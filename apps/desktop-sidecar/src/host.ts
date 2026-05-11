@@ -165,6 +165,16 @@ export class GraphnosisHost {
     const g = this.must(graphId);
     const sourceId = makeSourceId(kind, ref);
     const result = await this.opts.adapter.appendDocument(g.handle, input);
+    if (result.newNodeIds.length === 0) {
+      // Hard fail rather than create an orphan source record. The MCP layer surfaces
+      // this as an error to the AI client so the user sees the failure instead of
+      // a misleading "Saved" success message.
+      throw new Error(
+        `Ingest produced 0 nodes for source ${sourceId} (kind=${input.kind}). ` +
+        `The content may be empty, dedup-collided with existing nodes, or hit a parser edge case. ` +
+        `Try rephrasing the note or saving smaller pieces.`,
+      );
+    }
     await this.opts.adapter.buildEmbeddings(g.handle, {
       embed: cached(this.embed, g.cache),
       dimensions: this.embedDimensions,

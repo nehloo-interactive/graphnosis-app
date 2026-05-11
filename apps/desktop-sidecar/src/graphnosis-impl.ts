@@ -56,9 +56,25 @@ export class GraphnosisImpl implements GraphnosisAdapter {
     }
 
     const before = new Set(h.instance.graph.nodes.keys());
-    const result = await this.appendPostBuild(h.instance, input);
-    const newNodeIds: string[] = [];
+    let result = await this.appendPostBuild(h.instance, input);
+    let newNodeIds: string[] = [];
     for (const id of h.instance.graph.nodes.keys()) if (!before.has(id)) newNodeIds.push(id);
+
+    // Fallback: when `text` ingest produces no nodes (SDK's appendText doesn't
+    // always emit nodes for structured short text with punctuation, URLs, etc.),
+    // retry as markdown with a synthetic header derived from the source ref.
+    // This keeps the "single-chunk" intent for clean prose but ensures nothing
+    // silently fails — better a slightly noisier ingest than zero ingest.
+    if (newNodeIds.length === 0 && input.kind === 'text' && typeof input.content === 'string') {
+      const label = labelFromSourceRef(input.sourceRef);
+      const wrapped = `# ${label}\n\n${input.content}`;
+      const fallbackBefore = new Set(h.instance.graph.nodes.keys());
+      result = h.instance.appendMarkdown(wrapped, input.sourceRef);
+      for (const id of h.instance.graph.nodes.keys()) {
+        if (!fallbackBefore.has(id)) newNodeIds.push(id);
+      }
+    }
+
     return { newNodeIds, newNodes: result.newNodes, contradictions: result.contradictions };
   }
 
@@ -200,4 +216,12 @@ function nodeIdsBySource(g: Graphnosis, sourceRef: string): NodeId[] {
     if (n.source.file === sourceRef) out.push(id);
   }
   return out;
+}
+
+// Recover a human-readable label from a sourceRef of shape "clip:<ts>:<label>"
+// or fall back to the raw ref.
+function labelFromSourceRef(sourceRef: string): string {
+  const parts = sourceRef.split(':');
+  if (parts.length >= 3 && parts[0] === 'clip') return parts.slice(2).join(':');
+  return sourceRef;
 }
