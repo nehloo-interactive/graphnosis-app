@@ -1,0 +1,47 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Graphnosis",
+  "version": "0.0.1",
+  "identifier": "app.graphnosis",
+  "build": {
+    "frontendDist": "../dist",
+    "devUrl": "http://localhost:5173",
+    "beforeDevCommand": "pnpm --filter @graphnosis-app/desktop dev",
+    "beforeBuildCommand": "pnpm --filter @graphnosis-app/desktop build"
+  },
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "Graphnosis",
+        "width": 720,
+        "height": 560,
+        "resizable": true,
+        "visible": false,
+        "hiddenTitle": true,
+        "titleBarStyle": "Overlay"
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'"
+    },
+    "trayIcon": {
+      "iconPath": "icons/icon.png",
+      "iconAsTemplate": true,
+      "menuOnLeftClick": false
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["dmg", "app"],
+    "icon": ["icons/icon.png"],
+    "category": "Productivity",
+    "shortDescription": "Personal second memory",
+    "longDescription": "Local-first encrypted personal memory graph that attaches relevant context to your AI conversations."
+  },
+  "plugins": {
+    "autostart": {
+      "all": false
+    }
+  }
+}

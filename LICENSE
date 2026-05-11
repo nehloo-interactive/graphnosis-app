@@ -1,0 +1,129 @@
+Functional Source License, Version 1.1, Apache 2.0 Future License
+
+Copyright 2026 Nelu Lazar
+
+## Abbreviation
+
+FSL-1.1-Apache-2.0
+
+## Notice
+
+Business Source License 1.1
+
+Licensor: Nelu Lazar
+Licensed Work: Graphnosis App ("Software")
+            The Licensed Work is (c) 2026 Nelu Lazar.
+
+Additional Use Grant: You may make use of the Licensed Work, provided that
+            you may not use the Licensed Work for a Competing Use.
+
+            A "Competing Use" means making the Software, or a modified version
+            of it, available to third parties as a hosted or embedded service
+            whose value to those third parties derives, entirely or
+            substantially, from the functionality of the Software. Permitted
+            Purposes include:
+              (a) personal use;
+              (b) use in your organization for any purpose, including
+                  internal use, evaluation, and development of internal
+                  tools and integrations;
+              (c) professional services performed for an organization
+                  using the Software for the Permitted Purposes above
+                  (such as consulting, training, or custom integrations);
+              (d) any non-commercial use.
+
+Change Date:        Two years from the date the Licensed Work is published.
+
+Change License:     Apache License, Version 2.0
+
+## License
+
+### Acceptance
+
+In order to receive this license, you must agree to its rules. The rules of
+this license are both obligations under that agreement and conditions to your
+license. You must not do anything with this software that triggers a rule that
+you cannot or will not follow.
+
+### Licenses
+
+The licensor grants you a non-exclusive, royalty-free, worldwide,
+non-sublicensable, non-transferable license to use, copy, distribute, make
+available, and prepare derivative works of the software, in each case subject
+to the limitations and conditions below.
+
+### Limitations
+
+You may not make any use of the software that is a Competing Use, as defined
+above, prior to the Change Date.
+
+You must ensure that anyone who gets a copy of any part of the software from
+you also gets a copy of these terms or the URL for them above, as well as the
+following copyright notice:
+
+This software is Copyright © 2026 Nelu Lazar. The Functional Source License,
+Version 1.1, Apache 2.0 Future License conditions apply. See LICENSE for
+details.
+
+### Patents
+
+The licensor grants you a license, under any patent claims the licensor can
+license, or becomes able to license, to make, have made, use, sell, offer
+for sale, import and have imported the software, in each case subject to the
+limitations and conditions in this license. This license does not cover any
+patent claims that you cause to be infringed by modifications or additions to
+this software. If you or your company make any written claim that the software
+infringes or contributes to infringement of any patent, your patent license
+for the software granted under these terms ends immediately. If your company
+makes such a claim, your patent license ends immediately for work on behalf
+of your company.
+
+### Notices
+
+You must ensure that anyone who gets a copy of any part of this software from
+you, in source code or any other form, gets a copy of these terms or the URL
+for them.
+
+If you modify this software, you must include in any modified copies of the
+software prominent notices stating that you have modified the software.
+
+### No Other Rights
+
+These terms do not imply any licenses other than those expressly granted in
+these terms.
+
+### Termination
+
+If you use this software in violation of these terms, such use is not licensed,
+and your licenses will automatically terminate. If the licensor provides you
+with a notice of your violation, and you cease all violation of this license
+no later than 30 days after you receive that notice, your licenses will be
+reinstated retroactively. However, if you violate these terms after such
+reinstatement, any additional violation of these terms will cause your licenses
+to terminate automatically and permanently.
+
+### No Liability
+
+As far as the law allows, this software comes "as is", without any warranty or
+condition, and the licensor will not be liable to you for any damages arising
+out of these terms or the use or nature of the software, under any kind of
+legal claim.
+
+### Change License
+
+The Change License is the Apache License, Version 2.0, as published by the
+Apache Software Foundation. On the Change Date, the Licensed Work will be made
+available under the terms of the Change License, and these Terms will no longer
+apply to your use of the Software.
+
+## Covenants
+
+The Licensor commits to:
+  1. Convert this License to the Change License on the Change Date, allowing
+     unrestricted future use, modification, and distribution under the terms
+     of the Apache License, Version 2.0.
+  2. Make available the Source Code of any modifications or improvements that
+     the Licensor distributes publicly.
+
+This License does not grant any rights to trademarks, service marks, or trade
+names of the Licensor, except as required for reasonable and customary use
+in describing the origin of the Software.

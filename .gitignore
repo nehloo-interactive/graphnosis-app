@@ -1,0 +1,18 @@
+node_modules/
+dist/
+build/
+out/
+.turbo/
+.tauri/
+target/
+*.log
+.DS_Store
+.env
+.env.*
+!.env.example
+
+# App user data (must never be committed)
+*.aikg
+*.embcache
+*.oplog
+recovery-*.txt

@@ -1,0 +1,32 @@
+{
+  "name": "@graphnosis-app/desktop-sidecar",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "main": "./dist/index.js",
+  "bin": {
+    "graphnosis-sidecar": "./dist/index.js"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "dev": "node --watch --enable-source-maps --loader ts-node/esm src/index.ts",
+    "start": "node dist/index.js",
+    "smoke": "node --enable-source-maps dist/smoketest.js",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "dependencies": {
+    "@graphnosis-app/core": "workspace:*",
+    "@modelcontextprotocol/sdk": "^1.0.0",
+    "@mozilla/readability": "^0.5.0",
+    "@nehloo/graphnosis": "^0.2.3",
+    "fastembed": "^2.1.0",
+    "jsdom": "^24.0.0",
+    "zod": "^4.3.6"
+  },
+  "devDependencies": {
+    "@types/jsdom": "^21.1.0",
+    "@types/node": "^20.11.0",
+    "ts-node": "^10.9.0",
+    "typescript": "^5.4.0"
+  }
+}
