@@ -1,0 +1,16 @@
+{
+  "name": "graphnosis-app",
+  "version": "0.0.1",
+  "private": true,
+  "description": "Personal second-memory desktop app powered by Graphnosis. Local-first, encrypted, multi-graph, attaches relevant subgraph context to any MCP-aware AI.",
+  "packageManager": "pnpm@9.0.0",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "pnpm -r build",
+    "dev:sidecar": "pnpm --filter @graphnosis-app/desktop-sidecar dev",
+    "dev:desktop": "pnpm --filter @graphnosis-app/desktop tauri:dev",
+    "typecheck": "pnpm -r typecheck"
+  }
+}

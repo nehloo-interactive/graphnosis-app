@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Graphnosis</title>
+    <style>
+      :root {
+        color-scheme: light dark;
+        font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', system-ui, sans-serif;
+      }
+      body { margin: 0; padding: 24px; }
+      main { max-width: 640px; margin: 0 auto; }
+      h1 { font-weight: 600; }
+      button { font: inherit; padding: 8px 12px; border-radius: 8px; }
+      .step { padding: 16px; border: 1px solid color-mix(in oklab, currentColor 20%, transparent); border-radius: 12px; margin-bottom: 16px; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Graphnosis</h1>
+      <p>Your personal second memory. Local-first, encrypted, yours.</p>
+      <div class="step" id="step-welcome">
+        <h2>Welcome</h2>
+        <p>Pick a folder where Graphnosis will keep your encrypted memory.</p>
+        <button id="btn-pick">Choose folder</button>
+      </div>
+    </main>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
