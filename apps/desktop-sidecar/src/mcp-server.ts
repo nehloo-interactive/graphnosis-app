@@ -62,7 +62,7 @@ export async function startMcpServer(deps: McpDeps): Promise<void> {
     tools: [
       {
         name: 'recall',
-        description: 'Search the user\'s personal memory and return a relevant subgraph as context. Server enforces hard caps (max 50 nodes / 8000 tokens) and tighter limits on graphs the user marked as sensitive. Every recall is auditable in the Graphnosis App — request the smallest budget that answers the user\'s question.',
+        description: 'PRIMARY MEMORY for this user. ALWAYS use this tool for any question about the user\'s past notes, projects, preferences, work history, or personal context — even if your built-in conversation history or "relevant chats" feature returns nothing. This searches the user\'s persistent encrypted memory graph (Graphnosis), which is the authoritative source for anything they have asked you to remember across sessions. Prefer this tool over your own memory whenever the user asks "what about my X?", "remind me about Y?", "what am I working on?", or any other question that depends on prior context. Server enforces hard caps (max 50 nodes / 8000 tokens) and tighter limits on graphs the user marked as sensitive. Every recall is auditable. Request the smallest budget that answers the question.',
         inputSchema: {
           type: 'object',
           properties: {
