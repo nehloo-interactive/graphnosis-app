@@ -77,6 +77,22 @@
       .source-meta { color: var(--fg-dim); white-space: nowrap; }
       .toolbar { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; }
       .hidden { display: none; }
+      .drop-zone {
+        margin-top: 12px;
+        padding: 18px;
+        border: 1.5px dashed color-mix(in oklab, var(--fg-dim) 50%, transparent);
+        border-radius: 8px;
+        text-align: center;
+        color: var(--fg-dim);
+        font-size: 12px;
+        transition: background 80ms, border-color 80ms;
+      }
+      .drop-zone.dragging {
+        background: color-mix(in oklab, var(--accent) 8%, transparent);
+        border-color: var(--accent);
+        color: var(--fg);
+      }
+      .drop-zone.busy { opacity: 0.6; pointer-events: none; }
     </style>
   </head>
   <body>
@@ -114,12 +130,14 @@
           <div class="toolbar">
             <p class="panel-title" style="margin: 0;"><span class="ok-dot"></span><span id="vault-label">vault</span></p>
             <div class="actions">
+              <button id="btn-add-file" class="primary">Add file…</button>
               <button id="btn-refresh">Refresh</button>
               <button id="btn-open-folder">Open folder</button>
               <button id="btn-lock">Lock</button>
             </div>
           </div>
           <div id="graph-stats"></div>
+          <div id="drop-zone" class="drop-zone">Drop a file here to ingest — or use <strong>Add file…</strong></div>
         </div>
         <div class="panel">
           <p class="panel-title">Sources</p>

@@ -5,7 +5,7 @@
 
 use tauri::{
     menu::{Menu, MenuItem, PredefinedMenuItem},
-    tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
+    tray::TrayIconBuilder,
     AppHandle, Manager, Wry,
 };
 
@@ -19,29 +19,19 @@ pub fn create(app: &AppHandle) -> tauri::Result<()> {
         sidecar_running: false,
     })?;
 
-    TrayIconBuilder::with_id("graphnosis-tray")
-        .icon(app.default_window_icon().cloned().unwrap_or_else(|| {
-            // Fall back: solid square. App icon is the bundled icon.png.
-            tauri::image::Image::from_bytes(include_bytes!("../icons/32x32.png"))
-                .expect("32x32.png must exist in icons/")
-        }))
+    // The tray icon reuses the app's default window icon (loaded by Tauri from
+    // the bundle config). If for some reason it's missing, the tray will show
+    // the system's default placeholder rather than panic.
+    let mut builder = TrayIconBuilder::with_id("graphnosis-tray")
         .icon_as_template(true) // adapts to macOS light/dark menu bar
         .menu(&menu)
-        .show_menu_on_left_click(true)
+        .show_menu_on_left_click(true);
+    if let Some(icon) = app.default_window_icon().cloned() {
+        builder = builder.icon(icon);
+    }
+    builder
         .on_menu_event(|app, event| {
             on_menu_event(app, event.id().as_ref());
-        })
-        .on_tray_icon_event(|tray, event| {
-            // Single-click on the tray icon → also opens the menu (already default).
-            // Right-click is unused — we keep all actions in the menu for clarity.
-            if let TrayIconEvent::Click {
-                button: MouseButton::Left,
-                button_state: MouseButtonState::Up,
-                ..
-            } = event
-            {
-                let _ = tray.app_handle();
-            }
         })
         .build(app)?;
 
@@ -172,7 +162,7 @@ fn on_menu_event(app: &AppHandle, id: &str) {
 /// Truncate a vault path to its last two components for the tray label.
 fn short_vault_label(path: &str) -> String {
     let parts: Vec<&str> = path.rsplit('/').take(2).collect();
-    let mut tail: Vec<&str> = parts.into_iter().rev().collect();
+    let tail: Vec<&str> = parts.into_iter().rev().collect();
     let label = tail.join("/");
     if label.is_empty() {
         path.to_string()
