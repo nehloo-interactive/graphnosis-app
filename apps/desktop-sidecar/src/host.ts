@@ -77,7 +77,14 @@ export class GraphnosisHost {
     return [...this.graphs.keys()];
   }
 
+  /** Canonical on-disk path for a graph. New saves always go here (.gai). */
   private graphPath(graphId: GraphId): string {
+    return path.join(this.opts.vaultDir, 'graphs', `${graphId}.gai`);
+  }
+
+  /** Legacy path from pre-0.2.6 vaults (the App wrote .aikg). Used as a
+   * read-time fallback so existing user vaults keep working. */
+  private legacyGraphPath(graphId: GraphId): string {
     return path.join(this.opts.vaultDir, 'graphs', `${graphId}.aikg`);
   }
 
@@ -104,8 +111,19 @@ export class GraphnosisHost {
 
   async loadGraph(graphId: GraphId): Promise<void> {
     if (this.graphs.has(graphId)) return;
-    const aikg = await fs.readFile(this.graphPath(graphId));
-    const aikgPlain = await decrypt(new Uint8Array(aikg), this.key);
+    // Prefer the canonical .gai path; fall back to the legacy .aikg path so
+    // vaults created before 0.2.6 keep loading. The next `save()` will write
+    // the .gai file (and we can clean up the .aikg later if both exist).
+    let bytes: Buffer;
+    try {
+      bytes = await fs.readFile(this.graphPath(graphId));
+    } catch (e) {
+      const err = e as NodeJS.ErrnoException;
+      if (err.code !== 'ENOENT') throw err;
+      bytes = await fs.readFile(this.legacyGraphPath(graphId));
+      console.error(`[graphnosis-host] loaded legacy ${graphId}.aikg — will migrate to .gai on next save`);
+    }
+    const aikgPlain = await decrypt(new Uint8Array(bytes), this.key);
     // Inner SDK HMAC key (independent of outer encryption) — derived from data key + a fixed label.
     const hmacKey = this.key;
     const handle = await this.opts.adapter.loadFromBuffer(graphId, aikgPlain, hmacKey);
@@ -146,6 +164,10 @@ export class GraphnosisHost {
     const buf = await this.opts.adapter.toBuffer(g.handle, this.key);
     const ct = await encrypt(buf, this.key, this.salt);
     await fs.writeFile(this.graphPath(graphId), Buffer.from(ct));
+    // Migrate legacy: if a .aikg file from a pre-0.2.6 vault still exists
+    // alongside the new .gai we just wrote, remove it now that we've
+    // successfully persisted the canonical file.
+    try { await fs.unlink(this.legacyGraphPath(graphId)); } catch { /* no legacy file */ }
     const bundleCt = await encrypt(
       new TextEncoder().encode(JSON.stringify(g.sourceIndex.toJSON())),
       this.key,

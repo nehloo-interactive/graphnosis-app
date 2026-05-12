@@ -62,7 +62,7 @@ ferry to Naxos. The food in Mykonos was overrated.`;
   console.log('--- end context ---');
 
   log('encrypted-on-disk-check', {});
-  const aikgPath = path.join(vaultDir, 'graphs', 'personal.aikg');
+  const aikgPath = path.join(vaultDir, 'graphs', 'personal.gai');
   const raw = await fs.readFile(aikgPath);
   if (raw.includes(Buffer.from('Santorini'))) {
     throw new Error('FAIL: plaintext leak — found "Santorini" in .aikg on disk');
