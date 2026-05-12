@@ -49,8 +49,11 @@ pub async fn start(vault_dir: &Path, passphrase: &str) -> Result<SidecarHandle> 
         // Default graph; the App could later make this user-configurable.
         .env("GRAPHNOSIS_DEFAULT_GRAPH", "personal")
         .stdin(Stdio::null())
+        // Inherit stderr so the sidecar's [graphnosis-sidecar] / [graphnosis-host]
+        // log lines surface in the terminal running `pnpm dev:desktop`. This is
+        // critical for debugging — silent-pipe was hiding the real stack traces.
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
+        .stderr(Stdio::inherit())
         .kill_on_drop(true);
 
     let child = cmd
