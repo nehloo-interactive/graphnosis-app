@@ -45,7 +45,12 @@ export async function startIpc(deps: IpcDeps): Promise<net.Server> {
           const result = await dispatch(deps, req.method, req.params);
           sock.write(JSON.stringify({ id: req.id, result }) + '\n');
         } catch (e) {
-          sock.write(JSON.stringify({ id: req.id, error: e instanceof Error ? e.message : String(e) }) + '\n');
+          // Log full stack to stderr so the dev terminal shows it; return
+          // a multi-line message to the caller so the UI surfaces the cause.
+          const err = e instanceof Error ? e : new Error(String(e));
+          console.error(`[graphnosis-sidecar] IPC method '${req.method}' failed:`, err);
+          const message = err.stack ?? err.message;
+          sock.write(JSON.stringify({ id: req.id, error: message }) + '\n');
         }
       }
     });
