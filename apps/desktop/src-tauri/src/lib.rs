@@ -140,6 +140,49 @@ async fn inspector_stats(state: State<'_, AppState>) -> Result<serde_json::Value
 }
 
 #[tauri::command]
+async fn ingest_file(
+    state: State<'_, AppState>,
+    graph_id: Option<String>,
+    path: String,
+) -> Result<serde_json::Value, String> {
+    let socket_path = {
+        let inner = state.inner.lock().await;
+        match &inner.vault_dir {
+            Some(vd) => vd.join("sidecar.sock"),
+            None => return Err("vault is locked".to_string()),
+        }
+    };
+    let params = serde_json::json!({
+        "graphId": graph_id.unwrap_or_else(|| "personal".to_string()),
+        "path": path,
+    });
+    ipc_client::request(&socket_path, "ingest.file", params)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn pick_and_ingest_file(
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<Option<serde_json::Value>, String> {
+    // Open a native file picker, then route the chosen file through the
+    // existing sidecar ingest pipeline (Markdown / HTML / JSON / CSV / PDF / text).
+    let picked = app
+        .dialog()
+        .file()
+        .set_title("Choose a file to ingest into Graphnosis")
+        .add_filter("Common ingestible formats", &["md", "markdown", "txt", "html", "htm", "json", "csv", "pdf"])
+        .blocking_pick_file();
+    let path = match picked.and_then(|f| f.into_path().ok()) {
+        Some(p) => p.to_string_lossy().into_owned(),
+        None => return Ok(None), // user cancelled
+    };
+    let result = ingest_file(state, None, path).await?;
+    Ok(Some(result))
+}
+
+#[tauri::command]
 async fn open_vault_in_finder(state: State<'_, AppState>) -> Result<(), String> {
     let path = {
         let inner = state.inner.lock().await;
@@ -196,6 +239,8 @@ pub fn run() {
             lock_vault,
             status,
             inspector_stats,
+            ingest_file,
+            pick_and_ingest_file,
             open_vault_in_finder,
             show_window,
         ])

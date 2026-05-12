@@ -1,5 +1,6 @@
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
+import { getCurrentWebview } from '@tauri-apps/api/webview';
 
 // ---- types matching Rust ------------------------------------------------
 
@@ -47,9 +48,11 @@ const els = {
   btnRefresh: $<HTMLButtonElement>('btn-refresh'),
   btnOpenFolder: $<HTMLButtonElement>('btn-open-folder'),
   btnLock: $<HTMLButtonElement>('btn-lock'),
+  btnAddFile: $<HTMLButtonElement>('btn-add-file'),
   vaultLabel: $<HTMLSpanElement>('vault-label'),
   graphStats: $<HTMLDivElement>('graph-stats'),
   sourcesList: $<HTMLDivElement>('sources-list'),
+  dropZone: $<HTMLDivElement>('drop-zone'),
 };
 
 function showError(msg: string | null): void {
@@ -162,6 +165,57 @@ els.btnLock.addEventListener('click', async () => {
   } catch (e) {
     showError(String(e));
   }
+});
+
+els.btnAddFile.addEventListener('click', async () => {
+  showError(null);
+  try {
+    const result = (await invoke('pick_and_ingest_file')) as { sourceId?: string } | null;
+    if (result) {
+      await refreshStats();
+    }
+  } catch (e) {
+    showError(`Ingest failed: ${e}`);
+  }
+});
+
+// Tauri window drag-drop events. Webview is the canonical event target for
+// file drops in Tauri 2 (browser's drag/drop API gives us no real file paths).
+async function ingestDroppedPath(p: string): Promise<void> {
+  els.dropZone.classList.add('busy');
+  els.dropZone.textContent = `Ingesting ${p.split('/').pop()}…`;
+  try {
+    await invoke('ingest_file', { graphId: null, path: p });
+    await refreshStats();
+    els.dropZone.textContent = 'Drop another file here to ingest — or use Add file…';
+  } catch (e) {
+    showError(`Ingest failed: ${e}`);
+    els.dropZone.textContent = 'Drop a file here to ingest — or use Add file…';
+  } finally {
+    els.dropZone.classList.remove('busy');
+  }
+}
+
+void (async () => {
+  const webview = getCurrentWebview();
+  await webview.onDragDropEvent((event) => {
+    const payload = event.payload;
+    if (payload.type === 'enter' || payload.type === 'over') {
+      els.dropZone.classList.add('dragging');
+    } else if (payload.type === 'leave') {
+      els.dropZone.classList.remove('dragging');
+    } else if (payload.type === 'drop') {
+      els.dropZone.classList.remove('dragging');
+      const paths = (payload as { paths: string[] }).paths ?? [];
+      // Ingest the first file; multi-file batches are an obvious future improvement.
+      if (paths.length > 0 && paths[0]) {
+        void ingestDroppedPath(paths[0]);
+      }
+    }
+  });
+})().catch((e) => {
+  // Drag-drop wiring failure is non-fatal — the Add file button still works.
+  console.warn('drag-drop wiring failed:', e);
 });
 
 // Allow Enter in the passphrase field to submit.

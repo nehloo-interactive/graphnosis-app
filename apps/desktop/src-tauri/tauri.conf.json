@@ -24,11 +24,6 @@
     ],
     "security": {
       "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'"
-    },
-    "trayIcon": {
-      "iconPath": "icons/icon.png",
-      "iconAsTemplate": true,
-      "menuOnLeftClick": false
     }
   },
   "bundle": {
@@ -39,9 +34,5 @@
     "shortDescription": "Personal second memory",
     "longDescription": "Local-first encrypted personal memory graph that attaches relevant context to your AI conversations."
   },
-  "plugins": {
-    "autostart": {
-      "all": false
-    }
-  }
+  "plugins": {}
 }
