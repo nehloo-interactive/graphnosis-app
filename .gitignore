@@ -12,7 +12,9 @@ target/
 !.env.example
 
 # App user data (must never be committed)
+*.gai
 *.aikg
 *.embcache
 *.oplog
+*.bundle
 recovery-*.txt
