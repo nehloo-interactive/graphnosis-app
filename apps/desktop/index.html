@@ -7,24 +7,125 @@
     <style>
       :root {
         color-scheme: light dark;
-        font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', system-ui, sans-serif;
+        --bg: #ffffff;
+        --bg-elev: #f7f7f8;
+        --fg: #1a1a1a;
+        --fg-dim: #5b5b5b;
+        --accent: #1a4f63;
+        --border: rgba(0, 0, 0, 0.08);
+        --error: #b91c1c;
+        --ok: #15803d;
       }
-      body { margin: 0; padding: 24px; }
-      main { max-width: 640px; margin: 0 auto; }
-      h1 { font-weight: 600; }
-      button { font: inherit; padding: 8px 12px; border-radius: 8px; }
-      .step { padding: 16px; border: 1px solid color-mix(in oklab, currentColor 20%, transparent); border-radius: 12px; margin-bottom: 16px; }
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --bg: #1a1a1c;
+          --bg-elev: #232327;
+          --fg: #ededed;
+          --fg-dim: #9a9a9c;
+          --accent: #6ab3c8;
+          --border: rgba(255, 255, 255, 0.1);
+          --error: #f87171;
+          --ok: #4ade80;
+        }
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        padding: 0;
+        font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
+        background: var(--bg);
+        color: var(--fg);
+        font-size: 13px;
+        line-height: 1.5;
+        -webkit-user-select: none;
+        user-select: none;
+      }
+      main { padding: 24px; max-width: 640px; margin: 0 auto; }
+      h1 { font-size: 18px; font-weight: 600; margin: 0 0 4px; letter-spacing: -0.01em; }
+      .subtitle { color: var(--fg-dim); margin: 0 0 24px; }
+      label { display: block; font-weight: 500; margin-bottom: 6px; font-size: 12px; }
+      .row { margin-bottom: 16px; }
+      input[type="text"], input[type="password"] {
+        width: 100%; padding: 8px 10px; border: 1px solid var(--border);
+        border-radius: 6px; background: var(--bg-elev); color: var(--fg);
+        font-family: inherit; font-size: 13px;
+        -webkit-user-select: text; user-select: text;
+      }
+      input:focus { outline: 2px solid var(--accent); outline-offset: -1px; border-color: transparent; }
+      button {
+        font: inherit; padding: 8px 14px; border-radius: 6px; cursor: pointer;
+        border: 1px solid var(--border); background: var(--bg-elev); color: var(--fg);
+        transition: background 80ms;
+      }
+      button:hover { background: color-mix(in oklab, var(--accent) 8%, transparent); }
+      button.primary { background: var(--accent); color: white; border-color: transparent; }
+      button.primary:hover { background: color-mix(in oklab, var(--accent) 88%, white); }
+      button:disabled { opacity: 0.5; cursor: not-allowed; }
+      .actions { display: flex; gap: 8px; align-items: center; }
+      .pick-row { display: flex; gap: 8px; }
+      .pick-row input { flex: 1; }
+      .error { color: var(--error); padding: 8px 10px; border-radius: 6px; background: color-mix(in oklab, var(--error) 10%, transparent); margin-bottom: 16px; font-size: 12px; }
+      .ok-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--ok); margin-right: 6px; }
+      .dim-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--fg-dim); margin-right: 6px; }
+      .panel { background: var(--bg-elev); border: 1px solid var(--border); border-radius: 8px; padding: 16px; margin-bottom: 16px; }
+      .panel-title { font-weight: 600; margin: 0 0 8px; }
+      .stat-row { display: flex; justify-content: space-between; padding: 4px 0; border-bottom: 1px solid var(--border); }
+      .stat-row:last-child { border-bottom: 0; }
+      .stat-label { color: var(--fg-dim); }
+      .source-row { display: flex; justify-content: space-between; padding: 6px 0; font-size: 12px; }
+      .source-name { color: var(--fg); flex: 1; margin-right: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .source-meta { color: var(--fg-dim); white-space: nowrap; }
+      .toolbar { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; }
+      .hidden { display: none; }
     </style>
   </head>
   <body>
     <main>
       <h1>Graphnosis</h1>
-      <p>Your personal second memory. Local-first, encrypted, yours.</p>
-      <div class="step" id="step-welcome">
-        <h2>Welcome</h2>
-        <p>Pick a folder where Graphnosis will keep your encrypted memory.</p>
-        <button id="btn-pick">Choose folder</button>
-      </div>
+      <p class="subtitle" id="subtitle">Your private second memory</p>
+
+      <div id="error" class="error hidden"></div>
+
+      <!-- Unlock view -->
+      <section id="view-unlock">
+        <div class="panel">
+          <p class="panel-title">Unlock your vault</p>
+          <div class="row">
+            <label for="vault-dir">Vault folder</label>
+            <div class="pick-row">
+              <input type="text" id="vault-dir" placeholder="/Users/you/Graphnosis-test" />
+              <button id="btn-pick">Choose…</button>
+            </div>
+          </div>
+          <div class="row">
+            <label for="passphrase">Passphrase</label>
+            <input type="password" id="passphrase" placeholder="Your vault passphrase" />
+          </div>
+          <div class="actions">
+            <button id="btn-unlock" class="primary">Unlock</button>
+            <span id="unlock-status" class="subtitle"></span>
+          </div>
+        </div>
+      </section>
+
+      <!-- Inspector view (post-unlock) -->
+      <section id="view-inspector" class="hidden">
+        <div class="panel">
+          <div class="toolbar">
+            <p class="panel-title" style="margin: 0;"><span class="ok-dot"></span><span id="vault-label">vault</span></p>
+            <div class="actions">
+              <button id="btn-refresh">Refresh</button>
+              <button id="btn-open-folder">Open folder</button>
+              <button id="btn-lock">Lock</button>
+            </div>
+          </div>
+          <div id="graph-stats"></div>
+        </div>
+        <div class="panel">
+          <p class="panel-title">Sources</p>
+          <div id="sources-list"><p class="subtitle">Loading…</p></div>
+        </div>
+      </section>
     </main>
     <script type="module" src="/src/main.ts"></script>
   </body>

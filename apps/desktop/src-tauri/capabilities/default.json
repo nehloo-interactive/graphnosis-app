@@ -1,0 +1,23 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Capabilities granted to the main Graphnosis window. Kept minimal — folder picking, OS shell open (for the vault folder), keychain access, and the invoke commands we expose.",
+  "windows": ["main"],
+  "permissions": [
+    "core:default",
+    "core:window:allow-show",
+    "core:window:allow-hide",
+    "core:window:allow-close",
+    "core:window:allow-set-focus",
+    "core:webview:default",
+    "core:app:default",
+    "core:event:default",
+    "dialog:default",
+    "dialog:allow-open",
+    "fs:default",
+    "shell:default",
+    "opener:default",
+    "opener:allow-open-path",
+    "opener:allow-reveal-item-in-dir"
+  ]
+}

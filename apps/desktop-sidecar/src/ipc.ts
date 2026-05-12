@@ -95,6 +95,21 @@ async function dispatch(deps: IpcDeps, method: string, params: unknown): Promise
       }).parse(params);
       return ingestClip(deps.host, graphId, text, label);
     }
+    case 'stats.summary': {
+      // Used by the Tauri inspector — lighter than `stats` with `includeNodes`.
+      // Returns per-graph counts and source list (no node previews).
+      const s = deps.host.stats();
+      return {
+        graphs: s.graphs.map(g => ({
+          graphId: g.graphId,
+          totalNodes: g.totalNodes,
+          activeNodes: g.activeNodes,
+          softDeletedNodes: g.softDeletedNodes,
+          sources: g.sources,
+        })),
+        sources: deps.host.listSources(),
+      };
+    }
     case 'sources.list': {
       const { graphId } = z.object({ graphId: z.string().optional() }).parse(params ?? {});
       return deps.host.listSources(graphId);

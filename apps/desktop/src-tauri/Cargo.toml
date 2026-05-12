@@ -1,7 +1,7 @@
 [package]
 name = "graphnosis-app"
 version = "0.0.1"
-description = "Graphnosis App — personal second memory"
+description = "Graphnosis — personal second memory"
 edition = "2021"
 rust-version = "1.77"
 
@@ -9,14 +9,19 @@ rust-version = "1.77"
 name = "graphnosis_app_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
+[[bin]]
+name = "graphnosis-app"
+path = "src/main.rs"
+
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-tauri = { version = "2", features = ["macos-private-api", "tray-icon"] }
+tauri = { version = "2", features = ["tray-icon", "macos-private-api"] }
 tauri-plugin-dialog = "2"
 tauri-plugin-fs = "2"
 tauri-plugin-shell = "2"
+tauri-plugin-opener = "2"
 tauri-plugin-global-shortcut = "2"
 tauri-plugin-autostart = "2"
 keyring = "3"
@@ -25,3 +30,4 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["full"] }
 anyhow = "1"
+dirs = "5"
