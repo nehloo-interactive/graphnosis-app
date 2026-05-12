@@ -36,8 +36,8 @@ importers:
         specifier: ^0.5.0
         version: 0.5.0
       '@nehloo/graphnosis':
-        specifier: ^0.3.0
-        version: 0.3.0
+        specifier: ^0.3.1
+        version: 0.3.1
       fastembed:
         specifier: ^2.1.0
         version: 2.1.0
@@ -432,8 +432,8 @@ packages:
     resolution: {integrity: sha512-DxuT1ClnIPts1kQx8FBmkk4BQDTfI5kIzywAaMjQSXfNnra5UFU9PwurXrl+Je3bJ6BGsp/zmshVVFbCmyI+ww==}
     engines: {node: '>= 10'}
 
-  '@nehloo/graphnosis@0.3.0':
-    resolution: {integrity: sha512-RiykL2TXvaaJWvQ29d2CFucXQT8wUoIhlJXFri44Ofawk4Hr2w55N8Yx866eFVF+MNpvDCrKyI2TzN7LBycVCw==}
+  '@nehloo/graphnosis@0.3.1':
+    resolution: {integrity: sha512-hbtqdWaTLhxRKsUvN1UIZrZ8gtZ5anKbu/Dv9Ve61VeviERit929jZWz3sN7OmcTvrgePWzvcwnRYBGJZJuNTQ==}
     peerDependencies:
       '@ai-sdk/openai': '>=3.0.0'
       ai: '>=6.0.0'
@@ -2333,7 +2333,7 @@ snapshots:
       '@napi-rs/canvas-linux-x64-musl': 0.1.80
       '@napi-rs/canvas-win32-x64-msvc': 0.1.80
 
-  '@nehloo/graphnosis@0.3.0':
+  '@nehloo/graphnosis@0.3.1':
     dependencies:
       cheerio: 1.2.0
       exif-parser: 0.1.12
