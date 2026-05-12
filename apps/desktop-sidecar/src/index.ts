@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 import path from 'node:path';
 import os from 'node:os';
+import { promises as fs } from 'node:fs';
+import lockfile from 'proper-lockfile';
 import { embeddings, policy } from '@graphnosis-app/core';
 import { GraphnosisHost } from './host.js';
 import { GraphnosisImpl } from './graphnosis-impl.js';
@@ -34,8 +36,59 @@ function loadEnv(): CliEnv {
   };
 }
 
+/**
+ * Acquire an exclusive file lock on the vault dir so two sidecars cannot
+ * write to the same .aikg file simultaneously (multi-writer corruption,
+ * where one sidecar's saves get clobbered by another's stale in-memory
+ * state). The lock is auto-released on process exit; stale locks from
+ * killed processes are detected and recovered.
+ *
+ * If another sidecar already holds the lock, we exit with a clear message
+ * — Claude Desktop will show this in mcp-server-Graphnosis.log.
+ */
+async function acquireVaultLock(vaultDir: string): Promise<() => Promise<void>> {
+  await fs.mkdir(vaultDir, { recursive: true });
+  // proper-lockfile locks a target file, not a directory; use a sentinel.
+  const lockTarget = path.join(vaultDir, '.lockfile');
+  // Ensure the sentinel exists so proper-lockfile has something to lock.
+  await fs.writeFile(lockTarget, `pid=${process.pid}\nhost=${os.hostname()}\nstarted=${new Date().toISOString()}\n`);
+  try {
+    const release = await lockfile.lock(lockTarget, {
+      // If a previous process held the lock but died, ~10s of inactivity
+      // (no mtime update) is treated as stale and recovered.
+      stale: 10_000,
+      // Up to ~5 retries spaced 200ms..2s apart — handles brief overlap
+      // during a Claude Desktop ⌘Q + reopen.
+      retries: { retries: 5, minTimeout: 200, maxTimeout: 2_000, factor: 2 },
+      // Release on any process exit signal so the next sidecar can start cleanly.
+      realpath: false,
+    });
+    console.error(`[graphnosis-sidecar] vault lock acquired on ${lockTarget}`);
+    return release;
+  } catch (e) {
+    const msg = (e as Error).message;
+    console.error(`[graphnosis-sidecar] FATAL: could not acquire vault lock on ${vaultDir}: ${msg}`);
+    console.error('[graphnosis-sidecar] another Graphnosis sidecar is already writing to this vault. ' +
+      'Quit Claude Desktop fully (⌘Q, not ⌘W) and reopen, or check `ps -ax | grep graphnosis` for orphan processes to kill.');
+    process.exit(2);
+  }
+}
+
 async function main(): Promise<void> {
   const env = loadEnv();
+
+  // Acquire the vault lock BEFORE touching any files. If another sidecar
+  // is holding it, we exit immediately rather than starting a competing writer.
+  const releaseLock = await acquireVaultLock(env.vaultDir);
+
+  // Ensure the lock is released cleanly on common termination paths.
+  const safeRelease = async (): Promise<void> => {
+    try { await releaseLock(); } catch { /* lock already released */ }
+  };
+  process.on('SIGINT', () => { void safeRelease().then(() => process.exit(0)); });
+  process.on('SIGTERM', () => { void safeRelease().then(() => process.exit(0)); });
+  process.on('beforeExit', () => { void safeRelease(); });
+
   const adapter = new GraphnosisImpl();
 
   // Policy can be supplied via $GRAPHNOSIS_POLICY (path to JSON) for tiered graphs.
