@@ -32,8 +32,15 @@ export class GraphnosisImpl implements GraphnosisAdapter {
 
   async toBuffer(handle: GraphHandle, hmacKey?: Uint8Array): Promise<Uint8Array> {
     const h = handle as Internal;
-    // Build must have happened at least once before serializing.
-    if (!h.built) h.instance.build(h.graphId);
+    // Build must have happened at least once before serializing. Critically,
+    // we update h.built here too — previously we built the SDK graph but
+    // forgot to flip our local flag, which left subsequent ingests routing
+    // through addPreBuild and throwing for kinds (e.g. PDF) that don't have
+    // a pre-build form.
+    if (!h.built) {
+      h.instance.build(h.graphId);
+      h.built = true;
+    }
     const buf = h.instance.toBuffer(hmacKey ? { hmacKey: Buffer.from(hmacKey) } : undefined);
     return new Uint8Array(buf);
   }
@@ -46,13 +53,22 @@ export class GraphnosisImpl implements GraphnosisAdapter {
 
   async appendDocument(handle: GraphHandle, input: AppendDocumentInput): Promise<AppendDocumentResult> {
     const h = handle as Internal;
-    // Fresh graph: use add* (chainable) then build once. After that, every ingest is an append*.
+    // Fresh graph: most kinds use add* (chainable) then build once. PDF doesn't
+    // have a pre-build form in the SDK, so for PDF specifically we build an
+    // empty graph first and route through the post-build append path. This
+    // makes "first file is a PDF" Just Work instead of throwing.
     if (!h.built) {
-      this.addPreBuild(h.instance, input);
-      h.instance.build(h.graphId);
-      h.built = true;
-      const newNodeIds = nodeIdsBySource(h.instance, input.sourceRef);
-      return { newNodeIds, newNodes: newNodeIds.length, contradictions: [] };
+      if (input.kind === 'pdf') {
+        h.instance.build(h.graphId);
+        h.built = true;
+        // Fall through to the post-build path below.
+      } else {
+        this.addPreBuild(h.instance, input);
+        h.instance.build(h.graphId);
+        h.built = true;
+        const newNodeIds = nodeIdsBySource(h.instance, input.sourceRef);
+        return { newNodeIds, newNodes: newNodeIds.length, contradictions: [] };
+      }
     }
 
     const before = new Set(h.instance.graph.nodes.keys());
