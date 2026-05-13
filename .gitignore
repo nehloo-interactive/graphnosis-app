@@ -18,3 +18,6 @@ target/
 *.oplog
 *.bundle
 recovery-*.txt
+
+# Internal documentation (not for publication)
+DIFFERENTIATORS.md
