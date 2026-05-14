@@ -72,79 +72,2042 @@
       .stat-row { display: flex; justify-content: space-between; padding: 4px 0; border-bottom: 1px solid var(--border); }
       .stat-row:last-child { border-bottom: 0; }
       .stat-label { color: var(--fg-dim); }
-      .source-row { display: flex; justify-content: space-between; padding: 6px 0; font-size: 12px; }
-      .source-name { color: var(--fg); flex: 1; margin-right: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-      .source-meta { color: var(--fg-dim); white-space: nowrap; }
-      .toolbar { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; }
-      .hidden { display: none; }
-      .drop-zone {
-        margin-top: 12px;
-        padding: 18px;
-        border: 1.5px dashed color-mix(in oklab, var(--fg-dim) 50%, transparent);
-        border-radius: 8px;
-        text-align: center;
+      .stat-block { margin-bottom: 12px; }
+      .stat-block:last-child { margin-bottom: 0; }
+      .stat-group-title {
+        font-size: 11px;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
         color: var(--fg-dim);
-        font-size: 12px;
-        transition: background 80ms, border-color 80ms;
+        margin: 0 0 6px;
+        font-weight: 600;
       }
-      .drop-zone.dragging {
-        background: color-mix(in oklab, var(--accent) 8%, transparent);
-        border-color: var(--accent);
+      .forgotten-aside {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        margin-top: 6px;
+        padding: 4px 0;
+        font-size: 11px;
+        color: var(--fg-dim);
+      }
+      .forgotten-count { cursor: help; }
+      .btn-purge {
+        font-size: 11px;
+        padding: 2px 8px;
+        border-radius: 4px;
+        background: transparent;
+        color: var(--fg-dim);
+        border: 1px solid var(--border);
+      }
+      .btn-purge:hover {
+        background: color-mix(in oklab, var(--accent) 12%, transparent);
         color: var(--fg);
       }
-      .drop-zone.busy { opacity: 0.6; pointer-events: none; }
+      .diff-card {
+        background: var(--bg);
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        padding: 12px;
+        margin-bottom: 10px;
+      }
+      .diff-card:last-child { margin-bottom: 0; }
+      .diff-meta { display: flex; justify-content: space-between; font-size: 11px; color: var(--fg-dim); margin-bottom: 6px; }
+      .diff-reasoning {
+        font-size: 12px;
+        color: var(--fg);
+        padding: 6px 8px;
+        background: var(--bg-elev);
+        border-radius: 4px;
+        margin-bottom: 8px;
+        font-style: italic;
+      }
+      .diff-op {
+        font-size: 11px;
+        padding: 6px 0;
+        border-bottom: 1px solid var(--border);
+      }
+      .diff-op:last-child { border-bottom: 0; }
+      .diff-op-kind {
+        display: inline-block;
+        padding: 1px 6px;
+        border-radius: 3px;
+        font-size: 10px;
+        font-weight: 600;
+        margin-right: 6px;
+      }
+      .diff-op-kind.edit { background: color-mix(in oklab, var(--accent) 25%, transparent); color: var(--accent); }
+      .diff-op-kind.supersede { background: color-mix(in oklab, #a855f7 30%, transparent); color: #a855f7; }
+      .diff-op-kind.delete { background: color-mix(in oklab, var(--error) 25%, transparent); color: var(--error); }
+      .diff-op-kind.add { background: color-mix(in oklab, var(--ok) 25%, transparent); color: var(--ok); }
+      .diff-op-content {
+        margin-top: 4px;
+        padding: 6px 8px;
+        background: var(--bg-elev);
+        border-radius: 4px;
+        white-space: pre-wrap;
+        word-break: break-word;
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-size: 11px;
+        max-height: 120px;
+        overflow-y: auto;
+      }
+      .diff-op-reason {
+        margin-top: 4px;
+        font-size: 11px;
+        color: var(--fg-dim);
+      }
+      .diff-actions {
+        display: flex;
+        gap: 8px;
+        justify-content: flex-end;
+        margin-top: 10px;
+      }
+      .btn-approve {
+        background: var(--ok);
+        color: white;
+        border-color: transparent;
+        padding: 6px 14px;
+        font-weight: 500;
+      }
+      .btn-approve:hover { background: color-mix(in oklab, var(--ok) 85%, white); }
+      .btn-reject {
+        background: transparent;
+        color: var(--fg-dim);
+        padding: 6px 14px;
+      }
+      .btn-reject:hover {
+        background: color-mix(in oklab, var(--error) 12%, transparent);
+        color: var(--error);
+      }
+
+      .mcp-row {
+        display: flex; align-items: center; gap: 8px;
+        padding: 6px 0; font-size: 12px;
+        border-bottom: 1px solid var(--border);
+      }
+      .mcp-row:last-child { border-bottom: 0; }
+      .mcp-dot {
+        width: 8px; height: 8px; border-radius: 50%;
+        background: var(--ok);
+        flex-shrink: 0;
+        animation: mcp-pulse 2s ease-in-out infinite;
+      }
+      @keyframes mcp-pulse {
+        0%, 100% { opacity: 1; }
+        50% { opacity: 0.4; }
+      }
+      .mcp-client-name { color: var(--fg); font-weight: 500; }
+      .mcp-meta { color: var(--fg-dim); font-size: 11px; }
+      .mcp-empty { color: var(--fg-dim); font-size: 12px; padding: 4px 0; }
+
+      .source-row { display: flex; align-items: center; gap: 8px; padding: 6px 0; font-size: 12px; }
+      .source-name { color: var(--fg); flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .source-meta { color: var(--fg-dim); white-space: nowrap; }
+      .btn-forget {
+        font-size: 11px;
+        padding: 2px 8px;
+        border-radius: 4px;
+        background: transparent;
+        color: var(--fg-dim);
+        border: 1px solid var(--border);
+      }
+      .btn-forget:hover {
+        background: color-mix(in oklab, var(--error) 12%, transparent);
+        color: var(--error);
+        border-color: color-mix(in oklab, var(--error) 40%, transparent);
+      }
+      .toolbar { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; }
+      /* `.hidden` must beat the later flex/grid display values used by
+         the modal backdrops below — otherwise modals show on launch. */
+      .hidden { display: none !important; }
+      /* Global drop overlay — hidden by default, surfaces when the user
+         drags a file anywhere over the app window. Replaces the old
+         in-Overview drop-zone since the Graphnosis pane doesn't have a
+         natural "drop here" spot. Tauri's onDragDropEvent paints into
+         #drop-zone on type='enter'/'over' and clears on 'leave'/'drop'. */
+      .drop-zone {
+        position: fixed;
+        inset: 12px;
+        z-index: 90;
+        display: none;
+        align-items: center;
+        justify-content: center;
+        background: color-mix(in oklab, var(--accent) 14%, color-mix(in oklab, var(--bg) 92%, transparent));
+        border: 2px dashed var(--accent);
+        border-radius: 14px;
+        color: var(--fg);
+        font-size: 16px;
+        font-weight: 500;
+        backdrop-filter: blur(4px);
+        pointer-events: none; /* don't block the user's pointer when shown */
+        transition: opacity 80ms;
+      }
+      .drop-zone.dragging,
+      .drop-zone.busy { display: flex; }
+      .drop-zone.busy { opacity: 0.85; }
+
+      /* Recovery modal — dimmed overlay + centered panel. Pure CSS so the
+         UI stays single-page; no router needed. */
+      .modal-backdrop {
+        position: fixed; inset: 0;
+        background: rgba(0,0,0,0.4);
+        display: flex; align-items: center; justify-content: center;
+        z-index: 100;
+        padding: 24px;
+      }
+      .modal {
+        background: var(--bg);
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        width: 100%; max-width: 720px;
+        max-height: 90vh;
+        display: flex; flex-direction: column;
+        overflow: hidden;
+      }
+      .modal-header {
+        padding: 16px 20px;
+        border-bottom: 1px solid var(--border);
+      }
+      .modal-header h2 { margin: 0; font-size: 15px; font-weight: 600; }
+      .modal-header .subtitle { margin: 4px 0 0; font-size: 12px; }
+      .modal-body { padding: 16px 20px; overflow-y: auto; flex: 1; }
+      .modal-footer {
+        padding: 12px 20px;
+        border-top: 1px solid var(--border);
+        display: flex; gap: 8px; justify-content: flex-end;
+        align-items: center;
+      }
+      .modal-footer .filler { flex: 1; color: var(--fg-dim); font-size: 12px; }
+
+      .recovery-item {
+        display: grid;
+        grid-template-columns: 22px 1fr auto;
+        gap: 8px;
+        padding: 8px 0;
+        border-bottom: 1px solid var(--border);
+        font-size: 12px;
+        align-items: start;
+      }
+      .recovery-item:last-child { border-bottom: 0; }
+      .recovery-item .ref { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; word-break: break-all; }
+      .recovery-item .meta { color: var(--fg-dim); font-size: 11px; margin-top: 2px; }
+      .recovery-item .badge {
+        font-size: 10px; padding: 2px 6px; border-radius: 4px;
+        background: var(--bg-elev); color: var(--fg-dim); white-space: nowrap;
+      }
+      .recovery-item.recoverable .glyph,
+      .recovery-item.recoverable-from-cache .glyph { color: var(--ok); }
+      .recovery-item.file-missing .glyph,
+      .recovery-item.url-refetch-not-implemented .glyph,
+      .recovery-item.content-not-in-oplog .glyph { color: var(--error); }
+      .recovery-item.already-present .glyph { color: var(--fg-dim); }
+      .recovery-item.recovered .glyph { color: var(--ok); }
+      .recovery-item.failed .glyph { color: var(--error); }
+      .recovery-section-title {
+        font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em;
+        color: var(--fg-dim); margin: 12px 0 6px; font-weight: 600;
+      }
+      .recovery-summary {
+        background: var(--bg-elev);
+        border-radius: 6px;
+        padding: 10px 12px;
+        margin-bottom: 12px;
+        font-size: 12px;
+      }
+      .recovery-summary strong { color: var(--fg); }
+
+      /* =================================================================
+         New app shell — rail + canvas + status bar
+         ================================================================= */
+
+      html, body {
+        height: 100%;
+        overflow: hidden;
+      }
+      body { margin: 0; }
+      main {
+        padding: 0;
+        max-width: none;
+        margin: 0;
+        height: 100%;
+      }
+
+      /* Unlock view stays full-screen and centered until the user authenticates. */
+      .unlock-shell {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        height: 100%;
+        padding: 24px;
+      }
+      .unlock-shell > .unlock-card { max-width: 480px; width: 100%; }
+      .unlock-shell h1 { font-size: 22px; margin-bottom: 4px; }
+
+      /* The full shell — header, body (rail + canvas), status bar. Three rows. */
+      .app-shell {
+        display: grid;
+        grid-template-rows: auto 1fr auto;
+        height: 100%;
+      }
+
+      .app-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 10px 16px 10px 88px; /* leave room for macOS traffic lights */
+        border-bottom: 1px solid var(--border);
+        background: var(--bg);
+        gap: 8px;
+        -webkit-app-region: drag;
+      }
+      .app-header button, .app-header input, .app-header select { -webkit-app-region: no-drag; }
+      .app-header-left {
+        display: flex; align-items: center; gap: 10px;
+        font-weight: 600; font-size: 13px;
+      }
+      .app-header-left .vault-label-truncate {
+        max-width: 320px;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .brain-glyph {
+        font-size: 14px;
+        color: var(--ok);
+        line-height: 1;
+      }
+      .header-subtitle {
+        font-size: 11px;
+        font-weight: 400;
+        color: var(--fg-dim);
+        font-style: italic;
+      }
+      .app-header-right { display: flex; gap: 6px; }
+
+      .app-body {
+        display: grid;
+        grid-template-columns: 168px 1fr;
+        overflow: hidden;
+        min-height: 0;
+      }
+
+      /* Left navigation rail. */
+      .app-rail {
+        background: var(--bg-elev);
+        border-right: 1px solid var(--border);
+        padding: 8px 6px;
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
+        overflow-y: auto;
+      }
+      .rail-btn {
+        display: grid;
+        grid-template-columns: 22px 1fr auto;
+        align-items: center;
+        gap: 6px;
+        padding: 7px 10px;
+        border-radius: 6px;
+        background: transparent;
+        border: 1px solid transparent;
+        color: var(--fg-dim);
+        text-align: left;
+        font-size: 12px;
+        cursor: pointer;
+        transition: background 80ms, color 80ms;
+      }
+      .rail-btn:hover {
+        background: color-mix(in oklab, var(--accent) 8%, transparent);
+        color: var(--fg);
+      }
+      .rail-btn.active {
+        background: color-mix(in oklab, var(--accent) 18%, transparent);
+        color: var(--fg);
+        font-weight: 500;
+      }
+      .rail-btn .rail-icon { font-size: 14px; line-height: 1; text-align: center; }
+      .rail-btn .rail-label { line-height: 1.2; }
+      .rail-badge {
+        background: var(--accent);
+        color: white;
+        font-size: 10px;
+        font-weight: 600;
+        padding: 1px 6px;
+        border-radius: 8px;
+      }
+      .rail-spacer { flex: 1; }
+      .rail-section-label {
+        font-size: 10px;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+        color: var(--fg-dim);
+        padding: 8px 10px 2px;
+      }
+
+      /* Main canvas — switches between mode panes. */
+      .app-canvas {
+        overflow-y: auto;
+        padding: 20px 24px;
+        background: var(--bg);
+      }
+      .mode-pane { display: block; max-width: 900px; margin: 0 auto; }
+      .mode-pane.hidden { display: none; }
+      /* Atlas and Activity benefit from full canvas width — graphs need room
+         to breathe, op-log rows read better wide. The text-heavier panes
+         (Overview, Settings, etc.) keep the 900px column for readability. */
+      .mode-pane[data-pane="atlas"],
+      .mode-pane[data-pane="activity"] {
+        max-width: none;
+      }
+      /* The Graphnosis pane is a fixed-height column inside .app-canvas so
+         its topbar (search + picker) and tabs stay pinned while the list
+         and detail pane scroll independently. Without this, the entire
+         pane would scroll as one when the list overflows. */
+      .mode-pane[data-pane="atlas"] {
+        height: 100%;
+        display: flex;
+        flex-direction: column;
+        min-height: 0;
+      }
+      .mode-pane[data-pane="atlas"] > .pane-header,
+      .mode-pane[data-pane="atlas"] > .g-topbar,
+      .mode-pane[data-pane="atlas"] > .g-recents {
+        flex-shrink: 0;
+      }
+      .pane-header { margin-bottom: 14px; }
+      .pane-header h2 { font-size: 17px; font-weight: 600; margin: 0 0 2px; }
+      .brain-subtitle {
+        font-size: 11px;
+        color: var(--fg-dim);
+        font-style: italic;
+        margin: 0;
+        letter-spacing: 0.01em;
+      }
+      .pane-callout {
+        margin-top: 10px;
+        margin-bottom: 14px;
+      }
+      .placeholder {
+        text-align: center;
+        padding: 48px 16px;
+        color: var(--fg-dim);
+      }
+      .placeholder p { margin: 4px 0; }
+      .badge {
+        display: inline-block;
+        margin-left: 6px;
+        padding: 1px 8px;
+        border-radius: 10px;
+        background: var(--accent);
+        color: white;
+        font-size: 10px;
+        font-weight: 600;
+        vertical-align: middle;
+      }
+
+      /* Status bar at the bottom of the shell. */
+      .app-statusbar {
+        display: flex;
+        gap: 16px;
+        align-items: center;
+        padding: 6px 16px;
+        border-top: 1px solid var(--border);
+        background: var(--bg-elev);
+        font-size: 11px;
+        color: var(--fg-dim);
+      }
+      .app-statusbar .status-search {
+        flex: 1;
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      }
+      .app-statusbar .status-mcp { display: flex; align-items: center; gap: 6px; }
+      .status-dot {
+        width: 7px; height: 7px;
+        border-radius: 50%;
+        background: var(--fg-dim);
+        display: inline-block;
+      }
+      .status-dot.ok {
+        background: var(--ok);
+        animation: mcp-pulse 2s ease-in-out infinite;
+      }
+      .status-dot.warn { background: #eab308; }
+      .status-dot.error { background: var(--error); }
+
+      /* Nodes view */
+      .nodes-toolbar {
+        display: flex;
+        gap: 8px;
+        align-items: center;
+        margin-bottom: 12px;
+      }
+      .nodes-toolbar input[type="search"] {
+        flex: 1;
+        padding: 7px 10px;
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        background: var(--bg-elev);
+        color: var(--fg);
+        font-family: inherit;
+        font-size: 13px;
+        -webkit-user-select: text; user-select: text;
+      }
+      .nodes-toolbar select {
+        padding: 7px 10px;
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        background: var(--bg-elev);
+        color: var(--fg);
+        font-size: 12px;
+      }
+      .node-row {
+        padding: 8px 10px;
+        border-bottom: 1px solid var(--border);
+        cursor: pointer;
+        transition: background 60ms;
+      }
+      .node-row:hover { background: color-mix(in oklab, var(--accent) 6%, transparent); }
+      .node-row .nr-confidence {
+        display: inline-block;
+        width: 36px;
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        color: var(--fg-dim);
+        font-size: 11px;
+      }
+      .node-row .nr-preview {
+        font-size: 12px;
+        color: var(--fg);
+      }
+      .node-row .nr-meta {
+        font-size: 11px;
+        color: var(--fg-dim);
+        margin-top: 2px;
+      }
+      .node-row.soft-deleted .nr-preview { color: var(--fg-dim); text-decoration: line-through; }
+      .node-row.detailed .nr-meta-detail {
+        margin-top: 4px;
+        padding: 6px 8px;
+        background: var(--bg-elev);
+        border-radius: 4px;
+        font-size: 11px;
+        color: var(--fg-dim);
+      }
+
+      /* Graph wizard cards */
+      .graph-templates {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 10px;
+        margin: 12px 0;
+      }
+      .graph-template-card {
+        text-align: left;
+        padding: 10px 12px;
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        background: var(--bg-elev);
+        cursor: pointer;
+        position: relative;
+        transition: border-color 80ms, background 80ms;
+      }
+      .graph-template-card:hover { border-color: var(--accent); }
+      .graph-template-card.selected {
+        border-color: var(--accent);
+        background: color-mix(in oklab, var(--accent) 12%, transparent);
+      }
+      .graph-template-card .gt-title { font-weight: 600; font-size: 13px; margin-bottom: 2px; }
+      .graph-template-card .gt-desc { font-size: 11px; color: var(--fg-dim); line-height: 1.4; }
+      .graph-template-card .gt-tier {
+        position: absolute;
+        top: 8px; right: 8px;
+        font-size: 9px;
+        font-weight: 600;
+        padding: 1px 6px;
+        border-radius: 4px;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+      }
+      .gt-tier.free { background: color-mix(in oklab, var(--ok) 18%, transparent); color: var(--ok); }
+      .gt-tier.power { background: color-mix(in oklab, var(--accent) 22%, transparent); color: var(--accent); }
+      .gt-tier.enterprise { background: color-mix(in oklab, #a855f7 22%, transparent); color: #a855f7; }
+      .graph-template-card.locked { opacity: 0.55; cursor: not-allowed; }
+      .graph-template-card.locked:hover { border-color: var(--border); }
+
+      /* ─── Graphnosis pane v2: search + tabs + detail ─────────────── */
+      .g-topbar {
+        display: flex;
+        gap: 8px;
+        align-items: center;
+        margin-bottom: 8px;
+      }
+      .g-search-wrap {
+        flex: 1;
+        position: relative;
+      }
+      .g-search-wrap input[type="search"] {
+        width: 100%;
+        padding: 7px 30px 7px 10px;
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        background: var(--bg-elev);
+        color: var(--fg);
+        font-family: inherit;
+        font-size: 13px;
+        -webkit-user-select: text;
+        user-select: text;
+      }
+      .g-search-wrap input[type="search"]:focus {
+        outline: 2px solid var(--accent);
+        outline-offset: -1px;
+        border-color: transparent;
+      }
+      .g-search-clear {
+        position: absolute;
+        right: 6px;
+        top: 50%;
+        transform: translateY(-50%);
+        background: transparent;
+        border: 0;
+        color: var(--fg-dim);
+        font-size: 16px;
+        line-height: 1;
+        cursor: pointer;
+        padding: 2px 6px;
+      }
+      .g-search-clear:hover { color: var(--fg); }
+
+      .g-recents {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        margin-bottom: 10px;
+        font-size: 11px;
+        flex-wrap: wrap;
+      }
+      .g-recents-label { color: var(--fg-dim); }
+      .g-recents-chips { display: flex; gap: 6px; flex-wrap: wrap; }
+      .g-recent-chip {
+        background: var(--bg-elev);
+        border: 1px solid var(--border);
+        color: var(--fg);
+        padding: 3px 8px;
+        border-radius: 12px;
+        font-size: 11px;
+        cursor: pointer;
+        max-width: 200px;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .g-recent-chip:hover { border-color: var(--accent); }
+
+      /* Main: tabs+content on left, detail pane right. Sized to fill the
+         remaining space inside the flex-column atlas pane so the children
+         (list, detail) scroll independently rather than the whole pane. */
+      .g-main {
+        display: grid;
+        grid-template-columns: 1fr 360px;
+        gap: 12px;
+        flex: 1;
+        min-height: 0; /* allow children to shrink + scroll internally */
+        overflow: hidden;
+      }
+      .g-browse {
+        display: flex;
+        flex-direction: column;
+        min-width: 0; /* let it shrink */
+        min-height: 0; /* enable internal scrolling */
+      }
+      .g-tabs {
+        display: flex;
+        gap: 2px;
+        border-bottom: 1px solid var(--border);
+        margin-bottom: 10px;
+        flex-shrink: 0;
+      }
+      .g-tab {
+        background: transparent;
+        border: 0;
+        border-bottom: 2px solid transparent;
+        padding: 7px 14px;
+        font-size: 12px;
+        color: var(--fg-dim);
+        cursor: pointer;
+        font-weight: 500;
+        margin-bottom: -1px;
+      }
+      .g-tab:hover { color: var(--fg); }
+      .g-tab.active {
+        color: var(--fg);
+        border-bottom-color: var(--accent);
+      }
+      .g-tab-pane {
+        flex: 1;
+        display: flex;
+        flex-direction: column;
+        min-height: 0;
+      }
+      .g-tab-pane.hidden { display: none; }
+
+      .g-list-stats {
+        font-size: 11px;
+        margin-bottom: 8px;
+        flex-shrink: 0;
+      }
+      .g-list {
+        flex: 1;
+        overflow-y: auto;
+        min-height: 0;
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        background: var(--bg);
+      }
+      .g-list:focus { outline: none; }
+      .g-list-row {
+        display: grid;
+        grid-template-columns: 36px 1fr;
+        gap: 10px;
+        padding: 8px 12px;
+        border-bottom: 1px solid var(--border);
+        cursor: pointer;
+        transition: background 60ms;
+      }
+      .g-list-row:last-child { border-bottom: 0; }
+      .g-list-row:hover { background: color-mix(in oklab, var(--accent) 6%, transparent); }
+      .g-list-row.selected {
+        background: color-mix(in oklab, var(--accent) 14%, transparent);
+        border-left: 2px solid var(--accent);
+        padding-left: 10px;
+      }
+      .g-list-row.soft-deleted .g-row-text { color: var(--fg-dim); text-decoration: line-through; }
+      .g-row-conf {
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        color: var(--fg-dim);
+        font-size: 10px;
+        align-self: start;
+        margin-top: 2px;
+      }
+      .g-row-text { color: var(--fg); font-size: 12px; line-height: 1.4; }
+      .g-row-meta { color: var(--fg-dim); font-size: 11px; margin-top: 3px; }
+      .g-row-source {
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-size: 10px;
+      }
+
+      /* ── Check-in dashboard ───────────────────────────────────────── */
+
+      /* The dashboard fills the left column of g-main. Vertical scroll
+         lives on the dashboard itself, not the page, so search-results
+         can take over the same space without layout jumps. */
+      .g-dashboard {
+        flex: 1;
+        overflow-y: auto;
+        min-height: 0;
+        display: flex;
+        flex-direction: column;
+        gap: 16px;
+      }
+      .g-search-results {
+        flex: 1;
+        display: flex;
+        flex-direction: column;
+        min-height: 0;
+      }
+      .g-search-results.hidden { display: none; }
+
+      /* Health gauge — single horizontal card. Grade + bar + phrase. */
+      .g-health {
+        display: grid;
+        grid-template-columns: auto 1fr;
+        gap: 14px;
+        align-items: center;
+        padding: 14px 18px;
+        background: var(--bg-elev);
+        border: 1px solid var(--border);
+        border-radius: 8px;
+      }
+      .g-health-gauge {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 4px;
+        min-width: 88px;
+      }
+      .g-health-grade {
+        font-size: 32px;
+        font-weight: 700;
+        line-height: 1;
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        letter-spacing: -0.02em;
+        transition: color 200ms;
+      }
+      .g-health-grade.a { color: var(--ok); }
+      .g-health-grade.b { color: var(--accent); }
+      .g-health-grade.c { color: #d9a445; }       /* warm yellow */
+      .g-health-grade.d { color: var(--error); }
+      .g-health-meter {
+        width: 72px;
+        height: 4px;
+        background: color-mix(in oklab, var(--fg) 8%, transparent);
+        border-radius: 2px;
+        overflow: hidden;
+      }
+      .g-health-fill {
+        height: 100%;
+        background: var(--accent);
+        width: 0%;
+        transition: width 600ms ease-out, background 400ms;
+        border-radius: 2px;
+      }
+      .g-health-meta { min-width: 0; }
+      .g-health-phrase {
+        font-size: 14px;
+        font-weight: 500;
+        color: var(--fg);
+        margin: 0;
+        line-height: 1.3;
+      }
+      .g-health-detail {
+        margin: 4px 0 0;
+        font-size: 11px;
+        line-height: 1.45;
+      }
+
+      /* Review deck — one card at a time with quick-action buttons */
+      .g-deck {
+        background: var(--bg-elev);
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        padding: 14px 18px 16px;
+      }
+      .g-deck-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: baseline;
+        margin-bottom: 10px;
+      }
+      .g-deck-title {
+        font-size: 12px;
+        font-weight: 600;
+        color: var(--fg);
+      }
+      .g-deck-progress {
+        font-size: 11px;
+        color: var(--fg-dim);
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      }
+      .g-deck-card {
+        min-height: 140px;
+        display: flex;
+        flex-direction: column;
+        justify-content: space-between;
+      }
+      .g-deck-prompt {
+        font-size: 11px;
+        color: var(--fg-dim);
+        font-style: italic;
+        margin: 0 0 8px;
+      }
+      /* Breadcrumb above a card's content — frames the memory inside its
+         original document/section context so single-fragment review
+         doesn't feel orphaned. Quieter than the content itself. */
+      .g-deck-breadcrumb,
+      .g-detail-breadcrumb {
+        font-size: 10px;
+        color: var(--fg-dim);
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        margin: 0 0 6px;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .g-detail-breadcrumb {
+        margin: 0 0 8px;
+        padding-bottom: 6px;
+        border-bottom: 1px dashed var(--border);
+      }
+      .g-deck-content {
+        font-size: 14px;
+        line-height: 1.5;
+        color: var(--fg);
+        margin: 0 0 10px;
+        padding: 10px 12px;
+        background: var(--bg);
+        border-left: 2px solid var(--accent);
+        border-radius: 0 4px 4px 0;
+      }
+      .g-deck-meta {
+        font-size: 10px;
+        color: var(--fg-dim);
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        margin: 0 0 12px;
+      }
+      .g-deck-actions {
+        display: flex;
+        gap: 6px;
+        flex-wrap: wrap;
+      }
+      .g-deck-actions button {
+        flex: 1;
+        min-width: 0;
+        font-size: 12px;
+        padding: 7px 10px;
+      }
+      .g-deck-actions .deck-ok {
+        background: color-mix(in oklab, var(--ok) 25%, var(--bg));
+        color: var(--fg);
+        border: 1px solid color-mix(in oklab, var(--ok) 40%, var(--border));
+      }
+      .g-deck-actions .deck-ok:hover {
+        background: color-mix(in oklab, var(--ok) 38%, var(--bg));
+      }
+      .g-deck-empty,
+      .g-deck-ack {
+        text-align: center;
+        padding: 30px 12px;
+        color: var(--fg-dim);
+        font-size: 12px;
+      }
+
+      /* Deck Related suggestions — appears inside an orphan card. Two
+         small rows with a Link button each; the goal is "one tap promotes
+         a semantic similarity into a real graph edge." */
+      .g-deck-related {
+        margin: 8px 0 10px;
+        padding: 8px 10px;
+        background: var(--bg);
+        border-left: 2px solid color-mix(in oklab, var(--accent) 50%, var(--border));
+        border-radius: 0 4px 4px 0;
+      }
+      .g-deck-related-title {
+        font-size: 10px;
+        color: var(--fg-dim);
+        font-style: italic;
+        margin: 0 0 6px;
+      }
+      .g-deck-related-row {
+        display: grid;
+        grid-template-columns: 1fr auto;
+        gap: 8px;
+        align-items: center;
+        padding: 4px 0;
+      }
+      .g-deck-related-row + .g-deck-related-row {
+        border-top: 1px dashed var(--border);
+      }
+      .g-deck-related-text {
+        font-size: 12px;
+        color: var(--fg);
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .btn-deck-link {
+        font-size: 11px;
+        padding: 3px 8px;
+        background: color-mix(in oklab, var(--accent) 18%, var(--bg-elev));
+        border: 1px solid color-mix(in oklab, var(--accent) 45%, var(--border));
+        color: var(--fg);
+      }
+      .btn-deck-link:hover { background: color-mix(in oklab, var(--accent) 28%, var(--bg-elev)); }
+      .btn-deck-link:disabled { opacity: 0.6; cursor: progress; }
+      .g-deck-ack { color: var(--fg); }
+
+      /* Two-tap armed Forget button in the sidebar. First tap turns the
+         button red and changes the label; second tap commits. */
+      #btn-detail-forget.btn-forget-armed {
+        background: color-mix(in oklab, var(--error) 18%, var(--bg));
+        color: var(--fg);
+        border: 1px solid color-mix(in oklab, var(--error) 60%, var(--border));
+      }
+      #btn-detail-forget.btn-forget-armed:hover {
+        background: color-mix(in oklab, var(--error) 28%, var(--bg));
+      }
+      .g-deck-empty-grade {
+        font-size: 28px;
+        margin-bottom: 6px;
+        color: var(--ok);
+      }
+      /* Brief celebratory pulse when the user dispatches a card */
+      @keyframes g-pulse-ok {
+        0%   { box-shadow: 0 0 0 0 color-mix(in oklab, var(--ok) 35%, transparent); }
+        100% { box-shadow: 0 0 0 12px transparent; }
+      }
+      .g-deck.flash { animation: g-pulse-ok 500ms ease-out; }
+
+      /* Recap — quiet numbers, no flames or streaks */
+      .g-recap {
+        background: var(--bg-elev);
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        padding: 4px 18px;
+      }
+      .g-recap-row {
+        display: flex;
+        justify-content: space-between;
+        padding: 8px 0;
+        border-bottom: 1px solid var(--border);
+        font-size: 12px;
+      }
+      .g-recap-row:last-child { border-bottom: 0; }
+      .g-recap-label { color: var(--fg-dim); }
+      .g-recap-value {
+        color: var(--fg);
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      }
+      .g-recap-value.tended-bump { color: var(--ok); }
+      /* Forgotten/Purge footer inside the recap — only surfaces when
+         the engram has soft-deleted memories still on disk. Visually
+         set apart so it reads as a maintenance call-to-action, not
+         another stat row. */
+      .g-recap-forgotten {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        gap: 10px;
+        padding: 10px 0 8px;
+        margin-top: 4px;
+        border-top: 1px dashed var(--border);
+        font-size: 11px;
+        color: var(--fg-dim);
+      }
+      .g-recap-forgotten.hidden { display: none; }
+      .btn-g-purge {
+        font-size: 11px;
+        padding: 4px 10px;
+      }
+
+      /* AI tools card — mirrors the Overview-side block but in the
+         Graphnosis dashboard's vocabulary. Calmer styling than the
+         original; "tapped in" framing feels less clinical. */
+      .g-mcp {
+        background: var(--bg-elev);
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        padding: 14px 18px;
+      }
+      .g-mcp-title {
+        font-size: 12px;
+        font-weight: 600;
+        color: var(--fg);
+        margin: 0 0 8px;
+      }
+      .g-mcp-list { font-size: 12px; }
+
+      /* Clusters tab — groups of memories shown as expandable cards */
+      .g-clusters-toolbar {
+        display: flex;
+        gap: 6px;
+        align-items: center;
+        margin-bottom: 8px;
+        flex-shrink: 0;
+        flex-wrap: wrap;
+      }
+      .g-cluster-mode {
+        background: var(--bg-elev);
+        border: 1px solid var(--border);
+        color: var(--fg-dim);
+        padding: 3px 10px;
+        border-radius: 12px;
+        font-size: 11px;
+        cursor: pointer;
+      }
+      .g-cluster-mode:hover { color: var(--fg); }
+      .g-cluster-mode.active {
+        background: color-mix(in oklab, var(--accent) 18%, var(--bg-elev));
+        color: var(--fg);
+        border-color: var(--accent);
+      }
+      .g-cluster-hint {
+        font-size: 10px;
+        color: var(--fg-dim);
+        font-style: italic;
+        margin-left: 4px;
+      }
+      .g-clusters-list {
+        flex: 1;
+        overflow-y: auto;
+        min-height: 0;
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        background: var(--bg);
+      }
+      .g-cluster {
+        border-bottom: 1px solid var(--border);
+      }
+      .g-cluster:last-child { border-bottom: 0; }
+      .g-cluster-head {
+        display: grid;
+        grid-template-columns: 18px 1fr auto;
+        gap: 10px;
+        align-items: center;
+        padding: 10px 14px;
+        cursor: pointer;
+        background: var(--bg-elev);
+        font-size: 12px;
+      }
+      .g-cluster-head:hover { background: color-mix(in oklab, var(--accent) 8%, var(--bg-elev)); }
+      .g-cluster-caret {
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        color: var(--fg-dim);
+        font-size: 10px;
+        text-align: center;
+        transition: transform 100ms;
+      }
+      .g-cluster.expanded .g-cluster-caret { transform: rotate(90deg); }
+      .g-cluster-title {
+        color: var(--fg);
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .g-cluster-count {
+        color: var(--fg-dim);
+        font-size: 11px;
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      }
+      .g-cluster-body {
+        display: none;
+        background: var(--bg);
+      }
+      .g-cluster.expanded .g-cluster-body { display: block; }
+
+      /* Detail pane (right) */
+      .g-detail {
+        background: var(--bg-elev);
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        padding: 14px;
+        overflow-y: auto;
+      }
+      .g-detail-empty {
+        color: var(--fg-dim);
+        font-size: 12px;
+      }
+      .g-detail-shortcuts {
+        margin-top: 16px;
+        font-size: 11px;
+        line-height: 1.7;
+        color: var(--fg-dim);
+      }
+      .g-detail-shortcuts kbd {
+        background: var(--bg);
+        border: 1px solid var(--border);
+        border-radius: 3px;
+        padding: 1px 5px;
+        font-size: 10px;
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      }
+      .g-detail-body.hidden { display: none; }
+      .g-detail-conf {
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        color: var(--fg-dim);
+        font-size: 11px;
+        margin-bottom: 4px;
+      }
+      .g-detail-content {
+        font-size: 13px;
+        line-height: 1.5;
+        margin: 8px 0;
+        white-space: pre-wrap;
+        word-break: break-word;
+      }
+      .g-detail-meta {
+        font-size: 11px;
+        color: var(--fg-dim);
+        margin: 8px 0;
+        padding-top: 8px;
+        border-top: 1px solid var(--border);
+        line-height: 1.7;
+      }
+      .g-detail-meta code {
+        font-size: 10px;
+        background: var(--bg);
+        padding: 1px 4px;
+        border-radius: 3px;
+      }
+      .g-detail-actions {
+        display: flex;
+        gap: 6px;
+        flex-wrap: wrap;
+        margin: 12px 0;
+        padding-top: 10px;
+        border-top: 1px solid var(--border);
+      }
+      .g-detail-edit-textarea {
+        width: 100%;
+        min-height: 120px;
+        padding: 8px 10px;
+        background: var(--bg);
+        color: var(--fg);
+        border: 1px solid var(--accent);
+        border-radius: 4px;
+        font: inherit;
+        font-size: 13px;
+        line-height: 1.5;
+        resize: vertical;
+        -webkit-user-select: text;
+        user-select: text;
+      }
+      .g-detail-conn-section { margin-top: 12px; }
+      .g-detail-conn-title {
+        font-size: 10px;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+        color: var(--fg-dim);
+        margin: 0 0 4px;
+        font-weight: 600;
+      }
+      .g-detail-conn-row {
+        display: grid;
+        grid-template-columns: 14px 1fr;
+        gap: 6px;
+        align-items: start;
+        padding: 4px 6px;
+        font-size: 11px;
+        cursor: pointer;
+        border-radius: 4px;
+      }
+      .g-detail-conn-row:hover { background: color-mix(in oklab, var(--accent) 8%, transparent); }
+      .g-detail-conn-arrow { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+      .g-detail-conn-text { line-height: 1.4; }
+      .g-detail-conn-type { color: var(--fg-dim); font-size: 10px; font-style: italic; }
+
+      /* Related memories — semantic candidates surfaced for nodes that
+         aren't yet connected by an explicit edge. Each row has its own
+         Link button so the user can promote a similarity into a real
+         graph edge with one tap. */
+      .g-detail-related {
+        margin-top: 6px;
+      }
+      .g-related-row {
+        display: grid;
+        grid-template-columns: 1fr auto;
+        gap: 8px;
+        align-items: center;
+        padding: 6px 8px;
+        border: 1px solid var(--border);
+        border-radius: 4px;
+        margin-bottom: 6px;
+        background: var(--bg);
+      }
+      .g-related-text {
+        font-size: 12px;
+        line-height: 1.35;
+        color: var(--fg);
+        overflow: hidden;
+      }
+      .g-related-actions {
+        display: flex;
+        gap: 4px;
+      }
+      .g-related-actions button {
+        font-size: 11px;
+        padding: 3px 8px;
+      }
+      .btn-related-link {
+        background: color-mix(in oklab, var(--accent) 18%, var(--bg-elev));
+        border: 1px solid color-mix(in oklab, var(--accent) 45%, var(--border));
+        color: var(--fg);
+      }
+      .btn-related-link:hover { background: color-mix(in oklab, var(--accent) 28%, var(--bg-elev)); }
+      .btn-related-link:disabled { opacity: 0.6; cursor: progress; }
+
+      /* Atlas: 3D viz */
+      .atlas-toolbar {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        margin-bottom: 10px;
+        font-size: 12px;
+      }
+      .atlas-toolbar .filler { flex: 1; }
+      .atlas-toolbar select {
+        padding: 5px 8px;
+        border-radius: 6px;
+        border: 1px solid var(--border);
+        background: var(--bg-elev);
+        color: var(--fg);
+        font-size: 12px;
+      }
+      .atlas-stage {
+        position: relative;
+        /* Grow to fill the remaining space inside the tab pane. The old
+           calc(100vh - 260px) was correct in the flat-pane layout but
+           overflowed the flex column when 3D Atlas became a tab — the
+           canvas got clipped and your drags landed on dead space. */
+        flex: 1;
+        min-height: 320px;
+        width: 100%;
+        background: radial-gradient(circle at 50% 50%, color-mix(in oklab, var(--accent) 6%, transparent), transparent 70%), var(--bg);
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        overflow: hidden;
+      }
+      .atlas-container {
+        position: absolute;
+        inset: 0;
+        cursor: grab;
+      }
+      .atlas-container:active { cursor: grabbing; }
+      /* 3d-force-graph injects its own canvas + scene-controls; make them blend. */
+      .atlas-container canvas { display: block; }
+      .scene-tooltip {
+        font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif !important;
+        font-size: 11px !important;
+        max-width: 320px;
+        background: color-mix(in oklab, var(--bg-elev) 96%, transparent) !important;
+        color: var(--fg) !important;
+        border: 1px solid var(--border) !important;
+        border-radius: 4px;
+        padding: 6px 8px !important;
+        backdrop-filter: blur(8px);
+      }
+      .atlas-inspector {
+        position: absolute;
+        top: 12px; right: 12px;
+        width: 260px;
+        max-height: calc(100% - 24px);
+        background: color-mix(in oklab, var(--bg-elev) 92%, transparent);
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        padding: 10px 12px;
+        font-size: 12px;
+        overflow-y: auto;
+        backdrop-filter: blur(8px);
+      }
+      .atlas-inspector .atlas-node-text {
+        margin-top: 6px;
+        white-space: pre-wrap;
+        word-break: break-word;
+        font-size: 12px;
+      }
+      .atlas-inspector .atlas-node-meta {
+        font-size: 11px;
+        color: var(--fg-dim);
+        margin-top: 6px;
+      }
+      .atlas-inspector .atlas-tip {
+        font-size: 10px;
+        color: var(--fg-dim);
+        margin: 8px 0 0;
+      }
+      .atlas-legend {
+        position: absolute;
+        top: 12px; left: 12px;
+        width: 200px;
+        background: color-mix(in oklab, var(--bg-elev) 92%, transparent);
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        padding: 10px 12px;
+        font-size: 11px;
+        backdrop-filter: blur(8px);
+      }
+      .atlas-legend .legend-title {
+        font-weight: 600; font-size: 11px;
+        text-transform: uppercase; letter-spacing: 0.05em;
+        color: var(--fg-dim);
+        margin: 0;
+      }
+      .atlas-legend .legend-row {
+        display: grid;
+        grid-template-columns: 14px 1fr auto;
+        gap: 6px;
+        align-items: center;
+        padding: 4px 0;
+        cursor: pointer;
+        user-select: none;
+      }
+      .atlas-legend .legend-row.off { opacity: 0.4; }
+      .atlas-legend .legend-row:hover { background: color-mix(in oklab, var(--accent) 6%, transparent); border-radius: 3px; }
+      .atlas-legend .legend-swatch {
+        width: 12px; height: 3px; border-radius: 2px;
+      }
+      .atlas-legend .legend-count {
+        color: var(--fg-dim);
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-size: 10px;
+      }
+      .atlas-legend .legend-swatch-dot {
+        width: 10px; height: 10px; border-radius: 50%;
+      }
+      .atlas-legend .source-name {
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-size: 11px;
+      }
+      .atlas-legend {
+        max-height: calc(100% - 24px);
+        overflow-y: auto;
+      }
+      .atlas-conn-list { margin-top: 8px; }
+      .atlas-conn-section {
+        margin-top: 6px;
+      }
+      .atlas-conn-section-title {
+        font-size: 10px;
+        color: var(--fg-dim);
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+        margin: 4px 0 2px;
+      }
+      .atlas-conn-row {
+        font-size: 11px;
+        padding: 3px 0;
+        display: grid;
+        grid-template-columns: 8px 1fr auto;
+        gap: 6px;
+        align-items: start;
+        cursor: pointer;
+      }
+      .atlas-conn-row:hover { background: color-mix(in oklab, var(--accent) 8%, transparent); border-radius: 3px; }
+      .atlas-conn-arrow { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--fg-dim); }
+      .atlas-conn-type { color: var(--fg-dim); font-size: 10px; font-style: italic; }
+
+      /* Overview mini-atlas */
+      .overview-atlas-frame {
+        margin: 14px 0;
+        padding: 10px;
+        background: var(--bg-elev);
+        border: 1px solid var(--border);
+        border-radius: 8px;
+      }
+      .overview-atlas-container {
+        position: relative;
+        width: 100%;
+        height: 240px;
+        border-radius: 4px;
+        cursor: pointer;
+        background: radial-gradient(circle at 50% 50%, color-mix(in oklab, var(--accent) 8%, transparent), transparent 70%);
+        overflow: hidden;
+      }
+      .overview-atlas-container canvas { display: block; }
+
+      /* Activity */
+      .activity-toolbar {
+        display: flex;
+        gap: 8px;
+        align-items: center;
+        margin-bottom: 12px;
+      }
+      .activity-toolbar select {
+        padding: 5px 8px;
+        border-radius: 6px;
+        border: 1px solid var(--border);
+        background: var(--bg-elev);
+        color: var(--fg);
+        font-size: 12px;
+      }
+      .activity-list { display: flex; flex-direction: column; gap: 8px; }
+      .activity-row {
+        display: grid;
+        grid-template-columns: 100px 14px 1fr;
+        gap: 8px;
+        align-items: start;
+        padding: 8px 10px;
+        background: var(--bg-elev);
+        border-radius: 6px;
+        font-size: 12px;
+      }
+      .activity-row .ar-when { color: var(--fg-dim); font-size: 11px; }
+      .activity-row .ar-dot { width: 8px; height: 8px; border-radius: 50%; margin-top: 4px; }
+      .activity-row .ar-dot.ingestSource { background: var(--ok); }
+      .activity-row .ar-dot.forgetSource { background: var(--error); }
+      .activity-row .ar-dot.editNode { background: var(--accent); }
+      .activity-row .ar-dot.supersede { background: #a855f7; }
+      .activity-row .ar-dot.addNode { background: var(--fg-dim); }
+      .activity-row .ar-dot.deleteNode { background: var(--error); opacity: 0.6; }
+      .activity-row .ar-detail {
+        font-size: 11px;
+        color: var(--fg-dim);
+        margin-top: 2px;
+      }
+      .activity-day-divider {
+        font-size: 11px;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+        color: var(--fg-dim);
+        margin: 14px 0 6px;
+        font-weight: 600;
+      }
+
+      /* Snapshots list */
+      .snapshot-row {
+        display: grid;
+        grid-template-columns: 1fr auto auto;
+        gap: 10px;
+        align-items: center;
+        padding: 8px 0;
+        border-bottom: 1px solid var(--border);
+        font-size: 12px;
+      }
+      .snapshot-row:last-child { border-bottom: 0; }
+      .snapshot-meta { color: var(--fg-dim); font-size: 11px; }
     </style>
   </head>
   <body>
     <main>
-      <h1>Graphnosis</h1>
-      <p class="subtitle" id="subtitle">Your private second memory</p>
-
-      <div id="error" class="error hidden"></div>
-
-      <!-- Unlock view -->
-      <section id="view-unlock">
-        <div class="panel">
-          <p class="panel-title">Unlock your vault</p>
-          <div class="row">
-            <label for="vault-dir">Vault folder</label>
-            <div class="pick-row">
-              <input type="text" id="vault-dir" placeholder="/Users/you/Graphnosis-test" />
-              <button id="btn-pick">Choose…</button>
+      <!-- ── Unlock view (full-screen until vault is open) ─────────────── -->
+      <section id="view-unlock" class="unlock-shell">
+        <div style="width: 100%; max-width: 480px;">
+          <h1>Graphnosis</h1>
+          <p class="subtitle" id="subtitle">Your private second memory</p>
+          <p class="brain-subtitle" style="margin-bottom: 18px;">
+            the blood–brain barrier — only your passphrase passes through
+          </p>
+          <div id="error" class="error hidden"></div>
+          <div class="panel unlock-card">
+            <p class="panel-title">Unlock your vault</p>
+            <div class="row">
+              <label for="vault-dir">Vault folder</label>
+              <div class="pick-row">
+                <input type="text" id="vault-dir" placeholder="/Users/you/Graphnosis-test" />
+                <button id="btn-pick">Choose…</button>
+              </div>
             </div>
-          </div>
-          <div class="row">
-            <label for="passphrase">Passphrase</label>
-            <input type="password" id="passphrase" placeholder="Your vault passphrase" />
-          </div>
-          <div class="actions">
-            <button id="btn-unlock" class="primary">Unlock</button>
-            <span id="unlock-status" class="subtitle"></span>
+            <div class="row">
+              <label for="passphrase">Passphrase</label>
+              <input type="password" id="passphrase" placeholder="Your vault passphrase" />
+            </div>
+            <div class="actions">
+              <button id="btn-unlock" class="primary">Unlock</button>
+              <span id="unlock-status" class="subtitle"></span>
+            </div>
           </div>
         </div>
       </section>
 
-      <!-- Inspector view (post-unlock) -->
-      <section id="view-inspector" class="hidden">
-        <div class="panel">
-          <div class="toolbar">
-            <p class="panel-title" style="margin: 0;"><span class="ok-dot"></span><span id="vault-label">vault</span></p>
-            <div class="actions">
-              <button id="btn-add-file" class="primary">Add file…</button>
-              <button id="btn-refresh">Refresh</button>
-              <button id="btn-open-folder">Open folder</button>
-              <button id="btn-lock">Lock</button>
-            </div>
+      <!-- ── Full app shell (post-unlock) ───────────────────────────────── -->
+      <section id="view-app" class="app-shell hidden">
+        <!-- Global drag-and-drop overlay. Hidden by default; surfaces
+             across the entire app window while a file is being dragged. -->
+        <div id="drop-zone" class="drop-zone">Drop the file anywhere — Graphnosis will remember it</div>
+        <!-- Top header: vault identity + global actions -->
+        <header class="app-header">
+          <div class="app-header-left">
+            <span class="brain-glyph" title="vault unlocked">●</span>
+            <span id="vault-label" class="vault-label-truncate">vault</span>
+            <span class="header-subtitle">— your graphnosis brain</span>
           </div>
-          <div id="graph-stats"></div>
-          <div id="drop-zone" class="drop-zone">Drop a file here to ingest — or use <strong>Add file…</strong></div>
+          <div class="app-header-right">
+            <button id="btn-add-file" class="primary">Add file…</button>
+            <button id="btn-new-graph" title="Create a new engram — an independent neighborhood of memory">+ New engram</button>
+            <button id="btn-lock">Lock</button>
+          </div>
+        </header>
+
+        <!-- Body: rail + canvas -->
+        <div class="app-body">
+          <nav class="app-rail">
+            <button class="rail-btn active" data-mode="atlas" title="Memory check-in dashboard + 3D map">
+              <span class="rail-icon">▣</span>
+              <span class="rail-label">Graphnosis</span>
+              <span></span>
+            </button>
+            <button class="rail-btn" data-mode="sources" title="Files that fed your memory">
+              <span class="rail-icon">◫</span>
+              <span class="rail-label">Sources</span>
+              <span></span>
+            </button>
+            <button class="rail-btn" data-mode="nodes" title="Inspect individual memories">
+              <span class="rail-icon">⊕</span>
+              <span class="rail-label">Nodes</span>
+              <span></span>
+            </button>
+            <button class="rail-btn" data-mode="corrections" title="Approve pending corrections">
+              <span class="rail-icon">↻</span>
+              <span class="rail-label">Corrections</span>
+              <span id="rail-corrections-badge" class="rail-badge hidden">0</span>
+            </button>
+            <button class="rail-btn" data-mode="activity" title="Timeline of your memory">
+              <span class="rail-icon">⏲</span>
+              <span class="rail-label">Activity</span>
+              <span></span>
+            </button>
+            <div class="rail-spacer"></div>
+            <button class="rail-btn" data-mode="settings" title="Preferences">
+              <span class="rail-icon">⚙</span>
+              <span class="rail-label">Settings</span>
+              <span></span>
+            </button>
+          </nav>
+
+          <div class="app-canvas">
+            <!-- Persistent error banner (any mode) -->
+            <div id="error" class="error hidden"></div>
+
+            <!-- GRAPHNOSIS — memory check-in dashboard + 3D atlas -->
+            <section class="mode-pane hidden" data-pane="atlas">
+              <header class="pane-header">
+                <h2>Graphnosis</h2>
+                <p class="brain-subtitle">a quick check-in with your second memory</p>
+              </header>
+
+              <!-- Top toolbar: search + engram picker. Search reveals
+                   a results pane and replaces the dashboard temporarily. -->
+              <div class="g-topbar">
+                <div class="g-search-wrap">
+                  <input type="search" id="g-search" placeholder="Look for a memory — ⌘K, ↑↓ to move, Enter to open" />
+                  <button id="g-search-clear" class="g-search-clear hidden" title="Clear search">×</button>
+                </div>
+                <select id="atlas-graph-picker" title="Choose an engram"></select>
+                <span id="atlas-stats" class="subtitle"></span>
+              </div>
+
+              <!-- Recents row: last few visited memories per engram -->
+              <div id="g-recents" class="g-recents hidden">
+                <span class="g-recents-label">You just looked at:</span>
+                <div id="g-recents-chips" class="g-recents-chips"></div>
+              </div>
+
+              <!-- Main grid: dashboard/atlas on the left, persistent detail pane right -->
+              <div class="g-main">
+                <div class="g-browse">
+                  <div class="g-tabs">
+                    <button class="g-tab active" data-gtab="checkin">Check-in</button>
+                    <button class="g-tab" data-gtab="atlas">3D Graphnosis</button>
+                  </div>
+
+                  <!-- CHECK-IN DASHBOARD (default) -->
+                  <section class="g-tab-pane" data-gpane="checkin">
+                    <!-- Search results take over when there's an active query;
+                         hidden otherwise so the dashboard owns the surface. -->
+                    <div id="g-search-results" class="g-search-results hidden">
+                      <div id="g-search-results-stats" class="g-list-stats subtitle"></div>
+                      <div id="g-list" class="g-list" tabindex="0"></div>
+                    </div>
+
+                    <div id="g-dashboard" class="g-dashboard">
+                      <!-- Health gauge: a single calming visual at the top -->
+                      <div id="g-health" class="g-health">
+                        <div class="g-health-gauge">
+                          <div id="g-health-grade" class="g-health-grade">—</div>
+                          <div id="g-health-meter" class="g-health-meter">
+                            <div id="g-health-fill" class="g-health-fill"></div>
+                          </div>
+                        </div>
+                        <div class="g-health-meta">
+                          <p id="g-health-phrase" class="g-health-phrase">Loading your memory health…</p>
+                          <p id="g-health-detail" class="g-health-detail subtitle"></p>
+                        </div>
+                      </div>
+
+                      <!-- Review deck: one card at a time, quick verdict -->
+                      <div id="g-deck" class="g-deck">
+                        <div class="g-deck-header">
+                          <span class="g-deck-title">If you have 30 seconds…</span>
+                          <span id="g-deck-progress" class="g-deck-progress"></span>
+                        </div>
+                        <div id="g-deck-card" class="g-deck-card">
+                          <p class="subtitle">Loading…</p>
+                        </div>
+                      </div>
+
+                      <!-- Recap: this engram in numbers; quiet, non-pushy -->
+                      <div id="g-recap" class="g-recap">
+                        <div class="g-recap-row">
+                          <span class="g-recap-label">Memories</span>
+                          <span id="g-recap-memories" class="g-recap-value">—</span>
+                        </div>
+                        <div class="g-recap-row">
+                          <span class="g-recap-label">Sources feeding this engram</span>
+                          <span id="g-recap-sources" class="g-recap-value">—</span>
+                        </div>
+                        <div class="g-recap-row">
+                          <span class="g-recap-label">Average confidence</span>
+                          <span id="g-recap-avg" class="g-recap-value">—</span>
+                        </div>
+                        <div class="g-recap-row" title="Lifetime count of corrections applied to this engram (edits + supersedes from the correct/apply pipeline)">
+                          <span class="g-recap-label">Corrections applied (lifetime)</span>
+                          <span id="g-recap-corrections" class="g-recap-value">—</span>
+                        </div>
+                        <div class="g-recap-row">
+                          <span class="g-recap-label">Tended in this session</span>
+                          <span id="g-recap-tended" class="g-recap-value">0</span>
+                        </div>
+                        <!-- Forgotten footer: hidden by default, surfaces a
+                             Purge call-to-action only when this engram has
+                             soft-deleted memories still on disk. -->
+                        <div id="g-recap-forgotten" class="g-recap-forgotten hidden">
+                          <span id="g-recap-forgotten-text">—</span>
+                          <button id="btn-g-purge" class="btn-g-purge">Purge now</button>
+                        </div>
+                      </div>
+
+                      <!-- AI tools card: which AI clients are currently
+                           tapped into the vault via MCP. Updated by the
+                           same poller that drives the Overview-pane copy. -->
+                      <div id="g-mcp" class="g-mcp">
+                        <p class="g-mcp-title">
+                          AI tools connected
+                          <span class="brain-subtitle" style="margin-left: 6px;">tapped into your memory right now</span>
+                        </p>
+                        <div id="g-mcp-list" class="g-mcp-list">
+                          <p class="subtitle">Checking…</p>
+                        </div>
+                      </div>
+                    </div>
+                  </section>
+
+                  <!-- 3D Atlas tab — unchanged from before. -->
+                  <section class="g-tab-pane hidden" data-gpane="atlas">
+                    <div class="atlas-toolbar">
+                      <button id="btn-atlas-alive" title="Toggle the constant gentle drift">Pause motion</button>
+                      <button id="btn-atlas-unpin" title="Release every dragged-and-pinned node">Unpin all</button>
+                      <button id="btn-atlas-fit" title="Frame all visible nodes">Fit</button>
+                      <button id="btn-atlas-reset" title="Clear selection emphasis">Reset</button>
+                    </div>
+                    <div class="atlas-stage">
+                      <div id="atlas-container" class="atlas-container"></div>
+                      <aside id="atlas-legend" class="atlas-legend">
+                        <p class="legend-title">Edge categories</p>
+                        <p class="brain-subtitle" style="margin: -2px 0 6px;">how this memory is wired</p>
+                        <div id="atlas-legend-list"></div>
+                        <p class="legend-title" style="margin-top: 12px;">Sources</p>
+                        <p class="brain-subtitle" style="margin: -2px 0 6px;">where these memories came from</p>
+                        <div id="atlas-source-list"></div>
+                        <p class="atlas-tip" style="margin-top: 8px;">
+                          Click a row to hide/show. Drag a node to pin it.
+                        </p>
+                      </aside>
+                    </div>
+                  </section>
+                </div>
+
+                <!-- Detail pane: persistent right-side inspector -->
+                <aside class="g-detail" id="g-detail">
+                  <div class="g-detail-empty">
+                    <p class="brain-subtitle" style="margin: 0;">Pick a card or search to inspect a memory.</p>
+                    <p class="g-detail-shortcuts">
+                      <kbd>⌘K</kbd> search · <kbd>E</kbd> fix ·
+                      <kbd>⌫</kbd> forget · <kbd>Esc</kbd> close
+                    </p>
+                  </div>
+                  <div class="g-detail-body hidden" id="g-detail-body"></div>
+                </aside>
+              </div>
+            </section>
+
+            <!-- SOURCES -->
+            <section class="mode-pane hidden" data-pane="sources">
+              <header class="pane-header">
+                <h2>Sources</h2>
+                <p class="brain-subtitle">your sensory cortex — everything you've taken in</p>
+              </header>
+              <div id="sources-list"><p class="subtitle">Loading…</p></div>
+            </section>
+
+            <!-- NODES -->
+            <section class="mode-pane hidden" data-pane="nodes">
+              <header class="pane-header">
+                <h2>Nodes</h2>
+                <p class="brain-subtitle">
+                  individual memory traces — search by meaning via your association cortex
+                  <span id="nodes-detail-mode" style="margin-left: 8px;"></span>
+                </p>
+              </header>
+              <div class="nodes-toolbar">
+                <input type="search" id="nodes-search" placeholder="Search by meaning (BGE-small) — ⌘F" />
+                <select id="nodes-graph-picker"></select>
+                <span id="nodes-count" class="subtitle"></span>
+              </div>
+              <div id="nodes-list"><p class="subtitle">Loading…</p></div>
+            </section>
+
+            <!-- CORRECTIONS -->
+            <section class="mode-pane hidden" data-pane="corrections">
+              <header class="pane-header">
+                <h2>Corrections</h2>
+                <p class="brain-subtitle">plasticity — rewiring memories with new evidence</p>
+              </header>
+              <div class="panel" id="pending-corrections-panel" style="display: none;">
+                <p class="panel-title">
+                  Pending
+                  <span id="pending-count-badge" class="badge"></span>
+                </p>
+                <p class="subtitle" style="margin: -4px 0 8px; font-size: 11px;">
+                  Corrections proposed by Claude (or another AI client) via the <code>correct</code> tool.
+                  Held in memory only — locking the vault discards all pending corrections.
+                </p>
+                <div id="pending-corrections-list"></div>
+              </div>
+              <div id="corrections-empty" class="placeholder">
+                <p>No corrections pending.</p>
+                <p class="brain-subtitle">
+                  When Claude proposes a correction via the <code>correct</code> tool, the diff
+                  appears here for you to review and approve.
+                </p>
+              </div>
+            </section>
+
+            <!-- ACTIVITY -->
+            <section class="mode-pane hidden" data-pane="activity">
+              <header class="pane-header">
+                <h2>Activity</h2>
+                <p class="brain-subtitle">your episodic timeline — every memory event, in order</p>
+              </header>
+              <div class="activity-toolbar">
+                <select id="activity-filter-kind">
+                  <option value="all">All events</option>
+                  <option value="ingestSource">Ingests</option>
+                  <option value="forgetSource">Forgets</option>
+                  <option value="editNode">Edits</option>
+                  <option value="supersede">Supersedes</option>
+                  <option value="addNode">Node adds</option>
+                  <option value="deleteNode">Node deletes</option>
+                </select>
+                <button id="btn-activity-refresh">Refresh</button>
+                <span id="activity-stats" class="subtitle"></span>
+              </div>
+              <div id="activity-list" class="activity-list">
+                <p class="subtitle">Loading…</p>
+              </div>
+            </section>
+
+            <!-- SETTINGS pane: actions + entry to settings modal -->
+            <section class="mode-pane hidden" data-pane="settings">
+              <header class="pane-header">
+                <h2>Settings & actions</h2>
+                <p class="brain-subtitle">tune your graphnosis brain's behavior</p>
+              </header>
+              <div class="panel">
+                <p class="panel-title">Preferences</p>
+                <p class="subtitle" style="font-size: 11px; margin: -4px 0 10px;">
+                  Caching policy, forget behavior, MCP relay timings, inspector detail level.
+                </p>
+                <button id="btn-settings" class="primary">Open preferences…</button>
+              </div>
+              <div class="panel">
+                <p class="panel-title">AI client integration</p>
+                <p class="subtitle" style="font-size: 11px; margin: -4px 0 10px;">
+                  Wire Claude Desktop to talk to this App's sidecar — your corpus callosum.
+                </p>
+                <button id="btn-claude">Configure Claude Desktop…</button>
+              </div>
+              <div class="panel">
+                <p class="panel-title">Vault tools</p>
+                <p class="subtitle" style="font-size: 11px; margin: -4px 0 10px;">
+                  Reconstruct lost memories from the encrypted op-log, refresh state, peek at vault files.
+                </p>
+                <button id="btn-recover">Recover from op-log…</button>
+                <button id="btn-refresh" style="margin-left: 6px;">Refresh stats</button>
+                <button id="btn-open-folder" style="margin-left: 6px;">Open vault folder</button>
+              </div>
+              <div class="panel">
+                <p class="panel-title">Vault snapshots</p>
+                <p class="subtitle" style="font-size: 11px; margin: -4px 0 10px;">
+                  Frozen point-in-time copies of your encrypted vault — every <code>.gai</code>,
+                  <code>.bundle</code>, <code>.embcache</code>, and the settings file. Useful before a risky
+                  re-ingest, a big correction batch, or trying a new ingest path. Snapshots live
+                  inside the vault folder so they're swept by the same sync as everything else.
+                </p>
+                <button id="btn-snapshots-open">Manage snapshots…</button>
+              </div>
+            </section>
+          </div>
         </div>
-        <div class="panel">
-          <p class="panel-title">Sources</p>
-          <div id="sources-list"><p class="subtitle">Loading…</p></div>
-        </div>
+
+        <!-- Status bar -->
+        <footer class="app-statusbar">
+          <span class="status-search">⌘K to search nodes</span>
+          <span class="status-mcp">
+            <span id="status-mcp-dot" class="status-dot"></span>
+            <span id="status-mcp-text">checking clients…</span>
+          </span>
+          <span id="status-saved" class="status-saved">—</span>
+        </footer>
       </section>
     </main>
+
+    <!-- Snapshots: list / create. Restore lands in a follow-up session — too easy to footgun without a careful flow. -->
+    <div id="snapshots-modal" class="modal-backdrop hidden">
+      <div class="modal">
+        <div class="modal-header">
+          <h2>Vault snapshots</h2>
+          <p class="subtitle">
+            Snapshots freeze a copy of every vault file at this moment. They sit inside
+            your vault folder under <code>.snapshots/</code> — encrypted, syncable, listable.
+          </p>
+        </div>
+        <div class="modal-body" id="snapshots-body">
+          <p class="subtitle">Loading…</p>
+        </div>
+        <div class="modal-footer">
+          <span class="filler" id="snapshots-note"></span>
+          <button id="btn-snapshots-close">Close</button>
+          <button id="btn-snapshots-create" class="primary">Create snapshot now</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Graph wizard: pick a template + name; creates the graph + stores metadata. -->
+    <div id="graph-wizard-modal" class="modal-backdrop hidden">
+      <div class="modal">
+        <div class="modal-header">
+          <h2>New engram</h2>
+          <p class="subtitle">
+            An engram is an independent neighborhood of memory inside your vault — its
+            own graph, with its own consolidation rules. Pick a template to seed it
+            with sensible defaults; you can change anything later.
+          </p>
+        </div>
+        <div class="modal-body">
+          <p class="brain-subtitle" style="margin-bottom: 4px;">Free templates</p>
+          <div class="graph-templates" id="gw-free"></div>
+          <p class="brain-subtitle" style="margin: 14px 0 4px;">Power-user templates</p>
+          <div class="graph-templates" id="gw-power"></div>
+          <p class="brain-subtitle" style="margin: 14px 0 4px;">Enterprise templates</p>
+          <div class="graph-templates" id="gw-enterprise"></div>
+
+          <div class="row" style="margin-top: 16px;">
+            <label for="gw-name">Display name</label>
+            <input type="text" id="gw-name" placeholder="e.g. Work project · Music notes · Reading 2026" />
+          </div>
+          <div class="row">
+            <label for="gw-id">Internal ID</label>
+            <input type="text" id="gw-id" placeholder="slug (lowercase letters, numbers, hyphens)" />
+            <p class="subtitle" style="font-size: 10px; margin-top: 4px;">
+              Used as the filename inside your vault. Can't be changed later.
+            </p>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <span class="filler" id="gw-note"></span>
+          <button id="btn-gw-cancel">Cancel</button>
+          <button id="btn-gw-create" class="primary" disabled>Create engram</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Configure Claude modal: writes ~/Library/Application Support/Claude/claude_desktop_config.json -->
+    <div id="claude-modal" class="modal-backdrop hidden">
+      <div class="modal">
+        <div class="modal-header">
+          <h2>Configure Claude Desktop</h2>
+          <p class="subtitle">
+            Make Claude Desktop's Graphnosis tools talk to this App's running sidecar
+            instead of spawning its own. Both share one in-memory graph and one vault lock.
+          </p>
+        </div>
+        <div class="modal-body" id="claude-body">
+          <p class="subtitle">Click <strong>Apply</strong> to update Claude Desktop's config.</p>
+          <div class="recovery-summary" id="claude-preview" style="display: none;"></div>
+        </div>
+        <div class="modal-footer">
+          <span class="filler" id="claude-footer-note">After applying, fully quit Claude Desktop (⌘Q) and reopen it.</span>
+          <button id="btn-claude-close">Close</button>
+          <button id="btn-claude-apply" class="primary">Apply</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Settings modal: per-vault preferences (content cache mode + size cap) -->
+    <div id="settings-modal" class="modal-backdrop hidden">
+      <div class="modal">
+        <div class="modal-header">
+          <h2>Settings</h2>
+          <p class="subtitle">Per-vault preferences. Stored at <code>&lt;vault&gt;/settings.json</code>.</p>
+        </div>
+        <div class="modal-body" id="settings-body">
+          <p class="panel-title" style="margin-top: 0;">Content cache</p>
+          <p class="subtitle" style="margin-bottom: 12px;">
+            Cached source content lets the App rebuild your graph from the encrypted op-log
+            after accidental data loss — including for pasted text and AI-conversation snippets
+            that aren't stored anywhere else. Cache files are encrypted with the same passphrase
+            as your graph.
+          </p>
+          <div class="row">
+            <label><input type="radio" name="cache-mode" value="all" /> <strong>Cache everything</strong> — files, clips, AI chats, URLs (recommended)</label>
+            <label style="margin-top: 8px;"><input type="radio" name="cache-mode" value="ephemeral-only" /> <strong>Cache only ephemeral content</strong> — clips, AI chats, URLs (files stay on your disk)</label>
+            <label style="margin-top: 8px;"><input type="radio" name="cache-mode" value="off" /> <strong>Off</strong> — no content cache (recovery is best-effort only)</label>
+          </div>
+          <div class="row">
+            <label for="cache-cap">Skip caching for files larger than</label>
+            <select id="cache-cap" style="width: 100%; padding: 8px 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg-elev); color: var(--fg); font-family: inherit; font-size: 13px;">
+              <option value="10485760">10 MB</option>
+              <option value="52428800">50 MB (default)</option>
+              <option value="209715200">200 MB</option>
+              <option value="1073741824">1 GB</option>
+              <option value="0">No limit</option>
+            </select>
+          </div>
+
+          <p class="panel-title" style="margin-top: 20px;">MCP relay timings</p>
+          <p class="subtitle" style="margin-bottom: 12px;">
+            How long the small relay process (the bridge between Claude Desktop and
+            your vault) waits before giving up. Changes apply the next time a client
+            spawns or reconnects a relay — current Claude sessions keep their old values.
+          </p>
+          <div class="row">
+            <label for="relay-initial">
+              Initial connect timeout
+              <span style="color: var(--fg-dim); font-weight: normal;"> — when an MCP client launches before the vault is unlocked</span>
+            </label>
+            <div style="display: flex; align-items: center; gap: 8px;">
+              <input type="number" id="relay-initial" min="2" max="120" step="1" style="flex: 1;" />
+              <span style="color: var(--fg-dim); font-size: 12px;">seconds (2–120, default 10)</span>
+            </div>
+          </div>
+          <div class="row">
+            <label for="relay-reconnect">
+              Reconnect timeout
+              <span style="color: var(--fg-dim); font-weight: normal;"> — when the vault is locked or restarted mid-session</span>
+            </label>
+            <div style="display: flex; align-items: center; gap: 8px;">
+              <input type="number" id="relay-reconnect" min="5" max="86400" step="1" style="flex: 1;" />
+              <span style="color: var(--fg-dim); font-size: 12px;">seconds (5–86400, default 86400 = 24h)</span>
+            </div>
+          </div>
+
+          <p class="panel-title" style="margin-top: 20px;">Inspector detail</p>
+          <p class="subtitle" style="margin-bottom: 12px;">
+            How much information the Nodes view shows for each memory.
+          </p>
+          <div class="row">
+            <label><input type="radio" name="inspector-detail" value="simple" /> <strong>Simple</strong> — content, source, actions (recommended for most users)</label>
+            <label style="margin-top: 8px;"><input type="radio" name="inspector-detail" value="detailed" /> <strong>Detailed</strong> — adds confidence, validUntil, embedding info, edge stats, provenance, contradictions (power users)</label>
+          </div>
+
+          <p class="panel-title" style="margin-top: 20px;">When you Forget a source</p>
+          <p class="subtitle" style="margin-bottom: 12px;">
+            Forgotten memories are soft-deleted first — confidence drops to zero and they
+            never appear in recall. They stay on disk until physically purged, which gives
+            you a chance to undo and lets the graph stay fast.
+          </p>
+          <div class="row">
+            <label><input type="radio" name="forget-mode" value="soft" /> <strong>Soft delete</strong> — fast; use <em>Purge now</em> manually later (recommended)</label>
+            <label style="margin-top: 8px;"><input type="radio" name="forget-mode" value="purge" /> <strong>Purge immediately</strong> — slow; rebuilds the graph after every Forget. Requires <em>Cache everything</em> above.</label>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <span class="filler" id="settings-footer-note"></span>
+          <button id="btn-settings-cancel">Cancel</button>
+          <button id="btn-settings-save" class="primary">Save</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Recovery modal: scanned op-log + per-item status, then apply + report -->
+    <div id="recovery-modal" class="modal-backdrop hidden">
+      <div class="modal">
+        <div class="modal-header">
+          <h2 id="recovery-title">Recover from op-log</h2>
+          <p class="subtitle" id="recovery-subtitle">Scanning the encrypted op-log for sources that can be re-ingested…</p>
+        </div>
+        <div class="modal-body" id="recovery-body">
+          <p class="subtitle">Loading…</p>
+        </div>
+        <div class="modal-footer">
+          <span class="filler" id="recovery-footer-note"></span>
+          <button id="btn-recovery-close">Close</button>
+          <button id="btn-recovery-apply" class="primary hidden">Recover selected</button>
+        </div>
+      </div>
+    </div>
+
     <script type="module" src="/src/main.ts"></script>
   </body>
 </html>
