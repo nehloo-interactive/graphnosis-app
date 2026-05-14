@@ -49,13 +49,63 @@ export interface McpDeps {
   /** Default graph for ambient remember when no graphId is provided. */
   defaultGraphId: () => string;
   /** UI hook so a "correction proposed" notification fires for the user to confirm. */
-  pendingDiffs: Map<string, { graphId: string; diff: import('./correction.js').CorrectionDiff }>;
+  pendingDiffs: Map<string, { graphId: string; diff: import('./correction.js').CorrectionDiff; createdAt: number }>;
 }
 
-export async function startMcpServer(deps: McpDeps): Promise<void> {
+/**
+ * Build a fresh MCP `Server` instance with all of Graphnosis' tools wired up.
+ * The returned server is **unconnected** — caller decides which transport to
+ * bind it to (stdio, Unix socket, etc.). The tool handlers close over `deps`,
+ * so multiple Servers built from the same `deps` share one host + pendingDiffs
+ * state — exactly what we want when one sidecar serves multiple MCP clients.
+ */
+/**
+ * System-level instructions returned in the MCP `initialize` response.
+ * Claude Desktop (and most well-behaved MCP clients) treat this as a
+ * high-priority hint for the assistant — it's how we tell the AI when
+ * to reach for our tools instead of guessing or apologizing.
+ *
+ * Keep this concise and rule-shaped. Long rambly system prompts dilute
+ * the signal; clients append this on top of their own system prompt.
+ */
+const SERVER_INSTRUCTIONS = `\
+You have access to Graphnosis — a personal knowledge graph stored locally on the user's machine. It contains notes, files, conversations, decisions, and corrections the user has chosen to remember across sessions. **This is the authoritative source for anything personal to the user.**
+
+WHEN TO CALL \`recall\` (proactively, BEFORE responding):
+• Any question about the user's life, work, projects, preferences, plans, relationships, or history.
+• Any reference to a person, place, project, or concept by name without explanation ("how's Stela doing?", "the DRP proposal", "my Romanian-IA project").
+• Any moment you would otherwise say "I don't know" or "I don't have context" about the user. Check the graph FIRST. If recall returns nothing, then say you don't have it remembered yet.
+• Any "remind me…", "what did I say about…", "what's my…" prompt.
+
+WHEN TO CALL \`remember\`:
+• The user explicitly asks you to save / note / remember something.
+• The user shares a meaningful fact about themselves, their work, or their commitments that you sense they would want retained (ask first if unsure).
+
+WHEN TO CALL \`correct\`:
+• The user says you (or the graph) got something wrong about them. Don't try to fix the graph via \`remember\` — that creates conflicting duplicates. Use \`correct\` to propose a structured diff; the user approves it inside the Graphnosis App.
+
+WHEN NOT TO USE THESE TOOLS:
+• General knowledge questions ("what's the capital of France"). The graph is personal context, not a world-fact lookup.
+• Math, code generation, and tasks that don't depend on the user's history.
+
+UX guidelines:
+• Be quiet about it. Don't announce "I'll check your memory" every time — just call recall and use the result. The user sees an audit log if they want to know.
+• Ask the smallest budget that answers the question (default 1000–2000 tokens is plenty).
+• If a recall result contradicts something the user just said, surface the contradiction gently and offer to \`correct\`.
+
+The graph is end-to-end encrypted on disk and never leaves the user's machine.`;
+
+export function createMcpServer(deps: McpDeps): Server {
   const server = new Server(
     { name: 'graphnosis', version: '0.0.1' },
-    { capabilities: { tools: {} } },
+    {
+      capabilities: { tools: {} },
+      // Surfaces via the `initialize` response → Claude treats as system-
+      // prompt-level. The strongest legitimate lever MCP gives us for
+      // nudging tool use; combined with the per-tool descriptions below,
+      // this is how we convert "tools available" into "tools actually used."
+      instructions: SERVER_INSTRUCTIONS,
+    },
   );
 
   server.setRequestHandler(ListToolsRequestSchema, async () => ({
@@ -193,7 +243,7 @@ export async function startMcpServer(deps: McpDeps): Promise<void> {
         });
         const targetGraph = args.graphId ?? candidates[0]?.graphId ?? deps.defaultGraphId();
         const diffId = `diff_${Date.now().toString(36)}`;
-        deps.pendingDiffs.set(diffId, { graphId: targetGraph, diff });
+        deps.pendingDiffs.set(diffId, { graphId: targetGraph, diff, createdAt: Date.now() });
         return {
           content: [{
             type: 'text',
@@ -232,8 +282,45 @@ export async function startMcpServer(deps: McpDeps): Promise<void> {
     }
   });
 
+  return server;
+}
+
+/**
+ * Bind a freshly built MCP server to stdio. Used when the sidecar is spawned
+ * directly by an MCP client (e.g., a `command`/`args` entry in Claude
+ * Desktop's config).
+ */
+export async function startStdioMcpServer(deps: McpDeps): Promise<void> {
+  const { mcpRegistry } = await import('./mcp-registry.js');
+  const server = createMcpServer(deps);
   const transport = new StdioServerTransport();
   await server.connect(transport);
+
+  // We can't tell from outside whether anything is actually on stdin (parents
+  // that spawn with stdin=null, like the Tauri shell when the relay path is
+  // used, never send anything here). Poll for clientInfo for a while; if it
+  // never shows up, no connection was real — leave the registry empty.
+  const started = Date.now();
+  let connId: string | null = null;
+  const probe = setInterval(() => {
+    try {
+      const ci = server.getClientVersion?.();
+      if (ci?.name) {
+        if (!connId) connId = mcpRegistry.register('stdio');
+        mcpRegistry.setClientInfo(connId, ci.name, ci.version ?? 'unknown');
+        clearInterval(probe);
+        return;
+      }
+    } catch { /* still booting */ }
+    if (Date.now() - started > 30_000) clearInterval(probe);
+  }, 500);
+  // Unref so the interval doesn't keep the event loop alive on its own.
+  probe.unref?.();
+
+  // Clean up on stdin close (legacy stdio MCP client went away).
+  process.stdin.on('end', () => {
+    if (connId) mcpRegistry.unregister(connId);
+  });
 }
 
 // JSON schemas are inlined above. Zod is still used at runtime for input validation

@@ -161,20 +161,130 @@ export class GraphnosisImpl implements GraphnosisAdapter {
     return h.built && h.instance.hasEmbeddings();
   }
 
-  inspectNodes(handle: GraphHandle): Array<{ id: string; confidence: number; validUntil?: number; sourceFile: string; contentPreview: string }> {
+  inspectNodes(handle: GraphHandle): Array<{
+    id: string;
+    confidence: number;
+    validUntil?: number;
+    sourceFile: string;
+    contentPreview: string;
+    section?: string;
+    nodeType?: string;
+  }> {
     const h = handle as Internal;
     if (!h.built) return [];
-    const out: Array<{ id: string; confidence: number; validUntil?: number; sourceFile: string; contentPreview: string }> = [];
+    const out: Array<{
+      id: string;
+      confidence: number;
+      validUntil?: number;
+      sourceFile: string;
+      contentPreview: string;
+      section?: string;
+      nodeType?: string;
+    }> = [];
     for (const [id, n] of h.instance.graph.nodes) {
-      out.push({
+      const rec: {
+        id: string;
+        confidence: number;
+        validUntil?: number;
+        sourceFile: string;
+        contentPreview: string;
+        section?: string;
+        nodeType?: string;
+      } = {
         id,
         confidence: n.confidence,
-        ...(n.validUntil !== undefined ? { validUntil: n.validUntil } : {}),
         sourceFile: n.source.file,
         contentPreview: n.content.length > 120 ? n.content.slice(0, 117) + '…' : n.content,
-      });
+      };
+      if (n.validUntil !== undefined) rec.validUntil = n.validUntil;
+      if (n.source.section) rec.section = n.source.section;
+      if (n.type) rec.nodeType = n.type;
+      out.push(rec);
     }
     return out;
+  }
+
+  /**
+   * Snapshot every edge in the dual-graph. The SDK stores directed and
+   * undirected edges separately (different semantics) so we keep that split
+   * — the App's Atlas renders them differently (arrows vs lines).
+   */
+  inspectEdges(handle: GraphHandle): {
+    directed: Array<{ id: string; from: string; to: string; type: ReturnType<GraphnosisImpl['_directedType']>; weight: number }>;
+    undirected: Array<{ id: string; a: string; b: string; type: ReturnType<GraphnosisImpl['_undirectedType']>; weight: number }>;
+  } {
+    const h = handle as Internal;
+    if (!h.built) return { directed: [], undirected: [] };
+    const directed = [...h.instance.graph.directedEdges.entries()].map(([id, e]) => ({
+      id,
+      from: e.from,
+      to: e.to,
+      type: e.type,
+      weight: e.weight,
+    }));
+    const undirected = [...h.instance.graph.undirectedEdges.entries()].map(([id, e]) => ({
+      id,
+      a: e.nodes[0],
+      b: e.nodes[1],
+      type: e.type,
+      weight: e.weight,
+    }));
+    return { directed, undirected };
+  }
+  // Phantom methods purely to anchor the return-type inference for the
+  // inspectEdges signature without re-importing the SDK types here.
+  private _directedType(): import('@nehloo/graphnosis').DirectedEdge['type'] { throw new Error('phantom'); }
+  private _undirectedType(): import('@nehloo/graphnosis').UndirectedEdge['type'] { throw new Error('phantom'); }
+
+  /**
+   * Add an undirected edge between two existing nodes. The SDK has no
+   * public `addEdge`, so we write directly into `graph.undirectedEdges`.
+   * Idempotent: if an edge of the same type already connects these two
+   * nodes (in either order), we return the existing edge instead of
+   * creating a duplicate.
+   *
+   * For the App's "Link them" workflow we default to `related-to` with
+   * weight 0.7 — meaningful but below auto-extracted edges (which sit
+   * at 0.85+), so manual links don't pollute the dominant-edge view.
+   */
+  async linkNodes(
+    handle: GraphHandle,
+    fromNodeId: string,
+    toNodeId: string,
+    opts: { type?: import('@nehloo/graphnosis').UndirectedEdge['type']; weight?: number; reason?: string } = {},
+  ): Promise<{ edgeId: string; created: boolean }> {
+    const h = handle as Internal;
+    if (!h.built) {
+      throw new Error('Cannot link nodes on an unbuilt graph');
+    }
+    if (fromNodeId === toNodeId) {
+      throw new Error('Cannot link a node to itself');
+    }
+    if (!h.instance.graph.nodes.has(fromNodeId)) {
+      throw new Error(`Node not found: ${fromNodeId}`);
+    }
+    if (!h.instance.graph.nodes.has(toNodeId)) {
+      throw new Error(`Node not found: ${toNodeId}`);
+    }
+    const type = opts.type ?? 'related-to';
+    // Dedupe: scan existing undirected edges for the same pair + type.
+    // Order-independent (undirected) so both directions count as a match.
+    for (const [eid, e] of h.instance.graph.undirectedEdges) {
+      if (e.type !== type) continue;
+      const [a, b] = e.nodes;
+      if ((a === fromNodeId && b === toNodeId) || (a === toNodeId && b === fromNodeId)) {
+        return { edgeId: eid, created: false };
+      }
+    }
+    const edgeId = `e-link-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+    h.instance.graph.undirectedEdges.set(edgeId, {
+      id: edgeId,
+      nodes: [fromNodeId, toNodeId],
+      type,
+      weight: opts.weight ?? 0.7,
+      createdAt: Date.now(),
+    });
+    return { edgeId, created: true };
   }
 
   // -- internals --

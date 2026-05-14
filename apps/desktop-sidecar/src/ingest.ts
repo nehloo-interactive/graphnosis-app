@@ -2,6 +2,7 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { JSDOM } from 'jsdom';
 import { Readability } from '@mozilla/readability';
+import mammoth from 'mammoth';
 import type { GraphnosisHost } from './host.js';
 import type { AppendDocumentInput } from './graphnosis-adapter.js';
 
@@ -10,6 +11,7 @@ const HTML_EXTS = new Set(['.html', '.htm']);
 const JSON_EXTS = new Set(['.json']);
 const CSV_EXTS = new Set(['.csv']);
 const PDF_EXTS = new Set(['.pdf']);
+const DOCX_EXTS = new Set(['.docx']);
 
 export async function ingestFile(host: GraphnosisHost, graphId: string, filePath: string) {
   const ext = path.extname(filePath).toLowerCase();
@@ -27,11 +29,50 @@ export async function ingestFile(host: GraphnosisHost, graphId: string, filePath
     input = { kind: 'csv', content: await fs.readFile(filePath, 'utf8'), sourceRef: filePath };
   } else if (PDF_EXTS.has(ext)) {
     input = { kind: 'pdf', content: new Uint8Array(await fs.readFile(filePath)), sourceRef: filePath };
+  } else if (DOCX_EXTS.has(ext)) {
+    // Word documents: convert to markdown via mammoth so the SDK gets clean
+    // structured text. mammoth understands paragraphs, headings, lists,
+    // tables, and inline emphasis — far better than reading the raw zip-XML
+    // bytes as "text", which produced 124 nodes of binary garbage before
+    // this path existed.
+    input = await convertDocxToMarkdownInput(filePath);
+  } else if (ext === '.doc') {
+    // Legacy binary .doc (pre-2007). mammoth only handles .docx; we don't
+    // bundle a .doc parser. Fail loudly so the user knows to convert/re-save.
+    throw new Error(
+      `Legacy .doc files aren't supported — open the file in Word/Pages/LibreOffice ` +
+      `and Save As .docx, then try again. (File: ${filePath})`,
+    );
   } else {
     // Best-effort: treat unknown as text.
     input = { kind: 'text', content: await fs.readFile(filePath, 'utf8'), sourceRef: filePath };
   }
   return host.ingest(graphId, 'file', filePath, input);
+}
+
+/**
+ * Convert a .docx to HTML via mammoth, then hand off to the SDK's HTML
+ * parser. mammoth's HTML output preserves headings, paragraphs, lists, and
+ * tables — everything the SDK needs to split sensibly. mammoth's warnings
+ * (unrecognized styles, images skipped, etc.) are non-fatal: partial
+ * conversion beats rejecting the doc.
+ *
+ * (We picked HTML over markdown only because mammoth's TS typings only
+ * expose `convertToHtml`. The runtime path is otherwise identical.)
+ */
+async function convertDocxToMarkdownInput(filePath: string): Promise<AppendDocumentInput> {
+  const buf = await fs.readFile(filePath);
+  const { value: html, messages } = await mammoth.convertToHtml({ buffer: buf });
+  for (const m of messages) {
+    console.error(`[ingest:docx] ${m.type}: ${m.message}`);
+  }
+  if (!html.trim()) {
+    throw new Error(
+      `mammoth produced empty HTML for ${filePath}. The document may be ` +
+      `image-only or password-protected.`,
+    );
+  }
+  return { kind: 'html', content: html, sourceRef: filePath };
 }
 
 export interface WebIngestInput {

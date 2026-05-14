@@ -14,10 +14,12 @@
       {
         "label": "main",
         "title": "Graphnosis",
-        "width": 720,
-        "height": 560,
+        "width": 1180,
+        "height": 760,
+        "minWidth": 800,
+        "minHeight": 560,
         "resizable": true,
-        "visible": false,
+        "visible": true,
         "hiddenTitle": true,
         "titleBarStyle": "Overlay"
       }

@@ -4,6 +4,10 @@ import path from 'node:path';
 import { z } from 'zod';
 import type { GraphnosisHost } from './host.js';
 import { ingestFile, ingestWeb, ingestClip } from './ingest.js';
+import { mcpRegistry } from './mcp-registry.js';
+import { applyCorrection as runApplyCorrection } from './correction.js';
+import type { CorrectionDiff } from './correction.js';
+import { oplog } from '@graphnosis-app/core';
 
 // Local IPC between Tauri shell and Node sidecar. Newline-delimited JSON over a
 // Unix-domain socket on macOS/Linux (Windows uses a named pipe — same socket API).
@@ -19,6 +23,10 @@ const Request = z.object({
 export interface IpcDeps {
   host: GraphnosisHost;
   socketPath: string;
+  /** Same Map shared with the MCP server — proposed corrections waiting for user approval. */
+  pendingDiffs: Map<string, { graphId: string; diff: CorrectionDiff; createdAt: number }>;
+  /** Closes + reopens the MCP socket listener — used by the "Reconnect" button in the inspector. */
+  restartMcpListener: () => Promise<void>;
 }
 
 export async function startIpc(deps: IpcDeps): Promise<net.Server> {
@@ -65,6 +73,131 @@ export async function startIpc(deps: IpcDeps): Promise<net.Server> {
 async function dispatch(deps: IpcDeps, method: string, params: unknown): Promise<unknown> {
   switch (method) {
     case 'graphs.list': return deps.host.listGraphs();
+    case 'graphs.listWithMetadata': return deps.host.graphsWithMetadata();
+    case 'graphs.setMetadata': {
+      const args = z.object({
+        graphId: z.string(),
+        template: z.enum([
+          'personal', 'journal', 'reading', 'learning',
+          'project', 'research', 'codebase', 'health',
+          'team', 'compliance', 'onboarding',
+        ]),
+        displayName: z.string().min(1),
+        createdAt: z.number().int().nonnegative().optional(),
+      }).parse(params);
+      await deps.host.setGraphMetadata(args.graphId, {
+        template: args.template,
+        displayName: args.displayName,
+        createdAt: args.createdAt ?? Date.now(),
+      });
+      return { ok: true };
+    }
+    case 'graphs.createWithTemplate': {
+      const args = z.object({
+        graphId: z.string().min(1).regex(/^[a-zA-Z0-9_-]+$/, 'graphId must be slug-like'),
+        template: z.enum([
+          'personal', 'journal', 'reading', 'learning',
+          'project', 'research', 'codebase', 'health',
+          'team', 'compliance', 'onboarding',
+        ]),
+        displayName: z.string().min(1),
+      }).parse(params);
+      await deps.host.createGraph(args.graphId);
+      await deps.host.setGraphMetadata(args.graphId, {
+        template: args.template,
+        displayName: args.displayName,
+        createdAt: Date.now(),
+      });
+      return { ok: true, graphId: args.graphId };
+    }
+    case 'search.nodes': {
+      const args = z.object({
+        graphId: z.string(),
+        query: z.string(),
+        k: z.number().int().positive().max(200).optional(),
+      }).parse(params);
+      return deps.host.searchNodes(args.graphId, args.query, args.k ?? 30);
+    }
+    case 'nodes.list': {
+      const args = z.object({ graphId: z.string() }).parse(params);
+      return deps.host.listNodes(args.graphId);
+    }
+    case 'edges.list': {
+      const args = z.object({ graphId: z.string() }).parse(params);
+      return deps.host.listEdges(args.graphId);
+    }
+    case 'node.directEdit': {
+      // Inline-edit a node's content from the App's detail pane. Bypasses
+      // the correct/apply pending-diff dance — the user just typed the
+      // new text, no LLM proposal needed. Op-log records `editNode` so
+      // history is preserved.
+      const args = z.object({
+        graphId: z.string(),
+        nodeId: z.string(),
+        content: z.string().min(1),
+        reason: z.string().optional(),
+      }).parse(params);
+      await deps.host.applyCorrection(args.graphId, {
+        edits: [{
+          kind: 'edit',
+          nodeId: args.nodeId,
+          content: args.content,
+          reason: args.reason ?? 'Direct edit from Graphnosis App',
+        }],
+      });
+      return { ok: true };
+    }
+    case 'node.softDelete': {
+      // Forget a single node (soft-delete via SDK correction). Used by
+      // the detail pane's Forget action + the Delete key shortcut.
+      // Returns ok so the UI can refresh.
+      const args = z.object({
+        graphId: z.string(),
+        nodeId: z.string(),
+        reason: z.string().optional(),
+      }).parse(params);
+      await deps.host.applyCorrection(args.graphId, {
+        edits: [{
+          kind: 'delete',
+          nodeId: args.nodeId,
+          reason: args.reason ?? 'Forgotten from Graphnosis App',
+        }],
+      });
+      return { ok: true };
+    }
+    case 'node.link': {
+      // Create an undirected `related-to` edge between two existing nodes.
+      // Powers the App's "Link them" affordance from the Check-in deck +
+      // detail pane. Idempotent: returns `created: false` if the edge
+      // was already there.
+      const args = z.object({
+        graphId: z.string(),
+        fromNodeId: z.string(),
+        toNodeId: z.string(),
+        reason: z.string().optional(),
+      }).parse(params);
+      const linkOpts: { reason?: string } = {};
+      if (args.reason !== undefined) linkOpts.reason = args.reason;
+      const result = await deps.host.linkNodes(
+        args.graphId,
+        args.fromNodeId,
+        args.toNodeId,
+        linkOpts,
+      );
+      return result;
+    }
+    case 'activity.list': {
+      // No filtering server-side; the UI is small enough to handle that
+      // client-side and benefits from showing every event for "all" filter.
+      const events = await deps.host.listOplogEvents();
+      return { events };
+    }
+    case 'snapshots.list': {
+      return { snapshots: await deps.host.listSnapshots() };
+    }
+    case 'snapshots.create': {
+      return deps.host.createSnapshot();
+    }
     case 'graphs.create': {
       const { graphId } = z.object({ graphId: z.string() }).parse(params);
       await deps.host.createGraph(graphId);
@@ -111,6 +244,7 @@ async function dispatch(deps: IpcDeps, method: string, params: unknown): Promise
           activeNodes: g.activeNodes,
           softDeletedNodes: g.softDeletedNodes,
           sources: g.sources,
+          corrections: g.corrections,
         })),
         sources: deps.host.listSources(),
       };
@@ -122,6 +256,94 @@ async function dispatch(deps: IpcDeps, method: string, params: unknown): Promise
     case 'sources.forget': {
       const { graphId, sourceId } = z.object({ graphId: z.string(), sourceId: z.string() }).parse(params);
       return deps.host.forgetSource(graphId, sourceId);
+    }
+    case 'corrections.list': {
+      // Return every pending diff so the App can render its approval panel.
+      // Sorted oldest-first so the user reviews them in creation order.
+      const items = Array.from(deps.pendingDiffs.entries())
+        .map(([diffId, v]) => ({
+          diffId,
+          graphId: v.graphId,
+          createdAt: v.createdAt,
+          reasoning: v.diff.reasoning ?? null,
+          edits: v.diff.edits,
+          adds: v.diff.adds,
+        }))
+        .sort((a, b) => a.createdAt - b.createdAt);
+      return { pending: items };
+    }
+    case 'corrections.apply': {
+      const { diffId } = z.object({ diffId: z.string() }).parse(params);
+      const pending = deps.pendingDiffs.get(diffId);
+      if (!pending) throw new Error(`No pending diff ${diffId}. It may have been applied or rejected already.`);
+      await runApplyCorrection({ host: deps.host, graphId: pending.graphId, diff: pending.diff });
+      deps.pendingDiffs.delete(diffId);
+      return { ok: true, graphId: pending.graphId };
+    }
+    case 'corrections.reject': {
+      const { diffId } = z.object({ diffId: z.string() }).parse(params);
+      const existed = deps.pendingDiffs.delete(diffId);
+      return { ok: existed };
+    }
+    case 'mcp.restartListener': {
+      // Bounce the MCP socket: close the current listener, recreate it at
+      // the same path. Any relay in auto-reconnect-wait sees the new socket
+      // and connects on its next probe. Dead relays don't come back from
+      // this — those need their parent (Claude Desktop, Cursor, etc.) to
+      // respawn them.
+      await deps.restartMcpListener();
+      return { ok: true };
+    }
+    case 'mcp.status': {
+      // Live registry of MCP clients currently connected to this sidecar
+      // (socket transport for the relay-based clients, stdio for legacy
+      // direct-spawn clients). The App polls this for its inspector panel.
+      return { connections: mcpRegistry.list() };
+    }
+    case 'settings.get': {
+      return deps.host.getSettings();
+    }
+    case 'settings.update': {
+      const parsed = z.object({
+        contentCache: z.object({
+          mode: z.enum(['all', 'ephemeral-only', 'off']),
+          maxBytesPerSource: z.number().int().nonnegative(),
+        }).optional(),
+        forget: z.object({
+          mode: z.enum(['soft', 'purge']),
+        }).optional(),
+        mcpRelay: z.object({
+          initialWaitMs: z.number().int().positive(),
+          reconnectMs: z.number().int().positive(),
+        }).optional(),
+        ui: z.object({
+          inspectorDetail: z.enum(['simple', 'detailed']),
+        }).optional(),
+      }).parse(params ?? {});
+      // Strip undefined keys explicitly for exactOptionalPropertyTypes.
+      const patch: Parameters<typeof deps.host.setSettings>[0] = {};
+      if (parsed.contentCache) patch.contentCache = parsed.contentCache;
+      if (parsed.forget) patch.forget = parsed.forget;
+      if (parsed.mcpRelay) patch.mcpRelay = parsed.mcpRelay;
+      if (parsed.ui) patch.ui = parsed.ui;
+      return deps.host.setSettings(patch);
+    }
+    case 'vault.purgeForgotten': {
+      const { graphId } = z.object({ graphId: z.string() }).parse(params);
+      return deps.host.purgeSoftDeleted(graphId);
+    }
+    case 'recovery.plan': {
+      // No params — uses the running sidecar's existing key. Returns a list
+      // of every source ever ingested (minus forgotten), with per-item status
+      // (recoverable / file-missing / already-present / etc).
+      return deps.host.planRecovery();
+    }
+    case 'recovery.apply': {
+      // Re-ingest selected sources. `sourceIds: null` means "all recoverable".
+      const { sourceIds } = z.object({
+        sourceIds: z.array(z.string()).nullable().optional(),
+      }).parse(params ?? {});
+      return deps.host.applyRecovery(sourceIds ?? undefined);
     }
     case 'recall': {
       const { query, maxTokens, maxNodes } = z.object({
