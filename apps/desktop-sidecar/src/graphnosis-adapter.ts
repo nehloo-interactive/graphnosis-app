@@ -65,6 +65,20 @@ export interface GraphnosisAdapter {
 
   applyCorrection(handle: GraphHandle, edit: CorrectionEdit): Promise<void>;
 
+  /**
+   * Create an undirected edge between two existing nodes. Used by the App's
+   * "Link them" affordance when the user confirms two memories belong
+   * together (the SDK has no public addEdge — we write directly to the
+   * dual-graph's `undirectedEdges` map). Idempotent: if an edge of the
+   * same type already exists between the two nodes, we no-op.
+   */
+  linkNodes(
+    handle: GraphHandle,
+    fromNodeId: string,
+    toNodeId: string,
+    opts?: { type?: UndirectedEdgeType; weight?: number; reason?: string },
+  ): Promise<{ edgeId: string; created: boolean }>;
+
   /** Build TF-IDF + structure. The adapter calls this internally before the first append on a fresh graph. */
   build(handle: GraphHandle): Promise<void>;
 
@@ -74,9 +88,44 @@ export interface GraphnosisAdapter {
   /** All node IDs currently in the graph. Used by the host to diff append results. */
   allNodeIds(handle: GraphHandle): string[];
 
-  /** Ground-truth node info — includes soft-deleted (low-confidence) nodes. */
-  inspectNodes(handle: GraphHandle): Array<{ id: string; confidence: number; validUntil?: number; sourceFile: string; contentPreview: string }>;
+  /**
+   * Ground-truth node info — includes soft-deleted (low-confidence) nodes.
+   *
+   * `section` and `nodeType` were added in the App's Path-1 refactor (the
+   * deck/detail surface needs them to render a breadcrumb and to filter
+   * structural-noise nodes like 'document' and 'section' out of the
+   * review queue). They're nullable because not every ingest path
+   * (clip:* sources, plain-text) sets them.
+   */
+  inspectNodes(handle: GraphHandle): Array<{
+    id: string;
+    confidence: number;
+    validUntil?: number;
+    sourceFile: string;
+    contentPreview: string;
+    section?: string;
+    nodeType?: string;
+  }>;
 
   /** True if buildEmbeddings has run and the graph has an embedding index attached. */
   hasEmbeddings(handle: GraphHandle): boolean;
+
+  /** Snapshot of the dual-graph's edges. Powers the Atlas visualization. */
+  inspectEdges(handle: GraphHandle): {
+    directed: Array<{ id: string; from: string; to: string; type: DirectedEdgeType; weight: number }>;
+    undirected: Array<{ id: string; a: string; b: string; type: UndirectedEdgeType; weight: number }>;
+  };
 }
+
+/**
+ * The SDK's full edge-type catalogue. Re-exported through the adapter so the
+ * App can render legends + filters without re-importing the SDK directly.
+ */
+export type DirectedEdgeType =
+  | 'causes' | 'depends-on' | 'precedes' | 'contains' | 'defines' | 'cites'
+  | 'contradicts' | 'supports' | 'supersedes' | 'discussed-in' | 'knows'
+  | 'works-with' | 'reports-to' | 'collaborated-on' | 'prefers' | 'summarizes';
+
+export type UndirectedEdgeType =
+  | 'similar-to' | 'co-occurs' | 'shares-entity' | 'shares-topic'
+  | 'same-source' | 'same-person' | 'related-to';

@@ -5,7 +5,8 @@
   "type": "module",
   "main": "./dist/index.js",
   "bin": {
-    "graphnosis-sidecar": "./dist/index.js"
+    "graphnosis-sidecar": "./dist/index.js",
+    "graphnosis-mcp-relay": "./dist/mcp-relay.js"
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
@@ -18,9 +19,10 @@
     "@graphnosis-app/core": "workspace:*",
     "@modelcontextprotocol/sdk": "^1.0.0",
     "@mozilla/readability": "^0.5.0",
-    "@nehloo/graphnosis": "^0.3.1",
+    "@nehloo/graphnosis": "^0.3.2",
     "fastembed": "^2.1.0",
     "jsdom": "^24.0.0",
+    "mammoth": "^1.12.0",
     "proper-lockfile": "^4.1.2",
     "zod": "^4.3.6"
   },

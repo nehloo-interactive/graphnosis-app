@@ -54,6 +54,16 @@ export class OpLogWriter {
   }
 }
 
+/**
+ * Per-process memo of op-log filenames we've already warned about. The
+ * sidecar may call `readAllEvents` multiple times in a session (corrections
+ * counter, Activity timeline, recovery flow) — without deduplication each
+ * call would re-print the same skip warnings for every stale file, which
+ * spams the dev terminal and the Claude relay log with no new information.
+ * Cleared when the process restarts (Set lives only in this module).
+ */
+const warnedOplogFiles = new Set<string>();
+
 export async function readAllEvents(dir: string, passphraseOrKey: string | Uint8Array): Promise<OpLogEvent[]> {
   const out: OpLogEvent[] = [];
   let entries: string[] = [];
@@ -67,17 +77,53 @@ export async function readAllEvents(dir: string, passphraseOrKey: string | Uint8
     const buf = await fs.readFile(path.join(dir, name));
     const u8 = new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength);
     let cursor = 0;
-    while (cursor < u8.length) {
+    let skippedChunks = 0;
+    let firstSkipReason = '';
+    while (cursor + 4 <= u8.length) {
       const len = new DataView(u8.buffer, u8.byteOffset + cursor, 4).getUint32(0, true);
       cursor += 4;
+      // Defensive: corrupted length prefix → skip the rest of this file
+      // rather than reading past the buffer. Happens if the file was
+      // truncated mid-write or modified out-of-band.
+      if (len === 0 || cursor + len > u8.length) {
+        skippedChunks++;
+        firstSkipReason = firstSkipReason || 'malformed length prefix';
+        break;
+      }
       const chunk = u8.subarray(cursor, cursor + len);
       cursor += len;
-      const pt = await decrypt(chunk, passphraseOrKey);
+      // Skip chunks we can't decrypt rather than failing the whole read.
+      // This happens when the op-log directory still contains files from
+      // a previous passphrase (e.g., the silent-overwrite era pre-fix),
+      // or when a sibling key was used. Other chunks in the same — or
+      // adjacent — files may still be valid and worth returning.
+      let pt: Uint8Array;
+      try {
+        pt = await decrypt(chunk, passphraseOrKey);
+      } catch (e) {
+        skippedChunks++;
+        firstSkipReason = firstSkipReason || (e instanceof Error ? e.message : String(e));
+        continue;
+      }
       const text = new TextDecoder().decode(pt);
       for (const ln of text.split('\n')) {
         if (!ln) continue;
-        out.push(JSON.parse(ln) as OpLogEvent);
+        try {
+          out.push(JSON.parse(ln) as OpLogEvent);
+        } catch {
+          // Decrypted to non-JSON: rare, treat as skipped.
+          skippedChunks++;
+          firstSkipReason = firstSkipReason || 'decrypted chunk was not valid JSON';
+        }
       }
+    }
+    if (skippedChunks > 0 && !warnedOplogFiles.has(name)) {
+      warnedOplogFiles.add(name);
+      console.error(
+        `[oplog] skipped ${skippedChunks} chunk(s) in ${name} — first reason: ${firstSkipReason}. ` +
+        `Likely a leftover file from a previous passphrase or a corrupted segment; ` +
+        `delete the file manually if you want this warning to stop.`,
+      );
     }
   }
   out.sort((a, b) => a.ts - b.ts || a.id.localeCompare(b.id));
