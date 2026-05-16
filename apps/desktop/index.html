@@ -750,6 +750,32 @@
       }
       .g-tab-pane.hidden { display: none; }
 
+      /* Header for the search-results pane — stats on the left, sort
+         dropdown on the right. Becomes a stacked layout if the window
+         is too narrow for both. */
+      .g-search-results-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        gap: 12px;
+        flex-wrap: wrap;
+        margin-bottom: 6px;
+      }
+      .g-search-sort {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        font-size: 11px;
+        color: var(--fg-dim);
+      }
+      .g-search-sort select {
+        background: var(--bg);
+        color: var(--fg);
+        border: 1px solid var(--border);
+        border-radius: 4px;
+        padding: 2px 6px;
+        font-size: 11px;
+      }
       .g-list-stats {
         font-size: 11px;
         margin-bottom: 8px;
@@ -2181,7 +2207,17 @@
                     <!-- Search results take over when there's an active query;
                          hidden otherwise so the dashboard owns the surface. -->
                     <div id="g-search-results" class="g-search-results hidden">
-                      <div id="g-search-results-stats" class="g-list-stats subtitle"></div>
+                      <div class="g-search-results-header">
+                        <div id="g-search-results-stats" class="g-list-stats subtitle"></div>
+                        <label class="g-search-sort">
+                          Sort:
+                          <select id="g-search-sort-select">
+                            <option value="relevance">Relevance</option>
+                            <option value="confidence">Confidence</option>
+                            <option value="source">Source A→Z</option>
+                          </select>
+                        </label>
+                      </div>
                       <div id="g-list" class="g-list" tabindex="0"></div>
                     </div>
 
