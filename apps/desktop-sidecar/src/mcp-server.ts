@@ -18,18 +18,48 @@ import { ingestClip } from './ingest.js';
 // The MCP layer never writes without explicit user-side confirmation for mutations
 // except `remember` (which the user themselves invoked from the conversation).
 
-const RememberInput = z.object({
-  graphId: z.string().optional(),
-  label: z.string().default('Conversation note'),
-  text: z.string(),
-});
+// Anthropic's platform lazy-loads MCP tool schemas via `tool_search` — until
+// that runs, Claude sees only the tool NAME and the description prose, then
+// guesses parameter names from the description. The `remember` tool's
+// description heavily uses the word "note", so models commonly call with
+// `{note: "..."}` instead of `{text: "..."}` and the platform refuses.
+// Accept the common guesses (`note`, `content`, `body`) and normalize to
+// `text` before validation so the tool works whether or not `tool_search`
+// was called first.
+const RememberInput = z.preprocess(
+  (raw: unknown) => {
+    if (typeof raw !== 'object' || raw === null) return raw;
+    const r = raw as Record<string, unknown>;
+    if (!r.text && (r.note || r.content || r.body)) {
+      return { ...r, text: r.note ?? r.content ?? r.body };
+    }
+    return raw;
+  },
+  z.object({
+    graphId: z.string().optional(),
+    label: z.string().default('Conversation note'),
+    text: z.string(),
+  }),
+);
 // Coerce so that AI clients sending stringified numbers (a common MCP foot-gun)
 // don't fail validation. zod.coerce parses '50' -> 50, '5000.0' -> 5000.
-const RecallInput = z.object({
-  query: z.string(),
-  maxTokens: z.coerce.number().int().positive().max(8000).optional(),
-  maxNodes: z.coerce.number().int().positive().max(50).optional(),
-});
+// Also accept `q` / `question` aliases for `query` for the same lazy-load
+// reason described on RememberInput above.
+const RecallInput = z.preprocess(
+  (raw: unknown) => {
+    if (typeof raw !== 'object' || raw === null) return raw;
+    const r = raw as Record<string, unknown>;
+    if (!r.query && (r.q || r.question)) {
+      return { ...r, query: r.q ?? r.question };
+    }
+    return raw;
+  },
+  z.object({
+    query: z.string(),
+    maxTokens: z.coerce.number().int().positive().max(8000).optional(),
+    maxNodes: z.coerce.number().int().positive().max(50).optional(),
+  }),
+);
 const CorrectInput = z.object({
   correction: z.string(),
   graphId: z.string().optional(),
@@ -70,6 +100,8 @@ export interface McpDeps {
  */
 const SERVER_INSTRUCTIONS = `\
 You have access to Graphnosis — a personal knowledge graph stored locally on the user's machine. It contains notes, files, conversations, decisions, and corrections the user has chosen to remember across sessions. **This is the authoritative source for anything personal to the user.**
+
+TOOL SCHEMA LOADING: If your client uses lazy schema loading (Anthropic's \`tool_search\` and similar layers), call \`tool_search("graphnosis")\` once near the start of any conversation that might need these tools — this ensures parameter names are loaded before you invoke \`recall\`, \`remember\`, \`remind\`, \`correct\`, \`forget\`, or \`stats\`. If you skip this step, the tools still accept common parameter-name guesses (e.g. \`note\` for \`remember\`, \`q\`/\`question\` for \`recall\`/\`remind\`), but loading the real schema is more reliable.
 
 LANGUAGE: Every tool here is language-agnostic. Trigger on the user's INTENT, not on the specific English phrasing. If the user speaks Romanian, Spanish, Hebrew, Mandarin, Arabic, Hindi, French, German — anything you understand — route to the right tool just as readily. Pass the user's query through in their own language; the underlying search, embeddings, and entity extraction are all multilingual. Don't translate the user's prompt to English before calling the tool.
 
