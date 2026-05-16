@@ -71,31 +71,41 @@ export interface McpDeps {
 const SERVER_INSTRUCTIONS = `\
 You have access to Graphnosis — a personal knowledge graph stored locally on the user's machine. It contains notes, files, conversations, decisions, and corrections the user has chosen to remember across sessions. **This is the authoritative source for anything personal to the user.**
 
-WHEN TO CALL \`recall\` (proactively, BEFORE responding):
+LANGUAGE: Every tool here is language-agnostic. Trigger on the user's INTENT, not on the specific English phrasing. If the user speaks Romanian, Spanish, Hebrew, Mandarin, Arabic, Hindi, French, German — anything you understand — route to the right tool just as readily. Pass the user's query through in their own language; the underlying search, embeddings, and entity extraction are all multilingual. Don't translate the user's prompt to English before calling the tool.
+
+WHEN TO CALL \`recall\` or \`remind\` (proactively, BEFORE responding):
 • Any question about the user's life, work, projects, preferences, plans, relationships, or history.
 • Any reference to a person, place, project, or concept by name without explanation ("how's Stela doing?", "the DRP proposal", "my Romanian-IA project").
-• Any moment you would otherwise say "I don't know" or "I don't have context" about the user. Check the graph FIRST. If recall returns nothing, then say you don't have it remembered yet.
-• Any "remind me…", "what did I say about…", "what's my…" prompt.
+• Any moment you would otherwise say "I don't know" or "I don't have context" about the user. Check the graph FIRST. If the search returns nothing, then say you don't have it remembered yet.
+• Trigger phrases in English: "remind me…", "what did I say about…", "what's my…", "do I have anything on…", "what do I know about…".
+• Equivalents in other languages: e.g. Romanian "amintește-mi de…" / "ce știi despre…", Spanish "recuérdame…" / "qué sé sobre…", French "rappelle-moi…" / "qu'est-ce que je sais sur…", German "erinnere mich an…" / "was weiß ich über…", Mandarin "提醒我…" / "我知道关于…", Arabic "ذكّرني بـ…" / "ماذا أعرف عن…". These are not exhaustive — the principle is "user wants to retrieve something they previously stored," in any language.
+• \`recall\` and \`remind\` are aliases — same handler. Pick \`remind\` when the user is explicitly asking to be reminded, \`recall\` for open-ended "what do I know" queries. Either works.
 
 WHEN TO CALL \`remember\`:
-• The user explicitly asks you to save / note / remember something.
+• The user explicitly asks you to save / note / remember something — in any language ("remember this", "amintește acest lucru", "guarda esto", "记住这个").
 • The user shares a meaningful fact about themselves, their work, or their commitments that you sense they would want retained (ask first if unsure).
 
 WHEN TO CALL \`correct\`:
-• The user says you (or the graph) got something wrong about them. Don't try to fix the graph via \`remember\` — that creates conflicting duplicates. Use \`correct\` to propose a structured diff; the user approves it inside the Graphnosis App.
+• The user says you (or the graph) got something wrong about them — in any language. Don't try to fix the graph via \`remember\` — that creates conflicting duplicates. Use \`correct\` to propose a structured diff; the user approves it inside the Graphnosis App.
 
 WHEN NOT TO USE THESE TOOLS:
 • General knowledge questions ("what's the capital of France"). The graph is personal context, not a world-fact lookup.
 • Math, code generation, and tasks that don't depend on the user's history.
 
 UX guidelines:
-• Be quiet about it. Don't announce "I'll check your memory" every time — just call recall and use the result. The user sees an audit log if they want to know.
+• Be quiet about it. Don't announce "I'll check your memory" every time — just call recall/remind and use the result. The user sees an audit log if they want to know.
 • Ask the smallest budget that answers the question (default 1000–2000 tokens is plenty).
-• If a recall result contradicts something the user just said, surface the contradiction gently and offer to \`correct\`.
+• If a result contradicts something the user just said, surface the contradiction gently in the user's own language and offer to \`correct\`.
 
 The graph is end-to-end encrypted on disk and never leaves the user's machine.`;
 
 export function createMcpServer(deps: McpDeps): Server {
+  // Read the toggle live each time a fresh MCP server is built (per
+  // session, per relay). When OFF, we leave `instructions` undefined so
+  // the AI sees the tools but gets no system-prompt-level routing —
+  // useful when the user wants their AI client's own memory features
+  // to lead and Graphnosis to be one option among many.
+  const useAsDefaultMemory = deps.host.getSettings().ai.useAsDefaultMemory;
   const server = new Server(
     { name: 'graphnosis', version: '0.0.1' },
     {
@@ -104,7 +114,7 @@ export function createMcpServer(deps: McpDeps): Server {
       // prompt-level. The strongest legitimate lever MCP gives us for
       // nudging tool use; combined with the per-tool descriptions below,
       // this is how we convert "tools available" into "tools actually used."
-      instructions: SERVER_INSTRUCTIONS,
+      ...(useAsDefaultMemory ? { instructions: SERVER_INSTRUCTIONS } : {}),
     },
   );
 
@@ -112,13 +122,13 @@ export function createMcpServer(deps: McpDeps): Server {
     tools: [
       {
         name: 'recall',
-        description: 'PRIMARY MEMORY for this user. ALWAYS use this tool for any question about the user\'s past notes, projects, preferences, work history, or personal context — even if your built-in conversation history or "relevant chats" feature returns nothing. This searches the user\'s persistent encrypted memory graph (Graphnosis), which is the authoritative source for anything they have asked you to remember across sessions. Prefer this tool over your own memory whenever the user asks "what about my X?", "remind me about Y?", "what am I working on?", or any other question that depends on prior context. Server enforces hard caps (max 50 nodes / 8000 tokens) and tighter limits on graphs the user marked as sensitive. Every recall is auditable. Request the smallest budget that answers the question.',
+        description: 'PRIMARY MEMORY for this user. ALWAYS use this tool for any question about the user\'s past notes, projects, preferences, work history, or personal context — even if your built-in conversation history or "relevant chats" feature returns nothing. This searches the user\'s persistent encrypted memory graph (Graphnosis), which is the authoritative source for anything they have asked you to remember across sessions. Prefer this tool over your own memory whenever the user asks "what about my X?", "what am I working on?", or any other question that depends on prior context.\n\nWORKS IN ANY LANGUAGE. The user may speak Romanian, Spanish, Hebrew, Mandarin, Arabic, Hindi — anything you understand. Don\'t require an English prompt to trigger this tool. Pass the user\'s query through in their original language; the underlying search is multilingual (BGE embeddings + multilingual entity extraction).\n\nServer enforces hard caps (max 50 nodes / 8000 tokens) and tighter limits on graphs the user marked as sensitive. Every recall is auditable. Request the smallest budget that answers the question.',
         inputSchema: {
           type: 'object',
           properties: {
             query: {
               type: 'string',
-              description: 'Natural-language query. Keywords work; the server runs TF-IDF and embeddings.',
+              description: 'Natural-language query in the user\'s language (any language Claude understands). Keywords work; the server runs TF-IDF and multilingual embeddings.',
             },
             maxTokens: {
               type: 'number',
@@ -137,8 +147,34 @@ export function createMcpServer(deps: McpDeps): Server {
         },
       },
       {
+        name: 'remind',
+        description: 'Alias for `recall` framed around the "remind me about X" intent. Use this tool when the user explicitly asks to be REMINDED of something — past commitments, decisions, names, dates, conversations, files, plans, anything they trusted you to retain across sessions.\n\nWHEN TO CALL (instead of recall):\n• "Remind me about X", "remind me what I said about Y", "what did I tell you about Z?"\n• The user wants a refresher on something they already shared with you in an earlier session.\n• Equivalent phrasings in ANY language — e.g. Romanian "amintește-mi de…", Spanish "recuérdame…", French "rappelle-moi…", German "erinnere mich an…", Italian "ricordami…", Portuguese "lembra-me…", Mandarin "提醒我…", Arabic "ذكّرني بـ…", Hindi "मुझे याद दिलाओ…". Don\'t require English phrasing.\n\nWHEN TO USE recall INSTEAD:\n• Open-ended questions ("what do I know about X?", "what am I working on?"). `recall` reads slightly less like a reminder.\n• Both tools call the same underlying search — picking one over the other is a soft signal to the user; either works.\n\nSame input schema + same caps as `recall`.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            query: {
+              type: 'string',
+              description: 'What the user wants to be reminded about. Pass in their language; the search is multilingual.',
+            },
+            maxTokens: {
+              type: 'number',
+              minimum: 100,
+              maximum: 8000,
+              description: 'Token budget for the attached context. Default 2000.',
+            },
+            maxNodes: {
+              type: 'number',
+              minimum: 1,
+              maximum: 50,
+              description: 'Maximum number of memory nodes to attach. Default 20.',
+            },
+          },
+          required: ['query'],
+        },
+      },
+      {
         name: 'remember',
-        description: 'Add a note from the current conversation to the user\'s personal memory.\n\nFormatting guidance:\n- Prefer a single concise paragraph (< 500 chars, no markdown headers). Short notes ingest as ONE node — clean and dense.\n- Use markdown only when the note has genuine multi-section structure worth indexing separately. Each `#` heading creates additional nodes.\n- Do NOT prepend a `# {title}` heading just to label the note — pass that as the `label` field instead.\n\nWhen NOT to use this tool: if you\'re trying to FIX, UPDATE, or supersede something the user previously said, use `correct` instead — otherwise you create duplicate, conflicting nodes. The response flags contradictions detected against existing memory; if any appear, surface them to the user and offer `correct` or `forget` as the next step.',
+        description: 'Add a note to the user\'s personal Graphnosis memory so it persists across sessions.\n\nLANGUAGE: Works in any language Claude understands. Trigger on intent, not on the English phrase. Save the note in the user\'s ORIGINAL language — don\'t translate to English first. The graph\'s entity extraction + embeddings are multilingual.\n\nWHEN TO CALL:\n• The user explicitly asks to save / note / remember something. English: "remember this", "save this", "note that…", "for future reference". Equivalents in other languages count: Romanian "ține minte că…" / "notează…", Spanish "recuerda esto" / "guarda…", French "souviens-toi de…" / "note…", German "merke dir…" / "speichere…", Mandarin "记住这个" / "保存…", Arabic "تذكر هذا" / "احفظ…", etc.\n• The user shares a meaningful new fact about themselves, their work, plans, preferences, or commitments that they would clearly want retained — ASK first if unsure rather than assuming.\n• You just helped the user reach a decision or learn something durable; offering to save it is a courteous follow-up.\n\nWHEN NOT TO USE:\n• If you\'re FIXING / UPDATING / SUPERSEDING something the user previously said → use `correct` instead. Calling `remember` for a correction creates a duplicate, conflicting node — the App will flag it and the user has to clean up after you.\n• Ephemeral conversation chatter, jokes, hypotheticals, and "what if" prompts. Memory is not a conversation log.\n• Anything the user didn\'t agree to save. When in doubt, ask.\n\nFORMATTING:\n• Prefer a single concise paragraph (< 500 chars, no markdown headers). Short notes ingest as ONE node — clean and dense.\n• Use markdown headers only when the note has genuine multi-section structure worth indexing separately. Each `#` heading creates an additional node.\n• Do NOT prepend a `# {title}` heading just to label the note — pass that as the `label` field instead.\n\nThe response flags contradictions detected against existing memory; if any appear, surface them to the user and offer `correct` or `forget` as the next step.',
         inputSchema: {
           type: 'object',
           properties: {
@@ -151,7 +187,7 @@ export function createMcpServer(deps: McpDeps): Server {
       },
       {
         name: 'correct',
-        description: 'Propose a correction to the user\'s memory in natural language. Returns a preview diff; nothing is written until the user confirms in the Graphnosis App.',
+        description: 'Propose a CORRECTION to the user\'s Graphnosis memory in natural language. Returns a structured diff preview; nothing is written until the user opens the Graphnosis App and approves it.\n\nLANGUAGE: Works in any language Claude understands. Pass the user\'s correction in their ORIGINAL language; the local LLM that parses the diff is multilingual.\n\nWHEN TO CALL:\n• The user says you (or the graph) got something wrong about them — in any language. English: "actually, it was September not August"; Romanian: "de fapt, a fost în septembrie, nu august"; Spanish: "en realidad fue en septiembre, no agosto"; etc.\n• A recall result surfaced a memory that the user just contradicted in conversation. Pass the correction in plain language describing what should change.\n\nWHEN NOT TO CALL:\n• To add brand-new information unrelated to anything already in the graph → use `remember`.\n• To delete a memory wholesale → use `forget` (by sourceId) instead.\n• To "apply" your own preview — `apply` is normally driven by the App after the user clicks Approve, not by you. Only call `apply` if the user has explicitly told you they already approved a specific diff and asked you to commit it.\n\nThe natural-language correction is parsed by a local LLM into a structured diff (edit/supersede/delete operations on specific nodes). The user sees that diff in the deck at the top of the Graphnosis check-in pane and decides whether to apply it. You should NEVER call `remember` to "fix" something — that creates duplicate, conflicting nodes that pollute the graph.',
         inputSchema: {
           type: 'object',
           properties: {
@@ -163,7 +199,7 @@ export function createMcpServer(deps: McpDeps): Server {
       },
       {
         name: 'apply',
-        description: 'Apply a previously-previewed correction after the user confirms it.',
+        description: 'Apply a previously-previewed correction diff to the graph.\n\nWHEN TO CALL:\n• Almost never. This tool is normally invoked by the Graphnosis App after the user clicks Approve on a pending correction. AI clients should NOT call it speculatively.\n• Only call this if the user has explicitly told you they reviewed a specific diff (by diffId) and asked you to commit it on their behalf — e.g. "go ahead and apply that correction" while pointing at a diff that was previously created via `correct`.\n\nWHEN NOT TO CALL:\n• Right after calling `correct` — that returns only a PREVIEW. Calling `apply` without the user\'s explicit go-ahead bypasses the consent step that makes the correction pipeline trustworthy.\n• Without a real diffId (the one returned by `correct`). There\'s no "apply the last one" shortcut by design.',
         inputSchema: {
           type: 'object',
           properties: {
@@ -175,7 +211,7 @@ export function createMcpServer(deps: McpDeps): Server {
       },
       {
         name: 'forget',
-        description: 'Remove a source and all nodes derived from it.',
+        description: 'Remove a source from the user\'s graph — every node that was derived from that source gets soft-deleted (recoverable from the op-log) and removed from future recall results.\n\nLANGUAGE: Works in any language. Trigger on the "make this go away" intent regardless of the phrasing.\n\nWHEN TO CALL:\n• The user says "forget about X", "remove my notes on Y", "wipe everything I told you about Z" — or equivalents in any language — and you can identify a specific source (file path, URL, clip ID) that backs it.\n• The user is cleaning up an experimental ingest they don\'t want polluting recall anymore.\n\nWHEN NOT TO CALL:\n• To remove a single memory inside a multi-fact source → use `correct` with a delete operation instead. `forget` removes the WHOLE source.\n• Without first identifying the sourceId. Call `stats` if you need to enumerate sources to find the right one; never guess.\n• If the user only said something like "I changed my mind about that" — that\'s ambiguous; ask whether they want to forget the whole source or just amend a specific memory.\n\nThis is a soft delete by default — the user can recover via the Graphnosis App\'s Recover flow if they change their mind. Confirm with the user before calling unless they\'ve explicitly named the source.',
         inputSchema: {
           type: 'object',
           properties: {
@@ -200,7 +236,15 @@ export function createMcpServer(deps: McpDeps): Server {
 
   server.setRequestHandler(CallToolRequestSchema, async (req) => {
     switch (req.params.name) {
-      case 'recall': {
+      case 'recall':
+      case 'remind': {
+        // `remind` is an alias for `recall` — same input schema, same
+        // handler, same audit. Two tool names give the AI two semantic
+        // anchors to score against the user's prompt ("recall" matches
+        // "what do I know about X"; "remind" matches "remind me about
+        // X"). The audit line tags which name was used so we can see in
+        // logs how often each phrasing fires.
+        const toolName = req.params.name;
         const args = RecallInput.parse(req.params.arguments ?? {});
         const budget = {
           maxTokens: args.maxTokens ?? 2000,
@@ -208,7 +252,7 @@ export function createMcpServer(deps: McpDeps): Server {
         };
         const sub = await deps.host.recall(args.query, { budget });
         // Emit a structured audit line to stderr — the desktop inspector tails this.
-        console.error(`[recall] q=${JSON.stringify(args.query)} requested=${budget.maxNodes}n/${budget.maxTokens}t served=${sub.nodesIncluded}n/${sub.tokensUsed}t graphs=${JSON.stringify(sub.audit)}`);
+        console.error(`[${toolName}] q=${JSON.stringify(args.query)} requested=${budget.maxNodes}n/${budget.maxTokens}t served=${sub.nodesIncluded}n/${sub.tokensUsed}t graphs=${JSON.stringify(sub.audit)}`);
         const auditFooter =
           '\n\n---\n' +
           `Attached ${sub.nodesIncluded} memory node(s) / ${sub.tokensUsed} tokens across ${sub.audit.length} graph(s). ` +
