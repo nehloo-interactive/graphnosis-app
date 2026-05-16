@@ -7,7 +7,7 @@ import { ingestFile, ingestWeb, ingestClip } from './ingest.js';
 import { mcpRegistry } from './mcp-registry.js';
 import { applyCorrection as runApplyCorrection } from './correction.js';
 import type { CorrectionDiff } from './correction.js';
-import { oplog } from '@graphnosis-app/core';
+import { oplog } from '@nehloo-interactive/graphnosis-secure-sync';
 
 // Local IPC between Tauri shell and Node sidecar. Newline-delimited JSON over a
 // Unix-domain socket on macOS/Linux (Windows uses a named pipe — same socket API).

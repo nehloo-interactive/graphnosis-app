@@ -1,6 +1,7 @@
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
-import { crypto, embeddings, federation, oplog, policy, settings as settingsMod, sources, type DeviceId, type GraphId, type SourceRecord, type SubgraphBudget } from '@graphnosis-app/core';
+import { embeddings, settings as settingsMod, sources, type SourceRecord } from '@graphnosis-app/core';
+import { crypto, federation, oplog, policy, type DeviceId, type GraphId, type SubgraphBudget } from '@nehloo-interactive/graphnosis-secure-sync';
 import type { GraphnosisAdapter, GraphHandle, AppendDocumentInput, CorrectionEdit } from './graphnosis-adapter.js';
 
 const { deriveKey, encrypt, decrypt } = crypto;

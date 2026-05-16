@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { promises as fs } from 'node:fs';
-import { encrypt, decrypt } from '../crypto/index.js';
+import { encrypt, decrypt } from '@nehloo-interactive/graphnosis-secure-sync/crypto';
 
 export type EmbedFn = (text: string) => Promise<number[]>;
 
