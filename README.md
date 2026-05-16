@@ -1,4 +1,4 @@
-# Graphnosis
+# Graphnosis™
 
 > Private second memory for any AI. Local-first, encrypted, multi-graph.
 > Attaches a relevant subgraph from your own memory to every prompt you send
@@ -211,3 +211,7 @@ This license lets anyone read, audit, fork, modify, and self-host the code, but 
 If you want to use Graphnosis App commercially (hosted, embedded, white-labeled) before that window expires, contact the author about a commercial license.
 
 The Graphnosis engine itself ([`@nehloo/graphnosis`](https://github.com/nehloo/Graphnosis)) is and remains Apache 2.0.
+
+---
+
+Made by Nehloo Interactive LLC.
