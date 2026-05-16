@@ -169,6 +169,7 @@ export class GraphnosisImpl implements GraphnosisAdapter {
     contentPreview: string;
     section?: string;
     nodeType?: string;
+    entities?: string[];
   }> {
     const h = handle as Internal;
     if (!h.built) return [];
@@ -180,6 +181,7 @@ export class GraphnosisImpl implements GraphnosisAdapter {
       contentPreview: string;
       section?: string;
       nodeType?: string;
+      entities?: string[];
     }> = [];
     for (const [id, n] of h.instance.graph.nodes) {
       const rec: {
@@ -190,6 +192,7 @@ export class GraphnosisImpl implements GraphnosisAdapter {
         contentPreview: string;
         section?: string;
         nodeType?: string;
+        entities?: string[];
       } = {
         id,
         confidence: n.confidence,
@@ -199,6 +202,12 @@ export class GraphnosisImpl implements GraphnosisAdapter {
       if (n.validUntil !== undefined) rec.validUntil = n.validUntil;
       if (n.source.section) rec.section = n.source.section;
       if (n.type) rec.nodeType = n.type;
+      // Pass the SDK's extracted entities through. Used by the App's
+      // entity-aware candidate ranking + the deck's "connect" cards
+      // ("This memory mentions {entity} — connect to other memories
+      // where it appears?"). Empty array is fine for the App's Jaccard
+      // calculation; we only attach the field when there's something.
+      if (n.entities && n.entities.length > 0) rec.entities = n.entities;
       out.push(rec);
     }
     return out;
@@ -210,18 +219,25 @@ export class GraphnosisImpl implements GraphnosisAdapter {
    * — the App's Atlas renders them differently (arrows vs lines).
    */
   inspectEdges(handle: GraphHandle): {
-    directed: Array<{ id: string; from: string; to: string; type: ReturnType<GraphnosisImpl['_directedType']>; weight: number }>;
+    directed: Array<{ id: string; from: string; to: string; type: ReturnType<GraphnosisImpl['_directedType']>; weight: number; evidence?: string }>;
     undirected: Array<{ id: string; a: string; b: string; type: ReturnType<GraphnosisImpl['_undirectedType']>; weight: number }>;
   } {
     const h = handle as Internal;
     if (!h.built) return { directed: [], undirected: [] };
-    const directed = [...h.instance.graph.directedEdges.entries()].map(([id, e]) => ({
-      id,
-      from: e.from,
-      to: e.to,
-      type: e.type,
-      weight: e.weight,
-    }));
+    const directed = [...h.instance.graph.directedEdges.entries()].map(([id, e]) => {
+      const rec: { id: string; from: string; to: string; type: ReturnType<GraphnosisImpl['_directedType']>; weight: number; evidence?: string } = {
+        id,
+        from: e.from,
+        to: e.to,
+        type: e.type,
+        weight: e.weight,
+      };
+      // Pass through the user-chosen label (set by linkNodesDirected).
+      // Auto-extracted edges typically don't set evidence; the App
+      // falls back to a humanized SDK type for those.
+      if (e.evidence) rec.evidence = e.evidence;
+      return rec;
+    });
     const undirected = [...h.instance.graph.undirectedEdges.entries()].map(([id, e]) => ({
       id,
       a: e.nodes[0],
@@ -284,7 +300,261 @@ export class GraphnosisImpl implements GraphnosisAdapter {
       weight: opts.weight ?? 0.7,
       createdAt: Date.now(),
     });
+    // Keep the metadata count fresh — the gai-writer reads this when
+    // serializing, and the pruner only resets it on optimize. Before this
+    // fix every manual link left the count stale until the next optimize
+    // pass; downstream stats under-reported edge counts.
+    if (h.instance.graph.metadata) {
+      h.instance.graph.metadata.undirectedEdgeCount = h.instance.graph.undirectedEdges.size;
+    }
     return { edgeId, created: true };
+  }
+
+  /**
+   * Add a DIRECTED edge between two existing nodes. Mirror of `linkNodes`
+   * but writes to `graph.directedEdges`. Order-sensitive dedupe on
+   * `(from, to, type)` — reversed direction is a different edge.
+   *
+   * `evidence` carries the user-friendly label ("Works at", "Lives in"
+   * etc.) so the App can render the user's vocabulary in the detail
+   * pane instead of the structural SDK type.
+   */
+  async linkNodesDirected(
+    handle: GraphHandle,
+    fromNodeId: string,
+    toNodeId: string,
+    opts: { type: import('@nehloo/graphnosis').DirectedEdge['type']; weight?: number; evidence?: string },
+  ): Promise<{ edgeId: string; created: boolean }> {
+    const h = handle as Internal;
+    if (!h.built) {
+      throw new Error('Cannot link nodes on an unbuilt graph');
+    }
+    if (fromNodeId === toNodeId) {
+      throw new Error('Cannot link a node to itself');
+    }
+    if (!h.instance.graph.nodes.has(fromNodeId)) {
+      throw new Error(`Node not found: ${fromNodeId}`);
+    }
+    if (!h.instance.graph.nodes.has(toNodeId)) {
+      throw new Error(`Node not found: ${toNodeId}`);
+    }
+    const { type } = opts;
+    // Dedupe order-sensitively — directed `(A → B knows)` is distinct
+    // from `(B → A knows)` and from `(A → B works-with)`. If the user
+    // clicks Connect twice on the same row we no-op.
+    for (const [eid, e] of h.instance.graph.directedEdges) {
+      if (e.from === fromNodeId && e.to === toNodeId && e.type === type) {
+        return { edgeId: eid, created: false };
+      }
+    }
+    const edgeId = `e-dlink-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+    const rec: import('@nehloo/graphnosis').DirectedEdge = {
+      id: edgeId,
+      from: fromNodeId,
+      to: toNodeId,
+      type,
+      weight: opts.weight ?? 0.7,
+      createdAt: Date.now(),
+    };
+    if (opts.evidence) rec.evidence = opts.evidence;
+    h.instance.graph.directedEdges.set(edgeId, rec);
+    if (h.instance.graph.metadata) {
+      h.instance.graph.metadata.directedEdgeCount = h.instance.graph.directedEdges.size;
+    }
+    return { edgeId, created: true };
+  }
+
+  /**
+   * Cross-document entity-overlap relink. See adapter interface comment
+   * for context. Logic:
+   *   1. Snapshot every ACTIVE node's entity set.
+   *   2. For each pair (i < j), compute the entity Jaccard.
+   *   3. If Jaccard ≥ 0.2 AND no existing `shares-entity` edge between
+   *      them, add one (weight scaled by overlap strength).
+   *   4. For pairs sharing a person-shaped entity (2+ capitalized
+   *      words, no digits, not ACRONYM), add a `same-person` edge.
+   *      Dedupe by `(nodes, type)`.
+   *
+   * Pure mutation of `graph.undirectedEdges`. The host calls this
+   * post-append and emits one op-log event per new edge for audit /
+   * recovery.
+   */
+  async relinkFullGraph(
+    handle: GraphHandle,
+    opts: { maxNodes?: number } = {},
+  ): Promise<{
+    skipped: boolean;
+    skipReason?: string;
+    activeNodes: number;
+    newEdges: Array<{
+      edgeId: string;
+      a: string;
+      b: string;
+      type: 'shares-entity' | 'same-person';
+      weight: number;
+      sharedEntities: string[];
+    }>;
+  }> {
+    const h = handle as Internal;
+    if (!h.built) {
+      return { skipped: true, skipReason: 'graph not built', activeNodes: 0, newEdges: [] };
+    }
+    const maxNodes = opts.maxNodes ?? 5000;
+    // 0 means "disabled" — the user (or default) opted out of post-ingest
+    // cross-doc linking. Honor it.
+    if (maxNodes === 0) {
+      return { skipped: true, skipReason: 'auto-relink disabled (maxNodes=0)', activeNodes: 0, newEdges: [] };
+    }
+    const now = Date.now();
+    // Snapshot active nodes + their entity sets. Skip soft-deleted +
+    // structural-noise (document/section) nodes — these are graph
+    // chrome and don't carry user-meaningful entities.
+    interface NodeSnap {
+      id: string;
+      entitiesLower: Set<string>;
+      personEntities: string[];
+    }
+    const snaps: NodeSnap[] = [];
+    for (const [id, n] of h.instance.graph.nodes) {
+      if (n.confidence <= 0.2) continue;
+      if (n.validUntil !== undefined && n.validUntil < now) continue;
+      if (n.type === 'document' || n.type === 'section') continue;
+      const rawEnts = n.entities ?? [];
+      if (rawEnts.length === 0) continue;
+      const lower = new Set(rawEnts.map((e) => e.toLowerCase()));
+      const personEnts = rawEnts.filter(isPersonLikeEntity);
+      snaps.push({ id, entitiesLower: lower, personEntities: personEnts });
+    }
+    if (snaps.length > maxNodes) {
+      return {
+        skipped: true,
+        skipReason: `active node count ${snaps.length} > maxNodes ${maxNodes}`,
+        activeNodes: snaps.length,
+        newEdges: [],
+      };
+    }
+    if (snaps.length < 2) {
+      return { skipped: true, skipReason: 'fewer than 2 candidate nodes', activeNodes: snaps.length, newEdges: [] };
+    }
+
+    // Index existing undirected edges by an unordered pair key so the
+    // O(N²) scan can check "does this pair already have an edge of
+    // this type?" in O(1). Pair key uses sorted ids.
+    const existing = new Map<string, Set<string>>(); // pairKey → set of types
+    const pairKey = (a: string, b: string): string => (a < b ? `${a}|${b}` : `${b}|${a}`);
+    for (const [, e] of h.instance.graph.undirectedEdges) {
+      const [a, b] = e.nodes;
+      const k = pairKey(a, b);
+      const set = existing.get(k) ?? new Set<string>();
+      set.add(e.type);
+      existing.set(k, set);
+    }
+    // The newly-added edges we'll return to the host so it can emit op-log entries.
+    const newEdges: Array<{
+      edgeId: string;
+      a: string;
+      b: string;
+      type: 'shares-entity' | 'same-person';
+      weight: number;
+      sharedEntities: string[];
+    }> = [];
+
+    const addEdge = (
+      a: string,
+      b: string,
+      type: 'shares-entity' | 'same-person',
+      weight: number,
+      sharedEntities: string[],
+    ): void => {
+      const k = pairKey(a, b);
+      const types = existing.get(k);
+      if (types?.has(type)) return; // already linked with this type
+      const edgeId = `e-relink-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+      h.instance.graph.undirectedEdges.set(edgeId, {
+        id: edgeId,
+        nodes: [a, b],
+        type,
+        weight,
+        createdAt: Date.now(),
+      });
+      const nextTypes = types ?? new Set<string>();
+      nextTypes.add(type);
+      existing.set(k, nextTypes);
+      newEdges.push({ edgeId, a, b, type, weight, sharedEntities });
+    };
+
+    // Main O(N²) scan. snaps is capped by maxNodes above, so this is
+    // bounded. For N=5000 worst case = 12.5M comparisons, each a small
+    // Set lookup — finishes in under a second on a modern machine.
+    for (let i = 0; i < snaps.length; i++) {
+      const si = snaps[i];
+      if (!si) continue;
+      for (let j = i + 1; j < snaps.length; j++) {
+        const sj = snaps[j];
+        if (!sj) continue;
+        // Jaccard on lowercased entities. We compute intersection +
+        // union sizes directly (faster than allocating temporary sets).
+        const aSet = si.entitiesLower;
+        const bSet = sj.entitiesLower;
+        const small = aSet.size <= bSet.size ? aSet : bSet;
+        const large = small === aSet ? bSet : aSet;
+        let inter = 0;
+        const sharedLower: string[] = [];
+        for (const e of small) {
+          if (large.has(e)) {
+            inter++;
+            sharedLower.push(e);
+          }
+        }
+        if (inter === 0) continue;
+        // Hybrid threshold — Jaccard alone punishes short clips: a
+        // remember-clip with {NYFA} vs a file with {NYFA + 12 others}
+        // scores Jaccard = 1/13 = 0.077, below the SDK's 0.2 cutoff
+        // even though the link is obvious. We OR-in containment
+        // (intersection / shorter-set-size) which captures the
+        // "all of the short clip's entities are in this longer doc"
+        // case cleanly. Either signal at meaningful strength → link.
+        const union = aSet.size + bSet.size - inter;
+        const jaccard = inter / union;
+        const containment = inter / Math.min(aSet.size, bSet.size);
+        // Require at least 1 shared entity AND (decent containment
+        // OR mild Jaccard). The containment ≥ 0.5 rule fires for
+        // small-overlap-but-meaningful clips; the Jaccard ≥ 0.15
+        // rule fires for two longish docs with sustained overlap.
+        if (containment >= 0.5 || jaccard >= 0.15) {
+          // Weight scaled by the strongest signal — favors high
+          // containment for short clips, high Jaccard for long
+          // docs. Capped at 0.85 so auto links visually sit
+          // below SDK-auto-extracted edges (which sit at 0.85+).
+          const strength = Math.max(jaccard, containment * 0.6);
+          const weight = Math.min(0.85, 0.45 + strength * 0.55);
+          addEdge(si.id, sj.id, 'shares-entity', weight, sharedLower);
+        }
+        // Person-bridge: if any person-shaped entity (2+ capitalized
+        // words, not acronym, no digits) appears in both nodes, add
+        // `same-person`. Independent of the threshold above — even a
+        // single shared person name is a strong signal. NOTE: single-
+        // word names like "Stela" don't trigger this path (need 2+
+        // words); they still get caught by the shares-entity rule
+        // above when there's any meaningful overlap.
+        if (si.personEntities.length > 0 && sj.personEntities.length > 0) {
+          const sharedPersons: string[] = [];
+          for (const p of si.personEntities) {
+            const pLower = p.toLowerCase();
+            if (sj.entitiesLower.has(pLower)) sharedPersons.push(p);
+          }
+          if (sharedPersons.length > 0) {
+            addEdge(si.id, sj.id, 'same-person', 0.75, sharedPersons);
+          }
+        }
+      }
+    }
+
+    // Keep metadata count fresh — the gai-writer reads it.
+    if (h.instance.graph.metadata) {
+      h.instance.graph.metadata.undirectedEdgeCount = h.instance.graph.undirectedEdges.size;
+    }
+    return { skipped: false, activeNodes: snaps.length, newEdges };
   }
 
   // -- internals --
@@ -334,6 +604,22 @@ export class GraphnosisImpl implements GraphnosisAdapter {
 
 function asString(c: string | Uint8Array): string {
   return typeof c === 'string' ? c : new TextDecoder().decode(c);
+}
+
+/**
+ * Heuristic person-shape classifier — mirrors the one in the App-side
+ * suggestion panel so the relink pass and the user-facing review deck
+ * use consistent signals. Person-like = 2+ capitalized words, no digits,
+ * no dot-notation, not an ALL-CAPS acronym, length 4–60.
+ */
+function isPersonLikeEntity(e: string): boolean {
+  if (!e || e.length < 4 || e.length > 60) return false;
+  if (/\d/.test(e)) return false;
+  if (e.includes('.')) return false;
+  if (e === e.toUpperCase() && e.length < 10) return false; // ACRONYM
+  const words = e.split(/\s+/);
+  if (words.length < 2) return false;
+  return words.every((w) => /^[A-ZÀ-Ý][a-zà-ÿ'-]+/.test(w));
 }
 
 function nodeIdsBySource(g: Graphnosis, sourceRef: string): NodeId[] {

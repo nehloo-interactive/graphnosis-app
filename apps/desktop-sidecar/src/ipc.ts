@@ -166,19 +166,78 @@ async function dispatch(deps: IpcDeps, method: string, params: unknown): Promise
       return { ok: true };
     }
     case 'node.link': {
-      // Create an undirected `related-to` edge between two existing nodes.
-      // Powers the App's "Link them" affordance from the Check-in deck +
-      // detail pane. Idempotent: returns `created: false` if the edge
-      // was already there.
+      // Create an UNDIRECTED typed edge between two existing nodes.
+      // Powers the App's typed-relationship picker for inherently-
+      // symmetric labels (Same person, Same topic, Partners with,
+      // Related). Idempotent — returns `created: false` if an edge of
+      // the same type already connects this pair (in either order).
       const args = z.object({
         graphId: z.string(),
         fromNodeId: z.string(),
         toNodeId: z.string(),
+        // The full set of undirected edge types the SDK supports.
+        // Defaulted to 'related-to' if the caller omits.
+        type: z.enum([
+          'similar-to',
+          'co-occurs',
+          'shares-entity',
+          'shares-topic',
+          'same-source',
+          'same-person',
+          'related-to',
+        ]).optional(),
         reason: z.string().optional(),
       }).parse(params);
-      const linkOpts: { reason?: string } = {};
+      const linkOpts: { type?: import('@nehloo/graphnosis').UndirectedEdge['type']; reason?: string } = {};
+      if (args.type !== undefined) linkOpts.type = args.type;
       if (args.reason !== undefined) linkOpts.reason = args.reason;
       const result = await deps.host.linkNodes(
+        args.graphId,
+        args.fromNodeId,
+        args.toNodeId,
+        linkOpts,
+      );
+      return result;
+    }
+    case 'node.linkDirected': {
+      // Create a DIRECTED typed edge between two existing nodes. Used
+      // by the App's typed-relationship picker for asymmetric labels
+      // (Knows, Works with, Reports to, Lives in, Works at, …).
+      //
+      // The Zod enum below catches type-name typos at the boundary —
+      // far better than letting the SDK throw from inside the adapter.
+      // `evidence` carries the user-friendly label (e.g. "Works at")
+      // so the detail pane renders the user's vocabulary, not the
+      // structural SDK type.
+      const args = z.object({
+        graphId: z.string(),
+        fromNodeId: z.string(),
+        toNodeId: z.string(),
+        type: z.enum([
+          'causes',
+          'depends-on',
+          'precedes',
+          'contains',
+          'defines',
+          'cites',
+          'contradicts',
+          'supports',
+          'supersedes',
+          'discussed-in',
+          'knows',
+          'works-with',
+          'reports-to',
+          'collaborated-on',
+          'prefers',
+          'summarizes',
+        ]),
+        evidence: z.string().optional(),
+      }).parse(params);
+      const linkOpts: { type: import('@nehloo/graphnosis').DirectedEdge['type']; evidence?: string } = {
+        type: args.type,
+      };
+      if (args.evidence !== undefined) linkOpts.evidence = args.evidence;
+      const result = await deps.host.linkNodesDirected(
         args.graphId,
         args.fromNodeId,
         args.toNodeId,
@@ -319,6 +378,14 @@ async function dispatch(deps: IpcDeps, method: string, params: unknown): Promise
         ui: z.object({
           inspectorDetail: z.enum(['simple', 'detailed']),
         }).optional(),
+        ai: z.object({
+          useAsDefaultMemory: z.boolean(),
+          // Optional in the payload so older App builds (which don't
+          // know about the field yet) still pass validation. The
+          // mergeWithDefaults pass on the host side fills in the
+          // current default for any missing fields.
+          autoRelinkMaxNodes: z.number().int().nonnegative().optional(),
+        }).optional(),
       }).parse(params ?? {});
       // Strip undefined keys explicitly for exactOptionalPropertyTypes.
       const patch: Parameters<typeof deps.host.setSettings>[0] = {};
@@ -326,6 +393,16 @@ async function dispatch(deps: IpcDeps, method: string, params: unknown): Promise
       if (parsed.forget) patch.forget = parsed.forget;
       if (parsed.mcpRelay) patch.mcpRelay = parsed.mcpRelay;
       if (parsed.ui) patch.ui = parsed.ui;
+      if (parsed.ai) {
+        // AiSettings requires both fields, but the wire payload allows
+        // older clients to omit autoRelinkMaxNodes. Fill from current
+        // settings so we never silently revert it to the default.
+        const currentAi = deps.host.getSettings().ai;
+        patch.ai = {
+          useAsDefaultMemory: parsed.ai.useAsDefaultMemory,
+          autoRelinkMaxNodes: parsed.ai.autoRelinkMaxNodes ?? currentAi.autoRelinkMaxNodes,
+        };
+      }
       return deps.host.setSettings(patch);
     }
     case 'vault.purgeForgotten': {

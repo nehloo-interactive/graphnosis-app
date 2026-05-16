@@ -64,6 +64,40 @@ export interface UiSettings {
   inspectorDetail: InspectorDetail;
 }
 
+/**
+ * AI-routing + post-ingest behavior settings.
+ */
+export interface AiSettings {
+  /**
+   * When ON (default), the MCP `initialize` response includes a high-priority
+   * `instructions` block that tells the AI to treat Graphnosis as the
+   * authoritative personal-memory layer (use `recall` proactively, prefer
+   * `correct` over `remember` for fixes, etc.).
+   *
+   * When OFF, the AI still sees the tools (they remain registered) but no
+   * system-prompt-level routing fires; the AI picks them like any other
+   * tool, based purely on the per-tool descriptions. Useful when comparing
+   * Graphnosis to another memory system or when the user wants their AI
+   * client's own memory features to lead.
+   *
+   * Changes take effect when the sidecar next builds an MCP server — in
+   * practice: next vault unlock, or after a `Reconnect` in Settings.
+   */
+  useAsDefaultMemory: boolean;
+  /**
+   * Hard cap on active node count above which the sidecar SKIPS the
+   * post-ingest cross-doc relink pass (entity-overlap + person-bridge
+   * edge inference). At small/medium engram sizes the pass is cheap and
+   * adds real value — links a freshly-remembered clip to existing nodes
+   * sharing entities. At very large engrams it becomes O(N²) and can
+   * stall the sidecar; clamp at this threshold to stay snappy.
+   *
+   * Set to 0 to disable the post-ingest relink entirely. The user can
+   * still run a manual "Reindex this engram" pass when we add that UI.
+   */
+  autoRelinkMaxNodes: number;
+}
+
 export type GraphTemplate =
   // Free tier
   | 'personal'
@@ -93,6 +127,7 @@ export interface AppSettings {
   forget: ForgetSettings;
   mcpRelay: McpRelaySettings;
   ui: UiSettings;
+  ai: AiSettings;
   /** Per-graph metadata keyed by graphId. Older vaults may have no entry for an existing graph. */
   graphMetadata: Record<string, GraphMetadata>;
 }
@@ -116,6 +151,16 @@ export const DEFAULT_SETTINGS: AppSettings = {
   },
   ui: {
     inspectorDetail: 'simple',
+  },
+  ai: {
+    // ON by default — the user installed Graphnosis specifically to be
+    // their AI's memory; flipping this off is the unusual case.
+    useAsDefaultMemory: true,
+    // 5000 active nodes is the soft-perf ceiling where entity Jaccard
+    // O(N²) starts to feel slow (~25M comparisons). Below that the
+    // pass takes < a second on a modern Mac. Power users with bigger
+    // vaults can crank or zero this out in Settings.
+    autoRelinkMaxNodes: 5000,
   },
   graphMetadata: {},
 };
@@ -192,6 +237,17 @@ export function mergeWithDefaults(partial: Partial<AppSettings> | null | undefin
       ? ui.inspectorDetail
       : DEFAULT_SETTINGS.ui.inspectorDetail;
 
+  // AI routing: default ON for older vaults that didn't have this field —
+  // matches the behavior they were already getting (the SERVER_INSTRUCTIONS
+  // block always fired before this setting existed).
+  const ai: Partial<AiSettings> = partial?.ai ?? {};
+  const useAsDefaultMemory = typeof ai.useAsDefaultMemory === 'boolean'
+    ? ai.useAsDefaultMemory
+    : DEFAULT_SETTINGS.ai.useAsDefaultMemory;
+  const autoRelinkMaxNodes = typeof ai.autoRelinkMaxNodes === 'number' && ai.autoRelinkMaxNodes >= 0
+    ? Math.floor(ai.autoRelinkMaxNodes)
+    : DEFAULT_SETTINGS.ai.autoRelinkMaxNodes;
+
   const graphMetadata = (partial?.graphMetadata && typeof partial.graphMetadata === 'object')
     ? partial.graphMetadata
     : { ...DEFAULT_SETTINGS.graphMetadata };
@@ -201,6 +257,7 @@ export function mergeWithDefaults(partial: Partial<AppSettings> | null | undefin
     forget: { mode: forgetMode },
     mcpRelay: { initialWaitMs, reconnectMs },
     ui: { inspectorDetail },
+    ai: { useAsDefaultMemory, autoRelinkMaxNodes },
     graphMetadata,
   };
 }
