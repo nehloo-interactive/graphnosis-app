@@ -363,6 +363,7 @@ const els = {
   vaultLabel: $<HTMLSpanElement>('vault-label'),
   sourcesList: $<HTMLDivElement>('sources-list'),
   dropZone: $<HTMLDivElement>('drop-zone'),
+  toastStack: $<HTMLDivElement>('g-toast-stack'),
   btnRecover: $<HTMLButtonElement>('btn-recover'),
   recoveryModal: $<HTMLDivElement>('recovery-modal'),
   recoveryTitle: $<HTMLHeadingElement>('recovery-title'),
@@ -481,6 +482,112 @@ function showError(msg: string | null): void {
   }
   els.err.textContent = msg;
   els.err.classList.remove('hidden');
+}
+
+// ── Ingest toast queue ──────────────────────────────────────────────
+//
+// Per-file progress + outcome surface. Each `addIngestToast` call
+// returns an id; downstream code transitions the toast via
+// `finishIngestToast(id, 'success'|'error', message?)`. Success
+// auto-dismisses after 4s; errors stick until the user closes them
+// so the failure message isn't blink-and-gone.
+//
+// Two reasons this lives next to showError rather than reusing the
+// existing single-banner pattern:
+//   1. Batch ingest (multi-file pick / drag) needs N concurrent
+//      progress rows, not one shared banner.
+//   2. Errors during ingest are durable user feedback — they describe
+//      a specific file that needs the user's attention later.
+
+type ToastKind = 'pending' | 'success' | 'error';
+let toastSeq = 0;
+const liveToasts = new Map<string, HTMLDivElement>();
+
+function addIngestToast(label: string, message?: string): string {
+  const id = `t${++toastSeq}`;
+  const root = document.createElement('div');
+  root.className = 'g-toast g-toast--pending';
+  root.dataset.toastId = id;
+  root.innerHTML = `
+    <span class="g-toast-icon" aria-hidden="true"></span>
+    <span class="g-toast-body">
+      <span class="g-toast-label"></span>
+      <span class="g-toast-msg"></span>
+    </span>
+    <button class="g-toast-close" title="Dismiss" aria-label="Dismiss">×</button>
+  `;
+  const labelEl = root.querySelector('.g-toast-label') as HTMLSpanElement;
+  const msgEl = root.querySelector('.g-toast-msg') as HTMLSpanElement;
+  const closeBtn = root.querySelector('.g-toast-close') as HTMLButtonElement;
+  labelEl.textContent = label;
+  if (message) msgEl.textContent = message; else msgEl.style.display = 'none';
+  closeBtn.addEventListener('click', () => removeIngestToast(id));
+  els.toastStack.appendChild(root);
+  // Force layout so the transition runs.
+  requestAnimationFrame(() => root.classList.add('visible'));
+  liveToasts.set(id, root);
+  return id;
+}
+
+function updateIngestToast(id: string, patch: { label?: string; message?: string }): void {
+  const root = liveToasts.get(id);
+  if (!root) return;
+  if (patch.label !== undefined) {
+    const labelEl = root.querySelector('.g-toast-label') as HTMLSpanElement;
+    labelEl.textContent = patch.label;
+  }
+  if (patch.message !== undefined) {
+    const msgEl = root.querySelector('.g-toast-msg') as HTMLSpanElement;
+    msgEl.textContent = patch.message;
+    msgEl.style.display = patch.message ? '' : 'none';
+  }
+}
+
+function finishIngestToast(id: string, kind: 'success' | 'error', message?: string): void {
+  const root = liveToasts.get(id);
+  if (!root) return;
+  root.classList.remove('g-toast--pending');
+  root.classList.add(kind === 'success' ? 'g-toast--success' : 'g-toast--error');
+  if (message !== undefined) updateIngestToast(id, { message });
+  // Success auto-dismisses; errors persist so the user can read them.
+  if (kind === 'success') {
+    window.setTimeout(() => removeIngestToast(id), 4_000);
+  }
+}
+
+function removeIngestToast(id: string): void {
+  const root = liveToasts.get(id);
+  if (!root) return;
+  root.classList.remove('visible');
+  // Match the CSS transition (140ms) before yanking from DOM.
+  window.setTimeout(() => root.remove(), 180);
+  liveToasts.delete(id);
+}
+
+/**
+ * Run a single-file ingest with a toast. Used by the Add-file button,
+ * the drag-drop handler, and the multi-file batch. Returns the result
+ * (so callers can chain follow-up work) or rethrows on failure.
+ *
+ * The IPC `ingest.file` returns `{ sourceId, nodeIds: string[] }` on
+ * success; we surface nodeIds.length so the user sees "Saved 5 nodes
+ * from handbook.pdf" rather than the opaque source id.
+ */
+async function ingestSingleFile(path: string): Promise<unknown> {
+  const fileName = path.split('/').pop() ?? path;
+  const toastId = addIngestToast(`Ingesting ${fileName}…`);
+  try {
+    const result = (await invoke('ingest_file', { graphId: null, path })) as {
+      sourceId?: string;
+      nodeIds?: string[];
+    };
+    const n = result?.nodeIds?.length ?? 0;
+    finishIngestToast(toastId, 'success', n > 0 ? `Saved ${n} node${n === 1 ? '' : 's'}` : 'Saved');
+    return result;
+  } catch (e) {
+    finishIngestToast(toastId, 'error', String(e));
+    throw e;
+  }
 }
 
 function render(status: StatusSnapshot): void {
@@ -1340,34 +1447,41 @@ els.btnRecoveryApply.addEventListener('click', async () => {
   }
 });
 
+// Multi-file batch ingest. Used by both the Add-file button and the
+// drag-drop handler. Runs sequentially (one IPC roundtrip per file) so
+// each file's progress toast updates in order; parallel ingest would
+// race on the graph save() chokepoint and lose the per-file feedback.
+async function ingestBatch(paths: string[]): Promise<void> {
+  if (paths.length === 0) return;
+  showError(null);
+  let succeeded = 0;
+  for (const p of paths) {
+    try {
+      await ingestSingleFile(p);
+      succeeded += 1;
+    } catch {
+      // Toast already shows the per-file error; continue with the rest
+      // so a single bad file doesn't abort a multi-file batch.
+    }
+  }
+  // Refresh stats once per batch (cheaper than per-file). The push-event
+  // channel will fire as each save commits, but refreshStats also paints
+  // the Sources list which isn't reactive to push events.
+  if (succeeded > 0) await refreshStats();
+}
+
 els.btnAddFile.addEventListener('click', async () => {
   showError(null);
   try {
-    const result = (await invoke('pick_and_ingest_file')) as { sourceId?: string } | null;
-    if (result) {
-      await refreshStats();
-    }
+    const paths = (await invoke('pick_files')) as string[];
+    await ingestBatch(paths);
   } catch (e) {
-    showError(`Ingest failed: ${e}`);
+    showError(`Pick failed: ${e}`);
   }
 });
 
 // Tauri window drag-drop events. Webview is the canonical event target for
 // file drops in Tauri 2 (browser's drag/drop API gives us no real file paths).
-async function ingestDroppedPath(p: string): Promise<void> {
-  els.dropZone.classList.add('busy');
-  els.dropZone.textContent = `Ingesting ${p.split('/').pop()}…`;
-  try {
-    await invoke('ingest_file', { graphId: null, path: p });
-    await refreshStats();
-    els.dropZone.textContent = 'Drop another file here to ingest — or use Add file…';
-  } catch (e) {
-    showError(`Ingest failed: ${e}`);
-    els.dropZone.textContent = 'Drop a file here to ingest — or use Add file…';
-  } finally {
-    els.dropZone.classList.remove('busy');
-  }
-}
 
 void (async () => {
   const webview = getCurrentWebview();
@@ -1380,9 +1494,10 @@ void (async () => {
     } else if (payload.type === 'drop') {
       els.dropZone.classList.remove('dragging');
       const paths = (payload as { paths: string[] }).paths ?? [];
-      // Ingest the first file; multi-file batches are an obvious future improvement.
-      if (paths.length > 0 && paths[0]) {
-        void ingestDroppedPath(paths[0]);
+      // Drop a whole folder full of files at once — iterate the batch.
+      // Each file gets its own toast; sequential ingest below.
+      if (paths.length > 0) {
+        void ingestBatch(paths);
       }
     }
   });
@@ -4326,6 +4441,51 @@ function formatBytes(n: number): string {
 
 // Tray-driven status updates push us into the right view in real time.
 void listen<StatusSnapshot>('graphnosis://status', (evt) => render(evt.payload));
+
+// ── Mutation push-channel ───────────────────────────────────────────
+//
+// The sidecar broadcasts a `graphnosis://graph-mutation` Tauri event
+// every time any graph is mutated (ambient ingest, MCP `remember`,
+// auto-relink, user corrections). We delegate the refresh work to
+// `pollGraphMutations` — same function the 3s timer calls — so the
+// push path and the poll path share one ground-truth refresh
+// sequence (reload data, re-render dashboard/atlas/detail, update
+// recap, update forgotten row).
+//
+// Three layers of staleness defence:
+//   1. Push events  → sub-second updates when everything's healthy
+//   2. 3s poll      → catches dropped events (backpressure, socket
+//                     reconnect race)
+//   3. Hello frame  → catches sidecar-restart drift (events emitted
+//                     between sidecar relock and our reconnect)
+//
+// `pollGraphMutations` itself maintains the canonical
+// `lastSeenMutationAt` cursor, so the push path doesn't need its own
+// state — calling it is idempotent if the cursor hasn't advanced.
+
+interface GraphMutationPayload {
+  graphId: string;
+  ts: number;
+}
+
+interface EventStreamConnectedPayload {
+  ts: number;
+  cursor: Record<string, number>;
+}
+
+void listen<GraphMutationPayload>('graphnosis://graph-mutation', () => {
+  // Don't filter on graphId here — pollGraphMutations checks the
+  // active-engram-changed predicate against the full cursor set
+  // returned by inspector_stats and only repaints when relevant.
+  void pollGraphMutations();
+});
+
+// Hello frame fires once per event-stream (re)connect. Run a full
+// poll to reconcile cursor drift from the gap between sidecar restart
+// and our subscription being established.
+void listen<EventStreamConnectedPayload>('graphnosis://event-stream-connected', () => {
+  void pollGraphMutations();
+});
 
 // Initial state: ask the backend whether we're already unlocked
 // (e.g., auto-unlock from keychain in a future iteration).

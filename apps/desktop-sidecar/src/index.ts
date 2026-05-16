@@ -8,6 +8,7 @@ import { policy } from '@nehloo-interactive/graphnosis-secure-sync';
 import { GraphnosisHost } from './host.js';
 import { GraphnosisImpl } from './graphnosis-impl.js';
 import { startIpc } from './ipc.js';
+import { startEvents } from './events.js';
 import { startStdioMcpServer } from './mcp-server.js';
 import { startSocketMcpServer } from './mcp-socket-server.js';
 import { LLM_CATALOG, makeLlm } from './local-llm.js';
@@ -239,6 +240,13 @@ async function main(): Promise<void> {
     ?? path.join(env.vaultDir, 'sidecar.sock');
   await startIpc({ host, socketPath: ipcSocketPath, pendingDiffs, restartMcpListener });
   console.error(`[graphnosis-sidecar] IPC listening on ${ipcSocketPath}`);
+
+  // Push-event channel for the App (and future long-running consumers like
+  // federation listeners or agent workers). Stateless request/response goes
+  // over sidecar.sock; this socket is server-pushed events only.
+  const eventsSocketPath = process.env.GRAPHNOSIS_EVENTS_SOCKET
+    ?? path.join(env.vaultDir, 'events.sock');
+  await startEvents({ host, socketPath: eventsSocketPath });
 
   // MCP server over stdio — the legacy path. Stays active so existing
   // configurations (where Claude Desktop spawns this binary directly) keep

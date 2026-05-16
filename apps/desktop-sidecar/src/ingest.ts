@@ -6,7 +6,12 @@ import mammoth from 'mammoth';
 import type { GraphnosisHost } from './host.js';
 import type { AppendDocumentInput } from './graphnosis-adapter.js';
 
-const TEXT_EXTS = new Set(['.md', '.markdown', '.txt']);
+// Markdown extensions go through the SDK's markdown parser (heading-aware,
+// produces one node per section). `.txt` is plain prose without structure —
+// route it to `kind: 'text'` so the SDK splits by paragraph/length instead
+// of bailing with 0 chunks when no `#` headings are present.
+const MARKDOWN_EXTS = new Set(['.md', '.markdown']);
+const PLAIN_TEXT_EXTS = new Set(['.txt']);
 const HTML_EXTS = new Set(['.html', '.htm']);
 const JSON_EXTS = new Set(['.json']);
 const CSV_EXTS = new Set(['.csv']);
@@ -19,8 +24,10 @@ export async function ingestFile(host: GraphnosisHost, graphId: string, filePath
   if (!stat.isFile()) throw new Error(`Not a file: ${filePath}`);
 
   let input: AppendDocumentInput;
-  if (TEXT_EXTS.has(ext)) {
+  if (MARKDOWN_EXTS.has(ext)) {
     input = { kind: 'markdown', content: await fs.readFile(filePath, 'utf8'), sourceRef: filePath };
+  } else if (PLAIN_TEXT_EXTS.has(ext)) {
+    input = { kind: 'text', content: await fs.readFile(filePath, 'utf8'), sourceRef: filePath };
   } else if (HTML_EXTS.has(ext)) {
     input = { kind: 'html', content: await fs.readFile(filePath, 'utf8'), sourceRef: filePath };
   } else if (JSON_EXTS.has(ext)) {
