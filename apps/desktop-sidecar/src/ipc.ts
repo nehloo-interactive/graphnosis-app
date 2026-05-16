@@ -74,6 +74,12 @@ async function dispatch(deps: IpcDeps, method: string, params: unknown): Promise
   switch (method) {
     case 'graphs.list': return deps.host.listGraphs();
     case 'graphs.listWithMetadata': return deps.host.graphsWithMetadata();
+    // Reconciliation cursor — returns {graphId: lastMutationTs} for all
+    // loaded graphs. Cheap (memo read, microseconds). The App polls this
+    // periodically as a safety net for the push-event channel: if a
+    // push frame was dropped (backpressure, socket reconnect, sidecar
+    // restart between events), this catches the drift on the next tick.
+    case 'node.cursor': return deps.host.getMutationCursor();
     case 'graphs.setMetadata': {
       const args = z.object({
         graphId: z.string(),

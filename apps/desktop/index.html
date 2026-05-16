@@ -1062,6 +1062,101 @@
         font-size: 12px;
       }
 
+      /* Ingest toast queue — bottom-right stack of per-file progress
+         pills. Each toast cycles pending → success/error and auto-fades.
+         Used for the "Add file…" button, drag-drop, and multi-file
+         batches so the user can see every file's outcome in one place
+         instead of guessing from a counter that may or may not move. */
+      .g-toast-stack {
+        position: fixed;
+        right: 18px;
+        bottom: 18px;
+        z-index: 200;
+        display: flex;
+        flex-direction: column-reverse;
+        gap: 8px;
+        max-width: 380px;
+        pointer-events: none; /* container lets clicks pass; toasts opt back in */
+      }
+      .g-toast {
+        pointer-events: auto;
+        background: var(--bg);
+        border: 1px solid var(--border);
+        border-left: 3px solid var(--fg-dim);
+        border-radius: 8px;
+        padding: 10px 12px;
+        box-shadow: 0 6px 24px rgba(0,0,0,0.18);
+        font-size: 12px;
+        color: var(--fg);
+        display: grid;
+        grid-template-columns: 18px 1fr auto;
+        gap: 8px;
+        align-items: center;
+        opacity: 0;
+        transform: translateY(6px);
+        transition: opacity 140ms ease, transform 140ms ease;
+        max-width: 100%;
+      }
+      .g-toast.visible { opacity: 1; transform: translateY(0); }
+      .g-toast-icon {
+        width: 18px; height: 18px;
+        display: flex; align-items: center; justify-content: center;
+        font-weight: bold;
+        font-size: 14px;
+      }
+      .g-toast-body {
+        display: flex; flex-direction: column;
+        gap: 2px;
+        min-width: 0; /* enable text-overflow inside flex */
+      }
+      .g-toast-label {
+        font-weight: 600;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        max-width: 280px;
+      }
+      .g-toast-msg {
+        color: var(--fg-dim);
+        font-size: 11px;
+        line-height: 1.35;
+        max-width: 280px;
+        overflow-wrap: anywhere;
+      }
+      .g-toast-close {
+        background: none;
+        border: none;
+        color: var(--fg-dim);
+        font-size: 14px;
+        cursor: pointer;
+        padding: 0 4px;
+      }
+      .g-toast-close:hover { color: var(--fg); }
+      .g-toast--pending {
+        border-left-color: var(--accent);
+      }
+      .g-toast--pending .g-toast-icon::before {
+        content: "";
+        width: 12px; height: 12px;
+        border: 2px solid color-mix(in oklab, var(--accent) 30%, transparent);
+        border-top-color: var(--accent);
+        border-radius: 50%;
+        animation: g-toast-spin 700ms linear infinite;
+      }
+      @keyframes g-toast-spin {
+        to { transform: rotate(360deg); }
+      }
+      .g-toast--success {
+        border-left-color: var(--ok, #4caf50);
+      }
+      .g-toast--success .g-toast-icon { color: var(--ok, #4caf50); }
+      .g-toast--success .g-toast-icon::before { content: "✓"; }
+      .g-toast--error {
+        border-left-color: #d33;
+      }
+      .g-toast--error .g-toast-icon { color: #d33; }
+      .g-toast--error .g-toast-icon::before { content: "✕"; }
+
       /* Deck Related suggestions — appears inside an orphan card. Two
          small rows with a Link button each; the goal is "one tap promotes
          a semantic similarity into a real graph edge." */
@@ -1969,6 +2064,10 @@
         <!-- Global drag-and-drop overlay. Hidden by default; surfaces
              across the entire app window while a file is being dragged. -->
         <div id="drop-zone" class="drop-zone">Drop the file anywhere — Graphnosis will remember it</div>
+        <!-- Ingest toast stack. One row per file in flight; rows morph
+             pending → success/error and fade out. Lives under the
+             drag-drop overlay so it's never obscured during a drop. -->
+        <div id="g-toast-stack" class="g-toast-stack" aria-live="polite" aria-atomic="false"></div>
         <!-- Top header: vault identity + global actions -->
         <header class="app-header">
           <div class="app-header-left">

@@ -7,6 +7,7 @@
 //! - Supervises the Node sidecar process (single-writer guaranteed by
 //!   the sidecar's own vault lock)
 
+mod event_stream;
 mod ipc_client;
 mod keychain;
 mod sidecar;
@@ -31,6 +32,9 @@ pub struct AppState {
 struct AppInner {
     vault_dir: Option<PathBuf>,
     sidecar: Option<sidecar::SidecarHandle>,
+    /// Long-lived task reading push-events from `<vault>/events.sock`.
+    /// Spawned on unlock; dropped/cancelled on lock or sidecar replacement.
+    event_stream: Option<event_stream::EventStreamHandle>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -88,8 +92,17 @@ async fn unlock_vault(
         if let Some(prev) = inner.sidecar.take() {
             let _ = prev.shutdown().await;
         }
+        // Tear down the prior event stream (different vault → different
+        // socket). The new stream is spawned just below.
+        if let Some(prev) = inner.event_stream.take() {
+            prev.shutdown().await;
+        }
         inner.vault_dir = Some(vault_dir.clone());
         inner.sidecar = Some(handle);
+        // Spawn the push-event reader for this vault. It tolerates the
+        // sidecar's events socket not being up yet — bounded backoff
+        // retries until either it connects or vault lock cancels it.
+        inner.event_stream = Some(event_stream::spawn(app.clone(), vault_dir.clone()));
     }
 
     let snapshot = current_status(&state).await;
@@ -104,6 +117,9 @@ async fn lock_vault(app: AppHandle, state: State<'_, AppState>) -> Result<Status
         let mut inner = state.inner.lock().await;
         if let Some(handle) = inner.sidecar.take() {
             let _ = handle.shutdown().await;
+        }
+        if let Some(stream) = inner.event_stream.take() {
+            stream.shutdown().await;
         }
         inner.vault_dir.as_ref().map(|p| p.to_string_lossy().into_owned())
     };
@@ -123,6 +139,29 @@ async fn lock_vault(app: AppHandle, state: State<'_, AppState>) -> Result<Status
 #[tauri::command]
 async fn status(state: State<'_, AppState>) -> Result<StatusSnapshot, String> {
     Ok(current_status(&state).await)
+}
+
+/// Reconciliation cursor — {graphId: lastMutationTs} for all loaded graphs.
+/// The frontend polls this on a slow interval (~30s) as a safety net for
+/// the push-event channel; if a push frame got dropped (backpressure,
+/// reconnect mid-mutation), this catches the drift on the next tick.
+#[tauri::command]
+async fn node_cursor(state: State<'_, AppState>) -> Result<serde_json::Value, String> {
+    let socket_path = {
+        let inner = state.inner.lock().await;
+        match &inner.vault_dir {
+            Some(vd) => vd.join("sidecar.sock"),
+            None => return Err("vault is locked".to_string()),
+        }
+    };
+    ipc_client::request_with_timeout(
+        &socket_path,
+        "node.cursor",
+        serde_json::Value::Null,
+        std::time::Duration::from_secs(5),
+    )
+        .await
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -194,6 +233,32 @@ async fn pick_and_ingest_file(
     };
     let result = ingest_file(state, None, path).await?;
     Ok(Some(result))
+}
+
+/// Multi-file native picker. Returns the chosen file paths so the
+/// frontend can iterate ingest sequentially with one progress toast per
+/// file. We deliberately don't ingest here — the frontend wants per-file
+/// progress feedback, which requires the round-trip to happen in JS
+/// (sequential `ingest_file` invokes, each with its own toast).
+///
+/// Empty result = user cancelled (or selected nothing).
+#[tauri::command]
+async fn pick_files(app: AppHandle) -> Result<Vec<String>, String> {
+    let picked = app
+        .dialog()
+        .file()
+        .set_title("Choose files to ingest into Graphnosis")
+        .add_filter("Common ingestible formats", &["md", "markdown", "txt", "html", "htm", "json", "csv", "pdf", "docx"])
+        .blocking_pick_files();
+    let paths = match picked {
+        Some(files) => files
+            .into_iter()
+            .filter_map(|f| f.into_path().ok())
+            .map(|p| p.to_string_lossy().into_owned())
+            .collect(),
+        None => Vec::new(),
+    };
+    Ok(paths)
 }
 
 /// Result of the "Configure Claude Desktop" flow. The UI shows the user what
@@ -944,8 +1009,10 @@ pub fn run() {
             lock_vault,
             status,
             inspector_stats,
+            node_cursor,
             ingest_file,
             pick_and_ingest_file,
+            pick_files,
             forget_source,
             purge_forgotten,
             mcp_status,
@@ -1011,10 +1078,13 @@ pub fn run() {
             if let tauri::RunEvent::ExitRequested { .. } = event {
                 let state = app_handle.state::<AppState>();
                 tauri::async_runtime::block_on(async {
-                    let handle = {
+                    let (handle, stream) = {
                         let mut inner = state.inner.lock().await;
-                        inner.sidecar.take()
+                        (inner.sidecar.take(), inner.event_stream.take())
                     };
+                    if let Some(s) = stream {
+                        s.shutdown().await;
+                    }
                     if let Some(h) = handle {
                         let _ = h.shutdown().await;
                     }

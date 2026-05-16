@@ -1,4 +1,5 @@
 import { promises as fs } from 'node:fs';
+import { EventEmitter } from 'node:events';
 import path from 'node:path';
 import { embeddings, settings as settingsMod, sources, type SourceRecord } from '@graphnosis-app/core';
 import { crypto, federation, oplog, policy, type DeviceId, type GraphId, type SubgraphBudget } from '@nehloo-interactive/graphnosis-secure-sync';
@@ -107,10 +108,32 @@ interface LoadedGraph {
   dirty: boolean;
 }
 
+/** Payload emitted on every successful graph mutation. Consumers (the IPC
+ *  layer's events socket, future in-process subscribers) listen to this to
+ *  push UI refreshes or wake agent-style workers. */
+export interface MutationEvent {
+  graphId: GraphId;
+  /** Wall-clock ms at the moment `save()` committed. Matches the value
+   *  returned from `getMutationCursor()` so consumers can dedupe push
+   *  events against a reconciliation poll. */
+  ts: number;
+}
+
 // GraphnosisHost = the App's single integration point for the SDK.
 // Owns encryption at rest, op-log emission, embedding cache, and the source index.
 // Every mutation funnels through here so the op-log is the durable truth.
 export class GraphnosisHost {
+  // ── Mutation events ────────────────────────────────────────────────
+  //
+  // Every successful save() bumps lastMutationAt AND emits on this
+  // EventEmitter. Anyone watching the host for changes (IPC layer's
+  // events socket, future federation listeners, in-process consumers)
+  // subscribes via onMutation() instead of polling lastMutationAt.
+  //
+  // The emit point is save() — the single chokepoint every mutation
+  // funnels through — so we don't risk forgetting to fire when a new
+  // mutation method is added.
+  private readonly mutationEvents = new EventEmitter();
   private readonly key: Uint8Array;
   private readonly salt: Uint8Array;
   private readonly graphs = new Map<GraphId, LoadedGraph>();
@@ -450,12 +473,31 @@ export class GraphnosisHost {
     await fs.writeFile(this.bundlePath(graphId), Buffer.from(bundleCt));
     await g.cache.save();
     g.dirty = false;
-    // Per-graph mutation tick — bumps every successful save. The App
-    // polls this via inspector_stats to know when to refresh its local
-    // edges/nodes cache without needing a push channel. Background
-    // auto-relink edges in particular need this — there's no user
-    // action in the App that would otherwise trigger a reload.
-    this.lastMutationAt.set(graphId, Date.now());
+    // Per-graph mutation tick — bumps every successful save. Doubles
+    // as the cursor returned by `getMutationCursor()` for reconciliation
+    // polls. Background auto-relink edges also flow through here, so
+    // even silent mutations are observable.
+    const ts = Date.now();
+    this.lastMutationAt.set(graphId, ts);
+    this.mutationEvents.emit('mutation', { graphId, ts } satisfies MutationEvent);
+  }
+
+  /** Subscribe to graph mutations. Returns an unsubscribe function. */
+  onMutation(handler: (e: MutationEvent) => void): () => void {
+    this.mutationEvents.on('mutation', handler);
+    return () => this.mutationEvents.off('mutation', handler);
+  }
+
+  /** Snapshot of {graphId: lastMutationTs} for all loaded graphs. Used
+   *  by the App as a cheap reconciliation cursor — compare against a
+   *  locally-cached value to detect missed push events.
+   *  Graphs not yet mutated this session report 0. */
+  getMutationCursor(): Record<GraphId, number> {
+    const out: Record<GraphId, number> = {};
+    for (const graphId of this.listGraphs()) {
+      out[graphId] = this.lastMutationAt.get(graphId) ?? 0;
+    }
+    return out;
   }
 
   /** Per-engram timestamp of the last successful save. Polled by the
@@ -472,14 +514,33 @@ export class GraphnosisHost {
     const sourceId = makeSourceId(kind, ref);
     const result = await this.opts.adapter.appendDocument(g.handle, input);
     if (result.newNodeIds.length === 0) {
-      // Hard fail rather than create an orphan source record. The MCP layer surfaces
-      // this as an error to the AI client so the user sees the failure instead of
-      // a misleading "Saved" success message.
-      throw new Error(
-        `Ingest produced 0 nodes for source ${sourceId} (kind=${input.kind}). ` +
-        `The content may be empty, dedup-collided with existing nodes, or hit a parser edge case. ` +
-        `Try rephrasing the note or saving smaller pieces.`,
-      );
+      // Hard fail rather than create an orphan source record. The MCP layer
+      // surfaces this as an error to the AI client so the user sees the
+      // failure instead of a misleading "Saved" success message.
+      //
+      // Pre-compute a couple of cheap signals to give the user a clearer
+      // diagnostic than the original three-causes-in-one error:
+      //   - byteLen=0 → file/content literally empty
+      //   - sourceIndex already has this sourceId → user re-ingested same
+      //     ref; treat as a dedup case rather than a parser failure
+      //   - everything else → SDK parser produced no chunks for valid
+      //     content. Could be markdown parser edge case, content too
+      //     short to chunk, dedup against ANOTHER source with same
+      //     content-hash inside the SDK, etc.
+      const byteLen = typeof input.content === 'string'
+        ? new TextEncoder().encode(input.content).byteLength
+        : (input.content as Uint8Array | Buffer).byteLength;
+      const sameSourceReingested = g.sourceIndex.list().some((s) => s.sourceId === sourceId);
+      let reason: string;
+      if (byteLen === 0) {
+        reason = `${sourceId} — file is empty (0 bytes).`;
+      } else if (sameSourceReingested) {
+        reason = `${sourceId} — already saved (this exact source is already in your graph).`;
+      } else {
+        reason = `${sourceId} — already saved or nothing to extract (kind=${input.kind}, ${byteLen} bytes). ` +
+                 `If this is a fresh file, the parser may have skipped it as malformed or too short to chunk.`;
+      }
+      throw new Error(`Ingest produced 0 nodes for source ${reason}`);
     }
     await this.opts.adapter.buildEmbeddings(g.handle, {
       embed: cached(this.embed, g.cache),

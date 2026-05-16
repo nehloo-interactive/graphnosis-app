@@ -1181,13 +1181,39 @@ export class Atlas {
     return c.getHex();
   }
 
+  /**
+   * O(1) neighbor lookup, with a tiny memoization cache keyed on
+   * (selectedId, allLinks-reference). Critical perf path: 3d-force-graph
+   * calls our `colorForNode` accessor on every visible node every frame,
+   * which used to call this method O(E) per call → O(N × E) per frame.
+   *
+   * For typical vaults (hundreds of nodes, ~1000 edges) the naive loop
+   * pushed total work past 25M ops/sec just for the dim color decision
+   * — visible as severe lag the moment a node got selected.
+   *
+   * Cache invalidates automatically on:
+   *   - new selection (selectedId changes)
+   *   - graph data reload (allLinks gets a new array reference,
+   *     happens in pushDataIntoAtlas after every mutation reload)
+   */
+  private cachedNeighbors: { selectedId: string; linksRef: AtlasLink[]; set: Set<string> } | null = null;
+
   private isNeighborOf(candidateId: string, selectedId: string): boolean {
-    for (const l of this.allLinks) {
-      const sId = typeof l.source === 'string' ? l.source : (l.source as AtlasNode).id;
-      const tId = typeof l.target === 'string' ? l.target : (l.target as AtlasNode).id;
-      if ((sId === selectedId && tId === candidateId) || (tId === selectedId && sId === candidateId)) return true;
+    if (
+      this.cachedNeighbors === null ||
+      this.cachedNeighbors.selectedId !== selectedId ||
+      this.cachedNeighbors.linksRef !== this.allLinks
+    ) {
+      const set = new Set<string>();
+      for (const l of this.allLinks) {
+        const sId = typeof l.source === 'string' ? l.source : (l.source as AtlasNode).id;
+        const tId = typeof l.target === 'string' ? l.target : (l.target as AtlasNode).id;
+        if (sId === selectedId) set.add(tId);
+        else if (tId === selectedId) set.add(sId);
+      }
+      this.cachedNeighbors = { selectedId, linksRef: this.allLinks, set };
     }
-    return false;
+    return this.cachedNeighbors.set.has(candidateId);
   }
 
   private applyAlpha(hexInt: number, alpha: number): string {
