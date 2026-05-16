@@ -5,7 +5,7 @@
   "description": "Personal second-memory desktop app powered by Graphnosis. Local-first, encrypted, multi-graph, attaches relevant subgraph context to any MCP-aware AI.",
   "author": "Nehloo Interactive LLC",
   "license": "SEE LICENSE IN LICENSE",
-  "packageManager": "pnpm@9.0.0",
+  "packageManager": "pnpm@10.12.1",
   "engines": {
     "node": ">=20"
   },
@@ -14,5 +14,14 @@
     "dev:sidecar": "pnpm --filter @graphnosis-app/desktop-sidecar dev",
     "dev:desktop": "pnpm --filter @graphnosis-app/desktop tauri:dev",
     "typecheck": "pnpm -r typecheck"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "better-sqlite3",
+      "esbuild",
+      "msgpackr-extract",
+      "onnxruntime-node",
+      "wtf_wikipedia"
+    ]
   }
 }
