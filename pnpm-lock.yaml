@@ -48,8 +48,8 @@ importers:
         specifier: ^0.5.0
         version: 0.5.0
       '@nehloo-interactive/graphnosis-secure-sync':
-        specifier: file:../../../graphnosis-secure-sync
-        version: file:../graphnosis-secure-sync
+        specifier: https://github.com/nehloo-interactive/graphnosis-secure-sync.git#v0.1.1
+        version: git+https://git@github.com:nehloo-interactive/graphnosis-secure-sync.git#782a38c4083e72dadc43b20c5d5ef3401ea5d49d
       '@nehloo/graphnosis':
         specifier: ^0.3.2
         version: 0.3.2
@@ -88,8 +88,8 @@ importers:
   packages/graphnosis-app-core:
     dependencies:
       '@nehloo-interactive/graphnosis-secure-sync':
-        specifier: file:../../../graphnosis-secure-sync
-        version: file:../graphnosis-secure-sync
+        specifier: https://github.com/nehloo-interactive/graphnosis-secure-sync.git#v0.1.1
+        version: git+https://git@github.com:nehloo-interactive/graphnosis-secure-sync.git#782a38c4083e72dadc43b20c5d5ef3401ea5d49d
     devDependencies:
       '@types/libsodium-wrappers-sumo':
         specifier: ^0.7.8
@@ -461,8 +461,9 @@ packages:
     resolution: {integrity: sha512-DxuT1ClnIPts1kQx8FBmkk4BQDTfI5kIzywAaMjQSXfNnra5UFU9PwurXrl+Je3bJ6BGsp/zmshVVFbCmyI+ww==}
     engines: {node: '>= 10'}
 
-  '@nehloo-interactive/graphnosis-secure-sync@file:../graphnosis-secure-sync':
-    resolution: {directory: ../graphnosis-secure-sync, type: directory}
+  '@nehloo-interactive/graphnosis-secure-sync@git+https://git@github.com:nehloo-interactive/graphnosis-secure-sync.git#782a38c4083e72dadc43b20c5d5ef3401ea5d49d':
+    resolution: {commit: 782a38c4083e72dadc43b20c5d5ef3401ea5d49d, repo: git@github.com:nehloo-interactive/graphnosis-secure-sync.git, type: git}
+    version: 0.1.1
 
   '@nehloo/graphnosis@0.3.2':
     resolution: {integrity: sha512-wBc1NJIjqlIyqmlZVUjZ5xuIgxMTHCBRZv5+OZtTEvQRm+DYWM7NKGkAAlCoNxq0Jknwu7XoaXrwznCUsqoGew==}
@@ -2597,7 +2598,7 @@ snapshots:
       '@napi-rs/canvas-linux-x64-musl': 0.1.80
       '@napi-rs/canvas-win32-x64-msvc': 0.1.80
 
-  '@nehloo-interactive/graphnosis-secure-sync@file:../graphnosis-secure-sync':
+  '@nehloo-interactive/graphnosis-secure-sync@git+https://git@github.com:nehloo-interactive/graphnosis-secure-sync.git#782a38c4083e72dadc43b20c5d5ef3401ea5d49d':
     dependencies:
       libsodium-wrappers-sumo: 0.7.16
 
