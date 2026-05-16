@@ -494,6 +494,10 @@ async fn node_link(
     graph_id: String,
     from_node_id: String,
     to_node_id: String,
+    // Undirected edge type — defaults to `related-to` server-side if omitted.
+    // Used by the App's typed-relationship picker for symmetric labels
+    // (Same person, Same topic, Partners with, Related).
+    r#type: Option<String>,
     reason: Option<String>,
 ) -> Result<serde_json::Value, String> {
     let socket_path = {
@@ -508,12 +512,54 @@ async fn node_link(
         "fromNodeId": from_node_id,
         "toNodeId": to_node_id,
     });
+    if let Some(t) = r#type {
+        params["type"] = serde_json::Value::String(t);
+    }
     if let Some(r) = reason {
         params["reason"] = serde_json::Value::String(r);
     }
     ipc_client::request_with_timeout(
         &socket_path,
         "node.link",
+        params,
+        std::time::Duration::from_secs(30),
+    )
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Create a DIRECTED typed edge between two existing nodes. The Zod
+/// schema on the sidecar side validates `type` against the SDK's
+/// DirectedEdgeType enum; invalid types come back as an InvalidParams
+/// error. `evidence` carries the user-friendly label (e.g. "Works at").
+#[tauri::command]
+async fn node_link_directed(
+    state: State<'_, AppState>,
+    graph_id: String,
+    from_node_id: String,
+    to_node_id: String,
+    r#type: String,
+    evidence: Option<String>,
+) -> Result<serde_json::Value, String> {
+    let socket_path = {
+        let inner = state.inner.lock().await;
+        match &inner.vault_dir {
+            Some(vd) => vd.join("sidecar.sock"),
+            None => return Err("vault is locked".to_string()),
+        }
+    };
+    let mut params = serde_json::json!({
+        "graphId": graph_id,
+        "fromNodeId": from_node_id,
+        "toNodeId": to_node_id,
+        "type": r#type,
+    });
+    if let Some(e) = evidence {
+        params["evidence"] = serde_json::Value::String(e);
+    }
+    ipc_client::request_with_timeout(
+        &socket_path,
+        "node.linkDirected",
         params,
         std::time::Duration::from_secs(30),
     )
@@ -915,6 +961,7 @@ pub fn run() {
             node_direct_edit,
             node_soft_delete,
             node_link,
+            node_link_directed,
             list_activity,
             list_snapshots,
             create_snapshot,

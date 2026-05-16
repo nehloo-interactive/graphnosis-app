@@ -449,7 +449,17 @@ export class GraphnosisHost {
     await fs.writeFile(this.bundlePath(graphId), Buffer.from(bundleCt));
     await g.cache.save();
     g.dirty = false;
+    // Per-graph mutation tick — bumps every successful save. The App
+    // polls this via inspector_stats to know when to refresh its local
+    // edges/nodes cache without needing a push channel. Background
+    // auto-relink edges in particular need this — there's no user
+    // action in the App that would otherwise trigger a reload.
+    this.lastMutationAt.set(graphId, Date.now());
   }
+
+  /** Per-engram timestamp of the last successful save. Polled by the
+   *  App to know when to invalidate its cached node/edge view. */
+  private lastMutationAt: Map<GraphId, number> = new Map();
 
   async ingest(
     graphId: GraphId,
@@ -531,7 +541,89 @@ export class GraphnosisHost {
     }
 
     await this.save(graphId);
+    // Fire-and-forget cross-doc relink. New clip might mention entities
+    // that already appear in older nodes — without this pass the SDK
+    // leaves it orphan. Coalesced + throttled inside kickoffRelink so
+    // back-to-back ingests don't spawn parallel passes.
+    this.kickoffRelink(graphId);
     return record;
+  }
+
+  // ── Post-ingest auto-relink ─────────────────────────────────────────
+  //
+  // After every successful ingest we run a cross-doc entity-overlap pass
+  // (see adapter.relinkFullGraph) to wire the freshly-added node(s) into
+  // existing nodes that share entities. The pass is O(N²); we coalesce
+  // back-to-back ingests on the same engram and throttle by node count.
+  //
+  // `relinkInFlight` tracks active passes per engram; `relinkPending`
+  // queues a re-run if another ingest fired while a pass was running
+  // (so the latest state is always picked up after the in-flight one
+  // settles).
+
+  private relinkInFlight: Map<GraphId, Promise<void>> = new Map();
+  private relinkPending: Set<GraphId> = new Set();
+
+  private kickoffRelink(graphId: GraphId): void {
+    if (this.relinkInFlight.has(graphId)) {
+      // Another pass is running — mark this engram as needing a
+      // re-run when it finishes.
+      this.relinkPending.add(graphId);
+      return;
+    }
+    const p = this.runRelink(graphId).catch((e) => {
+      console.error(`[host] auto-relink failed for ${graphId}: ${(e as Error).message}`);
+    }).finally(() => {
+      this.relinkInFlight.delete(graphId);
+      if (this.relinkPending.delete(graphId)) {
+        // Another ingest queued itself while we were running — go again.
+        this.kickoffRelink(graphId);
+      }
+    });
+    this.relinkInFlight.set(graphId, p);
+  }
+
+  private async runRelink(graphId: GraphId): Promise<void> {
+    const g = this.graphs.get(graphId);
+    if (!g) return; // engram unloaded mid-pass; nothing to do
+    const maxNodes = this.settings.ai.autoRelinkMaxNodes;
+    const result = await this.opts.adapter.relinkFullGraph(g.handle, { maxNodes });
+    if (result.skipped) {
+      // Log skip reasons at debug — useful when users wonder why their
+      // big engram isn't getting auto-linked.
+      console.error(
+        `[host] auto-relink skipped for ${graphId}: ${result.skipReason} ` +
+        `(active=${result.activeNodes}, cap=${maxNodes})`,
+      );
+      return;
+    }
+    if (result.newEdges.length === 0) {
+      // Nothing to do — no entity overlaps formed. Don't dirty/save.
+      return;
+    }
+    // Emit one op-log event per new edge for audit + recovery. Group
+    // by the same `addEdge` op kind we use for user-created links; the
+    // `after.reason` makes auto vs manual distinguishable.
+    for (const e of result.newEdges) {
+      this.oplogWriter.emit({
+        graphId,
+        op: 'addEdge',
+        target: { kind: 'edge', id: e.edgeId },
+        after: {
+          fromNodeId: e.a,
+          toNodeId: e.b,
+          type: e.type,
+          weight: e.weight,
+          directed: false,
+          reason: `auto-relink: ${e.type} (${e.sharedEntities.slice(0, 3).join(', ')}${e.sharedEntities.length > 3 ? '…' : ''})`,
+        },
+      });
+    }
+    g.dirty = true;
+    await this.save(graphId);
+    console.error(
+      `[host] auto-relink wove ${result.newEdges.length} edges across ${result.activeNodes} active nodes in ${graphId}`,
+    );
   }
 
   async forgetSource(graphId: GraphId, sourceId: string): Promise<{ nodeIds: string[] }> {
@@ -640,6 +732,12 @@ export class GraphnosisHost {
     }
     g.dirty = true;
     await this.save(graphId);
+    // Same auto-relink pass that runs after `ingest` — applyCorrection's
+    // `adds` path appends brand-new content via the same SDK code path,
+    // so it deserves the same cross-doc wiring.
+    if ((patches.adds?.length ?? 0) > 0) {
+      this.kickoffRelink(graphId);
+    }
   }
 
   /**
@@ -654,11 +752,12 @@ export class GraphnosisHost {
     graphId: GraphId,
     fromNodeId: string,
     toNodeId: string,
-    opts?: { reason?: string },
+    opts?: { type?: import('@nehloo/graphnosis').UndirectedEdge['type']; reason?: string },
   ): Promise<{ edgeId: string; created: boolean }> {
     const g = this.must(graphId);
-    const linkOpts: { type: 'related-to'; weight: number; reason?: string } = {
-      type: 'related-to',
+    const type = opts?.type ?? 'related-to';
+    const linkOpts: { type: import('@nehloo/graphnosis').UndirectedEdge['type']; weight: number; reason?: string } = {
+      type,
       weight: 0.7,
     };
     if (opts?.reason !== undefined) linkOpts.reason = opts.reason;
@@ -671,9 +770,56 @@ export class GraphnosisHost {
         after: {
           fromNodeId,
           toNodeId,
-          type: 'related-to',
+          type,
           weight: 0.7,
+          directed: false,
           reason: opts?.reason ?? 'User-confirmed related memories',
+        },
+      });
+      g.dirty = true;
+      await this.save(graphId);
+    }
+    return result;
+  }
+
+  /**
+   * Create a DIRECTED edge between two existing nodes — sibling of
+   * `linkNodes` for typed edges (knows, works-with, reports-to,
+   * collaborated-on, …) that need to encode direction.
+   *
+   * The user-friendly label (e.g. "Works at", "Lives in") rides on
+   * `evidence` so the detail pane can render it directly instead of
+   * humanizing the raw SDK type.
+   *
+   * Op-log records the same `addEdge` kind as `linkNodes`, with
+   * `directed: true` in the `after` payload so a future replayer can
+   * dispatch on shape.
+   */
+  async linkNodesDirected(
+    graphId: GraphId,
+    fromNodeId: string,
+    toNodeId: string,
+    opts: { type: import('@nehloo/graphnosis').DirectedEdge['type']; evidence?: string },
+  ): Promise<{ edgeId: string; created: boolean }> {
+    const g = this.must(graphId);
+    const linkOpts: { type: import('@nehloo/graphnosis').DirectedEdge['type']; weight: number; evidence?: string } = {
+      type: opts.type,
+      weight: 0.7,
+    };
+    if (opts.evidence !== undefined) linkOpts.evidence = opts.evidence;
+    const result = await this.opts.adapter.linkNodesDirected(g.handle, fromNodeId, toNodeId, linkOpts);
+    if (result.created) {
+      this.oplogWriter.emit({
+        graphId,
+        op: 'addEdge',
+        target: { kind: 'edge', id: result.edgeId },
+        after: {
+          fromNodeId,
+          toNodeId,
+          type: opts.type,
+          weight: 0.7,
+          directed: true,
+          evidence: opts.evidence ?? null,
         },
       });
       g.dirty = true;
@@ -709,7 +855,18 @@ export class GraphnosisHost {
     }
   }
 
-  stats(): { graphs: Array<{ graphId: GraphId; totalNodes: number; activeNodes: number; softDeletedNodes: number; sources: number; corrections: number; nodes: ReturnType<GraphnosisAdapter['inspectNodes']> }> } {
+  stats(): {
+    graphs: Array<{
+      graphId: GraphId;
+      totalNodes: number;
+      activeNodes: number;
+      softDeletedNodes: number;
+      sources: number;
+      corrections: number;
+      lastMutationAt: number;
+      nodes: ReturnType<GraphnosisAdapter['inspectNodes']>;
+    }>;
+  } {
     const out = [];
     for (const [graphId, g] of this.graphs) {
       const nodes = this.opts.adapter.inspectNodes(g.handle);
@@ -721,6 +878,10 @@ export class GraphnosisHost {
         softDeletedNodes: nodes.length - active.length,
         sources: g.sourceIndex.list().length,
         corrections: this.correctionsCount.get(graphId) ?? 0,
+        // Bumped on every save(); the App polls this so background
+        // auto-relink edges show up without a manual refresh. 0 means
+        // never mutated this session (the graph was just loaded).
+        lastMutationAt: this.lastMutationAt.get(graphId) ?? 0,
         nodes,
       });
     }

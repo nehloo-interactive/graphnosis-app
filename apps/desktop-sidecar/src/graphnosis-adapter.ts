@@ -79,6 +79,60 @@ export interface GraphnosisAdapter {
     opts?: { type?: UndirectedEdgeType; weight?: number; reason?: string },
   ): Promise<{ edgeId: string; created: boolean }>;
 
+  /**
+   * Create a DIRECTED edge between two existing nodes. Used by the App's
+   * typed-relationship picker (e.g. user picks "Works at" → directed
+   * `collaborated-on` from person → org with `evidence: "Works at"`).
+   *
+   * Order-sensitive dedupe — `(from, to, type)` is the identity. Reversing
+   * `from`/`to` creates a different edge. Reverse-direction users want
+   * "B reports-to A" should pass that explicit ordering.
+   *
+   * `evidence` is the SDK's existing free-form provenance field; we use
+   * it to carry the human-friendly label (e.g. "Works at", "Lives in")
+   * so the detail pane can render the user's vocabulary instead of the
+   * structural SDK type.
+   */
+  linkNodesDirected(
+    handle: GraphHandle,
+    fromNodeId: string,
+    toNodeId: string,
+    opts: { type: DirectedEdgeType; weight?: number; evidence?: string },
+  ): Promise<{ edgeId: string; created: boolean }>;
+
+  /**
+   * Post-ingest cross-document relink. Scans every active node pair
+   * for entity overlap and creates `shares-entity` undirected edges
+   * where they're missing. Also creates `same-person` edges between
+   * nodes that share a person-shaped entity (capitalized multi-word).
+   *
+   * The SDK's `appendDocument` only links new chunks to OTHER new
+   * chunks — never to existing nodes — so a freshly-remembered clip
+   * stays orphan even when its entities are mentioned in older nodes.
+   * This pass closes that gap.
+   *
+   * Throttled by `maxNodes`: skips entirely when the active node
+   * count exceeds the cap (entity Jaccard is O(N²)). Returns the
+   * list of newly-created edge ids + their endpoints so the host
+   * can emit one op-log event per edge.
+   */
+  relinkFullGraph(
+    handle: GraphHandle,
+    opts?: { maxNodes?: number },
+  ): Promise<{
+    skipped: boolean;
+    skipReason?: string;
+    activeNodes: number;
+    newEdges: Array<{
+      edgeId: string;
+      a: string;
+      b: string;
+      type: 'shares-entity' | 'same-person';
+      weight: number;
+      sharedEntities: string[];
+    }>;
+  }>;
+
   /** Build TF-IDF + structure. The adapter calls this internally before the first append on a fresh graph. */
   build(handle: GraphHandle): Promise<void>;
 
@@ -96,6 +150,12 @@ export interface GraphnosisAdapter {
    * structural-noise nodes like 'document' and 'section' out of the
    * review queue). They're nullable because not every ingest path
    * (clip:* sources, plain-text) sets them.
+   *
+   * `entities` exposes the SDK's per-node extracted entity strings
+   * (proper nouns, dates, acronyms, technical terms, …) — used by the
+   * App's entity-aware candidate ranking when surfacing "what other
+   * memories mention this person/place/topic?". Empty array if the
+   * node never went through entity extraction (rare).
    */
   inspectNodes(handle: GraphHandle): Array<{
     id: string;
@@ -105,14 +165,21 @@ export interface GraphnosisAdapter {
     contentPreview: string;
     section?: string;
     nodeType?: string;
+    entities?: string[];
   }>;
 
   /** True if buildEmbeddings has run and the graph has an embedding index attached. */
   hasEmbeddings(handle: GraphHandle): boolean;
 
-  /** Snapshot of the dual-graph's edges. Powers the Atlas visualization. */
+  /**
+   * Snapshot of the dual-graph's edges. Powers the Atlas visualization
+   * and the detail pane's Connections section. `evidence` on directed
+   * edges carries the user-chosen label when the edge was created via
+   * `linkNodesDirected` (e.g. "Works at", "Lives in") — the App renders
+   * that label in preference to a humanized SDK type.
+   */
   inspectEdges(handle: GraphHandle): {
-    directed: Array<{ id: string; from: string; to: string; type: DirectedEdgeType; weight: number }>;
+    directed: Array<{ id: string; from: string; to: string; type: DirectedEdgeType; weight: number; evidence?: string }>;
     undirected: Array<{ id: string; a: string; b: string; type: UndirectedEdgeType; weight: number }>;
   };
 }
