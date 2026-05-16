@@ -9,19 +9,16 @@
   "types": "./dist/index.d.ts",
   "exports": {
     ".": "./dist/index.js",
-    "./crypto": "./dist/crypto/index.js",
-    "./oplog": "./dist/oplog/index.js",
     "./sources": "./dist/sources/index.js",
-    "./federation": "./dist/federation/index.js",
     "./embeddings": "./dist/embeddings/index.js",
-    "./policy": "./dist/policy/index.js"
+    "./settings": "./dist/settings/index.js"
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc --noEmit -p tsconfig.json"
   },
   "dependencies": {
-    "libsodium-wrappers-sumo": "^0.7.13"
+    "@nehloo-interactive/graphnosis-secure-sync": "file:../../../graphnosis-secure-sync"
   },
   "devDependencies": {
     "@types/libsodium-wrappers-sumo": "^0.7.8",

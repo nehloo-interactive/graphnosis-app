@@ -1,30 +1,14 @@
-export type DeviceId = string;
-export type GraphId = string;
-export type NodeId = string;
+// App-specific types. Shared infrastructure types (DeviceId, GraphId, NodeId,
+// OpKind, OpLogEvent, SubgraphBudget) live in
+// @nehloo-interactive/graphnosis-secure-sync — re-exported through
+// ./index.ts for backwards compatibility.
+
+import type { GraphId, NodeId } from '@nehloo-interactive/graphnosis-secure-sync';
+
+// Re-export so internal files (sources/) can keep importing from '../types.js'.
+export type { GraphId, NodeId };
+
 export type SourceId = string;
-
-export type OpKind =
-  | 'addNode'
-  | 'editNode'
-  | 'deleteNode'
-  | 'addEdge'
-  | 'deleteEdge'
-  | 'supersede'
-  | 'merge'
-  | 'ingestSource'
-  | 'forgetSource';
-
-export interface OpLogEvent {
-  id: string;
-  ts: number;
-  deviceId: DeviceId;
-  sessionId: string;
-  graphId: GraphId;
-  op: OpKind;
-  target: { kind: 'node' | 'edge' | 'source'; id: string };
-  before?: unknown;
-  after?: unknown;
-}
 
 export interface SourceRecord {
   sourceId: SourceId;
@@ -34,10 +18,4 @@ export interface SourceRecord {
   graphId: GraphId;
   nodeIds: NodeId[];
   contentHash?: string;
-}
-
-export interface SubgraphBudget {
-  maxTokens: number;
-  maxNodes: number;
-  perGraphMinTokens?: number;
 }
