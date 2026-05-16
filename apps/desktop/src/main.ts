@@ -398,6 +398,7 @@ const els = {
   // Graphnosis (Check-in dashboard + 3D Atlas)
   gSearch: $<HTMLInputElement>('g-search'),
   gSearchClear: $<HTMLButtonElement>('g-search-clear'),
+  gSearchSortSelect: $<HTMLSelectElement>('g-search-sort-select'),
   gRecents: $<HTMLDivElement>('g-recents'),
   gRecentsChips: $<HTMLDivElement>('g-recents-chips'),
   gDashboard: $<HTMLDivElement>('g-dashboard'),
@@ -2365,6 +2366,74 @@ els.btnGPurge.addEventListener('click', () => {
 
 // ── Dashboard / search-results visibility ────────────────────────────
 
+// User-selectable sort order for search results. Defaults to "relevance"
+// — closer matches to the search term rank higher than incidental hits.
+// Persists in memory only (session-scoped); reset on app launch.
+type SearchSortMode = 'relevance' | 'confidence' | 'source';
+let searchSortMode: SearchSortMode = 'relevance';
+
+/**
+ * Per-node relevance score against the lowercased query. Higher is better.
+ *
+ * Heuristics (chosen so the score interleaves cleanly with BGE semantic
+ * scores in the 0–~120 range):
+ *   - Exact word-boundary match in content: +100, scaled by inverse
+ *     position (earlier = closer to "the topic")
+ *   - Substring match in content: +50, scaled by inverse position
+ *   - Multiple occurrences: +10 per extra hit (capped at 5 extras)
+ *   - Match in sourceFile: +20
+ *
+ * Pure local — no IPC. Called once per row during filter.
+ */
+function computeRelevance(n: NodeRecord, q: string): number {
+  if (q.length === 0) return 0;
+  const content = n.contentPreview.toLowerCase();
+  const source = n.sourceFile.toLowerCase();
+  let score = 0;
+
+  const pos = content.indexOf(q);
+  if (pos >= 0) {
+    // Position bonus: position 0 → +100, drops to ~+50 by position 200.
+    const positionBoost = Math.max(50, 100 - pos * 0.25);
+    // Word-boundary detection: previous char (if any) and next char (if any)
+    // must NOT be alphanumeric for it to count as a boundary match.
+    const prev = pos > 0 ? content.charCodeAt(pos - 1) : 0;
+    const after = pos + q.length < content.length ? content.charCodeAt(pos + q.length) : 0;
+    const isWordBoundary =
+      !(prev >= 48 && prev <= 57) && !(prev >= 97 && prev <= 122) &&
+      !(after >= 48 && after <= 57) && !(after >= 97 && after <= 122);
+    score += isWordBoundary ? positionBoost : positionBoost * 0.5;
+    // Bonus per additional occurrence (regex.split returns [pre, post-each-hit, …]).
+    const occurrences = content.split(q).length - 1;
+    if (occurrences > 1) score += Math.min(occurrences - 1, 5) * 10;
+  }
+
+  if (source.includes(q)) score += 20;
+
+  return score;
+}
+
+/**
+ * Apply the user-selected sort mode to a list of rows. `relevance`
+ * requires the query (uses computeRelevance), the others are simple
+ * field comparisons.
+ */
+function sortSearchResults(rows: NodeRecord[], q: string): NodeRecord[] {
+  const sorted = rows.slice();
+  switch (searchSortMode) {
+    case 'relevance':
+      sorted.sort((a, b) => computeRelevance(b, q) - computeRelevance(a, q));
+      break;
+    case 'confidence':
+      sorted.sort((a, b) => b.confidence - a.confidence);
+      break;
+    case 'source':
+      sorted.sort((a, b) => a.sourceFile.localeCompare(b.sourceFile));
+      break;
+  }
+  return sorted;
+}
+
 function applyGraphnosisFilter(): void {
   const qRaw = els.gSearch.value.trim();
   const q = qRaw.toLowerCase();
@@ -2385,11 +2454,11 @@ function applyGraphnosisFilter(): void {
   const active = graphnosisAllNodes.filter(
     (n) => n.confidence > 0.2 && (n.validUntil === undefined || n.validUntil > now),
   );
-  const filtered = active.filter((n) =>
+  const matched = active.filter((n) =>
     n.contentPreview.toLowerCase().includes(q) ||
     n.sourceFile.toLowerCase().includes(q),
   );
-  filtered.sort((a, b) => b.confidence - a.confidence);
+  const filtered = sortSearchResults(matched, q);
   graphnosisListRows = filtered;
   graphnosisListMode = 'substring';
   els.gSearchResultsStats.textContent =
@@ -2428,7 +2497,7 @@ async function runSemanticFallback(query: string, graphId: string): Promise<void
     const hits = (await invoke('search_nodes', { graphId, query, k: 30 })) as SearchHit[];
     if (myToken !== graphnosisSemanticToken) return;
     const now = Date.now();
-    const rows: NodeRecord[] = hits
+    const rawRows: NodeRecord[] = hits
       .map((h) => {
         const cached = graphnosisAllNodes.find((n) => n.id === h.nodeId);
         if (cached) return cached;
@@ -2440,6 +2509,9 @@ async function runSemanticFallback(query: string, graphId: string): Promise<void
         } satisfies NodeRecord;
       })
       .filter((n) => n.confidence > 0.2 && (n.validUntil === undefined || n.validUntil > now));
+    // For semantic fallback under `relevance` mode, the BGE order IS the
+    // relevance order — keep it. Confidence/source modes re-sort.
+    const rows = searchSortMode === 'relevance' ? rawRows : sortSearchResults(rawRows, query.toLowerCase());
     graphnosisListRows = rows;
     graphnosisListMode = 'semantic';
     els.gSearchResultsStats.textContent =
@@ -4147,6 +4219,16 @@ els.gSearch.addEventListener('input', () => {
   // 140ms gives a fluid feel without re-rendering on every keystroke when
   // typing fast.
   graphnosisSearchTimer = setTimeout(() => applyGraphnosisFilter(), 140);
+});
+
+// Sort dropdown — re-apply the filter when the user picks a new order.
+// No debounce; the change is user-initiated and synchronous.
+els.gSearchSortSelect.addEventListener('change', () => {
+  const v = els.gSearchSortSelect.value;
+  if (v === 'relevance' || v === 'confidence' || v === 'source') {
+    searchSortMode = v;
+    applyGraphnosisFilter();
+  }
 });
 
 els.gSearchClear.addEventListener('click', () => {
