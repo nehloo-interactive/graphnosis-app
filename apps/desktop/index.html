@@ -873,13 +873,76 @@
         font-size: 11px;
         line-height: 1.45;
       }
+      /* Inline variant — health gauge sits in the Graphnosis pane
+         header next to the h2 title. More horizontal, less vertical
+         padding so it doesn't dwarf the title row. */
+      .g-pane-header {
+        display: flex;
+        align-items: center;
+        gap: 16px;
+        flex-wrap: wrap;
+      }
+      .g-pane-header-title { flex: 1; min-width: 0; }
+      .g-pane-header-title h2 { margin: 0 0 2px; }
+      .g-health.g-health-inline {
+        padding: 8px 12px;
+        gap: 12px;
+        min-width: 0;
+        max-width: 360px;
+        flex: 0 1 auto;
+        background: var(--bg-elev);
+      }
+      .g-health.g-health-inline .g-health-gauge {
+        flex-direction: row;
+        min-width: auto;
+        gap: 8px;
+      }
+      .g-health.g-health-inline .g-health-grade {
+        font-size: 22px;
+      }
+      .g-health.g-health-inline .g-health-meter {
+        width: 48px;
+      }
+      .g-health.g-health-inline .g-health-phrase {
+        font-size: 12px;
+        font-weight: 500;
+      }
+      .g-health.g-health-inline .g-health-detail {
+        font-size: 10px;
+        margin-top: 2px;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
 
-      /* Review deck — one card at a time with quick-action buttons */
+      /* Review deck — one card at a time with quick-action buttons.
+         Padding-top moved INTO the pinned region (below) so the
+         sticky region's opaque background covers all the space above
+         the deck title. The old `padding: 14px 18px 16px` on .g-deck
+         left a 14px strip above the pinned region that showed bg-elev
+         while content scrolled, but with a visible color seam under
+         macOS subpixel rendering. */
       .g-deck {
         background: var(--bg-elev);
         border: 1px solid var(--border);
         border-radius: 8px;
-        padding: 14px 18px 16px;
+        padding: 0 18px 16px;
+        max-height: 100%;
+        overflow-y: auto;
+      }
+      /* The whole pinned region — header + card head — is ONE sticky
+         block with one fully-opaque background. Its own padding-top
+         provides the breathing room (was previously on .g-deck) so
+         the sticky bg covers every pixel above the deck title. */
+      .g-deck-pinned {
+        position: sticky;
+        top: 0;
+        z-index: 5;
+        background: var(--bg-elev);
+        padding: 14px 2px 4px;     /* top padding lives here now */
+        margin: 0 -2px 4px;        /* slight horizontal bleed so AA
+                                      seams don't reveal a sliver of
+                                      the scrolling content behind. */
       }
       .g-deck-header {
         display: flex;
@@ -892,16 +955,45 @@
         font-weight: 600;
         color: var(--fg);
       }
+      .g-deck-nav {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+      }
+      .g-deck-nav-btn {
+        background: transparent;
+        border: 1px solid var(--border);
+        color: var(--fg-dim);
+        padding: 2px 9px;
+        font-size: 14px;
+        line-height: 1;
+        border-radius: 4px;
+        cursor: pointer;
+      }
+      .g-deck-nav-btn:hover:not(:disabled) { color: var(--fg); border-color: var(--accent); }
+      .g-deck-nav-btn:disabled { opacity: 0.35; cursor: not-allowed; }
       .g-deck-progress {
         font-size: 11px;
         color: var(--fg-dim);
         font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        min-width: 50px;
+        text-align: center;
       }
       .g-deck-card {
         min-height: 140px;
         display: flex;
         flex-direction: column;
         justify-content: space-between;
+      }
+      /* Card head (prompt + breadcrumb + content + meta) — lives inside
+         the .g-deck-pinned wrapper, so its own positioning is normal
+         flow. The wrapper does the sticky lifting. A dashed bottom
+         separates it visually from the scrolling suggestion panel
+         below. */
+      .g-deck-card-head {
+        padding-bottom: 6px;
+        margin-bottom: 4px;
+        border-bottom: 1px dashed var(--border);
       }
       .g-deck-prompt {
         font-size: 11px;
@@ -1012,6 +1104,298 @@
       }
       .btn-deck-link:hover { background: color-mix(in oklab, var(--accent) 28%, var(--bg-elev)); }
       .btn-deck-link:disabled { opacity: 0.6; cursor: progress; }
+
+      /* ── Suggestion panel — shared between deck cards + detail pane ──
+         Drives the typed-relationship picker: multi-select rows with
+         full content (no truncation), inline search, per-row type pill
+         with popover (primary + alternatives + More… + Custom label). */
+      .g-suggest-panel {
+        margin: 12px 0 4px;
+        padding: 10px 12px;
+        background: var(--bg);
+        border-left: 2px solid color-mix(in oklab, var(--accent) 50%, var(--border));
+        border-radius: 0 6px 6px 0;
+      }
+      .g-suggest-header {
+        display: flex;
+        gap: 8px;
+        align-items: center;
+        margin-bottom: 8px;
+      }
+      .g-suggest-search {
+        flex: 1;
+        padding: 6px 10px;
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        background: var(--bg-elev);
+        color: var(--fg);
+        font-family: inherit;
+        font-size: 12px;
+      }
+      .g-suggest-search:focus {
+        outline: 2px solid var(--accent);
+        outline-offset: -1px;
+        border-color: transparent;
+      }
+      .g-suggest-close {
+        background: transparent;
+        border: 0;
+        color: var(--fg-dim);
+        font-size: 18px;
+        cursor: pointer;
+        line-height: 1;
+        padding: 4px 8px;
+      }
+      .g-suggest-close:hover { color: var(--fg); }
+
+      .g-suggest-rows {
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+      }
+      .g-suggest-row {
+        position: relative;            /* anchor for the popover */
+        display: grid;
+        grid-template-columns: 22px 1fr auto;
+        gap: 8px;
+        align-items: start;
+        padding: 8px 10px;
+        background: var(--bg-elev);
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        cursor: pointer;
+        transition: border-color 80ms, background 80ms;
+      }
+      .g-suggest-row:hover {
+        border-color: color-mix(in oklab, var(--accent) 30%, var(--border));
+      }
+      .g-suggest-row.selected {
+        background: color-mix(in oklab, var(--accent) 8%, var(--bg-elev));
+        border-color: color-mix(in oklab, var(--accent) 55%, var(--border));
+      }
+      .g-suggest-row.needs-pick.selected {
+        border-color: color-mix(in oklab, #d9a445 60%, var(--border));
+      }
+      .g-suggest-check {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding-top: 2px;
+      }
+      .g-suggest-check-input { margin: 0; cursor: pointer; }
+      .g-suggest-row-body {
+        min-width: 0;
+        display: flex;
+        flex-direction: column;
+        gap: 3px;
+      }
+      .g-suggest-content {
+        font-size: 12px;
+        line-height: 1.45;
+        color: var(--fg);
+        word-break: break-word;
+        white-space: pre-wrap;          /* full content, wraps */
+      }
+      .g-suggest-breadcrumb {
+        font-size: 10px;
+        color: var(--fg-dim);
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      .g-suggest-custom-shown {
+        font-size: 10px;
+        color: var(--fg-dim);
+      }
+      .g-suggest-type-pill {
+        align-self: start;
+        font-size: 11px;
+        padding: 4px 10px;
+        background: color-mix(in oklab, var(--accent) 14%, var(--bg));
+        border: 1px solid color-mix(in oklab, var(--accent) 45%, var(--border));
+        color: var(--fg);
+        border-radius: 14px;
+        white-space: nowrap;
+      }
+      .g-suggest-type-pill:hover {
+        background: color-mix(in oklab, var(--accent) 25%, var(--bg));
+      }
+      .g-suggest-type-pill.needs-pick {
+        background: color-mix(in oklab, #d9a445 18%, var(--bg));
+        border-color: color-mix(in oklab, #d9a445 55%, var(--border));
+        color: var(--fg);
+      }
+
+      .g-suggest-show-more {
+        margin-top: 8px;
+        font-size: 11px;
+        padding: 4px 10px;
+        background: transparent;
+        border: 1px solid var(--border);
+        color: var(--fg-dim);
+        width: 100%;
+      }
+      .g-suggest-show-more:hover { color: var(--fg); border-color: var(--accent); }
+
+      .g-suggest-actions {
+        display: flex;
+        gap: 8px;
+        margin-top: 10px;
+        padding-top: 10px;
+        border-top: 1px dashed var(--border);
+      }
+      .g-suggest-connect {
+        flex: 1;
+        font-size: 12px;
+        padding: 7px 10px;
+      }
+      .g-suggest-cancel {
+        font-size: 12px;
+        padding: 7px 14px;
+      }
+      .g-suggest-warn {
+        margin: 6px 0 0;
+        font-size: 10px;
+        color: color-mix(in oklab, #d9a445 70%, var(--fg-dim));
+        font-style: italic;
+      }
+
+      /* Popover lives at body level (position: fixed) so it can't be
+         clipped by ancestor overflow or by the deck-card sticky stack.
+         JS computes the screen coordinates from the pill's bounding
+         rect and writes top/left/right inline. */
+      .g-suggest-popover {
+        position: fixed;
+        z-index: 1200;
+        min-width: 260px;
+        max-width: 360px;
+        max-height: 60vh;
+        overflow-y: auto;
+        background: var(--bg-elev);
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        box-shadow: 0 6px 24px rgba(0, 0, 0, 0.35);
+        padding: 10px;
+        font-size: 12px;
+      }
+      /* Dim logic — two independent triggers:
+         A. Checked rows: dim and KEEP DIM. They're "committed" — focus
+            should be on the rows the user hasn't decided on yet.
+         B. While the dropdown popover is open: dim everything EXCEPT
+            the row whose pill triggered the popover (so attention is
+            on the relationship the user is currently picking).
+         The row currently being edited (popover-active) always stays
+         full color, even if the user has it checked. */
+      .g-suggest-row {
+        transition: opacity 120ms;
+      }
+      .g-suggest-row.selected:not(.popover-active) {
+        opacity: 0.4;
+      }
+      .g-suggest-panel.popover-open .g-suggest-row:not(.popover-active):not(.selected) {
+        opacity: 0.35;
+      }
+      /* Hover restores some visibility for re-engagement. */
+      .g-suggest-row.selected:hover,
+      .g-suggest-panel.popover-open .g-suggest-row:not(.popover-active):hover {
+        opacity: 0.7;
+      }
+      /* Explicit override — the popover-anchor row stays full color
+         regardless of selection state. */
+      .g-suggest-row.popover-active {
+        opacity: 1 !important;
+      }
+      .g-suggest-popover-section + .g-suggest-popover-section {
+        margin-top: 8px;
+        padding-top: 8px;
+        border-top: 1px dashed var(--border);
+      }
+      .g-suggest-popover-label {
+        margin: 0 0 4px;
+        font-size: 10px;
+        color: var(--fg-dim);
+        text-transform: uppercase;
+        letter-spacing: 0.04em;
+      }
+      .g-suggest-popover-option {
+        display: block;
+        width: 100%;
+        text-align: left;
+        background: transparent;
+        border: 1px solid transparent;
+        color: var(--fg);
+        font-size: 12px;
+        padding: 5px 8px;
+        border-radius: 4px;
+      }
+      .g-suggest-popover-option:hover {
+        background: color-mix(in oklab, var(--accent) 12%, transparent);
+      }
+      .g-suggest-popover-option.active {
+        background: color-mix(in oklab, var(--accent) 20%, transparent);
+        border-color: color-mix(in oklab, var(--accent) 50%, var(--border));
+      }
+      .g-suggest-popover-option.small { font-size: 11px; padding: 3px 6px; }
+      .g-suggest-popover-more {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 2px;
+      }
+      .g-suggest-dir {
+        opacity: 0.5;
+        margin-left: 4px;
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      }
+      .g-suggest-custom-input {
+        width: 100%;
+        padding: 5px 8px;
+        background: var(--bg);
+        border: 1px solid var(--border);
+        border-radius: 4px;
+        font: inherit;
+        font-size: 12px;
+        color: var(--fg);
+      }
+      .g-suggest-custom-input:focus {
+        outline: 1px solid var(--accent);
+        border-color: transparent;
+      }
+      .g-suggest-custom-hint {
+        margin: 4px 0 0;
+        font-size: 10px;
+        color: var(--fg-dim);
+        font-style: italic;
+      }
+
+      /* Deck card wrapper + Connect toggle for low-confidence cards */
+      .g-deck-card-inner { min-width: 0; }
+      .g-deck-connect-toggle {
+        margin-top: 10px;
+        font-size: 11px;
+        padding: 5px 12px;
+        background: transparent;
+        border: 1px dashed color-mix(in oklab, var(--accent) 50%, var(--border));
+        color: color-mix(in oklab, var(--accent) 80%, var(--fg));
+      }
+      .g-deck-connect-toggle:hover {
+        background: color-mix(in oklab, var(--accent) 10%, transparent);
+      }
+      .g-deck-suggest.hidden { display: none; }
+
+      /* Detail-pane Connect toggle (collapsed-by-default state) */
+      .g-detail-suggest-wrap { margin-top: 12px; }
+      .g-detail-connect-toggle {
+        font-size: 11px;
+        padding: 5px 12px;
+        background: transparent;
+        border: 1px dashed color-mix(in oklab, var(--accent) 50%, var(--border));
+        color: color-mix(in oklab, var(--accent) 80%, var(--fg));
+      }
+      .g-detail-connect-toggle:hover {
+        background: color-mix(in oklab, var(--accent) 10%, transparent);
+      }
+      .g-detail-suggest.hidden { display: none; }
       .g-deck-ack { color: var(--fg); }
 
       /* Two-tap armed Forget button in the sidebar. First tap turns the
@@ -1605,26 +1989,31 @@
             <button class="rail-btn active" data-mode="atlas" title="Memory check-in dashboard + 3D map">
               <span class="rail-icon">▣</span>
               <span class="rail-label">Graphnosis</span>
-              <span></span>
+              <span id="rail-corrections-badge" class="rail-badge hidden" title="Pending corrections waiting in the deck">0</span>
             </button>
             <button class="rail-btn" data-mode="sources" title="Files that fed your memory">
               <span class="rail-icon">◫</span>
               <span class="rail-label">Sources</span>
               <span></span>
             </button>
-            <button class="rail-btn" data-mode="nodes" title="Inspect individual memories">
-              <span class="rail-icon">⊕</span>
-              <span class="rail-label">Nodes</span>
-              <span></span>
-            </button>
-            <button class="rail-btn" data-mode="corrections" title="Approve pending corrections">
-              <span class="rail-icon">↻</span>
-              <span class="rail-label">Corrections</span>
-              <span id="rail-corrections-badge" class="rail-badge hidden">0</span>
-            </button>
+            <!-- Nodes rail tab removed — its functionality (search,
+                 per-node inspect, edit, forget) is covered by the
+                 Graphnosis pane's search + detail pane + deck. The
+                 redundant flat-list view was a legacy power-user
+                 surface that confused regular users. -->
+            <!-- Corrections rail tab removed — pending AI-proposed
+                 diffs now show up as top-priority cards in the
+                 Graphnosis check-in deck. The pending-count badge
+                 moved to the Graphnosis rail item so it's still
+                 visible at a glance. -->
             <button class="rail-btn" data-mode="activity" title="Timeline of your memory">
               <span class="rail-icon">⏲</span>
               <span class="rail-label">Activity</span>
+              <span></span>
+            </button>
+            <button class="rail-btn" data-mode="status" title="Engram counts, lifetime corrections, AI clients tapped in">
+              <span class="rail-icon">⌬</span>
+              <span class="rail-label">Status</span>
               <span></span>
             </button>
             <div class="rail-spacer"></div>
@@ -1641,9 +2030,26 @@
 
             <!-- GRAPHNOSIS — memory check-in dashboard + 3D atlas -->
             <section class="mode-pane hidden" data-pane="atlas">
-              <header class="pane-header">
-                <h2>Graphnosis</h2>
-                <p class="brain-subtitle">a quick check-in with your second memory</p>
+              <header class="pane-header g-pane-header">
+                <div class="g-pane-header-title">
+                  <h2>Graphnosis</h2>
+                  <p class="brain-subtitle">a quick check-in with your second memory</p>
+                </div>
+                <!-- Health gauge lives in the pane header so it's visible
+                     across both tabs (Check-in + 3D Graphnosis) and on
+                     the same row as the title + global header actions. -->
+                <div id="g-health" class="g-health g-health-inline">
+                  <div class="g-health-gauge">
+                    <div id="g-health-grade" class="g-health-grade">—</div>
+                    <div id="g-health-meter" class="g-health-meter">
+                      <div id="g-health-fill" class="g-health-fill"></div>
+                    </div>
+                  </div>
+                  <div class="g-health-meta">
+                    <p id="g-health-phrase" class="g-health-phrase">Loading your memory health…</p>
+                    <p id="g-health-detail" class="g-health-detail subtitle"></p>
+                  </div>
+                </div>
               </header>
 
               <!-- Top toolbar: search + engram picker. Search reveals
@@ -1681,72 +2087,30 @@
                     </div>
 
                     <div id="g-dashboard" class="g-dashboard">
-                      <!-- Health gauge: a single calming visual at the top -->
-                      <div id="g-health" class="g-health">
-                        <div class="g-health-gauge">
-                          <div id="g-health-grade" class="g-health-grade">—</div>
-                          <div id="g-health-meter" class="g-health-meter">
-                            <div id="g-health-fill" class="g-health-fill"></div>
-                          </div>
-                        </div>
-                        <div class="g-health-meta">
-                          <p id="g-health-phrase" class="g-health-phrase">Loading your memory health…</p>
-                          <p id="g-health-detail" class="g-health-detail subtitle"></p>
-                        </div>
-                      </div>
-
-                      <!-- Review deck: one card at a time, quick verdict -->
+                      <!-- Review deck: one card at a time, quick verdict.
+                           Health gauge moved to the pane header; recap +
+                           AI tools moved to the Status mode pane. The
+                           dashboard now hosts only the deck — keeps the
+                           review surface focused. -->
                       <div id="g-deck" class="g-deck">
-                        <div class="g-deck-header">
-                          <span class="g-deck-title">If you have 30 seconds…</span>
-                          <span id="g-deck-progress" class="g-deck-progress"></span>
+                        <!-- Pinned region: deck header + the current card's
+                             head (prompt + breadcrumb + content + meta) live
+                             in ONE sticky wrapper so there's no gap between
+                             them. Without this wrapper the two sticky
+                             siblings have a small visible gap on scroll. -->
+                        <div class="g-deck-pinned">
+                          <div class="g-deck-header">
+                            <span class="g-deck-title">If you have 30 seconds…</span>
+                            <span class="g-deck-nav">
+                              <button id="btn-deck-prev" class="g-deck-nav-btn" title="Previous card" aria-label="Previous card">‹</button>
+                              <span id="g-deck-progress" class="g-deck-progress"></span>
+                              <button id="btn-deck-next" class="g-deck-nav-btn" title="Next card" aria-label="Next card">›</button>
+                            </span>
+                          </div>
+                          <div id="g-deck-card-head" class="g-deck-card-head"></div>
                         </div>
                         <div id="g-deck-card" class="g-deck-card">
                           <p class="subtitle">Loading…</p>
-                        </div>
-                      </div>
-
-                      <!-- Recap: this engram in numbers; quiet, non-pushy -->
-                      <div id="g-recap" class="g-recap">
-                        <div class="g-recap-row">
-                          <span class="g-recap-label">Memories</span>
-                          <span id="g-recap-memories" class="g-recap-value">—</span>
-                        </div>
-                        <div class="g-recap-row">
-                          <span class="g-recap-label">Sources feeding this engram</span>
-                          <span id="g-recap-sources" class="g-recap-value">—</span>
-                        </div>
-                        <div class="g-recap-row">
-                          <span class="g-recap-label">Average confidence</span>
-                          <span id="g-recap-avg" class="g-recap-value">—</span>
-                        </div>
-                        <div class="g-recap-row" title="Lifetime count of corrections applied to this engram (edits + supersedes from the correct/apply pipeline)">
-                          <span class="g-recap-label">Corrections applied (lifetime)</span>
-                          <span id="g-recap-corrections" class="g-recap-value">—</span>
-                        </div>
-                        <div class="g-recap-row">
-                          <span class="g-recap-label">Tended in this session</span>
-                          <span id="g-recap-tended" class="g-recap-value">0</span>
-                        </div>
-                        <!-- Forgotten footer: hidden by default, surfaces a
-                             Purge call-to-action only when this engram has
-                             soft-deleted memories still on disk. -->
-                        <div id="g-recap-forgotten" class="g-recap-forgotten hidden">
-                          <span id="g-recap-forgotten-text">—</span>
-                          <button id="btn-g-purge" class="btn-g-purge">Purge now</button>
-                        </div>
-                      </div>
-
-                      <!-- AI tools card: which AI clients are currently
-                           tapped into the vault via MCP. Updated by the
-                           same poller that drives the Overview-pane copy. -->
-                      <div id="g-mcp" class="g-mcp">
-                        <p class="g-mcp-title">
-                          AI tools connected
-                          <span class="brain-subtitle" style="margin-left: 6px;">tapped into your memory right now</span>
-                        </p>
-                        <div id="g-mcp-list" class="g-mcp-list">
-                          <p class="subtitle">Checking…</p>
                         </div>
                       </div>
                     </div>
@@ -1800,48 +2164,13 @@
               <div id="sources-list"><p class="subtitle">Loading…</p></div>
             </section>
 
-            <!-- NODES -->
-            <section class="mode-pane hidden" data-pane="nodes">
-              <header class="pane-header">
-                <h2>Nodes</h2>
-                <p class="brain-subtitle">
-                  individual memory traces — search by meaning via your association cortex
-                  <span id="nodes-detail-mode" style="margin-left: 8px;"></span>
-                </p>
-              </header>
-              <div class="nodes-toolbar">
-                <input type="search" id="nodes-search" placeholder="Search by meaning (BGE-small) — ⌘F" />
-                <select id="nodes-graph-picker"></select>
-                <span id="nodes-count" class="subtitle"></span>
-              </div>
-              <div id="nodes-list"><p class="subtitle">Loading…</p></div>
-            </section>
+            <!-- Nodes pane removed — its functionality (search, per-node
+                 inspect, edit, forget) is covered by the Graphnosis
+                 pane's search + detail pane + check-in deck. -->
 
-            <!-- CORRECTIONS -->
-            <section class="mode-pane hidden" data-pane="corrections">
-              <header class="pane-header">
-                <h2>Corrections</h2>
-                <p class="brain-subtitle">plasticity — rewiring memories with new evidence</p>
-              </header>
-              <div class="panel" id="pending-corrections-panel" style="display: none;">
-                <p class="panel-title">
-                  Pending
-                  <span id="pending-count-badge" class="badge"></span>
-                </p>
-                <p class="subtitle" style="margin: -4px 0 8px; font-size: 11px;">
-                  Corrections proposed by Claude (or another AI client) via the <code>correct</code> tool.
-                  Held in memory only — locking the vault discards all pending corrections.
-                </p>
-                <div id="pending-corrections-list"></div>
-              </div>
-              <div id="corrections-empty" class="placeholder">
-                <p>No corrections pending.</p>
-                <p class="brain-subtitle">
-                  When Claude proposes a correction via the <code>correct</code> tool, the diff
-                  appears here for you to review and approve.
-                </p>
-              </div>
-            </section>
+            <!-- Corrections pane removed — AI-proposed diffs now show
+                 up as top-priority cards in the Graphnosis check-in
+                 deck. See renderPendingCorrectionCard in main.ts. -->
 
             <!-- ACTIVITY -->
             <section class="mode-pane hidden" data-pane="activity">
@@ -1864,6 +2193,60 @@
               </div>
               <div id="activity-list" class="activity-list">
                 <p class="subtitle">Loading…</p>
+              </div>
+            </section>
+
+            <!-- STATUS pane — engram counts, lifetime corrections,
+                 forgotten-memories cleanup, AI clients currently tapped
+                 into the vault. Lifted out of the Graphnosis dashboard
+                 so the check-in surface stays focused on the deck. -->
+            <section class="mode-pane hidden" data-pane="status">
+              <header class="pane-header">
+                <h2>Status</h2>
+                <p class="brain-subtitle">a quick read on this engram + which AI tools are tapped in</p>
+              </header>
+
+              <!-- Recap: this engram in numbers; quiet, non-pushy -->
+              <div id="g-recap" class="g-recap">
+                <div class="g-recap-row">
+                  <span class="g-recap-label">Memories</span>
+                  <span id="g-recap-memories" class="g-recap-value">—</span>
+                </div>
+                <div class="g-recap-row">
+                  <span class="g-recap-label">Sources feeding this engram</span>
+                  <span id="g-recap-sources" class="g-recap-value">—</span>
+                </div>
+                <div class="g-recap-row">
+                  <span class="g-recap-label">Average confidence</span>
+                  <span id="g-recap-avg" class="g-recap-value">—</span>
+                </div>
+                <div class="g-recap-row" title="Lifetime count of corrections applied to this engram (edits + supersedes from the correct/apply pipeline)">
+                  <span class="g-recap-label">Corrections applied (lifetime)</span>
+                  <span id="g-recap-corrections" class="g-recap-value">—</span>
+                </div>
+                <div class="g-recap-row">
+                  <span class="g-recap-label">Tended in this session</span>
+                  <span id="g-recap-tended" class="g-recap-value">0</span>
+                </div>
+                <!-- Forgotten footer: hidden by default, surfaces a
+                     Purge call-to-action only when this engram has
+                     soft-deleted memories still on disk. -->
+                <div id="g-recap-forgotten" class="g-recap-forgotten hidden">
+                  <span id="g-recap-forgotten-text">—</span>
+                  <button id="btn-g-purge" class="btn-g-purge">Purge now</button>
+                </div>
+              </div>
+
+              <!-- AI tools card: which AI clients are currently tapped
+                   into the vault via MCP. -->
+              <div id="g-mcp" class="g-mcp" style="margin-top: 14px;">
+                <p class="g-mcp-title">
+                  AI tools connected
+                  <span class="brain-subtitle" style="margin-left: 6px;">tapped into your memory right now</span>
+                </p>
+                <div id="g-mcp-list" class="g-mcp-list">
+                  <p class="subtitle">Checking…</p>
+                </div>
               </div>
             </section>
 
@@ -2062,15 +2445,6 @@
             </div>
           </div>
 
-          <p class="panel-title" style="margin-top: 20px;">Inspector detail</p>
-          <p class="subtitle" style="margin-bottom: 12px;">
-            How much information the Nodes view shows for each memory.
-          </p>
-          <div class="row">
-            <label><input type="radio" name="inspector-detail" value="simple" /> <strong>Simple</strong> — content, source, actions (recommended for most users)</label>
-            <label style="margin-top: 8px;"><input type="radio" name="inspector-detail" value="detailed" /> <strong>Detailed</strong> — adds confidence, validUntil, embedding info, edge stats, provenance, contradictions (power users)</label>
-          </div>
-
           <p class="panel-title" style="margin-top: 20px;">When you Forget a source</p>
           <p class="subtitle" style="margin-bottom: 12px;">
             Forgotten memories are soft-deleted first — confidence drops to zero and they
@@ -2080,6 +2454,24 @@
           <div class="row">
             <label><input type="radio" name="forget-mode" value="soft" /> <strong>Soft delete</strong> — fast; use <em>Purge now</em> manually later (recommended)</label>
             <label style="margin-top: 8px;"><input type="radio" name="forget-mode" value="purge" /> <strong>Purge immediately</strong> — slow; rebuilds the graph after every Forget. Requires <em>Cache everything</em> above.</label>
+          </div>
+
+          <p class="panel-title" style="margin-top: 20px;">AI client routing</p>
+          <p class="subtitle" style="margin-bottom: 12px;">
+            How aggressively Claude Desktop (and other MCP-aware AI clients) should reach
+            for Graphnosis tools. With this on, the AI gets a system-prompt-level hint to
+            use Graphnosis as your default memory layer — proactively calling <code>recall</code>
+            before answering personal-context questions and <code>correct</code> instead of
+            <code>remember</code> when fixing earlier statements.
+          </p>
+          <div class="row">
+            <label>
+              <input type="checkbox" id="ai-default-memory" />
+              <strong>Use Graphnosis as my AI's default memory</strong> — recommended.
+              Off = the AI sees the tools but treats them as one option among many; its
+              own memory features lead. Changes take effect on next vault unlock or after
+              <em>Reconnect</em> below.
+            </label>
           </div>
         </div>
         <div class="modal-footer">

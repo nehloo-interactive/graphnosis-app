@@ -26,6 +26,11 @@ interface GraphSummary {
   softDeletedNodes: number;
   sources: number;
   corrections: number;
+  /** Epoch ms of the last successful save on the sidecar side. Bumps on
+   *  every mutation (ingest, edit, forget, auto-relink). The App polls
+   *  this to know when its node/edge cache is stale. 0 = the engram was
+   *  just loaded and hasn't been mutated this session. */
+  lastMutationAt: number;
 }
 
 interface SourceRecord {
@@ -111,6 +116,17 @@ interface AppSettings {
   ui: {
     inspectorDetail: InspectorDetail;
   };
+  ai: {
+    /** When ON, the sidecar's MCP `initialize` response includes a high-
+     *  priority routing block telling the AI to use Graphnosis as the
+     *  default memory layer. Default true. */
+    useAsDefaultMemory: boolean;
+    /** Cap on active node count above which the sidecar skips the
+     *  post-ingest cross-doc relink pass (entity Jaccard is O(N²)).
+     *  Default 5000. Set 0 to disable. Optional in the wire shape so
+     *  older clients can omit; the sidecar fills in the current value. */
+    autoRelinkMaxNodes?: number;
+  };
   graphMetadata?: Record<string, GraphMetadata>;
 }
 
@@ -144,6 +160,12 @@ interface NodeRecord {
   section?: string;
   /** SDK NodeType — 'fact' | 'concept' | 'section' | 'document' | … */
   nodeType?: string;
+  /** SDK-extracted entities (proper nouns, dates, acronyms, technical
+   *  terms, …). Used by the App's entity-aware candidate ranking when
+   *  surfacing "what other memories mention this person/place/topic?"
+   *  in the typed-relationship suggestion panel. Empty/undefined if the
+   *  node never went through entity extraction. */
+  entities?: string[];
 }
 
 interface SearchHit { nodeId: string; score: number; text: string; type?: string }
@@ -202,12 +224,9 @@ interface SnapshotInfo {
   fileCount: number;
 }
 
-// State for the Nodes view.
+// Loaded graphs metadata cache. Populated on unlock via
+// list_graphs_with_metadata. Drives engram pickers across the app.
 let loadedGraphs: GraphWithMetadata[] = [];
-let inspectorDetail: InspectorDetail = 'simple';
-let nodesActiveGraph: string | null = null;
-let nodesSearchTimer: ReturnType<typeof setTimeout> | null = null;
-let lastNodesRender: 'all' | 'search' = 'all';
 
 // State for the Graphnosis check-in dashboard. Two tabs (Check-in / Atlas);
 // the Check-in tab shows a triage dashboard by default and a results list
@@ -226,15 +245,34 @@ let graphnosisSemanticToken = 0; // race-guard
 // plus a set of node IDs the user has already touched this session (so
 // the deck doesn't keep showing the same memory after a "Looks right").
 interface DeckItem {
+  /** For `pending-correction` cards the deck "node" is a synthesized
+   *  stand-in built from the first edit's target — it's just enough
+   *  for the breadcrumb + node lookup to work. The full diff payload
+   *  lives on `pendingDiff`. */
   node: NodeRecord;
   prompt: string;   // plain-English question above the content
-  reason: 'low-confidence' | 'orphan';
+  reason: 'low-confidence' | 'orphan' | 'connect' | 'pending-correction';
+  /** Set for `connect` cards: the entity that bridges this node to ≥3
+   *  others. Interpolated into the prompt and used as the auto-pick
+   *  ranking signal for the suggestion panel. */
+  bridgeEntity?: string;
+  /** Set for `pending-correction` cards: the AI-proposed diff awaiting
+   *  the user's approval. The deck card renders the diff preview and
+   *  exposes Approve / Reject actions that route through the existing
+   *  `apply_correction` / `reject_correction` Tauri commands. */
+  pendingDiff?: PendingDiff;
 }
 let graphnosisDeck: DeckItem[] = [];
 let graphnosisDeckIndex = 0;
 const graphnosisSessionDispatched = new Set<string>(); // nodeIds confirmed/skipped/fixed this session
 let graphnosisTendedThisSession = 0; // counter shown in the recap row
 let graphnosisOrphanIds: Set<string> = new Set(); // nodes with no edges, recomputed per data load
+
+// AI-proposed correction diffs awaiting the user's approval. Polled by
+// fetchPendingCorrections; surfaced as top-priority `pending-correction`
+// cards in the deck queue (folded in here after the user wanted the
+// Corrections rail tab removed). Cleared on vault lock.
+let graphnosisPendingDiffs: PendingDiff[] = [];
 
 // Per-session cache of "related memories" by source node id, populated
 // on-demand via the BGE-semantic search IPC. Used by the detail pane and
@@ -324,9 +362,6 @@ const els = {
   btnAddFile: $<HTMLButtonElement>('btn-add-file'),
   vaultLabel: $<HTMLSpanElement>('vault-label'),
   sourcesList: $<HTMLDivElement>('sources-list'),
-  pendingPanel: $<HTMLDivElement>('pending-corrections-panel'),
-  pendingBadge: $<HTMLSpanElement>('pending-count-badge'),
-  pendingList: $<HTMLDivElement>('pending-corrections-list'),
   dropZone: $<HTMLDivElement>('drop-zone'),
   btnRecover: $<HTMLButtonElement>('btn-recover'),
   recoveryModal: $<HTMLDivElement>('recovery-modal'),
@@ -339,13 +374,10 @@ const els = {
   btnSettings: $<HTMLButtonElement>('btn-settings'),
   relayInitial: $<HTMLInputElement>('relay-initial'),
   relayReconnect: $<HTMLInputElement>('relay-reconnect'),
-  // Nodes view
-  nodesSearch: $<HTMLInputElement>('nodes-search'),
-  nodesGraphPicker: $<HTMLSelectElement>('nodes-graph-picker'),
-  nodesCount: $<HTMLSpanElement>('nodes-count'),
-  nodesList: $<HTMLDivElement>('nodes-list'),
-  nodesDetailMode: $<HTMLSpanElement>('nodes-detail-mode'),
-  correctionsEmpty: $<HTMLDivElement>('corrections-empty'),
+  // (Nodes rail pane removed — its els refs went with it.)
+  // Pending-correction badge — now lives on the Graphnosis rail item
+  // since the Corrections rail tab was removed (diffs surface as deck
+  // cards instead).
   railCorrectionsBadge: $<HTMLSpanElement>('rail-corrections-badge'),
   // New-graph wizard
   btnNewGraph: $<HTMLButtonElement>('btn-new-graph'),
@@ -379,6 +411,9 @@ const els = {
   gDeck: $<HTMLDivElement>('g-deck'),
   gDeckCard: $<HTMLDivElement>('g-deck-card'),
   gDeckProgress: $<HTMLSpanElement>('g-deck-progress'),
+  gDeckCardHead: $<HTMLDivElement>('g-deck-card-head'),
+  btnDeckPrev: $<HTMLButtonElement>('btn-deck-prev'),
+  btnDeckNext: $<HTMLButtonElement>('btn-deck-next'),
   gRecapMemories: $<HTMLSpanElement>('g-recap-memories'),
   gRecapSources: $<HTMLSpanElement>('g-recap-sources'),
   gRecapAvg: $<HTMLSpanElement>('g-recap-avg'),
@@ -421,6 +456,7 @@ const els = {
   btnClaudeApply: $<HTMLButtonElement>('btn-claude-apply'),
   settingsModal: $<HTMLDivElement>('settings-modal'),
   cacheCap: $<HTMLSelectElement>('cache-cap'),
+  aiDefaultMemory: $<HTMLInputElement>('ai-default-memory'),
   btnSettingsCancel: $<HTMLButtonElement>('btn-settings-cancel'),
   btnSettingsSave: $<HTMLButtonElement>('btn-settings-save'),
   settingsFooterNote: $<HTMLSpanElement>('settings-footer-note'),
@@ -472,7 +508,7 @@ function shortVaultLabel(p: string): string {
 
 // ── View router ────────────────────────────────────────────────────────
 
-type Mode = 'atlas' | 'sources' | 'nodes' | 'corrections' | 'activity' | 'settings';
+type Mode = 'atlas' | 'sources' | 'activity' | 'status' | 'settings';
 // Graphnosis (mode='atlas') is the default landing pane post-unlock. The
 // internal symbol stays 'atlas' for backwards compatibility with the
 // existing DOM data-pane attributes.
@@ -489,10 +525,17 @@ function activateMode(mode: Mode): void {
     p.classList.toggle('hidden', p.dataset.pane !== mode);
   });
   // Lazy-load per mode
-  if (mode === 'nodes') void refreshNodesView();
   if (mode === 'sources') void refreshStats(); // sources list rendered inside refreshStats payload
   if (mode === 'atlas') void refreshAtlasView();
   if (mode === 'activity') void refreshActivityView();
+  if (mode === 'status') {
+    // Status pane re-uses the same data the Graphnosis recap reads.
+    // refreshStats() repopulates lastInspectorStats which then drives
+    // updateRecap + the forgotten/Purge footer.
+    void refreshStats();
+    updateRecap();
+    void fetchMcpStatus();
+  }
 }
 
 // Wire the rail buttons once on module load.
@@ -620,55 +663,9 @@ async function fetchMcpStatus(): Promise<void> {
   }
 }
 
-function renderPendingCorrections(pending: PendingDiff[]): void {
-  updatePendingBadge(pending.length);
-  if (pending.length === 0) {
-    els.pendingPanel.style.display = 'none';
-    return;
-  }
-  els.pendingPanel.style.display = '';
-  els.pendingBadge.textContent = String(pending.length);
-
-  els.pendingList.innerHTML = pending.map((d) => {
-    const when = new Date(d.createdAt).toLocaleString();
-    const reasoning = d.reasoning
-      ? `<div class="diff-reasoning">${escape(d.reasoning)}</div>`
-      : '';
-    const editRows = d.edits.map(renderDiffOp).join('');
-    const addRows = d.adds.map((a) => `
-      <div class="diff-op">
-        <span class="diff-op-kind add">ADD</span>
-        ${a.label ? `<span class="mcp-meta">${escape(a.label)}</span>` : ''}
-        <div class="diff-op-content">${escape(a.text)}</div>
-      </div>
-    `).join('');
-    const empty = editRows === '' && addRows === ''
-      ? '<p class="mcp-empty">Empty diff — nothing to apply.</p>'
-      : '';
-    return `
-      <div class="diff-card">
-        <div class="diff-meta">
-          <span>Graph: <strong>${escape(d.graphId)}</strong> · ${escape(when)}</span>
-          <span><code>${escape(d.diffId)}</code></span>
-        </div>
-        ${reasoning}
-        ${editRows}${addRows}${empty}
-        <div class="diff-actions">
-          <button class="btn-reject" data-diff-id="${escape(d.diffId)}">Reject</button>
-          <button class="btn-approve primary" data-diff-id="${escape(d.diffId)}">Approve</button>
-        </div>
-      </div>
-    `;
-  }).join('');
-
-  els.pendingList.querySelectorAll<HTMLButtonElement>('.btn-approve').forEach((b) => {
-    b.addEventListener('click', () => void handleCorrectionAction(b, 'apply'));
-  });
-  els.pendingList.querySelectorAll<HTMLButtonElement>('.btn-reject').forEach((b) => {
-    b.addEventListener('click', () => void handleCorrectionAction(b, 'reject'));
-  });
-}
-
+// Diff operation → small HTML chunk used inside the pending-correction
+// deck card. Same vocabulary the old Corrections rail pane used (EDIT /
+// SUPERSEDE / DELETE), just rendered inline now.
 function renderDiffOp(op: DiffEdit): string {
   const node = `<span class="mcp-meta">node <code>${escape(op.nodeId.slice(0, 12))}…</code></span>`;
   const reason = `<div class="diff-op-reason">${escape(op.reason)}</div>`;
@@ -686,50 +683,109 @@ function renderDiffOp(op: DiffEdit): string {
   </div>`;
 }
 
-async function handleCorrectionAction(btn: HTMLButtonElement, action: 'apply' | 'reject'): Promise<void> {
-  const diffId = btn.dataset.diffId ?? '';
+// Called from the deck card's Approve / Reject buttons. Mirrors the
+// behavior of the old Corrections rail pane: optimistically advance,
+// refresh state on completion.
+async function handlePendingDiffAction(diffId: string, action: 'apply' | 'reject'): Promise<void> {
   if (!diffId) return;
-  const card = btn.closest('.diff-card') as HTMLElement | null;
-  card?.querySelectorAll<HTMLButtonElement>('button').forEach((b) => { b.disabled = true; });
-  btn.textContent = action === 'apply' ? 'Applying…' : 'Rejecting…';
   try {
     if (action === 'apply') {
       await invoke('apply_correction', { diffId });
     } else {
       await invoke('reject_correction', { diffId });
     }
-    // Optimistic: remove the card, then refresh state to confirm.
-    card?.remove();
-    await Promise.all([fetchPendingCorrections(), refreshStats()]);
+    // Drop the diff from in-memory state so the deck queue doesn't
+    // re-surface it before the next poller tick refreshes truth.
+    graphnosisPendingDiffs = graphnosisPendingDiffs.filter((d) => d.diffId !== diffId);
+    if (action === 'apply') {
+      graphnosisTendedThisSession++;
+      updateRecap();
+    }
+    rebuildDeckQueue();
+    renderDeck();
+    void refreshStats();
+    void fetchPendingCorrections(); // confirm with sidecar
   } catch (e) {
     showError(`${action} failed: ${e}`);
-    card?.querySelectorAll<HTMLButtonElement>('button').forEach((b) => { b.disabled = false; });
-    btn.textContent = action === 'apply' ? 'Approve' : 'Reject';
   }
 }
 
 async function fetchPendingCorrections(): Promise<void> {
   try {
     const r = (await invoke('list_pending_corrections')) as { pending: PendingDiff[] };
-    renderPendingCorrections(r.pending);
+    // Store in module state; the deck queue reads from this on rebuild.
+    // Detect a change to know when to rebuild — avoids re-rendering the
+    // deck every poll tick when nothing's new.
+    const prevCount = graphnosisPendingDiffs.length;
+    const prevIds = new Set(graphnosisPendingDiffs.map((d) => d.diffId));
+    graphnosisPendingDiffs = r.pending;
+    updatePendingBadge(r.pending.length);
+    const changed = r.pending.length !== prevCount
+      || r.pending.some((d) => !prevIds.has(d.diffId));
+    if (changed && currentMode === 'atlas') {
+      // New diff arrived (or one was applied/rejected externally) → fold
+      // it into the deck queue and re-render the card.
+      rebuildDeckQueue();
+      renderDeck();
+    }
   } catch {
-    // Vault locked / sidecar gone — hide panel.
-    els.pendingPanel.style.display = 'none';
+    // Vault locked / sidecar gone — clear pending state silently.
+    graphnosisPendingDiffs = [];
+    updatePendingBadge(0);
   }
 }
 
 function startMcpPolling(): void {
   if (mcpPollTimer !== null) return;
-  // Immediate first paint for both panels.
+  // Immediate first paint for both panels + the mutation poll.
   void fetchMcpStatus();
   void fetchPendingCorrections();
+  void pollGraphMutations();
   // 3s is a good balance: fast enough that "I just opened Claude" or "Claude
   // just proposed a correction" feels responsive, slow enough not to burn
-  // IPC traffic on a static state.
+  // IPC traffic on a static state. The mutation poll piggybacks here so
+  // background auto-relink edges + any other sidecar-side change (Claude
+  // ingest, applyCorrection) shows up within a tick.
   mcpPollTimer = setInterval(() => {
     void fetchMcpStatus();
     void fetchPendingCorrections();
+    void pollGraphMutations();
   }, 3000);
+}
+
+// Per-graph "last seen mutation timestamp" cache. Compared against the
+// sidecar's `lastMutationAt` on every poll — when it advances, the
+// active engram's data gets reloaded so new edges (especially the
+// background auto-relink ones) become visible without a manual refresh.
+const lastSeenMutationAt: Map<string, number> = new Map();
+
+async function pollGraphMutations(): Promise<void> {
+  if (!atlasActiveGraph) return;
+  try {
+    const data = (await invoke('inspector_stats')) as StatsSummary;
+    lastInspectorStats = data;
+    let activeChanged = false;
+    for (const g of data.graphs) {
+      const prev = lastSeenMutationAt.get(g.graphId) ?? 0;
+      if (g.lastMutationAt > prev) {
+        lastSeenMutationAt.set(g.graphId, g.lastMutationAt);
+        if (g.graphId === atlasActiveGraph) activeChanged = true;
+      }
+    }
+    if (!activeChanged) return;
+    // Active engram mutated under us — reload nodes + edges. Cheap on
+    // small engrams, throttled by the 3s poll cadence on bigger ones.
+    await loadGraphnosisData(atlasActiveGraph);
+    // Re-render whichever surface is currently in front of the user.
+    applyGraphnosisFilter();           // dashboard or search-results
+    if (graphnosisSelectedId) renderDetailPane();
+    if (mainAtlas && graphnosisActiveTab === 'atlas') pushDataIntoAtlas();
+    // Refresh stats UI (recap rows + forgotten footer + corrections counter).
+    updateRecap();
+    updateGraphnosisForgottenRow();
+  } catch {
+    // Locked vault / sidecar gone — silent. Other polls will surface the error.
+  }
 }
 
 function stopMcpPolling(): void {
@@ -1090,9 +1146,22 @@ els.btnClaudeApply.addEventListener('click', async () => {
       : r.created_file
         ? 'Created Claude Desktop config and added the Graphnosis entry.'
         : 'Updated Claude Desktop\'s Graphnosis entry.';
+    // Read the current AI-routing toggle so we can tell the user whether
+    // Claude will be guided to use Graphnosis as default memory. Cheap IPC.
+    let routingLine = '';
+    try {
+      const s = (await invoke('get_settings')) as AppSettings;
+      routingLine = s.ai?.useAsDefaultMemory ?? true
+        ? `<p style="margin-top: 8px;">Claude will be guided to use Graphnosis as your <strong>default memory</strong> — calling <code>recall</code> proactively for personal-context questions, and <code>correct</code> instead of <code>remember</code> for fixes. Change this any time under <strong>Settings → AI client routing</strong>.</p>`
+        : `<p style="margin-top: 8px;">Claude will see Graphnosis as <strong>one memory option among many</strong> — no system-prompt-level routing. Change this under <strong>Settings → AI client routing</strong> if you want Graphnosis to lead.</p>`;
+    } catch {
+      // If we can't read settings (vault just locked, etc.) skip the line
+      // rather than block the success message.
+    }
     els.claudePreview.innerHTML = `
       <p><strong>${escape(headline)}</strong></p>
       <p style="margin-top: 6px;">${preservedLine}</p>
+      ${routingLine}
       <p style="margin-top: 10px; font-size: 11px; color: var(--fg-dim);">
         <strong>Config file:</strong> <code>${escape(r.config_path)}</code><br/>
         <strong>Relay script:</strong> <code>${escape(r.relay_path)}</code><br/>
@@ -1128,21 +1197,11 @@ function clampMs(n: number, lo: number, hi: number): number {
   return Math.max(lo, Math.min(hi, n));
 }
 
-function setInspectorDetailRadio(d: InspectorDetail): void {
-  const radios = els.settingsModal.querySelectorAll<HTMLInputElement>('input[name="inspector-detail"]');
-  radios.forEach((r) => { r.checked = r.value === d; });
-}
-
-function getInspectorDetailRadio(): InspectorDetail {
-  const checked = els.settingsModal.querySelector<HTMLInputElement>('input[name="inspector-detail"]:checked');
-  return checked?.value === 'detailed' ? 'detailed' : 'simple';
-}
-
-function updateNodesDetailBadge(): void {
-  els.nodesDetailMode.textContent = inspectorDetail === 'detailed'
-    ? '· detailed view'
-    : '· simple view';
-}
+// (setInspectorDetailRadio / getInspectorDetailRadio /
+//  updateNodesDetailBadge removed — Nodes pane is gone, inspector-detail
+//  setting deprecated. The Settings modal no longer renders that block.
+//  The setting still exists on AppSettings for backwards-compat with
+//  vaults written by older builds; it's just ignored.)
 
 function setForgetModeRadio(mode: ForgetMode): void {
   const radios = els.settingsModal.querySelectorAll<HTMLInputElement>('input[name="forget-mode"]');
@@ -1181,11 +1240,11 @@ els.btnSettings.addEventListener('click', async () => {
     setCacheModeRadio(s.contentCache.mode);
     setCacheCapDropdown(s.contentCache.maxBytesPerSource);
     setForgetModeRadio(s.forget.mode);
-    setInspectorDetailRadio(s.ui.inspectorDetail);
-    inspectorDetail = s.ui.inspectorDetail;
-    updateNodesDetailBadge();
     els.relayInitial.value = String(Math.round(s.mcpRelay.initialWaitMs / 1000));
     els.relayReconnect.value = String(Math.round(s.mcpRelay.reconnectMs / 1000));
+    // AI routing toggle: defaults to true for older settings payloads that
+    // don't include the field yet.
+    els.aiDefaultMemory.checked = s.ai?.useAsDefaultMemory ?? true;
   } catch (e) {
     els.settingsFooterNote.textContent = `Could not read settings: ${e}`;
   }
@@ -1213,19 +1272,19 @@ els.btnSettingsSave.addEventListener('click', async () => {
       RELAY_RECONNECT_MIN_MS,
       RELAY_RECONNECT_MAX_MS,
     );
-    const newInspectorDetail = getInspectorDetailRadio();
     await invoke('update_settings', {
       settings: {
         contentCache: { mode, maxBytesPerSource },
         forget: { mode: forgetMode },
         mcpRelay: { initialWaitMs, reconnectMs },
-        ui: { inspectorDetail: newInspectorDetail },
+        // ui.inspectorDetail is no longer wired to the UI (the Nodes
+        // pane that used it is gone). We still send the field through
+        // so the sidecar's settings.update Zod validator doesn't break
+        // on older client builds; default to 'simple'.
+        ui: { inspectorDetail: 'simple' as InspectorDetail },
+        ai: { useAsDefaultMemory: els.aiDefaultMemory.checked },
       },
     });
-    inspectorDetail = newInspectorDetail;
-    updateNodesDetailBadge();
-    // Re-render nodes view if it's currently visible.
-    if (currentMode === 'nodes') void refreshNodesView();
     els.settingsFooterNote.textContent = 'Saved.';
     setTimeout(() => els.settingsModal.classList.add('hidden'), 350);
   } catch (e) {
@@ -1337,138 +1396,24 @@ els.passphrase.addEventListener('keydown', (e) => {
   if (e.key === 'Enter') els.btnUnlock.click();
 });
 
-// ── Nodes view ────────────────────────────────────────────────────────
+// ── Loaded engrams metadata fetch ────────────────────────────────────
+//
+// Pre-Graphnosis-as-default, this used to also drive a separate Nodes
+// pane's graph picker. With Nodes removed, this just keeps the
+// in-memory engram catalog fresh so the rest of the App (Graphnosis
+// engram picker, atlas, wizards) has a current view of the vault.
 
 async function fetchGraphsMetadata(): Promise<void> {
   try {
     loadedGraphs = (await invoke('list_graphs_with_metadata')) as GraphWithMetadata[];
-    // Populate the graph picker. If only one graph, hide it; the label
-    // shows the graph elsewhere.
-    els.nodesGraphPicker.innerHTML = loadedGraphs
-      .map((g) => `<option value="${escape(g.graphId)}">${escape(g.metadata.displayName)} · ${escape(g.metadata.template)}</option>`)
-      .join('');
-    if (loadedGraphs.length === 0) {
-      nodesActiveGraph = null;
-      els.nodesGraphPicker.style.display = 'none';
-    } else {
-      els.nodesGraphPicker.style.display = loadedGraphs.length === 1 ? 'none' : '';
-      if (!nodesActiveGraph || !loadedGraphs.some((g) => g.graphId === nodesActiveGraph)) {
-        nodesActiveGraph = loadedGraphs[0]?.graphId ?? null;
-      }
-      els.nodesGraphPicker.value = nodesActiveGraph ?? '';
-    }
     // At unlock, render() fires fetchGraphsMetadata + activateMode in
     // parallel — by the time activateMode's lazy-load ran, loadedGraphs
     // was empty and refresh*View bailed out. Now that the fetch resolved,
     // re-trigger the currently-active mode so its view actually populates.
     if (currentMode === 'atlas') void refreshAtlasView();
-    if (currentMode === 'nodes') void refreshNodesView();
   } catch (e) {
     console.error('list_graphs_with_metadata failed', e);
   }
-}
-
-els.nodesGraphPicker.addEventListener('change', () => {
-  nodesActiveGraph = els.nodesGraphPicker.value;
-  void refreshNodesView();
-});
-
-els.nodesSearch.addEventListener('input', () => {
-  if (nodesSearchTimer !== null) clearTimeout(nodesSearchTimer);
-  nodesSearchTimer = setTimeout(() => void refreshNodesView(), 280);
-});
-
-// ⌘F focuses the search input when the Nodes view is active.
-document.addEventListener('keydown', (e) => {
-  if (e.metaKey && e.key === 'f' && currentMode === 'nodes') {
-    e.preventDefault();
-    els.nodesSearch.focus();
-    els.nodesSearch.select();
-  }
-});
-
-async function refreshNodesView(): Promise<void> {
-  if (!nodesActiveGraph) {
-    els.nodesList.innerHTML = '<p class="subtitle">No graph loaded yet.</p>';
-    els.nodesCount.textContent = '';
-    return;
-  }
-  const query = els.nodesSearch.value.trim();
-  els.nodesList.innerHTML = '<p class="subtitle">Loading…</p>';
-  try {
-    if (query) {
-      lastNodesRender = 'search';
-      const hits = (await invoke('search_nodes', { graphId: nodesActiveGraph, query, k: 50 })) as SearchHit[];
-      renderSearchHits(hits);
-    } else {
-      lastNodesRender = 'all';
-      const nodes = (await invoke('list_nodes', { graphId: nodesActiveGraph })) as NodeRecord[];
-      renderNodeList(nodes);
-    }
-  } catch (e) {
-    els.nodesList.innerHTML = `<p class="error">${escape(String(e))}</p>`;
-  }
-}
-
-function renderSearchHits(hits: SearchHit[]): void {
-  if (hits.length === 0) {
-    els.nodesList.innerHTML = '<p class="subtitle">No matches. Try a different phrasing — search is semantic, not keyword-strict.</p>';
-    els.nodesCount.textContent = '0 results';
-    return;
-  }
-  els.nodesCount.textContent = `${hits.length} result${hits.length === 1 ? '' : 's'}`;
-  els.nodesList.innerHTML = hits
-    .map((h) => {
-      const detail = inspectorDetail === 'detailed'
-        ? `<div class="nr-meta-detail">
-             score ${h.score.toFixed(3)} · id <code>${escape(h.nodeId.slice(0, 16))}…</code>${h.type ? ` · type <code>${escape(h.type)}</code>` : ''}
-           </div>`
-        : '';
-      return `<div class="node-row ${inspectorDetail === 'detailed' ? 'detailed' : ''}">
-        <div class="nr-preview">${escape(h.text.slice(0, 280))}${h.text.length > 280 ? '…' : ''}</div>
-        <div class="nr-meta">match score ${h.score.toFixed(3)}</div>
-        ${detail}
-      </div>`;
-    })
-    .join('');
-}
-
-function renderNodeList(nodes: NodeRecord[]): void {
-  if (nodes.length === 0) {
-    els.nodesList.innerHTML = '<p class="subtitle">No memories yet in this graph.</p>';
-    els.nodesCount.textContent = '';
-    return;
-  }
-  const active = nodes.filter((n) => n.confidence > 0.2 && (n.validUntil === undefined || n.validUntil > Date.now()));
-  els.nodesCount.textContent = `${active.length} active · ${nodes.length - active.length} forgotten`;
-
-  // Sort: active first, then by confidence desc.
-  const sorted = nodes.slice().sort((a, b) => {
-    const aActive = a.confidence > 0.2 && (a.validUntil === undefined || a.validUntil > Date.now()) ? 1 : 0;
-    const bActive = b.confidence > 0.2 && (b.validUntil === undefined || b.validUntil > Date.now()) ? 1 : 0;
-    if (aActive !== bActive) return bActive - aActive;
-    return b.confidence - a.confidence;
-  });
-
-  els.nodesList.innerHTML = sorted.slice(0, 200).map((n) => {
-    const isActive = n.confidence > 0.2 && (n.validUntil === undefined || n.validUntil > Date.now());
-    const cls = `node-row ${isActive ? '' : 'soft-deleted'} ${inspectorDetail === 'detailed' ? 'detailed' : ''}`;
-    const confidenceDot = isActive
-      ? (n.confidence >= 0.8 ? '●●●' : n.confidence >= 0.5 ? '●●○' : '●○○')
-      : '○○○';
-    const detail = inspectorDetail === 'detailed'
-      ? `<div class="nr-meta-detail">
-           confidence ${n.confidence.toFixed(2)} · id <code>${escape(n.id.slice(0, 16))}…</code>
-           ${n.validUntil ? ` · validUntil ${new Date(n.validUntil).toLocaleString()}` : ''}
-           ${n.sourceFile ? ` · source <code>${escape(n.sourceFile)}</code>` : ''}
-         </div>`
-      : '';
-    return `<div class="${cls}">
-      <span class="nr-confidence">${confidenceDot}</span>
-      <span class="nr-preview">${escape(n.contentPreview)}</span>
-      ${detail}
-    </div>`;
-  }).join('') + (sorted.length > 200 ? `<p class="subtitle" style="margin-top: 10px;">Showing 200 of ${sorted.length} — use search to narrow.</p>` : '');
 }
 
 // ── Graph wizard ──────────────────────────────────────────────────────
@@ -1552,12 +1497,13 @@ els.btnGwCreate.addEventListener('click', async () => {
     els.graphWizardModal.classList.add('hidden');
     await fetchGraphsMetadata();
     await refreshStats();
-    // Switch the user into Nodes view, pre-selected to the new graph, so
-    // they immediately see their empty new neighborhood and can start
-    // adding memories.
-    nodesActiveGraph = graphId;
-    els.nodesGraphPicker.value = graphId;
-    activateMode('nodes');
+    // Land the user on the Graphnosis pane pre-selected to the new
+    // engram. The Check-in dashboard's empty state will guide them
+    // toward dropping in a file or having Claude remember something.
+    atlasActiveGraph = graphId;
+    if (els.atlasGraphPicker) els.atlasGraphPicker.value = graphId;
+    activateMode('atlas');
+    void refreshAtlasView();
   } catch (e) {
     els.gwNote.textContent = `Create failed: ${e}`;
   } finally {
@@ -1579,14 +1525,15 @@ function updateStatusBar(connections: McpConnection[]): void {
   }
 }
 
+// Pending-corrections badge — now lives on the Graphnosis rail item.
+// Surfaces the same count the deck queue is about to show as the first
+// few cards; clicking the rail item routes the user there directly.
 function updatePendingBadge(count: number): void {
   if (count > 0) {
     els.railCorrectionsBadge.classList.remove('hidden');
     els.railCorrectionsBadge.textContent = String(count);
-    els.correctionsEmpty.classList.add('hidden');
   } else {
     els.railCorrectionsBadge.classList.add('hidden');
-    els.correctionsEmpty.classList.remove('hidden');
   }
 }
 
@@ -1612,9 +1559,9 @@ let atlasLoadedForGraph: string | null = null; // guards re-fetch when picker do
 let lastEdgesByGraph: Map<string, { directed: AtlasDirectedEdge[]; undirected: AtlasUndirectedEdge[] }> = new Map();
 
 function pickAtlasGraph(): string | null {
-  // Prefer the user's Nodes-view selection, fall back to the first graph,
-  // so the Atlas feels consistent with the rest of the app.
-  return nodesActiveGraph ?? loadedGraphs[0]?.graphId ?? null;
+  // First-loaded engram is the default. The Atlas picker UI lets users
+  // switch at any time, and the choice persists in `atlasActiveGraph`.
+  return loadedGraphs[0]?.graphId ?? null;
 }
 
 function nodesToAtlas(records: NodeRecord[]): AtlasNode[] {
@@ -1817,6 +1764,33 @@ function rebuildDeckQueue(): void {
   // review in isolation. Path 1 of the chunking refactor: fix the surface
   // without changing the underlying ingest.
   const reviewable = active.filter((n) => !isStructuralNoise(n));
+
+  // Pending corrections always go to the TOP of the queue — these are
+  // explicit AI-proposed diffs the user already gestured at consenting
+  // to (by asking Claude to correct something). Don't bury them behind
+  // low-confidence churn.
+  const pendingCards: DeckItem[] = graphnosisPendingDiffs
+    .filter((d) => !graphnosisSessionDispatched.has(`diff:${d.diffId}`))
+    .map((diff): DeckItem => {
+      // Find a representative node for the breadcrumb (first edit's
+      // target). For pure `adds` diffs (no edits), synthesize a stub.
+      const firstEdit = diff.edits[0];
+      const refNode = firstEdit
+        ? graphnosisAllNodes.find((n) => n.id === firstEdit.nodeId)
+        : undefined;
+      const stubNode: NodeRecord = refNode ?? {
+        id: `pending:${diff.diffId}`,
+        confidence: 1,
+        sourceFile: '',
+        contentPreview: diff.reasoning ?? '(new memory proposed by Claude)',
+      };
+      return {
+        node: stubNode,
+        prompt: 'Claude proposed an update to your memory. Approve or reject?',
+        reason: 'pending-correction',
+        pendingDiff: diff,
+      };
+    });
   // Low-confidence first — these are the most likely to be wrong.
   const lowConfidence = reviewable
     .filter((n) => n.confidence < 0.65 && !graphnosisSessionDispatched.has(n.id))
@@ -1839,15 +1813,71 @@ function rebuildDeckQueue(): void {
       prompt: "Not connected to anything yet — keep it, or was it a one-off?",
       reason: 'orphan',
     }));
-  graphnosisDeck = [...lowConfidence, ...orphans];
+  // Then "connect" cards — nodes whose entities ALSO appear in ≥3 other
+  // active nodes. These are entity bridges the user can densify with
+  // typed relationships in one pass. We pick the strongest bridge entity
+  // for the prompt copy ("This memory mentions {Stela}…"). Excludes
+  // nodes already surfaced as low-confidence or orphan to keep the deck
+  // varied.
+  const taken = new Set<string>([
+    ...lowConfidence.map((it) => it.node.id),
+    ...orphans.map((it) => it.node.id),
+  ]);
+  const entityCounts = computeEntityCounts(reviewable);
+  const connect = reviewable
+    .filter((n) => !taken.has(n.id) && !graphnosisSessionDispatched.has(n.id))
+    .map((n) => {
+      // Score by the strongest bridge entity this node carries.
+      const ents = n.entities ?? [];
+      let bestEnt: string | null = null;
+      let bestCount = 0;
+      for (const e of ents) {
+        const c = entityCounts.get(e) ?? 0;
+        if (c >= 4 && c > bestCount) {
+          bestEnt = e;
+          bestCount = c;
+        }
+      }
+      return bestEnt ? { node: n, bridge: bestEnt, count: bestCount } : null;
+    })
+    .filter((x): x is { node: NodeRecord; bridge: string; count: number } => x !== null)
+    .sort((a, b) => b.count - a.count)
+    .slice(0, 4)
+    .map(({ node, bridge }): DeckItem => ({
+      node,
+      bridgeEntity: bridge,
+      prompt: `This memory mentions ${bridge}. Want to connect it to other memories where ${bridge} appears?`,
+      reason: 'connect',
+    }));
+
+  // Pending corrections lead — they're explicit, time-sensitive, and
+  // the user already consented to the correction flow by asking Claude.
+  graphnosisDeck = [...pendingCards, ...lowConfidence, ...orphans, ...connect];
   graphnosisDeckIndex = 0;
 }
 
+// Tally entity → occurrence count across the reviewable corpus. Used by
+// the connect-card source to detect strong bridges (entities mentioned
+// in many memories, where typed relationships will be richest).
+function computeEntityCounts(nodes: NodeRecord[]): Map<string, number> {
+  const out = new Map<string, number>();
+  for (const n of nodes) {
+    for (const e of n.entities ?? []) {
+      out.set(e, (out.get(e) ?? 0) + 1);
+    }
+  }
+  return out;
+}
+
 function renderDeck(): void {
+  // Sync nav button disabled states regardless of which branch we hit.
+  syncDeckNavButtons();
   if (graphnosisDeck.length === 0 || graphnosisDeckIndex >= graphnosisDeck.length) {
-    // Empty state: praise the user for whatever they did this session.
+    // Empty state: clear the pinned card-head (no card to show) and
+    // praise the user for whatever they did this session in the body.
     const done = graphnosisTendedThisSession;
     els.gDeckProgress.textContent = '';
+    els.gDeckCardHead.innerHTML = '';
     els.gDeckCard.innerHTML = `
       <div class="g-deck-empty">
         <div class="g-deck-empty-grade">✓</div>
@@ -1866,14 +1896,32 @@ function renderDeck(): void {
   const breadcrumb = renderBreadcrumb(n);
   const cleanContent = cleanDisplayContent(n.contentPreview);
   els.gDeckProgress.textContent = `${graphnosisDeckIndex + 1} / ${graphnosisDeck.length}`;
+  // Pending-correction cards are a special path — they render the AI's
+  // proposed diff (edits + adds + reasoning) in the body and replace
+  // the standard 4 actions with Approve / Reject / Skip.
+  if (item.reason === 'pending-correction' && item.pendingDiff) {
+    renderPendingCorrectionCard(item.pendingDiff, breadcrumb);
+    return;
+  }
+  // Orphan + connect cards get the suggestion panel inline.
+  // Low-confidence cards get a small "+ Connect this memory" button that
+  // expands the panel on demand — keeps the trivia-fast feel for the
+  // common "is this still right?" check.
+  const showsPanel = item.reason === 'orphan' || item.reason === 'connect';
+  // Write the prompt + content into the PINNED card-head slot (sibling
+  // of the deck header, both inside .g-deck-pinned). The suggestion
+  // panel + action buttons go into the scrolling card body below.
+  els.gDeckCardHead.innerHTML = `
+    <p class="g-deck-prompt">${escape(item.prompt)}</p>
+    ${breadcrumb ? `<p class="g-deck-breadcrumb">${breadcrumb}</p>` : ''}
+    <p class="g-deck-content">${escape(cleanContent)}</p>
+    <p class="g-deck-meta">trust ${n.confidence.toFixed(2)}</p>
+    ${!showsPanel
+      ? `<button class="g-deck-connect-toggle" data-deck-action="open-connect">+ Connect this memory</button>`
+      : ''}
+  `;
   els.gDeckCard.innerHTML = `
-    <div>
-      <p class="g-deck-prompt">${escape(item.prompt)}</p>
-      ${breadcrumb ? `<p class="g-deck-breadcrumb">${breadcrumb}</p>` : ''}
-      <p class="g-deck-content">${escape(cleanContent)}</p>
-      <p class="g-deck-meta">trust ${n.confidence.toFixed(2)}</p>
-      ${item.reason === 'orphan' ? `<div id="g-deck-related" class="g-deck-related" data-node-id="${escape(n.id)}"></div>` : ''}
-    </div>
+    <div id="g-deck-suggest" class="g-deck-suggest${showsPanel ? '' : ' hidden'}" data-node-id="${escape(n.id)}"></div>
     <div class="g-deck-actions">
       <button class="deck-ok" data-deck-action="ok">✓ Looks right</button>
       <button data-deck-action="fix">✏️ Fix</button>
@@ -1881,73 +1929,133 @@ function renderDeck(): void {
       <button data-deck-action="skip">Skip</button>
     </div>
   `;
-  // Wire actions. The card buttons are short-lived (re-rendered on every
-  // dispatch), so direct binding is fine.
-  els.gDeckCard.querySelectorAll<HTMLButtonElement>('button[data-deck-action]').forEach((btn) => {
-    const action = btn.dataset['deckAction'] as 'ok' | 'fix' | 'forget' | 'skip' | undefined;
+  // Wire actions — query BOTH the card-head (which now holds the
+  // "+ Connect this memory" toggle for low-conf cards) AND the card body
+  // (which holds Looks-right / Fix / Forget / Skip).
+  const actionButtons: HTMLButtonElement[] = [
+    ...Array.from(els.gDeckCardHead.querySelectorAll<HTMLButtonElement>('button[data-deck-action]')),
+    ...Array.from(els.gDeckCard.querySelectorAll<HTMLButtonElement>('button[data-deck-action]')),
+  ];
+  actionButtons.forEach((btn) => {
+    const action = btn.dataset['deckAction'] as
+      | 'ok' | 'fix' | 'forget' | 'skip' | 'open-connect' | undefined;
     if (!action) return;
+    if (action === 'open-connect') {
+      btn.addEventListener('click', () => {
+        const slot = document.getElementById('g-deck-suggest');
+        if (!slot) return;
+        slot.classList.remove('hidden');
+        btn.classList.add('hidden');
+        void renderSuggestionPanel({
+          sourceNode: n,
+          slot,
+          variant: 'deck',
+          onConnected: (count) => onDeckConnected(count, n),
+        });
+      });
+      return;
+    }
     btn.addEventListener('click', () => handleDeckAction(action, n));
   });
-  // For orphans, fetch related candidates and surface them inline so the
-  // user can promote an implicit similarity into a real graph edge. We
-  // never block the card render on this — fills in async.
-  if (item.reason === 'orphan') {
-    void fillDeckRelated(n.id);
+  // Mount the suggestion panel for orphan + connect variants.
+  if (showsPanel) {
+    const slot = document.getElementById('g-deck-suggest');
+    if (slot) {
+      void renderSuggestionPanel({
+        sourceNode: n,
+        slot,
+        variant: 'deck',
+        onConnected: (count) => onDeckConnected(count, n),
+      });
+    }
   }
 }
 
-async function fillDeckRelated(nodeId: string): Promise<void> {
-  const slot = document.getElementById('g-deck-related');
-  if (!slot || slot.dataset['nodeId'] !== nodeId) return;
-  const items = await getRelatedMemories(nodeId);
-  const slotNow = document.getElementById('g-deck-related');
-  if (!slotNow || slotNow.dataset['nodeId'] !== nodeId) return;
-  if (items.length === 0) {
-    // No candidates → no panel; the existing prompt ("…was it a one-off?")
-    // already tells the user this might just be a singleton.
-    slotNow.innerHTML = '';
+// Called when the suggestion panel inside a deck card finishes (Connect
+// or Cancel). count === 0 is the Cancel / close path: do NOT dispatch
+// the card (it can come back in a future session) and re-render the
+// deck card so the low-conf variant collapses its panel back to the
+// "+ Connect" toggle, and the orphan/connect variants reset the panel's
+// own internal state. count > 0 is a real Connect: tick the counter,
+// mark the source dispatched, flash, advance.
+function onDeckConnected(count: number, sourceNode: NodeRecord): void {
+  if (count === 0) {
+    renderDeck();
     return;
   }
-  // Top 2 to keep the card light. Each row has a one-tap Link button.
-  const top = items.slice(0, 2);
-  slotNow.innerHTML = `
-    <p class="g-deck-related-title">…sounds related to:</p>
-    ${top.map((it) => {
-      const clean = cleanDisplayContent(it.contentPreview);
-      const truncated = clean.length > 70 ? clean.slice(0, 67) + '…' : clean;
-      return `
-      <div class="g-deck-related-row" data-neighbor="${escape(it.nodeId)}">
-        <span class="g-deck-related-text" title="${escape(it.contentPreview)}">
-          ${escape(truncated)}
-        </span>
-        <button class="btn-deck-link" data-neighbor="${escape(it.nodeId)}" title="Make this connection real">🔗 Link</button>
-      </div>`;
-    }).join('')}
+  graphnosisSessionDispatched.add(sourceNode.id);
+  graphnosisTendedThisSession += count;
+  updateRecap();
+  void showDeckAck(`connected ${count}`, 'ok').then(() => advanceDeck());
+}
+
+// Render a pending-correction card — replaces the standard layout. The
+// pinned head shows the AI's reasoning + a stable identifier; the body
+// shows the edit/supersede/delete operations the diff would apply, plus
+// Approve / Reject / Skip actions.
+function renderPendingCorrectionCard(diff: PendingDiff, breadcrumb: string): void {
+  const when = new Date(diff.createdAt).toLocaleString();
+  const reasoning = diff.reasoning
+    ? `<p class="g-deck-content" style="border-left-color: var(--accent);">${escape(diff.reasoning)}</p>`
+    : `<p class="g-deck-content" style="border-left-color: var(--accent);">(no reasoning provided)</p>`;
+  // The pinned head: prompt + breadcrumb + AI reasoning + meta.
+  els.gDeckCardHead.innerHTML = `
+    <p class="g-deck-prompt">Claude proposed an update to your memory. Approve or reject?</p>
+    ${breadcrumb ? `<p class="g-deck-breadcrumb">${breadcrumb}</p>` : ''}
+    ${reasoning}
+    <p class="g-deck-meta">Proposed ${escape(when)} · in <strong>${escape(diff.graphId)}</strong> · <code>${escape(diff.diffId.slice(0, 8))}…</code></p>
   `;
-  slotNow.querySelectorAll<HTMLButtonElement>('.btn-deck-link').forEach((btn) => {
-    const neighborId = btn.dataset['neighbor'];
-    if (!neighborId) return;
-    btn.addEventListener('click', () => void handleDeckLink(nodeId, neighborId, btn));
+  // The body: edit/supersede/delete operations + Add operations,
+  // followed by the Approve / Reject / Skip action row.
+  const editRows = diff.edits.map(renderDiffOp).join('');
+  const addRows = diff.adds.map((a) => `
+    <div class="diff-op">
+      <span class="diff-op-kind add">ADD</span>
+      ${a.label ? `<span class="mcp-meta">${escape(a.label)}</span>` : ''}
+      <div class="diff-op-content">${escape(a.text)}</div>
+    </div>
+  `).join('');
+  const empty = editRows === '' && addRows === ''
+    ? '<p class="subtitle" style="padding: 12px;">Empty diff — nothing to apply.</p>'
+    : '';
+  els.gDeckCard.innerHTML = `
+    <div class="g-pending-ops">
+      ${editRows}${addRows}${empty}
+    </div>
+    <div class="g-deck-actions">
+      <button class="deck-ok" data-deck-action="approve">✓ Approve</button>
+      <button data-deck-action="reject">✗ Reject</button>
+      <button data-deck-action="skip">Skip</button>
+    </div>
+  `;
+  // Wire Approve / Reject / Skip.
+  const actionButtons = Array.from(els.gDeckCard.querySelectorAll<HTMLButtonElement>('button[data-deck-action]'));
+  actionButtons.forEach((btn) => {
+    const action = btn.dataset['deckAction'];
+    btn.addEventListener('click', () => {
+      if (action === 'skip') {
+        // Mark this diff as session-skipped so it doesn't keep reappearing
+        // within this session. (It WILL come back if the user re-opens
+        // the vault — pending diffs are persisted in the sidecar.)
+        graphnosisSessionDispatched.add(`diff:${diff.diffId}`);
+        rebuildDeckQueue();
+        advanceDeck();
+        return;
+      }
+      if (action === 'approve' || action === 'reject') {
+        // Mark as dispatched IMMEDIATELY so it doesn't flicker back from
+        // a stale poll while the IPC is in flight.
+        graphnosisSessionDispatched.add(`diff:${diff.diffId}`);
+        void handlePendingDiffAction(diff.diffId, action === 'approve' ? 'apply' : 'reject');
+      }
+    });
   });
 }
 
-async function handleDeckLink(fromId: string, toId: string, btn: HTMLButtonElement): Promise<void> {
-  btn.disabled = true;
-  btn.textContent = 'Linking…';
-  const ok = await linkNodes(fromId, toId);
-  if (!ok) {
-    btn.disabled = false;
-    btn.textContent = '🔗 Link';
-    return;
-  }
-  // Treat a confirmed link the same as a "Looks right" — counts as a
-  // tend, advances the deck, brief ack.
-  graphnosisSessionDispatched.add(fromId);
-  graphnosisTendedThisSession++;
-  updateRecap();
-  await showDeckAck('linked', 'ok');
-  advanceDeck();
-}
+// (fillDeckRelated + handleDeckLink removed — replaced by the shared
+// renderSuggestionPanel mounted inline in renderDeck for orphan + connect
+// cards and on-demand for low-confidence cards via the "+ Connect this
+// memory" toggle.)
 
 async function handleDeckAction(
   action: 'ok' | 'fix' | 'forget' | 'skip',
@@ -1965,7 +2073,11 @@ async function handleDeckAction(
     return;
   }
   if (action === 'skip') {
-    graphnosisSessionDispatched.add(node.id);
+    // Skip just advances — does NOT mark the card permanently dispatched.
+    // The user can navigate back to it within this session via the
+    // deck nav arrows, and a future session will surface it again if
+    // it still meets the queue criteria. (Looks-right / Forget / Fix
+    // remain permanent because they encode a real user judgment.)
     advanceDeck();
     return;
   }
@@ -2018,6 +2130,45 @@ function advanceDeck(): void {
   graphnosisDeckIndex++;
   renderDeck();
 }
+
+// Go back to the previous card without un-doing any committed action.
+// Useful when the user wants to revisit a card they skipped or change
+// their mind mid-review. Clamped at index 0.
+function previousDeck(): void {
+  if (graphnosisDeckIndex > 0) {
+    graphnosisDeckIndex--;
+    renderDeck();
+  }
+}
+
+// Step forward through the deck without taking an action. Mirror of
+// previousDeck — lets the user scan to a specific card before deciding.
+// Clamped to the last card so the empty state is only reached by
+// dispatching all cards (which is the deserved-celebration moment).
+function skipForwardDeck(): void {
+  if (graphnosisDeckIndex < graphnosisDeck.length - 1) {
+    graphnosisDeckIndex++;
+    renderDeck();
+  }
+}
+
+// Greys out the deck-header nav arrows at the edges of the queue.
+// Next is disabled once we're viewing the LAST card (10 / 10): there's
+// no "skip past the end" navigation; the empty-state lives there on
+// its own. Prev is disabled at the first card.
+function syncDeckNavButtons(): void {
+  if (els.btnDeckPrev) {
+    els.btnDeckPrev.disabled = graphnosisDeckIndex <= 0;
+  }
+  if (els.btnDeckNext) {
+    els.btnDeckNext.disabled = graphnosisDeckIndex >= graphnosisDeck.length - 1;
+  }
+}
+
+// Wire the nav buttons once at module load — same pattern as the rail
+// buttons. The render() loop only updates their disabled state.
+els.btnDeckPrev?.addEventListener('click', () => previousDeck());
+els.btnDeckNext?.addEventListener('click', () => skipForwardDeck());
 
 function flashDeck(): void {
   // CSS handles the visual pulse via the `flash` class.
@@ -2373,13 +2524,39 @@ function renderDetailPane(): void {
     </div>
     ${actionRow}
     ${renderConnectionsBlock(conns)}
-    <div id="g-detail-related" class="g-detail-related" data-node-id="${escape(node.id)}"></div>
+    <div class="g-detail-suggest-wrap">
+      <button id="btn-detail-connect" class="g-detail-connect-toggle">
+        + Connect this memory
+      </button>
+      <div id="g-detail-suggest" class="g-detail-suggest hidden" data-node-id="${escape(node.id)}"></div>
+    </div>
   `;
-  // Kick off the related-memories lookup asynchronously. We don't block
-  // the detail-pane render on it — the panel fills in once the IPC
-  // returns. data-node-id guards against a stale fetch overwriting a
-  // newer selection.
-  void fillRelatedPanel(node.id);
+  // The suggestion panel is collapsed by default in the detail pane.
+  // Clicking the button mounts the shared renderer; on Connect or Cancel
+  // it collapses again and the Connections section refreshes via
+  // renderDetailPane (loadGraphnosisData fired inside linkOne).
+  document.getElementById('btn-detail-connect')?.addEventListener('click', () => {
+    const slot = document.getElementById('g-detail-suggest');
+    const btn = document.getElementById('btn-detail-connect');
+    if (!slot || !btn) return;
+    slot.classList.remove('hidden');
+    btn.classList.add('hidden');
+    void renderSuggestionPanel({
+      sourceNode: node,
+      slot,
+      variant: 'detail',
+      onConnected: (count) => {
+        // Collapse + re-render the detail pane regardless of count so
+        // the Connections section picks up any new edges (and so the
+        // button reappears for the next round).
+        if (count > 0) {
+          graphnosisTendedThisSession += count;
+          updateRecap();
+        }
+        renderDetailPane();
+      },
+    });
+  });
 
   // Wire the action buttons. All reads of selection/state happen at click
   // time, not closure capture — the latter caused a real bug where the
@@ -2422,33 +2599,58 @@ interface ConnRow {
   category: EdgeCategory;
   weight: number;
   direction: 'out' | 'in' | 'undirected';
+  /** User-chosen label (the SDK's `evidence` field on directed edges).
+   *  Set when the edge was created via the typed-relationship picker
+   *  with a non-default label (e.g. "Works at" for collaborated-on).
+   *  Auto-extracted edges don't carry evidence. */
+  evidence?: string;
 }
 
 function buildConnectionsForNode(nodeId: string): ConnRow[] {
-  // Prefer Atlas's enriched view (it knows category bucketing); fall back
-  // to cached edges if Atlas isn't mounted yet (List tab, fresh load).
-  if (mainAtlas) {
-    return mainAtlas.getConnections(nodeId).map((c) => ({
-      neighborId: c.neighborId,
-      type: c.type,
-      category: c.category,
-      weight: c.weight,
-      direction: c.direction,
-    }));
-  }
-  // Atlas not mounted — derive a coarse view from raw edges. Category is
-  // assigned 'semantic' as a neutral default; we'll re-render with the
-  // real category once Atlas is opened.
+  // Always read from cached raw edges so we get the `evidence` field on
+  // directed edges (the Atlas's getConnections doesn't expose it yet —
+  // can be lifted there in a follow-up). For the category we fall back
+  // to Atlas's categorizer when available, otherwise 'semantic'.
   const edges = atlasActiveGraph ? lastEdgesByGraph.get(atlasActiveGraph) : undefined;
-  if (!edges) return [];
+  if (!edges) {
+    // Fallback: if no cached edges yet, ask the Atlas (which keeps its
+    // own copy). Loses evidence in this branch — acceptable since it
+    // only fires before the first data load completes.
+    if (mainAtlas) {
+      return mainAtlas.getConnections(nodeId).map((c) => ({
+        neighborId: c.neighborId,
+        type: c.type,
+        category: c.category,
+        weight: c.weight,
+        direction: c.direction,
+      }));
+    }
+    return [];
+  }
+  // Atlas-aware category lookup so directed/undirected edges render in
+  // the right color in the detail pane. Falls back to 'semantic' when
+  // Atlas isn't mounted yet.
+  const categoryFor = (type: string): EdgeCategory => {
+    if (!mainAtlas) return 'semantic';
+    const conns = mainAtlas.getConnections(nodeId);
+    const match = conns.find((c) => c.type === type);
+    return match?.category ?? 'semantic';
+  };
   const out: ConnRow[] = [];
   for (const e of edges.directed) {
-    if (e.from === nodeId) out.push({ neighborId: e.to, type: e.type, category: 'semantic', weight: e.weight, direction: 'out' });
-    else if (e.to === nodeId) out.push({ neighborId: e.from, type: e.type, category: 'semantic', weight: e.weight, direction: 'in' });
+    if (e.from === nodeId) {
+      const row: ConnRow = { neighborId: e.to, type: e.type, category: categoryFor(e.type), weight: e.weight, direction: 'out' };
+      if (e.evidence) row.evidence = e.evidence;
+      out.push(row);
+    } else if (e.to === nodeId) {
+      const row: ConnRow = { neighborId: e.from, type: e.type, category: categoryFor(e.type), weight: e.weight, direction: 'in' };
+      if (e.evidence) row.evidence = e.evidence;
+      out.push(row);
+    }
   }
   for (const e of edges.undirected) {
-    if (e.a === nodeId) out.push({ neighborId: e.b, type: e.type, category: 'semantic', weight: e.weight, direction: 'undirected' });
-    else if (e.b === nodeId) out.push({ neighborId: e.a, type: e.type, category: 'semantic', weight: e.weight, direction: 'undirected' });
+    if (e.a === nodeId) out.push({ neighborId: e.b, type: e.type, category: categoryFor(e.type), weight: e.weight, direction: 'undirected' });
+    else if (e.b === nodeId) out.push({ neighborId: e.a, type: e.type, category: categoryFor(e.type), weight: e.weight, direction: 'undirected' });
   }
   return out;
 }
@@ -2469,13 +2671,17 @@ function renderConnectionsBlock(conns: ConnRow[]): string {
     if (list.length === 0) return '';
     return `<div class="g-detail-conn-section">
       <div class="g-detail-conn-title">${escape(label)} (${list.length})</div>
-      ${list.map((c) => `
-        <div class="g-detail-conn-row" data-neighbor="${escape(c.neighborId)}" title="${escape(c.type)} · weight ${c.weight.toFixed(2)}">
+      ${list.map((c) => {
+        // Prefer the user-chosen label (evidence) over a humanized
+        // SDK type. Auto-extracted edges fall back to humanization
+        // ("shares-entity" → "Same topic"-ish via the catalog).
+        const displayLabel = c.evidence ?? humanizeSdkType(c.type, c.direction !== 'undirected');
+        return `<div class="g-detail-conn-row" data-neighbor="${escape(c.neighborId)}" title="${escape(c.type)} · weight ${c.weight.toFixed(2)}${c.evidence ? ` · evidence: ${c.evidence}` : ''}">
           <span class="g-detail-conn-arrow" style="color: ${cssColorForCategory(c.category)};">${arrow}</span>
           <span class="g-detail-conn-text">${escape(neighborLabel(c.neighborId))}</span>
-          <span class="g-detail-conn-type">${escape(c.type)}</span>
-        </div>
-      `).join('')}
+          <span class="g-detail-conn-type">${escape(displayLabel)}</span>
+        </div>`;
+      }).join('')}
     </div>`;
   };
   return `<p class="brain-subtitle" style="margin: 14px 0 4px;">${conns.length} connection${conns.length === 1 ? '' : 's'}</p>
@@ -2484,70 +2690,9 @@ function renderConnectionsBlock(conns: ConnRow[]): string {
     ${section('Mutual', '↔', undirs)}`;
 }
 
-// Async: fetch BGE-related memories for a node and patch them into the
-// detail pane's #g-detail-related slot. Guards against stale fills via
-// the slot's data-node-id (selection may have changed during the await).
-async function fillRelatedPanel(nodeId: string): Promise<void> {
-  const slot = document.getElementById('g-detail-related');
-  if (!slot || slot.dataset['nodeId'] !== nodeId) return;
-  slot.innerHTML = '<p class="atlas-tip" style="margin-top: 12px;">Looking for similar memories…</p>';
-  const items = await getRelatedMemories(nodeId);
-  // Re-check the slot in case the user clicked another memory while we
-  // were waiting on the IPC.
-  const slotNow = document.getElementById('g-detail-related');
-  if (!slotNow || slotNow.dataset['nodeId'] !== nodeId) return;
-  if (items.length === 0) {
-    slotNow.innerHTML = '';
-    return;
-  }
-  slotNow.innerHTML = `
-    <p class="brain-subtitle" style="margin: 14px 0 4px;">
-      Related by meaning
-      <span style="font-style: normal; color: var(--fg-dim); margin-left: 6px;">
-        (no link yet — Link them to make it real)
-      </span>
-    </p>
-    ${items.map((it) => `
-      <div class="g-related-row" data-neighbor="${escape(it.nodeId)}">
-        <div class="g-related-text" title="${escape(it.contentPreview)}">
-          ${escape(it.contentPreview.length > 90 ? it.contentPreview.slice(0, 87) + '…' : it.contentPreview)}
-        </div>
-        <div class="g-related-actions">
-          <button class="btn-related-link" data-neighbor="${escape(it.nodeId)}" title="Create a 'related-to' link between these two memories">🔗 Link</button>
-          <button class="btn-related-open" data-neighbor="${escape(it.nodeId)}" title="Open this memory in the inspector">Open</button>
-        </div>
-      </div>
-    `).join('')}
-  `;
-  // Wire the action buttons.
-  slotNow.querySelectorAll<HTMLButtonElement>('.btn-related-link').forEach((btn) => {
-    const neighborId = btn.dataset['neighbor'];
-    if (!neighborId) return;
-    btn.addEventListener('click', () => void handleLinkClick(nodeId, neighborId, btn));
-  });
-  slotNow.querySelectorAll<HTMLButtonElement>('.btn-related-open').forEach((btn) => {
-    const neighborId = btn.dataset['neighbor'];
-    if (!neighborId) return;
-    btn.addEventListener('click', () => selectGraphnosisNode(neighborId));
-  });
-}
-
-async function handleLinkClick(fromId: string, toId: string, btn: HTMLButtonElement): Promise<void> {
-  btn.disabled = true;
-  btn.textContent = 'Linking…';
-  const ok = await linkNodes(fromId, toId);
-  if (ok) {
-    graphnosisTendedThisSession++;
-    updateRecap();
-    // The detail pane will refresh from the new edge state. Easiest: just
-    // re-render — buildConnectionsForNode + the Related fetcher will both
-    // reflect the new link.
-    renderDetailPane();
-  } else {
-    btn.disabled = false;
-    btn.textContent = '🔗 Link';
-  }
-}
+// (fillRelatedPanel + handleLinkClick removed — replaced by the shared
+// renderSuggestionPanel mounted on demand via the "+ Connect this memory"
+// button under the detail pane's Connections section.)
 
 // ── Inline edit + forget actions ──────────────────────────────────────
 
@@ -2606,6 +2751,190 @@ async function saveInlineEdit(): Promise<void> {
       saveBtn.textContent = 'Save correction';
     }
   }
+}
+
+// ── Relationship labels catalog ───────────────────────────────────────
+//
+// User-facing label vocabulary for typed-relationship creation. Each
+// label maps to an SDK edge type + directed flag. Directed labels carry
+// the user's chosen string as the SDK's `evidence` field so the detail
+// pane can render the user's vocabulary ("Works at") instead of the
+// structural SDK type ("collaborated-on"). Undirected labels use the
+// SDK type itself as the label.
+//
+// Order matters — the suggestion engine returns labels in this order
+// after filtering by nodeType match, so the primary auto-pick is the
+// first matching label per pair.
+
+type DirectedSdkType =
+  | 'causes' | 'depends-on' | 'precedes' | 'contains' | 'defines'
+  | 'cites' | 'contradicts' | 'supports' | 'supersedes' | 'discussed-in'
+  | 'knows' | 'works-with' | 'reports-to' | 'collaborated-on'
+  | 'prefers' | 'summarizes';
+
+type UndirectedSdkType =
+  | 'similar-to' | 'co-occurs' | 'shares-entity' | 'shares-topic'
+  | 'same-source' | 'same-person' | 'related-to';
+
+interface RelationshipLabel {
+  id: string;                   // stable id used by the popover for keying
+  label: string;                // user-facing string (also the evidence for directed)
+  sdkType: DirectedSdkType | UndirectedSdkType;
+  directed: boolean;
+  /** nodeType pairs this label is the natural default for. The empty
+   *  array means it's never auto-suggested — only available via the
+   *  "More…" expansion in the popover. The wildcard `'*'` matches any
+   *  nodeType. */
+  defaultFor: Array<[string, string]>;
+}
+
+const RELATIONSHIP_LABELS: RelationshipLabel[] = [
+  // Person ↔ person — directed
+  { id: 'knows',       label: 'Knows',           sdkType: 'knows',           directed: true,
+    defaultFor: [['person', 'person']] },
+  { id: 'works-with',  label: 'Works with',      sdkType: 'works-with',      directed: true,
+    defaultFor: [['person', 'person']] },
+  { id: 'reports-to',  label: 'Reports to',      sdkType: 'reports-to',      directed: true,
+    defaultFor: [['person', 'person']] },
+
+  // Person ↔ person — undirected (same identity)
+  { id: 'same-person', label: 'Same person',     sdkType: 'same-person',     directed: false,
+    defaultFor: [['person', 'person']] },
+
+  // Person → organization / project / document — directed
+  { id: 'works-at',    label: 'Works at',        sdkType: 'collaborated-on', directed: true,
+    defaultFor: [['person', 'organization']] },
+  { id: 'founded',     label: 'Founded',         sdkType: 'collaborated-on', directed: true,
+    defaultFor: [['person', 'organization']] },
+  { id: 'member-of',   label: 'Member of',       sdkType: 'collaborated-on', directed: true,
+    defaultFor: [['person', 'organization']] },
+  { id: 'leads',       label: 'Leads / works on', sdkType: 'collaborated-on', directed: true,
+    defaultFor: [['person', 'concept'], ['person', 'event']] },
+  { id: 'wrote',       label: 'Wrote / authored', sdkType: 'cites',           directed: true,
+    defaultFor: [['person', 'document']] },
+
+  // Place-bound
+  { id: 'lives-in',    label: 'Lives in',         sdkType: 'depends-on',      directed: true,
+    defaultFor: [['person', 'concept']] }, // place often comes through as concept
+  { id: 'based-in',    label: 'Based in',         sdkType: 'depends-on',      directed: true,
+    defaultFor: [['organization', 'concept']] },
+  { id: 'located-in',  label: 'Located in',       sdkType: 'contains',        directed: true,
+    defaultFor: [['concept', 'concept']] },
+
+  // Doc + conversation
+  { id: 'cited-in',    label: 'Cited in',         sdkType: 'cites',           directed: true,
+    defaultFor: [['document', 'document'], ['concept', 'document']] },
+  { id: 'mentioned-in', label: 'Mentioned in',    sdkType: 'discussed-in',    directed: true,
+    defaultFor: [['*', 'conversation']] },
+
+  // Concept relations
+  { id: 'depends-on',  label: 'Depends on',       sdkType: 'depends-on',      directed: true,
+    defaultFor: [['concept', 'concept']] },
+  { id: 'builds-on',   label: 'Builds on',        sdkType: 'supports',        directed: true,
+    defaultFor: [['concept', 'concept']] },
+  { id: 'contradicts', label: 'Contradicts',      sdkType: 'contradicts',     directed: true,
+    defaultFor: [] }, // available in More…, never auto
+
+  // Time
+  { id: 'precedes',    label: 'Precedes / follows', sdkType: 'precedes',      directed: true,
+    defaultFor: [['event', 'event']] },
+
+  // Generic undirected
+  { id: 'partners-with', label: 'Partners with',  sdkType: 'related-to',      directed: false,
+    defaultFor: [['organization', 'organization']] },
+  { id: 'same-topic',  label: 'Same topic',       sdkType: 'shares-topic',    directed: false,
+    defaultFor: [['concept', 'concept'], ['fact', 'fact']] },
+  { id: 'related',     label: 'Related',          sdkType: 'related-to',      directed: false,
+    defaultFor: [['*', '*']] }, // ultimate fallback
+];
+
+/**
+ * Lookup the user-facing label for a given SDK type. Used by the detail
+ * pane's Connections render when we DON'T have an `evidence` string
+ * (auto-extracted edges, or older manual edges from before this feature).
+ */
+function humanizeSdkType(sdkType: string, directed: boolean): string {
+  // Prefer a label whose defaultFor isn't empty (i.e. one we'd actually
+  // pick for that type) over generic "Related" — gives nicer fallbacks
+  // for auto-extracted edges like `shares-entity` → "Same topic"-ish.
+  const candidates = RELATIONSHIP_LABELS.filter((r) => r.sdkType === sdkType && r.directed === directed);
+  const meaningful = candidates.find((r) => r.defaultFor.length > 0);
+  if (meaningful) return meaningful.label;
+  if (candidates[0]) return candidates[0].label;
+  // Final fallback: humanize the raw SDK type ("shares-entity" → "Shares entity").
+  return sdkType
+    .split('-')
+    .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
+    .join(' ');
+}
+
+/**
+ * Given a (source, candidate) pair, return the primary auto-suggested
+ * label + up to 3 alternatives. The primary's `auto: false` flag means
+ * the system couldn't decide between competing labels — the user must
+ * click the type pill before connecting. (Person+person is the canonical
+ * case: Knows / Works with / Reports to are all plausible and the user
+ * should choose.)
+ */
+interface SuggestedLabel {
+  id: string;
+  label: string;
+  sdkType: string;
+  directed: boolean;
+  auto: boolean;
+  fromId: string;
+  toId: string;
+}
+function suggestRelationshipLabels(
+  source: NodeRecord,
+  candidate: NodeRecord,
+): { primary: SuggestedLabel; alternatives: SuggestedLabel[] } {
+  const srcType = source.nodeType ?? '*';
+  const candType = candidate.nodeType ?? '*';
+  const matches = (l: RelationshipLabel): boolean =>
+    l.defaultFor.some(([a, b]) =>
+      (a === srcType || a === '*') && (b === candType || b === '*'),
+    );
+  // First pass: labels whose defaultFor explicitly matches this pair.
+  // Wildcard ('*') matches last so concrete pairs beat generic fallbacks.
+  const exact = RELATIONSHIP_LABELS.filter(
+    (l) => l.defaultFor.some(([a, b]) => a === srcType && b === candType),
+  );
+  const wildcardish = RELATIONSHIP_LABELS.filter((l) => matches(l) && !exact.includes(l));
+  const ranked = [...exact, ...wildcardish];
+  // Always ensure 'Related' is at the very end as a fallback safety net.
+  const related = RELATIONSHIP_LABELS.find((l) => l.id === 'related');
+  if (related && !ranked.includes(related)) ranked.push(related);
+
+  const toSuggestion = (l: RelationshipLabel, auto: boolean): SuggestedLabel => ({
+    id: l.id,
+    label: l.label,
+    sdkType: l.sdkType,
+    directed: l.directed,
+    auto,
+    fromId: source.id,
+    toId: candidate.id,
+  });
+
+  const first = ranked[0];
+  if (!first) {
+    // Shouldn't happen (Related always matches *,*) but be defensive.
+    const fallback = RELATIONSHIP_LABELS.find((l) => l.id === 'related');
+    if (!fallback) throw new Error('Relationship catalog missing the Related fallback');
+    return { primary: toSuggestion(fallback, true), alternatives: [] };
+  }
+
+  // If the top-3 includes ≥2 directed-different labels for the SAME pair
+  // (person+person → Knows / Works with / Reports to), call it ambiguous
+  // and force the user to pick.
+  const top3 = ranked.slice(0, 3);
+  const distinctDirected = new Set(top3.filter((l) => l.directed).map((l) => l.id));
+  const ambiguous = srcType === 'person' && candType === 'person' && distinctDirected.size >= 2;
+
+  return {
+    primary: toSuggestion(first, !ambiguous),
+    alternatives: ranked.slice(1, 4).map((l) => toSuggestion(l, true)),
+  };
 }
 
 // ── Related memories (semantic candidates) ───────────────────────────
@@ -2681,21 +3010,168 @@ async function getRelatedMemories(nodeId: string): Promise<RelatedItem[]> {
   }
 }
 
-// Create the actual edge via the sidecar. Returns true on success.
-// Invalidates the related cache for both endpoints so the just-linked
-// memory stops being suggested.
-async function linkNodes(fromNodeId: string, toNodeId: string): Promise<boolean> {
+// ── Entity-aware candidate ranking ────────────────────────────────────
+//
+// The typed-relationship suggestion panel needs richer candidates than
+// the legacy `getRelatedMemories` flow gives us:
+//   • Full NodeRecord (not just preview + score) so the panel can pass
+//     nodeType into the relationship suggester
+//   • Up to ~12 results (vs the old 5) so the user has real choice
+//   • Boost candidates that SHARE ENTITIES with the source — those are
+//     the bridges the user is most likely confirming ("Stela also shows
+//     up in these other 4 memories")
+//   • Falls back to BGE-semantic when entity overlap is thin
+//
+// Cached per source-node-id; invalidated on data reload + after any
+// successful link from either endpoint.
+
+interface Candidate {
+  node: NodeRecord;
+  /** Combined score (0..~2 with the person-boost). Higher = more likely
+   *  to be a meaningful bridge. */
+  score: number;
+  /** Entities that appear in BOTH source and candidate — the "why this
+   *  was suggested" signal. Surfaced in the panel for transparency. */
+  sharedEntities: string[];
+}
+
+const graphnosisCandidatesCache: Map<string, Candidate[]> = new Map();
+
+function jaccardOverlap<T>(a: Iterable<T>, b: Iterable<T>): { intersection: T[]; jaccard: number } {
+  const aSet = new Set(a);
+  const bSet = new Set(b);
+  const inter: T[] = [];
+  for (const x of aSet) if (bSet.has(x)) inter.push(x);
+  const unionSize = aSet.size + bSet.size - inter.length;
+  return { intersection: inter, jaccard: unionSize === 0 ? 0 : inter.length / unionSize };
+}
+
+// Cheap heuristic: does this entity LOOK like a person name?
+// 2+ capitalized words, no digits, no dot-notation, no all-caps acronyms.
+// Used to boost person-bridge candidates (the user's primary use case).
+function isPersonLikeEntity(e: string): boolean {
+  if (!e || e.length < 4 || e.length > 60) return false;
+  if (/\d/.test(e)) return false;
+  if (e.includes('.')) return false;
+  if (e === e.toUpperCase() && e.length < 10) return false; // ACRONYM
+  const words = e.split(/\s+/);
+  if (words.length < 2) return false;
+  return words.every((w) => /^[A-ZÀ-Ý][a-zà-ÿ'-]+/.test(w));
+}
+
+async function getRelatedCandidates(nodeId: string): Promise<Candidate[]> {
+  const cached = graphnosisCandidatesCache.get(nodeId);
+  if (cached) return cached;
+  if (!atlasActiveGraph) return [];
+  const source = graphnosisAllNodes.find((n) => n.id === nodeId);
+  if (!source) {
+    graphnosisCandidatesCache.set(nodeId, []);
+    return [];
+  }
+
+  // Existing connections shouldn't show up — the user already linked
+  // them. Includes both directions for directed edges.
+  const connectedNeighbors = new Set<string>();
+  const edges = lastEdgesByGraph.get(atlasActiveGraph);
+  if (edges) {
+    for (const e of edges.directed) {
+      if (e.from === nodeId) connectedNeighbors.add(e.to);
+      else if (e.to === nodeId) connectedNeighbors.add(e.from);
+    }
+    for (const e of edges.undirected) {
+      if (e.a === nodeId) connectedNeighbors.add(e.b);
+      else if (e.b === nodeId) connectedNeighbors.add(e.a);
+    }
+  }
+
+  // Pull BGE-semantic candidates (as before) — gives us the long tail.
+  let bgeHits: SearchHit[] = [];
+  if (source.contentPreview.trim().length >= 5) {
+    try {
+      bgeHits = (await invoke('search_nodes', {
+        graphId: atlasActiveGraph,
+        query: source.contentPreview,
+        k: 20,
+      })) as SearchHit[];
+    } catch (e) {
+      console.error('candidate lookup failed', e);
+    }
+  }
+  // Normalize BGE scores to 0..1 for the combined ranking.
+  const maxBge = bgeHits.reduce((m, h) => Math.max(m, h.score), 0) || 1;
+  const bgeScore = new Map<string, number>();
+  for (const h of bgeHits) bgeScore.set(h.nodeId, h.score / maxBge);
+
+  // For entity-based candidates, scan the full graph node cache. This
+  // is O(N) but N is bounded by the engram's active node count; the
+  // cache hit ratio above keeps this rare.
+  const sourceEntities = source.entities ?? [];
+  const now = Date.now();
+  const scored: Candidate[] = [];
+  for (const n of graphnosisAllNodes) {
+    if (n.id === nodeId) continue;
+    if (connectedNeighbors.has(n.id)) continue;
+    if (n.confidence <= 0.2) continue;
+    if (n.validUntil !== undefined && n.validUntil < now) continue;
+
+    const { intersection, jaccard } = jaccardOverlap(sourceEntities, n.entities ?? []);
+    const bge = bgeScore.get(n.id) ?? 0;
+    // Only include nodes that have SOME signal — either real entity
+    // overlap or a BGE hit above ~0.3 normalized. Pure 0/0 candidates
+    // would just be noise.
+    if (jaccard === 0 && bge < 0.3) continue;
+    // Combined score: weight entity overlap higher than BGE because it
+    // gives concrete "we share this person" semantics; the ×1.5 boost
+    // for person-shaped entity matches biases toward the user's main
+    // use case (connecting memories that mention the same person).
+    let score = 0.5 * jaccard + 0.5 * bge;
+    if (intersection.some((e) => typeof e === 'string' && isPersonLikeEntity(e))) {
+      score *= 1.5;
+    }
+    scored.push({ node: n, score, sharedEntities: intersection as string[] });
+  }
+  scored.sort((a, b) => b.score - a.score);
+  const top = scored.slice(0, 12);
+  graphnosisCandidatesCache.set(nodeId, top);
+  return top;
+}
+
+// Create a typed edge via the sidecar. Returns true on success.
+// Routes to node_link (undirected) or node_link_directed (directed)
+// based on the suggestion's `directed` flag. The user-friendly label
+// rides on `evidence` for directed edges.
+//
+// Invalidates BOTH caches (legacy + new candidates) for the two
+// endpoints so the just-linked memory stops being suggested.
+async function linkOne(suggestion: SuggestedLabel, evidence?: string): Promise<boolean> {
   if (!atlasActiveGraph) return false;
   try {
-    await invoke('node_link', {
-      graphId: atlasActiveGraph,
-      fromNodeId,
-      toNodeId,
-      reason: 'User-confirmed related memories',
-    });
-    // Cache invalidation: both endpoints' related lists are now stale.
-    graphnosisRelatedCache.delete(fromNodeId);
-    graphnosisRelatedCache.delete(toNodeId);
+    if (suggestion.directed) {
+      const params: { graphId: string; fromNodeId: string; toNodeId: string; type: string; evidence?: string } = {
+        graphId: atlasActiveGraph,
+        fromNodeId: suggestion.fromId,
+        toNodeId: suggestion.toId,
+        type: suggestion.sdkType,
+      };
+      // Use the explicit evidence override (custom labels), else the
+      // suggestion's human label (e.g. "Works at" for collaborated-on).
+      const ev = evidence ?? suggestion.label;
+      if (ev) params.evidence = ev;
+      await invoke('node_link_directed', params);
+    } else {
+      await invoke('node_link', {
+        graphId: atlasActiveGraph,
+        fromNodeId: suggestion.fromId,
+        toNodeId: suggestion.toId,
+        type: suggestion.sdkType,
+        reason: `User-confirmed: ${suggestion.label}`,
+      });
+    }
+    // Cache invalidation: both endpoints' lists are now stale.
+    graphnosisRelatedCache.delete(suggestion.fromId);
+    graphnosisRelatedCache.delete(suggestion.toId);
+    graphnosisCandidatesCache.delete(suggestion.fromId);
+    graphnosisCandidatesCache.delete(suggestion.toId);
     // Reload edges so the new link is reflected in connections + orphan set.
     await loadGraphnosisData(atlasActiveGraph);
     if (mainAtlas) pushDataIntoAtlas();
@@ -2704,6 +3180,534 @@ async function linkNodes(fromNodeId: string, toNodeId: string): Promise<boolean>
     showError(`Link failed: ${e}`);
     return false;
   }
+}
+
+// Backward-compat shim for the existing 🔗 Link single-button flow that
+// always created a generic undirected `related-to` edge. New code should
+// build a `SuggestedLabel` and call `linkOne` directly.
+async function linkNodes(fromNodeId: string, toNodeId: string): Promise<boolean> {
+  const suggestion: SuggestedLabel = {
+    id: 'related',
+    label: 'Related',
+    sdkType: 'related-to',
+    directed: false,
+    auto: true,
+    fromId: fromNodeId,
+    toId: toNodeId,
+  };
+  return linkOne(suggestion);
+}
+
+// ── Suggestion panel (shared between deck cards + detail pane) ────────
+//
+// Renders into the given `slot` element. Same renderer powers two
+// surfaces:
+//   • Deck cards (orphan + connect + optional low-confidence expansion):
+//     panel is inline inside the card; on Connect → showDeckAck + advance
+//     via `onConnected`.
+//   • Detail pane: panel sits below the existing Connections section;
+//     on Connect → re-render detail pane (the Connections list refreshes
+//     with the new typed entries) via `onConnected`.
+//
+// State is closed over inside the function — each call to
+// `renderSuggestionPanel` owns its own state. The slot's data-source-id
+// is the race-guard: if the user switches to a different node mid-load,
+// the async pieces check the slot's current id and bail.
+
+interface SuggestionPanelOpts {
+  sourceNode: NodeRecord;
+  slot: HTMLElement;
+  variant: 'deck' | 'detail';
+  /** Called after a successful Connect (any number of edges created).
+   *  Deck variant uses this to advance; detail variant uses it to
+   *  re-render its own state. */
+  onConnected: (count: number) => void;
+}
+
+async function renderSuggestionPanel(opts: SuggestionPanelOpts): Promise<void> {
+  const { sourceNode, slot, variant, onConnected } = opts;
+  slot.dataset['sourceId'] = sourceNode.id;
+  slot.classList.add('g-suggest-panel');
+
+  // Per-instance state.
+  const selected = new Map<string, SuggestedLabel>(); // candidateId → chosen label
+  const customLabels = new Map<string, string>();      // candidateId → custom string
+  let searchQuery = '';
+  let searchResults: NodeRecord[] | null = null;
+  let searchToken = 0;
+  let showMore = false;
+  let openPopoverFor: string | null = null;
+
+  slot.innerHTML = '<p class="subtitle" style="padding: 8px;">Looking for candidates…</p>';
+  const candidates = await getRelatedCandidates(sourceNode.id);
+  // Race-guard: another node may have been selected while we awaited.
+  if (slot.dataset['sourceId'] !== sourceNode.id) return;
+
+  function suggestionForCandidate(cand: NodeRecord): { primary: SuggestedLabel; alternatives: SuggestedLabel[] } {
+    return suggestRelationshipLabels(sourceNode, cand);
+  }
+
+  function visibleCandidates(): NodeRecord[] {
+    if (searchResults !== null) return searchResults;
+    const all = candidates.map((c) => c.node);
+    return showMore ? all : all.slice(0, 8);
+  }
+
+  function selectedAndReady(): SuggestedLabel[] {
+    const out: SuggestedLabel[] = [];
+    for (const [, s] of selected) {
+      if (!s.auto && !customLabels.get(s.toId)) {
+        // For ambiguous rows the user must pick (we set auto=true in
+        // the suggestion once they commit a choice).
+        continue;
+      }
+      out.push(s);
+    }
+    return out;
+  }
+
+  function render(): void {
+    const rows = visibleCandidates();
+    const totalAvailable = candidates.length;
+    const hasMore = searchResults === null && totalAvailable > rows.length;
+    const readyCount = selectedAndReady().length;
+    const selectedTotal = selected.size;
+    // Dim is driven by CSS rules over .selected (per-row) + the
+    // panel-level .popover-open class — toggled by openPopover/closePopover.
+    // We don't toggle has-selection anymore: selecting a row no longer
+    // dims the others. (Selected rows dim themselves; popover focus
+    // dims everything except the row being edited.)
+    void selectedTotal;
+
+    if (rows.length === 0) {
+      slot.innerHTML = `
+        <div class="g-suggest-header">
+          <input type="search" class="g-suggest-search" placeholder="Don't see it? Search this engram…" value="${escape(searchQuery)}" />
+          ${variant === 'detail' ? '<button class="g-suggest-close" title="Close">×</button>' : ''}
+        </div>
+        <p class="subtitle" style="padding: 12px 8px;">
+          ${searchResults !== null
+            ? 'No matches for that search.'
+            : 'No related candidates yet — try searching above, or add more memories so the entity ranker has something to work with.'}
+        </p>
+      `;
+    } else {
+      slot.innerHTML = `
+        <div class="g-suggest-header">
+          <input type="search" class="g-suggest-search" placeholder="Don't see it? Search this engram…" value="${escape(searchQuery)}" />
+          ${variant === 'detail' ? '<button class="g-suggest-close" title="Close">×</button>' : ''}
+        </div>
+        <div class="g-suggest-rows">
+          ${rows.map((cand) => renderRow(cand)).join('')}
+        </div>
+        ${hasMore ? `<button class="g-suggest-show-more">Show ${totalAvailable - rows.length} more</button>` : ''}
+        <div class="g-suggest-actions">
+          <button class="g-suggest-connect primary" ${readyCount === 0 ? 'disabled' : ''}>
+            ✓ Connect${readyCount > 0 ? ` (${readyCount}${readyCount < selectedTotal ? ` of ${selectedTotal}` : ''})` : ''}
+          </button>
+          <button class="g-suggest-cancel">Cancel</button>
+        </div>
+        ${selectedTotal > readyCount ? `<p class="g-suggest-warn">${selectedTotal - readyCount} row${selectedTotal - readyCount === 1 ? '' : 's'} still need${selectedTotal - readyCount === 1 ? 's' : ''} a relationship type — click the “Pick a type” pill.</p>` : ''}
+      `;
+    }
+
+    wireHandlers();
+    // If a popover was open before the re-render, restore it.
+    if (openPopoverFor) {
+      const row = slot.querySelector<HTMLElement>(`.g-suggest-row[data-candidate-id="${cssEscape(openPopoverFor)}"]`);
+      if (row) {
+        openPopover(openPopoverFor, row);
+      } else {
+        openPopoverFor = null;
+      }
+    }
+  }
+
+  function renderRow(cand: NodeRecord): string {
+    const isSelected = selected.has(cand.id);
+    const chosen = selected.get(cand.id);
+    const { primary } = suggestionForCandidate(cand);
+    const pillLabel = chosen?.label ?? primary.label;
+    const pillNeedsPick = !chosen && !primary.auto;
+    const clean = cleanDisplayContent(cand.contentPreview);
+    const breadcrumb = renderBreadcrumb(cand);
+    const customLabel = customLabels.get(cand.id);
+    return `
+      <div class="g-suggest-row${isSelected ? ' selected' : ''}${pillNeedsPick ? ' needs-pick' : ''}" data-candidate-id="${escape(cand.id)}">
+        <label class="g-suggest-check">
+          <input type="checkbox" class="g-suggest-check-input" ${isSelected ? 'checked' : ''} />
+        </label>
+        <div class="g-suggest-row-body">
+          <div class="g-suggest-content">${escape(clean)}</div>
+          ${breadcrumb ? `<div class="g-suggest-breadcrumb">${breadcrumb}</div>` : ''}
+          ${customLabel ? `<div class="g-suggest-custom-shown">Custom label: <em>${escape(customLabel)}</em></div>` : ''}
+        </div>
+        <button class="g-suggest-type-pill${pillNeedsPick ? ' needs-pick' : ''}" data-pill-for="${escape(cand.id)}">
+          ${pillNeedsPick ? 'Pick a type ▾' : `${escape(pillLabel)} ▾`}
+        </button>
+      </div>
+    `;
+  }
+
+  function wireHandlers(): void {
+    // Search input — debounced 200ms.
+    const searchInput = slot.querySelector<HTMLInputElement>('.g-suggest-search');
+    searchInput?.addEventListener('input', () => {
+      searchQuery = searchInput.value;
+      const myToken = ++searchToken;
+      setTimeout(() => {
+        if (myToken !== searchToken) return;
+        if (searchQuery.trim().length === 0) {
+          searchResults = null;
+          render();
+          return;
+        }
+        void runSearch(searchQuery, myToken);
+      }, 200);
+    });
+    // Esc / Enter in the search box: just blur — let the user pick rows.
+    searchInput?.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') {
+        if (searchQuery.length > 0) {
+          searchInput.value = '';
+          searchQuery = '';
+          searchResults = null;
+          render();
+        } else if (variant === 'detail') {
+          opts.onConnected(0);
+        }
+        e.preventDefault();
+      }
+    });
+    // Row click toggles selection (unless click was on the type pill).
+    slot.querySelectorAll<HTMLElement>('.g-suggest-row').forEach((row) => {
+      const candId = row.dataset['candidateId'];
+      if (!candId) return;
+      const checkbox = row.querySelector<HTMLInputElement>('.g-suggest-check-input');
+      const toggle = (): void => {
+        if (selected.has(candId)) {
+          selected.delete(candId);
+          customLabels.delete(candId);
+        } else {
+          // Use the suggested primary as the default; if it's not auto,
+          // we keep selected but disable Connect for this row until the
+          // user commits a type via the pill.
+          const cand = findCandidate(candId);
+          if (!cand) return;
+          const { primary } = suggestionForCandidate(cand);
+          selected.set(candId, primary);
+        }
+        render();
+      };
+      row.addEventListener('click', (e) => {
+        const target = e.target as HTMLElement;
+        if (target.closest('.g-suggest-type-pill')) return; // pill has its own handler
+        if (target.closest('.g-suggest-popover')) return;
+        toggle();
+      });
+      checkbox?.addEventListener('change', toggle);
+    });
+    // Type pill → popover.
+    slot.querySelectorAll<HTMLButtonElement>('.g-suggest-type-pill').forEach((btn) => {
+      const candId = btn.dataset['pillFor'];
+      if (!candId) return;
+      btn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const row = btn.closest<HTMLElement>('.g-suggest-row');
+        if (!row) return;
+        if (openPopoverFor === candId) {
+          closePopover();
+        } else {
+          openPopover(candId, row);
+        }
+      });
+    });
+    slot.querySelector<HTMLButtonElement>('.g-suggest-show-more')?.addEventListener('click', () => {
+      showMore = true;
+      render();
+    });
+    slot.querySelector<HTMLButtonElement>('.g-suggest-connect')?.addEventListener('click', () => {
+      void commitSelections();
+    });
+    slot.querySelector<HTMLButtonElement>('.g-suggest-cancel')?.addEventListener('click', () => {
+      // Clear state and notify caller — they decide whether to dismiss
+      // the panel (detail variant) or treat it like skip (deck variant).
+      selected.clear();
+      customLabels.clear();
+      onConnected(0);
+    });
+    slot.querySelector<HTMLButtonElement>('.g-suggest-close')?.addEventListener('click', () => {
+      onConnected(0);
+    });
+  }
+
+  function findCandidate(candId: string): NodeRecord | null {
+    if (searchResults) {
+      return searchResults.find((n) => n.id === candId) ?? null;
+    }
+    return candidates.find((c) => c.node.id === candId)?.node ?? null;
+  }
+
+  async function runSearch(query: string, myToken: number): Promise<void> {
+    if (!atlasActiveGraph) return;
+    try {
+      const hits = (await invoke('search_nodes', {
+        graphId: atlasActiveGraph,
+        query,
+        k: 20,
+      })) as SearchHit[];
+      if (myToken !== searchToken) return;
+      const now = Date.now();
+      searchResults = hits
+        .map((h) => {
+          const cached = graphnosisAllNodes.find((n) => n.id === h.nodeId);
+          if (cached) return cached;
+          // Synthesize a minimal NodeRecord for hits not in the local cache.
+          return {
+            id: h.nodeId,
+            confidence: h.score,
+            sourceFile: '',
+            contentPreview: h.text,
+          } satisfies NodeRecord;
+        })
+        .filter((n) =>
+          n.id !== sourceNode.id &&
+          n.confidence > 0.2 &&
+          (n.validUntil === undefined || n.validUntil > now),
+        );
+      render();
+    } catch (e) {
+      console.error('panel search failed', e);
+    }
+  }
+
+  function openPopover(candId: string, row: HTMLElement): void {
+    closePopover();
+    openPopoverFor = candId;
+    // Visual focus state: panel enters "popover-open" mode (CSS dims
+    // every row except the popover-active one); the originating row
+    // gets `popover-active` so it stays in full color even when the
+    // user already checked it.
+    slot.classList.add('popover-open');
+    row.classList.add('popover-active');
+    const cand = findCandidate(candId);
+    if (!cand) return;
+    const { primary, alternatives } = suggestionForCandidate(cand);
+    const customForRow = customLabels.get(candId) ?? '';
+    const popover = document.createElement('div');
+    popover.className = 'g-suggest-popover';
+    // Mark which row this popover belongs to so global click-outside
+    // dismissal can still find it.
+    popover.dataset['candidateId'] = candId;
+    popover.innerHTML = `
+      <div class="g-suggest-popover-section">
+        <p class="g-suggest-popover-label">Suggested${primary.auto ? '' : ' — pick one'}</p>
+        <button class="g-suggest-popover-option ${selected.get(candId)?.id === primary.id ? 'active' : ''}" data-option="${escape(primary.id)}">
+          ${escape(primary.label)} ${primary.directed ? '<span class="g-suggest-dir">→</span>' : ''}
+        </button>
+        ${alternatives.map((alt) => `
+          <button class="g-suggest-popover-option ${selected.get(candId)?.id === alt.id ? 'active' : ''}" data-option="${escape(alt.id)}">
+            ${escape(alt.label)} ${alt.directed ? '<span class="g-suggest-dir">→</span>' : ''}
+          </button>
+        `).join('')}
+      </div>
+      <div class="g-suggest-popover-section">
+        <p class="g-suggest-popover-label">More…</p>
+        <div class="g-suggest-popover-more">
+          ${RELATIONSHIP_LABELS
+            .filter((l) => l.id !== primary.id && !alternatives.some((a) => a.id === l.id))
+            .map((l) => `
+              <button class="g-suggest-popover-option small ${selected.get(candId)?.id === l.id ? 'active' : ''}" data-option="${escape(l.id)}">
+                ${escape(l.label)} ${l.directed ? '<span class="g-suggest-dir">→</span>' : ''}
+              </button>
+            `).join('')}
+        </div>
+      </div>
+      <div class="g-suggest-popover-section">
+        <p class="g-suggest-popover-label">Custom label</p>
+        <input type="text" class="g-suggest-custom-input" placeholder="e.g. Old roommate, Ski buddy…" value="${escape(customForRow)}" />
+        <p class="g-suggest-custom-hint">Free text — stored as the edge's evidence. Will be a directed “Related” edge.</p>
+      </div>
+    `;
+    // Mount at body level — position: fixed in CSS means the popover
+    // floats above any ancestor's overflow:hidden / sticky stacking
+    // context. Coordinates derived from the pill's bounding rect.
+    document.body.appendChild(popover);
+    positionPopoverAt(popover, row);
+    // Re-position on viewport changes — keeps the popover anchored
+    // even when the deck scrolls under it.
+    const reposition = (): void => positionPopoverAt(popover, row);
+    window.addEventListener('resize', reposition);
+    // Track the scroll container too (the deck's overflow-y: auto).
+    const scrollParents: HTMLElement[] = [];
+    let cur: HTMLElement | null = row;
+    while (cur && cur !== document.body) {
+      const overflowY = getComputedStyle(cur).overflowY;
+      if (overflowY === 'auto' || overflowY === 'scroll') scrollParents.push(cur);
+      cur = cur.parentElement;
+    }
+    for (const sp of scrollParents) sp.addEventListener('scroll', reposition, { passive: true });
+    // Stash listeners on the popover so closePopover can remove them.
+    (popover as HTMLElement & { _cleanup?: () => void })._cleanup = () => {
+      window.removeEventListener('resize', reposition);
+      for (const sp of scrollParents) sp.removeEventListener('scroll', reposition);
+    };
+    // Click-outside dismissal: ignore clicks inside the popover or on
+    // the originating pill (which has its own toggle handler).
+    const outsideHandler = (e: MouseEvent): void => {
+      const target = e.target as HTMLElement;
+      if (popover.contains(target)) return;
+      if (target.closest('.g-suggest-type-pill')) return;
+      closePopover();
+    };
+    // Esc-to-close: capture-phase listener so it wins over input/textarea
+    // handlers inside the popover that might also bind Esc.
+    const escHandler = (e: KeyboardEvent): void => {
+      if (e.key !== 'Escape') return;
+      e.stopPropagation();
+      e.preventDefault();
+      closePopover();
+    };
+    setTimeout(() => {
+      document.addEventListener('mousedown', outsideHandler);
+      document.addEventListener('keydown', escHandler, true);
+    }, 0);
+    const prevCleanup = (popover as HTMLElement & { _cleanup?: () => void })._cleanup;
+    (popover as HTMLElement & { _cleanup?: () => void })._cleanup = () => {
+      prevCleanup?.();
+      document.removeEventListener('mousedown', outsideHandler);
+      document.removeEventListener('keydown', escHandler, true);
+    };
+
+    popover.querySelectorAll<HTMLButtonElement>('.g-suggest-popover-option').forEach((opt) => {
+      opt.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const optionId = opt.dataset['option'];
+        if (!optionId) return;
+        const labelDef = RELATIONSHIP_LABELS.find((l) => l.id === optionId);
+        if (!labelDef) return;
+        // Once the user explicitly picks, treat it as auto:true so
+        // Connect enables for this row.
+        const newSuggestion: SuggestedLabel = {
+          id: labelDef.id,
+          label: labelDef.label,
+          sdkType: labelDef.sdkType,
+          directed: labelDef.directed,
+          auto: true,
+          fromId: sourceNode.id,
+          toId: candId,
+        };
+        selected.set(candId, newSuggestion);
+        customLabels.delete(candId);
+        closePopover();
+        render();
+      });
+    });
+    const customInput = popover.querySelector<HTMLInputElement>('.g-suggest-custom-input');
+    customInput?.addEventListener('input', () => {
+      const v = customInput.value.trim();
+      if (v.length === 0) {
+        customLabels.delete(candId);
+      } else {
+        customLabels.set(candId, v);
+      }
+    });
+    customInput?.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') {
+        const v = customInput.value.trim();
+        if (v.length > 0) {
+          // Custom label → directed `related-to` edge with the label as
+          // evidence. (The SDK's UndirectedEdge has no evidence field;
+          // documented v1 limitation.)
+          const newSuggestion: SuggestedLabel = {
+            id: 'custom',
+            label: v,
+            sdkType: 'related-to',
+            directed: true, // store as directed so evidence sticks
+            auto: true,
+            fromId: sourceNode.id,
+            toId: candId,
+          };
+          selected.set(candId, newSuggestion);
+          customLabels.set(candId, v);
+          closePopover();
+          render();
+        }
+        e.preventDefault();
+      }
+    });
+  }
+
+  function closePopover(): void {
+    openPopoverFor = null;
+    // Clear focus state — every row resumes its baseline dim rules
+    // (selected rows dim themselves, others go back to full color).
+    slot.classList.remove('popover-open');
+    slot.querySelectorAll<HTMLElement>('.g-suggest-row.popover-active').forEach((r) => {
+      r.classList.remove('popover-active');
+    });
+    // Popovers now live at body level — find by data-candidate-id rather
+    // than scanning the slot. Run each one's cleanup (scroll listeners,
+    // outside-click handler) before removing the DOM node.
+    document.body.querySelectorAll<HTMLElement>('.g-suggest-popover').forEach((p) => {
+      const cleanup = (p as HTMLElement & { _cleanup?: () => void })._cleanup;
+      cleanup?.();
+      p.remove();
+    });
+  }
+
+  // Position the body-level popover hugging the pill it belongs to.
+  // Anchored just under the pill (2px gap so it reads as visually
+  // attached), left-aligned with the pill so it opens FROM the button
+  // instead of floating off to one side. Flips above when there's no
+  // room below; clamps horizontally to keep it on-screen.
+  function positionPopoverAt(popover: HTMLElement, row: HTMLElement): void {
+    const pill = row.querySelector<HTMLElement>('.g-suggest-type-pill');
+    if (!pill) return;
+    const rect = pill.getBoundingClientRect();
+    const popH = popover.offsetHeight || 320;
+    const popW = popover.offsetWidth || 280;
+    const vh = window.innerHeight;
+    const vw = window.innerWidth;
+    // Vertical: directly under the pill if there's room, otherwise
+    // immediately above it. Tight 2px gap reads as "this opened from
+    // the button" instead of "this floated in from elsewhere."
+    const spaceBelow = vh - rect.bottom;
+    const top = spaceBelow >= popH + 8
+      ? rect.bottom + 2
+      : Math.max(8, rect.top - popH - 2);
+    // Horizontal: prefer left-aligned with the pill so the popover
+    // opens FROM the pill's edge. If that would overflow the right
+    // edge of the viewport, slide left just enough to fit.
+    let left = rect.left;
+    if (left + popW > vw - 8) {
+      left = Math.max(8, vw - popW - 8);
+    } else {
+      left = Math.max(8, left);
+    }
+    popover.style.top = `${top}px`;
+    popover.style.left = `${left}px`;
+    popover.style.right = 'auto';
+  }
+
+  async function commitSelections(): Promise<void> {
+    const ready = selectedAndReady();
+    if (ready.length === 0) return;
+    const connectBtn = slot.querySelector<HTMLButtonElement>('.g-suggest-connect');
+    if (connectBtn) {
+      connectBtn.disabled = true;
+      connectBtn.textContent = 'Connecting…';
+    }
+    let createdCount = 0;
+    for (const s of ready) {
+      const evidence = s.id === 'custom' ? customLabels.get(s.toId) : undefined;
+      const ok = await linkOne(s, evidence);
+      if (ok) createdCount++;
+    }
+    onConnected(createdCount);
+  }
+
+  render();
 }
 
 // Strip the SDK's structural markdown markers from the displayed content
