@@ -54,7 +54,18 @@ export type UndirectedEdgeType =
   | 'similar-to' | 'co-occurs' | 'shares-entity' | 'shares-topic'
   | 'same-source' | 'same-person' | 'related-to';
 
-export interface AtlasDirectedEdge { id: string; from: string; to: string; type: DirectedEdgeType; weight: number; }
+export interface AtlasDirectedEdge {
+  id: string;
+  from: string;
+  to: string;
+  type: DirectedEdgeType;
+  weight: number;
+  /** User-chosen human label for typed edges created via the App's
+   *  relationship picker (e.g. "Works at" backing a `collaborated-on`).
+   *  Auto-extracted edges leave this empty. The 3D viz renders edges
+   *  by type/category — evidence is metadata for the detail pane only. */
+  evidence?: string;
+}
 export interface AtlasUndirectedEdge { id: string; a: string; b: string; type: UndirectedEdgeType; weight: number; }
 
 export type EdgeCategory = 'reasoning' | 'structure' | 'social' | 'temporal' | 'semantic' | 'identity';
