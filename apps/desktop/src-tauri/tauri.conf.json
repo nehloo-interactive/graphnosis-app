@@ -34,7 +34,9 @@
     "icon": ["icons/icon.png"],
     "category": "Productivity",
     "shortDescription": "Personal second memory",
-    "longDescription": "Local-first encrypted personal memory graph that attaches relevant context to your AI conversations."
+    "longDescription": "Local-first encrypted personal memory graph that attaches relevant context to your AI conversations.",
+    "publisher": "Nehloo Interactive LLC",
+    "copyright": "Copyright © 2026 Nehloo Interactive LLC"
   },
   "plugins": {}
 }
