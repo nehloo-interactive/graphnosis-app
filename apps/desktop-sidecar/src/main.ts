@@ -426,11 +426,21 @@ async function main(): Promise<void> {
 
   const pendingDiffs = new Map<string, { graphId: string; diff: CorrectionDiff; createdAt: number }>();
 
+  // Push-event channel — start BEFORE the MCP server and IPC so
+  // `broadcastRaw` is available to wire into mcpDeps and the IPC
+  // startup. Order matters here: the `remember` MCP tool uses
+  // broadcastRaw to surface "engram missing — create?" prompts to the
+  // App's UI, and the first ingest.file event arrives once IPC is up.
+  const eventsSocketPath = process.env.GRAPHNOSIS_EVENTS_SOCKET
+    ?? path.join(env.cortexDir, 'events.sock');
+  const { broadcastRaw } = await startEvents({ host, socketPath: eventsSocketPath });
+
   const mcpDeps = {
     host,
     llm: () => llm,
     defaultGraphId: () => env.defaultGraph,
     pendingDiffs,
+    broadcastRaw,
   };
 
   // MCP server over Unix socket. Lets multiple clients (Claude Desktop via
@@ -449,12 +459,6 @@ async function main(): Promise<void> {
     await new Promise<void>((resolve) => mcpServer.close(() => resolve()));
     mcpServer = await startSocketMcpServer({ deps: mcpDeps, socketPath: mcpSocketPath });
   };
-
-  // Push-event channel — start BEFORE IPC so broadcastRaw is ready when
-  // the first ingest.file arrives.
-  const eventsSocketPath = process.env.GRAPHNOSIS_EVENTS_SOCKET
-    ?? path.join(env.cortexDir, 'events.sock');
-  const { broadcastRaw } = await startEvents({ host, socketPath: eventsSocketPath });
 
   // Tauri shell IPC (custom JSON-RPC, not MCP).
   const ipcSocketPath = process.env.GRAPHNOSIS_IPC_SOCKET

@@ -919,6 +919,66 @@ async fn create_graph_with_template(
         .map_err(|e| e.to_string())
 }
 
+/// One-shot accept the "Create engram?" suggestion banner.
+///
+/// The flow upstream:
+///   1. AI calls `remember(text, target_engram="book-notes")` via MCP.
+///   2. Sidecar can't resolve the target — broadcasts `engram.create-suggested`
+///      to the event socket AND returns an actionable error to the AI.
+///   3. App UI shows a banner with the AI's note. User clicks "Create".
+///   4. This Tauri command fires, which calls the sidecar's
+///      `graphs.acceptEngramSuggestion` IPC. The sidecar creates the
+///      engram (if it doesn't exist already — idempotent) and ingests
+///      the suggested note into it. One roundtrip.
+///   5. App refreshes its engram list + Sources tab — the user sees the
+///      new engram with the note already inside.
+///
+/// Why a dedicated command (not "create_graph_with_template + ingest_*")?
+/// Two reasons: (a) lets the sidecar enforce the "idempotent create" with
+/// no race window, (b) keeps the UI handler simple — one button, one IPC,
+/// one result toast. Splitting into two calls means the App has to manage
+/// half-success states (engram created but ingest failed).
+#[tauri::command]
+async fn accept_engram_suggestion(
+    state: State<'_, AppState>,
+    graph_id: String,
+    template: String,
+    display_name: String,
+    text: String,
+    label: String,
+    source_kind: Option<String>,
+) -> Result<serde_json::Value, String> {
+    let socket_path = {
+        let inner = state.inner.lock().await;
+        match &inner.cortex_dir {
+            Some(vd) => vd.join("sidecar.sock"),
+            None => return Err("cortex is locked".to_string()),
+        }
+    };
+    let mut params = serde_json::json!({
+        "graphId": graph_id,
+        "template": template,
+        "displayName": display_name,
+        "text": text,
+        "label": label,
+    });
+    if let Some(sk) = source_kind {
+        params["sourceKind"] = serde_json::Value::String(sk);
+    }
+    // Bigger budget than plain create — ingestClip runs through the
+    // embedding pool (BGE inference for the new node's vector) and the
+    // first call after a fresh engram creation cold-starts the pool.
+    // 120 s is comfortably above the worst observed cold-start.
+    ipc_client::request_with_timeout(
+        &socket_path,
+        "graphs.acceptEngramSuggestion",
+        params,
+        std::time::Duration::from_secs(120),
+    )
+        .await
+        .map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 async fn search_nodes(
     state: State<'_, AppState>,
@@ -1741,6 +1801,7 @@ pub fn run() {
             reject_correction,
             list_graphs_with_metadata,
             create_graph_with_template,
+            accept_engram_suggestion,
             search_nodes,
             list_nodes,
             list_edges,

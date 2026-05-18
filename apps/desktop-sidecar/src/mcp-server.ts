@@ -39,6 +39,28 @@ const RememberInput = z.preprocess(
   },
   z.object({
     graphId: z.string().optional(),
+    /**
+     * Optional engram target by NAME (graph id slug OR human display name).
+     *
+     * Use this when the user's intent names a specific engram:
+     *   "save this to my book-notes engram"
+     *   "remember this in work-2026"
+     *
+     * Resolution priority:
+     *   1. Exact match on a loaded graph's id slug (`book-notes`)
+     *   2. Case-insensitive match on a graph's displayName ("Book Notes")
+     *
+     * If neither matches, the sidecar returns an actionable error AND
+     * broadcasts a `engram.create-suggested` event to the App's UI so
+     * the user can click "Create" once to (a) create the engram and
+     * (b) ingest this same note in one shot. The AI does NOT create
+     * engrams unilaterally — that's a taxonomy decision the human
+     * must approve.
+     *
+     * If both `graphId` and `target_engram` are passed, `graphId` wins
+     * (explicit slug beats fuzzy resolution).
+     */
+    target_engram: z.string().optional(),
     label: z.string().default('Conversation note'),
     text: z.string(),
     /**
@@ -85,6 +107,143 @@ const ForgetInput = z.object({
   sourceId: z.string(),
 });
 
+/**
+ * Resolve a user-supplied engram name against the loaded graphs.
+ *
+ * Three outcomes:
+ *   - `exact`     — normalized name matches a graphId or displayName exactly;
+ *                   safe to write without user confirmation.
+ *   - `ambiguous` — at least one candidate scored above the similarity
+ *                   threshold; the App banner shows them so the user can
+ *                   pick (or create a new engram instead). The AI never
+ *                   silently disambiguates.
+ *   - `none`      — no candidate above threshold; the banner offers
+ *                   "Create new" only.
+ *
+ * Matching is dependency-free and runs O(N) over engrams:
+ *   1. Normalize both sides: NFC, lowercase, strip non-alphanumeric.
+ *   2. Score = max(substring_containment, jaccard_token_overlap,
+ *                  1 - normalized_levenshtein).
+ *   3. Threshold 0.6; keep up to 3 candidates ranked by score.
+ *
+ * Token splitting handles camelCase, snake_case, kebab-case, and spaces —
+ * so "Romania Unpublished" and "UnpublishedRomania" both tokenize to
+ * {romania, unpublished} and match via Jaccard = 1.0.
+ */
+type EngramCandidate = {
+  graphId: string;
+  displayName: string;
+  score: number;
+  reason: 'substring' | 'tokens' | 'edit-distance';
+};
+type ResolveResult =
+  | { kind: 'exact'; graphId: string }
+  | { kind: 'ambiguous'; candidates: EngramCandidate[] }
+  | { kind: 'none' };
+
+const FUZZY_THRESHOLD = 0.6;
+const MAX_CANDIDATES = 3;
+
+function normalizeName(s: string): string {
+  return s.normalize('NFC').toLowerCase().replace(/[^a-z0-9]+/g, '');
+}
+
+function tokenize(s: string): string[] {
+  // Split camelCase ("UnpublishedRomania" → ["Unpublished","Romania"]),
+  // then on non-alphanumerics, then lowercase, drop empties.
+  return s
+    .normalize('NFC')
+    .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+    .split(/[^a-zA-Z0-9]+/)
+    .map((t) => t.toLowerCase())
+    .filter(Boolean);
+}
+
+function jaccard(a: string[], b: string[]): number {
+  if (!a.length || !b.length) return 0;
+  const setA = new Set(a);
+  const setB = new Set(b);
+  let inter = 0;
+  for (const t of setA) if (setB.has(t)) inter++;
+  const union = setA.size + setB.size - inter;
+  return union === 0 ? 0 : inter / union;
+}
+
+function levenshtein(a: string, b: string): number {
+  if (a === b) return 0;
+  if (!a.length) return b.length;
+  if (!b.length) return a.length;
+  const prev = new Array(b.length + 1);
+  const curr = new Array(b.length + 1);
+  for (let j = 0; j <= b.length; j++) prev[j] = j;
+  for (let i = 1; i <= a.length; i++) {
+    curr[0] = i;
+    for (let j = 1; j <= b.length; j++) {
+      const cost = a.charCodeAt(i - 1) === b.charCodeAt(j - 1) ? 0 : 1;
+      curr[j] = Math.min(curr[j - 1] + 1, prev[j] + 1, prev[j - 1] + cost);
+    }
+    for (let j = 0; j <= b.length; j++) prev[j] = curr[j];
+  }
+  return prev[b.length];
+}
+
+function scoreCandidate(query: string, candidate: string): { score: number; reason: EngramCandidate['reason'] } {
+  const qn = normalizeName(query);
+  const cn = normalizeName(candidate);
+  if (!qn || !cn) return { score: 0, reason: 'edit-distance' };
+
+  // 1. Substring containment (either direction). Strong signal — but scale
+  //    down a bit when the query is much shorter than the candidate, so a
+  //    3-char query doesn't auto-match every long name that happens to
+  //    contain those letters.
+  let substring = 0;
+  if (cn.includes(qn)) substring = qn.length >= 4 ? 0.9 : 0.7;
+  else if (qn.includes(cn)) substring = 0.9;
+
+  // 2. Token-set Jaccard
+  const tokens = jaccard(tokenize(query), tokenize(candidate));
+
+  // 3. Edit distance normalized by longer length, inverted
+  const dist = levenshtein(qn, cn);
+  const editScore = 1 - dist / Math.max(qn.length, cn.length);
+
+  // Pick best signal so each reason gets a fair shot
+  if (substring >= tokens && substring >= editScore) return { score: substring, reason: 'substring' };
+  if (tokens >= editScore) return { score: tokens, reason: 'tokens' };
+  return { score: editScore, reason: 'edit-distance' };
+}
+
+function resolveTargetEngram(host: GraphnosisHost, name: string): ResolveResult {
+  const ids = host.listGraphs();
+  if (!ids.length) return { kind: 'none' };
+
+  // Pass 1: exact match on slug or displayName (normalized).
+  const qn = normalizeName(name);
+  for (const id of ids) {
+    if (normalizeName(id) === qn) return { kind: 'exact', graphId: id };
+    const meta = host.getGraphMetadata(id);
+    if (meta?.displayName && normalizeName(meta.displayName) === qn) {
+      return { kind: 'exact', graphId: id };
+    }
+  }
+
+  // Pass 2: fuzzy. Score against both slug and displayName, keep the better.
+  const scored: EngramCandidate[] = [];
+  for (const id of ids) {
+    const meta = host.getGraphMetadata(id);
+    const display = meta?.displayName?.trim() || id;
+    const a = scoreCandidate(name, id);
+    const b = scoreCandidate(name, display);
+    const best = b.score > a.score ? b : a;
+    if (best.score >= FUZZY_THRESHOLD) {
+      scored.push({ graphId: id, displayName: display, score: best.score, reason: best.reason });
+    }
+  }
+  if (!scored.length) return { kind: 'none' };
+  scored.sort((x, y) => y.score - x.score);
+  return { kind: 'ambiguous', candidates: scored.slice(0, MAX_CANDIDATES) };
+}
+
 export interface McpDeps {
   host: GraphnosisHost;
   llm: () => LocalLlm | null;
@@ -92,6 +251,15 @@ export interface McpDeps {
   defaultGraphId: () => string;
   /** UI hook so a "correction proposed" notification fires for the user to confirm. */
   pendingDiffs: Map<string, { graphId: string; diff: import('./correction.js').CorrectionDiff; createdAt: number }>;
+  /**
+   * Emit a frame to all connected event-socket subscribers (currently
+   * just the App's Rust event_stream forwarder). Used by `remember` to
+   * surface the "engram doesn't exist — create?" prompt in the App UI
+   * when the AI passes a target_engram that doesn't resolve. Optional —
+   * undefined in test/standalone-MCP contexts where no event channel is
+   * wired and the AI just gets the actionable error string.
+   */
+  broadcastRaw?: import('./events.js').BroadcastRawFn;
 }
 
 /**
@@ -311,7 +479,83 @@ export function createMcpServer(deps: McpDeps): Server {
       }
       case 'remember': {
         const args = RememberInput.parse(req.params.arguments ?? {});
-        const graphId = args.graphId ?? deps.defaultGraphId();
+
+        // ── Resolve target engram ────────────────────────────────────
+        //
+        // Precedence: explicit graphId (slug) > target_engram (name or
+        // displayName fuzzy match) > defaultGraphId().
+        //
+        // When target_engram is set but doesn't match any loaded graph,
+        // we emit `engram.create-suggested` to the App's UI and return
+        // an actionable error instead of ingesting. The user clicks
+        // Create in the App banner; the App handles the create-then-
+        // ingest two-step in one user gesture. The AI is told to relay
+        // the message and wait — never auto-creates.
+        let graphId: string;
+        if (args.graphId) {
+          graphId = args.graphId;
+        } else if (args.target_engram) {
+          const resolution = resolveTargetEngram(deps.host, args.target_engram);
+          if (resolution.kind === 'exact') {
+            graphId = resolution.graphId;
+          } else {
+            // Either ambiguous (close matches exist) or none — both go
+            // through the App banner, never through silent AI guess.
+            // Truncate text payload for the broadcast; the App re-supplies
+            // the full body via Tauri IPC when the user confirms, so we
+            // don't ship 50KB over the socket.
+            const candidates = resolution.kind === 'ambiguous' ? resolution.candidates : [];
+            if (deps.broadcastRaw) {
+              deps.broadcastRaw({
+                kind: 'engram.create-suggested',
+                name: args.target_engram,
+                payload: {
+                  suggestedName: args.target_engram,
+                  label: args.label,
+                  text: args.text,
+                  preview: args.text.slice(0, 280),
+                  sourceKind: args.kind ?? 'clip',
+                  requestedBy: mcpRegistry.getMostRecentClientName() ?? 'an AI client',
+                  candidates: candidates.map((c) => ({
+                    graphId: c.graphId,
+                    displayName: c.displayName,
+                    score: Number(c.score.toFixed(2)),
+                    reason: c.reason,
+                  })),
+                },
+              });
+            }
+            // Compose an AI-facing error. When candidates exist, hint them
+            // so the AI can correct itself on the next call instead of
+            // re-asking the user; when none, list everything so the AI
+            // can suggest alternatives without another tool round-trip.
+            const lines: string[] = [];
+            if (candidates.length) {
+              lines.push(
+                `No engram exactly matches "${args.target_engram}". ` +
+                `Closest matches: ${candidates.map((c) => `"${c.displayName}"`).join(', ')}.`,
+              );
+              lines.push(
+                `Tell the user: "I'd save this to '${args.target_engram}' but found similar engrams already — ` +
+                `a banner in the Graphnosis App is asking which one to use (or create a new one)."`,
+              );
+            } else {
+              const known = deps.host.listGraphs().join(', ');
+              lines.push(
+                `No engram named "${args.target_engram}" exists yet. ` +
+                `Tell the user: "I'd save this to a new '${args.target_engram}' engram. ` +
+                `A banner in the Graphnosis App is asking you to confirm — click Create there. ` +
+                `It'll create the engram AND save this note in one click."`,
+              );
+              lines.push(`Existing engrams the user could pick instead: ${known}.`);
+            }
+            lines.push(`DO NOT retry this remember call. The App handles the ingest after the user confirms.`);
+            return { isError: true, content: [{ type: 'text', text: lines.join('\n\n') }] };
+          }
+        } else {
+          graphId = deps.defaultGraphId();
+        }
+
         // Attribute this ingest to the calling MCP client (e.g. "claude-ai",
         // "cursor", "claude-code"). The Sources list in the App's UI shows
         // a small "via <client>" badge for memories not added by the user
@@ -348,6 +592,26 @@ export function createMcpServer(deps: McpDeps): Server {
         const targetGraph = args.graphId ?? candidates[0]?.graphId ?? deps.defaultGraphId();
         const diffId = `diff_${Date.now().toString(36)}`;
         deps.pendingDiffs.set(diffId, { graphId: targetGraph, diff, createdAt: Date.now() });
+        // Surface to the App so it can refresh its pending-corrections
+        // panel immediately AND fire a system notification when the
+        // window's in the background. Without this broadcast the user
+        // only sees the proposed diff when their poll cycle ticks, with
+        // no nudge from the OS — easy to miss when they're elsewhere.
+        if (deps.broadcastRaw) {
+          deps.broadcastRaw({
+            kind: 'correction.proposed',
+            name: diffId,
+            payload: {
+              diffId,
+              graphId: targetGraph,
+              correction: args.correction,
+              requestedBy: mcpRegistry.getMostRecentClientName() ?? 'an AI client',
+              // Small preview for the notification body — count of changes
+              // gives the user enough signal to decide whether to switch.
+              changeCount: (diff.edits?.length ?? 0) + (diff.adds?.length ?? 0),
+            },
+          });
+        }
         return {
           content: [{
             type: 'text',

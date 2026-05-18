@@ -186,6 +186,52 @@ async function dispatch(deps: IpcDeps, method: string, params: unknown): Promise
       });
       return { ok: true, graphId: args.graphId };
     }
+    case 'graphs.acceptEngramSuggestion': {
+      // One-shot create-then-ingest used by the App's UI when the user
+      // accepts a "Create engram?" banner that was suggested by an MCP
+      // `remember` call with an unresolved target_engram. Idempotent on
+      // the create side — if a graph with this slug already exists (the
+      // user might have created it manually between the AI suggestion
+      // and the click), we skip the create and go straight to ingest.
+      //
+      // Single IPC roundtrip so the App UI doesn't have to choreograph
+      // create + ingest + error handling across two calls.
+      const args = z.object({
+        graphId: z.string().min(1).regex(/^[a-zA-Z0-9_-]+$/, 'graphId must be slug-like'),
+        template: z.enum([
+          'personal', 'journal', 'reading', 'learning',
+          'project', 'research', 'codebase', 'health',
+          'team', 'compliance', 'onboarding',
+        ]),
+        displayName: z.string().min(1),
+        text: z.string().min(1),
+        label: z.string().default('Conversation note'),
+        sourceKind: z.enum(['clip', 'ai-conversation']).optional(),
+      }).parse(params);
+      // listGraphs returns the in-memory loaded set — accurate for "does
+      // this engram already exist" because all engrams are loaded at
+      // sidecar startup.
+      const existed = deps.host.listGraphs().includes(args.graphId);
+      if (!existed) {
+        await deps.host.createGraph(args.graphId);
+        await deps.host.setGraphMetadata(args.graphId, {
+          template: args.template,
+          displayName: args.displayName,
+          createdAt: Date.now(),
+        });
+      }
+      const rec = await withEmbedding(() =>
+        ingestClip(deps.host, args.graphId, args.text, args.label, {
+          sourceKind: args.sourceKind ?? 'clip',
+        }),
+      );
+      return {
+        ok: true,
+        graphId: args.graphId,
+        sourceId: rec.sourceId,
+        engramCreated: !existed,
+      };
+    }
     case 'search.nodes': {
       const args = z.object({
         graphId: z.string(),

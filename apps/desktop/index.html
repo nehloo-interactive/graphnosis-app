@@ -1835,6 +1835,71 @@
          Used for the "Add file…" button, drag-drop, and multi-file
          batches so the user can see every file's outcome in one place
          instead of guessing from a counter that may or may not move. */
+      /* Engram-create suggestion banner — top-center, above all panes.
+         Shows when an AI client requested a target engram that doesn't
+         exist. The user clicks Create to do a one-shot create+ingest. */
+      .engram-suggest {
+        position: fixed;
+        top: 56px;
+        left: 50%;
+        transform: translateX(-50%);
+        z-index: 250;
+        max-width: 520px;
+        width: calc(100% - 32px);
+        background: var(--bg);
+        border: 1px solid var(--border);
+        border-left: 3px solid var(--accent);
+        border-radius: 10px;
+        box-shadow: 0 12px 36px rgba(0,0,0,0.22);
+        padding: 12px 14px;
+        font-size: 13px;
+        color: var(--fg);
+      }
+      .engram-suggest.hidden { display: none; }
+      .engram-suggest-title { display: flex; gap: 8px; align-items: baseline; margin-bottom: 6px; }
+      .engram-suggest-icon { font-size: 14px; }
+      .engram-suggest-preview {
+        font-size: 12px;
+        color: var(--fg-dim);
+        background: color-mix(in oklab, var(--fg) 6%, transparent);
+        border-radius: 6px;
+        padding: 8px 10px;
+        margin: 6px 0 10px;
+        max-height: 88px;
+        overflow: hidden;
+        white-space: pre-wrap;
+      }
+      .engram-suggest-actions { display: flex; gap: 8px; justify-content: flex-end; }
+      .engram-suggest-candidates { display: flex; flex-direction: column; gap: 4px; margin: 6px 0 10px; }
+      .engram-suggest-candidates.hidden { display: none; }
+      .engram-suggest-cand {
+        display: flex; align-items: center; gap: 8px;
+        padding: 6px 8px;
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        cursor: pointer;
+        background: transparent;
+        text-align: left;
+        font-size: 12px;
+        color: var(--fg);
+      }
+      .engram-suggest-cand:hover { background: color-mix(in oklab, var(--fg) 5%, transparent); }
+      .engram-suggest-cand.selected {
+        border-color: var(--accent);
+        background: color-mix(in oklab, var(--accent) 10%, transparent);
+      }
+      .engram-suggest-cand-radio {
+        width: 12px; height: 12px; border-radius: 50%;
+        border: 1.5px solid var(--fg-dim); flex-shrink: 0;
+      }
+      .engram-suggest-cand.selected .engram-suggest-cand-radio {
+        border-color: var(--accent);
+        background: var(--accent);
+        box-shadow: inset 0 0 0 2px var(--bg);
+      }
+      .engram-suggest-cand-name { flex: 1; font-weight: 500; }
+      .engram-suggest-cand-reason { color: var(--fg-dim); font-size: 11px; }
+
       .g-toast-stack {
         position: fixed;
         right: 18px;
@@ -3469,6 +3534,27 @@
              pending → success/error and fade out. Lives under the
              drag-drop overlay so it's never obscured during a drop. -->
         <div id="g-toast-stack" class="g-toast-stack" aria-live="polite" aria-atomic="false"></div>
+        <!-- Engram-create suggestion banner. An AI client (via MCP `remember`
+             with target_engram=<name>) asked to save into an engram that
+             doesn't exist yet. The sidecar refuses the write and broadcasts
+             a suggestion; we surface it here so the *user* decides whether
+             to create the engram. Never auto-creates. -->
+        <div id="engram-suggest-banner" class="engram-suggest hidden" role="dialog" aria-live="polite">
+          <div class="engram-suggest-body">
+            <div class="engram-suggest-title">
+              <span class="engram-suggest-icon">✨</span>
+              <span id="engram-suggest-headline"></span>
+            </div>
+            <div class="engram-suggest-preview" id="engram-suggest-preview"></div>
+            <!-- Candidate list — populated when the sidecar's fuzzy match
+                 finds close engrams. Hidden when there are no candidates. -->
+            <div class="engram-suggest-candidates hidden" id="engram-suggest-candidates" role="radiogroup" aria-label="Choose engram"></div>
+            <div class="engram-suggest-actions">
+              <button type="button" class="btn-primary" id="engram-suggest-primary">Create engram &amp; save</button>
+              <button type="button" class="btn-ghost" id="engram-suggest-dismiss">Dismiss</button>
+            </div>
+          </div>
+        </div>
         <!-- Top header: cortex identity + global actions -->
         <header class="app-header" data-tauri-drag-region>
           <div class="app-header-left">
