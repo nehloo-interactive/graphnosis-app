@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Info.plist embedded into the Swift biometric sidecar binary via swiftc's
+  `-sectcreate __TEXT __info_plist` option. Without this, macOS's
+  LocalAuthentication prompt and the Privacy & Security pane show the
+  bare filename "graphnosis-biometric" — which leaks the implementation
+  detail and reads as developer-internal. With the bundle metadata,
+  Touch ID prompts say "Graphnosis Biometric" (matched to the app it
+  pairs with) and the entry in System Settings → Privacy & Security
+  uses the same friendly name.
+-->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTD/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleName</key>
+  <string>Graphnosis Biometric</string>
+  <key>CFBundleDisplayName</key>
+  <string>Graphnosis Biometric</string>
+  <key>CFBundleIdentifier</key>
+  <string>app.graphnosis.biometric</string>
+  <key>CFBundleShortVersionString</key>
+  <string>0.0.1</string>
+  <key>CFBundleVersion</key>
+  <string>1</string>
+  <key>CFBundleExecutable</key>
+  <string>graphnosis-biometric</string>
+  <key>CFBundlePackageType</key>
+  <string>APPL</string>
+  <key>LSUIElement</key>
+  <true/>
+  <!-- The reason string shown alongside the biometric prompt. Apple
+       requires NSFaceIDUsageDescription for Face ID; macOS Touch ID
+       reads CFBundleDisplayName for the title and uses our
+       localizedReason argument (passed to evaluatePolicy) for the body. -->
+  <key>NSFaceIDUsageDescription</key>
+  <string>Used to unlock your Graphnosis Cortex.</string>
+</dict>
+</plist>

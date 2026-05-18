@@ -1,14 +1,14 @@
 //! Long-lived push-event channel from the sidecar.
 //!
-//! Connects to `<vault>/events.sock` and reads newline-delimited JSON frames.
+//! Connects to `<cortex>/events.sock` and reads newline-delimited JSON frames.
 //! Each frame is forwarded to the frontend via Tauri's event system as
 //! `graph-mutation`. The frontend listens once at startup and refreshes
 //! whichever panes care about the affected graph.
 //!
 //! Failure handling: if the connection drops (sidecar restart, socket churn
-//! from a vault relock), we wait for the socket file to reappear and try
+//! from a cortex relock), we wait for the socket file to reappear and try
 //! again with bounded exponential backoff. A cancellation token lets the
-//! Tauri layer kill the loop on vault lock.
+//! Tauri layer kill the loop on cortex lock.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -71,19 +71,22 @@ impl EventStreamHandle {
     }
 }
 
-/// Spawn the event-stream reader for a given vault. Returns a handle the
-/// caller holds until vault lock / app shutdown.
+/// Spawn the event-stream reader for a given cortex. Returns a handle the
+/// caller holds until cortex lock / app shutdown.
 ///
 /// The reader keeps trying to connect — if the sidecar isn't up yet at the
 /// time of unlock (race), the first connect will fail and we retry. Bounded
 /// backoff caps at 5s between attempts.
-pub fn spawn(app: AppHandle, vault_dir: PathBuf) -> EventStreamHandle {
+pub fn spawn(app: AppHandle, cortex_dir: PathBuf) -> EventStreamHandle {
     let cancel = Arc::new(Notify::new());
     let cancel_inner = cancel.clone();
-    let socket_path = vault_dir.join("events.sock");
+    let socket_path = cortex_dir.join("events.sock");
 
     let join = tokio::spawn(async move {
         let mut backoff_ms: u64 = 100;
+        // Track consecutive failures so the log noise doesn't drown out
+        // anything useful when the sidecar's gone for an extended period.
+        let mut consecutive_failures: u64 = 0;
         loop {
             // Cancellation check: race the connect against the cancel notify.
             let connect_or_cancel = tokio::select! {
@@ -95,12 +98,23 @@ pub fn spawn(app: AppHandle, vault_dir: PathBuf) -> EventStreamHandle {
                 None => return, // cancelled
                 Some(Ok(())) => {
                     // Connection ended cleanly (sidecar closed the socket).
-                    // Reset backoff and try to reconnect — vault is still
-                    // unlocked or we'd have been cancelled.
+                    // Reset backoff and consecutive-failure counter.
                     backoff_ms = 100;
+                    consecutive_failures = 0;
                 }
                 Some(Err(e)) => {
-                    eprintln!("[event_stream] connection lost: {} (retry in {}ms)", e, backoff_ms);
+                    consecutive_failures += 1;
+                    // Quiet the log after the first handful of retries —
+                    // if the sidecar has been gone for >30s it isn't coming
+                    // back without an explicit unlock. The retry continues
+                    // (so a re-unlock reconnects automatically) but the
+                    // 5000ms spam stops cluttering the dev terminal.
+                    if consecutive_failures <= 3 || consecutive_failures % 12 == 0 {
+                        eprintln!(
+                            "[event_stream] connection lost: {} (retry in {}ms, attempt {})",
+                            e, backoff_ms, consecutive_failures,
+                        );
+                    }
                 }
             }
             // Sleep with cancellation. If cancelled mid-sleep, exit promptly.
@@ -159,6 +173,27 @@ async fn open_and_read(app: &AppHandle, socket_path: &Path) -> Result<()> {
                     let payload = GraphHelloPayload { ts, cursor };
                     let _ = app.emit("graphnosis://event-stream-connected", &payload);
                 }
+            }
+            "ingest.progress" | "ingest.done"
+            | "recovery.progress" | "recovery.done" => {
+                // Forward the raw payload to the frontend as-is.
+                // The frontend matches on the event name to update the
+                // appropriate UI (toast for ingest, progress bar in the
+                // recovery panel for recovery).
+                //
+                // Tauri 2 rejects '.' in event names (allowed chars: alpha-
+                // numerics, '-', '/', ':', '_'). The sidecar's internal wire
+                // protocol uses dotted kinds ("ingest.progress" etc.) which
+                // are perfectly fine on the socket, but we MUST convert them
+                // to dashes here or the emit silently fails and the frontend
+                // never receives the event. Earlier this was masking a
+                // long-standing bug where ingest progress + recovery progress
+                // weren't actually reaching the UI.
+                let event_name = format!(
+                    "graphnosis://{}",
+                    frame.kind.replace('.', "-"),
+                );
+                let _ = app.emit(&event_name, &frame.payload);
             }
             other => {
                 eprintln!("[event_stream] unknown frame kind '{}' (ignored)", other);
