@@ -13,11 +13,11 @@
     "windows": [
       {
         "label": "main",
-        "title": "Graphnosis",
-        "width": 1180,
+        "title": "Graphnosis: Your Private Second Cortex",
+        "width": 1280,
         "height": 760,
-        "minWidth": 800,
-        "minHeight": 560,
+        "minWidth": 1280,
+        "minHeight": 760,
         "resizable": true,
         "visible": true,
         "hiddenTitle": true,
@@ -31,12 +31,27 @@
   "bundle": {
     "active": true,
     "targets": ["dmg", "app"],
-    "icon": ["icons/icon.png"],
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico",
+      "icons/icon.png"
+    ],
     "category": "Productivity",
     "shortDescription": "Personal second memory",
     "longDescription": "Local-first encrypted personal memory graph that attaches relevant context to your AI conversations.",
     "publisher": "Nehloo Interactive LLC",
-    "copyright": "Copyright © 2026 Nehloo Interactive LLC"
+    "copyright": "Copyright © 2026 Nehloo Interactive LLC",
+    "externalBin": [
+      "binaries/graphnosis-biometric",
+      "binaries/graphnosis-sidecar",
+      "binaries/graphnosis-mcp-relay"
+    ],
+    "resources": [
+      "resources/libonnxruntime.1.21.0.dylib"
+    ]
   },
   "plugins": {}
 }

@@ -6,6 +6,8 @@ import type { GraphnosisHost } from './host.js';
 import type { LocalLlm } from './correction.js';
 import { proposeCorrection, applyCorrection } from './correction.js';
 import { ingestClip } from './ingest.js';
+import { withEmbedding } from './embedding-queue.js';
+import { mcpRegistry } from './mcp-registry.js';
 
 // MCP tools the App exposes to any AI client (Claude Desktop, Claude Code, Cursor, Zed, ...).
 //
@@ -39,6 +41,16 @@ const RememberInput = z.preprocess(
     graphId: z.string().optional(),
     label: z.string().default('Conversation note'),
     text: z.string(),
+    /**
+     * What kind of memory this is, on the SourceRecord taxonomy:
+     *   - 'clip' (default) — a discrete note or fact the AI extracted from
+     *     somewhere (article, doc, the user's earlier message).
+     *   - 'ai-conversation' — the AI is saving a turn or summary of the
+     *     CURRENT conversation. Surfaces differently in the Sources list
+     *     so the user can tell "Claude paraphrased me" from "Claude saw
+     *     this in a doc I shared".
+     */
+    kind: z.enum(['clip', 'ai-conversation']).optional(),
   }),
 );
 // Coerce so that AI clients sending stringified numbers (a common MCP foot-gun)
@@ -213,6 +225,11 @@ export function createMcpServer(deps: McpDeps): Server {
             graphId: { type: 'string' },
             label: { type: 'string' },
             text: { type: 'string' },
+            kind: {
+              type: 'string',
+              enum: ['clip', 'ai-conversation'],
+              description: 'What sort of memory this is. Default is "clip" — a discrete note or fact you extracted (from a doc, the user\'s earlier message, a search result, etc.). Use "ai-conversation" when you\'re saving a turn or summary of the CURRENT conversation between you and the user; the Sources list shows these distinctly so the user can tell "the AI summarized me" from "the AI saw this in a doc I shared".',
+            },
           },
           required: ['text'],
         },
@@ -282,7 +299,7 @@ export function createMcpServer(deps: McpDeps): Server {
           maxTokens: args.maxTokens ?? 2000,
           maxNodes: args.maxNodes ?? 20,
         };
-        const sub = await deps.host.recall(args.query, { budget });
+        const sub = await withEmbedding(() => deps.host.recall(args.query, { budget }));
         // Emit a structured audit line to stderr — the desktop inspector tails this.
         console.error(`[${toolName}] q=${JSON.stringify(args.query)} requested=${budget.maxNodes}n/${budget.maxTokens}t served=${sub.nodesIncluded}n/${sub.tokensUsed}t graphs=${JSON.stringify(sub.audit)}`);
         const auditFooter =
@@ -295,8 +312,19 @@ export function createMcpServer(deps: McpDeps): Server {
       case 'remember': {
         const args = RememberInput.parse(req.params.arguments ?? {});
         const graphId = args.graphId ?? deps.defaultGraphId();
-        const rec = await ingestClip(deps.host, graphId, args.text, args.label) as
-          import('@graphnosis-app/core').SourceRecord & { contradictions?: unknown[] };
+        // Attribute this ingest to the calling MCP client (e.g. "claude-ai",
+        // "cursor", "claude-code"). The Sources list in the App's UI shows
+        // a small "via <client>" badge for memories not added by the user
+        // directly — useful for audit and for distinguishing AI-driven
+        // remember/correct flows from user-driven ingest.
+        const addedBy = mcpRegistry.getMostRecentClientName();
+        const sourceKind = args.kind ?? 'clip';
+        const rec = await withEmbedding(() =>
+          ingestClip(deps.host, graphId, args.text, args.label, {
+            ...(addedBy ? { addedBy } : {}),
+            sourceKind,
+          })
+        ) as import('@graphnosis-app/core').SourceRecord & { contradictions?: unknown[] };
         let msg = `Saved to ${graphId} as ${rec.sourceId}.`;
         if (rec.contradictions && rec.contradictions.length > 0) {
           msg +=
@@ -331,7 +359,13 @@ export function createMcpServer(deps: McpDeps): Server {
         const args = ApplyInput.parse(req.params.arguments ?? {});
         const pending = deps.pendingDiffs.get(args.diffId);
         if (!pending) throw new Error(`No pending diff ${args.diffId}. The user must confirm in the app first.`);
-        await applyCorrection({ host: deps.host, graphId: pending.graphId, diff: pending.diff });
+        const correctedBy = mcpRegistry.getMostRecentClientName();
+        await applyCorrection({
+          host: deps.host,
+          graphId: pending.graphId,
+          diff: pending.diff,
+          ...(correctedBy ? { correctedBy } : {}),
+        });
         deps.pendingDiffs.delete(args.diffId);
         return { content: [{ type: 'text', text: 'Applied.' }] };
       }
@@ -367,7 +401,8 @@ export function createMcpServer(deps: McpDeps): Server {
  * Desktop's config).
  */
 export async function startStdioMcpServer(deps: McpDeps): Promise<void> {
-  const { mcpRegistry } = await import('./mcp-registry.js');
+  // mcpRegistry is now imported statically at the top of the file so the
+  // tool handlers can use it too (attribution of MCP-driven ingests).
   const server = createMcpServer(deps);
   const transport = new StdioServerTransport();
   await server.connect(transport);

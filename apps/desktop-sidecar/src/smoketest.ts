@@ -3,7 +3,7 @@
 // encryption -> ingest -> recall path against @nehloo/graphnosis@0.2.3.
 //
 // Run with:
-//   GRAPHNOSIS_VAULT=/tmp/gn-smoke \
+//   GRAPHNOSIS_CORTEX=/tmp/gn-smoke \
 //   GRAPHNOSIS_PASSPHRASE=smoke-test \
 //   node --enable-source-maps dist/smoketest.js
 //
@@ -17,11 +17,11 @@ import { GraphnosisHost } from './host.js';
 import { GraphnosisImpl } from './graphnosis-impl.js';
 
 async function main(): Promise<void> {
-  const vaultDir = process.env.GRAPHNOSIS_VAULT ?? path.join(os.tmpdir(), `gn-smoke-${process.pid}`);
+  const cortexDir = process.env.GRAPHNOSIS_CORTEX ?? path.join(os.tmpdir(), `gn-smoke-${process.pid}`);
   const passphrase = process.env.GRAPHNOSIS_PASSPHRASE ?? 'smoke-test';
-  await fs.rm(vaultDir, { recursive: true, force: true });
+  await fs.rm(cortexDir, { recursive: true, force: true });
 
-  log('setup', { vaultDir });
+  log('setup', { cortexDir });
   const policyCfg: policy.PolicyConfig = {
     defaultBudget: policy.DEFAULT_BUDGET,
     graphs: [
@@ -29,13 +29,71 @@ async function main(): Promise<void> {
       { graphId: 'secrets',  shareWithAi: true, tier: 'sensitive' },
     ],
   };
-  const host = await GraphnosisHost.open({
-    vaultDir,
+  const { host, recoveryPhrase } = await GraphnosisHost.open({
+    cortexDir,
     passphrase,
     deviceId: 'smoke',
     adapter: new GraphnosisImpl(),
     policy: policyCfg,
   });
+
+  // Verify first-run generates a 24-word recovery phrase and writes recovery.enc
+  if (!recoveryPhrase) throw new Error('smoke: expected recoveryPhrase on first open');
+  const wordCount = recoveryPhrase.trim().split(/\s+/).length;
+  if (wordCount !== 24) throw new Error(`smoke: expected 24-word phrase, got ${wordCount}`);
+  const recoveryEncPath = path.join(cortexDir, 'recovery.enc');
+  await fs.stat(recoveryEncPath); // throws if missing
+  log('recovery-phrase', { words: wordCount, recoveryEncExists: true });
+
+  // Verify round-trip: open again with recovery phrase should succeed
+  const { host: hostRecovered } = await GraphnosisHost.open({
+    cortexDir,
+    passphrase: '',
+    deviceId: 'smoke-recovered',
+    adapter: new GraphnosisImpl(),
+    recoveryPhrase,
+  });
+  log('recovery-roundtrip', { ok: !!hostRecovered });
+
+  // Verify passphrase rotation: change to a new passphrase, then confirm
+  // both that (a) the new passphrase unlocks and (b) the old one doesn't.
+  // The dataKey is preserved so all the existing engram files (when we
+  // create them below) still decrypt.
+  const newPassphrase = 'smoke-rotated-passphrase';
+  await hostRecovered.changePassphrase(newPassphrase, { skipOldPassphraseCheck: true });
+  log('passphrase-change.applied', {});
+  const { host: hostNewPass } = await GraphnosisHost.open({
+    cortexDir,
+    passphrase: newPassphrase,
+    deviceId: 'smoke-new-pass',
+    adapter: new GraphnosisImpl(),
+  });
+  log('passphrase-change.unlock-with-new', { ok: !!hostNewPass });
+  let oldPassphraseRejected = false;
+  try {
+    await GraphnosisHost.open({
+      cortexDir,
+      passphrase, // original
+      deviceId: 'smoke-old-pass-should-fail',
+      adapter: new GraphnosisImpl(),
+    });
+  } catch {
+    oldPassphraseRejected = true;
+  }
+  log('passphrase-change.old-rejected', { ok: oldPassphraseRejected });
+  if (!oldPassphraseRejected) {
+    throw new Error('smoke: old passphrase should NOT unlock after rotation');
+  }
+  // Recovery phrase MUST still work after passphrase rotation — the dataKey
+  // is unchanged, so recovery.enc still wraps it correctly.
+  const { host: hostRecoveredAfterRotation } = await GraphnosisHost.open({
+    cortexDir,
+    passphrase: '',
+    deviceId: 'smoke-recovery-after-rotation',
+    adapter: new GraphnosisImpl(),
+    recoveryPhrase,
+  });
+  log('passphrase-change.recovery-still-works', { ok: !!hostRecoveredAfterRotation });
 
   log('create-graph', { graphId: 'personal' });
   await host.createGraph('personal');
@@ -62,7 +120,7 @@ ferry to Naxos. The food in Mykonos was overrated.`;
   console.log('--- end context ---');
 
   log('encrypted-on-disk-check', {});
-  const aikgPath = path.join(vaultDir, 'graphs', 'personal.gai');
+  const aikgPath = path.join(cortexDir, 'graphs', 'personal.gai');
   const raw = await fs.readFile(aikgPath);
   if (raw.includes(Buffer.from('Santorini'))) {
     throw new Error('FAIL: plaintext leak — found "Santorini" in .aikg on disk');

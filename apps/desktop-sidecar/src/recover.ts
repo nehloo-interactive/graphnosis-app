@@ -1,30 +1,30 @@
 #!/usr/bin/env node
 /**
- * Standalone vault-recovery CLI — replays the encrypted op-log to reconstruct
+ * Standalone cortex-recovery CLI — replays the encrypted op-log to reconstruct
  * a graph emptied by the pre-fix silent-overwrite bug (or any other accident).
  *
  * In the normal product flow this is exposed via the App's "Recover" UI,
  * which calls `host.planRecovery()` / `host.applyRecovery()` over IPC. This
  * CLI is the no-App fallback — useful when the App won't start (e.g., the
- * vault is in a weird state) or for power-user scripted recovery.
+ * cortex is in a weird state) or for power-user scripted recovery.
  *
  * Usage:
- *   GRAPHNOSIS_VAULT=/path/to/vault GRAPHNOSIS_PASSPHRASE='...' \
+ *   GRAPHNOSIS_CORTEX=/path/to/cortex GRAPHNOSIS_PASSPHRASE='...' \
  *     node dist/recover.js plan        # print recovery plan, no writes
  *
- *   GRAPHNOSIS_VAULT=/path/to/vault GRAPHNOSIS_PASSPHRASE='...' \
+ *   GRAPHNOSIS_CORTEX=/path/to/cortex GRAPHNOSIS_PASSPHRASE='...' \
  *     node dist/recover.js apply       # re-ingest every `recoverable` item
  *
- * IMPORTANT: nothing else can hold the vault lock while this runs. Quit the
- * App and Claude Desktop's MCP relay (if it's pointing at this vault) first.
+ * IMPORTANT: nothing else can hold the cortex lock while this runs. Quit the
+ * App and Claude Desktop's MCP relay (if it's pointing at this cortex) first.
  */
 
 import { embeddings } from '@graphnosis-app/core';
 import { GraphnosisHost, type RecoveryPlanItem } from './host.js';
 import { GraphnosisImpl } from './graphnosis-impl.js';
-import { localEmbed, LOCAL_EMBED_ID, LOCAL_EMBED_DIM } from './local-embed.js';
+import { workerEmbed, LOCAL_EMBED_ID, LOCAL_EMBED_DIM } from './local-embed.js';
 
-async function bootHost(vaultDir: string, passphrase: string): Promise<GraphnosisHost> {
+async function bootHost(cortexDir: string, passphrase: string): Promise<GraphnosisHost> {
   const adapter = new GraphnosisImpl();
 
   // Best-effort local embeddings — recovery still works on the stub.
@@ -32,9 +32,9 @@ async function bootHost(vaultDir: string, passphrase: string): Promise<Graphnosi
   let embedAdapterId = 'graphnosis-app:stub@384';
   let embedDimensions = 384;
   try {
-    const probe = await localEmbed('graphnosis recovery probe');
+    const probe = await workerEmbed('graphnosis recovery probe');
     if (probe.length === LOCAL_EMBED_DIM) {
-      embedFn = localEmbed;
+      embedFn = workerEmbed;
       embedAdapterId = LOCAL_EMBED_ID;
       embedDimensions = LOCAL_EMBED_DIM;
     }
@@ -42,8 +42,8 @@ async function bootHost(vaultDir: string, passphrase: string): Promise<Graphnosi
     console.error(`[recover] embeddings unavailable: ${(e as Error).message} — falling back to stub.`);
   }
 
-  return GraphnosisHost.open({
-    vaultDir,
+  const { host } = await GraphnosisHost.open({
+    cortexDir,
     passphrase,
     deviceId: `recovery-${process.pid}`,
     adapter,
@@ -51,6 +51,7 @@ async function bootHost(vaultDir: string, passphrase: string): Promise<Graphnosi
     embedAdapterId,
     embedDimensions,
   });
+  return host;
 }
 
 function statusGlyph(item: RecoveryPlanItem): string {
@@ -64,9 +65,9 @@ function statusGlyph(item: RecoveryPlanItem): string {
   }
 }
 
-async function planMode(host: GraphnosisHost, vaultDir: string): Promise<void> {
+async function planMode(host: GraphnosisHost, cortexDir: string): Promise<void> {
   const plan = await host.planRecovery();
-  console.log(`\nRecovery plan for vault: ${vaultDir}`);
+  console.log(`\nRecovery plan for cortex: ${cortexDir}`);
   console.log(`Found ${plan.total} source(s) in op-log (${plan.recoverable} recoverable).\n`);
 
   const byGraph = new Map<string, RecoveryPlanItem[]>();
@@ -110,12 +111,12 @@ async function applyMode(host: GraphnosisHost): Promise<void> {
 }
 
 async function main(): Promise<void> {
-  const vaultDir = process.env.GRAPHNOSIS_VAULT;
+  const cortexDir = process.env.GRAPHNOSIS_CORTEX;
   const passphrase = process.env.GRAPHNOSIS_PASSPHRASE;
   const mode = process.argv[2];
 
-  if (!vaultDir || !passphrase) {
-    console.error('Set GRAPHNOSIS_VAULT and GRAPHNOSIS_PASSPHRASE env vars.');
+  if (!cortexDir || !passphrase) {
+    console.error('Set GRAPHNOSIS_CORTEX and GRAPHNOSIS_PASSPHRASE env vars.');
     process.exit(2);
   }
   if (mode !== 'plan' && mode !== 'apply') {
@@ -123,9 +124,9 @@ async function main(): Promise<void> {
     process.exit(2);
   }
 
-  const host = await bootHost(vaultDir, passphrase);
+  const host = await bootHost(cortexDir, passphrase);
   if (mode === 'plan') {
-    await planMode(host, vaultDir);
+    await planMode(host, cortexDir);
   } else {
     await applyMode(host);
   }

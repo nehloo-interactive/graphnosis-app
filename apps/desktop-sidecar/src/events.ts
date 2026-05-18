@@ -22,6 +22,16 @@ interface EventFrame {
   payload: MutationEvent;
 }
 
+/** Any arbitrary frame that the IPC layer wants to broadcast to all subscribers. */
+export interface RawFrame {
+  kind: string;
+  name: string;
+  payload: unknown;
+}
+
+/** Function returned by startEvents so callers can push custom frames. */
+export type BroadcastRawFn = (frame: RawFrame) => void;
+
 /** Backpressure threshold. If a socket's pending write buffer grows past
  *  this, we drop subsequent events for that socket and log it. Real-world
  *  cause: the consumer is stuck (UI re-render storm, paused process),
@@ -50,7 +60,7 @@ export interface EventsDeps {
   socketPath: string;
 }
 
-export async function startEvents(deps: EventsDeps): Promise<net.Server> {
+export async function startEvents(deps: EventsDeps): Promise<{ server: net.Server; broadcastRaw: BroadcastRawFn }> {
   await fs.mkdir(path.dirname(deps.socketPath), { recursive: true });
   await fs.rm(deps.socketPath, { force: true });
 
@@ -62,35 +72,26 @@ export async function startEvents(deps: EventsDeps): Promise<net.Server> {
     lastFiredAt: 0,
   };
 
+  /** Write a raw frame to every connected subscriber — used for progress
+   *  events that don't go through the throttled mutation path. */
+  const broadcastRaw: BroadcastRawFn = (frame: RawFrame): void => {
+    const line = JSON.stringify(frame) + '\n';
+    for (const sock of sockets) {
+      if (sock.destroyed) { sockets.delete(sock); continue; }
+      if (sock.writableLength > BACKPRESSURE_HIGH_WATER) continue;
+      sock.write(line, (err) => {
+        if (err) { sock.destroy(); sockets.delete(sock); }
+      });
+    }
+  };
+
   const broadcast = (event: MutationEvent): void => {
     const frame: EventFrame = {
       kind: 'event',
       name: 'graph.mutation',
       payload: event,
     };
-    const line = JSON.stringify(frame) + '\n';
-    for (const sock of sockets) {
-      if (sock.destroyed) {
-        sockets.delete(sock);
-        continue;
-      }
-      if (sock.writableLength > BACKPRESSURE_HIGH_WATER) {
-        console.error(
-          `[graphnosis-sidecar] event subscriber backpressured ` +
-          `(writableLength=${sock.writableLength}); dropping event ` +
-          `${event.graphId}@${event.ts}`,
-        );
-        continue;
-      }
-      sock.write(line, (err) => {
-        if (err) {
-          // Common case: client went away mid-write. Drop the socket
-          // quietly; reconnect logic on the client recovers.
-          sock.destroy();
-          sockets.delete(sock);
-        }
-      });
-    }
+    broadcastRaw(frame as unknown as RawFrame);
   };
 
   // Throttle: fire on leading edge, suppress 400ms, fire trailing if
@@ -171,7 +172,7 @@ export async function startEvents(deps: EventsDeps): Promise<net.Server> {
     server.once('error', reject);
     server.listen(deps.socketPath, () => {
       console.error(`[graphnosis-sidecar] events socket listening on ${deps.socketPath}`);
-      resolve(server);
+      resolve({ server, broadcastRaw });
     });
   });
 }

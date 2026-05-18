@@ -7,7 +7,9 @@ import type {
   GraphnosisAdapter,
   GraphHandle,
   AppendDocumentInput,
+  AppendDocumentOptions,
   AppendDocumentResult,
+  BuildEmbeddingsAdapterOpts,
   QueryResult,
   CorrectionEdit,
 } from './graphnosis-adapter.js';
@@ -51,12 +53,19 @@ export class GraphnosisImpl implements GraphnosisAdapter {
     h.built = true;
   }
 
-  async appendDocument(handle: GraphHandle, input: AppendDocumentInput): Promise<AppendDocumentResult> {
+  async appendDocument(handle: GraphHandle, input: AppendDocumentInput, opts: AppendDocumentOptions = {}): Promise<AppendDocumentResult> {
     const h = handle as Internal;
     // Fresh graph: most kinds use add* (chainable) then build once. PDF doesn't
     // have a pre-build form in the SDK, so for PDF specifically we build an
     // empty graph first and route through the post-build append path. This
     // makes "first file is a PDF" Just Work instead of throwing.
+    //
+    // chunkSize: only the post-build path can honor it (the SDK's `addX`
+    // pre-build chainables don't take chunk options yet). For pre-build
+    // we route through `addX` → `build()`, which uses the SDK's default
+    // chunking. Acceptable tradeoff: pre-build only runs on the very
+    // first append to a fresh graph; all subsequent appends use the
+    // chunk-aware post-build path.
     if (!h.built) {
       if (input.kind === 'pdf') {
         h.instance.build(h.graphId);
@@ -72,7 +81,7 @@ export class GraphnosisImpl implements GraphnosisAdapter {
     }
 
     const before = new Set(h.instance.graph.nodes.keys());
-    let result = await this.appendPostBuild(h.instance, input);
+    let result = await this.appendPostBuild(h.instance, input, opts);
     let newNodeIds: string[] = [];
     for (const id of h.instance.graph.nodes.keys()) if (!before.has(id)) newNodeIds.push(id);
 
@@ -85,7 +94,8 @@ export class GraphnosisImpl implements GraphnosisAdapter {
       const label = labelFromSourceRef(input.sourceRef);
       const wrapped = `# ${label}\n\n${input.content}`;
       const fallbackBefore = new Set(h.instance.graph.nodes.keys());
-      result = h.instance.appendMarkdown(wrapped, input.sourceRef);
+      const fallbackOpts = opts.chunkSize ? { chunkSize: opts.chunkSize } : undefined;
+      result = h.instance.appendMarkdown(wrapped, input.sourceRef, fallbackOpts);
       for (const id of h.instance.graph.nodes.keys()) {
         if (!fallbackBefore.has(id)) newNodeIds.push(id);
       }
@@ -139,7 +149,7 @@ export class GraphnosisImpl implements GraphnosisAdapter {
     }
   }
 
-  async buildEmbeddings(handle: GraphHandle, opts: { embed: EmbedFn; dimensions: number; id: string }): Promise<void> {
+  async buildEmbeddings(handle: GraphHandle, opts: BuildEmbeddingsAdapterOpts): Promise<void> {
     const h = handle as Internal;
     if (!h.built) h.instance.build(h.graphId);
     const adapter: EmbeddingAdapter = {
@@ -147,7 +157,14 @@ export class GraphnosisImpl implements GraphnosisAdapter {
       dimensions: opts.dimensions,
       embed: async (texts: string[]) => Promise.all(texts.map(t => opts.embed(t))),
     };
-    await h.instance.buildEmbeddings({ adapter });
+    // Pass batchSize through to the SDK. The SDK accepts either a number
+    // or a preset string ('small' | 'medium' | 'large' | 'auto') and
+    // resolves the preset to a numeric items-per-call internally.
+    await h.instance.buildEmbeddings(
+      opts.batchSize !== undefined
+        ? { adapter, batchSize: opts.batchSize }
+        : { adapter },
+    );
   }
 
   allNodeIds(handle: GraphHandle): string[] {
@@ -362,6 +379,33 @@ export class GraphnosisImpl implements GraphnosisAdapter {
       h.instance.graph.metadata.directedEdgeCount = h.instance.graph.directedEdges.size;
     }
     return { edgeId, created: true };
+  }
+
+  /**
+   * Remove a single edge by its ID. Tries directed edges first, then
+   * undirected. Returns `{ removed: false }` if the edge is not found
+   * rather than throwing — callers can treat this as idempotent.
+   */
+  async unlinkEdge(
+    handle: GraphHandle,
+    edgeId: string,
+  ): Promise<{ removed: boolean; wasDirected?: boolean }> {
+    const h = handle as Internal;
+    if (h.instance.graph.directedEdges.has(edgeId)) {
+      h.instance.graph.directedEdges.delete(edgeId);
+      if (h.instance.graph.metadata) {
+        h.instance.graph.metadata.directedEdgeCount = h.instance.graph.directedEdges.size;
+      }
+      return { removed: true, wasDirected: true };
+    }
+    if (h.instance.graph.undirectedEdges.has(edgeId)) {
+      h.instance.graph.undirectedEdges.delete(edgeId);
+      if (h.instance.graph.metadata) {
+        h.instance.graph.metadata.undirectedEdgeCount = h.instance.graph.undirectedEdges.size;
+      }
+      return { removed: true, wasDirected: false };
+    }
+    return { removed: false };
   }
 
   /**
@@ -584,20 +628,24 @@ export class GraphnosisImpl implements GraphnosisAdapter {
     }
   }
 
-  private async appendPostBuild(g: Graphnosis, input: AppendDocumentInput) {
+  private async appendPostBuild(g: Graphnosis, input: AppendDocumentInput, opts: AppendDocumentOptions = {}) {
+    // SDK accepts `{ chunkSize: ChunkSizePreset }` as the 3rd arg of every
+    // append* sugar method. Pass undefined when the user hasn't set a
+    // preset so the SDK falls back to its 'balanced' default.
+    const ingestOpts = opts.chunkSize ? { chunkSize: opts.chunkSize } : undefined;
     switch (input.kind) {
       case 'text':
-        return g.appendText(asString(input.content), input.sourceRef);
+        return g.appendText(asString(input.content), input.sourceRef, ingestOpts);
       case 'markdown':
-        return g.appendMarkdown(asString(input.content), input.sourceRef);
+        return g.appendMarkdown(asString(input.content), input.sourceRef, ingestOpts);
       case 'html':
-        return g.appendHtml(asString(input.content), input.sourceRef);
+        return g.appendHtml(asString(input.content), input.sourceRef, ingestOpts);
       case 'json':
-        return g.appendJson(asString(input.content), input.sourceRef);
+        return g.appendJson(asString(input.content), input.sourceRef, ingestOpts);
       case 'csv':
-        return g.appendCsv(asString(input.content), input.sourceRef);
+        return g.appendCsv(asString(input.content), input.sourceRef, ingestOpts);
       case 'pdf':
-        return g.appendPdf(Buffer.from(input.content as Uint8Array), input.sourceRef);
+        return g.appendPdf(Buffer.from(input.content as Uint8Array), input.sourceRef, ingestOpts);
     }
   }
 }

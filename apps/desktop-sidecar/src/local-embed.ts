@@ -1,19 +1,69 @@
+/**
+ * Local embedding pool — fastembed (BGE-small-en-v1.5, 384-dim) via forked
+ * child processes.
+ *
+ * We use child_process.fork() rather than worker_threads because
+ * onnxruntime-node is a native N-API addon that calls V8 APIs without the
+ * isolate lock — running it in a Worker thread causes an immediate fatal
+ * crash. Each forked child has its own V8 isolate and main thread, so the
+ * native addon runs safely, and the parent event loop is never blocked by
+ * ONNX inference.
+ *
+ * Pool size default: 2 processes (~200 MB RAM total).
+ * Override: GRAPHNOSIS_EMBED_WORKERS=N (min 1).
+ */
+import { fork, spawn, type ChildProcess } from 'node:child_process';
 import path from 'node:path';
 import os from 'node:os';
-import { promises as fs } from 'node:fs';
-import { FlagEmbedding, EmbeddingModel } from 'fastembed';
+import { fileURLToPath } from 'node:url';
 import type { EmbedFn } from '@graphnosis-app/core/embeddings';
 
-// Local embedding model via fastembed-js (ONNX runtime, fully offline after first download).
-// BGE-small-en-v1.5: 384-dim, ~33MB on disk, ~30-50ms per embed on M-series.
+// ── Bun-compiled mode detection ─────────────────────────────────────────────
 //
-// Adapter provenance id is stable per (model, dimension, intent) — this is what
-// @nehloo/graphnosis uses as the index identity. Change it if you swap models.
+// In a `bun build --compile` binary, module paths live in Bun's virtual
+// filesystem (`/$bunfs/`), Node's `child_process.fork(path)` against such
+// paths re-execs the parent binary. Without an env-var router (see
+// src/index.ts), that re-exec runs the full sidecar startup which itself
+// calls fork() — exponential fork bomb (May 2026 incident: 1,770 processes).
+//
+// To safely run workers in compiled mode we now:
+//   1. Spawn `process.execPath` (the binary itself) with
+//      `GRAPHNOSIS_WORKER_ROLE=embed` set in the child's env.
+//   2. The router at src/index.ts sees that env var and dynamic-imports
+//      ONLY `embed-worker.js` — local-embed.ts never loads in the worker,
+//      so it can't fork again no matter what.
+//   3. We add a defensive abort here too: if THIS file is somehow loaded
+//      with GRAPHNOSIS_WORKER_ROLE set, we throw immediately. That should
+//      never happen if the router is correct, but it's a cheap belt.
+//
+// Belt #1: structural — worker entry doesn't import local-embed.ts.
+// Belt #2: env-var check below — refuses to spawn if we're already a worker.
+const IS_COMPILED_BIN = (() => {
+  try {
+    if (import.meta.url.startsWith('file:///$bunfs/')) return true;
+    if (import.meta.url.includes('/$bunfs/')) return true;
+  } catch { /* import.meta.url may throw in some embedded contexts */ }
+  const exe = process.execPath || '';
+  if (exe.endsWith('/node')) return false;
+  if (exe.includes('graphnosis-sidecar')) return true;
+  return false;
+})();
+
+if (process.env['GRAPHNOSIS_WORKER_ROLE']) {
+  // Safety belt: a worker process should NEVER import local-embed.ts. If
+  // we're here, something in the import graph routes back into the main
+  // sidecar code from the worker entry — which would re-spawn workers,
+  // which would re-spawn, etc. Throw loudly so the bug is visible before
+  // damage spreads.
+  throw new Error(
+    `local-embed.ts loaded inside a worker process (GRAPHNOSIS_WORKER_ROLE=` +
+    `${process.env['GRAPHNOSIS_WORKER_ROLE']}). This is a fork-bomb risk; ` +
+    `aborting. Check the router in src/index.ts and the worker entry's import graph.`,
+  );
+}
 
 export const LOCAL_EMBED_ID = 'graphnosis-app:bge-small-en-v1.5@384:document';
 export const LOCAL_EMBED_DIM = 384;
-
-let modelPromise: Promise<FlagEmbedding> | null = null;
 
 function defaultCacheDir(): string {
   const home = os.homedir();
@@ -23,34 +73,139 @@ function defaultCacheDir(): string {
   return path.join(home, '.cache', 'GraphnosisApp', 'models');
 }
 
-async function loadModel(): Promise<FlagEmbedding> {
-  if (!modelPromise) {
-    const cacheDir = process.env.GRAPHNOSIS_EMBED_CACHE ?? defaultCacheDir();
-    console.error(`[graphnosis-sidecar] initializing local embedding model (BGE-small-en-v1.5) — cache=${cacheDir}`);
-    modelPromise = (async () => {
-      // fastembed doesn't mkdir its cache — we have to.
-      await fs.mkdir(cacheDir, { recursive: true });
-      return FlagEmbedding.init({
-        model: EmbeddingModel.BGESmallENV15,
-        cacheDir,
-        showDownloadProgress: false, // stdout is the MCP transport; logs go to stderr
-        maxLength: 512,
-      });
-    })();
-  }
-  return modelPromise;
+// ── Pool configuration ───────────────────────────────────────────────────────
+
+const WORKER_COUNT = Math.max(1, Number(process.env.GRAPHNOSIS_EMBED_WORKERS ?? 2));
+const cacheDir = process.env.GRAPHNOSIS_EMBED_CACHE ?? defaultCacheDir();
+const workerScriptPath = fileURLToPath(new URL('./embed-worker.js', import.meta.url));
+
+// ── Pending request tracking ─────────────────────────────────────────────────
+
+interface PendingEmbed {
+  resolve: (vec: number[]) => void;
+  reject: (err: Error) => void;
+  workerIdx: number;
 }
 
-// Single-text embed for the @graphnosis-app/core `EmbedFn` interface.
-// Internally batched calls (passageEmbed/embed) yield AsyncGenerator<number[][]>;
-// for one text we take the first batch's first vector.
-export const localEmbed: EmbedFn = async (text: string): Promise<number[]> => {
-  const model = await loadModel();
-  const trimmed = text.trim().slice(0, 8000);
-  if (!trimmed) return new Array(LOCAL_EMBED_DIM).fill(0);
-  for await (const batch of model.embed([trimmed], 1)) {
-    const first = batch[0];
-    if (first) return first;
-  }
-  throw new Error('Local embedding model returned no vectors');
+const pending = new Map<number, PendingEmbed>();
+let counter = 0;
+let nextWorker = 0;
+
+// ── Child process lifecycle ──────────────────────────────────────────────────
+
+function spawnWorker(idx: number): ChildProcess {
+  // Two spawn shapes, same IPC channel + env:
+  //   - Compiled binary: re-exec the parent binary itself with
+  //     GRAPHNOSIS_WORKER_ROLE=embed. The router at src/index.ts routes
+  //     the child into embed-worker.ts only — main sidecar code never
+  //     loads in the worker. Uses spawn() + 'ipc' stdio to get the same
+  //     `process.send()` channel that fork() sets up.
+  //   - Dev mode (node script): use fork() against the embed-worker.js
+  //     dist file. Same channel, same protocol.
+  // Both paths produce a ChildProcess with `.send()` / `.on('message')`
+  // semantics so the rest of this module doesn't branch.
+  const env = {
+    ...process.env,
+    GRAPHNOSIS_EMBED_CACHE_DIR: cacheDir,
+    // Set in BOTH paths — harmless in dev, essential in compiled.
+    GRAPHNOSIS_WORKER_ROLE: 'embed',
+  };
+  const child = IS_COMPILED_BIN
+    ? spawn(process.execPath, [], {
+        env,
+        // Same stdio shape as fork(): silence stdin/stdout, inherit
+        // stderr, IPC channel on fd 3.
+        stdio: ['ignore', 'ignore', 'inherit', 'ipc'],
+      })
+    : fork(workerScriptPath, [], {
+        env,
+        stdio: ['ignore', 'ignore', 'inherit', 'ipc'],
+      });
+
+  child.on('message', (msg: { type?: string; id?: number; vec?: number[]; error?: string }) => {
+    if (msg.type === 'ready') {
+      console.error(`[local-embed] worker-${idx} ready`);
+      return;
+    }
+    const id = msg.id;
+    if (id == null) return;
+    const p = pending.get(id);
+    if (!p) return; // already resolved/rejected (e.g., child restarted mid-flight)
+    pending.delete(id);
+    if (msg.error) {
+      p.reject(new Error(`[embed-worker-${idx}] ${msg.error}`));
+    } else if (msg.vec) {
+      p.resolve(msg.vec);
+    } else {
+      p.reject(new Error(`[embed-worker-${idx}] empty response (no vec, no error)`));
+    }
+  });
+
+  child.on('error', (err) => {
+    console.error(`[local-embed] worker-${idx} error: ${err.message}`);
+  });
+
+  child.on('exit', (code, signal) => {
+    // code === null when killed by signal (expected on terminateEmbedWorker).
+    if (code === 0 || signal === 'SIGTERM') return;
+    const reason = signal ? `signal ${signal}` : `exit code ${code}`;
+    console.error(`[local-embed] worker-${idx} exited unexpectedly (${reason}), respawning`);
+    // Reject all in-flight requests routed to this child.
+    for (const [id, p] of pending) {
+      if (p.workerIdx === idx) {
+        pending.delete(id);
+        p.reject(new Error(`embed-worker-${idx} crashed (${reason})`));
+      }
+    }
+    workers[idx] = spawnWorker(idx);
+  });
+
+  return child;
+}
+
+// Spawn the pool in BOTH modes. Compiled mode re-execs the parent binary
+// with GRAPHNOSIS_WORKER_ROLE=embed; the router at src/index.ts ensures the
+// worker process imports only embed-worker.ts (not this file). Dev mode
+// uses traditional fork() against embed-worker.js.
+const workers: ChildProcess[] = Array.from(
+  { length: WORKER_COUNT },
+  (_, i) => spawnWorker(i),
+);
+console.error(
+  `[local-embed] spawned ${WORKER_COUNT} embed worker(s) ` +
+  `(${IS_COMPILED_BIN ? 'compiled — re-exec of parent binary' : 'dev — fork of embed-worker.js'})`,
+);
+
+// ── Public API ───────────────────────────────────────────────────────────────
+
+/**
+ * Embed a single text string. Dispatches to the next child process in
+ * round-robin order; returns a Promise that resolves with the 384-dim vector
+ * once the child completes inference. The parent event loop is never blocked.
+ */
+export const workerEmbed: EmbedFn = (text: string): Promise<number[]> => {
+  const id = ++counter;
+  const idx = nextWorker % WORKER_COUNT;
+  nextWorker = (nextWorker + 1) % WORKER_COUNT;
+  const child = workers[idx];
+  if (!child) return Promise.reject(new Error(`embed pool not initialised (idx ${idx})`));
+  child.send({ id, text });
+  return new Promise<number[]>((resolve, reject) => {
+    pending.set(id, { resolve, reject, workerIdx: idx });
+  });
 };
+
+/**
+ * Gracefully terminate all embedding child processes. Call on sidecar shutdown
+ * so they don't linger as orphan processes after the main process exits.
+ */
+export async function terminateEmbedWorker(): Promise<void> {
+  await Promise.allSettled(
+    workers.map(
+      (child) => new Promise<void>((resolve) => {
+        child.once('exit', () => resolve());
+        child.kill('SIGTERM');
+      }),
+    ),
+  );
+}

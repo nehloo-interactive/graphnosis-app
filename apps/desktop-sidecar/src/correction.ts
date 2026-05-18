@@ -94,6 +94,11 @@ export async function applyCorrection(opts: {
   host: GraphnosisHost;
   graphId: string;
   diff: CorrectionDiff;
+  /** MCP client name when this correction was driven by an AI client
+   *  (e.g. "claude-ai"). Surfaced as `correctedBy` on every op-log event
+   *  the underlying host.applyCorrection emits. Undefined when the user
+   *  applied the correction directly via the App UI. */
+  correctedBy?: string;
 }): Promise<void> {
   const adds: AppendDocumentInput[] = (opts.diff.adds ?? []).map(a => ({
     kind: 'markdown' as const,
@@ -101,7 +106,11 @@ export async function applyCorrection(opts: {
     sourceRef: a.label ?? `correction:${Date.now()}`,
   }));
   const edits: CorrectionEdit[] = opts.diff.edits;
-  await opts.host.applyCorrection(opts.graphId, { adds, edits });
+  await opts.host.applyCorrection(
+    opts.graphId,
+    { adds, edits },
+    opts.correctedBy ? { correctedBy: opts.correctedBy } : undefined,
+  );
 }
 
 function extractJson(raw: string): unknown {

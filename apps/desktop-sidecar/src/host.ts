@@ -1,6 +1,9 @@
 import { promises as fs } from 'node:fs';
 import { EventEmitter } from 'node:events';
+import { randomBytes } from 'node:crypto';
 import path from 'node:path';
+import { generateMnemonic } from '@scure/bip39';
+import { wordlist } from '@scure/bip39/wordlists/english';
 import { embeddings, settings as settingsMod, sources, type SourceRecord } from '@graphnosis-app/core';
 import { crypto, federation, oplog, policy, type DeviceId, type GraphId, type SubgraphBudget } from '@nehloo-interactive/graphnosis-secure-sync';
 import type { GraphnosisAdapter, GraphHandle, AppendDocumentInput, CorrectionEdit } from './graphnosis-adapter.js';
@@ -12,7 +15,7 @@ const { federatedQuery } = federation;
 const { SourceIndex, makeSourceId, hashContent } = sources;
 
 export interface HostOptions {
-  vaultDir: string;
+  cortexDir: string;
   deviceId: DeviceId;
   passphrase: string;
   adapter: GraphnosisAdapter;
@@ -21,12 +24,30 @@ export interface HostOptions {
   /** Embedding model provenance — affects the on-disk vector index. Change the id if the model changes. */
   embedAdapterId?: string;
   embedDimensions?: number;
+  /**
+   * When set, the sidecar is running in recovery mode: the user provided
+   * their 24-word BIP-39 phrase instead of their passphrase. `open()` reads
+   * `<cortexDir>/recovery.enc`, decrypts it with this phrase to recover the
+   * raw data key, then bypasses the normal Argon2id derivation step.
+   *
+   * `passphrase` is ignored when `recoveryPhrase` is provided.
+   */
+  recoveryPhrase?: string;
+}
+
+/** Return type of `GraphnosisHost.open()`. The `recoveryPhrase` field is
+ *  set ONLY on the very first unlock of a brand-new cortex — it is the
+ *  24-word BIP-39 phrase that can recover the data key if the passphrase
+ *  is ever forgotten. Show it to the user ONCE and then discard it. */
+export interface OpenResult {
+  host: GraphnosisHost;
+  recoveryPhrase?: string;
 }
 
 export type RecoveryStatus =
   | 'pending'
   | 'recoverable'              // file still exists on disk at the recorded ref
-  | 'recoverable-from-cache'   // content blob exists in <vault>/content/
+  | 'recoverable-from-cache'   // content blob exists in <cortex>/content/
   | 'already-present'
   | 'file-missing'
   | 'url-refetch-not-implemented'
@@ -119,6 +140,17 @@ export interface MutationEvent {
   ts: number;
 }
 
+/** Minimal interface the host uses to notify a filesystem watcher about
+ *  source lifecycle changes. Defined as an interface (not a direct
+ *  import) so the host doesn't need to know about chokidar / fs.watch
+ *  implementation details, and so we can null it out without dragging
+ *  the file-watcher module into hosts that don't need it. */
+export interface SourceLifecycleListener {
+  onSourceIngested(graphId: string, sourceId: string, ref: string, kind: string): void;
+  onSourceForgotten(graphId: string, sourceId: string, ref: string): void;
+  syncAll(): void;
+}
+
 // GraphnosisHost = the App's single integration point for the SDK.
 // Owns encryption at rest, op-log emission, embedding cache, and the source index.
 // Every mutation funnels through here so the op-log is the durable truth.
@@ -134,8 +166,14 @@ export class GraphnosisHost {
   // funnels through — so we don't risk forgetting to fire when a new
   // mutation method is added.
   private readonly mutationEvents = new EventEmitter();
-  private readonly key: Uint8Array;
-  private readonly salt: Uint8Array;
+  // `key` and `salt` are NOT readonly because passphrase rotation may rewrite
+  // `salt.bin` and (in a future key-rotation feature) re-encrypt files with a
+  // new dataKey. For the current passphrase-change flow, the dataKey is
+  // preserved — only the wrap key derived from the passphrase changes —
+  // so neither this.key nor this.salt actually mutate at runtime; the fields
+  // remain assignable in case a true key rotation ships later.
+  private key: Uint8Array;
+  private salt: Uint8Array;
   private readonly graphs = new Map<GraphId, LoadedGraph>();
   /**
    * Running count of user-initiated corrections per graph. Counts ONLY
@@ -151,6 +189,12 @@ export class GraphnosisHost {
   private readonly embedAdapterId: string;
   private readonly embedDimensions: number;
   private settings: settingsMod.AppSettings;
+  /** Optional filesystem watcher — see SourceLifecycleListener. Null when
+   *  the watcher feature isn't wired (smoke tests, headless tools). */
+  private fileWatcher: SourceLifecycleListener | null = null;
+  /** Settings-change listeners — fired AFTER persistence + in-memory swap
+   *  so consumers (the file-watcher) always see the canonical new value. */
+  private readonly settingsListeners = new Set<(s: settingsMod.AppSettings) => void>();
 
   private constructor(
     private readonly opts: HostOptions,
@@ -160,7 +204,7 @@ export class GraphnosisHost {
     this.key = derived.key;
     this.salt = derived.salt;
     this.oplogWriter = new OpLogWriter({
-      dir: path.join(opts.vaultDir, 'oplog'),
+      dir: path.join(opts.cortexDir, 'oplog'),
       deviceId: opts.deviceId,
       key: this.key,
       salt: this.salt,
@@ -172,25 +216,300 @@ export class GraphnosisHost {
     this.settings = settings;
   }
 
-  static async open(opts: HostOptions): Promise<GraphnosisHost> {
-    await fs.mkdir(opts.vaultDir, { recursive: true });
-    const saltPath = path.join(opts.vaultDir, 'salt.bin');
+  static async open(opts: HostOptions): Promise<OpenResult> {
+    await fs.mkdir(opts.cortexDir, { recursive: true });
+    const saltPath = path.join(opts.cortexDir, 'salt.bin');
+    const masterEncPath = path.join(opts.cortexDir, 'master.enc');
+    const recoveryEncPath = path.join(opts.cortexDir, 'recovery.enc');
+
+    // ── Cortex unlock architecture ──────────────────────────────────────
+    //
+    // Two-tier key model (industry standard):
+    //   passphrase ──Argon2id──▶ wrapKey ──decrypts──▶ master.enc ──▶ dataKey
+    //   recovery phrase ──Argon2id──▶ recoveryWrapKey ──▶ recovery.enc ──▶ same dataKey
+    //
+    // The dataKey is persistent for the lifetime of the cortex and is what
+    // every other file is encrypted with. The passphrase only derives a
+    // *wrap* key that opens master.enc. This makes "change passphrase"
+    // an instant operation: rewrap master.enc with a wrap key from the new
+    // passphrase. The dataKey, and therefore every encrypted file, is
+    // untouched.
+    //
+    // Legacy cortexes (created before v0.3 added master.enc) have NO
+    // master.enc — the passphrase-derived key IS the dataKey. We detect
+    // this on first open with the new code and write master.enc using the
+    // legacy dataKey both as the value AND as the wrap key (since they're
+    // equal in the legacy model). After this migration, the cortex is
+    // indistinguishable from one that started with the new format.
+    //
+    // recovery.enc was always a separate wrap; it works the same in both
+    // models because it already wraps the dataKey directly.
+
     let salt: Uint8Array | undefined;
     try {
       salt = new Uint8Array(await fs.readFile(saltPath));
     } catch {
-      // first run: derive without explicit salt, persist it
+      // first run: salt doesn't exist yet
     }
-    const derived = await deriveKey(opts.passphrase, salt);
-    if (!salt) await fs.writeFile(saltPath, Buffer.from(derived.salt));
-    const settings = await settingsMod.loadSettings(opts.vaultDir);
-    return new GraphnosisHost(opts, derived, settings);
+
+    let dataKey: Uint8Array;
+    let derivedSalt: Uint8Array;
+    let recoveryPhrase: string | undefined;
+
+    if (opts.recoveryPhrase) {
+      // ── Recovery path ──────────────────────────────────────────────────
+      if (!salt) {
+        throw new Error(
+          'Cannot recover: cortex salt.bin not found. ' +
+          'This cortex may not have been initialized yet.',
+        );
+      }
+      let recoveryBlob: Uint8Array;
+      try {
+        recoveryBlob = new Uint8Array(await fs.readFile(recoveryEncPath));
+      } catch {
+        throw new Error(
+          'Cannot recover: recovery.enc not found in this cortex folder. ' +
+          'This cortex may have been created before recovery was supported.',
+        );
+      }
+      dataKey = await decrypt(recoveryBlob, opts.recoveryPhrase);
+      derivedSalt = salt;
+    } else if (!salt) {
+      // ── First run: brand-new cortex ───────────────────────────────────
+      // Derive the passphrase wrap key (this also generates the salt).
+      const wrap = await deriveKey(opts.passphrase);
+      derivedSalt = wrap.salt;
+
+      // Generate a fresh, random data key. This is what every other file
+      // in the cortex will be encrypted with for the rest of its life.
+      dataKey = randomBytes(32);
+
+      // Write salt.bin (atomic).
+      await writeFileAtomic(saltPath, Buffer.from(derivedSalt));
+
+      // Write master.enc: dataKey wrapped with passphrase wrap key.
+      const masterBlob = await encrypt(dataKey, wrap.key, wrap.salt);
+      await writeFileAtomic(masterEncPath, Buffer.from(masterBlob));
+
+      // Generate the 24-word BIP-39 recovery phrase (256-bit entropy) and
+      // write recovery.enc: dataKey wrapped with recovery-phrase wrap key.
+      // NOTE: we call deriveKey ONCE for the phrase, not twice. The SDK's
+      // makeRecoveryWrap() has a double-derivation bug, so we use the
+      // lower-level primitives directly to guarantee correctness.
+      recoveryPhrase = generateMnemonic(wordlist, 256);
+      const recDerived = await deriveKey(recoveryPhrase);
+      const recBlob = await encrypt(dataKey, recDerived.key, recDerived.salt);
+      await writeFileAtomic(recoveryEncPath, Buffer.from(recBlob));
+    } else {
+      // ── Returning user: salt exists ───────────────────────────────────
+      const wrap = await deriveKey(opts.passphrase, salt);
+      derivedSalt = salt;
+
+      // Check whether this cortex has been migrated to the master.enc model.
+      let masterBlob: Uint8Array | null = null;
+      try {
+        masterBlob = new Uint8Array(await fs.readFile(masterEncPath));
+      } catch {
+        // master.enc absent → legacy cortex
+      }
+
+      if (masterBlob) {
+        // New-format cortex: unwrap dataKey from master.enc.
+        try {
+          dataKey = await decrypt(masterBlob, wrap.key);
+        } catch (e) {
+          // Wrong passphrase OR corrupt master.enc. Preserve the legacy
+          // error string so the Rust stderr classifier keeps surfacing
+          // "Wrong passphrase" to the user.
+          throw new Error(
+            `FATAL: failed to load existing graph: Decryption failed ` +
+            `(wrong passphrase or master.enc tampered): ${(e as Error).message}`,
+          );
+        }
+      } else {
+        // ── Legacy cortex migration ────────────────────────────────────
+        // Pre-v0.3 cortexes: the passphrase-derived key IS the dataKey.
+        // Adopt it, then write master.enc so future opens use the new
+        // path and a passphrase rotation becomes possible.
+        dataKey = wrap.key;
+        const newMasterBlob = await encrypt(dataKey, wrap.key, wrap.salt);
+        try {
+          await writeFileAtomic(masterEncPath, Buffer.from(newMasterBlob));
+          console.error(
+            '[graphnosis-host] migrated cortex to wrapped-key format ' +
+            '(master.enc) — passphrase changes are now supported.',
+          );
+        } catch (e) {
+          // Migration write failure is non-fatal; the cortex unlocks fine
+          // without master.enc, and we'll try again on the next launch.
+          console.error(
+            `[graphnosis-host] could not write master.enc during migration: ` +
+            `${(e as Error).message} — will retry next open.`,
+          );
+        }
+
+        // ── Recovery phrase backfill ────────────────────────────────────
+        // Legacy cortexes also predate the 24-word recovery phrase. Generate
+        // one now so the user gets the same fallback as a fresh cortex.
+        // Skip if recovery.enc already exists (e.g. from a partial earlier
+        // migration on a previous launch).
+        let recoveryEncExists = false;
+        try {
+          await fs.access(recoveryEncPath);
+          recoveryEncExists = true;
+        } catch { /* doesn't exist yet — good, we'll create it */ }
+        if (!recoveryEncExists) {
+          try {
+            const phrase = generateMnemonic(wordlist, 256);
+            const recDerived = await deriveKey(phrase);
+            const recBlob = await encrypt(dataKey, recDerived.key, recDerived.salt);
+            await writeFileAtomic(recoveryEncPath, Buffer.from(recBlob));
+            recoveryPhrase = phrase;
+            console.error(
+              '[graphnosis-host] generated recovery phrase for legacy cortex ' +
+              '— will be shown once via cortex.created event.',
+            );
+          } catch (e) {
+            // Don't leak a phrase the disk doesn't have.
+            recoveryPhrase = undefined;
+            console.error(
+              `[graphnosis-host] could not backfill recovery.enc for legacy cortex: ` +
+              `${(e as Error).message} — will retry next open.`,
+            );
+          }
+        }
+      }
+    }
+
+    const derived: crypto.DerivedKey = {
+      key: dataKey,
+      salt: derivedSalt,
+      opslimit: 0,
+      memlimit: 0,
+    };
+
+    const settings = await settingsMod.loadSettings(opts.cortexDir);
+    const host = new GraphnosisHost(opts, derived, settings);
+    return recoveryPhrase ? { host, recoveryPhrase } : { host };
+  }
+
+  /**
+   * Generate a fresh 24-word BIP-39 recovery phrase, wrap the (unchanged)
+   * data key with it, and atomically replace `recovery.enc`. Returns the
+   * new phrase so the UI can show it to the user once.
+   *
+   * The dataKey is preserved — every encrypted file in the cortex still
+   * decrypts with the same key. Only `recovery.enc` (the wrapped backup)
+   * is replaced. The OLD recovery phrase, whatever it was, no longer
+   * unwraps anything in this cortex; the NEW phrase is the only fallback
+   * to the passphrase from this point on.
+   *
+   * Use cases:
+   *   - Legacy cortex where the one-time modal didn't show / wasn't seen
+   *   - User believes the old phrase was exposed and wants to rotate
+   *   - Periodic refresh as part of a security hygiene routine
+   */
+  async regenerateRecoveryPhrase(): Promise<string> {
+    const recoveryEncPath = path.join(this.opts.cortexDir, 'recovery.enc');
+    const phrase = generateMnemonic(wordlist, 256);
+    const recDerived = await deriveKey(phrase);
+    const recBlob = await encrypt(this.key, recDerived.key, recDerived.salt);
+    await writeFileAtomic(recoveryEncPath, Buffer.from(recBlob));
+    console.error('[graphnosis-host] regenerated recovery.enc — old phrase no longer valid.');
+    return phrase;
+  }
+
+  /**
+   * Rewrap master.enc with a key derived from `newPassphrase`. The dataKey
+   * — and therefore every other file in the cortex — is unchanged. Recovery
+   * phrase remains valid: it still unwraps the (unchanged) dataKey via
+   * recovery.enc.
+   *
+   * Throws if the cortex hasn't yet been migrated to the master.enc model.
+   * Legacy cortexes auto-migrate on their next normal unlock; user just
+   * needs to lock and unlock once before changing the passphrase.
+   *
+   * Throws if `oldPassphrase` doesn't decrypt the current master.enc — this
+   * prevents a recovery-mode-unlocked session from silently rotating to a
+   * passphrase that wouldn't actually unlock the cortex. The caller is
+   * expected to verify the recovery flow's "are you sure you want to change
+   * the passphrase?" path: in recovery mode there's no old passphrase to
+   * supply, so the caller should set `skipOldPassphraseCheck: true` and
+   * provide ONLY the new passphrase. (The recovery phrase itself authorizes
+   * the rotation in that case.)
+   */
+  async changePassphrase(
+    newPassphrase: string,
+    opts?: { oldPassphrase?: string; skipOldPassphraseCheck?: boolean },
+  ): Promise<void> {
+    const masterEncPath = path.join(this.opts.cortexDir, 'master.enc');
+    const saltPath = path.join(this.opts.cortexDir, 'salt.bin');
+
+    // Sanity: master.enc must exist (migration must have happened).
+    let masterBlob: Uint8Array;
+    try {
+      masterBlob = new Uint8Array(await fs.readFile(masterEncPath));
+    } catch {
+      throw new Error(
+        'Cannot change passphrase: this cortex has not yet been migrated to ' +
+        'the wrapped-key format. Lock and unlock the cortex once with your ' +
+        'current passphrase to migrate, then try again.',
+      );
+    }
+
+    // Verify old passphrase if provided (normal path) or skipped (recovery path).
+    if (!opts?.skipOldPassphraseCheck) {
+      const oldPassphrase = opts?.oldPassphrase;
+      if (oldPassphrase === undefined) {
+        throw new Error(
+          'changePassphrase: old passphrase is required unless skipOldPassphraseCheck is set.',
+        );
+      }
+      const oldWrap = await deriveKey(oldPassphrase, this.salt);
+      let oldDataKey: Uint8Array;
+      try {
+        oldDataKey = await decrypt(masterBlob, oldWrap.key);
+      } catch {
+        throw new Error('Old passphrase is incorrect.');
+      }
+      // Defence-in-depth: the unwrapped dataKey must match the host's
+      // in-memory key. If it doesn't, something is very wrong — refuse to
+      // proceed rather than silently corrupt the cortex.
+      if (!buffersEqual(oldDataKey, this.key)) {
+        throw new Error(
+          'Integrity check failed: master.enc decrypts to a different key ' +
+          'than the host has in memory. Aborting passphrase change.',
+        );
+      }
+    }
+
+    // Derive the new wrap key. We reuse the current salt — Argon2id with a
+    // different passphrase produces a fresh key, and reusing the salt keeps
+    // the rotation atomic (one file write instead of two). Future key
+    // rotation can refresh the salt as part of a heavier flow.
+    const newWrap = await deriveKey(newPassphrase, this.salt);
+    const newMasterBlob = await encrypt(this.key, newWrap.key, newWrap.salt);
+
+    // Atomic write — a crash mid-rename leaves the old master.enc intact.
+    await writeFileAtomic(masterEncPath, Buffer.from(newMasterBlob));
+
+    // salt.bin doesn't need to change (we reused the salt), but touch it to
+    // refresh its mtime — useful for backup tools and debugging.
+    try { await fs.utimes(saltPath, new Date(), new Date()); } catch { /* fine */ }
   }
 
   // ── Settings ────────────────────────────────────────────────────────────
 
   getSettings(): settingsMod.AppSettings {
     return this.settings;
+  }
+
+  /** Absolute path to the cortex root. Exposed for IPC handlers that need
+   *  to enumerate or operate on files outside the host's encrypted graph
+   *  abstraction — e.g. listing `.gai.corrupt-*` quarantine artifacts. */
+  getCortexDir(): string {
+    return this.opts.cortexDir;
   }
 
   // ── Search ──────────────────────────────────────────────────────────────
@@ -263,7 +582,7 @@ export class GraphnosisHost {
         [graphId]: metadata,
       },
     };
-    await settingsMod.saveSettings(this.opts.vaultDir, next);
+    await settingsMod.saveSettings(this.opts.cortexDir, next);
     this.settings = next;
   }
 
@@ -279,7 +598,64 @@ export class GraphnosisHost {
     }));
   }
 
-  /** Update settings, persist to <vault>/settings.json, return the merged result. */
+  /**
+   * Toggle the archived flag on a graph's metadata. Archived graphs are hidden
+   * from all in-app pickers but their files remain intact on disk. The graph
+   * must already exist (be loaded) — archiving a nonexistent graph is a no-op.
+   */
+  async setGraphArchived(graphId: GraphId, archived: boolean): Promise<void> {
+    const existing: settingsMod.GraphMetadata = this.settings.graphMetadata[graphId] ?? {
+      template: 'personal' as settingsMod.GraphTemplate,
+      displayName: graphId,
+      createdAt: 0,
+    };
+    await this.setGraphMetadata(graphId, { ...existing, archived });
+  }
+
+  /**
+   * Permanently delete a graph and all its on-disk files. The graph is removed
+   * from the in-memory map and from settings.graphMetadata.
+   *
+   * Safe guards:
+   *   - Does nothing if `graphId` is not loaded (already gone).
+   *   - Removes metadata even if file deletion partially fails, so the graph
+   *     doesn't ghost in the picker after a crash.
+   *   - Deletes main files + backup siblings (.bak) + embedding cache.
+   */
+  async deleteGraph(graphId: GraphId): Promise<void> {
+    // Remove from in-memory graph map first — stops any in-flight reads.
+    this.graphs.delete(graphId);
+
+    // Delete every on-disk artifact for this graph, including the legacy
+    // .aikg path (pre-0.2.6 cortexes) so it doesn't get rediscovered on
+    // the next startup by loadAllGraphsFromDisk().
+    const candidates = [
+      this.graphPath(graphId),
+      this.legacyGraphPath(graphId),
+      this.bundlePath(graphId),
+      this.cachePath(graphId),
+      `${this.graphPath(graphId)}.bak`,
+      `${this.legacyGraphPath(graphId)}.bak`,
+      `${this.bundlePath(graphId)}.bak`,
+      `${this.cachePath(graphId)}.bak`,
+    ];
+    for (const p of candidates) {
+      try { await fs.unlink(p); } catch (e) {
+        const err = e as NodeJS.ErrnoException;
+        if (err.code !== 'ENOENT') {
+          console.error(`[graphnosis-host] deleteGraph: failed to remove ${p}: ${err.message}`);
+        }
+      }
+    }
+
+    // Strip metadata from settings so the graph can't reappear on next boot.
+    const { [graphId]: _removed, ...rest } = this.settings.graphMetadata;
+    const next = { ...this.settings, graphMetadata: rest };
+    await settingsMod.saveSettings(this.opts.cortexDir, next);
+    this.settings = next;
+  }
+
+  /** Update settings, persist to <cortex>/settings.json, return the merged result. */
   async setSettings(partial: Partial<settingsMod.AppSettings>): Promise<settingsMod.AppSettings> {
     // Shallow merge per top-level key — keeps contentCache fully replaced if
     // the caller passes one, while leaving room for future top-level keys.
@@ -287,20 +663,44 @@ export class GraphnosisHost {
       ...this.settings,
       ...partial,
     });
-    await settingsMod.saveSettings(this.opts.vaultDir, next);
+    await settingsMod.saveSettings(this.opts.cortexDir, next);
     this.settings = next;
+    // Notify listeners with the persisted value so they don't react to
+    // a stale in-flight patch.
+    for (const fn of this.settingsListeners) {
+      try { fn(next); } catch (e) {
+        console.error(`[graphnosis-host] settings listener failed: ${(e as Error).message}`);
+      }
+    }
     return next;
+  }
+
+  /** Subscribe to settings updates. Returns an unsubscribe function.
+   *  Fires after the new value is persisted and swapped in. */
+  onSettingsChanged(handler: (s: settingsMod.AppSettings) => void): () => void {
+    this.settingsListeners.add(handler);
+    return () => this.settingsListeners.delete(handler);
+  }
+
+  /** Install (or remove) the filesystem watcher hook. Pass null to clear.
+   *  When installed, the host calls back into the listener on every
+   *  successful ingest/forgetSource so the watcher can mirror the active
+   *  set of file paths. The host also runs `syncAll()` once on install
+   *  so the watcher picks up sources loaded before it was attached. */
+  setFileWatcher(listener: SourceLifecycleListener | null): void {
+    this.fileWatcher = listener;
+    if (listener) listener.syncAll();
   }
 
   // ── Content cache (encrypted blobs keyed by sourceId) ───────────────────
   //
-  // Each cached source lives at <vault>/content/<sourceId>.bin. Format
+  // Each cached source lives at <cortex>/content/<sourceId>.bin. Format
   // before encryption: [u32 LE header-len][header JSON][raw content bytes].
   // On `ingest()` we write the blob respecting settings; on `forgetSource()`
   // we delete it. Recovery reads it back via `readContentBlob()`.
 
   private contentDir(): string {
-    return path.join(this.opts.vaultDir, 'content');
+    return path.join(this.opts.cortexDir, 'content');
   }
 
   private contentPath(sourceId: string): string {
@@ -362,21 +762,21 @@ export class GraphnosisHost {
 
   /** Canonical on-disk path for a graph. New saves always go here (.gai). */
   private graphPath(graphId: GraphId): string {
-    return path.join(this.opts.vaultDir, 'graphs', `${graphId}.gai`);
+    return path.join(this.opts.cortexDir, 'graphs', `${graphId}.gai`);
   }
 
-  /** Legacy path from pre-0.2.6 vaults (the App wrote .aikg). Used as a
-   * read-time fallback so existing user vaults keep working. */
+  /** Legacy path from pre-0.2.6 cortexes (the App wrote .aikg). Used as a
+   * read-time fallback so existing user cortexes keep working. */
   private legacyGraphPath(graphId: GraphId): string {
-    return path.join(this.opts.vaultDir, 'graphs', `${graphId}.aikg`);
+    return path.join(this.opts.cortexDir, 'graphs', `${graphId}.aikg`);
   }
 
   private bundlePath(graphId: GraphId): string {
-    return path.join(this.opts.vaultDir, 'graphs', `${graphId}.bundle`);
+    return path.join(this.opts.cortexDir, 'graphs', `${graphId}.bundle`);
   }
 
   private cachePath(graphId: GraphId): string {
-    return path.join(this.opts.vaultDir, 'graphs', `${graphId}.embcache`);
+    return path.join(this.opts.cortexDir, 'graphs', `${graphId}.embcache`);
   }
 
   async createGraph(graphId: GraphId): Promise<void> {
@@ -404,7 +804,7 @@ export class GraphnosisHost {
     //                                      data isn't lost.
     await this.recoverFromInterruptedPurge(graphId);
     // Prefer the canonical .gai path; fall back to the legacy .aikg path so
-    // vaults created before 0.2.6 keep loading. The next `save()` will write
+    // cortexes created before 0.2.6 keep loading. The next `save()` will write
     // the .gai file (and we can clean up the .aikg later if both exist).
     let bytes: Buffer;
     try {
@@ -418,16 +818,81 @@ export class GraphnosisHost {
     const aikgPlain = await decrypt(new Uint8Array(bytes), this.key);
     // Inner SDK HMAC key (independent of outer encryption) — derived from data key + a fixed label.
     const hmacKey = this.key;
-    const handle = await this.opts.adapter.loadFromBuffer(graphId, aikgPlain, hmacKey);
+    let handle: GraphHandle;
+    try {
+      handle = await this.opts.adapter.loadFromBuffer(graphId, aikgPlain, hmacKey);
+    } catch (e) {
+      // ── Auto-quarantine on integrity failure ──────────────────────────
+      // HMAC / checksum mismatch from loadFromBuffer means the .gai bytes
+      // are corrupt — almost always caused by a save() being interrupted
+      // mid-write before we made writes atomic. Keep retrying the same
+      // file on every launch would block the engram from ever recovering.
+      //
+      // Rename .gai + .bundle to .gai.corrupt-<ts> and re-throw as ENOENT
+      // so callers (loadAllGraphsFromDisk → applyRecovery) can treat the
+      // engram as missing and rebuild from the op-log. The quarantined
+      // files are kept on disk for forensic / manual recovery — never
+      // deleted automatically.
+      const msg = (e as Error).message ?? '';
+      const looksCorrupt =
+        msg.includes('checksum') || msg.includes('HMAC') ||
+        msg.includes('Invalid .gai') || msg.includes('signature');
+      if (looksCorrupt) {
+        const ts = Date.now();
+        const quarantinedGai = `${this.graphPath(graphId)}.corrupt-${ts}`;
+        const quarantinedBundle = `${this.bundlePath(graphId)}.corrupt-${ts}`;
+        try { await fs.rename(this.graphPath(graphId), quarantinedGai); } catch { /* may not exist */ }
+        try { await fs.rename(this.bundlePath(graphId), quarantinedBundle); } catch { /* may not exist */ }
+        console.error(
+          `[graphnosis-host] quarantined corrupt engram '${graphId}': ` +
+          `${msg}. Files moved to ${path.basename(quarantinedGai)} and ${path.basename(quarantinedBundle)}. ` +
+          `Run "Recover from op-log" to rebuild from sources.`,
+        );
+        const enoentErr = new Error(
+          `engram '${graphId}' was corrupted (${msg}) and has been quarantined — ` +
+          `use Recover from op-log to rebuild`,
+        ) as NodeJS.ErrnoException;
+        enoentErr.code = 'ENOENT';
+        throw enoentErr;
+      }
+      throw e;
+    }
     const sourceIndex = await this.loadBundle(graphId);
+
+    // ── Cache load is best-effort ─────────────────────────────────────────
+    // A corrupted/oversized embcache must NOT prevent the graph from being
+    // listed. We've seen large graphs (20k+ nodes, 160MB+ embcache) silently
+    // disappear from the picker when cache.load() threw — even though the
+    // .gai itself was perfectly readable. Fall back to a fresh empty cache;
+    // buildEmbeddings (below) will repopulate it.
     const cache = new EmbeddingCache({ path: this.cachePath(graphId), key: this.key, salt: this.salt });
-    await cache.load();
+    try {
+      await cache.load();
+    } catch (e) {
+      console.error(
+        `[graphnosis-host] embcache load failed for ${graphId}: ${(e as Error).message} ` +
+        `— starting with a fresh empty cache (embeddings will rebuild from scratch).`,
+      );
+    }
+
+    // Commit the graph to the in-memory map AS EARLY AS POSSIBLE so that
+    // even if downstream work (corrections-count scan, embedding rebuild)
+    // fails or hangs, the graph still appears in listGraphs() and the UI
+    // picker. Anything after this point is enrichment, not gating.
     this.graphs.set(graphId, { handle, sourceIndex, cache, dirty: false });
 
     // Seed the corrections counter from the op-log so historical activity is
     // visible after a fresh unlock. One-time scan per graph load; subsequent
-    // applyCorrection calls bump the counter in memory.
-    this.correctionsCount.set(graphId, await this.countCorrectionsFromOplog(graphId));
+    // applyCorrection calls bump the counter in memory. Best-effort: a
+    // corrupt op-log shouldn't hide the graph.
+    try {
+      this.correctionsCount.set(graphId, await this.countCorrectionsFromOplog(graphId));
+    } catch (e) {
+      console.error(
+        `[graphnosis-host] corrections-count scan failed for ${graphId}: ${(e as Error).message}`,
+      );
+      this.correctionsCount.set(graphId, 0);
+    }
 
     // SDK doesn't persist embeddings with .aikg — rebuild from cache (fast if warm,
     // re-embeds from scratch if cache is empty / model changed). Without this, queryHybrid
@@ -437,6 +902,7 @@ export class GraphnosisHost {
         embed: cached(this.embed, cache),
         dimensions: this.embedDimensions,
         id: this.embedAdapterId,
+        batchSize: this.settings.ai.embedBatch,
       });
     } catch (e) {
       console.error(`[graphnosis-host] could not build embeddings on load for ${graphId}: ${(e as Error).message} — query will use TF-IDF only.`);
@@ -460,8 +926,15 @@ export class GraphnosisHost {
     await fs.mkdir(path.dirname(this.graphPath(graphId)), { recursive: true });
     const buf = await this.opts.adapter.toBuffer(g.handle, this.key);
     const ct = await encrypt(buf, this.key, this.salt);
-    await fs.writeFile(this.graphPath(graphId), Buffer.from(ct));
-    // Migrate legacy: if a .aikg file from a pre-0.2.6 vault still exists
+    // Atomic write: write to .tmp, fsync via writeFile flush, then rename.
+    // POSIX rename is atomic — either the new file is fully there or the old
+    // file is unchanged. A direct fs.writeFile() to the final path can leave
+    // a half-written file if the process is killed mid-write (force-quit,
+    // OS kill, crash). For a 20k-node engram that's 30+MB of ciphertext,
+    // the write window is many seconds — wide enough that we've seen real
+    // checksum-mismatch corruption in the wild (davinci-manual.gai, May 2026).
+    await writeFileAtomic(this.graphPath(graphId), Buffer.from(ct));
+    // Migrate legacy: if a .aikg file from a pre-0.2.6 cortex still exists
     // alongside the new .gai we just wrote, remove it now that we've
     // successfully persisted the canonical file.
     try { await fs.unlink(this.legacyGraphPath(graphId)); } catch { /* no legacy file */ }
@@ -470,7 +943,7 @@ export class GraphnosisHost {
       this.key,
       this.salt,
     );
-    await fs.writeFile(this.bundlePath(graphId), Buffer.from(bundleCt));
+    await writeFileAtomic(this.bundlePath(graphId), Buffer.from(bundleCt));
     await g.cache.save();
     g.dirty = false;
     // Per-graph mutation tick — bumps every successful save. Doubles
@@ -509,10 +982,16 @@ export class GraphnosisHost {
     kind: SourceRecord['kind'],
     ref: string,
     input: AppendDocumentInput,
+    opts?: { addedBy?: string },
   ): Promise<SourceRecord> {
     const g = this.must(graphId);
     const sourceId = makeSourceId(kind, ref);
-    const result = await this.opts.adapter.appendDocument(g.handle, input);
+    // Settings carry the user's chunk size + embed batch presets. Pass
+    // through so the SDK uses them on this ingest. Reading on every call
+    // (cheap object access) so changes via Settings UI take effect on the
+    // very next file ingest without a sidecar restart.
+    const ai = this.settings.ai;
+    const result = await this.opts.adapter.appendDocument(g.handle, input, { chunkSize: ai.chunkSize });
     if (result.newNodeIds.length === 0) {
       // Hard fail rather than create an orphan source record. The MCP layer
       // surfaces this as an error to the AI client so the user sees the
@@ -546,6 +1025,7 @@ export class GraphnosisHost {
       embed: cached(this.embed, g.cache),
       dimensions: this.embedDimensions,
       id: this.embedAdapterId,
+      batchSize: ai.embedBatch,
     });
 
     const record: SourceRecord & { contradictions?: unknown[] } = {
@@ -556,6 +1036,7 @@ export class GraphnosisHost {
       graphId,
       nodeIds: result.newNodeIds,
       contentHash: hashContent(input.content),
+      ...(opts?.addedBy ? { addedBy: opts.addedBy } : {}),
       ...(result.contradictions.length > 0 ? { contradictions: result.contradictions } : {}),
     };
     g.sourceIndex.add(record);
@@ -603,10 +1084,107 @@ export class GraphnosisHost {
     }
 
     await this.save(graphId);
+    // Notify the optional file-watcher so it can start watching this
+    // path for on-disk changes. No-op when no watcher is installed or
+    // when the source isn't file-backed.
+    this.fileWatcher?.onSourceIngested(graphId, sourceId, ref, kind);
     // Fire-and-forget cross-doc relink. New clip might mention entities
     // that already appear in older nodes — without this pass the SDK
     // leaves it orphan. Coalesced + throttled inside kickoffRelink so
     // back-to-back ingests don't spawn parallel passes.
+    this.kickoffRelink(graphId);
+    return record;
+  }
+
+  /**
+   * Ingest content split into multiple chunks under ONE source record.
+   *
+   * Each chunk runs:
+   *   1. `appendDocument` — fast pure-JS text processing, runs freely outside
+   *      the mutex so progress events can fire during parsing.
+   *   2. `buildEmbeddings` — slow ONNX embedding, runs inside `wrap` to
+   *      serialize against other embedding operations.
+   *
+   * A single SourceRecord is written after all chunks complete, so the UI
+   * shows one entry for the whole document regardless of how many chunks were
+   * used. Designed for large PDFs where a single `ingest()` call saturates the
+   * Node.js event loop for minutes and starves IPC / progress traffic.
+   *
+   * Content caching is skipped — file-backed sources re-read from disk on
+   * recovery; caching concatenated PDF text would be expensive and redundant.
+   */
+  async ingestChunked(
+    graphId: GraphId,
+    kind: SourceRecord['kind'],
+    ref: string,
+    chunks: AppendDocumentInput[],
+    wrap: <T>(fn: () => Promise<T>) => Promise<T>,
+    onChunk?: (chunksDone: number, totalChunks: number, nodesTotal: number) => void,
+    opts?: { addedBy?: string },
+  ): Promise<SourceRecord> {
+    if (chunks.length === 0) throw new Error('ingestChunked: at least one chunk required');
+    const g = this.must(graphId);
+    const sourceId = makeSourceId(kind, ref);
+    const allNodeIds: string[] = [];
+    const yieldToLoop = () => new Promise<void>((r) => setImmediate(r));
+
+    const ai = this.settings.ai;
+    for (const [i, chunk] of chunks.entries()) {
+      // Text → node extraction: fast JS, no mutex needed.
+      const result = await this.opts.adapter.appendDocument(g.handle, chunk, { chunkSize: ai.chunkSize });
+      // ONNX embedding: slow, fastembed/ort is not concurrency-safe — serialize.
+      await wrap(() => this.opts.adapter.buildEmbeddings(g.handle, {
+        embed: cached(this.embed, g.cache),
+        dimensions: this.embedDimensions,
+        id: this.embedAdapterId,
+        batchSize: ai.embedBatch,
+      }));
+      allNodeIds.push(...result.newNodeIds);
+      onChunk?.(i + 1, chunks.length, allNodeIds.length);
+      // Yield so the event loop can service IPC connections between chunks.
+      await yieldToLoop();
+    }
+
+    if (allNodeIds.length === 0) {
+      const alreadyExists = g.sourceIndex.list().some((s) => s.sourceId === sourceId);
+      throw new Error(
+        `Ingest produced 0 nodes for source ${sourceId}` +
+        (alreadyExists
+          ? ' — already saved (this source is already in your graph).'
+          : ' — content may be empty or unparseable.'),
+      );
+    }
+
+    const record: SourceRecord = {
+      sourceId,
+      kind,
+      ref,
+      ingestedAt: Date.now(),
+      graphId,
+      nodeIds: allNodeIds,
+      ...(opts?.addedBy ? { addedBy: opts.addedBy } : {}),
+      // contentHash omitted — file-backed PDFs recover from disk, not cache.
+    };
+    g.sourceIndex.add(record);
+    g.dirty = true;
+
+    this.oplogWriter.emit({
+      graphId,
+      op: 'ingestSource',
+      target: { kind: 'source', id: sourceId },
+      after: record,
+    });
+    for (const nodeId of allNodeIds) {
+      this.oplogWriter.emit({
+        graphId,
+        op: 'addNode',
+        target: { kind: 'node', id: nodeId },
+        after: { sourceId },
+      });
+    }
+
+    await this.save(graphId);
+    this.fileWatcher?.onSourceIngested(graphId, sourceId, ref, kind);
     this.kickoffRelink(graphId);
     return record;
   }
@@ -690,6 +1268,9 @@ export class GraphnosisHost {
 
   async forgetSource(graphId: GraphId, sourceId: string): Promise<{ nodeIds: string[] }> {
     const g = this.must(graphId);
+    // Grab the ref BEFORE the forget so we can notify the file-watcher.
+    // sourceIndex.forget() removes the record; we'd otherwise lose the path.
+    const priorRecord = g.sourceIndex.get(sourceId);
     const nodeIds = g.sourceIndex.forget(sourceId);
     for (const nodeId of nodeIds) {
       // Soft-delete in Graphnosis: node stays for audit, confidence drops, won't be returned by queries.
@@ -711,6 +1292,15 @@ export class GraphnosisHost {
     await this.deleteContentBlob(sourceId);
     g.dirty = true;
     await this.save(graphId);
+
+    // Tell the file-watcher to stop watching this path. Doing this AFTER
+    // save() (vs. before) means the path stays in the watch set during
+    // the brief window where the encrypted bundle is being rewritten —
+    // harmless either way since the watcher debounces, but the post-save
+    // order keeps the "watch set mirrors persisted state" invariant.
+    if (priorRecord) {
+      this.fileWatcher?.onSourceForgotten(graphId, sourceId, priorRecord.ref);
+    }
 
     // If the user opted into "Purge forever" mode, physically remove the
     // soft-deleted nodes by rebuilding the graph. Failures here are
@@ -762,16 +1352,24 @@ export class GraphnosisHost {
   async applyCorrection(
     graphId: GraphId,
     patches: { adds?: AppendDocumentInput[]; edits?: CorrectionEdit[] },
+    opts?: { correctedBy?: string },
   ): Promise<void> {
     const g = this.must(graphId);
+    // Attribution: every op-log event emitted by this call carries the
+    // `correctedBy` field when the correction was driven by an MCP client
+    // (e.g. "claude-ai"). Lets the audit log show "Claude edited this
+    // node" alongside the content/reason. The field is silently omitted
+    // when the user applied the correction directly via the App UI.
+    const attribution = opts?.correctedBy ? { correctedBy: opts.correctedBy } : {};
+    const ingestOpts = { chunkSize: this.settings.ai.chunkSize };
     for (const add of patches.adds ?? []) {
-      const result = await this.opts.adapter.appendDocument(g.handle, add);
+      const result = await this.opts.adapter.appendDocument(g.handle, add, ingestOpts);
       for (const n of result.newNodeIds) {
         this.oplogWriter.emit({
           graphId,
           op: 'addNode',
           target: { kind: 'node', id: n },
-          after: { ref: add.sourceRef },
+          after: { ref: add.sourceRef, ...attribution },
         });
       }
     }
@@ -782,7 +1380,7 @@ export class GraphnosisHost {
         graphId,
         op: edit.kind === 'delete' ? 'deleteNode' : edit.kind === 'supersede' ? 'supersede' : 'editNode',
         target: { kind: 'node', id: edit.nodeId },
-        after: edit.kind === 'delete' ? undefined : { content: edit.content, reason: edit.reason },
+        after: edit.kind === 'delete' ? attribution : { content: edit.content, reason: edit.reason, ...attribution },
       });
       // Count only user-driven corrections (edit + supersede). Delete is
       // also user-driven here but we exclude it because deleteNode events
@@ -891,6 +1489,33 @@ export class GraphnosisHost {
   }
 
   /**
+   * Remove a single edge. Delegates to the adapter (pure in-memory Map
+   * delete) then saves. Emits an op-log `removeEdge` event so the audit
+   * trail stays intact even though the edge is gone from the graph.
+   *
+   * Returns `{ removed: false }` without saving when the edge doesn't
+   * exist — idempotent / safe to call twice on the same id.
+   */
+  async unlinkEdge(
+    graphId: GraphId,
+    edgeId: string,
+  ): Promise<{ removed: boolean; wasDirected?: boolean }> {
+    const g = this.must(graphId);
+    const result = await this.opts.adapter.unlinkEdge(g.handle, edgeId);
+    if (result.removed) {
+      this.oplogWriter.emit({
+        graphId,
+        op: 'deleteEdge',
+        target: { kind: 'edge', id: edgeId },
+        after: { wasDirected: result.wasDirected ?? false },
+      });
+      g.dirty = true;
+      await this.save(graphId);
+    }
+    return result;
+  }
+
+  /**
    * Ground-truth inspection across all loaded graphs — includes soft-deleted nodes
    * (the ones recall hides because confidence dropped). Used by the `stats` MCP tool
    * and the future desktop inspector to debug "where did my nodes go?" moments.
@@ -905,7 +1530,7 @@ export class GraphnosisHost {
   private async countCorrectionsFromOplog(graphId: GraphId): Promise<number> {
     try {
       const events = await oplog.readAllEvents(
-        path.join(this.opts.vaultDir, 'oplog'),
+        path.join(this.opts.cortexDir, 'oplog'),
         this.key,
       );
       return events.filter(
@@ -1222,7 +1847,7 @@ export class GraphnosisHost {
    * Called from loadGraph before any read. Handles crash-during-purge leftovers:
    *   - If the canonical file is missing but .bak exists → process died after
    *     the rename-to-bak step. Restore so the user isn't surprised by an
-   *     empty vault.
+   *     empty cortex.
    *   - If both exist → purge committed but didn't delete .bak. Drop the bak.
    */
   private async recoverFromInterruptedPurge(graphId: GraphId): Promise<void> {
@@ -1275,13 +1900,13 @@ export class GraphnosisHost {
    * each call. For massive op-logs (>100k events) we'd add windowing.
    */
   async listOplogEvents(): Promise<Awaited<ReturnType<typeof oplog.readAllEvents>>> {
-    return oplog.readAllEvents(path.join(this.opts.vaultDir, 'oplog'), this.key);
+    return oplog.readAllEvents(path.join(this.opts.cortexDir, 'oplog'), this.key);
   }
 
   // ── Snapshots ───────────────────────────────────────────────────────────
   //
-  // A snapshot is an atomic copy of the vault's encrypted files at a
-  // point in time. Lives at <vault>/.snapshots/<isoDate>/. Snapshots are
+  // A snapshot is an atomic copy of the cortex's encrypted files at a
+  // point in time. Lives at <cortex>/.snapshots/<isoDate>/. Snapshots are
   // already encrypted (same key as the live files), so no extra crypto.
   //
   // Restore is intentionally NOT exposed yet — too easy to footgun without
@@ -1289,7 +1914,7 @@ export class GraphnosisHost {
   // "pin this moment" use case the user asked for.
 
   private snapshotsDir(): string {
-    return path.join(this.opts.vaultDir, '.snapshots');
+    return path.join(this.opts.cortexDir, '.snapshots');
   }
 
   async listSnapshots(): Promise<Array<{ id: string; createdAt: number; sizeBytes: number; fileCount: number }>> {
@@ -1325,7 +1950,7 @@ export class GraphnosisHost {
   }
 
   /**
-   * Copy every encrypted vault file into `.snapshots/<iso>/`. Atomic on a
+   * Copy every encrypted cortex file into `.snapshots/<iso>/`. Atomic on a
    * per-file basis (no rename trickery — these are independent backups).
    * The live files are untouched. Snapshots stay encrypted; no key leak.
    */
@@ -1340,17 +1965,25 @@ export class GraphnosisHost {
     await fs.mkdir(dest, { recursive: true });
 
     // Files worth snapshotting: graphs/*.gai, graphs/*.bundle, graphs/*.embcache,
-    // settings.json, salt.bin, policy.json (if present), content/*. NOT the
-    // op-log — it's already append-only history, and copying it would double
-    // disk for every snapshot.
+    // settings.json, salt.bin, policy.json (if present), content/*, master.enc,
+    // recovery.enc. NOT the op-log — it's already append-only history, and
+    // copying it would double disk for every snapshot.
+    //
+    // master.enc + recovery.enc MUST be in the snapshot. Restoring a snapshot
+    // without them would leave the cortex unlockable (passphrase derives the
+    // wrap key fine, but there's no wrapped data key to unwrap). Adding them
+    // here closes a previously-silent gap that would have bricked any cortex
+    // restored from a snapshot taken after the v0.3 wrapped-key migration.
     const sourceDirs = [
-      { src: path.join(this.opts.vaultDir, 'graphs'), dest: path.join(dest, 'graphs') },
-      { src: path.join(this.opts.vaultDir, 'content'), dest: path.join(dest, 'content') },
+      { src: path.join(this.opts.cortexDir, 'graphs'), dest: path.join(dest, 'graphs') },
+      { src: path.join(this.opts.cortexDir, 'content'), dest: path.join(dest, 'content') },
     ];
     const sourceFiles = [
-      path.join(this.opts.vaultDir, 'settings.json'),
-      path.join(this.opts.vaultDir, 'salt.bin'),
-      path.join(this.opts.vaultDir, 'policy.json'),
+      path.join(this.opts.cortexDir, 'settings.json'),
+      path.join(this.opts.cortexDir, 'salt.bin'),
+      path.join(this.opts.cortexDir, 'policy.json'),
+      path.join(this.opts.cortexDir, 'master.enc'),
+      path.join(this.opts.cortexDir, 'recovery.enc'),
     ];
 
     let sizeBytes = 0;
@@ -1404,7 +2037,7 @@ export class GraphnosisHost {
   // unless they happened to be saved as files.
 
   async planRecovery(): Promise<RecoveryPlan> {
-    const events = await oplog.readAllEvents(path.join(this.opts.vaultDir, 'oplog'), this.key);
+    const events = await oplog.readAllEvents(path.join(this.opts.cortexDir, 'oplog'), this.key);
     // Walk in chronological order; ingestSource adds, forgetSource removes.
     const live = new Map<string, RecoveryPlanItem>();
     for (const ev of events) {
@@ -1427,7 +2060,7 @@ export class GraphnosisHost {
 
     // Annotate each item with recoverability. The order of preference:
     //   1. Already in the loaded graph → skip
-    //   2. Content blob in <vault>/content/ → recoverable-from-cache
+    //   2. Content blob in <cortex>/content/ → recoverable-from-cache
     //   3. kind=file and the original path still exists → recoverable
     //   4. kind=url → url-refetch-not-implemented
     //   5. Otherwise → file-missing or content-not-in-oplog
@@ -1487,8 +2120,18 @@ export class GraphnosisHost {
   /**
    * Re-ingest the selected sources. If `sourceIds` is undefined, re-ingests
    * every `recoverable` item from the current plan. Returns a per-item report.
+   *
+   * Optional callbacks let the IPC layer broadcast per-source progress events
+   * so the UI can render a live progress bar — re-ingesting a 4233-page PDF
+   * takes ~80 minutes and the user needs to see something happening.
    */
-  async applyRecovery(sourceIds?: string[]): Promise<RecoveryReport> {
+  async applyRecovery(
+    sourceIds?: string[],
+    callbacks?: {
+      onSourceStart?: (sourceId: string, ref: string, index: number, total: number) => void;
+      onSourceDone?: (outcome: RecoveryOutcome, index: number, total: number) => void;
+    },
+  ): Promise<RecoveryReport> {
     const plan = await this.planRecovery();
     const isRecoverable = (s: RecoveryStatus): boolean =>
       s === 'recoverable' || s === 'recoverable-from-cache';
@@ -1497,6 +2140,8 @@ export class GraphnosisHost {
       : plan.items.filter(i => sourceIds.includes(i.sourceId));
 
     const outcomes: RecoveryOutcome[] = [];
+    const total = want.length;
+    let globalIndex = 0;
 
     // Group by graph so we only loadGraph once per target.
     const byGraph = new Map<GraphId, RecoveryPlanItem[]>();
@@ -1517,12 +2162,15 @@ export class GraphnosisHost {
             await this.createGraph(graphId);
           } else {
             for (const item of arr) {
-              outcomes.push({
+              const outcome: RecoveryOutcome = {
                 sourceId: item.sourceId,
                 ref: item.ref,
                 ok: false,
                 error: `could not open graph ${graphId}: ${err.message}`,
-              });
+              };
+              outcomes.push(outcome);
+              globalIndex += 1;
+              callbacks?.onSourceDone?.(outcome, globalIndex, total);
             }
             continue;
           }
@@ -1530,61 +2178,65 @@ export class GraphnosisHost {
       }
 
       for (const item of arr) {
+        globalIndex += 1;
+        callbacks?.onSourceStart?.(item.sourceId, item.ref, globalIndex, total);
+
+        let outcome: RecoveryOutcome;
         if (item.status === 'already-present') {
-          outcomes.push({ sourceId: item.sourceId, ref: item.ref, ok: true, skipped: 'already-present' });
-          continue;
-        }
-        if (!isRecoverable(item.status)) {
-          outcomes.push({
+          outcome = { sourceId: item.sourceId, ref: item.ref, ok: true, skipped: 'already-present' };
+        } else if (!isRecoverable(item.status)) {
+          outcome = {
             sourceId: item.sourceId,
             ref: item.ref,
             ok: false,
             error: `not recoverable (status=${item.status})`,
-          });
-          continue;
-        }
-        try {
-          if (item.status === 'recoverable-from-cache') {
-            // Cache path: decrypt blob, re-ingest using the original docKind
-            // recorded at ingest time. This is the only recovery path for
-            // clip / ai-conversation kinds.
-            const blob = await this.readContentBlob(item.sourceId);
-            if (!blob) throw new Error('content blob disappeared between plan and apply');
-            const content = blob.header.docKind === 'pdf'
-              ? Buffer.from(blob.content)
-              : new TextDecoder().decode(blob.content);
-            await this.ingest(graphId, blob.header.kind, blob.header.ref, {
-              kind: blob.header.docKind,
-              content: content as never,
-              sourceRef: blob.header.ref,
-            });
-          } else {
-            // Disk path: re-read the original file.
-            const buf = await fs.readFile(item.ref);
-            const ext = path.extname(item.ref).toLowerCase().replace(/^\./, '');
-            const docKind: 'markdown' | 'text' | 'json' | 'html' | 'pdf' = (
-              ext === 'md' || ext === 'markdown' ? 'markdown' :
-              ext === 'json' ? 'json' :
-              ext === 'html' || ext === 'htm' ? 'html' :
-              ext === 'pdf' ? 'pdf' :
-              'text'
-            );
-            const content = docKind === 'pdf' ? buf : new TextDecoder().decode(buf);
-            await this.ingest(graphId, 'file', item.ref, {
-              kind: docKind,
-              content: content as never,
-              sourceRef: item.ref,
-            });
+          };
+        } else {
+          try {
+            if (item.status === 'recoverable-from-cache') {
+              // Cache path: decrypt blob, re-ingest using the original docKind
+              // recorded at ingest time. This is the only recovery path for
+              // clip / ai-conversation kinds.
+              const blob = await this.readContentBlob(item.sourceId);
+              if (!blob) throw new Error('content blob disappeared between plan and apply');
+              const content = blob.header.docKind === 'pdf'
+                ? Buffer.from(blob.content)
+                : new TextDecoder().decode(blob.content);
+              await this.ingest(graphId, blob.header.kind, blob.header.ref, {
+                kind: blob.header.docKind,
+                content: content as never,
+                sourceRef: blob.header.ref,
+              });
+            } else {
+              // Disk path: re-read the original file.
+              const buf = await fs.readFile(item.ref);
+              const ext = path.extname(item.ref).toLowerCase().replace(/^\./, '');
+              const docKind: 'markdown' | 'text' | 'json' | 'html' | 'pdf' = (
+                ext === 'md' || ext === 'markdown' ? 'markdown' :
+                ext === 'json' ? 'json' :
+                ext === 'html' || ext === 'htm' ? 'html' :
+                ext === 'pdf' ? 'pdf' :
+                'text'
+              );
+              const content = docKind === 'pdf' ? buf : new TextDecoder().decode(buf);
+              await this.ingest(graphId, 'file', item.ref, {
+                kind: docKind,
+                content: content as never,
+                sourceRef: item.ref,
+              });
+            }
+            outcome = { sourceId: item.sourceId, ref: item.ref, ok: true };
+          } catch (e) {
+            outcome = {
+              sourceId: item.sourceId,
+              ref: item.ref,
+              ok: false,
+              error: (e as Error).message,
+            };
           }
-          outcomes.push({ sourceId: item.sourceId, ref: item.ref, ok: true });
-        } catch (e) {
-          outcomes.push({
-            sourceId: item.sourceId,
-            ref: item.ref,
-            ok: false,
-            error: (e as Error).message,
-          });
         }
+        outcomes.push(outcome);
+        callbacks?.onSourceDone?.(outcome, globalIndex, total);
       }
     }
 
@@ -1611,4 +2263,39 @@ export class GraphnosisHost {
     if (!g) throw new Error(`Graph not loaded: ${graphId}`);
     return g;
   }
+}
+
+// ── Atomic file write helper ────────────────────────────────────────────────
+//
+// Writes data to a sibling .tmp path, fsync's it to disk, then atomically
+// renames it onto the target. On POSIX, rename(2) is atomic: a concurrent
+// reader sees either the old file or the new one, never a half-written
+// blob. This protects every .gai / .bundle write against process kills
+// (force-quit, OOM, crash, OS shutdown) that would otherwise leave the
+// canonical file mid-flight and unreadable on next load (HMAC mismatch).
+//
+// fsync matters: without it, a kernel buffer flush can happen AFTER the
+// rename completes, so a power loss in that window still leaves the new
+// file's bytes only partially on stable storage. We open + write + fsync
+// + close + rename — the standard atomic-write pattern.
+async function writeFileAtomic(target: string, data: Buffer): Promise<void> {
+  const tmp = `${target}.tmp-${process.pid}-${Date.now()}`;
+  const fh = await fs.open(tmp, 'w', 0o600);
+  try {
+    await fh.writeFile(data);
+    await fh.sync();
+  } finally {
+    await fh.close();
+  }
+  await fs.rename(tmp, target);
+}
+
+/** Constant-time byte-array compare for the master.enc integrity check.
+ *  Not strictly necessary (both sides are in our own memory), but it costs
+ *  nothing and signals intent — never compare key material with `===`. */
+function buffersEqual(a: Uint8Array, b: Uint8Array): boolean {
+  if (a.length !== b.length) return false;
+  let diff = 0;
+  for (let i = 0; i < a.length; i++) diff |= (a[i] ?? 0) ^ (b[i] ?? 0);
+  return diff === 0;
 }
