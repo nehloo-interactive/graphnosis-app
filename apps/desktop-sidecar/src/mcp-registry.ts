@@ -15,7 +15,7 @@ import { randomUUID } from 'node:crypto';
  * the right behavior — the App reads it fresh on every poll.
  */
 
-export type McpTransportKind = 'socket' | 'stdio';
+export type McpTransportKind = 'socket' | 'stdio' | 'http';
 
 export interface McpConnection {
   id: string;

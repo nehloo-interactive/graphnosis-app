@@ -5,6 +5,41 @@ import path from 'node:path';
 // like policy.json — no graph data here, just config). If we ever store
 // anything genuinely sensitive in here we'll switch to encrypted-at-rest.
 
+// ── Connector types ───────────────────────────────────────────────────────────
+
+export type ConnectorKind = 'webhook' | 'rss' | 'github' | 'slack' | 'trello' | 'linear';
+
+export interface ConnectorConfig {
+  /** User-chosen slug — must be unique within a cortex. */
+  id: string;
+  kind: ConnectorKind;
+  /** Target engram for ingested events. */
+  graphId: string;
+  enabled: boolean;
+  /**
+   * Connector-specific credentials (API keys, OAuth tokens).
+   * Stored plaintext in settings.json alongside all other non-graph config.
+   * Future: migrate to a cortex-encrypted connectors.enc file.
+   */
+  credentials: Record<string, string>;
+  /** Connector-specific options (feed URL, repo name, channel list, etc.). */
+  options: Record<string, unknown>;
+  /** Unix ms timestamp of the last successful pull. Used as the `since` cursor. */
+  lastPulledAt?: number;
+  /** Last pull error message, if any. Cleared on next successful pull. */
+  lastError?: string;
+}
+
+export interface ConnectorSettings {
+  configs: ConnectorConfig[];
+  /** Port for the incoming webhook server. Default 3458. */
+  webhookPort: number;
+  /** Interface for the webhook server. '127.0.0.1' or '0.0.0.0'. */
+  webhookHost: string;
+  /** How often to run pull() on each enabled pull-style connector. Default 15 min. */
+  pullIntervalMs: number;
+}
+
 export type ContentCacheMode =
   | 'all'              // cache every ingest (best recovery; ~2× cortex size on file ingests)
   | 'ephemeral-only'   // only cache clip / ai-conversation / url; files stay on the user's disk
@@ -173,6 +208,27 @@ export interface GraphMetadata {
   archived?: boolean;
 }
 
+export interface HttpBridgeSettings {
+  /** Whether the HTTP bridge is active. False by default. */
+  enabled: boolean;
+  /** TCP port to bind on. Default 3457. */
+  port: number;
+  /** Interface to bind on. '127.0.0.1' (loopback only) or '0.0.0.0' (LAN / Tailscale). */
+  host: string;
+  /**
+   * Bearer token mobile clients must present in Authorization headers.
+   * Auto-generated (UUID v4) on first enable via the App's Settings UI.
+   * Shown once in the UI; user copies it into their mobile MCP client config.
+   */
+  token: string;
+  /**
+   * Browser origins allowed to call the bridge (for future browser extensions / PWAs).
+   * Empty array = no browser origin is allowed (direct HTTP clients like mobile apps
+   * don't send an Origin header so they are unaffected by this list).
+   */
+  allowedOrigins: string[];
+}
+
 export interface AppSettings {
   contentCache: ContentCacheSettings;
   forget: ForgetSettings;
@@ -181,6 +237,19 @@ export interface AppSettings {
   ai: AiSettings;
   /** Per-graph metadata keyed by graphId. Older cortexes may have no entry for an existing graph. */
   graphMetadata: Record<string, GraphMetadata>;
+  /**
+   * Mobile & remote-client settings. Absent (undefined) means the HTTP bridge
+   * is disabled — old cortexes that have never touched this section behave
+   * identically to bridge.enabled = false.
+   */
+  mobile?: {
+    httpBridge: HttpBridgeSettings;
+  };
+  /**
+   * Service connector settings. Absent = no connectors configured.
+   * Each ConnectorConfig includes credentials (plaintext) and pull schedule state.
+   */
+  connectors?: ConnectorSettings;
 }
 
 export const DEFAULT_SETTINGS: AppSettings = {
@@ -338,6 +407,40 @@ export function mergeWithDefaults(partial: Partial<AppSettings> | null | undefin
     ? partial.graphMetadata
     : { ...DEFAULT_SETTINGS.graphMetadata };
 
+  // Mobile / HTTP bridge — entirely optional. Absent = bridge disabled.
+  // Pass through as-is if present; validate individual fields with fallbacks.
+  let mobile: AppSettings['mobile'] | undefined;
+  if (partial?.mobile) {
+    const hb: Partial<HttpBridgeSettings> = partial.mobile.httpBridge ?? {};
+    mobile = {
+      httpBridge: {
+        enabled: typeof hb.enabled === 'boolean' ? hb.enabled : false,
+        port: typeof hb.port === 'number' && hb.port > 0 && hb.port < 65536
+          ? Math.floor(hb.port) : 3457,
+        host: typeof hb.host === 'string' && hb.host.length > 0 ? hb.host : '127.0.0.1',
+        token: typeof hb.token === 'string' ? hb.token : '',
+        allowedOrigins: Array.isArray(hb.allowedOrigins)
+          ? (hb.allowedOrigins as unknown[]).filter((o): o is string => typeof o === 'string')
+          : [],
+      },
+    };
+  }
+
+  // Connector settings — optional. Absent = no connectors configured.
+  // Pass configs through verbatim; validate/clamp the scalar scheduling fields.
+  let connectors: ConnectorSettings | undefined;
+  if (partial?.connectors) {
+    const cs = partial.connectors;
+    connectors = {
+      configs: Array.isArray(cs.configs) ? cs.configs : [],
+      webhookPort: typeof cs.webhookPort === 'number' && cs.webhookPort > 0 && cs.webhookPort < 65536
+        ? Math.floor(cs.webhookPort) : 3458,
+      webhookHost: cs.webhookHost === '0.0.0.0' ? '0.0.0.0' : '127.0.0.1',
+      pullIntervalMs: typeof cs.pullIntervalMs === 'number' && cs.pullIntervalMs >= 60_000
+        ? Math.floor(cs.pullIntervalMs) : 15 * 60 * 1000,
+    };
+  }
+
   return {
     contentCache: { mode, maxBytesPerSource },
     forget: { mode: forgetMode },
@@ -348,6 +451,8 @@ export function mergeWithDefaults(partial: Partial<AppSettings> | null | undefin
       reingestQuietMs, chunkSize, embedBatch,
     },
     graphMetadata,
+    ...(mobile !== undefined ? { mobile } : {}),
+    ...(connectors !== undefined ? { connectors } : {}),
   };
 }
 
