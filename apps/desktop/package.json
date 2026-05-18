@@ -14,7 +14,13 @@
   },
   "dependencies": {
     "3d-force-graph": "^1.80.0",
+    "@deck.gl/core": "^9.3.2",
+    "@deck.gl/layers": "^9.3.2",
+    "@deck.gl/mesh-layers": "^9.3.2",
+    "@luma.gl/core": "^9.3.3",
+    "@luma.gl/engine": "^9.3.3",
     "@tauri-apps/api": "^2.0.0",
+    "@tauri-apps/plugin-notification": "^2.0.0",
     "d3-force-3d": "^3.0.6",
     "three": "^0.184.0"
   },
