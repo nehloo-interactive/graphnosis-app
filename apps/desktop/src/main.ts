@@ -1763,15 +1763,15 @@ interface ClientUiCopy {
 const MCP_CLIENT_COPY: Record<McpClientId, ClientUiCopy> = {
   'claude-desktop': {
     title: 'Configure Claude Desktop',
-    subtitle: "Make Claude Desktop's Graphnosis tools talk to this App's running Synapse instead of spawning its own. Both share one in-memory graph and one cortex lock.",
+    subtitle: "Make Claude Desktop's Graphnosis tools talk to Graphnosis Synapse instead of spawning its own. Both share one in-memory graph and one cortex lock.",
   },
   'claude-code': {
     title: 'Configure Claude Code (CLI)',
-    subtitle: "Make the `claude` CLI's Graphnosis tools talk to this App's running Synapse. Writes the user-level `~/.claude.json` so it applies in every project. Project-scoped `.mcp.json` files are left untouched.",
+    subtitle: "Make the `claude` CLI's Graphnosis tools talk to Graphnosis Synapse. Writes the user-level `~/.claude.json` so it applies in every project. Project-scoped `.mcp.json` files are left untouched.",
   },
   'cursor': {
     title: 'Configure Cursor',
-    subtitle: "Make Cursor's Graphnosis MCP tools talk to this App's running Synapse. Writes the user-level `~/.cursor/mcp.json`; project-scoped MCP configs are unaffected.",
+    subtitle: "Make Cursor's Graphnosis MCP tools talk to Graphnosis Synapse. Writes the user-level `~/.cursor/mcp.json`; project-scoped MCP configs are unaffected.",
   },
 };
 
