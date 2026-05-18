@@ -1,0 +1,13 @@
+diff --git a/package.json b/package.json
+index 15a3e629ddbd671ca8c0ff8ee7fa0ab31d3b0619..73272aa3cbbe2c29e12a18bb4fc2fa54787848f7 100644
+--- a/package.json
++++ b/package.json
+@@ -7,7 +7,7 @@
+   "types": "dist/modules-sumo/libsodium-wrappers.d.ts",
+   "exports": {
+     ".": {
+-      "import": "./dist/modules-sumo-esm/libsodium-wrappers.mjs",
++      "import": "./dist/modules-sumo/libsodium-wrappers.js",
+       "require": "./dist/modules-sumo/libsodium-wrappers.js",
+       "default": "./dist/modules-sumo/libsodium-wrappers.js"
+     }
