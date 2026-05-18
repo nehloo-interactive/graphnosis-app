@@ -676,13 +676,27 @@ async function ensureNotifPermission(): Promise<boolean> {
 /** Is the app currently in the background (menu-bar collapsed, window not
  *  focused, or hidden behind other windows)? Used to gate "the AI needs
  *  you" notifications — we don't want to nag the user when they're already
- *  looking at the App and would see the banner anyway. */
-function isAppBackgrounded(): boolean {
-  // visibilityState catches minimized/hidden NSPanel; hasFocus catches the
-  // common case where the user has another app focused on top of ours.
-  if (document.visibilityState === 'hidden') return true;
-  if (typeof document.hasFocus === 'function' && !document.hasFocus()) return true;
-  return false;
+ *  looking at the App and would see the banner anyway.
+ *
+ *  We ask Tauri's window API instead of DOM hasFocus / visibilityState
+ *  because a menu-bar NSPanel doesn't reliably toggle DOM signals when the
+ *  user collapses it — the WebView stays "focused" from the DOM's POV
+ *  even when the panel is hidden behind the menu-bar icon. The Tauri
+ *  window API reports the real OS-level visibility + focus state. */
+async function isAppBackgrounded(): Promise<boolean> {
+  try {
+    const w = getCurrentWindow();
+    const [visible, focused] = await Promise.all([w.isVisible(), w.isFocused()]);
+    if (!visible) return true;   // panel collapsed / window hidden
+    if (!focused) return true;   // another app on top
+    return false;
+  } catch {
+    // Fall back to DOM signals if the Tauri API isn't available for any
+    // reason (e.g., webview booted outside the Tauri shell during dev).
+    if (document.visibilityState === 'hidden') return true;
+    if (typeof document.hasFocus === 'function' && !document.hasFocus()) return true;
+    return false;
+  }
 }
 
 /**
@@ -692,12 +706,18 @@ function isAppBackgrounded(): boolean {
  * but isn't double-notified when they're already looking at the banner.
  */
 async function notifyIfBackground(opts: { title: string; body: string }): Promise<void> {
-  if (!isAppBackgrounded()) return;
-  if (!(await ensureNotifPermission())) return;
+  if (!(await isAppBackgrounded())) return;
+  if (!(await ensureNotifPermission())) {
+    // Surface this in the dev terminal so it's obvious why a missed
+    // notification didn't actually fire — silent failures here were the
+    // hardest part of debugging the background-confirmation flow.
+    console.warn('[notify] background notification skipped — OS permission not granted');
+    return;
+  }
   try {
     sendNotification({ title: opts.title, body: opts.body });
-  } catch {
-    // Notification API unavailable — silently ignore.
+  } catch (e) {
+    console.warn('[notify] sendNotification failed:', e);
   }
 }
 
@@ -7057,6 +7077,15 @@ document.getElementById('engram-suggest-primary')?.addEventListener('click', () 
         sourceKind: p.sourceKind ?? 'ai-conversation',
       });
       hideEngramSuggestion();
+      // Refresh the top-bar engram dropdown + stats so a freshly-created
+      // engram shows up immediately (pollGraphMutations alone only repaints
+      // panes that watch mutation cursors — it doesn't reload the engram
+      // list). When the user saved into an existing engram this is a
+      // no-op for the dropdown but still refreshes stats, which is fine.
+      if (!intoExisting) {
+        await fetchGraphsMetadata();
+      }
+      void refreshStats();
       void pollGraphMutations();
       const title = intoExisting ? `Saved to “${displayName}”` : `Created engram “${displayName}”`;
       const tid = addIngestToast(title, 'Saved AI suggestion');
