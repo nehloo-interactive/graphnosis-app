@@ -1779,9 +1779,14 @@ function openConfigureClientModal(clientId: McpClientId): void {
   showError(null);
   const copy = MCP_CLIENT_COPY[clientId];
   els.claudeModal.dataset['mcpClient'] = clientId;
+  // Clear any stale apply-done state from a previous configure session
+  // — without this, opening the modal a second time would show the
+  // Apply button labelled "Done" and clicking it would just close.
+  delete els.claudeModal.dataset['applyDone'];
   els.claudeModalTitle.textContent = copy.title;
   els.claudeModalSubtitle.textContent = copy.subtitle;
   els.claudeModalApplyHint.innerHTML = 'Click <strong>Apply</strong> to update the client\'s config.';
+  els.claudeModalApplyHint.style.display = '';
   els.claudeModal.classList.remove('hidden');
   els.claudePreview.style.display = 'none';
   els.claudePreview.innerHTML = '';
@@ -1801,6 +1806,15 @@ els.btnClaudeClose.addEventListener('click', () => {
 });
 
 els.btnClaudeApply.addEventListener('click', async () => {
+  // Post-success state: the button is labelled "Done" and clicking it
+  // should dismiss the modal, NOT re-fire the apply IPC (which would
+  // pointlessly re-write the same config and re-render the success
+  // screen). The flag is set after a successful apply and cleared on
+  // the next openConfigureClientModal().
+  if (els.claudeModal.dataset['applyDone'] === '1') {
+    els.claudeModal.classList.add('hidden');
+    return;
+  }
   const clientId = (els.claudeModal.dataset['mcpClient'] as McpClientId | undefined) ?? 'claude-desktop';
   els.btnClaudeApply.disabled = true;
   els.btnClaudeApply.textContent = 'Writing…';
@@ -1839,7 +1853,17 @@ els.btnClaudeApply.addEventListener('click', async () => {
     `;
     els.claudePreview.style.display = '';
     els.claudeFooterNote.textContent = r.restart_hint;
+    // Post-success: the apply already happened, so the modal's "Click
+    // Apply…" hint is stale — hide it. Repurpose the Apply button as
+    // a dismiss "Done" by re-enabling it and routing its next click to
+    // close (instead of re-firing the apply IPC). The dataset flag is
+    // read by the click handler; we DON'T detach the listener because
+    // a fresh openConfigureClientModal() resets the flag back to apply
+    // mode for the next session.
+    els.claudeModalApplyHint.style.display = 'none';
+    els.btnClaudeApply.disabled = false;
     els.btnClaudeApply.textContent = 'Done';
+    els.claudeModal.dataset['applyDone'] = '1';
   } catch (e) {
     els.claudePreview.innerHTML = `<p class="error">${escape(String(e))}</p>`;
     els.claudePreview.style.display = '';
