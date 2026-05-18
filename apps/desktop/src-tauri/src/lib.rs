@@ -1475,6 +1475,25 @@ async fn update_settings(
         .map_err(|e| e.to_string())
 }
 
+#[tauri::command]
+async fn get_mobile_connection_info(state: State<'_, AppState>) -> Result<serde_json::Value, String> {
+    let socket_path = {
+        let inner = state.inner.lock().await;
+        match &inner.cortex_dir {
+            Some(vd) => vd.join("sidecar.sock"),
+            None => return Err("cortex is locked".to_string()),
+        }
+    };
+    ipc_client::request_with_timeout(
+        &socket_path,
+        "mobile.getConnectionInfo",
+        serde_json::Value::Null,
+        std::time::Duration::from_secs(5),
+    )
+        .await
+        .map_err(|e| e.to_string())
+}
+
 /// Inspect the encrypted op-log and return a recovery plan listing every
 /// source ever ingested (minus those forgotten), annotated with whether
 /// it's recoverable (file still on disk), already-present, file-missing,
@@ -1817,6 +1836,7 @@ pub fn run() {
             recovery_apply,
             get_settings,
             update_settings,
+            get_mobile_connection_info,
             configure_mcp_client,
             open_cortex_in_finder,
             reveal_file_in_finder,

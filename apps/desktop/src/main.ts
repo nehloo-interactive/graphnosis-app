@@ -7528,6 +7528,240 @@ async function refreshBiometricButton(cortexDir: string): Promise<void> {
   }
 }
 
+// ── Mobile & Remote Access wizard ─────────────────────────────────────────
+
+interface MobileConnectionInfo {
+  enabled: boolean;
+  host: string;
+  port: number;
+  token: string;
+  localIps: string[];
+  tailscaleIp?: string;
+}
+
+let mobileConnInfo: MobileConnectionInfo | null = null;
+let mobileWizardStep = 0;
+let mobileTokenRevealed = false;
+
+function $m<T extends HTMLElement>(id: string): T | null {
+  return document.getElementById(id) as T | null;
+}
+
+function mobileSetStep(step: number): void {
+  mobileWizardStep = step;
+
+  // Update dots
+  const dots = document.querySelectorAll<HTMLElement>('.wizard-step-dot');
+  dots.forEach((d, i) => {
+    d.classList.toggle('done', i < step);
+    d.classList.toggle('active', i === step);
+  });
+  const label = $m<HTMLSpanElement>('mobile-step-label');
+  if (label) label.textContent = `Step ${step + 1} of 3`;
+
+  // Show/hide steps
+  for (let i = 0; i < 3; i++) {
+    $m<HTMLDivElement>(`mobile-step-${i}`)?.classList.toggle('active', i === step);
+  }
+
+  // Back / Next / Close button visibility
+  const btnBack = $m<HTMLButtonElement>('btn-mobile-back');
+  const btnNext = $m<HTMLButtonElement>('btn-mobile-next');
+  const btnClose = $m<HTMLButtonElement>('btn-mobile-close');
+  if (btnBack) btnBack.classList.toggle('hidden', step === 0);
+  if (btnNext) {
+    btnNext.classList.toggle('hidden', step === 2);
+    btnNext.textContent = step === 0 ? 'Save & Next' : 'Next';
+  }
+  if (btnClose) btnClose.textContent = step === 2 ? 'Done' : 'Cancel';
+
+  if (step === 1) renderMobileStep1();
+  if (step === 2) renderMobileStep2();
+}
+
+function renderMobileStep1(): void {
+  const info = mobileConnInfo;
+  if (!info) return;
+  const ipList = $m<HTMLDivElement>('mobile-ip-list');
+  const tailTip = $m<HTMLDivElement>('mobile-tailscale-tip');
+  const noTailTip = $m<HTMLDivElement>('mobile-no-tailscale-tip');
+  if (!ipList) return;
+  ipList.innerHTML = '';
+  if (info.tailscaleIp) {
+    const row = document.createElement('div');
+    row.className = 'mobile-ip-row';
+    row.innerHTML = `<span class="mobile-ip-tag tailscale">Tailscale</span><strong>${info.tailscaleIp}</strong>`;
+    ipList.appendChild(row);
+    if (tailTip) tailTip.style.display = '';
+    if (noTailTip) noTailTip.style.display = 'none';
+  } else {
+    if (tailTip) tailTip.style.display = 'none';
+    if (noTailTip) noTailTip.style.display = '';
+  }
+  for (const ip of info.localIps) {
+    const row = document.createElement('div');
+    row.className = 'mobile-ip-row';
+    row.innerHTML = `<span class="mobile-ip-tag">LAN</span>${ip}`;
+    ipList.appendChild(row);
+  }
+  if (info.localIps.length === 0 && !info.tailscaleIp) {
+    ipList.innerHTML = '<p class="subtitle" style="font-size:12px;">No network interfaces detected (VPN-only or no network).</p>';
+  }
+}
+
+function renderMobileStep2(): void {
+  const info = mobileConnInfo;
+  if (!info) return;
+  const preferredIp = info.tailscaleIp ?? info.localIps[0] ?? '127.0.0.1';
+  const url = `http://${preferredIp}:${info.port}`;
+  const urlEl = $m<HTMLSpanElement>('mobile-mcp-url');
+  const tokEl = $m<HTMLSpanElement>('mobile-mcp-token');
+  if (urlEl) urlEl.textContent = url;
+  if (tokEl) {
+    tokEl.textContent = mobileTokenRevealed ? info.token : info.token.replace(/./g, '•');
+    tokEl.setAttribute('data-token', info.token);
+  }
+  const footerNote = $m<HTMLSpanElement>('mobile-footer-note');
+  if (footerNote) footerNote.textContent = 'Changes take effect the next time the Cortex is unlocked.';
+}
+
+function mobileCopyBtn(btn: HTMLButtonElement, text: string): void {
+  void navigator.clipboard.writeText(text).then(() => {
+    const orig = btn.textContent;
+    btn.textContent = 'Copied!';
+    btn.classList.add('copied');
+    setTimeout(() => {
+      btn.textContent = orig;
+      btn.classList.remove('copied');
+    }, 1800);
+  });
+}
+
+async function openMobileWizard(): Promise<void> {
+  const modal = $m<HTMLDivElement>('mobile-setup-modal');
+  if (!modal) return;
+  modal.classList.remove('hidden');
+  mobileTokenRevealed = false;
+  const footerNote = $m<HTMLSpanElement>('mobile-footer-note');
+
+  try {
+    mobileConnInfo = (await invoke('get_mobile_connection_info')) as MobileConnectionInfo;
+  } catch (e) {
+    if (footerNote) footerNote.textContent = `Error: ${e}`;
+    return;
+  }
+
+  // Populate step 0 fields from current settings
+  const enabledCb = $m<HTMLInputElement>('mobile-bridge-enabled');
+  const badge = $m<HTMLElement>('mobile-bridge-badge');
+  const portInput = $m<HTMLInputElement>('mobile-bridge-port');
+  const hostSelect = $m<HTMLSelectElement>('mobile-bridge-host');
+  const portRow = $m<HTMLDivElement>('mobile-port-row');
+  const note0 = $m<HTMLParagraphElement>('mobile-step0-note');
+
+  if (enabledCb) enabledCb.checked = mobileConnInfo.enabled;
+  if (badge) {
+    badge.textContent = mobileConnInfo.enabled ? 'On' : 'Off';
+    badge.className = `mobile-badge ${mobileConnInfo.enabled ? 'on' : 'off'}`;
+  }
+  if (portInput) portInput.value = String(mobileConnInfo.port);
+  if (hostSelect) hostSelect.value = mobileConnInfo.host;
+  if (portRow) portRow.style.display = mobileConnInfo.enabled ? '' : 'none';
+  if (note0) note0.textContent = mobileConnInfo.enabled && mobileConnInfo.token
+    ? 'Bridge is active. You can skip to Step 3 to copy connection details.'
+    : '';
+
+  // If already enabled and has a token, jump straight to connection details.
+  const startStep = (mobileConnInfo.enabled && mobileConnInfo.token) ? 2 : 0;
+  mobileSetStep(startStep);
+}
+
+// Wire up the mobile wizard once DOM is ready.
+{
+  document.getElementById('btn-mobile-setup')?.addEventListener('click', () => {
+    void openMobileWizard();
+  });
+
+  document.getElementById('btn-mobile-close')?.addEventListener('click', () => {
+    $m<HTMLDivElement>('mobile-setup-modal')?.classList.add('hidden');
+  });
+
+  document.getElementById('btn-mobile-back')?.addEventListener('click', () => {
+    if (mobileWizardStep > 0) mobileSetStep(mobileWizardStep - 1);
+  });
+
+  document.getElementById('btn-mobile-next')?.addEventListener('click', async () => {
+    if (mobileWizardStep === 0) {
+      // Persist the enable/port/host settings before advancing.
+      const enabledCb = $m<HTMLInputElement>('mobile-bridge-enabled');
+      const portInput = $m<HTMLInputElement>('mobile-bridge-port');
+      const hostSelect = $m<HTMLSelectElement>('mobile-bridge-host');
+      const footerNote = $m<HTMLSpanElement>('mobile-footer-note');
+      const btn = $m<HTMLButtonElement>('btn-mobile-next');
+      if (btn) btn.disabled = true;
+      try {
+        const patch = {
+          mobile: {
+            httpBridge: {
+              enabled: enabledCb?.checked ?? false,
+              port: parseInt(portInput?.value ?? '3457', 10),
+              host: hostSelect?.value ?? '127.0.0.1',
+            },
+          },
+        };
+        const updated = (await invoke('update_settings', { settings: patch })) as MobileConnectionInfo & { mobile?: { httpBridge?: MobileConnectionInfo } };
+        // Re-fetch to get the auto-generated token.
+        mobileConnInfo = (await invoke('get_mobile_connection_info')) as MobileConnectionInfo;
+      } catch (e) {
+        if (footerNote) footerNote.textContent = `Save failed: ${e}`;
+        if (btn) btn.disabled = false;
+        return;
+      }
+      if (btn) btn.disabled = false;
+    }
+    mobileSetStep(mobileWizardStep + 1);
+  });
+
+  // Toggle reveal for the token field
+  document.getElementById('mobile-token-reveal')?.addEventListener('click', (e) => {
+    mobileTokenRevealed = !mobileTokenRevealed;
+    const btn = e.currentTarget as HTMLButtonElement;
+    btn.textContent = mobileTokenRevealed ? 'Hide' : 'Show';
+    const tokEl = $m<HTMLSpanElement>('mobile-mcp-token');
+    const token = tokEl?.getAttribute('data-token') ?? '';
+    if (tokEl) tokEl.textContent = mobileTokenRevealed ? token : token.replace(/./g, '•');
+  });
+
+  // Enable toggle shows/hides port row
+  document.getElementById('mobile-bridge-enabled')?.addEventListener('change', (e) => {
+    const cb = e.currentTarget as HTMLInputElement;
+    const portRow = $m<HTMLDivElement>('mobile-port-row');
+    const badge = $m<HTMLElement>('mobile-bridge-badge');
+    if (portRow) portRow.style.display = cb.checked ? '' : 'none';
+    if (badge) {
+      badge.textContent = cb.checked ? 'On' : 'Off';
+      badge.className = `mobile-badge ${cb.checked ? 'on' : 'off'}`;
+    }
+  });
+
+  // Copy buttons (static delegation)
+  document.getElementById('mobile-setup-modal')?.addEventListener('click', (e) => {
+    const btn = (e.target as HTMLElement).closest<HTMLButtonElement>('.copy-btn[data-copy-target]');
+    if (!btn) return;
+    const targetId = btn.getAttribute('data-copy-target')!;
+    const target = document.getElementById(targetId);
+    if (!target) return;
+    const text = target.getAttribute('data-token') ?? target.textContent ?? '';
+    mobileCopyBtn(btn, text);
+  });
+
+  // Tailscale link → open external browser
+  document.getElementById('link-tailscale')?.addEventListener('click', (e) => {
+    e.preventDefault();
+    void invoke('open_external_url', { url: 'https://tailscale.com/download' });
+  });
+}
+
 // Initial state: ask the backend whether we're already unlocked
 // (e.g., auto-unlock from keychain in a future iteration).
 void (async () => {

@@ -863,6 +863,115 @@
       }
       .recovery-summary strong { color: var(--fg); }
 
+      /* ── Mobile wizard ─────────────────────────────────────────────── */
+      .wizard-steps {
+        display: flex;
+        gap: 6px;
+        margin-bottom: 20px;
+        align-items: center;
+      }
+      .wizard-step-dot {
+        width: 8px; height: 8px;
+        border-radius: 50%;
+        background: var(--border);
+        transition: background 0.2s;
+      }
+      .wizard-step-dot.active { background: var(--accent); }
+      .wizard-step-dot.done { background: var(--ok, #4caf50); }
+      .wizard-step-label {
+        font-size: 11px; color: var(--fg-dim);
+        margin-left: 2px;
+      }
+      .copy-row {
+        display: flex; align-items: center; gap: 8px;
+        margin-bottom: 10px;
+      }
+      .copy-field {
+        flex: 1;
+        padding: 8px 10px;
+        background: var(--bg-elev);
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        font-family: ui-monospace, 'Cascadia Code', monospace;
+        font-size: 12px;
+        color: var(--fg);
+        user-select: all;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        cursor: text;
+      }
+      .copy-field.secret { letter-spacing: 0.15em; }
+      .copy-btn {
+        flex-shrink: 0;
+        padding: 7px 12px;
+        font-size: 12px;
+        border-radius: 6px;
+        background: var(--bg-elev);
+        border: 1px solid var(--border);
+        color: var(--fg);
+        cursor: pointer;
+        transition: background 0.15s;
+      }
+      .copy-btn:hover { background: var(--accent); color: #fff; border-color: var(--accent); }
+      .copy-btn.copied { background: var(--ok, #4caf50); color: #fff; border-color: transparent; }
+      .mobile-step { display: none; }
+      .mobile-step.active { display: block; }
+      .mobile-badge {
+        display: inline-block;
+        padding: 2px 8px;
+        border-radius: 10px;
+        font-size: 11px;
+        font-weight: 600;
+        margin-left: 6px;
+      }
+      .mobile-badge.on { background: var(--ok, #4caf50); color: #fff; }
+      .mobile-badge.off { background: var(--border); color: var(--fg-dim); }
+      .mobile-ip-row {
+        padding: 6px 10px;
+        background: var(--bg-elev);
+        border-radius: 6px;
+        margin-bottom: 6px;
+        font-size: 12px;
+        font-family: ui-monospace, 'Cascadia Code', monospace;
+        display: flex; align-items: center; gap: 8px;
+      }
+      .mobile-ip-tag {
+        font-size: 10px;
+        padding: 1px 6px;
+        border-radius: 8px;
+        border: 1px solid var(--border);
+        color: var(--fg-dim);
+        font-family: inherit;
+      }
+      .mobile-ip-tag.tailscale { border-color: var(--accent); color: var(--accent); }
+      .mobile-client-steps {
+        list-style: none;
+        padding: 0; margin: 12px 0 0;
+        counter-reset: step-counter;
+      }
+      .mobile-client-steps li {
+        counter-increment: step-counter;
+        padding: 6px 0 6px 28px;
+        position: relative;
+        font-size: 12px;
+        line-height: 1.5;
+        border-bottom: 1px solid var(--border);
+      }
+      .mobile-client-steps li:last-child { border-bottom: none; }
+      .mobile-client-steps li::before {
+        content: counter(step-counter);
+        position: absolute; left: 0;
+        width: 18px; height: 18px;
+        background: var(--accent);
+        color: #fff;
+        border-radius: 50%;
+        font-size: 10px;
+        font-weight: 700;
+        display: flex; align-items: center; justify-content: center;
+        top: 7px;
+      }
+
       /* =================================================================
          New app shell — rail + canvas + status bar
          ================================================================= */
@@ -3890,6 +3999,14 @@
                 <button id="btn-configure-cursor" data-mcp-client="cursor" style="margin-left: 6px;">Configure Cursor…</button>
               </div>
               <div class="panel">
+                <p class="panel-title">Mobile & Remote Access</p>
+                <p class="subtitle" style="font-size: 11px; margin: -4px 0 10px;">
+                  Connect Claude for iOS, Claude for Android, or any HTTP MCP-capable client
+                  to this Cortex over your local network or Tailscale VPN.
+                </p>
+                <button id="btn-mobile-setup">Set up mobile access…</button>
+              </div>
+              <div class="panel">
                 <p class="panel-title">Cortex tools</p>
                 <p class="subtitle" style="font-size: 11px; margin: -4px 0 10px;">
                   Reconstruct lost memories from the encrypted op-log, refresh state, peek at Cortex files.
@@ -4410,6 +4527,118 @@
           <span class="filler" id="recovery-footer-note"></span>
           <button id="btn-recovery-close">Close</button>
           <button id="btn-recovery-apply" class="primary hidden">Recover selected</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Mobile & Remote Access wizard -->
+    <div id="mobile-setup-modal" class="modal-backdrop hidden">
+      <div class="modal" style="max-width: 560px;">
+        <div class="modal-header">
+          <h2>Mobile & Remote Access</h2>
+          <p class="subtitle">Connect Claude for iOS, Android, or any HTTP MCP client to this Cortex.</p>
+        </div>
+        <div class="modal-body" id="mobile-setup-body">
+          <!-- Step dots -->
+          <div class="wizard-steps" id="mobile-wizard-dots">
+            <div class="wizard-step-dot active" data-step="0"></div>
+            <div class="wizard-step-dot" data-step="1"></div>
+            <div class="wizard-step-dot" data-step="2"></div>
+            <span class="wizard-step-label" id="mobile-step-label">Step 1 of 3</span>
+          </div>
+
+          <!-- Step 0: Enable HTTP bridge -->
+          <div class="mobile-step active" id="mobile-step-0">
+            <p style="font-size: 13px; line-height: 1.6; margin: 0 0 14px;">
+              Graphnosis can expose your Cortex's MCP tools (recall, remember, correct, apply,
+              forget, stats) over a local HTTP endpoint so mobile AI clients can connect.
+              A random bearer token is generated once and never changes unless you regenerate it.
+            </p>
+            <div class="row" style="margin-bottom: 0;">
+              <label style="display: flex; align-items: center; gap: 10px; cursor: pointer;">
+                <input type="checkbox" id="mobile-bridge-enabled" style="width: 16px; height: 16px;" />
+                <span>
+                  <strong>Enable HTTP Bridge</strong>
+                  <span class="mobile-badge off" id="mobile-bridge-badge">Off</span>
+                </span>
+              </label>
+            </div>
+            <div id="mobile-port-row" style="margin-top: 14px; display: none;">
+              <div style="display: flex; align-items: center; gap: 10px;">
+                <label for="mobile-bridge-port" style="font-size: 12px; white-space: nowrap;">Port:</label>
+                <input type="number" id="mobile-bridge-port" min="1024" max="65535"
+                  style="width: 90px; padding: 6px 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg-elev); color: var(--fg); font-size: 12px;" />
+                <label for="mobile-bridge-host" style="font-size: 12px; white-space: nowrap;">Bind:</label>
+                <select id="mobile-bridge-host"
+                  style="padding: 6px 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg-elev); color: var(--fg); font-size: 12px;">
+                  <option value="127.0.0.1">Loopback only — safest (use Tailscale to forward)</option>
+                  <option value="0.0.0.0">All interfaces — direct LAN access</option>
+                </select>
+              </div>
+              <p class="subtitle" style="font-size: 11px; margin-top: 6px;">
+                <strong>Loopback</strong> is safest — only processes on this machine can connect.
+                Use Tailscale to expose it remotely without opening a port.
+                <strong>All interfaces</strong> lets devices on the same WiFi connect directly.
+              </p>
+            </div>
+            <p id="mobile-step0-note" class="subtitle" style="font-size: 11px; margin-top: 12px; color: var(--fg-dim);"></p>
+          </div>
+
+          <!-- Step 1: Network setup -->
+          <div class="mobile-step" id="mobile-step-1">
+            <p style="font-size: 13px; margin: 0 0 14px;">
+              Your mobile device needs a network path to this computer.
+              Detected network addresses:
+            </p>
+            <div id="mobile-ip-list"></div>
+            <div id="mobile-tailscale-tip" style="display: none; margin-top: 12px; padding: 10px 12px;
+              background: var(--bg-elev); border-left: 3px solid var(--accent); border-radius: 4px; font-size: 12px;">
+              <strong style="color: var(--accent);">Tailscale detected</strong> — your Tailscale IP is the
+              most reliable address to use. It works from any network, not just your home WiFi.
+            </div>
+            <div id="mobile-no-tailscale-tip" style="display: none; margin-top: 12px; padding: 10px 12px;
+              background: var(--bg-elev); border-left: 3px solid var(--border); border-radius: 4px; font-size: 12px;">
+              <strong>No Tailscale detected.</strong>
+              For the best experience — especially when you're not on the same WiFi — install
+              <a href="#" id="link-tailscale" style="color: var(--accent); cursor: pointer;">Tailscale</a>
+              (free for personal use). It creates a secure private network between your devices.
+              Otherwise, use your LAN IP and make sure your phone and computer are on the same network.
+            </div>
+          </div>
+
+          <!-- Step 2: Connection details -->
+          <div class="mobile-step" id="mobile-step-2">
+            <p style="font-size: 13px; margin: 0 0 14px;">
+              Use these details to add Graphnosis as an MCP server in your mobile AI client.
+            </p>
+            <p style="font-size: 12px; font-weight: 600; margin: 0 0 4px; color: var(--fg-dim);">MCP Server URL</p>
+            <div class="copy-row">
+              <span class="copy-field" id="mobile-mcp-url"></span>
+              <button class="copy-btn" data-copy-target="mobile-mcp-url">Copy</button>
+            </div>
+            <p style="font-size: 12px; font-weight: 600; margin: 8px 0 4px; color: var(--fg-dim);">Bearer Token</p>
+            <div class="copy-row">
+              <span class="copy-field secret" id="mobile-mcp-token" title="Click to select all"></span>
+              <button class="copy-btn" data-copy-target="mobile-mcp-token">Copy</button>
+              <button class="copy-btn" id="mobile-token-reveal">Show</button>
+            </div>
+            <p class="subtitle" style="font-size: 11px; margin-bottom: 14px;">
+              Treat the token like a password — it grants full read/write access to your Cortex.
+            </p>
+            <p style="font-size: 12px; font-weight: 600; margin: 0 0 8px;">How to connect in Claude for iOS / Android</p>
+            <ol class="mobile-client-steps">
+              <li>Open Claude → Settings → <strong>Claude.ai account</strong> → <strong>MCP Servers</strong></li>
+              <li>Tap <strong>Add server</strong> and paste the URL above into "Server URL"</li>
+              <li>Under Authentication, choose <strong>Bearer token</strong> and paste the token above</li>
+              <li>Tap <strong>Save</strong> — Graphnosis tools appear in your next conversation</li>
+            </ol>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <span class="filler" id="mobile-footer-note"></span>
+          <button id="btn-mobile-back" class="hidden">Back</button>
+          <button id="btn-mobile-next" class="primary">Next</button>
+          <button id="btn-mobile-close">Close</button>
         </div>
       </div>
     </div>
