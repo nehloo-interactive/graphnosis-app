@@ -65,6 +65,27 @@ class McpRegistry {
   list(): McpConnection[] {
     return Array.from(this.connections.values()).sort((a, b) => a.connectedAt - b.connectedAt);
   }
+
+  /**
+   * Return the clientName of the most-recently-active connection, or
+   * undefined if no connection has a clientName set. Used to attribute
+   * MCP-driven source ingests and corrections to the calling client
+   * (e.g. "claude-ai" → "via Claude" badge on the Sources list).
+   *
+   * Single-source-of-truth caveat: when multiple MCP clients are connected
+   * simultaneously and one calls `remember` while another is also active,
+   * we attribute to whichever has the most recent `touch()` — which in
+   * practice will be the caller itself, since touch() runs on every
+   * incoming request. Race risk is real but narrow.
+   */
+  getMostRecentClientName(): string | undefined {
+    let best: McpConnection | undefined;
+    for (const c of this.connections.values()) {
+      if (!c.clientName) continue;
+      if (!best || c.lastActivityAt > best.lastActivityAt) best = c;
+    }
+    return best?.clientName;
+  }
 }
 
 export const mcpRegistry = new McpRegistry();

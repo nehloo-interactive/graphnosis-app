@@ -29,6 +29,42 @@ export interface AppendDocumentInput {
   sourceRef: string;
 }
 
+/**
+ * User-tunable ingestion presets. Map to SDK chunking knobs. App settings
+ * carry the global default; per-call overrides are possible for power-user
+ * flows (e.g. "Add this big PDF with `coarse` chunking just this once").
+ *
+ * - `fine`     ≈ 300-char nodes, ≤ 2 sentences. More semantic vectors,
+ *               finer-grained recall, higher embedding cost.
+ * - `balanced` ≈ 500-char nodes, ≤ 3 sentences. Default.
+ * - `coarse`   ≈ 2500-char nodes, ≤ 6 sentences. Fewer nodes, lower
+ *               memory + faster ingest, less precise recall.
+ */
+export type ChunkSizePreset = 'fine' | 'balanced' | 'coarse';
+
+/**
+ * Embedding batch sizing preset. Controls how many texts the SDK groups
+ * into one `embed([...])` adapter call.
+ *
+ * - `small`  → 64 items/call.   Low memory, frequent progress.
+ * - `medium` → 256 items/call.  Default.
+ * - `large`  → 1024 items/call. Highest throughput on big-RAM machines.
+ * - `auto`   → totalmem ≥ 32 GB → large, ≥ 16 GB → medium, else small.
+ */
+export type EmbedBatchPreset = 'small' | 'medium' | 'large' | 'auto';
+
+export interface AppendDocumentOptions {
+  chunkSize?: ChunkSizePreset;
+}
+
+export interface BuildEmbeddingsAdapterOpts {
+  embed: EmbedFn;
+  dimensions: number;
+  id: string;
+  /** Preset or explicit number — see SDK buildEmbeddings batchSize semantics. */
+  batchSize?: EmbedBatchPreset | number;
+}
+
 export interface AppendDocumentResult {
   newNodeIds: string[];
   newNodes: number;
@@ -58,8 +94,10 @@ export interface GraphnosisAdapter {
   loadFromBuffer(graphId: string, buffer: Uint8Array, hmacKey?: Uint8Array): Promise<GraphHandle>;
   toBuffer(handle: GraphHandle, hmacKey?: Uint8Array): Promise<Uint8Array>;
 
-  /** Append a single document and recover the new node IDs. */
-  appendDocument(handle: GraphHandle, input: AppendDocumentInput): Promise<AppendDocumentResult>;
+  /** Append a single document and recover the new node IDs. Optional
+   *  `opts.chunkSize` tunes how aggressively the doc is split into nodes;
+   *  defaults to the SDK's 'balanced' preset when omitted. */
+  appendDocument(handle: GraphHandle, input: AppendDocumentInput, opts?: AppendDocumentOptions): Promise<AppendDocumentResult>;
 
   query(handle: GraphHandle, query: string, k: number): Promise<QueryResult[]>;
 
@@ -137,7 +175,7 @@ export interface GraphnosisAdapter {
   build(handle: GraphHandle): Promise<void>;
 
   /** Build embeddings with a cached local embed function. Caller passes (dimensions, id) for adapter provenance. */
-  buildEmbeddings(handle: GraphHandle, opts: { embed: EmbedFn; dimensions: number; id: string }): Promise<void>;
+  buildEmbeddings(handle: GraphHandle, opts: BuildEmbeddingsAdapterOpts): Promise<void>;
 
   /** All node IDs currently in the graph. Used by the host to diff append results. */
   allNodeIds(handle: GraphHandle): string[];
@@ -170,6 +208,21 @@ export interface GraphnosisAdapter {
 
   /** True if buildEmbeddings has run and the graph has an embedding index attached. */
   hasEmbeddings(handle: GraphHandle): boolean;
+
+  /**
+   * Remove a single edge by its ID. Works for both directed and
+   * undirected edges — the implementation tries both maps. If the edge
+   * is not found (already removed, wrong id) it returns `{ removed: false }`
+   * rather than throwing so callers can treat it as idempotent.
+   *
+   * Primary use-case: the App's "change type" button first unlinks the
+   * existing edge then re-links with the new type, so the old edge
+   * doesn't linger alongside the new one.
+   */
+  unlinkEdge(
+    handle: GraphHandle,
+    edgeId: string,
+  ): Promise<{ removed: boolean; wasDirected?: boolean }>;
 
   /**
    * Snapshot of the dual-graph's edges. Powers the Atlas visualization

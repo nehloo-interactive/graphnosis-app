@@ -22,7 +22,7 @@
  *     boots before the user unlocks the App.
  *   - Mid-session disconnect: waits up to $GRAPHNOSIS_RELAY_RECONNECT_MS
  *     (default 60s) for the App to come back. Lets users lock/unlock the
- *     vault without restarting Claude.
+ *     cortex without restarting Claude.
  *   - If either deadline passes with no socket: relay exits → Claude shows
  *     "Server disconnected" → user must restart Claude after re-unlocking.
  */
@@ -56,17 +56,17 @@ const socketPath: string = rawSocketPath;
 /**
  * Resolve the relay timings, preferring (in order):
  *   1. Env vars — power-user override for the rare debug session.
- *   2. <vault>/settings.json — what the user picked in the App's Settings UI.
+ *   2. <cortex>/settings.json — what the user picked in the App's Settings UI.
  *   3. Hard-coded fallbacks.
  * The settings file is the same one the sidecar reads; we share the shape.
  */
 function resolveTimings(): { initialWaitMs: number; reconnectMs: number } {
   let initialWaitMs = FALLBACK_INITIAL_WAIT_MS;
   let reconnectMs = FALLBACK_RECONNECT_WAIT_MS;
-  // The vault dir is the directory containing the socket file.
-  const vaultDir = path.dirname(socketPath);
+  // The cortex dir is the directory containing the socket file.
+  const cortexDir = path.dirname(socketPath);
   try {
-    const raw = readFileSync(path.join(vaultDir, 'settings.json'), 'utf8');
+    const raw = readFileSync(path.join(cortexDir, 'settings.json'), 'utf8');
     const parsed = JSON.parse(raw) as { mcpRelay?: { initialWaitMs?: number; reconnectMs?: number } };
     if (typeof parsed.mcpRelay?.initialWaitMs === 'number') initialWaitMs = parsed.mcpRelay.initialWaitMs;
     if (typeof parsed.mcpRelay?.reconnectMs === 'number') reconnectMs = parsed.mcpRelay.reconnectMs;

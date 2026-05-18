@@ -1,6 +1,6 @@
 //! Newline-delimited JSON-RPC client over a Unix domain socket.
 //!
-//! Matches the protocol the sidecar speaks on `<vault>/sidecar.sock`:
+//! Matches the protocol the sidecar speaks on `<cortex>/sidecar.sock`:
 //!   request:  {"id": <number|string>, "method": <string>, "params": <any>}\n
 //!   response: {"id": <same>, "result": <any>} \n
 //!             OR
@@ -83,8 +83,40 @@ pub async fn request_with_timeout(
         return Err(anyhow!("sidecar returned empty response"));
     }
 
-    let response: Response = serde_json::from_str(&line)
-        .with_context(|| format!("parse sidecar response: {}", line.trim()))?;
+    // On parse failure, surface the exact serde location (line + column +
+    // reason) AND the size of the buffer we tried to parse. Previously the
+    // context-only message swallowed serde's "EOF while parsing value at line
+    // 1 column N" detail, which made multi-MB responses (e.g. nodes.list on
+    // a 3.7k-node engram) look mysteriously broken when the real cause was
+    // a truncated read or oversized payload. Bytes-read tells us instantly
+    // whether the line is truncated vs. invalid JSON of full size.
+    let response: Response = match serde_json::from_str::<Response>(&line) {
+        Ok(r) => r,
+        Err(serde_err) => {
+            let trimmed = line.trim();
+            // Show a window around the byte offset serde reports — that's
+            // the only way to find which node's content has the bad escape
+            // when the response is multi-MB. Char-boundary-safe slicing so
+            // we don't panic on multi-byte UTF-8 inside the window.
+            let col = serde_err.column();
+            let window_start = col.saturating_sub(150);
+            let window_end = (col + 150).min(trimmed.len());
+            // Walk forward / backward to char boundaries — slicing in the
+            // middle of a UTF-8 sequence would panic.
+            let safe_start = (window_start..=window_end)
+                .find(|&i| trimmed.is_char_boundary(i))
+                .unwrap_or(window_start);
+            let safe_end = (safe_start..=window_end)
+                .rev()
+                .find(|&i| trimmed.is_char_boundary(i))
+                .unwrap_or(window_end);
+            let window = &trimmed[safe_start..safe_end];
+            return Err(anyhow!(
+                "parse sidecar response failed: {serde_err} (bytes read: {len}, window around col {col}: {window:?})",
+                len = trimmed.len(),
+            ));
+        }
+    };
 
     if let Some(err) = response.error {
         return Err(anyhow!("sidecar error: {}", err));
