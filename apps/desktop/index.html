@@ -3,7 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Graphnosis</title>
+    <title>Graphnosis: Your Private Second Cortex</title>
     <style>
       :root {
         color-scheme: light dark;
@@ -40,9 +40,8 @@
         -webkit-user-select: none;
         user-select: none;
       }
-      main { padding: 24px; max-width: 640px; margin: 0 auto; }
       h1 { font-size: 18px; font-weight: 600; margin: 0 0 4px; letter-spacing: -0.01em; }
-      .subtitle { color: var(--fg-dim); margin: 0 0 24px; }
+      .subtitle { color: var(--fg-dim); margin: 0; }
       label { display: block; font-weight: 500; margin-bottom: 6px; font-size: 12px; }
       .row { margin-bottom: 16px; }
       input[type="text"], input[type="password"] {
@@ -58,8 +57,21 @@
         transition: background 80ms;
       }
       button:hover { background: color-mix(in oklab, var(--accent) 8%, transparent); }
-      button.primary { background: var(--accent); color: white; border-color: transparent; }
+      button.primary { background: var(--accent); color: color-mix(in oklab, var(--accent) 12%, black); border-color: transparent; }
       button.primary:hover { background: color-mix(in oklab, var(--accent) 88%, white); }
+      /* Destructive / cortex-management style — visibly red so it reads as
+         "careful, this opens engram delete & quarantine cleanup". Not full
+         saturation — the button isn't itself destructive, it opens a panel
+         that gates everything with typed confirmations. */
+      button.danger {
+        background: color-mix(in oklab, var(--error) 12%, transparent);
+        color: var(--error);
+        border-color: color-mix(in oklab, var(--error) 45%, var(--border));
+      }
+      button.danger:hover {
+        background: color-mix(in oklab, var(--error) 22%, transparent);
+        border-color: color-mix(in oklab, var(--error) 65%, var(--border));
+      }
       button:disabled { opacity: 0.5; cursor: not-allowed; }
       .actions { display: flex; gap: 8px; align-items: center; }
       .pick-row { display: flex; gap: 8px; }
@@ -69,6 +81,191 @@
       .dim-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--fg-dim); margin-right: 6px; }
       .panel { background: var(--bg-elev); border: 1px solid var(--border); border-radius: 8px; padding: 16px; margin-bottom: 16px; }
       .panel-title { font-weight: 600; margin: 0 0 8px; }
+      /* Passphrase input + inline Touch ID button. Wrapper is position:
+         relative so the fingerprint icon-button can be absolutely placed
+         at the right edge of the input. Input gets right-padding to keep
+         the cursor / placeholder text from sliding under the button. */
+      .passphrase-input-wrap {
+        position: relative;
+        display: flex;
+        align-items: center;
+      }
+      .passphrase-input-wrap input {
+        flex: 1;
+        padding-right: 44px;
+      }
+      .touchid-inline-btn {
+        position: absolute;
+        right: 6px;
+        top: 50%;
+        transform: translateY(-50%);
+        width: 32px;
+        height: 32px;
+        padding: 0;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        background: transparent;
+        border: none;
+        border-radius: 6px;
+        /* Apple's TouchID icon is a coral / salmon red — match that hue so
+           the user immediately associates the glyph with the OS biometric
+           rather than a generic icon. */
+        color: #ff5b5b;
+        cursor: pointer;
+      }
+      .touchid-inline-btn:hover {
+        background: rgba(255, 91, 91, 0.12);
+        color: #ff8080;
+      }
+      .touchid-inline-btn.hidden { display: none; }
+      .touchid-inline-btn:active { transform: translateY(-50%) scale(0.92); }
+      /* Passphrase label row: label on the left, optional Touch-ID hint
+         right-aligned on the same line. The hint only renders when
+         biometric is available; otherwise the label sits alone. */
+      .passphrase-label-row {
+        display: flex;
+        align-items: baseline;
+        justify-content: space-between;
+        gap: 12px;
+      }
+      .touchid-inline-hint {
+        font-size: 11px;
+        color: var(--fg-dim);
+        white-space: nowrap;
+      }
+      .touchid-inline-hint.hidden { display: none; }
+      .passphrase-warning { margin: 10px 0 0; padding: 10px 12px; background: rgba(255,200,0,0.07); border-left: 3px solid rgba(255,200,0,0.5); border-radius: 0 6px 6px 0; font-size: 11.5px; line-height: 1.6; color: var(--fg-dim); }
+      .passphrase-warning u { color: var(--fg-dim); font-style: normal; font-weight: 400; text-decoration: underline; text-underline-offset: 2px; }
+      .passphrase-warning-icon { margin-right: 4px; opacity: 0.7; }
+
+      /* ── Recovery phrase modal ─────────────────────────────────────────── */
+      .recovery-phrase-grid {
+        display: grid;
+        grid-template-columns: repeat(4, 1fr);
+        gap: 6px;
+        margin: 14px 0;
+        -webkit-user-select: text;
+        user-select: text;
+      }
+      .recovery-phrase-word {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        padding: 7px 10px;
+        background: var(--bg);
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        font-size: 12px;
+      }
+      .recovery-phrase-word .word-num {
+        font-size: 10px;
+        color: var(--fg-dim);
+        min-width: 16px;
+        text-align: right;
+        flex-shrink: 0;
+      }
+      .recovery-phrase-word .word-text {
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        color: var(--fg);
+        font-weight: 600;
+        letter-spacing: 0.01em;
+      }
+      .recovery-phrase-alert {
+        padding: 10px 12px;
+        background: color-mix(in oklab, var(--error) 10%, transparent);
+        border-left: 3px solid var(--error);
+        border-radius: 0 6px 6px 0;
+        font-size: 12px;
+        line-height: 1.5;
+        color: var(--fg);
+        margin-bottom: 14px;
+      }
+      .recovery-phrase-checkbox-row {
+        display: flex;
+        align-items: flex-start;
+        gap: 8px;
+        font-size: 12px;
+        color: var(--fg);
+        margin-top: 8px;
+        -webkit-user-select: none;
+        user-select: none;
+      }
+      .recovery-phrase-checkbox-row input[type="checkbox"] {
+        flex-shrink: 0;
+        margin-top: 2px;
+        width: 14px;
+        height: 14px;
+        accent-color: var(--accent);
+      }
+
+      /* ── "Forgot passphrase?" recovery unlock ──────────────────────────── */
+      .forgot-passphrase-link {
+        display: block;
+        margin-top: 10px;
+        font-size: 11.5px;
+        color: var(--fg-dim);
+        text-align: center;
+        text-decoration: none;
+        cursor: pointer;
+      }
+      .forgot-passphrase-link:hover { color: var(--accent); text-decoration: underline; }
+
+      /* Unlock progress: indeterminate animated bar shown between clicking
+         Unlock and the cortex actually being open. The duration varies a lot
+         (Argon2id key derivation 1-3s, sidecar boot, embedding-worker init,
+         loading every engram from disk — can be 3-15+ seconds on big cortexes)
+         so an indeterminate bar is more honest than a fake percentage. */
+      .unlock-progress {
+        margin-top: 10px;
+        height: 3px;
+        background: var(--bg-elev);
+        border-radius: 2px;
+        overflow: hidden;
+        position: relative;
+      }
+      .unlock-progress.hidden { display: none; }
+      .unlock-progress::before {
+        content: '';
+        position: absolute;
+        top: 0; left: 0;
+        height: 100%;
+        width: 35%;
+        background: var(--accent);
+        border-radius: 2px;
+        animation: unlock-progress-slide 1.4s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+      }
+      @keyframes unlock-progress-slide {
+        0%   { transform: translateX(-100%); }
+        100% { transform: translateX(285%); }
+      }
+      .recovery-unlock-section {
+        margin-top: 14px;
+        padding-top: 14px;
+        border-top: 1px solid var(--border);
+      }
+      .recovery-unlock-section p {
+        font-size: 12px;
+        color: var(--fg-dim);
+        margin: 0 0 8px;
+      }
+      .recovery-unlock-section textarea {
+        width: 100%;
+        padding: 6px 10px;
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        background: var(--bg-elev);
+        color: var(--fg);
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-size: 12px;
+        resize: vertical;
+        height: 38px;
+        min-height: 28px;
+        line-height: 1.4;
+        -webkit-user-select: text;
+        user-select: text;
+      }
+      .recovery-unlock-section textarea:focus { outline: 2px solid var(--accent); outline-offset: -1px; border-color: transparent; }
       .stat-row { display: flex; justify-content: space-between; padding: 4px 0; border-bottom: 1px solid var(--border); }
       .stat-row:last-child { border-bottom: 0; }
       .stat-label { color: var(--fg-dim); }
@@ -201,9 +398,27 @@
       .mcp-meta { color: var(--fg-dim); font-size: 11px; }
       .mcp-empty { color: var(--fg-dim); font-size: 12px; padding: 4px 0; }
 
+      .sources-engram-group { margin-bottom: 18px; }
+      .sources-engram-group:last-child { margin-bottom: 0; }
+      .sources-engram-heading { font-size: 11px; font-weight: 600; color: var(--fg-dim); text-transform: uppercase; letter-spacing: 0.05em; padding-bottom: 4px; margin-bottom: 2px; border-bottom: 1px solid var(--border); }
       .source-row { display: flex; align-items: center; gap: 8px; padding: 6px 0; font-size: 12px; }
+      .source-row-disabled .source-name { opacity: 0.4; }
+      .source-row-disabled .source-meta { opacity: 0.4; }
       .source-name { color: var(--fg); flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
       .source-meta { color: var(--fg-dim); white-space: nowrap; }
+      /* Attribution chip for AI-client-added sources (remember/correct
+         via MCP). Soft turquoise tint so it's clearly informational, not
+         clickable; matches the seahorse-logo accent. */
+      .source-added-by {
+        font-size: 10px;
+        padding: 1px 6px;
+        border-radius: 4px;
+        background: color-mix(in oklab, var(--accent) 14%, var(--bg-elev));
+        border: 1px solid color-mix(in oklab, var(--accent) 35%, var(--border));
+        color: color-mix(in oklab, var(--accent) 75%, var(--fg));
+        white-space: nowrap;
+        cursor: help;
+      }
       .btn-forget {
         font-size: 11px;
         padding: 2px 8px;
@@ -217,10 +432,334 @@
         color: var(--error);
         border-color: color-mix(in oklab, var(--error) 40%, transparent);
       }
+      /* Reingest mirrors Forget's chrome but uses the accent color on hover
+         since it's a re-read action, not a destructive one. */
+      .btn-reingest {
+        font-size: 11px;
+        padding: 2px 8px;
+        border-radius: 4px;
+        background: transparent;
+        color: var(--fg-dim);
+        border: 1px solid var(--border);
+      }
+      .btn-reingest:hover {
+        background: color-mix(in oklab, var(--accent) 12%, transparent);
+        color: var(--accent);
+        border-color: color-mix(in oklab, var(--accent) 40%, transparent);
+      }
+      .btn-reingest:disabled {
+        opacity: 0.5;
+        cursor: progress;
+      }
+      /* Inline two-step forget confirmation inside a .source-row.
+         Replaces the .btn-forget in-place; collapses on Escape / blur. */
+      .source-row-forget-confirm {
+        display: flex;
+        align-items: center;
+        gap: 5px;
+        flex-shrink: 0;
+      }
+      .source-row-forget-input {
+        width: 130px;
+        font-size: 11px;
+        padding: 2px 7px;
+        border-radius: 4px;
+        border: 1px solid color-mix(in oklab, var(--error) 50%, var(--border));
+        background: transparent;
+        color: var(--fg);
+        outline: none;
+      }
+      .source-row-forget-input:focus {
+        box-shadow: 0 0 0 2px color-mix(in oklab, var(--error) 20%, transparent);
+      }
+      .source-row-forget-go {
+        font-size: 11px;
+        padding: 2px 8px;
+        border-radius: 4px;
+        border: 1px solid color-mix(in oklab, var(--error) 60%, var(--border));
+        background: transparent;
+        color: var(--error, #e05555);
+        cursor: pointer;
+        white-space: nowrap;
+        flex-shrink: 0;
+        transition: background 0.12s, color 0.12s;
+      }
+      .source-row-forget-go:not(:disabled):hover {
+        background: color-mix(in oklab, var(--error, #e05555) 85%, transparent);
+        color: #fff;
+      }
+      .source-row-forget-go:disabled {
+        opacity: 0.35;
+        cursor: not-allowed;
+      }
+      /* Graph management rows in Settings */
+      .settings-graph-row {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        padding: 8px 10px;
+        border-radius: 6px;
+        background: var(--bg-elev);
+        border: 1px solid var(--border);
+      }
+      .settings-graph-row.is-archived {
+        opacity: 0.55;
+      }
+      .settings-graph-row .sgr-name {
+        flex: 1;
+        font-size: 13px;
+        font-weight: 500;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .settings-graph-row .sgr-id {
+        font-size: 11px;
+        color: var(--fg-dim);
+        font-family: monospace;
+        white-space: nowrap;
+      }
+      .settings-graph-row .sgr-badge {
+        font-size: 10px;
+        padding: 1px 6px;
+        border-radius: 4px;
+        background: color-mix(in oklab, var(--fg-dim) 15%, transparent);
+        color: var(--fg-dim);
+        white-space: nowrap;
+      }
+      .btn-graph-archive, .btn-graph-delete {
+        font-size: 11px;
+        padding: 3px 10px;
+        border-radius: 5px;
+        border: 1px solid var(--border);
+        background: transparent;
+        color: var(--fg-dim);
+        cursor: pointer;
+        white-space: nowrap;
+        flex-shrink: 0;
+      }
+      .btn-graph-archive:hover {
+        background: color-mix(in oklab, var(--fg-dim) 12%, transparent);
+        color: var(--fg);
+      }
+      .btn-graph-delete {
+        color: #e05555;
+        border-color: #e05555;
+      }
+      .btn-graph-delete:hover {
+        background: color-mix(in oklab, #e05555 15%, transparent);
+      }
+      /* Inline type-to-confirm delete form */
+      .settings-graph-row {
+        flex-wrap: wrap;
+      }
+      .sgr-confirm-delete {
+        width: 100%;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 6px 0 2px;
+        flex-wrap: wrap;
+      }
+      .sgr-confirm-label {
+        font-size: 11px;
+        color: var(--fg-dim);
+        flex-shrink: 0;
+      }
+      .sgr-confirm-input {
+        flex: 1 1 140px;
+        min-width: 100px;
+        max-width: 240px;
+        font-size: 12px;
+        padding: 3px 8px;
+        border-radius: 5px;
+        border: 1px solid #e05555;
+        background: transparent;
+        color: var(--fg);
+        outline: none;
+      }
+      .sgr-confirm-input:focus {
+        box-shadow: 0 0 0 2px color-mix(in oklab, #e05555 30%, transparent);
+      }
+      .sgr-confirm-go {
+        font-size: 11px;
+        padding: 3px 10px;
+        border-radius: 5px;
+        border: 1px solid #e05555;
+        background: transparent;
+        color: #e05555;
+        cursor: pointer;
+        white-space: nowrap;
+        flex-shrink: 0;
+        transition: background 0.15s, color 0.15s;
+      }
+      .sgr-confirm-go:not(:disabled):hover {
+        background: #e05555;
+        color: #fff;
+      }
+      .sgr-confirm-go:disabled {
+        opacity: 0.38;
+        cursor: not-allowed;
+      }
+      .sgr-confirm-cancel {
+        font-size: 11px;
+        padding: 3px 8px;
+        border-radius: 5px;
+        border: 1px solid var(--border);
+        background: transparent;
+        color: var(--fg-dim);
+        cursor: pointer;
+        white-space: nowrap;
+        flex-shrink: 0;
+      }
+      .sgr-confirm-cancel:hover {
+        background: color-mix(in oklab, var(--fg-dim) 10%, transparent);
+      }
+      /* Disable/Enable toggle for sources. Disable = neutral border;
+         Enable = accent tint to draw the eye back to re-activating. */
+      .btn-source-disable {
+        font-size: 11px;
+        padding: 2px 8px;
+        border-radius: 4px;
+        background: transparent;
+        color: var(--fg-dim);
+        border: 1px solid var(--border);
+      }
+      .btn-source-disable:hover {
+        background: color-mix(in oklab, var(--fg-dim) 10%, transparent);
+        color: var(--fg);
+      }
+      .btn-source-enable {
+        font-size: 11px;
+        padding: 2px 8px;
+        border-radius: 4px;
+        background: color-mix(in oklab, var(--accent) 10%, transparent);
+        color: var(--accent);
+        border: 1px solid color-mix(in oklab, var(--accent) 35%, transparent);
+      }
+      .btn-source-enable:hover {
+        background: color-mix(in oklab, var(--accent) 18%, transparent);
+      }
       .toolbar { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; }
       /* `.hidden` must beat the later flex/grid display values used by
          the modal backdrops below — otherwise modals show on launch. */
       .hidden { display: none !important; }
+      .visually-hidden { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; border: 0; }
+
+      /* ── First-run guided tour ──────────────────────────────────────── */
+      .tour-overlay {
+        position: fixed;
+        inset: 0;
+        z-index: 1000;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+      }
+      .tour-backdrop {
+        position: absolute;
+        inset: 0;
+        background: rgba(0, 0, 0, 0.72);
+        backdrop-filter: blur(2px);
+      }
+      .tour-card {
+        position: relative;
+        z-index: 1;
+        width: 100%;
+        max-width: 480px;
+        margin: 24px;
+        background: #1c1c1e;
+        border: 1px solid rgba(255, 255, 255, 0.10);
+        border-radius: 14px;
+        padding: 32px;
+        box-shadow: 0 24px 64px rgba(0, 0, 0, 0.55), 0 4px 16px rgba(0, 0, 0, 0.3);
+      }
+      @media (prefers-color-scheme: light) {
+        .tour-card {
+          background: #1c1c1e; /* keep dark card even in light system mode */
+          color: #ededed;
+        }
+      }
+      .tour-step-indicator {
+        display: flex;
+        gap: 6px;
+        margin-bottom: 22px;
+      }
+      .tour-dot {
+        width: 6px;
+        height: 6px;
+        border-radius: 50%;
+        background: rgba(255, 255, 255, 0.22);
+        transition: background 200ms, transform 200ms;
+      }
+      .tour-dot.active {
+        background: #6ab3c8;
+        transform: scale(1.3);
+      }
+      .tour-title {
+        font-size: 17px;
+        font-weight: 700;
+        color: #ededed;
+        margin: 0 0 10px;
+        letter-spacing: -0.02em;
+        line-height: 1.3;
+      }
+      .tour-body {
+        font-size: 13px;
+        line-height: 1.65;
+        color: rgba(237, 237, 237, 0.72);
+        margin: 0 0 28px;
+      }
+      .tour-actions {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
+      }
+      .tour-actions-right {
+        display: flex;
+        gap: 8px;
+        align-items: center;
+      }
+      .tour-btn-skip {
+        font: inherit;
+        font-size: 12px;
+        color: rgba(237, 237, 237, 0.40);
+        background: transparent;
+        border: none;
+        cursor: pointer;
+        padding: 0;
+        border-radius: 0;
+        transition: color 120ms;
+        flex-shrink: 0;
+      }
+      .tour-btn-skip:hover { color: rgba(237, 237, 237, 0.70); background: transparent; }
+      .tour-btn-secondary {
+        font: inherit;
+        font-size: 13px;
+        padding: 8px 16px;
+        border-radius: 7px;
+        background: rgba(255, 255, 255, 0.06);
+        border: 1px solid rgba(255, 255, 255, 0.12);
+        color: rgba(237, 237, 237, 0.80);
+        cursor: pointer;
+        transition: background 100ms;
+      }
+      .tour-btn-secondary:hover { background: rgba(255, 255, 255, 0.11); }
+      .tour-btn-primary {
+        font: inherit;
+        font-size: 13px;
+        font-weight: 600;
+        padding: 8px 18px;
+        border-radius: 7px;
+        background: #6ab3c8;
+        border: 1px solid transparent;
+        color: #0f2028;
+        cursor: pointer;
+        transition: background 100ms;
+        white-space: nowrap;
+      }
+      .tour-btn-primary:hover { background: #7ec4d6; }
+      /* ──────────────────────────────────────────────────────────────── */
       /* Global drop overlay — hidden by default, surfaces when the user
          drags a file anywhere over the app window. Replaces the old
          in-Overview drop-zone since the Graphnosis pane doesn't have a
@@ -278,7 +817,14 @@
         display: flex; gap: 8px; justify-content: flex-end;
         align-items: center;
       }
-      .modal-footer .filler { flex: 1; color: var(--fg-dim); font-size: 12px; }
+      .modal-footer .filler { flex: 1; color: var(--fg-dim); font-size: 11px; line-height: 1.45; max-width: 340px; }
+      /* Pinned name/id block between the scrolling template list and the footer */
+      .modal-sticky-fields {
+        padding: 14px 20px 10px;
+        border-top: 1px solid var(--border);
+        background: var(--bg);
+        flex-shrink: 0;
+      }
 
       .recovery-item {
         display: grid;
@@ -338,11 +884,13 @@
         display: flex;
         align-items: center;
         justify-content: center;
+        width: 100%;
         height: 100%;
         padding: 24px;
       }
       .unlock-shell > .unlock-card { max-width: 480px; width: 100%; }
       .unlock-shell h1 { font-size: 22px; margin-bottom: 4px; }
+      .unlock-shell #subtitle { margin-bottom: 16px; }
 
       /* The full shell — header, body (rail + canvas), status bar. Three rows. */
       .app-shell {
@@ -355,26 +903,49 @@
         display: flex;
         align-items: center;
         justify-content: space-between;
-        padding: 10px 16px 10px 88px; /* leave room for macOS traffic lights */
+        /* Padding-top clears the OS title bar's traffic-light strip. The
+           OS title text is hidden (hiddenTitle:true) so we render our own
+           inside this header — see .app-title-row. */
+        padding: 6px 16px 8px 88px;
         border-bottom: 1px solid var(--border);
         background: var(--bg);
         gap: 8px;
         -webkit-app-region: drag;
       }
       .app-header button, .app-header input, .app-header select { -webkit-app-region: no-drag; }
+      /* Two-row left column: title row on top (brain icon + app title),
+         cortex+engram metadata on the row below. */
       .app-header-left {
-        display: flex; align-items: center; gap: 10px;
+        display: flex;
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 1px;
         font-weight: 600; font-size: 13px;
+        min-width: 0; /* allow truncation */
       }
-      .app-header-left .vault-label-truncate {
-        max-width: 320px;
+      .app-title-row {
+        display: flex; align-items: center; gap: 8px;
+      }
+      .app-title {
+        font-size: 13px;
+        font-weight: 600;
+        color: var(--fg);
+        white-space: nowrap;
+      }
+      .app-cortex-row {
+        display: flex; align-items: center; gap: 6px;
+        font-weight: 400;
+      }
+      .app-header-left .cortex-label-truncate {
+        max-width: 220px;
         overflow: hidden;
         text-overflow: ellipsis;
         white-space: nowrap;
+        font-size: 11.5px;
+        color: var(--fg-dim);
       }
       .brain-glyph {
-        font-size: 14px;
-        color: var(--ok);
+        font-size: 16px;
         line-height: 1;
       }
       .header-subtitle {
@@ -383,11 +954,68 @@
         color: var(--fg-dim);
         font-style: italic;
       }
-      .app-header-right { display: flex; gap: 6px; }
+      .header-sep {
+        font-style: normal;
+        font-size: 13px;
+        opacity: 0.5;
+        margin: 0 2px;
+      }
+      /* Active engram picker — lighter-gray pill living in the right
+         action cluster, left of "Add file." Slightly elevated above the
+         top-bar `var(--bg)` so it reads as an interactive control
+         without competing with the title or the primary "Add file"
+         button next to it. */
+      .header-engram-picker {
+        font-size: 13px;
+        font-weight: 600;
+        color: var(--fg);
+        background-color: var(--bg-elev);
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        padding: 4px 10px;
+        max-width: 220px;
+        cursor: pointer;
+        /* Native macOS `<select>` styling is platform-dependent; force a
+           consistent look via -webkit-appearance reset + our own padding
+           for the dropdown arrow we draw via CSS. */
+        -webkit-appearance: none;
+        appearance: none;
+        padding-right: 26px;
+        background-image: linear-gradient(45deg, transparent 50%, var(--fg-dim) 50%),
+                          linear-gradient(135deg, var(--fg-dim) 50%, transparent 50%);
+        background-position: calc(100% - 14px) 50%, calc(100% - 9px) 50%;
+        background-size: 5px 5px, 5px 5px;
+        background-repeat: no-repeat;
+      }
+      .header-engram-picker:hover {
+        background-color: color-mix(in oklab, var(--bg-elev) 80%, var(--fg) 8%);
+        border-color: color-mix(in oklab, var(--border) 70%, var(--fg) 15%);
+      }
+      .header-engram-picker:focus {
+        outline: none;
+        border-color: var(--accent);
+        box-shadow: 0 0 0 2px color-mix(in oklab, var(--accent) 25%, transparent);
+      }
+      .header-engram-picker option {
+        /* Dropdown items rendered by the OS — give them our app palette
+           instead of system colors so the open menu doesn't suddenly
+           look like a different app. */
+        background: var(--bg-elev);
+        color: var(--fg);
+      }
+      .app-header-right { display: flex; gap: 6px; align-items: center; }
+      /* Label that sits before the engram picker — muted, smaller than
+         the picker text so the eye lands on the engram name itself. The
+         tight 4px gap to the picker visually binds them as one control. */
+      .header-engram-label {
+        font-size: 11.5px;
+        color: var(--fg-dim);
+        margin-right: -2px;  /* trim the .app-header-right 6px gap down to ~4px */
+      }
 
       .app-body {
         display: grid;
-        grid-template-columns: 168px 1fr;
+        grid-template-columns: var(--rail-width, 280px) 1fr;
         overflow: hidden;
         min-height: 0;
       }
@@ -400,7 +1028,7 @@
         display: flex;
         flex-direction: column;
         gap: 2px;
-        overflow-y: auto;
+        overflow: hidden; /* only the trace list scrolls, not the whole rail */
       }
       .rail-btn {
         display: grid;
@@ -427,7 +1055,7 @@
         font-weight: 500;
       }
       .rail-btn .rail-icon { font-size: 14px; line-height: 1; text-align: center; }
-      .rail-btn .rail-label { line-height: 1.2; }
+      .rail-btn .rail-label { line-height: 1.2; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
       .rail-badge {
         background: var(--accent);
         color: white;
@@ -436,13 +1064,92 @@
         padding: 1px 6px;
         border-radius: 8px;
       }
-      .rail-spacer { flex: 1; }
+      /* Inline AI-client indicator inside the Status rail button */
+      .rail-mcp-indicator {
+        display: flex;
+        align-items: center;
+        gap: 5px;
+        font-size: 10px;
+        color: var(--fg-dim);
+        white-space: nowrap;
+        overflow: hidden;
+        max-width: 110px;
+      }
+      .rail-mcp-indicator .rail-mcp-dot {
+        width: 6px;
+        height: 6px;
+        border-radius: 50%;
+        flex-shrink: 0;
+        background: var(--fg-dim);
+      }
+      .rail-mcp-indicator .rail-mcp-dot.connected {
+        background: var(--ok);
+        animation: mcp-pulse 2s ease-in-out infinite;
+      }
+      .rail-mcp-indicator .rail-mcp-name {
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      /* Settings button: margin-top:auto pins it to the bottom of the rail.
+         When the memory trace is hidden (display:none), this creates the gap
+         between the nav buttons and settings. When trace is visible, the
+         trace's flex:1 consumes all remaining space and the auto-margin
+         collapses to 0, so settings sits snugly below the trace. */
+      .rail-btn[data-mode="settings"] { margin-top: auto; flex-shrink: 0; }
       .rail-section-label {
         font-size: 10px;
         text-transform: uppercase;
         letter-spacing: 0.05em;
         color: var(--fg-dim);
         padding: 8px 10px 2px;
+      }
+      /* Memory trace section in sidebar.
+         flex:1 1 0 lets it grow to fill all space between the nav buttons
+         and the settings button, and shrink to nothing when the rail is
+         compressed. min-height:0 + overflow:hidden are required for a flex
+         child to clip its content without overflowing its parent.
+         The inner list gets overflow-y:auto so only it scrolls. */
+      .rail-memory-trace {
+        padding: 8px 6px 2px;
+        flex: 1 1 0;
+        min-height: 0;
+        overflow: hidden;
+        display: flex;
+        flex-direction: column;
+      }
+      .g-memory-trace-list {
+        flex: 1;
+        min-height: 0;
+        overflow-y: auto;
+        scrollbar-width: thin;
+      }
+      .rail-memory-trace-title {
+        font-size: 10px;
+        font-weight: 600;
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
+        color: var(--fg-dim);
+        padding: 0 4px 6px;
+      }
+      .rail-memory-chip {
+        display: block;
+        width: 100%;
+        text-align: left;
+        padding: 5px 8px;
+        border-radius: 5px;
+        font-size: 11px;
+        background: transparent;
+        border: 1px solid transparent;
+        color: var(--fg);
+        cursor: pointer;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        margin-bottom: 2px;
+      }
+      .rail-memory-chip:hover {
+        background: color-mix(in oklab, var(--accent) 10%, transparent);
+        border-color: var(--border);
       }
 
       /* Main canvas — switches between mode panes. */
@@ -470,9 +1177,7 @@
         flex-direction: column;
         min-height: 0;
       }
-      .mode-pane[data-pane="atlas"] > .pane-header,
-      .mode-pane[data-pane="atlas"] > .g-topbar,
-      .mode-pane[data-pane="atlas"] > .g-recents {
+      .mode-pane[data-pane="atlas"] > .pane-header {
         flex-shrink: 0;
       }
       .pane-header { margin-bottom: 14px; }
@@ -521,7 +1226,13 @@
         flex: 1;
         font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
       }
-      .app-statusbar .status-mcp { display: flex; align-items: center; gap: 6px; }
+      .app-statusbar .status-mcp {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        margin-left: auto;
+        white-space: nowrap;
+      }
       .status-dot {
         width: 7px; height: 7px;
         border-radius: 50%;
@@ -662,6 +1373,18 @@
         outline-offset: -1px;
         border-color: transparent;
       }
+      /* Hide the browser's native `type="search"` clear button so we only
+         render our own custom one (.g-search-clear). Showing both side by
+         side looked like a double dismiss control. */
+      .g-search-wrap input[type="search"]::-webkit-search-cancel-button {
+        -webkit-appearance: none;
+        appearance: none;
+        display: none;
+      }
+      .g-search-wrap input[type="search"]::-webkit-search-decoration {
+        -webkit-appearance: none;
+        appearance: none;
+      }
       .g-search-clear {
         position: absolute;
         right: 6px;
@@ -676,31 +1399,6 @@
         padding: 2px 6px;
       }
       .g-search-clear:hover { color: var(--fg); }
-
-      .g-recents {
-        display: flex;
-        align-items: center;
-        gap: 8px;
-        margin-bottom: 10px;
-        font-size: 11px;
-        flex-wrap: wrap;
-      }
-      .g-recents-label { color: var(--fg-dim); }
-      .g-recents-chips { display: flex; gap: 6px; flex-wrap: wrap; }
-      .g-recent-chip {
-        background: var(--bg-elev);
-        border: 1px solid var(--border);
-        color: var(--fg);
-        padding: 3px 8px;
-        border-radius: 12px;
-        font-size: 11px;
-        cursor: pointer;
-        max-width: 200px;
-        overflow: hidden;
-        text-overflow: ellipsis;
-        white-space: nowrap;
-      }
-      .g-recent-chip:hover { border-color: var(--accent); }
 
       /* Main: tabs+content on left, detail pane right. Sized to fill the
          remaining space inside the flex-column atlas pane so the children
@@ -904,18 +1602,22 @@
          padding so it doesn't dwarf the title row. */
       .g-pane-header {
         display: flex;
-        align-items: center;
+        align-items: flex-start;
         gap: 16px;
         flex-wrap: wrap;
       }
-      .g-pane-header-title { flex: 1; min-width: 0; }
+      /* Title is fixed-width; the search box between it and the health
+         gauge takes all remaining horizontal space (flex:1 is on .g-search-wrap). */
+      .g-pane-header-title { flex-shrink: 0; min-width: 0; }
       .g-pane-header-title h2 { margin: 0 0 2px; }
       .g-health.g-health-inline {
         padding: 8px 12px;
         gap: 12px;
         min-width: 0;
-        max-width: 360px;
-        flex: 0 1 auto;
+        /* Fixed at the same 360px as the inspector column in g-main so
+           the health box and inspector are visually aligned. */
+        width: 360px;
+        flex: 0 0 360px;
         background: var(--bg-elev);
       }
       .g-health.g-health-inline .g-health-gauge {
@@ -953,8 +1655,11 @@
         border: 1px solid var(--border);
         border-radius: 8px;
         padding: 0 18px 16px;
-        max-height: 100%;
-        overflow-y: auto;
+        flex: 1 1 0;
+        min-height: 0;
+        overflow: hidden;
+        display: flex;
+        flex-direction: column;
       }
       /* The whole pinned region — header + card head — is ONE sticky
          block with one fully-opaque background. Its own padding-top
@@ -1006,10 +1711,10 @@
         text-align: center;
       }
       .g-deck-card {
-        min-height: 140px;
+        flex: 1 1 0;
+        min-height: 0;
         display: flex;
         flex-direction: column;
-        justify-content: space-between;
       }
       /* Card head (prompt + breadcrumb + content + meta) — lives inside
          the .g-deck-pinned wrapper, so its own positioning is normal
@@ -1026,6 +1731,22 @@
         color: var(--fg-dim);
         font-style: italic;
         margin: 0 0 8px;
+      }
+      /* Bridge entity chip: shows the entity that triggered this connect
+         card. Small, muted, informational — not a button. */
+      .g-deck-bridge-chip {
+        display: inline-block;
+        font-size: 10px;
+        color: var(--fg-dim);
+        background: var(--bg-elev);
+        border: 1px solid var(--border);
+        border-radius: 4px;
+        padding: 1px 7px;
+        margin: -4px 0 6px;
+      }
+      .g-deck-bridge-chip strong {
+        color: var(--fg);
+        font-weight: 500;
       }
       /* Breadcrumb above a card's content — frames the memory inside its
          original document/section context so single-fragment review
@@ -1054,6 +1775,11 @@
         background: var(--bg);
         border-left: 2px solid var(--accent);
         border-radius: 0 4px 4px 0;
+        cursor: pointer;
+        transition: background 0.15s;
+      }
+      .g-deck-content:hover {
+        background: color-mix(in oklab, var(--accent) 6%, var(--bg));
       }
       .g-deck-meta {
         font-size: 10px;
@@ -1086,6 +1812,22 @@
         padding: 30px 12px;
         color: var(--fg-dim);
         font-size: 12px;
+      }
+      .deck-continue-btn {
+        margin-top: 14px;
+        display: inline-block;
+        padding: 6px 18px;
+        border-radius: 7px;
+        border: 1px solid var(--accent);
+        background: transparent;
+        color: var(--accent);
+        font-size: 12px;
+        cursor: pointer;
+        transition: background 0.15s, color 0.15s;
+      }
+      .deck-continue-btn:hover {
+        background: var(--accent);
+        color: color-mix(in oklab, var(--accent) 12%, black);
       }
 
       /* Ingest toast queue — bottom-right stack of per-file progress
@@ -1182,6 +1924,41 @@
       }
       .g-toast--error .g-toast-icon { color: #d33; }
       .g-toast--error .g-toast-icon::before { content: "✕"; }
+      /* Progress bar — spans the full toast width below the text rows.
+         grid-column: 1/-1 breaks out of the icon/body/close columns. */
+      .g-toast-progress {
+        grid-column: 1 / -1;
+        height: 3px;
+        background: color-mix(in oklab, var(--accent) 18%, transparent);
+        border-radius: 2px;
+        overflow: hidden;
+        margin-top: 4px;
+      }
+      .g-toast-progress-fill {
+        height: 100%;
+        width: 40%;
+        background: var(--accent);
+        border-radius: 2px;
+        animation: g-toast-shimmer 1.6s ease-in-out infinite;
+        transform-origin: left center;
+      }
+      @keyframes g-toast-shimmer {
+        0%   { transform: translateX(-100%) scaleX(1); }
+        50%  { transform: translateX(160%) scaleX(1.4); }
+        100% { transform: translateX(320%) scaleX(1); }
+      }
+      .g-toast-elapsed {
+        grid-column: 1 / -1;
+        font-size: 10px;
+        color: var(--fg-dim);
+        opacity: 0.7;
+        margin-top: 1px;
+      }
+      /* Hide progress + elapsed once the toast resolves */
+      .g-toast--success .g-toast-progress,
+      .g-toast--success .g-toast-elapsed,
+      .g-toast--error .g-toast-progress,
+      .g-toast--error .g-toast-elapsed { display: none; }
 
       /* Deck Related suggestions — appears inside an orphan card. Two
          small rows with a Link button each; the goal is "one tap promotes
@@ -1225,6 +2002,241 @@
       }
       .btn-deck-link:hover { background: color-mix(in oklab, var(--accent) 28%, var(--bg-elev)); }
       .btn-deck-link:disabled { opacity: 0.6; cursor: progress; }
+
+      /* ── Trivia candidate panel ──────────────────────────────────────── */
+      .g-deck-trivia-search-wrap {
+        padding: 8px 0 6px;
+      }
+      .g-deck-trivia-search {
+        width: 100%;
+        padding: 6px 10px;
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        background: var(--bg);
+        color: var(--fg);
+        font-size: 12px;
+        font-family: inherit;
+        box-sizing: border-box;
+      }
+      .g-deck-trivia-search:focus { outline: none; border-color: var(--accent); }
+      .g-deck-trivia-candidate {
+        flex: 1 1 0;
+        min-height: 0;
+        overflow: hidden;
+        margin-bottom: 8px;
+      }
+      .g-deck-trivia-body {
+        height: 100%;
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+        padding: 12px;
+        background: var(--bg);
+        border-left: 2px solid color-mix(in oklab, var(--accent) 50%, var(--border));
+        border-radius: 0 6px 6px 0;
+      }
+      .g-deck-trivia-text {
+        font-size: 15px;
+        line-height: 1.55;
+        margin: 0;
+        flex: 1 1 0;
+        /* Scroll instead of clamp so longer memories are fully readable.
+           The candidate panel grew taller with the intro-padding trim;
+           let the text actually use that height. */
+        overflow-y: auto;
+        max-height: none;
+        cursor: pointer;
+        border-radius: 4px;
+        transition: background 0.15s;
+        /* Color is inherited from the .g-deck-content rule above
+           (#d4a82c) — applied to both source and candidate texts. */
+      }
+      .g-deck-trivia-text:hover {
+        background: color-mix(in oklab, var(--accent) 8%, transparent);
+      }
+      .g-deck-trivia-meta {
+        display: flex;
+        gap: 8px;
+        align-items: center;
+        flex-wrap: wrap;
+        font-size: 11px;
+        color: var(--fg-dim);
+      }
+      /* Skip + Forget right-aligned in the meta row. margin-left:auto on
+         the wrapper pushes it to the end of the flex line. Small flat
+         buttons so the trivia card stays compact (no full-width action
+         bar below the candidate panel anymore). */
+      .g-deck-trivia-actions {
+        margin-left: auto;
+        display: inline-flex;
+        gap: 6px;
+        align-items: center;
+      }
+      .g-deck-meta-btn {
+        font-size: 11px;
+        padding: 3px 8px;
+        line-height: 1.2;
+        border-radius: 4px;
+      }
+      .g-deck-trivia-actions.deck-forget-confirm .deck-forget-confirm-msg {
+        font-size: 11px;
+        color: var(--fg-dim);
+        margin-right: 2px;
+      }
+      /* Metadata chips on the candidate panel — purposely muted/grayed so
+         they read as INFORMATION, not as clickable buttons. The relationship
+         buttons next to them carry the turquoise accent; if the chips also
+         did, users were trying to click them. Now they're flat gray pills. */
+      .g-deck-trivia-type,
+      .g-deck-trivia-conf {
+        background: transparent;
+        border: 1px solid var(--border);
+        border-radius: 4px;
+        padding: 1px 6px;
+        font-size: 10px;
+        color: var(--fg-dim);
+        cursor: default;
+        opacity: 0.75;
+      }
+      /* Intro block above the candidate panel: short explanation + a
+         rotating brain-themed tagline. The tagline gets the seahorse-logo
+         turquoise to make the playful line visually distinct from the
+         instructional headline. Slightly larger than before so the joke
+         actually reads. */
+      /* Compact intro — was eating too much vertical space and pushing the
+         candidate text below the fold. Tightened padding + line spacing
+         to give the candidate panel room to breathe. */
+      .g-deck-trivia-intro {
+        padding: 6px 12px 8px;
+        border-bottom: 1px solid var(--border);
+        margin-bottom: 4px;
+      }
+      .g-deck-trivia-intro-headline {
+        font-size: 11.5px;
+        color: var(--fg);
+        margin: 0 0 2px;
+        font-weight: 500;
+      }
+      .g-deck-trivia-intro-tagline {
+        font-size: 12.5px;
+        color: var(--accent);
+        margin: 0;
+        font-style: italic;
+        font-weight: 500;
+      }
+      /* The two memory texts (source in card head, candidate in body) use a
+         warm dark-yellow (mustard) so they stand out from interaction
+         affordances. Reads as "this is the CONTENT, the buttons are
+         elsewhere." Chosen for AA contrast on the near-black bg. */
+      .g-deck-content,
+      .g-deck-trivia-text,
+      .g-detail-content {
+        color: #d4a82c;
+      }
+      /* When the rel-type picker is opened from the Check-in deck, we want
+         the user to still see the source + candidate previews in the main
+         pane — so the picker overlays the right sidebar specifically,
+         instead of being a full-screen dim. The .over-sidebar modifier
+         turns off the backdrop dim and sizes the inner modal to fill the
+         right-sidebar bounding rect (set via inline styles in JS). */
+      .modal-backdrop.over-sidebar {
+        background: transparent;
+        pointer-events: none;       /* let clicks pass through outside picker */
+      }
+      .modal-backdrop.over-sidebar .modal {
+        pointer-events: auto;        /* picker itself is interactive */
+        margin: 0;
+        max-width: none;
+        max-height: none;
+        box-shadow: -8px 0 24px rgba(0,0,0,0.35);
+      }
+      /* Relationship-type picker rows (modal opened from candidate panel's
+         "Other…"). Tall enough to read, hoverable, label + direction hint. */
+      .rel-type-row {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 10px 14px;
+        background: var(--bg-elev);
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        cursor: pointer;
+        font-size: 13px;
+        color: var(--fg);
+        text-align: left;
+      }
+      .rel-type-row:hover {
+        background: color-mix(in oklab, var(--accent) 12%, var(--bg-elev));
+        border-color: color-mix(in oklab, var(--accent) 50%, var(--border));
+      }
+      .rel-type-row-meta {
+        font-size: 10px;
+        color: var(--fg-dim);
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      }
+      .g-deck-trivia-file {
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-size: 10px;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        max-width: 200px;
+      }
+      .g-deck-trivia-actions {
+        display: flex;
+        gap: 6px;
+      }
+      .g-deck-trivia-forget, .g-deck-trivia-skip {
+        font-size: 12px;
+        padding: 4px 12px;
+        border-radius: 5px;
+        border: 1px solid var(--border);
+        background: transparent;
+        color: var(--fg-dim);
+        cursor: pointer;
+      }
+      .g-deck-trivia-forget { color: #e05555; border-color: #e05555; }
+      .g-deck-trivia-forget:hover { background: color-mix(in oklab, #e05555 12%, transparent); }
+      .g-deck-trivia-skip:hover { background: color-mix(in oklab, var(--fg-dim) 12%, transparent); color: var(--fg); }
+      .g-deck-trivia-rel {
+        display: flex;
+        gap: 6px;
+        align-items: center;
+        flex-wrap: wrap;
+      }
+      .g-deck-trivia-rel-label {
+        font-size: 11px;
+        color: var(--fg-dim);
+        white-space: nowrap;
+      }
+      .g-deck-rel-btn {
+        font-size: 11px;
+        padding: 3px 10px;
+        border-radius: 5px;
+        background: color-mix(in oklab, var(--accent) 15%, var(--bg-elev));
+        border: 1px solid color-mix(in oklab, var(--accent) 40%, var(--border));
+        color: var(--fg);
+        cursor: pointer;
+        white-space: nowrap;
+      }
+      .g-deck-rel-btn:hover { background: color-mix(in oklab, var(--accent) 28%, var(--bg-elev)); }
+      .g-deck-rel-btn:disabled { opacity: 0.5; cursor: progress; }
+      .g-deck-trivia-other {
+        font-size: 11px;
+        padding: 3px 10px;
+        border-radius: 5px;
+        border: 1px dashed var(--border);
+        background: transparent;
+        color: var(--fg-dim);
+        cursor: pointer;
+        white-space: nowrap;
+      }
+      .g-deck-trivia-other:hover { color: var(--fg); border-color: var(--fg-dim); }
+      .g-deck-trivia-no-candidate {
+        padding: 12px;
+        font-size: 13px;
+        color: var(--fg-dim);
+      }
 
       /* ── Suggestion panel — shared between deck cards + detail pane ──
          Drives the typed-relationship picker: multi-select rows with
@@ -1348,23 +2360,62 @@
         color: var(--fg);
       }
 
-      .g-suggest-show-more {
-        margin-top: 8px;
-        font-size: 11px;
-        padding: 4px 10px;
-        background: transparent;
-        border: 1px solid var(--border);
-        color: var(--fg-dim);
-        width: 100%;
-      }
-      .g-suggest-show-more:hover { color: var(--fg); border-color: var(--accent); }
-
       .g-suggest-actions {
         display: flex;
         gap: 8px;
         margin-top: 10px;
         padding-top: 10px;
         border-top: 1px dashed var(--border);
+      }
+      /* When the suggestion panel is open the candidate rows scroll and
+         the action bar sits as a natural footer at the bottom of the
+         pane. Flex chain (set up on .g-detail and friends) gives this
+         layout for free — no sticky/absolute trickery. The action bar's
+         translucent backdrop + blur keep rows partially visible through
+         it as they scroll past. Negative side margins + side padding
+         extend the bar edge-to-edge inside the pane.
+         Note: rules apply only when the panel is open (`:not(.hidden)`);
+         display:none on the suggest panel collapses everything when
+         closed and the connections list takes the visible space. */
+      .g-detail-suggest:not(.hidden) {
+        flex: 1 1 0;
+        min-height: 0;
+        display: flex;
+        flex-direction: column;
+      }
+      .g-detail-suggest:not(.hidden) .g-suggest-rows {
+        flex: 1 1 0;
+        min-height: 0;
+        overflow-y: auto;
+      }
+      .g-detail-suggest .g-suggest-actions {
+        flex: 0 0 auto;
+        background: rgba(17, 20, 29, 0.78);          /* var(--bg-elev) @ 78% */
+        backdrop-filter: blur(8px) saturate(140%);
+        -webkit-backdrop-filter: blur(8px) saturate(140%);
+        border-top: 1px solid color-mix(in oklab, var(--border) 70%, transparent);
+        /* Negative side AND bottom margins so the bar extends past the
+           .g-detail pane's own 14px padding (which would otherwise leave
+           a visible gap below the buttons). The bar's internal padding
+           (12px bottom) becomes the only breathing space — bar bottom
+           touches the pane's rounded-border edge cleanly. */
+        margin: 0 -14px -14px;
+        padding: 10px 14px 12px;
+        /* Match the pane's border-radius on the bottom corners so the
+           translucent backdrop doesn't paint over the rounded edge. */
+        border-bottom-left-radius: 6px;
+        border-bottom-right-radius: 6px;
+      }
+      /* While the suggestion panel is open, the existing connections list
+         is hidden temporarily — keeps the user's attention on picking
+         candidates instead of competing with the already-connected list
+         (which will refresh anyway after a successful Connect). */
+      .g-detail-conn-wrap.hidden { display: none; }
+      /* + Connect button while the panel is open: dimmed + non-interactive
+         but still visually present so the header layout doesn't shift. */
+      .g-detail-btn-sm.is-busy {
+        opacity: 0.55;
+        cursor: default;
       }
       .g-suggest-connect {
         flex: 1;
@@ -1458,6 +2509,20 @@
         border-color: color-mix(in oklab, var(--accent) 50%, var(--border));
       }
       .g-suggest-popover-option.small { font-size: 11px; padding: 3px 6px; }
+      /* Destructive variant — for "Disconnect these memories". Separated
+         visually from the retype options by a faint top border, and tinted
+         in error red so the user can't miss that it's a different kind of
+         action. */
+      .g-suggest-popover-disconnect {
+        margin-top: 6px;
+        border-top: 1px solid var(--border);
+        padding-top: 8px;
+        color: var(--error);
+      }
+      .g-suggest-popover-disconnect:hover {
+        background: color-mix(in oklab, var(--error) 14%, transparent);
+        color: var(--error);
+      }
       .g-suggest-popover-more {
         display: grid;
         grid-template-columns: 1fr 1fr;
@@ -1519,15 +2584,79 @@
       .g-detail-suggest.hidden { display: none; }
       .g-deck-ack { color: var(--fg); }
 
-      /* Two-tap armed Forget button in the sidebar. First tap turns the
-         button red and changes the label; second tap commits. */
-      #btn-detail-forget.btn-forget-armed {
-        background: color-mix(in oklab, var(--error) 18%, var(--bg));
-        color: var(--fg);
-        border: 1px solid color-mix(in oklab, var(--error) 60%, var(--border));
+      /* Inline forget confirmation form — used in both the sidebar detail
+         pane and the trivia candidate panel. User must type "delete" to
+         enable the confirm button. */
+      .g-forget-confirm {
+        width: 100%;
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
       }
-      #btn-detail-forget.btn-forget-armed:hover {
-        background: color-mix(in oklab, var(--error) 28%, var(--bg));
+      .g-forget-note {
+        font-size: 11px;
+        line-height: 1.45;
+        color: var(--fg-dim);
+        margin: 0;
+        padding: 6px 8px;
+        border-left: 2px solid color-mix(in oklab, var(--error) 60%, var(--border));
+        background: color-mix(in oklab, var(--error) 6%, transparent);
+        border-radius: 0 4px 4px 0;
+      }
+      .g-forget-confirm-row {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        flex-wrap: wrap;
+      }
+      .g-forget-input {
+        flex: 1 1 120px;
+        min-width: 80px;
+        max-width: 200px;
+        font-size: 12px;
+        padding: 3px 8px;
+        border-radius: 5px;
+        border: 1px solid color-mix(in oklab, var(--error) 50%, var(--border));
+        background: transparent;
+        color: var(--fg);
+        outline: none;
+      }
+      .g-forget-input:focus {
+        box-shadow: 0 0 0 2px color-mix(in oklab, var(--error) 25%, transparent);
+      }
+      .g-forget-go {
+        font-size: 11px;
+        padding: 3px 10px;
+        border-radius: 5px;
+        border: 1px solid color-mix(in oklab, var(--error) 60%, var(--border));
+        background: transparent;
+        color: var(--error, #e05555);
+        cursor: pointer;
+        white-space: nowrap;
+        flex-shrink: 0;
+        transition: background 0.15s, color 0.15s;
+      }
+      .g-forget-go:not(:disabled):hover {
+        background: color-mix(in oklab, var(--error, #e05555) 85%, transparent);
+        color: #fff;
+      }
+      .g-forget-go:disabled {
+        opacity: 0.35;
+        cursor: not-allowed;
+      }
+      .g-forget-cancel {
+        font-size: 11px;
+        padding: 3px 8px;
+        border-radius: 5px;
+        border: 1px solid var(--border);
+        background: transparent;
+        color: var(--fg-dim);
+        cursor: pointer;
+        white-space: nowrap;
+        flex-shrink: 0;
+      }
+      .g-forget-cancel:hover {
+        background: color-mix(in oklab, var(--fg-dim) 10%, transparent);
       }
       .g-deck-empty-grade {
         font-size: 28px;
@@ -1578,9 +2707,24 @@
         color: var(--fg-dim);
       }
       .g-recap-forgotten.hidden { display: none; }
+      .g-recap-forgotten-row {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        gap: 10px;
+        padding: 5px 0;
+      }
+      .g-recap-forgotten-row:first-child { padding-top: 0; }
+      .g-recap-forgotten-label {
+        flex: 1;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
       .btn-g-purge {
         font-size: 11px;
         padding: 4px 10px;
+        flex-shrink: 0;
       }
 
       /* AI tools card — mirrors the Overview-side block but in the
@@ -1683,12 +2827,34 @@
         background: var(--bg-elev);
         border: 1px solid var(--border);
         border-radius: 6px;
-        padding: 14px;
-        overflow-y: auto;
+        /* No top padding — the sticky header provides it internally so it
+           sits flush against the top edge with no see-through gap. */
+        padding: 0 14px 14px;
+        /* Flex column wrapper so the suggestion panel's Connect/Cancel bar
+           can sit as a true bottom-aligned footer of THIS pane (not the
+           bottom of the scroll content, which is what position:sticky and
+           position:absolute gave us). When the suggestion panel is open
+           the chain .g-detail → .g-detail-body → .g-detail-scroll-body →
+           .g-detail-suggest-wrap → .g-detail-suggest is all flex column
+           with min-height:0, and the candidate-rows div gets flex:1 +
+           overflow-y:auto so it scrolls inside the pane while the action
+           bar at the bottom stays put. When the panel is closed, the
+           chain is still flex but the connections list (.g-detail-conn-wrap)
+           takes the natural height instead. */
+        display: flex;
+        flex-direction: column;
+        min-height: 0;
+      }
+      .g-detail-body {
+        flex: 1 1 0;
+        min-height: 0;
+        display: flex;
+        flex-direction: column;
       }
       .g-detail-empty {
         color: var(--fg-dim);
         font-size: 12px;
+        padding-top: 14px;
       }
       .g-detail-shortcuts {
         margin-top: 16px;
@@ -1705,6 +2871,43 @@
         font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
       }
       .g-detail-body.hidden { display: none; }
+      /* Sticky header — pins conf + breadcrumb + content at the very top
+         of the detail panel. Parent has no top padding so the header
+         starts at the absolute top edge with no visible gap. Negative
+         side margins cancel the parent's 14px side padding so it extends
+         edge-to-edge; padding re-applies it inside. border-bottom
+         separates the pinned block from the scrolling meta + connections. */
+      .g-detail-header {
+        position: sticky;
+        top: 0;
+        margin: 0 -14px;
+        padding: 14px 14px 12px;
+        background: var(--bg-elev);
+        border-bottom: 1px solid var(--border);
+        z-index: 1;
+      }
+      /* Wrapper for everything that scrolls below the sticky header.
+         Provides top spacing so the meta block doesn't butt against
+         the border-bottom of the pinned header. Flex column so the
+         child containers (.g-detail-conn-wrap / .g-detail-suggest-wrap)
+         can take the remaining height when needed. */
+      .g-detail-scroll-body {
+        padding-top: 8px;
+        flex: 1 1 0;
+        min-height: 0;
+        display: flex;
+        flex-direction: column;
+        overflow-y: auto;
+      }
+      /* When the suggestion panel is open, the conn-wrap is hidden and the
+         suggest-wrap fills the remaining space. When the panel is closed,
+         the conn-wrap takes natural height and scrolls within the parent. */
+      .g-detail-suggest-wrap {
+        flex: 1 1 0;
+        min-height: 0;
+        display: flex;
+        flex-direction: column;
+      }
       .g-detail-conf {
         font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
         color: var(--fg-dim);
@@ -1717,13 +2920,16 @@
         margin: 8px 0;
         white-space: pre-wrap;
         word-break: break-word;
+        /* Cap height so very long memories scroll inside the sticky
+           header instead of pushing the action row out of the viewport.
+           The connections list below still scrolls independently. */
+        max-height: 38vh;
+        overflow-y: auto;
       }
       .g-detail-meta {
         font-size: 11px;
         color: var(--fg-dim);
         margin: 8px 0;
-        padding-top: 8px;
-        border-top: 1px solid var(--border);
         line-height: 1.7;
       }
       .g-detail-meta code {
@@ -1739,6 +2945,46 @@
         margin: 12px 0;
         padding-top: 10px;
         border-top: 1px solid var(--border);
+      }
+      /* Compact variant used inside the sticky header so the three node
+         actions (Correct / Forget / + Connect) stay pinned with the node
+         content. Equal-width via flex:1 keeps them visually uniform; the
+         scroll boundary lives below so only the connections list moves. */
+      .g-detail-actions-compact {
+        margin: 10px 0 0;
+        padding-top: 10px;
+      }
+      .g-detail-actions-compact .g-detail-btn-sm {
+        flex: 1 1 0;
+        min-width: 0;
+        padding: 5px 8px;
+        font-size: 11px;
+        line-height: 1.2;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      .g-detail-actions-compact .g-detail-btn-sm kbd {
+        font-size: 9px;
+        padding: 0 3px;
+      }
+      /* Chip row above the filename: type + trust + (optional) valid-until.
+         Renders as a single line of pill-style spans so the meta info is
+         visible at a glance without taking the full vertical strip the
+         old key:value block needed. */
+      .g-detail-chips {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px 10px;
+        font-size: 11px;
+        color: var(--fg-dim);
+        margin-bottom: 4px;
+      }
+      .g-detail-chips .g-detail-chip code {
+        font-size: 10px;
+        background: var(--bg);
+        padding: 1px 4px;
+        border-radius: 3px;
       }
       .g-detail-edit-textarea {
         width: 100%;
@@ -1777,7 +3023,20 @@
       .g-detail-conn-row:hover { background: color-mix(in oklab, var(--accent) 8%, transparent); }
       .g-detail-conn-arrow { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
       .g-detail-conn-text { line-height: 1.4; }
-      .g-detail-conn-type { color: var(--fg-dim); font-size: 10px; font-style: italic; }
+      .g-detail-conn-meta {
+        display: flex; align-items: center; flex-wrap: wrap; gap: 4px;
+        color: var(--fg-dim); font-size: 10px; margin-top: 2px;
+      }
+      .g-conn-retype-btn {
+        display: inline-flex; align-items: center;
+        padding: 1px 5px; border-radius: 3px; border: 1px solid var(--border);
+        background: transparent; color: var(--fg-dim); font-size: 9px;
+        cursor: pointer; opacity: 0; transition: opacity 0.15s;
+        margin-left: 2px;
+      }
+      .g-detail-conn-row:hover .g-conn-retype-btn { opacity: 1; }
+      .g-conn-retype-btn:hover { color: var(--fg); border-color: var(--accent); }
+      .g-conn-retype-popover { min-width: 200px; max-height: 320px; overflow-y: auto; }
 
       /* Related memories — semantic candidates surfaced for nodes that
          aren't yet connected by an explicit edge. Each row has its own
@@ -1836,6 +3095,64 @@
         color: var(--fg);
         font-size: 12px;
       }
+      /* Navigation cheatsheet — single horizontal strip pinned to the
+         bottom edge of the 3D stage. Grayed + transparent so it doesn't
+         compete with the graph; pointer-events confined to the close
+         button so dragging through the strip still rotates the canvas. */
+      .atlas-nav-help {
+        position: absolute;
+        left: 50%;
+        bottom: 8px;
+        transform: translateX(-50%);
+        z-index: 4;
+        padding: 5px 28px 5px 12px;
+        background: rgba(10, 12, 18, 0.55);
+        border: 1px solid color-mix(in oklab, var(--border) 80%, transparent);
+        border-radius: 6px;
+        font-size: 10.5px;
+        color: var(--fg-dim);
+        line-height: 1.4;
+        pointer-events: none;          /* clicks pass through to canvas */
+        backdrop-filter: blur(4px);
+        -webkit-backdrop-filter: blur(4px);
+        display: flex;
+        gap: 14px;
+        white-space: nowrap;
+      }
+      .atlas-nav-help.hidden { display: none; }
+      .atlas-nav-row {
+        display: inline-flex;
+        align-items: baseline;
+        gap: 4px;
+      }
+      .atlas-nav-row kbd {
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-size: 9.5px;
+        padding: 0 4px;
+        background: color-mix(in oklab, var(--fg) 8%, transparent);
+        border: 1px solid color-mix(in oklab, var(--fg) 14%, transparent);
+        border-radius: 3px;
+        color: var(--fg);
+      }
+      .atlas-nav-row span { opacity: 0.7; }
+      .atlas-nav-close {
+        position: absolute;
+        top: 2px;
+        right: 4px;
+        width: 16px;
+        height: 16px;
+        padding: 0;
+        background: transparent;
+        border: none;
+        color: var(--fg-dim);
+        font-size: 14px;
+        line-height: 1;
+        cursor: pointer;
+        border-radius: 3px;
+        pointer-events: auto;          /* the only clickable element on the strip */
+      }
+      .atlas-nav-close:hover { background: rgba(255,255,255,0.05); color: var(--fg); }
+
       .atlas-stage {
         position: relative;
         /* Grow to fill the remaining space inside the tab pane. The old
@@ -1948,6 +3265,18 @@
         max-height: calc(100% - 24px);
         overflow-y: auto;
       }
+      /* When the navigation cheatsheet is visible at the bottom-center of
+         the 3D stage, both the top-left legend and the bottom-right axes
+         gizmo need to give it room. The cheatsheet is ~36px tall (bar +
+         bottom inset), so we shave that off the legend's max-height and
+         lift the gizmo by the same amount. Reverts automatically when the
+         user dismisses the cheatsheet (.nav-help-visible removed). */
+      .atlas-stage.nav-help-visible .atlas-legend {
+        max-height: calc(100% - 60px);
+      }
+      .atlas-stage.nav-help-visible #atlas-axes {
+        bottom: 50px !important;
+      }
       .atlas-conn-list { margin-top: 8px; }
       .atlas-conn-section {
         margin-top: 6px;
@@ -2055,33 +3384,79 @@
   </head>
   <body>
     <main>
-      <!-- ── Unlock view (full-screen until vault is open) ─────────────── -->
+      <!-- ── Unlock view (full-screen until cortex is open) ─────────────── -->
       <section id="view-unlock" class="unlock-shell">
-        <div style="width: 100%; max-width: 480px;">
-          <h1>Graphnosis</h1>
-          <p class="subtitle" id="subtitle">Your private second memory</p>
-          <p class="brain-subtitle" style="margin-bottom: 18px;">
-            the blood–brain barrier — only your passphrase passes through
-          </p>
+        <div style="width: 100%; max-width: 480px; display: flex; flex-direction: column; align-items: center;">
+          <!-- Graphnosis logo -->
+          <img src="/graphnosis-logo.png" alt="Graphnosis"
+               width="120" height="120"
+               style="margin-bottom: 20px; border-radius: 22px; opacity: 0.92; flex-shrink: 0; display: block;" />
+          <h1 style="text-align: center; width: 100%;">Graphnosis</h1>
+          <p class="subtitle" id="subtitle" style="text-align: center;">Your private second cortex</p>
           <div id="error" class="error hidden"></div>
           <div class="panel unlock-card">
-            <p class="panel-title">Unlock your vault</p>
+            <p class="panel-title">Unlock your private second cortex of memories:</p>
             <div class="row">
-              <label for="vault-dir">Vault folder</label>
+              <label for="cortex-dir" class="visually-hidden">Cortex folder path</label>
               <div class="pick-row">
-                <input type="text" id="vault-dir" placeholder="/Users/you/Graphnosis-test" />
+                <input type="text" id="cortex-dir" placeholder="/Users/you/Graphnosis-Cortex" />
                 <button id="btn-pick">Choose…</button>
               </div>
             </div>
             <div class="row">
-              <label for="passphrase">Passphrase</label>
-              <input type="password" id="passphrase" placeholder="Your vault passphrase" />
+              <div class="passphrase-label-row">
+                <label for="passphrase">Passphrase</label>
+                <span id="touchid-hint" class="touchid-inline-hint hidden">Unlock with Touch ID →</span>
+              </div>
+              <div class="passphrase-input-wrap">
+                <input type="password" id="passphrase" placeholder="Your Graphnosis Cortex passphrase" />
+                <button id="btn-touchid-inline" class="touchid-inline-btn hidden" type="button"
+                        title="Unlock with Touch ID" aria-label="Unlock with Touch ID">
+                  <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <path d="M12 11c0 6-1 8-3 9"/>
+                    <path d="M5 16a18 18 0 0 0 .5-5 6.5 6.5 0 0 1 6.5-6.5"/>
+                    <path d="M16 21c.5-2 .8-4 .8-7"/>
+                    <path d="M19 13c0 4-1 7-2 9"/>
+                    <path d="M14 19a13 13 0 0 0 .8-7 3 3 0 0 0-6 0c0 1 .1 2-.2 3"/>
+                    <path d="M3 12a9 9 0 0 1 16-5"/>
+                  </svg>
+                </button>
+              </div>
+              <p class="passphrase-warning">
+                <span class="passphrase-warning-icon">⚠</span>
+                Your passphrase is the <u>only</u> key to your Cortex. Graphnosis has no servers and no account reset — if you lose it, your 24-word recovery phrase is your fallback to regain access.
+                <br><br>
+                Keep both somewhere safe: a password manager (1Password, Bitwarden, Apple Keychain), a printed note stored securely, or both.
+              </p>
             </div>
             <div class="actions">
               <button id="btn-unlock" class="primary">Unlock</button>
               <span id="unlock-status" class="subtitle"></span>
             </div>
+            <!-- Indeterminate progress bar: visible only between clicking
+                 Unlock and the cortex actually opening. Same pattern reused
+                 for the recovery-phrase "Recover access" button. -->
+            <div id="unlock-progress" class="unlock-progress hidden"></div>
+            <a id="link-forgot-passphrase" class="forgot-passphrase-link" role="button" tabindex="0">Forgot passphrase? Use recovery phrase</a>
+            <!-- Recovery unlock (hidden by default; shown via "Forgot passphrase?" link).
+                 Placed AFTER the Unlock action so the user's primary path stays visually
+                 dominant; the recovery flow expands below it as a secondary option. -->
+            <div id="recovery-unlock-section" class="recovery-unlock-section hidden">
+              <p>Enter your 24-word recovery phrase (words separated by spaces):</p>
+              <textarea id="recovery-phrase-input" spellcheck="false" autocorrect="off" autocapitalize="off" placeholder="word1 word2 word3 … word24"></textarea>
+              <div class="actions" style="margin-top: 8px;">
+                <button id="btn-recovery-unlock" class="primary">Recover access</button>
+                <button id="btn-recovery-cancel">Cancel</button>
+              </div>
+              <p style="margin-top: 10px; font-size: 11px; color: var(--fg-dim); line-height: 1.5;">
+                After recovery, your Cortex is unlocked only for this session — the recovery phrase isn't stored. Your existing passphrase still works once you find it, and your 24-word phrase stays the same; we don't regenerate it.
+              </p>
+            </div>
           </div>
+          <p style="margin-top: 20px; font-size: 11px; color: var(--fg-dim); text-align: center; line-height: 1.6;">
+            &copy; 2026 Nehloo Interactive LLC. All rights reserved.<br>
+            <span style="font-size: 10px; opacity: 0.7;">Graphnosis is a private memory system. Your data never leaves your device.</span>
+          </p>
         </div>
       </section>
 
@@ -2094,26 +3469,46 @@
              pending → success/error and fade out. Lives under the
              drag-drop overlay so it's never obscured during a drop. -->
         <div id="g-toast-stack" class="g-toast-stack" aria-live="polite" aria-atomic="false"></div>
-        <!-- Top header: vault identity + global actions -->
-        <header class="app-header">
+        <!-- Top header: cortex identity + global actions -->
+        <header class="app-header" data-tauri-drag-region>
           <div class="app-header-left">
-            <span class="brain-glyph" title="vault unlocked">●</span>
-            <span id="vault-label" class="vault-label-truncate">vault</span>
-            <span class="header-subtitle">— your graphnosis brain</span>
+            <!-- Title row: brain icon + app title (we render this ourselves
+                 now that hiddenTitle:true silences the OS one). -->
+            <div class="app-title-row">
+              <span class="brain-glyph" title="Cortex unlocked">🧠</span>
+              <span class="app-title">Graphnosis: Your Private Second Cortex</span>
+            </div>
+            <!-- Cortex path row: just the path. The engram picker moved
+                 to the right-side actions cluster (left of Add file). -->
+            <div class="app-cortex-row">
+              <span id="cortex-label" class="cortex-label-truncate" title="Current Cortex folder">cortex</span>
+            </div>
           </div>
           <div class="app-header-right">
-            <button id="btn-add-file" class="primary">Add file…</button>
+            <!-- Active engram picker cluster: muted label + dropdown.
+                 Sits LEFT of Add file as the prominent "where you're
+                 working" indicator. -->
+            <span class="header-engram-label">Active engram:</span>
+            <select id="atlas-graph-picker" class="header-engram-picker" title="Switch active engram"></select>
+            <button id="btn-add-file" class="primary">Add file to engram…</button>
             <button id="btn-new-graph" title="Create a new engram — an independent neighborhood of memory">+ New engram</button>
-            <button id="btn-lock">Lock</button>
+            <button id="btn-lock">Lock cortex</button>
           </div>
         </header>
 
         <!-- Body: rail + canvas -->
         <div class="app-body">
           <nav class="app-rail">
+            <!-- Graphnosis identity mark at the top of the sidebar -->
+            <div style="display:flex; justify-content:center; padding: 6px 6px 6px; flex-shrink:0;">
+              <img src="/graphnosis-logo.png" alt="Graphnosis"
+                   width="72" height="72"
+                   style="border-radius: 14px; opacity: 0.85; display: block;"
+                   title="Graphnosis" />
+            </div>
             <button class="rail-btn active" data-mode="atlas" title="Memory check-in dashboard + 3D map">
               <span class="rail-icon">▣</span>
-              <span class="rail-label">Graphnosis</span>
+              <span class="rail-label">My Private Memory</span>
               <span id="rail-corrections-badge" class="rail-badge hidden" title="Pending corrections waiting in the deck">0</span>
             </button>
             <button class="rail-btn" data-mode="sources" title="Files that fed your memory">
@@ -2131,38 +3526,45 @@
                  Graphnosis check-in deck. The pending-count badge
                  moved to the Graphnosis rail item so it's still
                  visible at a glance. -->
-            <button class="rail-btn" data-mode="activity" title="Timeline of your memory">
-              <span class="rail-icon">⏲</span>
-              <span class="rail-label">Activity</span>
-              <span></span>
-            </button>
             <button class="rail-btn" data-mode="status" title="Engram counts, lifetime corrections, AI clients tapped in">
               <span class="rail-icon">⌬</span>
               <span class="rail-label">Status</span>
-              <span></span>
+              <span id="rail-mcp-indicator" class="rail-mcp-indicator"></span>
             </button>
-            <div class="rail-spacer"></div>
+            <!-- Memory trace: grows to fill space between nav buttons and settings.
+                 The inner list gets overflow-y:auto so it scrolls independently.
+                 Settings is pinned to the bottom via margin-top:auto (see CSS). -->
+            <div id="g-memory-trace" class="rail-memory-trace hidden">
+              <div class="rail-memory-trace-title">Memory trace</div>
+              <div id="g-memory-trace-list" class="g-memory-trace-list"></div>
+            </div>
             <button class="rail-btn" data-mode="settings" title="Preferences">
               <span class="rail-icon">⚙</span>
               <span class="rail-label">Settings</span>
               <span></span>
             </button>
           </nav>
-
           <div class="app-canvas">
             <!-- Persistent error banner (any mode) -->
             <div id="error" class="error hidden"></div>
 
             <!-- GRAPHNOSIS — memory check-in dashboard + 3D atlas -->
             <section class="mode-pane hidden" data-pane="atlas">
+              <!-- Header row: title | cortex picker | search | health gauge.
+                   All four are flex items in a single row so the health box
+                   can be pinned to the same 360px width as the inspector. -->
               <header class="pane-header g-pane-header">
                 <div class="g-pane-header-title">
                   <h2>Graphnosis</h2>
-                  <p class="brain-subtitle">a quick check-in with your second memory</p>
+                  <p class="brain-subtitle">your second cortex</p>
                 </div>
-                <!-- Health gauge lives in the pane header so it's visible
-                     across both tabs (Check-in + 3D Graphnosis) and on
-                     the same row as the title + global header actions. -->
+                <!-- The engram picker that used to live here has moved to
+                     the top app header — visible from every view, smaller
+                     footprint, single source of truth across panes. -->
+                <div class="g-search-wrap">
+                  <input type="search" id="g-search" placeholder="Look for a memory — ⌘K, ↑↓ to move, Enter to open" />
+                  <button id="g-search-clear" class="g-search-clear hidden" title="Clear search">×</button>
+                </div>
                 <div id="g-health" class="g-health g-health-inline">
                   <div class="g-health-gauge">
                     <div id="g-health-grade" class="g-health-grade">—</div>
@@ -2177,29 +3579,12 @@
                 </div>
               </header>
 
-              <!-- Top toolbar: search + engram picker. Search reveals
-                   a results pane and replaces the dashboard temporarily. -->
-              <div class="g-topbar">
-                <div class="g-search-wrap">
-                  <input type="search" id="g-search" placeholder="Look for a memory — ⌘K, ↑↓ to move, Enter to open" />
-                  <button id="g-search-clear" class="g-search-clear hidden" title="Clear search">×</button>
-                </div>
-                <select id="atlas-graph-picker" title="Choose an engram"></select>
-                <span id="atlas-stats" class="subtitle"></span>
-              </div>
-
-              <!-- Recents row: last few visited memories per engram -->
-              <div id="g-recents" class="g-recents hidden">
-                <span class="g-recents-label">You just looked at:</span>
-                <div id="g-recents-chips" class="g-recents-chips"></div>
-              </div>
-
               <!-- Main grid: dashboard/atlas on the left, persistent detail pane right -->
               <div class="g-main">
                 <div class="g-browse">
                   <div class="g-tabs">
                     <button class="g-tab active" data-gtab="checkin">Check-in</button>
-                    <button class="g-tab" data-gtab="atlas">3D Graphnosis</button>
+                    <button class="g-tab" data-gtab="atlas">3D Engram</button>
                   </div>
 
                   <!-- CHECK-IN DASHBOARD (default) -->
@@ -2235,7 +3620,7 @@
                              siblings have a small visible gap on scroll. -->
                         <div class="g-deck-pinned">
                           <div class="g-deck-header">
-                            <span class="g-deck-title">If you have 30 seconds…</span>
+                            <span class="g-deck-title">If you have 30 seconds, connect these lonely memories…</span>
                             <span class="g-deck-nav">
                               <button id="btn-deck-prev" class="g-deck-nav-btn" title="Previous card" aria-label="Previous card">‹</button>
                               <span id="g-deck-progress" class="g-deck-progress"></span>
@@ -2253,14 +3638,27 @@
 
                   <!-- 3D Atlas tab — unchanged from before. -->
                   <section class="g-tab-pane hidden" data-gpane="atlas">
-                    <div class="atlas-toolbar">
-                      <button id="btn-atlas-alive" title="Toggle the constant gentle drift">Pause motion</button>
-                      <button id="btn-atlas-unpin" title="Release every dragged-and-pinned node">Unpin all</button>
+                    <div class="atlas-toolbar" style="justify-content: flex-end;">
+                      <button id="btn-atlas-alive" title="Toggle cosmos motion — drift, breathing, and node elasticity" style="font-weight:600">🧠 Alive Brain: On</button>
                       <button id="btn-atlas-fit" title="Frame all visible nodes">Fit</button>
                       <button id="btn-atlas-reset" title="Clear selection emphasis">Reset</button>
                     </div>
                     <div class="atlas-stage">
                       <div id="atlas-container" class="atlas-container"></div>
+                      <!-- Navigation cheatsheet: a quiet, grayed overlay in the
+                           bottom-left of the 3D stage so the user can pick up
+                           rotate/pan/zoom + selection shortcuts without leaving
+                           the view. Dismissable; the choice persists per session
+                           via localStorage ('graphnosis_atlas_nav_hidden'). -->
+                      <div id="atlas-nav-help" class="atlas-nav-help">
+                        <button id="btn-atlas-nav-close" class="atlas-nav-close" title="Hide">×</button>
+                        <div class="atlas-nav-row"><kbd>drag</kbd> <span>rotate</span></div>
+                        <div class="atlas-nav-row"><kbd>⇧</kbd>+<kbd>drag</kbd> <span>pan</span></div>
+                        <div class="atlas-nav-row"><kbd>scroll</kbd> <span>zoom</span></div>
+                        <div class="atlas-nav-row"><kbd>click</kbd> <span>select</span></div>
+                        <div class="atlas-nav-row"><kbd>Esc</kbd> <span>deselect</span></div>
+                        <div class="atlas-nav-row"><kbd>⌘K</kbd> <span>find a memory</span></div>
+                      </div>
                       <aside id="atlas-legend" class="atlas-legend">
                         <p class="legend-title">Edge categories</p>
                         <p class="brain-subtitle" style="margin: -2px 0 6px;">how this memory is wired</p>
@@ -2279,7 +3677,7 @@
                 <!-- Detail pane: persistent right-side inspector -->
                 <aside class="g-detail" id="g-detail">
                   <div class="g-detail-empty">
-                    <p class="brain-subtitle" style="margin: 0;">Pick a card or search to inspect a memory.</p>
+                    <p class="brain-subtitle" style="margin: 0;">Pick a memory or search to inspect it.</p>
                     <p class="g-detail-shortcuts">
                       <kbd>⌘K</kbd> search · <kbd>E</kbd> fix ·
                       <kbd>⌫</kbd> forget · <kbd>Esc</kbd> close
@@ -2333,7 +3731,7 @@
 
             <!-- STATUS pane — engram counts, lifetime corrections,
                  forgotten-memories cleanup, AI clients currently tapped
-                 into the vault. Lifted out of the Graphnosis dashboard
+                 into the cortex. Lifted out of the Graphnosis dashboard
                  so the check-in surface stays focused on the deck. -->
             <section class="mode-pane hidden" data-pane="status">
               <header class="pane-header">
@@ -2363,17 +3761,14 @@
                   <span class="g-recap-label">Tended in this session</span>
                   <span id="g-recap-tended" class="g-recap-value">0</span>
                 </div>
-                <!-- Forgotten footer: hidden by default, surfaces a
-                     Purge call-to-action only when this engram has
-                     soft-deleted memories still on disk. -->
-                <div id="g-recap-forgotten" class="g-recap-forgotten hidden">
-                  <span id="g-recap-forgotten-text">—</span>
-                  <button id="btn-g-purge" class="btn-g-purge">Purge now</button>
-                </div>
+                <!-- Forgotten-memories surface has moved to
+                     Settings → Cortex Management. Status stays a
+                     read-only health snapshot; destructive ops live
+                     behind the red Cortex Management button. -->
               </div>
 
               <!-- AI tools card: which AI clients are currently tapped
-                   into the vault via MCP. -->
+                   into the cortex via MCP. -->
               <div id="g-mcp" class="g-mcp" style="margin-top: 14px;">
                 <p class="g-mcp-title">
                   AI tools connected
@@ -2389,7 +3784,7 @@
             <section class="mode-pane hidden" data-pane="settings">
               <header class="pane-header">
                 <h2>Settings & actions</h2>
-                <p class="brain-subtitle">tune your graphnosis brain's behavior</p>
+                <p class="brain-subtitle">tune your Graphnosis Cortex</p>
               </header>
               <div class="panel">
                 <p class="panel-title">Preferences</p>
@@ -2401,29 +3796,49 @@
               <div class="panel">
                 <p class="panel-title">AI client integration</p>
                 <p class="subtitle" style="font-size: 11px; margin: -4px 0 10px;">
-                  Wire Claude Desktop to talk to this App's sidecar — your corpus callosum.
+                  Wire Claude Desktop to talk to this App's Synapse — your corpus callosum.
                 </p>
                 <button id="btn-claude">Configure Claude Desktop…</button>
               </div>
               <div class="panel">
-                <p class="panel-title">Vault tools</p>
+                <p class="panel-title">Cortex tools</p>
                 <p class="subtitle" style="font-size: 11px; margin: -4px 0 10px;">
-                  Reconstruct lost memories from the encrypted op-log, refresh state, peek at vault files.
+                  Reconstruct lost memories from the encrypted op-log, refresh state, peek at Cortex files.
                 </p>
                 <button id="btn-recover">Recover from op-log…</button>
                 <button id="btn-refresh" style="margin-left: 6px;">Refresh stats</button>
-                <button id="btn-open-folder" style="margin-left: 6px;">Open vault folder</button>
+                <button id="btn-open-folder" style="margin-left: 6px;">Open Cortex in Finder</button>
+                <button id="btn-cortex-management" class="danger" style="margin-left: 6px;">Cortex Management…</button>
               </div>
               <div class="panel">
-                <p class="panel-title">Vault snapshots</p>
+                <p class="panel-title">Cortex snapshots</p>
                 <p class="subtitle" style="font-size: 11px; margin: -4px 0 10px;">
-                  Frozen point-in-time copies of your encrypted vault — every <code>.gai</code>,
-                  <code>.bundle</code>, <code>.embcache</code>, and the settings file. Useful before a risky
+                  Frozen point-in-time copies of your encrypted Cortex — every <code>.gai</code>,
+                  <code>.bundle</code>, <code>.embcache</code>, <code>master.enc</code>,
+                  <code>recovery.enc</code>, and settings file. Useful before a risky
                   re-ingest, a big correction batch, or trying a new ingest path. Snapshots live
-                  inside the vault folder so they're swept by the same sync as everything else.
+                  inside the Cortex folder so they're swept by the same sync as everything else.
                 </p>
                 <button id="btn-snapshots-open">Manage snapshots…</button>
               </div>
+
+              <!-- ── Recovery phrase ────────────────────────────────────
+                   Generate a fresh 24-word phrase and rewrap recovery.enc.
+                   Useful when the original one-time modal was missed, when
+                   the user thinks the old phrase was exposed, or for
+                   periodic rotation. The dataKey is preserved.            -->
+              <div class="panel">
+                <p class="panel-title">Recovery phrase</p>
+                <p class="subtitle" style="font-size: 11px; margin: -4px 0 10px;">
+                  Your 24-word recovery phrase is the only fallback if you forget your passphrase.
+                  <strong>If you didn't see or didn't write down the phrase Graphnosis showed you the first time</strong>
+                  (or if you think it's been exposed), generate a fresh one. The old phrase becomes invalid;
+                  the new one wraps the same data. Your engrams are untouched.
+                </p>
+                <button id="btn-regenerate-recovery-phrase">Regenerate recovery phrase…</button>
+                <span class="subtitle" style="font-size: 11px; margin-left: 8px;">Shows the new phrase once — write it down before dismissing.</span>
+              </div>
+
             </section>
           </div>
         </div>
@@ -2431,11 +3846,11 @@
         <!-- Status bar -->
         <footer class="app-statusbar">
           <span class="status-search">⌘K to search nodes</span>
+          <span id="status-saved" class="status-saved">—</span>
           <span class="status-mcp">
             <span id="status-mcp-dot" class="status-dot"></span>
             <span id="status-mcp-text">checking clients…</span>
           </span>
-          <span id="status-saved" class="status-saved">—</span>
         </footer>
       </section>
     </main>
@@ -2444,10 +3859,10 @@
     <div id="snapshots-modal" class="modal-backdrop hidden">
       <div class="modal">
         <div class="modal-header">
-          <h2>Vault snapshots</h2>
+          <h2>Cortex snapshots</h2>
           <p class="subtitle">
-            Snapshots freeze a copy of every vault file at this moment. They sit inside
-            your vault folder under <code>.snapshots/</code> — encrypted, syncable, listable.
+            Snapshots freeze a copy of every Cortex file at this moment. They sit inside
+            your Cortex folder under <code>.snapshots/</code> — encrypted, syncable, listable.
           </p>
         </div>
         <div class="modal-body" id="snapshots-body">
@@ -2467,7 +3882,7 @@
         <div class="modal-header">
           <h2>New engram</h2>
           <p class="subtitle">
-            An engram is an independent neighborhood of memory inside your vault — its
+            An engram is an independent neighborhood of memory inside your Graphnosis Cortex — its
             own graph, with its own consolidation rules. Pick a template to seed it
             with sensible defaults; you can change anything later.
           </p>
@@ -2480,15 +3895,17 @@
           <p class="brain-subtitle" style="margin: 14px 0 4px;">Enterprise templates</p>
           <div class="graph-templates" id="gw-enterprise"></div>
 
-          <div class="row" style="margin-top: 16px;">
+        </div>
+        <div class="modal-sticky-fields">
+          <div class="row">
             <label for="gw-name">Display name</label>
             <input type="text" id="gw-name" placeholder="e.g. Work project · Music notes · Reading 2026" />
           </div>
-          <div class="row">
+          <div class="row" style="margin-top: 10px;">
             <label for="gw-id">Internal ID</label>
             <input type="text" id="gw-id" placeholder="slug (lowercase letters, numbers, hyphens)" />
             <p class="subtitle" style="font-size: 10px; margin-top: 4px;">
-              Used as the filename inside your vault. Can't be changed later.
+              Used as the filename inside your Graphnosis Cortex. Can't be changed later.
             </p>
           </div>
         </div>
@@ -2506,8 +3923,8 @@
         <div class="modal-header">
           <h2>Configure Claude Desktop</h2>
           <p class="subtitle">
-            Make Claude Desktop's Graphnosis tools talk to this App's running sidecar
-            instead of spawning its own. Both share one in-memory graph and one vault lock.
+            Make Claude Desktop's Graphnosis tools talk to this App's running Synapse
+            instead of spawning its own. Both share one in-memory graph and one cortex lock.
           </p>
         </div>
         <div class="modal-body" id="claude-body">
@@ -2522,12 +3939,12 @@
       </div>
     </div>
 
-    <!-- Settings modal: per-vault preferences (content cache mode + size cap) -->
+    <!-- Settings modal: per-Cortex preferences (content cache mode + size cap) -->
     <div id="settings-modal" class="modal-backdrop hidden">
       <div class="modal">
         <div class="modal-header">
           <h2>Settings</h2>
-          <p class="subtitle">Per-vault preferences. Stored at <code>&lt;vault&gt;/settings.json</code>.</p>
+          <p class="subtitle">Per-Cortex preferences. Stored at <code>&lt;cortex&gt;/settings.json</code>.</p>
         </div>
         <div class="modal-body" id="settings-body">
           <p class="panel-title" style="margin-top: 0;">Content cache</p>
@@ -2556,13 +3973,13 @@
           <p class="panel-title" style="margin-top: 20px;">MCP relay timings</p>
           <p class="subtitle" style="margin-bottom: 12px;">
             How long the small relay process (the bridge between Claude Desktop and
-            your vault) waits before giving up. Changes apply the next time a client
+            your Cortex) waits before giving up. Changes apply the next time a client
             spawns or reconnects a relay — current Claude sessions keep their old values.
           </p>
           <div class="row">
             <label for="relay-initial">
               Initial connect timeout
-              <span style="color: var(--fg-dim); font-weight: normal;"> — when an MCP client launches before the vault is unlocked</span>
+              <span style="color: var(--fg-dim); font-weight: normal;"> — when an MCP client launches before the Cortex is unlocked</span>
             </label>
             <div style="display: flex; align-items: center; gap: 8px;">
               <input type="number" id="relay-initial" min="2" max="120" step="1" style="flex: 1;" />
@@ -2572,7 +3989,7 @@
           <div class="row">
             <label for="relay-reconnect">
               Reconnect timeout
-              <span style="color: var(--fg-dim); font-weight: normal;"> — when the vault is locked or restarted mid-session</span>
+              <span style="color: var(--fg-dim); font-weight: normal;"> — when the Cortex is locked or restarted mid-session</span>
             </label>
             <div style="display: flex; align-items: center; gap: 8px;">
               <input type="number" id="relay-reconnect" min="5" max="86400" step="1" style="flex: 1;" />
@@ -2604,8 +4021,82 @@
               <input type="checkbox" id="ai-default-memory" />
               <strong>Use Graphnosis as my AI's default memory</strong> — recommended.
               Off = the AI sees the tools but treats them as one option among many; its
-              own memory features lead. Changes take effect on next vault unlock or after
+              own memory features lead. Changes take effect on next Cortex unlock or after
               <em>Reconnect</em> below.
+            </label>
+          </div>
+
+          <p class="panel-title" style="margin-top: 20px;">File-source auto-reingest</p>
+          <p class="subtitle" style="margin-bottom: 12px;">
+            When a file you've ingested changes on disk, Graphnosis can re-read it
+            automatically — same flow as the <em>Reingest</em> button in the Sources tab.
+            Useful for Obsidian notes, daily journals, or any file you actively edit.
+            Off by default: enabling means every save fires a re-chunk + re-embed pass,
+            which is fine for small notes but heavier for big PDFs.
+          </p>
+          <div class="row">
+            <label>
+              <input type="checkbox" id="ai-auto-reingest" />
+              <strong>Re-read file sources when they change on disk.</strong>
+              Only affects file-backed sources (URLs, clips, AI conversations are unaffected).
+            </label>
+          </div>
+          <div class="row" id="reingest-delay-row" style="margin-top: 10px; display: none; align-items: center; gap: 10px;">
+            <label for="ai-reingest-quiet-ms" style="white-space: nowrap; font-size: 13px;">
+              Reingest after file is unchanged for:
+            </label>
+            <select id="ai-reingest-quiet-ms" style="flex: 0 0 auto;">
+              <option value="300000">5 minutes — quick notes &amp; dailies</option>
+              <option value="900000" selected>15 minutes — writing sessions (default)</option>
+              <option value="1800000">30 minutes — longer drafts</option>
+              <option value="3600000">1 hour — documents &amp; PDFs</option>
+              <option value="10800000">3 hours — large or reference files</option>
+              <option value="86400000">1 day — archive files you rarely edit</option>
+            </select>
+          </div>
+
+          <p class="panel-title" style="margin-top: 20px;">Ingest performance</p>
+          <p class="subtitle" style="margin-bottom: 12px;">
+            How aggressively the SDK splits documents into memory nodes, and how
+            many texts it groups into each embedding model call. Sensible defaults
+            cover most users; tune if ingest feels slow or recall feels imprecise.
+            Changes apply to the <em>next</em> file you ingest — existing nodes keep their previous shape.
+          </p>
+          <div class="row" style="display: flex; align-items: center; gap: 10px; margin-bottom: 10px;">
+            <label for="ai-chunk-size" style="white-space: nowrap; font-size: 13px; min-width: 160px;">
+              Chunk size:
+            </label>
+            <select id="ai-chunk-size" style="flex: 0 0 auto;">
+              <option value="fine">Fine — small nodes (~300 chars), best recall, slower ingest</option>
+              <option value="balanced" selected>Balanced — default (~500 chars)</option>
+              <option value="coarse">Coarse — large nodes (~2500 chars), faster, less precise recall</option>
+            </select>
+          </div>
+          <div class="row" style="display: flex; align-items: center; gap: 10px;">
+            <label for="ai-embed-batch" style="white-space: nowrap; font-size: 13px; min-width: 160px;">
+              Embed batch size:
+            </label>
+            <select id="ai-embed-batch" style="flex: 0 0 auto;">
+              <option value="auto" selected>Auto — pick from RAM (recommended)</option>
+              <option value="small">Small — 64/call (low memory, frequent progress)</option>
+              <option value="medium">Medium — 256/call (default)</option>
+              <option value="large">Large — 1024/call (≥ 32 GB RAM)</option>
+            </select>
+          </div>
+
+          <!-- NOTE: Graphs management, Recovery phrase regeneration, and the
+               Quarantined files cleanup have all moved out of this modal
+               into the main Settings tab (side rail) so they're surfaced
+               without requiring a popup. See <section data-pane="settings">. -->
+
+          <p class="panel-title" style="margin-top: 20px;">Support</p>
+          <p class="subtitle" style="margin-bottom: 12px;">
+            Diagnostic tools for sending feedback to Graphnosis support. Active until the next app restart.
+          </p>
+          <div class="row">
+            <label>
+              <input type="checkbox" id="debug-orbit-hud" />
+              <strong>Show orbit diagnostic overlay</strong> — displays live camera, pivot, and motion data in the 3D graph view. Enable before recording a screen capture for support.
             </label>
           </div>
         </div>
@@ -2613,6 +4104,200 @@
           <span class="filler" id="settings-footer-note"></span>
           <button id="btn-settings-cancel">Cancel</button>
           <button id="btn-settings-save" class="primary">Save</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Snapshot offer modal: shown before any operation that mutates the
+         Cortex in a way the user might want to roll back. The subtitle is
+         set by JS depending on the trigger (ingest, recovery, passphrase
+         change). The default copy below is the ingest-time variant.       -->
+    <div id="snapshot-offer-modal" class="modal-backdrop hidden">
+      <div class="modal" style="max-width: 460px;">
+        <div class="modal-header">
+          <h2 id="snapshot-offer-title">Save a snapshot?</h2>
+          <p class="subtitle" id="snapshot-offer-subtitle">
+            Pin the current state of your Cortex before ingesting. If this file changes
+            something you didn't expect, you can restore from the snapshot.
+          </p>
+        </div>
+        <div class="modal-footer">
+          <span class="filler" id="snapshot-offer-note"></span>
+          <button id="btn-snapshot-skip">Skip</button>
+          <button id="btn-snapshot-confirm" class="primary">Snapshot &amp; Continue</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── Relationship-type picker modal ────────────────────────────────
+         Opened from the Check-in candidate panel's "Other…" button. Shows
+         the full RELATIONSHIP_LABELS catalog as a vertical list so the user
+         can pick any type — replacing the old node-search "Other…" flow
+         which let you swap candidates (we have a search box on the card
+         body already; "Other" should be about THE RELATIONSHIP TYPE only). -->
+    <div id="rel-type-picker-modal" class="modal-backdrop hidden">
+      <div class="modal" style="max-width: 480px;">
+        <div class="modal-header">
+          <h2>How are these connected?</h2>
+          <p class="subtitle">Pick the relationship type that fits best. Each label maps to a typed edge in your engram graph.</p>
+        </div>
+        <div class="modal-body">
+          <div id="rel-type-picker-list" style="display: flex; flex-direction: column; gap: 4px;"></div>
+        </div>
+        <div class="modal-footer">
+          <span class="filler"></span>
+          <button id="btn-rel-type-cancel">Cancel</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── Cortex Management modal ───────────────────────────────────────
+         Opened from Settings → Cortex Tools → Cortex Management… This is the
+         single home for destructive engram operations: archive/delete graphs
+         and review/restore/delete quarantined corrupt files. Every action
+         inside requires typed confirmation. Surfaced as a modal (not a
+         top-level panel) because these are rare, careful operations.       -->
+    <div id="cortex-management-modal" class="modal-backdrop hidden">
+      <div class="modal" style="max-width: 640px;">
+        <div class="modal-header">
+          <h2>Cortex Management</h2>
+          <p class="subtitle">Archive or delete engrams, and clean up quarantined files. Destructive actions require you to type a confirmation phrase.</p>
+        </div>
+        <div class="modal-body">
+          <!-- Forgotten memories: soft-deleted nodes still on disk.
+               "Purge now" physically rebuilds the engram from the surviving
+               live sources to release space and remove the audit trail.
+               Slow on big engrams; aborts safely if any source can't be
+               re-read. Lives at the top of Cortex Management because it's
+               the most common destructive op (regular forget cycles
+               accumulate soft-deletes faster than corruption or graph
+               restructuring).                                            -->
+          <p class="panel-title" style="margin-top: 0;">Forgotten memories</p>
+          <p class="subtitle" style="font-size: 11px; margin: -4px 0 10px;">
+            Memories you've forgotten are <em>soft-deleted</em>: hidden from recall
+            but still on disk in case you need to undo. <strong>Purge now</strong>
+            rebuilds the engram from its remaining live sources to physically
+            remove them. Slow on big engrams; aborts safely if any source can't
+            be re-read.
+          </p>
+          <div id="g-recap-forgotten" class="g-recap-forgotten hidden"></div>
+          <p id="cm-no-forgotten" class="subtitle" style="font-size: 11px;">
+            Nothing forgotten right now — your engrams are clean.
+          </p>
+
+          <p class="panel-title" style="margin-top: 24px;">Engrams in this cortex</p>
+          <p class="subtitle" style="font-size: 11px; margin: -4px 0 10px;">
+            Archive an engram to hide it from the picker without touching its data.
+            Delete permanently removes all memories, sources, and embeddings — this cannot be undone.
+          </p>
+          <div id="settings-graphs-list" style="display: flex; flex-direction: column; gap: 6px;">
+            <p class="subtitle" style="font-size: 11px;">Loading…</p>
+          </div>
+
+          <p class="panel-title" style="margin-top: 24px;">Quarantined files</p>
+          <p class="subtitle" style="font-size: 11px; margin: -4px 0 10px;">
+            Engram files that failed integrity checks (corrupt <code>.gai</code> or <code>.bundle</code>)
+            and were auto-moved aside. Kept on disk in case you need them for manual recovery.
+            <strong>Don't delete a quarantined file until you've successfully re-ingested its sources via Recover from op-log</strong>
+            — it's the only on-disk copy of those bytes.
+          </p>
+          <div id="settings-quarantine-list" style="display: flex; flex-direction: column; gap: 6px;">
+            <p class="subtitle" style="font-size: 11px;">Loading…</p>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <span class="filler"></span>
+          <button id="btn-cortex-management-close" class="primary">Done</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── Quarantine action confirm modal ────────────────────────────────
+         Generic typed-confirmation modal for destructive actions on
+         quarantined files. The user must type the exact requested phrase
+         (e.g. "delete davinci-manual") before the action button enables.
+         Reused for delete + restore; the message text is set by JS.       -->
+    <div id="quarantine-confirm-modal" class="modal-backdrop hidden">
+      <div class="modal" style="max-width: 480px;">
+        <div class="modal-header">
+          <h2 id="qcm-title">Confirm</h2>
+          <p class="subtitle" id="qcm-subtitle"></p>
+        </div>
+        <div class="modal-body">
+          <div id="qcm-warning" class="recovery-phrase-alert" style="margin-bottom: 14px;"></div>
+          <div class="row">
+            <label for="qcm-input" id="qcm-input-label">Type the phrase to confirm:</label>
+            <input type="text" id="qcm-input" spellcheck="false" autocorrect="off" autocapitalize="off" />
+          </div>
+        </div>
+        <div class="modal-footer">
+          <span class="filler" id="qcm-status"></span>
+          <button id="btn-qcm-cancel">Cancel</button>
+          <button id="btn-qcm-confirm" class="primary" disabled>Confirm</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── Set-new-passphrase modal (after recovery unlock) ──────────────
+         Shown immediately after a recovery-phrase unlock so the user can
+         pick a passphrase they'll actually remember. The dataKey is
+         preserved — this only rewraps master.enc — so it's instant and
+         safe. The user can also Skip if they prefer to keep the current
+         (forgotten) passphrase and rely on the recovery phrase next time. -->
+    <div id="set-new-passphrase-modal" class="modal-backdrop hidden">
+      <div class="modal" style="max-width: 480px;">
+        <div class="modal-header">
+          <h2>Set a new passphrase?</h2>
+          <p class="subtitle">You unlocked your Cortex with the recovery phrase. While you're here, pick a new passphrase so you can unlock normally next time.</p>
+        </div>
+        <div class="modal-body">
+          <div class="row">
+            <label for="snp-new">New passphrase</label>
+            <input type="password" id="snp-new" placeholder="At least 8 characters, ideally a memorable phrase" />
+          </div>
+          <div class="row">
+            <label for="snp-confirm">Confirm passphrase</label>
+            <input type="password" id="snp-confirm" placeholder="Type it again" />
+          </div>
+          <p id="snp-error" class="error hidden" style="margin-bottom: 0;"></p>
+          <p class="subtitle" style="font-size: 11px; margin: 12px 0 0; line-height: 1.5;">
+            Your 24-word recovery phrase stays valid as a fallback for the new passphrase. Your encrypted memories are not re-encrypted — only the wrapping key changes. This is instant and safe.
+          </p>
+        </div>
+        <div class="modal-footer">
+          <span class="filler" id="snp-status"></span>
+          <button id="btn-snp-skip">Skip for now</button>
+          <button id="btn-snp-save" class="primary">Save new passphrase</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── Recovery PHRASE modal ──────────────────────────────────────────
+         Shown exactly once, right after a brand-new cortex is created.
+         The 24-word BIP-39 mnemonic is the only fallback if the passphrase
+         is ever forgotten. The user must acknowledge before dismissing.     -->
+    <div id="recovery-phrase-modal" class="modal-backdrop hidden">
+      <div class="modal" style="max-width: 560px;">
+        <div class="modal-header">
+          <h2>🔐 Save your Recovery Phrase</h2>
+          <p class="subtitle">These 24 words are the <strong>only</strong> backup if you ever forget your passphrase. Graphnosis just generated them for your Cortex — write them down now.</p>
+        </div>
+        <div class="modal-body">
+          <div class="recovery-phrase-alert">
+            ⚠ This phrase will never be shown again. Write it down and store it somewhere safe — a password manager, a printed note in a secure place, or both.
+          </div>
+          <div id="recovery-phrase-grid" class="recovery-phrase-grid">
+            <!-- populated by JS -->
+          </div>
+          <div class="recovery-phrase-checkbox-row">
+            <input type="checkbox" id="recovery-phrase-ack" />
+            <label for="recovery-phrase-ack" style="-webkit-user-select: none; user-select: none;">
+              I have written down all 24 words and stored them safely. I understand they cannot be recovered from this app.
+            </label>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button id="btn-recovery-phrase-close" class="primary" disabled>I've saved my recovery phrase — Continue</button>
         </div>
       </div>
     </div>
@@ -2631,6 +4316,23 @@
           <span class="filler" id="recovery-footer-note"></span>
           <button id="btn-recovery-close">Close</button>
           <button id="btn-recovery-apply" class="primary hidden">Recover selected</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── First-run guided tour ─────────────────────────────────────────── -->
+    <div id="tour-overlay" class="tour-overlay hidden">
+      <div class="tour-backdrop"></div>
+      <div class="tour-card">
+        <div id="tour-step-indicator" class="tour-step-indicator"></div>
+        <h2 id="tour-title" class="tour-title"></h2>
+        <p id="tour-body" class="tour-body"></p>
+        <div class="tour-actions">
+          <button id="tour-skip" class="tour-btn-skip">Skip tour</button>
+          <div class="tour-actions-right">
+            <button id="tour-prev" class="tour-btn-secondary">Back</button>
+            <button id="tour-next" class="tour-btn-primary">Next →</button>
+          </div>
         </div>
       </div>
     </div>
