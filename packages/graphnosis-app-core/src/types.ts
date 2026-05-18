@@ -18,4 +18,12 @@ export interface SourceRecord {
   graphId: GraphId;
   nodeIds: NodeId[];
   contentHash?: string;
+  /**
+   * Who added or last corrected this source. Set when the ingest or
+   * correction came from an MCP client (e.g. "claude-ai", "cursor",
+   * "claude-code"); undefined when the user added it directly via the
+   * app UI (drag-drop, paste, file picker). Free-form string — comes
+   * from the MCP `initialize` handshake's `clientInfo.name`.
+   */
+  addedBy?: string;
 }
