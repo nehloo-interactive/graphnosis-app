@@ -1293,9 +1293,14 @@ async function refreshStats(): Promise<void> {
         const finderBtn = s.kind === 'file'
           ? `<button class="btn-show-finder" data-ref="${escape(s.ref)}" title="Reveal this file in Finder">Show in Finder</button>`
           : '';
-        const isDisabled = disabledSources.has(s.sourceId);
-        const toggleCls = isDisabled ? 'btn-source-enable' : 'btn-source-disable';
-        const toggleLabel = isDisabled ? 'Enable' : 'Disable';
+        // Disable/Enable toggle hidden pending a redesign — see the
+        // "source disable / session filtering for power users" TODO in
+        // the Coding engram. The current implementation was client-only
+        // (no persistence, no sidecar filter for check-in / 3D / stats /
+        // recall) and gave the false impression that disabled sources
+        // were excluded everywhere. Until we land a real design (demo
+        // mode, per-recall exclusion, or tag-based filters), the button
+        // is omitted from the row. Forget remains for permanent removal.
         // "via Claude" attribution badge for sources added through an MCP
         // client (remember/correct tools). User-added sources (drag-drop,
         // paste, file picker) have no `addedBy` and get no badge.
@@ -1303,13 +1308,12 @@ async function refreshStats(): Promise<void> {
           ? `<span class="source-added-by" title="Added by ${escape(s.addedBy)} via MCP">via ${escape(s.addedBy)}</span>`
           : '';
         return `
-          <div class="source-row${isDisabled ? ' source-row-disabled' : ''}" data-source-id="${escape(s.sourceId)}">
+          <div class="source-row" data-source-id="${escape(s.sourceId)}">
             <span class="source-name" title="${escape(s.ref)}">${escape(s.ref)}</span>
             <span class="source-meta">${s.nodeIds.length} node${s.nodeIds.length === 1 ? '' : 's'}</span>
             ${addedByBadge}
             ${finderBtn}
             ${reingestBtn}
-            <button class="${toggleCls}" data-source-id="${escape(s.sourceId)}" data-ref="${escape(s.ref)}">${toggleLabel}</button>
             <button class="btn-forget" data-graph-id="${escape(s.graphId)}" data-source-id="${escape(s.sourceId)}" data-node-count="${s.nodeIds.length}" data-ref="${escape(s.ref)}">Forget</button>
           </div>`;
       };
