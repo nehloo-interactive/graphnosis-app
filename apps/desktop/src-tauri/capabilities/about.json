@@ -1,0 +1,12 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "about",
+  "description": "Capabilities granted to the About panel window opened via the `open_about_window` Tauri command. Kept tight — only what about.html actually needs: read the app version (core:app), open external URLs through the Rust opener plugin, and close itself. NO file system, dialog, notification, or sidecar IPC permissions are granted to this window.",
+  "windows": ["about"],
+  "permissions": [
+    "core:default",
+    "core:app:default",
+    "core:window:allow-close",
+    "core:window:allow-set-focus"
+  ]
+}

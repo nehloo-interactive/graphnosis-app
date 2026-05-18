@@ -5,8 +5,9 @@
 //! - Tray (menu-bar) icon + dropdown menu
 //! - Commands invoked from the unlock / inspector UI
 //! - Supervises the Node sidecar process (single-writer guaranteed by
-//!   the sidecar's own vault lock)
+//!   the sidecar's own cortex lock)
 
+mod biometric;
 mod event_stream;
 mod ipc_client;
 mod keychain;
@@ -30,30 +31,42 @@ pub struct AppState {
 
 #[derive(Default)]
 struct AppInner {
-    vault_dir: Option<PathBuf>,
+    cortex_dir: Option<PathBuf>,
     sidecar: Option<sidecar::SidecarHandle>,
-    /// Long-lived task reading push-events from `<vault>/events.sock`.
+    /// Long-lived task reading push-events from `<cortex>/events.sock`.
     /// Spawned on unlock; dropped/cancelled on lock or sidecar replacement.
     event_stream: Option<event_stream::EventStreamHandle>,
+    /// True when the current session was unlocked via the 24-word recovery
+    /// phrase (not the passphrase). This drives the post-recovery flow that
+    /// offers the user a chance to set a new passphrase — the new
+    /// `change_passphrase` call goes through with `skipOldPassphraseCheck`
+    /// because the user can't be expected to also know the forgotten old one.
+    unlocked_via_recovery: bool,
 }
 
 #[derive(Serialize, Deserialize)]
 pub struct UnlockArgs {
-    pub vault_dir: String,
+    pub cortex_dir: String,
     pub passphrase: String,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct RecoveryUnlockArgs {
+    pub cortex_dir: String,
+    pub recovery_phrase: String,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
 pub struct StatusSnapshot {
     pub unlocked: bool,
-    pub vault_dir: Option<String>,
+    pub cortex_dir: Option<String>,
     pub sidecar_running: bool,
 }
 
 // ---------- commands -----------------------------------------------------
 
 #[tauri::command]
-async fn pick_vault_folder(app: AppHandle) -> Result<Option<String>, String> {
+async fn pick_cortex_folder(app: AppHandle) -> Result<Option<String>, String> {
     let result = app
         .dialog()
         .file()
@@ -65,44 +78,96 @@ async fn pick_vault_folder(app: AppHandle) -> Result<Option<String>, String> {
 }
 
 #[tauri::command]
-async fn unlock_vault(
+async fn unlock_cortex(
     app: AppHandle,
     state: State<'_, AppState>,
     args: UnlockArgs,
 ) -> Result<StatusSnapshot, String> {
-    let vault_dir = PathBuf::from(&args.vault_dir);
-    if !vault_dir.is_dir() {
-        return Err(format!("Vault folder does not exist: {}", args.vault_dir));
+    let cortex_dir = PathBuf::from(&args.cortex_dir);
+    if !cortex_dir.is_dir() {
+        return Err(format!("Cortex folder does not exist: {}", args.cortex_dir));
     }
 
-    // Persist the passphrase to the OS keychain so subsequent app launches
-    // can auto-unlock without re-prompting.
-    keychain::store_passphrase(&args.vault_dir, &args.passphrase).map_err(|e| e.to_string())?;
+    // Persist the passphrase locally so subsequent launches can offer
+    // Touch ID unlock without re-prompting for the passphrase. We log on
+    // failure only; successful writes are routine and don't need stderr.
+    if let Err(e) = keychain::store_passphrase(&args.cortex_dir, &args.passphrase) {
+        eprintln!("[unlock_cortex] could not store passphrase for Touch ID: {:#}", e);
+        return Err(e.to_string());
+    }
 
     // Spawn the supervised Node sidecar. The sidecar acquires an exclusive
-    // vault lock on its own, so if another sidecar is already running against
-    // the same vault, this call will fail visibly.
-    let handle = sidecar::start(&vault_dir, &args.passphrase)
+    // cortex lock on its own, so if another sidecar is already running against
+    // the same cortex, this call will fail visibly.
+    let handle = sidecar::start(&cortex_dir, &args.passphrase)
         .await
         .map_err(|e| e.to_string())?;
 
     {
         let mut inner = state.inner.lock().await;
-        // If we had a previous sidecar running for a different vault, kill it cleanly.
+        // If we had a previous sidecar running for a different cortex, kill it cleanly.
         if let Some(prev) = inner.sidecar.take() {
             let _ = prev.shutdown().await;
         }
-        // Tear down the prior event stream (different vault → different
+        // Tear down the prior event stream (different cortex → different
         // socket). The new stream is spawned just below.
         if let Some(prev) = inner.event_stream.take() {
             prev.shutdown().await;
         }
-        inner.vault_dir = Some(vault_dir.clone());
+        inner.cortex_dir = Some(cortex_dir.clone());
         inner.sidecar = Some(handle);
-        // Spawn the push-event reader for this vault. It tolerates the
+        inner.unlocked_via_recovery = false;
+        // Spawn the push-event reader for this cortex. It tolerates the
         // sidecar's events socket not being up yet — bounded backoff
-        // retries until either it connects or vault lock cancels it.
-        inner.event_stream = Some(event_stream::spawn(app.clone(), vault_dir.clone()));
+        // retries until either it connects or cortex lock cancels it.
+        inner.event_stream = Some(event_stream::spawn(app.clone(), cortex_dir.clone()));
+    }
+
+    // First-run detection: the sidecar writes `.recovery-pending` with the
+    // plaintext 24-word phrase when it creates a brand-new cortex (or backfills
+    // a legacy one). Read it, delete it, and emit `graphnosis://cortex-created`
+    // so the webview can show the one-time recovery phrase modal.
+    //
+    // Event name uses a HYPHEN, not a dot — Tauri 2's event-name validator
+    // rejects '.' (allowed: alphanumeric, '-', '/', ':', '_'). Emitting a
+    // dotted name silently fails. Same applies to all forwarded events; see
+    // event_stream.rs for the conversion logic.
+    //
+    // Diagnostics: every path through this block is logged. If a user reports
+    // "the modal never showed", this is the first place to look. If the file
+    // exists, the read happens; if the read fails, we keep the file on disk
+    // for retry. The emit is wrapped so we know whether Tauri accepted it.
+    let pending_path = cortex_dir.join(".recovery-pending");
+    match std::fs::read_to_string(&pending_path) {
+        Ok(phrase) => {
+            let phrase = phrase.trim().to_string();
+            if phrase.is_empty() {
+                // Sidecar wrote an empty file — drop it, nothing to surface.
+                let _ = std::fs::remove_file(&pending_path);
+            } else {
+                match app.emit("graphnosis://cortex-created", phrase.clone()) {
+                    Ok(()) => {
+                        // Only delete the pending file AFTER a successful
+                        // emit. If emit failed, the file stays so the next
+                        // unlock retries.
+                        let _ = std::fs::remove_file(&pending_path);
+                    }
+                    Err(e) => {
+                        eprintln!(
+                            "[unlock] could not emit recovery-phrase event: {} — \
+                             leaving pending file for next launch",
+                            e
+                        );
+                    }
+                }
+            }
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            // Normal case: no pending phrase to show.
+        }
+        Err(e) => {
+            eprintln!("[unlock] could not read pending recovery file: {}", e);
+        }
     }
 
     let snapshot = current_status(&state).await;
@@ -111,9 +176,296 @@ async fn unlock_vault(
     Ok(snapshot)
 }
 
+/// Unlock the cortex using the 24-word BIP-39 recovery phrase instead of the
+/// passphrase. Used when the user has forgotten their passphrase.
+/// Does NOT persist anything to the keychain — this is an emergency access
+/// path; the user should set a new passphrase or change their workflow after recovery.
 #[tauri::command]
-async fn lock_vault(app: AppHandle, state: State<'_, AppState>) -> Result<StatusSnapshot, String> {
-    let vault_dir_str = {
+async fn unlock_cortex_with_recovery(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    args: RecoveryUnlockArgs,
+) -> Result<StatusSnapshot, String> {
+    let cortex_dir = PathBuf::from(&args.cortex_dir);
+    if !cortex_dir.is_dir() {
+        return Err(format!("Cortex folder does not exist: {}", args.cortex_dir));
+    }
+    // Validate the cortex has a recovery.enc before spawning the sidecar.
+    if !cortex_dir.join("recovery.enc").exists() {
+        return Err(
+            "No recovery.enc found in this cortex folder. \
+             Recovery is only available for cortexes created with Graphnosis v0.2.x or later."
+                .to_string(),
+        );
+    }
+
+    let handle = sidecar::start_with_recovery(&cortex_dir, &args.recovery_phrase)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    {
+        let mut inner = state.inner.lock().await;
+        if let Some(prev) = inner.sidecar.take() {
+            let _ = prev.shutdown().await;
+        }
+        if let Some(prev) = inner.event_stream.take() {
+            prev.shutdown().await;
+        }
+        inner.cortex_dir = Some(cortex_dir.clone());
+        inner.sidecar = Some(handle);
+        inner.unlocked_via_recovery = true;
+        inner.event_stream = Some(event_stream::spawn(app.clone(), cortex_dir.clone()));
+    }
+
+    let snapshot = current_status(&state).await;
+    let _ = app.emit("graphnosis://status", &snapshot);
+    // Tell the frontend this session was unlocked via recovery so it can
+    // surface the "Set a new passphrase?" modal.
+    let _ = app.emit("graphnosis://unlocked-via-recovery", ());
+    tray::refresh_status(&app, &snapshot);
+    Ok(snapshot)
+}
+
+/// Suggest a sensible default cortex-folder path for a brand-new user
+/// (`~/Graphnosis-Cortex`). The folder doesn't need to exist yet — the
+/// sidecar creates it on first unlock. Used by the lock screen to pre-fill
+/// the cortex-folder input when the user hasn't picked one before.
+#[tauri::command]
+async fn suggest_cortex_path() -> Result<String, String> {
+    let home = dirs::home_dir().ok_or_else(|| "could not resolve home directory".to_string())?;
+    Ok(home.join("Graphnosis-Cortex").to_string_lossy().to_string())
+}
+
+/// Reports whether the lock screen should offer a Touch ID button for the
+/// given cortex. Two preconditions:
+///   1. Biometric hardware is present + the user has at least one enrolled
+///      fingerprint (checked by spawning the Swift sidecar in --check mode).
+///   2. We have a stored passphrase for this cortex in the macOS Keychain.
+///      Without that, biometric auth has nothing to unlock — the user
+///      hasn't completed a passphrase login on this machine yet.
+///
+/// Returning false is the silent fallback: the frontend hides the button
+/// and the user uses the passphrase field as normal.
+#[tauri::command]
+async fn biometric_available(
+    app: AppHandle,
+    cortex_dir: String,
+) -> Result<bool, String> {
+    let has_passphrase = keychain::load_passphrase(&cortex_dir)
+        .map_err(|e| e.to_string())?
+        .is_some();
+    if !has_passphrase {
+        return Ok(false);
+    }
+    Ok(biometric::is_available(&app).await)
+}
+
+/// Unlock the cortex via Touch ID. Triggers the macOS biometric prompt
+/// (via the Swift sidecar); on success, reads the stored passphrase from
+/// the Keychain and delegates to the regular `unlock_cortex` flow.
+#[tauri::command]
+async fn biometric_unlock(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    cortex_dir: String,
+) -> Result<StatusSnapshot, String> {
+    let ok = biometric::prompt(&app, "Unlock your Graphnosis Cortex")
+        .await
+        .map_err(|e| e.to_string())?;
+    if !ok {
+        return Err("biometric authentication cancelled".to_string());
+    }
+    let passphrase = keychain::load_passphrase(&cortex_dir)
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| "no saved passphrase for this cortex".to_string())?;
+    let args = UnlockArgs { cortex_dir, passphrase };
+    unlock_cortex(app, state, args).await
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct ChangePassphraseArgs {
+    pub new_passphrase: String,
+    /// Required for "I remember my old passphrase and want to rotate it"
+    /// flow. Omitted when the current session is unlocked via recovery
+    /// phrase (the sidecar will skip the old-passphrase check in that case,
+    /// driven by `inner.unlocked_via_recovery`).
+    pub old_passphrase: Option<String>,
+}
+
+/// Rewrap master.enc with a key derived from `new_passphrase`. The data key
+/// — and every encrypted file in the cortex — is unchanged. Recovery phrase
+/// remains valid. On success, the new passphrase is also written to the
+/// macOS Keychain so the app auto-unlocks with it on subsequent launches.
+#[tauri::command]
+async fn change_passphrase(
+    state: State<'_, AppState>,
+    args: ChangePassphraseArgs,
+) -> Result<serde_json::Value, String> {
+    let (socket_path, cortex_dir, skip_old_check) = {
+        let inner = state.inner.lock().await;
+        let cd = inner.cortex_dir.clone()
+            .ok_or_else(|| "cortex is locked".to_string())?;
+        (cd.join("sidecar.sock"), cd, inner.unlocked_via_recovery)
+    };
+
+    // If we're not in a recovery session, the user must supply the old
+    // passphrase. Refuse rather than silently skipping the check.
+    if !skip_old_check && args.old_passphrase.is_none() {
+        return Err(
+            "old_passphrase is required when not unlocked via recovery phrase"
+                .to_string(),
+        );
+    }
+
+    let mut params = serde_json::json!({
+        "newPassphrase": args.new_passphrase,
+    });
+    if skip_old_check {
+        params["skipOldPassphraseCheck"] = serde_json::Value::Bool(true);
+    } else if let Some(op) = &args.old_passphrase {
+        params["oldPassphrase"] = serde_json::Value::String(op.clone());
+    }
+
+    let result = ipc_client::request_with_timeout(
+        &socket_path,
+        "passphrase.change",
+        params,
+        std::time::Duration::from_secs(60),
+    )
+        .await
+        .map_err(|e| e.to_string())?;
+
+    // Update the macOS Keychain so future auto-unlocks use the new passphrase.
+    // Failure here is non-fatal — the rotation already succeeded on disk —
+    // but we surface it as a warning so the user knows they may be prompted
+    // on next launch instead of auto-unlocked.
+    let keychain_ok = keychain::store_passphrase(
+        &cortex_dir.to_string_lossy(),
+        &args.new_passphrase,
+    ).is_ok();
+
+    // Clear the recovery-session flag — the user has now set a real
+    // passphrase, future passphrase changes should require the old one.
+    {
+        let mut inner = state.inner.lock().await;
+        inner.unlocked_via_recovery = false;
+    }
+
+    let mut out = result;
+    if let Some(obj) = out.as_object_mut() {
+        obj.insert(
+            "keychainUpdated".to_string(),
+            serde_json::Value::Bool(keychain_ok),
+        );
+    }
+    Ok(out)
+}
+
+/// Generate a fresh 24-word recovery phrase, replacing the existing
+/// `recovery.enc`. Returns the new phrase as a string so the frontend can
+/// show it once (then never again — same modal as first-run).
+///
+/// The data key is preserved; only the wrapper changes.
+#[tauri::command]
+async fn regenerate_recovery_phrase(state: State<'_, AppState>) -> Result<String, String> {
+    let socket_path = {
+        let inner = state.inner.lock().await;
+        match &inner.cortex_dir {
+            Some(vd) => vd.join("sidecar.sock"),
+            None => return Err("cortex is locked".to_string()),
+        }
+    };
+    let result = ipc_client::request_with_timeout(
+        &socket_path,
+        "recoveryPhrase.regenerate",
+        serde_json::Value::Null,
+        std::time::Duration::from_secs(15),
+    )
+        .await
+        .map_err(|e| e.to_string())?;
+    // Extract `recoveryPhrase` from the response object.
+    result
+        .get("recoveryPhrase")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
+        .ok_or_else(|| "sidecar response missing recoveryPhrase".to_string())
+}
+
+/// List every quarantined `.gai.corrupt-<ts>` / `.bundle.corrupt-<ts>` file
+/// in the cortex's `graphs/` directory. Used by the Settings → Quarantine
+/// section so the user can review and decide whether to delete or restore.
+#[tauri::command]
+async fn list_quarantine(state: State<'_, AppState>) -> Result<serde_json::Value, String> {
+    let socket_path = {
+        let inner = state.inner.lock().await;
+        match &inner.cortex_dir {
+            Some(vd) => vd.join("sidecar.sock"),
+            None => return Err("cortex is locked".to_string()),
+        }
+    };
+    ipc_client::request_with_timeout(
+        &socket_path,
+        "quarantine.list",
+        serde_json::Value::Null,
+        std::time::Duration::from_secs(15),
+    )
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Permanently delete one quarantined file. The frontend is responsible for
+/// confirmation UX (typed match); the sidecar enforces a name-shape regex
+/// so this can't be abused to delete arbitrary cortex files.
+#[tauri::command]
+async fn delete_quarantine(
+    state: State<'_, AppState>,
+    name: String,
+) -> Result<serde_json::Value, String> {
+    let socket_path = {
+        let inner = state.inner.lock().await;
+        match &inner.cortex_dir {
+            Some(vd) => vd.join("sidecar.sock"),
+            None => return Err("cortex is locked".to_string()),
+        }
+    };
+    ipc_client::request_with_timeout(
+        &socket_path,
+        "quarantine.delete",
+        serde_json::json!({ "name": name }),
+        std::time::Duration::from_secs(15),
+    )
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Restore a quarantined file to its canonical name. Used when the user
+/// believes the quarantine was spurious. Refuses if a current file with
+/// the same canonical name already exists.
+#[tauri::command]
+async fn restore_quarantine(
+    state: State<'_, AppState>,
+    name: String,
+) -> Result<serde_json::Value, String> {
+    let socket_path = {
+        let inner = state.inner.lock().await;
+        match &inner.cortex_dir {
+            Some(vd) => vd.join("sidecar.sock"),
+            None => return Err("cortex is locked".to_string()),
+        }
+    };
+    ipc_client::request_with_timeout(
+        &socket_path,
+        "quarantine.restore",
+        serde_json::json!({ "name": name }),
+        std::time::Duration::from_secs(15),
+    )
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn lock_cortex(app: AppHandle, state: State<'_, AppState>) -> Result<StatusSnapshot, String> {
+    {
         let mut inner = state.inner.lock().await;
         if let Some(handle) = inner.sidecar.take() {
             let _ = handle.shutdown().await;
@@ -121,14 +473,20 @@ async fn lock_vault(app: AppHandle, state: State<'_, AppState>) -> Result<Status
         if let Some(stream) = inner.event_stream.take() {
             stream.shutdown().await;
         }
-        inner.vault_dir.as_ref().map(|p| p.to_string_lossy().into_owned())
-    };
-    if let Some(vd) = vault_dir_str {
-        let _ = keychain::clear_passphrase(&vd);
     }
+    // NOTE: we deliberately do NOT clear the cached passphrase here. Lock
+    // means "step away" not "forget everything"; if we delete the cached
+    // passphrase on lock, Touch ID unlock has nothing to read on the next
+    // visit to the lock screen — defeating the whole point of storing it.
+    // The cache is only cleared when:
+    //   - The user explicitly changes the passphrase (passphrase rotation
+    //     replaces the cache on success)
+    //   - The user disables Touch ID for this cortex (future Settings flow)
+    //   - The user deletes the Cortex (also a future flow)
+    // For now: persist until one of those happens.
     let snapshot = StatusSnapshot {
         unlocked: false,
-        vault_dir: None,
+        cortex_dir: None,
         sidecar_running: false,
     };
     let _ = app.emit("graphnosis://status", &snapshot);
@@ -149,9 +507,9 @@ async fn status(state: State<'_, AppState>) -> Result<StatusSnapshot, String> {
 async fn node_cursor(state: State<'_, AppState>) -> Result<serde_json::Value, String> {
     let socket_path = {
         let inner = state.inner.lock().await;
-        match &inner.vault_dir {
+        match &inner.cortex_dir {
             Some(vd) => vd.join("sidecar.sock"),
-            None => return Err("vault is locked".to_string()),
+            None => return Err("cortex is locked".to_string()),
         }
     };
     ipc_client::request_with_timeout(
@@ -168,9 +526,9 @@ async fn node_cursor(state: State<'_, AppState>) -> Result<serde_json::Value, St
 async fn inspector_stats(state: State<'_, AppState>) -> Result<serde_json::Value, String> {
     let socket_path = {
         let inner = state.inner.lock().await;
-        match &inner.vault_dir {
+        match &inner.cortex_dir {
             Some(vd) => vd.join("sidecar.sock"),
-            None => return Err("vault is locked".to_string()),
+            None => return Err("cortex is locked".to_string()),
         }
     };
     // First call right after unlock can race the sidecar's host init —
@@ -193,9 +551,9 @@ async fn ingest_file(
 ) -> Result<serde_json::Value, String> {
     let socket_path = {
         let inner = state.inner.lock().await;
-        match &inner.vault_dir {
+        match &inner.cortex_dir {
             Some(vd) => vd.join("sidecar.sock"),
-            None => return Err("vault is locked".to_string()),
+            None => return Err("cortex is locked".to_string()),
         }
     };
     let params = serde_json::json!({
@@ -203,12 +561,14 @@ async fn ingest_file(
         "path": path,
     });
     // PDF parse + embeddings build + encrypted save can take well over 5s
-    // on first ingest (BGE model warm-up). Give it a generous budget.
+    // on first ingest (BGE model warm-up). Large PDFs (100+ pages) can
+    // saturate the embedding pipeline for several minutes. 600s (10 min)
+    // covers even the largest realistic documents.
     ipc_client::request_with_timeout(
         &socket_path,
         "ingest.file",
         params,
-        std::time::Duration::from_secs(180),
+        std::time::Duration::from_secs(600),
     )
         .await
         .map_err(|e| e.to_string())
@@ -267,6 +627,9 @@ async fn pick_files(app: AppHandle) -> Result<Vec<String>, String> {
 struct ClaudeConfigResult {
     config_path: String,
     relay_path: String,
+    /// Empty string — kept in the payload for backward compatibility with
+    /// older frontend versions that still read it. Post-Bun the relay is a
+    /// self-contained binary and Claude doesn't need a separate Node path.
     node_path: String,
     socket_path: String,
     /// True if the existing config already had a matching Graphnosis entry
@@ -289,16 +652,21 @@ struct ClaudeConfigResult {
 async fn configure_claude_desktop(
     state: State<'_, AppState>,
 ) -> Result<ClaudeConfigResult, String> {
-    // Need an unlocked vault — the socket path lives inside it.
-    let vault_dir = {
+    // Need an unlocked cortex — the socket path lives inside it.
+    let cortex_dir = {
         let inner = state.inner.lock().await;
-        inner.vault_dir.clone()
+        inner.cortex_dir.clone()
     }
-    .ok_or_else(|| "Unlock the vault first — Claude needs the vault's socket path.".to_string())?;
+    .ok_or_else(|| "Unlock the cortex first — Claude needs the cortex's socket path.".to_string())?;
 
-    let socket_path = vault_dir.join("mcp.sock");
+    let socket_path = cortex_dir.join("mcp.sock");
 
-    let (node, relay) = sidecar::resolve_node_and_relay().map_err(|e| e.to_string())?;
+    // Resolve the compiled MCP relay binary. Pre-Bun: this used to return
+    // (node-path, relay.js) and Claude was configured to run `node + relay.js`.
+    // Post-Bun: the relay is a self-contained executable, so Claude spawns
+    // it directly with the socket path as argv[1] — no Node dependency on
+    // the user's machine.
+    let relay = sidecar::resolve_relay_path().map_err(|e| e.to_string())?;
 
     let config_path = claude_desktop_config_path().ok_or_else(|| {
         "Could not locate Claude Desktop's config directory for this user.".to_string()
@@ -333,10 +701,10 @@ async fn configure_claude_desktop(
     let servers = mcp_entry.as_object_mut().expect("checked above");
 
     // Detect "already configured": same command, same args, same socket.
+    // The relay binary is the command; the socket path is argv[1].
     let desired_entry = serde_json::json!({
-        "command": node.to_string_lossy(),
+        "command": relay.to_string_lossy(),
         "args": [
-            relay.to_string_lossy(),
             socket_path.to_string_lossy(),
         ],
     });
@@ -366,7 +734,7 @@ async fn configure_claude_desktop(
     Ok(ClaudeConfigResult {
         config_path: config_path.to_string_lossy().into_owned(),
         relay_path: relay.to_string_lossy().into_owned(),
-        node_path: node.to_string_lossy().into_owned(),
+        node_path: String::new(),
         socket_path: socket_path.to_string_lossy().into_owned(),
         already_configured,
         created_file,
@@ -392,7 +760,7 @@ fn claude_desktop_config_path() -> Option<PathBuf> {
 }
 
 /// Physically remove every soft-deleted node from a graph by rebuilding it
-/// from the surviving live sources. Slow — up to a few minutes on big vaults.
+/// from the surviving live sources. Slow — up to a few minutes on big cortexes.
 #[tauri::command]
 async fn purge_forgotten(
     state: State<'_, AppState>,
@@ -400,15 +768,15 @@ async fn purge_forgotten(
 ) -> Result<serde_json::Value, String> {
     let socket_path = {
         let inner = state.inner.lock().await;
-        match &inner.vault_dir {
+        match &inner.cortex_dir {
             Some(vd) => vd.join("sidecar.sock"),
-            None => return Err("vault is locked".to_string()),
+            None => return Err("cortex is locked".to_string()),
         }
     };
     let params = serde_json::json!({ "graphId": graph_id });
     ipc_client::request_with_timeout(
         &socket_path,
-        "vault.purgeForgotten",
+        "cortex.purgeForgotten",
         params,
         std::time::Duration::from_secs(600),
     )
@@ -420,9 +788,9 @@ async fn purge_forgotten(
 async fn list_graphs_with_metadata(state: State<'_, AppState>) -> Result<serde_json::Value, String> {
     let socket_path = {
         let inner = state.inner.lock().await;
-        match &inner.vault_dir {
+        match &inner.cortex_dir {
             Some(vd) => vd.join("sidecar.sock"),
-            None => return Err("vault is locked".to_string()),
+            None => return Err("cortex is locked".to_string()),
         }
     };
     ipc_client::request(&socket_path, "graphs.listWithMetadata", serde_json::Value::Null)
@@ -439,9 +807,9 @@ async fn create_graph_with_template(
 ) -> Result<serde_json::Value, String> {
     let socket_path = {
         let inner = state.inner.lock().await;
-        match &inner.vault_dir {
+        match &inner.cortex_dir {
             Some(vd) => vd.join("sidecar.sock"),
-            None => return Err("vault is locked".to_string()),
+            None => return Err("cortex is locked".to_string()),
         }
     };
     let params = serde_json::json!({
@@ -469,9 +837,9 @@ async fn search_nodes(
 ) -> Result<serde_json::Value, String> {
     let socket_path = {
         let inner = state.inner.lock().await;
-        match &inner.vault_dir {
+        match &inner.cortex_dir {
             Some(vd) => vd.join("sidecar.sock"),
-            None => return Err("vault is locked".to_string()),
+            None => return Err("cortex is locked".to_string()),
         }
     };
     let params = serde_json::json!({
@@ -499,9 +867,9 @@ async fn node_direct_edit(
 ) -> Result<serde_json::Value, String> {
     let socket_path = {
         let inner = state.inner.lock().await;
-        match &inner.vault_dir {
+        match &inner.cortex_dir {
             Some(vd) => vd.join("sidecar.sock"),
-            None => return Err("vault is locked".to_string()),
+            None => return Err("cortex is locked".to_string()),
         }
     };
     let mut params = serde_json::json!({
@@ -531,9 +899,9 @@ async fn node_soft_delete(
 ) -> Result<serde_json::Value, String> {
     let socket_path = {
         let inner = state.inner.lock().await;
-        match &inner.vault_dir {
+        match &inner.cortex_dir {
             Some(vd) => vd.join("sidecar.sock"),
-            None => return Err("vault is locked".to_string()),
+            None => return Err("cortex is locked".to_string()),
         }
     };
     let mut params = serde_json::json!({
@@ -567,9 +935,9 @@ async fn node_link(
 ) -> Result<serde_json::Value, String> {
     let socket_path = {
         let inner = state.inner.lock().await;
-        match &inner.vault_dir {
+        match &inner.cortex_dir {
             Some(vd) => vd.join("sidecar.sock"),
-            None => return Err("vault is locked".to_string()),
+            None => return Err("cortex is locked".to_string()),
         }
     };
     let mut params = serde_json::json!({
@@ -608,9 +976,9 @@ async fn node_link_directed(
 ) -> Result<serde_json::Value, String> {
     let socket_path = {
         let inner = state.inner.lock().await;
-        match &inner.vault_dir {
+        match &inner.cortex_dir {
             Some(vd) => vd.join("sidecar.sock"),
-            None => return Err("vault is locked".to_string()),
+            None => return Err("cortex is locked".to_string()),
         }
     };
     let mut params = serde_json::json!({
@@ -632,6 +1000,37 @@ async fn node_link_directed(
         .map_err(|e| e.to_string())
 }
 
+/// Remove a single edge by its SDK edge id. Used by the App's
+/// "change type" button — it unlinks the old edge then re-links with
+/// the new type so both don't linger simultaneously. Returns
+/// `{ removed: bool, wasDirected?: bool }` from the sidecar.
+#[tauri::command]
+async fn node_unlink(
+    state: State<'_, AppState>,
+    graph_id: String,
+    edge_id: String,
+) -> Result<serde_json::Value, String> {
+    let socket_path = {
+        let inner = state.inner.lock().await;
+        match &inner.cortex_dir {
+            Some(vd) => vd.join("sidecar.sock"),
+            None => return Err("cortex is locked".to_string()),
+        }
+    };
+    let params = serde_json::json!({
+        "graphId": graph_id,
+        "edgeId": edge_id,
+    });
+    ipc_client::request_with_timeout(
+        &socket_path,
+        "node.unlink",
+        params,
+        std::time::Duration::from_secs(30),
+    )
+        .await
+        .map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 async fn list_edges(
     state: State<'_, AppState>,
@@ -639,9 +1038,9 @@ async fn list_edges(
 ) -> Result<serde_json::Value, String> {
     let socket_path = {
         let inner = state.inner.lock().await;
-        match &inner.vault_dir {
+        match &inner.cortex_dir {
             Some(vd) => vd.join("sidecar.sock"),
-            None => return Err("vault is locked".to_string()),
+            None => return Err("cortex is locked".to_string()),
         }
     };
     let params = serde_json::json!({ "graphId": graph_id });
@@ -659,12 +1058,12 @@ async fn list_edges(
 async fn list_activity(state: State<'_, AppState>) -> Result<serde_json::Value, String> {
     let socket_path = {
         let inner = state.inner.lock().await;
-        match &inner.vault_dir {
+        match &inner.cortex_dir {
             Some(vd) => vd.join("sidecar.sock"),
-            None => return Err("vault is locked".to_string()),
+            None => return Err("cortex is locked".to_string()),
         }
     };
-    // Decrypting the full op-log can take a few seconds on large vaults.
+    // Decrypting the full op-log can take a few seconds on large cortexes.
     ipc_client::request_with_timeout(
         &socket_path,
         "activity.list",
@@ -679,9 +1078,9 @@ async fn list_activity(state: State<'_, AppState>) -> Result<serde_json::Value, 
 async fn list_snapshots(state: State<'_, AppState>) -> Result<serde_json::Value, String> {
     let socket_path = {
         let inner = state.inner.lock().await;
-        match &inner.vault_dir {
+        match &inner.cortex_dir {
             Some(vd) => vd.join("sidecar.sock"),
-            None => return Err("vault is locked".to_string()),
+            None => return Err("cortex is locked".to_string()),
         }
     };
     ipc_client::request_with_timeout(
@@ -698,13 +1097,13 @@ async fn list_snapshots(state: State<'_, AppState>) -> Result<serde_json::Value,
 async fn create_snapshot(state: State<'_, AppState>) -> Result<serde_json::Value, String> {
     let socket_path = {
         let inner = state.inner.lock().await;
-        match &inner.vault_dir {
+        match &inner.cortex_dir {
             Some(vd) => vd.join("sidecar.sock"),
-            None => return Err("vault is locked".to_string()),
+            None => return Err("cortex is locked".to_string()),
         }
     };
-    // Copying every encrypted file in the vault — generous timeout for
-    // large vaults with content cache enabled.
+    // Copying every encrypted file in the cortex — generous timeout for
+    // large cortexes with content cache enabled.
     ipc_client::request_with_timeout(
         &socket_path,
         "snapshots.create",
@@ -722,9 +1121,9 @@ async fn list_nodes(
 ) -> Result<serde_json::Value, String> {
     let socket_path = {
         let inner = state.inner.lock().await;
-        match &inner.vault_dir {
+        match &inner.cortex_dir {
             Some(vd) => vd.join("sidecar.sock"),
-            None => return Err("vault is locked".to_string()),
+            None => return Err("cortex is locked".to_string()),
         }
     };
     let params = serde_json::json!({ "graphId": graph_id });
@@ -747,9 +1146,9 @@ async fn list_pending_corrections(
 ) -> Result<serde_json::Value, String> {
     let socket_path = {
         let inner = state.inner.lock().await;
-        match &inner.vault_dir {
+        match &inner.cortex_dir {
             Some(vd) => vd.join("sidecar.sock"),
-            None => return Err("vault is locked".to_string()),
+            None => return Err("cortex is locked".to_string()),
         }
     };
     ipc_client::request(&socket_path, "corrections.list", serde_json::Value::Null)
@@ -764,9 +1163,9 @@ async fn apply_correction(
 ) -> Result<serde_json::Value, String> {
     let socket_path = {
         let inner = state.inner.lock().await;
-        match &inner.vault_dir {
+        match &inner.cortex_dir {
             Some(vd) => vd.join("sidecar.sock"),
-            None => return Err("vault is locked".to_string()),
+            None => return Err("cortex is locked".to_string()),
         }
     };
     let params = serde_json::json!({ "diffId": diff_id });
@@ -789,9 +1188,9 @@ async fn reject_correction(
 ) -> Result<serde_json::Value, String> {
     let socket_path = {
         let inner = state.inner.lock().await;
-        match &inner.vault_dir {
+        match &inner.cortex_dir {
             Some(vd) => vd.join("sidecar.sock"),
-            None => return Err("vault is locked".to_string()),
+            None => return Err("cortex is locked".to_string()),
         }
     };
     let params = serde_json::json!({ "diffId": diff_id });
@@ -809,9 +1208,9 @@ async fn reject_correction(
 async fn mcp_restart_listener(state: State<'_, AppState>) -> Result<serde_json::Value, String> {
     let socket_path = {
         let inner = state.inner.lock().await;
-        match &inner.vault_dir {
+        match &inner.cortex_dir {
             Some(vd) => vd.join("sidecar.sock"),
-            None => return Err("vault is locked".to_string()),
+            None => return Err("cortex is locked".to_string()),
         }
     };
     ipc_client::request_with_timeout(
@@ -831,9 +1230,9 @@ async fn mcp_restart_listener(state: State<'_, AppState>) -> Result<serde_json::
 async fn mcp_status(state: State<'_, AppState>) -> Result<serde_json::Value, String> {
     let socket_path = {
         let inner = state.inner.lock().await;
-        match &inner.vault_dir {
+        match &inner.cortex_dir {
             Some(vd) => vd.join("sidecar.sock"),
-            None => return Err("vault is locked".to_string()),
+            None => return Err("cortex is locked".to_string()),
         }
     };
     ipc_client::request(&socket_path, "mcp.status", serde_json::Value::Null)
@@ -849,9 +1248,9 @@ async fn forget_source(
 ) -> Result<serde_json::Value, String> {
     let socket_path = {
         let inner = state.inner.lock().await;
-        match &inner.vault_dir {
+        match &inner.cortex_dir {
             Some(vd) => vd.join("sidecar.sock"),
-            None => return Err("vault is locked".to_string()),
+            None => return Err("cortex is locked".to_string()),
         }
     };
     let params = serde_json::json!({ "graphId": graph_id, "sourceId": source_id });
@@ -868,12 +1267,39 @@ async fn forget_source(
 }
 
 #[tauri::command]
+async fn reingest_source(
+    state: State<'_, AppState>,
+    graph_id: String,
+    source_id: String,
+) -> Result<serde_json::Value, String> {
+    let socket_path = {
+        let inner = state.inner.lock().await;
+        match &inner.cortex_dir {
+            Some(vd) => vd.join("sidecar.sock"),
+            None => return Err("cortex is locked".to_string()),
+        }
+    };
+    let params = serde_json::json!({ "graphId": graph_id, "sourceId": source_id });
+    // Forget + fresh ingest is a sequential round-trip on the sidecar
+    // side. PDF re-parse + BGE re-embed can hit the same multi-second
+    // budget as the original ingest_file, so give it the same 180s.
+    ipc_client::request_with_timeout(
+        &socket_path,
+        "sources.reingest",
+        params,
+        std::time::Duration::from_secs(180),
+    )
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 async fn get_settings(state: State<'_, AppState>) -> Result<serde_json::Value, String> {
     let socket_path = {
         let inner = state.inner.lock().await;
-        match &inner.vault_dir {
+        match &inner.cortex_dir {
             Some(vd) => vd.join("sidecar.sock"),
-            None => return Err("vault is locked".to_string()),
+            None => return Err("cortex is locked".to_string()),
         }
     };
     ipc_client::request(&socket_path, "settings.get", serde_json::Value::Null)
@@ -888,9 +1314,9 @@ async fn update_settings(
 ) -> Result<serde_json::Value, String> {
     let socket_path = {
         let inner = state.inner.lock().await;
-        match &inner.vault_dir {
+        match &inner.cortex_dir {
             Some(vd) => vd.join("sidecar.sock"),
-            None => return Err("vault is locked".to_string()),
+            None => return Err("cortex is locked".to_string()),
         }
     };
     ipc_client::request(&socket_path, "settings.update", settings)
@@ -901,14 +1327,14 @@ async fn update_settings(
 /// Inspect the encrypted op-log and return a recovery plan listing every
 /// source ever ingested (minus those forgotten), annotated with whether
 /// it's recoverable (file still on disk), already-present, file-missing,
-/// or otherwise unrecoverable. Read-only: no side effects on the vault.
+/// or otherwise unrecoverable. Read-only: no side effects on the cortex.
 #[tauri::command]
 async fn recovery_plan(state: State<'_, AppState>) -> Result<serde_json::Value, String> {
     let socket_path = {
         let inner = state.inner.lock().await;
-        match &inner.vault_dir {
+        match &inner.cortex_dir {
             Some(vd) => vd.join("sidecar.sock"),
-            None => return Err("vault is locked".to_string()),
+            None => return Err("cortex is locked".to_string()),
         }
     };
     // Decrypting + reducing a large op-log can take longer than the default
@@ -933,32 +1359,48 @@ async fn recovery_apply(
 ) -> Result<serde_json::Value, String> {
     let socket_path = {
         let inner = state.inner.lock().await;
-        match &inner.vault_dir {
+        match &inner.cortex_dir {
             Some(vd) => vd.join("sidecar.sock"),
-            None => return Err("vault is locked".to_string()),
+            None => return Err("cortex is locked".to_string()),
         }
     };
     let params = serde_json::json!({ "sourceIds": source_ids });
-    // Re-ingesting many sources can run for minutes. 10-minute ceiling
-    // is generous enough that a healthy session won't trip it, while
-    // still catching a truly hung sidecar.
+    // recovery.apply is now ASYNC on the sidecar side: it returns
+    // `{ accepted, jobId }` immediately, then pushes progress + final
+    // report via the events socket. A short timeout is fine — we're
+    // only waiting for the job to be accepted, not for it to finish.
+    // Re-ingesting a 4233-page PDF can take 60-90 minutes; the UI
+    // shouldn't be blocked, and Rust definitely shouldn't time out.
     ipc_client::request_with_timeout(
         &socket_path,
         "recovery.apply",
         params,
-        std::time::Duration::from_secs(600),
+        std::time::Duration::from_secs(15),
     )
         .await
         .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
-async fn open_vault_in_finder(state: State<'_, AppState>) -> Result<(), String> {
+async fn reveal_file_in_finder(path: String) -> Result<(), String> {
+    // `open -R <path>` selects the file inside Finder (reveals it in its
+    // containing folder).  Works for any absolute path; falls back to just
+    // opening the parent directory when the file has been moved.
+    std::process::Command::new("open")
+        .arg("-R")
+        .arg(&path)
+        .spawn()
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+async fn open_cortex_in_finder(state: State<'_, AppState>) -> Result<(), String> {
     let path = {
         let inner = state.inner.lock().await;
-        inner.vault_dir.clone()
+        inner.cortex_dir.clone()
     };
-    let path = path.ok_or_else(|| "vault is locked".to_string())?;
+    let path = path.ok_or_else(|| "cortex is locked".to_string())?;
     // macOS: `open <path>` opens the folder in Finder.
     std::process::Command::new("open")
         .arg(&path)
@@ -976,12 +1418,187 @@ async fn show_window(app: AppHandle) -> Result<(), String> {
     Ok(())
 }
 
+/// Open an external URL in the user's default browser.
+///
+/// Used by the About window's link list (Website / Source / Docs / Privacy).
+/// Webview anchors with `href="https://…"` are blocked by Tauri's top-level
+/// navigation guard, so the page invokes this command instead of relying
+/// on plain HTML navigation. Delegates to the `tauri-plugin-opener` plugin
+/// which handles per-OS quirks (macOS `open`, Windows `start`, Linux
+/// `xdg-open`) without us reimplementing that logic.
+#[tauri::command]
+async fn open_external_url(app: AppHandle, url: String) -> Result<(), String> {
+    use tauri_plugin_opener::OpenerExt;
+    app.opener()
+        .open_url(&url, None::<&str>)
+        .map_err(|e| format!("could not open url: {e}"))
+}
+
+/// Install the macOS application menu with "Graphnosis" as the app name.
+///
+/// Without this, the first menu item reads "graphnosis-app" (the Rust
+/// binary name) in dev mode. In a bundled .app it would read the
+/// CFBundleName from Info.plist, but Tauri's default menu builder
+/// always uses the binary name regardless of bundle metadata. Setting
+/// the menu explicitly fixes the title in both modes.
+///
+/// The About item is wired to our `open_about_window` command so the
+/// rich HTML About panel takes over from the macOS native dialog.
+#[cfg(target_os = "macos")]
+fn install_app_menu(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
+    use tauri::menu::{
+        AboutMetadataBuilder, MenuBuilder, MenuItemBuilder, PredefinedMenuItem, SubmenuBuilder,
+    };
+
+    let about_item = MenuItemBuilder::with_id("graphnosis-about", "About Graphnosis")
+        .build(app)?;
+
+    let app_submenu = SubmenuBuilder::new(app, "Graphnosis")
+        .item(&about_item)
+        .separator()
+        .services()
+        .separator()
+        .hide()
+        .hide_others()
+        .show_all()
+        .separator()
+        .quit()
+        .build()?;
+
+    // Standard Edit menu — gives ⌘Z / ⌘X / ⌘C / ⌘V / ⌘A their native
+    // bindings in the webview. Without it, common shortcuts feel broken
+    // (esp. in text inputs).
+    let edit_submenu = SubmenuBuilder::new(app, "Edit")
+        .undo()
+        .redo()
+        .separator()
+        .cut()
+        .copy()
+        .paste()
+        .select_all()
+        .build()?;
+
+    // Window menu — Minimize / Zoom / Close. Native Mac users expect it.
+    let window_submenu = SubmenuBuilder::new(app, "Window")
+        .item(&PredefinedMenuItem::minimize(app, None)?)
+        .item(&PredefinedMenuItem::maximize(app, None)?)
+        .item(&PredefinedMenuItem::close_window(app, None)?)
+        .build()?;
+
+    let menu = MenuBuilder::new(app)
+        .item(&app_submenu)
+        .item(&edit_submenu)
+        .item(&window_submenu)
+        .build()?;
+
+    app.set_menu(menu)?;
+
+    // Route the custom "About Graphnosis" click to the rich HTML panel.
+    let app_for_handler = app.clone();
+    app.on_menu_event(move |_app, event| {
+        if event.id() == "graphnosis-about" {
+            let app_inner = app_for_handler.clone();
+            tauri::async_runtime::spawn(async move {
+                let _ = open_about_window(app_inner).await;
+            });
+        }
+    });
+
+    // Suppress the unused-variable lint on AboutMetadataBuilder — it's
+    // available for callers who want to revert to the native panel.
+    let _ = AboutMetadataBuilder::new();
+
+    Ok(())
+}
+
+/// Open a custom HTML About window.
+///
+/// The native macOS About panel (Application menu → About Graphnosis) is
+/// minimal — name, icon, version, copyright. This command spawns a small
+/// dedicated Tauri window backed by `about.html` so we can render a richer
+/// view: tagline, links to the website + repo + privacy policy, build
+/// metadata, attributions, and a "what's new" link to the changelog.
+///
+/// If the window is already open, focus it instead of spawning a duplicate.
+/// Sized small (480×360) and non-resizable so it reads like a panel, not
+/// a second main window.
+#[tauri::command]
+async fn open_about_window(app: AppHandle) -> Result<(), String> {
+    const LABEL: &str = "about";
+    if let Some(win) = app.get_webview_window(LABEL) {
+        let _ = win.show();
+        let _ = win.set_focus();
+        return Ok(());
+    }
+    // about.html is bundled alongside index.html via the frontendDist
+    // pipeline. The Tauri webview uses tauri:// URLs in production and
+    // localhost:5173 in dev — `WebviewUrl::App("about.html".into())`
+    // resolves correctly for both.
+    tauri::WebviewWindowBuilder::new(
+        &app,
+        LABEL,
+        tauri::WebviewUrl::App("about.html".into()),
+    )
+        .title("About Graphnosis")
+        .inner_size(480.0, 360.0)
+        .resizable(false)
+        .maximizable(false)
+        .minimizable(false)
+        .visible(true)
+        .build()
+        .map_err(|e| format!("could not open About window: {e}"))?;
+    Ok(())
+}
+
+#[tauri::command]
+async fn set_graph_archived(
+    state: State<'_, AppState>,
+    graph_id: String,
+    archived: bool,
+) -> Result<serde_json::Value, String> {
+    let socket_path = {
+        let inner = state.inner.lock().await;
+        match &inner.cortex_dir {
+            Some(vd) => vd.join("sidecar.sock"),
+            None => return Err("cortex is locked".to_string()),
+        }
+    };
+    let params = serde_json::json!({ "graphId": graph_id, "archived": archived });
+    ipc_client::request(&socket_path, "graphs.setArchived", params)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn delete_graph(
+    state: State<'_, AppState>,
+    graph_id: String,
+) -> Result<serde_json::Value, String> {
+    let socket_path = {
+        let inner = state.inner.lock().await;
+        match &inner.cortex_dir {
+            Some(vd) => vd.join("sidecar.sock"),
+            None => return Err("cortex is locked".to_string()),
+        }
+    };
+    let params = serde_json::json!({ "graphId": graph_id });
+    // Deletion flushes settings.json + unlinks up to 6 files — 30s is plenty.
+    ipc_client::request_with_timeout(
+        &socket_path,
+        "graphs.delete",
+        params,
+        std::time::Duration::from_secs(30),
+    )
+        .await
+        .map_err(|e| e.to_string())
+}
+
 async fn current_status(state: &State<'_, AppState>) -> StatusSnapshot {
     let inner = state.inner.lock().await;
     StatusSnapshot {
-        unlocked: inner.vault_dir.is_some() && inner.sidecar.is_some(),
-        vault_dir: inner
-            .vault_dir
+        unlocked: inner.cortex_dir.is_some() && inner.sidecar.is_some(),
+        cortex_dir: inner
+            .cortex_dir
             .as_ref()
             .map(|p| p.to_string_lossy().into_owned()),
         sidecar_running: inner.sidecar.is_some(),
@@ -998,15 +1615,25 @@ pub fn run() {
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .plugin(tauri_plugin_autostart::init(
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
             None,
         ))
         .invoke_handler(tauri::generate_handler![
-            pick_vault_folder,
-            unlock_vault,
-            lock_vault,
+            pick_cortex_folder,
+            suggest_cortex_path,
+            unlock_cortex,
+            unlock_cortex_with_recovery,
+            biometric_available,
+            biometric_unlock,
+            change_passphrase,
+            regenerate_recovery_phrase,
+            list_quarantine,
+            delete_quarantine,
+            restore_quarantine,
+            lock_cortex,
             status,
             inspector_stats,
             node_cursor,
@@ -1014,6 +1641,7 @@ pub fn run() {
             pick_and_ingest_file,
             pick_files,
             forget_source,
+            reingest_source,
             purge_forgotten,
             mcp_status,
             mcp_restart_listener,
@@ -1029,6 +1657,7 @@ pub fn run() {
             node_soft_delete,
             node_link,
             node_link_directed,
+            node_unlink,
             list_activity,
             list_snapshots,
             create_snapshot,
@@ -1037,8 +1666,13 @@ pub fn run() {
             get_settings,
             update_settings,
             configure_claude_desktop,
-            open_vault_in_finder,
+            open_cortex_in_finder,
+            reveal_file_in_finder,
             show_window,
+            open_about_window,
+            open_external_url,
+            set_graph_archived,
+            delete_graph,
         ])
         .setup(|app| {
             // Full-blown Mac app: regular activation so we get a Dock icon,
@@ -1048,6 +1682,18 @@ pub fn run() {
             #[cfg(target_os = "macos")]
             {
                 let _ = app.set_activation_policy(tauri::ActivationPolicy::Regular);
+                // Override the application menu so the first item reads
+                // "Graphnosis" instead of the Rust binary name
+                // (`graphnosis-app`). macOS auto-names the app menu from
+                // the binary in dev, and from CFBundleName in a bundled
+                // .app — but Tauri's default menu builder always uses the
+                // binary name. Setting the title explicitly here fixes
+                // it in both modes. About item is wired to our custom
+                // open_about_window command so the rich HTML About panel
+                // replaces macOS's default name-icon-version dialog.
+                if let Err(e) = install_app_menu(app.handle()) {
+                    eprintln!("[graphnosis-app] failed to install app menu: {e}");
+                }
             }
             // Show the main window on startup. The user sees the unlock view
             // immediately; tray "Show" still works for re-showing after ⌘W.

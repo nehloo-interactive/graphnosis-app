@@ -1,0 +1,168 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>About Graphnosis</title>
+    <!--
+      Standalone About panel opened by the Tauri command
+      `open_about_window`. Lives in its own webview so the rich content
+      (logo, version, links, attributions) doesn't fight the main app's
+      DOM. The styling intentionally mirrors the main app's dark theme so
+      it doesn't read as a separate product.
+    -->
+    <style>
+      :root {
+        /* Slightly lighter than the main app's near-black so the About
+           panel reads as a distinct "info" surface, not "same window". */
+        --bg: #1a1d26;
+        --bg-elev: #232733;
+        --fg: #e8eaf0;
+        --fg-dim: #8a8fa3;
+        --border: #2a2f3e;
+        --accent: #6cc6c7;
+      }
+      * { box-sizing: border-box; }
+      html, body {
+        margin: 0;
+        padding: 0;
+        height: 100%;
+        background: var(--bg);
+        color: var(--fg);
+        font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text",
+                     "Helvetica Neue", Arial, sans-serif;
+        font-size: 13px;
+        line-height: 1.5;
+        -webkit-font-smoothing: antialiased;
+        user-select: none;
+        -webkit-user-select: none;
+      }
+      .container {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: flex-start;
+        height: 100%;
+        padding: 24px 24px 16px;
+        text-align: center;
+      }
+      .logo {
+        width: 96px;
+        height: 96px;
+        margin-bottom: 12px;
+        /* Subtle glow + soft drop shadow so the rounded-square logo lifts
+           off the dark background. Pure CSS — no extra image variants. */
+        filter: drop-shadow(0 6px 16px rgba(108, 198, 199, 0.18));
+        border-radius: 18px;
+      }
+      h1 {
+        font-size: 18px;
+        font-weight: 600;
+        margin: 0 0 2px;
+        letter-spacing: 0.01em;
+      }
+      .tagline {
+        font-size: 12px;
+        color: var(--fg-dim);
+        margin: 0 0 14px;
+        font-style: italic;
+      }
+      .version {
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-size: 11px;
+        color: var(--fg-dim);
+        margin: 0 0 16px;
+      }
+      .copyright {
+        font-size: 11px;
+        color: var(--fg-dim);
+        margin: 0 0 16px;
+      }
+      .links {
+        display: flex;
+        gap: 16px;
+        margin-bottom: 16px;
+        flex-wrap: wrap;
+        justify-content: center;
+      }
+      .links a {
+        color: var(--accent);
+        text-decoration: none;
+        font-size: 12px;
+        border-bottom: 1px dotted transparent;
+        cursor: pointer;
+        user-select: text;
+      }
+      .links a:hover {
+        border-bottom-color: var(--accent);
+      }
+      .attribution {
+        font-size: 10px;
+        color: var(--fg-dim);
+        margin-top: auto;
+        line-height: 1.6;
+        opacity: 0.7;
+        max-width: 380px;
+      }
+      .attribution a {
+        color: var(--fg-dim);
+        text-decoration: underline;
+        text-underline-offset: 2px;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="container">
+      <img
+        src="/graphnosis-logo-rounded.png"
+        alt="Graphnosis"
+        class="logo"
+      />
+      <h1>Graphnosis</h1>
+      <p class="tagline">Your private second cortex.</p>
+      <p class="version" id="version">Version —</p>
+      <p class="copyright">© 2026 Nehloo Interactive LLC</p>
+      <div class="links">
+        <a href="#" data-url="https://graphnosis.com">Website</a>
+        <a href="#" data-url="https://github.com/nehloo/graphnosis-app">Source</a>
+        <a href="#" data-url="https://graphnosis.app/docs">Docs</a>
+        <a href="#" data-url="https://graphnosis.com/privacy">Privacy</a>
+      </div>
+      <p class="attribution">
+        Built with the
+        <a href="#" data-url="https://github.com/nehloo/graphnosis">Graphnosis SDK</a>,
+        Tauri, and onnxruntime-node. Local-first by design — your memories
+        never leave your device.
+      </p>
+    </div>
+    <script type="module">
+      // Pull the version from the Tauri app metadata so this stays in sync
+      // with tauri.conf.json's `version` without a hard-coded string.
+      // Fallback to "—" if the JS-API call fails (e.g. the About window
+      // is open before the main app's runtime has finished initializing).
+      import { getVersion } from '@tauri-apps/api/app';
+      import { invoke } from '@tauri-apps/api/core';
+
+      getVersion()
+        .then((v) => {
+          const el = document.getElementById('version');
+          if (el) el.textContent = `Version ${v}`;
+        })
+        .catch(() => { /* keep the em-dash placeholder */ });
+
+      // Intercept link clicks and hand them to the OS opener — Tauri
+      // webviews block top-level navigation, so anchor href="https://…"
+      // would do nothing. data-url + invoke('open_external_url') opens
+      // the user's default browser as expected. Using the Rust command
+      // (rather than @tauri-apps/plugin-opener JS) avoids adding another
+      // JS dependency just for this one panel.
+      document.querySelectorAll('a[data-url]').forEach((a) => {
+        a.addEventListener('click', (e) => {
+          e.preventDefault();
+          const url = a.getAttribute('data-url');
+          if (url) void invoke('open_external_url', { url });
+        });
+      });
+    </script>
+  </body>
+</html>

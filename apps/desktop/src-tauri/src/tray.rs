@@ -1,7 +1,7 @@
 //! Menu-bar (tray) UX for Graphnosis.
 //!
-//! Shows a status row at the top of the dropdown ("Locked" / "Unlocked · vault"),
-//! plus actions: Show window, Open vault in Finder, Lock vault, Quit.
+//! Shows a status row at the top of the dropdown ("Locked" / "Unlocked · cortex"),
+//! plus actions: Show window, Open cortex in Finder, Lock cortex, Quit.
 
 use tauri::{
     menu::{Menu, MenuItem, PredefinedMenuItem},
@@ -15,18 +15,32 @@ use crate::{AppState, StatusSnapshot};
 pub fn create(app: &AppHandle) -> tauri::Result<()> {
     let menu = build_menu(app, &StatusSnapshot {
         unlocked: false,
-        vault_dir: None,
+        cortex_dir: None,
         sidecar_running: false,
     })?;
 
-    // The tray icon reuses the app's default window icon (loaded by Tauri from
-    // the bundle config). If for some reason it's missing, the tray will show
-    // the system's default placeholder rather than panic.
+    // Use the dedicated menu-bar icon (18×18, designed as a template image)
+    // so it fits naturally alongside other menu-bar icons and adapts to
+    // macOS light/dark mode. Falls back to the default window icon if for
+    // some reason the bytes can't be decoded.
+    const TRAY_ICON_BYTES: &[u8] = include_bytes!("../icons/menubar-icon.png");
+    let tray_icon = {
+        use image::GenericImageView as _;
+        image::load_from_memory(TRAY_ICON_BYTES)
+            .ok()
+            .map(|img| {
+                let (w, h) = img.dimensions();
+                let rgba = img.into_rgba8().into_raw();
+                tauri::image::Image::new_owned(rgba, w, h)
+            })
+            .or_else(|| app.default_window_icon().cloned())
+    };
+
     let mut builder = TrayIconBuilder::with_id("graphnosis-tray")
-        .icon_as_template(true) // adapts to macOS light/dark menu bar
+        .icon_as_template(true) // transparent bg → macOS colorises white/black per menu-bar style
         .menu(&menu)
         .show_menu_on_left_click(true);
-    if let Some(icon) = app.default_window_icon().cloned() {
+    if let Some(icon) = tray_icon {
         builder = builder.icon(icon);
     }
     builder
@@ -40,7 +54,7 @@ pub fn create(app: &AppHandle) -> tauri::Result<()> {
 
 /// Rebuild the tray menu in place to reflect new status.
 ///
-/// Called from `unlock_vault` and `lock_vault` so the user immediately sees
+/// Called from `unlock_cortex` and `lock_cortex` so the user immediately sees
 /// state changes without having to reopen the dropdown.
 pub fn refresh_status(app: &AppHandle, status: &StatusSnapshot) {
     let Some(tray) = app.tray_by_id("graphnosis-tray") else { return };
@@ -51,12 +65,12 @@ pub fn refresh_status(app: &AppHandle, status: &StatusSnapshot) {
 
 fn build_menu(app: &AppHandle, status: &StatusSnapshot) -> tauri::Result<Menu<Wry>> {
     let status_label = if status.unlocked {
-        let vault = status
-            .vault_dir
+        let cortex = status
+            .cortex_dir
             .as_deref()
-            .map(short_vault_label)
-            .unwrap_or_else(|| "vault".to_string());
-        format!("● Unlocked · {}", vault)
+            .map(short_cortex_label)
+            .unwrap_or_else(|| "cortex".to_string());
+        format!("● Unlocked · {}", cortex)
     } else {
         "○ Locked".to_string()
     };
@@ -65,18 +79,18 @@ fn build_menu(app: &AppHandle, status: &StatusSnapshot) -> tauri::Result<Menu<Wr
     let show_item = MenuItem::with_id(
         app,
         "show",
-        if status.unlocked { "Open inspector…" } else { "Unlock vault…" },
+        if status.unlocked { "Open Graphnosis…" } else { "Unlock cortex…" },
         true,
         None::<&str>,
     )?;
     let open_folder_item = MenuItem::with_id(
         app,
         "open_folder",
-        "Open vault folder",
+        "Open cortex folder",
         status.unlocked,
         None::<&str>,
     )?;
-    let lock_item = MenuItem::with_id(app, "lock", "Lock vault", status.unlocked, None::<&str>)?;
+    let lock_item = MenuItem::with_id(app, "lock", "Lock cortex", status.unlocked, None::<&str>)?;
     let quit_item = MenuItem::with_id(app, "quit", "Quit Graphnosis", true, Some("CmdOrCtrl+Q"))?;
     let sep1 = PredefinedMenuItem::separator(app)?;
     let sep2 = PredefinedMenuItem::separator(app)?;
@@ -109,7 +123,7 @@ fn on_menu_event(app: &AppHandle, id: &str) {
                 let state = app_clone.state::<AppState>();
                 let path = {
                     let inner = state.inner.lock().await;
-                    inner.vault_dir.clone()
+                    inner.cortex_dir.clone()
                 };
                 if let Some(p) = path {
                     let _ = std::process::Command::new("open").arg(&p).spawn();
@@ -125,14 +139,16 @@ fn on_menu_event(app: &AppHandle, id: &str) {
                     if let Some(handle) = inner.sidecar.take() {
                         let _ = handle.shutdown().await;
                     }
-                    if let Some(vd) = inner.vault_dir.as_ref() {
-                        let vd_str = vd.to_string_lossy().into_owned();
-                        let _ = crate::keychain::clear_passphrase(&vd_str);
-                    }
+                    // Intentionally DO NOT clear the cached passphrase here.
+                    // Mirrors the fix in `lock_cortex` — locking the cortex
+                    // is "step away," not "forget Touch ID." Clearing on
+                    // lock would mean every next-launch Touch ID prompt
+                    // has nothing to read and falls back to passphrase
+                    // entry, defeating the feature.
                 }
                 let snapshot = StatusSnapshot {
                     unlocked: false,
-                    vault_dir: None,
+                    cortex_dir: None,
                     sidecar_running: false,
                 };
                 use tauri::Emitter;
@@ -159,8 +175,8 @@ fn on_menu_event(app: &AppHandle, id: &str) {
     }
 }
 
-/// Truncate a vault path to its last two components for the tray label.
-fn short_vault_label(path: &str) -> String {
+/// Truncate a cortex path to its last two components for the tray label.
+fn short_cortex_label(path: &str) -> String {
     let parts: Vec<&str> = path.rsplit('/').take(2).collect();
     let tail: Vec<&str> = parts.into_iter().rev().collect();
     let label = tail.join("/");
