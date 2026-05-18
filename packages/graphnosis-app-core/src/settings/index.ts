@@ -1,12 +1,12 @@
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 
-// User-tunable per-vault settings. Lives at <vault>/settings.json (plaintext,
+// User-tunable per-cortex settings. Lives at <cortex>/settings.json (plaintext,
 // like policy.json — no graph data here, just config). If we ever store
 // anything genuinely sensitive in here we'll switch to encrypted-at-rest.
 
 export type ContentCacheMode =
-  | 'all'              // cache every ingest (best recovery; ~2× vault size on file ingests)
+  | 'all'              // cache every ingest (best recovery; ~2× cortex size on file ingests)
   | 'ephemeral-only'   // only cache clip / ai-conversation / url; files stay on the user's disk
   | 'off';             // never cache; recovery is best-effort from `ref` only
 
@@ -30,13 +30,13 @@ export interface McpRelaySettings {
   /**
    * How long the relay waits at startup for the App's mcp.sock to appear.
    * Useful when Claude (or any MCP client) launches before the user has
-   * unlocked the vault. Lower = faster failure feedback; higher = more
+   * unlocked the cortex. Lower = faster failure feedback; higher = more
    * forgiving cold-launch sequencing.
    */
   initialWaitMs: number;
   /**
    * How long the relay waits, mid-session, for the App to come back online
-   * after a disconnect (vault locked, sidecar bounced, etc.). Within this
+   * after a disconnect (cortex locked, sidecar bounced, etc.). Within this
    * window the relay keeps Claude attached and replays the original
    * `initialize` to the fresh sidecar.
    */
@@ -49,7 +49,7 @@ export interface McpRelaySettings {
 // healthy unlock — which would be a confusing footgun in Settings.
 export const MIN_RELAY_INITIAL_WAIT_MS = 2_000;
 export const MIN_RELAY_RECONNECT_MS = 5_000;
-// Soft maximums — keep relays from hanging forever on unreachable vaults.
+// Soft maximums — keep relays from hanging forever on unreachable cortexes.
 export const MAX_RELAY_INITIAL_WAIT_MS = 120_000;            // 2 min
 export const MAX_RELAY_RECONNECT_MS = 24 * 60 * 60 * 1000;   // 24 h
 
@@ -81,7 +81,7 @@ export interface AiSettings {
    * client's own memory features to lead.
    *
    * Changes take effect when the sidecar next builds an MCP server — in
-   * practice: next vault unlock, or after a `Reconnect` in Settings.
+   * practice: next cortex unlock, or after a `Reconnect` in Settings.
    */
   useAsDefaultMemory: boolean;
   /**
@@ -96,7 +96,53 @@ export interface AiSettings {
    * still run a manual "Reindex this engram" pass when we add that UI.
    */
   autoRelinkMaxNodes: number;
+  /**
+   * When ON, the sidecar watches every file-backed source's disk path and
+   * automatically reingests it on save (debounced ~2s). Mirrors the
+   * manual Reingest button but with zero clicks.
+   *
+   * OFF by default — auto-modifying the engram in response to filesystem
+   * activity is surprising behavior on first encounter, and the user
+   * may not want every Vim save to ripple back through chunking +
+   * embeddings + cross-doc relink. Power users with active note-files
+   * (Obsidian, dailies, etc.) flip this on in Settings.
+   */
+  autoReingestOnFileChange: boolean;
+  /**
+   * How long (ms) the file must be unchanged before auto-reingest fires.
+   * Acts as a long debounce: you can edit for 30 minutes and Graphnosis
+   * only re-chunks once you've stopped, not on every Cmd+S.
+   * Default 900 000 ms (15 min). Shown in Settings UI when
+   * autoReingestOnFileChange is on.
+   */
+  reingestQuietMs: number;
+  /**
+   * How aggressively the SDK splits a document into chunked memory nodes.
+   *
+   *   - 'fine'     ≈ 300-char nodes (more semantic vectors, finer recall,
+   *                  higher embedding cost per ingest)
+   *   - 'balanced' ≈ 500-char nodes — the SDK's historical default
+   *   - 'coarse'   ≈ 2500-char nodes (fewer/bigger nodes, faster + lower
+   *                  memory ingest, less precise recall)
+   *
+   * Threaded through every appendDocument call. Changing this doesn't
+   * re-chunk existing nodes — old content keeps its previous shape. Take
+   * effect on the next ingest.
+   */
+  chunkSize: ChunkSizePreset;
+  /**
+   * How many texts the SDK groups into one `model.embed([...])` call.
+   *
+   *   - 'small'  → 64 items/call   (low memory, frequent progress)
+   *   - 'medium' → 256 items/call  (default)
+   *   - 'large'  → 1024 items/call (max throughput on big-RAM machines)
+   *   - 'auto'   → totalmem-based: ≥32 GB → large, ≥16 GB → medium, else small
+   */
+  embedBatch: EmbedBatchPreset;
 }
+
+export type ChunkSizePreset = 'fine' | 'balanced' | 'coarse';
+export type EmbedBatchPreset = 'small' | 'medium' | 'large' | 'auto';
 
 export type GraphTemplate =
   // Free tier
@@ -117,9 +163,14 @@ export type GraphTemplate =
 export interface GraphMetadata {
   /** Template the user picked on creation. Hints downstream UX (badges, sorting, default queries). */
   template: GraphTemplate;
-  /** Human-friendly display name; falls back to graphId in older vaults. */
+  /** Human-friendly display name; falls back to graphId in older cortexes. */
   displayName: string;
   createdAt: number;
+  /**
+   * When true the graph is hidden from the cortex picker and all in-app navigation.
+   * The data files remain on disk untouched — the user can unarchive at any time.
+   */
+  archived?: boolean;
 }
 
 export interface AppSettings {
@@ -128,17 +179,19 @@ export interface AppSettings {
   mcpRelay: McpRelaySettings;
   ui: UiSettings;
   ai: AiSettings;
-  /** Per-graph metadata keyed by graphId. Older vaults may have no entry for an existing graph. */
+  /** Per-graph metadata keyed by graphId. Older cortexes may have no entry for an existing graph. */
   graphMetadata: Record<string, GraphMetadata>;
 }
 
 export const DEFAULT_SETTINGS: AppSettings = {
   contentCache: {
-    // The "you cannot lose memories" default. The 50MB cap keeps pathological
-    // ingests (e.g. a multi-GB PDF) from ballooning the vault; users can raise
-    // or lower it in the Settings UI.
+    // The "you cannot lose memories" default. The cap keeps pathological
+    // ingests (e.g. a multi-GB video file) from ballooning the cortex, but
+    // is generous enough to cover realistic large reference manuals — e.g.
+    // a 4233-page PDF (DaVinci Resolve manual) weighs in around 210MB.
+    // Users can raise or lower it in the Settings UI.
     mode: 'all',
-    maxBytesPerSource: 50 * 1024 * 1024,
+    maxBytesPerSource: 512 * 1024 * 1024,
   },
   forget: {
     // Soft by default — fast, undoable, and the user can always run "Purge now"
@@ -159,14 +212,24 @@ export const DEFAULT_SETTINGS: AppSettings = {
     // 5000 active nodes is the soft-perf ceiling where entity Jaccard
     // O(N²) starts to feel slow (~25M comparisons). Below that the
     // pass takes < a second on a modern Mac. Power users with bigger
-    // vaults can crank or zero this out in Settings.
+    // cortexes can crank or zero this out in Settings.
     autoRelinkMaxNodes: 5000,
+    // OFF by default — see the field comment above for rationale.
+    autoReingestOnFileChange: false,
+    // 15 min quiet period: file must be stable this long before re-chunk fires.
+    reingestQuietMs: 15 * 60 * 1000,
+    // Conservative defaults — match the SDK's pre-preset behaviour so
+    // existing cortexes don't change shape under users on upgrade.
+    chunkSize: 'balanced',
+    // 'auto' picks per-machine on first use without the user having to
+    // know what 256 vs 1024 means. They can override via Settings.
+    embedBatch: 'auto',
   },
   graphMetadata: {},
 };
 
-function settingsPath(vaultDir: string): string {
-  return path.join(vaultDir, 'settings.json');
+function settingsPath(cortexDir: string): string {
+  return path.join(cortexDir, 'settings.json');
 }
 
 /**
@@ -175,24 +238,24 @@ function settingsPath(vaultDir: string): string {
  * with safe defaults rather than refuse to unlock. Logged to stderr so devs
  * notice; users see normal behavior.
  */
-export async function loadSettings(vaultDir: string): Promise<AppSettings> {
+export async function loadSettings(cortexDir: string): Promise<AppSettings> {
   try {
-    const raw = await fs.readFile(settingsPath(vaultDir), 'utf8');
+    const raw = await fs.readFile(settingsPath(cortexDir), 'utf8');
     const parsed = JSON.parse(raw) as Partial<AppSettings>;
     return mergeWithDefaults(parsed);
   } catch (e) {
     const err = e as NodeJS.ErrnoException;
     if (err.code !== 'ENOENT') {
-      console.error(`[settings] failed to read ${settingsPath(vaultDir)}: ${err.message} — using defaults.`);
+      console.error(`[settings] failed to read ${settingsPath(cortexDir)}: ${err.message} — using defaults.`);
     }
     return DEFAULT_SETTINGS;
   }
 }
 
-export async function saveSettings(vaultDir: string, settings: AppSettings): Promise<void> {
-  await fs.mkdir(vaultDir, { recursive: true });
+export async function saveSettings(cortexDir: string, settings: AppSettings): Promise<void> {
+  await fs.mkdir(cortexDir, { recursive: true });
   // Write atomically: write to tmp, then rename.
-  const target = settingsPath(vaultDir);
+  const target = settingsPath(cortexDir);
   const tmp = `${target}.tmp`;
   await fs.writeFile(tmp, JSON.stringify(settings, null, 2));
   await fs.rename(tmp, target);
@@ -200,7 +263,7 @@ export async function saveSettings(vaultDir: string, settings: AppSettings): Pro
 
 /**
  * Merge a (possibly partial / older-shape) settings object with the current
- * defaults. Keeps forward-compat when we add new settings — older vaults
+ * defaults. Keeps forward-compat when we add new settings — older cortexes
  * just inherit the new defaults without forcing a migration step.
  */
 export function mergeWithDefaults(partial: Partial<AppSettings> | null | undefined): AppSettings {
@@ -237,7 +300,7 @@ export function mergeWithDefaults(partial: Partial<AppSettings> | null | undefin
       ? ui.inspectorDetail
       : DEFAULT_SETTINGS.ui.inspectorDetail;
 
-  // AI routing: default ON for older vaults that didn't have this field —
+  // AI routing: default ON for older cortexes that didn't have this field —
   // matches the behavior they were already getting (the SERVER_INSTRUCTIONS
   // block always fired before this setting existed).
   const ai: Partial<AiSettings> = partial?.ai ?? {};
@@ -247,6 +310,29 @@ export function mergeWithDefaults(partial: Partial<AppSettings> | null | undefin
   const autoRelinkMaxNodes = typeof ai.autoRelinkMaxNodes === 'number' && ai.autoRelinkMaxNodes >= 0
     ? Math.floor(ai.autoRelinkMaxNodes)
     : DEFAULT_SETTINGS.ai.autoRelinkMaxNodes;
+  const autoReingestOnFileChange = typeof ai.autoReingestOnFileChange === 'boolean'
+    ? ai.autoReingestOnFileChange
+    : DEFAULT_SETTINGS.ai.autoReingestOnFileChange;
+  // Valid values: any positive integer (ms). Clamp to sensible range:
+  //   min 60 s (prevents accidental near-instant reingests),
+  //   max 7 days (longer makes no practical sense for a file watcher).
+  const MIN_QUIET_MS = 60_000;
+  const MAX_QUIET_MS = 7 * 24 * 60 * 60 * 1000;
+  const reingestQuietMs = typeof ai.reingestQuietMs === 'number' && ai.reingestQuietMs > 0
+    ? clamp(Math.floor(ai.reingestQuietMs), MIN_QUIET_MS, MAX_QUIET_MS)
+    : DEFAULT_SETTINGS.ai.reingestQuietMs;
+  // Chunk size + embed batch presets — accept only the known labels;
+  // unrecognised values fall back to the default. Forward-compat: an
+  // older cortex with no entries gets the safe defaults at next load.
+  const chunkSize: ChunkSizePreset =
+    ai.chunkSize === 'fine' || ai.chunkSize === 'balanced' || ai.chunkSize === 'coarse'
+      ? ai.chunkSize
+      : DEFAULT_SETTINGS.ai.chunkSize;
+  const embedBatch: EmbedBatchPreset =
+    ai.embedBatch === 'small' || ai.embedBatch === 'medium' ||
+    ai.embedBatch === 'large' || ai.embedBatch === 'auto'
+      ? ai.embedBatch
+      : DEFAULT_SETTINGS.ai.embedBatch;
 
   const graphMetadata = (partial?.graphMetadata && typeof partial.graphMetadata === 'object')
     ? partial.graphMetadata
@@ -257,7 +343,10 @@ export function mergeWithDefaults(partial: Partial<AppSettings> | null | undefin
     forget: { mode: forgetMode },
     mcpRelay: { initialWaitMs, reconnectMs },
     ui: { inspectorDetail },
-    ai: { useAsDefaultMemory, autoRelinkMaxNodes },
+    ai: {
+      useAsDefaultMemory, autoRelinkMaxNodes, autoReingestOnFileChange,
+      reingestQuietMs, chunkSize, embedBatch,
+    },
     graphMetadata,
   };
 }
