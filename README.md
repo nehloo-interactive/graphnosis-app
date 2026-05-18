@@ -27,7 +27,7 @@ The underlying engine, [`@nehloo/graphnosis`](https://github.com/nehloo/Graphnos
 3. Anytime you talk to an MCP-aware AI, a relevant federated subgraph from your memory gets attached, within a tight token budget. The AI answers as if it knew you.
 4. You correct it in natural language (*"the trip was September, not August"*). A bundled local LLM produces a structured diff, you confirm, the graph updates — privately, on-device.
 
-The full `.aikg` files never reach the AI. The AI only ever sees the scoped subgraph relevant to the current prompt — and that subgraph is hard-capped by per-graph **sensitivity tiers** (`public` / `personal` / `sensitive`) that the AI cannot override.
+The full `.gai` files never reach the AI. The AI only ever sees the scoped subgraph relevant to the current prompt — and that subgraph is hard-capped by per-graph **sensitivity tiers** (`public` / `personal` / `sensitive`) that the AI cannot override.
 
 ---
 
@@ -46,12 +46,22 @@ The full `.aikg` files never reach the AI. The AI only ever sees the scoped subg
 ┌────────────────────────────────────────────────────────────────────────────┐
 │  Node sidecar (TypeScript) — apps/desktop-sidecar                          │
 │  - GraphnosisHost: encryption at rest, op-log, source index                │
-│  - ingest (file / web / clip)                                              │
+│  - ingest (file / web / clip); large files chunked for responsiveness      │
 │  - correction pipeline (local LLM via Ollama → structured diff)            │
 │  - local embeddings via fastembed (BGE-small-en-v1.5, ONNX)                │
+│    → PDF parsing offloaded to a worker_threads Worker (pure JS, safe)      │
+│    → ONNX inference runs in a pool of forked child processes (N-API safe)  │
 │  - federated query across all user graphs with tier-capped budgets         │
 │  - MCP server over stdio: recall, remember, correct, apply, forget, stats  │
 └────────────────────────────────┬───────────────────────────────────────────┘
+                                 │
+                                 ▼
+┌────────────────────────────────────────────────────────────────────────────┐
+│  Embedding worker pool (forked child processes)                             │
+│  - 2 × node embed-worker.js, each with its own fastembed / ONNX session    │
+│  - Round-robin dispatch; parent event loop never blocked by inference      │
+│  - Pool size: GRAPHNOSIS_EMBED_WORKERS (default 2)                         │
+└────────────────────────────────────────────────────────────────────────────┘
                                  │
                                  ▼
                   ┌─────────────────────────────┐
@@ -68,6 +78,16 @@ The full `.aikg` files never reach the AI. The AI only ever sees the scoped subg
 apps/
   desktop/              Tauri app (Rust shell + minimal HTML/JS UI)
   desktop-sidecar/      Node TypeScript sidecar (Graphnosis + MCP + IPC)
+    src/
+      index.ts          Entry point — boot, IPC, MCP, signal handling
+      host.ts           GraphnosisHost wrapper (ingest, ingestChunked, save, recover)
+      ingest.ts         File/web/clip ingest; PDF parsed in worker thread
+      pdf-parse-worker.ts  worker_threads PDF parser (pdfjs off the main thread)
+      local-embed.ts    Fork-based embedding pool (round-robin, 2 workers default)
+      embed-worker.ts   Forked child: owns one fastembed / ONNX session
+      embedding-queue.ts  Mutex: serializes ONNX calls between concurrent ingests
+      ipc.ts            Unix-socket JSON-RPC server for Tauri shell
+      mcp-registry.ts   MCP tool definitions (recall, remember, correct, …)
 packages/
   graphnosis-app-core/  Crypto, op-log, source index, federation,
                         sensitivity tiers, embeddings cache, policy
@@ -112,7 +132,7 @@ pnpm --filter @graphnosis-app/desktop-sidecar smoke
 Run the sidecar standalone for MCP wiring into Claude Desktop:
 
 ```bash
-GRAPHNOSIS_VAULT="$HOME/Graphnosis" \
+GRAPHNOSIS_CORTEX="$HOME/Graphnosis" \
 GRAPHNOSIS_PASSPHRASE="dev-passphrase-change-me" \
 pnpm dev:sidecar
 ```
@@ -136,7 +156,7 @@ Add to `~/Library/Application Support/Claude/claude_desktop_config.json`:
       "command": "node",
       "args": ["/absolute/path/to/GraphnosisApp/apps/desktop-sidecar/dist/index.js"],
       "env": {
-        "GRAPHNOSIS_VAULT": "/Users/you/Graphnosis",
+        "GRAPHNOSIS_CORTEX": "/Users/you/Graphnosis",
         "GRAPHNOSIS_PASSPHRASE": "your-passphrase",
         "GRAPHNOSIS_DEFAULT_GRAPH": "personal",
         "GRAPHNOSIS_POLICY": "/Users/you/Graphnosis/policy.json",
@@ -167,25 +187,36 @@ After saving, restart Claude Desktop. The MCP server appears as **Graphnosis** i
 
 | Variable | Purpose | Default |
 |---|---|---|
-| `GRAPHNOSIS_VAULT` | Folder where encrypted graphs + op-log + caches live | (required) |
-| `GRAPHNOSIS_PASSPHRASE` | Vault passphrase, used for Argon2id key derivation | (required) |
+| `GRAPHNOSIS_CORTEX` | Folder where encrypted graphs + op-log + caches live | (required) |
+| `GRAPHNOSIS_PASSPHRASE` | Cortex passphrase, used for Argon2id key derivation | (required) |
 | `GRAPHNOSIS_DEVICE_ID` | Stable device identifier (op-log attribution + sync) | `<hostname>-<pid>` |
 | `GRAPHNOSIS_DEFAULT_GRAPH` | Graph ID for `remember` when none specified | `personal` |
 | `GRAPHNOSIS_POLICY` | Path to JSON with per-graph sensitivity tiers | (none — defaults apply) |
 | `GRAPHNOSIS_LLM` | Which catalog LLM to use for `correct` (`llama-3.2-3b`, `qwen-2.5-3b`, `llama-3.2-1b`) | recommended (`llama-3.2-3b`) |
 | `GRAPHNOSIS_EMBED_DISABLE` | Set to `1` to skip local embeddings (TF-IDF only) | unset |
 | `GRAPHNOSIS_EMBED_CACHE` | Override the model cache dir for fastembed | `~/Library/Caches/GraphnosisApp/models` |
-| `GRAPHNOSIS_IPC_SOCKET` | Override the Unix socket path for Tauri ↔ sidecar IPC | `<vault>/sidecar.sock` |
+| `GRAPHNOSIS_EMBED_WORKERS` | Number of forked ONNX embedding child processes | `2` |
+| `GRAPHNOSIS_IPC_SOCKET` | Override the Unix socket path for Tauri ↔ sidecar IPC | `<cortex>/sidecar.sock` |
 
 ---
 
 ## Security model — short version
 
-- **At-rest encryption**: libsodium `crypto_secretstream_xchacha20poly1305`, key derived from the user's passphrase via Argon2id. Passphrase lives only in the OS keychain after first unlock. Stored `.aikg` files are unreadable without the key — leaked files are inert.
+- **At-rest encryption**: libsodium `crypto_secretstream_xchacha20poly1305`, key derived from the user's passphrase via Argon2id. Passphrase lives only in the OS keychain after first unlock. Stored `.gai` files are unreadable without the key — leaked files are inert.
 - **Recovery**: a 24-word phrase shown once at setup; can decrypt the data key without the passphrase. (Implementation in [`packages/graphnosis-app-core/src/crypto`](packages/graphnosis-app-core/src/crypto/index.ts) — currently library-side; UI wiring in Tauri shell pending.)
-- **AI exposure**: only the federated subgraph chosen for the current prompt, capped by sensitivity tier per graph. Full `.aikg` never leaves the device. Every `recall` returns an audit footer showing per-graph attribution.
+- **AI exposure**: only the federated subgraph chosen for the current prompt, capped by sensitivity tier per graph. Full `.gai` never leaves the device. Every `recall` returns an audit footer showing per-graph attribution.
 - **Local LLM**: corrections run on a bundled small model (default Llama 3.2 3B via Ollama). Never call out to a remote AI for graph mutations.
-- **Op-log syncing**: append-only encrypted event log per device. Drive/iCloud syncs the log directory, not the `.aikg` file, so concurrent edits across devices converge without lost data. (Reducer ready in [`packages/graphnosis-app-core/src/oplog`](packages/graphnosis-app-core/src/oplog/index.ts); materializer pass on load pending.)
+- **Op-log syncing**: append-only encrypted event log per device. Drive/iCloud syncs the log directory, not the `.gai` file, so concurrent edits across devices converge without lost data. (Reducer ready in [`packages/graphnosis-app-core/src/oplog`](packages/graphnosis-app-core/src/oplog/index.ts); materializer pass on load pending.)
+
+---
+
+## Embedding pipeline — why two layers of workers
+
+`onnxruntime-node` is an N-API native addon that calls V8 APIs without holding the V8 isolate lock. Running it inside a `worker_threads` Worker crashes Node with `HandleScope::HandleScope Entering the V8 API without proper locking in place`. To keep the main event loop free during inference, the sidecar uses **forked child processes** instead — each fork has its own V8 isolate and main thread, so the native addon runs safely. The parent dispatches texts round-robin and never blocks.
+
+PDF parsing (`pdfjs-dist` via `unpdf`) is pure JavaScript/WASM and has no lock requirements, so it runs in a **`worker_threads` Worker** (`pdf-parse-worker.ts`). This frees the main thread during the full parse phase of large documents — IPC connections, stats calls, and the UI stay responsive throughout.
+
+For large documents the sidecar uses `ingestChunked()`: pages are embedded in batches separated by event-loop yields, but only a single `SourceRecord` is written at the end. This means chunked ingests appear as one source in the UI with the original file path.
 
 ---
 
