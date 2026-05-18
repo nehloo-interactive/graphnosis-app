@@ -19,5 +19,21 @@ target/
 *.bundle
 recovery-*.txt
 
-# Internal documentation (not for publication)
-DIFFERENTIATORS.md
+# Tauri build artifacts produced by build.rs at compile time. The Bun-compiled
+# sidecar + MCP relay (~80 MB each) and the Swift biometric sidecar are
+# rebuilt on every `cargo build` from `apps/desktop-sidecar/src/` and the
+# Swift sources — keeping them in git would bloat the repo and create
+# merge conflicts on every dev iteration.
+apps/desktop/src-tauri/binaries/
+
+# Native shared libraries copied from node_modules by build.rs (≈30 MB).
+# The dylib is re-staged on every build so the bundler picks it up; the
+# source of truth is node_modules/.pnpm/onnxruntime-node@.../.
+apps/desktop/src-tauri/resources/libonnxruntime.*.dylib
+
+# Astro build cache for the docs site.
+.astro/
+
+# Claude Code session artifacts — local agent worktrees + transcripts.
+.claude/
+
