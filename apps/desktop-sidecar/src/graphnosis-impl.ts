@@ -85,17 +85,37 @@ export class GraphnosisImpl implements GraphnosisAdapter {
     let newNodeIds: string[] = [];
     for (const id of h.instance.graph.nodes.keys()) if (!before.has(id)) newNodeIds.push(id);
 
-    // Fallback: when `text` ingest produces no nodes (SDK's appendText doesn't
-    // always emit nodes for structured short text with punctuation, URLs, etc.),
-    // retry as markdown with a synthetic header derived from the source ref.
-    // This keeps the "single-chunk" intent for clean prose but ensures nothing
-    // silently fails — better a slightly noisier ingest than zero ingest.
-    if (newNodeIds.length === 0 && input.kind === 'text' && typeof input.content === 'string') {
-      const label = labelFromSourceRef(input.sourceRef);
-      const wrapped = `# ${label}\n\n${input.content}`;
+    // Fallback for text/markdown shapes that produce zero nodes on the
+    // first pass. Two failure modes, one retry per shape:
+    //
+    //   - kind='text' produced 0 nodes: the SDK's appendText sometimes
+    //     skips structured short text with punctuation / URLs / numbers
+    //     that doesn't look like prose to its splitter. Retry as
+    //     markdown with a synthetic `# <label>` header derived from the
+    //     source ref.
+    //
+    //   - kind='markdown' produced 0 nodes: the user (or an MCP client
+    //     like `remember`) passed prose without any `#` heading. SDK
+    //     0.5.1+ handles this internally via a synthetic section in
+    //     parseMarkdown, but older SDKs drop the body entirely. Retry
+    //     as text — host.ingest() doesn't differentiate node counts by
+    //     kind, so the side-effect is identical from the user's POV.
+    //
+    // Both retries use the same `input.sourceRef` so the per-source
+    // dedup key stays stable across the original and retry paths.
+    if (newNodeIds.length === 0 && typeof input.content === 'string') {
       const fallbackBefore = new Set(h.instance.graph.nodes.keys());
       const fallbackOpts = opts.chunkSize ? { chunkSize: opts.chunkSize } : undefined;
-      result = h.instance.appendMarkdown(wrapped, input.sourceRef, fallbackOpts);
+      if (input.kind === 'text') {
+        const label = labelFromSourceRef(input.sourceRef);
+        const wrapped = `# ${label}\n\n${input.content}`;
+        result = h.instance.appendMarkdown(wrapped, input.sourceRef, fallbackOpts);
+      } else if (input.kind === 'markdown') {
+        // Bare prose dressed as markdown — strip whatever pseudo-markdown
+        // shape the caller used and pass through appendText, which has
+        // its own "wrap with synthetic header" path inside the SDK.
+        result = h.instance.appendText(input.content, input.sourceRef, fallbackOpts);
+      }
       for (const id of h.instance.graph.nodes.keys()) {
         if (!fallbackBefore.has(id)) newNodeIds.push(id);
       }
