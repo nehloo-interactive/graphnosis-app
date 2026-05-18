@@ -621,15 +621,24 @@ async fn pick_files(app: AppHandle) -> Result<Vec<String>, String> {
     Ok(paths)
 }
 
-/// Result of the "Configure Claude Desktop" flow. The UI shows the user what
+/// Result of an MCP-client configure flow. The UI shows the user what
 /// changed so they know exactly what was written.
+///
+/// Kept name `ClaudeConfigResult` for now to avoid churn on the JS-side
+/// type, but the result now covers any client — see `client_name` /
+/// `restart_hint` for per-client surface.
 #[derive(Serialize)]
 struct ClaudeConfigResult {
+    /// Display name of the configured client (e.g. "Claude Desktop").
+    client_name: String,
+    /// One-sentence "restart X so it re-reads the config" instruction,
+    /// rendered in the modal footer.
+    restart_hint: String,
     config_path: String,
     relay_path: String,
     /// Empty string — kept in the payload for backward compatibility with
     /// older frontend versions that still read it. Post-Bun the relay is a
-    /// self-contained binary and Claude doesn't need a separate Node path.
+    /// self-contained binary and clients don't need a separate Node path.
     node_path: String,
     socket_path: String,
     /// True if the existing config already had a matching Graphnosis entry
@@ -645,31 +654,92 @@ struct ClaudeConfigResult {
 /// connect to *this* App's sidecar over a Unix socket instead of spawning a
 /// competing sidecar. Preserves any other MCP servers the user has set up.
 ///
-/// Path: `~/Library/Application Support/Claude/claude_desktop_config.json` on macOS.
-/// Other platforms aren't supported yet — Claude Desktop is macOS/Windows only,
-/// and the path scheme differs on Windows; we'll add that when we ship Windows.
+/// Identifier for one of the MCP-aware client apps we can auto-configure.
+/// Add a new variant + `display_name` + `config_path` entry to wire a new
+/// client. Every supported client uses the same `mcpServers` shape — only
+/// the config file location differs — so this is a flat enum, not a trait.
+#[derive(Debug, Clone, Copy)]
+enum McpClient {
+    /// Anthropic's macOS desktop app. Config at
+    /// `~/Library/Application Support/Claude/claude_desktop_config.json`.
+    ClaudeDesktop,
+    /// `claude` CLI (Claude Code). User-level config at `~/.claude.json`
+    /// with the same `mcpServers` shape. The CLI also supports project-
+    /// scoped `.mcp.json` files but we write to the user level so it
+    /// works regardless of CWD.
+    ClaudeCode,
+    /// Cursor IDE. User-level config at `~/.cursor/mcp.json`.
+    Cursor,
+}
+
+impl McpClient {
+    fn from_id(id: &str) -> Option<Self> {
+        match id {
+            "claude-desktop" => Some(Self::ClaudeDesktop),
+            "claude-code" => Some(Self::ClaudeCode),
+            "cursor" => Some(Self::Cursor),
+            _ => None,
+        }
+    }
+    fn display_name(&self) -> &'static str {
+        match self {
+            Self::ClaudeDesktop => "Claude Desktop",
+            Self::ClaudeCode => "Claude Code",
+            Self::Cursor => "Cursor",
+        }
+    }
+    /// User-visible "after applying, restart X" hint shown in the modal
+    /// footer. Most clients need a full quit + reopen to re-read the
+    /// MCP config; some (like Cursor) reload on workspace open.
+    fn restart_hint(&self) -> &'static str {
+        match self {
+            Self::ClaudeDesktop => "Fully quit Claude Desktop (⌘Q) and reopen it.",
+            Self::ClaudeCode => "Restart any running `claude` CLI sessions to pick up the new MCP server.",
+            Self::Cursor => "Reopen Cursor (or restart the workspace) so it re-reads ~/.cursor/mcp.json.",
+        }
+    }
+}
+
+/// Configure an MCP-aware AI client to talk to this App's running sidecar.
+///
+/// Writes an `mcpServers.Graphnosis` entry to the client's config file,
+/// pointing it at the compiled relay binary + the cortex's `mcp.sock`.
+/// Preserves any other MCP servers the user already had configured.
+///
+/// Adding a new client: extend `McpClient` with a variant, add the OS-
+/// specific path branch in `mcp_client_config_path`, and add a button
+/// in the Settings UI calling `configure_mcp_client(<new-id>)`.
 #[tauri::command]
-async fn configure_claude_desktop(
+async fn configure_mcp_client(
     state: State<'_, AppState>,
+    client_id: String,
 ) -> Result<ClaudeConfigResult, String> {
+    let client = McpClient::from_id(&client_id)
+        .ok_or_else(|| format!("Unknown AI client id: '{}'", client_id))?;
+
     // Need an unlocked cortex — the socket path lives inside it.
     let cortex_dir = {
         let inner = state.inner.lock().await;
         inner.cortex_dir.clone()
     }
-    .ok_or_else(|| "Unlock the cortex first — Claude needs the cortex's socket path.".to_string())?;
+    .ok_or_else(|| format!(
+        "Unlock the cortex first — {} needs the cortex's socket path.",
+        client.display_name(),
+    ))?;
 
     let socket_path = cortex_dir.join("mcp.sock");
 
-    // Resolve the compiled MCP relay binary. Pre-Bun: this used to return
-    // (node-path, relay.js) and Claude was configured to run `node + relay.js`.
-    // Post-Bun: the relay is a self-contained executable, so Claude spawns
-    // it directly with the socket path as argv[1] — no Node dependency on
-    // the user's machine.
+    // Resolve the compiled MCP relay binary. Same one all clients spawn —
+    // the relay is a self-contained executable with the socket path as
+    // argv[1], no Node dependency on the user's machine.
     let relay = sidecar::resolve_relay_path().map_err(|e| e.to_string())?;
 
-    let config_path = claude_desktop_config_path().ok_or_else(|| {
-        "Could not locate Claude Desktop's config directory for this user.".to_string()
+    let config_path = mcp_client_config_path(client).ok_or_else(|| {
+        format!(
+            "Could not locate {}'s config directory for this user. \
+             This OS isn't supported yet for that client.",
+            client.display_name(),
+        )
     })?;
 
     // Read existing config (if any). We deliberately fail loudly on unparseable
@@ -689,7 +759,10 @@ async fn configure_claude_desktop(
 
     // Ensure root is an object and `mcpServers` is an object.
     if !root.is_object() {
-        return Err("claude_desktop_config.json root is not a JSON object — aborting.".to_string());
+        return Err(format!(
+            "{} root is not a JSON object — aborting. Fix or remove the file and try again.",
+            config_path.display(),
+        ));
     }
     let root_obj = root.as_object_mut().expect("checked above");
     let mcp_entry = root_obj
@@ -732,6 +805,8 @@ async fn configure_claude_desktop(
         .map_err(|e| format!("Could not finalize {}: {}", config_path.display(), e))?;
 
     Ok(ClaudeConfigResult {
+        client_name: client.display_name().to_string(),
+        restart_hint: client.restart_hint().to_string(),
         config_path: config_path.to_string_lossy().into_owned(),
         relay_path: relay.to_string_lossy().into_owned(),
         node_path: String::new(),
@@ -742,20 +817,36 @@ async fn configure_claude_desktop(
     })
 }
 
+/// Where each supported MCP client stores its config on this OS.
+///
+/// All three macOS paths are the upstream-documented locations:
+///   - Claude Desktop: `~/Library/Application Support/Claude/claude_desktop_config.json`
+///   - Claude Code:    `~/.claude.json` (user-level; CLI also supports
+///                     project-scoped `.mcp.json` we don't touch)
+///   - Cursor:         `~/.cursor/mcp.json` (user-level)
+///
+/// Windows + Linux paths are different (Cursor lives at
+/// `%APPDATA%\Cursor\User\globalStorage\` on Windows; Claude Desktop
+/// uses `%APPDATA%\Claude\`). Wire them up alongside the Windows / Linux
+/// build targets — for now we return None on those platforms and the
+/// command surfaces a clear "not supported yet" error.
 #[cfg(target_os = "macos")]
-fn claude_desktop_config_path() -> Option<PathBuf> {
+fn mcp_client_config_path(client: McpClient) -> Option<PathBuf> {
     let home = dirs::home_dir()?;
-    Some(home
-        .join("Library")
-        .join("Application Support")
-        .join("Claude")
-        .join("claude_desktop_config.json"))
+    Some(match client {
+        McpClient::ClaudeDesktop => home
+            .join("Library")
+            .join("Application Support")
+            .join("Claude")
+            .join("claude_desktop_config.json"),
+        McpClient::ClaudeCode => home.join(".claude.json"),
+        McpClient::Cursor => home.join(".cursor").join("mcp.json"),
+    })
 }
 
 #[cfg(not(target_os = "macos"))]
-fn claude_desktop_config_path() -> Option<PathBuf> {
-    // Windows path scheme is %APPDATA%\Claude\claude_desktop_config.json —
-    // wire it up when we ship Windows. Linux Claude Desktop doesn't exist yet.
+fn mcp_client_config_path(_client: McpClient) -> Option<PathBuf> {
+    // TODO: wire up Windows + Linux paths when those builds ship.
     None
 }
 
@@ -1665,7 +1756,7 @@ pub fn run() {
             recovery_apply,
             get_settings,
             update_settings,
-            configure_claude_desktop,
+            configure_mcp_client,
             open_cortex_in_finder,
             reveal_file_in_finder,
             show_window,

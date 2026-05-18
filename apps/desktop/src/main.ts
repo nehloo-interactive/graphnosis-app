@@ -104,7 +104,14 @@ interface RecoveryReport {
   outcomes: RecoveryOutcome[];
 }
 
+/** Result of any `configure_mcp_client` call (Claude Desktop, Claude Code,
+ *  Cursor — all share this shape). Backwards-compat name kept since the
+ *  modal + helpers still reference it across the file. */
 interface ClaudeConfigResult {
+  /** Display name of the client we just configured (e.g. "Claude Desktop"). */
+  client_name: string;
+  /** One-sentence "restart X" hint shown in the modal footer after Apply. */
+  restart_hint: string;
   config_path: string;
   relay_path: string;
   node_path: string;
@@ -113,6 +120,9 @@ interface ClaudeConfigResult {
   created_file: boolean;
   preserved_servers: string[];
 }
+
+/** Identifiers accepted by the Rust `configure_mcp_client` command. */
+type McpClientId = 'claude-desktop' | 'claude-code' | 'cursor';
 
 type ContentCacheMode = 'all' | 'ephemeral-only' | 'off';
 type ForgetMode = 'soft' | 'purge';
@@ -494,8 +504,13 @@ const els = {
   snapshotsNote: $<HTMLSpanElement>('snapshots-note'),
   btnSnapshotsClose: $<HTMLButtonElement>('btn-snapshots-close'),
   btnSnapshotsCreate: $<HTMLButtonElement>('btn-snapshots-create'),
-  btnClaude: $<HTMLButtonElement>('btn-claude'),
+  btnConfigureClaudeDesktop: $<HTMLButtonElement>('btn-configure-claude-desktop'),
+  btnConfigureClaudeCode: $<HTMLButtonElement>('btn-configure-claude-code'),
+  btnConfigureCursor: $<HTMLButtonElement>('btn-configure-cursor'),
   claudeModal: $<HTMLDivElement>('claude-modal'),
+  claudeModalTitle: $<HTMLHeadingElement>('claude-modal-title'),
+  claudeModalSubtitle: $<HTMLParagraphElement>('claude-modal-subtitle'),
+  claudeModalApplyHint: $<HTMLParagraphElement>('claude-modal-apply-hint'),
   claudeBody: $<HTMLDivElement>('claude-body'),
   claudePreview: $<HTMLDivElement>('claude-preview'),
   claudeFooterNote: $<HTMLSpanElement>('claude-footer-note'),
@@ -1727,44 +1742,87 @@ async function runPurge(btn: HTMLButtonElement): Promise<void> {
   }
 }
 
-// ---- configure-claude flow ---------------------------------------------
+// ---- configure-AI-client flow ------------------------------------------
+//
+// One modal serves all three MCP-aware clients (Claude Desktop / Claude
+// Code / Cursor). The selected client_id is stored on the modal's dataset
+// when a Configure button is clicked, and the Apply handler reads it back
+// so the same listener works for every client without per-client wiring.
+//
+// Adding a new client: register the Tauri side in `lib.rs`'s McpClient
+// enum + `mcp_client_config_path`, then add another `data-mcp-client`
+// button to the AI-client panel and a small per-client copy block below.
 
-els.btnClaude.addEventListener('click', () => {
+interface ClientUiCopy {
+  /** Modal title shown above the subtitle when this client is being configured. */
+  title: string;
+  /** One-line description above the Apply button. */
+  subtitle: string;
+}
+
+const MCP_CLIENT_COPY: Record<McpClientId, ClientUiCopy> = {
+  'claude-desktop': {
+    title: 'Configure Claude Desktop',
+    subtitle: "Make Claude Desktop's Graphnosis tools talk to this App's running Synapse instead of spawning its own. Both share one in-memory graph and one cortex lock.",
+  },
+  'claude-code': {
+    title: 'Configure Claude Code (CLI)',
+    subtitle: "Make the `claude` CLI's Graphnosis tools talk to this App's running Synapse. Writes the user-level `~/.claude.json` so it applies in every project. Project-scoped `.mcp.json` files are left untouched.",
+  },
+  'cursor': {
+    title: 'Configure Cursor',
+    subtitle: "Make Cursor's Graphnosis MCP tools talk to this App's running Synapse. Writes the user-level `~/.cursor/mcp.json`; project-scoped MCP configs are unaffected.",
+  },
+};
+
+function openConfigureClientModal(clientId: McpClientId): void {
   showError(null);
+  const copy = MCP_CLIENT_COPY[clientId];
+  els.claudeModal.dataset['mcpClient'] = clientId;
+  els.claudeModalTitle.textContent = copy.title;
+  els.claudeModalSubtitle.textContent = copy.subtitle;
+  els.claudeModalApplyHint.innerHTML = 'Click <strong>Apply</strong> to update the client\'s config.';
   els.claudeModal.classList.remove('hidden');
   els.claudePreview.style.display = 'none';
   els.claudePreview.innerHTML = '';
   els.btnClaudeApply.disabled = false;
   els.btnClaudeApply.textContent = 'Apply';
-  els.claudeFooterNote.textContent = 'After applying, fully quit Claude Desktop (⌘Q) and reopen it.';
-});
+  // Per-client restart hint set by the success path; show a generic
+  // placeholder until then.
+  els.claudeFooterNote.textContent = 'After applying, restart the client so it re-reads the config.';
+}
+
+els.btnConfigureClaudeDesktop.addEventListener('click', () => openConfigureClientModal('claude-desktop'));
+els.btnConfigureClaudeCode.addEventListener('click', () => openConfigureClientModal('claude-code'));
+els.btnConfigureCursor.addEventListener('click', () => openConfigureClientModal('cursor'));
 
 els.btnClaudeClose.addEventListener('click', () => {
   els.claudeModal.classList.add('hidden');
 });
 
 els.btnClaudeApply.addEventListener('click', async () => {
+  const clientId = (els.claudeModal.dataset['mcpClient'] as McpClientId | undefined) ?? 'claude-desktop';
   els.btnClaudeApply.disabled = true;
   els.btnClaudeApply.textContent = 'Writing…';
   els.claudeFooterNote.textContent = '';
   try {
-    const r = (await invoke('configure_claude_desktop')) as ClaudeConfigResult;
+    const r = (await invoke('configure_mcp_client', { clientId })) as ClaudeConfigResult;
     const preservedLine = r.preserved_servers.length > 0
       ? `Preserved ${r.preserved_servers.length} other MCP server${r.preserved_servers.length === 1 ? '' : 's'}: <code>${r.preserved_servers.map(escape).join(', ')}</code>.`
       : 'No other MCP servers were present.';
     const headline = r.already_configured
-      ? 'Claude Desktop is already configured to use this App.'
+      ? `${r.client_name} is already configured to use this App.`
       : r.created_file
-        ? 'Created Claude Desktop config and added the Graphnosis entry.'
-        : 'Updated Claude Desktop\'s Graphnosis entry.';
+        ? `Created ${r.client_name} config and added the Graphnosis entry.`
+        : `Updated ${r.client_name}'s Graphnosis entry.`;
     // Read the current AI-routing toggle so we can tell the user whether
-    // Claude will be guided to use Graphnosis as default memory. Cheap IPC.
+    // the client will be guided to use Graphnosis as default memory. Cheap IPC.
     let routingLine = '';
     try {
       const s = (await invoke('get_settings')) as AppSettings;
       routingLine = s.ai?.useAsDefaultMemory ?? true
-        ? `<p style="margin-top: 8px;">Claude will be guided to use Graphnosis as your <strong>default memory</strong> — calling <code>recall</code> proactively for personal-context questions, and <code>correct</code> instead of <code>remember</code> for fixes. Change this any time under <strong>Settings → AI client routing</strong>.</p>`
-        : `<p style="margin-top: 8px;">Claude will see Graphnosis as <strong>one memory option among many</strong> — no system-prompt-level routing. Change this under <strong>Settings → AI client routing</strong> if you want Graphnosis to lead.</p>`;
+        ? `<p style="margin-top: 8px;">${escape(r.client_name)} will be guided to use Graphnosis as your <strong>default memory</strong> — calling <code>recall</code> proactively for personal-context questions, and <code>correct</code> instead of <code>remember</code> for fixes. Change this any time under <strong>Settings → AI client routing</strong>.</p>`
+        : `<p style="margin-top: 8px;">${escape(r.client_name)} will see Graphnosis as <strong>one memory option among many</strong> — no system-prompt-level routing. Change this under <strong>Settings → AI client routing</strong> if you want Graphnosis to lead.</p>`;
     } catch {
       // If we can't read settings (cortex just locked, etc.) skip the line
       // rather than block the success message.
@@ -1775,13 +1833,12 @@ els.btnClaudeApply.addEventListener('click', async () => {
       ${routingLine}
       <p style="margin-top: 10px; font-size: 11px; color: var(--fg-dim);">
         <strong>Config file:</strong> <code>${escape(r.config_path)}</code><br/>
-        <strong>Relay script:</strong> <code>${escape(r.relay_path)}</code><br/>
-        <strong>Node binary:</strong> <code>${escape(r.node_path)}</code><br/>
+        <strong>Relay binary:</strong> <code>${escape(r.relay_path)}</code><br/>
         <strong>Socket:</strong> <code>${escape(r.socket_path)}</code>
       </p>
     `;
     els.claudePreview.style.display = '';
-    els.claudeFooterNote.textContent = 'Now fully quit Claude Desktop (⌘Q, not ⌘W) and reopen it. The Graphnosis tools will reconnect to this App.';
+    els.claudeFooterNote.textContent = r.restart_hint;
     els.btnClaudeApply.textContent = 'Done';
   } catch (e) {
     els.claudePreview.innerHTML = `<p class="error">${escape(String(e))}</p>`;

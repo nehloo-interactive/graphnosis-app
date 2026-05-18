@@ -3796,9 +3796,12 @@
               <div class="panel">
                 <p class="panel-title">AI client integration</p>
                 <p class="subtitle" style="font-size: 11px; margin: -4px 0 10px;">
-                  Wire Claude Desktop to talk to this App's Synapse — your corpus callosum.
+                  Wire MCP-aware AI clients to talk to this App's Synapse — your corpus callosum.
+                  Each one updates only its own user-level MCP config; existing servers untouched.
                 </p>
-                <button id="btn-claude">Configure Claude Desktop…</button>
+                <button id="btn-configure-claude-desktop" data-mcp-client="claude-desktop">Configure Claude Desktop…</button>
+                <button id="btn-configure-claude-code" data-mcp-client="claude-code" style="margin-left: 6px;">Configure Claude Code (CLI)…</button>
+                <button id="btn-configure-cursor" data-mcp-client="cursor" style="margin-left: 6px;">Configure Cursor…</button>
               </div>
               <div class="panel">
                 <p class="panel-title">Cortex tools</p>
@@ -3917,22 +3920,27 @@
       </div>
     </div>
 
-    <!-- Configure Claude modal: writes ~/Library/Application Support/Claude/claude_desktop_config.json -->
+    <!-- Configure AI-client modal. Title + subtitle + footer hint are
+         set dynamically by main.ts based on which client button was
+         clicked. The same modal serves all three (Claude Desktop /
+         Claude Code / Cursor) — they share the MCP server shape, only
+         the config path differs. -->
     <div id="claude-modal" class="modal-backdrop hidden">
       <div class="modal">
         <div class="modal-header">
-          <h2>Configure Claude Desktop</h2>
-          <p class="subtitle">
-            Make Claude Desktop's Graphnosis tools talk to this App's running Synapse
-            instead of spawning its own. Both share one in-memory graph and one cortex lock.
+          <h2 id="claude-modal-title">Configure AI client</h2>
+          <p class="subtitle" id="claude-modal-subtitle">
+            Wire the client's Graphnosis MCP tools to this App's running Synapse
+            instead of spawning a competing one. Both share one in-memory graph
+            and one cortex lock.
           </p>
         </div>
         <div class="modal-body" id="claude-body">
-          <p class="subtitle">Click <strong>Apply</strong> to update Claude Desktop's config.</p>
+          <p class="subtitle" id="claude-modal-apply-hint">Click <strong>Apply</strong> to update the client's config.</p>
           <div class="recovery-summary" id="claude-preview" style="display: none;"></div>
         </div>
         <div class="modal-footer">
-          <span class="filler" id="claude-footer-note">After applying, fully quit Claude Desktop (⌘Q) and reopen it.</span>
+          <span class="filler" id="claude-footer-note">After applying, restart the client so it re-reads the config.</span>
           <button id="btn-claude-close">Close</button>
           <button id="btn-claude-apply" class="primary">Apply</button>
         </div>
