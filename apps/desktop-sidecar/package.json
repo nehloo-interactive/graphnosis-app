@@ -22,7 +22,7 @@
     "@modelcontextprotocol/sdk": "^1.0.0",
     "@mozilla/readability": "^0.5.0",
     "@nehloo-interactive/graphnosis-secure-sync": "https://github.com/nehloo-interactive/graphnosis-secure-sync.git#v0.1.2",
-    "@nehloo/graphnosis": "^0.5.0",
+    "@nehloo/graphnosis": "^0.5.1",
     "@scure/bip39": "^1.4.0",
     "fastembed": "^2.1.0",
     "jsdom": "^24.0.0",
