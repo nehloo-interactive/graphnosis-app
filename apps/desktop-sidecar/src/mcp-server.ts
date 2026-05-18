@@ -482,20 +482,43 @@ export function createMcpServer(deps: McpDeps): Server {
 
         // ── Resolve target engram ────────────────────────────────────
         //
-        // Precedence: explicit graphId (slug) > target_engram (name or
-        // displayName fuzzy match) > defaultGraphId().
+        // Two name-bearing inputs converge into one resolver:
+        //   - `graphId`     — explicit slug; preferred when the AI knows
+        //                     the exact graph id.
+        //   - `target_engram` — human-friendly name; preferred when the
+        //                     AI is going off what the user typed.
         //
-        // When target_engram is set but doesn't match any loaded graph,
-        // we emit `engram.create-suggested` to the App's UI and return
-        // an actionable error instead of ingesting. The user clicks
-        // Create in the App banner; the App handles the create-then-
-        // ingest two-step in one user gesture. The AI is told to relay
-        // the message and wait — never auto-creates.
-        let graphId: string;
-        if (args.graphId) {
+        // Behavior:
+        //   - graphId provided AND exists      → write immediately.
+        //   - graphId provided but UNKNOWN     → treat it as a target name
+        //                                        and route through the same
+        //                                        banner flow as target_engram.
+        //                                        This catches AIs that guess
+        //                                        a slug instead of using
+        //                                        target_engram (e.g. claude
+        //                                        passing graphId: "trademark"
+        //                                        when no such graph exists).
+        //   - target_engram provided           → fuzzy-resolve; if not exact,
+        //                                        broadcast banner + return
+        //                                        actionable error to the AI.
+        //   - neither                          → defaultGraphId().
+        //
+        // The AI is told to relay the situation to the user and NOT retry —
+        // the App handles the create-then-ingest two-step on user confirm.
+        const knownGraphs = deps.host.listGraphs();
+        let graphId: string | null = null;
+        let unresolvedName: string | null = null;
+        if (args.graphId && knownGraphs.includes(args.graphId)) {
           graphId = args.graphId;
+        } else if (args.graphId) {
+          // graphId points at a non-existent slug — promote to target name.
+          unresolvedName = args.graphId;
         } else if (args.target_engram) {
-          const resolution = resolveTargetEngram(deps.host, args.target_engram);
+          unresolvedName = args.target_engram;
+        }
+
+        if (graphId === null && unresolvedName !== null) {
+          const resolution = resolveTargetEngram(deps.host, unresolvedName);
           if (resolution.kind === 'exact') {
             graphId = resolution.graphId;
           } else {
@@ -508,9 +531,9 @@ export function createMcpServer(deps: McpDeps): Server {
             if (deps.broadcastRaw) {
               deps.broadcastRaw({
                 kind: 'engram.create-suggested',
-                name: args.target_engram,
+                name: unresolvedName,
                 payload: {
-                  suggestedName: args.target_engram,
+                  suggestedName: unresolvedName,
                   label: args.label,
                   text: args.text,
                   preview: args.text.slice(0, 280),
@@ -532,18 +555,18 @@ export function createMcpServer(deps: McpDeps): Server {
             const lines: string[] = [];
             if (candidates.length) {
               lines.push(
-                `No engram exactly matches "${args.target_engram}". ` +
+                `No engram exactly matches "${unresolvedName}". ` +
                 `Closest matches: ${candidates.map((c) => `"${c.displayName}"`).join(', ')}.`,
               );
               lines.push(
-                `Tell the user: "I'd save this to '${args.target_engram}' but found similar engrams already — ` +
+                `Tell the user: "I'd save this to '${unresolvedName}' but found similar engrams already — ` +
                 `a banner in the Graphnosis App is asking which one to use (or create a new one)."`,
               );
             } else {
-              const known = deps.host.listGraphs().join(', ');
+              const known = knownGraphs.join(', ');
               lines.push(
-                `No engram named "${args.target_engram}" exists yet. ` +
-                `Tell the user: "I'd save this to a new '${args.target_engram}' engram. ` +
+                `No engram named "${unresolvedName}" exists yet. ` +
+                `Tell the user: "I'd save this to a new '${unresolvedName}' engram. ` +
                 `A banner in the Graphnosis App is asking you to confirm — click Create there. ` +
                 `It'll create the engram AND save this note in one click."`,
               );
@@ -552,7 +575,7 @@ export function createMcpServer(deps: McpDeps): Server {
             lines.push(`DO NOT retry this remember call. The App handles the ingest after the user confirms.`);
             return { isError: true, content: [{ type: 'text', text: lines.join('\n\n') }] };
           }
-        } else {
+        } else if (graphId === null) {
           graphId = deps.defaultGraphId();
         }
 
