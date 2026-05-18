@@ -237,10 +237,32 @@ async function fetchWithReadabilityFallback(url: string): Promise<string> {
 }
 
 // Short clips (< 500 chars, no markdown headers in body) ingest as a single chunk.
-// Anything longer or already structured goes through markdown so the SDK can split sensibly.
-// The label is stored on the source record (visible in stats), not prepended as a heading
-// — heading prefixes were causing the SDK to spawn label/metadata + content nodes (3-way split)
-// for every short remember call, ballooning the graph.
+// Three routing shapes, picked by the content's length + whether it already
+// has any markdown heading:
+//
+//   1. Short clean prose (< SHORT_CLIP_THRESHOLD, no headings)
+//      → kind='text'. SDK's appendText wraps the content with a synthetic
+//        `# <source>` header internally for the chunker. We don't prepend
+//        our own — for short content the synthetic header was producing
+//        a 3-way split (label node + metadata node + content node) per
+//        clip, ballooning the graph.
+//
+//   2. Long, already-structured markdown (has at least one heading)
+//      → kind='markdown'. Pass through verbatim. The SDK splits on the
+//        user's own headings.
+//
+//   3. Long but headerless prose (≥ SHORT_CLIP_THRESHOLD, no headings)
+//      → kind='markdown' with a synthetic `# <label>` prepended. The
+//        SDK's parseMarkdown anchors sections on headings; without one
+//        it used to return zero sections, the chunker emitted zero
+//        nodes, and the call surfaced as "Ingest produced 0 nodes".
+//        SDK 0.5.1+ handles this internally (and the sidecar has a
+//        symmetric fallback), but routing intelligently here avoids
+//        the retry round-trip in the common case.
+//
+// Using the user-supplied `label` as the synthetic header is friendlier
+// than the source ref (`clip:1779xxx:label`), which would otherwise
+// surface as the section title in the graph.
 const SHORT_CLIP_THRESHOLD = 500;
 const HAS_MARKDOWN_HEADER = /^\s*#{1,6}\s/m;
 
@@ -258,10 +280,27 @@ export async function ingestClip(
   // source — never rewritten.
   const refPrefix = sourceKind === 'ai-conversation' ? 'ai-conversation' : 'clip';
   const sourceRef = `${refPrefix}:${Date.now()}:${label}`;
-  const isShort = text.length < SHORT_CLIP_THRESHOLD && !HAS_MARKDOWN_HEADER.test(text);
+
+  const hasHeader = HAS_MARKDOWN_HEADER.test(text);
+  const isShort = text.length < SHORT_CLIP_THRESHOLD && !hasHeader;
+
+  // Three-way routing — see comment block above for rationale.
+  let kind: 'text' | 'markdown';
+  let content: string;
+  if (isShort) {
+    kind = 'text';
+    content = text;
+  } else if (hasHeader) {
+    kind = 'markdown';
+    content = text;
+  } else {
+    kind = 'markdown';
+    content = `# ${label}\n\n${text}`;
+  }
+
   return host.ingest(graphId, sourceKind, sourceRef, {
-    kind: isShort ? 'text' : 'markdown',
-    content: text,
+    kind,
+    content,
     sourceRef,
   }, opts?.addedBy ? { addedBy: opts.addedBy } : undefined);
 }
