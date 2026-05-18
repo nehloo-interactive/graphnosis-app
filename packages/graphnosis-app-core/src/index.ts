@@ -8,6 +8,9 @@ export * as settings from './settings/index.js';
 // Source tracking types are App-specific and stay here.
 export type { SourceId, SourceRecord } from './types.js';
 
+// Connector types are used by the sidecar's connector subsystem.
+export type { ConnectorKind, ConnectorConfig, ConnectorSettings } from './settings/index.js';
+
 // Shared infrastructure types are re-exported from the extracted package
 // so existing call sites keep working with @graphnosis-app/core imports.
 export type {
