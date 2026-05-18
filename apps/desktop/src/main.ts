@@ -1,6 +1,12 @@
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { getCurrentWebview } from '@tauri-apps/api/webview';
+import { getCurrentWindow } from '@tauri-apps/api/window';
+import {
+  isPermissionGranted,
+  requestPermission,
+  sendNotification,
+} from '@tauri-apps/plugin-notification';
 import {
   Atlas,
   type AtlasNode,
@@ -10,12 +16,17 @@ import {
   CATEGORY_COLOR,
   CATEGORY_LABEL,
 } from './atlas';
+import {
+  createAtlasEngine,
+  ATLAS_ENGINES,
+  type AtlasEngineKind,
+} from './atlas-engine';
 
 // ---- types matching Rust ------------------------------------------------
 
 interface StatusSnapshot {
   unlocked: boolean;
-  vault_dir: string | null;
+  cortex_dir: string | null;
   sidecar_running: boolean;
 }
 
@@ -40,6 +51,10 @@ interface SourceRecord {
   graphId: string;
   nodeIds: string[];
   ingestedAt: number;
+  /** MCP client name when this source was added or last corrected via an
+   *  AI tool call (e.g. "claude-ai", "cursor"). Undefined for user-driven
+   *  ingests (drag-drop, paste, file picker). */
+  addedBy?: string;
 }
 
 interface StatsSummary {
@@ -126,6 +141,18 @@ interface AppSettings {
      *  Default 5000. Set 0 to disable. Optional in the wire shape so
      *  older clients can omit; the sidecar fills in the current value. */
     autoRelinkMaxNodes?: number;
+    /** When ON, the sidecar watches each file-backed source's disk path
+     *  and re-ingests automatically on save. Off by default; see the
+     *  Settings UI for the user-facing tradeoff. Optional on the wire
+     *  for the same forward-compat reason as autoRelinkMaxNodes. */
+    autoReingestOnFileChange?: boolean;
+    /** Quiet period (ms): file must be unchanged this long before reingest fires.
+     *  Default 900 000 (15 min). Only relevant when autoReingestOnFileChange is on. */
+    reingestQuietMs?: number;
+    /** SDK chunk-size preset: 'fine' / 'balanced' / 'coarse'. Default 'balanced'. */
+    chunkSize?: 'fine' | 'balanced' | 'coarse';
+    /** SDK embed-batch preset: 'small' / 'medium' / 'large' / 'auto'. Default 'auto'. */
+    embedBatch?: 'small' | 'medium' | 'large' | 'auto';
   };
   graphMetadata?: Record<string, GraphMetadata>;
 }
@@ -147,6 +174,7 @@ interface GraphMetadata {
   template: GraphTemplate;
   displayName: string;
   createdAt: number;
+  archived?: boolean;
 }
 interface GraphWithMetadata { graphId: string; metadata: GraphMetadata; }
 
@@ -237,6 +265,14 @@ let graphnosisActiveTab: GraphnosisTab = 'checkin';
 let graphnosisListRows: NodeRecord[] = []; // current visible search results
 let graphnosisAllNodes: NodeRecord[] = []; // unfiltered cache for the active engram
 let graphnosisSelectedId: string | null = null;
+// Whether the current selection was set by explicit user action (search
+// click, memory-trace click, 3D node click, sidebar connection click)
+// vs implicitly (trivia card surfacing a candidate). Read by
+// switchGraphnosisTab to decide whether to carry the selection forward
+// when the 3D Engram tab opens — implicit selections get reset so the
+// user lands on a clean unhighlighted graph, explicit ones persist so
+// the user sees the node they navigated to.
+let graphnosisSelectionExplicit = false;
 let graphnosisSearchTimer: ReturnType<typeof setTimeout> | null = null;
 let graphnosisListMode: 'substring' | 'semantic' = 'substring';
 let graphnosisSemanticToken = 0; // race-guard
@@ -262,6 +298,9 @@ interface DeckItem {
    *  `apply_correction` / `reject_correction` Tauri commands. */
   pendingDiff?: PendingDiff;
 }
+const DECK_PAGE_SIZE = 30;          // cards served per session page
+let graphnosisDeckPool: DeckItem[] = [];   // full ordered set for this session
+let graphnosisDeckPageStart = 0;           // index into pool where current page starts
 let graphnosisDeck: DeckItem[] = [];
 let graphnosisDeckIndex = 0;
 const graphnosisSessionDispatched = new Set<string>(); // nodeIds confirmed/skipped/fixed this session
@@ -271,7 +310,7 @@ let graphnosisOrphanIds: Set<string> = new Set(); // nodes with no edges, recomp
 // AI-proposed correction diffs awaiting the user's approval. Polled by
 // fetchPendingCorrections; surfaced as top-priority `pending-correction`
 // cards in the deck queue (folded in here after the user wanted the
-// Corrections rail tab removed). Cleared on vault lock.
+// Corrections rail tab removed). Cleared on cortex lock.
 let graphnosisPendingDiffs: PendingDiff[] = [];
 
 // Per-session cache of "related memories" by source node id, populated
@@ -289,21 +328,25 @@ const graphnosisRelatedCache: Map<string, RelatedItem[]> = new Map();
 // Recents are kept per-engram so switching graphs doesn't blow away the
 // trail of memories you were just touching in the other one. The map
 // keys on graphId; values are node IDs newest-first. Cleared when the
-// vault locks (we don't persist this across sessions).
+// cortex locks (we don't persist this across sessions).
 const graphnosisRecentsByGraph: Map<string, string[]> = new Map();
-const GRAPHNOSIS_RECENTS_MAX = 6;
+
 function currentRecents(): string[] {
   return atlasActiveGraph ? graphnosisRecentsByGraph.get(atlasActiveGraph) ?? [] : [];
 }
 let graphnosisEditingId: string | null = null; // node currently in inline-edit mode
-// Two-tap inline confirm for the sidebar Forget button. First click sets
-// this to the node's id (button turns red, label changes); second click
-// actually forgets. We avoid window.confirm() because it can be missed
-// or behave oddly in the webview. Auto-resets after a few seconds.
-let graphnosisForgetArming: { nodeId: string; resetTimer: ReturnType<typeof setTimeout> } | null = null;
+// Current forget mode — synced from settings whenever they are loaded/saved.
+// Used to show the right deletion-behaviour note in the forget confirmation UI.
+let currentForgetMode: ForgetMode = 'soft';
 
 // State for the graph wizard.
 let gwSelected: GraphTemplate | null = null;
+
+// Sources that the user has temporarily disabled — excluded from the
+// Atlas visualization until re-enabled. Keyed by sourceId; value is
+// the ref (= node sourceFile path) used as the atlas sourceKey.
+// Survives graph data reloads; reset on cortex lock.
+const disabledSources = new Map<string, string>();
 
 type DiffEdit =
   | { kind: 'edit'; nodeId: string; content: string; reason: string }
@@ -351,7 +394,7 @@ const els = {
   err: $<HTMLDivElement>('error'),
   viewUnlock: $<HTMLElement>('view-unlock'),
   viewApp: $<HTMLElement>('view-app'),
-  vaultDir: $<HTMLInputElement>('vault-dir'),
+  cortexDir: $<HTMLInputElement>('cortex-dir'),
   passphrase: $<HTMLInputElement>('passphrase'),
   btnPick: $<HTMLButtonElement>('btn-pick'),
   btnUnlock: $<HTMLButtonElement>('btn-unlock'),
@@ -360,7 +403,8 @@ const els = {
   btnOpenFolder: $<HTMLButtonElement>('btn-open-folder'),
   btnLock: $<HTMLButtonElement>('btn-lock'),
   btnAddFile: $<HTMLButtonElement>('btn-add-file'),
-  vaultLabel: $<HTMLSpanElement>('vault-label'),
+  cortexLabel: $<HTMLSpanElement>('cortex-label'),
+  activeEngramLabel: $<HTMLSpanElement>('active-engram-label'),
   sourcesList: $<HTMLDivElement>('sources-list'),
   dropZone: $<HTMLDivElement>('drop-zone'),
   toastStack: $<HTMLDivElement>('g-toast-stack'),
@@ -399,8 +443,8 @@ const els = {
   gSearch: $<HTMLInputElement>('g-search'),
   gSearchClear: $<HTMLButtonElement>('g-search-clear'),
   gSearchSortSelect: $<HTMLSelectElement>('g-search-sort-select'),
-  gRecents: $<HTMLDivElement>('g-recents'),
-  gRecentsChips: $<HTMLDivElement>('g-recents-chips'),
+  gMemoryTrace: $<HTMLDivElement>('g-memory-trace'),
+  gMemoryTraceList: $<HTMLDivElement>('g-memory-trace-list'),
   gDashboard: $<HTMLDivElement>('g-dashboard'),
   gSearchResults: $<HTMLDivElement>('g-search-results'),
   gSearchResultsStats: $<HTMLDivElement>('g-search-results-stats'),
@@ -422,17 +466,13 @@ const els = {
   gRecapCorrections: $<HTMLSpanElement>('g-recap-corrections'),
   gRecapTended: $<HTMLSpanElement>('g-recap-tended'),
   gRecapForgotten: $<HTMLDivElement>('g-recap-forgotten'),
-  gRecapForgottenText: $<HTMLSpanElement>('g-recap-forgotten-text'),
-  btnGPurge: $<HTMLButtonElement>('btn-g-purge'),
   gMcpList: $<HTMLDivElement>('g-mcp-list'),
   gDetail: $<HTMLElement>('g-detail'),
   gDetailBody: $<HTMLDivElement>('g-detail-body'),
   // Atlas (3D) sub-tab
   atlasContainer: $<HTMLDivElement>('atlas-container'),
   atlasGraphPicker: $<HTMLSelectElement>('atlas-graph-picker'),
-  atlasStats: $<HTMLSpanElement>('atlas-stats'),
   btnAtlasReset: $<HTMLButtonElement>('btn-atlas-reset'),
-  btnAtlasUnpin: $<HTMLButtonElement>('btn-atlas-unpin'),
   btnAtlasFit: $<HTMLButtonElement>('btn-atlas-fit'),
   btnAtlasAlive: $<HTMLButtonElement>('btn-atlas-alive'),
   atlasLegendList: $<HTMLDivElement>('atlas-legend-list'),
@@ -442,6 +482,11 @@ const els = {
   activityFilterKind: $<HTMLSelectElement>('activity-filter-kind'),
   activityStats: $<HTMLSpanElement>('activity-stats'),
   btnActivityRefresh: $<HTMLButtonElement>('btn-activity-refresh'),
+  // Snapshot offer (pre-ingest prompt)
+  snapshotOfferModal: $<HTMLDivElement>('snapshot-offer-modal'),
+  snapshotOfferNote: $<HTMLSpanElement>('snapshot-offer-note'),
+  btnSnapshotSkip: $<HTMLButtonElement>('btn-snapshot-skip'),
+  btnSnapshotConfirm: $<HTMLButtonElement>('btn-snapshot-confirm'),
   // Snapshots
   btnSnapshotsOpen: $<HTMLButtonElement>('btn-snapshots-open'),
   snapshotsModal: $<HTMLDivElement>('snapshots-modal'),
@@ -459,9 +504,22 @@ const els = {
   settingsModal: $<HTMLDivElement>('settings-modal'),
   cacheCap: $<HTMLSelectElement>('cache-cap'),
   aiDefaultMemory: $<HTMLInputElement>('ai-default-memory'),
+  aiAutoReingest: $<HTMLInputElement>('ai-auto-reingest'),
+  aiReingestQuietMs: $<HTMLSelectElement>('ai-reingest-quiet-ms'),
+  aiChunkSize: $<HTMLSelectElement>('ai-chunk-size'),
+  aiEmbedBatch: $<HTMLSelectElement>('ai-embed-batch'),
+  reingestDelayRow: $<HTMLDivElement>('reingest-delay-row'),
   btnSettingsCancel: $<HTMLButtonElement>('btn-settings-cancel'),
   btnSettingsSave: $<HTMLButtonElement>('btn-settings-save'),
   settingsFooterNote: $<HTMLSpanElement>('settings-footer-note'),
+  // Guided tour
+  tourOverlay: $<HTMLDivElement>('tour-overlay'),
+  tourStepIndicator: $<HTMLDivElement>('tour-step-indicator'),
+  tourTitle: $<HTMLHeadingElement>('tour-title'),
+  tourBody: $<HTMLParagraphElement>('tour-body'),
+  tourSkip: $<HTMLButtonElement>('tour-skip'),
+  tourPrev: $<HTMLButtonElement>('tour-prev'),
+  tourNext: $<HTMLButtonElement>('tour-next'),
 };
 
 // Current plan in the modal — kept in module scope so the Apply button can
@@ -503,6 +561,7 @@ function showError(msg: string | null): void {
 type ToastKind = 'pending' | 'success' | 'error';
 let toastSeq = 0;
 const liveToasts = new Map<string, HTMLDivElement>();
+const liveToastTimers = new Map<string, ReturnType<typeof setInterval>>();
 
 function addIngestToast(label: string, message?: string): string {
   const id = `t${++toastSeq}`;
@@ -516,17 +575,28 @@ function addIngestToast(label: string, message?: string): string {
       <span class="g-toast-msg"></span>
     </span>
     <button class="g-toast-close" title="Dismiss" aria-label="Dismiss">×</button>
+    <div class="g-toast-progress"><div class="g-toast-progress-fill"></div></div>
+    <span class="g-toast-elapsed">0:00 elapsed</span>
   `;
   const labelEl = root.querySelector('.g-toast-label') as HTMLSpanElement;
   const msgEl = root.querySelector('.g-toast-msg') as HTMLSpanElement;
+  const elapsedEl = root.querySelector('.g-toast-elapsed') as HTMLSpanElement;
   const closeBtn = root.querySelector('.g-toast-close') as HTMLButtonElement;
   labelEl.textContent = label;
-  if (message) msgEl.textContent = message; else msgEl.style.display = 'none';
+  msgEl.textContent = message ?? '';
   closeBtn.addEventListener('click', () => removeIngestToast(id));
   els.toastStack.appendChild(root);
-  // Force layout so the transition runs.
   requestAnimationFrame(() => root.classList.add('visible'));
   liveToasts.set(id, root);
+  // Tick elapsed time every second.
+  const startedAt = Date.now();
+  const timer = setInterval(() => {
+    const secs = Math.floor((Date.now() - startedAt) / 1000);
+    const m = Math.floor(secs / 60);
+    const s = secs % 60;
+    elapsedEl.textContent = `${m}:${String(s).padStart(2, '0')} elapsed`;
+  }, 1000);
+  liveToastTimers.set(id, timer);
   return id;
 }
 
@@ -540,13 +610,15 @@ function updateIngestToast(id: string, patch: { label?: string; message?: string
   if (patch.message !== undefined) {
     const msgEl = root.querySelector('.g-toast-msg') as HTMLSpanElement;
     msgEl.textContent = patch.message;
-    msgEl.style.display = patch.message ? '' : 'none';
   }
 }
 
 function finishIngestToast(id: string, kind: 'success' | 'error', message?: string): void {
   const root = liveToasts.get(id);
   if (!root) return;
+  // Stop elapsed timer — CSS hides the progress bar + elapsed span.
+  const timer = liveToastTimers.get(id);
+  if (timer !== undefined) { clearInterval(timer); liveToastTimers.delete(id); }
   root.classList.remove('g-toast--pending');
   root.classList.add(kind === 'success' ? 'g-toast--success' : 'g-toast--error');
   if (message !== undefined) updateIngestToast(id, { message });
@@ -559,44 +631,197 @@ function finishIngestToast(id: string, kind: 'success' | 'error', message?: stri
 function removeIngestToast(id: string): void {
   const root = liveToasts.get(id);
   if (!root) return;
+  const timer = liveToastTimers.get(id);
+  if (timer !== undefined) { clearInterval(timer); liveToastTimers.delete(id); }
   root.classList.remove('visible');
   // Match the CSS transition (140ms) before yanking from DOM.
   window.setTimeout(() => root.remove(), 180);
   liveToasts.delete(id);
 }
 
+// ── Native macOS notification on ingest completion ─────────────────────────
+// Only fires when macOS granted notification permission. We request it lazily
+// on first ingest completion rather than at startup — less intrusive.
+let _notifPermission: boolean | null = null;
+
+async function notifyIngestDone(fileName: string, nodesAdded: number, error?: string): Promise<void> {
+  try {
+    if (_notifPermission === null) {
+      _notifPermission = await isPermissionGranted();
+      if (!_notifPermission) {
+        const result = await requestPermission();
+        _notifPermission = result === 'granted';
+      }
+    }
+    if (!_notifPermission) return;
+
+    if (error) {
+      sendNotification({ title: 'Graphnosis — Ingest failed', body: `${fileName}: ${error}` });
+    } else {
+      const mem = nodesAdded === 1 ? '1 memory' : `${nodesAdded.toLocaleString()} memories`;
+      sendNotification({
+        title: 'Graphnosis',
+        body: nodesAdded > 0 ? `"${fileName}" ingested — ${mem} added.` : `"${fileName}" ingested.`,
+      });
+    }
+  } catch {
+    // Notification API unavailable — silently ignore.
+  }
+}
+
+// Map jobId → { toastId, fileName } so progress/done events can find the right toast.
+// Also tracks fileName so the notification body can name the file.
+interface IngestJob { toastId: string; fileName: string; }
+const ingestJobToasts = new Map<string, IngestJob>();
+
+// Escape-hatch: if the events socket was interrupted and the done event was
+// missed, pending toasts would stick forever. After MAX_PENDING_MS with no
+// progress tick we auto-dismiss with a neutral "check Sources" message.
+const MAX_PENDING_MS = 8 * 60 * 1000; // 8 minutes
+
 /**
- * Run a single-file ingest with a toast. Used by the Add-file button,
- * the drag-drop handler, and the multi-file batch. Returns the result
- * (so callers can chain follow-up work) or rethrows on failure.
- *
- * The IPC `ingest.file` returns `{ sourceId, nodeIds: string[] }` on
- * success; we surface nodeIds.length so the user sees "Saved 5 nodes
- * from handbook.pdf" rather than the opaque source id.
+ * Run a single-file ingest with a toast. The sidecar now processes the
+ * file in the background and returns { accepted, jobId } immediately —
+ * no timeout possible. Progress and completion arrive via the events
+ * socket as `graphnosis://ingest-progress` and `graphnosis://ingest-done`
+ * Tauri events, which update the toast live.
  */
 async function ingestSingleFile(path: string): Promise<unknown> {
   const fileName = path.split('/').pop() ?? path;
   const toastId = addIngestToast(`Ingesting ${fileName}…`);
+  // Escape-hatch timer: if the done event is missed (e.g. events socket
+  // disconnected mid-ingest), auto-dismiss the toast after MAX_PENDING_MS.
+  const escapeTimer = window.setTimeout(() => {
+    const job = [...ingestJobToasts.entries()].find(([, j]) => j.toastId === toastId);
+    if (job) {
+      ingestJobToasts.delete(job[0]);
+      finishIngestToast(toastId, 'success', 'Completed — check Sources for details');
+      void pushDataIntoAtlas();
+      void refreshStats();
+    }
+  }, MAX_PENDING_MS);
   try {
-    const result = (await invoke('ingest_file', { graphId: null, path })) as {
-      sourceId?: string;
-      nodeIds?: string[];
+    const result = (await invoke('ingest_file', { graphId: atlasActiveGraph || null, path })) as {
+      accepted?: boolean;
+      jobId?: string;
     };
-    const n = result?.nodeIds?.length ?? 0;
-    finishIngestToast(toastId, 'success', n > 0 ? `Saved ${n} node${n === 1 ? '' : 's'}` : 'Saved');
+    if (result?.jobId) {
+      ingestJobToasts.set(result.jobId, { toastId, fileName });
+    } else {
+      // Sidecar didn't return a jobId — cancel the escape-hatch timer.
+      window.clearTimeout(escapeTimer);
+    }
     return result;
   } catch (e) {
+    window.clearTimeout(escapeTimer);
     finishIngestToast(toastId, 'error', String(e));
     throw e;
   }
 }
 
+// Listen for progress events — update the toast's message with live node count.
+void listen<{ jobId: string; graphId: string; fileName: string; phase: string; nodesAdded: number; pagesProcessed?: number; totalPages?: number; pagesExtracted?: number }>(
+  'graphnosis://ingest-progress',
+  (evt) => {
+    const job = ingestJobToasts.get(evt.payload.jobId);
+    if (!job) return;
+    const { toastId } = job;
+    const { phase, nodesAdded, pagesProcessed, totalPages, pagesExtracted, chunksDone, chunksTotal } = evt.payload;
+    let message: string;
+    if (phase === 'parsing' && pagesProcessed != null && totalPages != null) {
+      message = `Parsing page ${pagesProcessed} of ${totalPages}…`;
+    } else if (phase === 'parsing') {
+      message = nodesAdded > 0 ? `Parsing… ${nodesAdded} node${nodesAdded === 1 ? '' : 's'} so far` : 'Parsing…';
+    } else if (phase === 'embedding') {
+      if (chunksDone != null && chunksTotal != null && chunksTotal > 1) {
+        // Chunked PDF embedding — show section progress so the user knows
+        // it's still working on a large document.
+        const nodeNote = nodesAdded > 0 ? ` · ${nodesAdded} node${nodesAdded === 1 ? '' : 's'}` : '';
+        message = `Creating memories… section ${chunksDone} of ${chunksTotal}${nodeNote}`;
+      } else {
+        message = pagesExtracted != null
+          ? `Creating memories from ${pagesExtracted} page${pagesExtracted === 1 ? '' : 's'}…`
+          : 'Creating memories…';
+      }
+    } else {
+      message = nodesAdded > 0 ? `Saving… ${nodesAdded} node${nodesAdded === 1 ? '' : 's'} so far` : 'Saving…';
+    }
+    updateIngestToast(toastId, { message });
+  },
+);
+
+// Listen for done events — resolve the toast and fire a native notification.
+void listen<{ jobId: string; graphId: string; fileName: string; nodesAdded: number; nodeIds?: string[]; error?: string }>(
+  'graphnosis://ingest-done',
+  (evt) => {
+    const job = ingestJobToasts.get(evt.payload.jobId);
+    if (!job) return;
+    const { toastId, fileName } = job;
+    ingestJobToasts.delete(evt.payload.jobId);
+    if (evt.payload.error) {
+      finishIngestToast(toastId, 'error', evt.payload.error);
+      void notifyIngestDone(fileName, 0, evt.payload.error);
+    } else {
+      const n = evt.payload.nodesAdded;
+      finishIngestToast(toastId, 'success', n > 0 ? `Saved ${n} node${n === 1 ? '' : 's'}` : 'Saved');
+      void notifyIngestDone(fileName, n);
+      // Auto-jump to the 3D Engram view when the LAST ingest in a batch
+      // completes successfully — the user just added memories, they almost
+      // certainly want to see the new shape of the graph. Guards:
+      //   - n > 0: don't switch on a no-op ingest (dedup, empty file)
+      //   - ingestJobToasts.size === 0: don't switch mid-batch; wait for
+      //     the final file in a multi-file drop. (We already .delete()'d
+      //     this job id above, so size === 0 means no more in flight.)
+      if (n > 0 && ingestJobToasts.size === 0) {
+        // Side rail → Graphnosis (atlas mode-pane). The 3D Engram inner
+        // tab lives inside that pane.
+        if (currentMode !== 'atlas') activateMode('atlas');
+        // Inner tab → 3D Engram. switchGraphnosisTab handles the mount,
+        // pushDataIntoAtlas, and zoomToFit; no node gets auto-selected.
+        switchGraphnosisTab('atlas');
+      }
+    }
+    // Trigger the atlas/sources refresh now that the graph has new data.
+    // (Still runs even when we don't jump — keeps Check-in / Sources fresh.)
+    void pushDataIntoAtlas();
+    void refreshStats();
+  },
+);
+
+/**
+ * Status snapshot deferred while the one-time recovery phrase modal is on
+ * screen. We want the recovery phrase to be a gate on the lock screen, not
+ * a popup that lands on top of the dashboard, so the unlock → app transition
+ * is paused until the user acknowledges and dismisses the modal.
+ *
+ * Set by `render()` when called with `unlocked: true` while the modal is
+ * visible. Applied (and cleared) by the modal's close button. Survives across
+ * any number of intervening render() calls — only the most recent unlocked
+ * snapshot is kept.
+ */
+let queuedStatusAfterRecovery: StatusSnapshot | null = null;
+
 function render(status: StatusSnapshot): void {
+  // Gate the unlock transition on the recovery-phrase modal being dismissed.
+  // The modal is shown by `graphnosis://cortex-created` (fired before the
+  // status event from the Rust unlock command), so by the time we get here
+  // with `unlocked: true`, the modal is already visible. Defer instead of
+  // transitioning underneath it.
+  if (status.unlocked) {
+    const recoveryModal = document.getElementById('recovery-phrase-modal');
+    if (recoveryModal && !recoveryModal.classList.contains('hidden')) {
+      queuedStatusAfterRecovery = status;
+      return;
+    }
+  }
+
   if (status.unlocked) {
     els.viewUnlock.classList.add('hidden');
     els.viewApp.classList.remove('hidden');
-    els.vaultLabel.textContent = shortVaultLabel(status.vault_dir ?? 'vault');
+    els.cortexLabel.textContent = shortCortexLabel(status.cortex_dir ?? 'cortex');
+    refreshActiveEngramLabel();
     void refreshStats();
+    void syncForgetMode();
     void fetchGraphsMetadata();
     startMcpPolling();
     activateMode(currentMode);
@@ -604,10 +829,52 @@ function render(status: StatusSnapshot): void {
     els.viewApp.classList.add('hidden');
     els.viewUnlock.classList.remove('hidden');
     stopMcpPolling();
+    // Clear ephemeral disable state on lock so a re-unlock starts fresh.
+    disabledSources.clear();
+    // Hide every modal that might be left visible from the previous unlocked
+    // session — Vite HMR preserves DOM, so a modal open at the moment of a
+    // lock can persist into the next render.
+    document.querySelectorAll<HTMLElement>('.modal-backdrop').forEach((m) => {
+      m.classList.add('hidden');
+      m.classList.remove('over-sidebar');
+      const inner = m.querySelector<HTMLElement>('.modal');
+      if (inner) {
+        inner.style.position = '';
+        inner.style.top = '';
+        inner.style.left = '';
+        inner.style.width = '';
+        inner.style.height = '';
+      }
+    });
+    // Whenever we land on the lock screen, re-probe biometric availability
+    // for whatever cortex path is currently in the input. Covers cases
+    // where the initial prefill skipped (no localStorage entry) but the
+    // user has since unlocked once (passphrase stored in keychain) and
+    // is now seeing the lock screen again.
+    const currentPath = els.cortexDir.value.trim();
+    if (currentPath) void refreshBiometricButton(currentPath);
   }
 }
 
-function shortVaultLabel(p: string): string {
+/**
+ * Update the "on engram <name>" label in the app header. Single chokepoint
+ * for the active-engram display so we don't drift between places that
+ * mutate `atlasActiveGraph`. Called from `render()` on unlock and from
+ * the picker change handler. Reads the friendly display name from the
+ * loaded-graphs metadata, falling back to the raw graphId.
+ */
+function refreshActiveEngramLabel(): void {
+  if (!els.activeEngramLabel) return;
+  const id = atlasActiveGraph;
+  if (!id) {
+    els.activeEngramLabel.textContent = '—';
+    return;
+  }
+  const meta = loadedGraphs.find((g) => g.graphId === id);
+  els.activeEngramLabel.textContent = meta?.metadata.displayName ?? id;
+}
+
+function shortCortexLabel(p: string): string {
   // Take last two path segments to keep the header compact but recognizable.
   const parts = p.split('/').filter(Boolean);
   if (parts.length <= 2) return p;
@@ -643,6 +910,13 @@ function activateMode(mode: Mode): void {
     void refreshStats();
     updateRecap();
     void fetchMcpStatus();
+  }
+  if (mode === 'settings') {
+    // Engrams management, recovery phrase, quarantine cleanup — see
+    // renderSettingsTab(). Re-rendering on each activation keeps the
+    // panels in sync with whatever happened elsewhere (recovery from
+    // op-log, new ingest, startup-time quarantine, etc.).
+    renderSettingsTab();
   }
 }
 
@@ -765,7 +1039,7 @@ async function fetchMcpStatus(): Promise<void> {
     const r = (await invoke('mcp_status')) as { connections: McpConnection[] };
     renderMcpStatus(r.connections);
   } catch (e) {
-    // Vault was locked or sidecar gone — show a quiet idle state rather than
+    // Cortex was locked or sidecar gone — show a quiet idle state rather than
     // spamming the error banner.
     els.gMcpList.innerHTML = `<p class="mcp-empty">MCP status unavailable: ${escape(String(e))}</p>`;
   }
@@ -837,7 +1111,7 @@ async function fetchPendingCorrections(): Promise<void> {
       renderDeck();
     }
   } catch {
-    // Vault locked / sidecar gone — clear pending state silently.
+    // Cortex locked / sidecar gone — clear pending state silently.
     graphnosisPendingDiffs = [];
     updatePendingBadge(0);
   }
@@ -892,7 +1166,7 @@ async function pollGraphMutations(): Promise<void> {
     updateRecap();
     updateGraphnosisForgottenRow();
   } catch {
-    // Locked vault / sidecar gone — silent. Other polls will surface the error.
+    // Locked cortex / sidecar gone — silent. Other polls will surface the error.
   }
 }
 
@@ -920,44 +1194,203 @@ async function refreshStats(): Promise<void> {
     if (data.sources.length === 0) {
       els.sourcesList.innerHTML = '<p class="subtitle">No sources yet. Use the `remember` MCP tool from Claude or drag a file in.</p>';
     } else {
-      els.sourcesList.innerHTML = data.sources
-        .slice()
-        .sort((a, b) => b.ingestedAt - a.ingestedAt)
-        .map(
-          (s) => `
-          <div class="source-row">
+      // Group sources by engram, preserving the order engrams appear in
+      // loadedGraphs (active first, then archived). Within each group sort
+      // newest-first by ingestedAt.
+      const groupOrder = loadedGraphs.map((g) => g.graphId);
+      const byEngram = new Map<string, SourceRecord[]>();
+      for (const s of data.sources) {
+        if (!byEngram.has(s.graphId)) byEngram.set(s.graphId, []);
+        byEngram.get(s.graphId)!.push(s);
+      }
+      // Sort each group's sources newest-first.
+      for (const group of byEngram.values()) {
+        group.sort((a, b) => b.ingestedAt - a.ingestedAt);
+      }
+      // Order groups by the engram order from loadedGraphs; unknowns at end.
+      const orderedGroupIds = [
+        ...groupOrder.filter((id) => byEngram.has(id)),
+        ...[...byEngram.keys()].filter((id) => !groupOrder.includes(id)),
+      ];
+
+      const renderSourceRow = (s: SourceRecord): string => {
+        // Reingest is only meaningful for file-backed sources: the
+        // SDK can re-read the disk path. URLs would need a fresh
+        // network fetch (separate concern), clips have no canonical
+        // file, ai-conversation has no source-of-truth file at all.
+        const reingestBtn = s.kind === 'file'
+          ? `<button class="btn-reingest" data-graph-id="${escape(s.graphId)}" data-source-id="${escape(s.sourceId)}" data-ref="${escape(s.ref)}" title="Re-read this file from disk and replace the existing nodes">Reingest</button>`
+          : '';
+        const finderBtn = s.kind === 'file'
+          ? `<button class="btn-show-finder" data-ref="${escape(s.ref)}" title="Reveal this file in Finder">Show in Finder</button>`
+          : '';
+        const isDisabled = disabledSources.has(s.sourceId);
+        const toggleCls = isDisabled ? 'btn-source-enable' : 'btn-source-disable';
+        const toggleLabel = isDisabled ? 'Enable' : 'Disable';
+        // "via Claude" attribution badge for sources added through an MCP
+        // client (remember/correct tools). User-added sources (drag-drop,
+        // paste, file picker) have no `addedBy` and get no badge.
+        const addedByBadge = s.addedBy
+          ? `<span class="source-added-by" title="Added by ${escape(s.addedBy)} via MCP">via ${escape(s.addedBy)}</span>`
+          : '';
+        return `
+          <div class="source-row${isDisabled ? ' source-row-disabled' : ''}" data-source-id="${escape(s.sourceId)}">
             <span class="source-name" title="${escape(s.ref)}">${escape(s.ref)}</span>
             <span class="source-meta">${s.nodeIds.length} node${s.nodeIds.length === 1 ? '' : 's'}</span>
+            ${addedByBadge}
+            ${finderBtn}
+            ${reingestBtn}
+            <button class="${toggleCls}" data-source-id="${escape(s.sourceId)}" data-ref="${escape(s.ref)}">${toggleLabel}</button>
             <button class="btn-forget" data-graph-id="${escape(s.graphId)}" data-source-id="${escape(s.sourceId)}" data-node-count="${s.nodeIds.length}" data-ref="${escape(s.ref)}">Forget</button>
-          </div>
-        `,
-        )
-        .join('');
-      // Wire each Forget button — event delegation would also work, but
-      // there are typically a handful of sources so direct binding is fine.
+          </div>`;
+      };
+
+      els.sourcesList.innerHTML = orderedGroupIds.map((graphId) => {
+        const displayName = loadedGraphs.find((g) => g.graphId === graphId)?.metadata.displayName ?? graphId;
+        const sources = byEngram.get(graphId)!;
+        return `
+          <div class="sources-engram-group">
+            <div class="sources-engram-heading">${escape(displayName)}</div>
+            ${sources.map(renderSourceRow).join('')}
+          </div>`;
+      }).join('');
+      // Disable/Enable toggle — hides/shows this source's nodes in the
+      // Atlas without permanently forgetting them. State survives graph
+      // data reloads (pushDataIntoAtlas re-applies it); resets on lock.
+      els.sourcesList.querySelectorAll<HTMLButtonElement>('.btn-source-disable, .btn-source-enable').forEach((btn) => {
+        btn.addEventListener('click', () => {
+          const sourceId = btn.dataset.sourceId ?? '';
+          const ref = btn.dataset.ref ?? '';
+          if (!sourceId) return;
+          const nowDisabled = !disabledSources.has(sourceId);
+          if (nowDisabled) {
+            disabledSources.set(sourceId, ref);
+          } else {
+            disabledSources.delete(sourceId);
+          }
+          mainAtlas?.setSourceVisible(ref, !nowDisabled);
+          // Update button and row in place — no full re-render needed.
+          const row = els.sourcesList.querySelector<HTMLDivElement>(`[data-source-id="${CSS.escape(sourceId)}"]`);
+          if (row) {
+            row.classList.toggle('source-row-disabled', nowDisabled);
+            btn.textContent = nowDisabled ? 'Enable' : 'Disable';
+            btn.className = nowDisabled ? 'btn-source-enable' : 'btn-source-disable';
+          }
+        });
+      });
+      // Wire each Forget button — two-step inline confirmation flow.
+      // First click expands an input; the source is only forgotten once the
+      // user types "forget" and clicks the enabled confirm button.
+      // Pressing Escape or clicking outside collapses back without any action.
       els.sourcesList.querySelectorAll<HTMLButtonElement>('.btn-forget').forEach((btn) => {
+        btn.addEventListener('click', () => {
+          const graphId = btn.dataset.graphId ?? '';
+          const sourceId = btn.dataset.sourceId ?? '';
+          const ref = btn.dataset.ref ?? sourceId;
+          if (!graphId || !sourceId) return;
+
+          // If this row already has a confirm widget open, do nothing (guard
+          // against double-clicks while the widget is animating into view).
+          const row = btn.closest<HTMLDivElement>('.source-row');
+          if (!row || row.querySelector('.source-row-forget-confirm')) return;
+
+          // --- Build the inline confirm widget ---
+          const widget = document.createElement('div');
+          widget.className = 'source-row-forget-confirm';
+          widget.innerHTML =
+            `<input type="text" class="source-row-forget-input" placeholder='type "forget" to confirm' autocomplete="off" spellcheck="false" />` +
+            `<button class="source-row-forget-go" disabled>Forget</button>`;
+
+          const input = widget.querySelector<HTMLInputElement>('.source-row-forget-input')!;
+          const goBtn = widget.querySelector<HTMLButtonElement>('.source-row-forget-go')!;
+
+          // Hide the original Forget button and insert the widget after it.
+          btn.style.display = 'none';
+          btn.insertAdjacentElement('afterend', widget);
+          input.focus();
+
+          // Enable/disable the confirm button as the user types.
+          input.addEventListener('input', () => {
+            goBtn.disabled = input.value.trim().toLowerCase() !== 'forget';
+          });
+
+          // Collapse helper — removes widget, restores button, no action.
+          const collapse = (): void => {
+            widget.remove();
+            btn.style.display = '';
+          };
+
+          // Escape key collapses immediately.
+          input.addEventListener('keydown', (e: KeyboardEvent) => {
+            if (e.key === 'Escape') { e.stopPropagation(); collapse(); }
+          });
+
+          // Clicking outside the widget collapses it. Use a mousedown listener
+          // on the document so we catch clicks on the confirm button too (the
+          // click on goBtn fires before blur, so we handle that case inline).
+          const onDocMousedown = (e: MouseEvent): void => {
+            if (!widget.contains(e.target as Node)) {
+              collapse();
+              document.removeEventListener('mousedown', onDocMousedown, true);
+            }
+          };
+          document.addEventListener('mousedown', onDocMousedown, true);
+
+          // Confirm: perform the actual forget.
+          goBtn.addEventListener('click', async () => {
+            document.removeEventListener('mousedown', onDocMousedown, true);
+            widget.remove();
+            btn.style.display = '';
+            btn.disabled = true;
+            btn.textContent = 'Forgetting…';
+            try {
+              await invoke('forget_source', { graphId, sourceId });
+              await refreshStats();
+            } catch (e) {
+              showError(`Forget failed: ${e}`);
+              btn.disabled = false;
+              btn.textContent = 'Forget';
+            }
+          });
+        });
+      });
+      // Reingest button: forget + re-read the file from disk. Surface
+      // progress via the same toast plumbing the drag-drop path uses, so
+      // long PDF re-parses don't look like a frozen UI.
+      els.sourcesList.querySelectorAll<HTMLButtonElement>('.btn-reingest').forEach((btn) => {
         btn.addEventListener('click', async () => {
           const graphId = btn.dataset.graphId ?? '';
           const sourceId = btn.dataset.sourceId ?? '';
           const ref = btn.dataset.ref ?? sourceId;
-          const nodeCount = btn.dataset.nodeCount ?? '?';
           if (!graphId || !sourceId) return;
-          const ok = confirm(
-            `Forget this source?\n\n${ref}\n\n` +
-            `${nodeCount} node${nodeCount === '1' ? '' : 's'} will be soft-deleted. ` +
-            `The original file is not affected. ` +
-            `If content caching is on, the cached copy will also be removed.`,
-          );
-          if (!ok) return;
+          const fileName = ref.split('/').pop() ?? ref;
           btn.disabled = true;
-          btn.textContent = 'Forgetting…';
+          btn.textContent = 'Reingesting…';
+          const toastId = addIngestToast(`Reingesting ${fileName}…`);
           try {
-            await invoke('forget_source', { graphId, sourceId });
+            const result = (await invoke('reingest_source', { graphId, sourceId })) as {
+              nodeIds?: string[];
+            };
+            const n = result?.nodeIds?.length ?? 0;
+            finishIngestToast(toastId, 'success', n > 0 ? `Re-saved ${n} node${n === 1 ? '' : 's'}` : 'Reingested');
             await refreshStats();
           } catch (e) {
-            showError(`Forget failed: ${e}`);
+            finishIngestToast(toastId, 'error', String(e));
+            showError(`Reingest failed: ${e}`);
             btn.disabled = false;
-            btn.textContent = 'Forget';
+            btn.textContent = 'Reingest';
+          }
+        });
+      });
+      // Show in Finder — reveals the file (selects it) in macOS Finder.
+      els.sourcesList.querySelectorAll<HTMLButtonElement>('.btn-show-finder').forEach((btn) => {
+        btn.addEventListener('click', async () => {
+          const ref = btn.dataset.ref ?? '';
+          if (!ref) return;
+          try {
+            await invoke('reveal_file_in_finder', { path: ref });
+          } catch (e) {
+            showError(`Could not reveal file: ${e}`);
           }
         });
       });
@@ -975,44 +1408,114 @@ function escape(s: string): string {
 
 // ---- event wiring -------------------------------------------------------
 
+// Re-probe biometric availability whenever the cortex-folder input changes
+// (typed, pasted, picked-via-dialog). Debounced because the input fires per
+// keystroke. Without this, the Touch ID button stays stale if the user
+// switches cortexes by typing rather than clicking Choose.
+{
+  let timer: number | null = null;
+  els.cortexDir.addEventListener('input', () => {
+    if (timer !== null) window.clearTimeout(timer);
+    timer = window.setTimeout(() => {
+      void refreshBiometricButton(els.cortexDir.value.trim());
+    }, 250);
+  });
+}
+
 els.btnPick.addEventListener('click', async () => {
   showError(null);
   try {
-    const folder = (await invoke('pick_vault_folder')) as string | null;
-    if (folder) els.vaultDir.value = folder;
+    const folder = (await invoke('pick_cortex_folder')) as string | null;
+    if (folder) {
+      els.cortexDir.value = folder;
+      els.passphrase.focus();
+      // The user may have switched cortexes — re-probe biometric availability
+      // for the newly-chosen folder so the Touch ID button reflects whether
+      // THAT cortex has a stored passphrase.
+      void refreshBiometricButton(folder);
+    }
   } catch (e) {
     showError(String(e));
   }
 });
 
-els.btnUnlock.addEventListener('click', async () => {
+// Touch ID — both the "Touch ID" button (next to Unlock) and the inline
+// fingerprint icon (inside the passphrase field's right edge) fire the
+// same flow: spawn the Swift sidecar for biometric auth, read the cached
+// passphrase, run the normal unlock.
+async function runBiometricUnlock(): Promise<void> {
+  if (!els.cortexDir.value.trim()) {
+    showError('Choose a Graphnosis Cortex folder first.');
+    return;
+  }
   showError(null);
-  // Client-side guards. Sidecar would also reject these, but failing fast in
-  // the UI is friendlier than a 30s wait for the timeout error.
-  if (!els.vaultDir.value.trim()) {
-    showError('Choose a vault folder first.');
-    return;
-  }
-  if (!els.passphrase.value) {
-    showError('Enter your vault passphrase.');
-    return;
-  }
+  const inlineBtn = document.getElementById('btn-touchid-inline') as HTMLButtonElement | null;
+  if (inlineBtn) inlineBtn.disabled = true;
   els.btnUnlock.disabled = true;
-  els.unlockStatus.textContent = 'Starting sidecar…';
+  els.unlockStatus.textContent = 'Touch the sensor…';
+  const progressBar = document.getElementById('unlock-progress');
+  progressBar?.classList.remove('hidden');
   try {
-    const status = (await invoke('unlock_vault', {
-      args: { vault_dir: els.vaultDir.value, passphrase: els.passphrase.value },
-    })) as StatusSnapshot;
+    const status = await invoke<StatusSnapshot>('biometric_unlock', {
+      cortexDir: els.cortexDir.value,
+    });
+    rememberCortexDir(els.cortexDir.value);
     els.passphrase.value = '';
     els.unlockStatus.textContent = '';
     render(status);
   } catch (e) {
-    // Surface the sidecar's startup error (wrong passphrase, vault corrupt,
+    showError(String(e));
+    els.unlockStatus.textContent = '';
+  } finally {
+    if (inlineBtn) inlineBtn.disabled = false;
+    els.btnUnlock.disabled = false;
+    progressBar?.classList.add('hidden');
+  }
+}
+
+{
+  const inlineBtn = document.getElementById('btn-touchid-inline') as HTMLButtonElement | null;
+  inlineBtn?.addEventListener('click', () => void runBiometricUnlock());
+}
+
+els.btnUnlock.addEventListener('click', async () => {
+  showError(null);
+  // Client-side guards. Sidecar would also reject these, but failing fast in
+  // the UI is friendlier than a 30s wait for the timeout error.
+  if (!els.cortexDir.value.trim()) {
+    showError('Choose a Graphnosis Cortex folder first.');
+    return;
+  }
+  if (!els.passphrase.value) {
+    showError('Enter your Cortex passphrase.');
+    return;
+  }
+  els.btnUnlock.disabled = true;
+  els.unlockStatus.textContent = 'Starting synapse…';
+  // Indeterminate progress bar — the unlock has several variable-duration
+  // steps (Argon2id key derivation, sidecar spawn, embedding-worker init,
+  // engram loads). We don't have meaningful percentages, but a moving bar
+  // tells the user something IS happening so they don't second-guess the
+  // click and try to mash the button again.
+  const progressBar = document.getElementById('unlock-progress');
+  progressBar?.classList.remove('hidden');
+  try {
+    const status = (await invoke('unlock_cortex', {
+      args: { cortex_dir: els.cortexDir.value, passphrase: els.passphrase.value },
+    })) as StatusSnapshot;
+    // Persist for the next launch — see rememberCortexDir().
+    rememberCortexDir(els.cortexDir.value);
+    els.passphrase.value = '';
+    els.unlockStatus.textContent = '';
+    render(status);
+  } catch (e) {
+    // Surface the sidecar's startup error (wrong passphrase, cortex corrupt,
     // etc.) directly. The Rust side has already classified it.
     showError(String(e));
     els.unlockStatus.textContent = '';
   } finally {
     els.btnUnlock.disabled = false;
+    progressBar?.classList.add('hidden');
   }
 });
 
@@ -1020,7 +1523,7 @@ els.btnRefresh.addEventListener('click', () => void refreshStats());
 
 els.btnOpenFolder.addEventListener('click', async () => {
   try {
-    await invoke('open_vault_in_finder');
+    await invoke('open_cortex_in_finder');
   } catch (e) {
     showError(String(e));
   }
@@ -1028,7 +1531,7 @@ els.btnOpenFolder.addEventListener('click', async () => {
 
 els.btnLock.addEventListener('click', async () => {
   try {
-    const status = (await invoke('lock_vault')) as StatusSnapshot;
+    const status = (await invoke('lock_cortex')) as StatusSnapshot;
     render(status);
   } catch (e) {
     showError(String(e));
@@ -1182,7 +1685,7 @@ async function runPurge(btn: HTMLButtonElement): Promise<void> {
   const ok = confirm(
     `Purge forgotten memories from "${graphId}"?\n\n` +
     `This rebuilds the graph from your remaining sources to physically remove ` +
-    `soft-deleted nodes. It can take a few minutes on large vaults.\n\n` +
+    `soft-deleted nodes. It can take a few minutes on large cortexes.\n\n` +
     `Requirement: every live source must be re-readable — either from the ` +
     `content cache, or from its original file path. If anything is missing, ` +
     `the purge will abort without changing the graph.`,
@@ -1263,7 +1766,7 @@ els.btnClaudeApply.addEventListener('click', async () => {
         ? `<p style="margin-top: 8px;">Claude will be guided to use Graphnosis as your <strong>default memory</strong> — calling <code>recall</code> proactively for personal-context questions, and <code>correct</code> instead of <code>remember</code> for fixes. Change this any time under <strong>Settings → AI client routing</strong>.</p>`
         : `<p style="margin-top: 8px;">Claude will see Graphnosis as <strong>one memory option among many</strong> — no system-prompt-level routing. Change this under <strong>Settings → AI client routing</strong> if you want Graphnosis to lead.</p>`;
     } catch {
-      // If we can't read settings (vault just locked, etc.) skip the line
+      // If we can't read settings (cortex just locked, etc.) skip the line
       // rather than block the success message.
     }
     els.claudePreview.innerHTML = `
@@ -1309,7 +1812,16 @@ function clampMs(n: number, lo: number, hi: number): number {
 //  updateNodesDetailBadge removed — Nodes pane is gone, inspector-detail
 //  setting deprecated. The Settings modal no longer renders that block.
 //  The setting still exists on AppSettings for backwards-compat with
-//  vaults written by older builds; it's just ignored.)
+//  cortexes written by older builds; it's just ignored.)
+
+async function syncForgetMode(): Promise<void> {
+  try {
+    const s = (await invoke('get_settings')) as AppSettings;
+    currentForgetMode = s.forget.mode;
+  } catch {
+    // Leave currentForgetMode at its last-known value — non-fatal.
+  }
+}
 
 function setForgetModeRadio(mode: ForgetMode): void {
   const radios = els.settingsModal.querySelectorAll<HTMLInputElement>('input[name="forget-mode"]');
@@ -1339,6 +1851,156 @@ function setCacheCapDropdown(bytes: number): void {
   els.cacheCap.selectedIndex = pick;
 }
 
+// ── Engram engine toolbar picker ────────────────────────────────────
+//
+// The toolbar picker has been removed. Engine switching is no longer
+// exposed in the UI — force-3d is always the active engine.
+
+async function switchEngramEngine(kind: AtlasEngineKind): Promise<void> {
+  const current = currentAtlasEngineKind();
+  if (kind === current && mainAtlas) return; // nothing to do
+  localStorage.setItem(ATLAS_ENGINE_STORAGE_KEY, kind);
+  // Tear down the current engine (frees WebGL context, removes the
+  // canvas from the DOM) and re-mount with the new kind.
+  if (mainAtlas) {
+    mainAtlas.dispose();
+    mainAtlas = null;
+  }
+  // Clear the container in case the previous engine left scaffolding
+  // (the stub engine, for example, injects a "Coming soon" panel).
+  els.atlasContainer.innerHTML = '';
+  await mountAtlasIfNeeded();
+  // Re-push the current graph's data into the new engine.
+  if (atlasActiveGraph) pushDataIntoAtlas();
+  renderAtlasLegend();
+}
+
+
+// ── Settings — graph management ───────────────────────────────────────────
+
+/**
+ * Render the "Graphs in this cortex" list inside Settings.
+ * Shows every graph (including archived ones) with Archive/Unarchive and
+ * Delete actions. Delete requires two clicks: first arms the button, second
+ * confirms. Armed state resets if the user moves away.
+ */
+function renderSettingsGraphsList(): void {
+  const container = document.getElementById('settings-graphs-list');
+  if (!container) return;
+
+  if (loadedGraphs.length === 0) {
+    container.innerHTML = '<p style="font-size:13px; color:var(--fg-dim); margin:0;">No graphs loaded.</p>';
+    return;
+  }
+
+  container.innerHTML = loadedGraphs.map((g) => {
+    const archived = g.metadata.archived ?? false;
+    const isActive = g.graphId === atlasActiveGraph;
+    return `
+      <div class="settings-graph-row${archived ? ' is-archived' : ''}" data-sgr-id="${escape(g.graphId)}">
+        <span class="sgr-name">${escape(g.metadata.displayName)}</span>
+        <span class="sgr-id">${escape(g.graphId)}</span>
+        ${archived ? '<span class="sgr-badge">archived</span>' : ''}
+        ${isActive ? '<span class="sgr-badge">active</span>' : ''}
+        <button class="btn-graph-archive" data-sgr-id="${escape(g.graphId)}" data-archived="${archived}">
+          ${archived ? 'Unarchive' : 'Archive'}
+        </button>
+        <button class="btn-graph-delete" data-sgr-id="${escape(g.graphId)}" data-name="${escape(g.metadata.displayName)}">
+          Delete
+        </button>
+      </div>`;
+  }).join('');
+
+  // ── Archive / Unarchive ──────────────────────────────────────────────────
+  container.querySelectorAll<HTMLButtonElement>('.btn-graph-archive').forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      const graphId = btn.dataset['sgrId'] ?? '';
+      const nowArchived = btn.dataset['archived'] === 'true';
+      const nextArchived = !nowArchived;
+      const displayName = loadedGraphs.find((g) => g.graphId === graphId)?.metadata.displayName ?? graphId;
+      if (!graphId) return;
+
+      btn.disabled = true;
+      try {
+        await invoke('set_graph_archived', { graphId, archived: nextArchived });
+        // Refresh loadedGraphs so the picker and the list reflect the change.
+        loadedGraphs = (await invoke('list_graphs_with_metadata')) as GraphWithMetadata[];
+        // If we just archived the active graph, switch to a visible one.
+        if (nextArchived && atlasActiveGraph === graphId) {
+          atlasActiveGraph = pickAtlasGraph(); refreshActiveEngramLabel();
+        }
+        await refreshAtlasView();
+        renderSettingsGraphsList();
+      } catch (e) {
+        showError(`Could not ${nextArchived ? 'archive' : 'unarchive'} "${displayName}": ${e}`);
+        btn.disabled = false;
+      }
+    });
+  });
+
+  // ── Delete (type-to-confirm) ─────────────────────────────────────────────
+  container.querySelectorAll<HTMLButtonElement>('.btn-graph-delete').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const graphId = btn.dataset['sgrId'] ?? '';
+      const displayName = btn.dataset['name'] ?? graphId;
+      if (!graphId) return;
+
+      // Find the parent row and inject the inline confirmation form.
+      const row = btn.closest<HTMLElement>('.settings-graph-row');
+      if (!row) return;
+
+      // Hide the original action buttons while confirming.
+      btn.style.display = 'none';
+      const archiveBtn = row.querySelector<HTMLButtonElement>('.btn-graph-archive');
+      if (archiveBtn) archiveBtn.style.display = 'none';
+
+      const confirmDiv = document.createElement('div');
+      confirmDiv.className = 'sgr-confirm-delete';
+      confirmDiv.innerHTML = `
+        <span class="sgr-confirm-label">Type <strong>${escape(displayName)}</strong> to delete forever:</span>
+        <input type="text" class="sgr-confirm-input" placeholder="${escape(displayName)}" autocomplete="off" />
+        <button class="sgr-confirm-go" disabled>Delete forever</button>
+        <button class="sgr-confirm-cancel">Cancel</button>
+      `;
+      row.appendChild(confirmDiv);
+
+      const input = confirmDiv.querySelector<HTMLInputElement>('.sgr-confirm-input')!;
+      const goBtn = confirmDiv.querySelector<HTMLButtonElement>('.sgr-confirm-go')!;
+      const cancelBtn = confirmDiv.querySelector<HTMLButtonElement>('.sgr-confirm-cancel')!;
+
+      // Focus input so user can start typing immediately.
+      input.focus();
+
+      // Enable Delete button only when typed name matches exactly.
+      input.addEventListener('input', () => {
+        goBtn.disabled = input.value !== displayName;
+      });
+
+      cancelBtn.addEventListener('click', () => renderSettingsGraphsList());
+
+      goBtn.addEventListener('click', async () => {
+        goBtn.disabled = true;
+        goBtn.textContent = 'Deleting…';
+        cancelBtn.disabled = true;
+        input.disabled = true;
+        try {
+          await invoke('delete_graph', { graphId });
+          loadedGraphs = (await invoke('list_graphs_with_metadata')) as GraphWithMetadata[];
+          if (atlasActiveGraph === graphId) {
+            atlasActiveGraph = pickAtlasGraph(); refreshActiveEngramLabel();
+            if (mainAtlas) { mainAtlas.dispose(); mainAtlas = null; }
+          }
+          await refreshAtlasView();
+          renderSettingsGraphsList();
+        } catch (e) {
+          showError(`Could not delete "${displayName}": ${e}`);
+          renderSettingsGraphsList();
+        }
+      });
+    });
+  });
+}
+
 els.btnSettings.addEventListener('click', async () => {
   showError(null);
   els.settingsFooterNote.textContent = '';
@@ -1348,14 +2010,283 @@ els.btnSettings.addEventListener('click', async () => {
     setCacheModeRadio(s.contentCache.mode);
     setCacheCapDropdown(s.contentCache.maxBytesPerSource);
     setForgetModeRadio(s.forget.mode);
+    currentForgetMode = s.forget.mode;
     els.relayInitial.value = String(Math.round(s.mcpRelay.initialWaitMs / 1000));
     els.relayReconnect.value = String(Math.round(s.mcpRelay.reconnectMs / 1000));
     // AI routing toggle: defaults to true for older settings payloads that
     // don't include the field yet.
     els.aiDefaultMemory.checked = s.ai?.useAsDefaultMemory ?? true;
+    // Auto-reingest: off by default for the same reason — safer to make
+    // the user opt in than to surprise them by re-chunking on Vim save.
+    els.aiAutoReingest.checked = s.ai?.autoReingestOnFileChange ?? false;
+    // Quiet period selector: default 15 min. Match the closest option value.
+    els.aiReingestQuietMs.value = String(s.ai?.reingestQuietMs ?? 900_000);
+    // Show/hide the delay row based on current checkbox state.
+    els.reingestDelayRow.style.display = els.aiAutoReingest.checked ? 'flex' : 'none';
+    // Ingest performance presets — both default-safe if absent from older
+    // settings payloads. The sidecar's mergeWithDefaults fills these in
+    // on the next save regardless.
+    els.aiChunkSize.value = s.ai?.chunkSize ?? 'balanced';
+    els.aiEmbedBatch.value = s.ai?.embedBatch ?? 'auto';
+    // Orbit debug HUD: session-only, reflects live engine state.
+    const hudCb = els.settingsModal.querySelector<HTMLInputElement>('#debug-orbit-hud');
+    if (hudCb) hudCb.checked = mainAtlas?.isOrbitDebugHUDVisible?.() ?? false;
   } catch (e) {
     els.settingsFooterNote.textContent = `Could not read settings: ${e}`;
   }
+});
+
+// ── Settings tab (mode-pane data-pane="settings") render ───────────────────
+//
+// Engrams management, recovery phrase, and quarantined files used to live
+// inside the Preferences modal. They are now top-level panels in the Settings
+// tab (side rail) so the user doesn't need to open a modal to access them.
+//
+// This function is called every time the user activates the Settings tab
+// (see activateMode in mode-switch logic). Re-rendering on each visit means
+// changes made elsewhere (recovery from op-log, new ingest, quarantine
+// happening at startup) are reflected without a manual refresh.
+
+function renderSettingsTab(): void {
+  // Engrams + quarantine moved out of the Settings tab into the dedicated
+  // Cortex Management modal (red-ish button under Cortex tools). Renders
+  // for those happen when the modal opens — see #btn-cortex-management.
+  //
+  // What remains on the Settings tab is just the Recovery phrase panel
+  // (regenerate button), which is non-destructive and worth top-level
+  // visibility.
+  const regenBtn = document.getElementById('btn-regenerate-recovery-phrase') as HTMLButtonElement | null;
+  if (regenBtn) {
+    regenBtn.onclick = () => {
+      showQuarantineConfirm({
+        title: 'Generate a fresh recovery phrase?',
+        subtitle: 'The current recovery phrase will stop working. The new one becomes your only fallback to the passphrase.',
+        warningHtml:
+          '<strong>You will see the new phrase exactly once.</strong> Have a way to write down 24 words ready before you continue ' +
+          '(a password manager, a notepad, a printed piece of paper). After you dismiss the modal, the phrase cannot be retrieved.',
+        confirmPhrase: 'regenerate recovery phrase',
+        confirmLabel: 'Generate & show me the phrase',
+        onConfirm: async () => {
+          const phrase = await invoke<string>('regenerate_recovery_phrase');
+          if (typeof phrase === 'string' && phrase.length > 0) {
+            showRecoveryPhraseModal(phrase);
+          } else {
+            throw new Error('Sidecar returned an empty phrase.');
+          }
+        },
+      });
+    };
+  }
+
+  // Wire the Cortex Management button (red-ish) every time the tab is
+  // activated. Idempotent because we replace .onclick each time.
+  const cmBtn = document.getElementById('btn-cortex-management') as HTMLButtonElement | null;
+  if (cmBtn) cmBtn.onclick = openCortexManagementModal;
+}
+
+// ── Cortex Management modal ────────────────────────────────────────────────
+//
+// Single home for destructive engram operations: archive/delete graphs and
+// review/restore/delete quarantined files. Opened from Settings → Cortex
+// Tools → "Cortex Management…". Every action inside is gated by typed
+// confirmation; the modal itself is just the entry surface.
+
+function openCortexManagementModal(): void {
+  const modal = document.getElementById('cortex-management-modal') as HTMLDivElement | null;
+  if (!modal) return;
+  modal.classList.remove('hidden');
+  // Render the three sections each time the modal opens so they reflect
+  // current state (recently-quarantined engram, recently-recovered one
+  // whose `recovered ✓` badge just appeared, recent forget calls that
+  // bumped the soft-deleted count, etc.). Force a fresh stats fetch so
+  // the forgotten-memories list is current; refreshStats invokes
+  // updateGraphnosisForgottenRow() in its completion path.
+  renderSettingsGraphsList();
+  void renderQuarantineList();
+  void refreshStats();
+
+  const closeBtn = document.getElementById('btn-cortex-management-close') as HTMLButtonElement | null;
+  if (closeBtn) closeBtn.onclick = () => modal.classList.add('hidden');
+}
+
+// ── Quarantine cleanup UI ───────────────────────────────────────────────
+//
+// Lists every <engram>.gai.corrupt-<ts> and <engram>.bundle.corrupt-<ts>
+// in the cortex's graphs/ folder. Each row has a typed-confirmation Delete
+// button (and a Restore button when it's safe to restore — i.e. no live
+// canonical file exists for the engram).
+
+interface QuarantineItem {
+  name: string;        // filename, e.g. "davinci-manual.gai.corrupt-1715901234567"
+  engramId: string;    // "davinci-manual"
+  kind: 'gai' | 'bundle';
+  timestamp: number;
+  sizeBytes: number;
+  liveEngramExists: boolean;
+}
+
+function formatTimestamp(ts: number): string {
+  try {
+    // The Rust auto-quarantine code uses Date.now() (milliseconds).
+    // But manually-renamed files (e.g. when a user follows a "rename to
+    // .corrupt-$(date +%s)" instruction in a doc / support thread) end up
+    // with a SECONDS timestamp. Detect a seconds-shaped value (< year 2001
+    // in ms = 1e12) and promote to ms so the display is sensible either way.
+    const ms = ts < 1e12 ? ts * 1000 : ts;
+    return new Date(ms).toLocaleString();
+  } catch {
+    return String(ts);
+  }
+}
+
+async function renderQuarantineList(): Promise<void> {
+  const container = document.getElementById('settings-quarantine-list');
+  if (!container) return;
+  try {
+    const result = await invoke<{ items?: QuarantineItem[] }>('list_quarantine');
+    const items = result?.items ?? [];
+    if (items.length === 0) {
+      container.innerHTML =
+        '<p class="subtitle" style="font-size: 12px;">' +
+        'No quarantined files. Nothing to clean up. ✨' +
+        '</p>';
+      return;
+    }
+    container.innerHTML = items.map((item) => {
+      const safeToDelete = item.liveEngramExists; // engram was successfully recovered
+      const safeBadge = safeToDelete
+        ? '<span style="font-size: 10px; padding: 1px 6px; border-radius: 4px; background: color-mix(in oklab, var(--ok) 18%, transparent); color: var(--ok); font-weight: 600;">recovered ✓</span>'
+        : '<span style="font-size: 10px; padding: 1px 6px; border-radius: 4px; background: color-mix(in oklab, var(--error) 18%, transparent); color: var(--error); font-weight: 600;">not yet recovered</span>';
+      const restoreBtn = !item.liveEngramExists
+        ? `<button class="btn-qrestore" data-qname="${escape(item.name)}" data-qengram="${escape(item.engramId)}" style="font-size: 11px; padding: 2px 8px;">Restore</button>`
+        : '';
+      return (
+        '<div class="settings-graph-row" style="align-items: flex-start;">' +
+          '<div style="flex: 1; min-width: 0;">' +
+            `<div style="display: flex; gap: 8px; align-items: baseline;"><strong style="font-family: ui-monospace, monospace; font-size: 12px;">${escape(item.engramId)}</strong> ${safeBadge} <span class="sgr-id">${item.kind}</span></div>` +
+            `<div class="subtitle" style="font-size: 11px; margin-top: 2px;">${escape(item.name)}</div>` +
+            `<div class="subtitle" style="font-size: 11px;">Quarantined ${escape(formatTimestamp(item.timestamp))} · ${formatBytes(item.sizeBytes)}</div>` +
+          '</div>' +
+          '<div style="display: flex; gap: 6px; flex-shrink: 0;">' +
+            restoreBtn +
+            `<button class="btn-qdelete" data-qname="${escape(item.name)}" data-qengram="${escape(item.engramId)}" data-qsafe="${safeToDelete ? '1' : '0'}" style="font-size: 11px; padding: 2px 8px; color: var(--error); border-color: color-mix(in oklab, var(--error) 40%, var(--border));">Delete</button>` +
+          '</div>' +
+        '</div>'
+      );
+    }).join('');
+
+    // Wire up Delete buttons
+    container.querySelectorAll<HTMLButtonElement>('.btn-qdelete').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const name = btn.dataset.qname ?? '';
+        const engramId = btn.dataset.qengram ?? '';
+        const safe = btn.dataset.qsafe === '1';
+        const warning = safe
+          ? `The engram <strong>${escape(engramId)}</strong> has already been recovered (a live copy exists). The quarantined file <code>${escape(name)}</code> is no longer needed and can be safely deleted.`
+          : `<strong>⚠ This engram has NOT been recovered yet.</strong> The quarantined file <code>${escape(name)}</code> may be the only on-disk copy of these bytes. Deleting it now means you will lose the chance to manually recover from it later — you'll have to rely on the op-log and original sources.<br><br>We strongly recommend you run <em>Recover from op-log</em> first and verify the engram comes back, then return here to delete.`;
+        showQuarantineConfirm({
+          title: `Delete ${name}?`,
+          subtitle: 'Permanent — the file is unlinked from disk and cannot be undone.',
+          warningHtml: warning,
+          confirmPhrase: `delete ${engramId}`,
+          confirmLabel: 'Delete file',
+          onConfirm: async () => {
+            await invoke('delete_quarantine', { name });
+            await renderQuarantineList();
+          },
+        });
+      });
+    });
+
+    // Wire up Restore buttons
+    container.querySelectorAll<HTMLButtonElement>('.btn-qrestore').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const name = btn.dataset.qname ?? '';
+        const engramId = btn.dataset.qengram ?? '';
+        showQuarantineConfirm({
+          title: `Restore ${name}?`,
+          subtitle: 'The file will be renamed back to its original name and Graphnosis will try to load it on next unlock.',
+          warningHtml:
+            `Only do this if you have reason to believe the quarantine was spurious — e.g. you accidentally interrupted a save and the file is actually fine, or you're restoring a backup. ` +
+            `If the file is actually corrupt, the next unlock will quarantine it again immediately.`,
+          confirmPhrase: `restore ${engramId}`,
+          confirmLabel: 'Restore file',
+          onConfirm: async () => {
+            await invoke('restore_quarantine', { name });
+            await renderQuarantineList();
+          },
+        });
+      });
+    });
+  } catch (e) {
+    container.innerHTML = `<p class="error" style="font-size: 12px;">${escape(String(e))}</p>`;
+  }
+}
+
+interface QuarantineConfirmOptions {
+  title: string;
+  subtitle: string;
+  warningHtml: string;
+  confirmPhrase: string;     // user must type exactly this
+  confirmLabel: string;
+  onConfirm: () => Promise<void>;
+}
+
+function showQuarantineConfirm(opts: QuarantineConfirmOptions): void {
+  const modal = document.getElementById('quarantine-confirm-modal') as HTMLDivElement | null;
+  const titleEl = document.getElementById('qcm-title');
+  const subtitleEl = document.getElementById('qcm-subtitle');
+  const warningEl = document.getElementById('qcm-warning');
+  const inputLabel = document.getElementById('qcm-input-label');
+  const input = document.getElementById('qcm-input') as HTMLInputElement | null;
+  const statusEl = document.getElementById('qcm-status');
+  const cancelBtn = document.getElementById('btn-qcm-cancel') as HTMLButtonElement | null;
+  const confirmBtn = document.getElementById('btn-qcm-confirm') as HTMLButtonElement | null;
+  if (!modal || !titleEl || !subtitleEl || !warningEl || !inputLabel || !input || !statusEl || !cancelBtn || !confirmBtn) return;
+
+  titleEl.textContent = opts.title;
+  subtitleEl.textContent = opts.subtitle;
+  warningEl.innerHTML = opts.warningHtml;
+  inputLabel.innerHTML = `Type <code style="font-family: ui-monospace, monospace; padding: 1px 5px; background: var(--bg-elev); border-radius: 3px;">${escape(opts.confirmPhrase)}</code> to confirm:`;
+  input.value = '';
+  input.placeholder = opts.confirmPhrase;
+  statusEl.textContent = '';
+  confirmBtn.textContent = opts.confirmLabel;
+  confirmBtn.disabled = true;
+
+  const onInput = (): void => {
+    confirmBtn.disabled = input.value.trim() !== opts.confirmPhrase;
+  };
+  input.oninput = onInput;
+
+  const close = (): void => {
+    modal.classList.add('hidden');
+    input.oninput = null;
+  };
+
+  cancelBtn.onclick = close;
+  confirmBtn.onclick = async () => {
+    confirmBtn.disabled = true;
+    cancelBtn.disabled = true;
+    statusEl.textContent = 'Working…';
+    try {
+      await opts.onConfirm();
+      close();
+    } catch (e) {
+      statusEl.textContent = '';
+      warningEl.innerHTML = `<strong style="color: var(--error);">Failed:</strong> ${escape(String(e))}`;
+      confirmBtn.disabled = false;
+      cancelBtn.disabled = false;
+    }
+  };
+
+  modal.classList.remove('hidden');
+  input.focus();
+}
+
+// Show/hide the quiet-period selector whenever the checkbox changes.
+els.aiAutoReingest.addEventListener('change', () => {
+  els.reingestDelayRow.style.display = els.aiAutoReingest.checked ? 'flex' : 'none';
 });
 
 els.btnSettingsCancel.addEventListener('click', () => {
@@ -1369,6 +2300,7 @@ els.btnSettingsSave.addEventListener('click', async () => {
     const mode = getCacheModeRadio();
     const maxBytesPerSource = Number.parseInt(els.cacheCap.value, 10) || 0;
     const forgetMode = getForgetModeRadio();
+    currentForgetMode = forgetMode;   // keep in-memory copy in sync
     // Clamp to the same min/max the sidecar enforces. Convert seconds → ms.
     const initialWaitMs = clampMs(
       (Number.parseInt(els.relayInitial.value, 10) || 10) * 1000,
@@ -1390,9 +2322,21 @@ els.btnSettingsSave.addEventListener('click', async () => {
         // so the sidecar's settings.update Zod validator doesn't break
         // on older client builds; default to 'simple'.
         ui: { inspectorDetail: 'simple' as InspectorDetail },
-        ai: { useAsDefaultMemory: els.aiDefaultMemory.checked },
+        ai: {
+          useAsDefaultMemory: els.aiDefaultMemory.checked,
+          autoReingestOnFileChange: els.aiAutoReingest.checked,
+          reingestQuietMs: parseInt(els.aiReingestQuietMs.value, 10) || 900_000,
+          chunkSize: els.aiChunkSize.value as 'fine' | 'balanced' | 'coarse',
+          embedBatch: els.aiEmbedBatch.value as 'small' | 'medium' | 'large' | 'auto',
+        },
       },
     });
+    // Orbit debug HUD: session-only toggle, not persisted to settings.
+    const hudCb = els.settingsModal.querySelector<HTMLInputElement>('#debug-orbit-hud');
+    if (hudCb && mainAtlas) {
+      if (hudCb.checked) mainAtlas.startOrbitDebugHUD?.();
+      else mainAtlas.stopOrbitDebugHUD?.();
+    }
     els.settingsFooterNote.textContent = 'Saved.';
     setTimeout(() => els.settingsModal.classList.add('hidden'), 350);
   } catch (e) {
@@ -1424,6 +2368,12 @@ els.btnRecoveryClose.addEventListener('click', () => {
   void refreshStats();
 });
 
+// In-flight recovery state — tracked at module scope so progress events
+// fired by the sidecar can update the panel even after the user has navigated
+// away (closed the modal) and come back. Survives modal close because the
+// listeners are wired once at startup.
+let currentRecoveryJobId: string | null = null;
+
 els.btnRecoveryApply.addEventListener('click', async () => {
   if (!currentRecoveryPlan) return;
   const checks = Array.from(
@@ -1434,19 +2384,178 @@ els.btnRecoveryApply.addEventListener('click', async () => {
     els.recoveryFooterNote.textContent = 'Nothing selected.';
     return;
   }
+
+  // Offer to snapshot the current state first. Recovery re-ingests sources,
+  // which writes new nodes / edges / embcache and overwrites engram files.
+  // If something goes wrong mid-recovery (rare with atomic writes + the
+  // async progress flow, but possible) the user can restore the snapshot.
+  // Skipping is fine — recovery itself doesn't destroy existing data.
+  await showSnapshotOffer({
+    subtitle:
+      "About to re-ingest " + sourceIds.length + " source" +
+      (sourceIds.length === 1 ? '' : 's') +
+      ". A snapshot lets you roll back the entire Cortex if recovery " +
+      "produces an unexpected state. Recommended for large recoveries.",
+  });
+
   els.btnRecoveryApply.disabled = true;
   els.btnRecoveryApply.textContent = `Recovering ${sourceIds.length}…`;
-  els.recoveryFooterNote.textContent = 'Re-ingesting — this may take a moment.';
+  els.recoveryFooterNote.textContent =
+    'Re-ingesting in the background — this can take 60+ minutes for a large PDF. ' +
+    'You can close this panel and keep using the app; just don\'t quit Graphnosis. ' +
+    'A notification will fire when recovery completes.';
+  els.recoveryBody.innerHTML =
+    '<div id="recovery-progress" style="padding: 12px 0;">' +
+    '  <p id="recovery-progress-label" class="subtitle" style="margin: 0 0 8px;">Starting recovery…</p>' +
+    '  <div style="height: 8px; background: var(--bg); border-radius: 4px; overflow: hidden;">' +
+    '    <div id="recovery-progress-bar" style="height: 100%; width: 0%; background: var(--accent); transition: width 200ms;"></div>' +
+    '  </div>' +
+    '  <p id="recovery-progress-current" class="subtitle" style="margin: 8px 0 0; font-size: 11px;"></p>' +
+    '</div>';
   try {
-    const report = (await invoke('recovery_apply', { sourceIds })) as RecoveryReport;
-    renderReport(report);
+    const ack = (await invoke('recovery_apply', { sourceIds })) as { accepted?: boolean; jobId?: string };
+    if (ack?.jobId) {
+      currentRecoveryJobId = ack.jobId;
+    }
   } catch (e) {
-    els.recoveryBody.innerHTML = `<p class="error">Recovery failed: ${escape(String(e))}</p>`;
+    els.recoveryBody.innerHTML = `<p class="error">Recovery could not be started: ${escape(String(e))}</p>`;
     els.recoverySubtitle.textContent = 'Apply failed.';
     els.btnRecoveryApply.disabled = false;
     els.btnRecoveryApply.textContent = 'Recover selected';
+    currentRecoveryJobId = null;
   }
 });
+
+// ── Recovery progress + completion listeners ────────────────────────────
+// These fire whether or not the recovery panel is open. If it's open, we
+// update the progress bar live. If it's closed, we still post a native
+// notification + refresh stats when the job completes.
+
+interface RecoveryProgressPayload {
+  jobId: string;
+  phase: 'started' | 'source-start' | 'source-done';
+  sourceId?: string;
+  ref?: string;
+  index?: number;
+  total?: number;
+  outcome?: { sourceId: string; ref: string; ok: boolean; error?: string; skipped?: string };
+}
+
+interface RecoveryDonePayload {
+  jobId: string;
+  report?: RecoveryReport;
+  error?: string;
+}
+
+void listen<RecoveryProgressPayload>('graphnosis://recovery-progress', (evt) => {
+  if (!currentRecoveryJobId || evt.payload.jobId !== currentRecoveryJobId) return;
+  const { phase, ref, index, total } = evt.payload;
+  if (phase === 'started') {
+    const label = document.getElementById('recovery-progress-label');
+    if (label) label.textContent = 'Reading op-log…';
+    return;
+  }
+  if (total === undefined || index === undefined) return;
+  const pct = Math.round((index - (phase === 'source-start' ? 1 : 0)) / total * 100);
+  const bar = document.getElementById('recovery-progress-bar') as HTMLDivElement | null;
+  if (bar) bar.style.width = `${Math.max(0, Math.min(100, pct))}%`;
+  const label = document.getElementById('recovery-progress-label');
+  if (label) label.textContent = `Source ${index} of ${total}`;
+  const current = document.getElementById('recovery-progress-current');
+  if (current) {
+    const fileName = ref ? (ref.split('/').pop() ?? ref) : '';
+    if (phase === 'source-start') {
+      current.textContent = `Re-ingesting ${fileName}…`;
+    } else if (phase === 'source-done') {
+      const ok = evt.payload.outcome?.ok ?? false;
+      const err = evt.payload.outcome?.error;
+      current.textContent = ok
+        ? `✓ ${fileName}`
+        : `✗ ${fileName} — ${err ?? 'failed'}`;
+    }
+  }
+});
+
+void listen<RecoveryDonePayload>('graphnosis://recovery-done', (evt) => {
+  if (!currentRecoveryJobId || evt.payload.jobId !== currentRecoveryJobId) return;
+  currentRecoveryJobId = null;
+  if (evt.payload.error) {
+    // If the panel is still open, surface it there
+    const isOpen = !els.recoveryModal.classList.contains('hidden');
+    if (isOpen) {
+      els.recoveryBody.innerHTML = `<p class="error">Recovery failed: ${escape(evt.payload.error)}</p>`;
+      els.recoverySubtitle.textContent = 'Apply failed.';
+      els.btnRecoveryApply.disabled = false;
+      els.btnRecoveryApply.textContent = 'Recover selected';
+    }
+    void notifyRecoveryDone(0, 0, evt.payload.error);
+    return;
+  }
+  const report = evt.payload.report;
+  if (report) {
+    const isOpen = !els.recoveryModal.classList.contains('hidden');
+    if (isOpen) {
+      renderReport(report);
+    }
+    void notifyRecoveryDone(report.recovered, report.failed);
+    void refreshStats();
+    void pushDataIntoAtlas();
+  }
+});
+
+async function notifyRecoveryDone(recovered: number, failed: number, error?: string): Promise<void> {
+  try {
+    if (_notifPermission === null) {
+      _notifPermission = await isPermissionGranted();
+      if (!_notifPermission) {
+        const result = await requestPermission();
+        _notifPermission = result === 'granted';
+      }
+    }
+    if (!_notifPermission) return;
+    if (error) {
+      sendNotification({ title: 'Graphnosis — Recovery failed', body: error });
+    } else {
+      const lines: string[] = [];
+      if (recovered > 0) lines.push(`${recovered} source${recovered === 1 ? '' : 's'} recovered`);
+      if (failed > 0) lines.push(`${failed} failed`);
+      sendNotification({
+        title: 'Graphnosis — Recovery complete',
+        body: lines.join(' · ') || 'Done.',
+      });
+    }
+  } catch { /* silent */ }
+}
+
+// Extensions the sidecar's ingest pipeline knows how to parse. Mirror of
+// the set in apps/desktop-sidecar/src/ingest.ts (MARKDOWN_EXTS + …); kept
+// in sync by hand because the sidecar runs in its own process. Anything
+// else gets surfaced as "unsupported" before we round-trip to the sidecar
+// — saves a confusing "couldn't parse" toast later in the pipeline.
+const INGEST_SUPPORTED_EXTS = new Set([
+  '.md', '.markdown', '.txt', '.html', '.htm', '.json', '.csv', '.pdf', '.docx',
+]);
+
+function extOf(p: string): string {
+  const dot = p.lastIndexOf('.');
+  if (dot < 0) return '';
+  return p.slice(dot).toLowerCase();
+}
+
+/** Split paths into supported + rejected (unsupported extension OR no
+ *  extension at all — drag-and-drop happily delivers folders/aliases). */
+function partitionIngestPaths(paths: string[]): { supported: string[]; rejected: string[] } {
+  const supported: string[] = [];
+  const rejected: string[] = [];
+  for (const p of paths) {
+    if (INGEST_SUPPORTED_EXTS.has(extOf(p))) supported.push(p);
+    else rejected.push(p);
+  }
+  return { supported, rejected };
+}
+
+/** Friendly, user-facing list of what we CAN ingest. */
+const INGEST_SUPPORTED_HUMAN = 'PDF · DOCX · Markdown · TXT · HTML · JSON · CSV';
 
 // Multi-file batch ingest. Used by both the Add-file button and the
 // drag-drop handler. Runs sequentially (one IPC roundtrip per file) so
@@ -1471,11 +2580,101 @@ async function ingestBatch(paths: string[]): Promise<void> {
   if (succeeded > 0) await refreshStats();
 }
 
+// ── Pre-ingest snapshot offer ─────────────────────────────────────────
+//
+// Presents a non-blocking modal after the user picks files (or drops them)
+// but before ingestBatch fires. Resolves true if the user wants a snapshot
+// first, false to skip. The caller decides what to do with that answer.
+
+interface SnapshotOfferOptions {
+  /** Override the default subtitle copy. Use for non-ingest triggers
+   *  (recovery from op-log, passphrase change, etc.) so the user sees a
+   *  context-appropriate explanation of what they're snapshotting against. */
+  subtitle?: string;
+  /** Override the confirm button label. Defaults to "Snapshot & Continue". */
+  confirmLabel?: string;
+}
+
+function showSnapshotOffer(opts?: SnapshotOfferOptions): Promise<boolean> {
+  return new Promise((resolve) => {
+    const modal = els.snapshotOfferModal;
+    const note = els.snapshotOfferNote;
+    const btnSkip = els.btnSnapshotSkip;
+    const btnConfirm = els.btnSnapshotConfirm;
+    const subtitle = document.getElementById('snapshot-offer-subtitle');
+
+    // Restore default subtitle on every open in case a previous caller
+    // customized it; if the caller wants a custom subtitle they pass one.
+    const defaultSubtitle =
+      "Pin the current state of your Cortex before ingesting. If this file " +
+      "changes something you didn't expect, you can restore from the snapshot.";
+    if (subtitle) subtitle.textContent = opts?.subtitle ?? defaultSubtitle;
+
+    note.textContent = '';
+    btnConfirm.disabled = false;
+    btnConfirm.textContent = opts?.confirmLabel ?? 'Snapshot & Continue';
+    modal.classList.remove('hidden');
+
+    const cleanup = (answer: boolean): void => {
+      modal.classList.add('hidden');
+      // Remove listeners so they don't fire on future invocations.
+      btnSkip.removeEventListener('click', onSkip);
+      btnConfirm.removeEventListener('click', onConfirm);
+      modal.removeEventListener('click', onBackdrop);
+      resolve(answer);
+    };
+
+    const onSkip = (): void => cleanup(false);
+    const onBackdrop = (e: MouseEvent): void => {
+      // Clicking the backdrop (not the modal panel itself) acts as Skip.
+      if (e.target === modal) cleanup(false);
+    };
+    const onConfirm = async (): Promise<void> => {
+      btnConfirm.disabled = true;
+      btnConfirm.textContent = 'Snapshotting…';
+      note.textContent = '';
+      try {
+        const r = (await invoke('create_snapshot')) as { id: string; sizeBytes: number; fileCount: number };
+        note.textContent = `Snapshot saved (${r.fileCount} files).`;
+        // Brief pause so the user can see the confirmation, then proceed.
+        await new Promise<void>((res) => setTimeout(res, 600));
+        cleanup(true);
+      } catch (e) {
+        note.textContent = `Snapshot failed: ${e}`;
+        btnConfirm.disabled = false;
+        btnConfirm.textContent = 'Retry';
+        // Leave modal open so user can retry or skip.
+      }
+    };
+
+    btnSkip.addEventListener('click', onSkip);
+    btnConfirm.addEventListener('click', () => void onConfirm());
+    modal.addEventListener('click', onBackdrop);
+  });
+}
+
 els.btnAddFile.addEventListener('click', async () => {
   showError(null);
   try {
     const paths = (await invoke('pick_files')) as string[];
-    await ingestBatch(paths);
+    if (paths.length === 0) return;
+    // Defense-in-depth: the native dialog already filters extensions, but
+    // "All files" is one click away. Re-check here so a stray .key / .zip /
+    // folder never makes it to the sidecar.
+    const { supported, rejected } = partitionIngestPaths(paths);
+    if (rejected.length > 0) {
+      const names = rejected.map((p) => p.split('/').pop() ?? p).join(', ');
+      if (supported.length === 0) {
+        showError(`Can't ingest ${names}. Supported: ${INGEST_SUPPORTED_HUMAN}.`);
+        return;
+      }
+      showError(`Skipped ${rejected.length} unsupported file${rejected.length === 1 ? '' : 's'} (${names}). Supported: ${INGEST_SUPPORTED_HUMAN}.`);
+    }
+    // Offer snapshot after file selection so the user knows what they're about
+    // to ingest. Skip proceeds immediately; Snapshot & Continue waits for the
+    // snapshot to finish before handing off to ingestBatch.
+    await showSnapshotOffer();
+    await ingestBatch(supported);
   } catch (e) {
     showError(`Pick failed: ${e}`);
   }
@@ -1497,9 +2696,21 @@ void (async () => {
       const paths = (payload as { paths: string[] }).paths ?? [];
       // Drop a whole folder full of files at once — iterate the batch.
       // Each file gets its own toast; sequential ingest below.
-      if (paths.length > 0) {
-        void ingestBatch(paths);
+      if (paths.length === 0) return;
+      // Filter unsupported drops before the snapshot prompt — no point
+      // asking the user to wait for a snapshot if the file we're about
+      // to "ingest" can't be parsed. Surface what was rejected so the
+      // drop didn't silently no-op.
+      const { supported, rejected } = partitionIngestPaths(paths);
+      if (rejected.length > 0) {
+        const names = rejected.map((p) => p.split('/').pop() ?? p).join(', ');
+        if (supported.length === 0) {
+          showError(`Can't ingest ${names}. Supported: ${INGEST_SUPPORTED_HUMAN}.`);
+          return;
+        }
+        showError(`Skipped ${rejected.length} unsupported file${rejected.length === 1 ? '' : 's'} (${names}). Supported: ${INGEST_SUPPORTED_HUMAN}.`);
       }
+      void showSnapshotOffer().then(() => ingestBatch(supported));
     }
   });
 })().catch((e) => {
@@ -1517,7 +2728,7 @@ els.passphrase.addEventListener('keydown', (e) => {
 // Pre-Graphnosis-as-default, this used to also drive a separate Nodes
 // pane's graph picker. With Nodes removed, this just keeps the
 // in-memory engram catalog fresh so the rest of the App (Graphnosis
-// engram picker, atlas, wizards) has a current view of the vault.
+// engram picker, atlas, wizards) has a current view of the cortex.
 
 async function fetchGraphsMetadata(): Promise<void> {
   try {
@@ -1527,6 +2738,9 @@ async function fetchGraphsMetadata(): Promise<void> {
     // was empty and refresh*View bailed out. Now that the fetch resolved,
     // re-trigger the currently-active mode so its view actually populates.
     if (currentMode === 'atlas') void refreshAtlasView();
+    // Engram label in the app header reads displayName from loadedGraphs;
+    // it was a fallback "—" until this fetch completed, so refresh it now.
+    refreshActiveEngramLabel();
   } catch (e) {
     console.error('list_graphs_with_metadata failed', e);
   }
@@ -1539,7 +2753,10 @@ function openGraphWizard(): void {
   gwSelected = null;
   els.gwName.value = '';
   els.gwId.value = '';
-  els.gwNote.textContent = '';
+  els.gwNote.innerHTML = '🔒 <strong>Stays on your machine.</strong> Your engram is stored only in your local Cortex folder — never uploaded or synced. When you use Graphnosis with an AI client, relevant memories are shared with that AI to enrich your conversations. Nothing else leaves your device. <button id="gw-gh-link" style="background:none;border:none;padding:0;color:inherit;opacity:0.6;font-size:inherit;cursor:pointer;white-space:nowrap;text-decoration:underline;">View source on GitHub ↗</button>';
+  document.getElementById('gw-gh-link')?.addEventListener('click', () => {
+    void invoke('plugin:opener|open_url', { url: 'https://github.com/nehloo-interactive/graphnosis-app' });
+  });
   els.btnGwCreate.disabled = true;
   renderGraphTemplateCards();
   els.graphWizardModal.classList.remove('hidden');
@@ -1607,7 +2824,7 @@ els.btnGwCreate.addEventListener('click', async () => {
   }
   els.btnGwCreate.disabled = true;
   els.btnGwCreate.textContent = 'Creating…';
-  els.gwNote.textContent = '';
+  els.gwNote.textContent = 'Creating…';
   try {
     await invoke('create_graph_with_template', { graphId, template: gwSelected, displayName });
     els.graphWizardModal.classList.add('hidden');
@@ -1616,7 +2833,7 @@ els.btnGwCreate.addEventListener('click', async () => {
     // Land the user on the Graphnosis pane pre-selected to the new
     // engram. The Check-in dashboard's empty state will guide them
     // toward dropping in a file or having Claude remember something.
-    atlasActiveGraph = graphId;
+    atlasActiveGraph = graphId; refreshActiveEngramLabel();
     if (els.atlasGraphPicker) els.atlasGraphPicker.value = graphId;
     activateMode('atlas');
     void refreshAtlasView();
@@ -1632,12 +2849,31 @@ els.btnGwCreate.addEventListener('click', async () => {
 
 function updateStatusBar(connections: McpConnection[]): void {
   if (!els.statusMcpDot) return;
+  const railIndicator = document.getElementById('rail-mcp-indicator');
   if (connections.length === 0) {
-    els.statusMcpDot.className = 'status-dot warn';
-    els.statusMcpText.textContent = 'no clients';
+    // Status bar
+    els.statusMcpDot.className = 'status-dot';
+    els.statusMcpText.textContent = 'No AI client connected';
+    // Rail indicator
+    if (railIndicator) {
+      railIndicator.innerHTML =
+        '<span class="rail-mcp-dot"></span><span class="rail-mcp-name">No client</span>';
+    }
   } else {
+    // Pick the first alphabetically by friendly display name so the shown
+    // client is deterministic when multiple are connected.
+    const sorted = [...connections].sort((a, b) =>
+      friendlyClient(a.clientName).localeCompare(friendlyClient(b.clientName))
+    );
+    const primary = friendlyClient(sorted[0]?.clientName);
+    // Status bar
     els.statusMcpDot.className = 'status-dot ok';
-    els.statusMcpText.textContent = `${connections.length} client${connections.length === 1 ? '' : 's'} connected`;
+    els.statusMcpText.textContent = primary;
+    // Rail indicator — same info, compact form
+    if (railIndicator) {
+      railIndicator.innerHTML =
+        `<span class="rail-mcp-dot connected"></span><span class="rail-mcp-name" title="${escape(primary)}">${escape(primary)}</span>`;
+    }
   }
 }
 
@@ -1675,9 +2911,9 @@ let atlasLoadedForGraph: string | null = null; // guards re-fetch when picker do
 let lastEdgesByGraph: Map<string, { directed: AtlasDirectedEdge[]; undirected: AtlasUndirectedEdge[] }> = new Map();
 
 function pickAtlasGraph(): string | null {
-  // First-loaded engram is the default. The Atlas picker UI lets users
+  // First non-archived engram is the default. The Atlas picker UI lets users
   // switch at any time, and the choice persists in `atlasActiveGraph`.
-  return loadedGraphs[0]?.graphId ?? null;
+  return loadedGraphs.find((g) => !g.metadata.archived)?.graphId ?? null;
 }
 
 function nodesToAtlas(records: NodeRecord[]): AtlasNode[] {
@@ -1703,19 +2939,19 @@ async function fetchEdges(graphId: string): Promise<{ directed: AtlasDirectedEdg
 // Top-level entry the rail calls when the user picks the Graphnosis pane.
 // Refreshes everything: picker, list, detail. Atlas is lazy-loaded.
 async function refreshAtlasView(): Promise<void> {
-  // Populate the engram picker from loadedGraphs.
-  els.atlasGraphPicker.innerHTML = loadedGraphs
+  // Populate the engram picker — archived graphs are hidden from all navigation.
+  const visibleGraphs = loadedGraphs.filter((g) => !g.metadata.archived);
+  els.atlasGraphPicker.innerHTML = visibleGraphs
     .map((g) => `<option value="${escape(g.graphId)}">${escape(g.metadata.displayName)}</option>`)
     .join('');
-  if (loadedGraphs.length === 0) {
-    els.atlasStats.textContent = 'No engrams yet';
+  if (visibleGraphs.length === 0) {
     els.gDashboard.classList.add('hidden');
     els.gSearchResults.classList.add('hidden');
     renderDetailEmpty();
     return;
   }
-  if (!atlasActiveGraph || !loadedGraphs.some((g) => g.graphId === atlasActiveGraph)) {
-    atlasActiveGraph = pickAtlasGraph();
+  if (!atlasActiveGraph || !visibleGraphs.some((g) => g.graphId === atlasActiveGraph)) {
+    atlasActiveGraph = pickAtlasGraph(); refreshActiveEngramLabel();
   }
   if (atlasActiveGraph) els.atlasGraphPicker.value = atlasActiveGraph;
   if (!atlasActiveGraph) return;
@@ -1766,14 +3002,16 @@ async function loadGraphnosisData(graphId: string): Promise<void> {
       active.filter((n) => !connected.has(n.id)).map((n) => n.id),
     );
 
-    const totalEdges = directed.length + undirected.length;
-    els.atlasStats.textContent =
-      `${active.length} memor${active.length === 1 ? 'y' : 'ies'} · ${totalEdges} link${totalEdges === 1 ? '' : 's'}`;
   } catch (e) {
-    console.error('graphnosis load failed', e);
-    els.atlasStats.textContent = `Load failed: ${e}`;
-    graphnosisAllNodes = [];
-    graphnosisOrphanIds = new Set();
+    // Real-world bug seen here: a forget triggered graph-mutation →
+    // pollGraphMutations → loadGraphnosisData, and a transient IPC blip
+    // landed in this catch. The old behavior nuked graphnosisAllNodes
+    // and graphnosisOrphanIds to empty, which cascaded into pushDataIntoAtlas
+    // (setNodes([])), an empty Sources list, and a zeroed legend — the
+    // whole engram view disappeared even though the user only forgot
+    // ONE node. Now: keep the previous cache so the UI stays usable;
+    // the next successful poll (3 s cadence) will reconcile any drift.
+    console.error('graphnosis load failed; keeping previous in-memory data', e);
   }
 }
 
@@ -1911,7 +3149,7 @@ function rebuildDeckQueue(): void {
   const lowConfidence = reviewable
     .filter((n) => n.confidence < 0.65 && !graphnosisSessionDispatched.has(n.id))
     .sort((a, b) => a.confidence - b.confidence)
-    .slice(0, 8)
+    .slice(0, 60)        // pool: up to 60; served 30 at a time across pages
     .map((node): DeckItem => ({
       node,
       prompt: "Graphnosis isn't fully sure about this one — does it still look right?",
@@ -1923,7 +3161,7 @@ function rebuildDeckQueue(): void {
   const orphans = reviewable
     .filter((n) => graphnosisOrphanIds.has(n.id) && !graphnosisSessionDispatched.has(n.id))
     .filter((n) => !lowConfidence.some((it) => it.node.id === n.id))
-    .slice(0, 6)
+    .slice(0, 30)
     .map((node): DeckItem => ({
       node,
       prompt: "Not connected to anything yet — keep it, or was it a one-off?",
@@ -1932,9 +3170,15 @@ function rebuildDeckQueue(): void {
   // Then "connect" cards — nodes whose entities ALSO appear in ≥3 other
   // active nodes. These are entity bridges the user can densify with
   // typed relationships in one pass. We pick the strongest bridge entity
-  // for the prompt copy ("This memory mentions {Stela}…"). Excludes
-  // nodes already surfaced as low-confidence or orphan to keep the deck
-  // varied.
+  // for the prompt copy. Excludes nodes already surfaced as low-confidence
+  // or orphan to keep the deck varied.
+  //
+  // Entity selection is two-pass:
+  //   1. Prefer entities that appear verbatim in the visible contentPreview
+  //      so the prompt is verifiably accurate ("this memory mentions X").
+  //   2. Fall back to any strong entity from the SDK extraction (which may
+  //      come from the full chunk text, not the truncated preview) — use
+  //      softer prompt language in that case.
   const taken = new Set<string>([
     ...lowConfidence.map((it) => it.node.id),
     ...orphans.map((it) => it.node.id),
@@ -1943,32 +3187,74 @@ function rebuildDeckQueue(): void {
   const connect = reviewable
     .filter((n) => !taken.has(n.id) && !graphnosisSessionDispatched.has(n.id))
     .map((n) => {
-      // Score by the strongest bridge entity this node carries.
       const ents = n.entities ?? [];
+      const previewLower = n.contentPreview.toLowerCase();
+
+      // Pass 1: entity visible in the truncated preview.
       let bestEnt: string | null = null;
       let bestCount = 0;
+      let inPreview = false;
       for (const e of ents) {
         const c = entityCounts.get(e) ?? 0;
-        if (c >= 4 && c > bestCount) {
-          bestEnt = e;
-          bestCount = c;
+        if (c >= 4 && c > bestCount && previewLower.includes(e.toLowerCase())) {
+          bestEnt = e; bestCount = c; inPreview = true;
         }
       }
-      return bestEnt ? { node: n, bridge: bestEnt, count: bestCount } : null;
+      // Pass 2: any strong entity if nothing matched the preview.
+      if (!bestEnt) {
+        for (const e of ents) {
+          const c = entityCounts.get(e) ?? 0;
+          if (c >= 4 && c > bestCount) {
+            bestEnt = e; bestCount = c;
+          }
+        }
+      }
+
+      return bestEnt ? { node: n, bridge: bestEnt, count: bestCount, inPreview } : null;
     })
-    .filter((x): x is { node: NodeRecord; bridge: string; count: number } => x !== null)
-    .sort((a, b) => b.count - a.count)
-    .slice(0, 4)
-    .map(({ node, bridge }): DeckItem => ({
+    .filter((x): x is { node: NodeRecord; bridge: string; count: number; inPreview: boolean } => x !== null)
+    // Prefer cards where the entity is visible in the preview — those produce
+    // accurate, verifiable prompts. Within each tier sort by entity frequency.
+    .sort((a, b) => {
+      if (a.inPreview !== b.inPreview) return a.inPreview ? -1 : 1;
+      return b.count - a.count;
+    })
+    // Cap cards per bridge entity so a single dominant entity doesn't
+    // monopolize the deck. The previous behavior surfaced 30 cards all
+    // pointing to the same most-frequent entity ("DRP" in Nelu's test
+    // engram) — useful in theory but feels mechanically repetitive in
+    // practice. With this cap, the deck stays varied: at most 6 cards
+    // per bridge, with the remaining slots filled by less-frequent
+    // entities the user might otherwise never review.
+    .reduce<Array<{ node: NodeRecord; bridge: string; count: number; inPreview: boolean }>>(
+      (acc, item) => {
+        const perBridge = acc.filter((x) => x.bridge === item.bridge).length;
+        if (perBridge < 6) acc.push(item);
+        return acc;
+      },
+      [],
+    )
+    .slice(0, 30)        // pool: up to 30 connect cards across pages
+    .map(({ node, bridge, inPreview }): DeckItem => ({
       node,
       bridgeEntity: bridge,
-      prompt: `This memory mentions ${bridge}. Want to connect it to other memories where ${bridge} appears?`,
+      // Rotate phrasings so 30 cards with the same bridge entity don't
+      // all read as the literal same sentence. The bridge name itself
+      // shows up underneath as a small chip — see g-deck-bridge-chip
+      // in the card head HTML — so the prompt stays short and varied.
+      // Templates are brain/synapse-flavored to match the tour's
+      // hippocampus/seahorse story. Pick is deterministic per node so
+      // navigating back to the same card shows the same prompt.
+      prompt: pickConnectPrompt(node.id, inPreview),
       reason: 'connect',
     }));
 
   // Pending corrections lead — they're explicit, time-sensitive, and
   // the user already consented to the correction flow by asking Claude.
-  graphnosisDeck = [...pendingCards, ...lowConfidence, ...orphans, ...connect];
+  // Build the full pool; serve the first page of DECK_PAGE_SIZE now.
+  graphnosisDeckPool = [...pendingCards, ...lowConfidence, ...orphans, ...connect];
+  graphnosisDeckPageStart = 0;
+  graphnosisDeck = graphnosisDeckPool.slice(0, DECK_PAGE_SIZE);
   graphnosisDeckIndex = 0;
 }
 
@@ -1985,13 +3271,205 @@ function computeEntityCounts(nodes: NodeRecord[]): Map<string, number> {
   return out;
 }
 
+// ── Check-in taglines ──────────────────────────────────────────────────
+//
+// Rotated randomly under the "Wire two memories together" headline so the
+// trivia tool feels playful instead of clinical. All references stay
+// inside the brain-as-software metaphor (engrams, synapses, hippocampus,
+// neuroscientists, the seahorse). One is picked per card render via
+// pickCheckinTagline(); same-card re-renders (search override) reuse the
+// initial pick by caching it on the source node — see renderDeckTriviaCandidate.
+
+const CHECKIN_TAGLINES: ReadonlyArray<string> = [
+  "Your hippocampus would be proud.",
+  "Neurons firing… probably.",
+  "The synapse is listening.",
+  "Two engrams walked into a graph…",
+  "Memory consolidation, but with extra clicks.",
+  "Cajal would have approved.",
+  "Cogito ergo memorize.",
+  "REM sleep, but for your second brain.",
+  "Even your seahorse is impressed.",
+  "Wire it once, recall it forever.",
+  "Hebb's rule: cells that fire together, wire together.",
+  "This is what neuroplasticity feels like.",
+  "Your AI's hippocampus thanks you.",
+  "Building neural overpasses.",
+  "Memory palace, IRL.",
+  "Stitching two thoughts together — like a brain surgeon, but cozier.",
+  "Cross-reference like a librarian on espresso.",
+  "Pavlov rings a bell.",
+  "If neurons could subscribe, they would.",
+  "Even Mnemosyne would take notes.",
+  "Don't worry, your real brain won't notice.",
+  "Spotting patterns is your superpower.",
+  "Aristotle linked ideas this way. Probably.",
+  "Connecting axons across the cortex.",
+  "Two memories, one click — sweep the synapses.",
+  "Plug them in. The dendrites await.",
+  "Long-term potentiation: now with a UI.",
+  "Glia approve this message.",
+  "The Default Mode Network is taking a coffee break — your turn.",
+  "Sherlock had a memory palace too.",
+  "Funes the Memorious wishes he had this.",
+  "Mind the synaptic gap.",
+  "Encoding > Storage > Retrieval. You're at step two.",
+  "Bonus engram unlocked.",
+  "The corpus callosum sends its regards.",
+  "More productive than your morning coffee.",
+  "Marcel Proust enters the chat.",
+  "What a sea-hippocampus this is.",
+];
+
+function pickCheckinTagline(): string {
+  const i = Math.floor(Math.random() * CHECKIN_TAGLINES.length);
+  return CHECKIN_TAGLINES[i] ?? CHECKIN_TAGLINES[0]!;
+}
+
+/**
+ * Short, varied prompts for connect-reason deck cards. Rotated by a stable
+ * hash of the node id so the same card always shows the same prompt —
+ * scrolling back via the deck arrows doesn't reshuffle. The bridge entity
+ * is shown separately as a chip (see g-deck-bridge-chip), so the prompt
+ * stays generic and the audit detail is in the chip.
+ *
+ * Two pools: in-preview (we can verifiably claim the entity appears in
+ * this memory's text) and not-in-preview (entity is in the SDK-extracted
+ * set but might not be visible in the previewed chunk). Both pools stay
+ * short and action-oriented.
+ */
+const CONNECT_PROMPTS_IN_PREVIEW: ReadonlyArray<string> = [
+  'Wire this memory to its neighbors?',
+  'This one has cousins in your engram — connect them?',
+  'Mind the synaptic gap — bridge this to a related memory?',
+  'Two threads, one topic. Connect them?',
+  'A memory in the same neighborhood. Wire them up?',
+  'Same context, different memory. Worth a link?',
+  'Build a synapse between these two?',
+  'These share ground. Tell us how.',
+];
+
+const CONNECT_PROMPTS_NOT_IN_PREVIEW: ReadonlyArray<string> = [
+  'Across your engram, these share context. Connect?',
+  'Same neighborhood — link this one to a relative?',
+  'These overlap somewhere in your memories. Wire them?',
+  'A nearby memory in the graph. Worth wiring up?',
+  'Cousins, possibly. Tell us how they relate.',
+  'These look like they belong together. Are they?',
+];
+
+function pickConnectPrompt(nodeId: string, inPreview: boolean): string {
+  // Stable hash → same card always reads the same on revisit.
+  let h = 0;
+  for (let i = 0; i < nodeId.length; i++) h = (h * 31 + nodeId.charCodeAt(i)) | 0;
+  const pool = inPreview ? CONNECT_PROMPTS_IN_PREVIEW : CONNECT_PROMPTS_NOT_IN_PREVIEW;
+  return pool[Math.abs(h) % pool.length] ?? pool[0]!;
+}
+
+/**
+ * Open the relationship-type picker modal. Lists every entry in
+ * RELATIONSHIP_LABELS so the user can pick any type when the inline
+ * Connect-as buttons don't cover what they want. Calls `onPick` with the
+ * chosen label and closes the modal. Cancel just closes.
+ */
+function openRelTypePickerModal(onPick: (label: RelationshipLabel) => void): void {
+  const modal = document.getElementById('rel-type-picker-modal') as HTMLDivElement | null;
+  const list = document.getElementById('rel-type-picker-list');
+  const cancelBtn = document.getElementById('btn-rel-type-cancel') as HTMLButtonElement | null;
+  if (!modal || !list || !cancelBtn) return;
+
+  const innerModal = modal.querySelector<HTMLElement>('.modal');
+  const sourceTextEl = document.querySelector<HTMLElement>('.g-deck-content');
+  const candidateTextEl = document.querySelector<HTMLElement>('.g-deck-trivia-text');
+  const tabButtons = document.querySelectorAll<HTMLButtonElement>('.g-tab');
+  const deckCard = document.getElementById('g-deck-card');
+
+  // ── Close + cleanup ────────────────────────────────────────────────────
+  // Define handlers first so they can reference closeAndCleanup, then wire
+  // them at the bottom. Single chokepoint = no listener leaks across opens.
+  const onTextClick = (): void => closeAndCleanup();
+  const onTabSwitch = (e: Event): void => {
+    const t = e.currentTarget as HTMLElement;
+    if (t.dataset['gtab'] && t.dataset['gtab'] !== 'checkin') closeAndCleanup();
+  };
+  const onDeckBackdropClick = (e: MouseEvent): void => {
+    if (innerModal && innerModal.contains(e.target as Node)) return;
+    closeAndCleanup();
+  };
+  const onEscape = (e: KeyboardEvent): void => {
+    if (e.key === 'Escape') closeAndCleanup();
+  };
+
+  function closeAndCleanup(): void {
+    modal!.classList.add('hidden');
+    modal!.classList.remove('over-sidebar');
+    if (innerModal) {
+      innerModal.style.position = '';
+      innerModal.style.top = '';
+      innerModal.style.left = '';
+      innerModal.style.width = '';
+      innerModal.style.height = '';
+    }
+    sourceTextEl?.removeEventListener('click', onTextClick);
+    candidateTextEl?.removeEventListener('click', onTextClick);
+    tabButtons.forEach((b) => b.removeEventListener('click', onTabSwitch));
+    deckCard?.removeEventListener('click', onDeckBackdropClick, { capture: true } as EventListenerOptions);
+    document.removeEventListener('keydown', onEscape);
+  }
+
+  // ── Content ────────────────────────────────────────────────────────────
+  list.innerHTML = RELATIONSHIP_LABELS.map((l) => `
+    <button class="rel-type-row" data-rel-id="${escape(l.id)}">
+      <span>${escape(l.label)}</span>
+      <span class="rel-type-row-meta">${l.directed ? '→ directed' : '↔ undirected'} · ${escape(l.sdkType)}</span>
+    </button>
+  `).join('');
+
+  list.querySelectorAll<HTMLButtonElement>('.rel-type-row').forEach((btn) => {
+    btn.onclick = () => {
+      const id = btn.dataset['relId'] ?? '';
+      const label = RELATIONSHIP_LABELS.find((l) => l.id === id);
+      if (label) {
+        closeAndCleanup();
+        onPick(label);
+      }
+    };
+  });
+
+  // ── Position over the right sidebar ───────────────────────────────────
+  const sidebar = document.getElementById('g-detail');
+  if (innerModal && sidebar && !sidebar.classList.contains('hidden')) {
+    const rect = sidebar.getBoundingClientRect();
+    modal.classList.add('over-sidebar');
+    innerModal.style.position = 'fixed';
+    innerModal.style.top = `${rect.top}px`;
+    innerModal.style.left = `${rect.left}px`;
+    innerModal.style.width = `${rect.width}px`;
+    innerModal.style.height = `${rect.height}px`;
+  }
+
+  // ── Wire dismissals ────────────────────────────────────────────────────
+  // The picker auto-closes when the user "moves away" from picking a
+  // relationship type: clicks either node text, switches inner tab to
+  // 3D Engram, clicks outside the picker on the deck card, or hits Escape.
+  sourceTextEl?.addEventListener('click', onTextClick);
+  candidateTextEl?.addEventListener('click', onTextClick);
+  tabButtons.forEach((b) => b.addEventListener('click', onTabSwitch));
+  deckCard?.addEventListener('click', onDeckBackdropClick, { capture: true });
+  document.addEventListener('keydown', onEscape);
+  cancelBtn.onclick = closeAndCleanup;
+
+  modal.classList.remove('hidden');
+}
+
 function renderDeck(): void {
   // Sync nav button disabled states regardless of which branch we hit.
   syncDeckNavButtons();
   if (graphnosisDeck.length === 0 || graphnosisDeckIndex >= graphnosisDeck.length) {
-    // Empty state: clear the pinned card-head (no card to show) and
-    // praise the user for whatever they did this session in the body.
     const done = graphnosisTendedThisSession;
+    const nextPageStart = graphnosisDeckPageStart + DECK_PAGE_SIZE;
+    const hasMore = nextPageStart < graphnosisDeckPool.length;
+    const remaining = graphnosisDeckPool.length - nextPageStart;
     els.gDeckProgress.textContent = '';
     els.gDeckCardHead.innerHTML = '';
     els.gDeckCard.innerHTML = `
@@ -1999,92 +3477,284 @@ function renderDeck(): void {
         <div class="g-deck-empty-grade">✓</div>
         <div>
           ${done > 0
-            ? `You tended ${done} memor${done === 1 ? 'y' : 'ies'} this session.<br/>Nothing else flagged right now — your memory is in good hands.`
-            : 'Nothing flagged right now — your memory is in good hands.'}
+            ? `You tended ${done} memor${done === 1 ? 'y' : 'ies'} this session.`
+            : ''}
+          ${hasMore
+            ? `${done > 0 ? '<br/>' : ''}${remaining} more memor${remaining === 1 ? 'y' : 'ies'} flagged for review.`
+            : done > 0
+              ? '<br/>Nothing else flagged right now — your memory is in good hands.'
+              : 'Nothing flagged right now — your memory is in good hands.'}
         </div>
+        ${hasMore ? `<button class="deck-continue-btn">Continue with next ${Math.min(DECK_PAGE_SIZE, remaining)} →</button>` : ''}
       </div>
     `;
+    if (hasMore) {
+      els.gDeckCard.querySelector<HTMLButtonElement>('.deck-continue-btn')?.addEventListener('click', () => {
+        graphnosisDeckPageStart = nextPageStart;
+        graphnosisDeck = graphnosisDeckPool.slice(graphnosisDeckPageStart, graphnosisDeckPageStart + DECK_PAGE_SIZE);
+        graphnosisDeckIndex = 0;
+        renderDeck();
+      });
+    }
     return;
   }
   const item = graphnosisDeck[graphnosisDeckIndex];
-  if (!item) return; // type-guard for the array access
+  if (!item) return;
   const n = item.node;
   const breadcrumb = renderBreadcrumb(n);
   const cleanContent = cleanDisplayContent(n.contentPreview);
   els.gDeckProgress.textContent = `${graphnosisDeckIndex + 1} / ${graphnosisDeck.length}`;
-  // Pending-correction cards are a special path — they render the AI's
-  // proposed diff (edits + adds + reasoning) in the body and replace
-  // the standard 4 actions with Approve / Reject / Skip.
+
+  // Auto-load the source node in the right sidebar so the user can see
+  // its full details (all connections, metadata) while reviewing.
+  // `trace: true` also pushes the node into the left-rail Memory Trace so
+  // the user can quickly hop back to memories they've reviewed.
+  selectGraphnosisNode(n.id, { trace: true });
+
+  // Pending-correction cards keep their own layout.
   if (item.reason === 'pending-correction' && item.pendingDiff) {
     renderPendingCorrectionCard(item.pendingDiff, breadcrumb);
     return;
   }
-  // Orphan + connect cards get the suggestion panel inline.
-  // Low-confidence cards get a small "+ Connect this memory" button that
-  // expands the panel on demand — keeps the trivia-fast feel for the
-  // common "is this still right?" check.
-  const showsPanel = item.reason === 'orphan' || item.reason === 'connect';
-  // Write the prompt + content into the PINNED card-head slot (sibling
-  // of the deck header, both inside .g-deck-pinned). The suggestion
-  // panel + action buttons go into the scrolling card body below.
+
+  // ── Pinned card head: the source node being reviewed ────────────────
+  //
+  // Layout mirrors the candidate panel below it so the two memories read
+  // as a matched pair:
+  //   [prompt]
+  //   [common-topic chip]
+  //   [content]
+  //   [type chip] [trust chip]  filename
+  //
+  // The bridge entity (per-card specificity) lives in its own chip above
+  // the content. The bottom meta line uses the same grayed chip styling
+  // as the candidate panel — fact/memory/concept chip, trust chip, then
+  // the filename as plain mono text (NOT a chip — it's a location, not
+  // a category).
+  const bridgeChip = item.bridgeEntity
+    ? `<p class="g-deck-bridge-chip">Common topic: <strong>${escape(item.bridgeEntity)}</strong></p>`
+    : '';
+  const sourceType = n.nodeType ?? 'memory';
+  // breadcrumb is already escape()'d HTML like "CLAUDE.md › Environment".
+  // Drop it directly as the breadcrumb position in the meta row — mirrors
+  // how the candidate panel shows its filename after the trust chip.
   els.gDeckCardHead.innerHTML = `
     <p class="g-deck-prompt">${escape(item.prompt)}</p>
-    ${breadcrumb ? `<p class="g-deck-breadcrumb">${breadcrumb}</p>` : ''}
+    ${bridgeChip}
     <p class="g-deck-content">${escape(cleanContent)}</p>
-    <p class="g-deck-meta">trust ${n.confidence.toFixed(2)}</p>
-    ${!showsPanel
-      ? `<button class="g-deck-connect-toggle" data-deck-action="open-connect">+ Connect this memory</button>`
-      : ''}
-  `;
-  els.gDeckCard.innerHTML = `
-    <div id="g-deck-suggest" class="g-deck-suggest${showsPanel ? '' : ' hidden'}" data-node-id="${escape(n.id)}"></div>
-    <div class="g-deck-actions">
-      <button class="deck-ok" data-deck-action="ok">✓ Looks right</button>
-      <button data-deck-action="fix">✏️ Fix</button>
-      <button data-deck-action="forget">🗑 Forget</button>
-      <button data-deck-action="skip">Skip</button>
+    <div class="g-deck-trivia-meta">
+      <span class="g-deck-trivia-type">${escape(sourceType)}</span>
+      <span class="g-deck-trivia-conf">trust ${n.confidence.toFixed(2)}</span>
+      ${breadcrumb ? `<span class="g-deck-trivia-file" title="${escape(renderBreadcrumbPlain(n))}">${breadcrumb}</span>` : ''}
+      <!-- Skip + Forget sit at the right end of the meta row so the
+           card-level actions are tucked beside the source provenance
+           (file › section) rather than taking a full-width action row
+           below. They're rendered small (.g-deck-meta-btn) but carry
+           the same data-deck-action wiring as before. -->
+      <span class="g-deck-trivia-actions">
+        <button data-deck-action="skip" class="g-deck-meta-btn">Skip</button>
+        <button data-deck-action="forget" class="g-deck-meta-btn deck-forget">🗑 Forget</button>
+      </span>
     </div>
   `;
-  // Wire actions — query BOTH the card-head (which now holds the
-  // "+ Connect this memory" toggle for low-conf cards) AND the card body
-  // (which holds Looks-right / Fix / Forget / Skip).
-  const actionButtons: HTMLButtonElement[] = [
-    ...Array.from(els.gDeckCardHead.querySelectorAll<HTMLButtonElement>('button[data-deck-action]')),
-    ...Array.from(els.gDeckCard.querySelectorAll<HTMLButtonElement>('button[data-deck-action]')),
-  ];
-  actionButtons.forEach((btn) => {
-    const action = btn.dataset['deckAction'] as
-      | 'ok' | 'fix' | 'forget' | 'skip' | 'open-connect' | undefined;
-    if (!action) return;
-    if (action === 'open-connect') {
-      btn.addEventListener('click', () => {
-        const slot = document.getElementById('g-deck-suggest');
-        if (!slot) return;
-        slot.classList.remove('hidden');
-        btn.classList.add('hidden');
-        void renderSuggestionPanel({
-          sourceNode: n,
-          slot,
-          variant: 'deck',
-          onConnected: (count) => onDeckConnected(count, n),
-        });
-      });
-      return;
-    }
-    btn.addEventListener('click', () => handleDeckAction(action, n));
+  // Clicking the source node text re-selects it in the right sidebar
+  // (useful after the user clicked the candidate and wants to switch back)
+  // AND pushes the node into the left-rail Memory Trace.
+  els.gDeckCardHead.querySelector<HTMLElement>('.g-deck-content')?.addEventListener('click', () => {
+    selectGraphnosisNode(n.id, { trace: true });
   });
-  // Mount the suggestion panel for orphan + connect variants.
-  if (showsPanel) {
-    const slot = document.getElementById('g-deck-suggest');
-    if (slot) {
-      void renderSuggestionPanel({
-        sourceNode: n,
-        slot,
-        variant: 'deck',
-        onConnected: (count) => onDeckConnected(count, n),
-      });
-    }
+
+  // ── Card body: search + single candidate panel ───────────────────────
+  // Show the top-ranked connected candidate, with quick-action buttons.
+  // The search lets the user swap to any other memory in this engram.
+  els.gDeckCard.innerHTML = `
+    <div class="g-deck-trivia-intro">
+      <p class="g-deck-trivia-intro-headline">Wire two memories together — like neurons forming a new pathway.</p>
+      <p class="g-deck-trivia-intro-tagline">${escape(pickCheckinTagline())}</p>
+    </div>
+    <div id="g-deck-trivia-candidate" class="g-deck-trivia-candidate">
+      <p class="subtitle" style="padding: 12px;">Finding a connected memory…</p>
+    </div>
+  `;
+
+  // Wire the top-level card actions. Skip + Forget moved into the pinned
+  // meta row (rendered in gDeckCardHead above), but they retain the same
+  // data-deck-action wiring. Forget targets the SOURCE node (the memory
+  // currently under review) — distinct from the candidate-panel
+  // relationship buttons, which connect the source to whatever candidate
+  // is currently displayed.
+  els.gDeckCardHead.querySelectorAll<HTMLButtonElement>('button[data-deck-action]').forEach((btn) => {
+    btn.addEventListener('click', () =>
+      handleDeckAction(btn.dataset['deckAction'] as 'skip' | 'forget', n));
+  });
+
+  // Note: the "Choose another memory" search input was removed — users
+  // can navigate between cards via the deck arrows + the existing ⌘K
+  // search; an inline-on-card search was redundant and added clutter.
+
+  // Load candidates and render the first one.
+  void renderDeckTriviaCandidate(n);
+}
+
+// ── Trivia candidate panel ─────────────────────────────────────────────
+//
+// Loads the top-ranked related candidate for the source node and renders
+// it as a full-height panel with text, metadata, Forget/Skip buttons, and
+// quick relationship-suggestion buttons (plus "Other" to open the modal).
+// The search input in the same card body lets the user pick a different one.
+
+let deckTriviaCurrentCandidate: NodeRecord | null = null;
+
+async function renderDeckTriviaCandidate(sourceNode: NodeRecord, override?: NodeRecord): Promise<void> {
+  const slot = document.getElementById('g-deck-trivia-candidate');
+  if (!slot) return;
+
+  // If an override was provided (from search), use it; otherwise load candidates.
+  let candidate: NodeRecord | null = override ?? null;
+  if (!candidate) {
+    slot.innerHTML = '<p class="subtitle" style="padding:12px;">Finding a connected memory…</p>';
+    const candidates = await getRelatedCandidates(sourceNode.id);
+    candidate = candidates[0]?.node ?? null;
   }
+  deckTriviaCurrentCandidate = candidate;
+
+  if (!candidate) {
+    slot.innerHTML = `
+      <div class="g-deck-trivia-no-candidate">
+        <p>No connected memories found. Search above to pick one, or click <strong>Looks right</strong> to move on.</p>
+      </div>
+    `;
+    return;
+  }
+
+  // Compute relationship suggestions between source → candidate. Show as
+  // many Connect-as buttons inline as we can — the more the user sees at
+  // a glance, the rarer the trip to the "Other…" picker modal. We also
+  // top up with always-useful generic types (Same topic, Related, Mentioned in)
+  // so even uninformative type pairs (memory ↔ memory with no node-type
+  // info) still surface a handful of one-click options.
+  const ALWAYS_AVAILABLE_REL_IDS = [
+    'same-topic', 'related', 'mentioned-in', 'depends-on',
+    'cited-in', 'builds-on', 'contradicts',
+  ];
+  const { primary, alternatives } = suggestRelationshipLabels(sourceNode, candidate);
+  const auto: SuggestedLabel[] = [primary, ...alternatives];
+  // Dedupe-by-id, then append always-available generics that aren't already
+  // present. Cap the inline list at 10 to avoid wrapping into a tall stack;
+  // anything beyond that lives in the Other… modal.
+  const seen = new Set(auto.map((s) => s.id));
+  const generics: SuggestedLabel[] = [];
+  for (const id of ALWAYS_AVAILABLE_REL_IDS) {
+    if (seen.has(id)) continue;
+    const l = RELATIONSHIP_LABELS.find((rl) => rl.id === id);
+    if (!l) continue;
+    generics.push({
+      id: l.id, label: l.label, sdkType: l.sdkType, directed: l.directed,
+      auto: true, fromId: sourceNode.id, toId: candidate.id,
+    });
+    seen.add(id);
+  }
+  const topSuggestions = [...auto, ...generics].slice(0, 10);
+  const relBtns = topSuggestions.map((s) =>
+    `<button class="g-deck-rel-btn" data-rel-id="${escape(s.id)}" data-rel-directed="${s.directed}"
+             title="${escape(s.label)}">${escape(s.label)}</button>`
+  ).join('');
+
+  // Use the shared renderBreadcrumb so the candidate gets the same
+  // "file › section <name>" treatment as the source node head and the
+  // detail pane (was rendering bare filename before, which made the
+  // candidate's provenance look inconsistent with the source's).
+  const candBreadcrumb = renderBreadcrumb(candidate);
+  const candType = candidate.nodeType ?? 'memory';
+  const candPreview = cleanDisplayContent(candidate.contentPreview);
+
+  // Layout intent: the candidate panel is now purely about deciding
+  // whether and how to CONNECT the source to this candidate. Reading
+  // order is SOURCE (top of card) → [relationship] → CANDIDATE — so
+  // "Connect as: …" sits ABOVE the candidate text. Putting the buttons
+  // between source and candidate makes the directional intent visually
+  // obvious ("source --[same topic]--> candidate") without needing
+  // explicit arrows. Meta chips (type, trust, file › section) remain
+  // at the bottom as supporting context.
+  slot.innerHTML = `
+    <div class="g-deck-trivia-body">
+      <div class="g-deck-trivia-rel">
+        <span class="g-deck-trivia-rel-label">Connect as:</span>
+        ${relBtns}
+        <button class="g-deck-trivia-other">Other…</button>
+      </div>
+      <p class="g-deck-trivia-text">${escape(candPreview)}</p>
+      <div class="g-deck-trivia-meta">
+        <span class="g-deck-trivia-type">${escape(candType)}</span>
+        <span class="g-deck-trivia-conf">trust ${candidate.confidence.toFixed(2)}</span>
+        ${candBreadcrumb ? `<span class="g-deck-trivia-file" title="${escape(renderBreadcrumbPlain(candidate))}">${candBreadcrumb}</span>` : ''}
+      </div>
+    </div>
+  `;
+
+  // Forget / Skip used to live inside the candidate panel; they've moved
+  // to the top-level card actions where they unambiguously target the
+  // SOURCE node (the memory under review). The candidate panel is now
+  // purely about connecting source → candidate.
+
+  // Quick-connect relationship buttons.
+  slot.querySelectorAll<HTMLButtonElement>('.g-deck-rel-btn').forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      if (!candidate) return;
+      const relId = btn.dataset['relId'] ?? '';
+      const directed = btn.dataset['relDirec'] === 'true' || (btn.dataset['relDirected'] === 'true');
+      const label = RELATIONSHIP_LABELS.find((l) => l.id === relId);
+      if (!label) return;
+      const suggestion: SuggestedLabel = {
+        id: label.id, label: label.label, sdkType: label.sdkType,
+        directed: label.directed, auto: true,
+        fromId: sourceNode.id, toId: candidate.id,
+      };
+      btn.disabled = true;
+      const ok = await linkOne(suggestion);
+      if (ok) {
+        graphnosisTendedThisSession++;
+        updateRecap();
+        await showDeckAck(`connected as "${label.label}"`, 'ok');
+        graphnosisSessionDispatched.add(sourceNode.id);
+        advanceDeck();
+      } else {
+        btn.disabled = false;
+      }
+    });
+  });
+
+  // "Other…" → open a modal listing every relationship TYPE. The old
+  // implementation opened a node-search panel ("Don't see it? Search this
+  // engram…") that conflated "pick a different candidate" with "pick a
+  // relationship type" — and the search box on the card body already
+  // covers the first case. Now Other… is purely about the relationship
+  // type when the inline buttons don't cover the user's intent.
+  slot.querySelector<HTMLButtonElement>('.g-deck-trivia-other')?.addEventListener('click', () => {
+    if (!candidate) return;
+    openRelTypePickerModal(async (picked) => {
+      if (!candidate) return;
+      const suggestion: SuggestedLabel = {
+        id: picked.id, label: picked.label, sdkType: picked.sdkType,
+        directed: picked.directed, auto: true,
+        fromId: sourceNode.id, toId: candidate.id,
+      };
+      const ok = await linkOne(suggestion);
+      if (ok) {
+        graphnosisTendedThisSession++;
+        updateRecap();
+        await showDeckAck(`connected as "${picked.label}"`, 'ok');
+        graphnosisSessionDispatched.add(sourceNode.id);
+        advanceDeck();
+      }
+    });
+  });
+
+  // Wire click on candidate text → open it in the right sidebar AND
+  // push to the left-rail Memory Trace so the user can revisit it later.
+  slot.querySelector<HTMLElement>('.g-deck-trivia-text')?.addEventListener('click', () => {
+    if (candidate) selectGraphnosisNode(candidate.id, { trace: true });
+  });
 }
 
 // Called when the suggestion panel inside a deck card finishes (Connect
@@ -2152,7 +3822,7 @@ function renderPendingCorrectionCard(diff: PendingDiff, breadcrumb: string): voi
       if (action === 'skip') {
         // Mark this diff as session-skipped so it doesn't keep reappearing
         // within this session. (It WILL come back if the user re-opens
-        // the vault — pending diffs are persisted in the sidecar.)
+        // the cortex — pending diffs are persisted in the sidecar.)
         graphnosisSessionDispatched.add(`diff:${diff.diffId}`);
         rebuildDeckQueue();
         advanceDeck();
@@ -2207,18 +3877,55 @@ async function handleDeckAction(
     return;
   }
   if (action === 'forget') {
-    // The deck click IS the decision — no confirm dialog. Skip the
-    // selection step too: yanking focus to the sidebar before forgetting
-    // was the bug Nelu hit (the node "appeared in the sidebar" because
-    // selectGraphnosisNode ran before the data mutation cleared it).
-    const success = await softDeleteNode(node.id);
-    if (success) {
-      graphnosisTendedThisSession++;
-      updateRecap();
-      await showDeckAck('forgotten', 'forget');
-      advanceDeck();
-    }
-    // softDeleteNode already showed an error toast on failure.
+    // Two-step inline confirm: the meta-row actions transform in place
+    // into "Sure? [Cancel] [Forget anyway]". Forgetting a memory is the
+    // most permanent action in the deck — a single mis-click shouldn't be
+    // enough. Modal would be heavier than this inline pattern needs.
+    // Targets the new compact actions container inside the pinned head.
+    const actionsRow = els.gDeckCardHead.querySelector<HTMLElement>('.g-deck-trivia-actions');
+    if (!actionsRow) return;
+    // If the confirm UI is already showing, ignore re-clicks (idempotent).
+    if (actionsRow.classList.contains('deck-forget-confirm')) return;
+
+    const previousHtml = actionsRow.innerHTML;
+    actionsRow.innerHTML = `
+      <span class="deck-forget-confirm-msg subtitle">Sure?</span>
+      <button class="deck-forget-cancel g-deck-meta-btn">Cancel</button>
+      <button class="deck-forget-go deck-forget g-deck-meta-btn">🗑 Forget</button>
+    `;
+    actionsRow.classList.add('deck-forget-confirm');
+
+    actionsRow.querySelector<HTMLButtonElement>('.deck-forget-cancel')?.addEventListener('click', () => {
+      actionsRow.classList.remove('deck-forget-confirm');
+      actionsRow.innerHTML = previousHtml;
+      // Re-wire the restored Skip/Forget buttons.
+      actionsRow.querySelectorAll<HTMLButtonElement>('button[data-deck-action]').forEach((btn) => {
+        btn.addEventListener('click', () =>
+          handleDeckAction(btn.dataset['deckAction'] as 'skip' | 'forget', node));
+      });
+    });
+
+    actionsRow.querySelector<HTMLButtonElement>('.deck-forget-go')?.addEventListener('click', async () => {
+      const goBtn = actionsRow.querySelector<HTMLButtonElement>('.deck-forget-go');
+      const cancelBtn = actionsRow.querySelector<HTMLButtonElement>('.deck-forget-cancel');
+      if (goBtn) { goBtn.disabled = true; goBtn.textContent = 'Forgetting…'; }
+      if (cancelBtn) cancelBtn.disabled = true;
+      const success = await softDeleteNode(node.id);
+      if (success) {
+        graphnosisTendedThisSession++;
+        updateRecap();
+        await showDeckAck('forgotten', 'forget');
+        advanceDeck();
+      } else {
+        // Restore the action bar so user can retry.
+        actionsRow.classList.remove('deck-forget-confirm');
+        actionsRow.innerHTML = previousHtml;
+        actionsRow.querySelectorAll<HTMLButtonElement>('button[data-deck-action]').forEach((btn) => {
+          btn.addEventListener('click', () =>
+            handleDeckAction(btn.dataset['deckAction'] as 'skip' | 'forget', node));
+        });
+      }
+    });
   }
 }
 
@@ -2328,41 +4035,52 @@ function updateRecap(): void {
   updateGraphnosisForgottenRow();
 }
 
-// Surface the active engram's forgotten-on-disk count in the recap card.
-// Hidden when count is 0 — no need to nag about an empty cleanup queue.
+// Surface all engrams that have forgotten memories still on disk.
+// Renders one row per engram (with its display name and count) so the
+// user can purge each one independently. Hidden entirely when no engram
+// has a non-zero soft-deleted count.
 // Reads from the lastInspectorStats cache (populated by refreshStats).
 function updateGraphnosisForgottenRow(): void {
-  if (!lastInspectorStats || !atlasActiveGraph) {
+  // The forgotten-memories list now lives inside the Cortex Management
+  // modal (Settings → Cortex Management). The companion "Nothing forgotten"
+  // empty-state line below the list is shown when no engram has soft-deleted
+  // nodes — so the modal section always says something, instead of leaving
+  // the header awkwardly alone.
+  const emptyMsg = document.getElementById('cm-no-forgotten');
+  if (!lastInspectorStats) {
     els.gRecapForgotten.classList.add('hidden');
+    emptyMsg?.classList.remove('hidden');
     return;
   }
-  const g = lastInspectorStats.graphs.find((x) => x.graphId === atlasActiveGraph);
-  const forgotten = g?.softDeletedNodes ?? 0;
-  if (forgotten <= 0) {
+  const withForgotten = lastInspectorStats.graphs.filter((g) => g.softDeletedNodes > 0);
+  if (withForgotten.length === 0) {
     els.gRecapForgotten.classList.add('hidden');
+    els.gRecapForgotten.innerHTML = '';
+    emptyMsg?.classList.remove('hidden');
     return;
   }
-  els.gRecapForgottenText.textContent =
-    `${forgotten} forgotten memor${forgotten === 1 ? 'y' : 'ies'} still on disk`;
-  els.gRecapForgotten.classList.remove('hidden');
-  // Tooltip explains the trade-off so users know why this exists as
-  // a deliberate action, not an automatic background job.
-  els.btnGPurge.title =
+  emptyMsg?.classList.add('hidden');
+  const purgeTitle =
     'Rebuild the graph from your remaining sources to physically remove ' +
     'forgotten memories. Slow on large engrams; aborts safely if any source ' +
     "can't be re-read.";
+  els.gRecapForgotten.innerHTML = withForgotten.map((g) => {
+    const name = loadedGraphs.find((lg) => lg.graphId === g.graphId)?.metadata.displayName ?? g.graphId;
+    const n = g.softDeletedNodes;
+    return `
+      <div class="g-recap-forgotten-row">
+        <span class="g-recap-forgotten-label" title="${escape(name)}">
+          ${escape(name)} — ${n} forgotten memor${n === 1 ? 'y' : 'ies'}
+        </span>
+        <button class="btn-g-purge" data-graph-id="${escape(g.graphId)}" title="${purgeTitle}">Purge now</button>
+      </div>`;
+  }).join('');
+  els.gRecapForgotten.classList.remove('hidden');
+  // Wire each Purge button — rendered fresh each call so direct binding is fine.
+  els.gRecapForgotten.querySelectorAll<HTMLButtonElement>('.btn-g-purge').forEach((btn) => {
+    btn.addEventListener('click', () => void runPurge(btn));
+  });
 }
-
-// Wire the Graphnosis-side Purge button to the existing runPurge flow.
-// The button's data-graph-id is set per render so runPurge picks the
-// right engram (which always matches the active Graphnosis selection).
-els.btnGPurge.addEventListener('click', () => {
-  if (!atlasActiveGraph) return;
-  // runPurge reads graphId off the button's dataset. We set it just-in-time
-  // here so it always matches the currently-active engram.
-  els.btnGPurge.dataset['graphId'] = atlasActiveGraph;
-  void runPurge(els.btnGPurge);
-});
 
 // ── Dashboard / search-results visibility ────────────────────────────
 
@@ -2474,12 +4192,117 @@ function applyGraphnosisFilter(): void {
     els.gList.innerHTML = '<p class="subtitle">No matches. Try different words, or clear the search.</p>';
     return;
   }
-  els.gList.innerHTML = filtered.slice(0, 300).map(renderListRow).join('') +
-    (filtered.length > 300
-      ? `<p class="subtitle" style="margin-top: 10px;">Showing 300 of ${filtered.length} — narrow the search.</p>`
-      : '');
-  wireListRowHandlers();
+  // Infinite scroll: render the first batch, then let the IntersectionObserver
+  // mount more as the user scrolls. Keeps initial paint cheap even on huge
+  // result sets, while removing the old "Show X more" cliff.
+  renderListWithInfiniteScroll(filtered);
+}
+
+// ── Infinite-scroll list renderer ─────────────────────────────────────
+//
+// One pager per active result set. Render the first INFINITE_SCROLL_BATCH
+// rows immediately, then place a sentinel <div> at the bottom of the list;
+// when it enters the viewport, append the next batch and re-mount the
+// sentinel below.
+//
+// Why this shape (vs. just listening to scroll):
+//   - IntersectionObserver is debounced by the browser, no rAF needed.
+//   - Selection highlights + keyboard nav can target any rendered row;
+//     we never replace earlier rows, only append.
+//   - Resetting on new search is just "render again from 0" — no shared
+//     mutable state to clean up beyond the previous observer (which we
+//     disconnect explicitly).
+const INFINITE_SCROLL_BATCH = 100;
+let listScrollObserver: IntersectionObserver | null = null;
+let listScrollSource: NodeRecord[] = [];
+let listScrollDisplayed = 0;
+
+function renderListWithInfiniteScroll(rows: NodeRecord[]): void {
+  // Tear down any prior observer so we don't fire callbacks against a list
+  // that's already been replaced (stale sentinel sitting in the previous
+  // result set's DOM fragment).
+  if (listScrollObserver) {
+    listScrollObserver.disconnect();
+    listScrollObserver = null;
+  }
+  listScrollSource = rows;
+  listScrollDisplayed = 0;
+
+  if (rows.length === 0) {
+    els.gList.innerHTML = '';
+    return;
+  }
+  els.gList.innerHTML = '';
+  appendNextListBatch();
+}
+
+function appendNextListBatch(): void {
+  const start = listScrollDisplayed;
+  const end = Math.min(start + INFINITE_SCROLL_BATCH, listScrollSource.length);
+  if (start >= end) return;
+
+  // Strip any previous sentinel (it's about to be replaced lower in the list).
+  const oldSentinel = els.gList.querySelector('.g-list-sentinel');
+  if (oldSentinel) oldSentinel.remove();
+
+  const html = listScrollSource.slice(start, end).map(renderListRow).join('');
+  els.gList.insertAdjacentHTML('beforeend', html);
+  listScrollDisplayed = end;
+
+  // Wire just the freshly-added rows. Earlier rows already have handlers
+  // — re-wiring everything would leak listeners on long scrolls.
+  wireListRowHandlersFrom(start);
   syncListSelectionHighlight();
+
+  if (end < listScrollSource.length) {
+    // More to come — drop a sentinel and re-observe it.
+    const sentinel = document.createElement('div');
+    sentinel.className = 'g-list-sentinel';
+    sentinel.style.height = '1px';
+    els.gList.appendChild(sentinel);
+    if (!listScrollObserver) {
+      listScrollObserver = new IntersectionObserver((entries) => {
+        for (const entry of entries) {
+          if (entry.isIntersecting) {
+            appendNextListBatch();
+            break;
+          }
+        }
+      }, {
+        // root: the scrollable list container itself, with a wide rootMargin
+        // so we start fetching the next batch before the user hits the bottom.
+        root: els.gList,
+        rootMargin: '400px',
+      });
+    }
+    listScrollObserver.observe(sentinel);
+  } else if (listScrollObserver) {
+    // We've rendered everything — stop watching.
+    listScrollObserver.disconnect();
+    listScrollObserver = null;
+  }
+}
+
+function wireListRowHandlersFrom(startIndex: number): void {
+  // Bind click/dblclick only to rows at or beyond `startIndex` to avoid
+  // double-binding earlier batches on each scroll-triggered append.
+  const rows = els.gList.querySelectorAll<HTMLElement>('.g-list-row');
+  for (let i = startIndex; i < rows.length; i++) {
+    const row = rows[i] as HTMLElement;
+    const id = row.dataset['nodeId'];
+    if (!id) continue;
+    row.addEventListener('click', () => {
+      // `trace: true` so search-result picks (and dashboard list picks)
+      // accumulate in the left-rail Memory Trace — clicks here are
+      // explicit user attention worth remembering for hop-back later.
+      selectGraphnosisNode(id, { trace: true });
+      els.gList.focus();
+    });
+    row.addEventListener('dblclick', () => {
+      selectGraphnosisNode(id, { trace: true });
+      startInlineEdit(id);
+    });
+  }
 }
 
 function renderDashboard(): void {
@@ -2520,9 +4343,7 @@ async function runSemanticFallback(query: string, graphId: string): Promise<void
       els.gList.innerHTML = '<p class="subtitle">Nothing close enough. Try different words.</p>';
       return;
     }
-    els.gList.innerHTML = rows.slice(0, 100).map(renderListRow).join('');
-    wireListRowHandlers();
-    syncListSelectionHighlight();
+    renderListWithInfiniteScroll(rows);
   } catch (e) {
     if (myToken !== graphnosisSemanticToken) return;
     els.gList.innerHTML = `<p class="subtitle">Semantic search failed: ${escape(String(e))}</p>`;
@@ -2552,7 +4373,7 @@ function renderListRow(n: NodeRecord): string {
     <span class="g-row-conf" title="trust ${n.confidence.toFixed(2)}">${confidenceDot}</span>
     <div>
       <div class="g-row-text">${escape(cleanContent)}</div>
-      ${metaLine ? `<div class="g-row-meta"><span class="g-row-source" title="${escape(n.sourceFile)}">${metaLine}</span></div>` : ''}
+      ${metaLine ? `<div class="g-row-meta"><span class="g-row-source" title="${escape(renderBreadcrumbPlain(n))}">${metaLine}</span></div>` : ''}
     </div>
   </div>`;
 }
@@ -2562,11 +4383,14 @@ function wireListRowHandlers(): void {
     const id = row.dataset['nodeId'];
     if (!id) return;
     row.addEventListener('click', () => {
-      selectGraphnosisNode(id);
+      // `trace: true` so search-result picks (and dashboard list picks)
+      // accumulate in the left-rail Memory Trace — clicks here are
+      // explicit user attention worth remembering for hop-back later.
+      selectGraphnosisNode(id, { trace: true });
       els.gList.focus();
     });
     row.addEventListener('dblclick', () => {
-      selectGraphnosisNode(id);
+      selectGraphnosisNode(id, { trace: true });
       startInlineEdit(id);
     });
   });
@@ -2592,21 +4416,46 @@ function cssEscape(s: string): string {
 
 // ── Selection (the heart of cross-tab routing) ────────────────────────
 
-function selectGraphnosisNode(nodeId: string | null): void {
+function selectGraphnosisNode(nodeId: string | null, { trace = false }: { trace?: boolean } = {}): void {
+  // If the same node is re-selected and the detail pane isn't in edit mode,
+  // skip the full re-render — replacing innerHTML reflows the sticky header
+  // and resets the parent scroll container to the top, losing the user's
+  // reading position inside the connections list.
+  const alreadyShown = nodeId !== null
+    && nodeId === graphnosisSelectedId
+    && graphnosisEditingId === null;
+
   graphnosisSelectedId = nodeId;
+  // Track WHY the selection happened. `trace: true` is the call signature
+  // used for user-initiated navigation (search row click, memory-trace
+  // click, 3D graph node click, detail-pane connection click). Trivia
+  // candidate auto-cycle calls use `trace: true` too — but the user IS
+  // explicitly interacting with the candidate when they click it. Setters
+  // that happen invisibly (e.g. when the deck auto-advances) DON'T pass
+  // trace. We use this flag in switchGraphnosisTab to decide whether the
+  // selection should persist onto the 3D Engram view or be reset.
+  graphnosisSelectionExplicit = trace;
   graphnosisEditingId = null; // cancel any pending edit on selection change
   syncListSelectionHighlight();
   // Mirror selection into the Atlas if mounted — but don't move the camera.
   if (mainAtlas && nodeId) mainAtlas.select(nodeId);
   if (mainAtlas && !nodeId) mainAtlas.resetEmphasis();
-  if (nodeId) pushRecent(nodeId);
-  renderDetailPane();
+  // Only add to memory trace for explicit user clicks in the 3D graph or right sidebar.
+  if (nodeId && trace) pushRecent(nodeId);
+
+  if (!alreadyShown) {
+    // Different node: re-render and let the panel naturally scroll to top so
+    // the user sees the new node's header first.
+    renderDetailPane();
+  }
+  // Same node, not editing: detail pane content is already correct — no need
+  // to touch it. Scroll position is preserved.
 }
 
 function pushRecent(nodeId: string): void {
   if (!atlasActiveGraph) return;
   const current = graphnosisRecentsByGraph.get(atlasActiveGraph) ?? [];
-  const next = [nodeId, ...current.filter((id) => id !== nodeId)].slice(0, GRAPHNOSIS_RECENTS_MAX);
+  const next = [nodeId, ...current.filter((id) => id !== nodeId)]; // no cap — sidebar scrolls
   graphnosisRecentsByGraph.set(atlasActiveGraph, next);
   renderRecents();
 }
@@ -2614,22 +4463,28 @@ function pushRecent(nodeId: string): void {
 function renderRecents(): void {
   const recents = currentRecents();
   if (recents.length === 0) {
-    els.gRecents.classList.add('hidden');
-    els.gRecentsChips.innerHTML = '';
+    els.gMemoryTrace.classList.add('hidden');
+    els.gMemoryTraceList.innerHTML = '';
     return;
   }
-  els.gRecents.classList.remove('hidden');
-  els.gRecentsChips.innerHTML = recents.map((id) => {
+  els.gMemoryTrace.classList.remove('hidden');
+  els.gMemoryTraceList.innerHTML = recents.map((id) => {
     const n = graphnosisAllNodes.find((nn) => nn.id === id);
     const cleanText = n ? cleanDisplayContent(n.contentPreview) : '';
     const label = cleanText
       ? (cleanText.length > 36 ? cleanText.slice(0, 33) + '…' : cleanText)
       : id.slice(0, 8) + '…';
-    return `<button class="g-recent-chip" data-node-id="${escape(id)}" title="${escape(n?.contentPreview ?? id)}">${escape(label)}</button>`;
+    return `<button class="rail-memory-chip" data-node-id="${escape(id)}" title="${escape(n?.contentPreview ?? id)}">${escape(label)}</button>`;
   }).join('');
-  els.gRecentsChips.querySelectorAll<HTMLButtonElement>('.g-recent-chip').forEach((btn) => {
+  els.gMemoryTraceList.querySelectorAll<HTMLButtonElement>('.rail-memory-chip').forEach((btn) => {
     const id = btn.dataset['nodeId'];
-    if (id) btn.addEventListener('click', () => selectGraphnosisNode(id));
+    if (id) btn.addEventListener('click', () => {
+      // trace:true — memory-trace clicks are explicit navigation; the
+      // selection should persist when the user switches to the 3D Engram
+      // tab to see where this node sits in the graph.
+      selectGraphnosisNode(id, { trace: true });
+      mainAtlas?.focus(id);
+    });
   });
 }
 
@@ -2659,7 +4514,11 @@ function renderDetailPane(): void {
   // Use the friendly source label for clip:* sources so users don't see
   // the raw "clip:1778…:Educație NYFA" identifier in the detail pane.
   const sourceLabel = node.sourceFile ? prettySourceLabel(node.sourceFile) : null;
-  const breadcrumb = renderBreadcrumb(node);
+  // Full breadcrumb (file › section section-name) — section was dropped
+  // briefly and re-added once the labeling clarified what it represents
+  // (the sub-heading inside the source file, useful for situating where
+  // a quote came from).
+  const breadcrumbHtml = renderBreadcrumb(node);
   const cleanContent = cleanDisplayContent(node.contentPreview);
 
   // If we're in edit mode for this node, render the textarea instead of the
@@ -2681,41 +4540,42 @@ function renderDetailPane(): void {
   // independent of whether the 3D viz is mounted.
   const conns = buildConnectionsForNode(node.id);
 
-  // Two-tap forget: the button shows "Forget" by default; first click
-  // changes it to "Tap again to confirm" and reddens it. Second click
-  // commits. Click elsewhere or wait — it reverts. This avoids the
-  // window.confirm() dialog, which can be missed or feel disconnected
-  // from the surface the user is already looking at.
-  const armed = graphnosisForgetArming?.nodeId === node.id;
-  const forgetLabel = !isActive
-    ? 'Already forgotten'
-    : armed ? 'Tap again to confirm' : 'Forget';
-  const forgetClass = armed ? 'btn-forget-armed' : '';
   // Action row (only when not editing — edit buttons are above).
+  // Lives INSIDE the sticky header so the three buttons stay pinned with
+  // the node content and only the connections list scrolls below. Three
+  // equal-width buttons via flex:1 each. "+ Connect" sits to the right
+  // of Forget so the destructive action stays close to Correct and the
+  // additive Connect is the trailing option.
   const actionRow = isEditing ? '' : `
-    <div class="g-detail-actions">
-      <button class="primary" id="btn-detail-edit">Correct <kbd>E</kbd></button>
-      <button id="btn-detail-forget" class="${forgetClass}" ${isActive ? '' : 'disabled'}>${escape(forgetLabel)}${armed || !isActive ? '' : ' <kbd>⌫</kbd>'}</button>
+    <div id="g-detail-forget-wrap" class="g-detail-actions g-detail-actions-compact">
+      <button class="primary g-detail-btn-sm" id="btn-detail-edit">Correct <kbd>E</kbd></button>
+      <button class="g-detail-btn-sm" id="btn-detail-forget" ${isActive ? '' : 'disabled'}>${isActive ? 'Forget <kbd>⌫</kbd>' : 'Already forgotten'}</button>
+      <button class="g-detail-btn-sm g-detail-connect-toggle" id="btn-detail-connect">+ Connect</button>
     </div>`;
 
+  // Type + trust + memory-trace status all live in one compact meta strip
+  // ABOVE the filename. "Trust" is the user-facing rename of the internal
+  // confidence score (0..1 → "trust: 0.90"). The trace dot still leads as
+  // the at-a-glance signal.
+  const typeChip = node.nodeType ? `<span class="g-detail-chip">type: <code>${escape(node.nodeType)}</code></span>` : '';
+  const trustChip = `<span class="g-detail-chip">trust: <code>${node.confidence.toFixed(2)}</code></span>`;
+  const validUntilChip = node.validUntil ? `<span class="g-detail-chip">valid until: ${new Date(node.validUntil).toLocaleString()}</span>` : '';
+
   els.gDetailBody.innerHTML = `
-    <div class="g-detail-conf">${confidenceDot} memory trace${isActive ? '' : ' · forgotten'}</div>
-    ${breadcrumb ? `<div class="g-detail-breadcrumb">${breadcrumb}</div>` : ''}
-    ${contentBlock}
-    <div class="g-detail-meta">
-      ${sourceLabel && !node.section ? `source: <code title="${escape(node.sourceFile)}">${escape(sourceLabel)}</code><br/>` : ''}
-      ${node.nodeType ? `type: <code>${escape(node.nodeType)}</code><br/>` : ''}
-      confidence: ${node.confidence.toFixed(2)}<br/>
-      ${node.validUntil ? `valid until: ${new Date(node.validUntil).toLocaleString()}<br/>` : ''}
-      id: <code>${escape(node.id.slice(0, 16))}…</code>
+    <div class="g-detail-header">
+      <div class="g-detail-conf">${confidenceDot} memory trace${isActive ? '' : ' · forgotten'}</div>
+      <div class="g-detail-chips">${typeChip}${trustChip}${validUntilChip}</div>
+      ${breadcrumbHtml ? `<div class="g-detail-breadcrumb" title="${escape(renderBreadcrumbPlain(node))}">${breadcrumbHtml}</div>` : ''}
+      ${contentBlock}
+      ${actionRow}
     </div>
-    ${actionRow}
-    ${renderConnectionsBlock(conns)}
+    <div class="g-detail-scroll-body">
+    <div id="g-detail-conn-wrap" class="g-detail-conn-wrap">
+      ${renderConnectionsBlock(conns)}
+    </div>
     <div class="g-detail-suggest-wrap">
-      <button id="btn-detail-connect" class="g-detail-connect-toggle">
-        + Connect this memory
-      </button>
       <div id="g-detail-suggest" class="g-detail-suggest hidden" data-node-id="${escape(node.id)}"></div>
+    </div>
     </div>
   `;
   // The suggestion panel is collapsed by default in the detail pane.
@@ -2725,17 +4585,26 @@ function renderDetailPane(): void {
   document.getElementById('btn-detail-connect')?.addEventListener('click', () => {
     const slot = document.getElementById('g-detail-suggest');
     const btn = document.getElementById('btn-detail-connect');
+    const connWrap = document.getElementById('g-detail-conn-wrap');
     if (!slot || !btn) return;
     slot.classList.remove('hidden');
-    btn.classList.add('hidden');
+    // Keep + Connect visible (but disabled) so the header doesn't
+    // visually shift when the panel opens — clicking it while the
+    // panel is open is a no-op via :disabled. Temporarily hide the
+    // existing connections list since it's about to be replaced (after
+    // a successful Connect) and would otherwise compete with the
+    // candidate picker for the user's attention.
+    btn.setAttribute('disabled', '');
+    btn.classList.add('is-busy');
+    if (connWrap) connWrap.classList.add('hidden');
     void renderSuggestionPanel({
       sourceNode: node,
       slot,
       variant: 'detail',
       onConnected: (count) => {
-        // Collapse + re-render the detail pane regardless of count so
-        // the Connections section picks up any new edges (and so the
-        // button reappears for the next round).
+        // Re-render the detail pane regardless of count so the
+        // Connections section picks up any new edges and the button
+        // re-enables (renderDetailPane rebuilds the whole subtree).
         if (count > 0) {
           graphnosisTendedThisSession += count;
           updateRecap();
@@ -2762,14 +4631,111 @@ function renderDetailPane(): void {
     renderDetailPane();
   });
 
-  // Wire connection rows: click → select neighbor; hover → preview-highlight
-  // on the Atlas (pre-mounted on pane open, so this always works).
+  // Wire connection rows: click → select neighbor; hover → preview-highlight.
+  // Clicks on the retype button are intercepted before bubbling to the row.
   els.gDetailBody.querySelectorAll<HTMLElement>('.g-detail-conn-row').forEach((row) => {
     const id = row.dataset['neighbor'];
     if (!id) return;
-    row.addEventListener('click', () => selectGraphnosisNode(id));
+    row.addEventListener('click', (e) => {
+      if ((e.target as HTMLElement).closest('.g-conn-retype-btn')) return;
+      selectGraphnosisNode(id, { trace: true });
+    });
     row.addEventListener('mouseenter', () => mainAtlas?.previewHighlight(id));
     row.addEventListener('mouseleave', () => mainAtlas?.previewHighlight(null));
+  });
+
+  // Retype button: show a popover with all RELATIONSHIP_LABELS filtered by
+  // directed/undirected. Selecting a label calls node_link / node_link_directed.
+  els.gDetailBody.querySelectorAll<HTMLButtonElement>('.g-conn-retype-btn').forEach((btn) => {
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      // Close any existing retype popover.
+      document.querySelector('.g-conn-retype-popover')?.remove();
+      const edgeId  = btn.dataset['edgeId']   ?? '';
+      const fromId  = btn.dataset['from']    ?? '';
+      const toId    = btn.dataset['to']      ?? '';
+      const directed = btn.dataset['directed'] === 'true';
+      const currentType = btn.dataset['current'] ?? '';
+
+      const labels = RELATIONSHIP_LABELS.filter((l) => l.directed === directed);
+      const pop = document.createElement('div');
+      pop.className = 'g-conn-retype-popover g-suggest-popover';
+      pop.innerHTML = `
+        <div class="g-suggest-popover-section">
+          <p class="g-suggest-popover-label">Change connection type</p>
+          ${labels.map((l) => `
+            <button class="g-suggest-popover-option${l.sdkType === currentType ? ' active' : ''}" data-sdk="${escape(l.sdkType)}" data-label="${escape(l.label)}" data-directed="${l.directed}">
+              ${escape(l.label)}${l.directed ? ' <span class="g-suggest-dir">→</span>' : ''}
+            </button>`).join('')}
+          <button class="g-suggest-popover-option g-suggest-popover-disconnect" data-disconnect="1" title="Remove this edge entirely — the two memories are no longer connected.">
+            🗑 Disconnect these memories
+          </button>
+        </div>`;
+      document.body.appendChild(pop);
+      // Position below the button.
+      const rect = btn.getBoundingClientRect();
+      pop.style.position = 'fixed';
+      pop.style.top  = `${rect.bottom + 4}px`;
+      pop.style.left = `${Math.min(rect.left, window.innerWidth - 260)}px`;
+
+      const close = (): void => { pop.remove(); document.removeEventListener('mousedown', outside); };
+      const outside = (ev: MouseEvent): void => { if (!pop.contains(ev.target as Node)) close(); };
+      setTimeout(() => document.addEventListener('mousedown', outside), 0);
+
+      pop.querySelectorAll<HTMLButtonElement>('.g-suggest-popover-option').forEach((opt) => {
+        opt.addEventListener('click', async () => {
+          // "Disconnect" path: remove the edge entirely and don't replace
+          // it. The two memories are no longer related per the user's
+          // judgement. No retype, no new edge — just unlink.
+          if (opt.dataset['disconnect'] === '1') {
+            close();
+            if (!edgeId) return;
+            try {
+              await invoke('node_unlink', { graphId: atlasActiveGraph, edgeId });
+              await loadGraphnosisData(atlasActiveGraph!);
+              if (mainAtlas) pushDataIntoAtlas();
+              renderDetailPane();
+            } catch (err) {
+              console.error('[disconnect]', err);
+            }
+            return;
+          }
+          const sdkType = opt.dataset['sdk'] ?? '';
+          const optLabel = opt.dataset['label'] ?? '';
+          const isDir = opt.dataset['directed'] === 'true';
+          close();
+          try {
+            // Remove the old edge before creating the new one so both
+            // don't linger in the graph simultaneously.
+            if (edgeId) {
+              await invoke('node_unlink', { graphId: atlasActiveGraph, edgeId });
+            }
+            if (isDir) {
+              await invoke('node_link_directed', {
+                graphId: atlasActiveGraph,
+                fromNodeId: fromId,
+                toNodeId: toId,
+                type: sdkType,
+                evidence: optLabel,
+              });
+            } else {
+              await invoke('node_link', {
+                graphId: atlasActiveGraph,
+                fromNodeId: fromId,
+                toNodeId: toId,
+                type: sdkType,
+                reason: `User retyped: ${optLabel}`,
+              });
+            }
+            await loadGraphnosisData(atlasActiveGraph!);
+            if (mainAtlas) pushDataIntoAtlas();
+            renderDetailPane();
+          } catch (err) {
+            console.error('[retype]', err);
+          }
+        });
+      });
+    });
   });
 
   // Auto-focus the textarea when entering edit mode.
@@ -2782,6 +4748,11 @@ function renderDetailPane(): void {
 
 interface ConnRow {
   neighborId: string;
+  /** SDK edge id — needed to identify which specific edge to retype. */
+  edgeId: string;
+  /** from/to as the SDK sees it (not necessarily the selected node) */
+  fromNodeId: string;
+  toNodeId: string;
   type: string;
   category: EdgeCategory;
   weight: number;
@@ -2826,18 +4797,18 @@ function buildConnectionsForNode(nodeId: string): ConnRow[] {
   const out: ConnRow[] = [];
   for (const e of edges.directed) {
     if (e.from === nodeId) {
-      const row: ConnRow = { neighborId: e.to, type: e.type, category: categoryFor(e.type), weight: e.weight, direction: 'out' };
+      const row: ConnRow = { edgeId: e.id, fromNodeId: e.from, toNodeId: e.to, neighborId: e.to, type: e.type, category: categoryFor(e.type), weight: e.weight, direction: 'out' };
       if (e.evidence) row.evidence = e.evidence;
       out.push(row);
     } else if (e.to === nodeId) {
-      const row: ConnRow = { neighborId: e.from, type: e.type, category: categoryFor(e.type), weight: e.weight, direction: 'in' };
+      const row: ConnRow = { edgeId: e.id, fromNodeId: e.from, toNodeId: e.to, neighborId: e.from, type: e.type, category: categoryFor(e.type), weight: e.weight, direction: 'in' };
       if (e.evidence) row.evidence = e.evidence;
       out.push(row);
     }
   }
   for (const e of edges.undirected) {
-    if (e.a === nodeId) out.push({ neighborId: e.b, type: e.type, category: categoryFor(e.type), weight: e.weight, direction: 'undirected' });
-    else if (e.b === nodeId) out.push({ neighborId: e.a, type: e.type, category: categoryFor(e.type), weight: e.weight, direction: 'undirected' });
+    if (e.a === nodeId) out.push({ edgeId: e.id, fromNodeId: e.a, toNodeId: e.b, neighborId: e.b, type: e.type, category: categoryFor(e.type), weight: e.weight, direction: 'undirected' });
+    else if (e.b === nodeId) out.push({ edgeId: e.id, fromNodeId: e.a, toNodeId: e.b, neighborId: e.a, type: e.type, category: categoryFor(e.type), weight: e.weight, direction: 'undirected' });
   }
   return out;
 }
@@ -2854,19 +4825,37 @@ function renderConnectionsBlock(conns: ConnRow[]): string {
     const text = n?.contentPreview ?? id;
     return text.length > 60 ? text.slice(0, 57) + '…' : text;
   };
+  const neighborSourceFile = (id: string): string => {
+    const n = graphnosisAllNodes.find((nn) => nn.id === id);
+    const src = n?.sourceFile ?? '';
+    return src ? src.split('/').pop() ?? src : '';
+  };
   const section = (label: string, arrow: string, list: ConnRow[]): string => {
     if (list.length === 0) return '';
     return `<div class="g-detail-conn-section">
       <div class="g-detail-conn-title">${escape(label)} (${list.length})</div>
       ${list.map((c) => {
-        // Prefer the user-chosen label (evidence) over a humanized
-        // SDK type. Auto-extracted edges fall back to humanization
-        // ("shares-entity" → "Same topic"-ish via the catalog).
         const displayLabel = c.evidence ?? humanizeSdkType(c.type, c.direction !== 'undirected');
-        return `<div class="g-detail-conn-row" data-neighbor="${escape(c.neighborId)}" title="${escape(c.type)} · weight ${c.weight.toFixed(2)}${c.evidence ? ` · evidence: ${c.evidence}` : ''}">
+        const srcFile = neighborSourceFile(c.neighborId);
+        const isDirected = c.direction !== 'undirected';
+        const meta = [
+          escape(displayLabel),
+          `confidence: ${c.weight.toFixed(2)}`,
+          srcFile ? escape(srcFile) : '',
+        ].filter(Boolean).join(' · ');
+        return `<div class="g-detail-conn-row" data-neighbor="${escape(c.neighborId)}"
+          data-edge-id="${escape(c.edgeId)}"
+          data-from="${escape(c.fromNodeId)}"
+          data-to="${escape(c.toNodeId)}"
+          data-directed="${isDirected}">
           <span class="g-detail-conn-arrow" style="color: ${cssColorForCategory(c.category)};">${arrow}</span>
-          <span class="g-detail-conn-text">${escape(neighborLabel(c.neighborId))}</span>
-          <span class="g-detail-conn-type">${escape(displayLabel)}</span>
+          <div style="flex:1;min-width:0;">
+            <div class="g-detail-conn-text">${escape(neighborLabel(c.neighborId))}</div>
+            <div class="g-detail-conn-meta">
+              ${meta}
+              <button class="g-conn-retype-btn" data-edge-id="${escape(c.edgeId)}" data-from="${escape(c.fromNodeId)}" data-to="${escape(c.toNodeId)}" data-directed="${isDirected}" data-current="${escape(c.type)}">change ▾</button>
+            </div>
+          </div>
         </div>`;
       }).join('')}
     </div>`;
@@ -3422,7 +5411,6 @@ async function renderSuggestionPanel(opts: SuggestionPanelOpts): Promise<void> {
   let searchQuery = '';
   let searchResults: NodeRecord[] | null = null;
   let searchToken = 0;
-  let showMore = false;
   let openPopoverFor: string | null = null;
 
   slot.innerHTML = '<p class="subtitle" style="padding: 8px;">Looking for candidates…</p>';
@@ -3436,8 +5424,12 @@ async function renderSuggestionPanel(opts: SuggestionPanelOpts): Promise<void> {
 
   function visibleCandidates(): NodeRecord[] {
     if (searchResults !== null) return searchResults;
-    const all = candidates.map((c) => c.node);
-    return showMore ? all : all.slice(0, 8);
+    // Used to cap at 8 with a "Show N more" button. Dropped: the candidate
+    // pool is already bounded (~20 via BGE search) and the rows area scrolls
+    // inside the suggestion panel, so showing all of them costs ~12 extra
+    // DOM rows worth of render time. Removing the cliff lets users see the
+    // full ranked list at once.
+    return candidates.map((c) => c.node);
   }
 
   function selectedAndReady(): SuggestedLabel[] {
@@ -3455,8 +5447,6 @@ async function renderSuggestionPanel(opts: SuggestionPanelOpts): Promise<void> {
 
   function render(): void {
     const rows = visibleCandidates();
-    const totalAvailable = candidates.length;
-    const hasMore = searchResults === null && totalAvailable > rows.length;
     const readyCount = selectedAndReady().length;
     const selectedTotal = selected.size;
     // Dim is driven by CSS rules over .selected (per-row) + the
@@ -3465,6 +5455,15 @@ async function renderSuggestionPanel(opts: SuggestionPanelOpts): Promise<void> {
     // dims the others. (Selected rows dim themselves; popover focus
     // dims everything except the row being edited.)
     void selectedTotal;
+
+    // Preserve the candidate-rows scroll position across re-renders.
+    // Every row click triggers render() which replaces slot.innerHTML —
+    // the new .g-suggest-rows element starts at scrollTop=0, so the
+    // user's scroll context vanishes on each tick. Snapshot before the
+    // wipe, restore right after the new DOM is in place. Same trick
+    // we use to keep the popover open across re-renders below.
+    const prevRows = slot.querySelector<HTMLElement>('.g-suggest-rows');
+    const prevScrollTop = prevRows?.scrollTop ?? 0;
 
     if (rows.length === 0) {
       slot.innerHTML = `
@@ -3487,7 +5486,6 @@ async function renderSuggestionPanel(opts: SuggestionPanelOpts): Promise<void> {
         <div class="g-suggest-rows">
           ${rows.map((cand) => renderRow(cand)).join('')}
         </div>
-        ${hasMore ? `<button class="g-suggest-show-more">Show ${totalAvailable - rows.length} more</button>` : ''}
         <div class="g-suggest-actions">
           <button class="g-suggest-connect primary" ${readyCount === 0 ? 'disabled' : ''}>
             ✓ Connect${readyCount > 0 ? ` (${readyCount}${readyCount < selectedTotal ? ` of ${selectedTotal}` : ''})` : ''}
@@ -3499,6 +5497,12 @@ async function renderSuggestionPanel(opts: SuggestionPanelOpts): Promise<void> {
     }
 
     wireHandlers();
+    // Restore the candidate-rows scroll position so a checkbox click in
+    // the middle of the list doesn't yank the user back to the top.
+    if (prevScrollTop > 0) {
+      const newRows = slot.querySelector<HTMLElement>('.g-suggest-rows');
+      if (newRows) newRows.scrollTop = prevScrollTop;
+    }
     // If a popover was open before the re-render, restore it.
     if (openPopoverFor) {
       const row = slot.querySelector<HTMLElement>(`.g-suggest-row[data-candidate-id="${cssEscape(openPopoverFor)}"]`);
@@ -3608,10 +5612,6 @@ async function renderSuggestionPanel(opts: SuggestionPanelOpts): Promise<void> {
           openPopover(candId, row);
         }
       });
-    });
-    slot.querySelector<HTMLButtonElement>('.g-suggest-show-more')?.addEventListener('click', () => {
-      showMore = true;
-      render();
     });
     slot.querySelector<HTMLButtonElement>('.g-suggest-connect')?.addEventListener('click', () => {
       void commitSelections();
@@ -3946,13 +5946,33 @@ function isStructuralNoise(n: NodeRecord): boolean {
 // Render the breadcrumb shown above a node's content in the deck and
 // detail pane. Pulls source + section together — section is optional
 // because not every ingest path (clip, plain text) sets one.
+// Plain-text version of the breadcrumb suitable for a title="" tooltip.
+// Matches what renderBreadcrumb prints (filename + section), without the
+// HTML span used for the separator dim styling. Used in hover tooltips
+// where leaking the full file path felt like an info leak (the user
+// already sees the friendly name on the row; the tooltip just confirms
+// it without exposing absolute paths from disk).
+function renderBreadcrumbPlain(n: NodeRecord): string {
+  const sourcePart = n.sourceFile ? prettySourceLabel(n.sourceFile) : '';
+  if (!sourcePart && !n.section) return '';
+  if (sourcePart && n.section) return `${sourcePart} › section ${n.section}`;
+  if (n.section && !sourcePart) return `section ${n.section}`;
+  return sourcePart;
+}
+
 function renderBreadcrumb(n: NodeRecord): string {
   const sourcePart = n.sourceFile ? prettySourceLabel(n.sourceFile) : '';
   if (!sourcePart && !n.section) return '';
+  // "section " prefix in front of the section name clarifies what the
+  // second breadcrumb segment is — without it users have read the bare
+  // string ("Environment") as a separate node attribute rather than the
+  // sub-heading inside the source file. Applied wherever the breadcrumb
+  // renders (deck card head, detail pane, suggestion candidates).
   if (sourcePart && n.section) {
-    return `${escape(sourcePart)} <span style="opacity: 0.55;">›</span> ${escape(n.section)}`;
+    return `${escape(sourcePart)} <span style="opacity: 0.55;">›</span> section ${escape(n.section)}`;
   }
-  return escape(sourcePart || n.section || '');
+  if (n.section && !sourcePart) return `section ${escape(n.section)}`;
+  return escape(sourcePart);
 }
 
 // Pretty-render a source ref. "clip:1778...:Educație NYFA" becomes
@@ -3986,6 +6006,15 @@ function humanTimeSince(ts: number): string {
   return new Date(ts).toLocaleDateString();
 }
 
+// Returns the human-readable note explaining what "forget" will do given
+// the current forget mode. Shown inside the confirmation UI.
+function forgetModeNote(): string {
+  if (currentForgetMode === 'purge') {
+    return 'Permanently deleted — this memory will be removed from your cortex and cannot be recovered.';
+  }
+  return 'Soft-deleted — the memory will be hidden from your graph and AI context. It stays in your cortex and can be purged later from Settings → Purge soft-deleted.';
+}
+
 // Low-level forget: actually does the work. Returns true on success.
 // No confirm dialog, no UI side-effects beyond the data mutation —
 // callers decide what feedback to show. Used by both the conservative
@@ -4000,7 +6029,7 @@ async function softDeleteNode(nodeId: string): Promise<boolean> {
     });
     // Mutate local cache so the next render reflects the forget without
     // a round-trip. Re-fetching the whole engram is expensive on big
-    // vaults; the next deliberate refresh will catch any drift.
+    // cortexes; the next deliberate refresh will catch any drift.
     graphnosisAllNodes = graphnosisAllNodes.map((n) =>
       n.id === nodeId ? { ...n, confidence: 0 } : n,
     );
@@ -4029,44 +6058,62 @@ async function softDeleteNode(nodeId: string): Promise<boolean> {
   }
 }
 
-// Sidebar Forget — two-tap inline confirm. First click arms the button
-// (renderDetailPane re-renders with red styling + "Tap again to confirm").
-// Second click on the same node within 4s commits the forget.
-async function handleSidebarForgetClick(): Promise<void> {
+// Sidebar Forget — opens an inline type-to-confirm form inside the
+// #g-detail-forget-wrap element. User must type "delete" before the
+// confirm button enables. Keyboard shortcut (Backspace) either opens the
+// form or, if it's already open, focuses the input so the user can type.
+function handleSidebarForgetClick(): void {
   const nodeId = graphnosisSelectedId;
   if (!nodeId || !atlasActiveGraph) return;
-  // Already armed for THIS node → second tap, commit.
-  if (graphnosisForgetArming?.nodeId === nodeId) {
-    clearTimeout(graphnosisForgetArming.resetTimer);
-    graphnosisForgetArming = null;
+  openSidebarForgetConfirm(nodeId);
+}
+
+function openSidebarForgetConfirm(nodeId: string): void {
+  const wrap = document.getElementById('g-detail-forget-wrap');
+  if (!wrap) return;
+  // If the confirm form is already open, just focus the input.
+  const existingInput = wrap.querySelector<HTMLInputElement>('.g-forget-input');
+  if (existingInput) { existingInput.focus(); return; }
+
+  wrap.innerHTML = `
+    <div class="g-forget-confirm">
+      <p class="g-forget-note">${escape(forgetModeNote())}</p>
+      <div class="g-forget-confirm-row">
+        <input type="text" class="g-forget-input" placeholder='Type "delete" to confirm' autocomplete="off" />
+        <button class="g-forget-go" disabled>Forget</button>
+        <button class="g-forget-cancel">Cancel</button>
+      </div>
+    </div>
+  `;
+
+  const input = wrap.querySelector<HTMLInputElement>('.g-forget-input')!;
+  const goBtn = wrap.querySelector<HTMLButtonElement>('.g-forget-go')!;
+  const cancelBtn = wrap.querySelector<HTMLButtonElement>('.g-forget-cancel')!;
+
+  input.focus();
+  input.addEventListener('input', () => {
+    goBtn.disabled = input.value.trim().toLowerCase() !== 'delete';
+  });
+  cancelBtn.addEventListener('click', () => renderDetailPane());
+  goBtn.addEventListener('click', async () => {
+    goBtn.disabled = true;
+    goBtn.textContent = 'Forgetting…';
+    input.disabled = true;
+    cancelBtn.disabled = true;
     const success = await softDeleteNode(nodeId);
     if (success) {
       graphnosisTendedThisSession++;
       applyGraphnosisFilter();
+    } else {
+      renderDetailPane(); // restore on failure
     }
-    return;
-  }
-  // Different node armed → reset that one first.
-  if (graphnosisForgetArming) {
-    clearTimeout(graphnosisForgetArming.resetTimer);
-    graphnosisForgetArming = null;
-  }
-  // Arm: button re-renders red + label changes. Auto-resets in 4s.
-  graphnosisForgetArming = {
-    nodeId,
-    resetTimer: setTimeout(() => {
-      graphnosisForgetArming = null;
-      if (graphnosisSelectedId === nodeId) renderDetailPane();
-    }, 4000),
-  };
-  renderDetailPane();
+  });
 }
 
-// Keyboard path (Backspace/Delete) — same UX as a sidebar click. Routes
-// through handleSidebarForgetClick so the two-tap pattern applies there
-// too (one Backspace arms the button, second Backspace commits).
-async function forgetSelected(): Promise<void> {
-  await handleSidebarForgetClick();
+// Keyboard path (Backspace/Delete) — opens the confirm form if not open,
+// or focuses the input if already open so the user can type right away.
+function forgetSelected(): void {
+  handleSidebarForgetClick();
 }
 
 // ── Tabs ──────────────────────────────────────────────────────────────
@@ -4080,12 +6127,25 @@ function switchGraphnosisTab(tab: GraphnosisTab): void {
     p.classList.toggle('hidden', p.dataset['gpane'] !== tab);
   });
   if (tab === 'atlas') {
+    // Selection carry-over: explicit user navigation (search hit, memory
+    // trace click, etc.) persists onto the 3D view so the user sees the
+    // node they were exploring. Implicit selections (trivia card auto-
+    // surfacing a candidate) get cleared so the graph opens with no
+    // highlighted node — the user picks fresh in the 3D space.
+    if (!graphnosisSelectionExplicit) {
+      graphnosisSelectedId = null;
+      // Don't call selectGraphnosisNode(null) — that would re-render the
+      // detail pane and reset the explicit flag again. Just clear state.
+      if (mainAtlas) mainAtlas.resetEmphasis();
+      syncListSelectionHighlight();
+      renderDetailEmpty();
+    }
     void (async () => {
       await mountAtlasIfNeeded();
       pushDataIntoAtlas();
       // Frame the graph after a beat — same idea as before, lets the layout
       // settle before snapping the camera.
-      setTimeout(() => mainAtlas?.zoomToFit(700, 60), 1200);
+      setTimeout(() => mainAtlas?.zoomToFit(700, 20), 1200);
     })();
   } else if (tab === 'checkin') {
     // Returning to the dashboard from the Atlas tab — re-render in case
@@ -4101,17 +6161,35 @@ document.querySelectorAll<HTMLButtonElement>('.g-tab').forEach((btn) => {
   });
 });
 
-// ── Atlas (3D) wiring — lazy-mounted when its tab opens ───────────────
+// ── Atlas wiring — lazy-mounted when its tab opens ───────────────────
+//
+// Engine is selectable via Settings → Atlas engine. The factory in
+// atlas-engine.ts hands back the chosen implementation; unavailable
+// engines (sigma-2d, three-custom, deckgl-2d) render a "Coming soon"
+// placeholder until they're built. Default is force-3d (today's
+// current 3d-force-graph renderer).
+
+const ATLAS_ENGINE_STORAGE_KEY = 'graphnosis.atlasEngine';
+
+function currentAtlasEngineKind(): AtlasEngineKind {
+  const raw = localStorage.getItem(ATLAS_ENGINE_STORAGE_KEY);
+  const valid: AtlasEngineKind[] = ['force-3d', 'sigma-2d'];
+  if (raw && (valid as string[]).includes(raw)) return raw as AtlasEngineKind;
+  return 'force-3d';
+}
 
 async function mountAtlasIfNeeded(): Promise<void> {
   if (mainAtlas) return;
-  mainAtlas = new Atlas({
+  const kind = currentAtlasEngineKind();
+  mainAtlas = await createAtlasEngine(kind, {
     container: els.atlasContainer,
     onSelect: (node) => {
       // Route through the shared selection so list + detail stay in sync.
-      selectGraphnosisNode(node?.id ?? null);
+      selectGraphnosisNode(node?.id ?? null, { trace: true });
     },
-  });
+  }) as unknown as Atlas; // cast: factory returns AtlasEngine; main.ts
+                          // still types as Atlas during the transition.
+                          // To be tightened when all engines are real.
 }
 
 function pushDataIntoAtlas(): void {
@@ -4124,6 +6202,11 @@ function pushDataIntoAtlas(): void {
     const directed = edges.directed.filter((e) => activeIds.has(e.from) && activeIds.has(e.to));
     const undirected = edges.undirected.filter((e) => activeIds.has(e.a) && activeIds.has(e.b));
     mainAtlas.setEdges(directed, undirected);
+  }
+  // Re-apply disabled sources — setNodes() defaults all sources to
+  // visible, so we have to push our disable state in after each rebuild.
+  for (const ref of disabledSources.values()) {
+    mainAtlas.setSourceVisible(ref, false);
   }
   renderAtlasLegend();
   // Apply current selection emphasis if any.
@@ -4146,11 +6229,32 @@ function renderAtlasLegend(): void {
     </div>`;
   }).join('');
   els.atlasLegendList.querySelectorAll<HTMLElement>('.legend-row').forEach((row) => {
-    row.addEventListener('click', () => {
+    row.addEventListener('mouseenter', () => {
+      const cat = row.dataset['cat'] as EdgeCategory | undefined;
+      if (cat) mainAtlas?.hoverCategory(cat);
+    });
+    row.addEventListener('mouseleave', () => mainAtlas?.hoverCategory(null));
+    row.addEventListener('click', (e) => {
+      mainAtlas?.hoverCategory(null); // clear preview on click-commit
       const cat = row.dataset['cat'] as EdgeCategory | undefined;
       if (!cat || !mainAtlas) return;
-      const current = mainAtlas.getCategoryVisibility()[cat];
-      mainAtlas.setCategoryVisible(cat, !current);
+      // Cmd/Ctrl-click: additive toggle (multi-select). Plain click: isolate
+      // — show only this category, hide every other. Matches the Photoshop /
+      // Figma / iTunes convention for filterable legend rows.
+      if (e.metaKey || e.ctrlKey) {
+        const current = mainAtlas.getCategoryVisibility()[cat];
+        mainAtlas.setCategoryVisible(cat, !current);
+      } else {
+        const allVis = mainAtlas.getCategoryVisibility();
+        const isolatedAlready =
+          allVis[cat] && cats.every((c) => c === cat || !allVis[c]);
+        if (isolatedAlready) {
+          // Second click on the already-isolated row reverts to "show all".
+          for (const c of cats) mainAtlas.setCategoryVisible(c, true);
+        } else {
+          for (const c of cats) mainAtlas.setCategoryVisible(c, c === cat);
+        }
+      }
       renderAtlasLegend();
     });
   });
@@ -4167,19 +6271,49 @@ function renderAtlasLegend(): void {
     </div>`;
   }).join('');
   els.atlasSourceList.querySelectorAll<HTMLElement>('.legend-row').forEach((row) => {
-    row.addEventListener('click', () => {
+    row.addEventListener('mouseenter', () => {
+      const key = row.dataset['sourceKey'];
+      if (key !== undefined) mainAtlas?.hoverSource(key);
+    });
+    row.addEventListener('mouseleave', () => mainAtlas?.hoverSource(null));
+    row.addEventListener('click', (e) => {
+      mainAtlas?.hoverSource(null); // clear preview on click-commit
       const key = row.dataset['sourceKey'];
       if (key === undefined || !mainAtlas) return;
-      const current = mainAtlas.sourcesWithCounts().find((s) => s.key === key)?.visible ?? true;
-      mainAtlas.setSourceVisible(key, !current);
+      const sourcesSnapshot = mainAtlas.sourcesWithCounts();
+      // Same semantic as category rows: Cmd/Ctrl-click = additive toggle,
+      // plain click = isolate this source (re-click reverts to show all).
+      if (e.metaKey || e.ctrlKey) {
+        const current = sourcesSnapshot.find((s) => s.key === key)?.visible ?? true;
+        mainAtlas.setSourceVisible(key, !current);
+      } else {
+        const target = sourcesSnapshot.find((s) => s.key === key);
+        const isolatedAlready =
+          (target?.visible ?? false) &&
+          sourcesSnapshot.every((s) => s.key === key || !s.visible);
+        if (isolatedAlready) {
+          for (const s of sourcesSnapshot) mainAtlas.setSourceVisible(s.key, true);
+        } else {
+          for (const s of sourcesSnapshot) mainAtlas.setSourceVisible(s.key, s.key === key);
+        }
+      }
       renderAtlasLegend();
     });
   });
 }
 
-els.atlasGraphPicker.addEventListener('change', () => {
+els.atlasGraphPicker.addEventListener('change', () => void (async () => {
   atlasActiveGraph = els.atlasGraphPicker.value;
+  refreshActiveEngramLabel();
   graphnosisSelectedId = null;
+  // Clear any active search — the old query + results belong to the engram
+  // you just left. Without this, switching engrams while a search is open
+  // leaves stale result rows (and stale health stats) on screen until the
+  // user manually clears the box. Reset the input, hide the clear button,
+  // and let applyGraphnosisFilter (called below via refreshAtlasView's
+  // sibling render) fall back to the dashboard.
+  els.gSearch.value = '';
+  els.gSearchClear.classList.add('hidden');
   // Recents are per-engram; the map is preserved so switching back later
   // restores the trail. renderRecents reads from the current engram.
   renderRecents();
@@ -4188,27 +6322,61 @@ els.atlasGraphPicker.addEventListener('change', () => {
   // tending. Switching engrams = starting a fresh check-in.
   graphnosisSessionDispatched.clear();
   graphnosisTendedThisSession = 0;
-  void refreshAtlasView();
-});
+  await refreshAtlasView();
+  // After switching engrams, reset the camera so the new graph fills the
+  // view instead of inheriting the physics/camera state of the previous one.
+  // Short delay lets the physics simulation settle before zoomToFit runs.
+  setTimeout(() => mainAtlas?.zoomToFit(700, 20), 800);
+})());
 
 els.btnAtlasReset.addEventListener('click', () => {
   mainAtlas?.resetEmphasis();
   selectGraphnosisNode(null);
 });
 
-els.btnAtlasUnpin.addEventListener('click', () => {
-  mainAtlas?.unpinAll();
-});
-
 els.btnAtlasFit.addEventListener('click', () => {
-  mainAtlas?.zoomToFit(700, 60);
+  mainAtlas?.zoomToFit(700, 20);
 });
 
 els.btnAtlasAlive.addEventListener('click', () => {
   if (!mainAtlas) return;
   const nowEnabled = mainAtlas.setAliveEnabled(!mainAtlas.isAliveEnabled());
-  els.btnAtlasAlive.textContent = nowEnabled ? 'Pause motion' : 'Resume motion';
+  els.btnAtlasAlive.textContent = nowEnabled ? '🧠 Alive Brain: On' : '⏸ Alive Brain: Off';
 });
+
+// ── 3D Atlas navigation cheatsheet ─────────────────────────────────────
+// Small overlay in the bottom-left of the atlas pane that explains the
+// rotate/pan/zoom + selection shortcuts. Dismissable; the user's choice
+// persists in localStorage so they don't see it every time once they've
+// learned the bindings.
+{
+  const helpEl = document.getElementById('atlas-nav-help') as HTMLDivElement | null;
+  const closeBtn = document.getElementById('btn-atlas-nav-close') as HTMLButtonElement | null;
+  // The legend (top-left) and the axes gizmo (bottom-right) need to step
+  // out of the cheatsheet's footprint when it's shown, then reclaim the
+  // freed space when it's dismissed. We flag this on the .atlas-stage so
+  // CSS can drive both adjustments with a single ancestor selector — and
+  // it stays correct regardless of which child renders first.
+  const stage = helpEl?.closest('.atlas-stage') as HTMLElement | null;
+  const syncStageFlag = (visible: boolean) => {
+    stage?.classList.toggle('nav-help-visible', visible);
+  };
+  // Always show on launch. The old behaviour persisted a "hidden" flag in
+  // localStorage so dismissing the cheatsheet stuck across sessions, but
+  // the navigation bindings are subtle enough (drag rotate, shift+drag
+  // pan, scroll zoom) that a refresher every launch costs little and
+  // helps occasional users. The close button still works for THIS
+  // session — the cheatsheet just reappears on next app launch.
+  if (helpEl) {
+    helpEl.classList.remove('hidden');
+    syncStageFlag(true);
+  }
+  closeBtn?.addEventListener('click', () => {
+    helpEl?.classList.add('hidden');
+    syncStageFlag(false);
+    // Intentionally NOT persisted — see comment above.
+  });
+}
 
 // ── Search input + ⌘K + clear ─────────────────────────────────────────
 
@@ -4285,7 +6453,10 @@ document.addEventListener('keydown', (e) => {
       e.preventDefault();
       if (graphnosisListRows.length > 0) {
         const first = graphnosisListRows[0];
-        if (first) selectGraphnosisNode(first.id);
+        // trace:true — explicit keyboard navigation (Enter or ArrowDown
+        // from the search box) is the user picking a result; should
+        // persist onto 3D Engram tab.
+        if (first) selectGraphnosisNode(first.id, { trace: true });
         els.gList.focus();
         scrollSelectedListRowIntoView();
       }
@@ -4306,7 +6477,9 @@ document.addEventListener('keydown', (e) => {
       const nextIdx = Math.max(0, Math.min(graphnosisListRows.length - 1, (idx === -1 ? 0 : idx + step)));
       const next = graphnosisListRows[nextIdx];
       if (next) {
-        selectGraphnosisNode(next.id);
+        // trace:true — Arrow-key nav over the list is explicit user
+        // navigation; persists onto 3D Engram tab.
+        selectGraphnosisNode(next.id, { trace: true });
         scrollSelectedListRowIntoView();
       }
       e.preventDefault();
@@ -4494,7 +6667,7 @@ async function refreshSnapshots(): Promise<void> {
         <p class="subtitle">No snapshots yet.</p>
         <p class="subtitle" style="margin-top: 8px; font-size: 11px;">
           Snapshots are useful before a risky re-ingest, a big batch of corrections,
-          or any change you might want to undo. They live in <code>&lt;vault&gt;/.snapshots/</code>
+          or any change you might want to undo. They live in <code>&lt;cortex&gt;/.snapshots/</code>
           and stay encrypted.
         </p>`;
       return;
@@ -4521,8 +6694,45 @@ function formatBytes(n: number): string {
   return `${(n / 1024 / 1024 / 1024).toFixed(2)} GB`;
 }
 
+// Atlas perf A/B harness — exposes `atlasPerfApply()` to DevTools so you
+// can flip a flag and immediately see the effect on the live graph.
+// `globalThis.atlasPerf` is defined in atlas.ts with the flag defaults.
+globalThis.atlasPerfApply = (): void => {
+  mainAtlas?.reapplyPerfFlags();
+};
+
 // Tray-driven status updates push us into the right view in real time.
 void listen<StatusSnapshot>('graphnosis://status', (evt) => render(evt.payload));
+
+// ── Atlas render-loop power management ──────────────────────────────
+//
+// Three.js (via 3d-force-graph) runs its WebGL render loop at 60fps
+// regardless of whether the window is visible. For a 2000+ node graph
+// with active physics that's a constant ~5-15% CPU drain on every
+// machine, every second the App is open — including while the user is
+// on another desktop space, has the app minimized, or has the App
+// window unfocused behind another window.
+//
+// We pause the loop on visibilitychange (whole window hidden) and on
+// window blur (focus moved to another app). Resume on visibility +
+// focus. Together these cover macOS Mission Control / window minimize,
+// Cmd-Tabbing away, lock screen, and switching to another Space.
+//
+// Side effect: when the App is the active window but the user has
+// navigated to a non-Atlas pane (e.g., Sources), the renderer keeps
+// running. Not worth additional plumbing — the pane-switching case
+// is rare and brief compared to "window not focused for hours."
+
+if (typeof document !== 'undefined') {
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) mainAtlas?.pauseAnimation();
+    else mainAtlas?.resumeAnimation();
+  });
+}
+if (typeof window !== 'undefined') {
+  window.addEventListener('blur', () => mainAtlas?.pauseAnimation());
+  window.addEventListener('focus', () => mainAtlas?.resumeAnimation());
+}
 
 // ── Mutation push-channel ───────────────────────────────────────────
 //
@@ -4569,13 +6779,418 @@ void listen<EventStreamConnectedPayload>('graphnosis://event-stream-connected', 
   void pollGraphMutations();
 });
 
+// ── First-run guided tour ─────────────────────────────────────────────────
+//
+// Shows once (keyed on localStorage flag 'graphnosis_tour_done').
+// No external libraries. Pure DOM manipulation.
+
+const TOUR_STEPS: Array<{ title: string; body: string }> = [
+  {
+    title: 'Welcome to Graphnosis.',
+    body: 'Your private AI memory — local, encrypted, yours.\n\nThis quick tour takes about a minute.',
+  },
+  {
+    title: 'Your Cortex: a private memory storage',
+    body: 'Choose a folder on your Mac. That\'s your Cortex — an encrypted memory storage, like the human brain\'s cortex, that stays entirely on your device. Never uploaded. Never shared.\n\nGraphnosis will give you a 24-word recovery phrase the first time you unlock it. Write it down — that\'s the only fallback if you ever forget your passphrase.',
+  },
+  {
+    title: 'Add your memories privately',
+    body: 'Add files, websites, or clips to your Cortex. Graphnosis extracts meaningful nodes — ideas, facts, references — and indexes them for your AI, like the human brain\'s hippocampus.\n\n(Yes, that\'s why the logo is a seahorse. "Hippocampus" is Greek for seahorse — the brain region was named after the shape in 1564.)',
+  },
+  {
+    title: 'Your AI now remembers you',
+    body: 'Connect any MCP-aware AI (Claude, Cursor, and more). When you start a conversation, Graphnosis retrieves and attaches the most relevant memories, like the human brain\'s prefrontal cortex. The AI answers as if it already knew you.\n\nThe bridge between your AI and your Cortex is the synapse — Graphnosis\'s background process, named after the connections that pass signals between neurons in the brain. It only fires when your Cortex is unlocked and the app is running.\n\nBecause your files are already indexed inside Graphnosis, your AI doesn\'t have to re-parse the same PDFs, notes, or spreadsheets every prompt. Faster, more consistent, less token cost. Keep the app running with your Cortex unlocked while you use your AI client — closing the app means closing the memory.',
+  },
+  {
+    title: 'Privacy, plainly stated',
+    body: 'Your memory never leaves your device automatically. When your AI does recall something from your Graphnosis Cortex, only the relevant excerpt travels to that AI service — nothing more. Your Cortex files are passphrase-protected, so even if you ever choose to share or move them, they remain yours alone.',
+  },
+];
+
+function startTour(): void {
+  if (localStorage.getItem('graphnosis_tour_done')) return;
+
+  let currentStep = 0;
+
+  function completeTour(): void {
+    localStorage.setItem('graphnosis_tour_done', '1');
+    els.tourOverlay.classList.add('hidden');
+  }
+
+  function renderTourStep(): void {
+    const step = TOUR_STEPS[currentStep];
+    if (!step) return;
+    const total = TOUR_STEPS.length;
+    const isFirst = currentStep === 0;
+    const isLast = currentStep === total - 1;
+
+    // Title and body
+    els.tourTitle.textContent = step.title;
+    els.tourBody.textContent = step.body;
+
+    // Step dots
+    els.tourStepIndicator.innerHTML = '';
+    for (let i = 0; i < total; i++) {
+      const dot = document.createElement('span');
+      dot.className = 'tour-dot' + (i === currentStep ? ' active' : '');
+      els.tourStepIndicator.appendChild(dot);
+    }
+
+    // Back button — hidden on first step
+    els.tourPrev.classList.toggle('hidden', isFirst);
+
+    // Next button — changes label on last step
+    if (isLast) {
+      els.tourNext.textContent = 'Get started →';
+    } else {
+      els.tourNext.textContent = 'Next →';
+    }
+  }
+
+  // Wire up button handlers (idempotent — event listeners are attached once)
+  els.tourSkip.onclick = () => completeTour();
+
+  els.tourPrev.onclick = () => {
+    if (currentStep > 0) {
+      currentStep--;
+      renderTourStep();
+    }
+  };
+
+  els.tourNext.onclick = () => {
+    if (currentStep < TOUR_STEPS.length - 1) {
+      currentStep++;
+      renderTourStep();
+    } else {
+      completeTour();
+    }
+  };
+
+  // Render first step and show the overlay
+  renderTourStep();
+  els.tourOverlay.classList.remove('hidden');
+}
+
+// ── Recovery phrase modal ─────────────────────────────────────────────────
+//
+// Shown exactly once, right after a brand-new cortex is created. The Tauri
+// Rust layer reads `.recovery-pending` from the cortex dir immediately after
+// the sidecar IPC socket appears, then emits `graphnosis://cortex.created`
+// with the plaintext 24-word phrase as the payload. We show the phrase in a
+// 4×6 grid and require the user to tick an acknowledgment box before they
+// can continue.
+
+function showRecoveryPhraseModal(phrase: string): void {
+  const modal = document.getElementById('recovery-phrase-modal') as HTMLDivElement | null;
+  const grid = document.getElementById('recovery-phrase-grid') as HTMLDivElement | null;
+  const ack = document.getElementById('recovery-phrase-ack') as HTMLInputElement | null;
+  const closeBtn = document.getElementById('btn-recovery-phrase-close') as HTMLButtonElement | null;
+  if (!modal || !grid || !ack || !closeBtn) return;
+
+  // Populate the 4×6 grid
+  const words = phrase.trim().split(/\s+/);
+  grid.innerHTML = words.map((w, i) =>
+    `<div class="recovery-phrase-word">` +
+    `<span class="word-num">${i + 1}.</span>` +
+    `<span class="word-text">${w}</span>` +
+    `</div>`,
+  ).join('');
+
+  ack.checked = false;
+  closeBtn.disabled = true;
+
+  ack.onchange = () => {
+    closeBtn.disabled = !ack.checked;
+  };
+
+  closeBtn.onclick = () => {
+    modal.classList.add('hidden');
+    // Flush any unlock-transition that was deferred by render() while the
+    // modal was on screen. This is what makes the modal a true GATE on the
+    // lock screen: dismissing it now transitions to the app view.
+    if (queuedStatusAfterRecovery) {
+      const s = queuedStatusAfterRecovery;
+      queuedStatusAfterRecovery = null;
+      render(s);
+    }
+  };
+
+  modal.classList.remove('hidden');
+}
+
+void listen<string>('graphnosis://cortex-created', (evt) => {
+  showRecoveryPhraseModal(evt.payload);
+});
+
+// ── Set-new-passphrase modal (fires after recovery-mode unlock) ─────────
+//
+// The Rust side emits `graphnosis://unlocked-via-recovery` immediately after
+// a successful `unlock_cortex_with_recovery` call. We show a modal offering
+// the user a chance to set a fresh passphrase so they can unlock normally
+// next time. They can skip — the existing (forgotten) passphrase keeps
+// working in theory, and the recovery phrase remains their fallback.
+
+function showSetNewPassphraseModal(): void {
+  const modal = document.getElementById('set-new-passphrase-modal') as HTMLDivElement | null;
+  const newInput = document.getElementById('snp-new') as HTMLInputElement | null;
+  const confirmInput = document.getElementById('snp-confirm') as HTMLInputElement | null;
+  const errorEl = document.getElementById('snp-error') as HTMLParagraphElement | null;
+  const statusEl = document.getElementById('snp-status') as HTMLElement | null;
+  const skipBtn = document.getElementById('btn-snp-skip') as HTMLButtonElement | null;
+  const saveBtn = document.getElementById('btn-snp-save') as HTMLButtonElement | null;
+  if (!modal || !newInput || !confirmInput || !errorEl || !statusEl || !skipBtn || !saveBtn) return;
+
+  newInput.value = '';
+  confirmInput.value = '';
+  errorEl.textContent = '';
+  errorEl.classList.add('hidden');
+  statusEl.textContent = '';
+  saveBtn.disabled = false;
+  skipBtn.disabled = false;
+
+  const close = (): void => { modal.classList.add('hidden'); };
+
+  skipBtn.onclick = close;
+
+  saveBtn.onclick = async () => {
+    const np = newInput.value;
+    const cp = confirmInput.value;
+    errorEl.classList.add('hidden');
+    if (np.length < 8) {
+      errorEl.textContent = 'Passphrase must be at least 8 characters.';
+      errorEl.classList.remove('hidden');
+      return;
+    }
+    if (np !== cp) {
+      errorEl.textContent = 'The two entries don\'t match.';
+      errorEl.classList.remove('hidden');
+      return;
+    }
+    // Optional safety snapshot before mutating master.enc. The operation
+    // is atomic + reversible (the recovery phrase still works on the new
+    // passphrase since it wraps the same dataKey), but a snapshot adds
+    // defense against an unexpected outcome — and master.enc is the file
+    // the entire Cortex depends on for unlocking, so paranoia is cheap.
+    saveBtn.disabled = true;
+    skipBtn.disabled = true;
+    statusEl.textContent = 'Offering snapshot…';
+    await showSnapshotOffer({
+      subtitle:
+        "About to rewrap the master key with your new passphrase. The dataKey " +
+        "and your encrypted memories are not touched — only master.enc is " +
+        "rewritten — but a snapshot gives you a rollback path just in case.",
+      confirmLabel: 'Snapshot & Set Passphrase',
+    });
+    statusEl.textContent = 'Rewrapping master key…';
+    try {
+      const result = await invoke<{ ok?: boolean; keychainUpdated?: boolean }>(
+        'change_passphrase',
+        { args: { new_passphrase: np } },
+      );
+      const kc = result?.keychainUpdated ?? false;
+      statusEl.textContent = kc
+        ? 'Saved. Keychain updated.'
+        : 'Saved. (Keychain update failed — you may be prompted on next launch.)';
+      // Tiny delay so the user sees the success message before the modal closes.
+      window.setTimeout(close, 1200);
+    } catch (e) {
+      saveBtn.disabled = false;
+      skipBtn.disabled = false;
+      statusEl.textContent = '';
+      errorEl.textContent = String(e);
+      errorEl.classList.remove('hidden');
+    }
+  };
+
+  modal.classList.remove('hidden');
+  newInput.focus();
+}
+
+void listen('graphnosis://unlocked-via-recovery', () => {
+  // Small delay so the recovery-unlock UI has time to dismiss before the
+  // new modal pops up — otherwise we get a flicker through two modals.
+  window.setTimeout(showSetNewPassphraseModal, 250);
+});
+
+// ── "Forgot passphrase?" recovery unlock flow ─────────────────────────────
+
+{
+  const link = document.getElementById('link-forgot-passphrase') as HTMLElement | null;
+  const section = document.getElementById('recovery-unlock-section') as HTMLElement | null;
+  const cancelBtn = document.getElementById('btn-recovery-cancel') as HTMLButtonElement | null;
+  const recoverBtn = document.getElementById('btn-recovery-unlock') as HTMLButtonElement | null;
+  const phraseInput = document.getElementById('recovery-phrase-input') as HTMLTextAreaElement | null;
+  const cortexDirInput = document.getElementById('cortex-dir') as HTMLInputElement | null;
+  const unlockStatus = document.getElementById('unlock-status') as HTMLElement | null;
+
+  link?.addEventListener('click', (e) => {
+    e.preventDefault();
+    section?.classList.toggle('hidden');
+    if (!section?.classList.contains('hidden')) {
+      phraseInput?.focus();
+    }
+  });
+
+  cancelBtn?.addEventListener('click', () => {
+    section?.classList.add('hidden');
+    if (phraseInput) phraseInput.value = '';
+  });
+
+  recoverBtn?.addEventListener('click', async () => {
+    const cortexDir = cortexDirInput?.value.trim() ?? '';
+    const phrase = phraseInput?.value.trim() ?? '';
+    if (!cortexDir) {
+      if (unlockStatus) unlockStatus.textContent = 'Choose a Cortex folder first.';
+      return;
+    }
+    const wordCount = phrase.split(/\s+/).filter(Boolean).length;
+    if (wordCount !== 24) {
+      if (unlockStatus) unlockStatus.textContent = `Recovery phrase must be exactly 24 words (you entered ${wordCount}).`;
+      return;
+    }
+    if (recoverBtn) recoverBtn.disabled = true;
+    if (unlockStatus) unlockStatus.textContent = 'Recovering…';
+    // Reuse the same indeterminate progress bar as the normal unlock path —
+    // recovery-mode unlock is similar work plus the recovery.enc unwrap.
+    const progressBar = document.getElementById('unlock-progress');
+    progressBar?.classList.remove('hidden');
+    try {
+      const result = await invoke<StatusSnapshot>('unlock_cortex_with_recovery', {
+        args: { cortex_dir: cortexDir, recovery_phrase: phrase },
+      });
+      // Persist for the next launch — same flow as the passphrase path.
+      rememberCortexDir(cortexDir);
+      if (phraseInput) phraseInput.value = '';
+      section?.classList.add('hidden');
+      render(result);
+    } catch (e) {
+      if (unlockStatus) unlockStatus.textContent = String(e);
+    } finally {
+      if (recoverBtn) recoverBtn.disabled = false;
+      progressBar?.classList.add('hidden');
+    }
+  });
+}
+
+// ── Last-used cortex memory ─────────────────────────────────────────────
+//
+// Pre-fill the cortex-folder input on the unlock screen with the path the
+// user most recently unlocked. This is purely a UX convenience — the path
+// itself is not a secret, so localStorage is fine. (The passphrase lives in
+// the OS keychain via the Rust side; that's the real secret.)
+//
+// Written on every successful unlock (passphrase OR recovery-phrase path).
+// Read on app launch and immediately injected into the input so the user
+// just types their passphrase and hits Enter on a returning session.
+const LAST_CORTEX_KEY = 'graphnosis_last_cortex_dir';
+
+function rememberCortexDir(dir: string | null | undefined): void {
+  if (!dir) return;
+  try { localStorage.setItem(LAST_CORTEX_KEY, dir); } catch { /* private mode / quota */ }
+}
+
+function prefillLastCortexDir(): void {
+  try {
+    const last = localStorage.getItem(LAST_CORTEX_KEY);
+    if (last && !els.cortexDir.value.trim()) {
+      els.cortexDir.value = last;
+      // Path is already filled — the next thing the user needs to type is
+      // their passphrase. Focus that input so they can just start typing
+      // and hit Enter, skipping the click-into-passphrase-field step.
+      window.setTimeout(() => els.passphrase.focus(), 0);
+      // Also probe whether Touch ID is set up for this cortex. If yes,
+      // surface the button alongside the passphrase Unlock button.
+      void refreshBiometricButton(last);
+      return;
+    }
+    // No last-used path — suggest a sensible default (`~/Graphnosis-Cortex`).
+    // The folder doesn't need to exist yet; sidecar.host.open() creates it
+    // on first unlock. Pre-filling spares brand-new users from having to
+    // click Choose and pick a folder name before they can even type a
+    // passphrase.
+    if (!els.cortexDir.value.trim()) {
+      void (async () => {
+        try {
+          const suggested = await invoke<string>('suggest_cortex_path');
+          if (suggested && !els.cortexDir.value.trim()) {
+            els.cortexDir.value = suggested;
+            window.setTimeout(() => els.passphrase.focus(), 0);
+          }
+        } catch { /* fine — leave input empty + show placeholder */ }
+      })();
+    }
+  } catch { /* fine */ }
+}
+
+// ── Touch ID button (lock screen) ─────────────────────────────────────────
+//
+// Shown when:
+//   1. The cortex-folder input has a path (otherwise we don't know what
+//      to unlock — biometric is per-cortex via the stored passphrase).
+//   2. macOS Touch ID is set up (Swift sidecar's --check returns 0).
+//   3. We have a stored passphrase in the Keychain for that path.
+//
+// Click → Rust spawns the Swift sidecar in --prompt mode → user touches
+// the sensor → on success, Rust reads the passphrase and runs the regular
+// unlock_cortex flow. On cancel/failure, button re-enables and user can
+// fall back to typing the passphrase.
+
+async function refreshBiometricButton(cortexDir: string): Promise<void> {
+  // Two UI surfaces share the same availability state:
+  //   - The inline fingerprint icon inside the passphrase field's right edge
+  //   - The "Unlock with Touch ID →" hint right-justified on the label row
+  // Both hide together when biometric isn't ready.
+  const inlineBtn = document.getElementById('btn-touchid-inline') as HTMLButtonElement | null;
+  const hint = document.getElementById('touchid-hint') as HTMLElement | null;
+  if (!cortexDir.trim()) {
+    inlineBtn?.classList.add('hidden');
+    hint?.classList.add('hidden');
+    return;
+  }
+  try {
+    const available = await invoke<boolean>('biometric_available', { cortexDir });
+    inlineBtn?.classList.toggle('hidden', !available);
+    hint?.classList.toggle('hidden', !available);
+  } catch {
+    // Command failure → hide the Touch ID affordances. No console log —
+    // the user can see the button isn't there, and there's nothing they
+    // can do client-side to fix the underlying issue.
+    inlineBtn?.classList.add('hidden');
+    hint?.classList.add('hidden');
+  }
+}
+
 // Initial state: ask the backend whether we're already unlocked
 // (e.g., auto-unlock from keychain in a future iteration).
 void (async () => {
   try {
+    // Restore the last cortex path before any UI renders so the unlock
+    // screen — if that's where we land — already has the path filled in.
+    prefillLastCortexDir();
     const status = (await invoke('status')) as StatusSnapshot;
+    // If the backend reports an unlocked session, persist its cortex
+    // path too (covers the auto-unlock-from-keychain future case).
+    if (status.unlocked) rememberCortexDir(status.cortex_dir);
     render(status);
+    startTour();
   } catch (e) {
     showError(String(e));
   }
 })();
+
+// ── Window drag via Tauri startDragging API ───────────────────────────────
+// CSS -webkit-app-region:drag is set on .app-header but Tauri 2 on macOS
+// also needs the JS side.  We call startDragging() on primary mousedown on
+// the header, skipping interactive children so buttons/inputs still work.
+{
+  const appHeader = document.querySelector('.app-header') as HTMLElement | null;
+  if (appHeader) {
+    appHeader.addEventListener('mousedown', (e: MouseEvent) => {
+      if (e.button !== 0) return; // only left-button drags
+      const t = e.target as HTMLElement;
+      if (t.closest('button, input, select, a, [contenteditable]')) return;
+      void getCurrentWindow().startDragging();
+    });
+  }
+}
+
