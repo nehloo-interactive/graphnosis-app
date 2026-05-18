@@ -12,6 +12,8 @@ import { startIpc } from './ipc.js';
 import { startEvents } from './events.js';
 import { startStdioMcpServer } from './mcp-server.js';
 import { startSocketMcpServer } from './mcp-socket-server.js';
+import { startHttpMcpServer } from './mcp-http-server.js';
+import { ConnectorManager } from './connectors/manager.js';
 import { LLM_CATALOG, makeLlm } from './local-llm.js';
 import { workerEmbed, terminateEmbedWorker, LOCAL_EMBED_ID, LOCAL_EMBED_DIM } from './local-embed.js';
 import type { LocalLlm } from './correction.js';
@@ -460,11 +462,39 @@ async function main(): Promise<void> {
     mcpServer = await startSocketMcpServer({ deps: mcpDeps, socketPath: mcpSocketPath });
   };
 
+  // Optional HTTP bridge for mobile and remote MCP clients. Disabled by
+  // default; user enables in Settings → "Mobile & Remote". Requires a
+  // sidecar restart to take effect (same as mcpRelay settings).
+  const httpBridgeCfg = host.getSettings().mobile?.httpBridge;
+  if (httpBridgeCfg?.enabled && httpBridgeCfg.token) {
+    const httpServer = await startHttpMcpServer({
+      deps: mcpDeps,
+      port: httpBridgeCfg.port,
+      host: httpBridgeCfg.host,
+      token: httpBridgeCfg.token,
+      allowedOrigins: httpBridgeCfg.allowedOrigins,
+    });
+    process.on('SIGINT', () => httpServer.close());
+    process.on('SIGTERM', () => httpServer.close());
+  }
+
+  // Service connector manager. Always created (even with zero configs) so
+  // connectors.install works on a fresh cortex. Started after IPC so webhook
+  // and pull traffic doesn't race against the IPC socket being ready.
+  const connectorsCfg = host.getSettings().connectors ?? {
+    configs: [], webhookPort: 3458, webhookHost: '127.0.0.1', pullIntervalMs: 15 * 60 * 1000,
+  };
+  const connectorManager = new ConnectorManager(host, connectorsCfg);
+
   // Tauri shell IPC (custom JSON-RPC, not MCP).
   const ipcSocketPath = process.env.GRAPHNOSIS_IPC_SOCKET
     ?? path.join(env.cortexDir, 'sidecar.sock');
-  await startIpc({ host, socketPath: ipcSocketPath, pendingDiffs, restartMcpListener, broadcastRaw });
+  await startIpc({ host, socketPath: ipcSocketPath, pendingDiffs, restartMcpListener, broadcastRaw, connectorManager });
   console.error(`[graphnosis-sidecar] IPC listening on ${ipcSocketPath}`);
+
+  await connectorManager.start();
+  process.on('SIGINT', () => { void connectorManager.stop(); });
+  process.on('SIGTERM', () => { void connectorManager.stop(); });
 
   // MCP server over stdio — the legacy path. Stays active so existing
   // configurations (where Claude Desktop spawns this binary directly) keep

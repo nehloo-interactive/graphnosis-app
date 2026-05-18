@@ -1,6 +1,8 @@
 import net from 'node:net';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
+import { randomUUID } from 'node:crypto';
+import os from 'node:os';
 import { z } from 'zod';
 import type { GraphnosisHost } from './host.js';
 import { ingestFile, ingestWeb, ingestClip } from './ingest.js';
@@ -10,6 +12,7 @@ import { applyCorrection as runApplyCorrection } from './correction.js';
 import type { CorrectionDiff } from './correction.js';
 import { oplog } from '@nehloo-interactive/graphnosis-secure-sync';
 import { withEmbedding } from './embedding-queue.js';
+import type { ConnectorManager } from './connectors/manager.js';
 
 // Local IPC between Tauri shell and Node sidecar. Newline-delimited JSON over a
 // Unix-domain socket on macOS/Linux (Windows uses a named pipe — same socket API).
@@ -78,6 +81,8 @@ export interface IpcDeps {
   restartMcpListener: () => Promise<void>;
   /** Push arbitrary frames to all event-socket subscribers (e.g. ingest progress). */
   broadcastRaw: BroadcastRawFn;
+  /** Service connector manager. Always present; starts with empty config if no connectors exist yet. */
+  connectorManager: ConnectorManager;
 }
 
 export async function startIpc(deps: IpcDeps): Promise<net.Server> {
@@ -748,6 +753,15 @@ async function dispatch(deps: IpcDeps, method: string, params: unknown): Promise
           chunkSize: z.enum(['fine', 'balanced', 'coarse']).optional(),
           embedBatch: z.enum(['small', 'medium', 'large', 'auto']).optional(),
         }).optional(),
+        mobile: z.object({
+          httpBridge: z.object({
+            enabled: z.boolean(),
+            port: z.number().int().min(1024).max(65535).optional(),
+            host: z.enum(['127.0.0.1', '0.0.0.0']).optional(),
+            token: z.string().optional(),
+            allowedOrigins: z.array(z.string()).optional(),
+          }),
+        }).optional(),
       }).parse(params ?? {});
       // Strip undefined keys explicitly for exactOptionalPropertyTypes.
       const patch: Parameters<typeof deps.host.setSettings>[0] = {};
@@ -767,6 +781,26 @@ async function dispatch(deps: IpcDeps, method: string, params: unknown): Promise
           reingestQuietMs: parsed.ai.reingestQuietMs ?? currentAi.reingestQuietMs,
           chunkSize: parsed.ai.chunkSize ?? currentAi.chunkSize,
           embedBatch: parsed.ai.embedBatch ?? currentAi.embedBatch,
+        };
+      }
+      if (parsed.mobile) {
+        // Fill from current settings so partial updates don't lose fields.
+        const currentBridge = deps.host.getSettings().mobile?.httpBridge;
+        const inBridge = parsed.mobile.httpBridge;
+        // Auto-generate a token when enabling the bridge for the first time.
+        // The App UI reads it back from the returned settings and shows it to
+        // the user exactly once so they can copy it into their mobile client.
+        const token = inBridge.token
+          ?? currentBridge?.token
+          ?? (inBridge.enabled ? randomUUID() : '');
+        patch.mobile = {
+          httpBridge: {
+            enabled: inBridge.enabled,
+            port: inBridge.port ?? currentBridge?.port ?? 3457,
+            host: inBridge.host ?? currentBridge?.host ?? '127.0.0.1',
+            token,
+            allowedOrigins: inBridge.allowedOrigins ?? currentBridge?.allowedOrigins ?? [],
+          },
         };
       }
       return deps.host.setSettings(patch);
@@ -850,6 +884,67 @@ async function dispatch(deps: IpcDeps, method: string, params: unknown): Promise
         audit: sub.audit,
       };
     }
+    // ── Connector IPC ────────────────────────────────────────────────────────
+    case 'connectors.list': {
+      return deps.connectorManager.list();
+    }
+    case 'connectors.install': {
+      if (!deps.connectorManager) throw new Error('ConnectorManager not initialized');  // should never happen
+      const { config } = z.object({
+        config: z.object({
+          id: z.string().optional(),
+          kind: z.enum(['webhook', 'rss', 'github', 'slack', 'trello', 'linear']),
+          graphId: z.string().optional(),
+          enabled: z.boolean().optional(),
+          credentials: z.record(z.string()).optional(),
+          options: z.record(z.unknown()).optional(),
+        }),
+      }).parse(params ?? {});
+      const installed = await deps.connectorManager.install(config);
+      return { config: installed };
+    }
+    case 'connectors.remove': {
+      const { id } = z.object({ id: z.string() }).parse(params ?? {});
+      await deps.connectorManager.remove(id);
+      return { ok: true };
+    }
+    case 'connectors.triggerPull': {
+      const { id } = z.object({ id: z.string() }).parse(params ?? {});
+      return deps.connectorManager.triggerPull(id);
+    }
+    case 'connectors.getAuthUrl': {
+      const { id } = z.object({ id: z.string() }).parse(params ?? {});
+      return deps.connectorManager.getAuthUrl(id);
+    }
+
+    case 'mobile.getConnectionInfo': {
+      const settings = deps.host.getSettings();
+      const bridge = settings.mobile?.httpBridge;
+      const nets = os.networkInterfaces();
+      const localIps: string[] = [];
+      let tailscaleIp: string | undefined;
+      for (const ifaces of Object.values(nets)) {
+        if (!ifaces) continue;
+        for (const iface of ifaces) {
+          if (iface.family !== 'IPv4' || iface.internal) continue;
+          // Tailscale assigns IPs in the 100.64.0.0/10 CGNAT range.
+          if (iface.address.startsWith('100.')) {
+            tailscaleIp = iface.address;
+          } else {
+            localIps.push(iface.address);
+          }
+        }
+      }
+      return {
+        enabled: bridge?.enabled ?? false,
+        host: bridge?.host ?? '127.0.0.1',
+        port: bridge?.port ?? 3457,
+        token: bridge?.token ?? '',
+        localIps,
+        tailscaleIp,
+      };
+    }
+
     default:
       throw new Error(`Unknown IPC method: ${method}`);
   }
