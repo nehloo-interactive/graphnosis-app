@@ -654,22 +654,56 @@ function removeIngestToast(id: string): void {
   liveToasts.delete(id);
 }
 
-// ── Native macOS notification on ingest completion ─────────────────────────
-// Only fires when macOS granted notification permission. We request it lazily
-// on first ingest completion rather than at startup — less intrusive.
+// ── Native macOS notification helpers ──────────────────────────────────────
+// We request permission lazily on first send (less intrusive than asking at
+// startup) and cache the result for the rest of the session.
 let _notifPermission: boolean | null = null;
 
-async function notifyIngestDone(fileName: string, nodesAdded: number, error?: string): Promise<void> {
+async function ensureNotifPermission(): Promise<boolean> {
+  if (_notifPermission !== null) return _notifPermission;
   try {
-    if (_notifPermission === null) {
-      _notifPermission = await isPermissionGranted();
-      if (!_notifPermission) {
-        const result = await requestPermission();
-        _notifPermission = result === 'granted';
-      }
+    _notifPermission = await isPermissionGranted();
+    if (!_notifPermission) {
+      const result = await requestPermission();
+      _notifPermission = result === 'granted';
     }
-    if (!_notifPermission) return;
+  } catch {
+    _notifPermission = false;
+  }
+  return _notifPermission;
+}
 
+/** Is the app currently in the background (menu-bar collapsed, window not
+ *  focused, or hidden behind other windows)? Used to gate "the AI needs
+ *  you" notifications — we don't want to nag the user when they're already
+ *  looking at the App and would see the banner anyway. */
+function isAppBackgrounded(): boolean {
+  // visibilityState catches minimized/hidden NSPanel; hasFocus catches the
+  // common case where the user has another app focused on top of ours.
+  if (document.visibilityState === 'hidden') return true;
+  if (typeof document.hasFocus === 'function' && !document.hasFocus()) return true;
+  return false;
+}
+
+/**
+ * Fire a system notification only when the app is in the background.
+ * Used for AI-driven confirmations (engram-create-suggested,
+ * correction.proposed) so the user gets a poke when they're elsewhere
+ * but isn't double-notified when they're already looking at the banner.
+ */
+async function notifyIfBackground(opts: { title: string; body: string }): Promise<void> {
+  if (!isAppBackgrounded()) return;
+  if (!(await ensureNotifPermission())) return;
+  try {
+    sendNotification({ title: opts.title, body: opts.body });
+  } catch {
+    // Notification API unavailable — silently ignore.
+  }
+}
+
+async function notifyIngestDone(fileName: string, nodesAdded: number, error?: string): Promise<void> {
+  if (!(await ensureNotifPermission())) return;
+  try {
     if (error) {
       sendNotification({ title: 'Graphnosis — Ingest failed', body: `${fileName}: ${error}` });
     } else {
@@ -6858,6 +6892,230 @@ void listen<GraphMutationPayload>('graphnosis://graph-mutation', () => {
 // and our subscription being established.
 void listen<EventStreamConnectedPayload>('graphnosis://event-stream-connected', () => {
   void pollGraphMutations();
+});
+
+// ── Engram-create suggestions ─────────────────────────────────────────────
+//
+// An AI client called `remember` with target_engram=<name>, but the engram
+// doesn't exist. The sidecar refuses the write and broadcasts this event.
+// We surface a banner; user decides whether to create the engram. The AI
+// never auto-creates engrams — that's a deliberate human-in-the-loop call.
+interface EngramSuggestCandidate {
+  graphId: string;
+  displayName: string;
+  score: number;
+  reason: 'substring' | 'tokens' | 'edit-distance';
+}
+interface EngramSuggestPayload {
+  suggestedName: string;
+  label?: string;
+  text: string;
+  preview: string;
+  sourceKind?: 'clip' | 'ai-conversation';
+  requestedBy?: string;
+  /** Close-match candidates ranked by score. Empty → no close match,
+   *  banner offers only "Create new". When non-empty, user picks one
+   *  (or still falls through to "Create new" with the requested name). */
+  candidates?: EngramSuggestCandidate[];
+}
+
+// Selection state for the banner: null = "Create new", string = existing graphId.
+let pendingEngramSuggestion: EngramSuggestPayload | null = null;
+let engramSuggestSelection: string | null = null;
+
+function showEngramSuggestion(p: EngramSuggestPayload): void {
+  pendingEngramSuggestion = p;
+  const banner = document.getElementById('engram-suggest-banner');
+  const headlineEl = document.getElementById('engram-suggest-headline');
+  const previewEl = document.getElementById('engram-suggest-preview');
+  const candWrap = document.getElementById('engram-suggest-candidates');
+  if (!banner || !headlineEl || !previewEl || !candWrap) return;
+
+  const client = p.requestedBy || 'An AI client';
+  const candidates = p.candidates ?? [];
+  // Default selection: top candidate if any, else "create new"
+  engramSuggestSelection = candidates.length ? candidates[0]!.graphId : null;
+
+  if (candidates.length) {
+    headlineEl.innerHTML =
+      `<strong>${escapeHtml(client)}</strong> wants to save into ` +
+      `“<strong>${escapeHtml(p.suggestedName)}</strong>”. ` +
+      `Did you mean one of these?`;
+  } else {
+    headlineEl.innerHTML =
+      `<strong>${escapeHtml(client)}</strong> wants to save into a new engram ` +
+      `“<strong>${escapeHtml(p.suggestedName)}</strong>”`;
+  }
+  previewEl.textContent = p.preview || p.text.slice(0, 280);
+
+  // Render candidate radio rows (if any), plus a synthetic "Create new" row.
+  candWrap.innerHTML = '';
+  if (candidates.length) {
+    for (const c of candidates) {
+      candWrap.appendChild(renderCandRow(c.graphId, c.displayName, reasonLabel(c.reason, c.score)));
+    }
+    candWrap.appendChild(renderCandRow(null, `Create new “${p.suggestedName}”`, 'fresh engram'));
+    candWrap.classList.remove('hidden');
+  } else {
+    candWrap.classList.add('hidden');
+  }
+
+  updateEngramSuggestPrimary();
+  banner.classList.remove('hidden');
+}
+
+function renderCandRow(graphId: string | null, label: string, reason: string): HTMLElement {
+  const row = document.createElement('button');
+  row.type = 'button';
+  row.className = 'engram-suggest-cand';
+  row.dataset.candId = graphId ?? '__new__';
+  if (engramSuggestSelection === graphId) row.classList.add('selected');
+  row.innerHTML = `
+    <span class="engram-suggest-cand-radio" aria-hidden="true"></span>
+    <span class="engram-suggest-cand-name"></span>
+    <span class="engram-suggest-cand-reason"></span>
+  `;
+  (row.querySelector('.engram-suggest-cand-name') as HTMLElement).textContent = label;
+  (row.querySelector('.engram-suggest-cand-reason') as HTMLElement).textContent = reason;
+  row.addEventListener('click', () => {
+    engramSuggestSelection = graphId;
+    // Repaint selection state on siblings without rebuilding the list.
+    const wrap = document.getElementById('engram-suggest-candidates');
+    if (wrap) {
+      wrap.querySelectorAll('.engram-suggest-cand').forEach((el) => {
+        const elId = (el as HTMLElement).dataset.candId === '__new__' ? null : (el as HTMLElement).dataset.candId ?? null;
+        el.classList.toggle('selected', elId === engramSuggestSelection);
+      });
+    }
+    updateEngramSuggestPrimary();
+  });
+  return row;
+}
+
+function reasonLabel(reason: EngramSuggestCandidate['reason'], score: number): string {
+  const pct = Math.round(score * 100);
+  switch (reason) {
+    case 'substring': return `contains your text · ${pct}%`;
+    case 'tokens':    return `same words · ${pct}%`;
+    case 'edit-distance': return `close spelling · ${pct}%`;
+  }
+}
+
+function updateEngramSuggestPrimary(): void {
+  const btn = document.getElementById('engram-suggest-primary') as HTMLButtonElement | null;
+  const p = pendingEngramSuggestion;
+  if (!btn || !p) return;
+  if (engramSuggestSelection) {
+    // Find display name for that candidate to put on the button label.
+    const cand = (p.candidates ?? []).find((c) => c.graphId === engramSuggestSelection);
+    btn.textContent = cand ? `Save to “${cand.displayName}”` : 'Save to selected';
+  } else {
+    btn.textContent = `Create “${p.suggestedName}” & save`;
+  }
+}
+
+function hideEngramSuggestion(): void {
+  pendingEngramSuggestion = null;
+  engramSuggestSelection = null;
+  document.getElementById('engram-suggest-banner')?.classList.add('hidden');
+}
+
+function slugifyEngramName(name: string): string {
+  const base = name.trim().toLowerCase()
+    .replace(/[^a-z0-9_-]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .replace(/-+/g, '-');
+  return base || `engram-${Date.now()}`;
+}
+
+function escapeHtml(s: string): string {
+  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+
+document.getElementById('engram-suggest-primary')?.addEventListener('click', () => {
+  const p = pendingEngramSuggestion;
+  if (!p) return;
+  const btn = document.getElementById('engram-suggest-primary') as HTMLButtonElement | null;
+  if (btn) btn.disabled = true;
+  // If selection is an existing graphId, save into it (sidecar handler
+  // skips create when the graph already exists). Otherwise mint a new
+  // engram from the AI-suggested name.
+  const intoExisting = engramSuggestSelection;
+  const graphId = intoExisting ?? slugifyEngramName(p.suggestedName);
+  const displayName = intoExisting
+    ? (p.candidates?.find((c) => c.graphId === intoExisting)?.displayName ?? intoExisting)
+    : p.suggestedName;
+  void (async () => {
+    try {
+      await invoke('accept_engram_suggestion', {
+        graphId,
+        template: 'personal',
+        displayName,
+        text: p.text,
+        label: p.label ?? 'Conversation note',
+        sourceKind: p.sourceKind ?? 'ai-conversation',
+      });
+      hideEngramSuggestion();
+      void pollGraphMutations();
+      const title = intoExisting ? `Saved to “${displayName}”` : `Created engram “${displayName}”`;
+      const tid = addIngestToast(title, 'Saved AI suggestion');
+      finishIngestToast(tid, 'success', 'Saved AI suggestion');
+    } catch (e) {
+      const tid = addIngestToast(`Couldn't save`, String(e));
+      finishIngestToast(tid, 'error', String(e));
+    } finally {
+      if (btn) btn.disabled = false;
+    }
+  })();
+});
+
+document.getElementById('engram-suggest-dismiss')?.addEventListener('click', () => {
+  hideEngramSuggestion();
+});
+
+void listen<EngramSuggestPayload>('graphnosis://engram-create-suggested', (ev) => {
+  if (!ev.payload) return;
+  showEngramSuggestion(ev.payload);
+  // If the user has the App in the background (menu bar collapsed, or
+  // another app focused), poke them with a system notification. The
+  // banner will be waiting when they come back.
+  const who = ev.payload.requestedBy ?? 'An AI client';
+  const hasCandidates = (ev.payload.candidates?.length ?? 0) > 0;
+  void notifyIfBackground({
+    title: 'Graphnosis — confirmation needed',
+    body: hasCandidates
+      ? `${who} wants to save into “${ev.payload.suggestedName}” — close matches found. Click Graphnosis to choose.`
+      : `${who} wants to save into a new engram “${ev.payload.suggestedName}”. Click Graphnosis to confirm.`,
+  });
+});
+
+// ── Correction proposals from the `correct` MCP tool ─────────────────────
+// The AI proposed a structured diff for an existing memory. The diff lives
+// in the sidecar's pendingDiffs map; the App shows it in the pending-
+// corrections panel after the next poll. We use this event to (a) refresh
+// the panel immediately so there's no lag and (b) notify the user when
+// the App is backgrounded, since otherwise the correction can sit
+// unnoticed for hours.
+interface CorrectionProposedPayload {
+  diffId: string;
+  graphId: string;
+  correction: string;
+  requestedBy?: string;
+  changeCount: number;
+}
+void listen<CorrectionProposedPayload>('graphnosis://correction-proposed', (ev) => {
+  if (!ev.payload) return;
+  // Refresh the pending-corrections panel right away so the diff is
+  // visible the moment the user opens the App.
+  void fetchPendingCorrections();
+  const who = ev.payload.requestedBy ?? 'An AI client';
+  const n = ev.payload.changeCount;
+  const changes = n === 1 ? '1 change' : `${n} changes`;
+  void notifyIfBackground({
+    title: 'Graphnosis — correction proposed',
+    body: `${who} proposed ${changes} to your memory. Click Graphnosis to review.`,
+  });
 });
 
 // ── First-run guided tour ─────────────────────────────────────────────────
