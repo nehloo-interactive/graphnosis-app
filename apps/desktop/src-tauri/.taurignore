@@ -1,0 +1,11 @@
+# Tauri dev-mode file watcher ignores everything below. Same syntax as
+# .gitignore. Without this, Tauri detects every rebuild of the Swift
+# biometric sidecar binary in `binaries/` as a source change and triggers
+# yet another rebuild — an infinite loop the moment the dev server starts.
+
+# The Swift sidecar output. build.rs rewrites this on every cargo run.
+binaries/
+
+# Quarantined cortex artifacts that might accidentally land under src-tauri
+# during local debugging. Should never normally appear here.
+*.corrupt-*
