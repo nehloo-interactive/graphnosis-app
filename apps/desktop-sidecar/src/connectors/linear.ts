@@ -37,7 +37,7 @@ export class LinearConnector implements Connector {
     });
     if (!res.ok) throw new Error(`Linear API request failed: ${res.status}`);
     const data = await res.json() as { data: T; errors?: Array<{ message: string }> };
-    if (data.errors?.length) throw new Error(`Linear GraphQL error: ${data.errors[0].message}`);
+    if (data.errors?.length) throw new Error(`Linear GraphQL error: ${data.errors[0]?.message ?? 'unknown error'}`);
     return data.data;
   }
 
