@@ -390,7 +390,12 @@ export class GraphnosisHost {
     };
 
     const settings = await settingsMod.loadSettings(opts.cortexDir);
-    const host = new GraphnosisHost(opts, derived, settings);
+    // Decrypt connector credentials with the cortex data key before handing
+    // settings to the host. On-disk credentialsEnc → in-memory credentials.
+    // Legacy plaintext-credentials configs (pre-v0.6.1) pass through
+    // unchanged and get re-saved encrypted on the next setSettings() call.
+    const decryptedSettings = await decryptConnectorCredentialsInSettings(settings, dataKey);
+    const host = new GraphnosisHost(opts, derived, decryptedSettings);
     return recoveryPhrase ? { host, recoveryPhrase } : { host };
   }
 
@@ -582,8 +587,7 @@ export class GraphnosisHost {
         [graphId]: metadata,
       },
     };
-    await settingsMod.saveSettings(this.opts.cortexDir, next);
-    this.settings = next;
+    await this.persistSettings(next);
   }
 
   /** Combined view: every loaded graph + its metadata (or sensible defaults). */
@@ -651,8 +655,7 @@ export class GraphnosisHost {
     // Strip metadata from settings so the graph can't reappear on next boot.
     const { [graphId]: _removed, ...rest } = this.settings.graphMetadata;
     const next = { ...this.settings, graphMetadata: rest };
-    await settingsMod.saveSettings(this.opts.cortexDir, next);
-    this.settings = next;
+    await this.persistSettings(next);
   }
 
   /** Update settings, persist to <cortex>/settings.json, return the merged result. */
@@ -663,8 +666,7 @@ export class GraphnosisHost {
       ...this.settings,
       ...partial,
     });
-    await settingsMod.saveSettings(this.opts.cortexDir, next);
-    this.settings = next;
+    await this.persistSettings(next);
     // Notify listeners with the persisted value so they don't react to
     // a stale in-flight patch.
     for (const fn of this.settingsListeners) {
@@ -673,6 +675,23 @@ export class GraphnosisHost {
       }
     }
     return next;
+  }
+
+  /**
+   * Single I/O boundary for settings writes. Encrypts connector credentials
+   * with the cortex data key before writing to disk, then swaps the
+   * in-memory copy (with decrypted credentials) and notifies listeners.
+   *
+   * All three saveSettings paths in this file (setGraphMetadata,
+   * deleteGraph, setSettings) route through here so credentials never
+   * leak to settings.json in plaintext — including when an unrelated
+   * write piggybacks on a settings save and would otherwise re-serialise
+   * the in-memory plaintext credentials by accident.
+   */
+  private async persistSettings(next: settingsMod.AppSettings): Promise<void> {
+    const onDiskNext = await encryptConnectorCredentialsInSettings(next, this.key);
+    await settingsMod.saveSettings(this.opts.cortexDir, onDiskNext);
+    this.settings = next;
   }
 
   /** Subscribe to settings updates. Returns an unsubscribe function.
@@ -2298,4 +2317,91 @@ function buffersEqual(a: Uint8Array, b: Uint8Array): boolean {
   let diff = 0;
   for (let i = 0; i < a.length; i++) diff |= (a[i] ?? 0) ^ (b[i] ?? 0);
   return diff === 0;
+}
+
+// ── Connector credential encryption (v0.6.1+) ───────────────────────────────
+//
+// Connector credentials (API keys, OAuth tokens) MUST never sit plaintext on
+// disk. The v0.6 release shipped them in settings.json plaintext; v0.6.1
+// migrates them to XChaCha20-Poly1305 ciphertext using the cortex data key,
+// base64-encoded into a `credentialsEnc` field. The in-memory `credentials`
+// field stays populated so connector code doesn't need to re-decrypt on every
+// pull.
+//
+// Migration is automatic and one-way: if a config has plaintext `credentials`
+// and no `credentialsEnc`, the next `persistSettings` call encrypts it and
+// blanks out the plaintext field on disk. Users with legacy v0.6 cortexes
+// upgrade transparently the first time anything writes to settings.
+
+/** Encrypt every connector's `credentials` field into `credentialsEnc`,
+ *  blanking the in-disk plaintext field. Returns a deep copy of `settings`
+ *  with the on-disk shape. Safe to call when no connectors are configured. */
+async function encryptConnectorCredentialsInSettings(
+  settings: settingsMod.AppSettings,
+  dataKey: Uint8Array,
+): Promise<settingsMod.AppSettings> {
+  const conn = settings.connectors;
+  if (!conn?.configs?.length) return settings;
+  const newConfigs = await Promise.all(conn.configs.map(async (c) => {
+    // Empty credentials and no existing ciphertext → nothing to encrypt.
+    if ((!c.credentials || Object.keys(c.credentials).length === 0) && !c.credentialsEnc) {
+      const { credentialsEnc: _drop, ...rest } = c;
+      return { ...rest, credentials: {} };
+    }
+    // Already-encrypted (decryption skipped on load for some reason) → keep as-is.
+    if ((!c.credentials || Object.keys(c.credentials).length === 0) && c.credentialsEnc) {
+      return { ...c, credentials: {} };
+    }
+    const plaintext = new TextEncoder().encode(JSON.stringify(c.credentials));
+    // Fresh random 16-byte salt per encryption; sodium uses it as the
+    // pwhash salt slot in the blob header. Since we pass the dataKey
+    // directly (not a passphrase), the salt is effectively a unique IV.
+    const salt = randomBytes(16);
+    const blob = await crypto.encrypt(plaintext, dataKey, salt);
+    const credentialsEnc = Buffer.from(blob).toString('base64');
+    return { ...c, credentials: {}, credentialsEnc };
+  }));
+  return {
+    ...settings,
+    connectors: { ...conn, configs: newConfigs },
+  };
+}
+
+/** Decrypt every connector's `credentialsEnc` back into `credentials`. Leaves
+ *  legacy configs with plaintext `credentials` (no `credentialsEnc`)
+ *  untouched — those re-encrypt on the next save. Safe to call when no
+ *  connectors are configured or when all credentials are already plaintext. */
+async function decryptConnectorCredentialsInSettings(
+  settings: settingsMod.AppSettings,
+  dataKey: Uint8Array,
+): Promise<settingsMod.AppSettings> {
+  const conn = settings.connectors;
+  if (!conn?.configs?.length) return settings;
+  const newConfigs = await Promise.all(conn.configs.map(async (c) => {
+    // No ciphertext → either empty or legacy plaintext (both already correct
+    // in-memory).
+    if (!c.credentialsEnc) {
+      const { credentialsEnc: _drop, ...rest } = c;
+      return rest;
+    }
+    try {
+      const blob = new Uint8Array(Buffer.from(c.credentialsEnc, 'base64'));
+      const plaintext = await crypto.decrypt(blob, dataKey);
+      const credentials = JSON.parse(new TextDecoder().decode(plaintext)) as Record<string, string>;
+      const { credentialsEnc: _drop, ...rest } = c;
+      return { ...rest, credentials };
+    } catch (e) {
+      // Decryption failure is non-fatal: log, blank credentials, continue.
+      // The user will see the connector as "auth expired" / unconfigured
+      // and can re-paste credentials in the UI. Better than a hard fail
+      // that prevents cortex unlock.
+      console.error(`[graphnosis-host] connector '${c.id}' credentials decryption failed: ${(e as Error).message}`);
+      const { credentialsEnc: _drop, ...rest } = c;
+      return { ...rest, credentials: {} };
+    }
+  }));
+  return {
+    ...settings,
+    connectors: { ...conn, configs: newConfigs },
+  };
 }
