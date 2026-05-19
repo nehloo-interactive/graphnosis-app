@@ -76,7 +76,7 @@
       .actions { display: flex; gap: 8px; align-items: center; }
       .pick-row { display: flex; gap: 8px; }
       .pick-row input { flex: 1; }
-      .error { color: var(--error); padding: 8px 10px; border-radius: 6px; background: color-mix(in oklab, var(--error) 10%, transparent); margin-bottom: 16px; font-size: 12px; }
+      .error { color: var(--error); padding: 8px 10px; border-radius: 6px; background: color-mix(in oklab, var(--error) 10%, transparent); margin-bottom: 16px; font-size: 12px; white-space: pre-wrap; word-break: break-word; max-height: 280px; overflow-y: auto; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; line-height: 1.45; }
       .ok-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--ok); margin-right: 6px; }
       .dim-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--fg-dim); margin-right: 6px; }
       .panel { background: var(--bg-elev); border: 1px solid var(--border); border-radius: 8px; padding: 16px; margin-bottom: 16px; }
@@ -1015,7 +1015,11 @@
         height: 100%;
       }
 
-      /* Unlock view stays full-screen and centered until the user authenticates. */
+      /* Unlock view stays full-screen and centered until the user authenticates.
+         Belt-and-suspenders centering: outer shell flex-centers the inner
+         wrapper, which is then ALSO margin-auto'd to handle any browser
+         quirk where flex alignment doesn't take effect (e.g. when the
+         parent's height didn't establish cleanly). */
       .unlock-shell {
         display: flex;
         align-items: center;
@@ -1023,10 +1027,21 @@
         width: 100%;
         height: 100%;
         padding: 24px;
+        text-align: center;
       }
-      .unlock-shell > .unlock-card { max-width: 480px; width: 100%; }
-      .unlock-shell h1 { font-size: 22px; margin-bottom: 4px; }
-      .unlock-shell #subtitle { margin-bottom: 16px; }
+      .unlock-wrapper {
+        width: 100%;
+        max-width: 480px;
+        margin: 0 auto;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+      }
+      .unlock-wrapper > * { max-width: 100%; }
+      .unlock-shell .unlock-card { max-width: 480px; width: 100%; text-align: left; }
+      .unlock-shell h1 { font-size: 22px; margin-bottom: 4px; text-align: center; }
+      .unlock-shell #subtitle { margin-bottom: 16px; text-align: center; }
+      .unlock-footer { margin-top: 20px; font-size: 11px; color: var(--fg-dim); text-align: center; line-height: 1.6; }
 
       /* The full shell — header, body (rail + canvas), status bar. Three rows. */
       .app-shell {
@@ -3774,20 +3789,20 @@
     <main>
       <!-- ── Unlock view (full-screen until cortex is open) ─────────────── -->
       <section id="view-unlock" class="unlock-shell">
-        <div style="width: 100%; max-width: 480px; display: flex; flex-direction: column; align-items: center;">
+        <div class="unlock-wrapper">
           <!-- Graphnosis logo -->
           <img src="/graphnosis-logo.png" alt="Graphnosis"
                width="120" height="120"
                style="margin-bottom: 20px; border-radius: 22px; opacity: 0.92; flex-shrink: 0; display: block;" />
-          <h1 style="text-align: center; width: 100%;">Graphnosis</h1>
-          <p class="subtitle" id="subtitle" style="text-align: center;">Your local encrypted second cortex</p>
+          <h1>Graphnosis</h1>
+          <p class="subtitle" id="subtitle">Your local encrypted second cortex</p>
           <div id="error" class="error hidden"></div>
           <div class="panel unlock-card">
             <p class="panel-title">Unlock your encrypted second cortex:</p>
             <div class="row">
               <label for="cortex-dir" class="visually-hidden">Cortex folder path</label>
               <div class="pick-row">
-                <input type="text" id="cortex-dir" placeholder="/Users/you/Graphnosis-Cortex" />
+                <input type="text" id="cortex-dir" placeholder="/Users/you/GraphnosisCortex" />
                 <button id="btn-pick">Choose…</button>
               </div>
             </div>
@@ -3841,7 +3856,7 @@
               </p>
             </div>
           </div>
-          <p style="margin-top: 20px; font-size: 11px; color: var(--fg-dim); text-align: center; line-height: 1.6;">
+          <p class="unlock-footer">
             &copy; 2026 Nehloo Interactive LLC. All rights reserved.<br>
             <span style="font-size: 10px; opacity: 0.7;">Graphnosis is a private memory system. Your data never leaves your device.</span>
           </p>

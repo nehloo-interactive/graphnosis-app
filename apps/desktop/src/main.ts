@@ -1564,6 +1564,15 @@ els.btnUnlock.addEventListener('click', async () => {
     showError('Enter your Cortex passphrase.');
     return;
   }
+  await attemptUnlock();
+});
+
+/**
+ * Run the unlock flow. Extracted from the click handler so we can re-call
+ * it after the user confirms "create the missing folder" without rebuilding
+ * the click handler's pre-flight checks.
+ */
+async function attemptUnlock(): Promise<void> {
   els.btnUnlock.disabled = true;
   els.unlockStatus.textContent = 'Starting synapse…';
   // Indeterminate progress bar — the unlock has several variable-duration
@@ -1583,15 +1592,44 @@ els.btnUnlock.addEventListener('click', async () => {
     els.unlockStatus.textContent = '';
     render(status);
   } catch (e) {
-    // Surface the sidecar's startup error (wrong passphrase, cortex corrupt,
-    // etc.) directly. The Rust side has already classified it.
-    showError(String(e));
+    const msg = String(e);
+    // First-run friendly: if the cortex folder doesn't exist, don't dead-
+    // end — offer to create it on the spot. The Rust error has the form
+    // "Cortex folder does not exist: <path>"; we parse and confirm.
+    const missingPrefix = 'Cortex folder does not exist:';
+    const lacksPrefix = msg.indexOf(missingPrefix);
+    if (lacksPrefix !== -1) {
+      const path = msg.slice(lacksPrefix + missingPrefix.length).trim();
+      els.unlockStatus.textContent = '';
+      progressBar?.classList.add('hidden');
+      els.btnUnlock.disabled = false;
+      const proceed = confirm(
+        `The folder "${path}" doesn't exist yet.\n\n` +
+        `Create it now and continue unlocking?\n\n` +
+        `(If this is a typo, click Cancel and edit the path.)`
+      );
+      if (!proceed) return;
+      try {
+        await invoke('create_cortex_dir', { path });
+      } catch (createErr) {
+        showError(`Couldn't create folder: ${String(createErr)}`);
+        return;
+      }
+      // Retry unlock now that the folder exists. Re-enter attemptUnlock
+      // (rather than recursing inline) so the progress bar + status state
+      // cycle through cleanly.
+      await attemptUnlock();
+      return;
+    }
+    // All other startup errors (wrong passphrase, cortex corrupt, sidecar
+    // missing, etc.) — surface as-is. The Rust side already classified it.
+    showError(msg);
     els.unlockStatus.textContent = '';
   } finally {
     els.btnUnlock.disabled = false;
     progressBar?.classList.add('hidden');
   }
-});
+}
 
 els.btnRefresh.addEventListener('click', () => void refreshStats());
 
@@ -7207,19 +7245,19 @@ const TOUR_STEPS: Array<{ title: string; body: string }> = [
     body: 'Your private AI memory — local, encrypted, yours.\n\nThis quick tour takes about a minute.',
   },
   {
-    title: 'Your Cortex: a private memory storage',
+    title: 'Your Cortex: a local memory storage',
     body: 'Choose a folder on your Mac. That\'s your Cortex — an encrypted memory storage, like the human brain\'s cortex, that stays entirely on your device. Never uploaded. Never shared.\n\nGraphnosis will give you a 24-word recovery phrase the first time you unlock it. Write it down — that\'s the only fallback if you ever forget your passphrase.',
   },
   {
     title: 'Add your memories privately',
-    body: 'Add files, websites, or clips to your Cortex. Graphnosis extracts meaningful nodes — ideas, facts, references — and indexes them for your AI, like the human brain\'s hippocampus.\n\n(Yes, that\'s why the logo is a seahorse. "Hippocampus" is Greek for seahorse — the brain region was named after the shape in 1564.)',
+    body: 'Add files, websites, or clips to your Cortex. Graphnosis extracts meaningful nodes — ideas, facts, references — and indexes them for your AI, like the human brain\'s hippocampus.\n\nWant your Cortex to grow on its own? Settings → Connectors lets you wire in RSS feeds, GitHub repos, Slack stars, Trello boards, Linear issues, or any webhook. Bring your own credentials — Graphnosis is just the receiver — and new items flow in on a 15-minute schedule, encrypted at rest.\n\n(Yes, that\'s why the logo is a seahorse. "Hippocampus" is Greek for seahorse — the brain region was named after the shape in 1564.)',
   },
   {
     title: 'Your AI now remembers you',
     body: 'Connect any MCP-aware AI (Claude, Cursor, and more). When you start a conversation, Graphnosis retrieves and attaches the most relevant memories, like the human brain\'s prefrontal cortex. The AI answers as if it already knew you.\n\nThe bridge between your AI and your Cortex is the synapse — Graphnosis\'s background process, named after the connections that pass signals between neurons in the brain. It only fires when your Cortex is unlocked and the app is running.\n\nBecause your files are already indexed inside Graphnosis, your AI doesn\'t have to re-parse the same PDFs, notes, or spreadsheets every prompt. Faster, more consistent, less token cost. Keep the app running with your Cortex unlocked while you use your AI client — closing the app means closing the memory.',
   },
   {
-    title: 'Privacy, plainly stated',
+    title: 'Your local, encrypted, private memory',
     body: 'Your memory never leaves your device automatically. When your AI does recall something from your Graphnosis Cortex, only the relevant excerpt travels to that AI service — nothing more. Your Cortex files are passphrase-protected, so even if you ever choose to share or move them, they remain yours alone.',
   },
 ];
@@ -7520,7 +7558,7 @@ function prefillLastCortexDir(): void {
       void refreshBiometricButton(last);
       return;
     }
-    // No last-used path — suggest a sensible default (`~/Graphnosis-Cortex`).
+    // No last-used path — suggest a sensible default (`~/GraphnosisCortex`).
     // The folder doesn't need to exist yet; sidecar.host.open() creates it
     // on first unlock. Pre-filling spares brand-new users from having to
     // click Choose and pick a folder name before they can even type a
