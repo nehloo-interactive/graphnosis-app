@@ -1,5 +1,7 @@
 interface Env {
   RESEND_API_KEY: string;
+  RESEND_NEWSLETTER_SEGMENT_ID: string;
+  RESEND_ENTERPRISE_SEGMENT_ID: string;
 }
 
 export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
@@ -36,7 +38,16 @@ export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
       Authorization: `Bearer ${env.RESEND_API_KEY}`,
       'Content-Type': 'application/json',
     },
-    body: JSON.stringify({ email, properties: { source } }),
+    body: JSON.stringify({
+      email,
+      segments: [
+        {
+          id: source === 'enterprise'
+            ? env.RESEND_ENTERPRISE_SEGMENT_ID
+            : env.RESEND_NEWSLETTER_SEGMENT_ID,
+        },
+      ],
+    }),
   });
 
   if (!res.ok) {
