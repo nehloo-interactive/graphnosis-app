@@ -1,0 +1,72 @@
+---
+title: Graphnosis
+description: Private second memory for any AI. Local-first, encrypted, MCP-native.
+template: splash
+hero:
+  tagline: The hippocampus your AI has always been missing.
+  image:
+    html: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 80 80" width="80" height="80" fill="none"><circle cx="40" cy="40" r="38" stroke="#7c6af5" stroke-width="3"/><circle cx="40" cy="40" r="10" fill="#7c6af5" opacity="0.8"/><line x1="40" y1="10" x2="40" y2="30" stroke="#7c6af5" stroke-width="2"/><line x1="40" y1="50" x2="40" y2="70" stroke="#7c6af5" stroke-width="2"/><line x1="10" y1="40" x2="30" y2="40" stroke="#7c6af5" stroke-width="2"/><line x1="50" y1="40" x2="70" y2="40" stroke="#7c6af5" stroke-width="2"/><circle cx="40" cy="12" r="3" fill="#7c6af5"/><circle cx="40" cy="68" r="3" fill="#7c6af5"/><circle cx="12" cy="40" r="3" fill="#7c6af5"/><circle cx="68" cy="40" r="3" fill="#7c6af5"/></svg>'
+  actions:
+    - text: Get started
+      link: /getting-started/overview/
+      icon: right-arrow
+      variant: primary
+    - text: MCP tools reference
+      link: /reference/mcp-tools/
+      icon: open-book
+---
+
+import { Card, CardGrid } from '@astrojs/starlight/components';
+
+## What Graphnosis does
+
+<CardGrid>
+  <Card title="Your AI's hippocampus" icon="star">
+    AI has always had the reasoning layer — the prefrontal cortex. What it has always lacked
+    is a hippocampus: a system that encodes your knowledge as compact memory traces (engrams),
+    stores them privately, and retrieves only what's relevant when you need it.
+    Graphnosis is that missing piece. (Why the seahorse logo? "Hippocampus" is Greek for
+    seahorse — the brain region was named after it in 1564.)
+  </Card>
+  <Card title="Stored as engrams, not files" icon="document">
+    Ingested content is encoded into binary engrams in your local Cortex — not stored
+    as readable files the AI can rifle through. On recall, Graphnosis surfaces only the
+    nodes relevant to what you're asking right now. Your AI gets a precise memory,
+    not a document dump.
+  </Card>
+  <Card title="Private by architecture" icon="approve-check">
+    Your Cortex never leaves your device. The only time any content moves is when you are
+    actively using an AI client and it asks for context — and even then, only a small,
+    semantically filtered excerpt is shared. No Nehloo servers. No background sync. No account.
+  </Card>
+  <Card title="Works with any content" icon="add-document">
+    Feed it PDFs, documents, web pages, or quick clips. Graphnosis chunks, embeds,
+    and encrypts everything so you can recall it later without remembering
+    exact keywords — across sessions, across conversations.
+  </Card>
+</CardGrid>
+
+## How it works in three steps
+
+1. **Create a Cortex** — choose a local folder, set a passphrase. A 24-word recovery phrase is generated. Nothing is sent anywhere.
+2. **Ingest content** — drag in files, paste URLs, or save clips. Graphnosis encodes them as engrams in your encrypted Cortex. The originals stay on your disk.
+3. **Your AI remembers** — when you ask your AI a question, Graphnosis retrieves the relevant engrams and delivers them as context. Only the relevant slice. Only in that moment.
+
+## Your data: a clear picture
+
+| Situation | Data leaves your device? |
+|---|---|
+| Graphnosis is installed but your AI client is closed | No |
+| AI client is open but you haven't started a conversation | No |
+| You're chatting and recall returns nothing relevant | No |
+| Recall fires and returns results | Only the recalled excerpt, only to your AI provider |
+| Sensitive-tier graphs | Never — blocked entirely |
+
+Your Cortex is passive. It does not broadcast, sync in the background, or contact any server. Content moves only when you put it to use — and only the piece relevant to what you're asking, delivered to the AI provider you've chosen to use.
+
+Read more: [Using Graphnosis with AI Clients](/legal/third-party-ai/) · [Privacy Policy](/legal/privacy-policy/)
+
+## Ready to start?
+
+Follow the [Overview](/getting-started/overview/) to understand the architecture —
+including the full brain analogy — then the [Install & First Cortex](/getting-started/first-cortex/) guide to get running in minutes.

@@ -1,0 +1,65 @@
+---
+---
+
+<header class="sticky top-0 z-50 backdrop-blur-md bg-[#13131a]/90 border-b border-[#2a2a3d]">
+  <nav class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+    <div class="flex items-center justify-between h-16">
+
+      <!-- Wordmark -->
+      <a href="/" class="flex items-center gap-2.5 leading-tight">
+        <img src="/graphnosis-logo.png" alt="Graphnosis logo" class="w-12 h-12 shrink-0" />
+        <span class="flex flex-col">
+          <span class="font-black text-lg text-[#67e8f9] tracking-tight">Graphnosis</span>
+          <span class="text-sm text-[#f0f0f5] font-normal tracking-wide">Your Local Encrypted Second Cortex</span>
+        </span>
+      </a>
+
+      <!-- Desktop nav links -->
+      <div class="hidden md:flex items-center gap-8">
+        <a href="#graphnosis" class="text-sm text-[#71717a] hover:text-[#f0f0f5] transition-colors">Graphnosis</a>
+        <a href="#features" class="text-sm text-[#71717a] hover:text-[#f0f0f5] transition-colors">Features</a>
+        <a href="#clients" class="text-sm text-[#71717a] hover:text-[#f0f0f5] transition-colors">AI Clients</a>
+        <a href="/getting-started/overview" class="text-sm text-[#71717a] hover:text-[#f0f0f5] transition-colors">Docs</a>
+        <a href="#tech" class="text-sm text-[#71717a] hover:text-[#f0f0f5] transition-colors font-mono">.gai</a>
+        <a
+          href="#"
+          class="inline-flex items-center px-4 py-2 rounded-full bg-[#67e8f9] hover:bg-[#4dd6e8] text-[#13131a] text-sm font-semibold transition-colors"
+        >
+          Download
+        </a>
+      </div>
+
+      <!-- Mobile hamburger (CSS-only focus-within trick) -->
+      <div class="md:hidden relative" id="mobile-menu-container">
+        <button
+          id="mobile-menu-btn"
+          aria-label="Toggle menu"
+          class="flex flex-col gap-1.5 p-2 group"
+          onclick="this.setAttribute('aria-expanded', this.getAttribute('aria-expanded') === 'true' ? 'false' : 'true'); document.getElementById('mobile-menu').classList.toggle('hidden');"
+          aria-expanded="false"
+        >
+          <span class="block w-5 h-0.5 bg-[#f0f0f5] transition-transform"></span>
+          <span class="block w-5 h-0.5 bg-[#f0f0f5] transition-opacity"></span>
+          <span class="block w-5 h-0.5 bg-[#f0f0f5] transition-transform"></span>
+        </button>
+      </div>
+    </div>
+
+    <!-- Mobile menu -->
+    <div id="mobile-menu" class="hidden md:hidden pb-4 border-t border-[#2a2a3d] mt-2 pt-4">
+      <div class="flex flex-col gap-4">
+        <a href="#graphnosis" class="text-sm text-[#71717a] hover:text-[#f0f0f5] transition-colors">Graphnosis</a>
+        <a href="#features" class="text-sm text-[#71717a] hover:text-[#f0f0f5] transition-colors">Features</a>
+        <a href="#clients" class="text-sm text-[#71717a] hover:text-[#f0f0f5] transition-colors">AI Clients</a>
+        <a href="/getting-started/overview" class="text-sm text-[#71717a] hover:text-[#f0f0f5] transition-colors">Docs</a>
+        <a href="#tech" class="text-sm text-[#71717a] hover:text-[#f0f0f5] transition-colors font-mono">.gai</a>
+        <a
+          href="#"
+          class="inline-flex items-center justify-center px-4 py-2 rounded-full bg-[#67e8f9] hover:bg-[#4dd6e8] text-[#13131a] text-sm font-semibold transition-colors"
+        >
+          Download
+        </a>
+      </div>
+    </div>
+  </nav>
+</header>
