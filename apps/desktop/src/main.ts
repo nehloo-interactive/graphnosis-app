@@ -892,6 +892,7 @@ function render(status: StatusSnapshot): void {
     void refreshStats();
     void syncForgetMode();
     void fetchGraphsMetadata();
+    void refreshConnectorsList();
     startMcpPolling();
     activateMode(currentMode);
   } else {
@@ -7768,6 +7769,494 @@ async function openMobileWizard(): Promise<void> {
   document.getElementById('link-tailscale')?.addEventListener('click', (e) => {
     e.preventDefault();
     void invoke('open_external_url', { url: 'https://tailscale.com/download' });
+  });
+}
+
+// ── Settings → Connectors panel ─────────────────────────────────────────────
+//
+// Wires the Settings pane's connectors list + per-kind setup modals to the
+// sidecar's connectors.* IPC (via the Tauri commands list_connectors,
+// install_connector, remove_connector, trigger_connector_pull,
+// get_connector_auth_url). BYO-credentials by design: every kind that needs
+// auth (GitHub, Slack, Trello, Linear) takes credentials the user generated
+// in that service's developer console — Graphnosis is never in the OAuth
+// callback chain. v0.6.1 adds transparent encryption of the credentials
+// field at the host I/O boundary; this UI never sees ciphertext.
+//
+// Connector "kind" determines the modal's body shape (different services
+// need different inputs). Six kinds shipped: rss, github, slack, trello,
+// linear, webhook.
+
+type ConnectorKind = 'webhook' | 'rss' | 'github' | 'slack' | 'trello' | 'linear';
+
+interface ConnectorConfigShape {
+  id: string;
+  kind: ConnectorKind;
+  graphId: string;
+  enabled: boolean;
+  credentials: Record<string, string>;
+  options: Record<string, unknown>;
+  lastPulledAt?: number;
+  lastError?: string;
+}
+
+interface ConnectorStatus {
+  id: string;
+  kind: string;
+  enabled: boolean;
+  lastPulledAt?: number;
+  lastError?: string;
+  eventsTotal: number;
+  pulling: boolean;
+}
+
+const CONNECTOR_KIND_LABEL: Record<ConnectorKind, string> = {
+  rss: 'RSS', github: 'GitHub', slack: 'Slack',
+  trello: 'Trello', linear: 'Linear', webhook: 'Webhook',
+};
+const CONNECTOR_KIND_GLYPH: Record<ConnectorKind, string> = {
+  rss: '📰', github: '🐙', slack: '💬',
+  trello: '📋', linear: '📐', webhook: '🪝',
+};
+
+async function refreshConnectorsList(): Promise<void> {
+  const wrap = document.getElementById('connectors-list');
+  if (!wrap) return;
+  try {
+    const res = await invoke<{ configs: ConnectorConfigShape[]; statuses: ConnectorStatus[] }>(
+      'list_connectors',
+    );
+    if (!res.configs.length) {
+      wrap.innerHTML = `
+        <div class="connector-row" style="grid-template-columns: 1fr;">
+          <span style="color: var(--fg-dim); font-size: 12px;">
+            No connectors installed yet. Pick one below to start auto-ingesting from your existing tools.
+          </span>
+        </div>`;
+      return;
+    }
+    const statusById = new Map(res.statuses.map((s) => [s.id, s]));
+    wrap.innerHTML = res.configs
+      .map((cfg) => renderConnectorRow(cfg, statusById.get(cfg.id)))
+      .join('');
+    // Wire row buttons after render
+    wrap.querySelectorAll<HTMLButtonElement>('button[data-connector-action]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const action = btn.dataset['connectorAction'];
+        const id = btn.dataset['connectorId'];
+        if (!id) return;
+        if (action === 'pull') void handleConnectorPull(id, btn);
+        else if (action === 'remove') void handleConnectorRemove(id);
+        else if (action === 'edit') void handleConnectorEdit(id, res.configs);
+      });
+    });
+  } catch (e) {
+    wrap.innerHTML = `<div class="connector-row" style="grid-template-columns: 1fr;">
+      <span style="color: #f87171; font-size: 12px;">Couldn't load connectors: ${escapeHtml(String(e))}</span>
+    </div>`;
+  }
+}
+
+function renderConnectorRow(cfg: ConnectorConfigShape, status?: ConnectorStatus): string {
+  const glyph = CONNECTOR_KIND_GLYPH[cfg.kind] ?? '🔌';
+  const label = CONNECTOR_KIND_LABEL[cfg.kind] ?? cfg.kind;
+  let statusKind: 'enabled' | 'disabled' | 'error' | 'pulling';
+  let statusLabel: string;
+  if (status?.pulling) { statusKind = 'pulling'; statusLabel = 'pulling…'; }
+  else if (cfg.lastError) { statusKind = 'error'; statusLabel = 'error'; }
+  else if (cfg.enabled) { statusKind = 'enabled'; statusLabel = 'enabled'; }
+  else { statusKind = 'disabled'; statusLabel = 'disabled'; }
+
+  const lastPullStr = cfg.lastPulledAt
+    ? `last pulled ${relativeTimeShort(cfg.lastPulledAt)}`
+    : 'never pulled';
+  const events = status?.eventsTotal ?? 0;
+  const eventsStr = events > 0 ? ` · ${events} event${events === 1 ? '' : 's'} this session` : '';
+  const errorStr = cfg.lastError ? ` · ${escapeHtml(cfg.lastError)}` : '';
+
+  return `
+    <div class="connector-row" data-connector-id="${escapeHtml(cfg.id)}">
+      <span class="connector-row-kind" aria-hidden="true">${glyph}</span>
+      <div class="connector-row-body">
+        <div class="connector-row-title">
+          <span class="connector-row-name">${escapeHtml(label)} · ${escapeHtml(cfg.id)}</span>
+          <span class="connector-row-status ${statusKind}">${escapeHtml(statusLabel)}</span>
+        </div>
+        <span class="connector-row-meta">
+          → engram ${escapeHtml(cfg.graphId)} · ${escapeHtml(lastPullStr)}${escapeHtml(eventsStr)}${errorStr}
+        </span>
+      </div>
+      <div class="connector-row-actions">
+        ${cfg.kind !== 'webhook' ? `<button data-connector-action="pull" data-connector-id="${escapeHtml(cfg.id)}">Pull now</button>` : ''}
+        <button data-connector-action="edit" data-connector-id="${escapeHtml(cfg.id)}">Edit</button>
+        <button data-connector-action="remove" data-connector-id="${escapeHtml(cfg.id)}" class="danger">Remove</button>
+      </div>
+    </div>`;
+}
+
+function relativeTimeShort(ms: number): string {
+  const d = Date.now() - ms;
+  if (d < 60_000) return `${Math.max(1, Math.floor(d / 1000))}s ago`;
+  if (d < 3_600_000) return `${Math.floor(d / 60_000)}m ago`;
+  if (d < 86_400_000) return `${Math.floor(d / 3_600_000)}h ago`;
+  return `${Math.floor(d / 86_400_000)}d ago`;
+}
+
+async function handleConnectorPull(id: string, btn: HTMLButtonElement): Promise<void> {
+  const originalText = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = 'Pulling…';
+  try {
+    const res = await invoke<{ eventsIngested: number }>('trigger_connector_pull', { id });
+    const tid = addIngestToast(`Pulled ${id}`, `${res.eventsIngested} new event(s) ingested`);
+    finishIngestToast(tid, 'success', `${res.eventsIngested} new event(s) ingested`);
+    await refreshConnectorsList();
+  } catch (e) {
+    const tid = addIngestToast(`Pull failed: ${id}`, String(e));
+    finishIngestToast(tid, 'error', String(e));
+  } finally {
+    btn.disabled = false;
+    if (originalText) btn.textContent = originalText;
+  }
+}
+
+async function handleConnectorRemove(id: string): Promise<void> {
+  if (!confirm(`Remove connector "${id}"? Its credentials will be deleted and it'll stop pulling. Already-ingested events stay in your engram.`)) return;
+  try {
+    await invoke('remove_connector', { id });
+    await refreshConnectorsList();
+    const tid = addIngestToast(`Removed connector "${id}"`, 'Credentials deleted; engram content untouched');
+    finishIngestToast(tid, 'success', 'Credentials deleted; engram content untouched');
+  } catch (e) {
+    const tid = addIngestToast(`Couldn't remove "${id}"`, String(e));
+    finishIngestToast(tid, 'error', String(e));
+  }
+}
+
+async function handleConnectorEdit(id: string, configs: ConnectorConfigShape[]): Promise<void> {
+  const cfg = configs.find((c) => c.id === id);
+  if (!cfg) return;
+  openConnectorSetupModal(cfg.kind, cfg);
+}
+
+// ── Setup modal ────────────────────────────────────────────────────────────
+
+let pendingConnectorEditId: string | null = null;
+let pendingConnectorKind: ConnectorKind | null = null;
+
+function openConnectorSetupModal(kind: ConnectorKind, existing?: ConnectorConfigShape): void {
+  pendingConnectorEditId = existing?.id ?? null;
+  pendingConnectorKind = kind;
+  const modal = document.getElementById('connector-setup-modal');
+  const title = document.getElementById('connector-setup-title');
+  const subtitle = document.getElementById('connector-setup-subtitle');
+  const body = document.getElementById('connector-setup-body');
+  if (!modal || !title || !subtitle || !body) return;
+  title.textContent = (existing ? 'Edit ' : 'Add ') + CONNECTOR_KIND_LABEL[kind] + ' connector';
+  subtitle.textContent = connectorSubtitleFor(kind);
+  body.innerHTML = renderConnectorSetupBody(kind, existing);
+  // Populate engram dropdown after body renders
+  populateEngramDropdown('connector-graphid', existing?.graphId);
+  modal.classList.remove('hidden');
+}
+
+function connectorSubtitleFor(kind: ConnectorKind): string {
+  switch (kind) {
+    case 'webhook': return 'Receive POSTed events from Zapier, IFTTT, custom scripts, anything.';
+    case 'rss': return 'Pull new entries from any RSS or Atom feed on a schedule.';
+    case 'github': return 'Pull issues, pull requests, and releases from repos you watch.';
+    case 'slack': return 'Pull starred items and channel history from your workspace.';
+    case 'trello': return 'Pull cards and checklists from boards you choose.';
+    case 'linear': return 'Pull issues from your teams with status / priority filters.';
+  }
+}
+
+function renderConnectorSetupBody(kind: ConnectorKind, existing?: ConnectorConfigShape): string {
+  const opts = (existing?.options ?? {}) as Record<string, unknown>;
+  const creds = existing?.credentials ?? {};
+  const idField = `
+    <div class="connector-field">
+      <label for="connector-id">Connector ID (slug)</label>
+      <input type="text" id="connector-id" placeholder="e.g. my-rss-news" value="${escapeHtml(existing?.id ?? '')}" ${existing ? 'readonly' : ''} />
+      <span class="field-hint">${existing ? 'Cannot change after install.' : 'Letters, numbers, hyphens. Auto-generated if blank.'}</span>
+    </div>`;
+  const graphField = `
+    <div class="connector-field">
+      <label for="connector-graphid">Target engram</label>
+      <select id="connector-graphid"></select>
+      <span class="field-hint">Ingested events become source nodes in this engram.</span>
+    </div>`;
+  switch (kind) {
+    case 'rss':
+      return `
+        <div class="connector-help">
+          Paste one feed URL per line. Graphnosis dedupes by entry guid/link so re-pulls are no-ops on already-seen entries.
+        </div>
+        ${idField}
+        ${graphField}
+        <div class="connector-field">
+          <label for="connector-rss-feeds">Feed URL(s)</label>
+          <textarea id="connector-rss-feeds" placeholder="https://example.com/feed.xml&#10;https://another.com/rss">${escapeHtml(((opts['feeds'] as string[]) ?? []).join('\n'))}</textarea>
+        </div>`;
+    case 'github':
+      return `
+        <div class="connector-help">
+          <strong>Bring your own Personal Access Token.</strong>
+          <ol>
+            <li><a href="#" data-extlink="https://github.com/settings/tokens?type=beta">Open GitHub fine-grained tokens →</a></li>
+            <li>Create a token with read access to the repos you want indexed.</li>
+            <li>Paste it below. Your token never leaves your machine.</li>
+          </ol>
+        </div>
+        ${idField}
+        ${graphField}
+        <div class="connector-field">
+          <label for="connector-github-token">Personal Access Token</label>
+          <input type="password" id="connector-github-token" placeholder="github_pat_…" value="${escapeHtml(creds['token'] ?? '')}" />
+        </div>
+        <div class="connector-field">
+          <label for="connector-github-repos">Repos to watch (comma-separated)</label>
+          <input type="text" id="connector-github-repos" placeholder="owner/repo, another-owner/another-repo" value="${escapeHtml(((opts['repos'] as string[]) ?? []).join(', '))}" />
+        </div>
+        <div class="connector-field">
+          <label>Event types</label>
+          <div class="connector-checkboxes">
+            <label><input type="checkbox" id="connector-github-issues" ${((opts['issues'] as boolean) ?? true) ? 'checked' : ''} /> Issues</label>
+            <label><input type="checkbox" id="connector-github-prs" ${((opts['prs'] as boolean) ?? true) ? 'checked' : ''} /> Pull requests</label>
+            <label><input type="checkbox" id="connector-github-releases" ${((opts['releases'] as boolean) ?? false) ? 'checked' : ''} /> Releases</label>
+          </div>
+        </div>`;
+    case 'slack':
+      return `
+        <div class="connector-help">
+          <strong>Bring your own Slack app.</strong>
+          <ol>
+            <li><a href="#" data-extlink="https://api.slack.com/apps">Open api.slack.com/apps →</a></li>
+            <li>Create New App → From scratch → name it "Graphnosis".</li>
+            <li>OAuth & Permissions → add scopes: <code>channels:history</code>, <code>stars:read</code> (whichever you want indexed).</li>
+            <li>Install to Workspace → copy the <strong>Bot Token</strong> (starts with <code>xoxb-</code>) or use a <strong>User Token</strong> (<code>xoxp-</code>).</li>
+          </ol>
+        </div>
+        ${idField}
+        ${graphField}
+        <div class="connector-field">
+          <label for="connector-slack-token">Bot or User Token</label>
+          <input type="password" id="connector-slack-token" placeholder="xoxb-… or xoxp-…" value="${escapeHtml(creds['token'] ?? '')}" />
+        </div>
+        <div class="connector-field">
+          <label>What to pull</label>
+          <div class="connector-checkboxes">
+            <label><input type="checkbox" id="connector-slack-starred" ${((opts['starred'] as boolean) ?? true) ? 'checked' : ''} /> Starred items</label>
+            <label><input type="checkbox" id="connector-slack-channels" ${((opts['channelHistory'] as boolean) ?? false) ? 'checked' : ''} /> Channel history</label>
+          </div>
+        </div>`;
+    case 'trello':
+      return `
+        <div class="connector-help">
+          <strong>Bring your own Trello API key + token.</strong>
+          <ol>
+            <li><a href="#" data-extlink="https://trello.com/power-ups/admin">Open trello.com/power-ups/admin →</a> create a new Power-Up.</li>
+            <li>API Key tab → generate a Server Token by clicking "Token".</li>
+            <li>Paste both below.</li>
+          </ol>
+        </div>
+        ${idField}
+        ${graphField}
+        <div class="connector-field-row">
+          <div class="connector-field">
+            <label for="connector-trello-key">API Key</label>
+            <input type="password" id="connector-trello-key" value="${escapeHtml(creds['apiKey'] ?? '')}" />
+          </div>
+          <div class="connector-field">
+            <label for="connector-trello-token">Token</label>
+            <input type="password" id="connector-trello-token" value="${escapeHtml(creds['token'] ?? '')}" />
+          </div>
+        </div>
+        <div class="connector-field">
+          <label for="connector-trello-boards">Board IDs (comma-separated)</label>
+          <input type="text" id="connector-trello-boards" placeholder="boardId1, boardId2" value="${escapeHtml(((opts['boardIds'] as string[]) ?? []).join(', '))}" />
+          <span class="field-hint">Get board IDs from the URL: trello.com/b/<strong>BOARD_ID</strong>/board-name</span>
+        </div>`;
+    case 'linear':
+      return `
+        <div class="connector-help">
+          <strong>Bring your own Linear API key.</strong>
+          <ol>
+            <li><a href="#" data-extlink="https://linear.app/settings/api">Open linear.app/settings/api →</a></li>
+            <li>Create a Personal API key. No OAuth flow — Linear's personal keys are first-class.</li>
+            <li>Paste below.</li>
+          </ol>
+        </div>
+        ${idField}
+        ${graphField}
+        <div class="connector-field">
+          <label for="connector-linear-key">Personal API Key</label>
+          <input type="password" id="connector-linear-key" placeholder="lin_api_…" value="${escapeHtml(creds['apiKey'] ?? '')}" />
+        </div>
+        <div class="connector-field">
+          <label for="connector-linear-team">Team key (optional filter)</label>
+          <input type="text" id="connector-linear-team" placeholder="ENG, OPS, …" value="${escapeHtml(creds['teamKey'] ?? '')}" />
+          <span class="field-hint">Leave blank to pull from every team you have access to.</span>
+        </div>`;
+    case 'webhook': {
+      const token = (opts['webhookToken'] as string) || '<generated on save>';
+      const url = `http://localhost:3458/webhook/${existing?.id ?? '<id>'}/${token}`;
+      return `
+        <div class="connector-help">
+          Push-only connector. Anything that can POST JSON can send events here:
+          Zapier, IFTTT, custom scripts, GitHub Actions, ngrok-exposed webhooks, etc.
+          Expected body shape: <code>{ "text": "...", "label": "...", "source": "..." }</code>.
+        </div>
+        ${idField}
+        ${graphField}
+        ${existing ? `
+        <div class="connector-field">
+          <label>Webhook URL</label>
+          <div class="connector-webhook-url-row">
+            <code id="connector-webhook-url">${escapeHtml(url)}</code>
+            <button type="button" id="btn-copy-webhook-url" class="btn-ghost" style="font-size: 11px; padding: 3px 8px;">Copy</button>
+          </div>
+          <span class="field-hint">Paste into Zapier / IFTTT / your script's webhook target.</span>
+        </div>` : `
+        <div class="connector-help" style="border-left-color: var(--fg-dim);">
+          The unique webhook URL is generated when you click Save.
+        </div>`}`;
+    }
+  }
+}
+
+function populateEngramDropdown(selectId: string, selectedId?: string): void {
+  const sel = document.getElementById(selectId) as HTMLSelectElement | null;
+  if (!sel) return;
+  const fallback = selectedId ?? loadedGraphs[0]?.graphId ?? '';
+  sel.innerHTML = loadedGraphs
+    .map((g) => `<option value="${escapeHtml(g.graphId)}" ${g.graphId === fallback ? 'selected' : ''}>${escapeHtml(g.metadata.displayName ?? g.graphId)}</option>`)
+    .join('');
+}
+
+function collectConnectorFormData(kind: ConnectorKind): Partial<ConnectorConfigShape> | null {
+  const id = ($m<HTMLInputElement>('connector-id')?.value || '').trim();
+  const graphId = ($m<HTMLSelectElement>('connector-graphid')?.value || '').trim();
+  if (!graphId) { alert('Pick a target engram.'); return null; }
+  const credentials: Record<string, string> = {};
+  const options: Record<string, unknown> = {};
+  switch (kind) {
+    case 'rss': {
+      const feeds = ($m<HTMLTextAreaElement>('connector-rss-feeds')?.value || '')
+        .split('\n').map((s) => s.trim()).filter(Boolean);
+      if (!feeds.length) { alert('At least one feed URL is required.'); return null; }
+      options['feeds'] = feeds;
+      break;
+    }
+    case 'github': {
+      const token = $m<HTMLInputElement>('connector-github-token')?.value || '';
+      if (!token) { alert('GitHub PAT is required.'); return null; }
+      credentials['token'] = token;
+      options['repos'] = ($m<HTMLInputElement>('connector-github-repos')?.value || '')
+        .split(',').map((s) => s.trim()).filter(Boolean);
+      options['issues'] = $m<HTMLInputElement>('connector-github-issues')?.checked ?? true;
+      options['prs'] = $m<HTMLInputElement>('connector-github-prs')?.checked ?? true;
+      options['releases'] = $m<HTMLInputElement>('connector-github-releases')?.checked ?? false;
+      break;
+    }
+    case 'slack': {
+      const token = $m<HTMLInputElement>('connector-slack-token')?.value || '';
+      if (!token) { alert('Slack token is required.'); return null; }
+      credentials['token'] = token;
+      options['starred'] = $m<HTMLInputElement>('connector-slack-starred')?.checked ?? true;
+      options['channelHistory'] = $m<HTMLInputElement>('connector-slack-channels')?.checked ?? false;
+      break;
+    }
+    case 'trello': {
+      const apiKey = $m<HTMLInputElement>('connector-trello-key')?.value || '';
+      const token = $m<HTMLInputElement>('connector-trello-token')?.value || '';
+      if (!apiKey || !token) { alert('Trello API key + token are both required.'); return null; }
+      credentials['apiKey'] = apiKey;
+      credentials['token'] = token;
+      options['boardIds'] = ($m<HTMLInputElement>('connector-trello-boards')?.value || '')
+        .split(',').map((s) => s.trim()).filter(Boolean);
+      break;
+    }
+    case 'linear': {
+      const apiKey = $m<HTMLInputElement>('connector-linear-key')?.value || '';
+      if (!apiKey) { alert('Linear API key is required.'); return null; }
+      credentials['apiKey'] = apiKey;
+      const team = $m<HTMLInputElement>('connector-linear-team')?.value.trim() || '';
+      if (team) credentials['teamKey'] = team;
+      break;
+    }
+    case 'webhook': {
+      // Token auto-generated server-side if missing.
+      break;
+    }
+  }
+  return {
+    ...(id ? { id } : {}),
+    kind,
+    graphId,
+    enabled: true,
+    credentials,
+    options,
+  };
+}
+
+// Wire up the connectors UI.
+{
+  // Refresh on cortex unlock + when user toggles the Settings tab.
+  document.querySelectorAll<HTMLButtonElement>('.btn-add-connector').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const kind = btn.dataset['kind'] as ConnectorKind | undefined;
+      if (kind) openConnectorSetupModal(kind);
+    });
+  });
+
+  document.getElementById('connector-setup-cancel')?.addEventListener('click', () => {
+    document.getElementById('connector-setup-modal')?.classList.add('hidden');
+    pendingConnectorEditId = null; pendingConnectorKind = null;
+  });
+
+  document.getElementById('connector-setup-save')?.addEventListener('click', async () => {
+    if (!pendingConnectorKind) return;
+    const btn = document.getElementById('connector-setup-save') as HTMLButtonElement | null;
+    if (btn) { btn.disabled = true; btn.textContent = 'Saving…'; }
+    try {
+      const config = collectConnectorFormData(pendingConnectorKind);
+      if (!config) { if (btn) { btn.disabled = false; btn.textContent = 'Save'; } return; }
+      // If editing, force the id from the existing record.
+      if (pendingConnectorEditId) config.id = pendingConnectorEditId;
+      await invoke('install_connector', { config });
+      document.getElementById('connector-setup-modal')?.classList.add('hidden');
+      pendingConnectorEditId = null; pendingConnectorKind = null;
+      await refreshConnectorsList();
+      const tid = addIngestToast('Connector saved', 'Will start pulling on the next interval');
+      finishIngestToast(tid, 'success', 'Will start pulling on the next interval');
+    } catch (e) {
+      const tid = addIngestToast(`Couldn't save connector`, String(e));
+      finishIngestToast(tid, 'error', String(e));
+    } finally {
+      if (btn) { btn.disabled = false; btn.textContent = 'Save'; }
+    }
+  });
+
+  // External links in the help panels (deep-links to provider dev consoles).
+  document.addEventListener('click', (e) => {
+    const a = (e.target as HTMLElement | null)?.closest('a[data-extlink]') as HTMLAnchorElement | null;
+    if (!a) return;
+    e.preventDefault();
+    const url = a.dataset['extlink'];
+    if (url) void invoke('open_external_url', { url });
+  });
+
+  // Copy webhook URL button (delegated since the URL row may not exist yet).
+  document.addEventListener('click', (e) => {
+    const btn = (e.target as HTMLElement | null)?.closest('#btn-copy-webhook-url') as HTMLButtonElement | null;
+    if (!btn) return;
+    const code = document.getElementById('connector-webhook-url');
+    if (!code) return;
+    void navigator.clipboard.writeText(code.textContent ?? '').then(() => {
+      const orig = btn.textContent; btn.textContent = 'Copied!';
+      setTimeout(() => { btn.textContent = orig; }, 1500);
+    });
   });
 }
 
