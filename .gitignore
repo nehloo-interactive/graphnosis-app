@@ -11,12 +11,15 @@ target/
 .env.*
 !.env.example
 
+
 # App user data (must never be committed)
 *.gai
 *.aikg
 *.embcache
 *.oplog
 *.bundle
+*.enc
+salt.bin
 recovery-*.txt
 
 # Tauri build artifacts produced by build.rs at compile time. The Bun-compiled
@@ -36,4 +39,12 @@ apps/desktop/src-tauri/resources/libonnxruntime.*.dylib
 
 # Claude Code session artifacts — local agent worktrees + transcripts.
 .claude/
+
+# Distribution artifacts (DMG / .app.tar.gz / .sig) that get rebuilt on
+# every `pnpm tauri:build` or `hdiutil create`. Lives at repo root for
+# easy AirDrop / scp / upload; never committed.
+/releases/
+*.dmg
+*.app.tar.gz
+*.app.tar.gz.sig
 
