@@ -227,13 +227,39 @@ async fn unlock_cortex_with_recovery(
 }
 
 /// Suggest a sensible default cortex-folder path for a brand-new user
-/// (`~/Graphnosis-Cortex`). The folder doesn't need to exist yet — the
-/// sidecar creates it on first unlock. Used by the lock screen to pre-fill
-/// the cortex-folder input when the user hasn't picked one before.
+/// (`~/GraphnosisCortex`). The folder doesn't need to exist yet — the
+/// lock screen offers to create it on first unlock via `create_cortex_dir`.
+/// Used by the lock screen to pre-fill the cortex-folder input when the
+/// user hasn't picked one before.
 #[tauri::command]
 async fn suggest_cortex_path() -> Result<String, String> {
     let home = dirs::home_dir().ok_or_else(|| "could not resolve home directory".to_string())?;
-    Ok(home.join("Graphnosis-Cortex").to_string_lossy().to_string())
+    Ok(home.join("GraphnosisCortex").to_string_lossy().to_string())
+}
+
+/// Create a cortex folder at the given path (and any missing parents).
+///
+/// Idempotent: if the folder already exists it returns Ok immediately.
+/// Errors only on real filesystem failures (permission denied, path
+/// component is a file, etc.) — those bubble to the frontend so the user
+/// sees the specific reason instead of a generic "unlock failed."
+///
+/// Called by the frontend after the unlock click hits "Cortex folder does
+/// not exist" and the user confirms creation. We deliberately don't
+/// auto-create on every unlock — making folder creation an explicit
+/// user decision avoids the trap where a typo'd path silently materialises
+/// a new empty cortex.
+#[tauri::command]
+async fn create_cortex_dir(path: String) -> Result<(), String> {
+    let p = std::path::Path::new(&path);
+    if p.exists() {
+        if p.is_dir() {
+            return Ok(());
+        }
+        return Err(format!("'{}' exists but is not a directory", path));
+    }
+    std::fs::create_dir_all(p)
+        .map_err(|e| format!("Could not create '{}': {}", path, e))
 }
 
 /// Reports whether the lock screen should offer a Touch ID button for the
@@ -1911,6 +1937,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             pick_cortex_folder,
             suggest_cortex_path,
+            create_cortex_dir,
             unlock_cortex,
             unlock_cortex_with_recovery,
             biometric_available,
