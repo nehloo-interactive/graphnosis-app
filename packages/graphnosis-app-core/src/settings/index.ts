@@ -18,10 +18,25 @@ export interface ConnectorConfig {
   enabled: boolean;
   /**
    * Connector-specific credentials (API keys, OAuth tokens).
-   * Stored plaintext in settings.json alongside all other non-graph config.
-   * Future: migrate to a cortex-encrypted connectors.enc file.
+   *
+   * In-memory: this field is always populated (decrypted on cortex unlock).
+   * On-disk:   this field is always `{}` — the encrypted form lives in
+   *            `credentialsEnc` below. The host's settings I/O boundary
+   *            converts between the two transparently.
+   *
+   * v0.6.1+: encryption is mandatory; v0.6 (and earlier) wrote plaintext
+   * here. The migration is one-way + automatic: any pre-v0.6.1 settings.json
+   * with a non-empty `credentials` field is re-encrypted on the next save.
    */
   credentials: Record<string, string>;
+  /**
+   * Encrypted form of `credentials`. Base64-encoded XChaCha20-Poly1305
+   * ciphertext (using the cortex data key). Present only on disk; the host
+   * decrypts → `credentials` on load and encrypts → `credentialsEnc` on
+   * save. Don't read this field directly in connector code — use
+   * `credentials`.
+   */
+  credentialsEnc?: string;
   /** Connector-specific options (feed URL, repo name, channel list, etc.). */
   options: Record<string, unknown>;
   /** Unix ms timestamp of the last successful pull. Used as the `since` cursor. */
