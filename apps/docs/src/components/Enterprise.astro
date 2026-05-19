@@ -1,0 +1,144 @@
+---
+---
+
+<section id="enterprise" class="py-24 px-4 sm:px-6">
+  <div class="max-w-7xl mx-auto">
+    <div class="max-w-3xl mx-auto text-center">
+
+      <!-- Team graphic: graduating Graphnosis logos, arch of scale + opacity -->
+      <div class="flex items-end justify-center mb-8">
+        <img src="/graphnosis-logo-transparent-bg.png" alt="" aria-hidden="true" class="w-8 h-8 opacity-[0.10] -mr-1" style="transform: scaleX(-1)"/>
+        <img src="/graphnosis-logo-transparent-bg.png" alt="" aria-hidden="true" class="w-12 h-12 opacity-[0.20] -mr-2" style="transform: scaleX(-1)"/>
+        <img src="/graphnosis-logo-transparent-bg.png" alt="" aria-hidden="true" class="w-20 h-20 opacity-[0.42] -mr-3" style="transform: scaleX(-1)"/>
+        <img src="/graphnosis-logo-transparent-bg.png" alt="" aria-hidden="true" class="w-28 h-28 opacity-90 relative z-10"/>
+        <img src="/graphnosis-logo-transparent-bg.png" alt="" aria-hidden="true" class="w-20 h-20 opacity-[0.42] -ml-3"/>
+        <img src="/graphnosis-logo-transparent-bg.png" alt="" aria-hidden="true" class="w-12 h-12 opacity-[0.20] -ml-2"/>
+        <img src="/graphnosis-logo-transparent-bg.png" alt="" aria-hidden="true" class="w-8 h-8 opacity-[0.10] -ml-1"/>
+      </div>
+
+      <!-- Section header -->
+      <h2 class="text-3xl sm:text-4xl lg:text-5xl font-black text-white mb-6">
+        When your whole team needs AI to remember.
+        <span
+          class="block bg-clip-text text-transparent mt-2"
+          style="background-image: linear-gradient(135deg, #67e8f9 0%, #a78bfa 100%);"
+        >Securely.</span>
+      </h2>
+
+      <p class="text-[#71717a] text-lg leading-relaxed mb-10">
+        Individual memory is only the start. Teams share context — onboarding
+        docs, architecture decisions, client history. Graphnosis Enterprise
+        brings the same encrypted, local-first memory model to shared workspaces.
+      </p>
+
+      <!-- Bullet points -->
+      <ul class="text-left space-y-4 mb-12 max-w-2xl mx-auto">
+        <li class="flex items-start gap-3">
+          <span
+            class="mt-1 w-5 h-5 shrink-0 rounded-full flex items-center justify-center"
+            style="background: linear-gradient(135deg, #67e8f9, #a78bfa);"
+            aria-hidden="true"
+          >
+            <svg class="w-3 h-3 text-white" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4L19 7" />
+            </svg>
+          </span>
+          <span class="text-[#f0f0f5] text-lg leading-relaxed">
+            <strong class="font-semibold">Shared engrams</strong> — team-scoped memory graphs that every authorised member's AI tools can recall from, without exposing raw content.
+          </span>
+        </li>
+        <li class="flex items-start gap-3">
+          <span
+            class="mt-1 w-5 h-5 shrink-0 rounded-full flex items-center justify-center"
+            style="background: linear-gradient(135deg, #67e8f9, #a78bfa);"
+            aria-hidden="true"
+          >
+            <svg class="w-3 h-3 text-white" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4L19 7" />
+            </svg>
+          </span>
+          <span class="text-[#f0f0f5] text-lg leading-relaxed">
+            <strong class="font-semibold">Role-based sensitivity</strong> — admins set per-role sensitivity ceilings. Contractors see Public tier. Engineers see Personal. Principals see everything.
+          </span>
+        </li>
+        <li class="flex items-start gap-3">
+          <span
+            class="mt-1 w-5 h-5 shrink-0 rounded-full flex items-center justify-center"
+            style="background: linear-gradient(135deg, #67e8f9, #a78bfa);"
+            aria-hidden="true"
+          >
+            <svg class="w-3 h-3 text-white" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4L19 7" />
+            </svg>
+          </span>
+          <span class="text-[#f0f0f5] text-lg leading-relaxed">
+            <strong class="font-semibold">Audit log</strong> — every recall event is logged locally. Know exactly when a memory was surfaced, to which AI, in which session. No surprises, no silent leakage.
+          </span>
+        </li>
+      </ul>
+
+      <!-- Email waitlist form -->
+      <div class="bg-[#1c1c27] border border-[#2a2a3d] rounded-xl p-8">
+        <p class="text-white font-bold text-lg mb-2">Get early access for your team.</p>
+        <p class="text-[#71717a] text-sm mb-6">
+          Enterprise is in private beta. Leave your email and we'll reach out when your tier is ready.
+        </p>
+        <form id="enterprise-form" class="flex flex-col gap-3 max-w-md mx-auto">
+          <div class="flex flex-col sm:flex-row gap-3">
+            <label for="enterprise-email" class="sr-only">Work email address</label>
+            <input
+              id="enterprise-email"
+              type="email"
+              name="email"
+              placeholder="you@company.com"
+              required
+              class="flex-1 px-4 py-2.5 rounded-full bg-[#13131a] border border-[#2a2a3d] focus:border-[#67e8f9] focus:outline-none text-[#f0f0f5] placeholder-[#71717a] text-sm transition-colors"
+            />
+            <button
+              type="submit"
+              class="px-5 py-2.5 rounded-full bg-[#67e8f9] hover:bg-[#4dd6e8] text-[#13131a] font-semibold text-sm transition-colors whitespace-nowrap"
+            >
+              Join waitlist
+            </button>
+          </div>
+          <p id="enterprise-msg" class="text-xs text-center hidden"></p>
+        </form>
+        <script>
+          document.getElementById('enterprise-form')?.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const form = e.target as HTMLFormElement;
+            const btn = form.querySelector('button[type="submit"]') as HTMLButtonElement;
+            const msg = document.getElementById('enterprise-msg') as HTMLElement;
+            const email = (form.querySelector('input[type="email"]') as HTMLInputElement).value;
+            btn.disabled = true;
+            btn.textContent = 'Joining…';
+            try {
+              const res = await fetch('/subscribe', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ email, source: 'enterprise' }),
+              });
+              if (res.ok) {
+                form.reset();
+                btn.textContent = 'You\'re on the list ✓';
+                btn.classList.replace('bg-[#67e8f9]', 'bg-emerald-400');
+              } else {
+                const { error } = await res.json();
+                msg.textContent = error ?? 'Something went wrong.';
+                msg.className = 'text-xs text-center text-red-400';
+                btn.disabled = false;
+                btn.textContent = 'Join waitlist';
+              }
+            } catch {
+              msg.textContent = 'Network error — please try again.';
+              msg.className = 'text-xs text-center text-red-400';
+              btn.disabled = false;
+              btn.textContent = 'Join waitlist';
+            }
+          });
+        </script>
+      </div>
+
+    </div>
+  </div>
+</section>

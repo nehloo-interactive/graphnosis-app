@@ -1,0 +1,59 @@
+---
+const year = new Date().getFullYear();
+---
+
+<footer class="border-t border-[#2a2a3d] py-12 px-4 sm:px-6">
+  <div class="max-w-7xl mx-auto">
+
+    <!-- Top row: logo + links -->
+    <div class="flex flex-col md:flex-row items-start md:items-center justify-between gap-8 mb-8">
+
+      <!-- Logo & tagline -->
+      <div>
+        <a href="/" class="inline-block">
+          <span class="font-black text-2xl text-white tracking-tight">Graphnosis</span>
+        </a>
+        <p class="text-base text-[#71717a] mt-1">Your Local Encrypted Second Cortex for Every AI.</p>
+      </div>
+
+      <!-- Links -->
+      <nav aria-label="Footer navigation">
+        <ul class="flex flex-wrap gap-6">
+          <li>
+            <a href="#" class="text-sm text-[#71717a] hover:text-[#f0f0f5] transition-colors">Download</a>
+          </li>
+          <li>
+            <a href="/getting-started/overview" class="text-sm text-[#71717a] hover:text-[#f0f0f5] transition-colors">Docs</a>
+          </li>
+          <li>
+            <a
+              href="https://github.com/nehloo-interactive/graphnosis-app"
+              target="_blank"
+              rel="noopener noreferrer"
+              class="text-sm text-[#71717a] hover:text-[#f0f0f5] transition-colors"
+            >GitHub</a>
+          </li>
+          <li>
+            <a href="/changelog" class="text-sm text-[#71717a] hover:text-[#f0f0f5] transition-colors">Changelog</a>
+          </li>
+        </ul>
+      </nav>
+    </div>
+
+    <!-- Divider -->
+    <div class="border-t border-[#2a2a3d] pt-8">
+      <div class="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 text-sm text-[#71717a]">
+        <p>
+          &copy; {year} Nehloo Interactive LLC.
+          &nbsp;&middot;&nbsp;
+          <span class="font-mono">FSL-1.1</span>
+        </p>
+        <div class="flex items-center gap-4">
+          <a href="/legal/privacy-policy" class="hover:text-[#f0f0f5] transition-colors">Privacy</a>
+          <a href="/legal/terms-of-use" class="hover:text-[#f0f0f5] transition-colors">Terms</a>
+        </div>
+      </div>
+    </div>
+
+  </div>
+</footer>

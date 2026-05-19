@@ -1,0 +1,107 @@
+---
+---
+
+<section id="newsletter" class="py-24 px-4 sm:px-6 bg-[#1c1c27]">
+  <div class="max-w-7xl mx-auto">
+
+    <!-- Section header -->
+    <div class="text-center mb-16">
+      <h2 class="text-3xl sm:text-4xl font-black text-white">
+        Stay in the loop.
+      </h2>
+      <p class="text-[#71717a] mt-3 max-w-md mx-auto text-sm leading-relaxed">
+        New releases ship fast. Don't miss what's next.
+      </p>
+    </div>
+
+    <!-- Two columns -->
+    <div class="grid grid-cols-1 md:grid-cols-2 gap-10 max-w-3xl mx-auto">
+
+      <!-- Left: email capture -->
+      <div class="bg-[#13131a] border border-[#2a2a3d] rounded-xl p-8">
+        <p class="text-white font-bold mb-1">Early access &amp; updates</p>
+        <p class="text-[#71717a] text-sm mb-6 leading-relaxed">
+          Get notified about new platform support, Cortex features, and
+          release notes before they hit the changelog.
+        </p>
+        <form id="newsletter-form" class="flex flex-col gap-3">
+          <input type="hidden" name="source" value="newsletter" />
+          <label for="newsletter-email" class="sr-only">Email address</label>
+          <input
+            id="newsletter-email"
+            type="email"
+            name="email"
+            placeholder="your@email.com"
+            required
+            class="w-full px-4 py-2.5 rounded-full bg-[#1c1c27] border border-[#2a2a3d] focus:border-[#67e8f9] focus:outline-none text-[#f0f0f5] placeholder-[#71717a] text-sm transition-colors"
+          />
+          <button
+            type="submit"
+            class="w-full px-5 py-2.5 rounded-full bg-[#67e8f9] hover:bg-[#4dd6e8] text-[#13131a] font-semibold text-sm transition-colors"
+          >
+            Subscribe
+          </button>
+          <p id="newsletter-msg" class="text-xs text-center hidden"></p>
+        </form>
+        <script>
+          document.getElementById('newsletter-form')?.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const form = e.target as HTMLFormElement;
+            const btn = form.querySelector('button[type="submit"]') as HTMLButtonElement;
+            const msg = document.getElementById('newsletter-msg') as HTMLElement;
+            const email = (form.querySelector('input[type="email"]') as HTMLInputElement).value;
+            btn.disabled = true;
+            btn.textContent = 'Subscribing…';
+            try {
+              const res = await fetch('/subscribe', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ email, source: 'newsletter' }),
+              });
+              if (res.ok) {
+                form.reset();
+                btn.textContent = 'Subscribed ✓';
+                btn.classList.replace('bg-[#67e8f9]', 'bg-emerald-400');
+              } else {
+                const { error } = await res.json();
+                msg.textContent = error ?? 'Something went wrong.';
+                msg.className = 'text-xs text-center text-red-400';
+                btn.disabled = false;
+                btn.textContent = 'Subscribe';
+              }
+            } catch {
+              msg.textContent = 'Network error — please try again.';
+              msg.className = 'text-xs text-center text-red-400';
+              btn.disabled = false;
+              btn.textContent = 'Subscribe';
+            }
+          });
+        </script>
+      </div>
+
+      <!-- Right: feedback -->
+      <div class="bg-[#13131a] border border-[#2a2a3d] rounded-xl p-8 flex flex-col justify-between">
+        <div>
+          <p class="text-white font-bold mb-1">Feedback</p>
+          <p class="text-[#71717a] text-sm mb-6 leading-relaxed">
+            Found a bug? Have an idea? Graphnosis is built in public. Open an
+            issue directly on GitHub — we read every one.
+          </p>
+        </div>
+        <a
+          href="https://github.com/nehloo-interactive/graphnosis-app/issues"
+          target="_blank"
+          rel="noopener noreferrer"
+          class="inline-flex items-center gap-2 px-5 py-2.5 rounded-full border border-[#2a2a3d] hover:border-[#67e8f9] text-[#f0f0f5] font-semibold text-sm transition-colors"
+        >
+          <!-- GitHub icon -->
+          <svg class="w-4 h-4" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+            <path d="M12 2C6.477 2 2 6.484 2 12.017c0 4.425 2.865 8.18 6.839 9.504.5.092.682-.217.682-.483 0-.237-.008-.868-.013-1.703-2.782.605-3.369-1.343-3.369-1.343-.454-1.158-1.11-1.466-1.11-1.466-.908-.62.069-.608.069-.608 1.003.07 1.531 1.032 1.531 1.032.892 1.53 2.341 1.088 2.91.832.092-.647.35-1.088.636-1.338-2.22-.253-4.555-1.113-4.555-4.951 0-1.093.39-1.988 1.029-2.688-.103-.253-.446-1.272.098-2.65 0 0 .84-.27 2.75 1.026A9.564 9.564 0 0112 6.844c.85.004 1.705.115 2.504.337 1.909-1.296 2.747-1.027 2.747-1.027.546 1.379.202 2.398.1 2.651.64.7 1.028 1.595 1.028 2.688 0 3.848-2.339 4.695-4.566 4.943.359.309.678.92.678 1.855 0 1.338-.012 2.419-.012 2.747 0 .268.18.58.688.482A10.019 10.019 0 0022 12.017C22 6.484 17.522 2 12 2z" />
+          </svg>
+          Open an issue on GitHub
+        </a>
+      </div>
+
+    </div>
+  </div>
+</section>
