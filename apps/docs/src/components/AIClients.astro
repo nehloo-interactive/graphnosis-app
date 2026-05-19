@@ -1,0 +1,78 @@
+---
+const clients = [
+  { name: 'Claude Desktop', status: 'supported', color: '#D97757' },
+  { name: 'Claude Code', status: 'supported', color: '#D97757' },
+  { name: 'Cursor', status: 'supported', color: '#6366F1' },
+  { name: 'Zed', status: 'supported', color: '#0EA5E9' },
+  { name: 'Any MCP-aware tool', status: 'supported', color: '#67e8f9' },
+  { name: 'ChatGPT', status: 'coming', note: 'Via browser extension' },
+  { name: 'Gemini', status: 'coming', note: 'Via browser extension' },
+];
+---
+
+<section id="clients" class="py-24 px-4 sm:px-6">
+  <div class="max-w-7xl mx-auto">
+    <!-- Header -->
+    <div class="text-center mb-4">
+      <h2 class="text-3xl sm:text-4xl lg:text-5xl font-black text-white">
+        First-day support for the tools you already use.
+      </h2>
+    </div>
+    <p class="text-center text-[#71717a] max-w-2xl mx-auto mb-16 leading-relaxed">
+      Graphnosis speaks{' '}
+      <span class="text-[#f0f0f5] font-semibold">Model Context Protocol (MCP)</span>
+      {' '}— the open standard that connects AI tools to external context.
+    </p>
+
+    <!-- Client cards grid -->
+    <div class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-4 mb-12">
+      {clients.map((client) => (
+        <article class="bg-[#1c1c27] border border-[#2a2a3d] rounded-xl p-5 flex flex-col items-center gap-3 text-center">
+          <!-- Icon placeholder -->
+          <div
+            class="w-12 h-12 rounded-full flex items-center justify-center text-white font-bold text-lg"
+            style={`background: ${client.color ?? '#2a3a50'};`}
+            aria-hidden="true"
+          >
+            <svg class="w-6 h-6" fill="currentColor" viewBox="0 0 20 20" aria-hidden="true">
+              <circle cx="10" cy="10" r="8" />
+            </svg>
+          </div>
+
+          <!-- Name -->
+          <span class="text-sm font-semibold text-[#f0f0f5]">{client.name}</span>
+
+          <!-- Status badge -->
+          {client.status === 'supported' ? (
+            <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-emerald-900/40 border border-emerald-700/50 text-emerald-400 text-xs font-semibold">
+              <span class="w-1.5 h-1.5 rounded-full bg-emerald-400"></span>
+              Supported
+            </span>
+          ) : (
+            <div class="flex flex-col items-center gap-1">
+              <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-indigo-900/40 border border-indigo-700/50 text-indigo-400 text-xs font-semibold">
+                Coming soon
+              </span>
+              {client.note && (
+                <span class="text-[10px] text-[#71717a]">{client.note}</span>
+              )}
+            </div>
+          )}
+        </article>
+      ))}
+    </div>
+
+    <!-- CTA -->
+    <div class="text-center">
+      <a
+        href="/reference/mcp-tools"
+        class="inline-flex items-center gap-2 text-[#67e8f9] hover:text-[#a78bfa] font-semibold text-xl transition-colors"
+      >
+        Set up with your tools
+        <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" aria-hidden="true">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M17 8l4 4m0 0l-4 4m4-4H3" />
+        </svg>
+      </a>
+    </div>
+  </div>
+</section>

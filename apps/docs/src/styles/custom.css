@@ -1,0 +1,9 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Starlight logo size */
+.site-title img {
+  height: 2.5rem !important;
+  width: auto !important;
+}
