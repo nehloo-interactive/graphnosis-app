@@ -26,15 +26,17 @@ export default defineConfig({
             { label: 'Overview', slug: 'getting-started/overview' },
             { label: 'Install & First Cortex', slug: 'getting-started/first-cortex' },
             { label: 'Connect Your AI', slug: 'getting-started/connect-ai' },
+            { label: 'Connect from Your Phone', slug: 'getting-started/mobile' },
           ],
         },
         {
           label: 'Guides',
           items: [
+            { label: 'Memory Across AI Clients', slug: 'guides/memory-across-ai-clients' },
+            { label: 'Auto-ingest from Your Tools', slug: 'guides/connectors' },
             { label: 'Adding Content', slug: 'guides/adding-content' },
             { label: 'Correcting Memories', slug: 'guides/correcting-memories' },
             { label: 'Graphs & Sensitivity Tiers', slug: 'guides/graphs-and-tiers' },
-            { label: 'Memory Across AI Clients', slug: 'guides/memory-across-ai-clients' },
             { label: 'Keeping Your Cortex Safe', slug: 'guides/keeping-your-cortex-safe' },
             { label: 'Recovery', slug: 'guides/recovery' },
           ],

@@ -11,6 +11,50 @@ Conventions: **Added** = new features, **Changed** = behavior or UX shifts, **Fi
 
 ---
 
+## v0.6 — Mobile, connectors, and the broader MCP-client universe
+
+Theme: **make your Cortex reachable from anywhere, growing on its own from the tools you already use.** The biggest single release since v0.1 in scope of new surface — a mobile bridge with a 3-step wizard, six service connectors with BYO credentials, encryption for those credentials at rest, broader MCP-client coverage beyond Claude Desktop / Code / Cursor, and a Settings UI to manage all of it.
+
+### Added
+
+- **Mobile & Remote Access.** New HTTP/SSE MCP bridge on port `3457` with bearer-token auth, configurable interface (loopback-only vs all-interfaces). Auto-generated UUID token, no manual token handling. Connect Claude for iOS, Claude for Android, browser extensions, or any HTTP MCP client — over LAN at home or Tailscale anywhere. Full walkthrough at [Connect from your phone](/getting-started/mobile/).
+- **3-step mobile setup wizard.** Settings → Mobile & Remote Access → "Set up mobile access…" — enable the bridge, pick the network interface (Tailscale-aware, recommended), copy MCP URL + masked bearer with one-click Copy buttons. Returning-user fast path: jumps straight to Step 3 on re-open.
+- **Six service connectors.** Auto-ingest from existing tools, all BYO-credentials so Graphnosis is never in any OAuth chain:
+  - **RSS / Atom** — pull from any feed URLs, deduplicated by guid
+  - **GitHub** — issues, PRs, releases from a list of repos (fine-grained PAT)
+  - **Slack** — starred items + optional channel history (your own Slack app)
+  - **Trello** — cards + checklists from selected boards (API key + token)
+  - **Linear** — issues with team / state / priority filters (personal API key)
+  - **Generic webhook** — receive POSTs from Zapier, IFTTT, custom scripts, iOS Shortcuts; auto-generated unique URL per connector
+  Full walkthroughs per connector at [Auto-ingest from your tools](/guides/connectors/).
+- **Settings → Connectors panel.** Install, configure, pull-now, edit, remove — all 6 kinds. Status pills (enabled / disabled / error / pulling), last-pull timestamp, event counts, target engram, per-row actions. Lives between AI Clients and Cortex Tools in Settings.
+- **Connector credentials encrypted at rest.** XChaCha20-Poly1305 with the Cortex data key, base64-stored in `settings.json` as `credentialsEnc`. Same primitive as `.gai` files. Cloud-sync-safe — providers see ciphertext only. Migration from v0.6 plaintext is automatic on next save.
+- **Broader MCP-client coverage.** Added drop-in support documentation for Zed, Cline (VS Code), Continue.dev, Goose (Block), 5ire, Witsy, LibreChat, and Open WebUI — all the same `graphnosis` server entry, just different config-file paths per client.
+- **Sources pane → Settings deep links.** Above the Sources list, a quiet hint banner: "Want this list to grow on its own? Connect an AI client → · Set up a connector →". One click jumps to Settings, scrolls the relevant panel into view with a brief accent ring.
+- **Custom engram picker** in the top bar — always opens **downward** (replaces native `<select>` whose macOS-default open direction often drifted upward off the top bar). Outside-click and Escape close. Selected option indicator + chevron button.
+
+### Changed
+
+- **Brand line: "Your Local Encrypted Second Cortex"** (dropped the comma between Local and Encrypted — cleaner rhythm). Lock-screen unlock prompt sharpened to "Unlock your encrypted second cortex:" — fits the act of entering a passphrase.
+- **Atlas legend labels.** AI-conversation source labels were rendering as raw refs (`ai-conversation:1779139479066:Milestone — …`); now formatted to `AI: <topic>` so the legend reads as a list of things, not internal sourceRefs. Full label preserved in hover tooltip.
+- **About panel links** updated for current org / docs URLs: Source → `nehloo-interactive/graphnosis-app` (LLC org), Docs → `docs.graphnosis.com`. New **Terms** link added next to Privacy.
+- **Engram-suggest banner preview** now renders the full text scrollable inside the banner (was 280-char truncation), so you can read what the AI is about to save before confirming.
+
+### Fixed
+
+- **Sidecar typecheck violations** from the mobile session's HTTP-bridge + connectors commits (zod v4 `record` signature change, `exactOptionalPropertyTypes` strict mode catching explicit-undefined property assignments). 8 errors → 0, unblocking the v0.6 connectors UI work.
+- **Engram dropdown direction.** Was a macOS-OS-controlled annoyance for picker placement near the top bar; now custom-rendered to always drop down predictably.
+
+### Security
+
+- **Connector credential encryption at rest** (described above) closes the gap where v0.5 / pre-v0.6.1 settings.json stored Slack/GitHub/Trello/Linear tokens plaintext. Anyone backing up or cloud-syncing their Cortex folder pre-v0.6.1 should re-paste their connector credentials so the new encrypted-at-rest path takes effect, then verify `settings.json` shows `"credentialsEnc"` instead of `"credentials"` for each connector.
+
+### Migrations
+
+None required. v0.6 is fully backward-compatible with v0.5 Cortexes. The first settings save after upgrading to v0.6.1 transparently encrypts any plaintext connector credentials.
+
+---
+
 ## v0.5 — More AI clients, smarter remember, background notifications
 
 Theme: **let any AI client confidently target a specific engram, and tell you when the app's in the background**. Plus a broader AI-client expansion beyond Claude Desktop, and ingest performance you can dial in.

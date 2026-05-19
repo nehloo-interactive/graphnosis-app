@@ -85,13 +85,32 @@ The trip becomes a long, structured memory you can hand to friends, your future 
 
 ---
 
+## 6. The auto-growing inbox — connectors + cross-client recall
+
+The first five workflows are about you saving things deliberately. This sixth is the inverse — **memory that lands in your Cortex without you doing anything**, then becomes recallable across every AI client the same way.
+
+A realistic flow:
+
+- **Monday:** Set up the **Slack connector** in Settings → Connectors → paste a Slack User Token from a custom app you created in your workspace → target engram: `work`. Set it once and forget it. Every starred Slack message you make from now on lands in `work` within 15 minutes.
+- **Tuesday:** Same thing for the **GitHub connector** — paste a PAT, watch the repos you care about, route to `code`. PR descriptions, issue threads, releases all flow in.
+- **Tuesday afternoon, Claude Desktop:** "What did we decide about the auth flow last week?" — your AI recalls the starred Slack thread where the decision was made, plus the related GitHub PR comment, without you ever pasting anything.
+- **Thursday, on your phone, Claude for iOS:** Using the [mobile bridge](/getting-started/mobile/), same query, same answer — your `work` engram is reachable from anywhere over Tailscale.
+- **Friday, back in Cursor on the laptop:** Ask "draft a status update for the team based on what landed this week." Your AI pulls the week's connector-ingested context across Slack + GitHub + your manual notes.
+
+You stopped curating. The Cortex curates itself from the tools you already use, and every AI client you connect to it sees the same picture. Cross-device, cross-client, cross-source — one consistent memory.
+
+Setup walkthroughs for each connector: [Auto-ingest from your tools](/guides/connectors/).
+
+---
+
 ## What these workflows have in common
 
-Three things show up in every example:
+Four things show up in every example:
 
-1. **You don't pick "the right AI client" up front.** You use whichever client is in front of you at the moment. The memory is independent of any single AI.
+1. **You don't pick "the right AI client" up front.** You use whichever client is in front of you at the moment — desktop, mobile, IDE. The memory is independent of any single AI.
 2. **You don't re-upload anything.** Graphnosis stores the summary once; every AI client recalls just the slice relevant to the current prompt. Smaller context windows, faster responses, lower token costs.
-3. **Your data doesn't leave your machine.** The Cortex is encrypted on your Mac. The AI client only ever sees the few hundred tokens that matter for the current prompt — not your whole archive, and never the underlying files.
+3. **Your data doesn't leave your machine.** The Cortex is encrypted on your Mac. The AI client only ever sees the few hundred tokens that matter for the current prompt — not your whole archive, and never the underlying files. Mobile clients reach you over a bearer-authenticated local-network bridge or Tailscale — still your network, still your devices.
+4. **The Cortex grows whether you're paying attention or not.** Manual saves (workflows 1–5) plus passive connector ingest (workflow 6) compound. After a few weeks, ask your AI anything about your work and the relevant context is just there.
 
 If you find yourself thinking "I wish my AI remembered that thing I told it last week" — that's the thing Graphnosis exists to solve. Pick one of the workflows above, swap the topic for whatever you actually care about, and try it for a few days.
 
