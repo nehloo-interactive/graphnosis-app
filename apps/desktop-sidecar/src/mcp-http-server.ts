@@ -224,7 +224,12 @@ export async function startHttpMcpServer(opts: HttpBridgeOptions): Promise<http.
     };
 
     const mcpServer = createMcpServer(opts.deps);
-    await mcpServer.connect(transport);
+    // Cast: StreamableHTTPServerTransport.onclose is typed as optional, but
+    // the Transport interface mcpServer.connect() expects requires a
+    // non-undefined callback. We assigned it above (line ~220) so it's safe.
+    // exactOptionalPropertyTypes catches the structural mismatch but the
+    // runtime contract is fine.
+    await mcpServer.connect(transport as unknown as Parameters<typeof mcpServer.connect>[0]);
     pollForClientInfo(connId, mcpServer);
     await transport.handleRequest(req, res, body);
   });
