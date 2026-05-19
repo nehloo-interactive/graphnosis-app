@@ -1494,6 +1494,123 @@ async fn get_mobile_connection_info(state: State<'_, AppState>) -> Result<serde_
         .map_err(|e| e.to_string())
 }
 
+// ── Service connector commands ──────────────────────────────────────────────
+//
+// Five thin pass-throughs to the sidecar's connectors.* IPC. All take the
+// same shape as get_mobile_connection_info: lock → grab socket → IPC call
+// → map error. Each has a generous timeout because connector pulls can hit
+// rate-limited external APIs (GitHub, Slack, Linear) that occasionally take
+// 30+ seconds during a single iteration.
+
+#[tauri::command]
+async fn list_connectors(state: State<'_, AppState>) -> Result<serde_json::Value, String> {
+    let socket_path = {
+        let inner = state.inner.lock().await;
+        match &inner.cortex_dir {
+            Some(vd) => vd.join("sidecar.sock"),
+            None => return Err("cortex is locked".to_string()),
+        }
+    };
+    ipc_client::request_with_timeout(
+        &socket_path,
+        "connectors.list",
+        serde_json::Value::Null,
+        std::time::Duration::from_secs(5),
+    )
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn install_connector(
+    state: State<'_, AppState>,
+    config: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    let socket_path = {
+        let inner = state.inner.lock().await;
+        match &inner.cortex_dir {
+            Some(vd) => vd.join("sidecar.sock"),
+            None => return Err("cortex is locked".to_string()),
+        }
+    };
+    ipc_client::request_with_timeout(
+        &socket_path,
+        "connectors.install",
+        serde_json::json!({ "config": config }),
+        std::time::Duration::from_secs(30),
+    )
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn remove_connector(
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<serde_json::Value, String> {
+    let socket_path = {
+        let inner = state.inner.lock().await;
+        match &inner.cortex_dir {
+            Some(vd) => vd.join("sidecar.sock"),
+            None => return Err("cortex is locked".to_string()),
+        }
+    };
+    ipc_client::request_with_timeout(
+        &socket_path,
+        "connectors.remove",
+        serde_json::json!({ "id": id }),
+        std::time::Duration::from_secs(10),
+    )
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn trigger_connector_pull(
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<serde_json::Value, String> {
+    let socket_path = {
+        let inner = state.inner.lock().await;
+        match &inner.cortex_dir {
+            Some(vd) => vd.join("sidecar.sock"),
+            None => return Err("cortex is locked".to_string()),
+        }
+    };
+    // Pulls hit external APIs and may need to embed dozens of new items —
+    // 120s ceiling covers a healthy first-pull on GitHub/Slack workspaces.
+    ipc_client::request_with_timeout(
+        &socket_path,
+        "connectors.triggerPull",
+        serde_json::json!({ "id": id }),
+        std::time::Duration::from_secs(120),
+    )
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn get_connector_auth_url(
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<serde_json::Value, String> {
+    let socket_path = {
+        let inner = state.inner.lock().await;
+        match &inner.cortex_dir {
+            Some(vd) => vd.join("sidecar.sock"),
+            None => return Err("cortex is locked".to_string()),
+        }
+    };
+    ipc_client::request_with_timeout(
+        &socket_path,
+        "connectors.getAuthUrl",
+        serde_json::json!({ "id": id }),
+        std::time::Duration::from_secs(5),
+    )
+        .await
+        .map_err(|e| e.to_string())
+}
+
 /// Inspect the encrypted op-log and return a recovery plan listing every
 /// source ever ingested (minus those forgotten), annotated with whether
 /// it's recoverable (file still on disk), already-present, file-missing,
@@ -1837,6 +1954,11 @@ pub fn run() {
             get_settings,
             update_settings,
             get_mobile_connection_info,
+            list_connectors,
+            install_connector,
+            remove_connector,
+            trigger_connector_pull,
+            get_connector_auth_url,
             configure_mcp_client,
             open_cortex_in_finder,
             reveal_file_in_finder,

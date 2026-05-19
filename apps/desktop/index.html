@@ -2015,6 +2015,123 @@
       .engram-suggest-cand-name { flex: 1; font-weight: 500; }
       .engram-suggest-cand-reason { color: var(--fg-dim); font-size: 11px; }
 
+      /* ── Service connectors panel ────────────────────────────────────────
+         Settings → Connectors. Lists installed connectors with status pills
+         (enabled / disabled / error / pulling), and a row of "Add ..." chips
+         to launch the per-kind setup modal. Same visual family as the engram
+         suggestion banner — same border, same elevation, same accent. */
+      .connectors-list { display: flex; flex-direction: column; gap: 6px; margin-bottom: 10px; }
+      .connectors-list:empty { display: none; }
+      .connector-row {
+        display: grid;
+        grid-template-columns: 22px 1fr auto;
+        gap: 10px;
+        align-items: center;
+        padding: 8px 10px;
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        background: color-mix(in oklab, var(--fg) 3%, transparent);
+        font-size: 12px;
+      }
+      .connector-row-kind { font-size: 16px; line-height: 1; text-align: center; }
+      .connector-row-body { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+      .connector-row-title { color: var(--fg); display: flex; gap: 8px; align-items: baseline; }
+      .connector-row-name { font-weight: 500; }
+      .connector-row-status {
+        font-size: 10px;
+        padding: 1px 6px;
+        border-radius: 999px;
+        text-transform: uppercase;
+        letter-spacing: 0.04em;
+      }
+      .connector-row-status.enabled { color: #4ade80; background: color-mix(in oklab, #4ade80 12%, transparent); }
+      .connector-row-status.disabled { color: var(--fg-dim); background: color-mix(in oklab, var(--fg-dim) 12%, transparent); }
+      .connector-row-status.error    { color: #f87171; background: color-mix(in oklab, #f87171 12%, transparent); }
+      .connector-row-status.pulling  { color: var(--accent); background: color-mix(in oklab, var(--accent) 14%, transparent); }
+      .connector-row-meta { color: var(--fg-dim); font-size: 11px; }
+      .connector-row-actions { display: flex; gap: 4px; flex-shrink: 0; }
+      .connector-row-actions button {
+        font-size: 11px;
+        padding: 3px 8px;
+        border-radius: 4px;
+        border: 1px solid var(--border);
+        background: transparent;
+        color: var(--fg);
+        cursor: pointer;
+      }
+      .connector-row-actions button:hover { background: color-mix(in oklab, var(--fg) 6%, transparent); }
+      .connector-row-actions button.danger { color: #f87171; }
+      .connector-row-actions button.danger:hover { background: color-mix(in oklab, #f87171 12%, transparent); }
+
+      .connectors-add-row {
+        display: flex;
+        gap: 6px;
+        align-items: center;
+        flex-wrap: wrap;
+        padding-top: 4px;
+      }
+      .connectors-add-label { font-size: 11px; color: var(--fg-dim); margin-right: 4px; }
+      .btn-add-connector {
+        font-size: 11px;
+        padding: 3px 8px;
+        border-radius: 4px;
+        border: 1px dashed var(--border);
+        background: transparent;
+        color: var(--fg-dim);
+        cursor: pointer;
+      }
+      .btn-add-connector:hover {
+        background: color-mix(in oklab, var(--accent) 8%, transparent);
+        border-color: var(--accent);
+        color: var(--fg);
+      }
+
+      /* ── Connector setup modal ──────────────────────────────────────────
+         Reused for all 6 kinds. The body is rendered dynamically per-kind
+         in main.ts since each connector has a different credentials/options
+         shape — modal chrome is shared. */
+      .connector-modal-body { display: flex; flex-direction: column; gap: 12px; }
+      .connector-help {
+        font-size: 11px;
+        color: var(--fg-dim);
+        background: color-mix(in oklab, var(--fg) 4%, transparent);
+        border-left: 2px solid var(--accent);
+        padding: 8px 10px;
+        border-radius: 0 6px 6px 0;
+      }
+      .connector-help a { color: var(--accent); }
+      .connector-help ol { margin: 4px 0 0; padding-left: 18px; }
+      .connector-help li { margin-bottom: 2px; }
+      .connector-field { display: flex; flex-direction: column; gap: 3px; }
+      .connector-field label { font-size: 11px; color: var(--fg-dim); }
+      .connector-field input, .connector-field select, .connector-field textarea {
+        font-size: 12px;
+        padding: 6px 8px;
+        background: var(--bg);
+        border: 1px solid var(--border);
+        border-radius: 4px;
+        color: var(--fg);
+        font-family: inherit;
+      }
+      .connector-field textarea { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; min-height: 60px; resize: vertical; }
+      .connector-field .field-hint { font-size: 10px; color: var(--fg-dim); font-style: italic; }
+      .connector-field-row { display: flex; gap: 8px; }
+      .connector-field-row .connector-field { flex: 1; }
+      .connector-checkboxes { display: flex; gap: 12px; flex-wrap: wrap; }
+      .connector-checkboxes label { font-size: 12px; color: var(--fg); display: flex; gap: 4px; align-items: center; cursor: pointer; }
+      .connector-webhook-url-row {
+        display: flex;
+        gap: 6px;
+        align-items: center;
+        padding: 6px 8px;
+        background: var(--bg);
+        border: 1px solid var(--border);
+        border-radius: 4px;
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-size: 11px;
+      }
+      .connector-webhook-url-row code { flex: 1; word-break: break-all; color: var(--accent); }
+
       .g-toast-stack {
         position: fixed;
         right: 18px;
@@ -4013,6 +4130,26 @@
                 <button id="btn-mobile-setup">Set up mobile access…</button>
               </div>
               <div class="panel">
+                <p class="panel-title">Connectors</p>
+                <p class="subtitle" style="font-size: 11px; margin: -4px 0 10px;">
+                  Auto-ingest from RSS, GitHub, Slack, Trello, Linear, or any service
+                  that can POST to a webhook. Your credentials, your apps — Graphnosis
+                  is just the receiver. Stored locally and encrypted at rest.
+                </p>
+                <div id="connectors-list" class="connectors-list" aria-live="polite">
+                  <!-- Populated by refreshConnectorsList() in main.ts -->
+                </div>
+                <div class="connectors-add-row">
+                  <span class="connectors-add-label">Add connector:</span>
+                  <button class="btn-add-connector" data-kind="rss">RSS</button>
+                  <button class="btn-add-connector" data-kind="github">GitHub</button>
+                  <button class="btn-add-connector" data-kind="slack">Slack</button>
+                  <button class="btn-add-connector" data-kind="trello">Trello</button>
+                  <button class="btn-add-connector" data-kind="linear">Linear</button>
+                  <button class="btn-add-connector" data-kind="webhook">Webhook</button>
+                </div>
+              </div>
+              <div class="panel">
                 <p class="panel-title">Cortex tools</p>
                 <p class="subtitle" style="font-size: 11px; margin: -4px 0 10px;">
                   Reconstruct lost memories from the encrypted op-log, refresh state, peek at Cortex files.
@@ -4538,6 +4675,28 @@
     </div>
 
     <!-- Mobile & Remote Access wizard -->
+    <!-- Connector setup modal — body content rendered dynamically per-kind
+         (each connector has a different credentials/options shape).
+         Footer always has Save / Cancel; Save handler is bound at open time
+         so it can capture the kind + form state. -->
+    <div id="connector-setup-modal" class="modal-backdrop hidden">
+      <div class="modal" style="max-width: 560px;">
+        <div class="modal-header">
+          <h2 id="connector-setup-title">Add connector</h2>
+          <p class="subtitle" id="connector-setup-subtitle"></p>
+        </div>
+        <div class="modal-body">
+          <div class="connector-modal-body" id="connector-setup-body">
+            <!-- populated per-kind -->
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button id="connector-setup-cancel" class="btn-ghost">Cancel</button>
+          <button id="connector-setup-save" class="btn-primary">Save</button>
+        </div>
+      </div>
+    </div>
+
     <div id="mobile-setup-modal" class="modal-backdrop hidden">
       <div class="modal" style="max-width: 560px;">
         <div class="modal-header">
