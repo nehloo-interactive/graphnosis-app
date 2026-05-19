@@ -238,24 +238,63 @@ fn classify_startup_failure(stderr_tail: &str, exit_code: Option<i32>) -> String
     // Missing env var, missing node binary, etc. — bubble up.
     if stderr_tail.contains("Missing env var") {
         return format!("Synapse reported a missing configuration value. \
-                        Check the terminal running `pnpm dev:desktop` for details. \
-                        (synapse exit code {})",
-                       exit_code.map(|c| c.to_string()).unwrap_or_else(|| "unknown".to_string()));
+                        (synapse exit code {})\n\nSynapse stderr:\n{}",
+                       exit_code.map(|c| c.to_string()).unwrap_or_else(|| "unknown".to_string()),
+                       trimmed_stderr_for_display(stderr_tail));
     }
-    // Generic fallback — still informative, with the exit code if we have it.
+    // Generic fallback — appends the actual stderr tail so users can debug
+    // without dev tools. In production .app builds the user has no terminal
+    // to "check"; the only way they ever see the real error is if we put it
+    // in the message itself.
+    let display_tail = trimmed_stderr_for_display(stderr_tail);
+    let suffix = if display_tail.is_empty() {
+        String::new()
+    } else {
+        format!("\n\nSynapse stderr (last lines):\n{}", display_tail)
+    };
     match exit_code {
-        Some(2) => "Another Graphnosis synapse is already holding this cortex's lock. \
-                    Quit it and try again."
-            .to_string(),
-        Some(1) => "Synapse failed during startup. \
-                    Most likely cause: wrong passphrase or a corrupted cortex file. \
-                    Check the terminal running `pnpm dev:desktop` for the synapse's stderr."
-            .to_string(),
-        _ => format!("Synapse exited unexpectedly during startup. \
-                      Check the terminal running `pnpm dev:desktop` for the synapse's stderr. \
-                      (exit code {})",
-                     exit_code.map(|c| c.to_string()).unwrap_or_else(|| "unknown".to_string())),
+        Some(2) => format!(
+            "Another Graphnosis synapse is already holding this cortex's lock. \
+             Quit it and try again.{}",
+            suffix,
+        ),
+        Some(1) => format!(
+            "Synapse failed during startup. \
+             Most likely cause: wrong passphrase or a corrupted cortex file.{}",
+            suffix,
+        ),
+        _ => format!(
+            "Synapse exited unexpectedly during startup. (exit code {}){}",
+            exit_code.map(|c| c.to_string()).unwrap_or_else(|| "unknown".to_string()),
+            suffix,
+        ),
     }
+}
+
+/// Trim sidecar stderr for inclusion in a user-facing error message.
+///
+/// Production users have no terminal to "check the dev logs" — so when a
+/// startup failure can't be classified into a friendly canned message, we
+/// include the raw stderr tail in the error itself. This is the only way
+/// they (or we, debugging remotely) ever see the real cause.
+///
+/// Cap at ~1.5 KB so the error stays readable when shown in a dialog,
+/// and trim leading log noise (worker-spawn messages etc.) so the
+/// actual error line is more likely to be visible.
+fn trimmed_stderr_for_display(raw: &str) -> String {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return String::new();
+    }
+    const MAX_BYTES: usize = 1500;
+    if trimmed.len() <= MAX_BYTES {
+        return trimmed.to_string();
+    }
+    // Keep the tail — fatal errors land at the end. Marker so the user
+    // knows they're seeing a truncated view.
+    let cut_from = trimmed.len() - MAX_BYTES;
+    let tail = &trimmed[cut_from..];
+    format!("…[earlier output truncated]…\n{}", tail)
 }
 
 /// Resolve the path to the compiled MCP relay binary.
@@ -266,7 +305,10 @@ fn classify_startup_failure(stderr_tail: &str, exit_code: Option<i32>) -> String
 ///
 /// Resolution order matches `resolve_sidecar_path`:
 ///   1. `$GRAPHNOSIS_RELAY_BIN` override
-///   2. `<exe-dir>/graphnosis-mcp-relay-<host-triple>`
+///   2. `<exe-dir>/graphnosis-mcp-relay` — production .app bundles (Tauri
+///      strips the `-<host-triple>` suffix during externalBin bundling)
+///   3. `<exe-dir>/graphnosis-mcp-relay-<host-triple>` — dev builds where
+///      build.rs's `ensure_runtime_copy_named` copies the suffixed name
 pub fn resolve_relay_path() -> Result<PathBuf> {
     if let Ok(explicit) = env::var("GRAPHNOSIS_RELAY_BIN") {
         let p = PathBuf::from(explicit);
@@ -276,16 +318,23 @@ pub fn resolve_relay_path() -> Result<PathBuf> {
     let exe = env::current_exe().context("env::current_exe")?;
     let exe_dir = exe.parent().context("exe parent dir")?;
     let triple = host_target_triple();
-    let candidate = exe_dir.join(format!("graphnosis-mcp-relay-{}", triple));
-    if candidate.exists() {
-        return Ok(candidate);
+    // Production .app first (Tauri strips the triple suffix on externalBin
+    // bundling), then dev's suffixed name as fallback.
+    let bundled = exe_dir.join("graphnosis-mcp-relay");
+    if bundled.exists() {
+        return Ok(bundled);
+    }
+    let dev = exe_dir.join(format!("graphnosis-mcp-relay-{}", triple));
+    if dev.exists() {
+        return Ok(dev);
     }
     bail!(
         "Could not locate the Graphnosis MCP relay binary. \
-         Expected at: {}. \
-         Run `pnpm --filter @graphnosis-app/desktop tauri build` (which invokes \
+         Expected at {} (production bundle) or {} (dev build). \
+         Run `pnpm --filter @graphnosis-app/desktop tauri:build` (which invokes \
          build.rs → bun --compile), or set GRAPHNOSIS_RELAY_BIN.",
-        candidate.display()
+        bundled.display(),
+        dev.display(),
     )
 }
 
@@ -294,11 +343,13 @@ pub fn resolve_relay_path() -> Result<PathBuf> {
 /// Order:
 ///   1. `$GRAPHNOSIS_SIDECAR_BIN` — explicit override. Lets devs point at
 ///      a hand-built binary without rebuilding the Tauri shell.
-///   2. `<exe-dir>/graphnosis-sidecar-<host-triple>` — Tauri's externalBin
-///      convention. In a bundled .app the file sits next to the main
-///      binary in `Contents/MacOS/`; in `tauri dev` it sits in
-///      `target/<profile>/` (placed there by build.rs's
-///      `ensure_runtime_copy_named`).
+///   2. `<exe-dir>/graphnosis-sidecar` — production .app bundles. Tauri's
+///      externalBin packaging strips the `-<host-triple>` suffix when it
+///      copies the binary into `Contents/MacOS/`, so the file lives next
+///      to the main app binary under its base name.
+///   3. `<exe-dir>/graphnosis-sidecar-<host-triple>` — dev / `tauri dev`
+///      builds where build.rs's `ensure_runtime_copy_named` keeps the
+///      suffixed name in `target/<profile>/`.
 fn resolve_sidecar_path() -> Result<PathBuf> {
     if let Ok(explicit) = env::var("GRAPHNOSIS_SIDECAR_BIN") {
         let p = PathBuf::from(explicit);
@@ -308,16 +359,23 @@ fn resolve_sidecar_path() -> Result<PathBuf> {
     let exe = env::current_exe().context("env::current_exe")?;
     let exe_dir = exe.parent().context("exe parent dir")?;
     let triple = host_target_triple();
-    let candidate = exe_dir.join(format!("graphnosis-sidecar-{}", triple));
-    if candidate.exists() {
-        return Ok(candidate);
+    // Production .app first (Tauri strips the triple suffix on bundling),
+    // then dev's suffixed name as fallback.
+    let bundled = exe_dir.join("graphnosis-sidecar");
+    if bundled.exists() {
+        return Ok(bundled);
+    }
+    let dev = exe_dir.join(format!("graphnosis-sidecar-{}", triple));
+    if dev.exists() {
+        return Ok(dev);
     }
     bail!(
         "Could not locate the Graphnosis sidecar binary. \
-         Expected at: {}. \
-         Run `pnpm --filter @graphnosis-app/desktop tauri build` (which invokes \
+         Expected at {} (production bundle) or {} (dev build). \
+         Run `pnpm --filter @graphnosis-app/desktop tauri:build` (which invokes \
          build.rs → bun --compile), or set GRAPHNOSIS_SIDECAR_BIN to an explicit path.",
-        candidate.display()
+        bundled.display(),
+        dev.display(),
     )
 }
 
@@ -328,9 +386,14 @@ fn resolve_sidecar_path() -> Result<PathBuf> {
 /// Includes (in priority order):
 ///   1. The directory containing the sidecar binary itself — covers dev
 ///      mode (target/<profile>/) where build.rs copies the dylib.
-///   2. `../Resources/` relative to the sidecar binary — covers bundled
-///      .app where Tauri puts resource files. `Contents/MacOS/<binary>`
-///      sits next to `Contents/Resources/`.
+///   2. `../Resources/` relative to the sidecar binary — bundled .app
+///      where Tauri puts resource files. `Contents/MacOS/<binary>` sits
+///      next to `Contents/Resources/`.
+///   3. `../Resources/resources/` — same bundled layout when tauri.conf.json
+///      declares resources with a path prefix (e.g.
+///      `"resources/libonnxruntime.1.21.0.dylib"`), Tauri preserves the
+///      `resources/` segment inside `Contents/Resources/`. dyld doesn't
+///      recurse so we have to add this nested dir explicitly.
 ///
 /// Returns an empty string if the sidecar path can't be resolved; callers
 /// skip setting the env var in that case (better to let dyld error
@@ -339,11 +402,17 @@ fn compose_dyld_search_path(binary: &Path) -> String {
     let mut parts: Vec<String> = Vec::new();
     if let Some(dir) = binary.parent() {
         parts.push(dir.to_string_lossy().into_owned());
-        // `<exe-dir>/../Resources` — bundled .app layout.
+        // `<exe-dir>/../Resources` and its nested `resources/` — bundled
+        // .app layout. We add both because Tauri preserves the resource
+        // path prefix from tauri.conf.json's "resources" array.
         if let Some(grandparent) = dir.parent() {
             let resources = grandparent.join("Resources");
             if resources.exists() {
                 parts.push(resources.to_string_lossy().into_owned());
+                let nested = resources.join("resources");
+                if nested.exists() {
+                    parts.push(nested.to_string_lossy().into_owned());
+                }
             }
         }
     }
