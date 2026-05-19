@@ -6353,6 +6353,38 @@ function pushDataIntoAtlas(): void {
   if (graphnosisSelectedId) mainAtlas.select(graphnosisSelectedId);
 }
 
+/**
+ * Pretty-print a source label for the atlas legend. The atlas's source
+ * registry uses the raw sourceRef as the legend label, which for AI-
+ * created memories looks like `ai-conversation:<timestamp-or-id>:<topic>`
+ * — readable to debuggers, not to users.
+ *
+ * We collapse anything starting with a recognized source-kind prefix to
+ * a short human form ("AI: <topic>", "Clip: <topic>"). Falls through
+ * unchanged for user-supplied labels like "collaboration" or "book.md".
+ *
+ * Truncation isn't done here — CSS `text-overflow: ellipsis` on
+ * `.source-name` handles it; the full string lives in the row's
+ * `title` attribute for hover.
+ */
+function formatLegendLabel(raw: string | undefined | null): string {
+  if (!raw) return '(no source)';
+  // ai-conversation:<id>:<topic>  →  AI: <topic>
+  // ai-conversation:<id>          →  AI: <id>     (fallback when label missing)
+  if (raw.startsWith('ai-conversation:')) {
+    const rest = raw.slice('ai-conversation:'.length);
+    const secondColon = rest.indexOf(':');
+    return secondColon !== -1 ? `AI: ${rest.slice(secondColon + 1)}` : `AI: ${rest}`;
+  }
+  // clip:<id>:<topic>  →  Clip: <topic>  — same pattern for consistency.
+  if (raw.startsWith('clip:')) {
+    const rest = raw.slice('clip:'.length);
+    const secondColon = rest.indexOf(':');
+    return secondColon !== -1 ? `Clip: ${rest.slice(secondColon + 1)}` : `Clip: ${rest}`;
+  }
+  return raw;
+}
+
 function renderAtlasLegend(): void {
   if (!mainAtlas) return;
   // Edge categories
@@ -6404,9 +6436,16 @@ function renderAtlasLegend(): void {
   els.atlasSourceList.innerHTML = sources.map((s) => {
     const swatch = `#${s.color.toString(16).padStart(6, '0')}`;
     const cls = s.visible ? '' : 'off';
-    return `<div class="legend-row ${cls}" data-source-key="${escape(s.key)}" title="${escape(s.key || '(no source)')}">
+    // Pretty-print AI-conversation sources: the raw label looks like
+    // "ai-conversation:1779139479066:Milestone — first end-to-end..."
+    // which is just noise next to clean user-labelled sources like
+    // "collaboration" or "book-notes.md". Collapse to "AI: <topic>" so
+    // the legend reads like a list of things, not internal source refs.
+    // The full original label stays in the title attribute for hover.
+    const pretty = formatLegendLabel(s.label);
+    return `<div class="legend-row ${cls}" data-source-key="${escape(s.key)}" title="${escape(s.label || s.key || '(no source)')}">
       <span class="legend-swatch-dot" style="background: ${swatch};"></span>
-      <span class="source-name">${escape(s.label)}</span>
+      <span class="source-name">${escape(pretty)}</span>
       <span class="legend-count">${s.nodeCount}</span>
     </div>`;
   }).join('');
