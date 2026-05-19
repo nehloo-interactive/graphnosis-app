@@ -1,6 +1,5 @@
 interface Env {
   RESEND_API_KEY: string;
-  RESEND_AUDIENCE_ID: string;
 }
 
 export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
@@ -31,13 +30,13 @@ export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
     });
   }
 
-  const res = await fetch(`https://api.resend.com/audiences/${env.RESEND_AUDIENCE_ID}/contacts`, {
+  const res = await fetch('https://api.resend.com/contacts', {
     method: 'POST',
     headers: {
       Authorization: `Bearer ${env.RESEND_API_KEY}`,
       'Content-Type': 'application/json',
     },
-    body: JSON.stringify({ email, data: { source } }),
+    body: JSON.stringify({ email, properties: { source } }),
   });
 
   if (!res.ok) {
