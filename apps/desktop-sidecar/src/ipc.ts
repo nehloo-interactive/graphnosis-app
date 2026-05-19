@@ -896,11 +896,24 @@ async function dispatch(deps: IpcDeps, method: string, params: unknown): Promise
           kind: z.enum(['webhook', 'rss', 'github', 'slack', 'trello', 'linear']),
           graphId: z.string().optional(),
           enabled: z.boolean().optional(),
-          credentials: z.record(z.string()).optional(),
-          options: z.record(z.unknown()).optional(),
+          // zod v4: z.record requires (keyType, valueType). Credentials are
+          // string → string; options are string → unknown (connector-defined).
+          credentials: z.record(z.string(), z.string()).optional(),
+          options: z.record(z.string(), z.unknown()).optional(),
         }),
       }).parse(params ?? {});
-      const installed = await deps.connectorManager.install(config);
+      // Strip explicit `undefined` keys so Partial<ConnectorConfig> matches
+      // under exactOptionalPropertyTypes (which distinguishes absent from
+      // present-but-undefined). zod's .optional() produces the latter.
+      const cleanConfig: Partial<import('@graphnosis-app/core').ConnectorConfig> & { kind: import('@graphnosis-app/core').ConnectorKind } = {
+        kind: config.kind,
+        ...(config.id !== undefined ? { id: config.id } : {}),
+        ...(config.graphId !== undefined ? { graphId: config.graphId } : {}),
+        ...(config.enabled !== undefined ? { enabled: config.enabled } : {}),
+        ...(config.credentials !== undefined ? { credentials: config.credentials } : {}),
+        ...(config.options !== undefined ? { options: config.options } : {}),
+      };
+      const installed = await deps.connectorManager.install(cleanConfig);
       return { config: installed };
     }
     case 'connectors.remove': {

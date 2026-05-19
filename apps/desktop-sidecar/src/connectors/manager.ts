@@ -60,12 +60,14 @@ export class ConnectorManager {
     const configs = this.settings.configs;
     const statuses: ConnectorStatus[] = configs.map(cfg => {
       const rc = this.running.get(cfg.id);
+      // Conditional spread so we never set an explicit `undefined` on
+      // optional fields — required under exactOptionalPropertyTypes.
       return {
         id: cfg.id,
         kind: cfg.kind,
         enabled: cfg.enabled,
-        lastPulledAt: cfg.lastPulledAt,
-        lastError: cfg.lastError,
+        ...(cfg.lastPulledAt !== undefined ? { lastPulledAt: cfg.lastPulledAt } : {}),
+        ...(cfg.lastError !== undefined ? { lastError: cfg.lastError } : {}),
         eventsTotal: rc?.eventsTotal ?? 0,
         pulling: rc?.pulling ?? false,
       };
@@ -84,8 +86,10 @@ export class ConnectorManager {
       enabled: partial.enabled ?? true,
       credentials: { ...(existing?.credentials ?? {}), ...(partial.credentials ?? {}) },
       options: { ...(existing?.options ?? {}), ...(partial.options ?? {}) },
-      lastPulledAt: existing?.lastPulledAt,
-      lastError: existing?.lastError,
+      // Conditional spread to preserve absent-vs-undefined distinction
+      // required under exactOptionalPropertyTypes.
+      ...(existing?.lastPulledAt !== undefined ? { lastPulledAt: existing.lastPulledAt } : {}),
+      ...(existing?.lastError !== undefined ? { lastError: existing.lastError } : {}),
     };
 
     // Webhook connectors need a per-connector token for the URL path.
@@ -273,14 +277,22 @@ export class ConnectorManager {
     id: string,
     patch: { lastPulledAt?: number; lastError?: string | undefined },
   ): Promise<void> {
-    const newConfigs = this.settings.configs.map(c => {
+    const newConfigs: ConnectorConfig[] = this.settings.configs.map(c => {
       if (c.id !== id) return c;
-      return {
-        ...c,
+      // patch.lastError can be `undefined` to mean "clear it"; we represent
+      // that on-disk by omitting the field. Build the next config without
+      // the field if patch.lastError is explicitly undefined.
+      const { lastError: _oldLastError, ...rest } = c;
+      const next: ConnectorConfig = {
+        ...rest,
         ...(patch.lastPulledAt !== undefined ? { lastPulledAt: patch.lastPulledAt } : {}),
-        // Only update lastError if the key is present in the patch
-        ...('lastError' in patch ? { lastError: patch.lastError } : {}),
+        ...('lastError' in patch && patch.lastError !== undefined
+          ? { lastError: patch.lastError }
+          : c.lastError !== undefined && !('lastError' in patch)
+            ? { lastError: c.lastError }
+            : {}),
       };
+      return next;
     });
     await this.persistConfigs(newConfigs);
   }
