@@ -1,0 +1,90 @@
+{
+  "name": "graphnosis",
+  "displayName": "Graphnosis — Personal Memory for Copilot",
+  "description": "Enriches every Copilot Chat prompt with context from your private, encrypted Graphnosis Cortex. Nothing leaves your device.",
+  "version": "0.1.0",
+  "publisher": "nehloo-interactive",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/nehloo-interactive/graphnosis-app"
+  },
+  "engines": {
+    "vscode": "^1.96.0"
+  },
+  "categories": ["AI", "Other"],
+  "keywords": ["copilot", "memory", "ai", "mcp", "graphnosis"],
+  "activationEvents": ["onStartupFinished"],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "chatParticipants": [
+      {
+        "id": "graphnosis.assistant",
+        "name": "graphnosis",
+        "description": "Search and save to your private, encrypted Graphnosis memory Cortex",
+        "isSticky": false
+      }
+    ],
+    "commands": [
+      {
+        "command": "graphnosis.saveResponse",
+        "title": "Graphnosis: Save to memory"
+      },
+      {
+        "command": "graphnosis.configure",
+        "title": "Graphnosis: Configure connection"
+      }
+    ],
+    "configuration": {
+      "title": "Graphnosis",
+      "properties": {
+        "graphnosis.httpBridgeUrl": {
+          "type": "string",
+          "default": "http://127.0.0.1:3457/mcp",
+          "description": "URL of the Graphnosis local HTTP MCP bridge. Copy from Graphnosis Settings → VS Code."
+        },
+        "graphnosis.bearerToken": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "Bearer token for the Graphnosis HTTP bridge. Copy from **Graphnosis Settings → VS Code**.",
+          "secret": true
+        },
+        "graphnosis.autoInject": {
+          "type": "boolean",
+          "default": true,
+          "description": "Register graphnosis_recall as an LM tool so Copilot can call it automatically on relevant queries (VS Code 1.97+)."
+        },
+        "graphnosis.autoInjectMaxTier": {
+          "type": "string",
+          "enum": ["public", "personal"],
+          "enumDescriptions": [
+            "Only public-tier graph content is included in auto-injection.",
+            "Public and personal-tier graph content is included (default)."
+          ],
+          "default": "personal",
+          "description": "Sensitivity ceiling for auto-injection. Graphs above this tier are excluded."
+        },
+        "graphnosis.maxTokensPerInjection": {
+          "type": "number",
+          "default": 1500,
+          "minimum": 100,
+          "maximum": 8000,
+          "description": "Token budget passed to recall on each auto-injection or @graphnosis query."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "build": "esbuild src/extension.ts --bundle --platform=node --external:vscode --outfile=dist/extension.js --format=cjs --sourcemap",
+    "build:prod": "esbuild src/extension.ts --bundle --platform=node --external:vscode --outfile=dist/extension.js --format=cjs --minify",
+    "typecheck": "tsc --noEmit",
+    "package": "pnpm run build:prod && vsce package"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "@types/vscode": "^1.99.0",
+    "esbuild": "^0.24.0",
+    "typescript": "^5.7.0",
+    "@vscode/vsce": "^3.0.0"
+  }
+}

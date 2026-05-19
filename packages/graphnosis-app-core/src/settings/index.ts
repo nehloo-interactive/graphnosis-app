@@ -244,6 +244,18 @@ export interface HttpBridgeSettings {
   allowedOrigins: string[];
 }
 
+export interface VsCodeBridgeSettings {
+  /**
+   * Auto-generated UUID token for the always-on local HTTP MCP bridge
+   * (VS Code Copilot extension). Separate from the mobile bridge token.
+   * Generated on first sidecar start and stored here so the VS Code
+   * extension can reconnect across restarts without re-configuration.
+   */
+  localBridgeToken: string;
+  /** Port the local bridge binds on. Default 3457. */
+  localBridgePort: number;
+}
+
 export interface AppSettings {
   contentCache: ContentCacheSettings;
   forget: ForgetSettings;
@@ -265,6 +277,11 @@ export interface AppSettings {
    * Each ConnectorConfig includes credentials (plaintext) and pull schedule state.
    */
   connectors?: ConnectorSettings;
+  /**
+   * VS Code / Copilot integration settings. Absent on older cortexes; the
+   * sidecar auto-populates on first boot after the feature ships.
+   */
+  vscode?: VsCodeBridgeSettings;
 }
 
 export const DEFAULT_SETTINGS: AppSettings = {
@@ -456,6 +473,17 @@ export function mergeWithDefaults(partial: Partial<AppSettings> | null | undefin
     };
   }
 
+  // VS Code bridge — optional. Pass through if present; validate individual fields.
+  let vscode: AppSettings['vscode'] | undefined;
+  if (partial?.vscode) {
+    const v = partial.vscode;
+    vscode = {
+      localBridgeToken: typeof v.localBridgeToken === 'string' ? v.localBridgeToken : '',
+      localBridgePort: typeof v.localBridgePort === 'number' && v.localBridgePort > 0 && v.localBridgePort < 65536
+        ? Math.floor(v.localBridgePort) : 3457,
+    };
+  }
+
   return {
     contentCache: { mode, maxBytesPerSource },
     forget: { mode: forgetMode },
@@ -468,6 +496,7 @@ export function mergeWithDefaults(partial: Partial<AppSettings> | null | undefin
     graphMetadata,
     ...(mobile !== undefined ? { mobile } : {}),
     ...(connectors !== undefined ? { connectors } : {}),
+    ...(vscode !== undefined ? { vscode } : {}),
   };
 }
 
