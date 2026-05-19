@@ -3,7 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Graphnosis: Your Local, Encrypted Second Cortex</title>
+    <title>Graphnosis: Your Local Encrypted Second Cortex</title>
     <style>
       :root {
         color-scheme: light dark;
@@ -400,6 +400,33 @@
 
       .sources-engram-group { margin-bottom: 18px; }
       .sources-engram-group:last-child { margin-bottom: 0; }
+
+      /* Sources pane "grow this list" hint banner — sits above the source
+         list itself, points users at the two automatic ingest paths
+         (AI clients writing via MCP, connectors pulling on a schedule).
+         Quiet styling — informational, not action-required. */
+      .sources-grow-hint {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        flex-wrap: wrap;
+        padding: 8px 12px;
+        margin-bottom: 12px;
+        border: 1px solid var(--border);
+        border-left: 2px solid var(--accent);
+        border-radius: 6px;
+        background: color-mix(in oklab, var(--accent) 5%, transparent);
+        font-size: 12px;
+        color: var(--fg-dim);
+      }
+      .sources-grow-hint-text { color: var(--fg); }
+      .sources-grow-hint-link {
+        color: var(--accent);
+        text-decoration: none;
+        cursor: pointer;
+      }
+      .sources-grow-hint-link:hover { text-decoration: underline; }
+      .sources-grow-hint-sep { color: var(--fg-dim); opacity: 0.5; }
       .sources-engram-heading { font-size: 11px; font-weight: 600; color: var(--fg-dim); text-transform: uppercase; letter-spacing: 0.05em; padding-bottom: 4px; margin-bottom: 2px; border-bottom: 1px solid var(--border); }
       .source-row { display: flex; align-items: center; gap: 8px; padding: 6px 0; font-size: 12px; }
       .source-row-disabled .source-name { opacity: 0.4; }
@@ -1105,6 +1132,70 @@
         border-color: var(--accent);
         box-shadow: 0 0 0 2px color-mix(in oklab, var(--accent) 25%, transparent);
       }
+      /* ── Custom engram picker dropdown (replaces native <select> open) ──
+         The native macOS `<select>` opens centered on the selected option,
+         which often drifts upward off the top bar. Our custom button +
+         absolute-positioned dropdown opens DOWNWARD predictably and has
+         full CSS control. The native <select> stays in DOM (hidden) as the
+         source of truth so existing `.value` / `change` event consumers
+         keep working. */
+      .engram-picker-wrap {
+        position: relative;
+        display: inline-flex;
+        align-items: center;
+      }
+      .engram-picker-chevron {
+        margin-left: 6px;
+        font-size: 9px;
+        color: var(--fg-dim);
+        line-height: 1;
+      }
+      .engram-picker-dropdown {
+        position: absolute;
+        top: calc(100% + 4px);
+        left: 0;
+        z-index: 250;
+        min-width: 100%;
+        max-width: 320px;
+        max-height: 360px;
+        overflow-y: auto;
+        background: var(--bg-elev);
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        box-shadow: 0 8px 24px rgba(0, 0, 0, 0.25);
+        padding: 4px;
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
+      }
+      .engram-picker-dropdown.hidden { display: none; }
+      .engram-picker-option {
+        background: transparent;
+        border: none;
+        color: var(--fg);
+        font-size: 13px;
+        text-align: left;
+        padding: 6px 10px;
+        border-radius: 4px;
+        cursor: pointer;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      .engram-picker-option:hover {
+        background: color-mix(in oklab, var(--fg) 8%, transparent);
+      }
+      .engram-picker-option.selected {
+        background: color-mix(in oklab, var(--accent) 16%, transparent);
+        color: var(--fg);
+        font-weight: 600;
+      }
+      .engram-picker-option.selected::before {
+        content: "✓ ";
+        color: var(--accent);
+        margin-right: 4px;
+      }
+
       .header-engram-picker option {
         /* Dropdown items rendered by the OS — give them our app palette
            instead of system colors so the open menu doesn't suddenly
@@ -3689,7 +3780,7 @@
                width="120" height="120"
                style="margin-bottom: 20px; border-radius: 22px; opacity: 0.92; flex-shrink: 0; display: block;" />
           <h1 style="text-align: center; width: 100%;">Graphnosis</h1>
-          <p class="subtitle" id="subtitle" style="text-align: center;">Your local, encrypted second cortex</p>
+          <p class="subtitle" id="subtitle" style="text-align: center;">Your local encrypted second cortex</p>
           <div id="error" class="error hidden"></div>
           <div class="panel unlock-card">
             <p class="panel-title">Unlock your encrypted second cortex:</p>
@@ -3794,7 +3885,7 @@
                  now that hiddenTitle:true silences the OS one). -->
             <div class="app-title-row">
               <span class="brain-glyph" title="Cortex unlocked">🧠</span>
-              <span class="app-title">Graphnosis: Your Local, Encrypted Second Cortex</span>
+              <span class="app-title">Graphnosis: Your Local Encrypted Second Cortex</span>
             </div>
             <!-- Cortex path row: just the path. The engram picker moved
                  to the right-side actions cluster (left of Add file). -->
@@ -4012,6 +4103,22 @@
                 <h2>Sources</h2>
                 <p class="brain-subtitle">your sensory cortex — everything you've taken in</p>
               </header>
+              <!-- Pointer banner: most users land here after their first
+                   ingest and wonder "how do I get more in here?". One-line
+                   link to the two automatic paths (AI clients writing via
+                   MCP, and connectors pulling on a schedule). -->
+              <div class="sources-grow-hint">
+                <span class="sources-grow-hint-text">
+                  Want this list to grow on its own?
+                </span>
+                <a href="#" class="sources-grow-hint-link" data-jump-settings="ai-clients">
+                  Connect an AI client →
+                </a>
+                <span class="sources-grow-hint-sep">·</span>
+                <a href="#" class="sources-grow-hint-link" data-jump-settings="connectors">
+                  Set up a connector →
+                </a>
+              </div>
               <div id="sources-list"><p class="subtitle">Loading…</p></div>
             </section>
 
@@ -4111,7 +4218,7 @@
                 </p>
                 <button id="btn-settings" class="primary">Open preferences…</button>
               </div>
-              <div class="panel">
+              <div class="panel" id="settings-panel-ai-clients">
                 <p class="panel-title">AI client integration</p>
                 <p class="subtitle" style="font-size: 11px; margin: -4px 0 10px;">
                   Wire MCP-aware AI clients to talk to Graphnosis Synapse — your corpus callosum.
@@ -4129,7 +4236,7 @@
                 </p>
                 <button id="btn-mobile-setup">Set up mobile access…</button>
               </div>
-              <div class="panel">
+              <div class="panel" id="settings-panel-connectors">
                 <p class="panel-title">Connectors</p>
                 <p class="subtitle" style="font-size: 11px; margin: -4px 0 10px;">
                   Auto-ingest from RSS, GitHub, Slack, Trello, Linear, or any service

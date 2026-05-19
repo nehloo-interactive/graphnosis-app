@@ -7772,6 +7772,126 @@ async function openMobileWizard(): Promise<void> {
   });
 }
 
+// ── Custom engram picker (drops DOWN, not OS-default UP) ────────────────────
+//
+// Replaces the native <select> open behavior with a custom button +
+// absolute-positioned dropdown. The hidden native <select> stays in DOM
+// as the source of truth so existing `.value` assignments and `change`
+// listeners across the codebase keep working unchanged.
+//
+// Sync strategy:
+//   - Native select INNER HTML changes (refreshAtlasView repopulates) →
+//     MutationObserver triggers re-render of the custom dropdown
+//   - Native select VALUE changes (atlasActiveGraph rebind) → property
+//     setter intercept delegates to the prototype getter/setter and then
+//     fires our re-render hook
+//   - User clicks a custom option → set native select.value (via our
+//     intercept) + dispatch 'change' event → all listeners fire normally
+
+function installCustomEngramPicker(): void {
+  const sel = document.getElementById('atlas-graph-picker') as HTMLSelectElement | null;
+  if (!sel || sel.dataset['customDropdownInstalled'] === '1') return;
+  sel.dataset['customDropdownInstalled'] = '1';
+
+  // 1. Build the wrapper + button + dropdown around the existing select.
+  const wrap = document.createElement('span');
+  wrap.className = 'engram-picker-wrap';
+  const btn = document.createElement('button');
+  btn.type = 'button';
+  btn.className = 'header-engram-picker';
+  btn.id = 'engram-picker-button';
+  btn.setAttribute('aria-haspopup', 'listbox');
+  btn.setAttribute('aria-expanded', 'false');
+  btn.innerHTML = `<span class="engram-picker-button-label">—</span><span class="engram-picker-chevron" aria-hidden="true">▾</span>`;
+  const dropdown = document.createElement('div');
+  dropdown.className = 'engram-picker-dropdown hidden';
+  dropdown.id = 'engram-picker-dropdown';
+  dropdown.setAttribute('role', 'listbox');
+
+  sel.parentElement?.insertBefore(wrap, sel);
+  wrap.appendChild(btn);
+  wrap.appendChild(dropdown);
+  wrap.appendChild(sel);
+  // Hide the native select but keep it in DOM as the data source.
+  sel.style.display = 'none';
+
+  const labelEl = btn.querySelector('.engram-picker-button-label') as HTMLSpanElement;
+
+  // 2. Render dropdown options from the current state of the native select.
+  const renderOptions = (): void => {
+    const opts = Array.from(sel.options);
+    dropdown.innerHTML = opts.map((o) => `
+      <button type="button" class="engram-picker-option${o.value === sel.value ? ' selected' : ''}" data-value="${escapeHtml(o.value)}" role="option" aria-selected="${o.value === sel.value}">${escapeHtml(o.text)}</button>
+    `).join('');
+    const curOpt = opts.find((o) => o.value === sel.value) ?? opts[0];
+    labelEl.textContent = curOpt?.text ?? '—';
+  };
+
+  // 3. Intercept `.value` setter so external assignments (`sel.value = X`)
+  //    propagate to our custom render. The native getter/setter on the
+  //    prototype is delegated to — we just add a side effect on set.
+  const proto = HTMLSelectElement.prototype;
+  const desc = Object.getOwnPropertyDescriptor(proto, 'value');
+  if (desc?.get && desc?.set) {
+    Object.defineProperty(sel, 'value', {
+      get(): string { return desc.get!.call(sel) as string; },
+      set(v: string) {
+        desc.set!.call(sel, v);
+        renderOptions();
+      },
+      configurable: true,
+    });
+  }
+
+  // 4. Watch for innerHTML changes — refreshAtlasView rebuilds options
+  //    by setting select.innerHTML directly; we need to re-render too.
+  new MutationObserver(renderOptions).observe(sel, { childList: true });
+
+  // 5. Toggle dropdown on button click.
+  btn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    const willOpen = dropdown.classList.contains('hidden');
+    dropdown.classList.toggle('hidden');
+    btn.setAttribute('aria-expanded', String(willOpen));
+    if (willOpen) {
+      // Scroll the currently-selected option into view on open.
+      dropdown.querySelector('.engram-picker-option.selected')?.scrollIntoView({ block: 'nearest' });
+    }
+  });
+
+  // 6. Option click → set value, dispatch change, close.
+  dropdown.addEventListener('click', (e) => {
+    const opt = (e.target as HTMLElement | null)?.closest('.engram-picker-option') as HTMLButtonElement | null;
+    if (!opt) return;
+    const v = opt.dataset['value'] ?? '';
+    sel.value = v;  // intercepted setter re-renders + updates label
+    sel.dispatchEvent(new Event('change', { bubbles: true }));
+    dropdown.classList.add('hidden');
+    btn.setAttribute('aria-expanded', 'false');
+  });
+
+  // 7. Close on outside click.
+  document.addEventListener('click', (e) => {
+    if (!wrap.contains(e.target as Node)) {
+      dropdown.classList.add('hidden');
+      btn.setAttribute('aria-expanded', 'false');
+    }
+  });
+
+  // 8. Escape closes; Enter/Space on button opens; arrow keys not wired in
+  //    v0.6 — basic mouse-driven UX is the priority. Add full keyboard
+  //    navigation in a follow-up if anyone asks.
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && !dropdown.classList.contains('hidden')) {
+      dropdown.classList.add('hidden');
+      btn.setAttribute('aria-expanded', 'false');
+    }
+  });
+
+  // 9. Initial paint (in case options are already populated).
+  renderOptions();
+}
+
 // ── Settings → Connectors panel ─────────────────────────────────────────────
 //
 // Wires the Settings pane's connectors list + per-kind setup modals to the
@@ -8257,6 +8377,41 @@ function collectConnectorFormData(kind: ConnectorKind): Partial<ConnectorConfigS
       const orig = btn.textContent; btn.textContent = 'Copied!';
       setTimeout(() => { btn.textContent = orig; }, 1500);
     });
+  });
+
+  // ── Custom engram picker dropdown — forces "drop down" direction ────────
+  // The native <select id="atlas-graph-picker"> opens in whatever direction
+  // macOS thinks fits (often upward, centered on the selected option). We
+  // replace its open behavior with a custom button + absolute-positioned
+  // dropdown that always opens DOWNWARD. The native <select> stays in DOM
+  // (hidden) as the source of truth — `.value` and `change` event listeners
+  // throughout the codebase keep working without modification.
+  installCustomEngramPicker();
+
+  // Sources → Settings jump links. The "want this list to grow on its own?"
+  // hint above the source list points at the AI-clients and connectors
+  // panels in Settings. We switch panes, then scroll the target panel into
+  // view with a brief highlight so the user's eye lands on the right place.
+  document.addEventListener('click', (e) => {
+    const link = (e.target as HTMLElement | null)?.closest('[data-jump-settings]') as HTMLElement | null;
+    if (!link) return;
+    e.preventDefault();
+    const target = link.dataset['jumpSettings'];
+    activateMode('settings');
+    // Defer scroll so the pane has finished its display:block transition.
+    setTimeout(() => {
+      const targetId = target === 'connectors' ? 'settings-panel-connectors'
+        : target === 'ai-clients' ? 'settings-panel-ai-clients'
+        : null;
+      if (!targetId) return;
+      const panel = document.getElementById(targetId);
+      if (!panel) return;
+      panel.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      // Brief 1.5s accent ring so the user's eye lands on the right panel.
+      panel.style.transition = 'box-shadow 200ms ease';
+      panel.style.boxShadow = '0 0 0 2px var(--accent)';
+      setTimeout(() => { panel.style.boxShadow = ''; }, 1500);
+    }, 50);
   });
 }
 
