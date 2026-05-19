@@ -7672,6 +7672,26 @@ function renderMobileStep2(): void {
   }
   const footerNote = $m<HTMLSpanElement>('mobile-footer-note');
   if (footerNote) footerNote.textContent = 'Changes take effect the next time the Cortex is unlocked.';
+
+  // VS Code / Copilot Chat config snippet. Always uses 127.0.0.1 — the
+  // local bridge is always on loopback regardless of the mobile bind setting.
+  const vscodeEl = $m<HTMLSpanElement>('mobile-vscode-config');
+  if (vscodeEl && info.token) {
+    const mcpJson = JSON.stringify(
+      {
+        servers: {
+          graphnosis: {
+            type: 'http',
+            url: `http://127.0.0.1:${info.port}/mcp`,
+            headers: { Authorization: `Bearer ${info.token}` },
+          },
+        },
+      },
+      null,
+      2,
+    );
+    vscodeEl.textContent = mcpJson;
+  }
 }
 
 function mobileCopyBtn(btn: HTMLButtonElement, text: string): void {
@@ -7793,7 +7813,8 @@ async function openMobileWizard(): Promise<void> {
     }
   });
 
-  // Copy buttons (static delegation)
+  // Copy buttons (static delegation). Checks data-token attribute first
+  // (for the obfuscated token field), then falls back to textContent.
   document.getElementById('mobile-setup-modal')?.addEventListener('click', (e) => {
     const btn = (e.target as HTMLElement).closest<HTMLButtonElement>('.copy-btn[data-copy-target]');
     if (!btn) return;
@@ -7802,6 +7823,13 @@ async function openMobileWizard(): Promise<void> {
     if (!target) return;
     const text = target.getAttribute('data-token') ?? target.textContent ?? '';
     mobileCopyBtn(btn, text);
+  });
+
+  // VS Code config copy button — copies the full .vscode/mcp.json snippet.
+  document.getElementById('btn-copy-vscode-config')?.addEventListener('click', (e) => {
+    const btn = e.currentTarget as HTMLButtonElement;
+    const text = document.getElementById('mobile-vscode-config')?.textContent ?? '';
+    if (text) mobileCopyBtn(btn, text);
   });
 
   // Tailscale link → open external browser

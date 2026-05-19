@@ -3,6 +3,7 @@
 import path from 'node:path';
 import os from 'node:os';
 import { promises as fs } from 'node:fs';
+import { randomUUID } from 'node:crypto';
 import lockfile from 'proper-lockfile';
 import { embeddings } from '@graphnosis-app/core';
 import { policy } from '@nehloo-interactive/graphnosis-secure-sync';
@@ -476,6 +477,41 @@ async function main(): Promise<void> {
     });
     process.on('SIGINT', () => httpServer.close());
     process.on('SIGTERM', () => httpServer.close());
+  }
+
+  // Always-on local HTTP bridge for the VS Code / Copilot extension.
+  // Binds exclusively on 127.0.0.1 — never reachable from outside the machine.
+  // Token is auto-generated on first start and persisted in settings so the
+  // extension reconnects without re-configuration. Skipped only if the mobile
+  // bridge is already bound to the same loopback port (avoids EADDRINUSE).
+  {
+    const currentSettings = host.getSettings();
+    const localPort = currentSettings.vscode?.localBridgePort ?? 3457;
+    const mobileConflicts = httpBridgeCfg?.enabled
+      && httpBridgeCfg.host === '127.0.0.1'
+      && httpBridgeCfg.port === localPort;
+
+    if (!mobileConflicts) {
+      let localToken = currentSettings.vscode?.localBridgeToken;
+      if (!localToken) {
+        localToken = randomUUID();
+        await host.setSettings({ vscode: { localBridgeToken: localToken, localBridgePort: localPort } });
+      }
+      try {
+        const localHttpServer = await startHttpMcpServer({
+          deps: mcpDeps,
+          port: localPort,
+          host: '127.0.0.1',
+          token: localToken,
+          allowedOrigins: [],
+        });
+        process.on('SIGINT', () => localHttpServer.close());
+        process.on('SIGTERM', () => localHttpServer.close());
+        console.error(`[graphnosis-sidecar] local HTTP bridge (VS Code) on http://127.0.0.1:${localPort}/mcp`);
+      } catch (e) {
+        console.error(`[graphnosis-sidecar] local HTTP bridge on :${localPort} failed (port in use?): ${(e as Error).message}`);
+      }
+    }
   }
 
   // Service connector manager. Always created (even with zero configs) so
