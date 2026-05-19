@@ -6970,7 +6970,12 @@ function showEngramSuggestion(p: EngramSuggestPayload): void {
       `<strong>${escapeHtml(client)}</strong> wants to save into a new engram ` +
       `“<strong>${escapeHtml(p.suggestedName)}</strong>”`;
   }
-  previewEl.textContent = p.preview || p.text.slice(0, 280);
+  // Render the full text (scrollable in CSS) so the user can actually
+  // read what's about to be saved before clicking Create. The `preview`
+  // field on the broadcast is just a 280-char truncation; the full body
+  // is shipped as `p.text` for exactly this purpose.
+  previewEl.textContent = p.text || p.preview || '';
+  previewEl.scrollTop = 0;
 
   // Render candidate radio rows (if any), plus a synthetic "Create new" row.
   candWrap.innerHTML = '';

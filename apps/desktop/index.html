@@ -3,7 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Graphnosis: Your Private Second Cortex</title>
+    <title>Graphnosis: Your Local, Encrypted Second Cortex</title>
     <style>
       :root {
         color-scheme: light dark;
@@ -1974,9 +1974,15 @@
         border-radius: 6px;
         padding: 8px 10px;
         margin: 6px 0 10px;
-        max-height: 88px;
-        overflow: hidden;
+        /* Scrollable preview — the AI may be saving a multi-KB note and
+           the user needs to actually read what's about to land in the
+           new engram before clicking Create. Cap to a banner-friendly
+           height; vertical scroll inside the box keeps the Create /
+           Dismiss buttons reachable without scrolling the whole banner. */
+        max-height: 200px;
+        overflow-y: auto;
         white-space: pre-wrap;
+        word-break: break-word;
       }
       .engram-suggest-actions { display: flex; gap: 8px; justify-content: flex-end; }
       .engram-suggest-candidates { display: flex; flex-direction: column; gap: 4px; margin: 6px 0 10px; }
@@ -3566,10 +3572,10 @@
                width="120" height="120"
                style="margin-bottom: 20px; border-radius: 22px; opacity: 0.92; flex-shrink: 0; display: block;" />
           <h1 style="text-align: center; width: 100%;">Graphnosis</h1>
-          <p class="subtitle" id="subtitle" style="text-align: center;">Your private second cortex</p>
+          <p class="subtitle" id="subtitle" style="text-align: center;">Your local, encrypted second cortex</p>
           <div id="error" class="error hidden"></div>
           <div class="panel unlock-card">
-            <p class="panel-title">Unlock your private second cortex of memories:</p>
+            <p class="panel-title">Unlock your encrypted second cortex:</p>
             <div class="row">
               <label for="cortex-dir" class="visually-hidden">Cortex folder path</label>
               <div class="pick-row">
@@ -3671,7 +3677,7 @@
                  now that hiddenTitle:true silences the OS one). -->
             <div class="app-title-row">
               <span class="brain-glyph" title="Cortex unlocked">🧠</span>
-              <span class="app-title">Graphnosis: Your Private Second Cortex</span>
+              <span class="app-title">Graphnosis: Your Local, Encrypted Second Cortex</span>
             </div>
             <!-- Cortex path row: just the path. The engram picker moved
                  to the right-side actions cluster (left of Add file). -->
