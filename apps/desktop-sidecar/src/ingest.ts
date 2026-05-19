@@ -2,9 +2,16 @@ import { Worker } from 'node:worker_threads';
 import { fileURLToPath } from 'node:url';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
-import { JSDOM } from 'jsdom';
-import { Readability } from '@mozilla/readability';
 import mammoth from 'mammoth';
+// jsdom + Readability are loaded lazily inside ingestWeb() so that the
+// sidecar's *startup* doesn't pull jsdom into the import graph. jsdom has
+// a runtime require() of an absolute path to its xhr-sync-worker file
+// that Bun's --compile bakes into the binary at build time — that path
+// 404s on any machine other than the one the binary was built on, and
+// the failed require kills the sidecar at startup with an uncaughtException.
+// Pushing the import into the function body keeps startup clean; jsdom
+// still loads (or surfaces a clean error) when the user actually pastes
+// a URL to ingest.
 import type { GraphnosisHost } from './host.js';
 import type { AppendDocumentInput } from './graphnosis-adapter.js';
 
@@ -218,6 +225,20 @@ export async function ingestWeb(host: GraphnosisHost, graphId: string, web: WebI
   }
 
   const html = web.html ?? (await fetchWithReadabilityFallback(web.url));
+  // Dynamic import: jsdom + Readability only load when this code path runs,
+  // not at sidecar startup. See the module-level comment for why.
+  let JSDOM: typeof import('jsdom').JSDOM;
+  let Readability: typeof import('@mozilla/readability').Readability;
+  try {
+    ({ JSDOM } = await import('jsdom'));
+    ({ Readability } = await import('@mozilla/readability'));
+  } catch (e) {
+    throw new Error(
+      `URL ingest unavailable in this build: the bundled jsdom couldn't load ` +
+      `(${(e as Error).message}). Save the page to an .html file and drag it in instead, ` +
+      `or paste the content directly as a clip.`
+    );
+  }
   const dom = new JSDOM(html, { url: web.url });
   const article = new Readability(dom.window.document).parse();
   const content = article
