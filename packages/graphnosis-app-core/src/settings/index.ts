@@ -7,7 +7,7 @@ import path from 'node:path';
 
 // ── Connector types ───────────────────────────────────────────────────────────
 
-export type ConnectorKind = 'webhook' | 'rss' | 'github' | 'slack' | 'trello' | 'linear';
+export type ConnectorKind = 'webhook' | 'rss' | 'github' | 'slack' | 'trello' | 'linear' | 'obsidian' | 'gbrain' | 'ai-context';
 
 export interface ConnectorConfig {
   /** User-chosen slug — must be unique within a cortex. */

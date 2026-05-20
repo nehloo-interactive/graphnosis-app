@@ -11,6 +11,9 @@ import { GitHubConnector } from './github.js';
 import { SlackConnector } from './slack.js';
 import { TrelloConnector } from './trello.js';
 import { LinearConnector } from './linear.js';
+import { ObsidianConnector } from './obsidian.js';
+import { GBrainConnector } from './gbrain.js';
+import { AiContextConnector } from './ai-context.js';
 
 interface RunningConnector {
   connector: Connector;
@@ -311,8 +314,11 @@ function buildConnector(cfg: ConnectorConfig): Connector {
     case 'rss':     return new RssConnector(cfg);
     case 'github':  return new GitHubConnector(cfg);
     case 'slack':   return new SlackConnector(cfg);
-    case 'trello':  return new TrelloConnector(cfg);
-    case 'linear':  return new LinearConnector(cfg);
+    case 'trello':   return new TrelloConnector(cfg);
+    case 'linear':   return new LinearConnector(cfg);
+    case 'obsidian': return new ObsidianConnector(cfg);
+    case 'gbrain':      return new GBrainConnector(cfg);
+    case 'ai-context':  return new AiContextConnector(cfg);
     default: throw new Error(`Unknown connector kind: ${(cfg as ConnectorConfig).kind}`);
   }
 }
