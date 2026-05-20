@@ -1966,6 +1966,9 @@
         color: var(--fg);
         border-bottom-color: var(--accent);
       }
+      /* Drop the first tab's left padding so its label lines up flush with
+         the "Graphnosis" pane title directly above it. */
+      .g-tab:first-child { padding-left: 0; }
       .g-tab-pane {
         flex: 1;
         display: flex;
