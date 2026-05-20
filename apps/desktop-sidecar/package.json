@@ -15,6 +15,7 @@
     "dev": "node --watch --enable-source-maps --loader ts-node/esm src/index.ts",
     "start": "node dist/index.js",
     "smoke": "node --enable-source-maps dist/smoketest.js",
+    "smoke:brain": "node --enable-source-maps dist/smoketest-brain.js",
     "typecheck": "tsc --noEmit -p tsconfig.json"
   },
   "dependencies": {
