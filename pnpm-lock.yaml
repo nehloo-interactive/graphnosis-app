@@ -137,18 +137,6 @@ importers:
         specifier: ^3.4.19
         version: 3.4.19(yaml@2.9.0)
 
-  apps/docs-backup:
-    dependencies:
-      '@astrojs/starlight':
-        specifier: ^0.32.0
-        version: 0.32.6(astro@5.18.1(@types/node@24.12.4)(jiti@1.21.7)(rollup@4.60.4)(typescript@5.9.3)(yaml@2.9.0))
-      astro:
-        specifier: ^5.1.5
-        version: 5.18.1(@types/node@24.12.4)(jiti@1.21.7)(rollup@4.60.4)(typescript@5.9.3)(yaml@2.9.0)
-      sharp:
-        specifier: ^0.33.0
-        version: 0.33.5
-
   apps/marketing-web:
     dependencies:
       '@astrojs/tailwind':
@@ -5703,25 +5691,6 @@ snapshots:
     transitivePeerDependencies:
       - supports-color
 
-  '@astrojs/mdx@4.3.14(astro@5.18.1(@types/node@24.12.4)(jiti@1.21.7)(rollup@4.60.4)(typescript@5.9.3)(yaml@2.9.0))':
-    dependencies:
-      '@astrojs/markdown-remark': 6.3.11
-      '@mdx-js/mdx': 3.1.1
-      acorn: 8.16.0
-      astro: 5.18.1(@types/node@24.12.4)(jiti@1.21.7)(rollup@4.60.4)(typescript@5.9.3)(yaml@2.9.0)
-      es-module-lexer: 1.7.0
-      estree-util-visit: 2.0.0
-      hast-util-to-html: 9.0.5
-      piccolore: 0.1.3
-      rehype-raw: 7.0.0
-      remark-gfm: 4.0.1
-      remark-smartypants: 3.0.2
-      source-map: 0.7.6
-      unist-util-visit: 5.1.0
-      vfile: 6.0.3
-    transitivePeerDependencies:
-      - supports-color
-
   '@astrojs/prism@3.1.0':
     dependencies:
       prismjs: 1.30.0
@@ -5746,37 +5715,6 @@ snapshots:
       '@types/mdast': 4.0.4
       astro: 5.18.1(@azure/identity@4.13.1)(@types/node@24.12.4)(jiti@1.21.7)(rollup@4.60.4)(typescript@5.9.3)(yaml@2.9.0)
       astro-expressive-code: 0.40.2(astro@5.18.1(@azure/identity@4.13.1)(@types/node@24.12.4)(jiti@1.21.7)(rollup@4.60.4)(typescript@5.9.3)(yaml@2.9.0))
-      bcp-47: 2.1.0
-      hast-util-from-html: 2.0.3
-      hast-util-select: 6.0.4
-      hast-util-to-string: 3.0.1
-      hastscript: 9.0.1
-      i18next: 23.16.8
-      js-yaml: 4.1.1
-      klona: 2.0.6
-      mdast-util-directive: 3.1.0
-      mdast-util-to-markdown: 2.1.2
-      mdast-util-to-string: 4.0.0
-      pagefind: 1.5.2
-      rehype: 13.0.2
-      rehype-format: 5.0.1
-      remark-directive: 3.0.1
-      unified: 11.0.5
-      unist-util-visit: 5.1.0
-      vfile: 6.0.3
-    transitivePeerDependencies:
-      - supports-color
-
-  '@astrojs/starlight@0.32.6(astro@5.18.1(@types/node@24.12.4)(jiti@1.21.7)(rollup@4.60.4)(typescript@5.9.3)(yaml@2.9.0))':
-    dependencies:
-      '@astrojs/mdx': 4.3.14(astro@5.18.1(@types/node@24.12.4)(jiti@1.21.7)(rollup@4.60.4)(typescript@5.9.3)(yaml@2.9.0))
-      '@astrojs/sitemap': 3.7.2
-      '@pagefind/default-ui': 1.5.2
-      '@types/hast': 3.0.4
-      '@types/js-yaml': 4.0.9
-      '@types/mdast': 4.0.4
-      astro: 5.18.1(@types/node@24.12.4)(jiti@1.21.7)(rollup@4.60.4)(typescript@5.9.3)(yaml@2.9.0)
-      astro-expressive-code: 0.40.2(astro@5.18.1(@types/node@24.12.4)(jiti@1.21.7)(rollup@4.60.4)(typescript@5.9.3)(yaml@2.9.0))
       bcp-47: 2.1.0
       hast-util-from-html: 2.0.3
       hast-util-select: 6.0.4
@@ -7662,11 +7600,6 @@ snapshots:
       astro: 5.18.1(@azure/identity@4.13.1)(@types/node@24.12.4)(jiti@1.21.7)(rollup@4.60.4)(typescript@5.9.3)(yaml@2.9.0)
       rehype-expressive-code: 0.40.2
 
-  astro-expressive-code@0.40.2(astro@5.18.1(@types/node@24.12.4)(jiti@1.21.7)(rollup@4.60.4)(typescript@5.9.3)(yaml@2.9.0)):
-    dependencies:
-      astro: 5.18.1(@types/node@24.12.4)(jiti@1.21.7)(rollup@4.60.4)(typescript@5.9.3)(yaml@2.9.0)
-      rehype-expressive-code: 0.40.2
-
   astro@4.16.19(@types/node@24.12.4)(rollup@4.60.4)(typescript@5.9.3):
     dependencies:
       '@astrojs/compiler': 2.13.1
@@ -7802,108 +7735,6 @@ snapshots:
       unifont: 0.7.4
       unist-util-visit: 5.1.0
       unstorage: 1.17.5(@azure/identity@4.13.1)
-      vfile: 6.0.3
-      vite: 6.4.2(@types/node@24.12.4)(jiti@1.21.7)(yaml@2.9.0)
-      vitefu: 1.1.3(vite@6.4.2(@types/node@24.12.4)(jiti@1.21.7)(yaml@2.9.0))
-      xxhash-wasm: 1.1.0
-      yargs-parser: 21.1.1
-      yocto-spinner: 0.2.3
-      zod: 3.25.76
-      zod-to-json-schema: 3.25.2(zod@3.25.76)
-      zod-to-ts: 1.2.0(typescript@5.9.3)(zod@3.25.76)
-    optionalDependencies:
-      sharp: 0.34.5
-    transitivePeerDependencies:
-      - '@azure/app-configuration'
-      - '@azure/cosmos'
-      - '@azure/data-tables'
-      - '@azure/identity'
-      - '@azure/keyvault-secrets'
-      - '@azure/storage-blob'
-      - '@capacitor/preferences'
-      - '@deno/kv'
-      - '@netlify/blobs'
-      - '@planetscale/database'
-      - '@types/node'
-      - '@upstash/redis'
-      - '@vercel/blob'
-      - '@vercel/functions'
-      - '@vercel/kv'
-      - aws4fetch
-      - db0
-      - idb-keyval
-      - ioredis
-      - jiti
-      - less
-      - lightningcss
-      - rollup
-      - sass
-      - sass-embedded
-      - stylus
-      - sugarss
-      - supports-color
-      - terser
-      - tsx
-      - typescript
-      - uploadthing
-      - yaml
-
-  astro@5.18.1(@types/node@24.12.4)(jiti@1.21.7)(rollup@4.60.4)(typescript@5.9.3)(yaml@2.9.0):
-    dependencies:
-      '@astrojs/compiler': 2.13.1
-      '@astrojs/internal-helpers': 0.7.6
-      '@astrojs/markdown-remark': 6.3.11
-      '@astrojs/telemetry': 3.3.0
-      '@capsizecss/unpack': 4.0.0
-      '@oslojs/encoding': 1.1.0
-      '@rollup/pluginutils': 5.3.0(rollup@4.60.4)
-      acorn: 8.16.0
-      aria-query: 5.3.2
-      axobject-query: 4.1.0
-      boxen: 8.0.1
-      ci-info: 4.4.0
-      clsx: 2.1.1
-      common-ancestor-path: 1.0.1
-      cookie: 1.1.1
-      cssesc: 3.0.0
-      debug: 4.4.3
-      deterministic-object-hash: 2.0.2
-      devalue: 5.8.1
-      diff: 8.0.4
-      dlv: 1.1.3
-      dset: 3.1.4
-      es-module-lexer: 1.7.0
-      esbuild: 0.27.7
-      estree-walker: 3.0.3
-      flattie: 1.1.1
-      fontace: 0.4.1
-      github-slugger: 2.0.0
-      html-escaper: 3.0.3
-      http-cache-semantics: 4.2.0
-      import-meta-resolve: 4.2.0
-      js-yaml: 4.1.1
-      magic-string: 0.30.21
-      magicast: 0.5.3
-      mrmime: 2.0.1
-      neotraverse: 0.6.18
-      p-limit: 6.2.0
-      p-queue: 8.1.1
-      package-manager-detector: 1.6.0
-      piccolore: 0.1.3
-      picomatch: 4.0.4
-      prompts: 2.4.2
-      rehype: 13.0.2
-      semver: 7.8.0
-      shiki: 3.23.0
-      smol-toml: 1.6.1
-      svgo: 4.0.1
-      tinyexec: 1.1.2
-      tinyglobby: 0.2.16
-      tsconfck: 3.1.6(typescript@5.9.3)
-      ultrahtml: 1.6.0
-      unifont: 0.7.4
-      unist-util-visit: 5.1.0
-      unstorage: 1.17.5
       vfile: 6.0.3
       vite: 6.4.2(@types/node@24.12.4)(jiti@1.21.7)(yaml@2.9.0)
       vitefu: 1.1.3(vite@6.4.2(@types/node@24.12.4)(jiti@1.21.7)(yaml@2.9.0))
@@ -11696,17 +11527,6 @@ snapshots:
       '@napi-rs/canvas': 0.1.80
 
   unpipe@1.0.0: {}
-
-  unstorage@1.17.5:
-    dependencies:
-      anymatch: 3.1.3
-      chokidar: 5.0.0
-      destr: 2.0.5
-      h3: 1.15.11
-      lru-cache: 11.3.6
-      node-fetch-native: 1.6.7
-      ofetch: 1.5.1
-      ufo: 1.6.4
 
   unstorage@1.17.5(@azure/identity@4.13.1):
     dependencies:
