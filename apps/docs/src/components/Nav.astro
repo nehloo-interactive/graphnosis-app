@@ -1,4 +1,12 @@
 ---
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
+
+let version = '';
+try {
+  const conf = JSON.parse(readFileSync(resolve('../../apps/desktop/src-tauri/tauri.conf.json'), 'utf8'));
+  version = conf.version ? `v${conf.version}` : '';
+} catch {}
 ---
 
 <header class="sticky top-0 z-50 backdrop-blur-md bg-[#13131a]/90 border-b border-[#2a2a3d]">
@@ -10,7 +18,7 @@
         <img src="/graphnosis-logo.png" alt="Graphnosis logo" class="w-12 h-12 shrink-0" />
         <span class="flex flex-col">
           <span class="font-black text-lg text-[#67e8f9] tracking-tight">Graphnosis</span>
-          <span class="text-sm text-[#f0f0f5] font-normal tracking-wide">Your Local Encrypted Second Cortex</span>
+          <span class="text-sm text-[#f0f0f5] font-normal tracking-wide">Your Local Encrypted Memory, Indexed</span>
         </span>
       </a>
 
@@ -25,12 +33,16 @@
           href="/download/mac"
           class="inline-flex items-center px-4 py-2 rounded-full bg-[#67e8f9] hover:bg-[#4dd6e8] text-[#13131a] text-sm font-semibold transition-colors"
         >
-          Download
+          Download{version ? ` ${version}` : ''}
         </a>
       </div>
 
       <!-- Mobile hamburger (CSS-only focus-within trick) -->
-      <div class="md:hidden relative" id="mobile-menu-container">
+      <div class="md:hidden flex items-center gap-3">
+        {version && (
+          <a href="/download/mac" class="text-xs font-mono font-semibold px-2.5 py-1 rounded-full border border-[#67e8f9] text-[#67e8f9]">{version}</a>
+        )}
+        <div class="relative" id="mobile-menu-container">
         <button
           id="mobile-menu-btn"
           aria-label="Toggle menu"
@@ -42,6 +54,7 @@
           <span class="block w-5 h-0.5 bg-[#f0f0f5] transition-opacity"></span>
           <span class="block w-5 h-0.5 bg-[#f0f0f5] transition-transform"></span>
         </button>
+        </div>
       </div>
     </div>
 
@@ -54,10 +67,10 @@
         <a href="/getting-started/overview" class="text-sm text-[#c4c6d6] hover:text-[#f0f0f5] transition-colors">Docs</a>
         <a href="#tech" class="text-sm text-[#c4c6d6] hover:text-[#f0f0f5] transition-colors font-mono">.gai</a>
         <a
-          href="#"
+          href="/download/mac"
           class="inline-flex items-center justify-center px-4 py-2 rounded-full bg-[#67e8f9] hover:bg-[#4dd6e8] text-[#13131a] text-sm font-semibold transition-colors"
         >
-          Download
+          Download{version ? ` ${version}` : ''}
         </a>
       </div>
     </div>
