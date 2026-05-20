@@ -540,10 +540,13 @@ const els = {
   brainVitality: $<HTMLSpanElement>('brain-vitality'),
   llmStatusChip: $<HTMLSpanElement>('llm-status-chip'),
   // Autonomous Brain pane
+  livingBrain: $<HTMLDivElement>('living-brain'),
+  lbNeuronCanvas: $<HTMLCanvasElement>('lb-neuron-canvas'),
   lbVitalityRing: $<HTMLDivElement>('lb-vitality-ring'),
   lbVitalityScore: $<HTMLSpanElement>('lb-vitality-score'),
   lbVitalityTitle: $<HTMLHeadingElement>('lb-vitality-title'),
   lbVitalityDetail: $<HTMLParagraphElement>('lb-vitality-detail'),
+  lbScanStatus: $<HTMLParagraphElement>('lb-scan-status'),
   btnLbRefresh: $<HTMLButtonElement>('btn-lb-refresh'),
   lbContradictions: $<HTMLDivElement>('lb-contradictions'),
   lbInsights: $<HTMLDivElement>('lb-insights'),
@@ -568,6 +571,8 @@ const els = {
   ollamaPullBar: $<HTMLDivElement>('ollama-pull-bar'),
   ollamaPullLabel: $<HTMLSpanElement>('ollama-pull-label'),
   ollamaNotInstalled: $<HTMLDivElement>('ollama-not-installed'),
+  ollamaConnectedHelp: $<HTMLDivElement>('ollama-connected-help'),
+  btnOllamaRecheck: $<HTMLButtonElement>('btn-ollama-recheck'),
   btnOpenOllamaSite: $<HTMLAnchorElement>('btn-open-ollama-site'),
 };
 
@@ -6733,6 +6738,10 @@ function forgetSelected(): void {
 
 function switchGraphnosisTab(tab: GraphnosisTab): void {
   graphnosisActiveTab = tab;
+  // Pause the Autonomous Brain pane's animations whenever we leave it; the
+  // brain branch below re-enables them. Cheap to call unconditionally.
+  neuronField.stop();
+  stopScanTicker();
   document.querySelectorAll<HTMLButtonElement>('.g-tab').forEach((b) => {
     b.classList.toggle('active', b.dataset['gtab'] === tab);
   });
@@ -6765,7 +6774,17 @@ function switchGraphnosisTab(tab: GraphnosisTab): void {
     // selection/data changed while away.
     if (els.gSearch.value.trim().length === 0) renderDashboard();
   } else if (tab === 'brain') {
+    neuronField.start();
+    startScanTicker();
     void renderLivingBrain();
+    // First time the tab opens this session, kick a full self-scan so the
+    // user actually sees the brain working — contradictions, synapses,
+    // insights, goals — with the scanning visuals. Subsequent opens just
+    // repaint; "Scan now" re-triggers on demand.
+    if (!brainFirstScanDone) {
+      brainFirstScanDone = true;
+      void ipcCall('brain:runScan', {}).catch(() => { /* non-fatal */ });
+    }
   }
 }
 
@@ -7482,7 +7501,19 @@ type BrainGoal = {
 };
 let brainGoals: BrainGoal[] = [];
 
+// Sidecar scan status — lastRun timestamps + interval lengths, used for the
+// scan-status countdown line. Refreshed on tab open and after each scan.
+let brainStatus: { scanning: boolean; lastRun: Record<string, number>; intervals: Record<string, number> } | null = null;
+// Phases (e.g. 'fullscan', 'contradiction-scan') with a live start-frame but
+// no done-frame yet. Non-empty ⇒ the pane shows its "scanning" state.
+const brainActivePhases = new Set<string>();
+// Run the on-demand full scan only once per session when the tab first opens.
+let brainFirstScanDone = false;
+// 1s ticker for the countdown line; runs only while the brain pane is shown.
+let scanTickerTimer: ReturnType<typeof setInterval> | null = null;
+
 const BRAIN_PHASE_LABELS: Record<string, string> = {
+  fullscan: 'Running a full self-scan',
   'contradiction-scan': 'Scanning for contradictions',
   synapse: 'Forming new connections',
   insight: 'Synthesizing insights',
@@ -7523,14 +7554,15 @@ function updateBrainUI(): void {
 
 // ── Autonomous Brain pane ─────────────────────────────────────────────────
 
-/** Full refresh: pull state + LLM status, then paint. Tab-open + Refresh. */
+/** Full refresh: pull state + LLM status + scan status, then paint. */
 async function renderLivingBrain(): Promise<void> {
   els.lbVitalityTitle.textContent = 'Checking your brain…';
   ensureFeedPlaceholder();
-  await Promise.all([refreshBrainState(), refreshLlmStatus()]);
+  await Promise.all([refreshBrainState(), refreshLlmStatus(), refreshBrainStatus()]);
   // refreshBrainState only repaints on success — paint again so a failed
   // fetch still resolves to an honest "brain unavailable" state.
   renderLivingBrainPane();
+  renderScanStatus();
 }
 
 /** Paint the pane from cached module state — no IPC, safe to call often. */
@@ -7593,9 +7625,18 @@ function renderLbContradictions(): void {
     btn.addEventListener('click', async () => {
       const id = btn.dataset['dismissContradiction'];
       if (!id) return;
+      // (5) Self-healing: pin the card's measured height, then collapse it
+      // to zero so the resolved contradiction visibly "heals" shut.
+      const card = btn.closest<HTMLElement>('.lb-contradiction');
+      if (card) {
+        card.style.maxHeight = `${card.scrollHeight}px`;
+        card.classList.add('lb-healing');
+        requestAnimationFrame(() => { card.style.maxHeight = '0px'; });
+      }
       try { await ipcCall('brain:dismissContradiction', { id }); } catch { /* ignore */ }
       brainContradictions = brainContradictions.filter((c) => c.id !== id);
-      renderLbContradictions();
+      // Re-render after the collapse finishes so the list reflows cleanly.
+      window.setTimeout(() => renderLbContradictions(), card ? 560 : 0);
     });
   });
 }
@@ -7664,37 +7705,277 @@ function ensureFeedPlaceholder(): void {
   }
 }
 
+/** Cap the activity feed so it doesn't grow unbounded. */
+function trimFeed(): void {
+  while (els.lbFeed.querySelectorAll('.lb-feed-item').length > 25) {
+    els.lbFeed.querySelector('.lb-feed-item:last-child')?.remove();
+  }
+}
+
+/** Add a "<phase>…" row to the activity feed when a scan loop starts. */
+function addFeedStart(phase: string): void {
+  els.lbFeed.querySelector('.lb-empty')?.remove();
+  const label = BRAIN_PHASE_LABELS[phase] ?? phase;
+  const item = document.createElement('div');
+  item.className = 'lb-feed-item brain-thinking';
+  item.dataset['phase'] = phase;
+  item.textContent = `${label}… · ${new Date().toLocaleTimeString()}`;
+  els.lbFeed.prepend(item);
+  trimFeed();
+}
+
+/** Mark the matching feed row done when a scan loop finishes. */
+function addFeedDone(phase: string): void {
+  const item = els.lbFeed.querySelector<HTMLElement>(
+    `.lb-feed-item[data-phase="${CSS.escape(phase)}"].brain-thinking`,
+  );
+  if (item) {
+    item.classList.remove('brain-thinking');
+    const label = BRAIN_PHASE_LABELS[phase] ?? phase;
+    item.textContent = `${label} — done · ${new Date().toLocaleTimeString()}`;
+  }
+}
+
+/** (6) Ring ripple + a distinct feed row when the brain forms a synapse. */
+function flashSynapse(): void {
+  els.lbVitalityRing.classList.remove('lb-synapse-pulse');
+  void els.lbVitalityRing.offsetWidth; // reflow so the animation restarts
+  els.lbVitalityRing.classList.add('lb-synapse-pulse');
+  setTimeout(() => els.lbVitalityRing.classList.remove('lb-synapse-pulse'), 1000);
+  els.lbFeed.querySelector('.lb-empty')?.remove();
+  const item = document.createElement('div');
+  item.className = 'lb-feed-item lb-feed-synapse';
+  item.textContent = `⚡ New connection formed · ${new Date().toLocaleTimeString()}`;
+  els.lbFeed.prepend(item);
+  trimFeed();
+}
+
 function handleBrainFrame(graphId: string): void {
   if (graphId.startsWith('__brain_start_')) {
     const phase = graphId.slice('__brain_start_'.length, -2);
-    els.lbFeed.querySelector('.lb-empty')?.remove();
-    const label = BRAIN_PHASE_LABELS[phase] ?? phase;
-    const item = document.createElement('div');
-    item.className = 'lb-feed-item brain-thinking';
-    item.dataset['phase'] = phase;
-    item.textContent = `${label}… · ${new Date().toLocaleTimeString()}`;
-    els.lbFeed.prepend(item);
-    while (els.lbFeed.querySelectorAll('.lb-feed-item').length > 25) {
-      els.lbFeed.querySelector('.lb-feed-item:last-child')?.remove();
-    }
+    brainActivePhases.add(phase);
+    els.livingBrain.classList.add('lb-scanning');
+    // 'fullscan' is the wrapper — it drives the scanning state but isn't a
+    // feed row of its own; the sub-phases provide the feed detail.
+    if (phase !== 'fullscan') addFeedStart(phase);
+    renderScanStatus();
   } else if (graphId.startsWith('__brain_done_')) {
+    // phase is '' for the bare '__brain_done__' vitality frame.
     const phase = graphId.slice('__brain_done_'.length, -2);
     if (phase) {
-      const item = els.lbFeed.querySelector<HTMLElement>(
-        `.lb-feed-item[data-phase="${CSS.escape(phase)}"].brain-thinking`,
-      );
-      if (item) {
-        item.classList.remove('brain-thinking');
-        const label = BRAIN_PHASE_LABELS[phase] ?? phase;
-        item.textContent = `${label} — done · ${new Date().toLocaleTimeString()}`;
-      }
+      brainActivePhases.delete(phase);
+      if (phase !== 'fullscan') addFeedDone(phase);
     }
-    // The event channel only carries graphId + ts — pull the fresh report.
+    if (brainActivePhases.size === 0) els.livingBrain.classList.remove('lb-scanning');
+    // The event channel only carries graphId + ts — pull the fresh state.
+    void refreshBrainState();
+    void refreshBrainStatus();
+    renderScanStatus();
+  } else if (graphId === '__brain_synapse__') {
+    flashSynapse();
+  } else if (graphId === '__brain_contradiction__' || graphId === '__brain_goal__') {
     void refreshBrainState();
   }
 }
 
-els.btnLbRefresh.addEventListener('click', () => { void renderLivingBrain(); });
+// "Scan now" — trigger a fresh full self-scan and repaint. The scan emits
+// frames that drive the scanning visuals; this just kicks it off.
+els.btnLbRefresh.addEventListener('click', () => {
+  void ipcCall('brain:runScan', {}).catch(() => { /* non-fatal */ });
+  void renderLivingBrain();
+});
+
+// ── (3) Scan-status countdown line ─────────────────────────────────────────
+
+/** Pull scan status (lastRun + intervals + scanning) into the module cache. */
+async function refreshBrainStatus(): Promise<void> {
+  try {
+    brainStatus = await ipcCall<NonNullable<typeof brainStatus>>('brain:getStatus', {});
+  } catch { /* non-fatal */ }
+}
+
+function formatRel(ms: number): string {
+  const s = Math.floor(ms / 1000);
+  if (s < 45) return 'just now';
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m}m ago`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return `${h}h ago`;
+  return `${Math.floor(h / 24)}d ago`;
+}
+
+function formatCountdown(ms: number): string {
+  const s = Math.max(0, Math.floor(ms / 1000));
+  const m = Math.floor(s / 60);
+  if (m >= 60) return `${Math.floor(m / 60)}h ${m % 60}m`;
+  return `${m}:${String(s % 60).padStart(2, '0')}`;
+}
+
+/** Repaint the scan-status line: the live phase while scanning, otherwise a
+ *  countdown to the next automatic background self-check. */
+function renderScanStatus(): void {
+  const el = els.lbScanStatus;
+  if (brainActivePhases.size > 0) {
+    const phase = [...brainActivePhases].filter((p) => p !== 'fullscan').pop() ?? 'fullscan';
+    el.textContent = `🔬 ${BRAIN_PHASE_LABELS[phase] ?? 'Scanning'}…`;
+    return;
+  }
+  const last = brainStatus?.lastRun?.['contradictionScan'];
+  const interval = brainStatus?.intervals?.['contradictionScan'] ?? 20 * 60 * 1000;
+  if (!last) {
+    el.textContent = '🩺 Background self-checks run automatically';
+    return;
+  }
+  const now = Date.now();
+  const until = last + interval - now;
+  const rel = formatRel(now - last);
+  el.textContent = until <= 0
+    ? `🩺 Last self-check ${rel} · next scan due now`
+    : `🩺 Last self-check ${rel} · next in ${formatCountdown(until)}`;
+}
+
+function startScanTicker(): void {
+  if (scanTickerTimer) return;
+  renderScanStatus();
+  scanTickerTimer = setInterval(renderScanStatus, 1000);
+}
+
+function stopScanTicker(): void {
+  if (scanTickerTimer) { clearInterval(scanTickerTimer); scanTickerTimer = null; }
+}
+
+// ── (7) Ambient neuron field ───────────────────────────────────────────────
+//
+// Drifting nodes + faint links + occasional firing pulses on the hero
+// canvas. Self-contained: only runs while the Autonomous Brain pane is
+// visible and the window is focused — never burns CPU off-screen.
+const neuronField = (() => {
+  interface NeuronNode { x: number; y: number; vx: number; vy: number; }
+  interface Pulse { from: number; to: number; t: number; }
+  let ctx: CanvasRenderingContext2D | null = null;
+  let raf = 0;
+  let running = false;
+  let w = 0;
+  let h = 0;
+  let nodes: NeuronNode[] = [];
+  let pulses: Pulse[] = [];
+  const COUNT = 16;
+  const LINK_DIST = 130;
+
+  function resize(): void {
+    const cv = els.lbNeuronCanvas;
+    const rect = cv.getBoundingClientRect();
+    if (rect.width === 0 || rect.height === 0) return;
+    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    w = rect.width;
+    h = rect.height;
+    cv.width = Math.round(w * dpr);
+    cv.height = Math.round(h * dpr);
+    ctx = cv.getContext('2d');
+    ctx?.setTransform(dpr, 0, 0, dpr, 0, 0);
+  }
+
+  function seed(): void {
+    nodes = [];
+    for (let i = 0; i < COUNT; i++) {
+      nodes.push({
+        x: Math.random() * w,
+        y: Math.random() * h,
+        vx: (Math.random() - 0.5) * 0.22,
+        vy: (Math.random() - 0.5) * 0.22,
+      });
+    }
+    pulses = [];
+  }
+
+  function tick(): void {
+    if (!running || !ctx) return;
+    ctx.clearRect(0, 0, w, h);
+
+    for (const n of nodes) {
+      n.x += n.vx;
+      n.y += n.vy;
+      if (n.x < 0 || n.x > w) n.vx *= -1;
+      if (n.y < 0 || n.y > h) n.vy *= -1;
+      n.x = Math.max(0, Math.min(w, n.x));
+      n.y = Math.max(0, Math.min(h, n.y));
+    }
+
+    for (let i = 0; i < nodes.length; i++) {
+      for (let j = i + 1; j < nodes.length; j++) {
+        const a = nodes[i]!;
+        const b = nodes[j]!;
+        const d = Math.hypot(a.x - b.x, a.y - b.y);
+        if (d < LINK_DIST) {
+          ctx.strokeStyle = `rgba(106,179,200,${0.2 * (1 - d / LINK_DIST)})`;
+          ctx.lineWidth = 1;
+          ctx.beginPath();
+          ctx.moveTo(a.x, a.y);
+          ctx.lineTo(b.x, b.y);
+          ctx.stroke();
+        }
+      }
+    }
+
+    for (const n of nodes) {
+      ctx.fillStyle = 'rgba(167,139,250,0.6)';
+      ctx.beginPath();
+      ctx.arc(n.x, n.y, 2, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    // Occasionally fire a pulse along a random pair of neurons.
+    if (Math.random() < 0.045 && nodes.length > 1) {
+      const from = Math.floor(Math.random() * nodes.length);
+      let to = Math.floor(Math.random() * nodes.length);
+      if (to === from) to = (to + 1) % nodes.length;
+      pulses.push({ from, to, t: 0 });
+    }
+    pulses = pulses.filter((p) => p.t <= 1);
+    for (const p of pulses) {
+      p.t += 0.03;
+      const a = nodes[p.from]!;
+      const b = nodes[p.to]!;
+      const x = a.x + (b.x - a.x) * p.t;
+      const y = a.y + (b.y - a.y) * p.t;
+      ctx.fillStyle = 'rgba(120,220,240,0.9)';
+      ctx.beginPath();
+      ctx.arc(x, y, 2.6, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    raf = requestAnimationFrame(tick);
+  }
+
+  function start(): void {
+    if (running) return;
+    // offsetParent is null when the pane (or an ancestor) is display:none.
+    if (els.lbNeuronCanvas.offsetParent === null) return;
+    resize();
+    if (w === 0) return;
+    seed();
+    running = true;
+    tick();
+  }
+
+  function stop(): void {
+    running = false;
+    cancelAnimationFrame(raf);
+  }
+
+  return {
+    start,
+    stop,
+    resize,
+    get running(): boolean { return running; },
+  };
+})();
+
+window.addEventListener('resize', () => { if (neuronField.running) neuronField.resize(); });
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) neuronField.stop();
+  else if (graphnosisActiveTab === 'brain') neuronField.start();
+});
 
 // ── LLM / Ollama settings ─────────────────────────────────────────────────
 
@@ -7705,10 +7986,22 @@ async function refreshLlmStatus(): Promise<void> {
     if (status.ollamaReachable) {
       els.ollamaStatusBadge.textContent = '● Connected';
       els.ollamaStatusBadge.className = 'ok';
-      els.ollamaModelRow.style.display = 'flex';
       els.ollamaPullRow.style.display = 'flex';
       els.ollamaNotInstalled.style.display = 'none';
+      els.ollamaConnectedHelp.style.display = '';
       els.llmStatusChip.style.display = 'none';
+
+      const hasModels = status.installedModels.length > 0;
+      // Active-model row is only useful once at least one model is installed.
+      els.ollamaModelRow.style.display = hasModels ? 'flex' : 'none';
+      els.ollamaConnectedHelp.innerHTML = hasModels
+        ? '✅ Ollama is connected. To add another model, pick it below and click '
+          + '<strong>Pull</strong>. To switch which model the Brain uses, choose it '
+          + 'as the <strong>Active model</strong> and click <strong>Apply</strong>.'
+        : '✅ Ollama is connected — last step. Pick a model below and click '
+          + '<strong>Pull</strong> to download it (one-time). '
+          + '<strong>Llama 3.2 3B</strong> is the recommended starting point. '
+          + 'The Brain’s AI features turn on automatically once a model finishes.';
 
       // Populate model selector
       els.ollamaModelSelect.innerHTML = '';
@@ -7720,15 +8013,24 @@ async function refreshLlmStatus(): Promise<void> {
         els.ollamaModelSelect.appendChild(opt);
       }
     } else {
-      els.ollamaStatusBadge.textContent = '● Not running';
+      els.ollamaStatusBadge.textContent = '● Not detected';
       els.ollamaStatusBadge.className = 'err';
       els.ollamaModelRow.style.display = 'none';
       els.ollamaPullRow.style.display = 'none';
+      els.ollamaConnectedHelp.style.display = 'none';
       els.ollamaNotInstalled.style.display = '';
       els.llmStatusChip.style.display = '';
     }
   } catch { /* non-fatal */ }
 }
+
+// "Recheck" — re-probe Ollama after the user installs/starts it, without
+// having to close and reopen Settings.
+els.btnOllamaRecheck.addEventListener('click', () => {
+  els.ollamaStatusBadge.textContent = 'Checking…';
+  els.ollamaStatusBadge.className = '';
+  void refreshLlmStatus();
+});
 
 els.btnOllamaApplyModel.addEventListener('click', async () => {
   const model = els.ollamaModelSelect.value;
@@ -7782,7 +8084,7 @@ els.btnOllamaPull.addEventListener('click', async () => {
 
 els.btnOpenOllamaSite.addEventListener('click', (e) => {
   e.preventDefault();
-  void invoke('open_external_url', { url: 'https://ollama.ai' });
+  void invoke('open_external_url', { url: 'https://ollama.com/download' });
 });
 
 els.llmStatusChip.addEventListener('click', () => {

@@ -1055,6 +1055,21 @@ async function dispatch(deps: IpcDeps, method: string, params: unknown): Promise
       return deps.brainEngine.listGoals();
     }
 
+    case 'brain:runScan': {
+      // Fire-and-forget: the scan emits start/done frames that drive the
+      // UI's scanning visuals. Awaiting here would block the IPC response
+      // for the whole (potentially minute-long, LLM-bound) sweep.
+      if (deps.brainEngine) void deps.brainEngine.runFullScan();
+      return { ok: true };
+    }
+
+    case 'brain:getStatus': {
+      if (!deps.brainEngine) {
+        return { scanning: false, lastRun: {}, intervals: {} };
+      }
+      return deps.brainEngine.getStatus();
+    }
+
     // ── LLM / Ollama management IPC ─────────────────────────────────────────
 
     case 'llm:status': {

@@ -131,6 +131,21 @@ The timeline is tight. Past projects slipped by about two months each.`;
   assert(v2.overall >= 0 && v2.overall <= 100, 'computeVitality must be 0-100');
   log('compute-vitality', { overall: v2.overall });
 
+  // 10 — getStatus() reports intervals + lastRun without throwing.
+  const status = brain.getStatus();
+  assert(typeof status.scanning === 'boolean', 'getStatus.scanning must be boolean');
+  assert((status.intervals['contradictionScan'] ?? 0) > 0, 'getStatus must report intervals');
+  log('status', { scanning: status.scanning, intervalKeys: Object.keys(status.intervals).length });
+
+  // 11 — runFullScan() completes and emits a wrapping fullscan start/done.
+  await brain.runFullScan();
+  const frameGraphId = (f: RawFrame): string =>
+    (f.payload as { graphId?: string } | undefined)?.graphId ?? '';
+  const sawFullscanStart = frames.some((f) => frameGraphId(f) === '__brain_start_fullscan__');
+  const sawFullscanDone = frames.some((f) => frameGraphId(f) === '__brain_done_fullscan__');
+  assert(sawFullscanStart && sawFullscanDone, 'runFullScan must emit fullscan start + done frames');
+  log('full-scan', { fullscanStart: sawFullscanStart, fullscanDone: sawFullscanDone });
+
   log('PASS', { brainFramesEmitted: frames.length });
 }
 
