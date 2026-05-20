@@ -26,10 +26,13 @@ import type { Connector, ConnectorEvent } from './interface.js';
 export class RssConnector implements Connector {
   constructor(readonly config: ConnectorConfig) {}
 
-  private get feedUrl(): string {
-    const url = this.config.options['feedUrl'];
-    if (typeof url !== 'string' || !url) throw new Error('rss connector requires options.feedUrl');
-    return url;
+  private get feedUrls(): string[] {
+    const feeds = this.config.options['feeds'];
+    if (Array.isArray(feeds) && feeds.length > 0) return feeds as string[];
+    // Legacy single-URL field
+    const single = this.config.options['feedUrl'];
+    if (typeof single === 'string' && single) return [single];
+    throw new Error('rss connector requires at least one feed URL (options.feeds)');
   }
 
   private get maxItems(): number {
@@ -38,23 +41,25 @@ export class RssConnector implements Connector {
   }
 
   async pull(since?: Date): Promise<ConnectorEvent[]> {
-    const res = await fetch(this.feedUrl, {
-      headers: { 'User-Agent': 'GraphnosisApp/1.0 RSS reader (+local)' },
-    });
-    if (!res.ok) throw new Error(`RSS fetch failed: ${res.status} ${res.statusText}`);
-    const xml = await res.text();
-    const items = parseXmlFeed(xml, this.feedUrl);
-
     const sinceTime = since?.getTime() ?? 0;
-    const fresh = items
-      .filter(item => item.pubDate > sinceTime)
-      .slice(0, this.maxItems);
-
-    return fresh.map(item => ({
-      text: `# ${item.title}\n\n${item.description}\n\nSource: ${item.link}`,
-      sourceRef: `rss:${this.config.id}:${item.guid || item.link}`,
-      label: item.title || this.feedUrl,
-    }));
+    const all: ConnectorEvent[] = [];
+    for (const url of this.feedUrls) {
+      const res = await fetch(url, {
+        headers: { 'User-Agent': 'GraphnosisApp/1.0 RSS reader (+local)' },
+      });
+      if (!res.ok) throw new Error(`RSS fetch failed for ${url}: ${res.status} ${res.statusText}`);
+      const xml = await res.text();
+      const items = parseXmlFeed(xml, url);
+      const fresh = items.filter(item => item.pubDate > sinceTime).slice(0, this.maxItems);
+      for (const item of fresh) {
+        all.push({
+          text: `# ${item.title}\n\n${item.description}\n\nSource: ${item.link}`,
+          sourceRef: `rss:${this.config.id}:${item.guid || item.link}`,
+          label: item.title || url,
+        });
+      }
+    }
+    return all;
   }
 }
 
