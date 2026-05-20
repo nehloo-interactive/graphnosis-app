@@ -21,6 +21,7 @@ import {
   ATLAS_ENGINES,
   type AtlasEngineKind,
 } from './atlas-engine';
+import QRCode from 'qrcode';
 
 // ---- types matching Rust ------------------------------------------------
 
@@ -8195,6 +8196,19 @@ function renderMobileStep2(): void {
       2,
     );
     vscodeEl.textContent = mcpJson;
+  }
+
+  const qrCanvas = $m<HTMLCanvasElement>('mobile-qr-canvas');
+  if (qrCanvas && info.token) {
+    const qrPayload = JSON.stringify({ url: `${url}/mcp`, token: info.token });
+    QRCode.toCanvas(qrCanvas, qrPayload, {
+      width: 200,
+      margin: 2,
+      color: { dark: '#000000', light: '#ffffff' },
+    }).catch(() => {
+      const block = $m<HTMLDivElement>('mobile-qr-block');
+      if (block) block.style.display = 'none';
+    });
   }
 }
 
