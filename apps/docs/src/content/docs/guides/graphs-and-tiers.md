@@ -27,11 +27,14 @@ Open the Graphnosis window → click **+ New Graph** → give it a name and choo
 
 Every graph is assigned one of three tiers:
 
-| Tier | What it means |
-|------|--------------|
-| `public` | Content may be surfaced to any AI client without restriction. |
-| `personal` | Content is surfaced only when the AI explicitly asks for context (no proactive injection). Token cap applies. |
-| `sensitive` | Content is never surfaced to AI clients automatically. Requires manual export or explicit user action. |
+<table>
+<thead><tr><th>Tier</th><th>What it means</th></tr></thead>
+<tbody>
+<tr><td style="white-space:nowrap"><code>public</code></td><td>Content may be surfaced to any AI client without restriction.</td></tr>
+<tr><td style="white-space:nowrap"><code>personal</code></td><td>Content is surfaced only when the AI explicitly asks for context (no proactive injection). Token cap applies.</td></tr>
+<tr><td style="white-space:nowrap"><code>sensitive</code></td><td>Content is never surfaced to AI clients automatically. Requires manual export or explicit user action.</td></tr>
+</tbody>
+</table>
 
 Tiers are a hard cap, enforced by the sidecar before any content leaves the Cortex. The AI model itself never sees the tier configuration — it simply doesn't receive content above its allowed level.
 
@@ -85,6 +88,20 @@ Changes to `policy.json` take effect immediately — no restart required. The si
 ### `globalMaxTokensPerTurn`
 
 This is a hard ceiling across all graphs combined. Even if individual graph caps add up to more, the sidecar will truncate the total context to this limit. Default: `8000`.
+
+## Moving sources between engrams
+
+Sources aren't permanently bound to the engram they were ingested into. You can reassign a source at any time from the Sources pane — hover the row, click **Move to…**, and pick the destination.
+
+If you need a new engram as the destination, select **New Engram…** from the dropdown, type a name, and Graphnosis will create it and move the source in one step.
+
+Moving a source is instant and non-destructive. All chunks, embeddings, and cached content travel with it. The AI clients reflect the new location on the next `recall` call — no restart or re-ingest needed. The moved source is governed by the destination engram's sensitivity tier immediately after the move.
+
+Typical reasons to move a source:
+
+- You ingested a work document into `personal` by accident — move it to `work`
+- A research paper turned out to be closely related to a specific project — move it into that project's engram for tighter recall
+- You're splitting a large general-purpose engram into topic-specific ones over time
 
 ## Which graphs does a client see?
 

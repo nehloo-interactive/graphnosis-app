@@ -120,6 +120,24 @@ There is no hard file size limit, but files over ~50 MB of raw text may take sev
 
 If a file you've ingested has changed, you can reingest it from the Source detail view. The old chunks are replaced with fresh ones from the updated content. The Source's `updated_at` timestamp is updated accordingly.
 
+## Filtering sources
+
+The Sources pane has a **Filter sources…** search bar at the top. Typing any text immediately hides sources that don't match — by filename, URL, or clip snippet. Engram headings collapse automatically when none of their sources match, so the list stays clean.
+
+The filter is session-only: it resets when you close the app, and it never hides anything permanently. Clear the field to restore the full list.
+
+## Moving a source to another engram
+
+Sometimes a source ends up in the wrong engram. You can move it without reingesting.
+
+1. Hover the source row in the **Sources** pane.
+2. Click **Move to…** — a picker appears inline.
+3. Choose the destination engram from the dropdown, or select **New Engram…** to create one on the spot.
+   - If you choose **New Engram…**, type a display name in the field that appears. Graphnosis will generate a URL-safe graph ID automatically and create the engram before moving the source.
+4. Click **Move**. The source disappears from the current engram's list and appears in the destination.
+
+The move is non-destructive: all chunks, embeddings, and the content cache entry travel with the source. Nothing is reprocessed. AI recall from the destination engram will include the source on the next call, subject to that engram's sensitivity tier.
+
 ## Removing a source
 
 Open the Source in the Graphnosis window and click **Remove**. This deletes all associated chunks and embeddings from the Cortex. The original file on disk is not touched.

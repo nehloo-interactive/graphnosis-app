@@ -1,4 +1,14 @@
 ---
+let version = '';
+try {
+  const res = await fetch('https://api.github.com/repos/nehloo-interactive/graphnosis-app/releases/latest', {
+    headers: { 'Accept': 'application/vnd.github+json', 'User-Agent': 'graphnosis-docs' }
+  });
+  if (res.ok) {
+    const data = await res.json();
+    version = data.tag_name ?? '';
+  }
+} catch {}
 ---
 
 <section
@@ -43,7 +53,7 @@
       <div class="grid grid-cols-1 md:grid-cols-3 gap-4 text-left mb-12 mt-0">
 
         <article class="bg-[#1c1c27] border border-[#2a2a3d] rounded-xl p-6 flex flex-col gap-4">
-          <div class="flex items-center gap-2 text-xs text-[#71717a] font-mono whitespace-nowrap overflow-x-auto">
+          <div class="flex items-center gap-2 text-xs text-[#9b9db8] font-mono whitespace-nowrap overflow-x-auto">
             <span>flow</span>
             <span class="text-[#36C5F0] font-semibold">Slack</span>
             <span>+</span>
@@ -54,7 +64,7 @@
             <span class="text-[#D97757] font-semibold">Claude Cowork</span>
           </div>
           <p class="text-[#f0f0f5] text-sm font-semibold leading-snug">"Cross-memory of a recurring code bug. Note down the lessons learned."</p>
-          <p class="text-[#71717a] text-sm leading-relaxed">You <u>auto-ingest</u> your <b>Slack</b> export and <b>GitHub</b> PR history into <b>Graphnosis</b> private, local folder (kind of a human cortex). It indexes both in a multi-graph/engram (like the human hippocampus). In <b>Cursor</b>, you ask <span class="text-[#f0f0f5] font-mono text-xs"><u>recall</u> the report about yesterday's recurring crash</span> — it surfaces from the indexed graph/engram (just like the human prefrontal cortex) the Slack thread where the root cause was debated, plus the PR that "fixed" it and the later commit that silently undid it. You have the full picture before writing a single line, and now you can simply tell <b>Claude Cowork</b> to <span class="text-[#f0f0f5] font-mono text-xs"><u>remember</u> the lessons learned from the latest recurring crash</span> — it already knows what you're talking about.</p>
+          <p class="text-[#9b9db8] text-sm leading-relaxed">You <u>auto-ingest</u> your <b>Slack</b> export and <b>GitHub</b> PR history into <b>Graphnosis</b> private, local folder (kind of a human cortex). It indexes both in a multi-graph/engram (like the human hippocampus). In <b>Cursor</b>, you ask <span class="text-[#f0f0f5] font-mono text-xs"><u>recall</u> the report about yesterday's recurring crash</span> — it surfaces from the indexed graph/engram (just like the human prefrontal cortex) the Slack thread where the root cause was debated, plus the PR that "fixed" it and the later commit that silently undid it. You have the full picture before writing a single line, and now you can simply tell <b>Claude Cowork</b> to <span class="text-[#f0f0f5] font-mono text-xs"><u>remember</u> the lessons learned from the latest recurring crash</span> — it already knows what you're talking about.</p>
           <div class="flex gap-2 mt-auto flex-wrap">
             <span class="text-[10px] font-mono px-2 py-0.5 rounded bg-[#13131a] text-[#67e8f9] border border-[#2a2a3d]">ingest</span>
             <span class="text-[10px] font-mono px-2 py-0.5 rounded bg-[#13131a] text-[#67e8f9] border border-[#2a2a3d]">recall</span>
@@ -63,7 +73,7 @@
         </article>
 
         <article class="bg-[#1c1c27] border border-[#2a2a3d] rounded-xl p-6 flex flex-col gap-4">
-          <div class="flex items-center gap-2 text-xs text-[#71717a] font-mono whitespace-nowrap overflow-x-auto">
+          <div class="flex items-center gap-2 text-xs text-[#9b9db8] font-mono whitespace-nowrap overflow-x-auto">
             <span>flow</span>
             <span class="text-[#5E6AD2] font-semibold">Linear</span>
             <span>+</span>
@@ -74,7 +84,7 @@
             <span class="text-[#0EA5E9]">Zed</span>
           </div>
           <p class="text-[#f0f0f5] text-sm font-semibold leading-snug">"The Fed just moved. Which positions are exposed? Did I forget anything?"</p>
-          <p class="text-[#71717a] text-sm leading-relaxed">You <u>auto-ingest</u> your <b>Linear</b> research tickets and <b>Trello</b> deal pipeline into your private, local <b>Graphnosis</b> folder (kind of a human cortex). It indexes both in a multi-graph/engram (like the human hippocampus). The Fed announces a surprise rate hike. In <b>Claude Desktop</b>: <span class="text-[#f0f0f5] font-mono text-xs"><u>remind</u> me which positions carry duration risk above threshold.</span> It connects your research notes and pipeline cards, surfaces the two exposed holdings from the indexed graph/engram (just like the human prefrontal cortex) — one flagged three weeks ago in a ticket you'd forgotten. You switch to <b>Zed</b> and say <span class="text-[#f0f0f5] font-mono text-xs"><u>recall</u> the duration risk analysis and apply it to the model</span> — no re-briefing, no digging through threads.</p>
+          <p class="text-[#9b9db8] text-sm leading-relaxed">You <u>auto-ingest</u> your <b>Linear</b> research tickets and <b>Trello</b> deal pipeline into your private, local <b>Graphnosis</b> folder (kind of a human cortex). It indexes both in a multi-graph/engram (like the human hippocampus). The Fed announces a surprise rate hike. In <b>Claude Desktop</b>: <span class="text-[#f0f0f5] font-mono text-xs"><u>remind</u> me which positions carry duration risk above threshold.</span> It connects your research notes and pipeline cards, surfaces the two exposed holdings from the indexed graph/engram (just like the human prefrontal cortex) — one flagged three weeks ago in a ticket you'd forgotten. You switch to <b>Zed</b> and say <span class="text-[#f0f0f5] font-mono text-xs"><u>recall</u> the duration risk analysis and apply it to the model</span> — no re-briefing, no digging through threads.</p>
           <div class="flex gap-2 mt-auto flex-wrap">
             <span class="text-[10px] font-mono px-2 py-0.5 rounded bg-[#13131a] text-[#67e8f9] border border-[#2a2a3d]">ingest</span>
             <span class="text-[10px] font-mono px-2 py-0.5 rounded bg-[#13131a] text-[#67e8f9] border border-[#2a2a3d]">remind</span>
@@ -83,7 +93,7 @@
         </article>
 
         <article class="bg-[#1c1c27] border border-[#2a2a3d] rounded-xl p-6 flex flex-col gap-4">
-          <div class="flex items-center gap-2 text-xs text-[#71717a] font-mono whitespace-nowrap overflow-x-auto">
+          <div class="flex items-center gap-2 text-xs text-[#9b9db8] font-mono whitespace-nowrap overflow-x-auto">
             <span>flow</span>
             <span class="text-[#36C5F0] font-semibold">Slack</span>
             <span>+</span>
@@ -92,7 +102,7 @@
             <span class="text-[#D97757]">Claude Cowork</span>
           </div>
           <p class="text-[#f0f0f5] text-sm font-semibold leading-snug">"Our key volunteer left. Who holds the knowledge now?"</p>
-          <p class="text-[#71717a] text-sm leading-relaxed">You <u>auto-ingest</u> your <b>Slack</b> volunteer channels and program documentation files into your private, local <b>Graphnosis</b> folder (kind of a human cortex). It indexes both in a multi-graph/engram (like the human hippocampus). Your longest-serving volunteer resigns on short notice. In <b>Claude Code</b>: <span class="text-[#f0f0f5] font-mono text-xs"><u>correct</u> the org chart - Maria is no longer the lead for the youth literacy program.</span> You approve the diff — every reference updates. You switch to <b>Claude Cowork</b> and say <span class="text-[#f0f0f5] font-mono text-xs"><u>recall</u> everything Maria owned at work and draft an onboarding brief for her replacement</span> — three years of institutional knowledge, surfaced from the indexed graph/engram (just like the human prefrontal cortex) in seconds.</p>
+          <p class="text-[#9b9db8] text-sm leading-relaxed">You <u>auto-ingest</u> your <b>Slack</b> volunteer channels and program documentation files into your private, local <b>Graphnosis</b> folder (kind of a human cortex). It indexes both in a multi-graph/engram (like the human hippocampus). Your longest-serving volunteer resigns on short notice. In <b>Claude Code</b>: <span class="text-[#f0f0f5] font-mono text-xs"><u>correct</u> the org chart - Maria is no longer the lead for the youth literacy program.</span> You approve the diff — every reference updates. You switch to <b>Claude Cowork</b> and say <span class="text-[#f0f0f5] font-mono text-xs"><u>recall</u> everything Maria owned at work and draft an onboarding brief for her replacement</span> — three years of institutional knowledge, surfaced from the indexed graph/engram (just like the human prefrontal cortex) in seconds.</p>
           <div class="flex gap-2 mt-auto flex-wrap">
             <span class="text-[10px] font-mono px-2 py-0.5 rounded bg-[#13131a] text-[#67e8f9] border border-[#2a2a3d]">ingest</span>
             <span class="text-[10px] font-mono px-2 py-0.5 rounded bg-[#13131a] text-[#67e8f9] border border-[#2a2a3d]">correct</span>
@@ -122,7 +132,7 @@
         </p>
       </div>
       <div class="border-t border-[#2a2a3d] pt-12 text-center">
-      <p class="text-lg sm:text-xl text-[#71717a] max-w-xl mx-auto leading-relaxed mb-10">
+      <p class="text-lg sm:text-xl text-[#9b9db8] max-w-xl mx-auto leading-relaxed mb-10">
         Graphnosis' indexing pipeline is deterministic and runs entirely on your device. No AI API is called.
         <br />
         <span class="text-[#f0f0f5]">The cost to build your local, encrypted second cortex: $0.</span>
@@ -134,7 +144,7 @@
           href="/download/mac"
           class="inline-flex items-center gap-2 px-6 py-3.5 rounded-full bg-[#67e8f9] hover:bg-[#4dd6e8] text-[#13131a] font-bold text-base transition-colors shadow-lg shadow-[#67e8f9]/20"
         >
-          Download for macOS — Free
+          Download{version ? ` ${version}` : ''} for macOS — Free
         </a>
         <a
           href="/getting-started/overview"
@@ -147,7 +157,7 @@
         </a>
       </div>
 
-      <p class="text-sm text-[#71717a]">
+      <p class="text-sm text-[#9b9db8]">
         <span class="text-[#f0f0f5] font-semibold">Local-first</span>
         &nbsp;·&nbsp;
         <span class="text-[#f0f0f5] font-semibold">No cloud AI during ingest</span>

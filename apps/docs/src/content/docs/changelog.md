@@ -11,6 +11,36 @@ Conventions: **Added** = new features, **Changed** = behavior or UX shifts, **Fi
 
 ---
 
+## v0.7 — Sources management, 3D graph performance, and readability
+
+Theme: **make large Cortexes easier to navigate and large graphs easier to work with.** This release adds first-class source management (search, move between engrams), makes the 3D graph usable on 25K-edge graphs without freezing the UI, and addresses a wave of readability and polish issues reported after v0.6.
+
+### Added
+
+- **Sources search filter.** A "Filter sources…" input sits above the Sources list. Typing narrows the list instantly — source names and file paths both match. Engram group headings hide automatically when none of their sources match, so you only see the groups that are relevant.
+- **Move a source to another engram.** Each source row now has a **Move to…** button. A compact inline picker appears with a list of your other engrams (sorted alphabetically). Pick an existing engram or choose **New Engram…** to create one right from the picker — the new engram is created with a Personal template and your chosen display name, and the move happens in the same gesture. All chunks, embeddings, and the content cache entry transfer with the source; the graph re-links automatically after the move.
+- **Help button in the top bar.** A `?` button next to the Lock button opens [docs.graphnosis.com](https://docs.graphnosis.com) in your default browser.
+
+### Changed
+
+- **Sticky engram headings in Sources.** When you scroll through a long sources list, the current engram's name header sticks to the menu bar so you always know which engram you're looking at. The heading is replaced by the next engram's heading as it scrolls into view.
+- **Semantic edges auto-hide on large graphs.** When a graph has more than 5,000 semantic (embedding-similarity) edges, Graphnosis automatically hides that category in the 3D view to keep framerate navigable. The legend shows semantic edges as "off" so you can re-enable them at any time. Switching to a smaller graph that is below the threshold restores them automatically.
+- **3D graph layout no longer freezes the UI during initial layout.** The force simulation now scales its parameters to the graph's node count. Large graphs (1,500+ nodes) skip the synchronous warmup pass and run with a faster alpha-decay and fewer collision iterations — the graph appears immediately and settles in the background. Periodic reheat is also disabled above this threshold. Small graphs are unaffected.
+- **3D graph reset no longer shifts the view.** Previously the Reset button moved the orbit pivot to the world origin, which caused the camera to visibly jump when the pivot didn't coincide with the view center. Reset now only clears selection emphasis (node size, opacity); the camera stays exactly where it was.
+- **Engrams sorted alphabetically in all pickers.** The top-bar engram dropdown, the move-to picker, the connector target selector, and the Settings engram lists all now sort by display name instead of creation order.
+- **`ai-conversation` source references rendered as readable labels everywhere.** The detail-pane breadcrumb and trivia-card source label now show `AI: <topic>` (or `AI conversation` when no topic is set), matching the formatting the Sources list and atlas legend already used. The raw `ai-conversation:<timestamp>:<topic>` ref no longer appears anywhere in the UI.
+
+### Fixed
+
+- **Sources list scroll position preserved after a move.** Confirming a move previously reloaded the list and scrolled it back to the top. The view now stays in place.
+- **Sources list auto-refreshes after a move completes** rather than requiring a manual pane switch to see the updated state.
+
+### Migrations
+
+None. v0.7 is fully backward-compatible with v0.6 Cortexes.
+
+---
+
 ## v0.6 — Mobile, connectors, and the broader MCP-client universe
 
 Theme: **make your Cortex reachable from anywhere, growing on its own from the tools you already use.** The biggest single release since v0.1 in scope of new surface — a mobile bridge with a 3-step wizard, six service connectors with BYO credentials, encryption for those credentials at rest, broader MCP-client coverage beyond Claude Desktop / Code / Cursor, and a Settings UI to manage all of it.

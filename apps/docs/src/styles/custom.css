@@ -7,3 +7,11 @@
   height: 2.5rem !important;
   width: auto !important;
 }
+
+/* Increase contrast of muted gray text in Starlight dark theme.
+   gray-2 = main body text, gray-3 = sidebar labels / descriptions.
+   Defaults are 77% and 56% lightness — bump both for readability. */
+:root {
+  --sl-color-gray-2: hsl(224, 12%, 88%);
+  --sl-color-gray-3: hsl(224, 10%, 72%);
+}
