@@ -1,13 +1,11 @@
 ---
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
+
 let version = '';
 try {
-  const res = await fetch('https://api.github.com/repos/nehloo-interactive/graphnosis-app/releases/latest', {
-    headers: { 'Accept': 'application/vnd.github+json', 'User-Agent': 'graphnosis-docs' }
-  });
-  if (res.ok) {
-    const data = await res.json();
-    version = data.tag_name ?? '';
-  }
+  const conf = JSON.parse(readFileSync(resolve('../../apps/desktop/src-tauri/tauri.conf.json'), 'utf8'));
+  version = conf.version ? `v${conf.version}` : '';
 } catch {}
 ---
 
