@@ -7962,6 +7962,7 @@ function mobileSetStep(step: number): void {
   if (btnNext) {
     btnNext.classList.toggle('hidden', step === 2);
     btnNext.textContent = step === 0 ? 'Save & Next' : 'Next';
+    btnNext.disabled = step === 0 && !($m<HTMLInputElement>('mobile-bridge-enabled')?.checked);
   }
   if (btnClose) btnClose.textContent = step === 2 ? 'Done' : 'Cancel';
 
@@ -8147,11 +8148,13 @@ async function openMobileWizard(): Promise<void> {
     const cb = e.currentTarget as HTMLInputElement;
     const portRow = $m<HTMLDivElement>('mobile-port-row');
     const badge = $m<HTMLElement>('mobile-bridge-badge');
+    const btnNext = $m<HTMLButtonElement>('btn-mobile-next');
     if (portRow) portRow.style.display = cb.checked ? '' : 'none';
     if (badge) {
       badge.textContent = cb.checked ? 'On' : 'Off';
       badge.className = `mobile-badge ${cb.checked ? 'on' : 'off'}`;
     }
+    if (btnNext && mobileWizardStep === 0) btnNext.disabled = !cb.checked;
   });
 
   // Copy buttons (static delegation). Checks data-token attribute first
@@ -8171,6 +8174,20 @@ async function openMobileWizard(): Promise<void> {
     const btn = e.currentTarget as HTMLButtonElement;
     const text = document.getElementById('mobile-vscode-config')?.textContent ?? '';
     if (text) mobileCopyBtn(btn, text);
+  });
+
+  // "Install extension" — opens VS Code Marketplace page.
+  document.getElementById('btn-open-vscode-extension')?.addEventListener('click', () => {
+    void invoke('plugin:opener|open_url', {
+      url: 'https://marketplace.visualstudio.com/items?itemName=nehloo-interactive.graphnosis',
+    });
+  });
+
+  // "Copy token" — copies just the bearer token for pasting into VS Code settings.
+  document.getElementById('btn-copy-vscode-token')?.addEventListener('click', (e) => {
+    const btn = e.currentTarget as HTMLButtonElement;
+    const token = mobileConnInfo?.token ?? '';
+    if (token) mobileCopyBtn(btn, token);
   });
 
   // Tailscale link → open external browser

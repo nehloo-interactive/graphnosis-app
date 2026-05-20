@@ -1037,6 +1037,10 @@
       }
       .copy-btn:hover { background: var(--accent); color: #fff; border-color: var(--accent); }
       .copy-btn.copied { background: var(--ok, #4caf50); color: #fff; border-color: transparent; }
+      .vscode-option { background: var(--bg-elev); border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; }
+      .vscode-option-header { margin-bottom: 2px; }
+      .vscode-option-label { font-size: 13px; font-weight: 600; color: var(--fg); }
+      .badge-recommended { display: inline-block; margin-left: 6px; padding: 1px 6px; border-radius: 4px; font-size: 11px; font-weight: 600; background: var(--accent); color: #000; vertical-align: middle; }
       .mobile-step { display: none; }
       .mobile-step.active { display: block; }
       .mobile-badge {
@@ -5040,16 +5044,41 @@
             </ol>
 
             <!-- VS Code / Copilot Chat integration -->
-            <div style="margin-top: 16px; border-top: 1px solid var(--border); padding-top: 12px;">
-              <p style="font-size: 14px; font-weight: 600; margin: 0 0 2px; color: var(--fg-dim);">VS Code — Copilot Chat</p>
-              <p class="subtitle" style="font-size: 15px; margin: 0 0 6px;">
-                Install the <strong>Graphnosis VS Code extension</strong> for automatic recall on every Copilot prompt.
-                Or save the snippet below as <code>.vscode/mcp.json</code> in your project to add Graphnosis tools manually.
-              </p>
-              <div class="copy-row">
-                <span class="copy-field" id="mobile-vscode-config"
-                  style="font-family: monospace; font-size: 14px; max-height: 84px; overflow: auto; white-space: pre;"></span>
-                <button class="copy-btn" id="btn-copy-vscode-config">Copy</button>
+            <div style="margin-top: 16px; border-top: 1px solid var(--border); padding-top: 14px;">
+              <p style="font-size: 14px; font-weight: 600; margin: 0 0 10px; color: var(--fg-dim);">VS Code — Copilot Chat</p>
+
+              <!-- Option A: Extension -->
+              <div class="vscode-option">
+                <div class="vscode-option-header">
+                  <span class="vscode-option-label">Option A — Extension <span class="badge-recommended">Recommended</span></span>
+                </div>
+                <p class="subtitle" style="margin: 4px 0 8px;">
+                  Copilot calls <code>recall</code> automatically on relevant prompts — no <code>@</code> prefix needed.
+                  Also adds the <code>@graphnosis</code> participant and a "Save to memory" status bar shortcut.
+                </p>
+                <div style="display: flex; gap: 8px; flex-wrap: wrap;">
+                  <button class="copy-btn" id="btn-open-vscode-extension" style="background: var(--accent); color: #000;">Install extension</button>
+                  <button class="copy-btn" id="btn-copy-vscode-token" style="background: transparent; border: 1px solid var(--border);">Copy token</button>
+                </div>
+                <p class="subtitle" style="margin: 6px 0 0; font-size: 13px;">
+                  After installing: open VS Code Settings → search <code>graphnosis</code> → paste the token above into <strong>Bearer Token</strong>.
+                </p>
+              </div>
+
+              <!-- Option B: mcp.json -->
+              <div class="vscode-option" style="margin-top: 10px;">
+                <div class="vscode-option-header">
+                  <span class="vscode-option-label">Option B — <code>.vscode/mcp.json</code></span>
+                </div>
+                <p class="subtitle" style="margin: 4px 0 6px;">
+                  Adds Graphnosis as an MCP server for manual tool use. Save the snippet below as
+                  <code>.vscode/mcp.json</code> in your project root, then use tools explicitly in Copilot Chat.
+                </p>
+                <div class="copy-row">
+                  <span class="copy-field" id="mobile-vscode-config"
+                    style="font-family: monospace; font-size: 13px; max-height: 80px; overflow: auto; white-space: pre;"></span>
+                  <button class="copy-btn" id="btn-copy-vscode-config">Copy</button>
+                </div>
               </div>
             </div>
           </div>
