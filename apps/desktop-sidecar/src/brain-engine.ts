@@ -127,7 +127,12 @@ const SYNAPSE_INTERVAL_MS       = 45 * 60 * 1000;   // 45 min
 const INSIGHT_INTERVAL_MS       =  6 * 60 * 60 * 1000; // 6 h
 const TEMPORAL_INTERVAL_MS      = 24 * 60 * 60 * 1000; // 24 h
 const GOAL_CHECK_INTERVAL_MS    =  4 * 60 * 60 * 1000; // 4 h
-const MAX_CONTRADICTION_NODES   = 200;
+// Per-graph cap on nodes fed into the O(n²) pairwise cosine comparison.
+// 1200 keeps a full cortex sweep (11 engrams) near ~8M comparisons — a few
+// seconds of work, and the loop yields to the event loop so it never blocks
+// IPC. Nodes are taken highest-confidence-first, so the cap samples the
+// memories where a contradiction matters most.
+const MAX_CONTRADICTION_NODES   = 1200;
 const MAX_SYNAPSE_EDGES_PER_RUN = 20;
 const MAX_INSIGHTS_STORED       = 50;
 
@@ -138,6 +143,10 @@ export class BrainEngine {
 
   private contradictions: Contradiction[] = [];
   private insights: Insight[] = [];
+
+  // Guards runFullScan() against overlapping on-demand triggers (e.g. the
+  // user mashing Refresh, or a tab-open scan racing a manual one).
+  private scanInFlight = false;
 
   private contradictionTimer: NodeJS.Timeout | null = null;
   private synapseTimer: NodeJS.Timeout | null = null;
@@ -331,6 +340,55 @@ export class BrainEngine {
     return this.vitality.compute(this.contradictions.length);
   }
 
+  /**
+   * Run every scan loop once, back-to-back, for an on-demand full sweep —
+   * e.g. when the user opens the Autonomous Brain tab or hits Refresh.
+   * Emits a wrapping `fullscan` start/done frame so the UI can show one
+   * unified "scanning" state; each sub-loop still emits its own phase
+   * frames for the activity feed. Concurrent calls are coalesced: a second
+   * trigger while a scan is in flight is a no-op.
+   *
+   * Temporal decay is deliberately excluded — it's an age-based daily
+   * process, not a "scan", and re-running it on every tab open would be
+   * noise. The background 24h timer still handles it.
+   */
+  async runFullScan(): Promise<void> {
+    if (this.scanInFlight) return;
+    this.scanInFlight = true;
+    this.emitBrain('__brain_start_fullscan__');
+    try {
+      await this.runContradictionScan();
+      await this.runSynapse();
+      await this.runInsight();
+      await this.runGoalCheck();
+    } catch (err) {
+      console.error('[brain] full scan error:', err);
+    } finally {
+      this.scanInFlight = false;
+      this.emitBrain('__brain_done_fullscan__');
+    }
+  }
+
+  /** Snapshot for the UI's scan-status line: are we scanning, when did each
+   *  loop last run, and how often does each loop run on its own. */
+  getStatus(): {
+    scanning: boolean;
+    lastRun: Record<string, number>;
+    intervals: Record<string, number>;
+  } {
+    return {
+      scanning: this.scanInFlight,
+      lastRun: { ...(this.host.getSettings().brain?.lastRun ?? {}) },
+      intervals: {
+        contradictionScan: CONTRADICTION_INTERVAL_MS,
+        synapse: SYNAPSE_INTERVAL_MS,
+        insight: INSIGHT_INTERVAL_MS,
+        temporalDecay: TEMPORAL_INTERVAL_MS,
+        goalCheck: GOAL_CHECK_INTERVAL_MS,
+      },
+    };
+  }
+
   // ── Private loop implementations ──────────────────────────────────────────
 
   private async runContradictionScan(): Promise<void> {
@@ -358,6 +416,12 @@ export class BrainEngine {
         const embeddedNodes = active.filter(n => embs.has(n.id));
 
         for (let i = 0; i < embeddedNodes.length; i++) {
+          // Yield to the event loop every 64 rows so a large pairwise
+          // sweep stays responsive — IPC and other sidecar work keep
+          // flowing instead of stalling for the whole O(n²) pass.
+          if (i > 0 && i % 64 === 0) {
+            await new Promise<void>((resolve) => setImmediate(resolve));
+          }
           for (let j = i + 1; j < embeddedNodes.length; j++) {
             const a = embeddedNodes[i]!;
             const b = embeddedNodes[j]!;
