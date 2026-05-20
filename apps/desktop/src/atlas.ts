@@ -414,6 +414,7 @@ export class Atlas {
    */
   private nodePulsePhase = new Map<string, number>();   // [0, 2π]
   private nodePulsePeriod = new Map<string, number>();  // ms per full cycle [2000, 5000]
+  private brainVitality = 50; // 0-100; scales pulsation amp, breath, and reheat intensity
   /**
    * Per-source-file cluster anchor positions. Set by setNodes() whenever
    * source files change. The clusterForce closure reads from this map at
@@ -746,7 +747,7 @@ export class Atlas {
         // means adjacent clusters are slightly out of sync, giving the
         // whole graph a slow, organ-like pulse.
         const BREATH_PERIOD = 6_000; // ms per full inhale→exhale cycle
-        const BREATH_AMP    = 0.02;  // 2% scale — subtle but legible
+        const BREATH_AMP    = 0.02 * (this.brainVitality / 100); // scales with vitality
         const now_ms        = Date.now();
         const strength      = alpha * 0.22 + 0.035;
         for (const n of this.allNodes) {
@@ -1121,8 +1122,9 @@ export class Atlas {
           if (this.aliveEnabled) {
             const phase  = this.nodePulsePhase.get(n.id) ?? 0;
             const period = this.nodePulsePeriod.get(n.id) ?? 3000;
-            // Scale ∈ [1.0, 2.0]: min when sin=−1, max when sin=+1.
-            const s = 1 + (Math.sin(phase + PI2 * now / period) + 1) / 2;
+            const amp = this.brainVitality / 100;
+            // Scale ∈ [1.0, 1.0+amp]: lower vitality → subtler pulsation.
+            const s = 1 + amp * (Math.sin(phase + PI2 * now / period) + 1) / 2;
             obj.scale.setScalar(s);
           } else if (obj.scale.x !== 1) {
             obj.scale.setScalar(1); // restore once when alive is toggled off
@@ -1244,10 +1246,14 @@ export class Atlas {
    *    ≥ 1500 nodes →  20s  (mostly still; rare gentle stirs)
    */
   private reheatIntervalMs(): number {
+    if (this.brainVitality < 10) return 0;
     const N = this.allNodes.length;
-    if (N < 800)  return 4_000;
-    if (N < 1500) return 10_000;
-    return 0; // sentinel: startReheatLoop skips when this returns 0
+    let base: number;
+    if (N < 800)  base = 4_000;
+    else if (N < 1500) base = 10_000;
+    else return 0;
+    // Map vitality 0-100 → 25%-100% of base interval (higher vitality = faster reheats).
+    return Math.round(base / (this.brainVitality / 100 * 0.75 + 0.25));
   }
 
   private applyChargeForce(): void {
@@ -2332,6 +2338,17 @@ export class Atlas {
     return this.aliveEnabled;
   }
   isAliveEnabled(): boolean { return this.aliveEnabled; }
+
+  /** Set the brain vitality (0-100). Scales pulsation amplitude, cluster breath, and reheat intensity. */
+  setBrainVitality(vitality: number): void {
+    this.brainVitality = Math.max(0, Math.min(100, vitality));
+    // Restart reheat so the new intensity takes effect immediately.
+    if (this.reheatInterval !== null) {
+      clearInterval(this.reheatInterval);
+      this.reheatInterval = null;
+      this.startReheatLoop();
+    }
+  }
 
   /** Pause the Three.js render loop. Use when the App window is hidden
    *  or the user has navigated to a non-Atlas pane — Three.js doesn't

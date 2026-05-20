@@ -120,6 +120,7 @@ export interface AtlasEngine {
   setAliveEnabled?(enabled: boolean): boolean;
   isAliveEnabled?(): boolean;
   unpinAll?(): void;
+  setBrainVitality?(vitality: number): void;
 
   // ── Connections (for detail-pane sidebar) ───────────────────────
   getConnections(nodeId: string): NodeConnection[];

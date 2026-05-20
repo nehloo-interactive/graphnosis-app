@@ -20,6 +20,7 @@ import { workerEmbed, terminateEmbedWorker, LOCAL_EMBED_ID, LOCAL_EMBED_DIM } fr
 import type { LocalLlm } from './correction.js';
 import type { CorrectionDiff } from './correction.js';
 import { FileWatcher } from './file-watcher.js';
+import { BrainEngine } from './brain-engine.js';
 
 interface CliEnv {
   cortexDir: string;
@@ -438,12 +439,15 @@ async function main(): Promise<void> {
     ?? path.join(env.cortexDir, 'events.sock');
   const { broadcastRaw } = await startEvents({ host, socketPath: eventsSocketPath });
 
+  const brainEngine = new BrainEngine(host, llm, broadcastRaw);
+
   const mcpDeps = {
     host,
     llm: () => llm,
     defaultGraphId: () => env.defaultGraph,
     pendingDiffs,
     broadcastRaw,
+    brainEngine,
   };
 
   // MCP server over Unix socket. Lets multiple clients (Claude Desktop via
@@ -525,12 +529,13 @@ async function main(): Promise<void> {
   // Tauri shell IPC (custom JSON-RPC, not MCP).
   const ipcSocketPath = process.env.GRAPHNOSIS_IPC_SOCKET
     ?? path.join(env.cortexDir, 'sidecar.sock');
-  await startIpc({ host, socketPath: ipcSocketPath, pendingDiffs, restartMcpListener, broadcastRaw, connectorManager });
+  await startIpc({ host, socketPath: ipcSocketPath, pendingDiffs, restartMcpListener, broadcastRaw, connectorManager, brainEngine });
   console.error(`[graphnosis-sidecar] IPC listening on ${ipcSocketPath}`);
 
   await connectorManager.start();
-  process.on('SIGINT', () => { void connectorManager.stop(); });
-  process.on('SIGTERM', () => { void connectorManager.stop(); });
+  brainEngine.start();
+  process.on('SIGINT', () => { void connectorManager.stop(); brainEngine.stop(); });
+  process.on('SIGTERM', () => { void connectorManager.stop(); brainEngine.stop(); });
 
   // MCP server over stdio — the legacy path. Stays active so existing
   // configurations (where Claude Desktop spawns this binary directly) keep

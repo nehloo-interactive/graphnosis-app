@@ -189,6 +189,12 @@ export interface AiSettings {
    *   - 'auto'   → totalmem-based: ≥32 GB → large, ≥16 GB → medium, else small
    */
   embedBatch: EmbedBatchPreset;
+  /**
+   * The Ollama model tag to use for brain features (synapse, insight, develop, predict).
+   * Overrides the default from LLM_CATALOG. Set via Settings → Brain / Local AI.
+   * Examples: "llama3.2:3b-instruct-q4_K_M", "qwen2.5:3b-instruct-q4_K_M"
+   */
+  llmModel?: string;
 }
 
 export type ChunkSizePreset = 'fine' | 'balanced' | 'coarse';
@@ -290,6 +296,36 @@ export interface AppSettings {
    * sidecar auto-populates on first boot after the feature ships.
    */
   vscode?: VsCodeBridgeSettings;
+  /**
+   * Alive Brain — background intelligence settings. Absent on older cortexes;
+   * BrainEngine starts all activities immediately when unset (treats them
+   * as "never run"). Persisted to settings.json after each completed run.
+   */
+  brain?: {
+    /** Unix-ms timestamps of each completed background activity. */
+    lastRun?: {
+      contradictionScan?: number;
+      synapse?: number;
+      insight?: number;
+      temporalDecay?: number;
+      goalCheck?: number;
+    };
+    /** Count of pending (non-dismissed) insight cards in BrainEngine memory. */
+    pendingInsightsCount?: number;
+    /** Count of detected contradictions since last dismissal. */
+    pendingContradictionsCount?: number;
+    /** Temporal decay configuration. */
+    temporalDecay?: {
+      /** When false, the daily confidence decay loop is skipped entirely. Default true. */
+      enabled: boolean;
+      /** Percent confidence lost per day of non-recall for a typical node. Default 0.5. */
+      dailyRatePercent: number;
+      /** When true, nodes that appear in recall results gain a small confidence boost. Default true. */
+      reinforceOnRecall: boolean;
+      /** Clips and ephemeral notes decay this many times faster than files. Default 3. */
+      clipDecayMultiplier: number;
+    };
+  };
 }
 
 export const DEFAULT_SETTINGS: AppSettings = {
@@ -442,6 +478,9 @@ export function mergeWithDefaults(partial: Partial<AppSettings> | null | undefin
     ai.embedBatch === 'large' || ai.embedBatch === 'auto'
       ? ai.embedBatch
       : DEFAULT_SETTINGS.ai.embedBatch;
+  const llmModel = typeof ai.llmModel === 'string' && ai.llmModel.length > 0
+    ? ai.llmModel
+    : undefined;
 
   const graphMetadata = (partial?.graphMetadata && typeof partial.graphMetadata === 'object')
     ? partial.graphMetadata
@@ -492,6 +531,26 @@ export function mergeWithDefaults(partial: Partial<AppSettings> | null | undefin
     };
   }
 
+  // Brain / Alive Brain — pass through if present, validate individual fields.
+  let brain: AppSettings['brain'] | undefined;
+  if (partial?.brain) {
+    const b = partial.brain;
+    const td = b.temporalDecay;
+    brain = {
+      ...(b.lastRun !== undefined ? { lastRun: b.lastRun } : {}),
+      ...(typeof b.pendingInsightsCount === 'number' ? { pendingInsightsCount: b.pendingInsightsCount } : {}),
+      ...(typeof b.pendingContradictionsCount === 'number' ? { pendingContradictionsCount: b.pendingContradictionsCount } : {}),
+      ...(td !== undefined ? {
+        temporalDecay: {
+          enabled: typeof td.enabled === 'boolean' ? td.enabled : true,
+          dailyRatePercent: typeof td.dailyRatePercent === 'number' && td.dailyRatePercent > 0 ? td.dailyRatePercent : 0.5,
+          reinforceOnRecall: typeof td.reinforceOnRecall === 'boolean' ? td.reinforceOnRecall : true,
+          clipDecayMultiplier: typeof td.clipDecayMultiplier === 'number' && td.clipDecayMultiplier > 0 ? td.clipDecayMultiplier : 3,
+        },
+      } : {}),
+    };
+  }
+
   return {
     contentCache: { mode, maxBytesPerSource },
     forget: { mode: forgetMode },
@@ -500,11 +559,13 @@ export function mergeWithDefaults(partial: Partial<AppSettings> | null | undefin
     ai: {
       useAsDefaultMemory, autoRelinkMaxNodes, autoReingestOnFileChange,
       reingestQuietMs, chunkSize, embedBatch,
+      ...(llmModel !== undefined ? { llmModel } : {}),
     },
     graphMetadata,
     ...(mobile !== undefined ? { mobile } : {}),
     ...(connectors !== undefined ? { connectors } : {}),
     ...(vscode !== undefined ? { vscode } : {}),
+    ...(brain !== undefined ? { brain } : {}),
   };
 }
 
