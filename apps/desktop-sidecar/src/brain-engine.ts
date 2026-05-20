@@ -585,12 +585,15 @@ export class BrainEngine {
   }
 
   private emitBrain(graphId: string): void {
-    // Piggyback on graph.mutation so the UI's existing listener fires.
-    // The UI checks graphId.startsWith('__brain') and calls refreshBrainState().
+    // Piggyback on the graph.mutation event channel so the UI's existing
+    // listener fires. The Rust event_stream only forwards frames whose
+    // kind is 'event' (→ graphnosis://graph-mutation) and reads graphId +
+    // ts off the payload; the UI checks graphId.startsWith('__brain') and
+    // pulls fresh brain state via IPC.
     this.broadcast({
-      kind: 'graph.mutation',
+      kind: 'event',
       name: 'graph.mutation',
-      payload: { graphId, mutatedAt: Date.now() },
+      payload: { graphId, ts: Date.now() },
     });
   }
 
@@ -603,22 +606,13 @@ export class BrainEngine {
   }
 
   private async emitVitality(): Promise<void> {
+    // Warm the vitality cache so the UI's follow-up IPC pull is instant.
+    // The event channel only carries graphId + ts, so the report itself
+    // can't ride along — the UI fetches it when it sees the done frame.
     try {
-      const report = await this.vitality.compute(
-        this.contradictions.length,
-      );
-      this.emitBrain('__brain_done__');
-      // Embed vitality into a second mutation frame for the UI to read.
-      this.broadcast({
-        kind: 'graph.mutation',
-        name: 'graph.mutation',
-        payload: {
-          graphId: '__brain_vitality__',
-          mutatedAt: Date.now(),
-          vitality: report,
-        },
-      });
+      await this.vitality.compute(this.contradictions.length);
     } catch { /* non-fatal */ }
+    this.emitBrain('__brain_done__');
   }
 
   private async persistLastRun(
