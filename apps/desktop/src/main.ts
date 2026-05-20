@@ -410,6 +410,8 @@ const els = {
   btnPick: $<HTMLButtonElement>('btn-pick'),
   btnUnlock: $<HTMLButtonElement>('btn-unlock'),
   unlockStatus: $<HTMLSpanElement>('unlock-status'),
+  bootStatus: $<HTMLDivElement>('boot-status'),
+  bootStatusText: $<HTMLSpanElement>('boot-status-text'),
   btnRefresh: $<HTMLButtonElement>('btn-refresh'),
   btnOpenFolder: $<HTMLButtonElement>('btn-open-folder'),
   btnLock: $<HTMLButtonElement>('btn-lock'),
@@ -1742,6 +1744,8 @@ async function runBiometricUnlock(): Promise<void> {
   els.unlockStatus.textContent = 'Touch the sensor…';
   const progressBar = document.getElementById('unlock-progress');
   progressBar?.classList.remove('hidden');
+  els.bootStatusText.textContent = '';
+  els.bootStatus.classList.remove('hidden');
   try {
     const status = await invoke<StatusSnapshot>('biometric_unlock', {
       cortexDir: els.cortexDir.value,
@@ -1757,6 +1761,7 @@ async function runBiometricUnlock(): Promise<void> {
     if (inlineBtn) inlineBtn.disabled = false;
     els.btnUnlock.disabled = false;
     progressBar?.classList.add('hidden');
+    els.bootStatus.classList.add('hidden');
   }
 }
 
@@ -1795,6 +1800,9 @@ async function attemptUnlock(): Promise<void> {
   // click and try to mash the button again.
   const progressBar = document.getElementById('unlock-progress');
   progressBar?.classList.remove('hidden');
+  // Boot-status line: cleared then shown live as sidecar boot events arrive.
+  els.bootStatusText.textContent = '';
+  els.bootStatus.classList.remove('hidden');
   try {
     const status = (await invoke('unlock_cortex', {
       args: { cortex_dir: els.cortexDir.value, passphrase: els.passphrase.value },
@@ -1841,6 +1849,7 @@ async function attemptUnlock(): Promise<void> {
   } finally {
     els.btnUnlock.disabled = false;
     progressBar?.classList.add('hidden');
+    els.bootStatus.classList.add('hidden');
   }
 }
 
@@ -7381,6 +7390,20 @@ globalThis.atlasPerfApply = (): void => {
 // Tray-driven status updates push us into the right view in real time.
 void listen<StatusSnapshot>('graphnosis://status', (evt) => render(evt.payload));
 
+// Sidecar startup progress — shown in the lock screen while the cortex loads.
+// Each event carries a step name and a human-readable detail string.
+// We show it while the unlock-progress bar is visible and clear it on success.
+void listen<{ step: string; detail: string }>('graphnosis://sidecar-boot-status', (evt) => {
+  const { step, detail } = evt.payload;
+  els.bootStatusText.textContent = detail;
+  els.bootStatus.classList.remove('hidden');
+  if (step === 'ready') {
+    // Socket is up — hide the status line shortly after; unlock command
+    // will resolve and the view transitions away.
+    setTimeout(() => els.bootStatus.classList.add('hidden'), 1200);
+  }
+});
+
 // ── Atlas render-loop power management ──────────────────────────────
 //
 // Three.js (via 3d-force-graph) runs its WebGL render loop at 60fps
@@ -8376,6 +8399,8 @@ void listen('graphnosis://unlocked-via-recovery', () => {
     // recovery-mode unlock is similar work plus the recovery.enc unwrap.
     const progressBar = document.getElementById('unlock-progress');
     progressBar?.classList.remove('hidden');
+    els.bootStatusText.textContent = '';
+    els.bootStatus.classList.remove('hidden');
     try {
       const result = await invoke<StatusSnapshot>('unlock_cortex_with_recovery', {
         args: { cortex_dir: cortexDir, recovery_phrase: phrase },
@@ -8390,6 +8415,7 @@ void listen('graphnosis://unlocked-via-recovery', () => {
     } finally {
       if (recoverBtn) recoverBtn.disabled = false;
       progressBar?.classList.add('hidden');
+      els.bootStatus.classList.add('hidden');
     }
   });
 }
