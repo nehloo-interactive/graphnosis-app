@@ -46,6 +46,10 @@ try {
       </h1>
     </div>
 
+    <p class="text-base sm:text-lg text-[#c4c6d6] tracking-wide text-center mb-8 -mt-2">
+      Graphnosis is your local encrypted memory, indexed for every AI tool.
+    </p>
+
     <!-- Rotating flow diagram -->
     <div class="w-full max-w-7xl mx-auto px-4 sm:px-6 mb-10">
       <div id="hero-diagram" class="select-none"></div>
@@ -132,9 +136,10 @@ try {
     <div class="max-w-4xl mx-auto text-center w-full">
       <p
         id="graphnosis"
-        class="text-5xl sm:text-6xl lg:text-7xl font-black tracking-tight mt-10 mb-4 bg-clip-text text-transparent scroll-mt-24"
+        class="text-5xl sm:text-6xl lg:text-7xl font-black tracking-tight mt-10 mb-2 bg-clip-text text-transparent scroll-mt-24"
         style="background-image: linear-gradient(135deg, #67e8f9 0%, #a78bfa 100%);"
       >Graphnosis</p>
+      <p class="text-base sm:text-lg text-[#c4c6d6] tracking-wide mb-6">Your local encrypted memory, indexed for every AI tool</p>
       <img src="/graphnosis-logo.png" alt="Graphnosis" class="w-72 h-72 mx-auto mb-6" />
       <div class="border-t border-[#2a2a3d] pt-12 text-center">
         <p class="text-xl sm:text-2xl font-bold text-[#f0f0f5] max-w-3xl mx-auto leading-snug">
@@ -154,7 +159,7 @@ try {
       </p>
       </div>
 
-      <div class="flex flex-col sm:flex-row items-center justify-center gap-4 mb-12">
+      <div class="flex flex-col sm:flex-row items-center justify-center gap-4 mb-4">
         <a
           href="/download/mac"
           class="inline-flex items-center gap-2 px-8 py-4 rounded-full bg-[#67e8f9] hover:bg-[#4dd6e8] text-[#13131a] font-bold text-lg transition-colors shadow-lg shadow-[#67e8f9]/20"
@@ -171,6 +176,10 @@ try {
           </svg>
         </a>
       </div>
+
+      <p class="text-sm text-[#c4c6d6] mb-8 mt-3 tracking-wide">
+        Your local encrypted memory, indexed for every AI tool
+      </p>
 
       <p class="text-sm text-[#c4c6d6]">
         <span class="text-[#f0f0f5] font-semibold">Local-first</span>
@@ -482,17 +491,17 @@ try {
     tx(748, 215, 'recall / remind',             C.human, 11, 'normal', true);
 
     // ── Tools box text (cx=160) ──
-    tx(160, 264, '⚙️',                     C.tools, 22);
-    tx(160, 286, 'your tools',             C.tools, 15, '700');
-    tx(160, 307, 'Slack · GitHub',         C.white,  13);
-    tx(160, 324, 'Linear · RSS',           C.white,  13);
-    tx(160, 341, 'Trello · Webhook',       C.white,  13);
-    tx(160, 358, 'Obsidian',               C.white,  13);
-    tx(160, 381, 'auto-ingest / remember', C.human,  14);
-    amber( 85, 308, words[0], 11);
-    amber( 85, 322, words[1], 11);
-    amber(232, 308, words[2], 11);
-    amber(232, 322, words[3], 11);
+    tx(160, 264, 'your ⚙️ context',          C.tools, 15, '700');
+    tx(160, 284, 'Slack · GitHub',         C.white,  13);
+    tx(160, 301, 'Linear · RSS',           C.white,  13);
+    tx(160, 318, 'Trello · Webhook',       C.white,  13);
+    tx(160, 335, 'Obsidian · GBrain',      C.white,  13);
+    tx(160, 352, 'CLAUDE.md · AGENTS.md',  C.white,  13);
+    tx(160, 369, 'CURSOR_RULES · GEMINI.md', C.white, 13);
+    amber( 85, 285, words[0], 11);
+    amber( 85, 299, words[1], 11);
+    amber(232, 285, words[2], 11);
+    amber(232, 299, words[3], 11);
 
     // ── AI agents box text (cx=500) ──
     tx(500, 260, '⚡',               C.ai,    22);
@@ -570,18 +579,19 @@ try {
     tx(128, 318, 'auto-ingest',     C.human, 10, 'normal', true);
     tx(272, 318, 'recall / remind', C.human, 10, 'normal', true);
 
-    tx(97, 357, '⚙️',                   C.tools, 18);
-    tx(97, 375, 'your tools',           C.tools, 13, '700');
-    tx(97, 393, 'Slack · GitHub',       C.white,  12);
-    tx(97, 410, 'Linear · RSS',         C.white,  12);
-    tx(97, 427, 'Trello · Webhook',     C.white,  12);
-    tx(97, 444, 'Obsidian',             C.white,  12);
-    tx(97, 463, 'auto-ingest',          C.human,  12);
-    tx(97, 479, 'remember',             C.human,  12);
-    amber( 35, 415, words[0], 10);
-    amber( 35, 428, words[1], 10);
-    amber(157, 415, words[2], 10);
-    amber(157, 428, words[3], 10);
+    tx(97, 357, 'your ⚙️ context',           C.tools, 13, '700');
+    tx(97, 375, 'Slack · GitHub',         C.white,  12);
+    tx(97, 391, 'Linear · RSS',           C.white,  12);
+    tx(97, 407, 'Trello · Webhook',       C.white,  12);
+    tx(97, 423, 'Obsidian · GBrain',      C.white,  12);
+    tx(97, 439, 'CLAUDE.md · AGENTS.md',  C.white,  12);
+    tx(97, 455, 'CURSOR_RULES · GEMINI.md', C.white, 12);
+    tx(97, 471, 'auto-ingest',             C.human,  12);
+    tx(97, 487, 'remember',                C.human,  12);
+    amber( 35, 397, words[0], 10);
+    amber( 35, 410, words[1], 10);
+    amber(157, 397, words[2], 10);
+    amber(157, 410, words[3], 10);
 
     tx(302, 354, '🔀',              C.ai,    18);
     tx(302, 370, 'all clients',     C.human, 13, '700');

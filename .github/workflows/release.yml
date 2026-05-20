@@ -61,6 +61,11 @@ jobs:
           cp "$SRC" "$DEST"
           echo "Staged $SRC → $DEST"
 
+      - name: Install Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
       - name: Sign libonnxruntime
         run: |
           codesign --force --sign "Developer ID Application: Nehloo Interactive LLC (C76ZLJ5UQW)" \
