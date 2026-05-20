@@ -1614,6 +1614,28 @@
       .progress-bar > div { height: 100%; background: var(--accent); transition: width 0.3s; }
       #ollama-status-badge.ok { color: var(--ok); }
       #ollama-status-badge.err { color: var(--error); }
+      /* Non-technical Ollama setup guide, shown when Ollama isn't detected. */
+      .ollama-guide {
+        border: 1px solid var(--border); border-radius: 8px;
+        padding: 12px 14px; background: var(--bg-elev);
+      }
+      .ollama-guide-intro { font-size: 13px; margin: 0 0 10px; line-height: 1.5; }
+      .ollama-steps {
+        margin: 0; padding-left: 22px;
+        display: flex; flex-direction: column; gap: 10px;
+      }
+      .ollama-steps li { font-size: 13px; line-height: 1.55; }
+      .ollama-steps li strong { color: var(--fg); }
+      .ollama-guide-foot {
+        font-size: 12px; color: var(--fg-dim);
+        margin: 12px 0 0; padding-top: 10px;
+        border-top: 1px solid var(--border); line-height: 1.5;
+      }
+      .ollama-connected-help {
+        font-size: 13px; line-height: 1.55;
+        border-left: 2px solid var(--ok); padding: 6px 0 6px 10px;
+        margin: 4px 0 10px;
+      }
 
       /* ── Autonomous Brain pane ──────────────────────────────────── */
       .btn-sm { padding: 5px 10px; font-size: 13px; }
@@ -1626,12 +1648,30 @@
         padding: 18px; margin-bottom: 22px;
         background: var(--bg-elev); border: 1px solid var(--border);
         border-radius: 10px;
+        /* Host the absolutely-positioned neuron canvas; clip it to the
+           rounded corners. */
+        position: relative; overflow: hidden;
+      }
+      /* (7) Ambient neuron field — sits behind the hero content. */
+      .lb-neuron-canvas {
+        position: absolute; inset: 0;
+        width: 100%; height: 100%;
+        z-index: 0; pointer-events: none;
+        opacity: 0.55;
       }
       .lb-vitality-ring {
-        position: relative; width: 96px; height: 96px; flex-shrink: 0;
+        position: relative; z-index: 1;
+        width: 96px; height: 96px; flex-shrink: 0;
         border-radius: 50%;
         display: flex; align-items: center; justify-content: center;
         background: conic-gradient(var(--accent) calc(var(--v,0) * 1%), var(--border) 0);
+        /* (1) Breathing pulse — slow, always-on, so the brain reads as
+           alive even at idle. */
+        animation: lb-ring-breathe 4.5s ease-in-out infinite;
+      }
+      @keyframes lb-ring-breathe {
+        0%, 100% { transform: scale(1);    filter: brightness(1); }
+        50%      { transform: scale(1.045); filter: brightness(1.18); }
       }
       .lb-vitality-ring::before {
         content: ''; position: absolute; inset: 9px;
@@ -1641,7 +1681,7 @@
         position: relative; z-index: 1;
         font-size: 30px; font-weight: 700; color: var(--fg);
       }
-      .lb-hero-text { flex: 1; min-width: 0; }
+      .lb-hero-text { flex: 1; min-width: 0; position: relative; z-index: 1; }
       .lb-hero-text h3 { margin: 0 0 4px; font-size: 17px; }
       .lb-hero-text .btn-sm { margin-top: 10px; }
       .lb-section { margin-bottom: 22px; }
@@ -1714,6 +1754,80 @@
         padding: 1px 7px; border-radius: 10px; vertical-align: middle;
         background: var(--bg); border: 1px solid var(--border);
         color: var(--fg-dim); white-space: nowrap;
+      }
+
+      /* (3) Scan-status line — countdown to the next background self-check,
+         or the live phase label while a scan is running. */
+      .lb-scan-status {
+        font-size: 12px; color: var(--fg-dim);
+        margin: 6px 0 0; min-height: 16px;
+      }
+      /* (2) Thinking state — while any scan loop is in flight the ring
+         pulses faster + brighter and the status line shimmers. */
+      #living-brain.lb-scanning .lb-vitality-ring {
+        animation-duration: 1.5s;
+      }
+      #living-brain.lb-scanning .lb-scan-status {
+        background: linear-gradient(90deg,
+          var(--accent) 0%, var(--fg) 50%, var(--accent) 100%);
+        background-size: 200% auto;
+        -webkit-background-clip: text; background-clip: text;
+        -webkit-text-fill-color: transparent;
+        animation: lb-shimmer 2s linear infinite;
+      }
+      @keyframes lb-shimmer {
+        from { background-position: 200% center; }
+        to   { background-position: 0% center; }
+      }
+
+      /* (4) Feed items fade + slide in as the brain works. */
+      @keyframes lb-feed-in {
+        from { opacity: 0; transform: translateY(-6px); }
+        to   { opacity: 1; transform: translateY(0); }
+      }
+      .lb-feed-item { animation: lb-feed-in 0.35s ease-out; }
+      /* (6) Synapse feed item — visually distinct from scan-phase rows. */
+      .lb-feed-item.lb-feed-synapse {
+        border-left-color: #a78bfa;
+        background: color-mix(in oklab, #a78bfa 12%, transparent);
+        color: var(--fg);
+      }
+
+      /* (5) Self-healing — a resolved contradiction card stitches shut
+         and collapses rather than vanishing. max-height is set inline in
+         JS to the card's measured height so the collapse is smooth. */
+      .lb-contradiction.lb-healing {
+        overflow: hidden;
+        box-shadow: inset 0 0 0 1px var(--accent);
+        transition: max-height 0.5s ease-in, opacity 0.5s ease-in,
+                    margin 0.5s ease-in, padding 0.5s ease-in;
+        opacity: 0;
+        margin-bottom: 0;
+        padding-top: 0; padding-bottom: 0;
+      }
+
+      /* (6) Synapse-formation flash — the ring throws a brief ripple when
+         a new connection forms. Layered on top of the breathing pulse. */
+      @keyframes lb-synapse-flash {
+        0%   { box-shadow: 0 0 0 0 color-mix(in oklab, #a78bfa 70%, transparent); }
+        100% { box-shadow: 0 0 0 18px transparent; }
+      }
+      .lb-vitality-ring.lb-synapse-pulse {
+        animation: lb-ring-breathe 4.5s ease-in-out infinite,
+                   lb-synapse-flash 0.95s ease-out;
+      }
+      #living-brain.lb-scanning .lb-vitality-ring.lb-synapse-pulse {
+        animation: lb-ring-breathe 1.5s ease-in-out infinite,
+                   lb-synapse-flash 0.95s ease-out;
+      }
+
+      /* Respect reduced-motion: drop the ambient + pulse animations. */
+      @media (prefers-reduced-motion: reduce) {
+        .lb-vitality-ring,
+        #living-brain.lb-scanning .lb-vitality-ring,
+        .lb-feed-item,
+        #living-brain.lb-scanning .lb-scan-status { animation: none; }
+        .lb-neuron-canvas { display: none; }
       }
       .pane-callout {
         margin-top: 10px;
@@ -4431,6 +4545,10 @@
                   <section class="g-tab-pane hidden" data-gpane="brain">
                     <div id="living-brain">
                       <div class="lb-hero">
+                        <!-- Ambient neuron field — drifting nodes + firing
+                             synapses behind the hero. RAF-driven; paused
+                             whenever this pane isn't visible. -->
+                        <canvas id="lb-neuron-canvas" class="lb-neuron-canvas" aria-hidden="true"></canvas>
                         <div id="lb-vitality-ring" class="lb-vitality-ring" style="--v:0">
                           <span id="lb-vitality-score">–</span>
                         </div>
@@ -4439,7 +4557,8 @@
                           <p id="lb-vitality-detail" class="brain-subtitle">
                             Vitality reflects how alive, connected, and active your memory is.
                           </p>
-                          <button id="btn-lb-refresh" class="btn-sm">↻ Refresh</button>
+                          <p id="lb-scan-status" class="lb-scan-status"></p>
+                          <button id="btn-lb-refresh" class="btn-sm">↻ Scan now</button>
                         </div>
                       </div>
 
@@ -4724,7 +4843,7 @@
           <span class="status-search">⌘K to search nodes</span>
           <span id="status-saved" class="status-saved">—</span>
           <span id="brain-vitality" style="display:none; font-size:12px; opacity:0.7; margin-left:8px; cursor:default;" title="Brain vitality score">🧠 –</span>
-          <span id="llm-status-chip" style="display:none; font-size:11px; color:var(--fg-dim); margin-left:6px; cursor:pointer;" title="Ollama not running — click to open Brain settings">⚡ Brain: no LLM</span>
+          <span id="llm-status-chip" style="display:none; font-size:11px; color:var(--fg-dim); margin-left:6px; cursor:pointer;" title="Click to set up the Brain's local AI — install Ollama, pick a model">⚡ Set up Brain AI</span>
           <span class="status-mcp">
             <span id="status-mcp-dot" class="status-dot"></span>
             <span id="status-mcp-text">checking clients…</span>
@@ -4970,13 +5089,24 @@
           <!-- Brain / Local AI section -->
           <p class="panel-title" id="settings-brain-llm" style="margin-top: 20px;">Brain — Local AI</p>
           <p class="subtitle" style="margin-bottom: 12px;">
-            Graphnosis's Brain features (synapse formation, insights, strategic planning, risk prediction)
-            use a local language model running on your device. No data ever leaves your machine.
+            The Brain's smartest features — forming new connections, surfacing insights,
+            strategic planning, risk prediction — run a small AI model privately on your
+            own device. Nothing is ever sent to the cloud. Setup is free and one-time.
           </p>
           <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 10px;">
             <span style="font-size: 14px; min-width: 120px;">Ollama</span>
             <span id="ollama-status-badge">Checking…</span>
+            <button id="btn-ollama-recheck" class="btn-sm">Recheck</button>
           </div>
+
+          <!-- Shown when Ollama IS connected — explains the model rows below. -->
+          <div id="ollama-connected-help" class="ollama-connected-help" style="display:none;">
+            ✅ Ollama is connected. Pick a model below and click <strong>Pull</strong> to
+            download it (one-time). When it finishes, choose it as the <strong>Active
+            model</strong> and click <strong>Apply</strong>. New to this?
+            <strong>Llama 3.2 3B</strong> is the recommended starting point.
+          </div>
+
           <div id="ollama-model-row" style="display:none; align-items: center; gap: 10px; margin-bottom: 10px;">
             <span style="font-size: 14px; min-width: 120px;">Active model</span>
             <select id="ollama-model-select" style="flex: 1;"></select>
@@ -4985,9 +5115,9 @@
           <div id="ollama-pull-row" style="display:none; align-items: center; gap: 10px; margin-bottom: 10px;">
             <span style="font-size: 14px; min-width: 120px;">Download model</span>
             <select id="ollama-pull-select" style="flex: 1;">
-              <option value="llama3.2:3b">Llama 3.2 3B (recommended, ~2 GB)</option>
-              <option value="qwen2.5:3b">Qwen 2.5 3B (~2.1 GB)</option>
-              <option value="llama3.2:1b">Llama 3.2 1B (light, ~800 MB)</option>
+              <option value="llama3.2:3b">Llama 3.2 3B — recommended, balanced (~2 GB)</option>
+              <option value="qwen2.5:3b">Qwen 2.5 3B — alternative (~2.1 GB)</option>
+              <option value="llama3.2:1b">Llama 3.2 1B — lightest, for older machines (~800 MB)</option>
             </select>
             <button id="btn-ollama-pull" class="btn-sm">Pull</button>
           </div>
@@ -4995,12 +5125,39 @@
             <div class="progress-bar"><div id="ollama-pull-bar" style="width:0%"></div></div>
             <span id="ollama-pull-label" style="font-size: 12px; color: var(--fg-dim);">Downloading…</span>
           </div>
+
+          <!-- Shown when Ollama is NOT detected — full non-technical setup guide. -->
           <div id="ollama-not-installed" style="display:none; margin-bottom: 10px;">
-            <p class="subtitle">
-              Ollama is not running.
-              <a href="#" id="btn-open-ollama-site">Install Ollama →</a>
-              (opens ollama.ai in your browser — free, open source, runs entirely on your machine)
-            </p>
+            <div class="ollama-guide">
+              <p class="ollama-guide-intro">
+                Graphnosis can't find Ollama yet. Ollama is a free, open-source app
+                that runs the AI model on your own computer. It takes about three steps:
+              </p>
+              <ol class="ollama-steps">
+                <li>
+                  <strong>Install Ollama.</strong>
+                  <a href="#" id="btn-open-ollama-site">Download it from ollama.com&nbsp;→</a>
+                  Open the downloaded file and follow the installer — on a Mac, drag
+                  Ollama into your Applications folder; on Windows, run the installer.
+                </li>
+                <li>
+                  <strong>Start Ollama.</strong> Open the Ollama app once. It then runs
+                  quietly in the background — look for its icon in the menu bar (Mac) or
+                  system tray (Windows). There's no window to keep open; that's normal.
+                  Ollama just needs to be running for Graphnosis to use it.
+                </li>
+                <li>
+                  <strong>Connect.</strong> Come back here and click
+                  <strong>Recheck</strong> above. When the status turns green, you can
+                  download a model — Graphnosis walks you through it.
+                </li>
+              </ol>
+              <p class="ollama-guide-foot">
+                Ollama is free and open source, and runs entirely on your machine — your
+                memories never leave your device. Graphnosis only downloads the model
+                through your own copy of Ollama; it never installs anything for you.
+              </p>
+            </div>
           </div>
 
           <!-- NOTE: Graphs management, Recovery phrase regeneration, and the

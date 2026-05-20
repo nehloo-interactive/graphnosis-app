@@ -292,12 +292,22 @@ export class GraphnosisImpl implements GraphnosisAdapter {
   getNodeEmbeddings(handle: GraphHandle): Map<string, number[]> {
     const h = handle as Internal;
     if (!h.built || !h.instance.hasEmbeddings()) return new Map();
+    // Embedding vectors are NOT stored on GraphNode — the GraphNode type
+    // has no `embedding` field at all. They live in a separate
+    // EmbeddingIndex attached to the SDK instance's internal `built`
+    // object. The SDK's own hasEmbeddings() is literally
+    // `!!this.built?.embeddingIndex`, so reaching through
+    // `built.embeddingIndex.vectors` (Map<nodeId, vector>) is the correct
+    // — and only — access path. Reading `node.embedding` always yielded
+    // undefined, which silently disabled the contradiction scan entirely.
+    const index = (h.instance as unknown as {
+      built?: { embeddingIndex?: { vectors?: Map<string, number[]> } };
+    }).built?.embeddingIndex;
+    const vectors = index?.vectors;
+    if (!vectors) return new Map();
     const out = new Map<string, number[]>();
-    for (const [id, n] of h.instance.graph.nodes) {
-      const emb = (n as unknown as { embedding?: Float32Array | number[] }).embedding;
-      if (emb && emb.length > 0) {
-        out.set(id, Array.from(emb));
-      }
+    for (const [id, vec] of vectors) {
+      if (vec && vec.length > 0) out.set(id, vec);
     }
     return out;
   }
