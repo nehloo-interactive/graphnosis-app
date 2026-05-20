@@ -919,7 +919,7 @@ async function dispatch(deps: IpcDeps, method: string, params: unknown): Promise
       const { config } = z.object({
         config: z.object({
           id: z.string().optional(),
-          kind: z.enum(['webhook', 'rss', 'github', 'slack', 'trello', 'linear']),
+          kind: z.enum(['webhook', 'rss', 'github', 'slack', 'trello', 'linear', 'obsidian', 'gbrain', 'ai-context']),
           graphId: z.string().optional(),
           enabled: z.boolean().optional(),
           // zod v4: z.record requires (keyType, valueType). Credentials are
