@@ -114,6 +114,44 @@ In your project root, create or edit `.cursor/mcp.json`:
 
 Reload the Cursor window. Graphnosis tools will appear in the MCP tools panel.
 
+## GitHub Copilot (VS Code)
+
+Graphnosis integrates with Copilot Chat via two paths. The in-app wizard (**Settings → Mobile & Remote Access → "Set up mobile access…"** → Step 2) shows both options and generates your config automatically.
+
+### Option A — VS Code extension (recommended)
+
+Install the **Graphnosis** extension from the VS Code Marketplace (`nehloo-interactive.graphnosis`). Once installed it:
+
+- Registers `graphnosis_recall` and `graphnosis_remember` as **LM tools** (VS Code 1.97+) so Copilot calls recall autonomously on relevant queries — no `@` prefix needed
+- Adds the `@graphnosis` **chat participant** for explicit queries (`@graphnosis what did I decide about auth?`) on VS Code 1.96+
+- Shows a **"Save to memory"** status bar shortcut after large Copilot code insertions, so you can capture architectural decisions back into your Cortex with one click
+
+After installing, open VS Code Settings, search `graphnosis`, and paste your bearer token into **Bearer Token**. The extension connects to Graphnosis's always-on local bridge (`127.0.0.1:3457`) — no mobile access setup required.
+
+Get your token from the Graphnosis app: **Settings → Mobile & Remote Access → "Set up mobile access…" → Step 2 → Copy token**.
+
+### Option B — `.vscode/mcp.json`
+
+Create or edit `.vscode/mcp.json` in your project root with the snippet the wizard generates:
+
+```json
+{
+  "servers": {
+    "graphnosis": {
+      "type": "http",
+      "url": "http://127.0.0.1:3457/mcp",
+      "headers": {
+        "Authorization": "Bearer <your-token>"
+      }
+    }
+  }
+}
+```
+
+This registers Graphnosis as an MCP server for manual tool use. Copilot will call `recall` and `remember` when you explicitly ask it to — it won't inject context automatically the way the extension does.
+
+The wizard's **Copy** button produces the exact JSON with your token pre-filled.
+
 ## Other MCP-native clients
 
 The same `graphnosis` MCP server entry works in every MCP-native client — only the config file path changes. Below is the full set we've verified, ranked by user base. Each is a config-file drop-in; no Graphnosis-specific work per client.
@@ -131,8 +169,7 @@ The same `graphnosis` MCP server entry works in every MCP-native client — only
 The config snippet itself stays the same as the Claude Desktop / Claude Code / Cursor examples above — `command`, `args: ["--mcp-stdio"]`, `env: { GRAPHNOSIS_CORTEX_PATH }`. Reload the client after editing.
 
 **Not yet MCP-native (need an adapter, not built yet):**
-- **ChatGPT** (Desktop / Web / Mobile) — OpenAI has committed to MCP but rollout is partial. Today, the path is a Custom GPT Action (OpenAPI 3 spec served by Graphnosis's HTTP bridge). Tracked for a v0.7 follow-up.
-- **GitHub Copilot** (VS Code) — uses Microsoft's internal tool API. No MCP support today.
+- **ChatGPT** (Desktop / Web / Mobile) — OpenAI has committed to MCP but rollout is partial. Today, the path is a Custom GPT Action (OpenAPI 3 spec served by Graphnosis's HTTP bridge). Tracked for a future release.
 - **Gemini / Bard** — Google's own function-calling format. No MCP.
 
 ## Generic MCP clients (stdio transport)

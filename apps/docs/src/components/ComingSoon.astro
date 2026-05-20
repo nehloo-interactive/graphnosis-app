@@ -39,7 +39,7 @@ const platforms = [
       <h2 class="text-3xl sm:text-4xl lg:text-5xl font-black text-white mb-4">
         Graphnosis is synapsing.
       </h2>
-      <p class="text-[#9b9db8] max-w-xl mx-auto leading-relaxed">
+      <p class="text-[#c4c6d6] max-w-xl mx-auto leading-relaxed">
         Local-first memory for every device you own. macOS is live today — other platforms are on the roadmap.
       </p>
     </div>
@@ -55,7 +55,7 @@ const platforms = [
           <!-- Platform icon -->
           <div class={[
             'w-14 h-14 rounded-xl flex items-center justify-center',
-            p.status === 'available' ? 'text-[#67e8f9] bg-[#67e8f9]/10' : 'text-[#9b9db8] bg-[#1c1c27]',
+            p.status === 'available' ? 'text-[#67e8f9] bg-[#67e8f9]/10' : 'text-[#c4c6d6] bg-[#1c1c27]',
           ].join(' ')} aria-hidden="true" set:html={p.icon} />
 
           <!-- Platform name -->
@@ -68,13 +68,13 @@ const platforms = [
               {p.statusLabel}
             </span>
           ) : (
-            <span class="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-[#1c1c27] border border-[#2a2a3d] text-[#9b9db8] text-xs font-semibold">
+            <span class="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-[#1c1c27] border border-[#2a2a3d] text-[#c4c6d6] text-sm font-semibold">
               {p.statusLabel}
             </span>
           )}
 
           <!-- Note -->
-          <p class="text-[10px] text-[#9b9db8] leading-snug">{p.note}</p>
+          <p class="text-sm text-[#c4c6d6] leading-snug">{p.note}</p>
         </article>
       ))}
     </div>
