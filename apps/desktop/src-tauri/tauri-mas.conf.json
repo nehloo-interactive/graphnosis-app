@@ -1,0 +1,10 @@
+{
+  "bundle": {
+    "targets": ["app"],
+    "macOS": {
+      "signingIdentity": "3rd Party Mac Developer Application: Nehloo Interactive LLC (C76ZLJ5UQW)",
+      "providerShortName": "C76ZLJ5UQW",
+      "entitlements": "./entitlements-mas.plist"
+    }
+  }
+}

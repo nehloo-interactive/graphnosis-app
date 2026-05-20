@@ -1,0 +1,179 @@
+name: Release (Mac App Store)
+
+# Trigger manually or on the same v* tags as the DMG release.
+# MAS submissions go through App Review, so they can be triggered
+# on the same tag as the DMG without coupling the release schedules.
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version tag to build (e.g. v0.7.0)'
+        required: false
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  build-and-submit:
+    runs-on: macos-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v3
+        with:
+          version: 10
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Import MAS certificates
+        env:
+          MAS_APP_CERT_BASE64: ${{ secrets.APPLE_MAS_APP_CERTIFICATE_BASE64 }}
+          MAS_APP_CERT_PASSWORD: ${{ secrets.APPLE_MAS_APP_CERTIFICATE_PASSWORD }}
+          MAS_INSTALLER_CERT_BASE64: ${{ secrets.APPLE_MAS_INSTALLER_CERTIFICATE_BASE64 }}
+          MAS_INSTALLER_CERT_PASSWORD: ${{ secrets.APPLE_MAS_INSTALLER_CERTIFICATE_PASSWORD }}
+          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
+        run: |
+          KEYCHAIN_PATH=$RUNNER_TEMP/mas.keychain
+          security create-keychain -p "$KEYCHAIN_PASSWORD" $KEYCHAIN_PATH
+          security set-keychain-settings -lut 21600 $KEYCHAIN_PATH
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" $KEYCHAIN_PATH
+
+          echo "$MAS_APP_CERT_BASE64" | base64 --decode -o $RUNNER_TEMP/mas-app.p12
+          security import $RUNNER_TEMP/mas-app.p12 -k $KEYCHAIN_PATH \
+            -P "$MAS_APP_CERT_PASSWORD" -T /usr/bin/codesign
+
+          echo "$MAS_INSTALLER_CERT_BASE64" | base64 --decode -o $RUNNER_TEMP/mas-installer.p12
+          security import $RUNNER_TEMP/mas-installer.p12 -k $KEYCHAIN_PATH \
+            -P "$MAS_INSTALLER_CERT_PASSWORD" -T /usr/bin/productbuild
+
+          security list-keychain -d user -s $KEYCHAIN_PATH
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$KEYCHAIN_PASSWORD" $KEYCHAIN_PATH
+
+      - name: Install Mac App Distribution provisioning profile
+        env:
+          MAS_APP_PROFILE_BASE64: ${{ secrets.APPLE_MAS_APP_PROFILE_BASE64 }}
+        run: |
+          mkdir -p ~/Library/MobileDevice/Provisioning\ Profiles
+          echo "$MAS_APP_PROFILE_BASE64" | base64 --decode \
+            -o ~/Library/MobileDevice/Provisioning\ Profiles/graphnosis-mas-app.provisionprofile
+
+      - name: Stage libonnxruntime for bundling
+        run: |
+          DYLIB="libonnxruntime.1.21.0.dylib"
+          DEST="apps/desktop/src-tauri/resources/$DYLIB"
+          mkdir -p "$(dirname "$DEST")"
+          SRC=$(find node_modules/.pnpm -path "*/darwin/arm64/$DYLIB" | head -1)
+          if [ -z "$SRC" ]; then
+            echo "ERROR: $DYLIB not found in node_modules/.pnpm" && exit 1
+          fi
+          cp "$SRC" "$DEST"
+          echo "Staged $SRC → $DEST"
+
+      - name: Sign libonnxruntime for MAS
+        run: |
+          codesign --force \
+            --sign "3rd Party Mac Developer Application: Nehloo Interactive LLC (C76ZLJ5UQW)" \
+            apps/desktop/src-tauri/resources/libonnxruntime.1.21.0.dylib
+
+      - name: Install Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Build (Mac App Store target)
+        run: pnpm --filter @graphnosis-app/desktop tauri:build -- --config src-tauri/tauri-mas.conf.json
+
+      - name: Re-sign embedded helpers with child entitlements
+        # Tauri signs all embedded binaries with the main entitlements. The
+        # sidecar and helpers must use com.apple.security.inherit instead so
+        # they can run within the parent sandbox without being blocked.
+        run: |
+          APP="apps/desktop/src-tauri/target/release/bundle/macos/Graphnosis.app"
+          SIGN_ID="3rd Party Mac Developer Application: Nehloo Interactive LLC (C76ZLJ5UQW)"
+          CHILD_ENTITLEMENTS="apps/desktop/src-tauri/entitlements-mas-child.plist"
+          MAIN_ENTITLEMENTS="apps/desktop/src-tauri/entitlements-mas.plist"
+          TRIPLE="aarch64-apple-darwin"
+
+          for helper in graphnosis-sidecar graphnosis-mcp-relay graphnosis-biometric; do
+            BINARY="$APP/Contents/MacOS/${helper}-${TRIPLE}"
+            if [ -f "$BINARY" ]; then
+              codesign --force --sign "$SIGN_ID" \
+                --entitlements "$CHILD_ENTITLEMENTS" \
+                "$BINARY"
+              echo "Re-signed $helper with child entitlements"
+            else
+              echo "WARNING: $BINARY not found — skipping"
+            fi
+          done
+
+          # Re-sign the dylib inside the bundle
+          DYLIB="$APP/Contents/Resources/libonnxruntime.1.21.0.dylib"
+          if [ -f "$DYLIB" ]; then
+            codesign --force --sign "$SIGN_ID" "$DYLIB"
+          fi
+
+          # Re-sign the main app bundle last with the MAS entitlements
+          codesign --force --sign "$SIGN_ID" \
+            --entitlements "$MAIN_ENTITLEMENTS" \
+            "$APP"
+
+      - name: Embed provisioning profile
+        # Tauri does not embed MAS provisioning profiles automatically.
+        # Copy the profile into the bundle before packaging.
+        run: |
+          APP="apps/desktop/src-tauri/target/release/bundle/macos/Graphnosis.app"
+          cp ~/Library/MobileDevice/Provisioning\ Profiles/graphnosis-mas-app.provisionprofile \
+            "$APP/Contents/embedded.provisionprofile"
+
+      - name: Verify signing
+        run: |
+          APP="apps/desktop/src-tauri/target/release/bundle/macos/Graphnosis.app"
+          codesign --verify --deep --strict "$APP"
+          echo "Signing verification passed"
+
+      - name: Package as .pkg
+        run: |
+          APP="apps/desktop/src-tauri/target/release/bundle/macos/Graphnosis.app"
+          SEMVER=${GITHUB_REF_NAME#v}
+          PKG="Graphnosis_${SEMVER:-0.7.0}_aarch64.pkg"
+          productbuild \
+            --component "$APP" /Applications \
+            --sign "3rd Party Mac Developer Installer: Nehloo Interactive LLC (C76ZLJ5UQW)" \
+            "$PKG"
+          echo "PKG_PATH=$PKG" >> $GITHUB_ENV
+          echo "Packaged: $PKG"
+
+      - name: Validate .pkg
+        run: pkgutil --check-signature "$PKG_PATH"
+
+      - name: Upload to App Store Connect
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+        run: |
+          xcrun altool --upload-app \
+            --file "$PKG_PATH" \
+            --type osx \
+            --username "$APPLE_ID" \
+            --password "$APPLE_PASSWORD"
+
+      - name: Clean up keychain
+        if: always()
+        run: security delete-keychain $RUNNER_TEMP/mas.keychain
