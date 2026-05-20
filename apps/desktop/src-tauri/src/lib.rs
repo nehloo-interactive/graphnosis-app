@@ -99,7 +99,7 @@ async fn unlock_cortex(
     // Spawn the supervised Node sidecar. The sidecar acquires an exclusive
     // cortex lock on its own, so if another sidecar is already running against
     // the same cortex, this call will fail visibly.
-    let handle = sidecar::start(&cortex_dir, &args.passphrase)
+    let handle = sidecar::start(&app, &cortex_dir, &args.passphrase)
         .await
         .map_err(|e| e.to_string())?;
 
@@ -199,7 +199,7 @@ async fn unlock_cortex_with_recovery(
         );
     }
 
-    let handle = sidecar::start_with_recovery(&cortex_dir, &args.recovery_phrase)
+    let handle = sidecar::start_with_recovery(&app, &cortex_dir, &args.recovery_phrase)
         .await
         .map_err(|e| e.to_string())?;
 
