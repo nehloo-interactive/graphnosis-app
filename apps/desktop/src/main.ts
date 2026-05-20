@@ -534,9 +534,14 @@ const els = {
   tourStepIndicator: $<HTMLDivElement>('tour-step-indicator'),
   tourTitle: $<HTMLHeadingElement>('tour-title'),
   tourBody: $<HTMLParagraphElement>('tour-body'),
+  tourConnectArea: $<HTMLDivElement>('tour-connect-area'),
   tourSkip: $<HTMLButtonElement>('tour-skip'),
   tourPrev: $<HTMLButtonElement>('tour-prev'),
   tourNext: $<HTMLButtonElement>('tour-next'),
+  railGetConnected: $<HTMLDivElement>('rail-get-connected'),
+  railGcClients: $<HTMLDivElement>('rail-gc-clients'),
+  railGcMobile: $<HTMLDivElement>('rail-gc-mobile'),
+  railGcConnectors: $<HTMLDivElement>('rail-gc-connectors'),
 };
 
 // Current plan in the modal — kept in module scope so the Apply button can
@@ -951,6 +956,54 @@ function refreshActiveEngramLabel(): void {
   }
   const meta = loadedGraphs.find((g) => g.graphId === id);
   els.activeEngramLabel.textContent = meta?.metadata.displayName ?? id;
+}
+
+/** Rebuild the topbar engram <select> options from loadedGraphs (sorted A-Z).
+ *  Called whenever loadedGraphs changes so the picker is always up-to-date
+ *  regardless of which pane is active. */
+function syncEngramPicker(): void {
+  const visibleGraphs = loadedGraphs
+    .filter((g) => !g.metadata.archived)
+    .sort((a, b) => (a.metadata.displayName ?? a.graphId).localeCompare(b.metadata.displayName ?? b.graphId));
+  els.atlasGraphPicker.innerHTML = visibleGraphs
+    .map((g) => `<option value="${escape(g.graphId)}">${escape(g.metadata.displayName ?? g.graphId)}</option>`)
+    .join('');
+  if (!atlasActiveGraph || !visibleGraphs.some((g) => g.graphId === atlasActiveGraph)) {
+    atlasActiveGraph = pickAtlasGraph();
+  }
+  if (atlasActiveGraph) els.atlasGraphPicker.value = atlasActiveGraph;
+  refreshActiveEngramLabel();
+}
+
+/** Render the "Get connected" shortcut buttons in the left sidebar. */
+function renderRailGetConnected(): void {
+  if (!els.railGcClients) return;
+
+  const makeBtn = (label: string, onClick: () => void): HTMLButtonElement => {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'rail-shortcut-btn';
+    b.textContent = label;
+    b.addEventListener('click', onClick);
+    return b;
+  };
+
+  els.railGcClients.innerHTML = '';
+  els.railGcClients.appendChild(makeBtn('Claude Desktop', () => openConfigureClientModal('claude-desktop')));
+  els.railGcClients.appendChild(makeBtn('Claude Code', () => openConfigureClientModal('claude-code')));
+  els.railGcClients.appendChild(makeBtn('Cursor', () => openConfigureClientModal('cursor')));
+
+  els.railGcMobile.innerHTML = '';
+  els.railGcMobile.appendChild(makeBtn('📱 Mobile access', () => void openMobileWizard()));
+
+  els.railGcConnectors.innerHTML = '';
+  const connectorShortcuts: Array<[ConnectorKind, string]> = [
+    ['rss','RSS'],['github','GitHub'],['slack','Slack'],['trello','Trello'],
+    ['linear','Linear'],['obsidian','Obsidian'],['gbrain','GBrain'],['ai-context','AI Context Files'],
+  ];
+  for (const [kind, label] of connectorShortcuts) {
+    els.railGcConnectors.appendChild(makeBtn(label, () => openConnectorSetupModal(kind)));
+  }
 }
 
 function shortCortexLabel(p: string): string {
@@ -1532,6 +1585,7 @@ async function refreshStats(): Promise<void> {
               try {
                 await invoke('create_graph_with_template', { graphId: toGraphId, template: 'personal', displayName });
                 loadedGraphs = (await invoke('list_graphs_with_metadata')) as typeof loadedGraphs;
+                syncEngramPicker();
               } catch (e) {
                 showError(`Could not create engram "${displayName}": ${e}`);
                 return;
@@ -3169,14 +3223,13 @@ els.passphrase.addEventListener('keydown', (e) => {
 async function fetchGraphsMetadata(): Promise<void> {
   try {
     loadedGraphs = (await invoke('list_graphs_with_metadata')) as GraphWithMetadata[];
+    // Always keep the topbar picker in sync regardless of active pane.
+    syncEngramPicker();
     // At unlock, render() fires fetchGraphsMetadata + activateMode in
     // parallel — by the time activateMode's lazy-load ran, loadedGraphs
     // was empty and refresh*View bailed out. Now that the fetch resolved,
     // re-trigger the currently-active mode so its view actually populates.
     if (currentMode === 'atlas') void refreshAtlasView();
-    // Engram label in the app header reads displayName from loadedGraphs;
-    // it was a fallback "—" until this fetch completed, so refresh it now.
-    refreshActiveEngramLabel();
   } catch (e) {
     console.error('list_graphs_with_metadata failed', e);
   }
@@ -3375,23 +3428,14 @@ async function fetchEdges(graphId: string): Promise<{ directed: AtlasDirectedEdg
 // Top-level entry the rail calls when the user picks the Graphnosis pane.
 // Refreshes everything: picker, list, detail. Atlas is lazy-loaded.
 async function refreshAtlasView(): Promise<void> {
-  // Populate the engram picker — archived graphs are hidden from all navigation.
-  const visibleGraphs = loadedGraphs
-    .filter((g) => !g.metadata.archived)
-    .sort((a, b) => (a.metadata.displayName ?? a.graphId).localeCompare(b.metadata.displayName ?? b.graphId));
-  els.atlasGraphPicker.innerHTML = visibleGraphs
-    .map((g) => `<option value="${escape(g.graphId)}">${escape(g.metadata.displayName)}</option>`)
-    .join('');
+  syncEngramPicker();
+  const visibleGraphs = loadedGraphs.filter((g) => !g.metadata.archived);
   if (visibleGraphs.length === 0) {
     els.gDashboard.classList.add('hidden');
     els.gSearchResults.classList.add('hidden');
     renderDetailEmpty();
     return;
   }
-  if (!atlasActiveGraph || !visibleGraphs.some((g) => g.graphId === atlasActiveGraph)) {
-    atlasActiveGraph = pickAtlasGraph(); refreshActiveEngramLabel();
-  }
-  if (atlasActiveGraph) els.atlasGraphPicker.value = atlasActiveGraph;
   if (!atlasActiveGraph) return;
 
   // Always refresh the data backing the list (fast) + the Atlas data cache.
@@ -3910,6 +3954,74 @@ function renderDeck(): void {
     const remaining = graphnosisDeckPool.length - nextPageStart;
     els.gDeckProgress.textContent = '';
     els.gDeckCardHead.innerHTML = '';
+    // Empty engram — show onboarding card for new users
+    if (graphnosisAllNodes.length === 0) {
+      els.gDeckCard.innerHTML = `
+        <div class="g-deck-onboarding">
+          <div class="g-deck-onboarding-top">
+            <p class="g-deck-onboarding-tagline">Your local encrypted memory, indexed for every AI tool.</p>
+            <div class="g-deck-onboarding-steps">
+              <div class="g-deck-onboarding-step">
+                <span class="g-deck-onboarding-num">1</span>
+                <div class="g-deck-onboarding-step-body">
+                  <strong>Connect an AI client or add a data source</strong> — so Graphnosis has something to remember.
+                </div>
+              </div>
+              <div class="g-deck-onboarding-step">
+                <span class="g-deck-onboarding-num">2</span>
+                <div class="g-deck-onboarding-step-body">
+                  <strong>Ingest a file</strong> — drag a PDF, markdown file, or any document onto the app.
+                  <div style="margin-top: 6px;"><button id="ob-ingest-btn" class="rail-shortcut-btn">Add file to engram…</button></div>
+                </div>
+              </div>
+              <div class="g-deck-onboarding-step">
+                <span class="g-deck-onboarding-num">3</span>
+                <div class="g-deck-onboarding-step-body">
+                  <strong>Ask your AI</strong> — open Claude, Cursor, or any connected client and try:
+                </div>
+              </div>
+            </div>
+          </div>
+          <div class="g-deck-onboarding-bottom">
+            <div class="g-deck-onboarding-connect" id="ob-connect-btns"></div>
+            <div class="g-deck-onboarding-cmds">
+              <span class="g-deck-cmd-chip" title="Click to copy" data-cmd="recall [topic]">recall [topic]</span>
+              <span class="g-deck-cmd-chip" title="Click to copy" data-cmd="remember [something]">remember [something]</span>
+              <span class="g-deck-cmd-chip" title="Click to copy" data-cmd="remind me about [topic]">remind me about [topic]</span>
+              <span class="g-deck-cmd-chip" title="Click to copy" data-cmd="correct [memory]">correct [memory]</span>
+              <span class="g-deck-cmd-chip" title="Click to copy" data-cmd="forget [topic]">forget [topic]</span>
+            </div>
+          </div>
+        </div>`;
+      // Populate connect buttons
+      const wrap = document.getElementById('ob-connect-btns');
+      if (wrap) {
+        const clients: Array<[string, () => void]> = [
+          ['Claude Desktop', () => openConfigureClientModal('claude-desktop')],
+          ['Claude Code',    () => openConfigureClientModal('claude-code')],
+          ['Cursor',         () => openConfigureClientModal('cursor')],
+          ['📱 Mobile',      () => void openMobileWizard()],
+        ];
+        clients.forEach(([label, fn]) => {
+          const b = document.createElement('button');
+          b.type = 'button'; b.className = 'rail-shortcut-btn'; b.textContent = label;
+          b.addEventListener('click', fn);
+          wrap.appendChild(b);
+        });
+      }
+      // Step 2 ingest button
+      document.getElementById('ob-ingest-btn')?.addEventListener('click', () => els.btnAddFile.click());
+      // Copy-to-clipboard for cmd chips — CSS class drives the green flash + fade
+      els.gDeckCard.querySelectorAll<HTMLElement>('.g-deck-cmd-chip').forEach((chip) => {
+        chip.addEventListener('click', () => {
+          void navigator.clipboard.writeText(chip.dataset['cmd'] ?? chip.textContent ?? '');
+          chip.classList.add('copied');
+          setTimeout(() => chip.classList.remove('copied'), 1000);
+        });
+      });
+      return;
+    }
+
     els.gDeckCard.innerHTML = `
       <div class="g-deck-empty">
         <div class="g-deck-empty-grade">✓</div>
@@ -6367,6 +6479,8 @@ async function renderSuggestionPanel(opts: SuggestionPanelOpts): Promise<void> {
 function cleanDisplayContent(raw: string): string {
   if (!raw) return raw;
   let s = raw.trim();
+  // Strip HTML tags before any other processing.
+  s = s.replace(/<[^>]+>/g, ' ').replace(/\s{2,}/g, ' ').trim();
   // Leading list / heading / quote markers (markdown).
   s = s.replace(/^(?:#{1,6}\s+|[-*+]\s+|\d+[.)]\s+|>\s+)/, '');
   // Strip enclosing `*`, `**`, `_`, `__` pairs at start+end of the whole
@@ -7542,17 +7656,17 @@ void listen<CorrectionProposedPayload>('graphnosis://correction-proposed', (ev) 
 // Shows once (keyed on localStorage flag 'graphnosis_tour_done').
 // No external libraries. Pure DOM manipulation.
 
-const TOUR_STEPS: Array<{ title: string; body: string }> = [
+const TOUR_STEPS: Array<{ title: string; body: string; connectArea?: boolean }> = [
   {
-    title: 'Welcome to Graphnosis.',
-    body: 'Your private AI memory — local, encrypted, yours.\n\nThis quick tour takes about a minute.',
+    title: 'Welcome to Graphnosis',
+    body: 'Your local encrypted memory, indexed for every AI tool.\nThis quick tour takes about a minute.',
   },
   {
-    title: 'Your Cortex: a local memory storage',
+    title: 'Your Cortex: a local, encrypted memory',
     body: 'Choose a folder on your Mac. That\'s your Cortex — an encrypted memory storage, like the human brain\'s cortex, that stays entirely on your device. Never uploaded. Never shared.\n\nGraphnosis will give you a 24-word recovery phrase the first time you unlock it. Write it down — that\'s the only fallback if you ever forget your passphrase.',
   },
   {
-    title: 'Add your memories privately',
+    title: 'Add your memories privately — and index them',
     body: 'Add files, websites, or clips to your Cortex. Graphnosis extracts meaningful nodes — ideas, facts, references — and indexes them for your AI, like the human brain\'s hippocampus.\n\nWant your Cortex to grow on its own? Settings → Connectors lets you wire in RSS feeds, GitHub repos, Slack stars, Trello boards, Linear issues, or any webhook. Bring your own credentials — Graphnosis is just the receiver — and new items flow in on a 15-minute schedule, encrypted at rest.\n\n(Yes, that\'s why the logo is a seahorse. "Hippocampus" is Greek for seahorse — the brain region was named after the shape in 1564.)',
   },
   {
@@ -7562,6 +7676,11 @@ const TOUR_STEPS: Array<{ title: string; body: string }> = [
   {
     title: 'Your local, encrypted, private memory',
     body: 'Your memory never leaves your device automatically. When your AI does recall something from your Graphnosis Cortex, only the relevant excerpt travels to that AI service — nothing more. Your Cortex files are passphrase-protected, so even if you ever choose to share or move them, they remain yours alone.',
+  },
+  {
+    title: 'Your local encrypted memory.\nIndexed for every AI tool.',
+    body: 'Pick where you want to start — connect an AI client, set up mobile access, or wire in a data source. You can always do this later from Settings.',
+    connectArea: true,
   },
 ];
 
@@ -7585,6 +7704,49 @@ function startTour(): void {
     // Title and body
     els.tourTitle.textContent = step.title;
     els.tourBody.textContent = step.body;
+
+    // Logo — shown only on the first step
+    const tourLogo = document.getElementById('tour-logo');
+    if (tourLogo) tourLogo.classList.toggle('hidden', !isFirst);
+
+    // Connect area — shown only on the final step
+    if (step.connectArea) {
+      els.tourConnectArea.classList.add('visible');
+      els.tourConnectArea.innerHTML = `
+        <div class="tour-connect-label">Connect an AI client</div>
+        <div class="tour-connect-group" id="tca-clients"></div>
+        <div class="tour-connect-label" style="margin-top:8px;">Mobile &amp; remote access</div>
+        <div class="tour-connect-group" id="tca-mobile"></div>
+        <div class="tour-connect-label" style="margin-top:8px;">Data connectors</div>
+        <div class="tour-connect-group" id="tca-connectors"></div>`;
+      const makeBtn = (label: string, onClick: () => void): HTMLButtonElement => {
+        const b = document.createElement('button');
+        b.type = 'button'; b.className = 'tour-connect-btn'; b.textContent = label;
+        b.addEventListener('click', () => { completeTour(); onClick(); });
+        return b;
+      };
+      document.getElementById('tca-clients')?.append(
+        makeBtn('Claude Desktop', () => openConfigureClientModal('claude-desktop')),
+        makeBtn('Claude Code', () => openConfigureClientModal('claude-code')),
+        makeBtn('Cursor', () => openConfigureClientModal('cursor')),
+      );
+      document.getElementById('tca-mobile')?.append(
+        makeBtn('📱 Set up mobile access', () => void openMobileWizard()),
+      );
+      const connectorKinds: Array<[string, string]> = [
+        ['rss','RSS'],['github','GitHub'],['slack','Slack'],['trello','Trello'],
+        ['linear','Linear'],['obsidian','Obsidian'],['gbrain','GBrain'],['ai-context','AI Context Files'],
+        ['webhook','Webhook'],
+      ];
+      connectorKinds.forEach(([kind, label]) => {
+        document.getElementById('tca-connectors')?.appendChild(
+          makeBtn(label, () => openConnectorSetupModal(kind as ConnectorKind)),
+        );
+      });
+    } else {
+      els.tourConnectArea.classList.remove('visible');
+      els.tourConnectArea.innerHTML = '';
+    }
 
     // Step dots
     els.tourStepIndicator.innerHTML = '';
@@ -8332,7 +8494,7 @@ function installCustomEngramPicker(): void {
 // need different inputs). Six kinds shipped: rss, github, slack, trello,
 // linear, webhook.
 
-type ConnectorKind = 'webhook' | 'rss' | 'github' | 'slack' | 'trello' | 'linear';
+type ConnectorKind = 'webhook' | 'rss' | 'github' | 'slack' | 'trello' | 'linear' | 'obsidian' | 'gbrain' | 'ai-context';
 
 interface ConnectorConfigShape {
   id: string;
@@ -8358,10 +8520,12 @@ interface ConnectorStatus {
 const CONNECTOR_KIND_LABEL: Record<ConnectorKind, string> = {
   rss: 'RSS', github: 'GitHub', slack: 'Slack',
   trello: 'Trello', linear: 'Linear', webhook: 'Webhook',
+  obsidian: 'Obsidian', gbrain: 'GBrain', 'ai-context': 'AI Context Files',
 };
 const CONNECTOR_KIND_GLYPH: Record<ConnectorKind, string> = {
   rss: '📰', github: '🐙', slack: '💬',
   trello: '📋', linear: '📐', webhook: '🪝',
+  obsidian: '🔮', gbrain: '🧠', 'ai-context': '📎',
 };
 
 async function refreshConnectorsList(): Promise<void> {
@@ -8502,6 +8666,16 @@ function openConnectorSetupModal(kind: ConnectorKind, existing?: ConnectorConfig
   body.innerHTML = renderConnectorSetupBody(kind, existing);
   // Populate engram dropdown after body renders
   populateEngramDropdown('connector-graphid', existing?.graphId);
+  // Wire folder browse button for ai-context connector
+  document.getElementById('connector-aicontext-browse')?.addEventListener('click', async () => {
+    const picked = await invoke<string[]>('pick_folders');
+    if (!picked.length) return;
+    const ta = document.getElementById('connector-aicontext-paths') as HTMLTextAreaElement | null;
+    if (!ta) return;
+    const existing = ta.value.split('\n').map((s) => s.trim()).filter(Boolean);
+    const merged = [...new Set([...existing, ...picked])];
+    ta.value = merged.join('\n');
+  });
   modal.classList.remove('hidden');
 }
 
@@ -8513,6 +8687,9 @@ function connectorSubtitleFor(kind: ConnectorKind): string {
     case 'slack': return 'Pull starred items and channel history from your workspace.';
     case 'trello': return 'Pull cards and checklists from boards you choose.';
     case 'linear': return 'Pull issues from your teams with status / priority filters.';
+    case 'obsidian': return 'Auto-ingest notes from your local Obsidian vault. No API key needed.';
+    case 'gbrain': return 'Auto-ingest notes from your local GBrain repo. No API key needed.';
+    case 'ai-context': return 'Index CLAUDE.md, AGENTS.md, .cursorrules and other AI context files from your projects.';
   }
 }
 
@@ -8529,6 +8706,7 @@ function renderConnectorSetupBody(kind: ConnectorKind, existing?: ConnectorConfi
     <div class="connector-field">
       <label for="connector-graphid">Target engram</label>
       <select id="connector-graphid"></select>
+      <input type="text" id="connector-new-engram-name" placeholder="New engram name…" style="display:none;margin-top:6px;" />
       <span class="field-hint">Ingested events become source nodes in this engram.</span>
     </div>`;
   switch (kind) {
@@ -8643,6 +8821,56 @@ function renderConnectorSetupBody(kind: ConnectorKind, existing?: ConnectorConfi
           <input type="text" id="connector-linear-team" placeholder="ENG, OPS, …" value="${escapeHtml(creds['teamKey'] ?? '')}" />
           <span class="field-hint">Leave blank to pull from every team you have access to.</span>
         </div>`;
+    case 'obsidian':
+      return `
+        <div class="connector-help">
+          No API key needed — Graphnosis reads your vault's <code>.md</code> files directly from disk.
+          Point it at your vault folder and it will auto-ingest new and modified notes on each pull.
+          The <code>.obsidian/</code> config directory is always skipped.
+        </div>
+        ${idField}
+        ${graphField}
+        <div class="connector-field">
+          <label for="connector-obsidian-vault">Vault folder path</label>
+          <input type="text" id="connector-obsidian-vault" placeholder="/Users/you/Documents/MyVault" value="${escapeHtml((opts['vaultPath'] as string) ?? '')}" />
+          <span class="field-hint">Absolute path to the folder Obsidian uses as your vault.</span>
+        </div>`;
+    case 'gbrain':
+      return `
+        <div class="connector-help">
+          No API key needed — Graphnosis reads GBrain's <code>.md</code> files directly from your local git repo.
+          Point it at the repo folder and it will auto-ingest new and modified notes on each pull.
+          GBrain wikilinks (<code>[[wiki/...]]</code>) are preserved in the ingested text.
+        </div>
+        ${idField}
+        ${graphField}
+        <div class="connector-field">
+          <label for="connector-gbrain-repo">GBrain repo path</label>
+          <input type="text" id="connector-gbrain-repo" placeholder="/Users/you/Documents/my-gbrain" value="${escapeHtml((opts['repoPath'] as string) ?? '')}" />
+          <span class="field-hint">Absolute path to the root of your GBrain git repository.</span>
+        </div>`;
+    case 'ai-context':
+      return `
+        <div class="connector-help">
+          Indexes standard AI assistant context files across your projects — no credentials required.
+          <br /><br />
+          <strong>Only these specific filenames are indexed</strong> — no source code or other files are read:
+          <code>CLAUDE.md</code>, <code>AGENTS.md</code>, <code>MEMORY.md</code>,
+          <code>.cursorrules</code>, <code>.cursor/rules/*.md</code>,
+          <code>.github/copilot-instructions.md</code>, <code>GEMINI.md</code>, <code>.windsurfrules</code>.
+          <br /><br />
+          <strong>~/.claude/CLAUDE.md</strong> is always included automatically.
+          <br /><br />
+          To index code or all <code>.md</code> files in a repo, use the <strong>GBrain</strong> connector instead.
+        </div>
+        ${idField}
+        ${graphField}
+        <div class="connector-field">
+          <label for="connector-aicontext-paths">Project folders (one per line)</label>
+          <textarea id="connector-aicontext-paths" rows="4" placeholder="/Users/you/Developer/my-project&#10;/Users/you/Developer/another-project">${escapeHtml(((opts['paths'] as string[]) ?? []).join('\n'))}</textarea>
+          <button type="button" id="connector-aicontext-browse" class="btn-secondary" style="margin-top:6px;">Browse…</button>
+          <span class="field-hint">Point at the root of each project folder. Only the known AI context filenames above will be read — nothing else.</span>
+        </div>`;
     case 'webhook': {
       const token = (opts['webhookToken'] as string) || '<generated on save>';
       const url = `http://localhost:3458/webhook/${existing?.id ?? '<id>'}/${token}`;
@@ -8674,16 +8902,25 @@ function populateEngramDropdown(selectId: string, selectedId?: string): void {
   const sel = document.getElementById(selectId) as HTMLSelectElement | null;
   if (!sel) return;
   const fallback = selectedId ?? loadedGraphs[0]?.graphId ?? '';
-  sel.innerHTML = [...loadedGraphs]
-    .sort((a, b) => (a.metadata.displayName ?? a.graphId).localeCompare(b.metadata.displayName ?? b.graphId))
-    .map((g) => `<option value="${escapeHtml(g.graphId)}" ${g.graphId === fallback ? 'selected' : ''}>${escapeHtml(g.metadata.displayName ?? g.graphId)}</option>`)
-    .join('');
+  const nameInput = document.getElementById('connector-new-engram-name') as HTMLInputElement | null;
+  sel.innerHTML =
+    `<option value="__new__">New Engram…</option>` +
+    [...loadedGraphs]
+      .sort((a, b) => (a.metadata.displayName ?? a.graphId).localeCompare(b.metadata.displayName ?? b.graphId))
+      .map((g) => `<option value="${escapeHtml(g.graphId)}" ${g.graphId === fallback ? 'selected' : ''}>${escapeHtml(g.metadata.displayName ?? g.graphId)}</option>`)
+      .join('');
+  // Select the fallback (skips __new__ unless no graphs exist)
+  if (fallback && Array.from(sel.options).some((o) => o.value === fallback)) sel.value = fallback;
+  sel.addEventListener('change', () => {
+    if (nameInput) nameInput.style.display = sel.value === '__new__' ? '' : 'none';
+  });
 }
 
 function collectConnectorFormData(kind: ConnectorKind): Partial<ConnectorConfigShape> | null {
   const id = ($m<HTMLInputElement>('connector-id')?.value || '').trim();
   const graphId = ($m<HTMLSelectElement>('connector-graphid')?.value || '').trim();
   if (!graphId) { alert('Pick a target engram.'); return null; }
+  // __new__ is resolved to a real graphId in the save handler before install.
   const credentials: Record<string, string> = {};
   const options: Record<string, unknown> = {};
   switch (kind) {
@@ -8731,6 +8968,24 @@ function collectConnectorFormData(kind: ConnectorKind): Partial<ConnectorConfigS
       if (team) credentials['teamKey'] = team;
       break;
     }
+    case 'obsidian': {
+      const vaultPath = $m<HTMLInputElement>('connector-obsidian-vault')?.value.trim() || '';
+      if (!vaultPath) { alert('Vault path is required.'); return null; }
+      options['vaultPath'] = vaultPath;
+      break;
+    }
+    case 'gbrain': {
+      const repoPath = $m<HTMLInputElement>('connector-gbrain-repo')?.value.trim() || '';
+      if (!repoPath) { alert('Repo path is required.'); return null; }
+      options['repoPath'] = repoPath;
+      break;
+    }
+    case 'ai-context': {
+      const paths = ($m<HTMLTextAreaElement>('connector-aicontext-paths')?.value || '')
+        .split('\n').map((s) => s.trim()).filter(Boolean);
+      options['paths'] = paths;
+      break;
+    }
     case 'webhook': {
       // Token auto-generated server-side if missing.
       break;
@@ -8768,6 +9023,17 @@ function collectConnectorFormData(kind: ConnectorKind): Partial<ConnectorConfigS
     try {
       const config = collectConnectorFormData(pendingConnectorKind);
       if (!config) { if (btn) { btn.disabled = false; btn.textContent = 'Save'; } return; }
+      // Create a new engram on-the-fly when the user picked "New Engram…".
+      if (config.graphId === '__new__') {
+        const displayName = ($m<HTMLInputElement>('connector-new-engram-name')?.value || '').trim();
+        if (!displayName) { alert('Enter a name for the new engram.'); if (btn) { btn.disabled = false; btn.textContent = 'Save'; } return; }
+        const newGraphId = displayName.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') +
+          '-' + Math.random().toString(36).slice(-4);
+        await invoke('create_graph_with_template', { graphId: newGraphId, template: 'personal', displayName });
+        loadedGraphs = await invoke<GraphWithMetadata[]>('list_graphs_with_metadata');
+        syncEngramPicker();
+        config.graphId = newGraphId;
+      }
       // If editing, force the id from the existing record.
       if (pendingConnectorEditId) config.id = pendingConnectorEditId;
       await invoke('install_connector', { config });
@@ -8853,6 +9119,7 @@ void (async () => {
     // path too (covers the auto-unlock-from-keychain future case).
     if (status.unlocked) rememberCortexDir(status.cortex_dir);
     render(status);
+    renderRailGetConnected();
     startTour();
   } catch (e) {
     showError(String(e));

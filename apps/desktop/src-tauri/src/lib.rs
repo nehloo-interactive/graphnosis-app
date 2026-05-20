@@ -628,6 +628,27 @@ async fn pick_and_ingest_file(
 /// (sequential `ingest_file` invokes, each with its own toast).
 ///
 /// Empty result = user cancelled (or selected nothing).
+/// Let the user pick one or more folders via the native OS dialog.
+/// Empty result = user cancelled.
+#[tauri::command]
+async fn pick_folders(app: AppHandle) -> Result<Vec<String>, String> {
+    // Tauri v2 blocking_pick_folders opens a multi-select folder dialog.
+    let picked = app
+        .dialog()
+        .file()
+        .set_title("Choose project folders to watch")
+        .blocking_pick_folders();
+    let paths = match picked {
+        Some(folders) => folders
+            .into_iter()
+            .filter_map(|f| f.into_path().ok())
+            .map(|p| p.to_string_lossy().into_owned())
+            .collect(),
+        None => Vec::new(),
+    };
+    Ok(paths)
+}
+
 #[tauri::command]
 async fn pick_files(app: AppHandle) -> Result<Vec<String>, String> {
     let picked = app
@@ -2016,6 +2037,7 @@ pub fn run() {
             ingest_file,
             pick_and_ingest_file,
             pick_files,
+            pick_folders,
             forget_source,
             reingest_source,
             purge_forgotten,
@@ -2097,6 +2119,16 @@ pub fn run() {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 let _ = window.hide();
                 api.prevent_close();
+                // Let the user know the app is still alive so AI clients,
+                // agents, and connectors keep working without the window open.
+                use tauri_plugin_notification::NotificationExt;
+                let _ = window
+                    .app_handle()
+                    .notification()
+                    .builder()
+                    .title("Graphnosis Synapse is running")
+                    .body("Your AI clients, agents, and connectors stay active. Reopen anytime from the menu bar icon.")
+                    .show();
             }
         })
         .build(tauri::generate_context!())
