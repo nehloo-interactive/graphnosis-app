@@ -788,12 +788,15 @@
         z-index: 1;
         width: 100%;
         max-width: 480px;
+        height: 680px;
         margin: 24px;
         background: #1c1c1e;
         border: 1px solid rgba(255, 255, 255, 0.10);
         border-radius: 14px;
         padding: 32px;
         box-shadow: 0 24px 64px rgba(0, 0, 0, 0.55), 0 4px 16px rgba(0, 0, 0, 0.3);
+        display: flex;
+        flex-direction: column;
       }
       @media (prefers-color-scheme: light) {
         .tour-card {
@@ -824,13 +827,19 @@
         margin: 0 0 10px;
         letter-spacing: -0.02em;
         line-height: 1.3;
+        white-space: pre-line;
       }
       .tour-body {
-        font-size: 14px;
+        font-size: 16px;
         line-height: 1.65;
         color: rgba(237, 237, 237, 0.72);
-        margin: 0 0 28px;
+        margin: 0 0 16px;
+        white-space: pre-line;
+        flex: 1;
+        overflow-y: auto;
       }
+      .tour-logo { margin-bottom: 16px; }
+      .tour-logo.hidden { display: none; }
       .tour-actions {
         display: flex;
         align-items: center;
@@ -881,6 +890,53 @@
         white-space: nowrap;
       }
       .tour-btn-primary:hover { background: #7ec4d6; }
+      .tour-connect-area { display: none; flex-direction: column; gap: 8px; margin-bottom: 12px; overflow-y: auto; }
+      .tour-connect-area.visible { display: flex; }
+      .tour-connect-group { display: flex; flex-wrap: wrap; gap: 6px; }
+      .tour-connect-label { font-size: 11px; color: rgba(237,237,237,0.45); text-transform: uppercase; letter-spacing: .06em; margin-bottom: 2px; }
+      .tour-connect-btn {
+        font: inherit; font-size: 15px; font-weight: 500;
+        padding: 8px 14px; border-radius: 7px;
+        background: rgba(106,179,200,0.12); border: 1px solid rgba(106,179,200,0.30);
+        color: #9fd8e8; cursor: pointer; transition: background 100ms;
+      }
+      .tour-connect-btn:hover { background: rgba(106,179,200,0.22); }
+      /* ── Sidebar get-connected shortcuts ─────────────────────────────── */
+      .rail-get-connected { padding: 10px 8px 4px; display: flex; flex-direction: column; gap: 6px; }
+      .rail-get-connected-label { font-size: 10px; color: rgba(237,237,237,0.35); text-transform: uppercase; letter-spacing: .07em; padding: 0 2px 2px; }
+      .rail-get-connected-group { display: flex; flex-wrap: wrap; gap: 4px; }
+      .rail-shortcut-btn {
+        font: inherit; font-size: 14px;
+        padding: 5px 11px; border-radius: 5px;
+        background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.10);
+        color: rgba(237,237,237,0.65); cursor: pointer; transition: background 100ms, color 100ms;
+        white-space: nowrap;
+      }
+      .rail-shortcut-btn:hover { background: rgba(106,179,200,0.15); color: #9fd8e8; border-color: rgba(106,179,200,0.3); }
+      /* ── Empty engram onboarding card ────────────────────────────────── */
+      .g-deck-onboarding { padding: 24px; display: flex; flex-direction: column; gap: 16px; flex: 1; }
+      .g-deck-onboarding-top { flex: 1; display: flex; flex-direction: column; gap: 14px; }
+      .g-deck-onboarding-tagline { font-size: 13px; color: rgba(237,237,237,0.55); text-align: center; }
+      .g-deck-onboarding-steps { display: flex; flex-direction: column; gap: 14px; }
+      .g-deck-onboarding-step { display: flex; gap: 12px; align-items: flex-start; }
+      .g-deck-onboarding-num { font-size: 13px; font-weight: 700; color: #6ab3c8; min-width: 18px; }
+      .g-deck-onboarding-step-body { font-size: 13px; color: rgba(237,237,237,0.75); line-height: 1.5; }
+      .g-deck-onboarding-step-body strong { color: #ededed; }
+      .g-deck-onboarding-bottom { display: flex; flex-direction: column; gap: 8px; }
+      .g-deck-onboarding-cmds { display: flex; flex-wrap: wrap; gap: 5px; }
+      .g-deck-cmd-chip {
+        font-family: monospace; font-size: 14px;
+        padding: 4px 10px; border-radius: 5px;
+        background: rgba(106,179,200,0.06); border: 1px solid rgba(106,179,200,0.15);
+        color: rgba(159,216,232,0.5); cursor: pointer;
+        transition: background 150ms, border-color 150ms, color 300ms, opacity 400ms;
+      }
+      .g-deck-cmd-chip:hover { background: rgba(106,179,200,0.16); border-color: rgba(106,179,200,0.3); color: #9fd8e8; }
+      .g-deck-cmd-chip.copied {
+        background: rgba(80,200,120,0.14); border-color: rgba(80,200,120,0.35);
+        color: #7de0a0;
+      }
+      .g-deck-onboarding-connect { display: flex; flex-wrap: wrap; gap: 6px; }
       /* ──────────────────────────────────────────────────────────────── */
       /* Global drop overlay — hidden by default, surfaces when the user
          drags a file anywhere over the app window. Replaces the old
@@ -1177,23 +1233,35 @@
         display: flex; align-items: center; gap: 8px;
       }
       .app-title {
-        font-size: 14px;
-        font-weight: 600;
-        color: var(--fg);
+        font-size: 18px;
+        font-weight: 700;
+        background: linear-gradient(135deg, #6ab3c8 0%, #a78bfa 100%);
+        -webkit-background-clip: text;
+        -webkit-text-fill-color: transparent;
+        background-clip: text;
         white-space: nowrap;
       }
       .app-cortex-row {
         display: flex; align-items: center; gap: 6px;
         font-weight: 400;
       }
-      .app-header-left .cortex-label-truncate {
+      .header-tagline {
+        font-size: 11px;
+        color: var(--fg-dim);
+        font-weight: 400;
+        white-space: nowrap;
+        padding-left: 26px; /* align under title, past brain icon */
+      }
+      .status-cortex {
+        font-size: 11.5px;
+        color: var(--fg-dim);
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
         max-width: 220px;
         overflow: hidden;
         text-overflow: ellipsis;
         white-space: nowrap;
-        font-size: 11.5px;
-        color: var(--fg-dim);
       }
+      .status-sep { color: var(--border); }
       .brain-glyph {
         font-size: 16px;
         line-height: 1;
@@ -1483,7 +1551,7 @@
       /* Main canvas — switches between mode panes. */
       .app-canvas {
         overflow-y: auto;
-        padding: 20px 24px;
+        padding: 10px 24px 20px;
         background: var(--bg);
       }
       .mode-pane { display: block; max-width: 900px; margin: 0 auto; }
@@ -3914,7 +3982,7 @@
                width="120" height="120"
                style="margin-bottom: 20px; border-radius: 22px; opacity: 0.92; flex-shrink: 0; display: block;" />
           <h1>Graphnosis</h1>
-          <p class="subtitle" id="subtitle">Your local encrypted second cortex for every AI</p>
+          <p class="subtitle" id="subtitle">Your local encrypted memory, indexed for every AI tool</p>
           <div id="error" class="error hidden"></div>
           <div class="panel unlock-card">
             <p class="panel-title">Unlock your encrypted second cortex:</p>
@@ -4015,17 +4083,10 @@
         <!-- Top header: cortex identity + global actions -->
         <header class="app-header" data-tauri-drag-region>
           <div class="app-header-left">
-            <!-- Title row: brain icon + app title (we render this ourselves
-                 now that hiddenTitle:true silences the OS one). -->
             <div class="app-title-row">
-              <span class="brain-glyph" title="Cortex unlocked">🧠</span>
-              <span class="app-title">Graphnosis: Your Local Encrypted Second Cortex</span>
+              <span class="app-title">Graphnosis</span>
             </div>
-            <!-- Cortex path row: just the path. The engram picker moved
-                 to the right-side actions cluster (left of Add file). -->
-            <div class="app-cortex-row">
-              <span id="cortex-label" class="cortex-label-truncate" title="Current Cortex folder">cortex</span>
-            </div>
+            <span class="header-tagline">Your local encrypted memory, indexed for every AI tool</span>
           </div>
           <div class="app-header-right">
             <!-- Active engram picker cluster: muted label + dropdown.
@@ -4036,7 +4097,7 @@
             <button id="btn-add-file" class="primary">Add file to engram…</button>
             <button id="btn-new-graph" title="Create a new engram — an independent neighborhood of memory">+ New engram</button>
             <button id="btn-help" class="btn-help" title="Open documentation">?</button>
-            <button id="btn-lock">Lock cortex</button>
+            <button id="btn-lock">Lock memory</button>
           </div>
         </header>
 
@@ -4081,6 +4142,12 @@
             <div id="g-memory-trace" class="rail-memory-trace hidden">
               <div class="rail-memory-trace-title">Memory trace</div>
               <div id="g-memory-trace-list" class="g-memory-trace-list"></div>
+            </div>
+            <div id="rail-get-connected" class="rail-get-connected">
+              <div class="rail-get-connected-label">Get connected</div>
+              <div class="rail-get-connected-group" id="rail-gc-clients"></div>
+              <div class="rail-get-connected-group" id="rail-gc-mobile"></div>
+              <div class="rail-get-connected-group" id="rail-gc-connectors"></div>
             </div>
             <button class="rail-btn" data-mode="settings" title="Preferences">
               <span class="rail-icon">⚙</span>
@@ -4391,6 +4458,9 @@
                   <button class="btn-add-connector" data-kind="slack">Slack</button>
                   <button class="btn-add-connector" data-kind="trello">Trello</button>
                   <button class="btn-add-connector" data-kind="linear">Linear</button>
+                  <button class="btn-add-connector" data-kind="obsidian">Obsidian</button>
+                  <button class="btn-add-connector" data-kind="gbrain">GBrain</button>
+                  <button class="btn-add-connector" data-kind="ai-context">AI Context Files</button>
                   <button class="btn-add-connector" data-kind="webhook">Webhook</button>
                 </div>
               </div>
@@ -4439,6 +4509,8 @@
 
         <!-- Status bar -->
         <footer class="app-statusbar">
+          <span id="cortex-label" class="status-cortex" title="Current Cortex folder">cortex</span>
+          <span class="status-sep">·</span>
           <span class="status-search">⌘K to search nodes</span>
           <span id="status-saved" class="status-saved">—</span>
           <span class="status-mcp">
@@ -5097,8 +5169,12 @@
       <div class="tour-backdrop"></div>
       <div class="tour-card">
         <div id="tour-step-indicator" class="tour-step-indicator"></div>
+        <div id="tour-logo" class="tour-logo hidden">
+          <img src="/graphnosis-logo.png" alt="Graphnosis" width="288" height="288" style="border-radius: 52px; opacity: 0.9;" />
+        </div>
         <h2 id="tour-title" class="tour-title"></h2>
         <p id="tour-body" class="tour-body"></p>
+        <div id="tour-connect-area" class="tour-connect-area"></div>
         <div class="tour-actions">
           <button id="tour-skip" class="tour-btn-skip">Skip tour</button>
           <div class="tour-actions-right">

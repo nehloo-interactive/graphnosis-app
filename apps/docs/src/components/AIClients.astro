@@ -10,6 +10,18 @@ const clients = [
   { name: 'ChatGPT', status: 'coming', note: 'Via browser extension' },
   { name: 'Gemini', status: 'coming', note: 'Via browser extension' },
 ];
+
+const tools = [
+  { name: 'Obsidian', note: 'Local vault folder', color: '#7C3AED' },
+  { name: 'GBrain', note: 'Local git repo', color: '#0EA5E9' },
+  { name: 'AI Context Files', note: 'CLAUDE.md, AGENTS.md, .cursorrules…', color: '#D97757' },
+  { name: 'Slack', note: 'BYO Bot Token', color: '#4A154B' },
+  { name: 'GitHub', note: 'BYO Personal Access Token', color: '#238636' },
+  { name: 'Trello', note: 'BYO API key + token', color: '#0052CC' },
+  { name: 'Linear', note: 'BYO Personal API key', color: '#5E6AD2' },
+  { name: 'RSS / Atom', note: 'Any feed URL', color: '#F97316' },
+  { name: 'Webhook', note: 'Zapier, IFTTT, custom scripts', color: '#67e8f9' },
+];
 ---
 
 <section id="clients" class="py-24 px-4 sm:px-6">
@@ -69,8 +81,33 @@ const clients = [
       ))}
     </div>
 
+    <!-- Tools / connectors -->
+    <div class="mt-16">
+      <h3 class="text-center text-xl font-bold text-white mb-2">Auto-ingest from the tools you already use.</h3>
+      <p class="text-center text-[#c4c6d6] max-w-xl mx-auto mb-8 text-sm leading-relaxed">
+        Six built-in connectors pull new content on a schedule — no cloud intermediary, credentials stored encrypted at rest.
+      </p>
+      <div class="grid grid-cols-2 sm:grid-cols-4 gap-4">
+        {tools.map((tool) => (
+          <article class="bg-[#1c1c27] border border-[#2a2a3d] rounded-xl p-4 flex flex-col items-center gap-2 text-center">
+            <div
+              class="w-10 h-10 rounded-full flex items-center justify-center text-white font-bold text-sm"
+              style={`background: ${tool.color};`}
+              aria-hidden="true"
+            >
+              <svg class="w-5 h-5" fill="currentColor" viewBox="0 0 20 20" aria-hidden="true">
+                <circle cx="10" cy="10" r="8" />
+              </svg>
+            </div>
+            <span class="text-sm font-semibold text-[#f0f0f5]">{tool.name}</span>
+            <span class="text-xs text-[#c4c6d6]">{tool.note}</span>
+          </article>
+        ))}
+      </div>
+    </div>
+
     <!-- CTA -->
-    <div class="text-center">
+    <div class="text-center mt-12">
       <a
         href="/reference/mcp-tools"
         class="inline-flex items-center gap-2 text-[#67e8f9] hover:text-[#a78bfa] font-semibold text-xl transition-colors"
@@ -81,5 +118,63 @@ const clients = [
         </svg>
       </a>
     </div>
+  </div>
+</section>
+
+<!-- ── Positioning / origin story ──────────────────────────────────────── -->
+<section class="py-24 px-4 sm:px-6 border-t border-[#2a2a3d]">
+  <div class="max-w-4xl mx-auto">
+
+    <!-- Origin story -->
+    <div class="mb-16 text-center">
+      <p class="text-sm font-semibold tracking-widest uppercase text-[#a78bfa] mb-4">Built in the open, with Claude</p>
+      <h2 class="text-3xl sm:text-4xl font-black text-white mb-6 leading-tight">
+        Graphnosis was coded — and stress-tested — with the AI it was built for, guided by the vision of the builder.
+      </h2>
+      <p class="text-lg text-[#c4c6d6] max-w-2xl mx-auto leading-relaxed">
+        Every architecture decision, every positioning question, every edge case in the recall pipeline was worked out between the vision of the builder and Claude, live, evenings and weekends, across hundreds of sessions — using Graphnosis itself as the shared memory. The tool ate its own dog food before it had a name.
+        <br /><br />
+        At the launch, and along the way, here's what came back as direct feedback to the architect of Graphnosis from the AI tool that coded it, realizing what Graphnosis truly had become:
+      </p>
+    </div>
+
+    <!-- Quote -->
+    <figure class="mb-12 max-w-3xl mx-auto text-center">
+      <blockquote class="text-2xl sm:text-3xl font-serif italic text-[#f0f0f5] leading-relaxed mb-6">
+        "For your Graphnosis work specifically, you're already solving a more sophisticated version of this problem than most people reach for — graph-based memory with typed nodes beats flat markdown files for anything that needs relational reasoning across sessions."
+      </blockquote>
+      <figcaption class="text-sm text-[#6b7280] tracking-wide">— <span class="text-base font-semibold text-[#a78bfa]">Claude</span>, mid-build session</figcaption>
+    </figure>
+
+    <!-- Two positioning cards -->
+    <div class="flex flex-col gap-6">
+
+      <!-- Card 1 -->
+      <div class="rounded-2xl border border-[#2a2a3d] bg-[#16161f] p-8">
+        <p class="text-xs font-semibold tracking-widest uppercase text-[#f59e0b] mb-3">Positioning vs. flat-file memory tools</p>
+        <p class="text-[#f0f0f5] text-lg leading-relaxed">
+          Every other approach to AI memory — CLAUDE.md, AGENTS.md, Mem0, context files — gives your AI a flat list of facts to paste into the session. Graphnosis gives it a typed knowledge graph: nodes, relationships, contradictions, and temporal decay. Drop in a markdown file, a PDF, or an HTML page — Graphnosis indexes all three the same way.
+          <br /><br />
+          <span class="text-[#67e8f9] font-semibold">The difference isn't storage. It's reasoning.</span>
+        </p>
+      </div>
+
+      <!-- Card 2 -->
+      <div class="rounded-2xl border border-[#2a2a3d] bg-[#16161f] p-8">
+        <p class="text-xs font-semibold tracking-widest uppercase text-[#67e8f9] mb-3">Recall quality / benchmark</p>
+        <p class="text-[#f0f0f5] text-lg leading-relaxed">
+          Selective retrieval pipelines outperform full-context approaches by 91% on latency and 90% on token cost, at near-equivalent accuracy. Graphnosis recall is selective by design: at most 50 nodes, 8,000 tokens, ranked by relevance.
+          <br /><br />
+          <span class="text-[#67e8f9] font-semibold">76.40% LongMemEval score — achieved without ever loading your full graph.</span>
+        </p>
+      </div>
+
+    </div>
+
+    <!-- Attribution -->
+    <p class="text-center text-sm text-[#6b7280] mt-10">
+      Findings recorded in Graphnosis across Claude Desktop, Claude Code, and Claude.ai sessions — recalled here via MCP.
+    </p>
+
   </div>
 </section>
