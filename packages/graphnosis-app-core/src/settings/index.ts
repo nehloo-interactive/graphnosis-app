@@ -221,6 +221,14 @@ export interface GraphMetadata {
    * The data files remain on disk untouched — the user can unarchive at any time.
    */
   archived?: boolean;
+  /**
+   * Sensitivity tier controlling how much of this graph the AI is allowed to see.
+   * Defaults to 'personal' when unset.
+   *   public    — unrestricted (4 000 tokens)
+   *   personal  — explicit recall only, no proactive injection (2 000 tokens)
+   *   sensitive — AI never sees this graph (0 tokens)
+   */
+  sensitivityTier?: 'public' | 'personal' | 'sensitive';
 }
 
 export interface HttpBridgeSettings {

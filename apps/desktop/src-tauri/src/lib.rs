@@ -1883,6 +1883,68 @@ async fn set_graph_archived(
 }
 
 #[tauri::command]
+async fn rename_graph(
+    state: State<'_, AppState>,
+    graph_id: String,
+    display_name: String,
+) -> Result<serde_json::Value, String> {
+    let socket_path = {
+        let inner = state.inner.lock().await;
+        match &inner.cortex_dir {
+            Some(vd) => vd.join("sidecar.sock"),
+            None => return Err("cortex is locked".to_string()),
+        }
+    };
+    let params = serde_json::json!({ "graphId": graph_id, "displayName": display_name });
+    ipc_client::request(&socket_path, "graphs.rename", params)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn set_graph_tier(
+    state: State<'_, AppState>,
+    graph_id: String,
+    tier: String,
+) -> Result<serde_json::Value, String> {
+    let socket_path = {
+        let inner = state.inner.lock().await;
+        match &inner.cortex_dir {
+            Some(vd) => vd.join("sidecar.sock"),
+            None => return Err("cortex is locked".to_string()),
+        }
+    };
+    let params = serde_json::json!({ "graphId": graph_id, "tier": tier });
+    ipc_client::request(&socket_path, "graphs.setTier", params)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn move_source(
+    state: State<'_, AppState>,
+    from_graph_id: String,
+    source_id: String,
+    to_graph_id: String,
+) -> Result<serde_json::Value, String> {
+    let socket_path = {
+        let inner = state.inner.lock().await;
+        match &inner.cortex_dir {
+            Some(vd) => vd.join("sidecar.sock"),
+            None => return Err("cortex is locked".to_string()),
+        }
+    };
+    let params = serde_json::json!({
+        "fromGraphId": from_graph_id,
+        "sourceId": source_id,
+        "toGraphId": to_graph_id,
+    });
+    ipc_client::request(&socket_path, "sources.move", params)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 async fn delete_graph(
     state: State<'_, AppState>,
     graph_id: String,
@@ -1993,6 +2055,9 @@ pub fn run() {
             open_about_window,
             open_external_url,
             set_graph_archived,
+            set_graph_tier,
+            rename_graph,
+            move_source,
             delete_graph,
         ])
         .setup(|app| {
