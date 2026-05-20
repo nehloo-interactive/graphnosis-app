@@ -2,7 +2,9 @@
 const clients = [
   { name: 'Claude Desktop', status: 'supported', color: '#D97757' },
   { name: 'Claude Code', status: 'supported', color: '#D97757' },
+  { name: 'Claude Cowork', status: 'supported', color: '#D97757' },
   { name: 'Cursor', status: 'supported', color: '#6366F1' },
+  { name: 'GitHub Copilot', status: 'supported', color: '#238636', note: 'VS Code extension + mcp.json' },
   { name: 'Zed', status: 'supported', color: '#0EA5E9' },
   { name: 'Any MCP-aware tool', status: 'supported', color: '#67e8f9' },
   { name: 'ChatGPT', status: 'coming', note: 'Via browser extension' },
@@ -18,7 +20,7 @@ const clients = [
         First-day support for the tools you already use.
       </h2>
     </div>
-    <p class="text-center text-[#9b9db8] max-w-2xl mx-auto mb-16 leading-relaxed">
+    <p class="text-center text-[#c4c6d6] max-w-2xl mx-auto mb-16 leading-relaxed">
       Graphnosis speaks{' '}
       <span class="text-[#f0f0f5] font-semibold">Model Context Protocol (MCP)</span>
       {' '}— the open standard that connects AI tools to external context.
@@ -44,17 +46,22 @@ const clients = [
 
           <!-- Status badge -->
           {client.status === 'supported' ? (
-            <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-emerald-900/40 border border-emerald-700/50 text-emerald-400 text-xs font-semibold">
-              <span class="w-1.5 h-1.5 rounded-full bg-emerald-400"></span>
-              Supported
-            </span>
+            <div class="flex flex-col items-center gap-1">
+              <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-emerald-900/40 border border-emerald-700/50 text-emerald-400 text-xs font-semibold">
+                <span class="w-1.5 h-1.5 rounded-full bg-emerald-400"></span>
+                Supported
+              </span>
+              {client.note && (
+                <span class="text-sm text-[#c4c6d6]">{client.note}</span>
+              )}
+            </div>
           ) : (
             <div class="flex flex-col items-center gap-1">
               <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-indigo-900/40 border border-indigo-700/50 text-indigo-400 text-xs font-semibold">
                 Coming soon
               </span>
               {client.note && (
-                <span class="text-[10px] text-[#9b9db8]">{client.note}</span>
+                <span class="text-sm text-[#c4c6d6]">{client.note}</span>
               )}
             </div>
           )}
