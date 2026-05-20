@@ -1615,7 +1615,7 @@
       #ollama-status-badge.ok { color: var(--ok); }
       #ollama-status-badge.err { color: var(--error); }
 
-      /* ── Living Brain pane ──────────────────────────────────────── */
+      /* ── Autonomous Brain pane ──────────────────────────────────── */
       .btn-sm { padding: 5px 10px; font-size: 13px; }
       #living-brain {
         flex: 1; min-height: 0; overflow-y: auto;
@@ -1698,6 +1698,22 @@
       .lb-feed-item {
         padding: 5px 10px; font-size: 12px; color: var(--fg-dim);
         border-left: 2px solid var(--accent); margin-bottom: 4px;
+      }
+      /* Scope note: clarifies that this pane aggregates every engram. */
+      .lb-scope-note {
+        font-size: 12px; line-height: 1.5; color: var(--fg-dim);
+        padding: 9px 12px; margin-bottom: 20px; border-radius: 8px;
+        background: color-mix(in oklab, var(--accent) 8%, transparent);
+        border: 1px solid color-mix(in oklab, var(--accent) 22%, transparent);
+      }
+      .lb-scope-note strong { color: var(--fg); font-weight: 600; }
+      /* Engram-name chip on contradiction / insight / goal cards, so a
+         holistic list still tells you which engram each item belongs to. */
+      .lb-engram-chip {
+        display: inline-block; font-size: 10px; font-weight: 600;
+        padding: 1px 7px; border-radius: 10px; vertical-align: middle;
+        background: var(--bg); border: 1px solid var(--border);
+        color: var(--fg-dim); white-space: nowrap;
       }
       .pane-callout {
         margin-top: 10px;
@@ -4316,7 +4332,7 @@
                   <div class="g-tabs">
                     <button class="g-tab active" data-gtab="checkin">Check-in</button>
                     <button class="g-tab" data-gtab="atlas">3D Engram</button>
-                    <button class="g-tab" data-gtab="brain">Living Brain</button>
+                    <button class="g-tab" data-gtab="brain">Autonomous Brain</button>
                   </div>
 
                   <!-- CHECK-IN DASHBOARD (default) -->
@@ -4405,8 +4421,10 @@
                     </div>
                   </section>
 
-                  <!-- LIVING BRAIN tab — vitality, self-healing, insights,
-                       goals, and live brain activity in one surface. -->
+                  <!-- AUTONOMOUS BRAIN tab — vitality, self-healing,
+                       insights, goals, and live brain activity in one
+                       surface. Everything here is holistic: it spans every
+                       engram in the cortex, not the engram selected above. -->
                   <section class="g-tab-pane hidden" data-gpane="brain">
                     <div id="living-brain">
                       <div class="lb-hero">
@@ -4421,6 +4439,13 @@
                           <button id="btn-lb-refresh" class="btn-sm">↻ Refresh</button>
                         </div>
                       </div>
+
+                      <p class="lb-scope-note">
+                        🧠 <strong>Holistic view.</strong> Vitality, contradictions,
+                        insights, and goals here span <strong>every engram in your
+                        cortex</strong> — not just the one selected in the dropdown
+                        above. Each card is tagged with the engram it came from.
+                      </p>
 
                       <div class="lb-section">
                         <p class="lb-section-title">Self-healing</p>
