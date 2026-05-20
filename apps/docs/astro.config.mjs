@@ -12,10 +12,7 @@ export default defineConfig({
         src: './src/assets/graphnosis-logo.png',
         alt: 'Graphnosis',
       },
-      favicon: {
-        href: '/graphnosis-logo-rounded.png',
-        type: 'image/png',
-      },
+      favicon: '/graphnosis-logo-rounded.png',
       description: 'The hippocampus your AI has always been missing.',
       tagline: 'The hippocampus your AI has always been missing.',
 

@@ -7,7 +7,7 @@
     <div class="flex flex-col md:flex-row items-start justify-between gap-12 mb-16">
       <div class="flex-1">
         <blockquote class="border-l-4 border-[#a78bfa] pl-6 mb-16">
-          <p class="text-[#9b9db8] text-lg italic leading-relaxed">
+          <p class="text-[#c4c6d6] text-lg italic leading-relaxed">
             "Engram <span class="not-italic font-semibold text-[#f0f0f5]">/ˈɛnɡram/</span> — a hypothetical means by which memory traces are stored as biophysical or biochemical changes in the brain. First named by Richard Semon, 1904.<br /><br /><span class="not-italic font-semibold text-[#f0f0f5]">Graphnosis calls its multi-graph a</span> <span class="not-italic font-semibold text-[#a78bfa]">Graphnosis Engram</span><span class="not-italic text-[#f0f0f5]">.</span>"
           </p>
         </blockquote>
@@ -18,7 +18,7 @@
           </h2>
         </div>
 
-        <p class="text-[#9b9db8] max-w-2xl leading-relaxed">
+        <p class="text-[#c4c6d6] max-w-2xl leading-relaxed">
           Each engram in Graphnosis is an independent encrypted memory space — your work projects, personal notes, research, health records. Separate graphs, separate keys, separate rules. Your AI draws from the right one automatically.
         </p>
       </div>
@@ -35,7 +35,7 @@
 
         <article class="bg-[#13131a] border border-[#2a2a3d] rounded-xl p-6 flex flex-col gap-3">
           <a href="/getting-started/overview" class="text-base font-bold text-white hover:text-[#67e8f9] transition-colors">Temporal awareness ↗</a>
-          <p class="text-[#9b9db8] text-base leading-relaxed mb-3">Every memory node tracks five temporal properties:</p>
+          <p class="text-[#c4c6d6] text-base leading-relaxed mb-3">Every memory node tracks five temporal properties:</p>
           <ul class="space-y-1.5">
             {[
               ['createdAt', 'when the knowledge was first ingested'],
@@ -46,7 +46,7 @@
             ].map(([name, desc]) => (
               <li class="flex items-start gap-2 text-sm">
                 <code class="text-[#67e8f9] font-mono shrink-0 mt-0.5">{name}</code>
-                <span class="text-[#9b9db8]">{desc}</span>
+                <span class="text-[#c4c6d6]">{desc}</span>
               </li>
             ))}
           </ul>
@@ -54,12 +54,12 @@
 
         <article class="bg-[#13131a] border border-[#2a2a3d] rounded-xl p-6 flex flex-col gap-3">
           <a href="/guides/graphs-and-tiers" class="text-base font-bold text-white hover:text-[#67e8f9] transition-colors">Contradiction detection ↗</a>
-          <p class="text-[#9b9db8] text-base leading-relaxed">When new content conflicts with existing memory, Graphnosis flags it instead of silently overwriting. The <code class="text-[#67e8f9] font-mono text-sm">contradicts</code> edge type records the conflict with provenance; <code class="text-[#67e8f9] font-mono text-sm">supersedes</code> marks when new information replaces old. You decide what the ground truth is.</p>
+          <p class="text-[#c4c6d6] text-base leading-relaxed">When new content conflicts with existing memory, Graphnosis flags it instead of silently overwriting. The <code class="text-[#67e8f9] font-mono text-sm">contradicts</code> edge type records the conflict with provenance; <code class="text-[#67e8f9] font-mono text-sm">supersedes</code> marks when new information replaces old. You decide what the ground truth is.</p>
         </article>
 
         <article class="bg-[#13131a] border border-[#2a2a3d] rounded-xl p-6 flex flex-col gap-3 md:col-span-2">
           <a href="/guides/graphs-and-tiers" class="text-base font-bold text-white hover:text-[#67e8f9] transition-colors">Relationship edges — the dual graph ↗</a>
-          <p class="text-[#9b9db8] text-base leading-relaxed mb-4">Both directed and undirected edges exist over the same node set. This dual structure gives AI richer reasoning paths than either graph type alone.</p>
+          <p class="text-[#c4c6d6] text-base leading-relaxed mb-4">Both directed and undirected edges exist over the same node set. This dual structure gives AI richer reasoning paths than either graph type alone.</p>
           <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <div>
               <p class="text-sm font-semibold text-[#f0f0f5] mb-2">Directed (A → B)</p>
@@ -76,7 +76,7 @@
                 ].map(([name, desc]) => (
                   <li class="flex items-start gap-2 text-sm">
                     <code class="text-[#67e8f9] font-mono shrink-0 mt-0.5 leading-relaxed">{name}</code>
-                    <span class="text-[#9b9db8]">{desc}</span>
+                    <span class="text-[#c4c6d6]">{desc}</span>
                   </li>
                 ))}
               </ul>
@@ -93,7 +93,7 @@
                 ].map(([name, desc]) => (
                   <li class="flex items-start gap-2 text-sm">
                     <code class="text-[#67e8f9] font-mono shrink-0 mt-0.5">{name}</code>
-                    <span class="text-[#9b9db8]">{desc}</span>
+                    <span class="text-[#c4c6d6]">{desc}</span>
                   </li>
                 ))}
               </ul>
@@ -130,7 +130,7 @@
     <!-- MCP tools -->
     <div class="mb-12">
       <h3 class="text-lg font-bold text-white mb-2">What AI clients can do with Graphnosis</h3>
-      <p class="text-[#9b9db8] text-sm mb-6">These are the tools your AI uses. You can see every call in the audit log.</p>
+      <p class="text-[#c4c6d6] text-sm mb-6">These are the tools your AI uses. You can see every call in the audit log.</p>
       <div class="grid grid-cols-1 sm:grid-cols-3 gap-4">
         {[
           { name: 'recall', desc: 'Surface relevant context for the current prompt', slug: 'recall' },
@@ -142,7 +142,7 @@
         ].map((tool) => (
           <a href="/reference/mcp-tools" class="bg-[#13131a] border border-[#2a2a3d] hover:border-[#67e8f9]/40 rounded-lg p-5 flex flex-col gap-3 transition-colors group">
             <code class="text-[#67e8f9] text-lg font-mono font-bold">{tool.name}</code>
-            <p class="text-[#9b9db8] text-base leading-relaxed">{tool.desc}</p>
+            <p class="text-[#c4c6d6] text-base leading-relaxed">{tool.desc}</p>
           </a>
         ))}
       </div>
