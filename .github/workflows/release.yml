@@ -49,6 +49,18 @@ jobs:
           security list-keychain -d user -s $KEYCHAIN_PATH
           security set-key-partition-list -S apple-tool:,apple: -s -k "$KEYCHAIN_PASSWORD" $KEYCHAIN_PATH
 
+      - name: Stage libonnxruntime for signing
+        run: |
+          DYLIB="libonnxruntime.1.21.0.dylib"
+          DEST="apps/desktop/src-tauri/resources/$DYLIB"
+          mkdir -p "$(dirname "$DEST")"
+          SRC=$(find node_modules/.pnpm -path "*/darwin/arm64/$DYLIB" | head -1)
+          if [ -z "$SRC" ]; then
+            echo "ERROR: $DYLIB not found in node_modules/.pnpm" && exit 1
+          fi
+          cp "$SRC" "$DEST"
+          echo "Staged $SRC → $DEST"
+
       - name: Sign libonnxruntime
         run: |
           codesign --force --sign "Developer ID Application: Nehloo Interactive LLC (C76ZLJ5UQW)" \
