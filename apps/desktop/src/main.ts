@@ -542,11 +542,37 @@ const els = {
   railGcClients: $<HTMLDivElement>('rail-gc-clients'),
   railGcMobile: $<HTMLDivElement>('rail-gc-mobile'),
   railGcConnectors: $<HTMLDivElement>('rail-gc-connectors'),
+  // Brain / Alive
+  brainVitality: $<HTMLSpanElement>('brain-vitality'),
+  llmStatusChip: $<HTMLSpanElement>('llm-status-chip'),
+  brainFeed: $<HTMLDivElement>('brain-feed'),
+  brainFeedList: $<HTMLDivElement>('brain-feed-list'),
+  checkinGoals: $<HTMLDivElement>('checkin-goals'),
+  goalList: $<HTMLDivElement>('goal-list'),
+  btnNewGoal: $<HTMLButtonElement>('btn-new-goal'),
+  // Ollama settings
+  ollamaStatusBadge: $<HTMLSpanElement>('ollama-status-badge'),
+  ollamaModelRow: $<HTMLDivElement>('ollama-model-row'),
+  ollamaModelSelect: $<HTMLSelectElement>('ollama-model-select'),
+  btnOllamaApplyModel: $<HTMLButtonElement>('btn-ollama-apply-model'),
+  ollamaPullRow: $<HTMLDivElement>('ollama-pull-row'),
+  ollamaPullSelect: $<HTMLSelectElement>('ollama-pull-select'),
+  btnOllamaPull: $<HTMLButtonElement>('btn-ollama-pull'),
+  ollamaPullProgress: $<HTMLDivElement>('ollama-pull-progress'),
+  ollamaPullBar: $<HTMLDivElement>('ollama-pull-bar'),
+  ollamaPullLabel: $<HTMLSpanElement>('ollama-pull-label'),
+  ollamaNotInstalled: $<HTMLDivElement>('ollama-not-installed'),
+  btnOpenOllamaSite: $<HTMLAnchorElement>('btn-open-ollama-site'),
 };
 
 // Current plan in the modal — kept in module scope so the Apply button can
 // figure out which checkboxes are still checked at click time.
 let currentRecoveryPlan: RecoveryPlan | null = null;
+
+// Brain engine state — refreshed by refreshBrainState()
+let brainVitalityReport: { overall: number; byGraph: Record<string, number>; computedAt: number } | null = null;
+let brainInsights: Array<{ id: string; graphId: string; kind: string; title: string; body: string; relevantNodeIds: string[]; createdAt: number; dismissed?: boolean }> = [];
+let brainContradictions: Array<{ id: string; graphId: string; nodeA: string; nodeB: string; snippetA: string; snippetB: string; similarity: number; detectedAt: number }> = [];
 
 // MCP status poller handle. Started after unlock, cleared on lock.
 let mcpPollTimer: ReturnType<typeof setInterval> | null = null;
@@ -908,6 +934,7 @@ function render(status: StatusSnapshot): void {
     void fetchGraphsMetadata();
     void refreshConnectorsList();
     startMcpPolling();
+    void refreshBrainState();
     activateMode(currentMode);
   } else {
     els.viewApp.classList.add('hidden');
@@ -2524,6 +2551,7 @@ els.btnSettings.addEventListener('click', async () => {
   } catch (e) {
     els.settingsFooterNote.textContent = `Could not read settings: ${e}`;
   }
+  void refreshLlmStatus();
 });
 
 // ── Settings tab (mode-pane data-pane="settings") render ───────────────────
@@ -6731,6 +6759,7 @@ function switchGraphnosisTab(tab: GraphnosisTab): void {
     // Returning to the dashboard from the Atlas tab — re-render in case
     // selection/data changed while away.
     if (els.gSearch.value.trim().length === 0) renderDashboard();
+    void refreshGoalList();
   }
 }
 
@@ -7392,6 +7421,8 @@ if (typeof window !== 'undefined') {
 interface GraphMutationPayload {
   graphId: string;
   ts: number;
+  mutatedAt?: number;
+  vitality?: { overall: number; byGraph: Record<string, number>; computedAt: number };
 }
 
 interface EventStreamConnectedPayload {
@@ -7399,7 +7430,13 @@ interface EventStreamConnectedPayload {
   cursor: Record<string, number>;
 }
 
-void listen<GraphMutationPayload>('graphnosis://graph-mutation', () => {
+void listen<GraphMutationPayload>('graphnosis://graph-mutation', (evt) => {
+  const graphId = evt.payload.graphId ?? '';
+  if (graphId.startsWith('__brain')) {
+    void handleBrainFrame(graphId, evt.payload.vitality);
+    return;
+  }
+  if (graphId === '__llm_pull__') return; // handled by pull-progress listener
   // Don't filter on graphId here — pollGraphMutations checks the
   // active-engram-changed predicate against the full cursor set
   // returned by inspector_stats and only repaints when relevant.
@@ -7411,6 +7448,199 @@ void listen<GraphMutationPayload>('graphnosis://graph-mutation', () => {
 // and our subscription being established.
 void listen<EventStreamConnectedPayload>('graphnosis://event-stream-connected', () => {
   void pollGraphMutations();
+});
+
+// ── Sidecar IPC helper ────────────────────────────────────────────────────
+// Generic pass-through to the sidecar's IPC dispatch via the Tauri command
+// `sidecar_ipc_call`. Used for brain and LLM methods.
+async function ipcCall<T = unknown>(method: string, params: unknown): Promise<T> {
+  return invoke<T>('sidecar_ipc_call', { method, params });
+}
+
+// ── Brain / Alive state ───────────────────────────────────────────────────
+
+async function refreshBrainState(): Promise<void> {
+  try {
+    const [vitality, insights, contradictions] = await Promise.all([
+      ipcCall<{ overall: number; byGraph: Record<string, number>; computedAt: number }>('brain:getVitality', {}),
+      ipcCall<typeof brainInsights>('brain:getInsights', {}),
+      ipcCall<typeof brainContradictions>('brain:getContradictions', {}),
+    ]);
+    brainVitalityReport = vitality;
+    brainInsights = insights;
+    brainContradictions = contradictions;
+    updateBrainUI();
+  } catch { /* non-fatal — brain may not be initialized yet */ }
+}
+
+function updateBrainUI(): void {
+  if (!brainVitalityReport) return;
+  const v = brainVitalityReport.overall;
+
+  // Status bar vitality chip
+  els.brainVitality.style.display = '';
+  els.brainVitality.textContent = `🧠 ${v}`;
+  els.brainVitality.style.opacity = String(0.4 + (v / 100) * 0.6);
+
+  // Drive atlas animation intensity
+  mainAtlas?.setBrainVitality?.(v);
+
+  // Contradiction badge on check-in tab (if any contradictions)
+  const correctionBadge = document.getElementById('rail-corrections-badge');
+  if (correctionBadge && brainContradictions.length > 0) {
+    correctionBadge.textContent = String(brainContradictions.length);
+    correctionBadge.classList.remove('hidden');
+  }
+
+  // Show/hide brain feed
+  if (els.brainFeedList.children.length > 0) {
+    els.brainFeed.classList.remove('hidden');
+  }
+}
+
+let brainFeedItems: string[] = [];
+
+async function handleBrainFrame(graphId: string, inlineVitality?: { overall: number; byGraph: Record<string, number>; computedAt: number }): Promise<void> {
+  const phase = graphId.replace('__brain_start_', '').replace('__brain_done_', '').replace('__brain_', '').replace('__', '');
+
+  if (graphId.startsWith('__brain_start_')) {
+    const item = document.createElement('div');
+    item.className = 'brain-feed-item brain-thinking';
+    item.textContent = `${phase} running…`;
+    item.dataset.phase = phase;
+    els.brainFeedList.prepend(item);
+    els.brainFeed.classList.remove('hidden');
+    // Keep only last 20 items
+    while (els.brainFeedList.children.length > 20) {
+      els.brainFeedList.lastChild?.remove();
+    }
+  } else if (graphId.startsWith('__brain_done_')) {
+    // Remove "thinking" item for this phase
+    const thinking = els.brainFeedList.querySelector(`[data-phase="${CSS.escape(phase)}"]`);
+    if (thinking) thinking.classList.remove('brain-thinking');
+
+    // If vitality was inlined in the frame, apply it immediately
+    if (inlineVitality) {
+      brainVitalityReport = inlineVitality;
+    }
+    // Pull fresh state
+    void refreshBrainState();
+  } else if (graphId === '__brain_vitality__' && inlineVitality) {
+    brainVitalityReport = inlineVitality;
+    updateBrainUI();
+  }
+}
+
+// ── LLM / Ollama settings ─────────────────────────────────────────────────
+
+async function refreshLlmStatus(): Promise<void> {
+  try {
+    const status = await ipcCall<{ ollamaReachable: boolean; installedModels: string[]; activeModel: string | null; catalog?: Array<{ id: string; name: string }> }>('llm:status', {});
+
+    if (status.ollamaReachable) {
+      els.ollamaStatusBadge.textContent = '● Connected';
+      els.ollamaStatusBadge.className = 'ok';
+      els.ollamaModelRow.style.display = 'flex';
+      els.ollamaPullRow.style.display = 'flex';
+      els.ollamaNotInstalled.style.display = 'none';
+      els.llmStatusChip.style.display = 'none';
+
+      // Populate model selector
+      els.ollamaModelSelect.innerHTML = '';
+      for (const m of status.installedModels) {
+        const opt = document.createElement('option');
+        opt.value = m;
+        opt.textContent = m;
+        if (m === status.activeModel) opt.selected = true;
+        els.ollamaModelSelect.appendChild(opt);
+      }
+    } else {
+      els.ollamaStatusBadge.textContent = '● Not running';
+      els.ollamaStatusBadge.className = 'err';
+      els.ollamaModelRow.style.display = 'none';
+      els.ollamaPullRow.style.display = 'none';
+      els.ollamaNotInstalled.style.display = '';
+      els.llmStatusChip.style.display = '';
+    }
+  } catch { /* non-fatal */ }
+}
+
+els.btnOllamaApplyModel.addEventListener('click', async () => {
+  const model = els.ollamaModelSelect.value;
+  if (!model) return;
+  try {
+    await ipcCall('llm:setModel', { model });
+    els.settingsFooterNote.textContent = `Model set to ${model}`;
+  } catch (e) {
+    els.settingsFooterNote.textContent = `Failed: ${(e as Error).message}`;
+  }
+});
+
+els.btnOllamaPull.addEventListener('click', async () => {
+  const model = els.ollamaPullSelect.value;
+  if (!model) return;
+  els.ollamaPullProgress.style.display = '';
+  els.ollamaPullBar.style.width = '0%';
+  els.ollamaPullLabel.textContent = `Pulling ${model}…`;
+  els.btnOllamaPull.disabled = true;
+
+  try {
+    await ipcCall('llm:pullModel', { model });
+    els.ollamaPullLabel.textContent = `${model} ready`;
+    await refreshLlmStatus();
+  } catch (e) {
+    els.ollamaPullLabel.textContent = `Failed: ${(e as Error).message}`;
+  } finally {
+    els.btnOllamaPull.disabled = false;
+    setTimeout(() => { els.ollamaPullProgress.style.display = 'none'; }, 3000);
+  }
+});
+
+els.btnOpenOllamaSite.addEventListener('click', (e) => {
+  e.preventDefault();
+  void invoke('open_external_url', { url: 'https://ollama.ai' });
+});
+
+els.llmStatusChip.addEventListener('click', () => {
+  // Open settings modal and scroll to brain section
+  document.getElementById('settings-modal')?.classList.remove('hidden');
+  document.getElementById('settings-brain-llm')?.scrollIntoView({ behavior: 'smooth' });
+  void refreshLlmStatus();
+});
+
+// ── Goal UI ───────────────────────────────────────────────────────────────
+
+async function refreshGoalList(): Promise<void> {
+  try {
+    const goals = await ipcCall<Array<{ nodeId: string; graphId: string; title: string; milestones: string[]; targetDate?: number; createdAt: number }>>('brain:listGoals', {});
+    if (goals.length === 0) {
+      els.checkinGoals.classList.add('hidden');
+      return;
+    }
+    els.checkinGoals.classList.remove('hidden');
+    const now = Date.now();
+    els.goalList.innerHTML = goals.map(g => {
+      const daysLeft = g.targetDate ? Math.ceil((g.targetDate - now) / 86400000) : null;
+      const deadline = daysLeft !== null ? (daysLeft <= 0 ? ' <em style="color:var(--error)">overdue</em>' : ` <em style="color:var(--fg-dim)">${daysLeft}d left</em>`) : '';
+      return `<div style="padding: 6px 0; border-bottom: 1px solid var(--border-dim);">
+        <strong>${g.title}</strong>${deadline}
+        ${g.milestones.length > 0 ? `<div style="font-size:12px; color:var(--fg-dim); margin-top:2px;">${g.milestones.slice(0,2).join(' · ')}</div>` : ''}
+      </div>`;
+    }).join('');
+  } catch { /* non-fatal */ }
+}
+
+els.btnNewGoal.addEventListener('click', () => {
+  // Simple prompt for now; a full modal is future work
+  const context = prompt('What do you want to develop? (context)');
+  if (!context) return;
+  const strategy = prompt('What strategy or approach?') ?? 'balanced growth';
+  const goals = prompt('What does success look like?') ?? 'meaningful progress';
+  const toastId = addIngestToast('Saving goal to your brain…');
+  void ipcCall('brain:develop', { context, strategy, goals, saveAsGoal: true }).then(() => {
+    finishIngestToast(toastId, 'success', 'Goal saved');
+    void refreshGoalList();
+  }).catch((e: unknown) => finishIngestToast(toastId, 'error', (e as Error).message));
 });
 
 // ── Engram-create suggestions ─────────────────────────────────────────────

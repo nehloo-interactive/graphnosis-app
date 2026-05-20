@@ -235,6 +235,17 @@ export interface GraphnosisAdapter {
     directed: Array<{ id: string; from: string; to: string; type: DirectedEdgeType; weight: number; evidence?: string }>;
     undirected: Array<{ id: string; a: string; b: string; type: UndirectedEdgeType; weight: number }>;
   };
+
+  /**
+   * Returns the raw embedding vectors for all nodes that have been
+   * embedded. Used by BrainEngine's contradiction scan (cosine similarity
+   * between node pairs) and semantic synapse formation.
+   *
+   * Returns an empty map when the graph has no embedding index yet (i.e.
+   * before the first `buildEmbeddings` call). Callers must handle the
+   * empty-map case gracefully — the brain activities skip or no-op.
+   */
+  getNodeEmbeddings(handle: GraphHandle): Map<string, number[]>;
 }
 
 /**

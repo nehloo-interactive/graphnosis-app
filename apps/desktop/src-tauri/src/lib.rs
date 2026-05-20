@@ -1421,6 +1421,32 @@ async fn mcp_restart_listener(state: State<'_, AppState>) -> Result<serde_json::
         .map_err(|e| e.to_string())
 }
 
+/// Generic pass-through from the UI to the sidecar's IPC dispatch.
+/// Used for brain/LLM methods that don't have dedicated Tauri commands.
+/// Timeout is generous (120s) to accommodate slow LLM operations.
+#[tauri::command]
+async fn sidecar_ipc_call(
+    state: State<'_, AppState>,
+    method: String,
+    params: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    let socket_path = {
+        let inner = state.inner.lock().await;
+        match &inner.cortex_dir {
+            Some(vd) => vd.join("sidecar.sock"),
+            None => return Err("cortex is locked".to_string()),
+        }
+    };
+    ipc_client::request_with_timeout(
+        &socket_path,
+        &method,
+        params,
+        std::time::Duration::from_secs(120),
+    )
+    .await
+    .map_err(|e| e.to_string())
+}
+
 /// List the AI clients (Claude Desktop, Cursor, etc.) currently connected
 /// to this App's sidecar over MCP. Used by the inspector's "Connected AI
 /// clients" panel.
@@ -2081,6 +2107,7 @@ pub fn run() {
             rename_graph,
             move_source,
             delete_graph,
+            sidecar_ipc_call,
         ])
         .setup(|app| {
             // Full-blown Mac app: regular activation so we get a Dock icon,

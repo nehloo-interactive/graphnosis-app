@@ -584,6 +584,54 @@ export class GraphnosisHost {
     return this.opts.adapter.inspectEdges(g.handle);
   }
 
+  /**
+   * Raw embedding vectors for all embedded nodes — used by BrainEngine's
+   * contradiction scan (cosine pairwise comparison). Returns an empty map
+   * when the graph has no embedding index yet.
+   */
+  getNodeEmbeddings(graphId: GraphId): Map<string, number[]> {
+    const g = this.graphs.get(graphId);
+    if (!g) return new Map();
+    return this.opts.adapter.getNodeEmbeddings(g.handle);
+  }
+
+  /**
+   * Slightly increase the confidence of a node that was recalled and acted on.
+   * This is the reinforcement half of temporal decay — nodes the user finds
+   * useful strengthen; nodes that go unrecalled for a long time weaken.
+   *
+   * Skipped if the node is already high-confidence (> 0.9) or soft-deleted
+   * (confidence ≤ 0.2). Non-fatal: any failure is logged and swallowed so
+   * BrainEngine's recall loop isn't disrupted.
+   */
+  async reinforceNode(graphId: GraphId, nodeId: string): Promise<void> {
+    const g = this.graphs.get(graphId);
+    if (!g) return;
+    const nodes = this.opts.adapter.inspectNodes(g.handle);
+    const node = nodes.find((n) => n.id === nodeId);
+    if (!node) return;
+    if (node.confidence <= 0.2 || node.confidence > 0.9) return;
+    const newConfidence = Math.min(0.95, node.confidence + 0.03);
+    try {
+      await this.opts.adapter.applyCorrection(g.handle, {
+        kind: 'edit',
+        nodeId,
+        content: node.contentPreview,
+        reason: 'brain:reinforcement',
+      });
+      this.oplogWriter.emit({
+        graphId,
+        op: 'editNode',
+        target: { kind: 'node', id: nodeId },
+        after: { confidence: newConfidence, reason: 'brain:reinforcement' },
+      });
+      g.dirty = true;
+      await this.save(graphId);
+    } catch (err) {
+      console.error(`[brain] reinforceNode(${graphId}/${nodeId}) failed:`, err);
+    }
+  }
+
   // ── Graph metadata (template, displayName) ──────────────────────────────
 
   getGraphMetadata(graphId: GraphId): settingsMod.GraphMetadata | undefined {
@@ -1508,6 +1556,39 @@ export class GraphnosisHost {
     if ((patches.adds?.length ?? 0) > 0) {
       this.kickoffRelink(graphId);
     }
+  }
+
+  /**
+   * Apply a temporal decay correction to a single node. Called by TemporalEngine
+   * during its daily decay pass. Distinct from reinforceNode so the reason
+   * string is accurate in the op-log.
+   *
+   * We emit a lightweight 'editNode' event rather than a full supersede so
+   * the audit log doesn't get cluttered with decay lineage chains — decay
+   * is a background maintenance operation, not a factual correction.
+   */
+  async applyDecayCorrection(
+    graphId: GraphId,
+    nodeId: string,
+    contentPreview: string,
+    newConfidence: number,
+  ): Promise<void> {
+    const g = this.graphs.get(graphId);
+    if (!g) return;
+    await this.opts.adapter.applyCorrection(g.handle, {
+      kind: 'edit',
+      nodeId,
+      content: contentPreview,
+      reason: 'brain:temporal-decay',
+    });
+    this.oplogWriter.emit({
+      graphId,
+      op: 'editNode',
+      target: { kind: 'node', id: nodeId },
+      after: { confidence: newConfidence, reason: 'brain:temporal-decay' },
+    });
+    g.dirty = true;
+    await this.save(graphId);
   }
 
   /**

@@ -83,6 +83,8 @@ export interface IpcDeps {
   broadcastRaw: BroadcastRawFn;
   /** Service connector manager. Always present; starts with empty config if no connectors exist yet. */
   connectorManager: ConnectorManager;
+  /** Alive Brain engine. Null before the cortex is fully unlocked or if BrainEngine failed to start. */
+  brainEngine?: import('./brain-engine.js').BrainEngine | null;
 }
 
 export async function startIpc(deps: IpcDeps): Promise<net.Server> {
@@ -982,6 +984,133 @@ async function dispatch(deps: IpcDeps, method: string, params: unknown): Promise
         localIps,
         tailscaleIp,
       };
+    }
+
+    // ── Alive Brain IPC ──────────────────────────────────────────────────────
+
+    case 'brain:getVitality': {
+      if (!deps.brainEngine) return { overall: 0, byGraph: {}, computedAt: Date.now() };
+      return deps.brainEngine.getVitalityReport();
+    }
+
+    case 'brain:getInsights': {
+      if (!deps.brainEngine) return [];
+      return deps.brainEngine.getInsights();
+    }
+
+    case 'brain:getContradictions': {
+      if (!deps.brainEngine) return [];
+      return deps.brainEngine.getContradictions();
+    }
+
+    case 'brain:dismissInsight': {
+      const { id } = z.object({ id: z.string() }).parse(params);
+      deps.brainEngine?.dismissInsight(id);
+      return { ok: true };
+    }
+
+    case 'brain:dismissContradiction': {
+      const { id } = z.object({ id: z.string() }).parse(params);
+      deps.brainEngine?.dismissContradiction(id);
+      return { ok: true };
+    }
+
+    case 'brain:develop': {
+      const args = z.object({
+        context: z.string().min(1),
+        strategy: z.string().min(1),
+        goals: z.string().min(1),
+        graphIds: z.array(z.string()).optional(),
+        saveAsGoal: z.boolean().optional(),
+        goalGraphId: z.string().optional(),
+      }).parse(params);
+      if (!deps.brainEngine) throw new Error('BrainEngine not initialized. Ensure cortex is unlocked.');
+      const plan = await deps.brainEngine.runDevelop({
+        context: args.context,
+        strategy: args.strategy,
+        goals: args.goals,
+        ...(args.graphIds ? { graphIds: args.graphIds } : {}),
+      });
+      if (args.saveAsGoal && args.goalGraphId) {
+        await deps.brainEngine.ingestGoal(args.goalGraphId, plan);
+      }
+      return plan;
+    }
+
+    case 'brain:predict': {
+      const args = z.object({
+        action: z.string().min(1),
+        graphIds: z.array(z.string()).optional(),
+      }).parse(params);
+      if (!deps.brainEngine) return { risks: [], opportunities: [], recommendation: '', referencedNodeIds: [] };
+      return deps.brainEngine.runPredict({
+        action: args.action,
+        ...(args.graphIds ? { graphIds: args.graphIds } : {}),
+      });
+    }
+
+    case 'brain:listGoals': {
+      if (!deps.brainEngine) return [];
+      return deps.brainEngine.listGoals();
+    }
+
+    // ── LLM / Ollama management IPC ─────────────────────────────────────────
+
+    case 'llm:status': {
+      const ollamaUrl = 'http://127.0.0.1:11434';
+      let ollamaReachable = false;
+      let installedModels: string[] = [];
+      try {
+        const res = await fetch(`${ollamaUrl}/api/tags`, {
+          signal: AbortSignal.timeout(2000),
+        });
+        if (res.ok) {
+          ollamaReachable = true;
+          const data = await res.json() as { models?: Array<{ name: string }> };
+          installedModels = (data.models ?? []).map(m => m.name);
+        }
+      } catch { /* Ollama not running or not installed */ }
+      const activeModel = deps.host.getSettings().ai?.llmModel ?? null;
+      const { LLM_CATALOG } = await import('./local-llm.js');
+      return { ollamaReachable, installedModels, activeModel, catalog: LLM_CATALOG };
+    }
+
+    case 'llm:setModel': {
+      const { model } = z.object({ model: z.string().min(1) }).parse(params);
+      const current = deps.host.getSettings();
+      await deps.host.setSettings({ ai: { ...current.ai, llmModel: model } });
+      return { ok: true };
+    }
+
+    case 'llm:pullModel': {
+      const { model } = z.object({ model: z.string().min(1) }).parse(params);
+      const { spawn } = await import('node:child_process');
+      return new Promise<{ ok: boolean }>((resolve, reject) => {
+        const child = spawn('ollama', ['pull', model], { stdio: ['ignore', 'pipe', 'pipe'] });
+        child.stdout?.on('data', (chunk: Buffer) => {
+          const lines = chunk.toString().split('\n').filter(Boolean);
+          for (const line of lines) {
+            try {
+              const event = JSON.parse(line) as { status?: string; completed?: number; total?: number };
+              deps.broadcastRaw({
+                kind: 'graph.mutation',
+                name: 'graph.mutation',
+                payload: {
+                  graphId: '__llm_pull__',
+                  mutatedAt: Date.now(),
+                  model,
+                  ...event,
+                },
+              });
+            } catch { /* non-JSON line — ignore */ }
+          }
+        });
+        child.on('close', (code) => {
+          if (code === 0) resolve({ ok: true });
+          else reject(new Error(`ollama pull exited with code ${code}`));
+        });
+        child.on('error', reject);
+      });
     }
 
     default:
