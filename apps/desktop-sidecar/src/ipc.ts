@@ -817,8 +817,8 @@ async function dispatch(deps: IpcDeps, method: string, params: unknown): Promise
         // The App UI reads it back from the returned settings and shows it to
         // the user exactly once so they can copy it into their mobile client.
         const token = inBridge.token
-          ?? currentBridge?.token
-          ?? (inBridge.enabled ? randomUUID() : '');
+          || currentBridge?.token
+          || (inBridge.enabled ? randomUUID() : '');
         patch.mobile = {
           httpBridge: {
             enabled: inBridge.enabled,
