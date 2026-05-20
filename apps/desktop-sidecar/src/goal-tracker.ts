@@ -34,26 +34,48 @@ export class GoalTracker {
     private readonly llm: LocalLlm | null,
   ) {}
 
-  /** Find all nodes with nodeType='goal' across all loaded graphs. */
+  /**
+   * Find all goals across all loaded graphs. Goals are identified by their
+   * source ref carrying the `goal:` prefix that ingestGoal() assigns — the
+   * SDK ingest path doesn't expose a custom node type, so the source ref is
+   * the durable marker.
+   */
   async listGoals(): Promise<GoalNode[]> {
     const goals: GoalNode[] = [];
     const now = Date.now();
 
     for (const graphId of this.host.listGraphs()) {
-      const nodes = this.host.listNodes(graphId);
-      for (const n of nodes) {
-        if (n.nodeType !== 'goal') continue;
-        if (n.confidence <= 0.2) continue;
-        if (n.validUntil !== undefined && n.validUntil <= now) continue;
+      const goalSources = this.host
+        .listSources(graphId)
+        .filter((s) => s.ref.startsWith('goal:'));
+      if (goalSources.length === 0) continue;
 
-        const targetDate = extractDate(n.contentPreview);
+      const nodeById = new Map(
+        this.host.listNodes(graphId).map((n) => [n.id, n]),
+      );
+
+      for (const src of goalSources) {
+        const firstNodeId = src.nodeIds[0];
+        if (!firstNodeId) continue;
+        const first = nodeById.get(firstNodeId);
+        if (!first) continue;
+        if (first.confidence <= 0.2) continue;
+        if (first.validUntil !== undefined && first.validUntil <= now) continue;
+
+        // Aggregate every node preview of the source so milestone and date
+        // extraction sees the whole goal, not just its first chunk.
+        const fullText = src.nodeIds
+          .map((id) => nodeById.get(id)?.contentPreview ?? '')
+          .join('\n');
+
+        const targetDate = extractDate(fullText);
         goals.push({
-          nodeId: n.id,
+          nodeId: firstNodeId,
           graphId,
-          title: n.section ?? n.contentPreview.slice(0, 60),
-          milestones: extractMilestones(n.contentPreview),
+          title: first.section ?? first.contentPreview.slice(0, 60),
+          milestones: extractMilestones(fullText),
           ...(targetDate !== undefined ? { targetDate } : {}),
-          createdAt: 0,
+          createdAt: src.ingestedAt,
         });
       }
     }

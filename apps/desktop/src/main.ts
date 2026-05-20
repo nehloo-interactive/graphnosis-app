@@ -271,7 +271,7 @@ let loadedGraphs: GraphWithMetadata[] = [];
 // the Check-in tab shows a triage dashboard by default and a results list
 // when there's an active search. The Atlas tab renders the 3D viz on the
 // shared selection state below.
-type GraphnosisTab = 'checkin' | 'atlas';
+type GraphnosisTab = 'checkin' | 'atlas' | 'brain';
 let graphnosisActiveTab: GraphnosisTab = 'checkin';
 let graphnosisListRows: NodeRecord[] = []; // current visible search results
 let graphnosisAllNodes: NodeRecord[] = []; // unfiltered cache for the active engram
@@ -542,13 +542,25 @@ const els = {
   railGcClients: $<HTMLDivElement>('rail-gc-clients'),
   railGcMobile: $<HTMLDivElement>('rail-gc-mobile'),
   railGcConnectors: $<HTMLDivElement>('rail-gc-connectors'),
-  // Brain / Alive
+  // Brain / Alive — status bar
   brainVitality: $<HTMLSpanElement>('brain-vitality'),
   llmStatusChip: $<HTMLSpanElement>('llm-status-chip'),
-  brainFeed: $<HTMLDivElement>('brain-feed'),
-  brainFeedList: $<HTMLDivElement>('brain-feed-list'),
-  checkinGoals: $<HTMLDivElement>('checkin-goals'),
-  goalList: $<HTMLDivElement>('goal-list'),
+  // Living Brain pane
+  lbVitalityRing: $<HTMLDivElement>('lb-vitality-ring'),
+  lbVitalityScore: $<HTMLSpanElement>('lb-vitality-score'),
+  lbVitalityTitle: $<HTMLHeadingElement>('lb-vitality-title'),
+  lbVitalityDetail: $<HTMLParagraphElement>('lb-vitality-detail'),
+  btnLbRefresh: $<HTMLButtonElement>('btn-lb-refresh'),
+  lbContradictions: $<HTMLDivElement>('lb-contradictions'),
+  lbInsights: $<HTMLDivElement>('lb-insights'),
+  lbGoals: $<HTMLDivElement>('lb-goals'),
+  lbFeed: $<HTMLDivElement>('lb-feed'),
+  lbGoalForm: $<HTMLDivElement>('lb-goal-form'),
+  lbGoalContext: $<HTMLInputElement>('lb-goal-context'),
+  lbGoalStrategy: $<HTMLInputElement>('lb-goal-strategy'),
+  lbGoalGoals: $<HTMLInputElement>('lb-goal-goals'),
+  btnLbGoalCancel: $<HTMLButtonElement>('btn-lb-goal-cancel'),
+  btnLbGoalDevelop: $<HTMLButtonElement>('btn-lb-goal-develop'),
   btnNewGoal: $<HTMLButtonElement>('btn-new-goal'),
   // Ollama settings
   ollamaStatusBadge: $<HTMLSpanElement>('ollama-status-badge'),
@@ -935,6 +947,7 @@ function render(status: StatusSnapshot): void {
     void refreshConnectorsList();
     startMcpPolling();
     void refreshBrainState();
+    void refreshLlmStatus();
     activateMode(currentMode);
   } else {
     els.viewApp.classList.add('hidden');
@@ -6759,7 +6772,8 @@ function switchGraphnosisTab(tab: GraphnosisTab): void {
     // Returning to the dashboard from the Atlas tab — re-render in case
     // selection/data changed while away.
     if (els.gSearch.value.trim().length === 0) renderDashboard();
-    void refreshGoalList();
+  } else if (tab === 'brain') {
+    void renderLivingBrain();
   }
 }
 
@@ -7421,8 +7435,6 @@ if (typeof window !== 'undefined') {
 interface GraphMutationPayload {
   graphId: string;
   ts: number;
-  mutatedAt?: number;
-  vitality?: { overall: number; byGraph: Record<string, number>; computedAt: number };
 }
 
 interface EventStreamConnectedPayload {
@@ -7433,10 +7445,9 @@ interface EventStreamConnectedPayload {
 void listen<GraphMutationPayload>('graphnosis://graph-mutation', (evt) => {
   const graphId = evt.payload.graphId ?? '';
   if (graphId.startsWith('__brain')) {
-    void handleBrainFrame(graphId, evt.payload.vitality);
+    handleBrainFrame(graphId);
     return;
   }
-  if (graphId === '__llm_pull__') return; // handled by pull-progress listener
   // Don't filter on graphId here — pollGraphMutations checks the
   // active-engram-changed predicate against the full cursor set
   // returned by inspector_stats and only repaints when relevant.
@@ -7459,77 +7470,213 @@ async function ipcCall<T = unknown>(method: string, params: unknown): Promise<T>
 
 // ── Brain / Alive state ───────────────────────────────────────────────────
 
+type BrainGoal = {
+  nodeId: string; graphId: string; title: string;
+  milestones: string[]; targetDate?: number; createdAt: number;
+};
+let brainGoals: BrainGoal[] = [];
+
+const BRAIN_PHASE_LABELS: Record<string, string> = {
+  'contradiction-scan': 'Scanning for contradictions',
+  synapse: 'Forming new connections',
+  insight: 'Synthesizing insights',
+  temporal: 'Applying memory decay',
+  'goal-check': 'Checking goals',
+};
+
+/** Pull all brain state from the sidecar into module cache, then repaint. */
 async function refreshBrainState(): Promise<void> {
   try {
-    const [vitality, insights, contradictions] = await Promise.all([
-      ipcCall<{ overall: number; byGraph: Record<string, number>; computedAt: number }>('brain:getVitality', {}),
+    const [vitality, insights, contradictions, goals] = await Promise.all([
+      ipcCall<NonNullable<typeof brainVitalityReport>>('brain:getVitality', {}),
       ipcCall<typeof brainInsights>('brain:getInsights', {}),
       ipcCall<typeof brainContradictions>('brain:getContradictions', {}),
+      ipcCall<BrainGoal[]>('brain:listGoals', {}),
     ]);
     brainVitalityReport = vitality;
     brainInsights = insights;
     brainContradictions = contradictions;
+    brainGoals = goals;
     updateBrainUI();
   } catch { /* non-fatal — brain may not be initialized yet */ }
 }
 
+/** Status-bar chip + atlas animation + Living Brain pane. Cheap; no IPC. */
 function updateBrainUI(): void {
   if (!brainVitalityReport) return;
   const v = brainVitalityReport.overall;
 
-  // Status bar vitality chip
   els.brainVitality.style.display = '';
   els.brainVitality.textContent = `🧠 ${v}`;
   els.brainVitality.style.opacity = String(0.4 + (v / 100) * 0.6);
 
-  // Drive atlas animation intensity
   mainAtlas?.setBrainVitality?.(v);
 
-  // Contradiction badge on check-in tab (if any contradictions)
-  const correctionBadge = document.getElementById('rail-corrections-badge');
-  if (correctionBadge && brainContradictions.length > 0) {
-    correctionBadge.textContent = String(brainContradictions.length);
-    correctionBadge.classList.remove('hidden');
-  }
+  renderLivingBrainPane();
+}
 
-  // Show/hide brain feed
-  if (els.brainFeedList.children.length > 0) {
-    els.brainFeed.classList.remove('hidden');
+// ── Living Brain pane ─────────────────────────────────────────────────────
+
+/** Full refresh: pull state + LLM status, then paint. Tab-open + Refresh. */
+async function renderLivingBrain(): Promise<void> {
+  els.lbVitalityTitle.textContent = 'Checking your brain…';
+  ensureFeedPlaceholder();
+  await Promise.all([refreshBrainState(), refreshLlmStatus()]);
+  // refreshBrainState only repaints on success — paint again so a failed
+  // fetch still resolves to an honest "brain unavailable" state.
+  renderLivingBrainPane();
+}
+
+/** Paint the pane from cached module state — no IPC, safe to call often. */
+function renderLivingBrainPane(): void {
+  renderLbVitality();
+  renderLbContradictions();
+  renderLbInsights();
+  renderLbGoals();
+  ensureFeedPlaceholder();
+}
+
+function vitalityCopy(v: number): [string, string] {
+  if (v >= 75) return ['Your second brain is thriving', 'Well-connected, active, and consistent — keep feeding it.'];
+  if (v >= 50) return ['Your second brain is healthy', 'Solid shape. More links and activity will push it higher.'];
+  if (v >= 25) return ['Your second brain is waking up', 'Add memories, connect them, and resolve contradictions to strengthen it.'];
+  return ['Your second brain is dormant', 'Ingest more knowledge and let the brain form connections.'];
+}
+
+function renderLbVitality(): void {
+  if (!brainVitalityReport) {
+    els.lbVitalityTitle.textContent = 'Brain is starting up…';
+    els.lbVitalityDetail.textContent = 'Give it a moment after unlocking, then hit Refresh.';
+    return;
+  }
+  const v = brainVitalityReport.overall;
+  els.lbVitalityRing.style.setProperty('--v', String(v));
+  els.lbVitalityScore.textContent = String(v);
+  const [title, detail] = vitalityCopy(v);
+  els.lbVitalityTitle.textContent = title;
+  els.lbVitalityDetail.textContent = detail;
+}
+
+function renderLbContradictions(): void {
+  const host = els.lbContradictions;
+  if (brainContradictions.length === 0) {
+    host.innerHTML = '<p class="lb-empty">No contradictions detected — your memories are consistent.</p>';
+    return;
+  }
+  host.innerHTML = brainContradictions.map((c) => `
+    <div class="lb-contradiction">
+      <div class="lb-contradiction-pair">
+        <div class="lb-snippet"><span class="lb-snippet-tag">A</span>${escape(c.snippetA)}</div>
+        <div class="lb-snippet"><span class="lb-snippet-tag">B</span>${escape(c.snippetB)}</div>
+      </div>
+      <div class="lb-contradiction-foot">
+        <span class="brain-subtitle">${Math.round(c.similarity * 100)}% similar — likely the same fact stated two ways</span>
+        <button class="btn-sm" data-dismiss-contradiction="${escape(c.id)}">Dismiss</button>
+      </div>
+    </div>`).join('');
+  host.querySelectorAll<HTMLButtonElement>('[data-dismiss-contradiction]').forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      const id = btn.dataset['dismissContradiction'];
+      if (!id) return;
+      try { await ipcCall('brain:dismissContradiction', { id }); } catch { /* ignore */ }
+      brainContradictions = brainContradictions.filter((c) => c.id !== id);
+      renderLbContradictions();
+    });
+  });
+}
+
+function renderLbInsights(): void {
+  const host = els.lbInsights;
+  const active = brainInsights.filter((i) => !i.dismissed);
+  if (active.length === 0) {
+    host.innerHTML = '<p class="lb-empty">No insights yet. These surface every few hours when a local LLM is available.</p>';
+    return;
+  }
+  host.innerHTML = active.map((i) => `
+    <div class="lb-insight">
+      <span class="lb-insight-kind">${escape(i.kind)}</span>
+      <div class="lb-insight-title">${escape(i.title)}</div>
+      <div class="lb-insight-body">${escape(i.body)}</div>
+      <div style="margin-top:6px;"><button class="btn-sm" data-dismiss-insight="${escape(i.id)}">Dismiss</button></div>
+    </div>`).join('');
+  host.querySelectorAll<HTMLButtonElement>('[data-dismiss-insight]').forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      const id = btn.dataset['dismissInsight'];
+      if (!id) return;
+      try { await ipcCall('brain:dismissInsight', { id }); } catch { /* ignore */ }
+      brainInsights = brainInsights.filter((i) => i.id !== id);
+      renderLbInsights();
+    });
+  });
+}
+
+function renderLbGoals(): void {
+  const host = els.lbGoals;
+  if (brainGoals.length === 0) {
+    host.innerHTML = '<p class="lb-empty">No goals yet — develop one below and the brain will track it.</p>';
+    return;
+  }
+  const now = Date.now();
+  host.innerHTML = brainGoals.map((g) => {
+    let deadline = 'No deadline set';
+    if (g.targetDate) {
+      const days = Math.ceil((g.targetDate - now) / 86_400_000);
+      deadline = days <= 0
+        ? '<span class="lb-goal-deadline-soon">Overdue</span>'
+        : days <= 7
+          ? `<span class="lb-goal-deadline-soon">${days} day${days === 1 ? '' : 's'} left</span>`
+          : `${days} days left`;
+    }
+    const milestones = g.milestones.length > 0
+      ? `<div class="lb-goal-meta">Milestones: ${escape(g.milestones.slice(0, 3).join(' · '))}</div>`
+      : '';
+    return `<div class="lb-goal">
+      <div class="lb-goal-title">${escape(g.title)}</div>
+      <div class="lb-goal-meta">${deadline}</div>
+      ${milestones}
+    </div>`;
+  }).join('');
+}
+
+/** Show the empty-state line only when the feed has no real activity items. */
+function ensureFeedPlaceholder(): void {
+  if (!els.lbFeed.querySelector('.lb-feed-item')) {
+    els.lbFeed.innerHTML =
+      '<p class="lb-empty">No recent activity yet — the brain scans in the background every few minutes.</p>';
   }
 }
 
-let brainFeedItems: string[] = [];
-
-async function handleBrainFrame(graphId: string, inlineVitality?: { overall: number; byGraph: Record<string, number>; computedAt: number }): Promise<void> {
-  const phase = graphId.replace('__brain_start_', '').replace('__brain_done_', '').replace('__brain_', '').replace('__', '');
-
+function handleBrainFrame(graphId: string): void {
   if (graphId.startsWith('__brain_start_')) {
+    const phase = graphId.slice('__brain_start_'.length, -2);
+    els.lbFeed.querySelector('.lb-empty')?.remove();
+    const label = BRAIN_PHASE_LABELS[phase] ?? phase;
     const item = document.createElement('div');
-    item.className = 'brain-feed-item brain-thinking';
-    item.textContent = `${phase} running…`;
-    item.dataset.phase = phase;
-    els.brainFeedList.prepend(item);
-    els.brainFeed.classList.remove('hidden');
-    // Keep only last 20 items
-    while (els.brainFeedList.children.length > 20) {
-      els.brainFeedList.lastChild?.remove();
+    item.className = 'lb-feed-item brain-thinking';
+    item.dataset['phase'] = phase;
+    item.textContent = `${label}… · ${new Date().toLocaleTimeString()}`;
+    els.lbFeed.prepend(item);
+    while (els.lbFeed.querySelectorAll('.lb-feed-item').length > 25) {
+      els.lbFeed.querySelector('.lb-feed-item:last-child')?.remove();
     }
   } else if (graphId.startsWith('__brain_done_')) {
-    // Remove "thinking" item for this phase
-    const thinking = els.brainFeedList.querySelector(`[data-phase="${CSS.escape(phase)}"]`);
-    if (thinking) thinking.classList.remove('brain-thinking');
-
-    // If vitality was inlined in the frame, apply it immediately
-    if (inlineVitality) {
-      brainVitalityReport = inlineVitality;
+    const phase = graphId.slice('__brain_done_'.length, -2);
+    if (phase) {
+      const item = els.lbFeed.querySelector<HTMLElement>(
+        `.lb-feed-item[data-phase="${CSS.escape(phase)}"].brain-thinking`,
+      );
+      if (item) {
+        item.classList.remove('brain-thinking');
+        const label = BRAIN_PHASE_LABELS[phase] ?? phase;
+        item.textContent = `${label} — done · ${new Date().toLocaleTimeString()}`;
+      }
     }
-    // Pull fresh state
+    // The event channel only carries graphId + ts — pull the fresh report.
     void refreshBrainState();
-  } else if (graphId === '__brain_vitality__' && inlineVitality) {
-    brainVitalityReport = inlineVitality;
-    updateBrainUI();
   }
 }
+
+els.btnLbRefresh.addEventListener('click', () => { void renderLivingBrain(); });
 
 // ── LLM / Ollama settings ─────────────────────────────────────────────────
 
@@ -7576,6 +7723,25 @@ els.btnOllamaApplyModel.addEventListener('click', async () => {
   }
 });
 
+// Live progress for `ollama pull`, streamed line-by-line from the sidecar.
+interface LlmPullProgressPayload {
+  model: string;
+  status?: string;
+  completed?: number;
+  total?: number;
+}
+void listen<LlmPullProgressPayload>('graphnosis://llm-pull-progress', (evt) => {
+  const p = evt.payload;
+  els.ollamaPullProgress.style.display = '';
+  if (p.completed && p.total && p.total > 0) {
+    const pct = Math.round((p.completed / p.total) * 100);
+    els.ollamaPullBar.style.width = `${pct}%`;
+    els.ollamaPullLabel.textContent = `${p.status ?? 'Downloading'} — ${pct}%`;
+  } else {
+    els.ollamaPullLabel.textContent = p.status ?? 'Downloading…';
+  }
+});
+
 els.btnOllamaPull.addEventListener('click', async () => {
   const model = els.ollamaPullSelect.value;
   if (!model) return;
@@ -7608,39 +7774,45 @@ els.llmStatusChip.addEventListener('click', () => {
   void refreshLlmStatus();
 });
 
-// ── Goal UI ───────────────────────────────────────────────────────────────
+// ── Goal develop form (Living Brain pane) ─────────────────────────────────
 
-async function refreshGoalList(): Promise<void> {
-  try {
-    const goals = await ipcCall<Array<{ nodeId: string; graphId: string; title: string; milestones: string[]; targetDate?: number; createdAt: number }>>('brain:listGoals', {});
-    if (goals.length === 0) {
-      els.checkinGoals.classList.add('hidden');
-      return;
-    }
-    els.checkinGoals.classList.remove('hidden');
-    const now = Date.now();
-    els.goalList.innerHTML = goals.map(g => {
-      const daysLeft = g.targetDate ? Math.ceil((g.targetDate - now) / 86400000) : null;
-      const deadline = daysLeft !== null ? (daysLeft <= 0 ? ' <em style="color:var(--error)">overdue</em>' : ` <em style="color:var(--fg-dim)">${daysLeft}d left</em>`) : '';
-      return `<div style="padding: 6px 0; border-bottom: 1px solid var(--border-dim);">
-        <strong>${g.title}</strong>${deadline}
-        ${g.milestones.length > 0 ? `<div style="font-size:12px; color:var(--fg-dim); margin-top:2px;">${g.milestones.slice(0,2).join(' · ')}</div>` : ''}
-      </div>`;
-    }).join('');
-  } catch { /* non-fatal */ }
+function resetGoalForm(): void {
+  els.lbGoalForm.classList.add('hidden');
+  els.btnNewGoal.style.display = '';
+  els.lbGoalContext.value = '';
+  els.lbGoalStrategy.value = '';
+  els.lbGoalGoals.value = '';
 }
 
 els.btnNewGoal.addEventListener('click', () => {
-  // Simple prompt for now; a full modal is future work
-  const context = prompt('What do you want to develop? (context)');
-  if (!context) return;
-  const strategy = prompt('What strategy or approach?') ?? 'balanced growth';
-  const goals = prompt('What does success look like?') ?? 'meaningful progress';
-  const toastId = addIngestToast('Saving goal to your brain…');
-  void ipcCall('brain:develop', { context, strategy, goals, saveAsGoal: true }).then(() => {
-    finishIngestToast(toastId, 'success', 'Goal saved');
-    void refreshGoalList();
-  }).catch((e: unknown) => finishIngestToast(toastId, 'error', (e as Error).message));
+  els.lbGoalForm.classList.remove('hidden');
+  els.btnNewGoal.style.display = 'none';
+  els.lbGoalContext.focus();
+});
+
+els.btnLbGoalCancel.addEventListener('click', resetGoalForm);
+
+els.btnLbGoalDevelop.addEventListener('click', async () => {
+  const context = els.lbGoalContext.value.trim();
+  if (!context) { els.lbGoalContext.focus(); return; }
+  const strategy = els.lbGoalStrategy.value.trim() || 'balanced growth';
+  const goals = els.lbGoalGoals.value.trim() || 'meaningful progress';
+  els.btnLbGoalDevelop.disabled = true;
+  const toastId = addIngestToast('Developing your goal…');
+  try {
+    await ipcCall('brain:develop', {
+      context, strategy, goals,
+      saveAsGoal: true,
+      ...(atlasActiveGraph ? { goalGraphId: atlasActiveGraph } : {}),
+    });
+    finishIngestToast(toastId, 'success', 'Goal developed and saved');
+    resetGoalForm();
+    await refreshBrainState();
+  } catch (e) {
+    finishIngestToast(toastId, 'error', (e as Error).message);
+  } finally {
+    els.btnLbGoalDevelop.disabled = false;
+  }
 });
 
 // ── Engram-create suggestions ─────────────────────────────────────────────

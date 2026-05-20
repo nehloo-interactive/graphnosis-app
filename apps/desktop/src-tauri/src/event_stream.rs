@@ -177,7 +177,8 @@ async fn open_and_read(app: &AppHandle, socket_path: &Path) -> Result<()> {
             "ingest.progress" | "ingest.done"
             | "recovery.progress" | "recovery.done"
             | "engram.create-suggested"
-            | "correction.proposed" => {
+            | "correction.proposed"
+            | "llm.pull-progress" => {
                 // Forward the raw payload to the frontend as-is.
                 // The frontend matches on the event name to update the
                 // appropriate UI (toast for ingest, progress bar in the

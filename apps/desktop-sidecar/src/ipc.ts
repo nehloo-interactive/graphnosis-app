@@ -1031,8 +1031,9 @@ async function dispatch(deps: IpcDeps, method: string, params: unknown): Promise
         goals: args.goals,
         ...(args.graphIds ? { graphIds: args.graphIds } : {}),
       });
-      if (args.saveAsGoal && args.goalGraphId) {
-        await deps.brainEngine.ingestGoal(args.goalGraphId, plan);
+      if (args.saveAsGoal) {
+        const goalGraph = args.goalGraphId ?? plan.graphIds[0];
+        if (goalGraph) await deps.brainEngine.ingestGoal(goalGraph, plan);
       }
       return plan;
     }
@@ -1092,15 +1093,12 @@ async function dispatch(deps: IpcDeps, method: string, params: unknown): Promise
           for (const line of lines) {
             try {
               const event = JSON.parse(line) as { status?: string; completed?: number; total?: number };
+              // Forwarded raw by the Rust event_stream as
+              // graphnosis://llm-pull-progress (see its kind allow-list).
               deps.broadcastRaw({
-                kind: 'graph.mutation',
-                name: 'graph.mutation',
-                payload: {
-                  graphId: '__llm_pull__',
-                  mutatedAt: Date.now(),
-                  model,
-                  ...event,
-                },
+                kind: 'llm.pull-progress',
+                name: 'llm.pull-progress',
+                payload: { model, ...event },
               });
             } catch { /* non-JSON line — ignore */ }
           }
