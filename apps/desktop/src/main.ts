@@ -185,6 +185,7 @@ interface GraphMetadata {
   displayName: string;
   createdAt: number;
   archived?: boolean;
+  sensitivityTier?: 'public' | 'personal' | 'sensitive';
 }
 interface GraphWithMetadata { graphId: string; metadata: GraphMetadata; }
 
@@ -416,6 +417,7 @@ const els = {
   cortexLabel: $<HTMLSpanElement>('cortex-label'),
   activeEngramLabel: $<HTMLSpanElement>('active-engram-label'),
   sourcesList: $<HTMLDivElement>('sources-list'),
+  sourcesFilter: $<HTMLInputElement>('sources-filter'),
   dropZone: $<HTMLDivElement>('drop-zone'),
   toastStack: $<HTMLDivElement>('g-toast-stack'),
   btnRecover: $<HTMLButtonElement>('btn-recover'),
@@ -548,6 +550,7 @@ let mcpPollTimer: ReturnType<typeof setInterval> | null = null;
 // render the active engram's forgotten-on-disk count without re-firing
 // the IPC on every recap update. Updated by refreshStats().
 let lastInspectorStats: StatsSummary | null = null;
+let sourcesFilterTerm = '';
 
 function showError(msg: string | null): void {
   if (!msg) {
@@ -854,6 +857,12 @@ void listen<{ jobId: string; graphId: string; fileName: string; nodesAdded: numb
     // (Still runs even when we don't jump — keeps Check-in / Sources fresh.)
     void pushDataIntoAtlas();
     void refreshStats();
+    // Re-fit the camera after the last job in a batch so the new nodes are
+    // in view. Use a longer delay than the tab-switch fit (1.2s) — large
+    // graphs take a few seconds for the force layout to stabilise.
+    if (ingestJobToasts.size === 0 && mainAtlas && graphnosisActiveTab === 'atlas') {
+      setTimeout(() => mainAtlas?.zoomToFit(700, 20), 4000);
+    }
   },
 );
 
@@ -1308,13 +1317,19 @@ async function refreshStats(): Promise<void> {
         const addedByBadge = s.addedBy
           ? `<span class="source-added-by" title="Added by ${escape(s.addedBy)} via MCP">via ${escape(s.addedBy)}</span>`
           : '';
+        // Move-to button: only show when there are other non-archived engrams.
+        const moveTargets = loadedGraphs.filter((g) => g.graphId !== s.graphId && !g.metadata.archived);
+        const moveBtn = moveTargets.length > 0
+          ? `<button class="btn-move-source" data-graph-id="${escape(s.graphId)}" data-source-id="${escape(s.sourceId)}" title="Move this source to another engram">Move to…</button>`
+          : '';
         return `
           <div class="source-row" data-source-id="${escape(s.sourceId)}">
-            <span class="source-name" title="${escape(s.ref)}">${escape(s.ref)}</span>
+            <span class="source-name" title="${escape(s.ref)}">${escape(s.kind === 'file' ? (s.ref.split('/').pop() ?? s.ref) : formatLegendLabel(s.ref))}</span>
             <span class="source-meta">${s.nodeIds.length} node${s.nodeIds.length === 1 ? '' : 's'}</span>
             ${addedByBadge}
             ${finderBtn}
             ${reingestBtn}
+            ${moveBtn}
             <button class="btn-forget" data-graph-id="${escape(s.graphId)}" data-source-id="${escape(s.sourceId)}" data-node-count="${s.nodeIds.length}" data-ref="${escape(s.ref)}">Forget</button>
           </div>`;
       };
@@ -1394,9 +1409,10 @@ async function refreshStats(): Promise<void> {
             btn.style.display = '';
           };
 
-          // Escape key collapses immediately.
+          // Escape collapses; Enter confirms if enabled.
           input.addEventListener('keydown', (e: KeyboardEvent) => {
             if (e.key === 'Escape') { e.stopPropagation(); collapse(); }
+            if (e.key === 'Enter' && !goBtn.disabled) { e.preventDefault(); goBtn.click(); }
           });
 
           // Clicking outside the widget collapses it. Use a mousedown listener
@@ -1419,7 +1435,9 @@ async function refreshStats(): Promise<void> {
             btn.textContent = 'Forgetting…';
             try {
               await invoke('forget_source', { graphId, sourceId });
-              await refreshStats();
+              // Remove the row in place — no full re-render so scroll position is preserved.
+              const row = els.sourcesList.querySelector<HTMLDivElement>(`[data-source-id="${CSS.escape(sourceId)}"]`);
+              row?.remove();
             } catch (e) {
               showError(`Forget failed: ${e}`);
               btn.disabled = false;
@@ -1456,6 +1474,89 @@ async function refreshStats(): Promise<void> {
           }
         });
       });
+      // Move-to: inline engram picker that replaces the button row temporarily.
+      els.sourcesList.querySelectorAll<HTMLButtonElement>('.btn-move-source').forEach((btn) => {
+        btn.addEventListener('click', () => {
+          const fromGraphId = btn.dataset.graphId ?? '';
+          const sourceId = btn.dataset.sourceId ?? '';
+          if (!fromGraphId || !sourceId) return;
+
+          const row = btn.closest<HTMLDivElement>('.source-row');
+          if (!row || row.querySelector('.source-row-move-picker')) return;
+
+          const targets = loadedGraphs.filter((g) => g.graphId !== fromGraphId && !g.metadata.archived);
+
+          const picker = document.createElement('div');
+          picker.className = 'source-row-move-picker';
+          picker.innerHTML =
+            `<span class="source-row-move-label">Move to:</span>` +
+            `<select class="source-row-move-select">` +
+            `<option value="__new__">New Engram…</option>` +
+            [...targets].sort((a, b) => (a.metadata.displayName ?? a.graphId).localeCompare(b.metadata.displayName ?? b.graphId)).map((g) =>
+              `<option value="${escape(g.graphId)}">${escape(g.metadata.displayName || g.graphId)}</option>`
+            ).join('') +
+            `</select>` +
+            `<input type="text" class="source-row-move-name-input" placeholder="New engram name…" style="display:none" />` +
+            `<button class="source-row-move-go">Move</button>` +
+            `<button class="source-row-move-cancel">Cancel</button>`;
+
+          const select    = picker.querySelector<HTMLSelectElement>('.source-row-move-select')!;
+          const nameInput = picker.querySelector<HTMLInputElement>('.source-row-move-name-input')!;
+          const goBtn     = picker.querySelector<HTMLButtonElement>('.source-row-move-go')!;
+          const cancelBtn = picker.querySelector<HTMLButtonElement>('.source-row-move-cancel')!;
+
+          select.addEventListener('change', () => {
+            nameInput.style.display = select.value === '__new__' ? '' : 'none';
+          });
+
+          btn.style.display = 'none';
+          row.appendChild(picker);
+
+          cancelBtn.addEventListener('click', () => {
+            picker.remove();
+            btn.style.display = '';
+          });
+
+          goBtn.addEventListener('click', async () => {
+            let toGraphId = select.value;
+            let toName = targets.find((g) => g.graphId === toGraphId)?.metadata.displayName ?? toGraphId;
+
+            if (toGraphId === '__new__') {
+              const displayName = nameInput.value.trim();
+              if (!displayName) { nameInput.focus(); return; }
+              // Slug: lowercase, spaces→dash, strip non-alphanumeric except -_
+              const slug = displayName.toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9_-]/g, '');
+              const suffix = Math.random().toString(36).slice(-4);
+              toGraphId = `${slug || 'engram'}-${suffix}`;
+              toName = displayName;
+              try {
+                await invoke('create_graph_with_template', { graphId: toGraphId, template: 'personal', displayName });
+                loadedGraphs = (await invoke('list_graphs_with_metadata')) as typeof loadedGraphs;
+              } catch (e) {
+                showError(`Could not create engram "${displayName}": ${e}`);
+                return;
+              }
+            }
+
+            picker.remove();
+            btn.disabled = true;
+            btn.style.display = '';
+            btn.textContent = 'Moving…';
+            try {
+              await invoke('move_source', { fromGraphId, sourceId, toGraphId });
+              const canvas = document.querySelector<HTMLElement>('.app-canvas');
+              const savedScroll = canvas?.scrollTop ?? 0;
+              await refreshStats();
+              if (canvas) canvas.scrollTop = savedScroll;
+            } catch (e) {
+              showError(`Move to "${toName}" failed: ${e}`);
+              btn.disabled = false;
+              btn.textContent = 'Move to…';
+            }
+          });
+        });
+      });
+
       // Show in Finder — reveals the file (selects it) in macOS Finder.
       els.sourcesList.querySelectorAll<HTMLButtonElement>('.btn-show-finder').forEach((btn) => {
         btn.addEventListener('click', async () => {
@@ -1472,6 +1573,22 @@ async function refreshStats(): Promise<void> {
   } catch (e) {
     els.sourcesList.innerHTML = `<p class="error">${escape(String(e))}</p>`;
   }
+  applySourcesFilter();
+}
+
+function applySourcesFilter(): void {
+  const term = sourcesFilterTerm.toLowerCase();
+  els.sourcesList.querySelectorAll<HTMLElement>('[data-source-id]').forEach((row) => {
+    const ref = (row.dataset.ref ?? '').toLowerCase();
+    const name = (row.querySelector('.source-name')?.textContent ?? '').toLowerCase();
+    row.style.display = (!term || ref.includes(term) || name.includes(term)) ? '' : 'none';
+  });
+  // Hide engram group headings when none of their source rows match
+  els.sourcesList.querySelectorAll<HTMLElement>('.sources-engram-group').forEach((group) => {
+    const hasVisible = !term || Array.from(group.querySelectorAll<HTMLElement>('[data-source-id]'))
+      .some((r) => r.style.display !== 'none');
+    group.style.display = hasVisible ? '' : 'none';
+  });
 }
 
 function escape(s: string): string {
@@ -1481,6 +1598,11 @@ function escape(s: string): string {
 }
 
 // ---- event wiring -------------------------------------------------------
+
+els.sourcesFilter.addEventListener('input', () => {
+  sourcesFilterTerm = els.sourcesFilter.value.trim();
+  applySourcesFilter();
+});
 
 // Re-probe biometric availability whenever the cortex-folder input changes
 // (typed, pasted, picked-via-dialog). Debounced because the input fires per
@@ -1503,9 +1625,6 @@ els.btnPick.addEventListener('click', async () => {
     if (folder) {
       els.cortexDir.value = folder;
       els.passphrase.focus();
-      // The user may have switched cortexes — re-probe biometric availability
-      // for the newly-chosen folder so the Touch ID button reflects whether
-      // THAT cortex has a stored passphrase.
       void refreshBiometricButton(folder);
     }
   } catch (e) {
@@ -1639,6 +1758,10 @@ els.btnOpenFolder.addEventListener('click', async () => {
   } catch (e) {
     showError(String(e));
   }
+});
+
+document.getElementById('btn-help')?.addEventListener('click', () => {
+  void invoke('plugin:opener|open_url', { url: 'https://docs.graphnosis.com' });
 });
 
 els.btnLock.addEventListener('click', async () => {
@@ -1942,7 +2065,7 @@ els.btnClaudeApply.addEventListener('click', async () => {
       <p><strong>${escape(headline)}</strong></p>
       <p style="margin-top: 6px;">${preservedLine}</p>
       ${routingLine}
-      <p style="margin-top: 10px; font-size: 11px; color: var(--fg-dim);">
+      <p style="margin-top: 10px; font-size: 15px; color: var(--fg-dim);">
         <strong>Config file:</strong> <code>${escape(r.config_path)}</code><br/>
         <strong>Relay binary:</strong> <code>${escape(r.relay_path)}</code><br/>
         <strong>Socket:</strong> <code>${escape(r.socket_path)}</code>
@@ -2067,19 +2190,30 @@ function renderSettingsGraphsList(): void {
   if (!container) return;
 
   if (loadedGraphs.length === 0) {
-    container.innerHTML = '<p style="font-size:13px; color:var(--fg-dim); margin:0;">No graphs loaded.</p>';
+    container.innerHTML = '<p style="font-size:14px; color:var(--fg-dim); margin:0;">No graphs loaded.</p>';
     return;
   }
 
+  const TIER_CAPS: Record<string, string> = {
+    public:    '4 000 tokens — unrestricted',
+    personal:  '2 000 tokens — explicit recall only',
+    sensitive: '0 tokens — AI blocked',
+  };
   container.innerHTML = loadedGraphs.map((g) => {
     const archived = g.metadata.archived ?? false;
     const isActive = g.graphId === atlasActiveGraph;
+    const tier = g.metadata.sensitivityTier ?? 'personal';
     return `
       <div class="settings-graph-row${archived ? ' is-archived' : ''}" data-sgr-id="${escape(g.graphId)}">
-        <span class="sgr-name">${escape(g.metadata.displayName)}</span>
+        <span class="sgr-name" title="Click to rename" data-sgr-id="${escape(g.graphId)}">${escape(g.metadata.displayName)}</span>
         <span class="sgr-id">${escape(g.graphId)}</span>
         ${archived ? '<span class="sgr-badge">archived</span>' : ''}
         ${isActive ? '<span class="sgr-badge">active</span>' : ''}
+        <select class="sgr-tier-select" data-sgr-id="${escape(g.graphId)}" title="${TIER_CAPS[tier]}">
+          <option value="public"    ${tier === 'public'    ? 'selected' : ''}>public</option>
+          <option value="personal"  ${tier === 'personal'  ? 'selected' : ''}>personal</option>
+          <option value="sensitive" ${tier === 'sensitive' ? 'selected' : ''}>sensitive</option>
+        </select>
         <button class="btn-graph-archive" data-sgr-id="${escape(g.graphId)}" data-archived="${archived}">
           ${archived ? 'Unarchive' : 'Archive'}
         </button>
@@ -2113,6 +2247,130 @@ function renderSettingsGraphsList(): void {
         showError(`Could not ${nextArchived ? 'archive' : 'unarchive'} "${displayName}": ${e}`);
         btn.disabled = false;
       }
+    });
+  });
+
+  // ── Inline rename ───────────────────────────────────────────────────────
+  container.querySelectorAll<HTMLSpanElement>('.sgr-name').forEach((span) => {
+    span.style.cursor = 'pointer';
+    span.addEventListener('click', () => {
+      const graphId = span.dataset['sgrId'] ?? '';
+      const current = span.textContent ?? '';
+      const input = document.createElement('input');
+      input.type = 'text';
+      input.value = current;
+      input.className = 'sgr-rename-input';
+      span.replaceWith(input);
+      input.focus();
+      input.select();
+
+      const commit = async () => {
+        const newName = input.value.trim();
+        if (!newName || newName === current) { input.replaceWith(span); return; }
+        input.disabled = true;
+        try {
+          await invoke('rename_graph', { graphId, displayName: newName });
+          const g = loadedGraphs.find((x) => x.graphId === graphId);
+          if (g) g.metadata.displayName = newName;
+          span.textContent = newName;
+        } catch (e) {
+          showError(`Could not rename: ${e}`);
+        } finally {
+          input.replaceWith(span);
+        }
+      };
+
+      input.addEventListener('blur', commit);
+      input.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') { e.preventDefault(); input.blur(); }
+        if (e.key === 'Escape') { input.value = current; input.blur(); }
+      });
+    });
+  });
+
+  // ── Sensitivity tier ────────────────────────────────────────────────────
+  const TIER_INFO: Record<string, { headline: string; bullets: string[]; warning?: string }> = {
+    public: {
+      headline: 'AI has full access to this engram.',
+      bullets: [
+        'Up to <strong>4 000 tokens</strong> of content per recall query',
+        'Proactive injection enabled — AI may surface memories unprompted',
+        'Best for reference material, documentation, and public notes',
+      ],
+    },
+    personal: {
+      headline: 'AI can access this engram only when explicitly asked.',
+      bullets: [
+        'Up to <strong>2 000 tokens</strong> of content per recall query',
+        'Proactive injection <strong>disabled</strong> — AI only sees content when you call <code>recall</code>',
+        'Best for personal notes, journal entries, and work summaries',
+      ],
+    },
+    sensitive: {
+      headline: 'AI is completely blocked from this engram.',
+      bullets: [
+        '<strong>0 tokens</strong> — the sidecar returns no results for any query',
+        'The AI is never told why — it simply receives no results',
+        'You can still browse and search these memories in Graphnosis',
+        'Best for health records, financial data, or anything strictly private',
+      ],
+      warning: 'The AI will never see content from this engram, even if you ask it to recall memories from here.',
+    },
+  };
+
+  container.querySelectorAll<HTMLSelectElement>('.sgr-tier-select').forEach((sel) => {
+    let prevTier = sel.value;
+    sel.addEventListener('change', () => {
+      const graphId = sel.dataset['sgrId'] ?? '';
+      const tier = sel.value as 'public' | 'personal' | 'sensitive';
+      const g = loadedGraphs.find((x) => x.graphId === graphId);
+      if (!graphId) return;
+
+      const modal = document.getElementById('tier-confirm-modal')!;
+      const engramLabel = document.getElementById('tier-confirm-engram')!;
+      const body = document.getElementById('tier-confirm-body')!;
+      const okBtn = document.getElementById('tier-confirm-ok') as HTMLButtonElement;
+      const cancelBtn = document.getElementById('tier-confirm-cancel') as HTMLButtonElement;
+
+      const info = TIER_INFO[tier];
+      engramLabel.textContent = g?.metadata.displayName ?? graphId;
+      body.innerHTML = `
+        <div style="padding:12px 14px; border-radius:8px; background:var(--bg-elev); border:1px solid var(--border);">
+          <p style="margin:0 0 10px; font-weight:600; font-size:14px; color:var(--fg);">${tier} — ${info?.headline ?? ''}</p>
+          <ul style="margin:0; padding-left:18px; display:flex; flex-direction:column; gap:5px; font-size:14px; color:var(--fg-dim);">
+            ${(info?.bullets ?? []).map((b) => `<li>${b}</li>`).join('')}
+          </ul>
+          ${info?.warning ? `<p style="margin:10px 0 0; font-size:15px; color:#e0a055; padding:8px 10px; border-radius:6px; background:color-mix(in oklab,#e0a055 10%,transparent);">${info.warning}</p>` : ''}
+        </div>`;
+
+      modal.classList.remove('hidden');
+
+      const cleanup = () => {
+        modal.classList.add('hidden');
+        okBtn.onclick = null;
+        cancelBtn.onclick = null;
+      };
+
+      cancelBtn.onclick = () => {
+        sel.value = prevTier;
+        cleanup();
+      };
+
+      okBtn.onclick = async () => {
+        cleanup();
+        sel.disabled = true;
+        try {
+          await invoke('set_graph_tier', { graphId, tier });
+          if (g) g.metadata.sensitivityTier = tier;
+          sel.title = TIER_CAPS[tier] ?? '';
+          prevTier = tier;
+        } catch (e) {
+          showError(`Could not update tier: ${e}`);
+          sel.value = g?.metadata.sensitivityTier ?? 'personal';
+        } finally {
+          sel.disabled = false;
+        }
+      };
     });
   });
 
@@ -2325,7 +2583,7 @@ async function renderQuarantineList(): Promise<void> {
     const items = result?.items ?? [];
     if (items.length === 0) {
       container.innerHTML =
-        '<p class="subtitle" style="font-size: 12px;">' +
+        '<p class="subtitle" style="font-size: 14px;">' +
         'No quarantined files. Nothing to clean up. ✨' +
         '</p>';
       return;
@@ -2336,18 +2594,18 @@ async function renderQuarantineList(): Promise<void> {
         ? '<span style="font-size: 10px; padding: 1px 6px; border-radius: 4px; background: color-mix(in oklab, var(--ok) 18%, transparent); color: var(--ok); font-weight: 600;">recovered ✓</span>'
         : '<span style="font-size: 10px; padding: 1px 6px; border-radius: 4px; background: color-mix(in oklab, var(--error) 18%, transparent); color: var(--error); font-weight: 600;">not yet recovered</span>';
       const restoreBtn = !item.liveEngramExists
-        ? `<button class="btn-qrestore" data-qname="${escape(item.name)}" data-qengram="${escape(item.engramId)}" style="font-size: 11px; padding: 2px 8px;">Restore</button>`
+        ? `<button class="btn-qrestore" data-qname="${escape(item.name)}" data-qengram="${escape(item.engramId)}" style="font-size: 15px; padding: 2px 8px;">Restore</button>`
         : '';
       return (
         '<div class="settings-graph-row" style="align-items: flex-start;">' +
           '<div style="flex: 1; min-width: 0;">' +
-            `<div style="display: flex; gap: 8px; align-items: baseline;"><strong style="font-family: ui-monospace, monospace; font-size: 12px;">${escape(item.engramId)}</strong> ${safeBadge} <span class="sgr-id">${item.kind}</span></div>` +
-            `<div class="subtitle" style="font-size: 11px; margin-top: 2px;">${escape(item.name)}</div>` +
-            `<div class="subtitle" style="font-size: 11px;">Quarantined ${escape(formatTimestamp(item.timestamp))} · ${formatBytes(item.sizeBytes)}</div>` +
+            `<div style="display: flex; gap: 8px; align-items: baseline;"><strong style="font-family: ui-monospace, monospace; font-size: 14px;">${escape(item.engramId)}</strong> ${safeBadge} <span class="sgr-id">${item.kind}</span></div>` +
+            `<div class="subtitle" style="font-size: 15px; margin-top: 2px;">${escape(item.name)}</div>` +
+            `<div class="subtitle" style="font-size: 15px;">Quarantined ${escape(formatTimestamp(item.timestamp))} · ${formatBytes(item.sizeBytes)}</div>` +
           '</div>' +
           '<div style="display: flex; gap: 6px; flex-shrink: 0;">' +
             restoreBtn +
-            `<button class="btn-qdelete" data-qname="${escape(item.name)}" data-qengram="${escape(item.engramId)}" data-qsafe="${safeToDelete ? '1' : '0'}" style="font-size: 11px; padding: 2px 8px; color: var(--error); border-color: color-mix(in oklab, var(--error) 40%, var(--border));">Delete</button>` +
+            `<button class="btn-qdelete" data-qname="${escape(item.name)}" data-qengram="${escape(item.engramId)}" data-qsafe="${safeToDelete ? '1' : '0'}" style="font-size: 15px; padding: 2px 8px; color: var(--error); border-color: color-mix(in oklab, var(--error) 40%, var(--border));">Delete</button>` +
           '</div>' +
         '</div>'
       );
@@ -2397,7 +2655,7 @@ async function renderQuarantineList(): Promise<void> {
       });
     });
   } catch (e) {
-    container.innerHTML = `<p class="error" style="font-size: 12px;">${escape(String(e))}</p>`;
+    container.innerHTML = `<p class="error" style="font-size: 14px;">${escape(String(e))}</p>`;
   }
 }
 
@@ -2588,7 +2846,7 @@ els.btnRecoveryApply.addEventListener('click', async () => {
     '  <div style="height: 8px; background: var(--bg); border-radius: 4px; overflow: hidden;">' +
     '    <div id="recovery-progress-bar" style="height: 100%; width: 0%; background: var(--accent); transition: width 200ms;"></div>' +
     '  </div>' +
-    '  <p id="recovery-progress-current" class="subtitle" style="margin: 8px 0 0; font-size: 11px;"></p>' +
+    '  <p id="recovery-progress-current" class="subtitle" style="margin: 8px 0 0; font-size: 15px;"></p>' +
     '</div>';
   try {
     const ack = (await invoke('recovery_apply', { sourceIds })) as { accepted?: boolean; jobId?: string };
@@ -3118,7 +3376,9 @@ async function fetchEdges(graphId: string): Promise<{ directed: AtlasDirectedEdg
 // Refreshes everything: picker, list, detail. Atlas is lazy-loaded.
 async function refreshAtlasView(): Promise<void> {
   // Populate the engram picker — archived graphs are hidden from all navigation.
-  const visibleGraphs = loadedGraphs.filter((g) => !g.metadata.archived);
+  const visibleGraphs = loadedGraphs
+    .filter((g) => !g.metadata.archived)
+    .sort((a, b) => (a.metadata.displayName ?? a.graphId).localeCompare(b.metadata.displayName ?? b.graphId));
   els.atlasGraphPicker.innerHTML = visibleGraphs
     .map((g) => `<option value="${escape(g.graphId)}">${escape(g.metadata.displayName)}</option>`)
     .join('');
@@ -4073,7 +4333,24 @@ async function handleDeckAction(
     `;
     actionsRow.classList.add('deck-forget-confirm');
 
+    const onDeckForgetKey = (e: KeyboardEvent): void => {
+      if (!actionsRow.classList.contains('deck-forget-confirm')) {
+        document.removeEventListener('keydown', onDeckForgetKey, true);
+        return;
+      }
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        document.removeEventListener('keydown', onDeckForgetKey, true);
+        actionsRow.querySelector<HTMLButtonElement>('.deck-forget-go')?.click();
+      } else if (e.key === 'Escape') {
+        document.removeEventListener('keydown', onDeckForgetKey, true);
+        actionsRow.querySelector<HTMLButtonElement>('.deck-forget-cancel')?.click();
+      }
+    };
+    document.addEventListener('keydown', onDeckForgetKey, true);
+
     actionsRow.querySelector<HTMLButtonElement>('.deck-forget-cancel')?.addEventListener('click', () => {
+      document.removeEventListener('keydown', onDeckForgetKey, true);
       actionsRow.classList.remove('deck-forget-confirm');
       actionsRow.innerHTML = previousHtml;
       // Re-wire the restored Skip/Forget buttons.
@@ -4117,7 +4394,7 @@ async function showDeckAck(label: string, kind: 'ok' | 'forget'): Promise<void> 
   els.gDeckCard.innerHTML = `
     <div class="g-deck-ack" style="color: ${color};">
       <div style="font-size: 26px; line-height: 1;">${glyph}</div>
-      <div style="margin-top: 6px; font-size: 13px;">${escape(label)}</div>
+      <div style="margin-top: 6px; font-size: 14px;">${escape(label)}</div>
     </div>
   `;
   flashDeck();
@@ -4618,6 +4895,7 @@ function selectGraphnosisNode(nodeId: string | null, { trace = false }: { trace?
   // Mirror selection into the Atlas if mounted — but don't move the camera.
   if (mainAtlas && nodeId) mainAtlas.select(nodeId);
   if (mainAtlas && !nodeId) mainAtlas.resetEmphasis();
+  els.btnAtlasReset.classList.toggle('node-selected', !!nodeId);
   // Only add to memory trace for explicit user clicks in the 3D graph or right sidebar.
   if (nodeId && trace) pushRecent(nodeId);
 
@@ -6157,6 +6435,12 @@ function renderBreadcrumb(n: NodeRecord): string {
 // "remembered via Claude · 3 min ago". File paths stay as filename.
 function prettySourceLabel(sourceRef: string): string {
   if (!sourceRef) return '';
+  if (sourceRef.startsWith('ai-conversation:')) {
+    const rest = sourceRef.slice('ai-conversation:'.length);
+    const secondColon = rest.indexOf(':');
+    const topic = secondColon !== -1 ? rest.slice(secondColon + 1) : '';
+    return topic ? `AI: ${topic}` : 'AI conversation';
+  }
   const clipMatch = sourceRef.match(/^clip:(\d+)(?::.*)?$/);
   if (clipMatch && clipMatch[1]) {
     const ts = Number.parseInt(clipMatch[1], 10);
@@ -6271,6 +6555,10 @@ function openSidebarForgetConfirm(nodeId: string): void {
   input.focus();
   input.addEventListener('input', () => {
     goBtn.disabled = input.value.trim().toLowerCase() !== 'delete';
+  });
+  input.addEventListener('keydown', (e: KeyboardEvent) => {
+    if (e.key === 'Enter' && !goBtn.disabled) { e.preventDefault(); goBtn.click(); }
+    if (e.key === 'Escape') { e.preventDefault(); cancelBtn.click(); }
   });
   cancelBtn.addEventListener('click', () => renderDetailPane());
   goBtn.addEventListener('click', async () => {
@@ -6597,6 +6885,12 @@ els.btnAtlasAlive.addEventListener('click', () => {
 
 // ── Search input + ⌘K + clear ─────────────────────────────────────────
 
+els.gSearch.addEventListener('focus', () => {
+  // Search box is always visible above both tabs. If the user clicks into it
+  // while on the Atlas tab, switch to Check-in so results are visible.
+  if (graphnosisActiveTab === 'atlas') switchGraphnosisTab('checkin');
+});
+
 els.gSearch.addEventListener('input', () => {
   if (graphnosisSearchTimer !== null) clearTimeout(graphnosisSearchTimer);
   const hasValue = els.gSearch.value.length > 0;
@@ -6679,6 +6973,15 @@ document.addEventListener('keydown', (e) => {
       }
       return;
     }
+    return;
+  }
+
+  // Typing a printable character while looking at the 3D graph → auto-switch
+  // to Check-in so the keystroke lands in the search field naturally.
+  if (graphnosisActiveTab === 'atlas' && !e.metaKey && !e.ctrlKey && !e.altKey && e.key.length === 1) {
+    switchGraphnosisTab('checkin');
+    els.gSearch.focus();
+    // Don't preventDefault — the character propagates into the now-focused search input.
     return;
   }
 
@@ -6882,7 +7185,7 @@ async function refreshSnapshots(): Promise<void> {
     if (r.snapshots.length === 0) {
       els.snapshotsBody.innerHTML = `
         <p class="subtitle">No snapshots yet.</p>
-        <p class="subtitle" style="margin-top: 8px; font-size: 11px;">
+        <p class="subtitle" style="margin-top: 8px; font-size: 15px;">
           Snapshots are useful before a risky re-ingest, a big batch of corrections,
           or any change you might want to undo. They live in <code>&lt;cortex&gt;/.snapshots/</code>
           and stay encrypted.
@@ -7692,7 +7995,7 @@ function renderMobileStep1(): void {
     ipList.appendChild(row);
   }
   if (info.localIps.length === 0 && !info.tailscaleIp) {
-    ipList.innerHTML = '<p class="subtitle" style="font-size:12px;">No network interfaces detected (VPN-only or no network).</p>';
+    ipList.innerHTML = '<p class="subtitle" style="font-size:14px;">No network interfaces detected (VPN-only or no network).</p>';
   }
 }
 
@@ -8054,7 +8357,7 @@ async function refreshConnectorsList(): Promise<void> {
     if (!res.configs.length) {
       wrap.innerHTML = `
         <div class="connector-row" style="grid-template-columns: 1fr;">
-          <span style="color: var(--fg-dim); font-size: 12px;">
+          <span style="color: var(--fg-dim); font-size: 14px;">
             No connectors installed yet. Pick one below to start auto-ingesting from your existing tools.
           </span>
         </div>`;
@@ -8077,7 +8380,7 @@ async function refreshConnectorsList(): Promise<void> {
     });
   } catch (e) {
     wrap.innerHTML = `<div class="connector-row" style="grid-template-columns: 1fr;">
-      <span style="color: #f87171; font-size: 12px;">Couldn't load connectors: ${escapeHtml(String(e))}</span>
+      <span style="color: #f87171; font-size: 14px;">Couldn't load connectors: ${escapeHtml(String(e))}</span>
     </div>`;
   }
 }
@@ -8339,7 +8642,7 @@ function renderConnectorSetupBody(kind: ConnectorKind, existing?: ConnectorConfi
           <label>Webhook URL</label>
           <div class="connector-webhook-url-row">
             <code id="connector-webhook-url">${escapeHtml(url)}</code>
-            <button type="button" id="btn-copy-webhook-url" class="btn-ghost" style="font-size: 11px; padding: 3px 8px;">Copy</button>
+            <button type="button" id="btn-copy-webhook-url" class="btn-ghost" style="font-size: 15px; padding: 3px 8px;">Copy</button>
           </div>
           <span class="field-hint">Paste into Zapier / IFTTT / your script's webhook target.</span>
         </div>` : `
@@ -8354,7 +8657,8 @@ function populateEngramDropdown(selectId: string, selectedId?: string): void {
   const sel = document.getElementById(selectId) as HTMLSelectElement | null;
   if (!sel) return;
   const fallback = selectedId ?? loadedGraphs[0]?.graphId ?? '';
-  sel.innerHTML = loadedGraphs
+  sel.innerHTML = [...loadedGraphs]
+    .sort((a, b) => (a.metadata.displayName ?? a.graphId).localeCompare(b.metadata.displayName ?? b.graphId))
     .map((g) => `<option value="${escapeHtml(g.graphId)}" ${g.graphId === fallback ? 'selected' : ''}>${escapeHtml(g.metadata.displayName ?? g.graphId)}</option>`)
     .join('');
 }

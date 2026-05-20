@@ -409,6 +409,24 @@ async function dispatch(deps: IpcDeps, method: string, params: unknown): Promise
       await deps.host.setGraphArchived(args.graphId, args.archived);
       return { ok: true };
     }
+    case 'graphs.setTier': {
+      const args = z.object({
+        graphId: z.string(),
+        tier: z.enum(['public', 'personal', 'sensitive']),
+      }).parse(params);
+      await deps.host.setGraphTier(args.graphId, args.tier);
+      return { ok: true };
+    }
+    case 'graphs.rename': {
+      const args = z.object({
+        graphId: z.string(),
+        displayName: z.string().min(1),
+      }).parse(params);
+      const existing = deps.host.getGraphMetadata(args.graphId);
+      if (!existing) throw new Error(`graph ${args.graphId} not found`);
+      await deps.host.setGraphMetadata(args.graphId, { ...existing, displayName: args.displayName });
+      return { ok: true };
+    }
     case 'graphs.delete': {
       const args = z.object({ graphId: z.string() }).parse(params);
       await deps.host.deleteGraph(args.graphId);
@@ -562,6 +580,14 @@ async function dispatch(deps: IpcDeps, method: string, params: unknown): Promise
         wrapIngest: (fn) => withEmbedding(fn),
       });
       return record;
+    }
+    case 'sources.move': {
+      const { fromGraphId, sourceId, toGraphId } = z.object({
+        fromGraphId: z.string(),
+        sourceId: z.string(),
+        toGraphId: z.string(),
+      }).parse(params);
+      return deps.host.moveSource(fromGraphId, sourceId, toGraphId);
     }
     case 'corrections.list': {
       // Return every pending diff so the App can render its approval panel.

@@ -184,7 +184,7 @@ export class GraphnosisHost {
    */
   private readonly correctionsCount = new Map<GraphId, number>();
   private readonly oplogWriter: oplog.OpLogWriter;
-  private readonly policyCfg: policy.PolicyConfig;
+  private policyCfg: policy.PolicyConfig;
   private readonly embed: embeddings.EmbedFn;
   private readonly embedAdapterId: string;
   private readonly embedDimensions: number;
@@ -209,11 +209,22 @@ export class GraphnosisHost {
       key: this.key,
       salt: this.salt,
     });
-    this.policyCfg = opts.policy ?? { defaultBudget: policy.DEFAULT_BUDGET, graphs: [] };
     this.embed = opts.embed ?? stubEmbed;
     this.embedAdapterId = opts.embedAdapterId ?? 'graphnosis-app:stub@384';
     this.embedDimensions = opts.embedDimensions ?? 384;
     this.settings = settings;
+    // Seed policy from settings-persisted tiers. Env-supplied policy entries win
+    // (power-user / admin override path); settings fill in the rest.
+    const base = opts.policy ?? { defaultBudget: policy.DEFAULT_BUDGET, graphs: [] };
+    const envGraphIds = new Set(base.graphs.map((g) => g.graphId));
+    const fromSettings: policy.GraphPolicy[] = Object.entries(settings.graphMetadata)
+      .filter(([id, m]) => m.sensitivityTier && !envGraphIds.has(id))
+      .map(([id, m]) => ({
+        graphId: id,
+        tier: m.sensitivityTier as policy.SensitivityTier,
+        shareWithAi: m.sensitivityTier !== 'sensitive',
+      }));
+    this.policyCfg = { ...base, graphs: [...base.graphs, ...fromSettings] };
   }
 
   static async open(opts: HostOptions): Promise<OpenResult> {
@@ -614,6 +625,19 @@ export class GraphnosisHost {
       createdAt: 0,
     };
     await this.setGraphMetadata(graphId, { ...existing, archived });
+  }
+
+  async setGraphTier(graphId: GraphId, tier: 'public' | 'personal' | 'sensitive'): Promise<void> {
+    const existing: settingsMod.GraphMetadata = this.settings.graphMetadata[graphId] ?? {
+      template: 'personal' as settingsMod.GraphTemplate,
+      displayName: graphId,
+      createdAt: 0,
+    };
+    await this.setGraphMetadata(graphId, { ...existing, sensitivityTier: tier });
+    // Patch the live policy so the change takes effect immediately without restart.
+    const graphs = this.policyCfg.graphs.filter((g) => g.graphId !== graphId);
+    graphs.push({ graphId, shareWithAi: tier !== 'sensitive', tier });
+    this.policyCfg = { ...this.policyCfg, graphs };
   }
 
   /**
@@ -1222,11 +1246,29 @@ export class GraphnosisHost {
 
   private relinkInFlight: Map<GraphId, Promise<void>> = new Map();
   private relinkPending: Set<GraphId> = new Set();
+  private relinkDebounce: Map<GraphId, ReturnType<typeof setTimeout>> = new Map();
+
+  // Debounce delay before starting a relink pass. Resets on every new
+  // ingest so back-to-back batch ingests only trigger one pass at the end.
+  private static RELINK_DEBOUNCE_MS = 1500;
 
   private kickoffRelink(graphId: GraphId): void {
+    // Reset (or start) the debounce timer on every ingest call so rapid
+    // batch ingests coalesce into a single pass once ingest goes quiet.
+    const existing = this.relinkDebounce.get(graphId);
+    if (existing !== undefined) clearTimeout(existing);
+
+    const timer = setTimeout(() => {
+      this.relinkDebounce.delete(graphId);
+      this.startRelinkPass(graphId);
+    }, GraphnosisHost.RELINK_DEBOUNCE_MS);
+    this.relinkDebounce.set(graphId, timer);
+  }
+
+  private startRelinkPass(graphId: GraphId): void {
     if (this.relinkInFlight.has(graphId)) {
-      // Another pass is running — mark this engram as needing a
-      // re-run when it finishes.
+      // A pass is already running (started by a previous debounce window) —
+      // queue one re-run so the latest state is picked up after it settles.
       this.relinkPending.add(graphId);
       return;
     }
@@ -1235,8 +1277,7 @@ export class GraphnosisHost {
     }).finally(() => {
       this.relinkInFlight.delete(graphId);
       if (this.relinkPending.delete(graphId)) {
-        // Another ingest queued itself while we were running — go again.
-        this.kickoffRelink(graphId);
+        this.startRelinkPass(graphId);
       }
     });
     this.relinkInFlight.set(graphId, p);
@@ -1334,6 +1375,56 @@ export class GraphnosisHost {
       }
     }
     return { nodeIds, ...(purge ? { purge } : {}) };
+  }
+
+  /**
+   * Move a source (and all its nodes) from one engram to another.
+   *
+   * For file-backed sources the original file is re-read from disk.
+   * For cached non-file sources (clip, ai-conversation) the encrypted
+   * content blob is decrypted here BEFORE the forget so it isn't deleted.
+   * Throws if a non-file source has no cached content.
+   */
+  async moveSource(fromGraphId: GraphId, sourceId: string, toGraphId: GraphId): Promise<SourceRecord> {
+    if (fromGraphId === toGraphId) throw new Error('Source and destination engram must be different.');
+    const fromG = this.must(fromGraphId);
+    this.must(toGraphId); // ensure destination exists
+
+    const rec = fromG.sourceIndex.get(sourceId);
+    if (!rec) throw new Error(`Source ${sourceId} not found in engram ${fromGraphId}.`);
+
+    let newRecord: SourceRecord;
+
+    if (rec.kind === 'file') {
+      // File sources: re-read from disk into target, then forget from source.
+      const { ingestFile } = await import('./ingest.js');
+      const { withEmbedding } = await import('./embedding-queue.js');
+      await this.forgetSource(fromGraphId, sourceId);
+      newRecord = await ingestFile(this, toGraphId, rec.ref, {
+        wrapIngest: (fn) => withEmbedding(fn),
+      });
+    } else {
+      // Non-file sources (clip, ai-conversation): read encrypted blob first,
+      // then forget (which deletes the blob), then ingest from memory.
+      const blob = await this.readContentBlob(sourceId);
+      if (!blob) {
+        throw new Error(
+          `Cannot move source ${sourceId} (${rec.kind}): no cached content available. ` +
+          `Try forgetting and re-ingesting it instead.`,
+        );
+      }
+      const { header, content } = blob;
+      const input: AppendDocumentInput = {
+        kind: header.docKind,
+        content,
+        sourceRef: header.ref,
+      };
+      await this.forgetSource(fromGraphId, sourceId);
+      newRecord = await this.ingest(toGraphId, rec.kind, rec.ref, input);
+    }
+
+    this.kickoffRelink(toGraphId);
+    return newRecord;
   }
 
   async recall(query: string, opts?: { budget?: SubgraphBudget }): Promise<federation.FederatedSubgraph> {

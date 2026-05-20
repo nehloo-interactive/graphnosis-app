@@ -1202,6 +1202,9 @@ export class Atlas {
    */
   private startReheatLoop(): void {
     if (this.reheatInterval !== null) return;
+    // Skip reheat entirely for large graphs — each burst runs cooldownTicks
+    // frames of main-thread physics and visibly freezes navigation.
+    if (this.reheatIntervalMs() === 0) return;
     this.reheatInterval = setInterval(() => {
       // Hard kill-switch wins — user toggled motion OFF from the toolbar.
       if (!this.aliveEnabled) return;
@@ -1244,7 +1247,7 @@ export class Atlas {
     const N = this.allNodes.length;
     if (N < 800)  return 4_000;
     if (N < 1500) return 10_000;
-    return 20_000;
+    return 0; // sentinel: startReheatLoop skips when this returns 0
   }
 
   private applyChargeForce(): void {
@@ -1504,18 +1507,28 @@ export class Atlas {
     const N = this.allNodes.length;
     const scale = Math.max(1, Math.sqrt(N / 20));
     this.layoutScale = this.opts.compact ? Math.min(scale, 1.4) : scale;
-    // Re-apply forces that hold their value as a number (not an accessor):
-    // charge strength and collision radius. Link distance / strength use
-    // accessor closures that read layoutScale at simulation time, so they
-    // pick up the new value automatically on the next tick.
+    // Scale simulation intensity with graph size so large graphs don't freeze
+    // the main thread. Three tiers based on node count:
+    //   small  (< 500)  : warmup=80, cooldown=300, alphaDecay=0.012, collideIter=3
+    //   medium (< 2000) : warmup=20, cooldown=120, alphaDecay=0.020, collideIter=2
+    //   large  (≥ 2000) : warmup=0,  cooldown=60,  alphaDecay=0.035, collideIter=1
+    // warmupTicks runs synchronously before first render — keeping it at 0 for
+    // large graphs eliminates the hard freeze on load; nodes start random and
+    // settle visibly over a second or two instead.
     if (!this.opts.compact) {
-      this.applyChargeForce();
+      const [warmup, cooldown, alphaDecay, collideIter] =
+        N < 500  ? [80, 300, 0.012, 3] :
+        N < 2000 ? [20, 120, 0.020, 2] :
+                   [0,   60, 0.035, 1];
+      this.graph.warmupTicks(warmup);
+      this.graph.cooldownTicks(cooldown);
+      this.graph.d3AlphaDecay(alphaDecay);
       const collide = this.graph.d3Force('collide') as
         | undefined
-        | { radius?: (fn: () => number) => unknown };
-      // collide radius 0 when the perf flag is off — the force still
-      // exists but does nothing (cheaper than removing/re-adding).
+        | { radius?: (fn: () => number) => unknown; iterations?: (n: number) => unknown };
       collide?.radius?.(() => globalThis.atlasPerf.collide ? 14 * this.layoutScale : 0);
+      collide?.iterations?.(collideIter);
+      this.applyChargeForce();
     }
     // Initialize source-visibility map (existing keys preserved, new ones default-on).
     // Also rebuild the nodeSourceFileMap for O(1) cross-file edge detection.
@@ -1653,6 +1666,17 @@ export class Atlas {
     this.computeEdgeShapes();
     this.computeNodeDegrees();
     this.computeSubAnchors(); // needs both allNodes + allLinks — called here
+
+    // Auto-hide semantic edges when the graph is large enough that rendering
+    // them all tanks framerate. The category legend shows them as off so the
+    // user can re-enable. Threshold: >5K semantic edges (≈25K total edges).
+    const semanticCount = out.filter(l => l.category === 'semantic').length;
+    if (semanticCount > 5000 && this.categoryVisible['semantic']) {
+      this.categoryVisible['semantic'] = false;
+    } else if (semanticCount <= 5000 && !this.categoryVisible['semantic']) {
+      this.categoryVisible['semantic'] = true;
+    }
+
     this.refreshGraph();
   }
 
@@ -2261,6 +2285,8 @@ export class Atlas {
     this.selectedId = null;
     this.previewHighlightId = null;
     // Restore normal opacity multipliers now that there's no selection.
+    // Do NOT touch ctrls.target — moving the orbit pivot without moving the
+    // camera shifts the view direction and causes a visible jump.
     this.graph.linkOpacity(0.7);
     this.graph.nodeOpacity(0.92);
     this.graph.refresh();

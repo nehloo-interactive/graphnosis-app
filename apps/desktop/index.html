@@ -35,19 +35,19 @@
         font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
         background: var(--bg);
         color: var(--fg);
-        font-size: 13px;
+        font-size: 14px;
         line-height: 1.5;
         -webkit-user-select: none;
         user-select: none;
       }
       h1 { font-size: 18px; font-weight: 600; margin: 0 0 4px; letter-spacing: -0.01em; }
       .subtitle { color: var(--fg-dim); margin: 0; }
-      label { display: block; font-weight: 500; margin-bottom: 6px; font-size: 12px; }
+      label { display: block; font-weight: 500; margin-bottom: 6px; font-size: 14px; }
       .row { margin-bottom: 16px; }
       input[type="text"], input[type="password"] {
         width: 100%; padding: 8px 10px; border: 1px solid var(--border);
         border-radius: 6px; background: var(--bg-elev); color: var(--fg);
-        font-family: inherit; font-size: 13px;
+        font-family: inherit; font-size: 14px;
         -webkit-user-select: text; user-select: text;
       }
       input:focus { outline: 2px solid var(--accent); outline-offset: -1px; border-color: transparent; }
@@ -76,7 +76,7 @@
       .actions { display: flex; gap: 8px; align-items: center; }
       .pick-row { display: flex; gap: 8px; }
       .pick-row input { flex: 1; }
-      .error { color: var(--error); padding: 8px 10px; border-radius: 6px; background: color-mix(in oklab, var(--error) 10%, transparent); margin-bottom: 16px; font-size: 12px; white-space: pre-wrap; word-break: break-word; max-height: 280px; overflow-y: auto; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; line-height: 1.45; }
+      .error { color: var(--error); padding: 8px 10px; border-radius: 6px; background: color-mix(in oklab, var(--error) 10%, transparent); margin-bottom: 16px; font-size: 14px; white-space: pre-wrap; word-break: break-word; max-height: 280px; overflow-y: auto; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; line-height: 1.45; }
       .ok-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--ok); margin-right: 6px; }
       .dim-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--fg-dim); margin-right: 6px; }
       .panel { background: var(--bg-elev); border: 1px solid var(--border); border-radius: 8px; padding: 16px; margin-bottom: 16px; }
@@ -130,7 +130,7 @@
         gap: 12px;
       }
       .touchid-inline-hint {
-        font-size: 11px;
+        font-size: 15px;
         color: var(--fg-dim);
         white-space: nowrap;
       }
@@ -156,10 +156,10 @@
         background: var(--bg);
         border: 1px solid var(--border);
         border-radius: 6px;
-        font-size: 12px;
+        font-size: 14px;
       }
       .recovery-phrase-word .word-num {
-        font-size: 10px;
+        font-size: 14px;
         color: var(--fg-dim);
         min-width: 16px;
         text-align: right;
@@ -176,7 +176,7 @@
         background: color-mix(in oklab, var(--error) 10%, transparent);
         border-left: 3px solid var(--error);
         border-radius: 0 6px 6px 0;
-        font-size: 12px;
+        font-size: 14px;
         line-height: 1.5;
         color: var(--fg);
         margin-bottom: 14px;
@@ -185,7 +185,7 @@
         display: flex;
         align-items: flex-start;
         gap: 8px;
-        font-size: 12px;
+        font-size: 14px;
         color: var(--fg);
         margin-top: 8px;
         -webkit-user-select: none;
@@ -245,7 +245,7 @@
         border-top: 1px solid var(--border);
       }
       .recovery-unlock-section p {
-        font-size: 12px;
+        font-size: 14px;
         color: var(--fg-dim);
         margin: 0 0 8px;
       }
@@ -257,7 +257,7 @@
         background: var(--bg-elev);
         color: var(--fg);
         font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-        font-size: 12px;
+        font-size: 14px;
         resize: vertical;
         height: 38px;
         min-height: 28px;
@@ -272,7 +272,7 @@
       .stat-block { margin-bottom: 12px; }
       .stat-block:last-child { margin-bottom: 0; }
       .stat-group-title {
-        font-size: 11px;
+        font-size: 15px;
         text-transform: uppercase;
         letter-spacing: 0.05em;
         color: var(--fg-dim);
@@ -285,12 +285,12 @@
         justify-content: space-between;
         margin-top: 6px;
         padding: 4px 0;
-        font-size: 11px;
+        font-size: 15px;
         color: var(--fg-dim);
       }
       .forgotten-count { cursor: help; }
       .btn-purge {
-        font-size: 11px;
+        font-size: 15px;
         padding: 2px 8px;
         border-radius: 4px;
         background: transparent;
@@ -309,9 +309,9 @@
         margin-bottom: 10px;
       }
       .diff-card:last-child { margin-bottom: 0; }
-      .diff-meta { display: flex; justify-content: space-between; font-size: 11px; color: var(--fg-dim); margin-bottom: 6px; }
+      .diff-meta { display: flex; justify-content: space-between; font-size: 15px; color: var(--fg-dim); margin-bottom: 6px; }
       .diff-reasoning {
-        font-size: 12px;
+        font-size: 14px;
         color: var(--fg);
         padding: 6px 8px;
         background: var(--bg-elev);
@@ -320,7 +320,7 @@
         font-style: italic;
       }
       .diff-op {
-        font-size: 11px;
+        font-size: 15px;
         padding: 6px 0;
         border-bottom: 1px solid var(--border);
       }
@@ -329,7 +329,7 @@
         display: inline-block;
         padding: 1px 6px;
         border-radius: 3px;
-        font-size: 10px;
+        font-size: 14px;
         font-weight: 600;
         margin-right: 6px;
       }
@@ -345,13 +345,13 @@
         white-space: pre-wrap;
         word-break: break-word;
         font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-        font-size: 11px;
+        font-size: 15px;
         max-height: 120px;
         overflow-y: auto;
       }
       .diff-op-reason {
         margin-top: 4px;
-        font-size: 11px;
+        font-size: 15px;
         color: var(--fg-dim);
       }
       .diff-actions {
@@ -380,7 +380,7 @@
 
       .mcp-row {
         display: flex; align-items: center; gap: 8px;
-        padding: 6px 0; font-size: 12px;
+        padding: 6px 0; font-size: 14px;
         border-bottom: 1px solid var(--border);
       }
       .mcp-row:last-child { border-bottom: 0; }
@@ -395,8 +395,8 @@
         50% { opacity: 0.4; }
       }
       .mcp-client-name { color: var(--fg); font-weight: 500; }
-      .mcp-meta { color: var(--fg-dim); font-size: 11px; }
-      .mcp-empty { color: var(--fg-dim); font-size: 12px; padding: 4px 0; }
+      .mcp-meta { color: var(--fg-dim); font-size: 15px; }
+      .mcp-empty { color: var(--fg-dim); font-size: 14px; padding: 4px 0; }
 
       .sources-engram-group { margin-bottom: 18px; }
       .sources-engram-group:last-child { margin-bottom: 0; }
@@ -416,7 +416,7 @@
         border-left: 2px solid var(--accent);
         border-radius: 6px;
         background: color-mix(in oklab, var(--accent) 5%, transparent);
-        font-size: 12px;
+        font-size: 14px;
         color: var(--fg-dim);
       }
       .sources-grow-hint-text { color: var(--fg); }
@@ -427,8 +427,11 @@
       }
       .sources-grow-hint-link:hover { text-decoration: underline; }
       .sources-grow-hint-sep { color: var(--fg-dim); opacity: 0.5; }
-      .sources-engram-heading { font-size: 11px; font-weight: 600; color: var(--fg-dim); text-transform: uppercase; letter-spacing: 0.05em; padding-bottom: 4px; margin-bottom: 2px; border-bottom: 1px solid var(--border); }
-      .source-row { display: flex; align-items: center; gap: 8px; padding: 6px 0; font-size: 12px; }
+      .sources-filter-bar { margin: 8px 0 6px; }
+      .sources-filter-bar input[type="search"] { width: 100%; padding: 6px 9px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg-elev); color: var(--fg); font-family: inherit; font-size: 14px; box-sizing: border-box; }
+      .sources-filter-bar input[type="search"]::placeholder { color: var(--fg-dim); }
+      .sources-engram-heading { font-size: 15px; font-weight: 600; color: var(--fg-dim); text-transform: uppercase; letter-spacing: 0.05em; padding-bottom: 4px; margin-bottom: 2px; border-bottom: 1px solid var(--border); position: sticky; top: -20px; background: var(--bg); z-index: 1; padding-top: 20px; }
+      .source-row { display: flex; align-items: center; gap: 8px; padding: 6px 0; font-size: 14px; }
       .source-row-disabled .source-name { opacity: 0.4; }
       .source-row-disabled .source-meta { opacity: 0.4; }
       .source-name { color: var(--fg); flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -437,7 +440,7 @@
          via MCP). Soft turquoise tint so it's clearly informational, not
          clickable; matches the seahorse-logo accent. */
       .source-added-by {
-        font-size: 10px;
+        font-size: 14px;
         padding: 1px 6px;
         border-radius: 4px;
         background: color-mix(in oklab, var(--accent) 14%, var(--bg-elev));
@@ -447,7 +450,7 @@
         cursor: help;
       }
       .btn-forget {
-        font-size: 11px;
+        font-size: 15px;
         padding: 2px 8px;
         border-radius: 4px;
         background: transparent;
@@ -462,7 +465,7 @@
       /* Reingest mirrors Forget's chrome but uses the accent color on hover
          since it's a re-read action, not a destructive one. */
       .btn-reingest {
-        font-size: 11px;
+        font-size: 15px;
         padding: 2px 8px;
         border-radius: 4px;
         background: transparent;
@@ -488,7 +491,7 @@
       }
       .source-row-forget-input {
         width: 130px;
-        font-size: 11px;
+        font-size: 15px;
         padding: 2px 7px;
         border-radius: 4px;
         border: 1px solid color-mix(in oklab, var(--error) 50%, var(--border));
@@ -500,7 +503,7 @@
         box-shadow: 0 0 0 2px color-mix(in oklab, var(--error) 20%, transparent);
       }
       .source-row-forget-go {
-        font-size: 11px;
+        font-size: 15px;
         padding: 2px 8px;
         border-radius: 4px;
         border: 1px solid color-mix(in oklab, var(--error) 60%, var(--border));
@@ -519,6 +522,73 @@
         opacity: 0.35;
         cursor: not-allowed;
       }
+      /* Move-to source picker — inline engram selector */
+      .btn-move-source {
+        font-size: 15px;
+        padding: 2px 8px;
+        border-radius: 4px;
+        background: transparent;
+        color: var(--fg-dim);
+        border: 1px solid var(--border);
+      }
+      .btn-move-source:hover {
+        background: color-mix(in oklab, var(--accent) 12%, transparent);
+        color: var(--accent);
+        border-color: color-mix(in oklab, var(--accent) 40%, transparent);
+      }
+      .btn-move-source:disabled { opacity: 0.5; cursor: progress; }
+      .source-row-move-picker {
+        display: flex;
+        align-items: center;
+        gap: 5px;
+        flex-shrink: 0;
+      }
+      .source-row-move-label {
+        font-size: 15px;
+        color: var(--fg-dim);
+        white-space: nowrap;
+      }
+      .source-row-move-select {
+        font-size: 15px;
+        padding: 2px 4px;
+        border-radius: 4px;
+        border: 1px solid var(--border);
+        background: var(--bg-2);
+        color: var(--fg);
+      }
+      .source-row-move-go {
+        font-size: 15px;
+        padding: 2px 8px;
+        border-radius: 4px;
+        border: 1px solid color-mix(in oklab, var(--accent) 60%, var(--border));
+        background: transparent;
+        color: var(--accent);
+        cursor: pointer;
+        white-space: nowrap;
+      }
+      .source-row-move-go:hover {
+        background: color-mix(in oklab, var(--accent) 85%, transparent);
+        color: #fff;
+      }
+      .source-row-move-cancel {
+        font-size: 15px;
+        padding: 2px 8px;
+        border-radius: 4px;
+        border: 1px solid var(--border);
+        background: transparent;
+        color: var(--fg-dim);
+        cursor: pointer;
+      }
+      .source-row-move-name-input {
+        flex: 1;
+        padding: 3px 7px;
+        border: 1px solid var(--border);
+        border-radius: 4px;
+        background: var(--bg-elev);
+        color: var(--fg);
+        font-family: inherit;
+        font-size: 14px;
+      }
       /* Graph management rows in Settings */
       .settings-graph-row {
         display: flex;
@@ -534,28 +604,53 @@
       }
       .settings-graph-row .sgr-name {
         flex: 1;
-        font-size: 13px;
+        font-size: 14px;
         font-weight: 500;
         overflow: hidden;
         text-overflow: ellipsis;
         white-space: nowrap;
       }
+      .settings-graph-row .sgr-name:hover { text-decoration: underline; text-decoration-style: dotted; }
+      .sgr-rename-input {
+        flex: 1;
+        font-size: 14px;
+        font-weight: 500;
+        background: var(--bg);
+        border: 1px solid var(--accent, #67e8f9);
+        border-radius: 4px;
+        color: var(--fg);
+        padding: 1px 6px;
+        outline: none;
+        min-width: 0;
+      }
       .settings-graph-row .sgr-id {
-        font-size: 11px;
+        font-size: 15px;
         color: var(--fg-dim);
         font-family: monospace;
         white-space: nowrap;
       }
       .settings-graph-row .sgr-badge {
-        font-size: 10px;
+        font-size: 14px;
         padding: 1px 6px;
         border-radius: 4px;
         background: color-mix(in oklab, var(--fg-dim) 15%, transparent);
         color: var(--fg-dim);
         white-space: nowrap;
       }
+      .sgr-tier-select {
+        font-size: 15px;
+        padding: 3px 6px;
+        border-radius: 5px;
+        border: 1px solid var(--border);
+        background: var(--bg-elev);
+        color: var(--fg-dim);
+        cursor: pointer;
+        white-space: nowrap;
+        flex-shrink: 0;
+      }
+      .sgr-tier-select:hover { color: var(--fg); }
       .btn-graph-archive, .btn-graph-delete {
-        font-size: 11px;
+        font-size: 15px;
         padding: 3px 10px;
         border-radius: 5px;
         border: 1px solid var(--border);
@@ -589,7 +684,7 @@
         flex-wrap: wrap;
       }
       .sgr-confirm-label {
-        font-size: 11px;
+        font-size: 15px;
         color: var(--fg-dim);
         flex-shrink: 0;
       }
@@ -597,7 +692,7 @@
         flex: 1 1 140px;
         min-width: 100px;
         max-width: 240px;
-        font-size: 12px;
+        font-size: 14px;
         padding: 3px 8px;
         border-radius: 5px;
         border: 1px solid #e05555;
@@ -609,7 +704,7 @@
         box-shadow: 0 0 0 2px color-mix(in oklab, #e05555 30%, transparent);
       }
       .sgr-confirm-go {
-        font-size: 11px;
+        font-size: 15px;
         padding: 3px 10px;
         border-radius: 5px;
         border: 1px solid #e05555;
@@ -629,7 +724,7 @@
         cursor: not-allowed;
       }
       .sgr-confirm-cancel {
-        font-size: 11px;
+        font-size: 15px;
         padding: 3px 8px;
         border-radius: 5px;
         border: 1px solid var(--border);
@@ -645,7 +740,7 @@
       /* Disable/Enable toggle for sources. Disable = neutral border;
          Enable = accent tint to draw the eye back to re-activating. */
       .btn-source-disable {
-        font-size: 11px;
+        font-size: 15px;
         padding: 2px 8px;
         border-radius: 4px;
         background: transparent;
@@ -657,7 +752,7 @@
         color: var(--fg);
       }
       .btn-source-enable {
-        font-size: 11px;
+        font-size: 15px;
         padding: 2px 8px;
         border-radius: 4px;
         background: color-mix(in oklab, var(--accent) 10%, transparent);
@@ -731,7 +826,7 @@
         line-height: 1.3;
       }
       .tour-body {
-        font-size: 13px;
+        font-size: 14px;
         line-height: 1.65;
         color: rgba(237, 237, 237, 0.72);
         margin: 0 0 28px;
@@ -749,7 +844,7 @@
       }
       .tour-btn-skip {
         font: inherit;
-        font-size: 12px;
+        font-size: 14px;
         color: rgba(237, 237, 237, 0.40);
         background: transparent;
         border: none;
@@ -762,7 +857,7 @@
       .tour-btn-skip:hover { color: rgba(237, 237, 237, 0.70); background: transparent; }
       .tour-btn-secondary {
         font: inherit;
-        font-size: 13px;
+        font-size: 14px;
         padding: 8px 16px;
         border-radius: 7px;
         background: rgba(255, 255, 255, 0.06);
@@ -774,7 +869,7 @@
       .tour-btn-secondary:hover { background: rgba(255, 255, 255, 0.11); }
       .tour-btn-primary {
         font: inherit;
-        font-size: 13px;
+        font-size: 14px;
         font-weight: 600;
         padding: 8px 18px;
         border-radius: 7px;
@@ -836,7 +931,7 @@
         border-bottom: 1px solid var(--border);
       }
       .modal-header h2 { margin: 0; font-size: 15px; font-weight: 600; }
-      .modal-header .subtitle { margin: 4px 0 0; font-size: 12px; }
+      .modal-header .subtitle { margin: 4px 0 0; font-size: 14px; }
       .modal-body { padding: 16px 20px; overflow-y: auto; flex: 1; }
       .modal-footer {
         padding: 12px 20px;
@@ -844,7 +939,7 @@
         display: flex; gap: 8px; justify-content: flex-end;
         align-items: center;
       }
-      .modal-footer .filler { flex: 1; color: var(--fg-dim); font-size: 11px; line-height: 1.45; max-width: 340px; }
+      .modal-footer .filler { flex: 1; color: var(--fg-dim); font-size: 15px; line-height: 1.45; max-width: 340px; }
       /* Pinned name/id block between the scrolling template list and the footer */
       .modal-sticky-fields {
         padding: 14px 20px 10px;
@@ -859,14 +954,14 @@
         gap: 8px;
         padding: 8px 0;
         border-bottom: 1px solid var(--border);
-        font-size: 12px;
+        font-size: 14px;
         align-items: start;
       }
       .recovery-item:last-child { border-bottom: 0; }
       .recovery-item .ref { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; word-break: break-all; }
-      .recovery-item .meta { color: var(--fg-dim); font-size: 11px; margin-top: 2px; }
+      .recovery-item .meta { color: var(--fg-dim); font-size: 15px; margin-top: 2px; }
       .recovery-item .badge {
-        font-size: 10px; padding: 2px 6px; border-radius: 4px;
+        font-size: 14px; padding: 2px 6px; border-radius: 4px;
         background: var(--bg-elev); color: var(--fg-dim); white-space: nowrap;
       }
       .recovery-item.recoverable .glyph,
@@ -878,7 +973,7 @@
       .recovery-item.recovered .glyph { color: var(--ok); }
       .recovery-item.failed .glyph { color: var(--error); }
       .recovery-section-title {
-        font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em;
+        font-size: 15px; text-transform: uppercase; letter-spacing: 0.05em;
         color: var(--fg-dim); margin: 12px 0 6px; font-weight: 600;
       }
       .recovery-summary {
@@ -886,7 +981,7 @@
         border-radius: 6px;
         padding: 10px 12px;
         margin-bottom: 12px;
-        font-size: 12px;
+        font-size: 14px;
       }
       .recovery-summary strong { color: var(--fg); }
 
@@ -906,7 +1001,7 @@
       .wizard-step-dot.active { background: var(--accent); }
       .wizard-step-dot.done { background: var(--ok, #4caf50); }
       .wizard-step-label {
-        font-size: 11px; color: var(--fg-dim);
+        font-size: 15px; color: var(--fg-dim);
         margin-left: 2px;
       }
       .copy-row {
@@ -920,7 +1015,7 @@
         border: 1px solid var(--border);
         border-radius: 6px;
         font-family: ui-monospace, 'Cascadia Code', monospace;
-        font-size: 12px;
+        font-size: 14px;
         color: var(--fg);
         user-select: all;
         overflow: hidden;
@@ -932,7 +1027,7 @@
       .copy-btn {
         flex-shrink: 0;
         padding: 7px 12px;
-        font-size: 12px;
+        font-size: 14px;
         border-radius: 6px;
         background: var(--bg-elev);
         border: 1px solid var(--border);
@@ -948,7 +1043,7 @@
         display: inline-block;
         padding: 2px 8px;
         border-radius: 10px;
-        font-size: 11px;
+        font-size: 15px;
         font-weight: 600;
         margin-left: 6px;
       }
@@ -959,12 +1054,12 @@
         background: var(--bg-elev);
         border-radius: 6px;
         margin-bottom: 6px;
-        font-size: 12px;
+        font-size: 14px;
         font-family: ui-monospace, 'Cascadia Code', monospace;
         display: flex; align-items: center; gap: 8px;
       }
       .mobile-ip-tag {
-        font-size: 10px;
+        font-size: 14px;
         padding: 1px 6px;
         border-radius: 8px;
         border: 1px solid var(--border);
@@ -981,7 +1076,7 @@
         counter-increment: step-counter;
         padding: 6px 0 6px 28px;
         position: relative;
-        font-size: 12px;
+        font-size: 14px;
         line-height: 1.5;
         border-bottom: 1px solid var(--border);
       }
@@ -993,7 +1088,7 @@
         background: var(--accent);
         color: #fff;
         border-radius: 50%;
-        font-size: 10px;
+        font-size: 14px;
         font-weight: 700;
         display: flex; align-items: center; justify-content: center;
         top: 7px;
@@ -1041,7 +1136,7 @@
       .unlock-shell .unlock-card { max-width: 480px; width: 100%; text-align: left; }
       .unlock-shell h1 { font-size: 22px; margin-bottom: 4px; text-align: center; }
       .unlock-shell #subtitle { margin-bottom: 16px; text-align: center; }
-      .unlock-footer { margin-top: 20px; font-size: 11px; color: var(--fg-dim); text-align: center; line-height: 1.6; }
+      .unlock-footer { margin-top: 20px; font-size: 14px; color: var(--fg-dim); text-align: center; line-height: 1.6; }
 
       /* The full shell — header, body (rail + canvas), status bar. Three rows. */
       .app-shell {
@@ -1071,14 +1166,14 @@
         flex-direction: column;
         align-items: flex-start;
         gap: 1px;
-        font-weight: 600; font-size: 13px;
+        font-weight: 600; font-size: 14px;
         min-width: 0; /* allow truncation */
       }
       .app-title-row {
         display: flex; align-items: center; gap: 8px;
       }
       .app-title {
-        font-size: 13px;
+        font-size: 14px;
         font-weight: 600;
         color: var(--fg);
         white-space: nowrap;
@@ -1100,14 +1195,14 @@
         line-height: 1;
       }
       .header-subtitle {
-        font-size: 11px;
+        font-size: 15px;
         font-weight: 400;
         color: var(--fg-dim);
         font-style: italic;
       }
       .header-sep {
         font-style: normal;
-        font-size: 13px;
+        font-size: 14px;
         opacity: 0.5;
         margin: 0 2px;
       }
@@ -1117,7 +1212,7 @@
          without competing with the title or the primary "Add file"
          button next to it. */
       .header-engram-picker {
-        font-size: 13px;
+        font-size: 14px;
         font-weight: 600;
         color: var(--fg);
         background-color: var(--bg-elev);
@@ -1188,7 +1283,7 @@
         background: transparent;
         border: none;
         color: var(--fg);
-        font-size: 13px;
+        font-size: 14px;
         text-align: left;
         padding: 6px 10px;
         border-radius: 4px;
@@ -1219,6 +1314,20 @@
         color: var(--fg);
       }
       .app-header-right { display: flex; gap: 6px; align-items: center; }
+      .btn-help {
+        width: 24px; height: 24px;
+        border-radius: 50%;
+        border: 1px solid var(--border);
+        background: transparent;
+        color: var(--fg-dim);
+        font-size: 13px;
+        font-weight: 600;
+        cursor: pointer;
+        display: flex; align-items: center; justify-content: center;
+        padding: 0;
+        -webkit-app-region: no-drag;
+      }
+      .btn-help:hover { color: var(--fg); border-color: var(--accent); }
       /* Label that sits before the engram picker — muted, smaller than
          the picker text so the eye lands on the engram name itself. The
          tight 4px gap to the picker visually binds them as one control. */
@@ -1256,7 +1365,7 @@
         border: 1px solid transparent;
         color: var(--fg-dim);
         text-align: left;
-        font-size: 12px;
+        font-size: 14px;
         cursor: pointer;
         transition: background 80ms, color 80ms;
       }
@@ -1274,7 +1383,7 @@
       .rail-badge {
         background: var(--accent);
         color: white;
-        font-size: 10px;
+        font-size: 14px;
         font-weight: 600;
         padding: 1px 6px;
         border-radius: 8px;
@@ -1284,7 +1393,7 @@
         display: flex;
         align-items: center;
         gap: 5px;
-        font-size: 10px;
+        font-size: 14px;
         color: var(--fg-dim);
         white-space: nowrap;
         overflow: hidden;
@@ -1312,7 +1421,7 @@
          collapses to 0, so settings sits snugly below the trace. */
       .rail-btn[data-mode="settings"] { margin-top: auto; flex-shrink: 0; }
       .rail-section-label {
-        font-size: 10px;
+        font-size: 14px;
         text-transform: uppercase;
         letter-spacing: 0.05em;
         color: var(--fg-dim);
@@ -1339,7 +1448,7 @@
         scrollbar-width: thin;
       }
       .rail-memory-trace-title {
-        font-size: 10px;
+        font-size: 11px;
         font-weight: 600;
         text-transform: uppercase;
         letter-spacing: 0.06em;
@@ -1352,7 +1461,7 @@
         text-align: left;
         padding: 5px 8px;
         border-radius: 5px;
-        font-size: 11px;
+        font-size: 12px;
         background: transparent;
         border: 1px solid transparent;
         color: var(--fg);
@@ -1398,7 +1507,7 @@
       .pane-header { margin-bottom: 14px; }
       .pane-header h2 { font-size: 17px; font-weight: 600; margin: 0 0 2px; }
       .brain-subtitle {
-        font-size: 11px;
+        font-size: 15px;
         color: var(--fg-dim);
         font-style: italic;
         margin: 0;
@@ -1421,7 +1530,7 @@
         border-radius: 10px;
         background: var(--accent);
         color: white;
-        font-size: 10px;
+        font-size: 14px;
         font-weight: 600;
         vertical-align: middle;
       }
@@ -1434,7 +1543,7 @@
         padding: 6px 16px;
         border-top: 1px solid var(--border);
         background: var(--bg-elev);
-        font-size: 11px;
+        font-size: 15px;
         color: var(--fg-dim);
       }
       .app-statusbar .status-search {
@@ -1476,7 +1585,7 @@
         background: var(--bg-elev);
         color: var(--fg);
         font-family: inherit;
-        font-size: 13px;
+        font-size: 14px;
         -webkit-user-select: text; user-select: text;
       }
       .nodes-toolbar select {
@@ -1485,7 +1594,7 @@
         border-radius: 6px;
         background: var(--bg-elev);
         color: var(--fg);
-        font-size: 12px;
+        font-size: 14px;
       }
       .node-row {
         padding: 8px 10px;
@@ -1499,14 +1608,14 @@
         width: 36px;
         font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
         color: var(--fg-dim);
-        font-size: 11px;
+        font-size: 15px;
       }
       .node-row .nr-preview {
-        font-size: 12px;
+        font-size: 14px;
         color: var(--fg);
       }
       .node-row .nr-meta {
-        font-size: 11px;
+        font-size: 15px;
         color: var(--fg-dim);
         margin-top: 2px;
       }
@@ -1516,7 +1625,7 @@
         padding: 6px 8px;
         background: var(--bg-elev);
         border-radius: 4px;
-        font-size: 11px;
+        font-size: 15px;
         color: var(--fg-dim);
       }
 
@@ -1542,8 +1651,8 @@
         border-color: var(--accent);
         background: color-mix(in oklab, var(--accent) 12%, transparent);
       }
-      .graph-template-card .gt-title { font-weight: 600; font-size: 13px; margin-bottom: 2px; }
-      .graph-template-card .gt-desc { font-size: 11px; color: var(--fg-dim); line-height: 1.4; }
+      .graph-template-card .gt-title { font-weight: 600; font-size: 14px; margin-bottom: 2px; }
+      .graph-template-card .gt-desc { font-size: 15px; color: var(--fg-dim); line-height: 1.4; }
       .graph-template-card .gt-tier {
         position: absolute;
         top: 8px; right: 8px;
@@ -1579,7 +1688,7 @@
         background: var(--bg-elev);
         color: var(--fg);
         font-family: inherit;
-        font-size: 13px;
+        font-size: 14px;
         -webkit-user-select: text;
         user-select: text;
       }
@@ -1644,7 +1753,7 @@
         border: 0;
         border-bottom: 2px solid transparent;
         padding: 7px 14px;
-        font-size: 12px;
+        font-size: 14px;
         color: var(--fg-dim);
         cursor: pointer;
         font-weight: 500;
@@ -1678,7 +1787,7 @@
         display: inline-flex;
         align-items: center;
         gap: 6px;
-        font-size: 11px;
+        font-size: 15px;
         color: var(--fg-dim);
       }
       .g-search-sort select {
@@ -1687,10 +1796,10 @@
         border: 1px solid var(--border);
         border-radius: 4px;
         padding: 2px 6px;
-        font-size: 11px;
+        font-size: 15px;
       }
       .g-list-stats {
-        font-size: 11px;
+        font-size: 15px;
         margin-bottom: 8px;
         flex-shrink: 0;
       }
@@ -1723,15 +1832,15 @@
       .g-row-conf {
         font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
         color: var(--fg-dim);
-        font-size: 10px;
+        font-size: 14px;
         align-self: start;
         margin-top: 2px;
       }
-      .g-row-text { color: var(--fg); font-size: 12px; line-height: 1.4; }
-      .g-row-meta { color: var(--fg-dim); font-size: 11px; margin-top: 3px; }
+      .g-row-text { color: var(--fg); font-size: 14px; line-height: 1.4; }
+      .g-row-meta { color: var(--fg-dim); font-size: 15px; margin-top: 3px; }
       .g-row-source {
         font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-        font-size: 10px;
+        font-size: 14px;
       }
 
       /* ── Check-in dashboard ───────────────────────────────────────── */
@@ -1809,7 +1918,7 @@
       }
       .g-health-detail {
         margin: 4px 0 0;
-        font-size: 11px;
+        font-size: 15px;
         line-height: 1.45;
       }
       /* Inline variant — health gauge sits in the Graphnosis pane
@@ -1847,11 +1956,11 @@
         width: 48px;
       }
       .g-health.g-health-inline .g-health-phrase {
-        font-size: 12px;
+        font-size: 14px;
         font-weight: 500;
       }
       .g-health.g-health-inline .g-health-detail {
-        font-size: 10px;
+        font-size: 14px;
         margin-top: 2px;
         white-space: nowrap;
         overflow: hidden;
@@ -1897,7 +2006,7 @@
         margin-bottom: 10px;
       }
       .g-deck-title {
-        font-size: 12px;
+        font-size: 14px;
         font-weight: 600;
         color: var(--fg);
       }
@@ -1919,7 +2028,7 @@
       .g-deck-nav-btn:hover:not(:disabled) { color: var(--fg); border-color: var(--accent); }
       .g-deck-nav-btn:disabled { opacity: 0.35; cursor: not-allowed; }
       .g-deck-progress {
-        font-size: 11px;
+        font-size: 15px;
         color: var(--fg-dim);
         font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
         min-width: 50px;
@@ -1942,7 +2051,7 @@
         border-bottom: 1px dashed var(--border);
       }
       .g-deck-prompt {
-        font-size: 11px;
+        font-size: 15px;
         color: var(--fg-dim);
         font-style: italic;
         margin: 0 0 8px;
@@ -1951,7 +2060,7 @@
          card. Small, muted, informational — not a button. */
       .g-deck-bridge-chip {
         display: inline-block;
-        font-size: 10px;
+        font-size: 14px;
         color: var(--fg-dim);
         background: var(--bg-elev);
         border: 1px solid var(--border);
@@ -1968,7 +2077,7 @@
          doesn't feel orphaned. Quieter than the content itself. */
       .g-deck-breadcrumb,
       .g-detail-breadcrumb {
-        font-size: 10px;
+        font-size: 14px;
         color: var(--fg-dim);
         font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
         margin: 0 0 6px;
@@ -1997,7 +2106,7 @@
         background: color-mix(in oklab, var(--accent) 6%, var(--bg));
       }
       .g-deck-meta {
-        font-size: 10px;
+        font-size: 14px;
         color: var(--fg-dim);
         font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
         margin: 0 0 12px;
@@ -2010,7 +2119,7 @@
       .g-deck-actions button {
         flex: 1;
         min-width: 0;
-        font-size: 12px;
+        font-size: 14px;
         padding: 7px 10px;
       }
       .g-deck-actions .deck-ok {
@@ -2026,7 +2135,7 @@
         text-align: center;
         padding: 30px 12px;
         color: var(--fg-dim);
-        font-size: 12px;
+        font-size: 14px;
       }
       .deck-continue-btn {
         margin-top: 14px;
@@ -2036,7 +2145,7 @@
         border: 1px solid var(--accent);
         background: transparent;
         color: var(--accent);
-        font-size: 12px;
+        font-size: 14px;
         cursor: pointer;
         transition: background 0.15s, color 0.15s;
       }
@@ -2067,14 +2176,14 @@
         border-radius: 10px;
         box-shadow: 0 12px 36px rgba(0,0,0,0.22);
         padding: 12px 14px;
-        font-size: 13px;
+        font-size: 14px;
         color: var(--fg);
       }
       .engram-suggest.hidden { display: none; }
       .engram-suggest-title { display: flex; gap: 8px; align-items: baseline; margin-bottom: 6px; }
       .engram-suggest-icon { font-size: 14px; }
       .engram-suggest-preview {
-        font-size: 12px;
+        font-size: 14px;
         color: var(--fg-dim);
         background: color-mix(in oklab, var(--fg) 6%, transparent);
         border-radius: 6px;
@@ -2101,7 +2210,7 @@
         cursor: pointer;
         background: transparent;
         text-align: left;
-        font-size: 12px;
+        font-size: 14px;
         color: var(--fg);
       }
       .engram-suggest-cand:hover { background: color-mix(in oklab, var(--fg) 5%, transparent); }
@@ -2119,7 +2228,7 @@
         box-shadow: inset 0 0 0 2px var(--bg);
       }
       .engram-suggest-cand-name { flex: 1; font-weight: 500; }
-      .engram-suggest-cand-reason { color: var(--fg-dim); font-size: 11px; }
+      .engram-suggest-cand-reason { color: var(--fg-dim); font-size: 15px; }
 
       /* ── Service connectors panel ────────────────────────────────────────
          Settings → Connectors. Lists installed connectors with status pills
@@ -2137,14 +2246,14 @@
         border: 1px solid var(--border);
         border-radius: 6px;
         background: color-mix(in oklab, var(--fg) 3%, transparent);
-        font-size: 12px;
+        font-size: 14px;
       }
       .connector-row-kind { font-size: 16px; line-height: 1; text-align: center; }
       .connector-row-body { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
       .connector-row-title { color: var(--fg); display: flex; gap: 8px; align-items: baseline; }
       .connector-row-name { font-weight: 500; }
       .connector-row-status {
-        font-size: 10px;
+        font-size: 14px;
         padding: 1px 6px;
         border-radius: 999px;
         text-transform: uppercase;
@@ -2154,10 +2263,10 @@
       .connector-row-status.disabled { color: var(--fg-dim); background: color-mix(in oklab, var(--fg-dim) 12%, transparent); }
       .connector-row-status.error    { color: #f87171; background: color-mix(in oklab, #f87171 12%, transparent); }
       .connector-row-status.pulling  { color: var(--accent); background: color-mix(in oklab, var(--accent) 14%, transparent); }
-      .connector-row-meta { color: var(--fg-dim); font-size: 11px; }
+      .connector-row-meta { color: var(--fg-dim); font-size: 15px; }
       .connector-row-actions { display: flex; gap: 4px; flex-shrink: 0; }
       .connector-row-actions button {
-        font-size: 11px;
+        font-size: 15px;
         padding: 3px 8px;
         border-radius: 4px;
         border: 1px solid var(--border);
@@ -2176,9 +2285,9 @@
         flex-wrap: wrap;
         padding-top: 4px;
       }
-      .connectors-add-label { font-size: 11px; color: var(--fg-dim); margin-right: 4px; }
+      .connectors-add-label { font-size: 15px; color: var(--fg-dim); margin-right: 4px; }
       .btn-add-connector {
-        font-size: 11px;
+        font-size: 15px;
         padding: 3px 8px;
         border-radius: 4px;
         border: 1px dashed var(--border);
@@ -2198,7 +2307,7 @@
          shape — modal chrome is shared. */
       .connector-modal-body { display: flex; flex-direction: column; gap: 12px; }
       .connector-help {
-        font-size: 11px;
+        font-size: 15px;
         color: var(--fg-dim);
         background: color-mix(in oklab, var(--fg) 4%, transparent);
         border-left: 2px solid var(--accent);
@@ -2209,9 +2318,9 @@
       .connector-help ol { margin: 4px 0 0; padding-left: 18px; }
       .connector-help li { margin-bottom: 2px; }
       .connector-field { display: flex; flex-direction: column; gap: 3px; }
-      .connector-field label { font-size: 11px; color: var(--fg-dim); }
+      .connector-field label { font-size: 15px; color: var(--fg-dim); }
       .connector-field input, .connector-field select, .connector-field textarea {
-        font-size: 12px;
+        font-size: 14px;
         padding: 6px 8px;
         background: var(--bg);
         border: 1px solid var(--border);
@@ -2220,11 +2329,11 @@
         font-family: inherit;
       }
       .connector-field textarea { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; min-height: 60px; resize: vertical; }
-      .connector-field .field-hint { font-size: 10px; color: var(--fg-dim); font-style: italic; }
+      .connector-field .field-hint { font-size: 14px; color: var(--fg-dim); font-style: italic; }
       .connector-field-row { display: flex; gap: 8px; }
       .connector-field-row .connector-field { flex: 1; }
       .connector-checkboxes { display: flex; gap: 12px; flex-wrap: wrap; }
-      .connector-checkboxes label { font-size: 12px; color: var(--fg); display: flex; gap: 4px; align-items: center; cursor: pointer; }
+      .connector-checkboxes label { font-size: 14px; color: var(--fg); display: flex; gap: 4px; align-items: center; cursor: pointer; }
       .connector-webhook-url-row {
         display: flex;
         gap: 6px;
@@ -2234,7 +2343,7 @@
         border: 1px solid var(--border);
         border-radius: 4px;
         font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-        font-size: 11px;
+        font-size: 15px;
       }
       .connector-webhook-url-row code { flex: 1; word-break: break-all; color: var(--accent); }
 
@@ -2257,7 +2366,7 @@
         border-radius: 8px;
         padding: 10px 12px;
         box-shadow: 0 6px 24px rgba(0,0,0,0.18);
-        font-size: 12px;
+        font-size: 14px;
         color: var(--fg);
         display: grid;
         grid-template-columns: 18px 1fr auto;
@@ -2289,7 +2398,7 @@
       }
       .g-toast-msg {
         color: var(--fg-dim);
-        font-size: 11px;
+        font-size: 15px;
         line-height: 1.35;
         max-width: 280px;
         overflow-wrap: anywhere;
@@ -2352,7 +2461,7 @@
       }
       .g-toast-elapsed {
         grid-column: 1 / -1;
-        font-size: 10px;
+        font-size: 14px;
         color: var(--fg-dim);
         opacity: 0.7;
         margin-top: 1px;
@@ -2374,7 +2483,7 @@
         border-radius: 0 4px 4px 0;
       }
       .g-deck-related-title {
-        font-size: 10px;
+        font-size: 14px;
         color: var(--fg-dim);
         font-style: italic;
         margin: 0 0 6px;
@@ -2390,14 +2499,14 @@
         border-top: 1px dashed var(--border);
       }
       .g-deck-related-text {
-        font-size: 12px;
+        font-size: 14px;
         color: var(--fg);
         overflow: hidden;
         text-overflow: ellipsis;
         white-space: nowrap;
       }
       .btn-deck-link {
-        font-size: 11px;
+        font-size: 15px;
         padding: 3px 8px;
         background: color-mix(in oklab, var(--accent) 18%, var(--bg-elev));
         border: 1px solid color-mix(in oklab, var(--accent) 45%, var(--border));
@@ -2417,7 +2526,7 @@
         border-radius: 6px;
         background: var(--bg);
         color: var(--fg);
-        font-size: 12px;
+        font-size: 14px;
         font-family: inherit;
         box-sizing: border-box;
       }
@@ -2462,7 +2571,7 @@
         gap: 8px;
         align-items: center;
         flex-wrap: wrap;
-        font-size: 11px;
+        font-size: 15px;
         color: var(--fg-dim);
       }
       /* Skip + Forget right-aligned in the meta row. margin-left:auto on
@@ -2476,13 +2585,13 @@
         align-items: center;
       }
       .g-deck-meta-btn {
-        font-size: 11px;
+        font-size: 15px;
         padding: 3px 8px;
         line-height: 1.2;
         border-radius: 4px;
       }
       .g-deck-trivia-actions.deck-forget-confirm .deck-forget-confirm-msg {
-        font-size: 11px;
+        font-size: 15px;
         color: var(--fg-dim);
         margin-right: 2px;
       }
@@ -2496,7 +2605,7 @@
         border: 1px solid var(--border);
         border-radius: 4px;
         padding: 1px 6px;
-        font-size: 10px;
+        font-size: 14px;
         color: var(--fg-dim);
         cursor: default;
         opacity: 0.75;
@@ -2564,7 +2673,7 @@
         border: 1px solid var(--border);
         border-radius: 6px;
         cursor: pointer;
-        font-size: 13px;
+        font-size: 14px;
         color: var(--fg);
         text-align: left;
       }
@@ -2573,13 +2682,13 @@
         border-color: color-mix(in oklab, var(--accent) 50%, var(--border));
       }
       .rel-type-row-meta {
-        font-size: 10px;
+        font-size: 14px;
         color: var(--fg-dim);
         font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
       }
       .g-deck-trivia-file {
         font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-        font-size: 10px;
+        font-size: 14px;
         overflow: hidden;
         text-overflow: ellipsis;
         white-space: nowrap;
@@ -2590,7 +2699,7 @@
         gap: 6px;
       }
       .g-deck-trivia-forget, .g-deck-trivia-skip {
-        font-size: 12px;
+        font-size: 14px;
         padding: 4px 12px;
         border-radius: 5px;
         border: 1px solid var(--border);
@@ -2608,12 +2717,12 @@
         flex-wrap: wrap;
       }
       .g-deck-trivia-rel-label {
-        font-size: 11px;
+        font-size: 15px;
         color: var(--fg-dim);
         white-space: nowrap;
       }
       .g-deck-rel-btn {
-        font-size: 11px;
+        font-size: 15px;
         padding: 3px 10px;
         border-radius: 5px;
         background: color-mix(in oklab, var(--accent) 15%, var(--bg-elev));
@@ -2625,7 +2734,7 @@
       .g-deck-rel-btn:hover { background: color-mix(in oklab, var(--accent) 28%, var(--bg-elev)); }
       .g-deck-rel-btn:disabled { opacity: 0.5; cursor: progress; }
       .g-deck-trivia-other {
-        font-size: 11px;
+        font-size: 15px;
         padding: 3px 10px;
         border-radius: 5px;
         border: 1px dashed var(--border);
@@ -2637,7 +2746,7 @@
       .g-deck-trivia-other:hover { color: var(--fg); border-color: var(--fg-dim); }
       .g-deck-trivia-no-candidate {
         padding: 12px;
-        font-size: 13px;
+        font-size: 14px;
         color: var(--fg-dim);
       }
 
@@ -2666,7 +2775,7 @@
         background: var(--bg-elev);
         color: var(--fg);
         font-family: inherit;
-        font-size: 12px;
+        font-size: 14px;
       }
       .g-suggest-search:focus {
         outline: 2px solid var(--accent);
@@ -2726,14 +2835,14 @@
         gap: 3px;
       }
       .g-suggest-content {
-        font-size: 12px;
+        font-size: 14px;
         line-height: 1.45;
         color: var(--fg);
         word-break: break-word;
         white-space: pre-wrap;          /* full content, wraps */
       }
       .g-suggest-breadcrumb {
-        font-size: 10px;
+        font-size: 14px;
         color: var(--fg-dim);
         font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
         white-space: nowrap;
@@ -2741,12 +2850,12 @@
         text-overflow: ellipsis;
       }
       .g-suggest-custom-shown {
-        font-size: 10px;
+        font-size: 14px;
         color: var(--fg-dim);
       }
       .g-suggest-type-pill {
         align-self: start;
-        font-size: 11px;
+        font-size: 15px;
         padding: 4px 10px;
         background: color-mix(in oklab, var(--accent) 14%, var(--bg));
         border: 1px solid color-mix(in oklab, var(--accent) 45%, var(--border));
@@ -2822,16 +2931,16 @@
       }
       .g-suggest-connect {
         flex: 1;
-        font-size: 12px;
+        font-size: 14px;
         padding: 7px 10px;
       }
       .g-suggest-cancel {
-        font-size: 12px;
+        font-size: 14px;
         padding: 7px 14px;
       }
       .g-suggest-warn {
         margin: 6px 0 0;
-        font-size: 10px;
+        font-size: 14px;
         color: color-mix(in oklab, #d9a445 70%, var(--fg-dim));
         font-style: italic;
       }
@@ -2852,7 +2961,7 @@
         border-radius: 8px;
         box-shadow: 0 6px 24px rgba(0, 0, 0, 0.35);
         padding: 10px;
-        font-size: 12px;
+        font-size: 14px;
       }
       /* Dim logic — two independent triggers:
          A. Checked rows: dim and KEEP DIM. They're "committed" — focus
@@ -2888,7 +2997,7 @@
       }
       .g-suggest-popover-label {
         margin: 0 0 4px;
-        font-size: 10px;
+        font-size: 14px;
         color: var(--fg-dim);
         text-transform: uppercase;
         letter-spacing: 0.04em;
@@ -2900,7 +3009,7 @@
         background: transparent;
         border: 1px solid transparent;
         color: var(--fg);
-        font-size: 12px;
+        font-size: 14px;
         padding: 5px 8px;
         border-radius: 4px;
       }
@@ -2911,7 +3020,7 @@
         background: color-mix(in oklab, var(--accent) 20%, transparent);
         border-color: color-mix(in oklab, var(--accent) 50%, var(--border));
       }
-      .g-suggest-popover-option.small { font-size: 11px; padding: 3px 6px; }
+      .g-suggest-popover-option.small { font-size: 15px; padding: 3px 6px; }
       /* Destructive variant — for "Disconnect these memories". Separated
          visually from the retype options by a faint top border, and tinted
          in error red so the user can't miss that it's a different kind of
@@ -2943,7 +3052,7 @@
         border: 1px solid var(--border);
         border-radius: 4px;
         font: inherit;
-        font-size: 12px;
+        font-size: 14px;
         color: var(--fg);
       }
       .g-suggest-custom-input:focus {
@@ -2952,7 +3061,7 @@
       }
       .g-suggest-custom-hint {
         margin: 4px 0 0;
-        font-size: 10px;
+        font-size: 14px;
         color: var(--fg-dim);
         font-style: italic;
       }
@@ -2961,7 +3070,7 @@
       .g-deck-card-inner { min-width: 0; }
       .g-deck-connect-toggle {
         margin-top: 10px;
-        font-size: 11px;
+        font-size: 15px;
         padding: 5px 12px;
         background: transparent;
         border: 1px dashed color-mix(in oklab, var(--accent) 50%, var(--border));
@@ -2975,7 +3084,7 @@
       /* Detail-pane Connect toggle (collapsed-by-default state) */
       .g-detail-suggest-wrap { margin-top: 12px; }
       .g-detail-connect-toggle {
-        font-size: 11px;
+        font-size: 15px;
         padding: 5px 12px;
         background: transparent;
         border: 1px dashed color-mix(in oklab, var(--accent) 50%, var(--border));
@@ -2997,7 +3106,7 @@
         gap: 6px;
       }
       .g-forget-note {
-        font-size: 11px;
+        font-size: 15px;
         line-height: 1.45;
         color: var(--fg-dim);
         margin: 0;
@@ -3016,7 +3125,7 @@
         flex: 1 1 120px;
         min-width: 80px;
         max-width: 200px;
-        font-size: 12px;
+        font-size: 14px;
         padding: 3px 8px;
         border-radius: 5px;
         border: 1px solid color-mix(in oklab, var(--error) 50%, var(--border));
@@ -3028,7 +3137,7 @@
         box-shadow: 0 0 0 2px color-mix(in oklab, var(--error) 25%, transparent);
       }
       .g-forget-go {
-        font-size: 11px;
+        font-size: 15px;
         padding: 3px 10px;
         border-radius: 5px;
         border: 1px solid color-mix(in oklab, var(--error) 60%, var(--border));
@@ -3048,7 +3157,7 @@
         cursor: not-allowed;
       }
       .g-forget-cancel {
-        font-size: 11px;
+        font-size: 15px;
         padding: 3px 8px;
         border-radius: 5px;
         border: 1px solid var(--border);
@@ -3085,7 +3194,7 @@
         justify-content: space-between;
         padding: 8px 0;
         border-bottom: 1px solid var(--border);
-        font-size: 12px;
+        font-size: 14px;
       }
       .g-recap-row:last-child { border-bottom: 0; }
       .g-recap-label { color: var(--fg-dim); }
@@ -3100,13 +3209,12 @@
          another stat row. */
       .g-recap-forgotten {
         display: flex;
-        justify-content: space-between;
-        align-items: center;
-        gap: 10px;
+        flex-direction: column;
+        gap: 0;
         padding: 10px 0 8px;
         margin-top: 4px;
         border-top: 1px dashed var(--border);
-        font-size: 11px;
+        font-size: 15px;
         color: var(--fg-dim);
       }
       .g-recap-forgotten.hidden { display: none; }
@@ -3125,7 +3233,7 @@
         white-space: nowrap;
       }
       .btn-g-purge {
-        font-size: 11px;
+        font-size: 15px;
         padding: 4px 10px;
         flex-shrink: 0;
       }
@@ -3140,12 +3248,12 @@
         padding: 14px 18px;
       }
       .g-mcp-title {
-        font-size: 12px;
+        font-size: 14px;
         font-weight: 600;
         color: var(--fg);
         margin: 0 0 8px;
       }
-      .g-mcp-list { font-size: 12px; }
+      .g-mcp-list { font-size: 14px; }
 
       /* Clusters tab — groups of memories shown as expandable cards */
       .g-clusters-toolbar {
@@ -3162,7 +3270,7 @@
         color: var(--fg-dim);
         padding: 3px 10px;
         border-radius: 12px;
-        font-size: 11px;
+        font-size: 15px;
         cursor: pointer;
       }
       .g-cluster-mode:hover { color: var(--fg); }
@@ -3172,7 +3280,7 @@
         border-color: var(--accent);
       }
       .g-cluster-hint {
-        font-size: 10px;
+        font-size: 14px;
         color: var(--fg-dim);
         font-style: italic;
         margin-left: 4px;
@@ -3197,13 +3305,13 @@
         padding: 10px 14px;
         cursor: pointer;
         background: var(--bg-elev);
-        font-size: 12px;
+        font-size: 14px;
       }
       .g-cluster-head:hover { background: color-mix(in oklab, var(--accent) 8%, var(--bg-elev)); }
       .g-cluster-caret {
         font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
         color: var(--fg-dim);
-        font-size: 10px;
+        font-size: 14px;
         text-align: center;
         transition: transform 100ms;
       }
@@ -3216,7 +3324,7 @@
       }
       .g-cluster-count {
         color: var(--fg-dim);
-        font-size: 11px;
+        font-size: 15px;
         font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
       }
       .g-cluster-body {
@@ -3256,12 +3364,12 @@
       }
       .g-detail-empty {
         color: var(--fg-dim);
-        font-size: 12px;
+        font-size: 14px;
         padding-top: 14px;
       }
       .g-detail-shortcuts {
         margin-top: 16px;
-        font-size: 11px;
+        font-size: 15px;
         line-height: 1.7;
         color: var(--fg-dim);
       }
@@ -3270,7 +3378,7 @@
         border: 1px solid var(--border);
         border-radius: 3px;
         padding: 1px 5px;
-        font-size: 10px;
+        font-size: 14px;
         font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
       }
       .g-detail-body.hidden { display: none; }
@@ -3314,11 +3422,11 @@
       .g-detail-conf {
         font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
         color: var(--fg-dim);
-        font-size: 11px;
+        font-size: 15px;
         margin-bottom: 4px;
       }
       .g-detail-content {
-        font-size: 13px;
+        font-size: 14px;
         line-height: 1.5;
         margin: 8px 0;
         white-space: pre-wrap;
@@ -3330,13 +3438,13 @@
         overflow-y: auto;
       }
       .g-detail-meta {
-        font-size: 11px;
+        font-size: 15px;
         color: var(--fg-dim);
         margin: 8px 0;
         line-height: 1.7;
       }
       .g-detail-meta code {
-        font-size: 10px;
+        font-size: 14px;
         background: var(--bg);
         padding: 1px 4px;
         border-radius: 3px;
@@ -3361,7 +3469,7 @@
         flex: 1 1 0;
         min-width: 0;
         padding: 5px 8px;
-        font-size: 11px;
+        font-size: 15px;
         line-height: 1.2;
         white-space: nowrap;
         overflow: hidden;
@@ -3379,12 +3487,12 @@
         display: flex;
         flex-wrap: wrap;
         gap: 6px 10px;
-        font-size: 11px;
+        font-size: 15px;
         color: var(--fg-dim);
         margin-bottom: 4px;
       }
       .g-detail-chips .g-detail-chip code {
-        font-size: 10px;
+        font-size: 14px;
         background: var(--bg);
         padding: 1px 4px;
         border-radius: 3px;
@@ -3398,7 +3506,7 @@
         border: 1px solid var(--accent);
         border-radius: 4px;
         font: inherit;
-        font-size: 13px;
+        font-size: 14px;
         line-height: 1.5;
         resize: vertical;
         -webkit-user-select: text;
@@ -3406,7 +3514,7 @@
       }
       .g-detail-conn-section { margin-top: 12px; }
       .g-detail-conn-title {
-        font-size: 10px;
+        font-size: 13px;
         text-transform: uppercase;
         letter-spacing: 0.05em;
         color: var(--fg-dim);
@@ -3419,7 +3527,7 @@
         gap: 6px;
         align-items: start;
         padding: 4px 6px;
-        font-size: 11px;
+        font-size: 14px;
         cursor: pointer;
         border-radius: 4px;
       }
@@ -3428,7 +3536,7 @@
       .g-detail-conn-text { line-height: 1.4; }
       .g-detail-conn-meta {
         display: flex; align-items: center; flex-wrap: wrap; gap: 4px;
-        color: var(--fg-dim); font-size: 10px; margin-top: 2px;
+        color: var(--fg-dim); font-size: 13px; margin-top: 2px;
       }
       .g-conn-retype-btn {
         display: inline-flex; align-items: center;
@@ -3460,7 +3568,7 @@
         background: var(--bg);
       }
       .g-related-text {
-        font-size: 12px;
+        font-size: 14px;
         line-height: 1.35;
         color: var(--fg);
         overflow: hidden;
@@ -3470,7 +3578,7 @@
         gap: 4px;
       }
       .g-related-actions button {
-        font-size: 11px;
+        font-size: 15px;
         padding: 3px 8px;
       }
       .btn-related-link {
@@ -3487,16 +3595,23 @@
         align-items: center;
         gap: 8px;
         margin-bottom: 10px;
-        font-size: 12px;
+        font-size: 14px;
       }
       .atlas-toolbar .filler { flex: 1; }
+      #btn-atlas-reset.node-selected {
+        background: var(--accent, #67e8f9);
+        color: #13131a;
+        font-weight: 700;
+        border-color: var(--accent, #67e8f9);
+        box-shadow: 0 0 8px rgba(103,232,249,0.4);
+      }
       .atlas-toolbar select {
         padding: 5px 8px;
         border-radius: 6px;
         border: 1px solid var(--border);
         background: var(--bg-elev);
         color: var(--fg);
-        font-size: 12px;
+        font-size: 14px;
       }
       /* Navigation cheatsheet — single horizontal strip pinned to the
          bottom edge of the 3D stage. Grayed + transparent so it doesn't
@@ -3580,7 +3695,7 @@
       .atlas-container canvas { display: block; }
       .scene-tooltip {
         font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif !important;
-        font-size: 11px !important;
+        font-size: 15px !important;
         max-width: 320px;
         background: color-mix(in oklab, var(--bg-elev) 96%, transparent) !important;
         color: var(--fg) !important;
@@ -3598,7 +3713,7 @@
         border: 1px solid var(--border);
         border-radius: 6px;
         padding: 10px 12px;
-        font-size: 12px;
+        font-size: 14px;
         overflow-y: auto;
         backdrop-filter: blur(8px);
       }
@@ -3606,15 +3721,15 @@
         margin-top: 6px;
         white-space: pre-wrap;
         word-break: break-word;
-        font-size: 12px;
+        font-size: 14px;
       }
       .atlas-inspector .atlas-node-meta {
-        font-size: 11px;
+        font-size: 15px;
         color: var(--fg-dim);
         margin-top: 6px;
       }
       .atlas-inspector .atlas-tip {
-        font-size: 10px;
+        font-size: 14px;
         color: var(--fg-dim);
         margin: 8px 0 0;
       }
@@ -3685,14 +3800,14 @@
         margin-top: 6px;
       }
       .atlas-conn-section-title {
-        font-size: 10px;
+        font-size: 11px;
         color: var(--fg-dim);
         text-transform: uppercase;
         letter-spacing: 0.05em;
         margin: 4px 0 2px;
       }
       .atlas-conn-row {
-        font-size: 11px;
+        font-size: 12px;
         padding: 3px 0;
         display: grid;
         grid-template-columns: 8px 1fr auto;
@@ -3702,7 +3817,7 @@
       }
       .atlas-conn-row:hover { background: color-mix(in oklab, var(--accent) 8%, transparent); border-radius: 3px; }
       .atlas-conn-arrow { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--fg-dim); }
-      .atlas-conn-type { color: var(--fg-dim); font-size: 10px; font-style: italic; }
+      .atlas-conn-type { color: var(--fg-dim); font-size: 11px; font-style: italic; }
 
       /* Overview mini-atlas */
       .overview-atlas-frame {
@@ -3736,7 +3851,7 @@
         border: 1px solid var(--border);
         background: var(--bg-elev);
         color: var(--fg);
-        font-size: 12px;
+        font-size: 14px;
       }
       .activity-list { display: flex; flex-direction: column; gap: 8px; }
       .activity-row {
@@ -3747,9 +3862,9 @@
         padding: 8px 10px;
         background: var(--bg-elev);
         border-radius: 6px;
-        font-size: 12px;
+        font-size: 14px;
       }
-      .activity-row .ar-when { color: var(--fg-dim); font-size: 11px; }
+      .activity-row .ar-when { color: var(--fg-dim); font-size: 15px; }
       .activity-row .ar-dot { width: 8px; height: 8px; border-radius: 50%; margin-top: 4px; }
       .activity-row .ar-dot.ingestSource { background: var(--ok); }
       .activity-row .ar-dot.forgetSource { background: var(--error); }
@@ -3758,12 +3873,12 @@
       .activity-row .ar-dot.addNode { background: var(--fg-dim); }
       .activity-row .ar-dot.deleteNode { background: var(--error); opacity: 0.6; }
       .activity-row .ar-detail {
-        font-size: 11px;
+        font-size: 15px;
         color: var(--fg-dim);
         margin-top: 2px;
       }
       .activity-day-divider {
-        font-size: 11px;
+        font-size: 15px;
         text-transform: uppercase;
         letter-spacing: 0.05em;
         color: var(--fg-dim);
@@ -3779,10 +3894,10 @@
         align-items: center;
         padding: 8px 0;
         border-bottom: 1px solid var(--border);
-        font-size: 12px;
+        font-size: 14px;
       }
       .snapshot-row:last-child { border-bottom: 0; }
-      .snapshot-meta { color: var(--fg-dim); font-size: 11px; }
+      .snapshot-meta { color: var(--fg-dim); font-size: 15px; }
     </style>
   </head>
   <body>
@@ -3795,7 +3910,7 @@
                width="120" height="120"
                style="margin-bottom: 20px; border-radius: 22px; opacity: 0.92; flex-shrink: 0; display: block;" />
           <h1>Graphnosis</h1>
-          <p class="subtitle" id="subtitle">Your local encrypted second cortex</p>
+          <p class="subtitle" id="subtitle">Your local encrypted second cortex for every AI</p>
           <div id="error" class="error hidden"></div>
           <div class="panel unlock-card">
             <p class="panel-title">Unlock your encrypted second cortex:</p>
@@ -3851,14 +3966,14 @@
                 <button id="btn-recovery-unlock" class="primary">Recover access</button>
                 <button id="btn-recovery-cancel">Cancel</button>
               </div>
-              <p style="margin-top: 10px; font-size: 11px; color: var(--fg-dim); line-height: 1.5;">
+              <p style="margin-top: 10px; font-size: 15px; color: var(--fg-dim); line-height: 1.5;">
                 After recovery, your Cortex is unlocked only for this session — the recovery phrase isn't stored. Your existing passphrase still works once you find it, and your 24-word phrase stays the same; we don't regenerate it.
               </p>
             </div>
           </div>
           <p class="unlock-footer">
             &copy; 2026 Nehloo Interactive LLC. All rights reserved.<br>
-            <span style="font-size: 10px; opacity: 0.7;">Graphnosis is a private memory system. Your data never leaves your device.</span>
+            <span style="opacity: 0.7;">Graphnosis is a local, private, encrypted memory system. Read the docs at <a href="https://graphnosis.com" target="_blank" style="color: #fff; text-decoration: underline; opacity: 0.8;">graphnosis.com</a></span>
           </p>
         </div>
       </section>
@@ -3916,6 +4031,7 @@
             <select id="atlas-graph-picker" class="header-engram-picker" title="Switch active engram"></select>
             <button id="btn-add-file" class="primary">Add file to engram…</button>
             <button id="btn-new-graph" title="Create a new engram — an independent neighborhood of memory">+ New engram</button>
+            <button id="btn-help" class="btn-help" title="Open documentation">?</button>
             <button id="btn-lock">Lock cortex</button>
           </div>
         </header>
@@ -4134,6 +4250,9 @@
                   Set up a connector →
                 </a>
               </div>
+              <div class="sources-filter-bar">
+                <input type="search" id="sources-filter" placeholder="Filter sources…" autocomplete="off" />
+              </div>
               <div id="sources-list"><p class="subtitle">Loading…</p></div>
             </section>
 
@@ -4228,14 +4347,14 @@
               </header>
               <div class="panel">
                 <p class="panel-title">Preferences</p>
-                <p class="subtitle" style="font-size: 11px; margin: -4px 0 10px;">
+                <p class="subtitle" style="font-size: 15px; margin: -4px 0 10px;">
                   Caching policy, forget behavior, MCP relay timings, inspector detail level.
                 </p>
                 <button id="btn-settings" class="primary">Open preferences…</button>
               </div>
               <div class="panel" id="settings-panel-ai-clients">
                 <p class="panel-title">AI client integration</p>
-                <p class="subtitle" style="font-size: 11px; margin: -4px 0 10px;">
+                <p class="subtitle" style="font-size: 15px; margin: -4px 0 10px;">
                   Wire MCP-aware AI clients to talk to Graphnosis Synapse — your corpus callosum.
                   Each one updates only its own user-level MCP config; existing servers untouched.
                 </p>
@@ -4245,7 +4364,7 @@
               </div>
               <div class="panel">
                 <p class="panel-title">Mobile & Remote Access</p>
-                <p class="subtitle" style="font-size: 11px; margin: -4px 0 10px;">
+                <p class="subtitle" style="font-size: 15px; margin: -4px 0 10px;">
                   Connect Claude for iOS, Claude for Android, or any HTTP MCP-capable client
                   to this Cortex over your local network or Tailscale VPN.
                 </p>
@@ -4253,7 +4372,7 @@
               </div>
               <div class="panel" id="settings-panel-connectors">
                 <p class="panel-title">Connectors</p>
-                <p class="subtitle" style="font-size: 11px; margin: -4px 0 10px;">
+                <p class="subtitle" style="font-size: 15px; margin: -4px 0 10px;">
                   Auto-ingest from RSS, GitHub, Slack, Trello, Linear, or any service
                   that can POST to a webhook. Your credentials, your apps — Graphnosis
                   is just the receiver. Stored locally and encrypted at rest.
@@ -4273,7 +4392,7 @@
               </div>
               <div class="panel">
                 <p class="panel-title">Cortex tools</p>
-                <p class="subtitle" style="font-size: 11px; margin: -4px 0 10px;">
+                <p class="subtitle" style="font-size: 15px; margin: -4px 0 10px;">
                   Reconstruct lost memories from the encrypted op-log, refresh state, peek at Cortex files.
                 </p>
                 <button id="btn-recover">Recover from op-log…</button>
@@ -4283,7 +4402,7 @@
               </div>
               <div class="panel">
                 <p class="panel-title">Cortex snapshots</p>
-                <p class="subtitle" style="font-size: 11px; margin: -4px 0 10px;">
+                <p class="subtitle" style="font-size: 15px; margin: -4px 0 10px;">
                   Frozen point-in-time copies of your encrypted Cortex — every <code>.gai</code>,
                   <code>.bundle</code>, <code>.embcache</code>, <code>master.enc</code>,
                   <code>recovery.enc</code>, and settings file. Useful before a risky
@@ -4300,14 +4419,14 @@
                    periodic rotation. The dataKey is preserved.            -->
               <div class="panel">
                 <p class="panel-title">Recovery phrase</p>
-                <p class="subtitle" style="font-size: 11px; margin: -4px 0 10px;">
+                <p class="subtitle" style="font-size: 15px; margin: -4px 0 10px;">
                   Your 24-word recovery phrase is the only fallback if you forget your passphrase.
                   <strong>If you didn't see or didn't write down the phrase Graphnosis showed you the first time</strong>
                   (or if you think it's been exposed), generate a fresh one. The old phrase becomes invalid;
                   the new one wraps the same data. Your engrams are untouched.
                 </p>
                 <button id="btn-regenerate-recovery-phrase">Regenerate recovery phrase…</button>
-                <span class="subtitle" style="font-size: 11px; margin-left: 8px;">Shows the new phrase once — write it down before dismissing.</span>
+                <span class="subtitle" style="font-size: 15px; margin-left: 8px;">Shows the new phrase once — write it down before dismissing.</span>
               </div>
 
             </section>
@@ -4375,7 +4494,7 @@
           <div class="row" style="margin-top: 10px;">
             <label for="gw-id">Internal ID</label>
             <input type="text" id="gw-id" placeholder="slug (lowercase letters, numbers, hyphens)" />
-            <p class="subtitle" style="font-size: 10px; margin-top: 4px;">
+            <p class="subtitle" style="font-size: 14px; margin-top: 4px;">
               Used as the filename inside your Graphnosis Cortex. Can't be changed later.
             </p>
           </div>
@@ -4437,7 +4556,7 @@
           </div>
           <div class="row">
             <label for="cache-cap">Skip caching for files larger than</label>
-            <select id="cache-cap" style="width: 100%; padding: 8px 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg-elev); color: var(--fg); font-family: inherit; font-size: 13px;">
+            <select id="cache-cap" style="width: 100%; padding: 8px 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg-elev); color: var(--fg); font-family: inherit; font-size: 14px;">
               <option value="10485760">10 MB</option>
               <option value="52428800">50 MB (default)</option>
               <option value="209715200">200 MB</option>
@@ -4459,7 +4578,7 @@
             </label>
             <div style="display: flex; align-items: center; gap: 8px;">
               <input type="number" id="relay-initial" min="2" max="120" step="1" style="flex: 1;" />
-              <span style="color: var(--fg-dim); font-size: 12px;">seconds (2–120, default 10)</span>
+              <span style="color: var(--fg-dim); font-size: 14px;">seconds (2–120, default 10)</span>
             </div>
           </div>
           <div class="row">
@@ -4469,7 +4588,7 @@
             </label>
             <div style="display: flex; align-items: center; gap: 8px;">
               <input type="number" id="relay-reconnect" min="5" max="86400" step="1" style="flex: 1;" />
-              <span style="color: var(--fg-dim); font-size: 12px;">seconds (5–86400, default 86400 = 24h)</span>
+              <span style="color: var(--fg-dim); font-size: 14px;">seconds (5–86400, default 86400 = 24h)</span>
             </div>
           </div>
 
@@ -4518,7 +4637,7 @@
             </label>
           </div>
           <div class="row" id="reingest-delay-row" style="margin-top: 10px; display: none; align-items: center; gap: 10px;">
-            <label for="ai-reingest-quiet-ms" style="white-space: nowrap; font-size: 13px;">
+            <label for="ai-reingest-quiet-ms" style="white-space: nowrap; font-size: 14px;">
               Reingest after file is unchanged for:
             </label>
             <select id="ai-reingest-quiet-ms" style="flex: 0 0 auto;">
@@ -4539,7 +4658,7 @@
             Changes apply to the <em>next</em> file you ingest — existing nodes keep their previous shape.
           </p>
           <div class="row" style="display: flex; align-items: center; gap: 10px; margin-bottom: 10px;">
-            <label for="ai-chunk-size" style="white-space: nowrap; font-size: 13px; min-width: 160px;">
+            <label for="ai-chunk-size" style="white-space: nowrap; font-size: 14px; min-width: 160px;">
               Chunk size:
             </label>
             <select id="ai-chunk-size" style="flex: 0 0 auto;">
@@ -4549,7 +4668,7 @@
             </select>
           </div>
           <div class="row" style="display: flex; align-items: center; gap: 10px;">
-            <label for="ai-embed-batch" style="white-space: nowrap; font-size: 13px; min-width: 160px;">
+            <label for="ai-embed-batch" style="white-space: nowrap; font-size: 14px; min-width: 160px;">
               Embed batch size:
             </label>
             <select id="ai-embed-batch" style="flex: 0 0 auto;">
@@ -4649,7 +4768,7 @@
                accumulate soft-deletes faster than corruption or graph
                restructuring).                                            -->
           <p class="panel-title" style="margin-top: 0;">Forgotten memories</p>
-          <p class="subtitle" style="font-size: 11px; margin: -4px 0 10px;">
+          <p class="subtitle" style="font-size: 15px; margin: -4px 0 10px;">
             Memories you've forgotten are <em>soft-deleted</em>: hidden from recall
             but still on disk in case you need to undo. <strong>Purge now</strong>
             rebuilds the engram from its remaining live sources to physically
@@ -4657,28 +4776,28 @@
             be re-read.
           </p>
           <div id="g-recap-forgotten" class="g-recap-forgotten hidden"></div>
-          <p id="cm-no-forgotten" class="subtitle" style="font-size: 11px;">
+          <p id="cm-no-forgotten" class="subtitle" style="font-size: 15px;">
             Nothing forgotten right now — your engrams are clean.
           </p>
 
           <p class="panel-title" style="margin-top: 24px;">Engrams in this cortex</p>
-          <p class="subtitle" style="font-size: 11px; margin: -4px 0 10px;">
+          <p class="subtitle" style="font-size: 15px; margin: -4px 0 10px;">
             Archive an engram to hide it from the picker without touching its data.
             Delete permanently removes all memories, sources, and embeddings — this cannot be undone.
           </p>
           <div id="settings-graphs-list" style="display: flex; flex-direction: column; gap: 6px;">
-            <p class="subtitle" style="font-size: 11px;">Loading…</p>
+            <p class="subtitle" style="font-size: 15px;">Loading…</p>
           </div>
 
           <p class="panel-title" style="margin-top: 24px;">Quarantined files</p>
-          <p class="subtitle" style="font-size: 11px; margin: -4px 0 10px;">
+          <p class="subtitle" style="font-size: 15px; margin: -4px 0 10px;">
             Engram files that failed integrity checks (corrupt <code>.gai</code> or <code>.bundle</code>)
             and were auto-moved aside. Kept on disk in case you need them for manual recovery.
             <strong>Don't delete a quarantined file until you've successfully re-ingested its sources via Recover from op-log</strong>
             — it's the only on-disk copy of those bytes.
           </p>
           <div id="settings-quarantine-list" style="display: flex; flex-direction: column; gap: 6px;">
-            <p class="subtitle" style="font-size: 11px;">Loading…</p>
+            <p class="subtitle" style="font-size: 15px;">Loading…</p>
           </div>
         </div>
         <div class="modal-footer">
@@ -4736,7 +4855,7 @@
             <input type="password" id="snp-confirm" placeholder="Type it again" />
           </div>
           <p id="snp-error" class="error hidden" style="margin-bottom: 0;"></p>
-          <p class="subtitle" style="font-size: 11px; margin: 12px 0 0; line-height: 1.5;">
+          <p class="subtitle" style="font-size: 15px; margin: 12px 0 0; line-height: 1.5;">
             Your 24-word recovery phrase stays valid as a fallback for the new passphrase. Your encrypted memories are not re-encrypted — only the wrapping key changes. This is instant and safe.
           </p>
         </div>
@@ -4836,7 +4955,7 @@
 
           <!-- Step 0: Enable HTTP bridge -->
           <div class="mobile-step active" id="mobile-step-0">
-            <p style="font-size: 13px; line-height: 1.6; margin: 0 0 14px;">
+            <p style="font-size: 14px; line-height: 1.6; margin: 0 0 14px;">
               Graphnosis can expose your Cortex's MCP tools (recall, remember, correct, apply,
               forget, stats) over a local HTTP endpoint so mobile AI clients can connect.
               A random bearer token is generated once and never changes unless you regenerate it.
@@ -4852,39 +4971,39 @@
             </div>
             <div id="mobile-port-row" style="margin-top: 14px; display: none;">
               <div style="display: flex; align-items: center; gap: 10px;">
-                <label for="mobile-bridge-port" style="font-size: 12px; white-space: nowrap;">Port:</label>
+                <label for="mobile-bridge-port" style="font-size: 14px; white-space: nowrap;">Port:</label>
                 <input type="number" id="mobile-bridge-port" min="1024" max="65535"
-                  style="width: 90px; padding: 6px 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg-elev); color: var(--fg); font-size: 12px;" />
-                <label for="mobile-bridge-host" style="font-size: 12px; white-space: nowrap;">Bind:</label>
+                  style="width: 90px; padding: 6px 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg-elev); color: var(--fg); font-size: 14px;" />
+                <label for="mobile-bridge-host" style="font-size: 14px; white-space: nowrap;">Bind:</label>
                 <select id="mobile-bridge-host"
-                  style="padding: 6px 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg-elev); color: var(--fg); font-size: 12px;">
+                  style="padding: 6px 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg-elev); color: var(--fg); font-size: 14px;">
                   <option value="127.0.0.1">Loopback only — safest (use Tailscale to forward)</option>
                   <option value="0.0.0.0">All interfaces — direct LAN access</option>
                 </select>
               </div>
-              <p class="subtitle" style="font-size: 11px; margin-top: 6px;">
+              <p class="subtitle" style="font-size: 15px; margin-top: 6px;">
                 <strong>Loopback</strong> is safest — only processes on this machine can connect.
                 Use Tailscale to expose it remotely without opening a port.
                 <strong>All interfaces</strong> lets devices on the same WiFi connect directly.
               </p>
             </div>
-            <p id="mobile-step0-note" class="subtitle" style="font-size: 11px; margin-top: 12px; color: var(--fg-dim);"></p>
+            <p id="mobile-step0-note" class="subtitle" style="font-size: 15px; margin-top: 12px; color: var(--fg-dim);"></p>
           </div>
 
           <!-- Step 1: Network setup -->
           <div class="mobile-step" id="mobile-step-1">
-            <p style="font-size: 13px; margin: 0 0 14px;">
+            <p style="font-size: 14px; margin: 0 0 14px;">
               Your mobile device needs a network path to this computer.
               Detected network addresses:
             </p>
             <div id="mobile-ip-list"></div>
             <div id="mobile-tailscale-tip" style="display: none; margin-top: 12px; padding: 10px 12px;
-              background: var(--bg-elev); border-left: 3px solid var(--accent); border-radius: 4px; font-size: 12px;">
+              background: var(--bg-elev); border-left: 3px solid var(--accent); border-radius: 4px; font-size: 14px;">
               <strong style="color: var(--accent);">Tailscale detected</strong> — your Tailscale IP is the
               most reliable address to use. It works from any network, not just your home WiFi.
             </div>
             <div id="mobile-no-tailscale-tip" style="display: none; margin-top: 12px; padding: 10px 12px;
-              background: var(--bg-elev); border-left: 3px solid var(--border); border-radius: 4px; font-size: 12px;">
+              background: var(--bg-elev); border-left: 3px solid var(--border); border-radius: 4px; font-size: 14px;">
               <strong>No Tailscale detected.</strong>
               For the best experience — especially when you're not on the same WiFi — install
               <a href="#" id="link-tailscale" style="color: var(--accent); cursor: pointer;">Tailscale</a>
@@ -4895,24 +5014,24 @@
 
           <!-- Step 2: Connection details -->
           <div class="mobile-step" id="mobile-step-2">
-            <p style="font-size: 13px; margin: 0 0 14px;">
+            <p style="font-size: 14px; margin: 0 0 14px;">
               Use these details to add Graphnosis as an MCP server in your mobile AI client.
             </p>
-            <p style="font-size: 12px; font-weight: 600; margin: 0 0 4px; color: var(--fg-dim);">MCP Server URL</p>
+            <p style="font-size: 14px; font-weight: 600; margin: 0 0 4px; color: var(--fg-dim);">MCP Server URL</p>
             <div class="copy-row">
               <span class="copy-field" id="mobile-mcp-url"></span>
               <button class="copy-btn" data-copy-target="mobile-mcp-url">Copy</button>
             </div>
-            <p style="font-size: 12px; font-weight: 600; margin: 8px 0 4px; color: var(--fg-dim);">Bearer Token</p>
+            <p style="font-size: 14px; font-weight: 600; margin: 8px 0 4px; color: var(--fg-dim);">Bearer Token</p>
             <div class="copy-row">
               <span class="copy-field secret" id="mobile-mcp-token" title="Click to select all"></span>
               <button class="copy-btn" data-copy-target="mobile-mcp-token">Copy</button>
               <button class="copy-btn" id="mobile-token-reveal">Show</button>
             </div>
-            <p class="subtitle" style="font-size: 11px; margin-bottom: 14px;">
+            <p class="subtitle" style="font-size: 15px; margin-bottom: 14px;">
               Treat the token like a password — it grants full read/write access to your Cortex.
             </p>
-            <p style="font-size: 12px; font-weight: 600; margin: 0 0 8px;">How to connect in Claude for iOS / Android</p>
+            <p style="font-size: 14px; font-weight: 600; margin: 0 0 8px;">How to connect in Claude for iOS / Android</p>
             <ol class="mobile-client-steps">
               <li>Open Claude → Settings → <strong>Claude.ai account</strong> → <strong>MCP Servers</strong></li>
               <li>Tap <strong>Add server</strong> and paste the URL above into "Server URL"</li>
@@ -4922,14 +5041,14 @@
 
             <!-- VS Code / Copilot Chat integration -->
             <div style="margin-top: 16px; border-top: 1px solid var(--border); padding-top: 12px;">
-              <p style="font-size: 12px; font-weight: 600; margin: 0 0 2px; color: var(--fg-dim);">VS Code — Copilot Chat</p>
-              <p class="subtitle" style="font-size: 11px; margin: 0 0 6px;">
+              <p style="font-size: 14px; font-weight: 600; margin: 0 0 2px; color: var(--fg-dim);">VS Code — Copilot Chat</p>
+              <p class="subtitle" style="font-size: 15px; margin: 0 0 6px;">
                 Install the <strong>Graphnosis VS Code extension</strong> for automatic recall on every Copilot prompt.
                 Or save the snippet below as <code>.vscode/mcp.json</code> in your project to add Graphnosis tools manually.
               </p>
               <div class="copy-row">
                 <span class="copy-field" id="mobile-vscode-config"
-                  style="font-family: monospace; font-size: 10px; max-height: 84px; overflow: auto; white-space: pre;"></span>
+                  style="font-family: monospace; font-size: 14px; max-height: 84px; overflow: auto; white-space: pre;"></span>
                 <button class="copy-btn" id="btn-copy-vscode-config">Copy</button>
               </div>
             </div>
@@ -4957,6 +5076,23 @@
             <button id="tour-prev" class="tour-btn-secondary">Back</button>
             <button id="tour-next" class="tour-btn-primary">Next →</button>
           </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Sensitivity tier explanation modal -->
+    <div id="tier-confirm-modal" class="modal-backdrop hidden">
+      <div class="modal" style="max-width: 440px;">
+        <p class="modal-header" style="margin:0 0 4px;">Change sensitivity tier</p>
+        <p id="tier-confirm-engram" style="font-size:11px; color:var(--fg-dim); margin:0 0 16px; font-family:monospace;"></p>
+
+        <div id="tier-confirm-body" style="display:flex; flex-direction:column; gap:12px; margin-bottom:20px;">
+          <!-- filled by JS -->
+        </div>
+
+        <div style="display:flex; gap:8px; justify-content:flex-end;">
+          <button id="tier-confirm-cancel" class="btn-secondary">Cancel</button>
+          <button id="tier-confirm-ok" class="btn-primary">Confirm</button>
         </div>
       </div>
     </div>
