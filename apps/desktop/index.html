@@ -1585,6 +1585,14 @@
         margin: 0;
         letter-spacing: 0.01em;
       }
+      .brain-feed-item { padding: 4px 10px; font-size: 12px; border-left: 2px solid var(--accent); margin-bottom: 4px; }
+      .brain-thinking  { animation: brain-pulse 1.5s ease-in-out infinite; }
+      @keyframes brain-pulse { 0%,100% { opacity:1; } 50% { opacity:0.4; } }
+      .contradiction-card { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+      .progress-bar { height: 4px; background: var(--bg-dim); border-radius: 2px; overflow: hidden; margin-bottom: 4px; }
+      .progress-bar > div { height: 100%; background: var(--accent); transition: width 0.3s; }
+      #ollama-status-badge.ok { color: var(--ok); }
+      #ollama-status-badge.err { color: var(--error); }
       .pane-callout {
         margin-top: 10px;
         margin-bottom: 14px;
@@ -4354,6 +4362,10 @@
                 <button id="btn-activity-refresh">Refresh</button>
                 <span id="activity-stats" class="subtitle"></span>
               </div>
+              <div id="brain-feed" class="hidden" style="margin-bottom: 16px;">
+                <p class="brain-subtitle">Brain activity</p>
+                <div id="brain-feed-list" style="max-height:200px; overflow-y:auto;"></div>
+              </div>
               <div id="activity-list" class="activity-list">
                 <p class="subtitle">Loading…</p>
               </div>
@@ -4395,6 +4407,16 @@
                      Settings → Cortex Management. Status stays a
                      read-only health snapshot; destructive ops live
                      behind the red Cortex Management button. -->
+              </div>
+
+              <!-- Goals section — shown when brain engine has tracked goals -->
+              <div id="checkin-goals" class="hidden" style="margin-top: 14px;">
+                <p class="g-mcp-title">
+                  Active goals
+                  <span class="brain-subtitle" style="margin-left: 6px;">tracked by your brain</span>
+                </p>
+                <div id="goal-list" style="margin-top: 8px;"></div>
+                <button id="btn-new-goal" class="btn-sm" style="margin-top: 8px;">+ New goal from brain…</button>
               </div>
 
               <!-- AI tools card: which AI clients are currently tapped
@@ -4513,6 +4535,8 @@
           <span class="status-sep">·</span>
           <span class="status-search">⌘K to search nodes</span>
           <span id="status-saved" class="status-saved">—</span>
+          <span id="brain-vitality" style="display:none; font-size:12px; opacity:0.7; margin-left:8px; cursor:default;" title="Brain vitality score">🧠 –</span>
+          <span id="llm-status-chip" style="display:none; font-size:11px; color:var(--fg-dim); margin-left:6px; cursor:pointer;" title="Ollama not running — click to open Brain settings">⚡ Brain: no LLM</span>
           <span class="status-mcp">
             <span id="status-mcp-dot" class="status-dot"></span>
             <span id="status-mcp-text">checking clients…</span>
@@ -4753,6 +4777,42 @@
               <option value="medium">Medium — 256/call (default)</option>
               <option value="large">Large — 1024/call (≥ 32 GB RAM)</option>
             </select>
+          </div>
+
+          <!-- Brain / Local AI section -->
+          <p class="panel-title" id="settings-brain-llm" style="margin-top: 20px;">Brain — Local AI</p>
+          <p class="subtitle" style="margin-bottom: 12px;">
+            Graphnosis's Brain features (synapse formation, insights, strategic planning, risk prediction)
+            use a local language model running on your device. No data ever leaves your machine.
+          </p>
+          <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 10px;">
+            <span style="font-size: 14px; min-width: 120px;">Ollama</span>
+            <span id="ollama-status-badge">Checking…</span>
+          </div>
+          <div id="ollama-model-row" style="display:none; align-items: center; gap: 10px; margin-bottom: 10px;">
+            <span style="font-size: 14px; min-width: 120px;">Active model</span>
+            <select id="ollama-model-select" style="flex: 1;"></select>
+            <button id="btn-ollama-apply-model" class="btn-sm">Apply</button>
+          </div>
+          <div id="ollama-pull-row" style="display:none; align-items: center; gap: 10px; margin-bottom: 10px;">
+            <span style="font-size: 14px; min-width: 120px;">Download model</span>
+            <select id="ollama-pull-select" style="flex: 1;">
+              <option value="llama3.2:3b">Llama 3.2 3B (recommended, ~2 GB)</option>
+              <option value="qwen2.5:3b">Qwen 2.5 3B (~2.1 GB)</option>
+              <option value="llama3.2:1b">Llama 3.2 1B (light, ~800 MB)</option>
+            </select>
+            <button id="btn-ollama-pull" class="btn-sm">Pull</button>
+          </div>
+          <div id="ollama-pull-progress" style="display:none; margin-bottom: 10px;">
+            <div class="progress-bar"><div id="ollama-pull-bar" style="width:0%"></div></div>
+            <span id="ollama-pull-label" style="font-size: 12px; color: var(--fg-dim);">Downloading…</span>
+          </div>
+          <div id="ollama-not-installed" style="display:none; margin-bottom: 10px;">
+            <p class="subtitle">
+              Ollama is not running.
+              <a href="#" id="btn-open-ollama-site">Install Ollama →</a>
+              (opens ollama.ai in your browser — free, open source, runs entirely on your machine)
+            </p>
           </div>
 
           <!-- NOTE: Graphs management, Recovery phrase regeneration, and the

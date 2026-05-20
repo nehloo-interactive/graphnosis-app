@@ -73,6 +73,18 @@ export class OllamaLlm implements LocalLlm {
     const json = (await res.json()) as { message?: { content?: string } };
     return json.message?.content ?? '';
   }
+
+  /** Returns true if Ollama is reachable. Used by BrainEngine before LLM-dependent loops. */
+  async ping(): Promise<boolean> {
+    try {
+      const res = await fetch(`${this.baseUrl}/api/tags`, {
+        signal: AbortSignal.timeout(1500),
+      });
+      return res.ok;
+    } catch {
+      return false;
+    }
+  }
 }
 
 export function makeLlm(choice: LlmChoice): LocalLlm {

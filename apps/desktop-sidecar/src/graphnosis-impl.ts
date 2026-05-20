@@ -284,6 +284,24 @@ export class GraphnosisImpl implements GraphnosisAdapter {
     }));
     return { directed, undirected };
   }
+  /**
+   * Returns raw embedding vectors for all embedded nodes, keyed by nodeId.
+   * Used by BrainEngine's contradiction scan (cosine pairwise comparison).
+   * Returns an empty map when the graph has no embedding index.
+   */
+  getNodeEmbeddings(handle: GraphHandle): Map<string, number[]> {
+    const h = handle as Internal;
+    if (!h.built || !h.instance.hasEmbeddings()) return new Map();
+    const out = new Map<string, number[]>();
+    for (const [id, n] of h.instance.graph.nodes) {
+      const emb = (n as unknown as { embedding?: Float32Array | number[] }).embedding;
+      if (emb && emb.length > 0) {
+        out.set(id, Array.from(emb));
+      }
+    }
+    return out;
+  }
+
   // Phantom methods purely to anchor the return-type inference for the
   // inspectEdges signature without re-importing the SDK types here.
   private _directedType(): import('@nehloo/graphnosis').DirectedEdge['type'] { throw new Error('phantom'); }

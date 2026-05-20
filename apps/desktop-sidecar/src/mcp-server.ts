@@ -8,6 +8,7 @@ import { proposeCorrection, applyCorrection } from './correction.js';
 import { ingestClip } from './ingest.js';
 import { withEmbedding } from './embedding-queue.js';
 import { mcpRegistry } from './mcp-registry.js';
+import type { BrainEngine } from './brain-engine.js';
 
 // MCP tools the App exposes to any AI client (Claude Desktop, Claude Code, Cursor, Zed, ...).
 //
@@ -260,6 +261,8 @@ export interface McpDeps {
    * wired and the AI just gets the actionable error string.
    */
   broadcastRaw?: import('./events.js').BroadcastRawFn;
+  /** Brain engine — provides develop/predict/insights/vitality tools. Optional. */
+  brainEngine?: BrainEngine | null;
 }
 
 /**
@@ -459,6 +462,93 @@ export function createMcpServer(deps: McpDeps): Server {
           properties: {
             includeNodes: { type: 'boolean', description: 'Include up to 20 node previews. Default false.' },
           },
+        },
+      },
+      {
+        name: 'develop',
+        description: 'Strategic planning synthesised from the user\'s private knowledge graph. ' +
+          'Call this when the user asks to "develop X", "plan Y", "think through Z with my knowledge", or wants a strategic analysis grounded in what they already know. ' +
+          'The brain recalls relevant memory, then synthesises a full plan: Situation → Approach → Key Actions → Risks & Gaps → Next Step. ' +
+          'All computation is LOCAL — no data leaves the user\'s machine. ' +
+          'Respects sensitivity-tier policy (sensitive engrams may be excluded from recall). ' +
+          'If Ollama is not running, returns the raw recalled context block for the AI to synthesise instead.\n\n' +
+          'Returns a Markdown strategic plan (or raw recalled context when no local LLM is available) plus metadata about which memory nodes were referenced.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            context: {
+              type: 'string',
+              description: 'The domain or situation to develop a plan for (e.g. "my book project", "launching a product in Romania").',
+            },
+            strategy: {
+              type: 'string',
+              description: 'The approach or method to use (e.g. "bottom-up growth", "lean MVP", "focus on existing relationships").',
+            },
+            goals: {
+              type: 'string',
+              description: 'What success looks like (e.g. "publish a draft in 3 months", "reach 100 paying users").',
+            },
+            graphIds: {
+              type: 'array',
+              items: { type: 'string' },
+              description: 'Optional: restrict recall to specific engram IDs. If omitted, searches all accessible engrams.',
+            },
+            saveAsGoal: {
+              type: 'boolean',
+              description: 'If true, the resulting plan is also saved as a goal node in the first resolved engram, enabling periodic check-ins.',
+            },
+          },
+          required: ['context', 'strategy', 'goals'],
+        },
+      },
+      {
+        name: 'predict',
+        description: 'Proactive risk and opportunity assessment BEFORE the user takes an action. ' +
+          'Call this when the user is about to do something and asks "what does my memory say about this?" or "any risks I should know?" or "have I done anything like this before?". ' +
+          'The brain recalls memory related to the proposed action and uses local AI to identify: past failures, resource or timeline constraints, dependencies or blockers, and overlooked opportunities. ' +
+          'All computation is LOCAL — no data leaves the device. ' +
+          'Returns structured risks, opportunities, a recommendation, and referenced memory node IDs.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            action: {
+              type: 'string',
+              description: 'The action or decision the user is about to take (e.g. "hire a contractor for the redesign", "launch a new product line in Q3").',
+            },
+            graphIds: {
+              type: 'array',
+              items: { type: 'string' },
+              description: 'Optional: restrict recall to specific engram IDs. If omitted, searches all accessible engrams.',
+            },
+          },
+          required: ['action'],
+        },
+      },
+      {
+        name: 'insights',
+        description: 'Return the current pending brain insights — non-obvious patterns, gaps, opportunities, and conflicts detected by the background analysis loop across all engrams. ' +
+          'Call this when the user asks "what has my brain noticed?", "any insights for me?", or "what patterns have you found?". ' +
+          'Insights are generated automatically every 6 hours when Ollama is running; this tool retrieves what\'s already been computed — it does NOT trigger a new scan. ' +
+          'Returns an array of insight objects with kind (pattern/gap/opportunity/conflict), title, body, and relevant node IDs.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            dismissed: {
+              type: 'boolean',
+              description: 'If true, include already-dismissed insights. Default false (active only).',
+            },
+          },
+        },
+      },
+      {
+        name: 'vitality',
+        description: 'Return the current vitality score for the user\'s knowledge graph — a 0-100 measure of how alive and well-connected the engrams are. ' +
+          'Factors: node count (30%), edge density (30%), recent activity (20%), average confidence (20%), minus a contradiction penalty. ' +
+          'Call this when the user asks "how healthy is my brain?", "how active is my knowledge graph?", or "what\'s my vitality score?". ' +
+          'Returns overall score plus per-engram breakdown.',
+        inputSchema: {
+          type: 'object',
+          properties: {},
         },
       },
     ],
@@ -686,6 +776,71 @@ export function createMcpServer(deps: McpDeps): Server {
           ...(includeNodes ? { nodes: g.nodes.slice(0, 20) } : {}),
         }));
         return { content: [{ type: 'text', text: JSON.stringify({ graphs: summary }, null, 2) }] };
+      }
+      case 'develop': {
+        const args = z.object({
+          context: z.string().min(1),
+          strategy: z.string().min(1),
+          goals: z.string().min(1),
+          graphIds: z.array(z.string()).optional(),
+          saveAsGoal: z.boolean().optional(),
+        }).parse(req.params.arguments ?? {});
+        if (!deps.brainEngine) {
+          return { content: [{ type: 'text', text: 'Brain engine is not running. Open the Graphnosis app to enable it.' }] };
+        }
+        const plan = await deps.brainEngine.runDevelop({
+          context: args.context,
+          strategy: args.strategy,
+          goals: args.goals,
+          ...(args.graphIds ? { graphIds: args.graphIds } : {}),
+        });
+        const firstGraphId = plan.graphIds[0];
+        if (args.saveAsGoal && firstGraphId) {
+          await deps.brainEngine.ingestGoal(firstGraphId, plan);
+        }
+        return {
+          content: [{
+            type: 'text',
+            text: plan.synthesisMarkdown +
+              `\n\n---\n_Referenced ${plan.referencedNodeIds.length} memory nodes across engrams: ${plan.graphIds.join(', ')}_`,
+          }],
+        };
+      }
+      case 'predict': {
+        const args = z.object({
+          action: z.string().min(1),
+          graphIds: z.array(z.string()).optional(),
+        }).parse(req.params.arguments ?? {});
+        if (!deps.brainEngine) {
+          return { content: [{ type: 'text', text: 'Brain engine is not running. Open the Graphnosis app to enable it.' }] };
+        }
+        const result = await deps.brainEngine.runPredict({
+          action: args.action,
+          ...(args.graphIds ? { graphIds: args.graphIds } : {}),
+        });
+        const text = [
+          result.risks.length > 0 ? `**Risks:**\n${result.risks.map(r => `- ${r}`).join('\n')}` : '',
+          result.opportunities.length > 0 ? `**Opportunities:**\n${result.opportunities.map(o => `- ${o}`).join('\n')}` : '',
+          result.recommendation ? `**Recommendation:** ${result.recommendation}` : '',
+          result.referencedNodeIds.length > 0 ? `\n_Grounded in ${result.referencedNodeIds.length} memory node(s)_` : '',
+        ].filter(Boolean).join('\n\n') || 'No relevant memory found for this action.';
+        return { content: [{ type: 'text', text }] };
+      }
+      case 'insights': {
+        const { dismissed } = z.object({ dismissed: z.boolean().optional() }).parse(req.params.arguments ?? {});
+        if (!deps.brainEngine) {
+          return { content: [{ type: 'text', text: JSON.stringify([]) }] };
+        }
+        const all = deps.brainEngine.getInsights();
+        const filtered = dismissed ? all : all.filter(i => !i.dismissed);
+        return { content: [{ type: 'text', text: JSON.stringify(filtered, null, 2) }] };
+      }
+      case 'vitality': {
+        if (!deps.brainEngine) {
+          return { content: [{ type: 'text', text: JSON.stringify({ overall: 0, byGraph: {}, computedAt: Date.now() }) }] };
+        }
+        const report = await deps.brainEngine.computeVitality();
+        return { content: [{ type: 'text', text: JSON.stringify(report, null, 2) }] };
       }
       default:
         throw new Error(`Unknown tool: ${req.params.name}`);
