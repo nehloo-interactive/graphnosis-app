@@ -15,7 +15,7 @@
 //! worked inside the dev tree and broke as soon as the .app was moved out
 //! of the workspace.
 //!
-//! After spawn, we wait up to 30s for the sidecar's Unix socket to appear,
+//! After spawn, we wait up to 90s for the sidecar's Unix socket to appear,
 //! which indicates IPC is up. If it doesn't appear, we report a clear error
 //! so the unlock flow doesn't pretend everything's fine.
 
@@ -27,9 +27,19 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use anyhow::{anyhow, bail, Context, Result};
+use serde::Serialize;
+use tauri::{AppHandle, Emitter};
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::{Child, Command};
 use tokio::time::sleep;
+
+/// Payload emitted on `graphnosis://sidecar-boot-status` during startup.
+/// The UI listens for this and shows the step in the lock screen.
+#[derive(Serialize, Clone)]
+struct BootStatus<'a> {
+    step: &'a str,
+    detail: &'a str,
+}
 
 /// How many of the sidecar's most-recent stderr lines we keep, so we can
 /// classify startup failures by their actual log output. 200 is enough to
@@ -55,18 +65,18 @@ impl SidecarHandle {
     }
 }
 
-pub async fn start(cortex_dir: &Path, passphrase: &str) -> Result<SidecarHandle> {
-    start_inner(cortex_dir, passphrase, None).await
+pub async fn start(app: &AppHandle, cortex_dir: &Path, passphrase: &str) -> Result<SidecarHandle> {
+    start_inner(app, cortex_dir, passphrase, None).await
 }
 
 /// Start the sidecar in recovery mode: the user has their 24-word BIP-39
 /// phrase but has forgotten the passphrase. The sidecar reads `recovery.enc`
 /// from the cortex dir and decrypts it with this phrase to recover the data key.
-pub async fn start_with_recovery(cortex_dir: &Path, recovery_phrase: &str) -> Result<SidecarHandle> {
-    start_inner(cortex_dir, "", Some(recovery_phrase)).await
+pub async fn start_with_recovery(app: &AppHandle, cortex_dir: &Path, recovery_phrase: &str) -> Result<SidecarHandle> {
+    start_inner(app, cortex_dir, "", Some(recovery_phrase)).await
 }
 
-async fn start_inner(cortex_dir: &Path, passphrase: &str, recovery_phrase: Option<&str>) -> Result<SidecarHandle> {
+async fn start_inner(app: &AppHandle, cortex_dir: &Path, passphrase: &str, recovery_phrase: Option<&str>) -> Result<SidecarHandle> {
     let socket_path = cortex_dir.join("sidecar.sock");
     // Stale socket left by a previous orphan? Remove it; the sidecar would recreate
     // it cleanly, but having it pre-existing can mask the "is the new sidecar up?" check.
@@ -122,11 +132,13 @@ async fn start_inner(cortex_dir: &Path, passphrase: &str, recovery_phrase: Optio
 
     // Drain stderr into a ring buffer while mirroring to our stderr. Detached
     // task — it lives until the pipe closes (child exit), at which point it
-    // just returns.
+    // just returns. Also emits boot-status Tauri events for known startup
+    // phrases so the lock screen can show progress during long cortex loads.
     let stderr_buffer: Arc<Mutex<VecDeque<String>>> =
         Arc::new(Mutex::new(VecDeque::with_capacity(STDERR_BUFFER_LINES)));
     if let Some(stderr) = child.stderr.take() {
         let buffer = stderr_buffer.clone();
+        let app_inner = app.clone();
         tokio::spawn(async move {
             let mut lines = BufReader::new(stderr).lines();
             while let Ok(Some(line)) = lines.next_line().await {
@@ -135,23 +147,56 @@ async fn start_inner(cortex_dir: &Path, passphrase: &str, recovery_phrase: Optio
                     if buf.len() >= STDERR_BUFFER_LINES {
                         buf.pop_front();
                     }
-                    buf.push_back(line);
+                    buf.push_back(line.clone());
+                }
+                // Emit recognisable startup milestones to the frontend so the
+                // lock screen can show progress instead of a spinning bar.
+                let status: Option<BootStatus> = if line.contains("cortex lock acquired") {
+                    Some(BootStatus { step: "lock", detail: "Cortex secured" })
+                } else if line.contains("local embeddings ready") {
+                    Some(BootStatus { step: "embeddings", detail: "AI embeddings ready" })
+                } else if line.contains("WARNING: local embeddings unavailable") {
+                    Some(BootStatus { step: "embeddings", detail: "Starting (text search only)" })
+                } else if line.contains("loaded engram") {
+                    Some(BootStatus { step: "engram", detail: "Loading memories…" })
+                } else if line.contains("IPC listening") {
+                    Some(BootStatus { step: "ready", detail: "Ready" })
+                } else {
+                    None
+                };
+                if let Some(s) = status {
+                    let _ = app_inner.emit("graphnosis://sidecar-boot-status", s);
                 }
             }
         });
     }
 
     // Wait for either the IPC socket to appear OR the child process to exit.
-    // 30s is generous because the first launch may need to load the BGE
-    // embeddings model. Exit-during-startup commonly means: wrong passphrase
-    // (sidecar refused to overwrite an existing cortex), missing env var, or
-    // a fatal Node error. We surface that as a meaningful error instead of
-    // making the user wait the full timeout for a soft failure.
+    // 90s covers large cortexes (4000+ nodes with BGE embeddings can take
+    // 30–60s on first decrypt+load). Exit-during-startup commonly means:
+    // wrong passphrase, missing env var, or a fatal Node error — we surface
+    // that as a meaningful error instead of making the user wait the full
+    // timeout for a soft failure.
+    let _ = app.emit("graphnosis://sidecar-boot-status", BootStatus {
+        step: "starting",
+        detail: "Starting Graphnosis…",
+    });
     let start = std::time::Instant::now();
-    let max = Duration::from_secs(30);
+    let max = Duration::from_secs(90);
+    let mut last_tick_s: u64 = 0;
     loop {
         if socket_path.exists() {
             break;
+        }
+        // Emit a generic "still loading" heartbeat every 5s so the UI
+        // knows the sidecar is alive even between recognised stderr lines.
+        let elapsed_s = start.elapsed().as_secs();
+        if elapsed_s / 5 > last_tick_s / 5 {
+            last_tick_s = elapsed_s;
+            let _ = app.emit("graphnosis://sidecar-boot-status", BootStatus {
+                step: "loading",
+                detail: "Loading cortex…",
+            });
         }
         if let Some(status) = child.try_wait().context("try_wait on sidecar")? {
             // Sidecar exited before the socket appeared. Give the stderr
@@ -166,7 +211,7 @@ async fn start_inner(cortex_dir: &Path, passphrase: &str, recovery_phrase: Optio
             // Process still alive but socket never appeared — slow boot or hang.
             let _ = child.kill().await;
             return Err(anyhow!(
-                "sidecar did not start cleanly within 30s: socket {} did not appear. \
+                "sidecar did not start cleanly within 90s: socket {} did not appear. \
                  Check the dev terminal for stderr.",
                 socket_path.display()
             ));

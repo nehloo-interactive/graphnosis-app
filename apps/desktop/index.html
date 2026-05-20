@@ -239,6 +239,29 @@
         0%   { transform: translateX(-100%); }
         100% { transform: translateX(285%); }
       }
+      /* Boot-step status: visible during the sidecar startup wait so the
+         user sees progress instead of a frozen spinner. */
+      .boot-status {
+        display: flex;
+        align-items: center;
+        gap: 7px;
+        margin-top: 8px;
+        font-size: 12px;
+        color: var(--fg-dim);
+        min-height: 18px;
+      }
+      .boot-status.hidden { display: none; }
+      .boot-status-dot {
+        width: 6px; height: 6px;
+        border-radius: 50%;
+        background: var(--accent);
+        flex-shrink: 0;
+        animation: boot-dot-pulse 1.6s ease-in-out infinite;
+      }
+      @keyframes boot-dot-pulse {
+        0%, 100% { opacity: 1; }
+        50%       { opacity: 0.3; }
+      }
       .recovery-unlock-section {
         margin-top: 14px;
         padding-top: 14px;
@@ -4118,6 +4141,12 @@
                  Unlock and the cortex actually opening. Same pattern reused
                  for the recovery-phrase "Recover access" button. -->
             <div id="unlock-progress" class="unlock-progress hidden"></div>
+            <!-- Boot-step status line: shown during the sidecar startup wait.
+                 Tells the user what's happening so a 30-60s load doesn't look frozen. -->
+            <div id="boot-status" class="boot-status hidden">
+              <span id="boot-status-dot" class="boot-status-dot"></span>
+              <span id="boot-status-text"></span>
+            </div>
             <a id="link-forgot-passphrase" class="forgot-passphrase-link" role="button" tabindex="0">Forgot passphrase? Use recovery phrase</a>
             <!-- Recovery unlock (hidden by default; shown via "Forgot passphrase?" link).
                  Placed AFTER the Unlock action so the user's primary path stays visually
