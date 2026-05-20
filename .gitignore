@@ -37,6 +37,9 @@ apps/desktop/src-tauri/resources/libonnxruntime.*.dylib
 # Astro build cache for the docs site.
 .astro/
 
+# Marketing website — separate repo / deployment, not part of this monorepo.
+apps/marketing-web/
+
 # Claude Code session artifacts — local agent worktrees + transcripts.
 .claude/
 
