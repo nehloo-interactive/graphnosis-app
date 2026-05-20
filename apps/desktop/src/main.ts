@@ -547,7 +547,7 @@ const els = {
   // Brain / Alive — status bar
   brainVitality: $<HTMLSpanElement>('brain-vitality'),
   llmStatusChip: $<HTMLSpanElement>('llm-status-chip'),
-  // Living Brain pane
+  // Autonomous Brain pane
   lbVitalityRing: $<HTMLDivElement>('lb-vitality-ring'),
   lbVitalityScore: $<HTMLSpanElement>('lb-vitality-score'),
   lbVitalityTitle: $<HTMLHeadingElement>('lb-vitality-title'),
@@ -7524,7 +7524,7 @@ async function refreshBrainState(): Promise<void> {
   } catch { /* non-fatal — brain may not be initialized yet */ }
 }
 
-/** Status-bar chip + atlas animation + Living Brain pane. Cheap; no IPC. */
+/** Status-bar chip + atlas animation + Autonomous Brain pane. Cheap; no IPC. */
 function updateBrainUI(): void {
   if (!brainVitalityReport) return;
   const v = brainVitalityReport.overall;
@@ -7538,7 +7538,7 @@ function updateBrainUI(): void {
   renderLivingBrainPane();
 }
 
-// ── Living Brain pane ─────────────────────────────────────────────────────
+// ── Autonomous Brain pane ─────────────────────────────────────────────────
 
 /** Full refresh: pull state + LLM status, then paint. Tab-open + Refresh. */
 async function renderLivingBrain(): Promise<void> {
@@ -7557,6 +7557,12 @@ function renderLivingBrainPane(): void {
   renderLbInsights();
   renderLbGoals();
   ensureFeedPlaceholder();
+}
+
+/** Map a graphId to its human display name for the engram chips. Falls
+ *  back to the raw id if the graph isn't in loadedGraphs (e.g. archived). */
+function engramName(graphId: string): string {
+  return loadedGraphs.find((g) => g.graphId === graphId)?.metadata.displayName ?? graphId;
 }
 
 function vitalityCopy(v: number): [string, string] {
@@ -7593,7 +7599,10 @@ function renderLbContradictions(): void {
         <div class="lb-snippet"><span class="lb-snippet-tag">B</span>${escape(c.snippetB)}</div>
       </div>
       <div class="lb-contradiction-foot">
-        <span class="brain-subtitle">${Math.round(c.similarity * 100)}% similar — likely the same fact stated two ways</span>
+        <span style="display:flex; align-items:center; gap:8px; min-width:0;">
+          <span class="lb-engram-chip" title="Engram">${escape(engramName(c.graphId))}</span>
+          <span class="brain-subtitle">${Math.round(c.similarity * 100)}% similar — likely the same fact stated two ways</span>
+        </span>
         <button class="btn-sm" data-dismiss-contradiction="${escape(c.id)}">Dismiss</button>
       </div>
     </div>`).join('');
@@ -7618,6 +7627,7 @@ function renderLbInsights(): void {
   host.innerHTML = active.map((i) => `
     <div class="lb-insight">
       <span class="lb-insight-kind">${escape(i.kind)}</span>
+      <span class="lb-engram-chip" title="Engram">${escape(engramName(i.graphId))}</span>
       <div class="lb-insight-title">${escape(i.title)}</div>
       <div class="lb-insight-body">${escape(i.body)}</div>
       <div style="margin-top:6px;"><button class="btn-sm" data-dismiss-insight="${escape(i.id)}">Dismiss</button></div>
@@ -7654,7 +7664,9 @@ function renderLbGoals(): void {
       ? `<div class="lb-goal-meta">Milestones: ${escape(g.milestones.slice(0, 3).join(' · '))}</div>`
       : '';
     return `<div class="lb-goal">
-      <div class="lb-goal-title">${escape(g.title)}</div>
+      <div class="lb-goal-title">${escape(g.title)}
+        <span class="lb-engram-chip" title="Engram">${escape(engramName(g.graphId))}</span>
+      </div>
       <div class="lb-goal-meta">${deadline}</div>
       ${milestones}
     </div>`;
@@ -7797,7 +7809,7 @@ els.llmStatusChip.addEventListener('click', () => {
   void refreshLlmStatus();
 });
 
-// ── Goal develop form (Living Brain pane) ─────────────────────────────────
+// ── Goal develop form (Autonomous Brain pane) ─────────────────────────────
 
 function resetGoalForm(): void {
   els.lbGoalForm.classList.add('hidden');
