@@ -1,13 +1,11 @@
 import { randomUUID } from 'node:crypto';
-import { embeddings } from '@graphnosis-app/core';
 import type { GraphnosisHost } from './host.js';
 import type { LocalLlm } from './correction.js';
 import type { BroadcastRawFn } from './events.js';
 import { VitalityScorer, type VitalityReport } from './vitality.js';
 import { TemporalEngine } from './temporal-engine.js';
 import { GoalTracker } from './goal-tracker.js';
-
-const { cosine } = embeddings;
+import { findSimilarPairs } from './contradiction-scan.js';
 
 // ── Public types ────────────────────────────────────────────────────────────
 
@@ -127,12 +125,18 @@ const SYNAPSE_INTERVAL_MS       = 45 * 60 * 1000;   // 45 min
 const INSIGHT_INTERVAL_MS       =  6 * 60 * 60 * 1000; // 6 h
 const TEMPORAL_INTERVAL_MS      = 24 * 60 * 60 * 1000; // 24 h
 const GOAL_CHECK_INTERVAL_MS    =  4 * 60 * 60 * 1000; // 4 h
-// Per-graph cap on nodes fed into the O(n²) pairwise cosine comparison.
-// 1200 keeps a full cortex sweep (11 engrams) near ~8M comparisons — a few
-// seconds of work, and the loop yields to the event loop so it never blocks
-// IPC. Nodes are taken highest-confidence-first, so the cap samples the
-// memories where a contradiction matters most.
-const MAX_CONTRADICTION_NODES   = 1200;
+// Grace period before the first background sweep. The contradiction scan
+// does real embedding math now; running it during boot starves the IPC
+// the UI needs to load engrams. Hold off until the app has settled.
+const BOOT_GRACE_MS             = 60 * 1000;        // 60 s
+// Safety ceiling on nodes fed to the LSH near-duplicate search — the search
+// is ~O(n), not O(n²), so this is effectively "no cap" for real cortexes
+// and only guards against a pathologically huge single engram.
+const MAX_CONTRADICTION_NODES   = 30_000;
+// Keep the contradiction list bounded — on a large cortex the exhaustive
+// scan can surface many; we retain the highest-similarity (most likely
+// genuine) ones and let the user dismiss from there.
+const MAX_CONTRADICTIONS_STORED = 200;
 const MAX_SYNAPSE_EDGES_PER_RUN = 20;
 const MAX_INSIGHTS_STORED       = 50;
 
@@ -147,7 +151,12 @@ export class BrainEngine {
   // Guards runFullScan() against overlapping on-demand triggers (e.g. the
   // user mashing Refresh, or a tab-open scan racing a manual one).
   private scanInFlight = false;
+  // Guards the (now genuinely expensive) contradiction scan against
+  // overlapping runs — the boot warmup, the 20-min interval, and a
+  // runFullScan can otherwise all enter it at once.
+  private contradictionScanRunning = false;
 
+  private warmupTimer: NodeJS.Timeout | null = null;
   private contradictionTimer: NodeJS.Timeout | null = null;
   private synapseTimer: NodeJS.Timeout | null = null;
   private insightTimer: NodeJS.Timeout | null = null;
@@ -167,12 +176,20 @@ export class BrainEngine {
   // ── Lifecycle ──────────────────────────────────────────────────────────────
 
   start(): void {
-    // Fire all loops immediately (async, non-blocking) then schedule repeats.
-    void this.runContradictionScan();
-    void this.runSynapse();
-    void this.runInsight();
-    void this.runTemporalDecay();
-    void this.runGoalCheck();
+    // Do NOT scan at boot. The contradiction scan does real embedding math
+    // now; running it while the app is still loading engrams and wiring the
+    // UI saturates the CPU and starves the IPC the UI needs — engrams then
+    // appear not to load. Hold the first sweep for a grace period; the
+    // intervals below take over after that, and the Autonomous Brain tab
+    // triggers an on-demand scan whenever the user wants one sooner.
+    this.warmupTimer = setTimeout(() => {
+      void this.runContradictionScan();
+      void this.runSynapse();
+      void this.runInsight();
+      void this.runTemporalDecay();
+      void this.runGoalCheck();
+    }, BOOT_GRACE_MS);
+    this.warmupTimer.unref();
 
     this.contradictionTimer = setInterval(
       () => { void this.runContradictionScan(); },
@@ -199,13 +216,16 @@ export class BrainEngine {
       GOAL_CHECK_INTERVAL_MS,
     ).unref();
 
-    // Emit initial vitality after a short delay so host is fully settled.
+    // Emit initial vitality once boot has settled — vitality.compute()
+    // walks every node and the op-log, so keep it clear of the load path.
     setTimeout(() => {
       void this.emitVitality();
-    }, 2_000).unref();
+    }, 12_000).unref();
   }
 
   stop(): void {
+    if (this.warmupTimer) clearTimeout(this.warmupTimer);
+    this.warmupTimer = null;
     for (const t of [this.contradictionTimer, this.synapseTimer, this.insightTimer, this.temporalTimer, this.goalTimer]) {
       if (t) clearInterval(t);
     }
@@ -392,76 +412,100 @@ export class BrainEngine {
   // ── Private loop implementations ──────────────────────────────────────────
 
   private async runContradictionScan(): Promise<void> {
+    // The scan is genuinely expensive now — never let two overlap.
+    if (this.contradictionScanRunning) return;
+    this.contradictionScanRunning = true;
     this.emitActivity('contradiction-scan', 'start');
     const found: Contradiction[] = [];
     const now = Date.now();
+    const yieldToLoop = (): Promise<void> =>
+      new Promise<void>((resolve) => setImmediate(resolve));
 
-    for (const graphId of this.host.listGraphs()) {
-      try {
-        const nodes = this.host.listNodes(graphId);
-        const active = nodes
-          .filter(n =>
-            n.confidence > 0.2 &&
-            (n.validUntil === undefined || n.validUntil > now) &&
-            n.nodeType !== 'document' &&
-            n.nodeType !== 'section' &&
-            n.contentPreview.length > 20,
-          )
-          .sort((a, b) => b.confidence - a.confidence)
-          .slice(0, MAX_CONTRADICTION_NODES);
+    try {
+      for (const graphId of this.host.listGraphs()) {
+        try {
+          const nodes = this.host.listNodes(graphId);
+          const active = nodes
+            .filter(n =>
+              n.confidence > 0.2 &&
+              (n.validUntil === undefined || n.validUntil > now) &&
+              n.nodeType !== 'document' &&
+              n.nodeType !== 'section' &&
+              n.contentPreview.length > 20,
+            )
+            .sort((a, b) => b.confidence - a.confidence)
+            .slice(0, MAX_CONTRADICTION_NODES);
+          if (active.length < 2) continue;
 
-        const embs = this.host.getNodeEmbeddings(graphId);
-        if (embs.size < 2) continue;
-
-        const embeddedNodes = active.filter(n => embs.has(n.id));
-
-        for (let i = 0; i < embeddedNodes.length; i++) {
-          // Yield to the event loop every 64 rows so a large pairwise
-          // sweep stays responsive — IPC and other sidecar work keep
-          // flowing instead of stalling for the whole O(n²) pass.
-          if (i > 0 && i % 64 === 0) {
-            await new Promise<void>((resolve) => setImmediate(resolve));
+          const nodeById = new Map(active.map(n => [n.id, n]));
+          const allEmbs = this.host.getNodeEmbeddings(graphId);
+          // Restrict to active, content-bearing nodes that actually have a
+          // vector — embeddings live in a separate index, see
+          // graphnosis-impl.getNodeEmbeddings.
+          const embs = new Map<string, number[]>();
+          for (const n of active) {
+            const v = allEmbs.get(n.id);
+            if (v) embs.set(n.id, v);
           }
-          for (let j = i + 1; j < embeddedNodes.length; j++) {
-            const a = embeddedNodes[i]!;
-            const b = embeddedNodes[j]!;
-            const embA = embs.get(a.id)!;
-            const embB = embs.get(b.id)!;
-            const sim = cosine(embA, embB);
+          if (embs.size < 2) continue;
 
-            // High similarity but not identical content = potential contradiction
-            if (sim >= 0.85 && sim < 0.99 &&
-                a.contentPreview.slice(0, 40) !== b.contentPreview.slice(0, 40)) {
-              const key = `${graphId}|${a.id}|${b.id}`;
-              const alreadyKnown = this.contradictions.some(
-                c => c.graphId === graphId &&
-                     ((c.nodeA === a.id && c.nodeB === b.id) ||
-                      (c.nodeA === b.id && c.nodeB === a.id)),
-              );
-              if (!alreadyKnown) {
-                found.push({
-                  id: randomUUID(),
-                  graphId,
-                  nodeA: a.id,
-                  nodeB: b.id,
-                  snippetA: a.contentPreview.slice(0, 120),
-                  snippetB: b.contentPreview.slice(0, 120),
-                  similarity: sim,
-                  detectedAt: now,
-                });
-                this.emitBrain('__brain_contradiction__');
-              }
+          // Pre-index already-known pairs for this graph so the per-pair
+          // dedup check is O(1) instead of O(contradictions).
+          const knownKeys = new Set<string>();
+          for (const c of this.contradictions) {
+            if (c.graphId === graphId) {
+              knownKeys.add(c.nodeA < c.nodeB
+                ? `${c.nodeA}|${c.nodeB}` : `${c.nodeB}|${c.nodeA}`);
             }
           }
-        }
-      } catch (err) {
-        console.error(`[brain] contradiction scan error on ${graphId}:`, err);
-      }
-    }
 
-    this.contradictions.push(...found);
-    this.vitality.invalidate();
-    await this.persistLastRun('contradictionScan');
+          // LSH near-duplicate search — exhaustive across every embedded
+          // node in the engram, ~O(n) instead of a brute O(n²) sweep.
+          const pairs = await findSimilarPairs(embs, {
+            minSim: 0.85,
+            maxSim: 0.99,
+            onYield: yieldToLoop,
+          });
+
+          for (const pair of pairs) {
+            const a = nodeById.get(pair.idA);
+            const b = nodeById.get(pair.idB);
+            if (!a || !b) continue;
+            // Identical opening text = the same memory twice, not a
+            // contradiction — skip.
+            if (a.contentPreview.slice(0, 40) === b.contentPreview.slice(0, 40)) continue;
+            const dedupKey = a.id < b.id ? `${a.id}|${b.id}` : `${b.id}|${a.id}`;
+            if (knownKeys.has(dedupKey)) continue;
+            knownKeys.add(dedupKey);
+            found.push({
+              id: randomUUID(),
+              graphId,
+              nodeA: a.id,
+              nodeB: b.id,
+              snippetA: a.contentPreview.slice(0, 120),
+              snippetB: b.contentPreview.slice(0, 120),
+              similarity: pair.similarity,
+              detectedAt: now,
+            });
+          }
+        } catch (err) {
+          console.error(`[brain] contradiction scan error on ${graphId}:`, err);
+        }
+        await yieldToLoop();
+      }
+
+      this.contradictions.push(...found);
+      // Keep the list bounded — highest-similarity pairs first, since those
+      // are the most likely to be genuine same-fact contradictions.
+      if (this.contradictions.length > MAX_CONTRADICTIONS_STORED) {
+        this.contradictions.sort((a, b) => b.similarity - a.similarity);
+        this.contradictions = this.contradictions.slice(0, MAX_CONTRADICTIONS_STORED);
+      }
+      this.vitality.invalidate();
+      await this.persistLastRun('contradictionScan');
+    } finally {
+      this.contradictionScanRunning = false;
+    }
     this.emitActivity('contradiction-scan', 'done');
     await this.emitVitality();
   }

@@ -18,6 +18,7 @@ import { policy } from '@nehloo-interactive/graphnosis-secure-sync';
 import { GraphnosisHost } from './host.js';
 import { GraphnosisImpl } from './graphnosis-impl.js';
 import { BrainEngine } from './brain-engine.js';
+import { findSimilarPairs } from './contradiction-scan.js';
 import type { RawFrame } from './events.js';
 
 async function main(): Promise<void> {
@@ -75,7 +76,8 @@ The timeline is tight. Past projects slipped by about two months each.`;
   brain.stop();
   log('brain-stopped', { framesEmitted: frames.length });
 
-  // 3 — Contradiction scan ran during start(); list is a valid array.
+  // 3 — getContradictions() returns a valid array (empty before any scan —
+  // start() now defers the first sweep past a boot grace period).
   const contradictions = brain.getContradictions();
   assert(Array.isArray(contradictions), 'getContradictions must return an array');
   log('contradictions', { count: contradictions.length });
@@ -145,6 +147,29 @@ The timeline is tight. Past projects slipped by about two months each.`;
   const sawFullscanDone = frames.some((f) => frameGraphId(f) === '__brain_done_fullscan__');
   assert(sawFullscanStart && sawFullscanDone, 'runFullScan must emit fullscan start + done frames');
   log('full-scan', { fullscanStart: sawFullscanStart, fullscanDone: sawFullscanDone });
+
+  // 12 — LSH near-duplicate search finds a similar pair, skips a distant one.
+  {
+    const dim = 16;
+    const at = (idx: number, val: number): number[] =>
+      Array.from({ length: dim }, (_, i) => (i === idx ? val : 0));
+    const A = at(0, 1);                                    // unit on axis 0
+    const B = [0.98, 0.198997, ...new Array<number>(dim - 2).fill(0)]; // cos(A,B) ≈ 0.98
+    const C = at(dim - 1, 1);                              // orthogonal to A
+    const pairs = await findSimilarPairs(
+      new Map<string, number[]>([['A', A], ['B', B], ['C', C]]),
+      { minSim: 0.85, maxSim: 0.99 },
+    );
+    const foundAB = pairs.some(
+      (p) => (p.idA === 'A' && p.idB === 'B') || (p.idA === 'B' && p.idB === 'A'),
+    );
+    assert(foundAB, 'findSimilarPairs must detect the near-duplicate A/B pair');
+    assert(
+      !pairs.some((p) => p.idA === 'C' || p.idB === 'C'),
+      'findSimilarPairs must not pair the distant vector C',
+    );
+    log('lsh', { pairs: pairs.length, foundAB });
+  }
 
   log('PASS', { brainFramesEmitted: frames.length });
 }
