@@ -276,14 +276,6 @@ let graphnosisActiveTab: GraphnosisTab = 'checkin';
 let graphnosisListRows: NodeRecord[] = []; // current visible search results
 let graphnosisAllNodes: NodeRecord[] = []; // unfiltered cache for the active engram
 let graphnosisSelectedId: string | null = null;
-// Whether the current selection was set by explicit user action (search
-// click, memory-trace click, 3D node click, sidebar connection click)
-// vs implicitly (trivia card surfacing a candidate). Read by
-// switchGraphnosisTab to decide whether to carry the selection forward
-// when the 3D Engram tab opens — implicit selections get reset so the
-// user lands on a clean unhighlighted graph, explicit ones persist so
-// the user sees the node they navigated to.
-let graphnosisSelectionExplicit = false;
 let graphnosisSearchTimer: ReturnType<typeof setTimeout> | null = null;
 let graphnosisListMode: 'substring' | 'semantic' = 'substring';
 let graphnosisSemanticToken = 0; // race-guard
@@ -5043,15 +5035,6 @@ function selectGraphnosisNode(nodeId: string | null, { trace = false }: { trace?
     && graphnosisEditingId === null;
 
   graphnosisSelectedId = nodeId;
-  // Track WHY the selection happened. `trace: true` is the call signature
-  // used for user-initiated navigation (search row click, memory-trace
-  // click, 3D graph node click, detail-pane connection click). Trivia
-  // candidate auto-cycle calls use `trace: true` too — but the user IS
-  // explicitly interacting with the candidate when they click it. Setters
-  // that happen invisibly (e.g. when the deck auto-advances) DON'T pass
-  // trace. We use this flag in switchGraphnosisTab to decide whether the
-  // selection should persist onto the 3D Engram view or be reset.
-  graphnosisSelectionExplicit = trace;
   graphnosisEditingId = null; // cancel any pending edit on selection change
   syncListSelectionHighlight();
   // Mirror selection into the Atlas if mounted — but don't move the camera.
@@ -6757,24 +6740,24 @@ function switchGraphnosisTab(tab: GraphnosisTab): void {
     p.classList.toggle('hidden', p.dataset['gpane'] !== tab);
   });
   if (tab === 'atlas') {
-    // Selection carry-over: explicit user navigation (search hit, memory
-    // trace click, etc.) persists onto the 3D view so the user sees the
-    // node they were exploring. Implicit selections (trivia card auto-
-    // surfacing a candidate) get cleared so the graph opens with no
-    // highlighted node — the user picks fresh in the 3D space.
-    if (!graphnosisSelectionExplicit) {
-      graphnosisSelectedId = null;
-      // Don't call selectGraphnosisNode(null) — that would re-render the
-      // detail pane and reset the explicit flag again. Just clear state.
-      if (mainAtlas) mainAtlas.resetEmphasis();
-      syncListSelectionHighlight();
-      renderDetailEmpty();
-    }
+    // Every time the 3D Engram tab comes into focus, reset to a clean
+    // canvas: no node selected, full-colour graph framed in view. The
+    // user wants a consistent fresh entry rather than carrying a prior
+    // selection (and its dimmed emphasis) onto the 3D view.
+    graphnosisSelectedId = null;
+    // Clear state directly rather than via selectGraphnosisNode(null) —
+    // that would also re-render the detail pane mid-switch.
+    if (mainAtlas) mainAtlas.resetEmphasis();
+    syncListSelectionHighlight();
+    renderDetailEmpty();
     void (async () => {
       await mountAtlasIfNeeded();
       pushDataIntoAtlas();
-      // Frame the graph after a beat — same idea as before, lets the layout
-      // settle before snapping the camera.
+      // resetEmphasis again after the (possibly first-time) mount so a
+      // freshly-created engine also opens with the full graph un-dimmed.
+      mainAtlas?.resetEmphasis();
+      // Frame the whole graph after a beat — lets the force layout settle
+      // before snapping the camera so every node lands in view.
       setTimeout(() => mainAtlas?.zoomToFit(700, 20), 1200);
     })();
   } else if (tab === 'checkin') {
