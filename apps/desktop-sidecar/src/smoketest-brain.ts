@@ -1,6 +1,6 @@
 // Standalone smoke test for the Alive Brain engine.
 // Runs without Tauri, without MCP, and WITHOUT a local LLM — exercises every
-// brain feature that works offline: vitality scoring, contradiction scan,
+// brain feature that works offline: vitality scoring, duplicate scan,
 // temporal decay, develop/predict fallback, insights, and goal ingest.
 //
 // Run with:
@@ -18,7 +18,7 @@ import { policy } from '@nehloo-interactive/graphnosis-secure-sync';
 import { GraphnosisHost } from './host.js';
 import { GraphnosisImpl } from './graphnosis-impl.js';
 import { BrainEngine } from './brain-engine.js';
-import { findSimilarPairs } from './contradiction-scan.js';
+import { findSimilarPairs } from './duplicate-scan.js';
 import type { RawFrame } from './events.js';
 
 async function main(): Promise<void> {
@@ -76,11 +76,11 @@ The timeline is tight. Past projects slipped by about two months each.`;
   brain.stop();
   log('brain-stopped', { framesEmitted: frames.length });
 
-  // 3 — getContradictions() returns a valid array (empty before any scan —
+  // 3 — getDuplicatePairs() returns a valid array (empty before any scan —
   // start() now defers the first sweep past a boot grace period).
-  const contradictions = brain.getContradictions();
-  assert(Array.isArray(contradictions), 'getContradictions must return an array');
-  log('contradictions', { count: contradictions.length });
+  const duplicatePairs = brain.getDuplicatePairs();
+  assert(Array.isArray(duplicatePairs), 'getDuplicatePairs must return an array');
+  log('duplicatePairs', { count: duplicatePairs.length });
 
   // 4 — Temporal decay runs and returns a structured report. Freshly
   //     ingested nodes are < 1 day old so nodesDecayed is expected to be 0;
@@ -128,7 +128,7 @@ The timeline is tight. Past projects slipped by about two months each.`;
   assert(Array.isArray(goals), 'listGoals must return an array');
   log('goal', { ingestedNodeId: goalNodeId, goalsFound: goals.length });
 
-  // 9 — computeVitality() (the contradiction-count-aware variant) stays in range.
+  // 9 — computeVitality() (the duplicate-pair-count-aware variant) stays in range.
   const v2 = await brain.computeVitality();
   assert(v2.overall >= 0 && v2.overall <= 100, 'computeVitality must be 0-100');
   log('compute-vitality', { overall: v2.overall });
@@ -136,7 +136,7 @@ The timeline is tight. Past projects slipped by about two months each.`;
   // 10 — getStatus() reports intervals + lastRun without throwing.
   const status = brain.getStatus();
   assert(typeof status.scanning === 'boolean', 'getStatus.scanning must be boolean');
-  assert((status.intervals['contradictionScan'] ?? 0) > 0, 'getStatus must report intervals');
+  assert((status.intervals['duplicateScan'] ?? 0) > 0, 'getStatus must report intervals');
   log('status', { scanning: status.scanning, intervalKeys: Object.keys(status.intervals).length });
 
   // 11 — runFullScan() completes and emits a wrapping fullscan start/done.

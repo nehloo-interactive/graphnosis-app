@@ -1,6 +1,6 @@
 //! Near-duplicate detection over node embeddings via random-hyperplane LSH.
 //!
-//! The contradiction scan needs every pair of nodes whose cosine similarity
+//! The duplicate scan needs every pair of nodes whose cosine similarity
 //! sits in a "very similar but not identical" band. A brute O(n²) sweep is
 //! fine for a few hundred nodes but explodes on a real cortex (tens of
 //! thousands of nodes across many engrams) — so we previously capped at a
