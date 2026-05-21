@@ -135,7 +135,7 @@ export class EngramEngineThreeCustom implements AtlasEngine {
   private sourceVisible = new Map<string, boolean>();
   private categoryVisible: Record<EdgeCategory, boolean> = {
     reasoning: true, structure: true, social: true,
-    temporal: true, semantic: true, identity: true,
+    temporal: true, semantic: true, identity: true, predicted: true,
   };
   // Selection
   private selectedId: string | null = null;
@@ -932,7 +932,7 @@ export class EngramEngineThreeCustom implements AtlasEngine {
   edgeCounts(): Record<EdgeCategory, number> {
     const out: Record<EdgeCategory, number> = {
       reasoning: 0, structure: 0, social: 0,
-      temporal: 0, semantic: 0, identity: 0,
+      temporal: 0, semantic: 0, identity: 0, predicted: 0,
     };
     for (const l of this.allLinks) out[l.category]++;
     return out;

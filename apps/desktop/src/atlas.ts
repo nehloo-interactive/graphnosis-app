@@ -68,7 +68,15 @@ export interface AtlasDirectedEdge {
 }
 export interface AtlasUndirectedEdge { id: string; a: string; b: string; type: UndirectedEdgeType; weight: number; }
 
-export type EdgeCategory = 'reasoning' | 'structure' | 'social' | 'temporal' | 'semantic' | 'identity';
+/**
+ * A Graphnosis Neural Network prediction — a connection the model believes
+ * is likely real. Rendered as a distinct, dashed, toggleable overlay layer
+ * in the atlas; it is NOT an edge in the deterministic `.gai` graph and
+ * lives only in the encrypted `.gnn` overlay.
+ */
+export interface AtlasPredictedEdge { id: string; from: string; to: string; score: number; }
+
+export type EdgeCategory = 'reasoning' | 'structure' | 'social' | 'temporal' | 'semantic' | 'identity' | 'predicted';
 
 const DIRECTED_CATEGORY: Record<DirectedEdgeType, EdgeCategory> = {
   causes: 'reasoning', supports: 'reasoning', contradicts: 'reasoning', supersedes: 'reasoning',
@@ -90,6 +98,7 @@ export const CATEGORY_COLOR: Record<EdgeCategory, number> = {
   temporal:  0xfbbf24,
   semantic:  0x6ab3c8,
   identity:  0x9a9a9c,
+  predicted: 0xa3e635,
 };
 export const CATEGORY_LABEL: Record<EdgeCategory, string> = {
   reasoning: 'Reasoning',
@@ -98,10 +107,51 @@ export const CATEGORY_LABEL: Record<EdgeCategory, string> = {
   temporal:  'Temporal',
   semantic:  'Semantic',
   identity:  'Identity',
+  predicted: 'Predicted',
 };
 export function categoryFor(directed: boolean, type: DirectedEdgeType | UndirectedEdgeType): EdgeCategory {
   if (directed) return DIRECTED_CATEGORY[type as DirectedEdgeType];
   return UNDIRECTED_CATEGORY[type as UndirectedEdgeType];
+}
+
+/**
+ * Build the dashed THREE.Line used to render one GNN-predicted edge.
+ * Predicted edges are deliberately thin 1px dashed lines so they read as
+ * tentative against the solid weighted tubes of real connections.
+ */
+function makeDashedLink(): THREE.Line {
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute('position', new THREE.BufferAttribute(new Float32Array(6), 3));
+  const material = new THREE.LineDashedMaterial({
+    color: CATEGORY_COLOR.predicted,
+    dashSize: 9,
+    gapSize: 6,
+    transparent: true,
+    opacity: 0.6,
+    depthWrite: false,
+  });
+  const line = new THREE.Line(geometry, material);
+  line.renderOrder = 2;
+  // The prediction overlay is decorative — never a raycast / hover target.
+  line.raycast = () => {};
+  return line;
+}
+
+/**
+ * Position a predicted-edge dashed line at its endpoints and refresh the
+ * dash pattern. Runs every physics tick while the simulation is warm;
+ * LineDashedMaterial needs computeLineDistances() recomputed after a move.
+ */
+function positionDashedLink(
+  obj: THREE.Object3D,
+  coords: { start: { x: number; y: number; z: number }; end: { x: number; y: number; z: number } },
+): void {
+  const line = obj as THREE.Line;
+  const pos = line.geometry.getAttribute('position') as THREE.BufferAttribute;
+  pos.setXYZ(0, coords.start.x, coords.start.y, coords.start.z);
+  pos.setXYZ(1, coords.end.x, coords.end.y, coords.end.z);
+  pos.needsUpdate = true;
+  line.computeLineDistances();
 }
 
 // How long after a mousemove on the canvas we suppress the periodic
@@ -253,8 +303,14 @@ export class Atlas {
   private graph: ForceGraph3DInstance;
   private allNodes: AtlasNode[] = [];
   private allLinks: AtlasLink[] = [];
+  /** SDK edges (the deterministic `.gai` graph) — the real connections. */
+  private realLinks: AtlasLink[] = [];
+  /** GNN-predicted edges (the `.gnn` overlay) — a separate, dashed,
+   *  toggleable layer, never mixed into the deterministic graph. */
+  private predictedLinks: AtlasLink[] = [];
   private categoryVisible: Record<EdgeCategory, boolean> = {
     reasoning: true, structure: true, social: true, temporal: true, semantic: true, identity: true,
+    predicted: true,
   };
   /** Source visibility — keyed by sourceFile (or empty string for "no source"). */
   private sourceVisible = new Map<string, boolean>();
@@ -577,6 +633,22 @@ export class Atlas {
     // directional links sized proportional to weight.
     g.linkColor((l: AtlasLink) => this.colorForLink(l));
     g.linkOpacity(0.7);
+    // GNN-predicted edges (the `.gnn` overlay) render as thin DASHED lines —
+    // a deliberate contrast with the solid weighted tubes of real
+    // connections, so a model prediction is never mistaken for a
+    // deterministic edge. Real links return null here → three-forcegraph
+    // builds its default tube.
+    g.linkThreeObject((l: AtlasLink) =>
+      (l.category === 'predicted' ? makeDashedLink() : null) as unknown as THREE.Object3D);
+    g.linkPositionUpdate((
+      obj: THREE.Object3D,
+      coords: { start: { x: number; y: number; z: number }; end: { x: number; y: number; z: number } },
+      l: AtlasLink,
+    ) => {
+      if (l.category !== 'predicted') return undefined; // real links → default positioning
+      positionDashedLink(obj, coords);
+      return true;
+    });
     // Edge thickness: weight-based base width. When a node is selected, only
     // DIRECTED incident edges double in width — the thick tube makes the
     // flowing particles clearly visible. Undirected edges stay at base width.
@@ -1668,7 +1740,55 @@ export class Atlas {
         weight: u.weight,
       });
     }
-    this.allLinks = out;
+    this.realLinks = out;
+    this.rebuildAllLinks();
+  }
+
+  /**
+   * Replace the GNN-predicted overlay layer. Predicted edges live in the
+   * separate `.gnn` overlay, never in the `.gai` graph — here they render
+   * as a distinct, dashed, toggleable category so a model prediction is
+   * never mistaken for a deterministic connection. No-op while the layer
+   * is and stays empty (the common, neural-network-disabled case).
+   */
+  setPredictedEdges(predicted: AtlasPredictedEdge[]): void {
+    if (predicted.length === 0 && this.predictedLinks.length === 0) return;
+    // Skip the rebuild when the overlay is unchanged — pushDataIntoAtlas can
+    // fire often, but predictions only change on a neural-network run.
+    if (predicted.length === this.predictedLinks.length) {
+      let same = true;
+      for (let i = 0; i < predicted.length; i++) {
+        const a = predicted[i]!;
+        const b = this.predictedLinks[i]!;
+        if (`p:${a.id}` !== b.id || a.score !== b.weight) { same = false; break; }
+      }
+      if (same) return;
+    }
+    const validIds = new Set(this.allNodes.map((n) => n.id));
+    const out: AtlasLink[] = [];
+    for (const p of predicted) {
+      if (!validIds.has(p.from) || !validIds.has(p.to)) continue;
+      out.push({
+        id: `p:${p.id}`,
+        source: p.from,
+        target: p.to,
+        directed: false,
+        type: 'related-to',
+        category: 'predicted',
+        weight: p.score,
+      });
+    }
+    this.predictedLinks = out;
+    this.rebuildAllLinks();
+  }
+
+  /**
+   * Merge the real (`.gai`) and predicted (`.gnn`) link layers, recompute
+   * derived geometry, and refresh the renderer. Shared tail of setEdges()
+   * and setPredictedEdges().
+   */
+  private rebuildAllLinks(): void {
+    this.allLinks = [...this.realLinks, ...this.predictedLinks];
     this.computeEdgeShapes();
     this.computeNodeDegrees();
     this.computeSubAnchors(); // needs both allNodes + allLinks — called here
@@ -1676,7 +1796,7 @@ export class Atlas {
     // Auto-hide semantic edges when the graph is large enough that rendering
     // them all tanks framerate. The category legend shows them as off so the
     // user can re-enable. Threshold: >5K semantic edges (≈25K total edges).
-    const semanticCount = out.filter(l => l.category === 'semantic').length;
+    const semanticCount = this.realLinks.filter(l => l.category === 'semantic').length;
     if (semanticCount > 5000 && this.categoryVisible['semantic']) {
       this.categoryVisible['semantic'] = false;
     } else if (semanticCount <= 5000 && !this.categoryVisible['semantic']) {
@@ -1846,6 +1966,7 @@ export class Atlas {
   private computeNodeDegrees(): void {
     this.nodeDegree.clear();
     for (const l of this.allLinks) {
+      if (l.category === 'predicted') continue; // node size reflects real connectivity only
       const sId = typeof l.source === 'string' ? l.source : (l.source as AtlasNode).id;
       const tId = typeof l.target === 'string' ? l.target : (l.target as AtlasNode).id;
       this.nodeDegree.set(sId, (this.nodeDegree.get(sId) ?? 0) + l.weight);
@@ -2150,7 +2271,7 @@ export class Atlas {
 
   edgeCounts(): Record<EdgeCategory, number> {
     const out: Record<EdgeCategory, number> = {
-      reasoning: 0, structure: 0, social: 0, temporal: 0, semantic: 0, identity: 0,
+      reasoning: 0, structure: 0, social: 0, temporal: 0, semantic: 0, identity: 0, predicted: 0,
     };
     for (const l of this.allLinks) out[l.category] += 1;
     return out;
@@ -2389,6 +2510,7 @@ export class Atlas {
   getConnections(nodeId: string): Array<{ neighborId: string; type: DirectedEdgeType | UndirectedEdgeType; category: EdgeCategory; direction: 'out' | 'in' | 'undirected'; weight: number }> {
     const out: Array<{ neighborId: string; type: DirectedEdgeType | UndirectedEdgeType; category: EdgeCategory; direction: 'out' | 'in' | 'undirected'; weight: number }> = [];
     for (const l of this.allLinks) {
+      if (l.category === 'predicted') continue; // overlay layer — not a real connection
       const sId = typeof l.source === 'string' ? l.source : (l.source as AtlasNode).id;
       const tId = typeof l.target === 'string' ? l.target : (l.target as AtlasNode).id;
       if (sId !== nodeId && tId !== nodeId) continue;
