@@ -114,6 +114,10 @@ With Graphnosis:
 
 The result: faster prompts, smaller context windows, lower API costs, and noticeably more reliable answers — without giving up control of your data.
 
+### Autonomous upkeep
+
+A Cortex you never tend slowly fills with clutter — the same fact saved twice, near-identical notes, memories with nothing linked to them. Graphnosis maintains the graph on its own: background passes merge memories that are provably duplicates, weave connections between related ones, and let old, unused memory fade. Anything that needs a judgment call is routed to the Check-in tab rather than guessed at. See [Autonomous Upkeep](/guides/autonomous-upkeep/).
+
 ## What AI clients work with Graphnosis
 
 Any client that supports the Model Context Protocol (MCP) will work:

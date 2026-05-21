@@ -37,6 +37,7 @@ export default defineConfig({
             { label: 'Auto-ingest from Your Tools', slug: 'guides/connectors' },
             { label: 'Adding Content', slug: 'guides/adding-content' },
             { label: 'Correcting Memories', slug: 'guides/correcting-memories' },
+            { label: 'Autonomous Upkeep', slug: 'guides/autonomous-upkeep' },
             { label: 'Graphs & Sensitivity Tiers', slug: 'guides/graphs-and-tiers' },
             { label: 'Keeping Your Cortex Safe', slug: 'guides/keeping-your-cortex-safe' },
             { label: 'Recovery', slug: 'guides/recovery' },
