@@ -416,7 +416,6 @@ const els = {
   btnPick: $<HTMLButtonElement>('btn-pick'),
   btnUnlock: $<HTMLButtonElement>('btn-unlock'),
   unlockStatus: $<HTMLSpanElement>('unlock-status'),
-  bootStatus: $<HTMLDivElement>('boot-status'),
   bootStatusText: $<HTMLSpanElement>('boot-status-text'),
   btnRefresh: $<HTMLButtonElement>('btn-refresh'),
   btnOpenFolder: $<HTMLButtonElement>('btn-open-folder'),
@@ -550,6 +549,8 @@ const els = {
   railGcClients: $<HTMLDivElement>('rail-gc-clients'),
   railGcMobile: $<HTMLDivElement>('rail-gc-mobile'),
   railGcConnectors: $<HTMLDivElement>('rail-gc-connectors'),
+  railGcAimode: $<HTMLDivElement>('rail-gc-aimode'),
+  standaloneModal: $<HTMLDivElement>('standalone-modal'),
   // Brain / Alive — status bar
   brainVitality: $<HTMLSpanElement>('brain-vitality'),
   llmStatusChip: $<HTMLSpanElement>('llm-status-chip'),
@@ -562,10 +563,12 @@ const els = {
   lbVitalityDetail: $<HTMLParagraphElement>('lb-vitality-detail'),
   lbScanStatus: $<HTMLParagraphElement>('lb-scan-status'),
   btnLbRefresh: $<HTMLButtonElement>('btn-lb-refresh'),
-  lbContradictions: $<HTMLDivElement>('lb-contradictions'),
+  lbHealingLog: $<HTMLDivElement>('lb-healing-log'),
+  gNeedsReview: $<HTMLDivElement>('g-needs-review'),
   lbInsights: $<HTMLDivElement>('lb-insights'),
   lbGoals: $<HTMLDivElement>('lb-goals'),
   lbFeed: $<HTMLDivElement>('lb-feed'),
+  lbSchedule: $<HTMLParagraphElement>('lb-schedule'),
   lbGoalForm: $<HTMLDivElement>('lb-goal-form'),
   lbGoalContext: $<HTMLInputElement>('lb-goal-context'),
   lbGoalStrategy: $<HTMLInputElement>('lb-goal-strategy'),
@@ -603,7 +606,27 @@ let currentRecoveryPlan: RecoveryPlan | null = null;
 // Brain engine state — refreshed by refreshBrainState()
 let brainVitalityReport: { overall: number; byGraph: Record<string, number>; computedAt: number } | null = null;
 let brainInsights: Array<{ id: string; graphId: string; kind: string; title: string; body: string; relevantNodeIds: string[]; createdAt: number; dismissed?: boolean }> = [];
-let brainContradictions: Array<{ id: string; graphId: string; nodeA: string; nodeB: string; snippetA: string; snippetB: string; similarity: number; detectedAt: number }> = [];
+// A near-duplicate / possibly-conflicting memory pair the autonomous
+// brain could NOT safely auto-merge — surfaced in the Check-in deck's
+// "Needs your review" block for a human call.
+interface BrainDuplicatePair {
+  id: string; graphId: string; nodeA: string; nodeB: string;
+  snippetA: string; snippetB: string; similarity: number; detectedAt: number;
+}
+// One autonomous-heal event from the healing journal — rendered in the
+// Autonomous Brain "Self-healing" log. The llm* fields are filled in
+// later by the (future) local-LLM second-opinion pass.
+interface BrainHealingRecord {
+  id: string; graphId: string; healedAt: number; similarity: number;
+  rule: 'exact-duplicate' | 'superset-duplicate';
+  survivingNodeId: string; supersededNodeId: string;
+  survivingContentSnapshot: string; supersededContentSnapshot: string;
+  decisionReason: string;
+  llmReviewed: boolean;
+  llmVerdict?: 'confirmed' | 'reversed' | 'unmerged' | 'resynthesized';
+  llmReviewedAt?: number; llmNote?: string;
+}
+let brainHealingJournal: BrainHealingRecord[] = [];
 
 // MCP status poller handle. Started after unlock, cleared on lock.
 let mcpPollTimer: ReturnType<typeof setInterval> | null = null;
@@ -982,6 +1005,14 @@ function render(status: StatusSnapshot): void {
     setClipboardCaptureEnabled(false); // stop polling on lock
     // Clear ephemeral disable state on lock so a re-unlock starts fresh.
     disabledSources.clear();
+    // Clear the memory trace — the left-rail recents list AND the right
+    // detail pane — so a re-unlock starts with a clean slate, not the
+    // previous session's navigation trail.
+    graphnosisRecentsByGraph.clear();
+    renderRecents();
+    graphnosisSelectedId = null;
+    graphnosisEditingId = null;
+    renderDetailEmpty();
     // Hide every modal that might be left visible from the previous unlocked
     // session — Vite HMR preserves DOM, so a modal open at the moment of a
     // lock can persist into the next render.
@@ -1055,13 +1086,27 @@ function renderRailGetConnected(): void {
     return b;
   };
 
+  // AI mode comes first: Standalone (the deterministic default) and the
+  // optional Local LLM. These frame everything below — clients, mobile,
+  // connectors — as "now wire it up".
+  els.railGcAimode.innerHTML = '';
+  els.railGcAimode.appendChild(makeBtn('Standalone', () => {
+    els.standaloneModal.classList.remove('hidden');
+  }));
+  els.railGcAimode.appendChild(makeBtn('Local LLM', () => {
+    // Reuse the existing route: open Settings and scroll to the
+    // "Brain — Local AI" (Ollama) section, which is the setup guide.
+    els.settingsModal.classList.remove('hidden');
+    document.getElementById('settings-brain-llm')?.scrollIntoView({ behavior: 'smooth' });
+  }));
+
   els.railGcClients.innerHTML = '';
   els.railGcClients.appendChild(makeBtn('Claude Desktop', () => openConfigureClientModal('claude-desktop')));
   els.railGcClients.appendChild(makeBtn('Claude Code', () => openConfigureClientModal('claude-code')));
   els.railGcClients.appendChild(makeBtn('Cursor', () => openConfigureClientModal('cursor')));
 
   els.railGcMobile.innerHTML = '';
-  els.railGcMobile.appendChild(makeBtn('📱 Mobile access', () => void openMobileWizard()));
+  els.railGcMobile.appendChild(makeBtn('Mobile access', () => void openMobileWizard()));
 
   els.railGcConnectors.innerHTML = '';
   const connectorShortcuts: Array<[ConnectorKind, string]> = [
@@ -1072,6 +1117,13 @@ function renderRailGetConnected(): void {
     els.railGcConnectors.appendChild(makeBtn(label, () => openConnectorSetupModal(kind)));
   }
 }
+
+// Standalone-mode explainer modal — dismiss on "Got it" or backdrop click.
+document.getElementById('standalone-modal-close')
+  ?.addEventListener('click', () => els.standaloneModal.classList.add('hidden'));
+els.standaloneModal.addEventListener('click', (e) => {
+  if (e.target === els.standaloneModal) els.standaloneModal.classList.add('hidden');
+});
 
 function shortCortexLabel(p: string): string {
   // Take last two path segments to keep the header compact but recognizable.
@@ -1766,27 +1818,27 @@ async function runBiometricUnlock(): Promise<void> {
   const inlineBtn = document.getElementById('btn-touchid-inline') as HTMLButtonElement | null;
   if (inlineBtn) inlineBtn.disabled = true;
   els.btnUnlock.disabled = true;
-  els.unlockStatus.textContent = 'Touch the sensor…';
+  els.bootStatusText.textContent = 'Touch the sensor…';
   const progressBar = document.getElementById('unlock-progress');
   progressBar?.classList.remove('hidden');
   els.bootStatusText.textContent = '';
-  els.bootStatus.classList.remove('hidden');
+  els.unlockStatus.classList.remove('hidden');
   try {
     const status = await invoke<StatusSnapshot>('biometric_unlock', {
       cortexDir: els.cortexDir.value,
     });
     rememberCortexDir(els.cortexDir.value);
     els.passphrase.value = '';
-    els.unlockStatus.textContent = '';
+    els.bootStatusText.textContent = '';
     render(status);
   } catch (e) {
     showError(String(e));
-    els.unlockStatus.textContent = '';
+    els.bootStatusText.textContent = '';
   } finally {
     if (inlineBtn) inlineBtn.disabled = false;
     els.btnUnlock.disabled = false;
     progressBar?.classList.add('hidden');
-    els.bootStatus.classList.add('hidden');
+    els.unlockStatus.classList.add('hidden');
   }
 }
 
@@ -1817,7 +1869,7 @@ els.btnUnlock.addEventListener('click', async () => {
  */
 async function attemptUnlock(): Promise<void> {
   els.btnUnlock.disabled = true;
-  els.unlockStatus.textContent = 'Starting synapse…';
+  els.bootStatusText.textContent = 'Starting synapse…';
   // Indeterminate progress bar — the unlock has several variable-duration
   // steps (Argon2id key derivation, sidecar spawn, embedding-worker init,
   // engram loads). We don't have meaningful percentages, but a moving bar
@@ -1827,7 +1879,7 @@ async function attemptUnlock(): Promise<void> {
   progressBar?.classList.remove('hidden');
   // Boot-status line: cleared then shown live as sidecar boot events arrive.
   els.bootStatusText.textContent = '';
-  els.bootStatus.classList.remove('hidden');
+  els.unlockStatus.classList.remove('hidden');
   try {
     const status = (await invoke('unlock_cortex', {
       args: { cortex_dir: els.cortexDir.value, passphrase: els.passphrase.value },
@@ -1835,7 +1887,7 @@ async function attemptUnlock(): Promise<void> {
     // Persist for the next launch — see rememberCortexDir().
     rememberCortexDir(els.cortexDir.value);
     els.passphrase.value = '';
-    els.unlockStatus.textContent = '';
+    els.bootStatusText.textContent = '';
     render(status);
   } catch (e) {
     const msg = String(e);
@@ -1846,7 +1898,7 @@ async function attemptUnlock(): Promise<void> {
     const lacksPrefix = msg.indexOf(missingPrefix);
     if (lacksPrefix !== -1) {
       const path = msg.slice(lacksPrefix + missingPrefix.length).trim();
-      els.unlockStatus.textContent = '';
+      els.bootStatusText.textContent = '';
       progressBar?.classList.add('hidden');
       els.btnUnlock.disabled = false;
       const proceed = confirm(
@@ -1870,11 +1922,11 @@ async function attemptUnlock(): Promise<void> {
     // All other startup errors (wrong passphrase, cortex corrupt, sidecar
     // missing, etc.) — surface as-is. The Rust side already classified it.
     showError(msg);
-    els.unlockStatus.textContent = '';
+    els.bootStatusText.textContent = '';
   } finally {
     els.btnUnlock.disabled = false;
     progressBar?.classList.add('hidden');
-    els.bootStatus.classList.add('hidden');
+    els.unlockStatus.classList.add('hidden');
   }
 }
 
@@ -3642,7 +3694,7 @@ function computeHealth(): HealthSummary {
   // Phrases tuned to feel warm rather than performative.
   const phrase =
     grade === 'A' ? 'Your memory is feeling well-tended.' :
-    grade === 'B' ? "Solid. A few things might want your eyes." :
+    grade === 'B' ? "Solid memory, but check it." :
     grade === 'C' ? "Some memories could use a quick check-in." :
     "It's been a while — a few minutes of tending would help.";
   const orphansLabel =
@@ -4954,6 +5006,7 @@ function wireListRowHandlersFrom(startIndex: number): void {
 }
 
 function renderDashboard(): void {
+  void renderNeedsReview();
   renderHealth();
   rebuildDeckQueue();
   renderDeck();
@@ -6821,14 +6874,9 @@ function switchGraphnosisTab(tab: GraphnosisTab): void {
     neuronField.start();
     startScanTicker();
     void renderLivingBrain();
-    // First time the tab opens this session, kick a full self-scan so the
-    // user actually sees the brain working — contradictions, synapses,
-    // insights, goals — with the scanning visuals. Subsequent opens just
-    // repaint; "Scan now" re-triggers on demand.
-    if (!brainFirstScanDone) {
-      brainFirstScanDone = true;
-      void ipcCall('brain:runScan', {}).catch(() => { /* non-fatal */ });
-    }
+    // No scan kicked off on tab-open — the brain self-scans on its own:
+    // the boot-grace sweep (~60s after unlock), the background intervals,
+    // and the post-ingest debounced scan, plus "Scan now" for a manual run.
   }
 }
 
@@ -7448,11 +7496,11 @@ void listen<StatusSnapshot>('graphnosis://status', (evt) => render(evt.payload))
 void listen<{ step: string; detail: string }>('graphnosis://sidecar-boot-status', (evt) => {
   const { step, detail } = evt.payload;
   els.bootStatusText.textContent = detail;
-  els.bootStatus.classList.remove('hidden');
+  els.unlockStatus.classList.remove('hidden');
   if (step === 'ready') {
     // Socket is up — hide the status line shortly after; unlock command
     // will resolve and the view transitions away.
-    setTimeout(() => els.bootStatus.classList.add('hidden'), 1200);
+    setTimeout(() => els.unlockStatus.classList.add('hidden'), 1200);
   }
 });
 
@@ -7559,12 +7607,11 @@ let brainStatus: {
   intervals: Record<string, number>;
   lastDecayReport: { graphsProcessed: number; nodesDecayed: number } | null;
   sessionSynapsesFormed: number;
+  sessionAutoLinksFormed: number;
 } | null = null;
-// Phases (e.g. 'fullscan', 'contradiction-scan') with a live start-frame but
+// Phases (e.g. 'fullscan', 'duplicate-scan') with a live start-frame but
 // no done-frame yet. Non-empty ⇒ the pane shows its "scanning" state.
 const brainActivePhases = new Set<string>();
-// Run the on-demand full scan only once per session when the tab first opens.
-let brainFirstScanDone = false;
 // 1s ticker for the countdown line; runs only while the brain pane is shown.
 let scanTickerTimer: ReturnType<typeof setInterval> | null = null;
 // Whether a local LLM is reachable with a model installed. Drives the
@@ -7574,7 +7621,10 @@ let brainLlmReady = false;
 
 const BRAIN_PHASE_LABELS: Record<string, string> = {
   fullscan: 'Running a full self-scan',
-  'contradiction-scan': 'Scanning for contradictions',
+  'duplicate-scan': 'Scanning for duplicate memories',
+  'auto-heal': 'Merging a duplicate',
+  'auto-link': 'Weaving connections',
+  'healing-review': 'Re-checking past merges',
   synapse: 'Forming new connections',
   insight: 'Synthesizing insights',
   temporal: 'Applying memory decay',
@@ -7584,16 +7634,16 @@ const BRAIN_PHASE_LABELS: Record<string, string> = {
 /** Pull all brain state from the sidecar into module cache, then repaint. */
 async function refreshBrainState(): Promise<void> {
   try {
-    const [vitality, insights, contradictions, goals] = await Promise.all([
-      ipcCall<NonNullable<typeof brainVitalityReport>>('brain:getVitality', {}),
+    const [vitality, insights, goals, healingJournal] = await Promise.all([
+      ipcCall<typeof brainVitalityReport>('brain:getVitality', {}),
       ipcCall<typeof brainInsights>('brain:getInsights', {}),
-      ipcCall<typeof brainContradictions>('brain:getContradictions', {}),
       ipcCall<BrainGoal[]>('brain:listGoals', {}),
+      ipcCall<BrainHealingRecord[]>('brain:getHealingJournal', {}),
     ]);
     brainVitalityReport = vitality;
     brainInsights = insights;
-    brainContradictions = contradictions;
     brainGoals = goals;
+    brainHealingJournal = healingJournal;
     updateBrainUI();
   } catch { /* non-fatal — brain may not be initialized yet */ }
 }
@@ -7628,9 +7678,10 @@ async function renderLivingBrain(): Promise<void> {
 /** Paint the pane from cached module state — no IPC, safe to call often. */
 function renderLivingBrainPane(): void {
   renderLbVitality();
-  renderLbContradictions();
+  renderLbHealingLog();
   renderLbInsights();
   renderLbGoals();
+  renderBrainSchedule();
   ensureFeedPlaceholder();
 }
 
@@ -7643,7 +7694,7 @@ function engramName(graphId: string): string {
 function vitalityCopy(v: number): [string, string] {
   if (v >= 75) return ['Your second brain is thriving', 'Well-connected, active, and consistent — keep feeding it.'];
   if (v >= 50) return ['Your second brain is healthy', 'Solid shape. More links and activity will push it higher.'];
-  if (v >= 25) return ['Your second brain is waking up', 'Add memories, connect them, and resolve contradictions to strengthen it.'];
+  if (v >= 25) return ['Your second brain is waking up', 'Add memories, connect them, and resolve duplicates to strengthen it.'];
   return ['Your second brain is dormant', 'Ingest more knowledge and let the brain form connections.'];
 }
 
@@ -7652,6 +7703,10 @@ function renderLbVitality(): void {
     els.lbVitalityTitle.textContent = 'Brain is starting up…';
     els.lbVitalityDetail.textContent = 'Give it a moment after unlocking, then hit Refresh.';
     els.lbBrainStats.style.display = 'none';
+    // Vitality not computed yet — show a neutral 0 (the ring stays at 0%,
+    // gray) until the first real score is calculated.
+    els.lbVitalityScore.textContent = '0';
+    els.lbVitalityRing.style.setProperty('--v', '0');
     return;
   }
   const v = brainVitalityReport.overall;
@@ -7668,54 +7723,112 @@ function renderLbVitality(): void {
     if (decayReport !== null && decayReport !== undefined) {
       els.lbStatDecayNodes.textContent = String(decayReport.nodesDecayed);
       els.lbStatDecayWhen.textContent = lastDecay ? formatRel(Date.now() - lastDecay) : 'not yet run';
-      els.lbStatSynapses.textContent = String(brainStatus.sessionSynapsesFormed);
+      els.lbStatSynapses.textContent = String((brainStatus.sessionSynapsesFormed ?? 0) + (brainStatus.sessionAutoLinksFormed ?? 0));
       els.lbBrainStats.style.display = '';
     } else if (lastDecay) {
       els.lbStatDecayNodes.textContent = '–';
       els.lbStatDecayWhen.textContent = formatRel(Date.now() - lastDecay);
-      els.lbStatSynapses.textContent = String(brainStatus.sessionSynapsesFormed);
+      els.lbStatSynapses.textContent = String((brainStatus.sessionSynapsesFormed ?? 0) + (brainStatus.sessionAutoLinksFormed ?? 0));
       els.lbBrainStats.style.display = '';
     }
   }
 }
 
-function renderLbContradictions(): void {
-  const host = els.lbContradictions;
-  if (brainContradictions.length === 0) {
-    host.innerHTML = '<p class="lb-empty">No contradictions detected — your memories are consistent.</p>';
+/** Clamp display text to `n` chars with an ellipsis. The healing journal
+ *  stores FULL content snapshots (for the local-LLM review pass) — the
+ *  UI only needs a readable preview. */
+function clampText(s: string, n: number): string {
+  return s.length > n ? `${s.slice(0, n).trimEnd()}…` : s;
+}
+
+/** Autonomous Brain → "Self-healing": a log of duplicate memories the
+ *  brain merged on its own. Read-only — every merge is a recoverable
+ *  soft-delete. Once a local LLM has re-judged a merge, its verdict
+ *  rides alongside as a chip + note. */
+/** Autonomous Brain → "Self-healing": stats only — how much the brain has
+ *  merged, not a per-merge card list. Every merge is op-logged and
+ *  recoverable from the Recovery panel, so the count is the at-a-glance
+ *  signal; the boxes-per-issue view was noise. */
+function renderLbHealingLog(): void {
+  const host = els.lbHealingLog;
+  const n = brainHealingJournal.length;
+  if (n === 0) {
+    host.innerHTML = '<p class="lb-empty">Nothing merged yet — the brain merges exact duplicates and redundant memories automatically as it finds them.</p>';
     return;
   }
-  host.innerHTML = brainContradictions.map((c) => `
-    <div class="lb-contradiction">
-      <div class="lb-contradiction-pair">
-        <div class="lb-snippet"><span class="lb-snippet-tag">A</span>${escape(c.snippetA)}</div>
-        <div class="lb-snippet"><span class="lb-snippet-tag">B</span>${escape(c.snippetB)}</div>
+  const reviewed = brainHealingJournal.filter((r) => r.llmReviewed).length;
+  host.innerHTML = `
+    <div class="lb-stats-row">
+      <div class="lb-stat">
+        <span class="lb-stat-value">${n}</span>
+        <span class="lb-stat-label">duplicate memor${n === 1 ? 'y' : 'ies'} merged</span>
       </div>
-      <div class="lb-contradiction-foot">
-        <span style="display:flex; align-items:center; gap:8px; min-width:0;">
-          <span class="lb-engram-chip" title="Engram">${escape(engramName(c.graphId))}</span>
-          <span class="brain-subtitle">${Math.round(c.similarity * 100)}% similar — likely the same fact stated two ways</span>
-        </span>
-        <button class="btn-sm" data-dismiss-contradiction="${escape(c.id)}" title="Marks these two memories as reviewed. Both are kept in your graph — this only removes the flagged pair from the healing queue.">Mark resolved</button>
-      </div>
-      <p class="lb-contradiction-note">Both memories are kept in your graph. "Mark resolved" removes this pair from the healing queue once you've reviewed it.</p>
-    </div>`).join('');
-  host.querySelectorAll<HTMLButtonElement>('[data-dismiss-contradiction]').forEach((btn) => {
+      ${reviewed > 0 ? `
+      <div class="lb-stat">
+        <span class="lb-stat-value">${reviewed}</span>
+        <span class="lb-stat-label">re-checked by local AI</span>
+      </div>` : ''}
+    </div>`;
+}
+
+/** Check-in dashboard → "Needs your review": near-duplicate / possibly-
+ *  conflicting memory pairs the autonomous brain could NOT safely merge
+ *  on its own. Holistic across every engram. Each pair offers a real
+ *  decision — merge them, or keep both. Hidden entirely when empty. */
+async function renderNeedsReview(): Promise<void> {
+  const host = els.gNeedsReview;
+  if (!host) return;
+  let pairs: BrainDuplicatePair[];
+  try {
+    pairs = await ipcCall<BrainDuplicatePair[]>('brain:getDuplicatePairs', {});
+  } catch {
+    host.classList.add('hidden');
+    return;
+  }
+  if (pairs.length === 0) {
+    host.classList.add('hidden');
+    host.innerHTML = '';
+    return;
+  }
+  host.classList.remove('hidden');
+  host.innerHTML = `
+    <p class="g-needs-review-title">Needs your review — ${pairs.length} memory pair${pairs.length === 1 ? '' : 's'}</p>
+    <p class="g-needs-review-sub">The brain found these memories nearly identical but couldn't be sure they're the same fact — a number, a negation, or a partial overlap made it unsafe to merge automatically. You decide.</p>
+    ${pairs.map((c) => `
+      <div class="lb-dup-card">
+        <div class="lb-dup-card-pair">
+          <div class="lb-snippet"><span class="lb-snippet-tag">A</span>${escape(clampText(c.snippetA, 160))}</div>
+          <div class="lb-snippet"><span class="lb-snippet-tag">B</span>${escape(clampText(c.snippetB, 160))}</div>
+        </div>
+        <div class="lb-dup-card-foot">
+          <span style="display:flex; align-items:center; gap:8px; min-width:0;">
+            <span class="lb-engram-chip" title="Engram">${escape(engramName(c.graphId))}</span>
+            <span class="brain-subtitle">${Math.round(c.similarity * 100)}% similar</span>
+          </span>
+          <span class="g-nr-actions">
+            <button class="btn-sm" data-nr-action="keep-both" data-nr-id="${escape(c.id)}" title="They're genuinely different memories — keep both, untouched.">Keep both</button>
+            <button class="btn-sm primary" data-nr-action="merge" data-nr-id="${escape(c.id)}" title="They're the same memory — merge into one. The duplicate is soft-deleted and stays recoverable.">Same memory — merge</button>
+          </span>
+        </div>
+      </div>`).join('')}
+  `;
+  host.querySelectorAll<HTMLButtonElement>('[data-nr-action]').forEach((btn) => {
     btn.addEventListener('click', async () => {
-      const id = btn.dataset['dismissContradiction'];
-      if (!id) return;
-      // (5) Self-healing: pin the card's measured height, then collapse it
-      // to zero so the resolved contradiction visibly "heals" shut.
-      const card = btn.closest<HTMLElement>('.lb-contradiction');
+      const id = btn.dataset['nrId'];
+      const action = btn.dataset['nrAction'] as 'merge' | 'keep-both' | undefined;
+      if (!id || !action) return;
+      // Collapse the card shut — reuses the .lb-healing "heals closed"
+      // transition: pin the measured height, then animate to zero.
+      const card = btn.closest<HTMLElement>('.lb-dup-card');
       if (card) {
         card.style.maxHeight = `${card.scrollHeight}px`;
         card.classList.add('lb-healing');
         requestAnimationFrame(() => { card.style.maxHeight = '0px'; });
       }
-      try { await ipcCall('brain:dismissContradiction', { id }); } catch { /* ignore */ }
-      brainContradictions = brainContradictions.filter((c) => c.id !== id);
-      // Re-render after the collapse finishes so the list reflows cleanly.
-      window.setTimeout(() => renderLbContradictions(), card ? 560 : 0);
+      try { await ipcCall('brain:resolveDuplicatePair', { id, action }); } catch { /* ignore */ }
+      // Re-render the block once the collapse finishes. A merge soft-
+      // deletes a node; the 3s graph-mutation poll refreshes the deck.
+      window.setTimeout(() => { void renderNeedsReview(); }, card ? 560 : 0);
     });
   });
 }
@@ -7735,7 +7848,7 @@ function renderLbInsights(): void {
         + '<p><strong>Insights need a local AI model — and none is set up yet.</strong> '
         + 'This section staying empty is expected, not a bug. The same goes for '
         + 'automatic <em>new-connection forming</em> (synapses).</p>'
-        + '<p>Everything else — vitality, contradiction detection, memory decay, '
+        + '<p>Everything else — vitality, duplicate detection, memory decay, '
         + 'goal tracking — already works without it.</p>'
         + '<p><button class="btn-sm primary" id="lb-insights-setup">Set up local AI…</button> '
         + '<span class="brain-subtitle">Free, a couple of minutes. A Terminal route is listed there too.</span></p>'
@@ -7875,10 +7988,13 @@ function handleBrainFrame(graphId: string): void {
     // The event channel only carries graphId + ts — pull the fresh state.
     void refreshBrainState();
     void refreshBrainStatus();
+    // A completed scan may have changed the needs-review queue — refresh
+    // the Check-in block too if the user is currently looking at it.
+    if (graphnosisActiveTab === 'checkin') void renderNeedsReview();
     renderScanStatus();
   } else if (graphId === '__brain_synapse__') {
     flashSynapse();
-  } else if (graphId === '__brain_contradiction__' || graphId === '__brain_goal__') {
+  } else if (graphId === '__brain_duplicate__' || graphId === '__brain_goal__') {
     void refreshBrainState();
   }
 }
@@ -7918,6 +8034,33 @@ function formatCountdown(ms: number): string {
 
 /** Repaint the scan-status line: the live phase while scanning, otherwise a
  *  countdown to the next automatic background self-check. */
+/** Human "20 min" / "4 h" for a millisecond interval. */
+function formatInterval(ms: number): string {
+  const min = Math.round(ms / 60000);
+  if (min < 60) return `${min} min`;
+  return `${Math.round(min / 60)} h`;
+}
+
+/** Autonomous Brain → "Recent brain activity": a one-line summary of how
+ *  often each background check runs, so the cadence is never a mystery.
+ *  Read live from brainStatus.intervals so it tracks the real constants. */
+function renderBrainSchedule(): void {
+  const iv = brainStatus?.intervals;
+  if (!iv) {
+    els.lbSchedule.textContent = 'Background checks run automatically while the app is open.';
+    return;
+  }
+  const parts: string[] = [];
+  if (iv['duplicateScan']) parts.push(`duplicate scan every ${formatInterval(iv['duplicateScan'])}`);
+  if (iv['synapse'])       parts.push(`new connections every ${formatInterval(iv['synapse'])}`);
+  if (iv['goalCheck'])     parts.push(`goal check every ${formatInterval(iv['goalCheck'])}`);
+  if (iv['insight'])       parts.push(`insights every ${formatInterval(iv['insight'])}`);
+  if (iv['temporalDecay']) parts.push(`memory decay every ${formatInterval(iv['temporalDecay'])}`);
+  els.lbSchedule.textContent = parts.length > 0
+    ? `Runs on its own — ${parts.join(' · ')}.`
+    : 'Background checks run automatically while the app is open.';
+}
+
 function renderScanStatus(): void {
   const el = els.lbScanStatus;
   if (brainActivePhases.size > 0) {
@@ -7925,8 +8068,8 @@ function renderScanStatus(): void {
     el.textContent = `🔬 ${BRAIN_PHASE_LABELS[phase] ?? 'Scanning'}…`;
     return;
   }
-  const last = brainStatus?.lastRun?.['contradictionScan'];
-  const interval = brainStatus?.intervals?.['contradictionScan'] ?? 20 * 60 * 1000;
+  const last = brainStatus?.lastRun?.['duplicateScan'];
+  const interval = brainStatus?.intervals?.['duplicateScan'] ?? 20 * 60 * 1000;
   if (!last) {
     el.textContent = '🩺 Background self-checks run automatically';
     return;
@@ -8904,7 +9047,7 @@ void listen('graphnosis://unlocked-via-recovery', () => {
     const progressBar = document.getElementById('unlock-progress');
     progressBar?.classList.remove('hidden');
     els.bootStatusText.textContent = '';
-    els.bootStatus.classList.remove('hidden');
+    els.unlockStatus.classList.remove('hidden');
     try {
       const result = await invoke<StatusSnapshot>('unlock_cortex_with_recovery', {
         args: { cortex_dir: cortexDir, recovery_phrase: phrase },
@@ -8919,7 +9062,7 @@ void listen('graphnosis://unlocked-via-recovery', () => {
     } finally {
       if (recoverBtn) recoverBtn.disabled = false;
       progressBar?.classList.add('hidden');
-      els.bootStatus.classList.add('hidden');
+      els.unlockStatus.classList.add('hidden');
     }
   });
 }
