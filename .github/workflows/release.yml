@@ -96,7 +96,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          DMG_PATH="apps/desktop/src-tauri/target/release/bundle/Graphnosis_${{ steps.meta.outputs.semver }}_aarch64.dmg"
+          DMG_PATH="apps/desktop/src-tauri/target/release/bundle/dmg/Graphnosis_${{ steps.meta.outputs.semver }}_aarch64.dmg"
           gh release create ${{ steps.meta.outputs.version }} \
             "$DMG_PATH#Graphnosis ${{ steps.meta.outputs.version }} (macOS Apple Silicon)" \
             --title "Graphnosis ${{ steps.meta.outputs.version }}" \
