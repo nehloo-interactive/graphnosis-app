@@ -1716,6 +1716,19 @@
         font-size: 13px; color: var(--fg-dim); font-style: italic;
         padding: 6px 0;
       }
+      /* "Insights need a local model" empty state — multi-line, not italic,
+         with a left accent so it reads as guidance rather than an error. */
+      .lb-empty.lb-needs-llm {
+        font-style: normal;
+        border: 1px solid var(--border);
+        border-left: 3px solid var(--accent);
+        border-radius: 6px;
+        padding: 10px 12px;
+        background: var(--bg-elev);
+      }
+      .lb-needs-llm p { margin: 0 0 8px; line-height: 1.5; }
+      .lb-needs-llm p:last-child { margin-bottom: 0; }
+      .lb-needs-llm strong { color: var(--fg); }
       .lb-contradiction {
         border: 1px solid var(--border); border-radius: 8px;
         padding: 10px; margin-bottom: 10px; background: var(--bg-elev);
