@@ -8,6 +8,9 @@ import { embeddings, settings as settingsMod, sources, type SourceRecord } from 
 import { crypto, federation, oplog, policy, type DeviceId, type GraphId, type SubgraphBudget } from '@nehloo-interactive/graphnosis-secure-sync';
 import type { GraphnosisAdapter, GraphHandle, AppendDocumentInput, CorrectionEdit } from './graphnosis-adapter.js';
 import * as healingJournalMod from './healing-journal.js';
+import * as connectionStoreMod from './connection-store.js';
+import * as associationIndexMod from './association-index.js';
+import * as gnnStoreMod from './gnn-store.js';
 
 const { deriveKey, encrypt, decrypt } = crypto;
 const { OpLogWriter } = oplog;
@@ -556,6 +559,94 @@ export class GraphnosisHost {
     const file = path.join(this.opts.cortexDir, healingJournalMod.HEALING_JOURNAL_FILE);
     const blob = await healingJournalMod.encodeHealingJournal(records, this.key);
     await writeFileAtomic(file, Buffer.from(blob));
+  }
+
+  /** Load + decrypt the cross-engram connection store. [] if none exists yet. */
+  async loadConnectionStore(): Promise<connectionStoreMod.CrossEngramConnection[]> {
+    const file = path.join(this.opts.cortexDir, connectionStoreMod.CROSS_ENGRAM_CONNECTIONS_FILE);
+    let blob: Buffer;
+    try {
+      blob = await fs.readFile(file);
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code === 'ENOENT') return [];
+      console.error(`[host] could not read connection store: ${(e as Error).message}`);
+      return [];
+    }
+    return connectionStoreMod.decodeConnectionStore(new Uint8Array(blob), this.key);
+  }
+
+  /** Encrypt + atomically write the cross-engram connection store. */
+  async saveConnectionStore(connections: connectionStoreMod.CrossEngramConnection[]): Promise<void> {
+    const file = path.join(this.opts.cortexDir, connectionStoreMod.CROSS_ENGRAM_CONNECTIONS_FILE);
+    const blob = await connectionStoreMod.encodeConnectionStore(connections, this.key);
+    await writeFileAtomic(file, Buffer.from(blob));
+  }
+
+  /** Load + decrypt the association index. [] if none exists yet. */
+  async loadAssociationIndex(): Promise<associationIndexMod.AssociationEntry[]> {
+    const file = path.join(this.opts.cortexDir, associationIndexMod.ASSOCIATION_INDEX_FILE);
+    let blob: Buffer;
+    try {
+      blob = await fs.readFile(file);
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code === 'ENOENT') return [];
+      console.error(`[host] could not read association index: ${(e as Error).message}`);
+      return [];
+    }
+    return associationIndexMod.decodeAssociationIndex(new Uint8Array(blob), this.key);
+  }
+
+  /** Encrypt + atomically write the association index. */
+  async saveAssociationIndex(entries: associationIndexMod.AssociationEntry[]): Promise<void> {
+    const file = path.join(this.opts.cortexDir, associationIndexMod.ASSOCIATION_INDEX_FILE);
+    const blob = await associationIndexMod.encodeAssociationIndex(entries, this.key);
+    await writeFileAtomic(file, Buffer.from(blob));
+  }
+
+  /** Load + decrypt the Graphnosis Neural Network overlay. [] if none yet. */
+  async loadGnnStore(): Promise<gnnStoreMod.PredictedEdge[]> {
+    const file = path.join(this.opts.cortexDir, gnnStoreMod.GNN_STORE_FILE);
+    let blob: Buffer;
+    try {
+      blob = await fs.readFile(file);
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code === 'ENOENT') return [];
+      console.error(`[host] could not read GNN overlay: ${(e as Error).message}`);
+      return [];
+    }
+    return gnnStoreMod.decodeGnnStore(new Uint8Array(blob), this.key);
+  }
+
+  /** Encrypt + atomically write the Graphnosis Neural Network overlay. */
+  async saveGnnStore(edges: gnnStoreMod.PredictedEdge[]): Promise<void> {
+    const file = path.join(this.opts.cortexDir, gnnStoreMod.GNN_STORE_FILE);
+    const blob = await gnnStoreMod.encodeGnnStore(edges, this.key);
+    await writeFileAtomic(file, Buffer.from(blob));
+  }
+
+  /**
+   * Copy every engram's `.gai` file into `<cortexDir>/snapshots/<label>-<ts>/`
+   * — the safety snapshot taken before the Graphnosis Neural Network is first
+   * enabled, so the pre-neural-network graph state is preserved on disk.
+   * Returns the snapshot directory path.
+   */
+  async snapshotGraphs(label: string): Promise<string> {
+    const safe = `${label.replace(/[^a-zA-Z0-9_-]/g, '_')}-${Date.now()}`;
+    const graphsDir = path.join(this.opts.cortexDir, 'graphs');
+    const destDir = path.join(this.opts.cortexDir, 'snapshots', safe);
+    await fs.mkdir(destDir, { recursive: true });
+    let files: string[];
+    try {
+      files = await fs.readdir(graphsDir);
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code === 'ENOENT') return destDir;
+      throw e;
+    }
+    for (const f of files) {
+      if (!f.endsWith('.gai')) continue;
+      await fs.copyFile(path.join(graphsDir, f), path.join(destDir, f));
+    }
+    return destDir;
   }
 
   // ── Search ──────────────────────────────────────────────────────────────
@@ -1505,6 +1596,19 @@ export class GraphnosisHost {
     return newRecord;
   }
 
+  /**
+   * Optional observer notified with the result of every federated recall —
+   * wired by the sidecar to ReinforcementEngine so co-recalled memories can
+   * have their connections strengthened ("fire together, wire together").
+   * Never throws into the recall path.
+   */
+  private plasticityObserver: ((sub: federation.FederatedSubgraph) => void) | undefined;
+
+  /** Register the recall observer. Called once at sidecar startup. */
+  setPlasticityObserver(fn: (sub: federation.FederatedSubgraph) => void): void {
+    this.plasticityObserver = fn;
+  }
+
   async recall(query: string, opts?: { budget?: SubgraphBudget }): Promise<federation.FederatedSubgraph> {
     // Snapshot active-node IDs per graph BEFORE the federated query runs.
     // We use these to filter SDK results so soft-deleted (forgotten) nodes
@@ -1528,7 +1632,13 @@ export class GraphnosisHost {
           .map((r) => ({ graphId, nodeId: r.nodeId, score: r.score, text: r.text, ...(r.type !== undefined ? { type: r.type } : {}) }));
       },
     };
-    return federatedQuery(runner, this.listGraphs(), query, this.policyCfg, opts?.budget);
+    const sub = await federatedQuery(runner, this.listGraphs(), query, this.policyCfg, opts?.budget);
+    try {
+      this.plasticityObserver?.(sub);
+    } catch (err) {
+      console.error(`[host] plasticity observer failed: ${(err as Error).message}`);
+    }
+    return sub;
   }
 
   // Correction model mirrors the SDK: content-only edits with a reason; deletes are soft.
@@ -1715,6 +1825,7 @@ export class GraphnosisHost {
       a: string;
       b: string;
       type?: import('@nehloo/graphnosis').UndirectedEdge['type'];
+      weight?: number;
       reason?: string;
     }>,
   ): Promise<number> {
@@ -1722,9 +1833,10 @@ export class GraphnosisHost {
     let created = 0;
     for (const e of edges) {
       const type = e.type ?? 'related-to';
+      const weight = e.weight ?? 0.7;
       const linkOpts: { type: import('@nehloo/graphnosis').UndirectedEdge['type']; weight: number; reason?: string } = {
         type,
-        weight: 0.7,
+        weight,
       };
       if (e.reason !== undefined) linkOpts.reason = e.reason;
       try {
@@ -1738,7 +1850,7 @@ export class GraphnosisHost {
               fromNodeId: e.a,
               toNodeId: e.b,
               type,
-              weight: 0.7,
+              weight,
               directed: false,
               reason: e.reason ?? 'auto-link',
             },
@@ -1773,12 +1885,13 @@ export class GraphnosisHost {
     graphId: GraphId,
     fromNodeId: string,
     toNodeId: string,
-    opts: { type: import('@nehloo/graphnosis').DirectedEdge['type']; evidence?: string },
+    opts: { type: import('@nehloo/graphnosis').DirectedEdge['type']; weight?: number; evidence?: string },
   ): Promise<{ edgeId: string; created: boolean }> {
     const g = this.must(graphId);
+    const weight = opts.weight ?? 0.7;
     const linkOpts: { type: import('@nehloo/graphnosis').DirectedEdge['type']; weight: number; evidence?: string } = {
       type: opts.type,
-      weight: 0.7,
+      weight,
     };
     if (opts.evidence !== undefined) linkOpts.evidence = opts.evidence;
     const result = await this.opts.adapter.linkNodesDirected(g.handle, fromNodeId, toNodeId, linkOpts);
@@ -1791,7 +1904,7 @@ export class GraphnosisHost {
           fromNodeId,
           toNodeId,
           type: opts.type,
-          weight: 0.7,
+          weight,
           directed: true,
           evidence: opts.evidence ?? null,
         },
@@ -1800,6 +1913,61 @@ export class GraphnosisHost {
       await this.save(graphId);
     }
     return result;
+  }
+
+  /**
+   * Form many DIRECTED edges in one pass — the directed sibling of
+   * `linkNodesBatch`. Same per-edge dedup as `linkNodesDirected`, with a
+   * single graph save at the end. Used by Consolidation's transitive
+   * inference, which can add dozens of inferred edges per run. Returns
+   * the count actually created.
+   */
+  async linkNodesDirectedBatch(
+    graphId: GraphId,
+    edges: Array<{
+      from: string;
+      to: string;
+      type: import('@nehloo/graphnosis').DirectedEdge['type'];
+      weight?: number;
+      evidence?: string;
+    }>,
+  ): Promise<number> {
+    const g = this.must(graphId);
+    let created = 0;
+    for (const e of edges) {
+      const weight = e.weight ?? 0.7;
+      const linkOpts: { type: import('@nehloo/graphnosis').DirectedEdge['type']; weight: number; evidence?: string } = {
+        type: e.type,
+        weight,
+      };
+      if (e.evidence !== undefined) linkOpts.evidence = e.evidence;
+      try {
+        const result = await this.opts.adapter.linkNodesDirected(g.handle, e.from, e.to, linkOpts);
+        if (result.created) {
+          this.oplogWriter.emit({
+            graphId,
+            op: 'addEdge',
+            target: { kind: 'edge', id: result.edgeId },
+            after: {
+              fromNodeId: e.from,
+              toNodeId: e.to,
+              type: e.type,
+              weight,
+              directed: true,
+              evidence: e.evidence ?? null,
+            },
+          });
+          created += 1;
+        }
+      } catch (err) {
+        console.error(`[host] linkNodesDirectedBatch edge ${e.from}->${e.to} failed: ${(err as Error).message}`);
+      }
+    }
+    if (created > 0) {
+      g.dirty = true;
+      await this.save(graphId);
+    }
+    return created;
   }
 
   /**
@@ -1827,6 +1995,81 @@ export class GraphnosisHost {
       await this.save(graphId);
     }
     return result;
+  }
+
+  /**
+   * Reinforcement primitive — set the weight of many edges in one pass.
+   * Loops `adapter.reweightEdge` (pure in-memory), then a SINGLE graph save
+   * and a SINGLE summary op-log event. The autonomous reinforcement pass
+   * touches dozens of edges every cycle; one save + one op-log row per edge
+   * would be far too costly and would flood the audit log.
+   *
+   * The op kind is `addEdge` (the pinned op-log has no `editEdge`); the
+   * `after.reweight` marker tells a replayer the row is a re-assertion of
+   * existing edge weights, not a fresh edge. Returns the count changed.
+   */
+  async setEdgeWeightsBatch(
+    graphId: GraphId,
+    updates: Array<{ edgeId: string; weight: number }>,
+  ): Promise<number> {
+    const g = this.must(graphId);
+    let changed = 0;
+    let firstEdgeId = '';
+    for (const u of updates) {
+      try {
+        const result = await this.opts.adapter.reweightEdge(g.handle, u.edgeId, u.weight);
+        if (result.ok) {
+          changed += 1;
+          if (firstEdgeId === '') firstEdgeId = u.edgeId;
+        }
+      } catch (err) {
+        console.error(`[host] setEdgeWeightsBatch edge ${u.edgeId} failed: ${(err as Error).message}`);
+      }
+    }
+    if (changed > 0) {
+      this.oplogWriter.emit({
+        graphId,
+        op: 'addEdge',
+        target: { kind: 'edge', id: firstEdgeId },
+        after: { reweight: true, count: changed, reason: 'brain:reinforcement' },
+      });
+      g.dirty = true;
+      await this.save(graphId);
+    }
+    return changed;
+  }
+
+  /**
+   * Batched edge removal — one graph save for many unlinks. Used by
+   * Consolidation's redundancy cleanup (dead edges to soft-deleted nodes,
+   * exact-duplicate parallel edges). Each removed edge still gets its own
+   * `deleteEdge` op-log event so op-log replay / sync stays correct; only
+   * the disk save is batched. Returns the count actually removed.
+   */
+  async unlinkEdgesBatch(graphId: GraphId, edgeIds: string[]): Promise<number> {
+    const g = this.must(graphId);
+    let removed = 0;
+    for (const edgeId of edgeIds) {
+      try {
+        const result = await this.opts.adapter.unlinkEdge(g.handle, edgeId);
+        if (result.removed) {
+          removed += 1;
+          this.oplogWriter.emit({
+            graphId,
+            op: 'deleteEdge',
+            target: { kind: 'edge', id: edgeId },
+            after: { wasDirected: result.wasDirected ?? false, reason: 'brain:consolidation-cleanup' },
+          });
+        }
+      } catch (err) {
+        console.error(`[host] unlinkEdgesBatch edge ${edgeId} failed: ${(err as Error).message}`);
+      }
+    }
+    if (removed > 0) {
+      g.dirty = true;
+      await this.save(graphId);
+    }
+    return removed;
   }
 
   /**

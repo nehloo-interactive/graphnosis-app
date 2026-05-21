@@ -1102,9 +1102,70 @@ async function dispatch(deps: IpcDeps, method: string, params: unknown): Promise
         return {
           scanning: false, lastRun: {}, intervals: {},
           lastDecayReport: null, sessionSynapsesFormed: 0, sessionAutoLinksFormed: 0,
+          sessionReinforced: 0, sessionConnectionsFormed: 0, sessionInferred: 0,
+          sessionEdgesCleaned: 0, sessionCrossEngram: 0, lastConsolidation: null,
         };
       }
       return deps.brainEngine.getStatus();
+    }
+
+    case 'brain:getMemoryHealth': {
+      // Null (not a fabricated 0) when the brain isn't ready — lets the UI
+      // keep a neutral "computing…" ring.
+      if (!deps.brainEngine) return null;
+      return deps.brainEngine.getMemoryHealth();
+    }
+
+    case 'brain:getCrossEngramConnections': {
+      if (!deps.brainEngine) return [];
+      return deps.brainEngine.getCrossEngramConnections();
+    }
+
+    case 'brain:runConsolidation': {
+      // Fire-and-forget: the pass emits its own start/done frames.
+      if (deps.brainEngine) deps.brainEngine.runConsolidationNow();
+      return { ok: true };
+    }
+
+    case 'brain:getNeuralNetworkStatus': {
+      if (!deps.brainEngine) return { enabled: false, gnnEdgeCount: 0, lastRun: null };
+      return deps.brainEngine.getNeuralNetworkStatus();
+    }
+
+    case 'brain:getPredictedEdges': {
+      if (!deps.brainEngine) return [];
+      const args = z.object({ graphId: z.string().optional() }).parse(params ?? {});
+      return deps.brainEngine.getPredictedEdges(args.graphId);
+    }
+
+    case 'brain:enableNeuralNetwork': {
+      // Snapshot every engram BEFORE enabling — the safety net the user can
+      // fall back to. Then flip the setting on and kick off the first run.
+      const snapshotPath = await deps.host.snapshotGraphs('pre-neural-network');
+      const current = deps.host.getSettings();
+      await deps.host.setSettings({
+        brain: { ...current.brain, neuralNetwork: { enabled: true } },
+      });
+      if (deps.brainEngine) deps.brainEngine.runNeuralNetworkNow();
+      return { ok: true, snapshotPath };
+    }
+
+    case 'brain:disableNeuralNetwork': {
+      const current = deps.host.getSettings();
+      await deps.host.setSettings({
+        brain: { ...current.brain, neuralNetwork: { enabled: false } },
+      });
+      return { ok: true };
+    }
+
+    case 'brain:runNeuralNetwork': {
+      if (deps.brainEngine) deps.brainEngine.runNeuralNetworkNow();
+      return { ok: true };
+    }
+
+    case 'brain:removeNeuralNetworkEdges': {
+      const removed = deps.brainEngine ? await deps.brainEngine.removeNeuralNetworkEdges() : 0;
+      return { removed };
     }
 
     // ── LLM / Ollama management IPC ─────────────────────────────────────────

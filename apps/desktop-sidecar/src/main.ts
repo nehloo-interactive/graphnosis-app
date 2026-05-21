@@ -440,6 +440,9 @@ async function main(): Promise<void> {
   const { broadcastRaw } = await startEvents({ host, socketPath: eventsSocketPath });
 
   const brainEngine = new BrainEngine(host, llm, broadcastRaw);
+  // Wire recall → reinforcement: every federated recall feeds the
+  // co-activation accumulator so co-recalled memories strengthen.
+  host.setPlasticityObserver((sub) => brainEngine.onRecall(sub));
 
   const mcpDeps = {
     host,

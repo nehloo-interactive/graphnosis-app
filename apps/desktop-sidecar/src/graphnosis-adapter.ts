@@ -225,6 +225,20 @@ export interface GraphnosisAdapter {
   ): Promise<{ removed: boolean; wasDirected?: boolean }>;
 
   /**
+   * Set the weight of an existing edge (directed or undirected) — the
+   * primitive behind Deterministic Consolidation's connection reinforcement.
+   * Tries the directed map first, then undirected. The new weight is
+   * clamped to [0, 1]. Returns `{ ok: false }` when the edge id is not
+   * found — idempotent, like `unlinkEdge`. `prevWeight` is the weight
+   * before the change, for op-log auditing.
+   */
+  reweightEdge(
+    handle: GraphHandle,
+    edgeId: string,
+    newWeight: number,
+  ): Promise<{ ok: boolean; wasDirected?: boolean; prevWeight?: number }>;
+
+  /**
    * Snapshot of the dual-graph's edges. Powers the Atlas visualization
    * and the detail pane's Connections section. `evidence` on directed
    * edges carries the user-chosen label when the edge was created via

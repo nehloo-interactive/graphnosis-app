@@ -6,12 +6,18 @@ import { VitalityScorer, type VitalityReport } from './vitality.js';
 import { TemporalEngine } from './temporal-engine.js';
 import { GoalTracker } from './goal-tracker.js';
 import { findSimilarPairs } from './duplicate-scan.js';
+import { ReinforcementEngine } from './reinforcement-engine.js';
+import { MemoryHealthScorer, type MemoryHealth } from './memory-health.js';
 import {
   type HealingRecord,
   type HealingRule,
   type HealingLlmVerdict,
   makeHealingRecord,
 } from './healing-journal.js';
+
+/** The result of a federated recall — derived from the host so brain-engine
+ *  needn't import the secure-sync federation types directly. */
+type RecallResult = Awaited<ReturnType<GraphnosisHost['recall']>>;
 
 /**
  * A deduplication the brain decided it can do autonomously — no human
@@ -214,11 +220,25 @@ const AUTOLINK_DEGREE_CAP = 12;
 // scan; re-linking an existing pair is a no-op, so this only bounds the
 // work of a single run.
 const MAX_AUTOLINKS_PER_RUN = 300;
+// Cadence of the connection-reinforcement pass — frequent enough that
+// recall ranking stays responsive to use, coarse enough that the op-log
+// gets at most ~48 summary rows/day/graph.
+const REINFORCE_INTERVAL_MS = 30 * 60 * 1000;       // 30 min
+// Cross-engram connection formation — engrams don't change fast, so this
+// runs far less often than reinforcement.
+const CROSS_ENGRAM_INTERVAL_MS = 6 * 60 * 60 * 1000; // 6 h
+// Graphnosis Neural Network — daily, and only once the user has enabled it.
+const GNN_INTERVAL_MS = 24 * 60 * 60 * 1000;        // 24 h
 
 export class BrainEngine {
   private readonly vitality: VitalityScorer;
   readonly temporalEngine: TemporalEngine;
   private readonly goalTracker: GoalTracker;
+  // Deterministic Consolidation — connection reinforcement, cross-engram
+  // linking, and consolidation. Public so getStatus / Memory Health can
+  // read its session counters.
+  readonly reinforcement: ReinforcementEngine;
+  private readonly memoryHealth: MemoryHealthScorer;
 
   // The "needs human judgment" queue — genuine contradictions and
   // partial-overlap pairs the brain could NOT safely auto-heal. Surfaced
@@ -257,6 +277,10 @@ export class BrainEngine {
   private insightTimer: NodeJS.Timeout | null = null;
   private temporalTimer: NodeJS.Timeout | null = null;
   private goalTimer: NodeJS.Timeout | null = null;
+  private reinforceTimer: NodeJS.Timeout | null = null;
+  private consolidationTimer: NodeJS.Timeout | null = null;
+  private crossEngramTimer: NodeJS.Timeout | null = null;
+  private gnnTimer: NodeJS.Timeout | null = null;
   // Debounce timer for the post-ingest duplicate scan — see
   // notifyIngestComplete(). A one-shot setTimeout, reset on each ingest.
   private ingestScanTimer: NodeJS.Timeout | null = null;
@@ -269,6 +293,8 @@ export class BrainEngine {
     this.vitality = new VitalityScorer(host);
     this.temporalEngine = new TemporalEngine(host, () => host.getSettings());
     this.goalTracker = new GoalTracker(host, llm);
+    this.reinforcement = new ReinforcementEngine(host, () => host.getSettings(), (g) => this.emitBrain(g));
+    this.memoryHealth = new MemoryHealthScorer(host, this.reinforcement);
   }
 
   // ── Lifecycle ──────────────────────────────────────────────────────────────
@@ -284,6 +310,9 @@ export class BrainEngine {
         console.error(`[brain] healing journal load failed: ${(e as Error).message}`);
         this.healingJournalLoaded = true; // proceed with an empty journal
       });
+
+    // Load the predictive association index off disk (fire-and-forget).
+    void this.reinforcement.warmUp();
 
     // Do NOT scan at boot. The duplicate scan does real embedding math
     // now; running it while the app is still loading engrams and wiring the
@@ -326,6 +355,33 @@ export class BrainEngine {
       GOAL_CHECK_INTERVAL_MS,
     ).unref();
 
+    this.reinforceTimer = setInterval(
+      () => { void this.reinforcement.runReinforcementPass(); },
+      REINFORCE_INTERVAL_MS,
+    ).unref();
+
+    // Consolidation cadence is user-configurable (default 24 h); read once
+    // at start — a change takes effect on the next sidecar restart.
+    const consolidationMs =
+      (this.host.getSettings().brain?.reinforcement?.consolidationIntervalHours ?? 24)
+      * 60 * 60 * 1000;
+    this.consolidationTimer = setInterval(
+      () => { void this.reinforcement.runConsolidationPass(); },
+      consolidationMs,
+    ).unref();
+
+    this.crossEngramTimer = setInterval(
+      () => { void this.reinforcement.runCrossEngramPass(); },
+      CROSS_ENGRAM_INTERVAL_MS,
+    ).unref();
+
+    // The Graphnosis Neural Network self-gates on its settings toggle — the
+    // timer fires daily but does nothing unless the user has enabled it.
+    this.gnnTimer = setInterval(
+      () => { void this.reinforcement.runNeuralNetwork(); },
+      GNN_INTERVAL_MS,
+    ).unref();
+
     // Emit initial vitality once boot has settled — vitality.compute()
     // walks every node and the op-log, so keep it clear of the load path.
     setTimeout(() => {
@@ -338,7 +394,7 @@ export class BrainEngine {
     this.warmupTimer = null;
     if (this.ingestScanTimer) clearTimeout(this.ingestScanTimer);
     this.ingestScanTimer = null;
-    for (const t of [this.duplicateScanTimer, this.synapseTimer, this.insightTimer, this.temporalTimer, this.goalTimer]) {
+    for (const t of [this.duplicateScanTimer, this.synapseTimer, this.insightTimer, this.temporalTimer, this.goalTimer, this.reinforceTimer, this.consolidationTimer, this.crossEngramTimer, this.gnnTimer]) {
       if (t) clearInterval(t);
     }
     this.duplicateScanTimer = null;
@@ -346,6 +402,10 @@ export class BrainEngine {
     this.insightTimer = null;
     this.temporalTimer = null;
     this.goalTimer = null;
+    this.reinforceTimer = null;
+    this.consolidationTimer = null;
+    this.crossEngramTimer = null;
+    this.gnnTimer = null;
   }
 
   /**
@@ -366,6 +426,25 @@ export class BrainEngine {
   }
 
   // ── Public API (for IPC/MCP handlers) ────────────────────────────────────
+
+  /**
+   * Fed by host.setPlasticityObserver — invoked for every federated recall.
+   * Records co-activation (so co-recalled memories strengthen their links)
+   * and gives the recalled nodes a small confidence boost. Both effects are
+   * strengthen-only.
+   */
+  onRecall(sub: RecallResult): void {
+    const activated = new Set<string>();
+    for (const [graphId, items] of sub.byGraph) {
+      const nodeIds = items.map((i) => i.nodeId);
+      if (nodeIds.length === 0) continue;
+      this.reinforcement.recordCoActivation(graphId, nodeIds);
+      void this.temporalEngine.reinforceNodes(nodeIds, graphId);
+      for (const id of nodeIds) activated.add(`${graphId}#${id}`);
+    }
+    this.reinforcement.noteCrossEngramRecall(activated);
+    this.reinforcement.enrichRecall(sub);
+  }
 
   async getVitalityReport(): Promise<VitalityReport> {
     return this.vitality.compute(this.duplicatePairs.length);
@@ -537,6 +616,48 @@ export class BrainEngine {
     return this.vitality.compute(this.duplicatePairs.length);
   }
 
+  /** Retrieval-quality Memory Health report — powers the Autonomous
+   *  Indelibility tab's health ring. */
+  async getMemoryHealth(): Promise<MemoryHealth> {
+    return this.memoryHealth.compute();
+  }
+
+  /** Live cross-engram connection store — for the UI's cross-engram panel. */
+  getCrossEngramConnections(): ReturnType<ReinforcementEngine['getCrossEngramConnections']> {
+    return this.reinforcement.getCrossEngramConnections();
+  }
+
+  /** Trigger a Graphnosis Neural Network run (opt-in, non-deterministic).
+   *  Fire-and-forget; gated internally by the settings toggle. */
+  runNeuralNetworkNow(): void {
+    void this.reinforcement.runNeuralNetwork();
+  }
+
+  /** Remove every neural-network-predicted edge — the live undo. */
+  async removeNeuralNetworkEdges(): Promise<number> {
+    return this.reinforcement.removeGnnEdges();
+  }
+
+  /** Neural-network state for the UI: on/off, predicted-edge count, last run. */
+  getNeuralNetworkStatus(): {
+    enabled: boolean;
+    gnnEdgeCount: number;
+    lastRun: { at: number; edgesAdded: number; edgesPruned: number } | null;
+  } {
+    return {
+      enabled: this.host.getSettings().brain?.neuralNetwork?.enabled === true,
+      gnnEdgeCount: this.reinforcement.countGnnEdges(),
+      lastRun: this.reinforcement.lastNeuralNetwork,
+    };
+  }
+
+  /** Neural-network predicted edges (the `.gnn` overlay) — for the 3D
+   *  Engram's toggleable prediction layer. Optionally scoped to one engram. */
+  getPredictedEdges(graphId?: string): ReturnType<ReinforcementEngine['getPredictedEdges']> {
+    const all = this.reinforcement.getPredictedEdges();
+    return graphId ? all.filter((e) => e.graphId === graphId) : all;
+  }
+
   /**
    * Run every scan loop once, back-to-back, for an on-demand full sweep —
    * e.g. when the user opens the Autonomous Brain tab or hits Refresh.
@@ -558,12 +679,22 @@ export class BrainEngine {
       await this.runSynapse();
       await this.runInsight();
       await this.runGoalCheck();
+      await this.reinforcement.runReinforcementPass();
+      await this.reinforcement.runConsolidationPass();
+      await this.reinforcement.runCrossEngramPass();
     } catch (err) {
       console.error('[brain] full scan error:', err);
     } finally {
       this.scanInFlight = false;
       this.emitBrain('__brain_done_fullscan__');
     }
+  }
+
+  /** Trigger a consolidation pass on demand — the "Run consolidation"
+   *  button in the Deterministic Consolidation tab. Fire-and-forget; the pass
+   *  emits its own start/done frames. */
+  runConsolidationNow(): void {
+    void this.reinforcement.runConsolidationPass();
   }
 
   /** Snapshot for the UI's scan-status line: are we scanning, when did each
@@ -575,6 +706,12 @@ export class BrainEngine {
     lastDecayReport: { graphsProcessed: number; nodesDecayed: number } | null;
     sessionSynapsesFormed: number;
     sessionAutoLinksFormed: number;
+    sessionReinforced: number;
+    sessionConnectionsFormed: number;
+    sessionInferred: number;
+    sessionEdgesCleaned: number;
+    sessionCrossEngram: number;
+    lastConsolidation: { at: number; inferredEdges: number; communities: number; edgesCleaned: number } | null;
   } {
     return {
       scanning: this.scanInFlight,
@@ -585,10 +722,21 @@ export class BrainEngine {
         insight: INSIGHT_INTERVAL_MS,
         temporalDecay: TEMPORAL_INTERVAL_MS,
         goalCheck: GOAL_CHECK_INTERVAL_MS,
+        reinforce: REINFORCE_INTERVAL_MS,
+        crossEngram: CROSS_ENGRAM_INTERVAL_MS,
+        consolidation:
+          (this.host.getSettings().brain?.reinforcement?.consolidationIntervalHours ?? 24)
+          * 60 * 60 * 1000,
       },
       lastDecayReport: this.lastDecayReport,
       sessionSynapsesFormed: this.sessionSynapsesFormed,
       sessionAutoLinksFormed: this.sessionAutoLinksFormed,
+      sessionReinforced: this.reinforcement.sessionReinforced,
+      sessionConnectionsFormed: this.reinforcement.sessionConnectionsFormed,
+      sessionInferred: this.reinforcement.sessionInferred,
+      sessionEdgesCleaned: this.reinforcement.sessionEdgesCleaned,
+      sessionCrossEngram: this.reinforcement.sessionCrossEngram,
+      lastConsolidation: this.reinforcement.lastConsolidation,
     };
   }
 
