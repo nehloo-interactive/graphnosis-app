@@ -9,14 +9,14 @@ export interface VitalityReport {
 /**
  * Computes a 0-100 "vitality" score for each engram and an overall cortex
  * score. Higher = more knowledge, better connectivity, recent activity, fewer
- * contradictions. Cached with a 5-minute TTL so callers can poll freely.
+ * duplicate pairs. Cached with a 5-minute TTL so callers can poll freely.
  *
  * Formula per graph (each component 0-1, then scaled to 0-100):
  *   nodeScore      = clamp(activeNodes / 50) × 0.30
  *   edgeScore      = clamp(edgeDensity / 3)  × 0.30  (density = edges / nodes)
  *   activityScore  = clamp(recentOps  / 20)  × 0.20  (ops in last 7 days)
  *   avgConfScore   = avg(active node confidence) × 0.20
- *   penalty        = min(contradictions × 0.05, 0.30)
+ *   penalty        = min(duplicatePairs × 0.05, 0.30)
  *   graphScore     = round(clamp(sum − penalty) × 100)
  *
  * overall = active-node–weighted average across graphs.
@@ -28,16 +28,16 @@ export class VitalityScorer {
 
   constructor(private readonly host: GraphnosisHost) {}
 
-  async compute(pendingContradictions: number): Promise<VitalityReport> {
+  async compute(pendingDuplicatePairs: number): Promise<VitalityReport> {
     if (this.cache && Date.now() < this.cacheExpireAt) return this.cache;
-    return this.recompute(pendingContradictions);
+    return this.recompute(pendingDuplicatePairs);
   }
 
   invalidate(): void {
     this.cache = null;
   }
 
-  private async recompute(pendingContradictions: number): Promise<VitalityReport> {
+  private async recompute(pendingDuplicatePairs: number): Promise<VitalityReport> {
     const byGraph: Record<string, number> = {};
     let totalWeight = 0;
     let weightedSum = 0;
@@ -78,7 +78,7 @@ export class VitalityScorer {
         : 0;
       const avgConfScore = clamp(avgConf) * 0.20;
 
-      const penalty = Math.min(pendingContradictions * 0.05, 0.30);
+      const penalty = Math.min(pendingDuplicatePairs * 0.05, 0.30);
       const raw = clamp(nodeScore + edgeScore + activityScore + avgConfScore - penalty);
       byGraph[graphId] = Math.round(raw * 100);
 

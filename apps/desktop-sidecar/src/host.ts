@@ -7,6 +7,7 @@ import { wordlist } from '@scure/bip39/wordlists/english';
 import { embeddings, settings as settingsMod, sources, type SourceRecord } from '@graphnosis-app/core';
 import { crypto, federation, oplog, policy, type DeviceId, type GraphId, type SubgraphBudget } from '@nehloo-interactive/graphnosis-secure-sync';
 import type { GraphnosisAdapter, GraphHandle, AppendDocumentInput, CorrectionEdit } from './graphnosis-adapter.js';
+import * as healingJournalMod from './healing-journal.js';
 
 const { deriveKey, encrypt, decrypt } = crypto;
 const { OpLogWriter } = oplog;
@@ -528,6 +529,35 @@ export class GraphnosisHost {
     return this.opts.cortexDir;
   }
 
+  // ── Healing journal ──────────────────────────────────────────────────────
+  //
+  // The Autonomous Brain's auto-heal log lives in `<cortex>/healing-journal.enc`,
+  // encrypted with the cortex data key. The host owns the filesystem + key
+  // wiring; the record shape + encode/decode logic live in healing-journal.ts.
+  // BrainEngine holds the journal in memory and calls these on boot + after
+  // each heal — same pattern as how it owns `this.duplicatePairs`.
+
+  /** Load + decrypt the healing journal. Returns [] if none exists yet. */
+  async loadHealingJournal(): Promise<healingJournalMod.HealingRecord[]> {
+    const file = path.join(this.opts.cortexDir, healingJournalMod.HEALING_JOURNAL_FILE);
+    let blob: Buffer;
+    try {
+      blob = await fs.readFile(file);
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code === 'ENOENT') return [];
+      console.error(`[host] could not read healing journal: ${(e as Error).message}`);
+      return [];
+    }
+    return healingJournalMod.decodeHealingJournal(new Uint8Array(blob), this.key);
+  }
+
+  /** Encrypt + atomically write the healing journal. */
+  async saveHealingJournal(records: healingJournalMod.HealingRecord[]): Promise<void> {
+    const file = path.join(this.opts.cortexDir, healingJournalMod.HEALING_JOURNAL_FILE);
+    const blob = await healingJournalMod.encodeHealingJournal(records, this.key);
+    await writeFileAtomic(file, Buffer.from(blob));
+  }
+
   // ── Search ──────────────────────────────────────────────────────────────
   //
   // Single-graph semantic search, used by the Nodes view in the App. Calls
@@ -586,7 +616,7 @@ export class GraphnosisHost {
 
   /**
    * Raw embedding vectors for all embedded nodes — used by BrainEngine's
-   * contradiction scan (cosine pairwise comparison). Returns an empty map
+   * duplicate scan (cosine pairwise comparison). Returns an empty map
    * when the graph has no embedding index yet.
    */
   getNodeEmbeddings(graphId: GraphId): Map<string, number[]> {
@@ -1559,6 +1589,43 @@ export class GraphnosisHost {
   }
 
   /**
+   * Re-introduce a piece of content as fresh, source-less node(s) and
+   * return the new node ids.
+   *
+   * Used by the autonomous-healing review pass: when the LLM second
+   * opinion overturns an auto-heal as a false positive (`unmerged`), the
+   * superseded memory's frozen content snapshot is added back into the
+   * graph as a live node, so the now-un-merged pair can be sent to the
+   * Check-in deck for human judgment.
+   *
+   * Goes through the same `appendDocument` path — and emits the same
+   * `addNode` op-log events and auto-relink pass — as `applyCorrection`'s
+   * `adds`, but surfaces the node ids the caller needs to build a review
+   * card.
+   */
+  async addLooseContent(graphId: GraphId, content: string, sourceRef: string): Promise<string[]> {
+    const g = this.must(graphId);
+    const input: AppendDocumentInput = { kind: 'markdown', content, sourceRef };
+    const result = await this.opts.adapter.appendDocument(
+      g.handle,
+      input,
+      { chunkSize: this.settings.ai.chunkSize },
+    );
+    for (const n of result.newNodeIds) {
+      this.oplogWriter.emit({
+        graphId,
+        op: 'addNode',
+        target: { kind: 'node', id: n },
+        after: { ref: sourceRef },
+      });
+    }
+    g.dirty = true;
+    await this.save(graphId);
+    if (result.newNodeIds.length > 0) this.kickoffRelink(graphId);
+    return result.newNodeIds;
+  }
+
+  /**
    * Apply a temporal decay correction to a single node. Called by TemporalEngine
    * during its daily decay pass. Distinct from reinforceNode so the reason
    * string is accurate in the op-log.
@@ -1631,6 +1698,62 @@ export class GraphnosisHost {
       await this.save(graphId);
     }
     return result;
+  }
+
+  /**
+   * Form many undirected edges in one pass. Same per-edge behavior as
+   * `linkNodes` — idempotent dedup, an `addEdge` op-log event carrying
+   * `reason` — but with a SINGLE graph save at the end instead of one per
+   * edge. Used by the autonomous brain's auto-link tier, which weaves
+   * dozens of "related" edges per scan; one save per edge would be far
+   * too costly. Returns the count of edges actually created (re-linking an
+   * already-existing pair is a no-op and is not counted).
+   */
+  async linkNodesBatch(
+    graphId: GraphId,
+    edges: Array<{
+      a: string;
+      b: string;
+      type?: import('@nehloo/graphnosis').UndirectedEdge['type'];
+      reason?: string;
+    }>,
+  ): Promise<number> {
+    const g = this.must(graphId);
+    let created = 0;
+    for (const e of edges) {
+      const type = e.type ?? 'related-to';
+      const linkOpts: { type: import('@nehloo/graphnosis').UndirectedEdge['type']; weight: number; reason?: string } = {
+        type,
+        weight: 0.7,
+      };
+      if (e.reason !== undefined) linkOpts.reason = e.reason;
+      try {
+        const result = await this.opts.adapter.linkNodes(g.handle, e.a, e.b, linkOpts);
+        if (result.created) {
+          this.oplogWriter.emit({
+            graphId,
+            op: 'addEdge',
+            target: { kind: 'edge', id: result.edgeId },
+            after: {
+              fromNodeId: e.a,
+              toNodeId: e.b,
+              type,
+              weight: 0.7,
+              directed: false,
+              reason: e.reason ?? 'auto-link',
+            },
+          });
+          created += 1;
+        }
+      } catch (err) {
+        console.error(`[host] linkNodesBatch edge ${e.a}->${e.b} failed: ${(err as Error).message}`);
+      }
+    }
+    if (created > 0) {
+      g.dirty = true;
+      await this.save(graphId);
+    }
+    return created;
   }
 
   /**

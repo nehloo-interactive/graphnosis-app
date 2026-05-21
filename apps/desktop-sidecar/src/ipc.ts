@@ -489,6 +489,9 @@ async function dispatch(deps: IpcDeps, method: string, params: unknown): Promise
             name: 'ingest.done',
             payload: { jobId, graphId, fileName, nodeIds: (result as { nodeIds?: string[] }).nodeIds ?? [], nodesAdded: nodeCount },
           });
+          // Fresh content may have introduced duplicates — let the brain
+          // re-scan (debounced; a batch of files coalesces into one pass).
+          deps.brainEngine?.notifyIngestComplete();
         } catch (e) {
           const message = e instanceof Error ? e.message : String(e);
           console.error(`[graphnosis-sidecar] background ingest failed for ${filePath}:`, e);
@@ -1003,7 +1006,10 @@ async function dispatch(deps: IpcDeps, method: string, params: unknown): Promise
     // ── Alive Brain IPC ──────────────────────────────────────────────────────
 
     case 'brain:getVitality': {
-      if (!deps.brainEngine) return { overall: 0, byGraph: {}, computedAt: Date.now() };
+      // Null (not a fabricated 0) when the brain isn't ready yet — lets the
+      // UI keep a neutral "computing…" ring instead of showing a real-
+      // looking vitality of 0.
+      if (!deps.brainEngine) return null;
       return deps.brainEngine.getVitalityReport();
     }
 
@@ -1012,9 +1018,14 @@ async function dispatch(deps: IpcDeps, method: string, params: unknown): Promise
       return deps.brainEngine.getInsights();
     }
 
-    case 'brain:getContradictions': {
+    case 'brain:getDuplicatePairs': {
       if (!deps.brainEngine) return [];
-      return deps.brainEngine.getContradictions();
+      return deps.brainEngine.getDuplicatePairs();
+    }
+
+    case 'brain:getHealingJournal': {
+      if (!deps.brainEngine) return [];
+      return deps.brainEngine.getHealingJournal();
     }
 
     case 'brain:dismissInsight': {
@@ -1023,9 +1034,18 @@ async function dispatch(deps: IpcDeps, method: string, params: unknown): Promise
       return { ok: true };
     }
 
-    case 'brain:dismissContradiction': {
+    case 'brain:dismissDuplicatePair': {
       const { id } = z.object({ id: z.string() }).parse(params);
-      deps.brainEngine?.dismissContradiction(id);
+      deps.brainEngine?.dismissDuplicatePair(id);
+      return { ok: true };
+    }
+
+    case 'brain:resolveDuplicatePair': {
+      const { id, action } = z.object({
+        id: z.string(),
+        action: z.enum(['merge', 'keep-both']),
+      }).parse(params);
+      await deps.brainEngine?.resolveDuplicatePair(id, action);
       return { ok: true };
     }
 
@@ -1079,7 +1099,10 @@ async function dispatch(deps: IpcDeps, method: string, params: unknown): Promise
 
     case 'brain:getStatus': {
       if (!deps.brainEngine) {
-        return { scanning: false, lastRun: {}, intervals: {} };
+        return {
+          scanning: false, lastRun: {}, intervals: {},
+          lastDecayReport: null, sessionSynapsesFormed: 0, sessionAutoLinksFormed: 0,
+        };
       }
       return deps.brainEngine.getStatus();
     }
