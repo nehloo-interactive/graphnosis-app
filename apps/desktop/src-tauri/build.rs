@@ -381,6 +381,23 @@ fn build_node_binary(binary_name: &str, entry_relative: &str) {
     match status {
         Ok(s) if s.success() => {
             println!("cargo:warning={} built at {}", binary_name, binary_path.display());
+            // Embed rpath entries so the .node native addon's @rpath dependency on
+            // libonnxruntime.1.21.0.dylib resolves in production. DYLD_FALLBACK_LIBRARY_PATH
+            // is silently stripped by macOS for hardened-runtime (notarized) binaries, so the
+            // env-var approach in sidecar.rs only works in dev. Baking the paths in here means
+            // Tauri re-signs the binary with the correct rpaths already present.
+            //   @executable_path/           → target/<profile>/   (dev, next to binary)
+            //   @executable_path/../Resources/resources  → Contents/Resources/resources/ (bundled .app)
+            #[cfg(target_os = "macos")]
+            {
+                let _ = Command::new("install_name_tool")
+                    .args([
+                        "-add_rpath", "@executable_path/",
+                        "-add_rpath", "@executable_path/../Resources/resources",
+                    ])
+                    .arg(&binary_path)
+                    .status();
+            }
             #[cfg(target_os = "macos")]
             ensure_runtime_copy_named(&manifest_dir, &target, &binary_path, binary_name);
         }
