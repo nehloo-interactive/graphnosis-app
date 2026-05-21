@@ -262,6 +262,11 @@
         0%, 100% { opacity: 1; }
         50%       { opacity: 0.3; }
       }
+      /* Live unlock/boot status line — pulsing sphere + current boot step,
+         shown in place of the old "Touch the sensor" label. Font size is
+         inherited from the #unlock-status element's `subtitle` class. */
+      .unlock-boot { display: inline-flex; align-items: center; gap: 7px; }
+      .unlock-boot.hidden { display: none; }
       .recovery-unlock-section {
         margin-top: 14px;
         padding-top: 14px;
@@ -1269,11 +1274,13 @@
         font-weight: 400;
       }
       .header-tagline {
-        font-size: 11px;
+        font-size: 13px;
         color: var(--fg-dim);
         font-weight: 400;
         white-space: nowrap;
-        padding-left: 26px; /* align under title, past brain icon */
+        /* No left padding — flush-left so the tagline aligns under the
+           "Graphnosis" title. (Previously offset 26px to clear a brain
+           icon that no longer sits in the title row.) */
       }
       .status-cortex {
         font-size: 11.5px;
@@ -1761,11 +1768,11 @@
         padding: 1px 5px; border-radius: 4px; flex-shrink: 0;
       }
       .lb-mcp-tool-desc { color: var(--fg-dim); line-height: 1.45; }
-      .lb-contradiction {
+      .lb-dup-card {
         border: 1px solid var(--border); border-radius: 8px;
         padding: 10px; margin-bottom: 10px; background: var(--bg-elev);
       }
-      .lb-contradiction-pair {
+      .lb-dup-card-pair {
         display: grid; grid-template-columns: 1fr 1fr; gap: 10px;
       }
       .lb-snippet {
@@ -1776,11 +1783,11 @@
         display: inline-block; font-weight: 700; font-size: 11px;
         color: var(--accent); margin-right: 6px;
       }
-      .lb-contradiction-foot {
+      .lb-dup-card-foot {
         display: flex; align-items: center; justify-content: space-between;
         gap: 10px; margin-top: 8px;
       }
-      .lb-contradiction-note {
+      .lb-dup-card-note {
         font-size: 11px; color: var(--fg-dim); margin: 6px 0 0;
         font-style: italic;
       }
@@ -1818,7 +1825,7 @@
         border: 1px solid color-mix(in oklab, var(--accent) 22%, transparent);
       }
       .lb-scope-note strong { color: var(--fg); font-weight: 600; }
-      /* Engram-name chip on contradiction / insight / goal cards, so a
+      /* Engram-name chip on duplicate-pair / insight / goal cards, so a
          holistic list still tells you which engram each item belongs to. */
       .lb-engram-chip {
         display: inline-block; font-size: 10px; font-weight: 600;
@@ -1826,6 +1833,31 @@
         background: var(--bg); border: 1px solid var(--border);
         color: var(--fg-dim); white-space: nowrap;
       }
+      /* Healing-log: local-AI second-opinion verdict chip on a heal entry.
+         Green when the AI confirmed the deterministic call; amber when it
+         overturned it (reversed / unmerged / resynthesized). */
+      .lb-heal-verdict {
+        display: inline-block; font-size: 10px; font-weight: 700;
+        text-transform: uppercase; letter-spacing: 0.04em;
+        padding: 1px 6px; border-radius: 4px; vertical-align: middle;
+        white-space: nowrap;
+        background: color-mix(in oklab, var(--ok) 18%, transparent);
+        color: var(--ok);
+      }
+      .lb-heal-verdict.overturned {
+        background: color-mix(in oklab, #d9a445 22%, transparent);
+        color: #d9a445;
+      }
+      /* Check-in dashboard → "Needs your review": near-duplicate pairs the
+         autonomous brain could not safely merge on its own. The pair cards
+         reuse the .lb-dup-card family. */
+      .g-needs-review { margin-bottom: 18px; }
+      .g-needs-review.hidden { display: none; }
+      .g-needs-review-title { font-size: 13px; font-weight: 600; margin: 0 0 2px; }
+      .g-needs-review-sub {
+        font-size: 12px; color: var(--fg-dim); margin: 0 0 10px; line-height: 1.45;
+      }
+      .g-nr-actions { display: flex; gap: 8px; flex-shrink: 0; }
 
       /* (3) Scan-status line — countdown to the next background self-check,
          or the live phase label while a scan is running. */
@@ -1864,10 +1896,10 @@
         color: var(--fg);
       }
 
-      /* (5) Self-healing — a resolved contradiction card stitches shut
+      /* (5) Self-healing — a resolved duplicate-pair card stitches shut
          and collapses rather than vanishing. max-height is set inline in
          JS to the card's measured height so the collapse is smooth. */
-      .lb-contradiction.lb-healing {
+      .lb-dup-card.lb-healing {
         overflow: hidden;
         box-shadow: inset 0 0 0 1px var(--accent);
         transition: max-height 0.5s ease-in, opacity 0.5s ease-in,
@@ -2680,6 +2712,7 @@
         align-items: center;
         flex-wrap: wrap;
         padding-top: 4px;
+        margin-bottom: 10px;
       }
       .connectors-add-label { font-size: 15px; color: var(--fg-dim); margin-right: 4px; }
       .btn-add-connector {
@@ -4310,10 +4343,10 @@
                width="120" height="120"
                style="margin-bottom: 20px; border-radius: 22px; opacity: 0.92; flex-shrink: 0; display: block;" />
           <h1>Graphnosis</h1>
-          <p class="subtitle" id="subtitle">Your local encrypted memory, indexed for every AI tool</p>
+          <p class="subtitle" id="subtitle">Your local encrypted memory, indexed for every AI</p>
           <div id="error" class="error hidden"></div>
           <div class="panel unlock-card">
-            <p class="panel-title">Unlock your encrypted second cortex:</p>
+            <p class="panel-title">Unlock your local encrypted memory</p>
             <div class="row">
               <label for="cortex-dir" class="visually-hidden">Cortex folder path</label>
               <div class="pick-row">
@@ -4349,18 +4382,20 @@
             </div>
             <div class="actions">
               <button id="btn-unlock" class="primary">Unlock</button>
-              <span id="unlock-status" class="subtitle"></span>
+              <!-- Live unlock/boot status — a pulsing sphere + the current
+                   boot step, at subtitle size. Replaces the old static
+                   "Touch the sensor" / "Starting synapse" label; hidden
+                   until an unlock is in flight, cleared when the cortex
+                   opens. The boot-event listener writes #boot-status-text. -->
+              <span id="unlock-status" class="subtitle unlock-boot hidden">
+                <span class="boot-status-dot"></span>
+                <span id="boot-status-text"></span>
+              </span>
             </div>
             <!-- Indeterminate progress bar: visible only between clicking
                  Unlock and the cortex actually opening. Same pattern reused
                  for the recovery-phrase "Recover access" button. -->
             <div id="unlock-progress" class="unlock-progress hidden"></div>
-            <!-- Boot-step status line: shown during the sidecar startup wait.
-                 Tells the user what's happening so a 30-60s load doesn't look frozen. -->
-            <div id="boot-status" class="boot-status hidden">
-              <span id="boot-status-dot" class="boot-status-dot"></span>
-              <span id="boot-status-text"></span>
-            </div>
             <a id="link-forgot-passphrase" class="forgot-passphrase-link" role="button" tabindex="0">Forgot passphrase? Use recovery phrase</a>
             <!-- Recovery unlock (hidden by default; shown via "Forgot passphrase?" link).
                  Placed AFTER the Unlock action so the user's primary path stays visually
@@ -4420,7 +4455,7 @@
             <div class="app-title-row">
               <span class="app-title">Graphnosis</span>
             </div>
-            <span class="header-tagline">Your local encrypted memory, indexed for every AI tool</span>
+            <span class="header-tagline">Your local encrypted memory, indexed for every AI</span>
           </div>
           <div class="app-header-right">
             <!-- Active engram picker cluster: muted label + dropdown.
@@ -4447,7 +4482,7 @@
             </div>
             <button class="rail-btn active" data-mode="atlas" title="Memory check-in dashboard + 3D map">
               <span class="rail-icon">▣</span>
-              <span class="rail-label">My Private Memory</span>
+              <span class="rail-label">My Local Memory</span>
               <span id="rail-corrections-badge" class="rail-badge hidden" title="Pending corrections waiting in the deck">0</span>
             </button>
             <button class="rail-btn" data-mode="sources" title="Files that fed your memory">
@@ -4479,6 +4514,7 @@
             </div>
             <div id="rail-get-connected" class="rail-get-connected">
               <div class="rail-get-connected-label">Get connected</div>
+              <div class="rail-get-connected-group" id="rail-gc-aimode"></div>
               <div class="rail-get-connected-group" id="rail-gc-clients"></div>
               <div class="rail-get-connected-group" id="rail-gc-mobile"></div>
               <div class="rail-get-connected-group" id="rail-gc-connectors"></div>
@@ -4530,7 +4566,7 @@
                   <div class="g-tabs">
                     <button class="g-tab active" data-gtab="checkin">Check-in</button>
                     <button class="g-tab" data-gtab="atlas">3D Engram</button>
-                    <button class="g-tab" data-gtab="brain">Autonomous Brain</button>
+                    <button class="g-tab" data-gtab="brain">Autonomous upkeep</button>
                   </div>
 
                   <!-- CHECK-IN DASHBOARD (default) -->
@@ -4553,6 +4589,12 @@
                     </div>
 
                     <div id="g-dashboard" class="g-dashboard">
+                      <!-- "Needs your review" — near-duplicate / possibly-
+                           conflicting memory pairs the autonomous brain
+                           could NOT safely merge on its own. Holistic
+                           across every engram; hidden entirely when empty.
+                           Populated by renderNeedsReview(). -->
+                      <div id="g-needs-review" class="g-needs-review hidden"></div>
                       <!-- Review deck: one card at a time, quick verdict.
                            Health gauge moved to the pane header; recap +
                            AI tools moved to the Status mode pane. The
@@ -4632,7 +4674,7 @@
                         <canvas id="lb-neuron-canvas" class="lb-neuron-canvas" aria-hidden="true"></canvas>
                         <div style="display:flex; flex-direction:column; align-items:center; gap:4px; flex-shrink:0;">
                           <div id="lb-vitality-ring" class="lb-vitality-ring" style="--v:0">
-                            <span id="lb-vitality-score">–</span>
+                            <span id="lb-vitality-score">0</span>
                           </div>
                           <span class="lb-vitality-label">Vitality</span>
                         </div>
@@ -4661,7 +4703,7 @@
                       </div>
 
                       <p class="lb-scope-note">
-                        🧠 <strong>Holistic view.</strong> Vitality, contradictions,
+                        🧠 <strong>Holistic view.</strong> Vitality, self-healing,
                         insights, and goals here span <strong>every engram in your
                         cortex</strong> — not just the one selected in the dropdown
                         above. Each card is tagged with the engram it came from.
@@ -4670,9 +4712,9 @@
                       <div class="lb-section">
                         <p class="lb-section-title">Self-healing</p>
                         <p class="brain-subtitle">
-                          Contradictions the brain detected between memories that say nearly the same thing.
+                          Duplicate and redundant memories the brain merged on its own — no prompts, no review queue. Nothing is lost: every merge is a soft-delete you can undo from the Recovery panel.
                         </p>
-                        <div id="lb-contradictions" class="lb-block"></div>
+                        <div id="lb-healing-log" class="lb-block"></div>
                       </div>
 
                       <div class="lb-section">
@@ -4717,6 +4759,7 @@
 
                       <div class="lb-section">
                         <p class="lb-section-title">Recent brain activity</p>
+                        <p class="brain-subtitle" id="lb-schedule"></p>
                         <div id="lb-feed" class="lb-block"></div>
                       </div>
                     </div>
@@ -4852,7 +4895,7 @@
             <section class="mode-pane hidden" data-pane="settings">
               <header class="pane-header">
                 <h2>Settings & actions</h2>
-                <p class="brain-subtitle">tune your Graphnosis Cortex</p>
+                <p class="brain-subtitle">Tune your autonomous second brain.</p>
               </header>
               <div class="panel">
                 <p class="panel-title">Preferences</p>
@@ -4886,9 +4929,6 @@
                   that can POST to a webhook. Your credentials, your apps — Graphnosis
                   is just the receiver. Stored locally and encrypted at rest.
                 </p>
-                <div id="connectors-list" class="connectors-list" aria-live="polite">
-                  <!-- Populated by refreshConnectorsList() in main.ts -->
-                </div>
                 <div class="connectors-add-row">
                   <span class="connectors-add-label">Add connector:</span>
                   <button class="btn-add-connector" data-kind="rss">RSS</button>
@@ -4900,6 +4940,9 @@
                   <button class="btn-add-connector" data-kind="gbrain">GBrain</button>
                   <button class="btn-add-connector" data-kind="ai-context">AI Context Files</button>
                   <button class="btn-add-connector" data-kind="webhook">Webhook</button>
+                </div>
+                <div id="connectors-list" class="connectors-list" aria-live="polite">
+                  <!-- Populated by refreshConnectorsList() in main.ts -->
                 </div>
               </div>
               <div class="panel">
@@ -4951,7 +4994,7 @@
           <span class="status-sep">·</span>
           <span class="status-search">⌘K to search nodes</span>
           <span id="status-saved" class="status-saved">—</span>
-          <span id="brain-vitality" style="display:none; font-size:12px; opacity:0.7; margin-left:8px; cursor:pointer;" title="Open Autonomous Brain tab">🧠 Vitality –</span>
+          <span id="brain-vitality" style="display:none; font-size:12px; opacity:0.7; margin-left:8px; cursor:pointer;" title="Open Autonomous upkeep tab">🧠 Vitality –</span>
           <span id="llm-status-chip" style="display:none; font-size:11px; color:var(--fg-dim); margin-left:6px; cursor:pointer;" title="Click to set up the Brain's local AI — install Ollama, pick a model">⚡ Set up Brain AI</span>
           <span class="status-mcp">
             <span id="status-mcp-dot" class="status-dot"></span>
@@ -5066,7 +5109,7 @@
             as your graph.
           </p>
           <div class="row">
-            <label><input type="radio" name="cache-mode" value="all" /> <strong>Cache everything</strong> — files, clips, AI chats, URLs (recommended)</label>
+            <label><input type="radio" name="cache-mode" value="all" checked /> <strong>Cache everything</strong> — files, clips, AI chats, URLs (recommended)</label>
             <label style="margin-top: 8px;"><input type="radio" name="cache-mode" value="ephemeral-only" /> <strong>Cache only ephemeral content</strong> — clips, AI chats, URLs (files stay on your disk)</label>
             <label style="margin-top: 8px;"><input type="radio" name="cache-mode" value="off" /> <strong>Off</strong> — no content cache (recovery is best-effort only)</label>
           </div>
@@ -5418,6 +5461,22 @@ ollama list</code></pre>
             Archive an engram to hide it from the picker without touching its data.
             Delete permanently removes all memories, sources, and embeddings — this cannot be undone.
           </p>
+          <p class="subtitle" style="font-size: 15px; margin: 0 0 6px;">
+            Each engram carries a <strong>sensitivity tier</strong> — set it with the dropdown on each
+            row below. The tier controls how much your connected AI clients can pull from that engram:
+          </p>
+          <ul style="font-size: 14px; color: var(--fg-dim); line-height: 1.6; margin: 0 0 10px; padding-left: 20px;">
+            <li><strong>Public</strong> — full access. The AI can pull up to <strong>4&nbsp;000 tokens</strong>
+              per recall and may surface these memories <em>proactively</em>, without being asked. Best for
+              reference material, documentation, and notes you don't mind the AI volunteering.</li>
+            <li><strong>Personal</strong> — access only when you explicitly ask. Up to <strong>2&nbsp;000
+              tokens</strong> per <code>recall</code>; no proactive injection. Best for journal entries,
+              personal notes, and work summaries. This is the default for new engrams.</li>
+            <li><strong>Sensitive</strong> — the AI is fully blocked. It receives <strong>0 results</strong>
+              from this engram for any query and is never even told it exists. You can still browse and
+              search it yourself in Graphnosis. Best for health records, financial data, or anything
+              strictly private.</li>
+          </ul>
           <div id="settings-graphs-list" style="display: flex; flex-direction: column; gap: 6px;">
             <p class="subtitle" style="font-size: 15px;">Loading…</p>
           </div>
@@ -5553,6 +5612,40 @@ ollama list</code></pre>
          (each connector has a different credentials/options shape).
          Footer always has Save / Cancel; Save handler is bound at open time
          so it can capture the kind + form state. -->
+    <!-- Standalone-mode explainer — opened from the "Standalone" shortcut
+         in the sidebar's Get connected section. -->
+    <div id="standalone-modal" class="modal-backdrop hidden">
+      <div class="modal" style="max-width: 520px;">
+        <div class="modal-header">
+          <h2>Standalone — the default mode</h2>
+          <p class="subtitle">Graphnosis is fully functional with no AI model installed.</p>
+        </div>
+        <div class="modal-body">
+          <p style="font-size: 14px; line-height: 1.6; margin: 0 0 12px;">
+            Right now Graphnosis runs <strong>100% standalone</strong>. Everything you have used
+            so far is <strong>deterministic, local, and encrypted</strong> — your data never
+            leaves this machine and no AI model is required.
+          </p>
+          <p style="font-size: 14px; line-height: 1.6; margin: 0 0 6px;">Works with zero AI setup:</p>
+          <ul style="font-size: 14px; color: var(--fg-dim); line-height: 1.6; margin: 0 0 12px; padding-left: 20px;">
+            <li>recall, remember, correct, forget — every MCP tool</li>
+            <li>encryption at rest and the recoverable op-log</li>
+            <li>semantic search and the 3D engram map</li>
+            <li>autonomous duplicate-merging, memory decay, and goal deadline tracking</li>
+          </ul>
+          <p style="font-size: 14px; line-height: 1.6; margin: 0;">
+            A local LLM is <strong>optional</strong>. Add one with the <strong>Local LLM</strong>
+            button to unlock the brain's insights, automatic new-connection forming, and
+            second-opinion review of its own healing decisions — it still runs entirely on
+            your machine.
+          </p>
+        </div>
+        <div class="modal-footer">
+          <button id="standalone-modal-close" class="btn-primary">Got it</button>
+        </div>
+      </div>
+    </div>
+
     <div id="connector-setup-modal" class="modal-backdrop hidden">
       <div class="modal" style="max-width: 560px;">
         <div class="modal-header">
