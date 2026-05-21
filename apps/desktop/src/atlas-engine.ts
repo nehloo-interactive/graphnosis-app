@@ -19,6 +19,7 @@ import type {
   AtlasNode,
   AtlasDirectedEdge,
   AtlasUndirectedEdge,
+  AtlasPredictedEdge,
   EdgeCategory,
   AtlasOptions,
 } from './atlas.js';
@@ -96,6 +97,9 @@ export interface AtlasEngine {
   // ── Data ────────────────────────────────────────────────────────
   setNodes(nodes: AtlasNode[]): void;
   setEdges(directed: AtlasDirectedEdge[], undirected: AtlasUndirectedEdge[]): void;
+  /** Replace the GNN-predicted overlay layer. Optional — only the
+   *  force-3d engine renders the prediction layer today. */
+  setPredictedEdges?(predicted: AtlasPredictedEdge[]): void;
   getNodes(): AtlasNode[];
 
   // ── Selection / focus ───────────────────────────────────────────
@@ -207,17 +211,18 @@ function createStubEngine(kind: AtlasEngineKind, opts: AtlasOpts): AtlasEngine {
 
   const emptyCategoryVisibility: Record<EdgeCategory, boolean> = {
     reasoning: true, structure: true, social: true,
-    temporal: true, semantic: true, identity: true,
+    temporal: true, semantic: true, identity: true, predicted: true,
   };
   const zeroCounts: Record<EdgeCategory, number> = {
     reasoning: 0, structure: 0, social: 0,
-    temporal: 0, semantic: 0, identity: 0,
+    temporal: 0, semantic: 0, identity: 0, predicted: 0,
   };
 
   return {
     kind,
     setNodes: () => {},
     setEdges: () => {},
+    setPredictedEdges: () => {},
     getNodes: () => [],
     select: () => {},
     focus: () => {},

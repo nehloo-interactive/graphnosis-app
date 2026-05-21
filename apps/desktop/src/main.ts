@@ -280,7 +280,7 @@ let loadedGraphs: GraphWithMetadata[] = [];
 // the Check-in tab shows a triage dashboard by default and a results list
 // when there's an active search. The Atlas tab renders the 3D viz on the
 // shared selection state below.
-type GraphnosisTab = 'checkin' | 'atlas' | 'brain';
+type GraphnosisTab = 'checkin' | 'atlas' | 'brain' | 'nondeterministic';
 let graphnosisActiveTab: GraphnosisTab = 'checkin';
 let graphnosisListRows: NodeRecord[] = []; // current visible search results
 let graphnosisAllNodes: NodeRecord[] = []; // unfiltered cache for the active engram
@@ -553,7 +553,6 @@ const els = {
   standaloneModal: $<HTMLDivElement>('standalone-modal'),
   // Brain / Alive — status bar
   brainVitality: $<HTMLSpanElement>('brain-vitality'),
-  llmStatusChip: $<HTMLSpanElement>('llm-status-chip'),
   // Autonomous Brain pane
   livingBrain: $<HTMLDivElement>('living-brain'),
   lbNeuronCanvas: $<HTMLCanvasElement>('lb-neuron-canvas'),
@@ -564,6 +563,8 @@ const els = {
   lbScanStatus: $<HTMLParagraphElement>('lb-scan-status'),
   btnLbRefresh: $<HTMLButtonElement>('btn-lb-refresh'),
   lbHealingLog: $<HTMLDivElement>('lb-healing-log'),
+  lbMemoryHealth: $<HTMLDivElement>('lb-memory-health'),
+  lbNeuralNetwork: $<HTMLDivElement>('lb-neural-network'),
   gNeedsReview: $<HTMLDivElement>('g-needs-review'),
   lbInsights: $<HTMLDivElement>('lb-insights'),
   lbGoals: $<HTMLDivElement>('lb-goals'),
@@ -1073,48 +1074,68 @@ function syncEngramPicker(): void {
   refreshActiveEngramLabel();
 }
 
-/** Render the "Get connected" shortcut buttons in the left sidebar. */
+/** Live "Get connected" state — which integrations are currently active.
+ *  Updated by the MCP poll, the connector refresh, and the brain/LLM
+ *  refreshes; each one re-renders the sidebar status list. */
+let liveMcpClients = new Set<string>();
+let installedConnectorKinds = new Set<ConnectorKind>();
+
+/**
+ * Render the "Get connected" status list in the left sidebar. Every row is a
+ * clickable shortcut that ALSO lights up when that integration is connected.
+ * Standalone is the deterministic default — lit until anything else wires up.
+ */
 function renderRailGetConnected(): void {
   if (!els.railGcClients) return;
 
-  const makeBtn = (label: string, onClick: () => void): HTMLButtonElement => {
+  const makeChip = (label: string, active: boolean, onClick: () => void): HTMLButtonElement => {
     const b = document.createElement('button');
     b.type = 'button';
-    b.className = 'rail-shortcut-btn';
+    b.className = active ? 'rail-shortcut-btn connected' : 'rail-shortcut-btn';
     b.textContent = label;
     b.addEventListener('click', onClick);
     return b;
   };
+  const openNonDeterministic = (): void => {
+    activateMode('atlas');
+    switchGraphnosisTab('nondeterministic');
+  };
 
-  // AI mode comes first: Standalone (the deterministic default) and the
-  // optional Local LLM. These frame everything below — clients, mobile,
-  // connectors — as "now wire it up".
+  const llmOn = brainLlmReady;
+  const gnnOn = brainNeuralNetworkStatus?.enabled === true;
+
+  // AI mode: Standalone is the deterministic default — lit only while nothing
+  // else is connected. The opt-in non-deterministic layers (Local LLM,
+  // Graphnosis Neural Network) appear here once they are switched on.
   els.railGcAimode.innerHTML = '';
-  els.railGcAimode.appendChild(makeBtn('Standalone', () => {
+  const anythingElse = llmOn || gnnOn || liveMcpClients.size > 0 || installedConnectorKinds.size > 0;
+  els.railGcAimode.appendChild(makeChip('Standalone', !anythingElse, () => {
     els.standaloneModal.classList.remove('hidden');
   }));
-  els.railGcAimode.appendChild(makeBtn('Local LLM', () => {
-    // Reuse the existing route: open Settings and scroll to the
-    // "Brain — Local AI" (Ollama) section, which is the setup guide.
-    els.settingsModal.classList.remove('hidden');
-    document.getElementById('settings-brain-llm')?.scrollIntoView({ behavior: 'smooth' });
-  }));
+  if (llmOn) {
+    els.railGcAimode.appendChild(makeChip('Local LLM', true, openNonDeterministic));
+  }
+  if (gnnOn) {
+    els.railGcAimode.appendChild(makeChip('Graphnosis Neural Network', true, openNonDeterministic));
+  }
 
+  // AI clients — lit when a live relay from that client is connected.
   els.railGcClients.innerHTML = '';
-  els.railGcClients.appendChild(makeBtn('Claude Desktop', () => openConfigureClientModal('claude-desktop')));
-  els.railGcClients.appendChild(makeBtn('Claude Code', () => openConfigureClientModal('claude-code')));
-  els.railGcClients.appendChild(makeBtn('Cursor', () => openConfigureClientModal('cursor')));
+  els.railGcClients.appendChild(makeChip('Claude Desktop', liveMcpClients.has('Claude Desktop'), () => openConfigureClientModal('claude-desktop')));
+  els.railGcClients.appendChild(makeChip('Claude Code', liveMcpClients.has('Claude Code'), () => openConfigureClientModal('claude-code')));
+  els.railGcClients.appendChild(makeChip('Cursor', liveMcpClients.has('Cursor'), () => openConfigureClientModal('cursor')));
 
   els.railGcMobile.innerHTML = '';
-  els.railGcMobile.appendChild(makeBtn('Mobile access', () => void openMobileWizard()));
+  els.railGcMobile.appendChild(makeChip('Mobile access', false, () => void openMobileWizard()));
 
+  // Connectors — lit when installed.
   els.railGcConnectors.innerHTML = '';
   const connectorShortcuts: Array<[ConnectorKind, string]> = [
     ['rss','RSS'],['github','GitHub'],['slack','Slack'],['trello','Trello'],
     ['linear','Linear'],['obsidian','Obsidian'],['gbrain','GBrain'],['ai-context','AI Context Files'],
   ];
   for (const [kind, label] of connectorShortcuts) {
-    els.railGcConnectors.appendChild(makeBtn(label, () => openConnectorSetupModal(kind)));
+    els.railGcConnectors.appendChild(makeChip(label, installedConnectorKinds.has(kind), () => openConnectorSetupModal(kind)));
   }
 }
 
@@ -1203,6 +1224,9 @@ function friendlyClient(name?: string): string {
 
 function renderMcpStatus(connections: McpConnection[]): void {
   updateStatusBar(connections);
+  // Mirror the live client set into the sidebar's Get-connected status list.
+  liveMcpClients = new Set(connections.map((c) => friendlyClient(c.clientName)));
+  renderRailGetConnected();
   // Single target now that Overview is gone: the Graphnosis dashboard's
   // AI tools card. The status-bar dot (top) gives the at-a-glance signal
   // from any pane.
@@ -4092,7 +4116,7 @@ function renderDeck(): void {
       els.gDeckCard.innerHTML = `
         <div class="g-deck-onboarding">
           <div class="g-deck-onboarding-top">
-            <p class="g-deck-onboarding-tagline">Your local encrypted memory, indexed for every AI tool.</p>
+            <p class="g-deck-onboarding-tagline">Your local encrypted memory, indexed for deterministic recall.</p>
             <div class="g-deck-onboarding-steps">
               <div class="g-deck-onboarding-step">
                 <span class="g-deck-onboarding-num">1</span>
@@ -4110,38 +4134,33 @@ function renderDeck(): void {
               <div class="g-deck-onboarding-step">
                 <span class="g-deck-onboarding-num">3</span>
                 <div class="g-deck-onboarding-step-body">
-                  <strong>Ask your AI</strong> — open Claude, Cursor, or any connected client and try:
+                  <strong>Ask your AI</strong> — open Claude, Cursor, or any connected client. Here's your full toolset:
                 </div>
               </div>
             </div>
           </div>
           <div class="g-deck-onboarding-bottom">
-            <div class="g-deck-onboarding-connect" id="ob-connect-btns"></div>
             <div class="g-deck-onboarding-cmds">
-              <span class="g-deck-cmd-chip" title="Click to copy" data-cmd="recall [topic]">recall [topic]</span>
-              <span class="g-deck-cmd-chip" title="Click to copy" data-cmd="remember [something]">remember [something]</span>
-              <span class="g-deck-cmd-chip" title="Click to copy" data-cmd="remind me about [topic]">remind me about [topic]</span>
-              <span class="g-deck-cmd-chip" title="Click to copy" data-cmd="correct [memory]">correct [memory]</span>
-              <span class="g-deck-cmd-chip" title="Click to copy" data-cmd="forget [topic]">forget [topic]</span>
+              <div class="g-deck-cmd-group">
+                <span class="g-deck-cmd-grouplabel">Deterministic</span>
+                <span class="g-deck-cmd-chip" title="Click to copy" data-cmd="recall">recall</span>
+                <span class="g-deck-cmd-chip" title="Click to copy" data-cmd="remind">remind</span>
+                <span class="g-deck-cmd-chip" title="Click to copy" data-cmd="remember">remember</span>
+                <span class="g-deck-cmd-chip" title="Click to copy" data-cmd="forget">forget</span>
+                <span class="g-deck-cmd-chip" title="Click to copy" data-cmd="stats">stats</span>
+                <span class="g-deck-cmd-chip" title="Click to copy" data-cmd="vitality">vitality</span>
+                <span class="g-deck-cmd-chip" title="Click to copy" data-cmd="apply">apply</span>
+              </div>
+              <div class="g-deck-cmd-group">
+                <span class="g-deck-cmd-grouplabel">Non-deterministic</span>
+                <span class="g-deck-cmd-chip" title="Click to copy" data-cmd="develop">develop</span>
+                <span class="g-deck-cmd-chip" title="Click to copy" data-cmd="predict">predict</span>
+                <span class="g-deck-cmd-chip" title="Click to copy" data-cmd="insights">insights</span>
+                <span class="g-deck-cmd-chip" title="Click to copy" data-cmd="correct">correct</span>
+              </div>
             </div>
           </div>
         </div>`;
-      // Populate connect buttons
-      const wrap = document.getElementById('ob-connect-btns');
-      if (wrap) {
-        const clients: Array<[string, () => void]> = [
-          ['Claude Desktop', () => openConfigureClientModal('claude-desktop')],
-          ['Claude Code',    () => openConfigureClientModal('claude-code')],
-          ['Cursor',         () => openConfigureClientModal('cursor')],
-          ['📱 Mobile',      () => void openMobileWizard()],
-        ];
-        clients.forEach(([label, fn]) => {
-          const b = document.createElement('button');
-          b.type = 'button'; b.className = 'rail-shortcut-btn'; b.textContent = label;
-          b.addEventListener('click', fn);
-          wrap.appendChild(b);
-        });
-      }
       // Step 2 ingest button
       document.getElementById('ob-ingest-btn')?.addEventListener('click', () => els.btnAddFile.click());
       // Copy-to-clipboard for cmd chips — CSS class drives the green flash + fade
@@ -6877,6 +6896,11 @@ function switchGraphnosisTab(tab: GraphnosisTab): void {
     // No scan kicked off on tab-open — the brain self-scans on its own:
     // the boot-grace sweep (~60s after unlock), the background intervals,
     // and the post-ingest debounced scan, plus "Scan now" for a manual run.
+  } else if (tab === 'nondeterministic') {
+    // The opt-in non-deterministic layers — GNN + Local LLM. refreshBrainState
+    // carries the GNN status; refreshLlmStatus drives the Local LLM section.
+    void refreshBrainState();
+    void refreshLlmStatus();
   }
 }
 
@@ -6938,10 +6962,39 @@ function pushDataIntoAtlas(): void {
     mainAtlas.setSourceVisible(ref, false);
   }
   renderAtlasLegend();
+  // Fetch the GNN prediction overlay for this engram and push it as the
+  // atlas's dashed prediction layer. Async + fire-and-forget — the overlay
+  // is non-essential, so a slow or failed IPC never blocks the data push.
+  void refreshAtlasPredictedEdges();
   // Re-apply the atlas-local selection (set by user canvas click) after the
   // data rebuild. Note: this is atlasSelectedId, NOT graphnosisSelectedId —
   // the atlas and the list maintain independent selection state by design.
   if (atlasSelectedId) mainAtlas.select(atlasSelectedId);
+}
+
+/**
+ * Fetch the Graphnosis Neural Network's predicted edges for the active
+ * engram and hand them to the atlas as its dashed, toggleable prediction
+ * layer. Predictions live in the encrypted `.gnn` overlay, never in the
+ * deterministic graph; the IPC returns an empty list when the neural
+ * network is disabled (the default), so this is a cheap no-op then.
+ */
+async function refreshAtlasPredictedEdges(): Promise<void> {
+  if (!mainAtlas || !atlasActiveGraph) return;
+  const graphId = atlasActiveGraph;
+  try {
+    const predicted = await ipcCall<Array<{ id: string; from: string; to: string; score: number }>>(
+      'brain:getPredictedEdges', { graphId },
+    );
+    // A graph switch may have happened while the IPC was in flight.
+    if (!mainAtlas || atlasActiveGraph !== graphId) return;
+    mainAtlas.setPredictedEdges(
+      predicted.map((p) => ({ id: p.id, from: p.from, to: p.to, score: p.score })),
+    );
+    renderAtlasLegend();
+  } catch {
+    /* prediction overlay is non-essential — ignore IPC failures */
+  }
 }
 
 /**
@@ -6982,6 +7035,9 @@ function renderAtlasLegend(): void {
   const counts = mainAtlas.edgeCounts();
   const vis = mainAtlas.getCategoryVisibility();
   const cats: EdgeCategory[] = ['reasoning', 'structure', 'social', 'temporal', 'semantic', 'identity'];
+  // The Predicted (GNN overlay) row appears only once predictions exist —
+  // keeps the legend clean for the common, neural-network-disabled case.
+  if (counts.predicted > 0) cats.push('predicted');
   els.atlasLegendList.innerHTML = cats.map((c) => {
     const swatch = `#${CATEGORY_COLOR[c].toString(16).padStart(6, '0')}`;
     const cls = vis[c] ? '' : 'off';
@@ -7599,6 +7655,29 @@ type BrainGoal = {
 };
 let brainGoals: BrainGoal[] = [];
 
+/** Retrieval-quality Memory Health report — Deterministic Consolidation tab. */
+let brainMemoryHealth: {
+  overall: number;
+  connectivity: number;
+  integration: number;
+  confidence: number;
+  coherence: number;
+  reinforcementActivity: number;
+  weightSpread: number;
+  crossEngramConnections: number;
+  inferredEdges: number;
+  computedAt: number;
+} | null = null;
+
+/** Graphnosis Neural Network status — Deterministic Consolidation tab. */
+let brainNeuralNetworkStatus: {
+  enabled: boolean;
+  gnnEdgeCount: number;
+  lastRun: { at: number; edgesAdded: number; edgesPruned: number } | null;
+} | null = null;
+/** True while the user is mid-confirm on enabling the neural network. */
+let nnConfirmPending = false;
+
 // Sidecar scan status — lastRun timestamps + interval lengths, used for the
 // scan-status countdown line. Refreshed on tab open and after each scan.
 let brainStatus: {
@@ -7608,6 +7687,12 @@ let brainStatus: {
   lastDecayReport: { graphsProcessed: number; nodesDecayed: number } | null;
   sessionSynapsesFormed: number;
   sessionAutoLinksFormed: number;
+  sessionReinforced: number;
+  sessionConnectionsFormed: number;
+  sessionInferred: number;
+  sessionEdgesCleaned: number;
+  sessionCrossEngram: number;
+  lastConsolidation: { at: number; inferredEdges: number; communities: number; edgesCleaned: number } | null;
 } | null = null;
 // Phases (e.g. 'fullscan', 'duplicate-scan') with a live start-frame but
 // no done-frame yet. Non-empty ⇒ the pane shows its "scanning" state.
@@ -7629,22 +7714,31 @@ const BRAIN_PHASE_LABELS: Record<string, string> = {
   insight: 'Synthesizing insights',
   temporal: 'Applying memory decay',
   'goal-check': 'Checking goals',
+  reinforce: 'Strengthening connections',
+  consolidate: 'Consolidating memory',
+  'cross-engram': 'Linking engrams',
+  'neural-network': 'Graphnosis Neural Network',
 };
 
 /** Pull all brain state from the sidecar into module cache, then repaint. */
 async function refreshBrainState(): Promise<void> {
   try {
-    const [vitality, insights, goals, healingJournal] = await Promise.all([
+    const [vitality, insights, goals, healingJournal, memoryHealth, neuralNetwork] = await Promise.all([
       ipcCall<typeof brainVitalityReport>('brain:getVitality', {}),
       ipcCall<typeof brainInsights>('brain:getInsights', {}),
       ipcCall<BrainGoal[]>('brain:listGoals', {}),
       ipcCall<BrainHealingRecord[]>('brain:getHealingJournal', {}),
+      ipcCall<typeof brainMemoryHealth>('brain:getMemoryHealth', {}),
+      ipcCall<typeof brainNeuralNetworkStatus>('brain:getNeuralNetworkStatus', {}),
     ]);
     brainVitalityReport = vitality;
     brainInsights = insights;
     brainGoals = goals;
     brainHealingJournal = healingJournal;
+    brainMemoryHealth = memoryHealth;
+    brainNeuralNetworkStatus = neuralNetwork;
     updateBrainUI();
+    renderRailGetConnected();
   } catch { /* non-fatal — brain may not be initialized yet */ }
 }
 
@@ -7678,9 +7772,11 @@ async function renderLivingBrain(): Promise<void> {
 /** Paint the pane from cached module state — no IPC, safe to call often. */
 function renderLivingBrainPane(): void {
   renderLbVitality();
+  renderMemoryHealth();
   renderLbHealingLog();
   renderLbInsights();
   renderLbGoals();
+  renderNeuralNetwork();
   renderBrainSchedule();
   ensureFeedPlaceholder();
 }
@@ -7732,6 +7828,93 @@ function renderLbVitality(): void {
       els.lbBrainStats.style.display = '';
     }
   }
+}
+
+/** Deterministic Consolidation → "Memory health": the retrieval-quality
+ *  breakdown — connectivity, integration, confidence, coherence,
+ *  reinforcement activity, and the saturation-guard weight spread — plus
+ *  the most recent consolidation summary. All strengthen-only. */
+function renderMemoryHealth(): void {
+  const host = els.lbMemoryHealth;
+  const h = brainMemoryHealth;
+  if (!h) {
+    host.innerHTML = '<p class="lb-empty">Computing memory health…</p>';
+    return;
+  }
+  const pct = (x: number): number => Math.round(x * 100);
+  const metrics: Array<[string, string]> = [
+    ['Overall', String(h.overall)],
+    ['Connectivity', `${pct(h.connectivity)}%`],
+    ['Integration', `${pct(h.integration)}%`],
+    ['Confidence', `${pct(h.confidence)}%`],
+    ['Coherence', `${pct(h.coherence)}%`],
+    ['Reinforcement', `${pct(h.reinforcementActivity)}%`],
+    ['Weight spread', `${pct(h.weightSpread)}%`],
+  ];
+  const stats = metrics.map(([label, val]) =>
+    `<div class="lb-stat"><span class="lb-stat-value">${val}</span><span class="lb-stat-label">${label}</span></div>`,
+  ).join('');
+  const cons = brainStatus?.lastConsolidation ?? null;
+  const consLine = cons
+    ? `Last consolidation ${formatRel(Date.now() - cons.at)} — ${cons.inferredEdges} connection${cons.inferredEdges === 1 ? '' : 's'} inferred, ${cons.communities} cluster${cons.communities === 1 ? '' : 's'}, ${cons.edgesCleaned} dead edge${cons.edgesCleaned === 1 ? '' : 's'} cleaned.`
+    : 'No consolidation cycle has run yet.';
+  host.innerHTML = `
+    <div class="lb-stats-row">${stats}</div>
+    <p class="brain-subtitle" style="margin-top:8px;">${h.crossEngramConnections} cross-engram connection${h.crossEngramConnections === 1 ? '' : 's'} · ${h.inferredEdges} inferred edge${h.inferredEdges === 1 ? '' : 's'}</p>
+    <p class="brain-subtitle">${consLine}</p>
+  `;
+}
+
+/** Deterministic Consolidation → "Graphnosis Neural Network": the opt-in,
+ *  non-deterministic link-predictor. A two-step inline confirm guards the
+ *  enable action; once on, the user can re-run or remove all predictions. */
+function renderNeuralNetwork(): void {
+  const host = els.lbNeuralNetwork;
+  const st = brainNeuralNetworkStatus;
+  if (!st) {
+    host.innerHTML = '<p class="lb-empty">Loading…</p>';
+    return;
+  }
+  if (st.enabled) {
+    const last = st.lastRun
+      ? `Last run ${formatRel(Date.now() - st.lastRun.at)} — added ${st.lastRun.edgesAdded}, pruned ${st.lastRun.edgesPruned} stale.`
+      : 'Training…';
+    host.innerHTML = `
+      <p class="brain-subtitle">Status: <strong>ON</strong> · ${st.gnnEdgeCount} predicted connection${st.gnnEdgeCount === 1 ? '' : 's'} in your cortex. ${last}</p>
+      <div class="lb-goal-form-actions">
+        <button data-nn="run" class="btn-sm">Run again</button>
+        <button data-nn="remove" class="btn-sm">Remove all predicted connections</button>
+        <button data-nn="disable" class="btn-sm">Turn off</button>
+      </div>`;
+  } else if (nnConfirmPending) {
+    host.innerHTML = `
+      <p class="brain-subtitle"><strong>The neural network is non-deterministic</strong> — two runs differ. Its predictions are written to a separate encrypted overlay, never the deterministic graph, and a snapshot of every engram is saved first. You can remove all predictions at any time. Continue?</p>
+      <div class="lb-goal-form-actions">
+        <button data-nn="cancel" class="btn-sm">Cancel</button>
+        <button data-nn="confirm" class="btn-sm primary">Snapshot &amp; enable</button>
+      </div>`;
+  } else {
+    host.innerHTML = `
+      <p class="brain-subtitle">Off. Enabling trains a small neural network on your graph and lets it predict likely-missing connections — kept in a separate encrypted overlay, never mixed into the deterministic graph.</p>
+      <button data-nn="enable" class="btn-sm">Enable Graphnosis Neural Network…</button>`;
+  }
+  const on = (action: string, fn: () => void): void => {
+    host.querySelector(`[data-nn="${action}"]`)?.addEventListener('click', fn);
+  };
+  on('enable', () => { nnConfirmPending = true; renderNeuralNetwork(); });
+  on('cancel', () => { nnConfirmPending = false; renderNeuralNetwork(); });
+  on('confirm', () => {
+    nnConfirmPending = false;
+    renderNeuralNetwork();
+    void ipcCall('brain:enableNeuralNetwork', {}).then(() => { void refreshBrainState(); });
+  });
+  on('run', () => { void ipcCall('brain:runNeuralNetwork', {}); });
+  on('remove', () => {
+    void ipcCall('brain:removeNeuralNetworkEdges', {}).then(() => { void refreshBrainState(); });
+  });
+  on('disable', () => {
+    void ipcCall('brain:disableNeuralNetwork', {}).then(() => { void refreshBrainState(); });
+  });
 }
 
 /** Clamp display text to `n` chars with an ellipsis. The healing journal
@@ -8052,10 +8235,12 @@ function renderBrainSchedule(): void {
   }
   const parts: string[] = [];
   if (iv['duplicateScan']) parts.push(`duplicate scan every ${formatInterval(iv['duplicateScan'])}`);
+  if (iv['reinforce'])     parts.push(`reinforcement every ${formatInterval(iv['reinforce'])}`);
   if (iv['synapse'])       parts.push(`new connections every ${formatInterval(iv['synapse'])}`);
+  if (iv['crossEngram'])   parts.push(`engram linking every ${formatInterval(iv['crossEngram'])}`);
+  if (iv['consolidation']) parts.push(`consolidation every ${formatInterval(iv['consolidation'])}`);
   if (iv['goalCheck'])     parts.push(`goal check every ${formatInterval(iv['goalCheck'])}`);
   if (iv['insight'])       parts.push(`insights every ${formatInterval(iv['insight'])}`);
-  if (iv['temporalDecay']) parts.push(`memory decay every ${formatInterval(iv['temporalDecay'])}`);
   els.lbSchedule.textContent = parts.length > 0
     ? `Runs on its own — ${parts.join(' · ')}.`
     : 'Background checks run automatically while the app is open.';
@@ -8237,7 +8422,6 @@ async function refreshLlmStatus(): Promise<void> {
       els.ollamaPullRow.style.display = 'flex';
       els.ollamaNotInstalled.style.display = 'none';
       els.ollamaConnectedHelp.style.display = '';
-      els.llmStatusChip.style.display = 'none';
 
       const hasModels = status.installedModels.length > 0;
       // LLM-only brain features can run once Ollama is up AND a model exists.
@@ -8269,9 +8453,9 @@ async function refreshLlmStatus(): Promise<void> {
       els.ollamaPullRow.style.display = 'none';
       els.ollamaConnectedHelp.style.display = 'none';
       els.ollamaNotInstalled.style.display = '';
-      els.llmStatusChip.style.display = '';
       brainLlmReady = false;
     }
+    renderRailGetConnected();
   } catch { /* non-fatal */ }
 }
 
@@ -8336,13 +8520,6 @@ els.btnOllamaPull.addEventListener('click', async () => {
 els.btnOpenOllamaSite.addEventListener('click', (e) => {
   e.preventDefault();
   void invoke('open_external_url', { url: 'https://ollama.com/download' });
-});
-
-els.llmStatusChip.addEventListener('click', () => {
-  // Open settings modal and scroll to brain section
-  document.getElementById('settings-modal')?.classList.remove('hidden');
-  document.getElementById('settings-brain-llm')?.scrollIntoView({ behavior: 'smooth' });
-  void refreshLlmStatus();
 });
 
 els.brainVitality.addEventListener('click', () => {
@@ -8731,7 +8908,7 @@ void listen<CorrectionProposedPayload>('graphnosis://correction-proposed', (ev) 
 const TOUR_STEPS: Array<{ title: string; body: string; connectArea?: boolean }> = [
   {
     title: 'Welcome to Graphnosis',
-    body: 'Your local encrypted memory, indexed for every AI tool.\nThis quick tour takes about a minute.',
+    body: 'Your local encrypted memory, indexed for deterministic recall.\nThis quick tour takes about a minute.',
   },
   {
     title: 'Your Cortex: a local, encrypted memory',
@@ -9610,6 +9787,9 @@ async function refreshConnectorsList(): Promise<void> {
     const res = await invoke<{ configs: ConnectorConfigShape[]; statuses: ConnectorStatus[] }>(
       'list_connectors',
     );
+    // Reflect installed connectors in the sidebar's Get-connected status list.
+    installedConnectorKinds = new Set(res.configs.map((c) => c.kind));
+    renderRailGetConnected();
     if (!res.configs.length) {
       wrap.innerHTML = `
         <div class="connector-row" style="grid-template-columns: 1fr;">
