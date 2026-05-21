@@ -238,7 +238,7 @@ export interface GraphnosisAdapter {
 
   /**
    * Returns the raw embedding vectors for all nodes that have been
-   * embedded. Used by BrainEngine's contradiction scan (cosine similarity
+   * embedded. Used by BrainEngine's duplicate scan (cosine similarity
    * between node pairs) and semantic synapse formation.
    *
    * Returns an empty map when the graph has no embedding index yet (i.e.

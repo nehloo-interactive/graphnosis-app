@@ -286,7 +286,7 @@ export class GraphnosisImpl implements GraphnosisAdapter {
   }
   /**
    * Returns raw embedding vectors for all embedded nodes, keyed by nodeId.
-   * Used by BrainEngine's contradiction scan (cosine pairwise comparison).
+   * Used by BrainEngine's duplicate scan (cosine pairwise comparison).
    * Returns an empty map when the graph has no embedding index.
    */
   getNodeEmbeddings(handle: GraphHandle): Map<string, number[]> {
@@ -299,7 +299,7 @@ export class GraphnosisImpl implements GraphnosisAdapter {
     // `!!this.built?.embeddingIndex`, so reaching through
     // `built.embeddingIndex.vectors` (Map<nodeId, vector>) is the correct
     // — and only — access path. Reading `node.embedding` always yielded
-    // undefined, which silently disabled the contradiction scan entirely.
+    // undefined, which silently disabled the duplicate scan entirely.
     const index = (h.instance as unknown as {
       built?: { embeddingIndex?: { vectors?: Map<string, number[]> } };
     }).built?.embeddingIndex;

@@ -304,7 +304,7 @@ export interface AppSettings {
   brain?: {
     /** Unix-ms timestamps of each completed background activity. */
     lastRun?: {
-      contradictionScan?: number;
+      duplicateScan?: number;
       synapse?: number;
       insight?: number;
       temporalDecay?: number;
@@ -312,8 +312,8 @@ export interface AppSettings {
     };
     /** Count of pending (non-dismissed) insight cards in BrainEngine memory. */
     pendingInsightsCount?: number;
-    /** Count of detected contradictions since last dismissal. */
-    pendingContradictionsCount?: number;
+    /** Count of detected duplicate pairs since last dismissal. */
+    pendingDuplicatePairsCount?: number;
     /** Temporal decay configuration. */
     temporalDecay?: {
       /** When false, the daily confidence decay loop is skipped entirely. Default true. */
@@ -544,7 +544,7 @@ export function mergeWithDefaults(partial: Partial<AppSettings> | null | undefin
     brain = {
       ...(b.lastRun !== undefined ? { lastRun: b.lastRun } : {}),
       ...(typeof b.pendingInsightsCount === 'number' ? { pendingInsightsCount: b.pendingInsightsCount } : {}),
-      ...(typeof b.pendingContradictionsCount === 'number' ? { pendingContradictionsCount: b.pendingContradictionsCount } : {}),
+      ...(typeof b.pendingDuplicatePairsCount === 'number' ? { pendingDuplicatePairsCount: b.pendingDuplicatePairsCount } : {}),
       ...(td !== undefined ? {
         temporalDecay: {
           enabled: typeof td.enabled === 'boolean' ? td.enabled : true,

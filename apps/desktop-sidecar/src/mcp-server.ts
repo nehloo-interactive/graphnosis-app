@@ -543,7 +543,7 @@ export function createMcpServer(deps: McpDeps): Server {
       {
         name: 'vitality',
         description: 'Return the current vitality score for the user\'s knowledge graph — a 0-100 measure of how alive and well-connected the engrams are. ' +
-          'Factors: node count (30%), edge density (30%), recent activity (20%), average confidence (20%), minus a contradiction penalty. ' +
+          'Factors: node count (30%), edge density (30%), recent activity (20%), average confidence (20%), minus a duplicate-pair penalty. ' +
           'Call this when the user asks "how healthy is my brain?", "how active is my knowledge graph?", or "what\'s my vitality score?". ' +
           'Returns overall score plus per-engram breakdown.',
         inputSchema: {
