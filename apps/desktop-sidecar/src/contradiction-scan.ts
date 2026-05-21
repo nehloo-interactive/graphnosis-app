@@ -11,10 +11,15 @@
 //! bucket, so we exhaustively cover the whole engram while doing a tiny
 //! fraction of the comparisons.
 //!
-//! Recall is probabilistic. With K=12 bits per table and L=18 tables, a
-//! pair at cosine 0.85 collides in ≥1 table ~84% of the time; at 0.9+ it's
-//! ~95%+. The scan re-runs on a schedule with fresh random hyperplanes
-//! each time, so cumulative recall climbs toward 100% over a few passes.
+//! Recall is probabilistic. With K=12 bits per table and L=12 tables, a
+//! pair at cosine 0.85 collides in ≥1 table ~70% of the time; at 0.95+ it's
+//! ~98%+. High-similarity pairs — the ones that matter for near-duplicate
+//! detection — are caught almost every pass; the rest catch up because the
+//! scan re-runs on a schedule with fresh random hyperplanes each time, so
+//! cumulative recall climbs toward 100% over a few passes. L is kept
+//! modest deliberately: hashing cost is linear in L, and the post-boot CPU
+//! budget matters more than the last few points of single-pass recall on a
+//! scan that repeats anyway.
 
 import { embeddings } from '@graphnosis-app/core';
 
@@ -30,7 +35,7 @@ export interface SimilarPair {
 // independent tables (collision chances). See the file header for the
 // recall math behind these values.
 const LSH_K = 12;
-const LSH_L = 18;
+const LSH_L = 12;
 
 /** Standard-normal sample (Box–Muller) for random hyperplane normals. */
 function gaussian(): number {

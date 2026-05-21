@@ -1636,6 +1636,28 @@
         border-left: 2px solid var(--ok); padding: 6px 0 6px 10px;
         margin: 4px 0 10px;
       }
+      /* Terminal-route alternative to the point-and-click model setup. */
+      .ollama-cli-box { margin-top: 14px; }
+      .ollama-cli-title { font-size: 13px; font-weight: 600; margin: 0 0 4px; }
+      .ollama-cli-intro, .ollama-cli-foot {
+        font-size: 12px; color: var(--fg-dim); line-height: 1.5; margin: 0 0 8px;
+      }
+      .ollama-cli-foot { margin: 8px 0 0; }
+      .ollama-cli-foot code, .ollama-cli-intro code {
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-size: 11px; background: var(--bg); padding: 1px 4px;
+        border-radius: 3px; border: 1px solid var(--border);
+      }
+      pre.ollama-cli {
+        margin: 0; padding: 10px 12px;
+        background: var(--bg); border: 1px solid var(--border);
+        border-radius: 6px; overflow-x: auto;
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-size: 12px; line-height: 1.65; white-space: pre;
+        color: var(--fg);
+      }
+      pre.ollama-cli code { font-family: inherit; }
+      pre.ollama-cli .cli-comment { color: var(--fg-dim); }
 
       /* ── Autonomous Brain pane ──────────────────────────────────── */
       .btn-sm { padding: 5px 10px; font-size: 13px; }
@@ -2065,10 +2087,16 @@
         flex-shrink: 0;
       }
       .g-tab {
+        /* appearance:none strips the macOS native push-button rendering —
+           without it WebKit keeps an intrinsic text inset that no amount of
+           padding:0 removes, so the first tab never lines up with the title. */
+        -webkit-appearance: none;
+        appearance: none;
         background: transparent;
         border: 0;
         border-bottom: 2px solid transparent;
         padding: 7px 14px;
+        font-family: inherit;
         font-size: 14px;
         color: var(--fg-dim);
         cursor: pointer;
@@ -5158,6 +5186,34 @@
                 through your own copy of Ollama; it never installs anything for you.
               </p>
             </div>
+          </div>
+
+          <!-- Terminal route — shown regardless of detection state for users
+               who would rather set the model up from the command line. -->
+          <div class="ollama-cli-box">
+            <p class="ollama-cli-title">Prefer the Terminal?</p>
+            <p class="ollama-cli-intro">
+              Once Ollama is installed you can download and run a model from a
+              terminal — Graphnosis detects it automatically. Open Terminal
+              (macOS) or PowerShell (Windows) and run:
+            </p>
+            <pre class="ollama-cli"><code><span class="cli-comment"># 1. Download the recommended model (one-time, ~2 GB)</span>
+ollama pull llama3.2:3b
+
+<span class="cli-comment"># 2. Run it — this also starts Ollama's background service</span>
+ollama run llama3.2:3b
+
+<span class="cli-comment"># Lighter option for older machines (~800 MB)</span>
+ollama pull llama3.2:1b
+
+<span class="cli-comment"># See which models you have / confirm Ollama is up</span>
+ollama list</code></pre>
+            <p class="ollama-cli-foot">
+              Ollama serves on <code>http://127.0.0.1:11434</code>. After a model
+              is pulled and Ollama is running, click <strong>Recheck</strong>
+              above — the status turns green and the model appears in the
+              <strong>Active model</strong> list.
+            </p>
           </div>
 
           <!-- NOTE: Graphs management, Recovery phrase regeneration, and the

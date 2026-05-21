@@ -129,14 +129,16 @@ const GOAL_CHECK_INTERVAL_MS    =  4 * 60 * 60 * 1000; // 4 h
 // does real embedding math now; running it during boot starves the IPC
 // the UI needs to load engrams. Hold off until the app has settled.
 const BOOT_GRACE_MS             = 60 * 1000;        // 60 s
-// Safety ceiling on nodes fed to the LSH near-duplicate search — the search
-// is ~O(n), not O(n²), so this is effectively "no cap" for real cortexes
-// and only guards against a pathologically huge single engram.
-const MAX_CONTRADICTION_NODES   = 30_000;
-// Keep the contradiction list bounded — on a large cortex the exhaustive
-// scan can surface many; we retain the highest-similarity (most likely
-// genuine) ones and let the user dismiss from there.
-const MAX_CONTRADICTIONS_STORED = 200;
+// Safety ceiling on nodes fed to the LSH near-duplicate search. The search
+// is ~O(n), so this comfortably covers any real engram; a single engram
+// with more content-bearing nodes than this (typically a firehose RSS feed
+// of near-duplicates) is capped by confidence — scanning every dup past
+// this point only produces more dup-spam, not more signal.
+const MAX_CONTRADICTION_NODES   = 15_000;
+// Keep the contradiction list small and useful. Each node appears in at
+// most one contradiction (see runContradictionScan), so this is a hard cap
+// on distinct review cards — 60 highest-similarity pairs is plenty.
+const MAX_CONTRADICTIONS_STORED = 60;
 const MAX_SYNAPSE_EDGES_PER_RUN = 20;
 const MAX_INSIGHTS_STORED       = 50;
 
@@ -183,11 +185,12 @@ export class BrainEngine {
     // intervals below take over after that, and the Autonomous Brain tab
     // triggers an on-demand scan whenever the user wants one sooner.
     this.warmupTimer = setTimeout(() => {
-      void this.runContradictionScan();
-      void this.runSynapse();
-      void this.runInsight();
+      // One coordinated sweep. runFullScan serialises the scan loops so they
+      // don't all pin the CPU at once in the post-boot window, and coalesces
+      // with any scan the user triggered by opening the Brain tab early.
+      // Temporal decay runs alongside (runFullScan excludes it by design).
+      void this.runFullScan();
       void this.runTemporalDecay();
-      void this.runGoalCheck();
     }, BOOT_GRACE_MS);
     this.warmupTimer.unref();
 
@@ -449,13 +452,19 @@ export class BrainEngine {
           }
           if (embs.size < 2) continue;
 
-          // Pre-index already-known pairs for this graph so the per-pair
-          // dedup check is O(1) instead of O(contradictions).
+          // Pre-index already-known pairs (O(1) dedup) and already-paired
+          // nodes. `usedNodes` enforces "each node appears in at most one
+          // contradiction card" — without it, a cluster of near-duplicate
+          // memories (e.g. an RSS feed re-ingested over time) yields
+          // hundreds of pairs all pivoting on the same handful of nodes.
           const knownKeys = new Set<string>();
+          const usedNodes = new Set<string>();
           for (const c of this.contradictions) {
             if (c.graphId === graphId) {
               knownKeys.add(c.nodeA < c.nodeB
                 ? `${c.nodeA}|${c.nodeB}` : `${c.nodeB}|${c.nodeA}`);
+              usedNodes.add(c.nodeA);
+              usedNodes.add(c.nodeB);
             }
           }
 
@@ -466,24 +475,38 @@ export class BrainEngine {
             maxSim: 0.99,
             onYield: yieldToLoop,
           });
+          // Strongest matches first: the greedy per-node cap below should
+          // keep the most likely-genuine pairing when a node could pair
+          // with several neighbours.
+          pairs.sort((p1, p2) => p2.similarity - p1.similarity);
 
           for (const pair of pairs) {
             const a = nodeById.get(pair.idA);
             const b = nodeById.get(pair.idB);
             if (!a || !b) continue;
-            // Identical opening text = the same memory twice, not a
-            // contradiction — skip.
-            if (a.contentPreview.slice(0, 40) === b.contentPreview.slice(0, 40)) continue;
+            // One contradiction per node — skip if either is already paired.
+            if (usedNodes.has(a.id) || usedNodes.has(b.id)) continue;
             const dedupKey = a.id < b.id ? `${a.id}|${b.id}` : `${b.id}|${a.id}`;
             if (knownKeys.has(dedupKey)) continue;
+            // Node previews are often raw HTML (web-clipped / RSS memories);
+            // strip it so the review card shows readable text.
+            const snippetA = cleanSnippet(a.contentPreview);
+            const snippetB = cleanSnippet(b.contentPreview);
+            if (!snippetA || !snippetB) continue;
+            // Two memories whose text is identical once numbers are masked
+            // are the same record captured twice (e.g. an RSS item re-fetched
+            // as its score ticks up) — a duplicate, not a contradiction.
+            if (digitMasked(snippetA) === digitMasked(snippetB)) continue;
             knownKeys.add(dedupKey);
+            usedNodes.add(a.id);
+            usedNodes.add(b.id);
             found.push({
               id: randomUUID(),
               graphId,
               nodeA: a.id,
               nodeB: b.id,
-              snippetA: a.contentPreview.slice(0, 120),
-              snippetB: b.contentPreview.slice(0, 120),
+              snippetA: snippetA.slice(0, 140),
+              snippetB: snippetB.slice(0, 140),
               similarity: pair.similarity,
               detectedAt: now,
             });
@@ -767,4 +790,24 @@ function extractJsonObj(raw: string): unknown {
   const end = raw.lastIndexOf('}');
   if (start === -1 || end === -1) throw new Error('No JSON object in LLM response');
   return JSON.parse(raw.slice(start, end + 1));
+}
+
+// ── Contradiction snippet helpers ────────────────────────────────────────────
+
+/** Strip HTML tags + entities and collapse whitespace, so a node's raw
+ *  contentPreview (often HTML for web-clipped / RSS memories) renders as
+ *  plain readable text in a contradiction card. */
+function cleanSnippet(raw: string): string {
+  return raw
+    .replace(/<[^>]*>/g, ' ')
+    .replace(/&(?:[a-z]+|#\d+);/gi, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+/** Lowercase a snippet and mask every run of digits. Two snippets equal
+ *  after this are the same statement differing only in numbers — the
+ *  signature of a re-captured record rather than a genuine contradiction. */
+function digitMasked(s: string): string {
+  return s.toLowerCase().replace(/\d+/g, '#');
 }

@@ -6737,6 +6737,7 @@ function forgetSelected(): void {
 // ── Tabs ──────────────────────────────────────────────────────────────
 
 function switchGraphnosisTab(tab: GraphnosisTab): void {
+  const prevTab = graphnosisActiveTab;
   graphnosisActiveTab = tab;
   // Pause the Autonomous Brain pane's animations whenever we leave it; the
   // brain branch below re-enables them. Cheap to call unconditionally.
@@ -6749,22 +6750,28 @@ function switchGraphnosisTab(tab: GraphnosisTab): void {
     p.classList.toggle('hidden', p.dataset['gpane'] !== tab);
   });
   if (tab === 'atlas') {
-    // Every time the 3D Engram tab comes into focus, reset to a clean
-    // canvas: no node selected, full-colour graph framed in view. The
-    // user wants a consistent fresh entry rather than carrying a prior
-    // selection (and its dimmed emphasis) onto the 3D view.
-    graphnosisSelectedId = null;
-    // Clear state directly rather than via selectGraphnosisNode(null) —
-    // that would also re-render the detail pane mid-switch.
-    if (mainAtlas) mainAtlas.resetEmphasis();
-    syncListSelectionHighlight();
-    renderDetailEmpty();
+    // Reset to a clean canvas — no node selected, full-colour graph framed
+    // in view — only when genuinely switching INTO the 3D Engram tab from
+    // another tab. Re-entering when atlas is already the active tab (e.g.
+    // returning from the Settings pane) must preserve the user's last
+    // selection state instead of wiping it.
+    const enteringFresh = prevTab !== 'atlas';
+    if (enteringFresh) {
+      graphnosisSelectedId = null;
+      // Clear state directly rather than via selectGraphnosisNode(null) —
+      // that would also re-render the detail pane mid-switch.
+      els.btnAtlasReset.classList.remove('node-selected');
+      if (mainAtlas) mainAtlas.resetEmphasis();
+      syncListSelectionHighlight();
+      renderDetailEmpty();
+    }
     void (async () => {
       await mountAtlasIfNeeded();
       pushDataIntoAtlas();
       // resetEmphasis again after the (possibly first-time) mount so a
-      // freshly-created engine also opens with the full graph un-dimmed.
-      mainAtlas?.resetEmphasis();
+      // freshly-created engine also opens with the full graph un-dimmed —
+      // but only on a fresh entry, so a re-entry keeps its emphasis.
+      if (enteringFresh) mainAtlas?.resetEmphasis();
       // Frame the whole graph after a beat — lets the force layout settle
       // before snapping the camera so every node lands in view.
       setTimeout(() => mainAtlas?.zoomToFit(700, 20), 1200);
@@ -7714,6 +7721,11 @@ function trimFeed(): void {
 
 /** Add a "<phase>…" row to the activity feed when a scan loop starts. */
 function addFeedStart(phase: string): void {
+  // A loop's start frame can arrive while a prior run of the same phase is
+  // still in flight — don't stack duplicate "…" rows for it.
+  if (els.lbFeed.querySelector(
+    `.lb-feed-item[data-phase="${CSS.escape(phase)}"].brain-thinking`,
+  )) return;
   els.lbFeed.querySelector('.lb-empty')?.remove();
   const label = BRAIN_PHASE_LABELS[phase] ?? phase;
   const item = document.createElement('div');
