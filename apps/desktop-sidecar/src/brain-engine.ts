@@ -150,6 +150,11 @@ export class BrainEngine {
   private contradictions: Contradiction[] = [];
   private insights: Insight[] = [];
 
+  // Temporal decay report from the last completed decay run.
+  private lastDecayReport: { graphsProcessed: number; nodesDecayed: number } | null = null;
+  // Cumulative count of brain-formed synapse edges this session.
+  private sessionSynapsesFormed = 0;
+
   // Guards runFullScan() against overlapping on-demand triggers (e.g. the
   // user mashing Refresh, or a tab-open scan racing a manual one).
   private scanInFlight = false;
@@ -393,11 +398,13 @@ export class BrainEngine {
   }
 
   /** Snapshot for the UI's scan-status line: are we scanning, when did each
-   *  loop last run, and how often does each loop run on its own. */
+   *  loop last run, how often each loop runs, and aggregate stats. */
   getStatus(): {
     scanning: boolean;
     lastRun: Record<string, number>;
     intervals: Record<string, number>;
+    lastDecayReport: { graphsProcessed: number; nodesDecayed: number } | null;
+    sessionSynapsesFormed: number;
   } {
     return {
       scanning: this.scanInFlight,
@@ -409,6 +416,8 @@ export class BrainEngine {
         temporalDecay: TEMPORAL_INTERVAL_MS,
         goalCheck: GOAL_CHECK_INTERVAL_MS,
       },
+      lastDecayReport: this.lastDecayReport,
+      sessionSynapsesFormed: this.sessionSynapsesFormed,
     };
   }
 
@@ -594,6 +603,7 @@ export class BrainEngine {
             );
             if (result.created) {
               totalNewEdges++;
+              this.sessionSynapsesFormed++;
               this.emitBrain('__brain_synapse__');
             }
           } catch { /* single edge failure is non-fatal */ }
@@ -680,7 +690,8 @@ export class BrainEngine {
   private async runTemporalDecay(): Promise<void> {
     this.emitActivity('temporal', 'start');
     try {
-      await this.temporalEngine.runDecay();
+      const report = await this.temporalEngine.runDecay();
+      this.lastDecayReport = { graphsProcessed: report.graphsProcessed, nodesDecayed: report.nodesDecayed };
     } catch (err) {
       console.error('[brain] temporal decay error:', err);
     }

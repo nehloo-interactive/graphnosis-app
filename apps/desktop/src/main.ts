@@ -165,6 +165,15 @@ interface AppSettings {
     embedBatch?: 'small' | 'medium' | 'large' | 'auto';
   };
   graphMetadata?: Record<string, GraphMetadata>;
+  brain?: {
+    clipboardCapture?: { enabled: boolean };
+    temporalDecay?: {
+      enabled?: boolean;
+      dailyRatePercent?: number;
+      reinforceOnRecall?: boolean;
+      clipDecayMultiplier?: number;
+    };
+  };
 }
 
 // Keep in sync with MIN/MAX_RELAY_* in app-core. The UI clamps at these
@@ -276,6 +285,11 @@ let graphnosisActiveTab: GraphnosisTab = 'checkin';
 let graphnosisListRows: NodeRecord[] = []; // current visible search results
 let graphnosisAllNodes: NodeRecord[] = []; // unfiltered cache for the active engram
 let graphnosisSelectedId: string | null = null;
+// Tracks which node is visually selected IN the 3D atlas only.
+// Decoupled from graphnosisSelectedId: only atlas-canvas clicks update this.
+// List/sidebar selection does NOT drive atlas visual emphasis — only the
+// user clicking a node inside the 3D graph does.
+let atlasSelectedId: string | null = null;
 let graphnosisSearchTimer: ReturnType<typeof setTimeout> | null = null;
 let graphnosisListMode: 'substring' | 'semantic' = 'substring';
 let graphnosisSemanticToken = 0; // race-guard
@@ -574,6 +588,12 @@ const els = {
   ollamaConnectedHelp: $<HTMLDivElement>('ollama-connected-help'),
   btnOllamaRecheck: $<HTMLButtonElement>('btn-ollama-recheck'),
   btnOpenOllamaSite: $<HTMLAnchorElement>('btn-open-ollama-site'),
+  settingClipboardCapture: $<HTMLInputElement>('setting-clipboard-capture'),
+  // Brain pane stats
+  lbBrainStats: $<HTMLDivElement>('lb-brain-stats'),
+  lbStatDecayNodes: $<HTMLSpanElement>('lb-stat-decay-nodes'),
+  lbStatDecayWhen: $<HTMLSpanElement>('lb-stat-decay-when'),
+  lbStatSynapses: $<HTMLSpanElement>('lb-stat-synapses'),
 };
 
 // Current plan in the modal — kept in module scope so the Apply button can
@@ -947,11 +967,19 @@ function render(status: StatusSnapshot): void {
     startMcpPolling();
     void refreshBrainState();
     void refreshLlmStatus();
+    // Initialize clipboard capture from persisted settings.
+    void (async () => {
+      try {
+        const s = (await invoke('get_settings')) as AppSettings;
+        setClipboardCaptureEnabled(s.brain?.clipboardCapture?.enabled ?? false);
+      } catch { /* non-fatal */ }
+    })();
     activateMode(currentMode);
   } else {
     els.viewApp.classList.add('hidden');
     els.viewUnlock.classList.remove('hidden');
     stopMcpPolling();
+    setClipboardCaptureEnabled(false); // stop polling on lock
     // Clear ephemeral disable state on lock so a re-unlock starts fresh.
     disabledSources.clear();
     // Hide every modal that might be left visible from the previous unlocked
@@ -2564,6 +2592,8 @@ els.btnSettings.addEventListener('click', async () => {
     // on the next save regardless.
     els.aiChunkSize.value = s.ai?.chunkSize ?? 'balanced';
     els.aiEmbedBatch.value = s.ai?.embedBatch ?? 'auto';
+    // Clipboard capture: disabled by default.
+    els.settingClipboardCapture.checked = s.brain?.clipboardCapture?.enabled ?? false;
     // Orbit debug HUD: session-only, reflects live engine state.
     const hudCb = els.settingsModal.querySelector<HTMLInputElement>('#debug-orbit-hud');
     if (hudCb) hudCb.checked = mainAtlas?.isOrbitDebugHUDVisible?.() ?? false;
@@ -2849,6 +2879,7 @@ els.btnSettingsSave.addEventListener('click', async () => {
       RELAY_RECONNECT_MIN_MS,
       RELAY_RECONNECT_MAX_MS,
     );
+    const clipEnabled = els.settingClipboardCapture.checked;
     await invoke('update_settings', {
       settings: {
         contentCache: { mode, maxBytesPerSource },
@@ -2866,8 +2897,11 @@ els.btnSettingsSave.addEventListener('click', async () => {
           chunkSize: els.aiChunkSize.value as 'fine' | 'balanced' | 'coarse',
           embedBatch: els.aiEmbedBatch.value as 'small' | 'medium' | 'large' | 'auto',
         },
+        brain: { clipboardCapture: { enabled: clipEnabled } },
       },
     });
+    // Apply clipboard capture immediately so the user doesn't need to relaunch.
+    setClipboardCaptureEnabled(clipEnabled);
     // Orbit debug HUD: session-only toggle, not persisted to settings.
     const hudCb = els.settingsModal.querySelector<HTMLInputElement>('#debug-orbit-hud');
     if (hudCb && mainAtlas) {
@@ -5042,9 +5076,11 @@ function selectGraphnosisNode(nodeId: string | null, { trace = false }: { trace?
   graphnosisSelectedId = nodeId;
   graphnosisEditingId = null; // cancel any pending edit on selection change
   syncListSelectionHighlight();
-  // Mirror selection into the Atlas if mounted — but don't move the camera.
-  if (mainAtlas && nodeId) mainAtlas.select(nodeId);
-  if (mainAtlas && !nodeId) mainAtlas.resetEmphasis();
+  // The 3D atlas manages its own visual selection independently: only a
+  // direct click on a node inside the atlas canvas updates the atlas
+  // emphasis (via onSelect → atlasSelectedId). Selecting from the list,
+  // detail pane, or any other UI surface does NOT propagate into the atlas —
+  // the user deliberately chose not to interact with the graph canvas.
   els.btnAtlasReset.classList.toggle('node-selected', !!nodeId);
   // Only add to memory trace for explicit user clicks in the 3D graph or right sidebar.
   if (nodeId && trace) pushRecent(nodeId);
@@ -6758,6 +6794,7 @@ function switchGraphnosisTab(tab: GraphnosisTab): void {
     const enteringFresh = prevTab !== 'atlas';
     if (enteringFresh) {
       graphnosisSelectedId = null;
+      atlasSelectedId = null; // atlas-local selection also resets on fresh entry
       // Clear state directly rather than via selectGraphnosisNode(null) —
       // that would also re-render the detail pane mid-switch.
       els.btnAtlasReset.classList.remove('node-selected');
@@ -6825,7 +6862,10 @@ async function mountAtlasIfNeeded(): Promise<void> {
   mainAtlas = await createAtlasEngine(kind, {
     container: els.atlasContainer,
     onSelect: (node) => {
-      // Route through the shared selection so list + detail stay in sync.
+      // User clicked a node directly in the 3D canvas — record it as the
+      // atlas-local selection (drives emphasis on next data rebuild), then
+      // sync to the list/detail pane via the shared selection model.
+      atlasSelectedId = node?.id ?? null;
       selectGraphnosisNode(node?.id ?? null, { trace: true });
     },
   }) as unknown as Atlas; // cast: factory returns AtlasEngine; main.ts
@@ -6850,8 +6890,10 @@ function pushDataIntoAtlas(): void {
     mainAtlas.setSourceVisible(ref, false);
   }
   renderAtlasLegend();
-  // Apply current selection emphasis if any.
-  if (graphnosisSelectedId) mainAtlas.select(graphnosisSelectedId);
+  // Re-apply the atlas-local selection (set by user canvas click) after the
+  // data rebuild. Note: this is atlasSelectedId, NOT graphnosisSelectedId —
+  // the atlas and the list maintain independent selection state by design.
+  if (atlasSelectedId) mainAtlas.select(atlasSelectedId);
 }
 
 /**
@@ -6986,6 +7028,7 @@ els.atlasGraphPicker.addEventListener('change', () => void (async () => {
   atlasActiveGraph = els.atlasGraphPicker.value;
   refreshActiveEngramLabel();
   graphnosisSelectedId = null;
+  atlasSelectedId = null;
   // Clear any active search — the old query + results belong to the engram
   // you just left. Without this, switching engrams while a search is open
   // leaves stale result rows (and stale health stats) on screen until the
@@ -7510,7 +7553,13 @@ let brainGoals: BrainGoal[] = [];
 
 // Sidecar scan status — lastRun timestamps + interval lengths, used for the
 // scan-status countdown line. Refreshed on tab open and after each scan.
-let brainStatus: { scanning: boolean; lastRun: Record<string, number>; intervals: Record<string, number> } | null = null;
+let brainStatus: {
+  scanning: boolean;
+  lastRun: Record<string, number>;
+  intervals: Record<string, number>;
+  lastDecayReport: { graphsProcessed: number; nodesDecayed: number } | null;
+  sessionSynapsesFormed: number;
+} | null = null;
 // Phases (e.g. 'fullscan', 'contradiction-scan') with a live start-frame but
 // no done-frame yet. Non-empty ⇒ the pane shows its "scanning" state.
 const brainActivePhases = new Set<string>();
@@ -7555,7 +7604,7 @@ function updateBrainUI(): void {
   const v = brainVitalityReport.overall;
 
   els.brainVitality.style.display = '';
-  els.brainVitality.textContent = `🧠 ${v}`;
+  els.brainVitality.textContent = `🧠 Vitality ${v}`;
   els.brainVitality.style.opacity = String(0.4 + (v / 100) * 0.6);
 
   mainAtlas?.setBrainVitality?.(v);
@@ -7602,6 +7651,7 @@ function renderLbVitality(): void {
   if (!brainVitalityReport) {
     els.lbVitalityTitle.textContent = 'Brain is starting up…';
     els.lbVitalityDetail.textContent = 'Give it a moment after unlocking, then hit Refresh.';
+    els.lbBrainStats.style.display = 'none';
     return;
   }
   const v = brainVitalityReport.overall;
@@ -7610,6 +7660,23 @@ function renderLbVitality(): void {
   const [title, detail] = vitalityCopy(v);
   els.lbVitalityTitle.textContent = title;
   els.lbVitalityDetail.textContent = detail;
+
+  // Temporal decay + synapse stats from the last getStatus() pull.
+  if (brainStatus) {
+    const decayReport = brainStatus.lastDecayReport;
+    const lastDecay = brainStatus.lastRun['temporalDecay'];
+    if (decayReport !== null && decayReport !== undefined) {
+      els.lbStatDecayNodes.textContent = String(decayReport.nodesDecayed);
+      els.lbStatDecayWhen.textContent = lastDecay ? formatRel(Date.now() - lastDecay) : 'not yet run';
+      els.lbStatSynapses.textContent = String(brainStatus.sessionSynapsesFormed);
+      els.lbBrainStats.style.display = '';
+    } else if (lastDecay) {
+      els.lbStatDecayNodes.textContent = '–';
+      els.lbStatDecayWhen.textContent = formatRel(Date.now() - lastDecay);
+      els.lbStatSynapses.textContent = String(brainStatus.sessionSynapsesFormed);
+      els.lbBrainStats.style.display = '';
+    }
+  }
 }
 
 function renderLbContradictions(): void {
@@ -7629,8 +7696,9 @@ function renderLbContradictions(): void {
           <span class="lb-engram-chip" title="Engram">${escape(engramName(c.graphId))}</span>
           <span class="brain-subtitle">${Math.round(c.similarity * 100)}% similar — likely the same fact stated two ways</span>
         </span>
-        <button class="btn-sm" data-dismiss-contradiction="${escape(c.id)}">Dismiss</button>
+        <button class="btn-sm" data-dismiss-contradiction="${escape(c.id)}" title="Marks these two memories as reviewed. Both are kept in your graph — this only removes the flagged pair from the healing queue.">Mark resolved</button>
       </div>
+      <p class="lb-contradiction-note">Both memories are kept in your graph. "Mark resolved" removes this pair from the healing queue once you've reviewed it.</p>
     </div>`).join('');
   host.querySelectorAll<HTMLButtonElement>('[data-dismiss-contradiction]').forEach((btn) => {
     btn.addEventListener('click', async () => {
@@ -8133,6 +8201,105 @@ els.llmStatusChip.addEventListener('click', () => {
   document.getElementById('settings-brain-llm')?.scrollIntoView({ behavior: 'smooth' });
   void refreshLlmStatus();
 });
+
+els.brainVitality.addEventListener('click', () => {
+  // Jump to the Autonomous Brain tab from the status bar chip.
+  activateMode('atlas');
+  switchGraphnosisTab('brain');
+});
+
+// ── Clipboard ambient capture ──────────────────────────────────────────────
+//
+// When enabled: poll clipboard every 2s while the app window is focused.
+// If the copied text is > 150 characters and different from the last seen
+// content, show a non-intrusive toast offering to save it as a memory clip.
+// Disabled by default — user must opt in via Settings → Brain.
+
+let clipCaptureEnabled = false;
+let clipPollTimer: ReturnType<typeof setInterval> | null = null;
+let lastClipContent = '';
+let clipToastShownFor = ''; // prevents re-prompting same content within a session
+
+function setClipboardCaptureEnabled(enabled: boolean): void {
+  clipCaptureEnabled = enabled;
+  if (enabled) {
+    startClipPoll();
+  } else {
+    stopClipPoll();
+  }
+}
+
+function startClipPoll(): void {
+  if (clipPollTimer) return; // already running
+  clipPollTimer = setInterval(() => { void pollClipboard(); }, 2000);
+}
+
+function stopClipPoll(): void {
+  if (clipPollTimer) { clearInterval(clipPollTimer); clipPollTimer = null; }
+}
+
+async function pollClipboard(): Promise<void> {
+  if (!clipCaptureEnabled || document.hidden) return;
+  try {
+    const text = await navigator.clipboard.readText();
+    if (!text || text === lastClipContent || text === clipToastShownFor) return;
+    lastClipContent = text;
+    if (text.length < 150) return; // too short to be worth saving
+    clipToastShownFor = text;
+    showClipboardToast(text);
+  } catch {
+    // Clipboard access denied (no focus, permission error) — silently skip.
+  }
+}
+
+function showClipboardToast(text: string): void {
+  // Reuse the existing toast stack but with a distinct clip-offer variant.
+  const id = `clip${Date.now()}`;
+  const root = document.createElement('div');
+  root.className = 'g-toast g-toast--pending';
+  root.dataset.toastId = id;
+  root.innerHTML = `
+    <span class="g-toast-icon" aria-hidden="true">📋</span>
+    <span class="g-toast-body">
+      <span class="g-toast-label">Remember this?</span>
+      <span class="g-toast-msg">${escape(text.slice(0, 80))}${text.length > 80 ? '…' : ''}</span>
+    </span>
+    <button class="g-toast-action btn-sm" id="${id}-save">Save</button>
+    <button class="g-toast-close" title="Dismiss" aria-label="Dismiss">×</button>
+  `;
+  const saveBtn = root.querySelector<HTMLButtonElement>(`#${id}-save`)!;
+  const closeBtn = root.querySelector<HTMLButtonElement>('.g-toast-close')!;
+  const dismiss = (): void => {
+    root.classList.remove('visible');
+    setTimeout(() => root.remove(), 400);
+  };
+  saveBtn.addEventListener('click', async () => {
+    dismiss();
+    const targetGraph = atlasActiveGraph ?? loadedGraphs[0]?.graphId;
+    if (!targetGraph) return;
+    const toastId = addIngestToast('Saving clip…');
+    try {
+      await ipcCall('ingest', {
+        graphId: targetGraph,
+        kind: 'clip',
+        text,
+        label: `Clipboard: ${new Date().toLocaleTimeString()}`,
+      });
+      finishIngestToast(toastId, 'success', 'Saved to memory');
+    } catch (e) {
+      finishIngestToast(toastId, 'error', `Failed: ${(e as Error).message}`);
+    }
+  });
+  closeBtn.addEventListener('click', dismiss);
+  els.toastStack.appendChild(root);
+  requestAnimationFrame(() => root.classList.add('visible'));
+  // Auto-dismiss after 12s if no action taken.
+  setTimeout(dismiss, 12_000);
+}
+
+// Start/stop polling with window focus state.
+window.addEventListener('focus', () => { if (clipCaptureEnabled) startClipPoll(); });
+window.addEventListener('blur', stopClipPoll);
 
 // ── Goal develop form (Autonomous Brain pane) ─────────────────────────────
 
