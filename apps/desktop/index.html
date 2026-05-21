@@ -1703,6 +1703,17 @@
         position: relative; z-index: 1;
         font-size: 30px; font-weight: 700; color: var(--fg);
       }
+      .lb-vitality-label {
+        font-size: 11px; font-weight: 600; text-transform: uppercase;
+        letter-spacing: 0.07em; color: var(--fg-dim); margin-top: 2px;
+      }
+      .lb-stats-row {
+        display: flex; gap: 16px; flex-wrap: wrap; margin-top: 6px;
+        font-size: 12px; color: var(--fg-dim);
+      }
+      .lb-stat { display: flex; flex-direction: column; gap: 1px; }
+      .lb-stat-value { font-weight: 600; color: var(--fg); font-size: 13px; }
+      .lb-stat-label { font-size: 11px; }
       .lb-hero-text { flex: 1; min-width: 0; position: relative; z-index: 1; }
       .lb-hero-text h3 { margin: 0 0 4px; font-size: 17px; }
       .lb-hero-text .btn-sm { margin-top: 10px; }
@@ -1729,6 +1740,27 @@
       .lb-needs-llm p { margin: 0 0 8px; line-height: 1.5; }
       .lb-needs-llm p:last-child { margin-bottom: 0; }
       .lb-needs-llm strong { color: var(--fg); }
+      .lb-mcp-tools-hint {
+        margin-top: 12px; padding: 10px 12px;
+        border: 1px solid var(--border); border-radius: 8px;
+        background: var(--bg-elev);
+      }
+      .lb-mcp-tools-title {
+        font-size: 11px; font-weight: 700; text-transform: uppercase;
+        letter-spacing: 0.05em; color: var(--fg-dim); margin: 0 0 8px;
+      }
+      .lb-mcp-tool-row {
+        display: flex; gap: 8px; align-items: baseline; margin-bottom: 6px;
+        font-size: 12px;
+      }
+      .lb-mcp-tool-row:last-child { margin-bottom: 0; }
+      .lb-mcp-tool-name {
+        font-family: ui-monospace, 'Cascadia Code', 'Fira Code', monospace;
+        font-size: 12px; font-weight: 600; color: var(--accent);
+        background: color-mix(in oklab, var(--accent) 12%, transparent);
+        padding: 1px 5px; border-radius: 4px; flex-shrink: 0;
+      }
+      .lb-mcp-tool-desc { color: var(--fg-dim); line-height: 1.45; }
       .lb-contradiction {
         border: 1px solid var(--border); border-radius: 8px;
         padding: 10px; margin-bottom: 10px; background: var(--bg-elev);
@@ -1747,6 +1779,10 @@
       .lb-contradiction-foot {
         display: flex; align-items: center; justify-content: space-between;
         gap: 10px; margin-top: 8px;
+      }
+      .lb-contradiction-note {
+        font-size: 11px; color: var(--fg-dim); margin: 6px 0 0;
+        font-style: italic;
       }
       .lb-insight, .lb-goal {
         border: 1px solid var(--border); border-radius: 8px;
@@ -2772,6 +2808,10 @@
         padding: 0 4px;
       }
       .g-toast-close:hover { color: var(--fg); }
+      .g-toast-action {
+        flex-shrink: 0;
+        margin-right: 4px;
+      }
       .g-toast--pending {
         border-left-color: var(--accent);
       }
@@ -4590,14 +4630,31 @@
                              synapses behind the hero. RAF-driven; paused
                              whenever this pane isn't visible. -->
                         <canvas id="lb-neuron-canvas" class="lb-neuron-canvas" aria-hidden="true"></canvas>
-                        <div id="lb-vitality-ring" class="lb-vitality-ring" style="--v:0">
-                          <span id="lb-vitality-score">–</span>
+                        <div style="display:flex; flex-direction:column; align-items:center; gap:4px; flex-shrink:0;">
+                          <div id="lb-vitality-ring" class="lb-vitality-ring" style="--v:0">
+                            <span id="lb-vitality-score">–</span>
+                          </div>
+                          <span class="lb-vitality-label">Vitality</span>
                         </div>
                         <div class="lb-hero-text">
                           <h3 id="lb-vitality-title">Checking your brain…</h3>
                           <p id="lb-vitality-detail" class="brain-subtitle">
                             Vitality reflects how alive, connected, and active your memory is.
                           </p>
+                          <div id="lb-brain-stats" class="lb-stats-row" style="display:none;">
+                            <div class="lb-stat">
+                              <span class="lb-stat-value" id="lb-stat-decay-nodes">–</span>
+                              <span class="lb-stat-label">nodes adjusted by decay</span>
+                            </div>
+                            <div class="lb-stat">
+                              <span class="lb-stat-value" id="lb-stat-decay-when">–</span>
+                              <span class="lb-stat-label">last memory decay</span>
+                            </div>
+                            <div class="lb-stat">
+                              <span class="lb-stat-value" id="lb-stat-synapses">–</span>
+                              <span class="lb-stat-label">connections formed this session</span>
+                            </div>
+                          </div>
                           <p id="lb-scan-status" class="lb-scan-status"></p>
                           <button id="btn-lb-refresh" class="btn-sm">↻ Scan now</button>
                         </div>
@@ -4627,7 +4684,7 @@
                       </div>
 
                       <div class="lb-section">
-                        <p class="lb-section-title">Goals</p>
+                        <p class="lb-section-title">Goals &amp; Strategic Thinking</p>
                         <p class="brain-subtitle">
                           Strategic plans your brain is tracking for you, with deadline awareness.
                         </p>
@@ -4645,6 +4702,17 @@
                           </div>
                         </div>
                         <button id="btn-new-goal" class="btn-sm">+ Develop a new goal…</button>
+                        <div class="lb-mcp-tools-hint">
+                          <p class="lb-mcp-tools-title">Available via AI clients (Claude, Cursor…)</p>
+                          <div class="lb-mcp-tool-row">
+                            <span class="lb-mcp-tool-name">develop</span>
+                            <span class="lb-mcp-tool-desc">Give it your context, strategy, and goal — the brain reads your memories and writes a concrete strategic plan, citing what it actually knows.</span>
+                          </div>
+                          <div class="lb-mcp-tool-row">
+                            <span class="lb-mcp-tool-name">predict</span>
+                            <span class="lb-mcp-tool-desc">Before taking an action, the brain checks your memory for past failures, resource constraints, blockers, and hidden opportunities related to that action.</span>
+                          </div>
+                        </div>
                       </div>
 
                       <div class="lb-section">
@@ -4883,7 +4951,7 @@
           <span class="status-sep">·</span>
           <span class="status-search">⌘K to search nodes</span>
           <span id="status-saved" class="status-saved">—</span>
-          <span id="brain-vitality" style="display:none; font-size:12px; opacity:0.7; margin-left:8px; cursor:default;" title="Brain vitality score">🧠 –</span>
+          <span id="brain-vitality" style="display:none; font-size:12px; opacity:0.7; margin-left:8px; cursor:pointer;" title="Open Autonomous Brain tab">🧠 Vitality –</span>
           <span id="llm-status-chip" style="display:none; font-size:11px; color:var(--fg-dim); margin-left:6px; cursor:pointer;" title="Click to set up the Brain's local AI — install Ollama, pick a model">⚡ Set up Brain AI</span>
           <span class="status-mcp">
             <span id="status-mcp-dot" class="status-dot"></span>
@@ -5227,6 +5295,21 @@ ollama list</code></pre>
               above — the status turns green and the model appears in the
               <strong>Active model</strong> list.
             </p>
+          </div>
+
+          <!-- Clipboard capture — disabled by default, user opt-in -->
+          <p class="panel-title" style="margin-top: 20px;">Brain — Clipboard Capture</p>
+          <p class="subtitle" style="margin-bottom: 10px;">
+            When enabled, the brain watches your clipboard while Graphnosis is in focus.
+            Any text you copy that's longer than a sentence is offered for saving as a memory.
+            Disabled by default — you control what goes into your graph.
+          </p>
+          <div class="row">
+            <label>
+              <input type="checkbox" id="setting-clipboard-capture" />
+              <strong>Offer to save long clipboard text as memories</strong> —
+              when you copy something worth remembering, the brain asks. You can always dismiss.
+            </label>
           </div>
 
           <!-- NOTE: Graphs management, Recovery phrase regeneration, and the

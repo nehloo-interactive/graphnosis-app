@@ -325,6 +325,11 @@ export interface AppSettings {
       /** Clips and ephemeral notes decay this many times faster than files. Default 3. */
       clipDecayMultiplier: number;
     };
+    /** Ambient clipboard capture — watches clipboard for long text and offers to save it. */
+    clipboardCapture?: {
+      /** When true, clipboard is polled while the app is focused. Default false. */
+      enabled: boolean;
+    };
   };
 }
 

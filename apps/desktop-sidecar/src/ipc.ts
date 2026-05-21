@@ -790,6 +790,11 @@ async function dispatch(deps: IpcDeps, method: string, params: unknown): Promise
             allowedOrigins: z.array(z.string()).optional(),
           }),
         }).optional(),
+        brain: z.object({
+          clipboardCapture: z.object({
+            enabled: z.boolean(),
+          }).optional(),
+        }).optional(),
       }).parse(params ?? {});
       // Strip undefined keys explicitly for exactOptionalPropertyTypes.
       const patch: Parameters<typeof deps.host.setSettings>[0] = {};
@@ -829,6 +834,15 @@ async function dispatch(deps: IpcDeps, method: string, params: unknown): Promise
             token,
             allowedOrigins: inBridge.allowedOrigins ?? currentBridge?.allowedOrigins ?? [],
           },
+        };
+      }
+      if (parsed.brain) {
+        const currentBrain = deps.host.getSettings().brain ?? {};
+        patch.brain = {
+          ...currentBrain,
+          ...(parsed.brain.clipboardCapture !== undefined
+            ? { clipboardCapture: parsed.brain.clipboardCapture }
+            : {}),
         };
       }
       return deps.host.setSettings(patch);
