@@ -11,6 +11,29 @@ Conventions: **Added** = new features, **Changed** = behavior or UX shifts, **Fi
 
 ---
 
+## Unreleased — Deterministic Consolidation
+
+Theme: **a memory that strengthens, never weakens.** The third tab is reborn as **Deterministic Consolidation** — an engine that makes every memory you add permanent and ever more retrievable. Connections strengthen the more you use them, engrams link to one another, and a daily consolidation pass integrates the whole Cortex. Nothing here ever weakens a correct memory.
+
+### Added
+
+- **Connection reinforcement.** Memories recalled together have the connection between them strengthened ("fire together, wire together"); a repeatedly co-recalled pair with no link yet earns one. Reinforcement is live — strengthened connections genuinely rank higher in future recalls — and saturating, so it never runs away.
+- **Cross-engram connections.** Graphnosis now links memories *across* engrams — via shared named entities or high semantic similarity — so a query in one engram can surface what you know in another. Stored encrypted alongside your Cortex.
+- **Consolidation.** A daily deep pass: transitive inference (if A→B and B→C, infer A→C), community detection, and redundancy cleanup (dead edges left dangling to already-deleted memories). All additive or tidying — a connection between two live memories is never removed.
+- **Memory health.** The tab's headline is now a retrieval-quality report — connectivity, integration, confidence, coherence, reinforcement activity, and a saturation guard — instead of a raw size-and-density score.
+
+### Changed
+
+- **The third tab is now "Deterministic Consolidation"** (was "Autonomous upkeep").
+- **Memories no longer decay from disuse.** Anything you deliberately add — a file, URL, clip, or saved conversation — keeps its confidence indefinitely. The only things that lower a memory's standing are explicit correctness events (contradiction, supersession, your own correction), all audited and reversible.
+- **Recalled memories are reinforced.** Appearing in a recall result now gives a memory a small confidence boost — the strengthening half of the old decay/reinforce pair, now active.
+
+### Migrations
+
+None. Existing Cortexes gain the cross-engram connection store on first run. No memory is altered on upgrade.
+
+---
+
 ## v0.8 — Autonomous upkeep
 
 Theme: **a Cortex that maintains itself.** Graphnosis now keeps your memory tidy on its own — merging duplicates it can prove are redundant, weaving connections between related memories, and surfacing the judgment calls it can't safely make. New background passes run on a schedule: what they can fix, they fix; what needs you, they route to Check-in.
