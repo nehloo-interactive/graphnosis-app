@@ -309,6 +309,9 @@ export interface AppSettings {
       insight?: number;
       temporalDecay?: number;
       goalCheck?: number;
+      reinforce?: number;
+      consolidation?: number;
+      crossEngram?: number;
     };
     /** Count of pending (non-dismissed) insight cards in BrainEngine memory. */
     pendingInsightsCount?: number;
@@ -325,6 +328,13 @@ export interface AppSettings {
       /** Clips and ephemeral notes decay this many times faster than files. Default 3. */
       clipDecayMultiplier: number;
     };
+    /** Autonomous Indelibility — connection reinforcement + consolidation. */
+    reinforcement?: ReinforcementSettings;
+    /** Graphnosis Neural Network — a non-deterministic trained link-predictor. OFF by default. */
+    neuralNetwork?: {
+      /** When true, the trained link-predictor may add predicted connections. Default false. */
+      enabled: boolean;
+    };
     /** Ambient clipboard capture — watches clipboard for long text and offers to save it. */
     clipboardCapture?: {
       /** When true, clipboard is polled while the app is focused. Default false. */
@@ -332,6 +342,38 @@ export interface AppSettings {
     };
   };
 }
+
+/**
+ * Autonomous Indelibility configuration. Strengthen-only — no field here ever
+ * weakens a memory. Read by ReinforcementEngine; absent on older cortexes, in
+ * which case DEFAULT_REINFORCEMENT applies.
+ */
+export interface ReinforcementSettings {
+  /** When false, the reinforcement + consolidation passes are skipped. Default true. */
+  enabled: boolean;
+  /** Saturating increment rate for co-recalled connections. Default 0.10. */
+  reinforceRate: number;
+  /** Starting weight for a newly formed connection. Default 0.5. */
+  baselineWeight: number;
+  /** Co-activation count at which an unlinked pair earns a new connection. Default 3. */
+  newConnectionCoActivationThreshold: number;
+  /** Hours between consolidation passes. Default 24. */
+  consolidationIntervalHours: number;
+  /** When false, cross-engram connection formation is skipped. Default true. */
+  crossEngramEnabled: boolean;
+  /** Minimum embedding similarity for a cross-engram connection. Default 0.82. */
+  crossEngramMinSim: number;
+}
+
+export const DEFAULT_REINFORCEMENT: ReinforcementSettings = {
+  enabled: true,
+  reinforceRate: 0.1,
+  baselineWeight: 0.5,
+  newConnectionCoActivationThreshold: 3,
+  consolidationIntervalHours: 24,
+  crossEngramEnabled: true,
+  crossEngramMinSim: 0.82,
+};
 
 export const DEFAULT_SETTINGS: AppSettings = {
   contentCache: {
@@ -541,6 +583,7 @@ export function mergeWithDefaults(partial: Partial<AppSettings> | null | undefin
   if (partial?.brain) {
     const b = partial.brain;
     const td = b.temporalDecay;
+    const rf = b.reinforcement;
     brain = {
       ...(b.lastRun !== undefined ? { lastRun: b.lastRun } : {}),
       ...(typeof b.pendingInsightsCount === 'number' ? { pendingInsightsCount: b.pendingInsightsCount } : {}),
@@ -551,6 +594,22 @@ export function mergeWithDefaults(partial: Partial<AppSettings> | null | undefin
           dailyRatePercent: typeof td.dailyRatePercent === 'number' && td.dailyRatePercent > 0 ? td.dailyRatePercent : 0.5,
           reinforceOnRecall: typeof td.reinforceOnRecall === 'boolean' ? td.reinforceOnRecall : true,
           clipDecayMultiplier: typeof td.clipDecayMultiplier === 'number' && td.clipDecayMultiplier > 0 ? td.clipDecayMultiplier : 3,
+        },
+      } : {}),
+      ...(rf !== undefined ? {
+        reinforcement: {
+          enabled: typeof rf.enabled === 'boolean' ? rf.enabled : DEFAULT_REINFORCEMENT.enabled,
+          reinforceRate: typeof rf.reinforceRate === 'number' && rf.reinforceRate > 0 ? rf.reinforceRate : DEFAULT_REINFORCEMENT.reinforceRate,
+          baselineWeight: typeof rf.baselineWeight === 'number' && rf.baselineWeight > 0 ? rf.baselineWeight : DEFAULT_REINFORCEMENT.baselineWeight,
+          newConnectionCoActivationThreshold: typeof rf.newConnectionCoActivationThreshold === 'number' && rf.newConnectionCoActivationThreshold > 0 ? Math.floor(rf.newConnectionCoActivationThreshold) : DEFAULT_REINFORCEMENT.newConnectionCoActivationThreshold,
+          consolidationIntervalHours: typeof rf.consolidationIntervalHours === 'number' && rf.consolidationIntervalHours > 0 ? rf.consolidationIntervalHours : DEFAULT_REINFORCEMENT.consolidationIntervalHours,
+          crossEngramEnabled: typeof rf.crossEngramEnabled === 'boolean' ? rf.crossEngramEnabled : DEFAULT_REINFORCEMENT.crossEngramEnabled,
+          crossEngramMinSim: typeof rf.crossEngramMinSim === 'number' && rf.crossEngramMinSim > 0 ? rf.crossEngramMinSim : DEFAULT_REINFORCEMENT.crossEngramMinSim,
+        },
+      } : {}),
+      ...(b.neuralNetwork !== undefined ? {
+        neuralNetwork: {
+          enabled: typeof b.neuralNetwork.enabled === 'boolean' ? b.neuralNetwork.enabled : false,
         },
       } : {}),
     };
