@@ -7518,6 +7518,10 @@ const brainActivePhases = new Set<string>();
 let brainFirstScanDone = false;
 // 1s ticker for the countdown line; runs only while the brain pane is shown.
 let scanTickerTimer: ReturnType<typeof setInterval> | null = null;
+// Whether a local LLM is reachable with a model installed. Drives the
+// honest "this is expected, not broken" copy on LLM-only brain features
+// (insights, synapse formation). Refreshed by refreshLlmStatus().
+let brainLlmReady = false;
 
 const BRAIN_PHASE_LABELS: Record<string, string> = {
   fullscan: 'Running a full self-scan',
@@ -7652,7 +7656,28 @@ function renderLbInsights(): void {
   const host = els.lbInsights;
   const active = brainInsights.filter((i) => !i.dismissed);
   if (active.length === 0) {
-    host.innerHTML = '<p class="lb-empty">No insights yet. These surface every few hours when a local LLM is available.</p>';
+    if (brainLlmReady) {
+      host.innerHTML = '<p class="lb-empty">No insights yet — the brain surfaces these every few hours once it has had time to study your engrams.</p>';
+    } else {
+      // Honest empty state: insights + synapse formation are the only
+      // features that need a local model. Make clear this is expected,
+      // not a failure, and give a one-click route to set the model up.
+      host.innerHTML =
+        '<div class="lb-empty lb-needs-llm">'
+        + '<p><strong>Insights need a local AI model — and none is set up yet.</strong> '
+        + 'This section staying empty is expected, not a bug. The same goes for '
+        + 'automatic <em>new-connection forming</em> (synapses).</p>'
+        + '<p>Everything else — vitality, contradiction detection, memory decay, '
+        + 'goal tracking — already works without it.</p>'
+        + '<p><button class="btn-sm primary" id="lb-insights-setup">Set up local AI…</button> '
+        + '<span class="brain-subtitle">Free, a couple of minutes. A Terminal route is listed there too.</span></p>'
+        + '</div>';
+      host.querySelector<HTMLButtonElement>('#lb-insights-setup')?.addEventListener('click', () => {
+        document.getElementById('settings-modal')?.classList.remove('hidden');
+        document.getElementById('settings-brain-llm')?.scrollIntoView({ behavior: 'smooth' });
+        void refreshLlmStatus();
+      });
+    }
     return;
   }
   host.innerHTML = active.map((i) => `
@@ -8004,6 +8029,8 @@ async function refreshLlmStatus(): Promise<void> {
       els.llmStatusChip.style.display = 'none';
 
       const hasModels = status.installedModels.length > 0;
+      // LLM-only brain features can run once Ollama is up AND a model exists.
+      brainLlmReady = hasModels;
       // Active-model row is only useful once at least one model is installed.
       els.ollamaModelRow.style.display = hasModels ? 'flex' : 'none';
       els.ollamaConnectedHelp.innerHTML = hasModels
@@ -8032,6 +8059,7 @@ async function refreshLlmStatus(): Promise<void> {
       els.ollamaConnectedHelp.style.display = 'none';
       els.ollamaNotInstalled.style.display = '';
       els.llmStatusChip.style.display = '';
+      brainLlmReady = false;
     }
   } catch { /* non-fatal */ }
 }
