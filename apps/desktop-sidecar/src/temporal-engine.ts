@@ -1,6 +1,16 @@
 import type { GraphnosisHost } from './host.js';
 import type { AppSettings } from '@graphnosis-app/core/settings';
 
+/**
+ * Source kinds whose nodes are genuinely ephemeral — unconfirmed ambient
+ * auto-capture — and may fade with disuse. Human-added memories (file,
+ * url, ai-conversation, clip) are NEVER in this set: under Autonomous
+ * Indelibility they strengthen, never weaken. No current ingest path
+ * produces an ephemeral kind, so the decay loop is dormant by design; a
+ * future ambient-capture feature would ingest under such a kind.
+ */
+const EPHEMERAL_SOURCE_KINDS: ReadonlySet<string> = new Set(['ephemeral']);
+
 export interface DecayReport {
   graphsProcessed: number;
   nodesDecayed: number;
@@ -37,7 +47,6 @@ export class TemporalEngine {
     }
 
     const dailyRate = (td?.dailyRatePercent ?? 0.5) / 100;
-    const clipMultiplier = td?.clipDecayMultiplier ?? 3;
     const now = Date.now();
     const MS_PER_DAY = 24 * 60 * 60 * 1000;
 
@@ -69,10 +78,13 @@ export class TemporalEngine {
         const daysSinceIngest = (now - ingestedAt) / MS_PER_DAY;
         if (daysSinceIngest < 1) continue; // too young
 
+        // Deterministic Consolidation — human-added memories never decay from
+        // disuse; only genuinely ephemeral auto-capture is allowed to
+        // fade. No current ingest path produces an ephemeral kind, so this
+        // skip fires for every node today and the loop is a no-op.
         const kind = nodeKind.get(node.id) ?? 'file';
-        const rate = (kind === 'clip' || kind === 'ai-conversation')
-          ? dailyRate * clipMultiplier
-          : dailyRate;
+        if (!EPHEMERAL_SOURCE_KINDS.has(kind)) continue;
+        const rate = dailyRate;
 
         // Exponential decay over the node's lifetime.
         const decayFactor = Math.pow(1 - rate, daysSinceIngest);

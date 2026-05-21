@@ -457,6 +457,35 @@ export class GraphnosisImpl implements GraphnosisAdapter {
   }
 
   /**
+   * Set an existing edge's weight (directed or undirected) — the primitive
+   * behind Deterministic Consolidation's connection reinforcement. Tries the
+   * directed map first, then undirected; clamps the new weight to [0, 1].
+   * Edge count is unchanged, so no metadata update. Returns `{ ok: false }`
+   * when the edge id is not found — idempotent, like `unlinkEdge`.
+   */
+  async reweightEdge(
+    handle: GraphHandle,
+    edgeId: string,
+    newWeight: number,
+  ): Promise<{ ok: boolean; wasDirected?: boolean; prevWeight?: number }> {
+    const h = handle as Internal;
+    const w = Math.max(0, Math.min(1, newWeight));
+    const de = h.instance.graph.directedEdges.get(edgeId);
+    if (de) {
+      const prevWeight = de.weight;
+      de.weight = w;
+      return { ok: true, wasDirected: true, prevWeight };
+    }
+    const ue = h.instance.graph.undirectedEdges.get(edgeId);
+    if (ue) {
+      const prevWeight = ue.weight;
+      ue.weight = w;
+      return { ok: true, wasDirected: false, prevWeight };
+    }
+    return { ok: false };
+  }
+
+  /**
    * Cross-document entity-overlap relink. See adapter interface comment
    * for context. Logic:
    *   1. Snapshot every ACTIVE node's entity set.
