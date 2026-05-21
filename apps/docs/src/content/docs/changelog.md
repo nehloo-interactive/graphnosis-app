@@ -11,6 +11,32 @@ Conventions: **Added** = new features, **Changed** = behavior or UX shifts, **Fi
 
 ---
 
+## v0.8 — Autonomous upkeep
+
+Theme: **a Cortex that maintains itself.** Graphnosis now keeps your memory tidy on its own — merging duplicates it can prove are redundant, weaving connections between related memories, and surfacing the judgment calls it can't safely make. New background passes run on a schedule: what they can fix, they fix; what needs you, they route to Check-in.
+
+### Added
+
+- **Autonomous self-healing.** A background duplicate scan merges memories that are *provably* the same — byte-identical text, or one fully contained within a longer one. Merges are automatic, conservative (a merge never loses information), and reversible (soft-delete, recorded in the op-log). The Autonomous tab's Self-healing section shows the running count. Full detail in [Autonomous Upkeep](/guides/autonomous-upkeep/).
+- **"Needs your review" in Check-in.** Near-duplicate pairs that *aren't* provably identical — a differing number, an added negation, a partial overlap — surface in the Check-in tab with both memories side by side and a one-click **Same memory — merge** / **Keep both** decision. Graphnosis heals what's certain; you decide what's ambiguous.
+- **Automatic connection weaving.** Memories that are clearly related but distinct get an automatic "related" connection, so isolated memories aren't left floating. Conservative — already-dense memories are skipped, and typed/directional relationships are still left to you in the Check-in deck.
+- **Post-ingest scan.** Ingesting a file now triggers a duplicate scan shortly after it completes, so new content is checked promptly instead of waiting for the next scheduled pass.
+- **Visible upkeep schedule.** The Autonomous tab now shows the cadence of every background pass (duplicate scan every 20 min, connection forming 45 min, goal check 4 h, insights 6 h, memory decay 24 h).
+- **Standalone / Local LLM shortcuts.** Two buttons in the sidebar's "Get connected" section explain the two modes — fully deterministic Standalone (the default) vs. adding a local LLM for insights and deeper connection-forming.
+
+### Changed
+
+- **The third tab is now "Autonomous"** — it collects vitality, self-healing, insights, goals, and live activity in one place.
+- **Vitality shows 0 until it's calculated**, so a still-starting-up score is never mistaken for a real one.
+- **"Cache everything" is the default** content-cache mode, selected out of the box.
+- **The memory trace clears on lock.** Locking your Cortex now clears the left-rail recents list and the detail pane, so a re-unlock starts with a clean slate.
+
+### Migrations
+
+None. v0.8 is fully backward-compatible. The self-healing journal is created on first run; existing Cortexes gain it automatically.
+
+---
+
 ## v0.7 — Sources management, 3D graph performance, and readability
 
 Theme: **make large Cortexes easier to navigate and large graphs easier to work with.** This release adds first-class source management (search, move between engrams), makes the 3D graph usable on 25K-edge graphs without freezing the UI, and addresses a wave of readability and polish issues reported after v0.6.
