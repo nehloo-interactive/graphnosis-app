@@ -17,8 +17,11 @@ export default defineConfig({
       tagline: 'The hippocampus your AI has always been missing.',
 
       customCss: ['./src/styles/custom.css'],
+      components: {
+        Footer: './src/components/StarlightFooter.astro',
+      },
       social: {
-        github: 'https://github.com/nehloo/Graphnosis',
+        github: 'https://github.com/nehloo-interactive/graphnosis-app',
       },
       sidebar: [
         {
@@ -27,6 +30,7 @@ export default defineConfig({
             { label: 'Overview', slug: 'getting-started/overview' },
             { label: 'Install & First Cortex', slug: 'getting-started/first-cortex' },
             { label: 'Connect Your AI', slug: 'getting-started/connect-ai' },
+            { label: 'A GRAPHNOSIS.md for Your AI', slug: 'getting-started/graphnosis-md' },
             { label: 'Connect from Your Phone', slug: 'getting-started/mobile' },
           ],
         },
@@ -37,10 +41,12 @@ export default defineConfig({
             { label: 'Auto-ingest from Your Tools', slug: 'guides/connectors' },
             { label: 'Adding Content', slug: 'guides/adding-content' },
             { label: 'Correcting Memories', slug: 'guides/correcting-memories' },
-            { label: 'Autonomous Upkeep', slug: 'guides/autonomous-upkeep' },
+            { label: 'Indelibility & Determinism', slug: 'guides/indelibility-and-determinism' },
+            { label: 'Deterministic Consolidation', slug: 'guides/deterministic-consolidation' },
             { label: 'Graphs & Sensitivity Tiers', slug: 'guides/graphs-and-tiers' },
             { label: 'Keeping Your Cortex Safe', slug: 'guides/keeping-your-cortex-safe' },
             { label: 'Recovery', slug: 'guides/recovery' },
+            { label: 'Verify It Yourself', slug: 'guides/verify-it-yourself' },
           ],
         },
         {

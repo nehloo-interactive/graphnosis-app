@@ -1,0 +1,44 @@
+---
+import raw from '../../public/GRAPHNOSIS.md?raw';
+---
+
+<div class="gn-mdfile">
+  <div class="gn-mdfile-bar">
+    <span class="gn-mdfile-name">GRAPHNOSIS.md</span>
+    <div class="gn-mdfile-actions">
+      <button type="button" class="gn-mdfile-btn gn-mdfile-copy">Copy</button>
+      <a
+        class="gn-mdfile-btn gn-mdfile-download"
+        href="/GRAPHNOSIS.md"
+        download="GRAPHNOSIS.md"
+      >Download</a>
+    </div>
+  </div>
+  <pre class="gn-mdfile-body"><code>{raw}</code></pre>
+</div>
+
+<script>
+  document.querySelectorAll('.gn-mdfile-copy').forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      const card = btn.closest('.gn-mdfile');
+      const pre = card?.querySelector('pre');
+      const text = pre?.textContent ?? '';
+      try {
+        await navigator.clipboard.writeText(text);
+        const original = btn.textContent;
+        btn.textContent = 'Copied!';
+        btn.setAttribute('disabled', 'true');
+        setTimeout(() => {
+          btn.textContent = original;
+          btn.removeAttribute('disabled');
+        }, 1500);
+      } catch {
+        const original = btn.textContent;
+        btn.textContent = 'Copy failed';
+        setTimeout(() => {
+          btn.textContent = original;
+        }, 1500);
+      }
+    });
+  });
+</script>

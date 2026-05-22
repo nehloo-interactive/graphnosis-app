@@ -101,7 +101,7 @@ Devices that still have the old token will get `401 Unauthorized` on every reque
 
 ## Security model
 
-- **Encryption:** all bridge traffic is plain HTTP from Graphnosis's perspective. Encryption is provided by the network layer you choose — Tailscale (WireGuard, end-to-end) or HTTPS-via-reverse-proxy if you've set one up. **Plain LAN HTTP is unencrypted** — fine for "same Wi-Fi as me," not fine for "shared WeWork network."
+- **Encryption:** all bridge traffic is plain HTTP from Graphnosis' perspective. Encryption is provided by the network layer you choose — Tailscale (WireGuard, end-to-end) or HTTPS-via-reverse-proxy if you've set one up. **Plain LAN HTTP is unencrypted** — fine for "same Wi-Fi as me," not fine for "shared WeWork network."
 - **Authentication:** bearer token in the `Authorization` header. Requests without it return 401. Requests with the wrong token return 401.
 - **CORS:** the bridge sets `Access-Control-Allow-Origin: *` so browser-based clients can connect. Combined with the bearer auth, this is safe (origin doesn't auth anything; the token does).
 - **No public-internet exposure by default:** the bridge binds to `127.0.0.1` (loopback) until you explicitly choose `all-interfaces`. Even then, it's only reachable from your LAN unless you've explicitly forwarded the port at your router (don't).

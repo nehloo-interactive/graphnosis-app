@@ -99,7 +99,7 @@ The first sweep waits about 60 seconds after you unlock. A duplicate scan also r
 
 Everything **deterministic** above works with **no AI model installed** — this is the default, **Standalone** mode: Memory health, the duplicate scan and auto-merge, connection weaving, connection reinforcement, cross-engram linking, consolidation, and goal deadline tracking.
 
-Adding a **local LLM** — via [Ollama](https://ollama.com), the same setup the [correction flow](/guides/correcting-memories/) uses — unlocks the passes that need real language judgment:
+Adding a **local LLM** — via [Ollama](https://ollama.com), the same on-device model that also upgrades the [correction flow](/guides/correcting-memories/) — unlocks the passes that need real language judgment:
 
 - **Insights** — patterns, gaps, and opportunities across your engrams.
 - **Connection forming** — deeper conceptual links than the similarity-based passes can make.

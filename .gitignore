@@ -37,6 +37,12 @@ apps/desktop/src-tauri/resources/libonnxruntime.*.dylib
 # Astro build cache for the docs site.
 .astro/
 
+# Generated copy of the canonical repo-root GRAPHNOSIS.md, synced into the
+# docs site's public/ folder by apps/docs/scripts/sync-graphnosis-md.mjs
+# before every dev/build. The source of truth is /GRAPHNOSIS.md — this copy
+# must never be edited by hand or committed.
+apps/docs/public/GRAPHNOSIS.md
+
 # Marketing website — separate repo / deployment, not part of this monorepo.
 apps/marketing-web/
 

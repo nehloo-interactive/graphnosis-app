@@ -32,7 +32,7 @@ Every graph is assigned one of three tiers:
 <tbody>
 <tr><td style="white-space:nowrap"><code>public</code></td><td>Content may be surfaced to any AI client without restriction.</td></tr>
 <tr><td style="white-space:nowrap"><code>personal</code></td><td>Content is surfaced only when the AI explicitly asks for context (no proactive injection). Token cap applies.</td></tr>
-<tr><td style="white-space:nowrap"><code>sensitive</code></td><td>Content is never surfaced to AI clients automatically. Requires manual export or explicit user action.</td></tr>
+<tr><td style="white-space:nowrap"><code>sensitive</code></td><td>Excluded from AI recall by default. Surfaced only if you explicitly turn on "share with AI" for the engram — and even then, only under a tight cap.</td></tr>
 </tbody>
 </table>
 
@@ -44,21 +44,20 @@ Tiers are a hard cap, enforced by the sidecar before any content leaves the Cort
 
 **`personal` graphs** — chunks are only returned when `recall` is called explicitly. Proactive injection is disabled. The token cap limits how much context can be returned per conversation turn. Best for personal notes, journal entries, work summaries.
 
-**`sensitive` graphs** — the sidecar returns zero results for `recall` queries targeting this graph. The AI is never told why — it just gets no results. You can still search and review these memories in the Graphnosis UI. Best for health information, financial records, anything you want to keep entirely local.
+**`sensitive` graphs** — by default the sidecar returns zero results for `recall` queries targeting this graph; the AI is never told why, it just gets no results. If you deliberately turn on "share with AI" for a sensitive graph, recall returns at most a tight cap — 5 nodes / 500 tokens. You can always search and review these memories in the Graphnosis UI. Best for health information, financial records, anything you want to keep entirely local.
 
-## Per-graph token caps
+## How much a recall returns
 
-Each graph has a configurable maximum token budget per recall response. This prevents any single graph from consuming the entire context window of your AI.
+Recall is **budgeted per call**, not by a fixed per-tier number. When an AI client calls `recall`, it requests a token budget and a node count, and Graphnosis enforces a hard ceiling on both:
 
-Defaults:
+| Limit | Default | Hard cap |
+|---|---|---|
+| Tokens attached per recall | 2,000 | 8,000 |
+| Memory nodes attached per recall | 20 | 50 |
 
-| Tier | Default token cap |
-|------|-----------------|
-| `public` | 4000 tokens |
-| `personal` | 2000 tokens |
-| `sensitive` | 0 (AI access blocked) |
+That budget is shared across every engram the recall touches — Graphnosis fills it with the most relevant memories wherever they live, so no single engram can monopolize your AI's context window.
 
-You can override these in `policy.json`.
+Tiers shape this further: a `public` or `personal` engram can contribute up to the full budget, while a `sensitive` engram contributes **nothing** unless you have explicitly turned on "share with AI" for it — and even then it is held to a tight **5 nodes / 500 tokens**.
 
 ## Configuring policy.json
 
