@@ -1,5 +1,13 @@
 # Graphnosis App — Project Instructions
 
+## Use Graphnosis for memory
+
+This repo uses Graphnosis as its persistent memory. Follow the imported standing
+instructions — recall before answering; save decisions, to-dos, drafts, and open
+questions as you work:
+
+@GRAPHNOSIS.md
+
 ## Ship cadence: batch, don't drip
 
 **Do not commit, tag, or push after every individual fix.** A small bugfix is

@@ -1,0 +1,28 @@
+---
+title: A GRAPHNOSIS.md for Your AI
+description: A drop-in instructions file that tells any AI client to use Graphnosis as its memory — recall before answering, and save decisions, to-dos, drafts, and open questions automatically.
+---
+
+import GraphnosisMdFile from '../../../components/GraphnosisMdFile.astro';
+
+Connecting an AI client gives it *access* to Graphnosis. A **GRAPHNOSIS.md** file makes it actually *use* Graphnosis — consistently, without you having to ask each time.
+
+It is a short instructions file you drop into your project, or into your AI client's standing rules. It tells the assistant to do two things on its own:
+
+- **Recall before answering** — check Graphnosis for relevant past context first, instead of guessing.
+- **Remember proactively** — save decisions, to-dos, drafts, and the open questions it raises, as they come up.
+
+The payoff: your work, your follow-ups, and even the questions your AI asked mid-answer all end up saved and indexed in your Graphnosis memory — searchable later, from any client.
+
+## Where to put it
+
+- **Claude Code** — add `GRAPHNOSIS.md` to your repo and reference it from `CLAUDE.md`, or paste its contents straight in.
+- **Cursor** — add its contents to your Project Rules.
+- **Claude Cowork and other project-based clients** — drop `GRAPHNOSIS.md` into the project's files.
+- **Anywhere else** — paste it wherever your client accepts standing instructions or system context.
+
+## The file
+
+Copy it or download it, then drop it in. Tune it freely — trim what you don't need, or point it at specific engrams; it is a starting point, not a contract.
+
+<GraphnosisMdFile />

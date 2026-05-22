@@ -31,6 +31,27 @@ The full `.gai` files never reach the AI. The AI only ever sees the scoped subgr
 
 ---
 
+## Screenshots
+
+Unlock your Cortex with a passphrase or Touch ID, then work across four tabs — daily check-ins, the 3D engram, deterministic consolidation, and the optional non-deterministic layer.
+
+![Graphnosis — unlock screen](apps/docs/public/screenshots/01-unlock.png)
+
+| | |
+|:--:|:--:|
+| ![Check-in tab](apps/docs/public/screenshots/02-check-in.png)<br>**Check-in** — connect lonely memories | ![3D Engram tab](apps/docs/public/screenshots/03-3d-engram.png)<br>**3D Engram** — explore the whole graph |
+| ![Deterministic Consolidation tab](apps/docs/public/screenshots/04-deterministic-consolidation.png)<br>**Deterministic Consolidation** — vitality & memory health | ![Go Non-Deterministic tab](apps/docs/public/screenshots/05-go-non-deterministic.png)<br>**Go Non-Deterministic** — the optional AI layer |
+
+And the recall / remember loop, working live with an AI client:
+
+| | |
+|:--:|:--:|
+| ![Saving a memory from an AI client](apps/docs/public/screenshots/06-remember.png)<br>**remember** — your AI saves a memory; Graphnosis asks which engram first | ![Recalling a memory from an AI client](apps/docs/public/screenshots/07-recall.png)<br>**recall** — any client pulls it back from your encrypted graph |
+
+<sub>Claude is shown to demonstrate the MCP integration. Graphnosis is an independent product, not affiliated with or endorsed by Anthropic.</sub>
+
+---
+
 ## Architecture
 
 ```

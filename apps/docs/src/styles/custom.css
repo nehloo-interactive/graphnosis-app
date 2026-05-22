@@ -15,3 +15,136 @@
   --sl-color-gray-2: hsl(224, 12%, 88%);
   --sl-color-gray-3: hsl(224, 10%, 72%);
 }
+
+/* Keep inline code — MCP tool names, parameter names — on a single line.
+   The narrow reference-table columns otherwise break identifiers mid-word
+   (e.g. "correctio" / "n"), which reads badly. */
+:not(pre) > code {
+  white-space: nowrap;
+}
+
+/* Site-wide footer appended below Starlight's built-in page footer.
+   Small, dim, centered, with a subtle top border — matches the muted
+   gray-3 tone already used elsewhere. */
+.gn-site-footer {
+  margin-top: 3rem;
+  padding-top: 1.5rem;
+  border-top: 1px solid var(--sl-color-gray-5);
+  text-align: center;
+  font-size: var(--sl-text-xs);
+  color: var(--sl-color-gray-3);
+}
+
+.gn-site-footer p {
+  margin: 0.25rem 0;
+}
+
+.gn-site-footer-links {
+  margin-top: 0.5rem !important;
+}
+
+.gn-site-footer-links a {
+  color: var(--sl-color-gray-3);
+  text-decoration: none;
+}
+
+.gn-site-footer-links a:hover {
+  color: var(--sl-color-text-accent);
+  text-decoration: underline;
+}
+
+.gn-site-footer-links span {
+  margin: 0 0.4rem;
+  opacity: 0.5;
+}
+
+/* GRAPHNOSIS.md downloadable file card — a tidy code card with a header
+   bar (filename + Copy/Download buttons) over a scrollable monospace body. */
+.gn-mdfile {
+  margin: 1.5rem 0;
+  border: 1px solid var(--sl-color-gray-5);
+  border-radius: 0.5rem;
+  overflow: hidden;
+  background: var(--sl-color-gray-6, var(--sl-color-black));
+}
+
+.gn-mdfile-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding: 0.5rem 0.75rem;
+  background: var(--sl-color-gray-6, var(--sl-color-black));
+  border-bottom: 1px solid var(--sl-color-gray-5);
+}
+
+.gn-mdfile-name {
+  font-family: var(--sl-font-mono, monospace);
+  font-size: var(--sl-text-sm);
+  font-weight: 600;
+  color: var(--sl-color-white);
+}
+
+.gn-mdfile-actions {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.gn-mdfile-btn {
+  display: inline-block;
+  padding: 0.3rem 0.75rem;
+  border-radius: 0.375rem;
+  border: 1px solid var(--sl-color-gray-5);
+  background: var(--sl-color-gray-5);
+  color: var(--sl-color-white);
+  font-size: var(--sl-text-xs);
+  font-weight: 600;
+  line-height: 1.4;
+  cursor: pointer;
+  text-decoration: none;
+  transition: background-color 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+}
+
+.gn-mdfile-btn:hover {
+  background: var(--sl-color-text-accent);
+  border-color: var(--sl-color-text-accent);
+  color: var(--sl-color-black);
+  text-decoration: none;
+}
+
+.gn-mdfile-btn:disabled {
+  cursor: default;
+  opacity: 0.85;
+}
+
+.gn-mdfile-download {
+  background: var(--sl-color-text-accent);
+  border-color: var(--sl-color-text-accent);
+  /* !important is needed: the Download button is an <a>, and Starlight's
+     `.sl-markdown-content a` rule (higher specificity) otherwise paints its
+     text the same accent colour as this button's background — invisible. */
+  color: var(--sl-color-black) !important;
+}
+
+.gn-mdfile-download:hover {
+  color: var(--sl-color-black) !important;
+}
+
+.gn-mdfile-body {
+  margin: 0 !important;
+  max-height: 420px;
+  overflow: auto;
+  border-radius: 0 !important;
+  font-size: var(--sl-text-xs);
+}
+
+.gn-mdfile-body code {
+  font-family: var(--sl-font-mono, monospace);
+  white-space: pre;
+}
+
+/* Breathing room below the last entry in the left sidebar (Changelog) —
+   otherwise it sits flush against the bottom edge. */
+.sidebar-content {
+  padding-bottom: 1.5rem;
+}

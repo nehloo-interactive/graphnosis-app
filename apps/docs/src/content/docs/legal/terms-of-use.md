@@ -39,6 +39,10 @@ You agree not to:
 - Reverse-engineer any portions of the Software for purposes not permitted by the license.
 - Use the Software to ingest, store, process, or recall content that you do not have the right to use.
 
+### 2.4 Trademarks
+
+Graphnosis™, the Graphnosis logo, and "Nehloo Interactive" are trademarks of Nehloo Interactive LLC. The source license (FSL-1.1) grants you rights in the **source code**; it does not grant any right to use these names or logos in a way likely to cause confusion, to suggest endorsement by or affiliation with Nehloo Interactive, or to name a forked or derivative product. Nominative use — truthfully stating that your project is built on, compatible with, or derived from Graphnosis — is permitted.
+
 ---
 
 ## 3. Early access and alpha status
@@ -143,7 +147,7 @@ If you choose to store your Cortex on a cloud service (iCloud, Dropbox, Google D
 
 ### 8.4 Ollama and local LLMs
 
-The correction feature requires Ollama, a separate third-party application. Your use of Ollama and any models you download is governed by Ollama's terms and the respective model licenses. Nehloo Interactive does not distribute Ollama or any LLM weights.
+Several optional features — AI-generated insights, the synthesised `develop` / `predict` output, and the LLM-assisted correction path — can use a local large language model run via Ollama, a separate third-party application. These features are off by default, and Ollama is never required: the core app, including the deterministic `correct` flow, works fully without it. Your use of Ollama and any models you download is governed by Ollama's terms and the respective model licenses. Nehloo Interactive does not distribute Ollama or any LLM weights.
 
 ---
 

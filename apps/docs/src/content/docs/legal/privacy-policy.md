@@ -36,7 +36,10 @@ Nehloo Interactive does not hold a copy of your passphrase, your recovery phrase
 ### 3.2 What the Cortex folder contains
 
 - `.gai` files — encrypted serialized knowledge graphs
+- `neural-network.gnn` — the encrypted Neural Network prediction overlay, present only if you enable the Neural Network (kept separate from the deterministic `.gai` graph)
+- An encrypted cross-engram connection store
 - An encrypted op-log (append-only event log used for multi-device sync)
+- A settings file holding your app and engram preferences, including the configuration of any connectors you set up
 - A model cache directory — see §4.1 below
 - Socket files (`.sock`) — ephemeral, local process communication only
 
@@ -48,11 +51,19 @@ On macOS, after you first unlock your Cortex, the passphrase is stored in the **
 
 ## 4. The only network activity Graphnosis initiates
 
+Graphnosis never transmits your Cortex, your memories, or any personal data to Nehloo Interactive or anyone else. The app makes only the two kinds of outbound request described below — and the second happens **only if you set it up**.
+
 ### 4.1 Embedding model download (one-time)
 
-On first use, Graphnosis downloads the **BGE-small-en-v1.5** embedding model (~35 MB) from Hugging Face Hub to your local model cache. After that, all inference runs offline on your device. No personal data is sent during this download — only a standard HTTP request for a public model file. You can pre-stage the model manually to avoid this network call entirely.
+On first use, Graphnosis downloads the **BGE-small-en-v1.5** embedding model from Hugging Face Hub to your local model cache. After that, all inference runs offline on your device. No personal data is sent during this download — only a standard HTTP request for a public model file. You can pre-stage the model manually to avoid this network call entirely.
 
-**No other outbound network connections are made by Graphnosis itself.** The app does not check for updates automatically, does not send error reports, and does not ping any Nehloo Interactive endpoint.
+### 4.2 Connectors you set up
+
+Graphnosis can pull content into your Cortex from external services — RSS feeds and similar — through **connectors**. A connector fetches content *from* a service you choose, on a schedule you set. These connections happen **only with your permission**: a connector never runs unless you have explicitly created and configured it. If you set up no connectors, Graphnosis makes no such connections. A connector only ever *downloads into* your Cortex — it never sends your Cortex anywhere.
+
+### 4.3 What does not happen
+
+Apart from the one-time model download and any connectors you configure, Graphnosis makes no outbound network connections. It does not check for updates automatically, does not send error reports, does not transmit telemetry or analytics, and does not ping any Nehloo Interactive endpoint. The Graphnosis documentation is **bundled inside the app** — adding it to your Cortex is a fully offline, local operation that contacts no server.
 
 ---
 
@@ -100,16 +111,16 @@ Every graph in your Cortex has a sensitivity tier. These limits are enforced by 
 |---|---|
 | `public` | Up to 50 nodes / 8,000 tokens per recall |
 | `personal` | Up to 50 nodes / 8,000 tokens per recall |
-| `sensitive` | Zero — nothing from this graph is ever sent to an AI client |
+| `sensitive` | Excluded from AI recall by default. If you explicitly share one, a tight cap applies — at most 5 nodes / 500 tokens per recall. |
 
-Sensitive-tier graphs are fully blocked from AI access. The AI receives no results and no indication of what exists in that graph.
+By default, a `sensitive` graph is fully blocked from AI access — the AI receives no results and no indication that the graph exists. Sharing one with an AI client is a deliberate, per-graph choice you make in the app; even then, the tight cap above always applies. Nothing from a `sensitive` graph reaches an AI client unless you have opted that specific graph in.
 
 ### 5.4 You decide what goes in and what tier it gets
 
 Graphnosis gives you explicit control at every stage:
 - **You choose what to ingest.** Nothing is ingested automatically. Graphnosis only processes what you explicitly add.
 - **You assign sensitivity tiers to graphs.** You decide what gets protected.
-- **You can forget at any time.** The `forget` tool permanently removes a source and all derived nodes from your Cortex. There is no recycle bin, no soft delete.
+- **You can forget at any time.** The `forget` tool removes a source and all its derived memories from recall. It is a *soft delete* — the removal is recorded in the op-log and reversible from the app's Recover flow, so an accidental forget can be undone. The original content remains in your encrypted Cortex on your device, no longer surfaced to you or any AI client; deleting the Cortex folder erases it entirely.
 
 ---
 
@@ -139,12 +150,12 @@ That said, the security of your Cortex also depends on:
 
 We recommend using a strong, unique passphrase and storing your 24-word recovery phrase securely offline.
 
-### 8.1 Programmatic access — both libraries are open source
+### 8.1 Programmatic access — the libraries are source-available
 
-Both libraries that underpin Graphnosis are open source under the [Functional Source License (FSL-1.1)](https://fsl.software):
+The two libraries that underpin Graphnosis are open to read and audit:
 
-- **`@nehloo/graphnosis`** — defines the `.gai` binary graph format; parse and query engram graphs
-- **`@nehloo-interactive/graphnosis-secure-sync`** — the encryption layer; the `GNAPP\x01` format used to wrap and protect `.gai` files on disk
+- **`@nehloo/graphnosis`** — defines the `.gai` binary graph format; parse and query engram graphs. Open source under Apache-2.0.
+- **`@nehloo-interactive/graphnosis-secure-sync`** — the encryption layer; the `GNAPP\x01` format used to wrap and protect `.gai` files on disk. Source-available under the [Functional Source License (FSL-1.1)](https://fsl.software).
 
 This is intentional. We believe your data should never be locked behind proprietary tooling that only we control. You can inspect, export, migrate, or build on top of your own Cortex using these libraries — and you can audit exactly how your data is encrypted.
 
@@ -177,13 +188,35 @@ The Cortex folder is **portable by design**. The encryption salt is embedded ins
 
 ---
 
-## 9. Changes to this policy
+## 9. Regional privacy rights — GDPR, CCPA, and similar
+
+Graphnosis is built so that **Nehloo Interactive is neither a data controller nor a data processor of your Cortex.** Your memories, files, embeddings, and op-log exist only on your device, encrypted; Nehloo Interactive never receives, stores, or processes them (see §2 and §4). You are the sole controller of your own data.
+
+Because of this architecture, the rights granted by the EU/UK General Data Protection Regulation (GDPR), the California Consumer Privacy Act as amended (CCPA/CPRA), and comparable regimes are satisfied **structurally** — by the design of the software — rather than by request to us:
+
+- **Access & portability.** Your data is local, and stored in documented, open formats (see [File Formats](/reference/file-formats/)). You can read and export it yourself at any time, using the open-source libraries and your passphrase — no request to anyone is required.
+- **Rectification.** You can edit, correct, or supersede any memory directly in the app.
+- **Erasure.** You can delete any source, engram, or your entire Cortex yourself. Nehloo Interactive holds no copy to erase on your behalf.
+- **Restriction & objection.** Nehloo Interactive performs no processing of your personal data that you could restrict or object to.
+
+For the purposes of the CCPA/CPRA, Nehloo Interactive does **not** "sell" or "share" personal information, and runs no targeted advertising, because it never receives your personal information in the first place.
+
+Two clarifications:
+
+1. **AI clients are separate controllers.** When you connect a third-party AI client, the AI provider you choose is an independent controller of the memory excerpts you send it through that client. Their handling of that data is governed by their own privacy policy, not this one (see §5).
+2. **Scope.** This section concerns the Graphnosis desktop application. The Graphnosis website and documentation site are operated separately; any analytics or cookies they use are disclosed there.
+
+If you believe a privacy regulation nonetheless requires action from Nehloo Interactive, contact us at **privacy@graphnosis.com**.
+
+---
+
+## 10. Changes to this policy
 
 We may update this Privacy Policy from time to time. When we do, we will update the "Last updated" date at the top. Material changes will be noted in the release notes accompanying app updates. Continued use of Graphnosis after a policy change constitutes acceptance of the new terms.
 
 ---
 
-## 10. Contact
+## 11. Contact
 
 For privacy questions or concerns:
 

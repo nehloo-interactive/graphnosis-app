@@ -83,7 +83,7 @@ See [Graphs & Sensitivity Tiers](/guides/graphs-and-tiers) for setup instruction
 
 ## Open-source encryption — what it means for you
 
-Both libraries that handle your data are open source under the [Functional Source License (FSL-1.1)](https://fsl.software): `@nehloo/graphnosis` (the `.gai` graph format) and `@nehloo-interactive/graphnosis-secure-sync` (the encryption layer). You can read the source code, verify how encryption works, and use the libraries directly to access your own Cortex programmatically — for exports, custom tooling, or building integrations.
+Both libraries that handle your data are open to read and audit: `@nehloo/graphnosis` (the `.gai` graph format) under Apache-2.0, and `@nehloo-interactive/graphnosis-secure-sync` (the encryption layer) under the [Functional Source License (FSL-1.1)](https://fsl.software). You can read the source code, verify how encryption works, and use the libraries directly to access your own Cortex programmatically — for exports, custom tooling, or building integrations.
 
 The open-source nature of the encryption libraries does not weaken your security. The protection is your passphrase, not the secrecy of the algorithm. Anyone who has your Cortex files but not your passphrase still cannot read anything.
 
