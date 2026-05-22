@@ -11,7 +11,7 @@ Conventions: **Added** = new features, **Changed** = behavior or UX shifts, **Fi
 
 ---
 
-## Unreleased — Deterministic Consolidation
+## v0.9 — Deterministic Consolidation
 
 Theme: **a memory that strengthens, never weakens.** The third tab is reborn as **Deterministic Consolidation** — an engine that makes every memory you add permanent and ever more retrievable. Connections strengthen the more you use them, engrams link to one another, and a daily consolidation pass integrates the whole Cortex. Nothing here ever weakens a correct memory.
 
@@ -21,16 +21,28 @@ Theme: **a memory that strengthens, never weakens.** The third tab is reborn as 
 - **Cross-engram connections.** Graphnosis now links memories *across* engrams — via shared named entities or high semantic similarity — so a query in one engram can surface what you know in another. Stored encrypted alongside your Cortex.
 - **Consolidation.** A daily deep pass: transitive inference (if A→B and B→C, infer A→C), community detection, and redundancy cleanup (dead edges left dangling to already-deleted memories). All additive or tidying — a connection between two live memories is never removed.
 - **Memory health.** The tab's headline is now a retrieval-quality report — connectivity, integration, confidence, coherence, reinforcement activity, and a saturation guard — instead of a raw size-and-density score.
+- **Graphnosis Neural Network (opt-in).** A new **Go Non-Deterministic** tab adds an optional, off-by-default neural network that predicts likely-missing connections between your memories. Predictions live in a separate encrypted overlay (`neural-network.gnn`) — never mixed into your deterministic graph — and surface only as clearly-labelled, one-click-removable suggestions. That tab is also the new home for the optional local-LLM setup and AI-generated insights.
+- **Add the Graphnosis docs to your Cortex.** On unlock, Graphnosis offers to load its own documentation into a dedicated `graphnosis-docs` engram, so your AI can answer questions about Graphnosis itself. The docs are bundled inside the app — adding them is fully offline, with no network access — and refresh when you update the app.
 
 ### Changed
 
 - **The third tab is now "Deterministic Consolidation"** (was "Autonomous upkeep").
 - **Memories no longer decay from disuse.** Anything you deliberately add — a file, URL, clip, or saved conversation — keeps its confidence indefinitely. The only things that lower a memory's standing are explicit correctness events (contradiction, supersession, your own correction), all audited and reversible.
 - **Recalled memories are reinforced.** Appearing in a recall result now gives a memory a small confidence boost — the strengthening half of the old decay/reinforce pair, now active.
+- **The local LLM is now opt-in.** Graphnosis no longer uses a local LLM just because one happens to be running. Insights and the richer `develop` / `predict` synthesis stay off until you explicitly enable the local LLM in the Go Non-Deterministic tab — detection is never consent.
+- **`correct` no longer needs an AI model.** The correction tool is deterministic by default — it supersedes the closest-matching memory with your fix, reproducibly, with no model required. The optional Neural Network widens its candidate set and the optional local LLM upgrades it to multi-edit diffs, but neither is required. With the local LLM off, `develop` / `predict` / `insights` also degrade gracefully — returning the deterministic recalled context with a clear note instead of failing quietly.
+- **Vitality is a ratio-based score.** The 0–100 vitality reading is now computed from connectivity, confidence, recent activity, and coherence, so it ranges meaningfully across a Cortex's life instead of pinning near the top.
+
+### Fixed
+
+- **Cortexes that wouldn't open.** A crashed embedding worker could stall the sidecar so a Cortex never finished unlocking. The worker pool now routes around a dead worker and recovers.
+- **Your AI client keeps working across Cortex switches.** The MCP connection now uses a fixed per-user socket path, so a client you configured once (Claude Desktop, Cursor, …) keeps working after you switch or reopen Cortexes.
+- **A moved, renamed, or deleted Cortex folder no longer crashes the app.** If the folder Graphnosis remembered is gone, the app reports it cleanly instead of failing to start.
+- **UI polish.** The lock-screen footer no longer breaks awkwardly, the top-left logo is centered, the Settings → Connectors section renders cleanly, and the main tab strip no longer clips the first tab.
 
 ### Migrations
 
-None. Existing Cortexes gain the cross-engram connection store on first run. No memory is altered on upgrade.
+None. Existing Cortexes gain the cross-engram connection store on first run, and may be offered the bundled Graphnosis documentation; the neural network and local LLM both default to off until you opt in. No memory is altered on upgrade.
 
 ---
 
@@ -40,7 +52,7 @@ Theme: **a Cortex that maintains itself.** Graphnosis now keeps your memory tidy
 
 ### Added
 
-- **Autonomous self-healing.** A background duplicate scan merges memories that are *provably* the same — byte-identical text, or one fully contained within a longer one. Merges are automatic, conservative (a merge never loses information), and reversible (soft-delete, recorded in the op-log). The Autonomous tab's Self-healing section shows the running count. Full detail in [Autonomous Upkeep](/guides/autonomous-upkeep/).
+- **Autonomous self-healing.** A background duplicate scan merges memories that are *provably* the same — byte-identical text, or one fully contained within a longer one. Merges are automatic, conservative (a merge never loses information), and reversible (soft-delete, recorded in the op-log). The Autonomous tab's Self-healing section shows the running count. Full detail in [Deterministic Consolidation](/guides/deterministic-consolidation/).
 - **"Needs your review" in Check-in.** Near-duplicate pairs that *aren't* provably identical — a differing number, an added negation, a partial overlap — surface in the Check-in tab with both memories side by side and a one-click **Same memory — merge** / **Keep both** decision. Graphnosis heals what's certain; you decide what's ambiguous.
 - **Automatic connection weaving.** Memories that are clearly related but distinct get an automatic "related" connection, so isolated memories aren't left floating. Conservative — already-dense memories are skipped, and typed/directional relationships are still left to you in the Check-in deck.
 - **Post-ingest scan.** Ingesting a file now triggers a duplicate scan shortly after it completes, so new content is checked promptly instead of waiting for the next scheduled pass.

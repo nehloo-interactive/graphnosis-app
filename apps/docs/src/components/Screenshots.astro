@@ -1,0 +1,66 @@
+---
+const tabs = [
+  {
+    src: '/screenshots/02-check-in.png',
+    alt: 'Graphnosis Check-in tab',
+    caption: 'Check-in — wire up lonely memories in seconds.',
+  },
+  {
+    src: '/screenshots/03-3d-engram.png',
+    alt: 'Graphnosis 3D Engram tab',
+    caption: '3D Engram — every memory and connection, explorable.',
+  },
+  {
+    src: '/screenshots/04-deterministic-consolidation.png',
+    alt: 'Graphnosis Deterministic Consolidation tab',
+    caption: 'Deterministic Consolidation — vitality and memory health.',
+  },
+  {
+    src: '/screenshots/05-go-non-deterministic.png',
+    alt: 'Graphnosis Go Non-Deterministic tab',
+    caption: 'Go Non-Deterministic — the optional neural-network and local-AI layer.',
+  },
+];
+---
+
+<section id="screenshots" class="py-24 px-4 sm:px-6">
+  <div class="max-w-6xl mx-auto">
+    <div class="text-center mb-12">
+      <span class="block text-xs font-bold tracking-widest uppercase text-[#67e8f9] mb-4">The macOS app</span>
+      <h2 class="text-3xl sm:text-4xl lg:text-5xl font-black text-white mb-4">A look inside Graphnosis</h2>
+      <p class="text-[#c4c6d6] max-w-2xl mx-auto leading-relaxed">
+        Unlock your Cortex, then move across four tabs — daily check-ins, the 3D engram, deterministic consolidation, and the optional non-deterministic layer.
+      </p>
+    </div>
+
+    <figure class="max-w-3xl mx-auto mb-10">
+      <img
+        src="/screenshots/01-unlock.png"
+        alt="Graphnosis unlock screen"
+        width="1600"
+        height="1002"
+        loading="lazy"
+        class="w-full"
+      />
+      <figcaption class="text-sm text-[#c4c6d6] text-center mt-3">
+        Unlock with your passphrase or Touch ID — no account, no server.
+      </figcaption>
+    </figure>
+
+    <div class="grid grid-cols-1 md:grid-cols-2 gap-8">
+      {tabs.map((s) => (
+        <figure>
+          <img
+            src={s.src}
+            alt={s.alt}
+            width="1600"
+            height="1002"
+            loading="lazy"
+            class="w-full"
+          />
+          <figcaption class="text-sm text-[#c4c6d6] text-center mt-3">{s.caption}</figcaption>
+        </figure>
+      ))}
+    </div>
+  </div>
+</section>

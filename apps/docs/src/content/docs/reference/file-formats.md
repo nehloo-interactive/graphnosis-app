@@ -41,6 +41,50 @@ The encrypted payload is a MessagePack-serialized array of source and chunk reco
 When importing a `.gai` file into a different Cortex, you must also provide the passphrase (or recovery phrase) of the exporting Cortex. The import UI prompts for this.
 :::
 
+## `.gnn` — Neural Network Prediction Overlay
+
+The **Graphnosis Neural Network (GNN)** is an opt-in, off-by-default link predictor. When you enable it from the **Go Non-Deterministic** tab, it trains a small model on your engrams and proposes connections it judges *likely real but not yet recorded*.
+
+Those predictions are **never written into the deterministic `.gai` graph.** They live in a separate overlay file, one per Cortex:
+
+```
+<cortex>/neural-network.gnn
+```
+
+### Why a separate file
+
+Core recall traverses only `.gai`, so the same query always returns the same result — the graph is deterministic. The GNN is *non-deterministic*: two training runs can differ. Isolating its output in its own file guarantees:
+
+- **The deterministic graph stays pure.** No prediction can silently change a recall answer.
+- **Undo is trivial.** "Remove all predicted connections" simply discards this file; the `.gai` graph is never touched.
+- **Predictions are always labelled.** They surface only in the clearly-marked recall-enrichment section and the 3D Engram's toggleable prediction layer (dashed edges) — never inside a deterministic answer.
+
+### Structure
+
+`.gnn` is encrypted with the Cortex data key using XChaCha20-Poly1305 — the same primitive as `.gai`, because it records node ids. Decrypted, it is a small versioned JSON envelope:
+
+```json
+{
+  "version": 1,
+  "edges": [
+    {
+      "id": "a1b2c3d4e5f6a7b8",
+      "graphId": "work",
+      "from": "<node id>",
+      "to": "<node id>",
+      "score": 0.87,
+      "createdAt": 1716290000000
+    }
+  ]
+}
+```
+
+Each entry is one predicted edge: the engram it belongs to, the two endpoint node ids, the model's confidence (`score`, 0–1), and when it was predicted.
+
+:::note
+Deleting `neural-network.gnn` is safe — it only removes the prediction overlay. Your memories and their real connections live in the `.gai` graph and are unaffected; the app simply re-creates the overlay the next time the neural network runs (if it is still enabled).
+:::
+
 ## Op-log
 
 The op-log is an append-only event log stored in `cortex.db` (SQLite, encrypted). Every mutation to the Cortex is recorded as an op-log event before it is applied.
@@ -74,7 +118,7 @@ The `payload` field is also encrypted. The schema of each payload type is define
 
 ## Model cache
 
-The local embedding model is stored in the `models/` subdirectory of your Cortex folder (unless overridden with `GRAPHNOSIS_EMBED_MODEL_DIR`).
+The local embedding model is stored in the `models/` subdirectory of your Cortex folder (unless the embedding cache directory is overridden with `GRAPHNOSIS_EMBED_CACHE`).
 
 ```
 <cortex>/models/

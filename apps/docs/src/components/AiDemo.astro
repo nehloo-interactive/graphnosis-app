@@ -1,0 +1,50 @@
+---
+const shots = [
+  {
+    src: '/screenshots/06-remember.png',
+    alt: 'An AI client saving a new memory into Graphnosis',
+    caption: 'remember — your AI saves a new memory; Graphnosis asks which engram before anything is written.',
+    w: 1600,
+    h: 1052,
+  },
+  {
+    src: '/screenshots/07-recall.png',
+    alt: 'An AI client recalling a memory from Graphnosis',
+    caption: 'recall — later, any AI client pulls it straight from your encrypted graph and answers grounded in it.',
+    w: 1600,
+    h: 1040,
+  },
+];
+---
+
+<section id="ai-demo" class="py-24 px-4 sm:px-6 bg-[#1c1c27]">
+  <div class="max-w-6xl mx-auto">
+    <div class="text-center mb-12">
+      <span class="block text-xs font-bold tracking-widest uppercase text-[#67e8f9] mb-4">The recall / remember loop</span>
+      <h2 class="text-3xl sm:text-4xl lg:text-5xl font-black text-white mb-4">Watch your AI use it</h2>
+      <p class="text-[#c4c6d6] max-w-2xl mx-auto leading-relaxed">
+        Any MCP-aware AI client can read from and write to your Cortex. Tell it to remember something — Graphnosis asks which engram before it writes — and it's there the next time you ask, in that client or any other.
+      </p>
+    </div>
+
+    <div class="grid grid-cols-1 md:grid-cols-2 gap-8">
+      {shots.map((s) => (
+        <figure>
+          <img
+            src={s.src}
+            alt={s.alt}
+            width={s.w}
+            height={s.h}
+            loading="lazy"
+            class="w-full rounded-lg border border-[#2a2a3d]"
+          />
+          <figcaption class="text-sm text-[#c4c6d6] text-center mt-3">{s.caption}</figcaption>
+        </figure>
+      ))}
+    </div>
+
+    <p class="text-xs text-[#555570] text-center mt-10 max-w-2xl mx-auto leading-relaxed">
+      Claude is shown here to demonstrate the integration. Graphnosis is an independent product — not affiliated with, or endorsed by, Anthropic.
+    </p>
+  </div>
+</section>

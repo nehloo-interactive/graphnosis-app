@@ -1,0 +1,18 @@
+---
+import Default from '@astrojs/starlight/components/Footer.astro';
+const year = new Date().getFullYear();
+---
+
+<Default />
+
+<div class="gn-site-footer">
+  <p>&copy; {year} Nehloo Interactive LLC</p>
+  <p>Graphnosis&trade; is built by Nehloo Interactive.</p>
+  <p class="gn-site-footer-links">
+    <a href="https://github.com/nehloo-interactive/graphnosis-app" target="_blank" rel="noopener noreferrer">GitHub</a>
+    <span aria-hidden="true">&middot;</span>
+    <a href="/legal/privacy-policy/">Privacy</a>
+    <span aria-hidden="true">&middot;</span>
+    <a href="/legal/terms-of-use/">Terms</a>
+  </p>
+</div>

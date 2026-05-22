@@ -126,7 +126,7 @@ Install the **Graphnosis** extension from the VS Code Marketplace (`nehloo-inter
 - Adds the `@graphnosis` **chat participant** for explicit queries (`@graphnosis what did I decide about auth?`) on VS Code 1.96+
 - Shows a **"Save to memory"** status bar shortcut after large Copilot code insertions, so you can capture architectural decisions back into your Cortex with one click
 
-After installing, open VS Code Settings, search `graphnosis`, and paste your bearer token into **Bearer Token**. The extension connects to Graphnosis's always-on local bridge (`127.0.0.1:3457`) — no mobile access setup required.
+After installing, open VS Code Settings, search `graphnosis`, and paste your bearer token into **Bearer Token**. The extension connects to Graphnosis' always-on local bridge (`127.0.0.1:3457`) — no mobile access setup required.
 
 Get your token from the Graphnosis app: **Settings → Mobile & Remote Access → "Set up mobile access…" → Step 2 → Copy token**.
 
@@ -169,7 +169,7 @@ The same `graphnosis` MCP server entry works in every MCP-native client — only
 The config snippet itself stays the same as the Claude Desktop / Claude Code / Cursor examples above — `command`, `args: ["--mcp-stdio"]`, `env: { GRAPHNOSIS_CORTEX_PATH }`. Reload the client after editing.
 
 **Not yet MCP-native (need an adapter, not built yet):**
-- **ChatGPT** (Desktop / Web / Mobile) — OpenAI has committed to MCP but rollout is partial. Today, the path is a Custom GPT Action (OpenAPI 3 spec served by Graphnosis's HTTP bridge). Tracked for a future release.
+- **ChatGPT** (Desktop / Web / Mobile) — OpenAI has committed to MCP but rollout is partial. Today, the path is a Custom GPT Action (OpenAPI 3 spec served by Graphnosis' HTTP bridge). Tracked for a future release.
 - **Gemini / Bard** — Google's own function-calling format. No MCP.
 
 ## Generic MCP clients (stdio transport)
@@ -228,6 +228,19 @@ See the full [MCP Tools reference](/reference/mcp-tools/) for parameter details.
 When sensitivity allows it, Graphnosis can inject context proactively — before the AI even calls `recall`. The sidecar listens for the conversation's first user message, runs a fast semantic search, and prepends the top results as a system context block. This requires no AI cooperation; it works at the MCP transport layer.
 
 If your client does not support proactive injection, the AI will use `recall` as a tool call in the first turn. Either way, your memory gets attached.
+
+## Add the Graphnosis docs to your Cortex
+
+A connected AI client knows whatever is in your Cortex — but by default it knows nothing about Graphnosis itself. To fix that, the first time you unlock a Cortex the app offers to ingest the Graphnosis documentation into a dedicated `graphnosis-docs` engram. Accept, and your AI can answer "how do snapshots work?" or "what does the `correct` tool do?" straight from recall, using the same docs you are reading now.
+
+The documentation ships **bundled inside the app** — adding it is a fully offline operation with no network call. The `graphnosis-docs` engram lives in your Cortex like any other; it just is not built from your own content.
+
+It also stays current on its own. After an app update brings newer docs, the engram auto-refreshes to match. Two things it always respects:
+
+- If you **declined** the offer, the app does not ask again or ingest anything.
+- If you **deleted** the `graphnosis-docs` engram, it stays gone — the auto-refresh will not silently recreate it.
+
+So you can have a Graphnosis-aware AI with one click, or opt out entirely — your choice either way.
 
 ## Beyond AI clients: auto-ingest from your existing tools
 

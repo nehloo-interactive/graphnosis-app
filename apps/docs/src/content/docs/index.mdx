@@ -3,7 +3,7 @@ title: Graphnosis
 description: Private second memory for any AI. Local-first, encrypted, MCP-native.
 template: splash
 hero:
-  tagline: The hippocampus your AI has always been missing.
+  tagline: Your local encrypted memory, indexed for deterministic recall.
   image:
     html: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 80 80" width="80" height="80" fill="none"><circle cx="40" cy="40" r="38" stroke="#7c6af5" stroke-width="3"/><circle cx="40" cy="40" r="10" fill="#7c6af5" opacity="0.8"/><line x1="40" y1="10" x2="40" y2="30" stroke="#7c6af5" stroke-width="2"/><line x1="40" y1="50" x2="40" y2="70" stroke="#7c6af5" stroke-width="2"/><line x1="10" y1="40" x2="30" y2="40" stroke="#7c6af5" stroke-width="2"/><line x1="50" y1="40" x2="70" y2="40" stroke="#7c6af5" stroke-width="2"/><circle cx="40" cy="12" r="3" fill="#7c6af5"/><circle cx="40" cy="68" r="3" fill="#7c6af5"/><circle cx="12" cy="40" r="3" fill="#7c6af5"/><circle cx="68" cy="40" r="3" fill="#7c6af5"/></svg>'
   actions:
@@ -24,9 +24,9 @@ import { Card, CardGrid } from '@astrojs/starlight/components';
   <Card title="Your AI's hippocampus" icon="star">
     AI has always had the reasoning layer — the prefrontal cortex. What it has always lacked
     is a hippocampus: a system that encodes your knowledge as compact memory traces (engrams),
-    stores them privately, and retrieves only what's relevant when you need it.
-    Graphnosis is that missing piece. (Why the seahorse logo? "Hippocampus" is Greek for
-    seahorse — the brain region was named after it in 1564.)
+    stores them locally and encrypted, and retrieves only what's relevant — deterministically,
+    the same answer every time. Graphnosis is that missing piece. (Why the seahorse logo?
+    "Hippocampus" is Greek for seahorse — the brain region was named after it in 1564.)
   </Card>
   <Card title="Stored as engrams, not files" icon="document">
     Ingested content is encoded into binary engrams in your local Cortex — not stored
@@ -60,7 +60,7 @@ import { Card, CardGrid } from '@astrojs/starlight/components';
 | AI client is open but you haven't started a conversation | No |
 | You're chatting and recall returns nothing relevant | No |
 | Recall fires and returns results | Only the recalled excerpt, only to your AI provider |
-| Sensitive-tier graphs | Never — blocked entirely |
+| Sensitive-tier engrams | Blocked by default; only a tight cap if you explicitly share one |
 
 Your Cortex is passive. It does not broadcast, sync in the background, or contact any server. Content moves only when you put it to use — and only the piece relevant to what you're asking, delivered to the AI provider you've chosen to use.
 

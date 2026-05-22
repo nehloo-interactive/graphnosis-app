@@ -99,6 +99,11 @@
               </ul>
             </div>
           </div>
+          <div class="border-t border-[#2a2a3d] pt-4 mt-4">
+            <p class="text-[#c4c6d6] text-base leading-relaxed">
+              Switch on the optional <span class="text-[#a78bfa] font-semibold">Graphnosis Neural Network</span> and a third layer of predicted edges joins the same nodes — connections the deterministic passes never recorded, kept apart in a separate <code class="text-[#a78bfa] font-mono">.gnn</code> overlay. The dual-graph becomes a triple-graph. And because recall, consolidation, and cross-engram links all federate across every engram you've granted, the whole Cortex behaves as one multi-graph system — the structure your AI reasons over.
+            </p>
+          </div>
         </article>
 
       </div>
@@ -130,15 +135,23 @@
     <!-- MCP tools -->
     <div class="mb-12">
       <h3 class="text-lg font-bold text-white mb-2">What AI clients can do with Graphnosis</h3>
-      <p class="text-[#c4c6d6] text-sm mb-6">These are the tools your AI uses. You can see every call in the audit log.</p>
+      <p class="text-[#c4c6d6] text-sm mb-8">All eleven tools your AI can use — the deterministic set works out of the box; the opt-in set adds a local LLM. Every call is visible in the audit log.</p>
+
+      <!-- Deterministic — the default -->
+      <div class="mb-4">
+        <p class="text-xs font-mono tracking-widest uppercase text-[#67e8f9] mb-1">Deterministic · the default</p>
+        <p class="text-sm text-[#c4c6d6]">Reproducible and auditable — identical input, identical result, no AI model required.</p>
+      </div>
       <div class="grid grid-cols-1 sm:grid-cols-3 gap-4">
         {[
-          { name: 'recall', desc: 'Surface relevant context for the current prompt', slug: 'recall' },
-          { name: 'remind', desc: 'Alias for recall — responds to "remind me about X"', slug: 'recall' },
-          { name: 'remember', desc: 'Save a new fact or note to your graph', slug: 'remember' },
-          { name: 'correct', desc: 'Propose a change — previewed, user-approved before write', slug: 'correct' },
-          { name: 'forget', desc: 'Soft-delete a source and all nodes derived from it', slug: 'forget' },
-          { name: 'stats', desc: 'Inspect node counts and graph state', slug: 'stats' },
+          { name: 'recall', desc: 'Surface relevant context for the current prompt' },
+          { name: 'remind', desc: 'Alias for recall — responds to "remind me about X"' },
+          { name: 'remember', desc: 'Save a new fact or note to your graph' },
+          { name: 'correct', desc: 'Propose a change — previewed, user-approved before write' },
+          { name: 'forget', desc: 'Soft-delete a source and all nodes derived from it' },
+          { name: 'stats', desc: 'Inspect node counts and graph state' },
+          { name: 'apply', desc: 'Commit a reviewed correction diff to the graph' },
+          { name: 'vitality', desc: 'Score how alive and well-connected your memory is' },
         ].map((tool) => (
           <a href="/reference/mcp-tools" class="bg-[#13131a] border border-[#2a2a3d] hover:border-[#67e8f9]/40 rounded-lg p-5 flex flex-col gap-3 transition-colors group">
             <code class="text-[#67e8f9] text-lg font-mono font-bold">{tool.name}</code>
@@ -146,8 +159,27 @@
           </a>
         ))}
       </div>
-      <p class="text-base text-[#a0a0b8] mt-6">
-        The <code class="text-[#67e8f9] font-mono">correct</code> tool generates a diff preview parsed by a local LLM — nothing is written until you approve it in the app. <code class="text-[#67e8f9] font-mono">forget</code> is a soft delete; nodes are recoverable from the op-log.
+
+      <!-- Non-deterministic — opt-in -->
+      <div class="mb-4 mt-10">
+        <p class="text-xs font-mono tracking-widest uppercase text-[#a78bfa] mb-1">Non-deterministic · opt-in</p>
+        <p class="text-sm text-[#c4c6d6]">Off by default. Retrieval stays deterministic; an optional local LLM then produces the prose, so the wording varies run to run.</p>
+      </div>
+      <div class="grid grid-cols-1 sm:grid-cols-3 gap-4">
+        {[
+          { name: 'develop', desc: 'Draft a strategic plan grounded in your memory' },
+          { name: 'predict', desc: 'Assess risks and opportunities before you act' },
+          { name: 'insights', desc: 'Surface patterns, gaps, and conflicts across your memory' },
+        ].map((tool) => (
+          <a href="/reference/mcp-tools" class="bg-[#13131a] border border-[#2a2a3d] hover:border-[#a78bfa]/40 rounded-lg p-5 flex flex-col gap-3 transition-colors group">
+            <code class="text-[#a78bfa] text-lg font-mono font-bold">{tool.name}</code>
+            <p class="text-[#c4c6d6] text-base leading-relaxed">{tool.desc}</p>
+          </a>
+        ))}
+      </div>
+
+      <p class="text-base text-[#a0a0b8] mt-8">
+        <code class="text-[#67e8f9] font-mono">correct</code> is deterministic by default — it returns a diff for review, and nothing is written until you approve it in the app; the optional Neural Network or local LLM can widen it. <code class="text-[#67e8f9] font-mono">forget</code> is a soft delete — nodes stay recoverable from the op-log.
       </p>
     </div>
 
