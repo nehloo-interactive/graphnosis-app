@@ -15,6 +15,8 @@ import os from 'node:os';
 import { policy } from '@nehloo-interactive/graphnosis-secure-sync';
 import { GraphnosisHost } from './host.js';
 import { GraphnosisImpl } from './graphnosis-impl.js';
+import { proposeCorrection, applyCorrection } from './correction.js';
+import { BUNDLED_DOCS } from './docs-content.generated.js';
 
 async function main(): Promise<void> {
   const cortexDir = process.env.GRAPHNOSIS_CORTEX ?? path.join(os.tmpdir(), `gn-smoke-${process.pid}`);
@@ -119,6 +121,56 @@ ferry to Naxos. The food in Mykonos was overrated.`;
   console.log(recall.prompt);
   console.log('--- end context ---');
 
+  // --- deterministic correction (no LLM) -----------------------------------
+  // `correct` must work with no Local LLM configured: it deterministically
+  // supersedes the closest-matching memory with the correction text. The core
+  // guarantee is reproducibility — identical input yields an identical diff.
+  log('correct-deterministic', {});
+  const correctionText = 'Actually, we went to Greece in September 2020, not August.';
+  const c1 = await proposeCorrection({ host, correction: correctionText, graphIdHint: 'personal' });
+  const c2 = await proposeCorrection({ host, correction: correctionText, graphIdHint: 'personal' });
+  if (c1.mode !== 'deterministic') throw new Error(`FAIL: correct should be deterministic with no LLM, got mode '${c1.mode}'`);
+  if (JSON.stringify(c1.diff) !== JSON.stringify(c2.diff)) {
+    throw new Error('FAIL: deterministic correction is not reproducible — diffs differ between runs');
+  }
+  const edit0 = c1.diff.edits[0];
+  if (c1.diff.edits.length !== 1 || !edit0 || edit0.kind !== 'supersede') {
+    throw new Error(`FAIL: expected exactly one supersede edit, got ${JSON.stringify(c1.diff.edits)}`);
+  }
+  if (edit0.content !== correctionText) {
+    throw new Error('FAIL: supersede edit should carry the verbatim correction text');
+  }
+  if (c1.targetGraphId !== 'personal') {
+    throw new Error(`FAIL: correction should target 'personal', got ${String(c1.targetGraphId)}`);
+  }
+  await applyCorrection({ host, graphId: 'personal', diff: c1.diff });
+  log('correct-deterministic.applied', { supersededNode: edit0.nodeId, reproducible: true });
+
+  // --- GNN-expanded correction (Neural Network on) -------------------------
+  // With a GNN expander supplying a high-confidence predicted neighbour, the
+  // candidate set expands and the supersede target is re-ranked to it — this
+  // is what makes `correct` genuinely GNN-influenced (and non-deterministic).
+  log('correct-gnn-expanded', {});
+  const gnnResult = await proposeCorrection({
+    host,
+    correction: correctionText,
+    graphIdHint: 'personal',
+    expandWithGnn: async () => [
+      { graphId: 'personal', nodeId: 'gnn-predicted-node', text: 'a GNN-surfaced memory', gnnScore: 0.99 },
+    ],
+  });
+  if (gnnResult.mode !== 'gnn-expanded') {
+    throw new Error(`FAIL: expected mode 'gnn-expanded', got '${gnnResult.mode}'`);
+  }
+  const gnnEdit = gnnResult.diff.edits[0];
+  if (!gnnEdit || gnnEdit.kind !== 'supersede' || gnnEdit.nodeId !== 'gnn-predicted-node') {
+    throw new Error(`FAIL: a high-confidence GNN candidate should become the supersede target, got ${JSON.stringify(gnnResult.diff.edits)}`);
+  }
+  if (!gnnResult.candidates.some(c => c.viaGnn)) {
+    throw new Error('FAIL: GNN-expanded candidate set should include a viaGnn candidate');
+  }
+  log('correct-gnn-expanded.ok', { supersededNode: gnnEdit.nodeId, candidates: gnnResult.candidates.length });
+
   log('encrypted-on-disk-check', {});
   const aikgPath = path.join(cortexDir, 'graphs', 'personal.gai');
   const raw = await fs.readFile(aikgPath);
@@ -167,6 +219,22 @@ ferry to Naxos. The food in Mykonos was overrated.`;
     throw new Error(`FAIL: sensitive-tier token cap not enforced — got ${secretsAudit.tokensIncluded} tokens (max 500)`);
   }
   log('sensitive-tier-cap.ok', { nodes: secretsAudit.nodesIncluded, tokens: secretsAudit.tokensIncluded });
+
+  // --- bundled docs --------------------------------------------------------
+  // The Graphnosis docs ship inside the app — scripts/generate-docs-content.mjs
+  // regenerates docs-content.generated.ts from apps/docs on every build. The
+  // docs-ingest feature reads this bundle directly (no network), so it must be
+  // present and well-formed.
+  log('bundled-docs', {});
+  if (!Array.isArray(BUNDLED_DOCS) || BUNDLED_DOCS.length === 0) {
+    throw new Error('FAIL: BUNDLED_DOCS is empty — scripts/generate-docs-content.mjs did not run');
+  }
+  for (const d of BUNDLED_DOCS) {
+    if (!d.slug || typeof d.markdown !== 'string' || d.markdown.length === 0) {
+      throw new Error(`FAIL: malformed bundled doc — ${JSON.stringify(d).slice(0, 120)}`);
+    }
+  }
+  log('bundled-docs.ok', { pages: BUNDLED_DOCS.length });
 }
 
 function log(phase: string, data: Record<string, unknown>): void {

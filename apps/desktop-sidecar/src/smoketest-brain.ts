@@ -67,8 +67,10 @@ The timeline is tight. Past projects slipped by about two months each.`;
   const broadcast = (f: RawFrame): void => { frames.push(f); };
   const brain = new BrainEngine(host, null, broadcast);
 
-  // 1 — VitalityScorer returns a 0-100 score.
-  const vitality = await brain.getVitalityReport();
+  // 1 — VitalityScorer returns a 0-100 score. computeVitality() always
+  // computes (unlike the UI-facing getVitalityReport(), which withholds a
+  // number until the first full scan has run).
+  const vitality = await brain.computeVitality();
   assert(
     typeof vitality.overall === 'number' && vitality.overall >= 0 && vitality.overall <= 100,
     `vitality.overall must be 0-100, got ${vitality.overall}`,

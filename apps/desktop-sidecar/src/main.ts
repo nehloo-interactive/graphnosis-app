@@ -446,7 +446,9 @@ async function main(): Promise<void> {
 
   const mcpDeps = {
     host,
-    llm: () => llm,
+    // The local LLM is opt-in — `correct` and any other LLM-backed MCP tool
+    // sees null until the user enables it, even when Ollama is reachable.
+    llm: () => (host.getSettings().ai.llmEnabled === true ? llm : null),
     defaultGraphId: () => env.defaultGraph,
     pendingDiffs,
     broadcastRaw,
