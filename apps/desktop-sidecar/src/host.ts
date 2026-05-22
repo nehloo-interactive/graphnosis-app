@@ -631,6 +631,14 @@ export class GraphnosisHost {
    * Returns the snapshot directory path.
    */
   async snapshotGraphs(label: string): Promise<string> {
+    // Flush any dirty in-memory graphs first so the snapshot captures the
+    // CURRENT state. snapshotGraphs only copies the on-disk `.gai` files, so
+    // without this an engram mutated since its last save (the normal case
+    // right after an ingest) would be snapshotted stale — or skipped entirely
+    // if it has never been persisted. save() is a no-op for clean graphs.
+    for (const graphId of this.graphs.keys()) {
+      await this.save(graphId);
+    }
     const safe = `${label.replace(/[^a-zA-Z0-9_-]/g, '_')}-${Date.now()}`;
     const graphsDir = path.join(this.opts.cortexDir, 'graphs');
     const destDir = path.join(this.opts.cortexDir, 'snapshots', safe);
@@ -993,6 +1001,18 @@ export class GraphnosisHost {
 
   async createGraph(graphId: GraphId): Promise<void> {
     if (this.graphs.has(graphId)) throw new Error(`Graph ${graphId} already loaded`);
+    // Case-insensitive guard: macOS and Windows filesystems are
+    // case-insensitive, so `<graphId>.gai` for `MyNotes` and `mynotes` would
+    // be the SAME file on disk — silent overwrite. Reject a graphId that
+    // differs from an existing engram only in case.
+    const lower = graphId.toLowerCase();
+    for (const existing of this.graphs.keys()) {
+      if (existing.toLowerCase() === lower) {
+        throw new Error(
+          `An engram "${existing}" already exists — engram names are case-insensitive.`,
+        );
+      }
+    }
     const handle = await this.opts.adapter.create(graphId);
     const cache = new EmbeddingCache({ path: this.cachePath(graphId), key: this.key, salt: this.salt });
     this.graphs.set(graphId, {

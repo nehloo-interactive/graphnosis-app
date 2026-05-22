@@ -91,6 +91,21 @@ const pending = new Map<number, PendingEmbed>();
 let counter = 0;
 let nextWorker = 0;
 
+// ── Pool state ───────────────────────────────────────────────────────────────
+//
+// `workers` has one slot per pool index; a slot holds `undefined` while it is
+// dead or not yet spawned. Embeds are only ever dispatched to a live slot
+// (see workerEmbed) — a dead worker must never block a caller.
+const workers: (ChildProcess | undefined)[] =
+  new Array<ChildProcess | undefined>(WORKER_COUNT).fill(undefined);
+/** Consecutive unexpected exits per slot. A slot that keeps dying is given up
+ *  on after MAX_SLOT_FAILURES so it can't spin in an endless respawn loop —
+ *  embedding simply continues on the surviving worker(s). */
+const slotFailures = new Array<number>(WORKER_COUNT).fill(0);
+const MAX_SLOT_FAILURES = 3;
+/** Next slot index for the initial, one-worker-at-a-time pool fill. */
+let initialFillNext = 0;
+
 // ── Child process lifecycle ──────────────────────────────────────────────────
 
 function spawnWorker(idx: number): ChildProcess {
@@ -125,6 +140,8 @@ function spawnWorker(idx: number): ChildProcess {
   child.on('message', (msg: { type?: string; id?: number; vec?: number[]; error?: string }) => {
     if (msg.type === 'ready') {
       console.error(`[local-embed] worker-${idx} ready`);
+      slotFailures[idx] = 0; // healthy again — reset the failure counter
+      spawnNextInitial();    // chain the next slot of the initial pool fill
       return;
     }
     const id = msg.id;
@@ -149,49 +166,108 @@ function spawnWorker(idx: number): ChildProcess {
     // code === null when killed by signal (expected on terminateEmbedWorker).
     if (code === 0 || signal === 'SIGTERM') return;
     const reason = signal ? `signal ${signal}` : `exit code ${code}`;
-    console.error(`[local-embed] worker-${idx} exited unexpectedly (${reason}), respawning`);
-    // Reject all in-flight requests routed to this child.
+    // Reject every in-flight request routed to this child so its callers
+    // fail fast instead of hanging on a response that will never arrive.
     for (const [id, p] of pending) {
       if (p.workerIdx === idx) {
         pending.delete(id);
         p.reject(new Error(`embed-worker-${idx} crashed (${reason})`));
       }
     }
+    workers[idx] = undefined;
+    const failures = (slotFailures[idx] ?? 0) + 1;
+    slotFailures[idx] = failures;
+    if (failures > MAX_SLOT_FAILURES) {
+      console.error(
+        `[local-embed] worker-${idx} exited ${failures}x (${reason}) — giving up ` +
+        `on this slot; embedding continues on the remaining worker(s).`,
+      );
+      // Still advance the initial fill so a doomed slot can't stall the rest
+      // of the pool from ever spawning.
+      spawnNextInitial();
+      return;
+    }
+    console.error(`[local-embed] worker-${idx} exited unexpectedly (${reason}), respawning`);
     workers[idx] = spawnWorker(idx);
   });
 
   return child;
 }
 
-// Spawn the pool in BOTH modes. Compiled mode re-execs the parent binary
-// with GRAPHNOSIS_WORKER_ROLE=embed; the router at src/index.ts ensures the
-// worker process imports only embed-worker.ts (not this file). Dev mode
-// uses traditional fork() against embed-worker.js.
-const workers: ChildProcess[] = Array.from(
-  { length: WORKER_COUNT },
-  (_, i) => spawnWorker(i),
-);
+/**
+ * Spawn the next not-yet-started slot of the initial pool — one worker at a
+ * time. Called once at boot for slot 0, then again each time a slot first
+ * settles (reaches 'ready', or is given up on after repeated failures).
+ *
+ * Serializing the initial spawns is deliberate: in a `bun build --compile`
+ * binary, fastembed's native tokenizer addon (`@anush008/tokenizers-*`) is
+ * extracted from the embedded virtual filesystem on first require. Two worker
+ * processes doing that concurrently raced, and one died at import with
+ * "Cannot require module @anush008/tokenizers-darwin-arm64" — which then, via
+ * the leaked-promise bug fixed alongside this, hung the whole sidecar at boot.
+ */
+function spawnNextInitial(): void {
+  if (initialFillNext >= WORKER_COUNT) return;
+  const idx = initialFillNext;
+  initialFillNext += 1;
+  workers[idx] = spawnWorker(idx);
+}
+
+// Kick off the initial fill — slot 0 now; each later slot is spawned once its
+// predecessor reaches 'ready' (or is given up on). Compiled mode re-execs the
+// parent binary with GRAPHNOSIS_WORKER_ROLE=embed (the router at src/index.ts
+// keeps the worker importing only embed-worker.ts); dev mode forks embed-worker.js.
+spawnNextInitial();
 console.error(
-  `[local-embed] spawned ${WORKER_COUNT} embed worker(s) ` +
+  `[local-embed] embed pool: ${WORKER_COUNT} worker(s), spawned sequentially ` +
   `(${IS_COMPILED_BIN ? 'compiled — re-exec of parent binary' : 'dev — fork of embed-worker.js'})`,
 );
 
 // ── Public API ───────────────────────────────────────────────────────────────
 
 /**
- * Embed a single text string. Dispatches to the next child process in
- * round-robin order; returns a Promise that resolves with the 384-dim vector
- * once the child completes inference. The parent event loop is never blocked.
+ * Embed a single text string. Dispatches round-robin to the next LIVE child
+ * process, skipping any slot that is dead or not yet spawned; returns a
+ * Promise that resolves with the 384-dim vector once the child responds.
+ *
+ * Resilience: a dead worker is never sent a task, and a `send()` that fails
+ * anyway (worker died in the race window) rejects the request promise at
+ * once. Previously a failed send left the `pending` entry unsettled forever,
+ * which hung every caller — and, at boot, the entire sidecar startup.
  */
 export const workerEmbed: EmbedFn = (text: string): Promise<number[]> => {
   const id = ++counter;
-  const idx = nextWorker % WORKER_COUNT;
-  nextWorker = (nextWorker + 1) % WORKER_COUNT;
-  const child = workers[idx];
-  if (!child) return Promise.reject(new Error(`embed pool not initialised (idx ${idx})`));
-  child.send({ id, text });
+  // Round-robin to the next live slot — try every slot once before failing.
+  let child: ChildProcess | undefined;
+  let idx = -1;
+  for (let tries = 0; tries < WORKER_COUNT; tries++) {
+    const i = nextWorker % WORKER_COUNT;
+    nextWorker = (nextWorker + 1) % WORKER_COUNT;
+    const candidate = workers[i];
+    if (candidate && candidate.connected) {
+      child = candidate;
+      idx = i;
+      break;
+    }
+  }
+  if (!child) {
+    return Promise.reject(new Error('no live embed worker available'));
+  }
+  const liveChild = child;
   return new Promise<number[]>((resolve, reject) => {
     pending.set(id, { resolve, reject, workerIdx: idx });
+    // The callback fires with an error if the IPC channel is already gone
+    // (worker died between the liveness check above and this send) — reject
+    // the pending entry at once instead of leaving it to hang forever.
+    liveChild.send({ id, text }, (err) => {
+      if (err) {
+        const p = pending.get(id);
+        if (p) {
+          pending.delete(id);
+          p.reject(err);
+        }
+      }
+    });
   });
 };
 
@@ -200,12 +276,16 @@ export const workerEmbed: EmbedFn = (text: string): Promise<number[]> => {
  * so they don't linger as orphan processes after the main process exits.
  */
 export async function terminateEmbedWorker(): Promise<void> {
+  // Stop the initial fill from spawning anything further during shutdown.
+  initialFillNext = WORKER_COUNT;
   await Promise.allSettled(
-    workers.map(
-      (child) => new Promise<void>((resolve) => {
-        child.once('exit', () => resolve());
-        child.kill('SIGTERM');
-      }),
+    workers.map((child) =>
+      child === undefined
+        ? Promise.resolve()
+        : new Promise<void>((resolve) => {
+            child.once('exit', () => resolve());
+            child.kill('SIGTERM');
+          }),
     ),
   );
 }

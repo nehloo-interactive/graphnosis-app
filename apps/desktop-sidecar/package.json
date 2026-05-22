@@ -11,7 +11,7 @@
     "graphnosis-mcp-relay": "./dist/mcp-relay.js"
   },
   "scripts": {
-    "build": "tsc -p tsconfig.json",
+    "build": "node scripts/generate-docs-content.mjs && tsc -p tsconfig.json",
     "dev": "node --watch --enable-source-maps --loader ts-node/esm src/index.ts",
     "start": "node dist/index.js",
     "smoke": "node --enable-source-maps dist/smoketest.js",

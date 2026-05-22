@@ -8,16 +8,20 @@ export interface VitalityReport {
 
 /**
  * Computes a 0-100 "vitality" score for each engram and an overall cortex
- * score. Higher = more knowledge, better connectivity, recent activity, fewer
- * duplicate pairs. Cached with a 5-minute TTL so callers can poll freely.
+ * score. Higher = a healthier, better-maintained knowledge graph. Cached with
+ * a 5-minute TTL so callers can poll freely.
  *
- * Formula per graph (each component 0-1, then scaled to 0-100):
- *   nodeScore      = clamp(activeNodes / 50) × 0.30
- *   edgeScore      = clamp(edgeDensity / 3)  × 0.30  (density = edges / nodes)
- *   activityScore  = clamp(recentOps  / 20)  × 0.20  (ops in last 7 days)
- *   avgConfScore   = avg(active node confidence) × 0.20
- *   penalty        = min(duplicatePairs × 0.05, 0.30)
- *   graphScore     = round(clamp(sum − penalty) × 100)
+ * Every component is a RATIO that naturally spans 0-1, so the score genuinely
+ * ranges across a cortex's lifecycle instead of saturating near 100 for any
+ * non-trivial graph. Raw node / edge counts are deliberately NOT rewarded —
+ * a 30-node well-woven cortex can out-score a 3000-node bag of orphans.
+ *
+ * Formula per graph (weights sum to 1.0):
+ *   connectivity = connectedActiveNodes / activeNodes        × 0.40
+ *   confidence   = clamp((avgConfidence − 0.35) / 0.6)       × 0.25
+ *   activity     = clamp(recentOps / 40)  (ops in last 7d)   × 0.20
+ *   coherence    = clamp(1 − pendingDuplicatePairs × 0.05)   × 0.15
+ *   graphScore   = round(clamp(weighted sum) × 100)
  *
  * overall = active-node–weighted average across graphs.
  */
@@ -56,6 +60,10 @@ export class VitalityScorer {
       // op-log unreadable — treat as zero activity
     }
 
+    // Unresolved duplicate pairs are a cortex-wide count, so the coherence
+    // term is the same for every engram.
+    const coherence = clamp(1 - pendingDuplicatePairs * 0.05);
+
     for (const graphId of this.host.listGraphs()) {
       const nodes = this.host.listNodes(graphId);
       const now = Date.now();
@@ -64,22 +72,40 @@ export class VitalityScorer {
       );
       const activeCount = active.length;
 
+      // An empty engram has no vitality to measure.
+      if (activeCount === 0) {
+        byGraph[graphId] = 0;
+        continue;
+      }
+
+      // Connectivity — fraction of active memories woven into the graph.
+      // The core signal: isolated orphans drag it down, a dense web lifts it.
       const edges = this.host.listEdges(graphId);
-      const edgeCount = edges.directed.length + edges.undirected.length;
+      const linked = new Set<string>();
+      for (const e of edges.directed) { linked.add(e.from); linked.add(e.to); }
+      for (const e of edges.undirected) { linked.add(e.a); linked.add(e.b); }
+      let connectedActive = 0;
+      for (const n of active) {
+        if (linked.has(n.id)) connectedActive += 1;
+      }
+      const connectivity = connectedActive / activeCount;
 
+      // Confidence — average active-node confidence, stretched so the band
+      // human-added memories actually occupy (≈0.35–0.95) spans 0–1.
+      const avgConf = active.reduce((s, n) => s + n.confidence, 0) / activeCount;
+      const confidence = clamp((avgConf - 0.35) / 0.6);
+
+      // Activity — op-log events in the last 7 days; a maintained cortex
+      // scores high, a long-neglected one low.
       const recentOps = recentOpsByGraph[graphId] ?? 0;
+      const activity = clamp(recentOps / 40);
 
-      const nodeScore = clamp(activeCount / 50) * 0.30;
-      const edgeDensity = activeCount > 0 ? edgeCount / activeCount : 0;
-      const edgeScore = clamp(edgeDensity / 3) * 0.30;
-      const activityScore = clamp(recentOps / 20) * 0.20;
-      const avgConf = activeCount > 0
-        ? active.reduce((s, n) => s + n.confidence, 0) / activeCount
-        : 0;
-      const avgConfScore = clamp(avgConf) * 0.20;
-
-      const penalty = Math.min(pendingDuplicatePairs * 0.05, 0.30);
-      const raw = clamp(nodeScore + edgeScore + activityScore + avgConfScore - penalty);
+      const raw = clamp(
+        connectivity * 0.40 +
+        confidence * 0.25 +
+        activity * 0.20 +
+        coherence * 0.15,
+      );
       byGraph[graphId] = Math.round(raw * 100);
 
       totalWeight += activeCount;

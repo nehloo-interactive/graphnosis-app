@@ -88,7 +88,7 @@ interface GnnGraphContext {
    *  model is never trained to merely confirm its own past guesses. */
   positivePairs: Array<[string, string]>;
   /** The engram's existing gnn-predicted edges, for the re-prune pass. */
-  predictedEdges: Array<{ id: string; from: string; to: string }>;
+  predictedEdges: Array<{ from: string; to: string }>;
   embs: Map<string, number[]>;
   entities: Map<string, Set<string>>;
 }
@@ -859,10 +859,12 @@ export class ReinforcementEngine {
         const model = new GnnLinkPredictor();
         model.train(trainingSet);
         trained = true;
-        // Phase 3 — per engram: re-prune stale predictions, then add new ones.
+        // Phase 3 — per engram: recompute the overlay slice from scratch
+        // (replace, never accumulate) and tally the delta vs. the prior set.
         for (const ctx of contexts) {
-          edgesPruned += this.prunePredictedEdges(ctx, model);
-          edgesAdded += this.predictNewEdges(ctx, model);
+          const delta = this.predictNewEdges(ctx, model);
+          edgesAdded += delta.added;
+          edgesPruned += delta.pruned;
         }
         this.sessionGnnEdges += edgesAdded;
         this.lastNeuralNetwork = { at: Date.now(), edgesAdded, edgesPruned };
@@ -915,15 +917,16 @@ export class ReinforcementEngine {
     for (const e of edges.directed) {
       if (!STRUCTURAL_DIRECTED_TYPES.has(e.type)) consider(e.from, e.to);
     }
-    // Predicted edges come from the GNN overlay — never the .gai graph. They
-    // are added to edgeSet so candidate generation will not re-propose a
-    // pair the overlay already predicts, but NOT to `neighbors` or
-    // `positivePairs`: features and training data stay ground-truth only.
-    const predictedEdges: Array<{ id: string; from: string; to: string }> = [];
+    // The GNN overlay's own predictions for this engram — used to compute the
+    // added/pruned delta against this run's fresh set. They are deliberately
+    // NOT added to edgeSet, neighbors, or positivePairs: every run re-scores
+    // every candidate pair from scratch so "Run again" recomputes the overlay
+    // rather than piling fresh edges on top of the old set. Features and
+    // training data stay ground-truth only regardless.
+    const predictedEdges: Array<{ from: string; to: string }> = [];
     for (const pe of this.gnnEdges ?? []) {
       if (pe.graphId !== graphId || !idSet.has(pe.from) || !idSet.has(pe.to)) continue;
-      predictedEdges.push({ id: pe.id, from: pe.from, to: pe.to });
-      edgeSet.add(unorderedKey(pe.from, pe.to));
+      predictedEdges.push({ from: pe.from, to: pe.to });
     }
     return { graphId, nodeIds, neighbors, edgeSet, positivePairs, predictedEdges, embs, entities };
   }
@@ -954,26 +957,17 @@ export class ReinforcementEngine {
     };
   }
 
-  /** Re-score this engram's own predicted edges against the freshly trained
-   *  model and drop the ones that no longer clear the threshold — the
-   *  self-correcting half of the GNN. Mutates the in-memory overlay. */
-  private prunePredictedEdges(ctx: GnnGraphContext, model: GnnLinkPredictor): number {
-    const staleIds = new Set<string>();
-    for (const pe of ctx.predictedEdges) {
-      if (model.score(this.gnnFeatures(ctx, pe.from, pe.to)) < GNN_SCORE_THRESHOLD) {
-        staleIds.add(pe.id);
-      }
-    }
-    if (staleIds.size === 0 || !this.gnnEdges) return 0;
-    const before = this.gnnEdges.length;
-    this.gnnEdges = this.gnnEdges.filter((e) => !staleIds.has(e.id));
-    this.gnnDirty = true;
-    return before - this.gnnEdges.length;
-  }
-
-  /** Score 2-hop candidate non-edges and append the highest-confidence ones
-   *  to the GNN overlay — never to the .gai graph. Mutates the overlay. */
-  private predictNewEdges(ctx: GnnGraphContext, model: GnnLinkPredictor): number {
+  /** Re-score every 2-hop candidate non-edge for this engram against the
+   *  freshly trained model and REPLACE the engram's slice of the GNN overlay
+   *  with the fresh top-N. Each run recomputes from scratch, so repeated runs
+   *  refresh the overlay instead of accumulating. Self-correction is folded
+   *  in: a previously-predicted pair that no longer makes the cut is dropped.
+   *  Returns the delta vs. the prior set. Mutates the overlay, never the
+   *  .gai graph. */
+  private predictNewEdges(
+    ctx: GnnGraphContext,
+    model: GnnLinkPredictor,
+  ): { added: number; pruned: number } {
     const candidates: Array<[string, string]> = [];
     const candSeen = new Set<string>();
     for (const u of ctx.nodeIds) {
@@ -993,13 +987,23 @@ export class ReinforcementEngine {
         }
       }
     }
-    if (candidates.length === 0 || !this.gnnEdges) return 0;
+    if (!this.gnnEdges) return { added: 0, pruned: 0 };
     const scored = candidates
       .map(([a, b]) => ({ a, b, score: model.score(this.gnnFeatures(ctx, a, b)) }))
       .filter((c) => c.score >= GNN_SCORE_THRESHOLD)
       .sort((x, y) => y.score - x.score)
       .slice(0, MAX_GNN_EDGES_PER_RUN);
-    if (scored.length === 0) return 0;
+    // Delta vs. this engram's previous overlay slice.
+    const oldPairs = new Set(ctx.predictedEdges.map((p) => unorderedKey(p.from, p.to)));
+    const newPairs = new Set(scored.map((c) => unorderedKey(c.a, c.b)));
+    let added = 0;
+    for (const k of newPairs) if (!oldPairs.has(k)) added += 1;
+    let pruned = 0;
+    for (const k of oldPairs) if (!newPairs.has(k)) pruned += 1;
+    if (added === 0 && pruned === 0) return { added: 0, pruned: 0 };
+    // Replace this engram's slice — drop its old predictions, leave every
+    // other engram's untouched, append the freshly scored set.
+    this.gnnEdges = this.gnnEdges.filter((e) => e.graphId !== ctx.graphId);
     for (const c of scored) {
       this.gnnEdges.push(makePredictedEdge({
         graphId: ctx.graphId,
@@ -1010,7 +1014,7 @@ export class ReinforcementEngine {
       }));
     }
     this.gnnDirty = true;
-    return scored.length;
+    return { added, pruned };
   }
 
   /** Discard the entire GNN overlay — the live undo for the neural network.
