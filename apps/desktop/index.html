@@ -952,9 +952,11 @@
       .g-deck-onboarding-step-body { font-size: 13px; color: rgba(237,237,237,0.75); line-height: 1.5; }
       .g-deck-onboarding-step-body strong { color: #ededed; }
       .g-deck-onboarding-bottom { display: flex; flex-direction: column; gap: 8px; }
-      .g-deck-onboarding-cmds { display: flex; flex-direction: column; gap: 8px; }
-      .g-deck-cmd-group { display: flex; flex-wrap: wrap; gap: 5px; align-items: center; }
-      .g-deck-cmd-grouplabel { font-size: 10px; text-transform: uppercase; letter-spacing: .06em; color: rgba(237,237,237,0.4); margin-right: 3px; }
+      .g-deck-onboarding-cmds { display: flex; flex-direction: column; gap: 12px; }
+      .g-deck-cmd-group { display: flex; flex-direction: column; gap: 6px; }
+      .g-deck-cmd-grouplabel { font-size: 10px; text-transform: uppercase; letter-spacing: .06em; color: rgba(237,237,237,0.4); }
+      .g-deck-cmd-chips { display: flex; flex-wrap: wrap; gap: 5px; }
+      .g-deck-cmd-note { font-size: 11px; line-height: 1.5; color: rgba(237,237,237,0.4); margin: 10px 0 0; max-width: 560px; }
       .g-deck-cmd-chip {
         font-family: monospace; font-size: 14px;
         padding: 4px 10px; border-radius: 5px;
@@ -1027,6 +1029,8 @@
         align-items: center;
       }
       .modal-footer .filler { flex: 1; color: var(--fg-dim); font-size: 15px; line-height: 1.45; max-width: 340px; }
+      /* The engram-create dialog's privacy note is a longer paragraph — render it a notch smaller. */
+      #gw-note { font-size: 13px; line-height: 1.4; }
       /* Pinned name/id block between the scrolling template list and the footer */
       .modal-sticky-fields {
         padding: 14px 20px 10px;
@@ -1728,7 +1732,10 @@
       .lb-hero-text { flex: 1; min-width: 0; position: relative; z-index: 1; }
       .lb-hero-text h3 { margin: 0 0 4px; font-size: 17px; }
       .lb-hero-text .btn-sm { margin-top: 10px; }
-      .lb-section { margin-bottom: 22px; }
+      .lb-section {
+        background: var(--bg-elev); border: 1px solid var(--border);
+        border-radius: 10px; padding: 14px 16px; margin-bottom: 12px;
+      }
       .lb-section-title {
         font-size: 13px; font-weight: 700; margin: 0 0 2px;
         text-transform: uppercase; letter-spacing: 0.04em; color: var(--fg);
@@ -1855,9 +1862,20 @@
       /* Check-in dashboard → "Needs your review": near-duplicate pairs the
          autonomous brain could not safely merge on its own. The pair cards
          reuse the .lb-dup-card family. */
-      .g-needs-review { margin-bottom: 18px; }
+      .g-needs-review { margin-bottom: 18px; position: relative; }
       .g-needs-review.hidden { display: none; }
-      .g-needs-review-title { font-size: 13px; font-weight: 600; margin: 0 0 2px; }
+      .g-needs-review-title { font-size: 13px; font-weight: 600; margin: 0 0 2px; padding-right: 24px; }
+      /* Dismiss (×) — top-right; hides the list until consolidation surfaces
+         a new pair, or until the next app launch. */
+      .g-needs-review-dismiss {
+        position: absolute; top: -2px; right: 0;
+        width: 20px; height: 20px; padding: 0;
+        border: none; background: transparent;
+        color: var(--fg-dim); font-size: 17px; line-height: 1;
+        cursor: pointer; border-radius: 4px;
+        display: flex; align-items: center; justify-content: center;
+      }
+      .g-needs-review-dismiss:hover { color: var(--fg); background: var(--border); }
       .g-needs-review-sub {
         font-size: 12px; color: var(--fg-dim); margin: 0 0 10px; line-height: 1.45;
       }
@@ -2170,6 +2188,9 @@
         border-bottom: 1px solid var(--border);
         margin-bottom: 10px;
         flex-shrink: 0;
+        /* Inset the strip so the first tab isn't flush against the window
+           edge — otherwise the "Check-in" label looks clipped at the left. */
+        padding-left: 12px;
       }
       .g-tab {
         /* appearance:none strips the macOS native push-button rendering —
@@ -3950,6 +3971,12 @@
         user-select: text;
       }
       .g-detail-conn-section { margin-top: 12px; }
+      .g-detail-conn-section-predicted {
+        border-left: 2px solid rgba(163,230,53,0.55);
+        padding-left: 8px; margin-left: -2px;
+        background: rgba(163,230,53,0.05); border-radius: 4px;
+      }
+      .g-detail-conn-section-predicted .g-detail-conn-title { color: #a3e635; }
       .g-detail-conn-title {
         font-size: 13px;
         text-transform: uppercase;
@@ -4418,7 +4445,7 @@
           </div>
           <p class="unlock-footer">
             &copy; 2026 Nehloo Interactive LLC. All rights reserved.<br>
-            <span style="opacity: 0.7;">Graphnosis is a local, private, encrypted memory system. Read the docs at <a href="https://graphnosis.com" target="_blank" style="color: #fff; text-decoration: underline; opacity: 0.8;">graphnosis.com</a></span>
+            <span style="opacity: 0.7;">Graphnosis is a local, private, encrypted memory system.<br>Read the docs at <a href="https://graphnosis.com" target="_blank" style="color: #fff; text-decoration: underline; opacity: 0.8;">graphnosis.com</a></span>
           </p>
         </div>
       </section>
@@ -4453,6 +4480,25 @@
             </div>
           </div>
         </div>
+        <!-- Graphnosis-docs ingest offer. Shown once on cortex unlock when
+             the `graphnosis-docs` engram has never been offered, ingested,
+             or declined. Lets the user add the Graphnosis documentation so
+             their AI can answer questions about Graphnosis itself. -->
+        <div id="docs-offer-banner" class="engram-suggest hidden" role="dialog" aria-live="polite">
+          <div class="engram-suggest-body">
+            <div class="engram-suggest-title">
+              <span class="engram-suggest-icon">📚</span>
+              <span id="docs-offer-headline">
+                Add the Graphnosis docs to your Cortex? Your AI will be able to
+                answer questions about Graphnosis itself.
+              </span>
+            </div>
+            <div class="engram-suggest-actions">
+              <button type="button" class="btn-primary" id="docs-offer-add">Add docs</button>
+              <button type="button" class="btn-ghost" id="docs-offer-dismiss">Not now</button>
+            </div>
+          </div>
+        </div>
         <!-- Top header: cortex identity + global actions -->
         <header class="app-header" data-tauri-drag-region>
           <div class="app-header-left">
@@ -4469,6 +4515,7 @@
             <select id="atlas-graph-picker" class="header-engram-picker" title="Switch active engram"></select>
             <button id="btn-add-file" class="primary">Add file to engram…</button>
             <button id="btn-new-graph" title="Create a new engram — an independent neighborhood of memory">+ New engram</button>
+            <button id="btn-report-bug" class="btn-help" title="Report a bug on GitHub" aria-label="Report a bug"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m8 2 1.88 1.88"/><path d="M14.12 3.88 16 2"/><path d="M9 7.13v-1a3.003 3.003 0 1 1 6 0v1"/><path d="M12 20c-3.3 0-6-2.7-6-6v-3a4 4 0 0 1 4-4h4a4 4 0 0 1 4 4v3c0 3.3-2.7 6-6 6"/><path d="M12 20v-9"/><path d="M6.53 9C4.6 8.8 3 7.1 3 5"/><path d="M6 13H2"/><path d="M3 21c0-2.1 1.7-3.9 3.8-4"/><path d="M20.97 5c0 2.1-1.6 3.8-3.5 4"/><path d="M22 13h-4"/><path d="M17.2 17c2.1.1 3.8 1.9 3.8 4"/></svg></button>
             <button id="btn-help" class="btn-help" title="Open documentation">?</button>
             <button id="btn-lock">Lock memory</button>
           </div>
@@ -4478,10 +4525,10 @@
         <div class="app-body">
           <nav class="app-rail">
             <!-- Graphnosis identity mark at the top of the sidebar -->
-            <div style="display:flex; justify-content:center; padding: 6px 6px 6px; flex-shrink:0;">
+            <div style="width: 100%; box-sizing: border-box; padding: 6px; flex-shrink:0;">
               <img src="/graphnosis-logo.png" alt="Graphnosis"
                    width="72" height="72"
-                   style="border-radius: 14px; opacity: 0.85; display: block;"
+                   style="border-radius: 14px; opacity: 0.85; display: block; margin: 0 auto;"
                    title="Graphnosis" />
             </div>
             <button class="rail-btn active" data-mode="atlas" title="Memory check-in dashboard + 3D map">
@@ -4632,7 +4679,7 @@
                   <!-- 3D Atlas tab — unchanged from before. -->
                   <section class="g-tab-pane hidden" data-gpane="atlas">
                     <div class="atlas-toolbar" style="justify-content: flex-end;">
-                      <button id="btn-atlas-alive" title="Toggle cosmos motion — drift, breathing, and node elasticity" style="font-weight:600">🧠 Alive Brain: On</button>
+                      <button id="btn-atlas-alive" title="Toggle cosmos motion — drift, breathing, and node elasticity" style="font-weight:600">🧠 Alive Engram: On</button>
                       <button id="btn-atlas-fit" title="Frame all visible nodes">Fit</button>
                       <button id="btn-atlas-reset" title="Clear selection emphasis">Reset</button>
                     </div>
@@ -4684,7 +4731,7 @@
                           <span class="lb-vitality-label">Vitality</span>
                         </div>
                         <div class="lb-hero-text">
-                          <h3 id="lb-vitality-title">Checking your brain…</h3>
+                          <h3 id="lb-vitality-title">Checking your cortex…</h3>
                           <p id="lb-vitality-detail" class="brain-subtitle">
                             Vitality reflects how alive, connected, and active your memory is.
                           </p>
@@ -4728,23 +4775,15 @@
                       <div class="lb-section">
                         <p class="lb-section-title">Self-healing</p>
                         <p class="brain-subtitle">
-                          Duplicate and redundant memories the brain merged on its own — no prompts, no review queue. Nothing is lost: every merge is a soft-delete you can undo from the Recovery panel.
+                          Duplicate and redundant memories consolidation merged on its own — no prompts, no review queue. Nothing is lost: every merge is a soft-delete you can undo from the Recovery panel.
                         </p>
                         <div id="lb-healing-log" class="lb-block"></div>
                       </div>
 
                       <div class="lb-section">
-                        <p class="lb-section-title">Insights</p>
-                        <p class="brain-subtitle">
-                          Patterns, gaps, and opportunities surfaced from your knowledge. Requires a local LLM.
-                        </p>
-                        <div id="lb-insights" class="lb-block"></div>
-                      </div>
-
-                      <div class="lb-section">
                         <p class="lb-section-title">Goals &amp; Strategic Thinking</p>
                         <p class="brain-subtitle">
-                          Strategic plans your brain is tracking for you, with deadline awareness.
+                          Strategic plans Graphnosis is tracking for you, with deadline awareness.
                         </p>
                         <div id="lb-goals" class="lb-block"></div>
                         <div id="lb-goal-form" class="lb-goal-form hidden">
@@ -4764,11 +4803,11 @@
                           <p class="lb-mcp-tools-title">Available via AI clients (Claude, Cursor…)</p>
                           <div class="lb-mcp-tool-row">
                             <span class="lb-mcp-tool-name">develop</span>
-                            <span class="lb-mcp-tool-desc">Give it your context, strategy, and goal — the brain reads your memories and writes a concrete strategic plan, citing what it actually knows.</span>
+                            <span class="lb-mcp-tool-desc">Give it your context, strategy, and goal — Graphnosis reads your memories and writes a concrete strategic plan, citing what it actually knows.</span>
                           </div>
                           <div class="lb-mcp-tool-row">
                             <span class="lb-mcp-tool-name">predict</span>
-                            <span class="lb-mcp-tool-desc">Before taking an action, the brain checks your memory for past failures, resource constraints, blockers, and hidden opportunities related to that action.</span>
+                            <span class="lb-mcp-tool-desc">Before taking an action, Graphnosis checks your memory for past failures, resource constraints, blockers, and hidden opportunities related to that action.</span>
                           </div>
                         </div>
                       </div>
@@ -4805,13 +4844,22 @@
                       </div>
 
                       <div class="lb-section">
+                        <p class="lb-section-title">Insights</p>
+                        <p class="brain-subtitle">
+                          Patterns, gaps, and opportunities surfaced from your knowledge. Requires a local LLM.
+                        </p>
+                        <div id="lb-insights" class="lb-block"></div>
+                      </div>
+
+                      <div class="lb-section">
                         <p class="lb-section-title">Local LLM</p>
                         <p class="brain-subtitle">
-                          The Brain's smartest features — forming new connections,
+                          Graphnosis' smartest features — forming new connections,
                           surfacing insights, strategic planning, risk prediction — run
                           a small AI model privately on your own device. Nothing is ever
                           sent to the cloud. Setup is free and one-time.
                         </p>
+                        <div id="llm-enable-block" class="llm-enable-block" style="margin-bottom: 12px;"></div>
                         <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 10px;">
                           <span style="font-size: 14px; min-width: 120px;">Ollama</span>
                           <span id="ollama-status-badge">Checking…</span>
@@ -5040,7 +5088,7 @@ ollama list</code></pre>
             <section class="mode-pane hidden" data-pane="settings">
               <header class="pane-header">
                 <h2>Settings & actions</h2>
-                <p class="brain-subtitle">Tune your autonomous second brain.</p>
+                <p class="brain-subtitle">Tune your autonomous cortex.</p>
               </header>
               <div class="panel">
                 <p class="panel-title">Preferences</p>
@@ -5384,9 +5432,9 @@ ollama list</code></pre>
 
 
           <!-- Clipboard capture — disabled by default, user opt-in -->
-          <p class="panel-title" style="margin-top: 20px;">Brain — Clipboard Capture</p>
+          <p class="panel-title" style="margin-top: 20px;">Clipboard Capture</p>
           <p class="subtitle" style="margin-bottom: 10px;">
-            When enabled, the brain watches your clipboard while Graphnosis is in focus.
+            When enabled, Graphnosis watches your clipboard while it's in focus.
             Any text you copy that's longer than a sentence is offered for saving as a memory.
             Disabled by default — you control what goes into your graph.
           </p>
@@ -5394,7 +5442,7 @@ ollama list</code></pre>
             <label>
               <input type="checkbox" id="setting-clipboard-capture" />
               <strong>Offer to save long clipboard text as memories</strong> —
-              when you copy something worth remembering, the brain asks. You can always dismiss.
+              when you copy something worth remembering, Graphnosis asks. You can always dismiss.
             </label>
           </div>
 
@@ -5657,6 +5705,23 @@ ollama list</code></pre>
          so it can capture the kind + form state. -->
     <!-- Standalone-mode explainer — opened from the "Standalone" shortcut
          in the sidebar's Get connected section. -->
+    <!-- Tool explainer — opened by clicking a tool chip in the onboarding card. -->
+    <div id="tool-info-modal" class="modal-backdrop hidden">
+      <div class="modal" style="max-width: 460px;">
+        <div class="modal-header">
+          <h2 id="tool-info-name" style="font-family: monospace;">tool</h2>
+          <p class="subtitle" id="tool-info-determinism"></p>
+        </div>
+        <div class="modal-body">
+          <p id="tool-info-body" style="font-size: 14px; line-height: 1.6; margin: 0;"></p>
+        </div>
+        <div class="modal-footer">
+          <span class="filler"></span>
+          <button id="tool-info-close" class="primary">Got it</button>
+        </div>
+      </div>
+    </div>
+
     <div id="standalone-modal" class="modal-backdrop hidden">
       <div class="modal" style="max-width: 520px;">
         <div class="modal-header">
@@ -5678,7 +5743,7 @@ ollama list</code></pre>
           </ul>
           <p style="font-size: 14px; line-height: 1.6; margin: 0;">
             A local LLM is <strong>optional</strong>. Add one with the <strong>Local LLM</strong>
-            button to unlock the brain's insights, automatic new-connection forming, and
+            button to unlock insights, automatic new-connection forming, and
             second-opinion review of its own healing decisions — it still runs entirely on
             your machine.
           </p>

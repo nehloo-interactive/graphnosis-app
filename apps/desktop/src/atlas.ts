@@ -114,6 +114,11 @@ export function categoryFor(directed: boolean, type: DirectedEdgeType | Undirect
   return UNDIRECTED_CATEGORY[type as UndirectedEdgeType];
 }
 
+/** Smoothness of the dashed Bezier drawn for a curved predicted edge. */
+const PREDICTED_CURVE_SEGMENTS = 20;
+/** Scratch vector reused by positionDashedLink's curve sampling. */
+const _predictedCurvePoint = new THREE.Vector3();
+
 /**
  * Build the dashed THREE.Line used to render one GNN-predicted edge.
  * Predicted edges are deliberately thin 1px dashed lines so they read as
@@ -121,7 +126,10 @@ export function categoryFor(directed: boolean, type: DirectedEdgeType | Undirect
  */
 function makeDashedLink(): THREE.Line {
   const geometry = new THREE.BufferGeometry();
-  geometry.setAttribute('position', new THREE.BufferAttribute(new Float32Array(6), 3));
+  // Sized for the curved case; a straight predicted edge uses only the first
+  // two vertices via setDrawRange (see positionDashedLink).
+  geometry.setAttribute('position', new THREE.BufferAttribute(new Float32Array((PREDICTED_CURVE_SEGMENTS + 1) * 3), 3));
+  geometry.setDrawRange(0, 2);
   const material = new THREE.LineDashedMaterial({
     color: CATEGORY_COLOR.predicted,
     dashSize: 9,
@@ -138,18 +146,49 @@ function makeDashedLink(): THREE.Line {
 }
 
 /**
- * Position a predicted-edge dashed line at its endpoints and refresh the
- * dash pattern. Runs every physics tick while the simulation is warm;
- * LineDashedMaterial needs computeLineDistances() recomputed after a move.
+ * Position a predicted-edge dashed line. Straight by default; when the edge
+ * shares a node pair with a directed edge it carries a curvature (assigned in
+ * computeEdgeShapes) and is drawn as a quadratic Bezier so the dashed arc
+ * bows clear of the straight directed line — the same control-point math
+ * three-forcegraph applies to its real co-parallel edges. Runs every physics
+ * tick while the simulation is warm; LineDashedMaterial needs
+ * computeLineDistances() recomputed after a move.
  */
 function positionDashedLink(
   obj: THREE.Object3D,
   coords: { start: { x: number; y: number; z: number }; end: { x: number; y: number; z: number } },
+  shape: { curvature: number; rotation: number } | undefined,
 ): void {
   const line = obj as THREE.Line;
   const pos = line.geometry.getAttribute('position') as THREE.BufferAttribute;
-  pos.setXYZ(0, coords.start.x, coords.start.y, coords.start.z);
-  pos.setXYZ(1, coords.end.x, coords.end.y, coords.end.z);
+  const { start, end } = coords;
+
+  if (shape === undefined || shape.curvature === 0 || !globalThis.atlasPerf.curves) {
+    // Straight: two vertices, the rest of the buffer left unused.
+    pos.setXYZ(0, start.x, start.y, start.z);
+    pos.setXYZ(1, end.x, end.y, end.z);
+    line.geometry.setDrawRange(0, 2);
+  } else {
+    // Curved: control point computed exactly as three-forcegraph does for
+    // real curved edges, so a predicted arc and its directed partner
+    // separate identically.
+    const vStart = new THREE.Vector3(start.x, start.y, start.z);
+    const vEnd = new THREE.Vector3(end.x, end.y, end.z);
+    const vLine = new THREE.Vector3().subVectors(vEnd, vStart);
+    const dx = end.x - start.x;
+    const dy = end.y - start.y;
+    const cp = vLine.clone()
+      .multiplyScalar(shape.curvature)
+      .cross(dx !== 0 || dy !== 0 ? new THREE.Vector3(0, 0, 1) : new THREE.Vector3(0, 1, 0))
+      .applyAxisAngle(vLine.normalize(), shape.rotation)
+      .add(new THREE.Vector3().addVectors(vStart, vEnd).divideScalar(2));
+    const curve = new THREE.QuadraticBezierCurve3(vStart, cp, vEnd);
+    for (let i = 0; i <= PREDICTED_CURVE_SEGMENTS; i++) {
+      const p = curve.getPoint(i / PREDICTED_CURVE_SEGMENTS, _predictedCurvePoint);
+      pos.setXYZ(i, p.x, p.y, p.z);
+    }
+    line.geometry.setDrawRange(0, PREDICTED_CURVE_SEGMENTS + 1);
+  }
   pos.needsUpdate = true;
   line.computeLineDistances();
 }
@@ -308,6 +347,11 @@ export class Atlas {
   /** GNN-predicted edges (the `.gnn` overlay) — a separate, dashed,
    *  toggleable layer, never mixed into the deterministic graph. */
   private predictedLinks: AtlasLink[] = [];
+  /** THREE.Line objects for the predicted overlay, keyed by AtlasLink id —
+   *  captured in `linkThreeObject` so a connection-row hover can dim/brighten
+   *  one specific dashed predicted edge. Its color lives in its own material,
+   *  outside the `linkColor` accessor path the real edges use. */
+  private predictedLineObjs = new Map<string, THREE.Line>();
   private categoryVisible: Record<EdgeCategory, boolean> = {
     reasoning: true, structure: true, social: true, temporal: true, semantic: true, identity: true,
     predicted: true,
@@ -338,6 +382,13 @@ export class Atlas {
    * the node + its incident edges until the mouse moves away.
    */
   private previewHighlightId: string | null = null;
+  /**
+   * The node the inspector's connection list is built around — supplied by
+   * `previewHighlight()` so a connection-row hover can light up the edge even
+   * when the user never click-selected a node in the 3D view (`selectedId`
+   * is null). Falls back to `selectedId` when not given.
+   */
+  private previewAnchorId: string | null = null;
   /**
    * Legend hover preview — ephemeral, cleared on mouseleave.
    * When either is non-null the visibility callbacks expose ALL nodes/links
@@ -638,20 +689,29 @@ export class Atlas {
     // connections, so a model prediction is never mistaken for a
     // deterministic edge. Real links return null here → three-forcegraph
     // builds its default tube.
-    g.linkThreeObject((l: AtlasLink) =>
-      (l.category === 'predicted' ? makeDashedLink() : null) as unknown as THREE.Object3D);
+    g.linkThreeObject((l: AtlasLink) => {
+      if (l.category !== 'predicted') return null as unknown as THREE.Object3D;
+      const line = makeDashedLink();
+      // Keep a handle so previewHighlight() can dim/brighten this specific
+      // dashed edge — its color is baked into its own material and never
+      // passes through the linkColor accessor the real edges use.
+      this.predictedLineObjs.set(l.id, line);
+      return line as unknown as THREE.Object3D;
+    });
     g.linkPositionUpdate((
       obj: THREE.Object3D,
       coords: { start: { x: number; y: number; z: number }; end: { x: number; y: number; z: number } },
       l: AtlasLink,
     ) => {
       if (l.category !== 'predicted') return undefined; // real links → default positioning
-      positionDashedLink(obj, coords);
+      positionDashedLink(obj, coords, this.edgeShape.get(l.id));
       return true;
     });
-    // Edge thickness: weight-based base width. When a node is selected, only
-    // DIRECTED incident edges double in width — the thick tube makes the
-    // flowing particles clearly visible. Undirected edges stay at base width.
+    // Edge thickness: weight-based base width. Directed edges carry a heavier
+    // baseline than undirected ones — so the two kinds stay distinguishable,
+    // and a directed edge (with its flowing particles) stays legible even on a
+    // large graph zoomed out, where thin hairlines otherwise vanish. Incident
+    // edges of a selected node thicken further to spotlight the neighborhood.
     g.linkWidth((l: AtlasLink) => {
       const base = Math.max(0.4, Math.min(5, 0.4 + l.weight * 2.0));
       if (this.selectedId !== null) {
@@ -659,7 +719,7 @@ export class Atlas {
         const tId = typeof l.target === 'string' ? l.target : (l.target as AtlasNode).id;
         if (sId === this.selectedId || tId === this.selectedId) return base * 5;
       }
-      return base;
+      return l.directed ? Math.max(1.4, Math.min(8, base * 1.8)) : base;
     });
     // Curve undirected edges that share a node pair with a directed edge —
     // the arc visually separates them from the straight directed line.
@@ -707,16 +767,17 @@ export class Atlas {
     g.linkDirectionalParticles((l: AtlasLink) => globalThis.atlasPerf.particles ? this.particleCountFor(l) : 0);
     g.linkDirectionalParticleSpeed((l: AtlasLink) => {
       if (!l.directed) return 0;
-      // When a node is selected, its incident directed edges pulse faster to
-      // make the directional flow unmistakable.
+      // Deliberately slow — the pulse has to crawl slowly enough that the eye
+      // can track WHICH WAY it flows; that flow is how the edge's direction
+      // reads. Incident edges of a selected node pulse a touch faster.
       if (this.selectedId !== null) {
         const sId = typeof l.source === 'string' ? l.source : (l.source as AtlasNode).id;
         const tId = typeof l.target === 'string' ? l.target : (l.target as AtlasNode).id;
         if (sId === this.selectedId || tId === this.selectedId) {
-          return 0.022 + Math.min(0.018, l.weight * 0.010);
+          return 0.011 + Math.min(0.009, l.weight * 0.005);
         }
       }
-      return 0.008 + Math.min(0.012, l.weight * 0.006);
+      return 0.004 + Math.min(0.006, l.weight * 0.003);
     });
     g.linkDirectionalParticleColor((l: AtlasLink) => this.brightParticleColor(l));
     // Particle width: always large (6px) on directed edges so the neural
@@ -1462,6 +1523,7 @@ export class Atlas {
       if (this.selectedId === n.id) {
         this.selectedId = null;
         this.previewHighlightId = null;
+        this.restylePredictedEdges();
         this.graph.refresh();
         this.opts.onSelect?.(null);
         return;
@@ -1473,6 +1535,7 @@ export class Atlas {
       // change — only the rotation center shifts. This is safe at click
       // time (no gesture in flight), so there's no mid-drag jolt.
       this.setOrbitPivotTo(n);
+      this.restylePredictedEdges();
       this.graph.refresh();
       this.opts.onSelect?.(n);
     });
@@ -1488,6 +1551,7 @@ export class Atlas {
       // re-evaluated with the cleared selection state. Without this the
       // graph stays visually "stuck" on the dim-non-neighbors look until
       // the next event happens to trigger a refresh.
+      this.restylePredictedEdges();
       this.graph.refresh();
       this.opts.onSelect?.(null);
     });
@@ -1778,6 +1842,9 @@ export class Atlas {
         weight: p.score,
       });
     }
+    // Stale line handles — the new AtlasLink objects are fresh references, so
+    // linkThreeObject re-fires for every predicted edge and repopulates this.
+    this.predictedLineObjs.clear();
     this.predictedLinks = out;
     this.rebuildAllLinks();
   }
@@ -1788,7 +1855,23 @@ export class Atlas {
    * and setPredictedEdges().
    */
   private rebuildAllLinks(): void {
-    this.allLinks = [...this.realLinks, ...this.predictedLinks];
+    // d3-force only re-resolves a link endpoint that is still a string id; a
+    // link object reused across a setNodes() (the predicted overlay survives
+    // the early-return in setPredictedEdges) keeps a stale node-object ref and
+    // renders detached from the fresh nodes. Normalize every endpoint back to
+    // its id so d3 re-resolves it, and drop links whose endpoints no longer
+    // exist (e.g. a stale predicted overlay lingering after a graph switch).
+    const validIds = new Set(this.allNodes.map((n) => n.id));
+    const merged: AtlasLink[] = [];
+    for (const l of [...this.realLinks, ...this.predictedLinks]) {
+      const s = typeof l.source === 'string' ? l.source : (l.source as AtlasNode).id;
+      const t = typeof l.target === 'string' ? l.target : (l.target as AtlasNode).id;
+      if (!validIds.has(s) || !validIds.has(t)) continue;
+      l.source = s;
+      l.target = t;
+      merged.push(l);
+    }
+    this.allLinks = merged;
     this.computeEdgeShapes();
     this.computeNodeDegrees();
     this.computeSubAnchors(); // needs both allNodes + allLinks — called here
@@ -2292,6 +2375,7 @@ export class Atlas {
     const node = this.allNodes.find((n) => n.id === nodeId);
     if (!node) return;
     this.selectedId = nodeId;
+    this.restylePredictedEdges();
     this.setOrbitPivotTo(node);
     // Maximise opacity so incident edges and the node itself render at
     // 100% regardless of the global link/node opacity multipliers.
@@ -2358,6 +2442,7 @@ export class Atlas {
     const node = this.allNodes.find((n) => n.id === nodeId);
     if (!node) return;
     this.selectedId = nodeId;
+    this.restylePredictedEdges();
     this.graph.linkOpacity(1.0);
     this.graph.nodeOpacity(1.0);
 
@@ -2411,11 +2496,13 @@ export class Atlas {
   resetEmphasis(): void {
     this.selectedId = null;
     this.previewHighlightId = null;
+    this.previewAnchorId = null;
     // Restore normal opacity multipliers now that there's no selection.
     // Do NOT touch ctrls.target — moving the orbit pivot without moving the
     // camera shifts the view direction and causes a visible jump.
     this.graph.linkOpacity(0.7);
     this.graph.nodeOpacity(0.92);
+    this.restylePredictedEdges();
     this.graph.refresh();
   }
 
@@ -2425,12 +2512,53 @@ export class Atlas {
    * doesn't disturb the click-selection state — it's a pure visual preview
    * that ends as soon as the mouse leaves the row.
    */
-  previewHighlight(nodeId: string | null): void {
-    if (this.previewHighlightId === nodeId) return;
+  previewHighlight(nodeId: string | null, anchorId: string | null = null): void {
+    // The anchor is only meaningful while a node is being previewed; clearing
+    // the preview clears the anchor too.
+    const nextAnchor = nodeId === null ? null : anchorId;
+    if (this.previewHighlightId === nodeId && this.previewAnchorId === nextAnchor) return;
     this.previewHighlightId = nodeId;
+    this.previewAnchorId = nextAnchor;
+    // Predicted edges carry their color in their own material — restyle them
+    // explicitly; the linkColor accessor only covers the real edges.
+    this.restylePredictedEdges();
     // Force re-render so the accessors (nodeVal, nodeColor, linkColor) are
-    // re-evaluated with the new previewHighlightId.
+    // re-evaluated with the new highlight state.
     this.graph.refresh();
+  }
+
+  /**
+   * Dim/brighten the dashed predicted-edge overlay to match the current
+   * connection-row hover. A predicted edge's color is baked into its own
+   * LineDashedMaterial, so it bypasses the linkColor accessor — this is the
+   * only place its hover emphasis can be applied. No-op when no predictions
+   * exist (the common, neural-network-disabled case).
+   */
+  private restylePredictedEdges(): void {
+    if (this.predictedLineObjs.size === 0) return;
+    const anchor = this.previewAnchorId ?? this.selectedId;
+    const hovering = this.previewHighlightId !== null && anchor !== null;
+    for (const l of this.predictedLinks) {
+      const line = this.predictedLineObjs.get(l.id);
+      if (line === undefined) continue;
+      const mat = line.material as THREE.LineDashedMaterial;
+      const sId = typeof l.source === 'string' ? l.source : (l.source as AtlasNode).id;
+      const tId = typeof l.target === 'string' ? l.target : (l.target as AtlasNode).id;
+      if (hovering) {
+        const isTheConnection =
+          (sId === anchor && tId === this.previewHighlightId) ||
+          (sId === this.previewHighlightId && tId === anchor);
+        mat.opacity = isTheConnection ? 0.95 : 0.05;
+      } else if (this.selectedId !== null) {
+        // Selection mode — a predicted edge stays visible only if it touches
+        // the selected node; non-incident ones dim hard, the same focus the
+        // real edges get via computeColorForLink.
+        const incident = sId === this.selectedId || tId === this.selectedId;
+        mat.opacity = incident ? 0.7 : 0.05;
+      } else {
+        mat.opacity = 0.6; // neutral — default tentative-overlay opacity
+      }
+    }
   }
 
   /**
@@ -3007,6 +3135,7 @@ export class Atlas {
   private colorCacheState: {
     selectedId: string | null;
     previewHighlightId: string | null;
+    previewAnchorId: string | null;
     draggingId: string | null;
     previewLegendCategory: EdgeCategory | null;
     previewLegendSource: string | null;
@@ -3021,6 +3150,7 @@ export class Atlas {
       s !== null &&
       s.selectedId === this.selectedId &&
       s.previewHighlightId === this.previewHighlightId &&
+      s.previewAnchorId === this.previewAnchorId &&
       s.draggingId === this.draggingId &&
       s.previewLegendCategory === this.previewLegendCategory &&
       s.previewLegendSource === this.previewLegendSource &&
@@ -3033,6 +3163,7 @@ export class Atlas {
     this.colorCacheState = {
       selectedId: this.selectedId,
       previewHighlightId: this.previewHighlightId,
+      previewAnchorId: this.previewAnchorId,
       draggingId: this.draggingId,
       previewLegendCategory: this.previewLegendCategory,
       previewLegendSource: this.previewLegendSource,
@@ -3072,8 +3203,12 @@ export class Atlas {
       // Selected node → spotlight white so it's a clear focal point even
       // without the rest of the graph dimming around it.
       if (n.id === this.selectedId) return this.applyAlpha(0xffffff, 1.0);
-      // Hover mode: only selected + hovered neighbour are at full brightness.
-      if (this.previewHighlightId !== null && this.selectedId !== null) {
+      // Hover mode: only the anchor (the inspector's node) + the hovered
+      // neighbour are at full brightness. The anchor falls back to selectedId,
+      // so the hover works even with no prior click-selection in the 3D view.
+      const hoverAnchor = this.previewAnchorId ?? this.selectedId;
+      if (this.previewHighlightId !== null && hoverAnchor !== null) {
+        if (n.id === hoverAnchor) return this.applyAlpha(0xffffff, 1.0);
         if (n.id === this.previewHighlightId) return this.applyAlpha(this.brighten(base, 0.25), 1.0);
         return this.applyAlpha(base, 0.15);
       }
@@ -3096,8 +3231,9 @@ export class Atlas {
     // selected node + the hovered neighbor at full brightness; dim every
     // other node hard. This isolates the single relationship being inspected
     // and makes "which two memories are linked here" unambiguous.
-    if (this.previewHighlightId !== null && this.selectedId !== null) {
-      if (n.id === this.selectedId) return this.applyAlpha(0xffffff, 1.0); // spotlight white
+    const hoverAnchor = this.previewAnchorId ?? this.selectedId;
+    if (this.previewHighlightId !== null && hoverAnchor !== null) {
+      if (n.id === hoverAnchor) return this.applyAlpha(0xffffff, 1.0); // spotlight white
       if (n.id === this.previewHighlightId) return this.applyAlpha(this.brighten(base, 0.25), 1.0);
       return this.applyAlpha(base, 0.18);
     }
@@ -3163,10 +3299,11 @@ export class Atlas {
       // HOVER — only the specific edge between selected + hovered pair is
       // bright; everything else dims to near-invisible. Cross-file / LOD
       // rules don't apply here — the user is explicitly looking at this edge.
-      if (this.previewHighlightId !== null && this.selectedId !== null) {
+      const hoverAnchor = this.previewAnchorId ?? this.selectedId;
+      if (this.previewHighlightId !== null && hoverAnchor !== null) {
         const isTheConnection =
-          (sId === this.selectedId && tId === this.previewHighlightId) ||
-          (sId === this.previewHighlightId && tId === this.selectedId);
+          (sId === hoverAnchor && tId === this.previewHighlightId) ||
+          (sId === this.previewHighlightId && tId === hoverAnchor);
         return this.applyAlpha(base, isTheConnection ? 1.0 : 0.04);
       }
 
@@ -3181,11 +3318,14 @@ export class Atlas {
         }
       }
 
-      // NEUTRAL — directed edges are always dimmed so their flowing particles
-      // are clearly visible inside the tube regardless of graph state.
-      // Cross-file semantic/identity edges get LOD suppression; other
-      // cross-file edges are ghosted; same-file undirected edges are full.
-      if (l.directed) return this.applyAlpha(base, 0.20);
+      // NEUTRAL — directed edges keep a moderately strong tube (raised from
+      // the old near-invisible 0.20): they must stay legible, and stay
+      // distinguishable from the undirected edges, even on a large graph
+      // zoomed out. Still kept a touch below the undirected 1.0 so the bright
+      // flowing particles pop against the tube. Cross-file semantic/identity
+      // edges get LOD suppression; other cross-file edges are ghosted;
+      // same-file undirected edges are full.
+      if (l.directed) return this.applyAlpha(base, 0.65);
       if (crossFile && (l.category === 'semantic' || l.category === 'identity')) {
         return this.applyAlpha(base, this.lodSemanticAlpha());
       }
@@ -3237,10 +3377,11 @@ export class Atlas {
     // HOVER MODE — only the edge(s) connecting the selected node to the
     // hovered neighbor are bright. Multiple edges between the same pair
     // (directed + undirected) all qualify. Everything else dims hard.
-    if (this.previewHighlightId !== null && this.selectedId !== null) {
+    const hoverAnchor = this.previewAnchorId ?? this.selectedId;
+    if (this.previewHighlightId !== null && hoverAnchor !== null) {
       const isTheConnection =
-        (sId === this.selectedId && tId === this.previewHighlightId) ||
-        (sId === this.previewHighlightId && tId === this.selectedId);
+        (sId === hoverAnchor && tId === this.previewHighlightId) ||
+        (sId === this.previewHighlightId && tId === hoverAnchor);
       if (isTheConnection) return this.applyAlpha(this.brighten(base, 0.25), 1.0);
       return this.applyAlpha(base, 0.04);
     }
@@ -3285,10 +3426,11 @@ export class Atlas {
     const tId = typeof l.target === 'string' ? l.target : (l.target as AtlasNode).id;
 
     // HOVER — single connection lit up, everything else dead.
-    if (this.previewHighlightId !== null && this.selectedId !== null) {
+    const hoverAnchor = this.previewAnchorId ?? this.selectedId;
+    if (this.previewHighlightId !== null && hoverAnchor !== null) {
       const isTheConnection =
-        (sId === this.selectedId && tId === this.previewHighlightId) ||
-        (sId === this.previewHighlightId && tId === this.selectedId);
+        (sId === hoverAnchor && tId === this.previewHighlightId) ||
+        (sId === this.previewHighlightId && tId === hoverAnchor);
       return isTheConnection ? 6 : 0;
     }
 
@@ -3332,10 +3474,11 @@ export class Atlas {
     const tId = typeof l.target === 'string' ? l.target : (l.target as AtlasNode).id;
 
     // HOVER MODE — only the one hovered connection's particles glow.
-    if (this.previewHighlightId !== null && this.selectedId !== null) {
+    const hoverAnchor = this.previewAnchorId ?? this.selectedId;
+    if (this.previewHighlightId !== null && hoverAnchor !== null) {
       const isTheConnection =
-        (sId === this.selectedId && tId === this.previewHighlightId) ||
-        (sId === this.previewHighlightId && tId === this.selectedId);
+        (sId === hoverAnchor && tId === this.previewHighlightId) ||
+        (sId === this.previewHighlightId && tId === hoverAnchor);
       return isTheConnection
         ? this.applyAlpha(this.brighten(base, 0.45), 1.0)
         : this.applyAlpha(base, 0.04);

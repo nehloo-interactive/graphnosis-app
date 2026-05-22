@@ -750,8 +750,9 @@ impl McpClient {
 /// Configure an MCP-aware AI client to talk to this App's running sidecar.
 ///
 /// Writes an `mcpServers.Graphnosis` entry to the client's config file,
-/// pointing it at the compiled relay binary + the cortex's `mcp.sock`.
-/// Preserves any other MCP servers the user already had configured.
+/// pointing it at the compiled relay binary + the fixed MCP socket
+/// (`~/.graphnosis/mcp.sock` — cortex-independent, so one "Connect" survives
+/// every cortex switch). Preserves any other MCP servers the user had.
 ///
 /// Adding a new client: extend `McpClient` with a variant, add the OS-
 /// specific path branch in `mcp_client_config_path`, and add a button
@@ -764,17 +765,23 @@ async fn configure_mcp_client(
     let client = McpClient::from_id(&client_id)
         .ok_or_else(|| format!("Unknown AI client id: '{}'", client_id))?;
 
-    // Need an unlocked cortex — the socket path lives inside it.
-    let cortex_dir = {
+    // Graphnosis must be unlocked — the sidecar (and its MCP listener) only
+    // runs while a cortex is open, so there is nothing to attach to otherwise.
+    {
         let inner = state.inner.lock().await;
-        inner.cortex_dir.clone()
+        if inner.cortex_dir.is_none() {
+            return Err(format!(
+                "Unlock Graphnosis first — {} connects to the running app.",
+                client.display_name(),
+            ));
+        }
     }
-    .ok_or_else(|| format!(
-        "Unlock the cortex first — {} needs the cortex's socket path.",
-        client.display_name(),
-    ))?;
 
-    let socket_path = cortex_dir.join("mcp.sock");
+    // The MCP socket lives at a FIXED, cortex-independent path. The client
+    // config written below is global; baking a per-cortex path into it (the
+    // old behavior) silently broke the connection the moment the user opened
+    // a different cortex folder.
+    let socket_path = sidecar::mcp_socket_path().map_err(|e| e.to_string())?;
 
     // Resolve the compiled MCP relay binary. Same one all clients spawn —
     // the relay is a self-contained executable with the socket path as
