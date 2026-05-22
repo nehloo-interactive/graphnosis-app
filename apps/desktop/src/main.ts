@@ -1,4 +1,5 @@
 import { invoke } from '@tauri-apps/api/core';
+import { getVersion } from '@tauri-apps/api/app';
 import { listen } from '@tauri-apps/api/event';
 import { getCurrentWebview } from '@tauri-apps/api/webview';
 import { getCurrentWindow } from '@tauri-apps/api/window';
@@ -578,6 +579,7 @@ const els = {
   btnLbGoalDevelop: $<HTMLButtonElement>('btn-lb-goal-develop'),
   btnNewGoal: $<HTMLButtonElement>('btn-new-goal'),
   // Ollama settings
+  llmEnableBlock: $<HTMLDivElement>('llm-enable-block'),
   ollamaStatusBadge: $<HTMLSpanElement>('ollama-status-badge'),
   ollamaModelRow: $<HTMLDivElement>('ollama-model-row'),
   ollamaModelSelect: $<HTMLSelectElement>('ollama-model-select'),
@@ -986,7 +988,10 @@ function render(status: StatusSnapshot): void {
     refreshActiveEngramLabel();
     void refreshStats();
     void syncForgetMode();
-    void fetchGraphsMetadata();
+    // Load engrams, then evaluate the Graphnosis-docs ingest offer — the
+    // sidecar's decision depends on whether the `graphnosis-docs` engram is
+    // present, so the offer check must run after graphs are loaded.
+    void fetchGraphsMetadata().then(() => { void checkDocsIngestOffer(); });
     void refreshConnectorsList();
     startMcpPolling();
     void refreshBrainState();
@@ -1006,6 +1011,10 @@ function render(status: StatusSnapshot): void {
     setClipboardCaptureEnabled(false); // stop polling on lock
     // Clear ephemeral disable state on lock so a re-unlock starts fresh.
     disabledSources.clear();
+    // Reset the docs-offer guard + hide its banner so a re-unlock (possibly
+    // of a different cortex) re-evaluates the offer cleanly.
+    docsOfferChecked = false;
+    hideDocsOfferBanner();
     // Clear the memory trace — the left-rail recents list AND the right
     // detail pane — so a re-unlock starts with a clean slate, not the
     // previous session's navigation trail.
@@ -1146,6 +1155,41 @@ els.standaloneModal.addEventListener('click', (e) => {
   if (e.target === els.standaloneModal) els.standaloneModal.classList.add('hidden');
 });
 
+/** Per-tool explanations shown in the tool-info modal (onboarding card). */
+const TOOL_INFO: Record<string, { determinism: string; body: string }> = {
+  recall: { determinism: 'Deterministic', body: 'Searches your encrypted memory and pulls back what is relevant to a question. The same query returns the same memories every time — no AI, no randomness.' },
+  remind: { determinism: 'Deterministic', body: 'The same search as recall, framed as "remind me about…" — past commitments, decisions, names, plans. Identical, reproducible results.' },
+  remember: { determinism: 'Deterministic', body: 'Saves a note into your memory so it persists across sessions and across every AI client you connect.' },
+  forget: { determinism: 'Deterministic', body: 'Removes a source — every memory derived from it is soft-deleted (recoverable) and drops out of future recalls.' },
+  stats: { determinism: 'Deterministic', body: 'Shows the ground-truth state of your engrams — total, active and soft-deleted node counts, with a sample of contents.' },
+  vitality: { determinism: 'Deterministic', body: 'A 0–100 score of how alive and well-connected your knowledge graph is. The same graph state always yields the same score.' },
+  apply: { determinism: 'Deterministic', body: 'Commits a correction you have already reviewed and approved. Normally driven by the app after you click Approve — rarely asked for directly.' },
+  develop: { determinism: 'Non-deterministic', body: 'Synthesises a strategic plan grounded in your memory, using a local AI. The memory it retrieves is exact; the written plan varies between runs.' },
+  predict: { determinism: 'Non-deterministic', body: 'Before you act, checks your memory for past failures, constraints and overlooked opportunities — via a local AI. Retrieval is exact; the assessment varies between runs.' },
+  insights: { determinism: 'Non-deterministic', body: 'Patterns, gaps and opportunities surfaced by a local-AI background loop. The set of insights changes as the loop re-runs.' },
+  correct: { determinism: 'Conditional', body: 'Proposes a fix to an existing memory as a diff you review and approve. Deterministic by default — it supersedes the closest-matching memory. Enabling the Local LLM upgrades it to a multi-memory diff that varies between runs.' },
+};
+
+/** Open the tool-explainer modal for a given MCP tool. */
+function openToolInfoModal(tool: string): void {
+  const info = TOOL_INFO[tool];
+  if (!info) return;
+  const nameEl = document.getElementById('tool-info-name');
+  const detEl = document.getElementById('tool-info-determinism');
+  const bodyEl = document.getElementById('tool-info-body');
+  if (nameEl) nameEl.textContent = tool;
+  if (detEl) detEl.textContent = `${info.determinism} tool`;
+  if (bodyEl) bodyEl.textContent = info.body;
+  document.getElementById('tool-info-modal')?.classList.remove('hidden');
+}
+document.getElementById('tool-info-close')?.addEventListener('click', () => {
+  document.getElementById('tool-info-modal')?.classList.add('hidden');
+});
+document.getElementById('tool-info-modal')?.addEventListener('click', (e) => {
+  const m = document.getElementById('tool-info-modal');
+  if (e.target === m) m?.classList.add('hidden');
+});
+
 function shortCortexLabel(p: string): string {
   // Take last two path segments to keep the header compact but recognizable.
   const parts = p.split('/').filter(Boolean);
@@ -1173,7 +1217,12 @@ function activateMode(mode: Mode): void {
   });
   // Lazy-load per mode
   if (mode === 'sources') void refreshStats(); // sources list rendered inside refreshStats payload
-  if (mode === 'atlas') void refreshAtlasView();
+  if (mode === 'atlas') {
+    // Returning to the 3D Engram from another left-sidebar screen — reset it
+    // to a neutral view (no selection/emphasis); the camera is left alone.
+    if (graphnosisActiveTab === 'atlas') resetAtlasView();
+    void refreshAtlasView();
+  }
   if (mode === 'activity') void refreshActivityView();
   if (mode === 'status') {
     // Status pane re-uses the same data the Graphnosis recap reads.
@@ -1240,7 +1289,7 @@ function renderMcpStatus(connections: McpConnection[]): void {
       </p>
       <p class="mcp-empty" style="margin-top: 8px;">
         Already running but stuck? Click <strong>Reconnect</strong> to bounce
-        Graphnosis's MCP socket. Any waiting clients will reattach automatically.
+        Graphnosis' MCP socket. Any waiting clients will reattach automatically.
         If nothing happens, restart the client (in Claude: ⌘Q, reopen).
       </p>
       <div style="margin-top: 10px;">
@@ -1910,6 +1959,12 @@ async function attemptUnlock(): Promise<void> {
     })) as StatusSnapshot;
     // Persist for the next launch — see rememberCortexDir().
     rememberCortexDir(els.cortexDir.value);
+    // A different cortex just opened — its non-deterministic preferences
+    // (GNN, Local LLM) live in its own settings.json and are reloaded by the
+    // fresh sidecar. Clear any half-finished two-step enable-confirm so it
+    // can't leak from the previous cortex into this one.
+    nnConfirmPending = false;
+    llmConfirmPending = false;
     els.passphrase.value = '';
     els.bootStatusText.textContent = '';
     render(status);
@@ -1966,6 +2021,12 @@ els.btnOpenFolder.addEventListener('click', async () => {
 
 document.getElementById('btn-help')?.addEventListener('click', () => {
   void invoke('plugin:opener|open_url', { url: 'https://docs.graphnosis.com' });
+});
+
+document.getElementById('btn-report-bug')?.addEventListener('click', () => {
+  void invoke('plugin:opener|open_url', {
+    url: 'https://github.com/nehloo-interactive/graphnosis-app/issues',
+  });
 });
 
 els.btnLock.addEventListener('click', async () => {
@@ -3464,8 +3525,11 @@ els.btnGwCreate.addEventListener('click', async () => {
   if (!gwSelected) return;
   const graphId = els.gwId.value.trim();
   const displayName = els.gwName.value.trim();
-  if (loadedGraphs.some((g) => g.graphId === graphId)) {
-    els.gwNote.textContent = `An engram with ID "${graphId}" already exists.`;
+  // Case-insensitive: macOS/Windows filesystems are case-insensitive, so
+  // `MyNotes.gai` and `mynotes.gai` are the same file on disk.
+  const clash = loadedGraphs.find((g) => g.graphId.toLowerCase() === graphId.toLowerCase());
+  if (clash) {
+    els.gwNote.textContent = `An engram "${clash.graphId}" already exists — names are case-insensitive.`;
     return;
   }
   els.btnGwCreate.disabled = true;
@@ -3927,7 +3991,7 @@ const CHECKIN_TAGLINES: ReadonlyArray<string> = [
   "Memory consolidation, but with extra clicks.",
   "Cajal would have approved.",
   "Cogito ergo memorize.",
-  "REM sleep, but for your second brain.",
+  "REM sleep, but for your cortex.",
   "Even your seahorse is impressed.",
   "Wire it once, recall it forever.",
   "Hebb's rule: cells that fire together, wire together.",
@@ -4111,8 +4175,16 @@ function renderDeck(): void {
     const remaining = graphnosisDeckPool.length - nextPageStart;
     els.gDeckProgress.textContent = '';
     els.gDeckCardHead.innerHTML = '';
-    // Empty engram — show onboarding card for new users
-    if (graphnosisAllNodes.length === 0) {
+    // No usable memory yet — empty cortex, or everything forgotten / from
+    // hidden sources. Show onboarding rather than a misleading "all good".
+    const now = Date.now();
+    const hiddenRefs = new Set(disabledSources.values());
+    const hasVisibleMemory = graphnosisAllNodes.some(
+      (n) => n.confidence > 0.2
+        && (n.validUntil === undefined || n.validUntil > now)
+        && !hiddenRefs.has(n.sourceFile),
+    );
+    if (!hasVisibleMemory) {
       els.gDeckCard.innerHTML = `
         <div class="g-deck-onboarding">
           <div class="g-deck-onboarding-top">
@@ -4143,33 +4215,39 @@ function renderDeck(): void {
             <div class="g-deck-onboarding-cmds">
               <div class="g-deck-cmd-group">
                 <span class="g-deck-cmd-grouplabel">Deterministic</span>
-                <span class="g-deck-cmd-chip" title="Click to copy" data-cmd="recall">recall</span>
-                <span class="g-deck-cmd-chip" title="Click to copy" data-cmd="remind">remind</span>
-                <span class="g-deck-cmd-chip" title="Click to copy" data-cmd="remember">remember</span>
-                <span class="g-deck-cmd-chip" title="Click to copy" data-cmd="forget">forget</span>
-                <span class="g-deck-cmd-chip" title="Click to copy" data-cmd="stats">stats</span>
-                <span class="g-deck-cmd-chip" title="Click to copy" data-cmd="vitality">vitality</span>
-                <span class="g-deck-cmd-chip" title="Click to copy" data-cmd="apply">apply</span>
+                <div class="g-deck-cmd-chips">
+                  <span class="g-deck-cmd-chip" data-tool="recall">recall</span>
+                  <span class="g-deck-cmd-chip" data-tool="remind">remind</span>
+                  <span class="g-deck-cmd-chip" data-tool="remember">remember</span>
+                  <span class="g-deck-cmd-chip" data-tool="forget">forget</span>
+                  <span class="g-deck-cmd-chip" data-tool="stats">stats</span>
+                  <span class="g-deck-cmd-chip" data-tool="vitality">vitality</span>
+                  <span class="g-deck-cmd-chip" data-tool="apply">apply</span>
+                </div>
+              </div>
+              <div class="g-deck-cmd-group">
+                <span class="g-deck-cmd-grouplabel">Conditional</span>
+                <div class="g-deck-cmd-chips">
+                  <span class="g-deck-cmd-chip" data-tool="correct">correct</span>
+                </div>
               </div>
               <div class="g-deck-cmd-group">
                 <span class="g-deck-cmd-grouplabel">Non-deterministic</span>
-                <span class="g-deck-cmd-chip" title="Click to copy" data-cmd="develop">develop</span>
-                <span class="g-deck-cmd-chip" title="Click to copy" data-cmd="predict">predict</span>
-                <span class="g-deck-cmd-chip" title="Click to copy" data-cmd="insights">insights</span>
-                <span class="g-deck-cmd-chip" title="Click to copy" data-cmd="correct">correct</span>
+                <div class="g-deck-cmd-chips">
+                  <span class="g-deck-cmd-chip" data-tool="develop">develop</span>
+                  <span class="g-deck-cmd-chip" data-tool="predict">predict</span>
+                  <span class="g-deck-cmd-chip" data-tool="insights">insights</span>
+                </div>
               </div>
             </div>
+            <p class="g-deck-cmd-note">Deterministic tools always return the same answer — no AI model needed. The conditional and non-deterministic tools use the optional Local LLM; enabling it never changes how the deterministic tools behave.</p>
           </div>
         </div>`;
       // Step 2 ingest button
       document.getElementById('ob-ingest-btn')?.addEventListener('click', () => els.btnAddFile.click());
-      // Copy-to-clipboard for cmd chips — CSS class drives the green flash + fade
+      // Each tool chip opens an explanation modal.
       els.gDeckCard.querySelectorAll<HTMLElement>('.g-deck-cmd-chip').forEach((chip) => {
-        chip.addEventListener('click', () => {
-          void navigator.clipboard.writeText(chip.dataset['cmd'] ?? chip.textContent ?? '');
-          chip.classList.add('copied');
-          setTimeout(() => chip.classList.remove('copied'), 1000);
-        });
+        chip.addEventListener('click', () => openToolInfoModal(chip.dataset['tool'] ?? ''));
       });
       return;
     }
@@ -5354,7 +5432,7 @@ function renderDetailPane(): void {
       if ((e.target as HTMLElement).closest('.g-conn-retype-btn')) return;
       selectGraphnosisNode(id, { trace: true });
     });
-    row.addEventListener('mouseenter', () => mainAtlas?.previewHighlight(id));
+    row.addEventListener('mouseenter', () => mainAtlas?.previewHighlight(id, node.id));
     row.addEventListener('mouseleave', () => mainAtlas?.previewHighlight(null));
   });
 
@@ -5471,6 +5549,9 @@ interface ConnRow {
   category: EdgeCategory;
   weight: number;
   direction: 'out' | 'in' | 'undirected';
+  /** True for GNN-predicted (non-deterministic) connections — sourced from
+   *  the `.gnn` overlay, not the deterministic graph. */
+  predicted?: boolean;
   /** User-chosen label (the SDK's `evidence` field on directed edges).
    *  Set when the edge was created via the typed-relationship picker
    *  with a non-default label (e.g. "Works at" for collaborated-on).
@@ -5524,6 +5605,16 @@ function buildConnectionsForNode(nodeId: string): ConnRow[] {
     if (e.a === nodeId) out.push({ edgeId: e.id, fromNodeId: e.a, toNodeId: e.b, neighborId: e.b, type: e.type, category: categoryFor(e.type), weight: e.weight, direction: 'undirected' });
     else if (e.b === nodeId) out.push({ edgeId: e.id, fromNodeId: e.a, toNodeId: e.b, neighborId: e.a, type: e.type, category: categoryFor(e.type), weight: e.weight, direction: 'undirected' });
   }
+  // GNN-predicted (non-deterministic) connections from the `.gnn` overlay.
+  for (const p of lastPredictedEdges) {
+    if (p.from !== nodeId && p.to !== nodeId) continue;
+    const neighborId = p.from === nodeId ? p.to : p.from;
+    out.push({
+      edgeId: p.id, fromNodeId: p.from, toNodeId: p.to, neighborId,
+      type: 'predicted', category: 'predicted', weight: p.score,
+      direction: 'undirected', predicted: true,
+    });
+  }
   return out;
 }
 
@@ -5531,9 +5622,11 @@ function renderConnectionsBlock(conns: ConnRow[]): string {
   if (conns.length === 0) {
     return `<p class="atlas-tip" style="margin-top: 12px;">No connections — this memory stands alone.</p>`;
   }
-  const outs = conns.filter((c) => c.direction === 'out');
-  const ins = conns.filter((c) => c.direction === 'in');
-  const undirs = conns.filter((c) => c.direction === 'undirected');
+  const outs = conns.filter((c) => c.direction === 'out' && !c.predicted);
+  const ins = conns.filter((c) => c.direction === 'in' && !c.predicted);
+  const undirs = conns.filter((c) => c.direction === 'undirected' && !c.predicted);
+  const predicteds = conns.filter((c) => c.predicted);
+  const detCount = outs.length + ins.length + undirs.length;
   const neighborLabel = (id: string): string => {
     const n = graphnosisAllNodes.find((nn) => nn.id === id);
     const text = n?.contentPreview ?? id;
@@ -5544,19 +5637,25 @@ function renderConnectionsBlock(conns: ConnRow[]): string {
     const src = n?.sourceFile ?? '';
     return src ? src.split('/').pop() ?? src : '';
   };
-  const section = (label: string, arrow: string, list: ConnRow[]): string => {
+  const section = (label: string, arrow: string, list: ConnRow[], predicted: boolean): string => {
     if (list.length === 0) return '';
-    return `<div class="g-detail-conn-section">
+    return `<div class="g-detail-conn-section${predicted ? ' g-detail-conn-section-predicted' : ''}">
       <div class="g-detail-conn-title">${escape(label)} (${list.length})</div>
       ${list.map((c) => {
-        const displayLabel = c.evidence ?? humanizeSdkType(c.type, c.direction !== 'undirected');
+        const displayLabel = predicted
+          ? 'predicted link'
+          : (c.evidence ?? humanizeSdkType(c.type, c.direction !== 'undirected'));
         const srcFile = neighborSourceFile(c.neighborId);
         const isDirected = c.direction !== 'undirected';
         const meta = [
           escape(displayLabel),
-          `confidence: ${c.weight.toFixed(2)}`,
+          `${predicted ? 'score' : 'confidence'}: ${c.weight.toFixed(2)}`,
           srcFile ? escape(srcFile) : '',
         ].filter(Boolean).join(' · ');
+        // Predicted links aren't real edges — no retype affordance.
+        const retype = predicted
+          ? ''
+          : `<button class="g-conn-retype-btn" data-edge-id="${escape(c.edgeId)}" data-from="${escape(c.fromNodeId)}" data-to="${escape(c.toNodeId)}" data-directed="${isDirected}" data-current="${escape(c.type)}">change ▾</button>`;
         return `<div class="g-detail-conn-row" data-neighbor="${escape(c.neighborId)}"
           data-edge-id="${escape(c.edgeId)}"
           data-from="${escape(c.fromNodeId)}"
@@ -5567,17 +5666,26 @@ function renderConnectionsBlock(conns: ConnRow[]): string {
             <div class="g-detail-conn-text">${escape(neighborLabel(c.neighborId))}</div>
             <div class="g-detail-conn-meta">
               ${meta}
-              <button class="g-conn-retype-btn" data-edge-id="${escape(c.edgeId)}" data-from="${escape(c.fromNodeId)}" data-to="${escape(c.toNodeId)}" data-directed="${isDirected}" data-current="${escape(c.type)}">change ▾</button>
+              ${retype}
             </div>
           </div>
         </div>`;
       }).join('')}
     </div>`;
   };
-  return `<p class="brain-subtitle" style="margin: 14px 0 4px;">${conns.length} connection${conns.length === 1 ? '' : 's'}</p>
-    ${section('Outgoing', '→', outs)}
-    ${section('Incoming', '←', ins)}
-    ${section('Mutual', '↔', undirs)}`;
+  const plural = (n: number): string => (n === 1 ? '' : 's');
+  // Two lines when predictions exist — one count per kind — so the
+  // deterministic / non-deterministic split is unambiguous and never wraps
+  // mid-phrase. The non-deterministic line picks up the predicted-edge lime.
+  const summaryHtml = predicteds.length > 0
+    ? `<p class="brain-subtitle" style="margin: 14px 0 0;">${detCount} deterministic connection${plural(detCount)}</p>
+       <p class="brain-subtitle" style="margin: 0 0 4px; color: #a3e635;">${predicteds.length} non-deterministic connection${plural(predicteds.length)}</p>`
+    : `<p class="brain-subtitle" style="margin: 14px 0 4px;">${conns.length} connection${plural(conns.length)}</p>`;
+  return `${summaryHtml}
+    ${section('Outgoing', '→', outs, false)}
+    ${section('Incoming', '←', ins, false)}
+    ${section('Mutual', '↔', undirs, false)}
+    ${section('Predicted · non-deterministic', '⇢', predicteds, true)}`;
 }
 
 // (fillRelatedPanel + handleLinkClick removed — replaced by the shared
@@ -6844,6 +6952,18 @@ function forgetSelected(): void {
 
 // ── Tabs ──────────────────────────────────────────────────────────────
 
+/** Clear the 3D Engram to a neutral view — no node selected, no emphasis —
+ *  WITHOUT touching the camera. Run on every (re-)entry to the 3D Engram,
+ *  whether via the inner tab or a return from another left-sidebar screen. */
+function resetAtlasView(): void {
+  graphnosisSelectedId = null;
+  atlasSelectedId = null;
+  els.btnAtlasReset.classList.remove('node-selected');
+  mainAtlas?.resetEmphasis();
+  syncListSelectionHighlight();
+  renderDetailEmpty();
+}
+
 function switchGraphnosisTab(tab: GraphnosisTab): void {
   const prevTab = graphnosisActiveTab;
   graphnosisActiveTab = tab;
@@ -6858,32 +6978,21 @@ function switchGraphnosisTab(tab: GraphnosisTab): void {
     p.classList.toggle('hidden', p.dataset['gpane'] !== tab);
   });
   if (tab === 'atlas') {
-    // Reset to a clean canvas — no node selected, full-colour graph framed
-    // in view — only when genuinely switching INTO the 3D Engram tab from
-    // another tab. Re-entering when atlas is already the active tab (e.g.
-    // returning from the Settings pane) must preserve the user's last
-    // selection state instead of wiping it.
+    // Reset to a clean canvas — no node selected — when genuinely switching
+    // INTO the 3D Engram from another tab. (activateMode handles the other
+    // entry path: returning to this pane from a left-sidebar screen.)
     const enteringFresh = prevTab !== 'atlas';
-    if (enteringFresh) {
-      graphnosisSelectedId = null;
-      atlasSelectedId = null; // atlas-local selection also resets on fresh entry
-      // Clear state directly rather than via selectGraphnosisNode(null) —
-      // that would also re-render the detail pane mid-switch.
-      els.btnAtlasReset.classList.remove('node-selected');
-      if (mainAtlas) mainAtlas.resetEmphasis();
-      syncListSelectionHighlight();
-      renderDetailEmpty();
-    }
+    if (enteringFresh) resetAtlasView();
     void (async () => {
-      await mountAtlasIfNeeded();
+      const firstMount = await mountAtlasIfNeeded();
       pushDataIntoAtlas();
       // resetEmphasis again after the (possibly first-time) mount so a
-      // freshly-created engine also opens with the full graph un-dimmed —
-      // but only on a fresh entry, so a re-entry keeps its emphasis.
+      // freshly-created engine also opens with the full graph un-dimmed.
       if (enteringFresh) mainAtlas?.resetEmphasis();
-      // Frame the whole graph after a beat — lets the force layout settle
-      // before snapping the camera so every node lands in view.
-      setTimeout(() => mainAtlas?.zoomToFit(700, 20), 1200);
+      // Frame the graph ONLY on the very first mount. A reset clears the
+      // selection, not the view — re-entries keep the camera where the user
+      // left it instead of snapping back to a fit.
+      if (firstMount) setTimeout(() => mainAtlas?.zoomToFit(700, 20), 1200);
     })();
   } else if (tab === 'checkin') {
     // Returning to the dashboard from the Atlas tab — re-render in case
@@ -6928,8 +7037,8 @@ function currentAtlasEngineKind(): AtlasEngineKind {
   return 'force-3d';
 }
 
-async function mountAtlasIfNeeded(): Promise<void> {
-  if (mainAtlas) return;
+async function mountAtlasIfNeeded(): Promise<boolean> {
+  if (mainAtlas) return false;
   const kind = currentAtlasEngineKind();
   mainAtlas = await createAtlasEngine(kind, {
     container: els.atlasContainer,
@@ -6943,6 +7052,7 @@ async function mountAtlasIfNeeded(): Promise<void> {
   }) as unknown as Atlas; // cast: factory returns AtlasEngine; main.ts
                           // still types as Atlas during the transition.
                           // To be tightened when all engines are real.
+  return true;
 }
 
 function pushDataIntoAtlas(): void {
@@ -6979,6 +7089,10 @@ function pushDataIntoAtlas(): void {
  * deterministic graph; the IPC returns an empty list when the neural
  * network is disabled (the default), so this is a cheap no-op then.
  */
+/** The neural network's predicted edges for the active engram — cached so
+ *  the inspector can list them next to the deterministic connections. */
+let lastPredictedEdges: Array<{ id: string; from: string; to: string; score: number }> = [];
+
 async function refreshAtlasPredictedEdges(): Promise<void> {
   if (!mainAtlas || !atlasActiveGraph) return;
   const graphId = atlasActiveGraph;
@@ -6988,10 +7102,14 @@ async function refreshAtlasPredictedEdges(): Promise<void> {
     );
     // A graph switch may have happened while the IPC was in flight.
     if (!mainAtlas || atlasActiveGraph !== graphId) return;
+    lastPredictedEdges = predicted;
     mainAtlas.setPredictedEdges(
       predicted.map((p) => ({ id: p.id, from: p.from, to: p.to, score: p.score })),
     );
     renderAtlasLegend();
+    // Predicted edges arrive async — refresh the inspector so a selected
+    // node picks up its non-deterministic connections.
+    if (graphnosisSelectedId) renderDetailPane();
   } catch {
     /* prediction overlay is non-essential — ignore IPC failures */
   }
@@ -7168,7 +7286,7 @@ els.btnAtlasFit.addEventListener('click', () => {
 els.btnAtlasAlive.addEventListener('click', () => {
   if (!mainAtlas) return;
   const nowEnabled = mainAtlas.setAliveEnabled(!mainAtlas.isAliveEnabled());
-  els.btnAtlasAlive.textContent = nowEnabled ? '🧠 Alive Brain: On' : '⏸ Alive Brain: Off';
+  els.btnAtlasAlive.textContent = nowEnabled ? '🧠 Alive Engram: On' : '⏸ Alive Engram: Off';
 });
 
 // ── 3D Atlas navigation cheatsheet ─────────────────────────────────────
@@ -7760,7 +7878,7 @@ function updateBrainUI(): void {
 
 /** Full refresh: pull state + LLM status + scan status, then paint. */
 async function renderLivingBrain(): Promise<void> {
-  els.lbVitalityTitle.textContent = 'Checking your brain…';
+  els.lbVitalityTitle.textContent = 'Checking your cortex…';
   ensureFeedPlaceholder();
   await Promise.all([refreshBrainState(), refreshLlmStatus(), refreshBrainStatus()]);
   // refreshBrainState only repaints on success — paint again so a failed
@@ -7788,10 +7906,10 @@ function engramName(graphId: string): string {
 }
 
 function vitalityCopy(v: number): [string, string] {
-  if (v >= 75) return ['Your second brain is thriving', 'Well-connected, active, and consistent — keep feeding it.'];
-  if (v >= 50) return ['Your second brain is healthy', 'Solid shape. More links and activity will push it higher.'];
-  if (v >= 25) return ['Your second brain is waking up', 'Add memories, connect them, and resolve duplicates to strengthen it.'];
-  return ['Your second brain is dormant', 'Ingest more knowledge and let the brain form connections.'];
+  if (v >= 75) return ['Your cortex is thriving', 'Well-connected, active, and consistent — keep feeding it.'];
+  if (v >= 50) return ['Your cortex is healthy', 'Solid shape. More links and activity will push it higher.'];
+  if (v >= 25) return ['Your cortex is waking up', 'Add memories, connect them, and resolve duplicates to strengthen it.'];
+  return ['Your cortex is dormant', 'Ingest more knowledge and let Graphnosis form connections.'];
 }
 
 function renderLbVitality(): void {
@@ -7936,7 +8054,7 @@ function renderLbHealingLog(): void {
   const host = els.lbHealingLog;
   const n = brainHealingJournal.length;
   if (n === 0) {
-    host.innerHTML = '<p class="lb-empty">Nothing merged yet — the brain merges exact duplicates and redundant memories automatically as it finds them.</p>';
+    host.innerHTML = '<p class="lb-empty">Nothing merged yet — consolidation merges exact duplicates and redundant memories automatically as it finds them.</p>';
     return;
   }
   const reviewed = brainHealingJournal.filter((r) => r.llmReviewed).length;
@@ -7958,6 +8076,11 @@ function renderLbHealingLog(): void {
  *  conflicting memory pairs the autonomous brain could NOT safely merge
  *  on its own. Holistic across every engram. Each pair offers a real
  *  decision — merge them, or keep both. Hidden entirely when empty. */
+/** Pair IDs the user dismissed via the "Needs your review" × button. The list
+ *  stays hidden until consolidation surfaces a pair NOT in this set (something
+ *  new to review) — or until the next app launch, whichever comes first. */
+let dismissedReviewPairIds: Set<string> | null = null;
+
 async function renderNeedsReview(): Promise<void> {
   const host = els.gNeedsReview;
   if (!host) return;
@@ -7971,12 +8094,22 @@ async function renderNeedsReview(): Promise<void> {
   if (pairs.length === 0) {
     host.classList.add('hidden');
     host.innerHTML = '';
+    dismissedReviewPairIds = null; // nothing pending — reset the dismissal
     return;
   }
+  // Dismissed: stay hidden while every pending pair is one the user already
+  // dismissed. A pair from the next consolidation run clears the dismissal.
+  if (dismissedReviewPairIds !== null &&
+      pairs.every((p) => dismissedReviewPairIds?.has(p.id))) {
+    host.classList.add('hidden');
+    return;
+  }
+  dismissedReviewPairIds = null; // there is something to show — consume the dismissal
   host.classList.remove('hidden');
   host.innerHTML = `
+    <button class="g-needs-review-dismiss" title="Dismiss until consolidation finds something new" aria-label="Dismiss this list">×</button>
     <p class="g-needs-review-title">Needs your review — ${pairs.length} memory pair${pairs.length === 1 ? '' : 's'}</p>
-    <p class="g-needs-review-sub">The brain found these memories nearly identical but couldn't be sure they're the same fact — a number, a negation, or a partial overlap made it unsafe to merge automatically. You decide.</p>
+    <p class="g-needs-review-sub">Consolidation found these memories nearly identical but couldn't be sure they're the same fact — a number, a negation, or a partial overlap made it unsafe to merge automatically. You decide.</p>
     ${pairs.map((c) => `
       <div class="lb-dup-card">
         <div class="lb-dup-card-pair">
@@ -7995,6 +8128,12 @@ async function renderNeedsReview(): Promise<void> {
         </div>
       </div>`).join('')}
   `;
+  host.querySelector('.g-needs-review-dismiss')?.addEventListener('click', () => {
+    // Remember exactly which pairs were on screen — the list re-appears only
+    // when consolidation later surfaces a pair that is NOT in this set.
+    dismissedReviewPairIds = new Set(pairs.map((p) => p.id));
+    host.classList.add('hidden');
+  });
   host.querySelectorAll<HTMLButtonElement>('[data-nr-action]').forEach((btn) => {
     btn.addEventListener('click', async () => {
       const id = btn.dataset['nrId'];
@@ -8021,7 +8160,7 @@ function renderLbInsights(): void {
   const active = brainInsights.filter((i) => !i.dismissed);
   if (active.length === 0) {
     if (brainLlmReady) {
-      host.innerHTML = '<p class="lb-empty">No insights yet — the brain surfaces these every few hours once it has had time to study your engrams.</p>';
+      host.innerHTML = '<p class="lb-empty">No insights yet — Graphnosis surfaces these every few hours once it has studied your engrams.</p>';
     } else {
       // Honest empty state: insights + synapse formation are the only
       // features that need a local model. Make clear this is expected,
@@ -8033,14 +8172,9 @@ function renderLbInsights(): void {
         + 'automatic <em>new-connection forming</em> (synapses).</p>'
         + '<p>Everything else — vitality, duplicate detection, memory decay, '
         + 'goal tracking — already works without it.</p>'
-        + '<p><button class="btn-sm primary" id="lb-insights-setup">Set up local AI…</button> '
-        + '<span class="brain-subtitle">Free, a couple of minutes. A Terminal route is listed there too.</span></p>'
+        + '<p class="brain-subtitle">Set one up in the <strong>Local LLM</strong> section '
+        + 'below — free, a couple of minutes.</p>'
         + '</div>';
-      host.querySelector<HTMLButtonElement>('#lb-insights-setup')?.addEventListener('click', () => {
-        document.getElementById('settings-modal')?.classList.remove('hidden');
-        document.getElementById('settings-brain-llm')?.scrollIntoView({ behavior: 'smooth' });
-        void refreshLlmStatus();
-      });
     }
     return;
   }
@@ -8066,7 +8200,7 @@ function renderLbInsights(): void {
 function renderLbGoals(): void {
   const host = els.lbGoals;
   if (brainGoals.length === 0) {
-    host.innerHTML = '<p class="lb-empty">No goals yet — develop one below and the brain will track it.</p>';
+    host.innerHTML = '<p class="lb-empty">No goals yet — develop one below and Graphnosis will track it.</p>';
     return;
   }
   const now = Date.now();
@@ -8097,7 +8231,7 @@ function renderLbGoals(): void {
 function ensureFeedPlaceholder(): void {
   if (!els.lbFeed.querySelector('.lb-feed-item')) {
     els.lbFeed.innerHTML =
-      '<p class="lb-empty">No recent activity yet — the brain scans in the background every few minutes.</p>';
+      '<p class="lb-empty">No recent activity yet — Graphnosis scans in the background every few minutes.</p>';
   }
 }
 
@@ -8412,9 +8546,57 @@ document.addEventListener('visibilitychange', () => {
 
 // ── LLM / Ollama settings ─────────────────────────────────────────────────
 
+/** Two-step inline confirm flag for enabling the (non-deterministic) local
+ *  LLM — mirrors `nnConfirmPending` for the neural network. */
+let llmConfirmPending = false;
+
+/**
+ * Render the local-LLM master switch into #llm-enable-block. The LLM is
+ * opt-in: a running Ollama is never enough to turn it on. Mirrors the neural
+ * network's flow — a two-step confirm guards the non-deterministic opt-in;
+ * once on, a one-click Turn off.
+ */
+function renderLlmEnableBlock(reachable: boolean, hasModels: boolean, enabled: boolean): void {
+  const host = els.llmEnableBlock;
+  if (!reachable || !hasModels) {
+    host.innerHTML = '<p class="brain-subtitle">Local LLM is <strong>off</strong>. '
+      + 'Finish the Ollama setup below, then you can turn it on here.</p>';
+  } else if (enabled) {
+    host.innerHTML = '<p class="brain-subtitle">Status: <strong>ON</strong> — Graphnosis is '
+      + 'using your local LLM for insights, new-connection forming, and the mixed / '
+      + 'non-deterministic tools.</p>'
+      + '<button data-llm="disable" class="btn-sm">Turn off</button>';
+  } else if (llmConfirmPending) {
+    host.innerHTML = '<p class="brain-subtitle"><strong>The local LLM is non-deterministic</strong> '
+      + '— the same memory can yield different results across runs. It runs entirely on your '
+      + 'device; nothing is ever sent to the cloud. Turn it on?</p>'
+      + '<div class="lb-goal-form-actions">'
+      + '<button data-llm="cancel" class="btn-sm">Cancel</button>'
+      + '<button data-llm="confirm" class="btn-sm primary">Enable Local LLM</button>'
+      + '</div>';
+  } else {
+    host.innerHTML = '<p class="brain-subtitle">Ollama is set up, but the local LLM is '
+      + '<strong>off</strong> — Graphnosis won’t route any memory through it until you turn '
+      + 'it on.</p>'
+      + '<button data-llm="enable" class="btn-sm">Enable Local LLM…</button>';
+  }
+  const on = (action: string, fn: () => void): void => {
+    host.querySelector(`[data-llm="${action}"]`)?.addEventListener('click', fn);
+  };
+  on('enable', () => { llmConfirmPending = true; renderLlmEnableBlock(reachable, hasModels, enabled); });
+  on('cancel', () => { llmConfirmPending = false; renderLlmEnableBlock(reachable, hasModels, enabled); });
+  on('confirm', () => {
+    llmConfirmPending = false;
+    void ipcCall('llm:setEnabled', { enabled: true }).then(() => { void refreshLlmStatus(); });
+  });
+  on('disable', () => {
+    void ipcCall('llm:setEnabled', { enabled: false }).then(() => { void refreshLlmStatus(); });
+  });
+}
+
 async function refreshLlmStatus(): Promise<void> {
   try {
-    const status = await ipcCall<{ ollamaReachable: boolean; installedModels: string[]; activeModel: string | null; catalog?: Array<{ id: string; name: string }> }>('llm:status', {});
+    const status = await ipcCall<{ ollamaReachable: boolean; installedModels: string[]; activeModel: string | null; enabled: boolean; catalog?: Array<{ id: string; name: string }> }>('llm:status', {});
 
     if (status.ollamaReachable) {
       els.ollamaStatusBadge.textContent = '● Connected';
@@ -8424,18 +8606,19 @@ async function refreshLlmStatus(): Promise<void> {
       els.ollamaConnectedHelp.style.display = '';
 
       const hasModels = status.installedModels.length > 0;
-      // LLM-only brain features can run once Ollama is up AND a model exists.
-      brainLlmReady = hasModels;
+      // LLM brain features need Ollama up, a model installed, AND the user's
+      // explicit opt-in — detection alone never turns the local LLM on.
+      brainLlmReady = hasModels && status.enabled;
       // Active-model row is only useful once at least one model is installed.
       els.ollamaModelRow.style.display = hasModels ? 'flex' : 'none';
       els.ollamaConnectedHelp.innerHTML = hasModels
         ? '✅ Ollama is connected. To add another model, pick it below and click '
-          + '<strong>Pull</strong>. To switch which model the Brain uses, choose it '
+          + '<strong>Pull</strong>. To switch which model Graphnosis uses, choose it '
           + 'as the <strong>Active model</strong> and click <strong>Apply</strong>.'
         : '✅ Ollama is connected — last step. Pick a model below and click '
           + '<strong>Pull</strong> to download it (one-time). '
           + '<strong>Llama 3.2 3B</strong> is the recommended starting point. '
-          + 'The Brain’s AI features turn on automatically once a model finishes.';
+          + 'Then turn the local LLM on at the top of this section.';
 
       // Populate model selector
       els.ollamaModelSelect.innerHTML = '';
@@ -8446,6 +8629,7 @@ async function refreshLlmStatus(): Promise<void> {
         if (m === status.activeModel) opt.selected = true;
         els.ollamaModelSelect.appendChild(opt);
       }
+      renderLlmEnableBlock(true, hasModels, status.enabled);
     } else {
       els.ollamaStatusBadge.textContent = '● Not detected';
       els.ollamaStatusBadge.className = 'err';
@@ -8454,6 +8638,7 @@ async function refreshLlmStatus(): Promise<void> {
       els.ollamaConnectedHelp.style.display = 'none';
       els.ollamaNotInstalled.style.display = '';
       brainLlmReady = false;
+      renderLlmEnableBlock(false, false, status.enabled);
     }
     renderRailGetConnected();
   } catch { /* non-fatal */ }
@@ -8686,6 +8871,94 @@ interface EngramSuggestPayload {
    *  (or still falls through to "Create new" with the requested name). */
   candidates?: EngramSuggestCandidate[];
 }
+
+// ── Graphnosis docs ingest offer ──────────────────────────────────────────
+//
+// On cortex unlock we ask the sidecar whether to offer ingesting the
+// Graphnosis documentation site into a dedicated `graphnosis-docs` engram.
+// The sidecar owns the state machine (offered / declined / deleted / app
+// updated); the App just acts on the returned decision.
+//
+// `docsOfferChecked` guards against re-running the check on every render()
+// — render() fires on each status event and the periodic status poll, but
+// the offer should be evaluated once per unlocked session.
+let docsOfferChecked = false;
+
+/** Ask the sidecar what to do about the docs engram, then act on it. Runs
+ *  once per unlock. `offer` shows a banner; `reingest` runs silently with a
+ *  toast; `none` does nothing. */
+async function checkDocsIngestOffer(): Promise<void> {
+  if (docsOfferChecked) return;
+  docsOfferChecked = true;
+  try {
+    const appVersion = await getVersion();
+    const { decision } = await ipcCall<{ decision: 'offer' | 'reingest' | 'none' }>(
+      'docs:checkOffer', { appVersion },
+    );
+    if (decision === 'offer') {
+      showDocsOfferBanner();
+    } else if (decision === 'reingest') {
+      // App updated — refresh the docs silently. A toast keeps it honest
+      // without demanding a click.
+      const tid = addIngestToast('Updating Graphnosis docs', 'The app updated — refreshing docs…');
+      try {
+        const { ingested, failed } = await ipcCall<{ ingested: number; failed: number }>(
+          'docs:ingest', { appVersion },
+        );
+        finishIngestToast(tid, 'success', `Docs updated · ${ingested} pages${failed ? `, ${failed} failed` : ''}`);
+        void fetchGraphsMetadata();
+        void refreshStats();
+      } catch (e) {
+        finishIngestToast(tid, 'error', `Couldn't update docs: ${String(e)}`);
+      }
+    }
+    // 'none' → nothing to do.
+  } catch (e) {
+    // Non-fatal — the docs offer is a convenience, not core functionality.
+    console.error('docs:checkOffer failed', e);
+  }
+}
+
+function showDocsOfferBanner(): void {
+  document.getElementById('docs-offer-banner')?.classList.remove('hidden');
+}
+
+function hideDocsOfferBanner(): void {
+  document.getElementById('docs-offer-banner')?.classList.add('hidden');
+}
+
+document.getElementById('docs-offer-add')?.addEventListener('click', () => {
+  const addBtn = document.getElementById('docs-offer-add') as HTMLButtonElement | null;
+  const dismissBtn = document.getElementById('docs-offer-dismiss') as HTMLButtonElement | null;
+  if (addBtn) { addBtn.disabled = true; addBtn.textContent = 'Ingesting docs…'; }
+  if (dismissBtn) dismissBtn.disabled = true;
+  void (async () => {
+    const tid = addIngestToast('Adding Graphnosis docs', 'Ingesting the documentation site…');
+    try {
+      const appVersion = await getVersion();
+      const { ingested, failed } = await ipcCall<{ ingested: number; failed: number }>(
+        'docs:ingest', { appVersion },
+      );
+      hideDocsOfferBanner();
+      finishIngestToast(tid, 'success', `Graphnosis docs added · ${ingested} pages${failed ? `, ${failed} failed` : ''}`);
+      // Surface the freshly-created engram in the picker + stats.
+      await fetchGraphsMetadata();
+      void refreshStats();
+      void pollGraphMutations();
+    } catch (e) {
+      finishIngestToast(tid, 'error', `Couldn't add docs: ${String(e)}`);
+      // Re-enable so the user can retry from the banner.
+      if (addBtn) { addBtn.disabled = false; addBtn.textContent = 'Add docs'; }
+      if (dismissBtn) dismissBtn.disabled = false;
+    }
+  })();
+});
+
+document.getElementById('docs-offer-dismiss')?.addEventListener('click', () => {
+  hideDocsOfferBanner();
+  // Persist the decline so we never re-offer on future unlocks.
+  void ipcCall('docs:decline', {}).catch((e) => console.error('docs:decline failed', e));
+});
 
 // Selection state for the banner: null = "Create new", string = existing graphId.
 let pendingEngramSuggestion: EngramSuggestPayload | null = null;
@@ -8920,7 +9193,7 @@ const TOUR_STEPS: Array<{ title: string; body: string; connectArea?: boolean }> 
   },
   {
     title: 'Your AI now remembers you',
-    body: 'Connect any MCP-aware AI (Claude, Cursor, and more). When you start a conversation, Graphnosis retrieves and attaches the most relevant memories, like the human brain\'s prefrontal cortex. The AI answers as if it already knew you.\n\nThe bridge between your AI and your Cortex is the synapse — Graphnosis\'s background process, named after the connections that pass signals between neurons in the brain. It only fires when your Cortex is unlocked and the app is running.\n\nBecause your files are already indexed inside Graphnosis, your AI doesn\'t have to re-parse the same PDFs, notes, or spreadsheets every prompt. Faster, more consistent, less token cost. Keep the app running with your Cortex unlocked while you use your AI client — closing the app means closing the memory.',
+    body: 'Connect any MCP-aware AI (Claude, Cursor, and more). When you start a conversation, Graphnosis retrieves and attaches the most relevant memories, like the human brain\'s prefrontal cortex. The AI answers as if it already knew you.\n\nThe bridge between your AI and your Cortex is the synapse — Graphnosis\' background process, named after the connections that pass signals between neurons in the brain. It only fires when your Cortex is unlocked and the app is running.\n\nBecause your files are already indexed inside Graphnosis, your AI doesn\'t have to re-parse the same PDFs, notes, or spreadsheets every prompt. Faster, more consistent, less token cost. Keep the app running with your Cortex unlocked while you use your AI client — closing the app means closing the memory.',
   },
   {
     title: 'Your local, encrypted, private memory',
@@ -9231,6 +9504,10 @@ void listen('graphnosis://unlocked-via-recovery', () => {
       });
       // Persist for the next launch — same flow as the passphrase path.
       rememberCortexDir(cortexDir);
+      // Fresh cortex — clear any leftover two-step enable-confirm (see the
+      // passphrase unlock path for the rationale).
+      nnConfirmPending = false;
+      llmConfirmPending = false;
       if (phraseInput) phraseInput.value = '';
       section?.classList.add('hidden');
       render(result);
@@ -9792,11 +10069,9 @@ async function refreshConnectorsList(): Promise<void> {
     renderRailGetConnected();
     if (!res.configs.length) {
       wrap.innerHTML = `
-        <div class="connector-row" style="grid-template-columns: 1fr;">
-          <span style="color: var(--fg-dim); font-size: 14px;">
-            No connectors installed yet. Pick one below to start auto-ingesting from your existing tools.
-          </span>
-        </div>`;
+        <p style="color: var(--fg-dim); font-size: 14px; padding: 10px 4px; margin: 0;">
+          No connectors installed yet. Pick one above to start auto-ingesting from your existing tools.
+        </p>`;
       return;
     }
     const statusById = new Map(res.statuses.map((s) => [s.id, s]));

@@ -78,6 +78,9 @@ pub async fn start_with_recovery(app: &AppHandle, cortex_dir: &Path, recovery_ph
 
 async fn start_inner(app: &AppHandle, cortex_dir: &Path, passphrase: &str, recovery_phrase: Option<&str>) -> Result<SidecarHandle> {
     let socket_path = cortex_dir.join("sidecar.sock");
+    // Cortex-independent MCP listener socket (see mcp_socket_path) — the path
+    // external clients bake into their config, stable across cortex switches.
+    let mcp_socket = mcp_socket_path()?;
     // Stale socket left by a previous orphan? Remove it; the sidecar would recreate
     // it cleanly, but having it pre-existing can mask the "is the new sidecar up?" check.
     let _ = std::fs::remove_file(&socket_path);
@@ -99,6 +102,9 @@ async fn start_inner(app: &AppHandle, cortex_dir: &Path, passphrase: &str, recov
     cmd
         .env("GRAPHNOSIS_CORTEX", cortex_dir)
         .env("GRAPHNOSIS_IPC_SOCKET", &socket_path)
+        // Fixed, cortex-independent path so a client configured once stays
+        // connected across every cortex folder (see mcp_socket_path).
+        .env("GRAPHNOSIS_MCP_SOCKET", &mcp_socket)
         // Default graph; the App could later make this user-configurable.
         .env("GRAPHNOSIS_DEFAULT_GRAPH", "personal");
     if !dyld_search_path.is_empty() {
@@ -276,8 +282,8 @@ fn classify_startup_failure(stderr_tail: &str, exit_code: Option<i32>) -> String
     {
         return "Another Graphnosis synapse is already holding this cortex's lock. \
                 Quit any other Graphnosis instance (including Claude Desktop's MCP server \
-                if it spawns its own synapse), or run \
-                `pkill -f apps/desktop-sidecar/dist/index.js` to clear orphans, then try again."
+                if it spawns its own synapse), then try again. If the lock persists, quit \
+                any leftover `graphnosis-sidecar` process from Activity Monitor."
             .to_string();
     }
     // Missing env var, missing node binary, etc. — bubble up.
@@ -340,6 +346,32 @@ fn trimmed_stderr_for_display(raw: &str) -> String {
     let cut_from = trimmed.len() - MAX_BYTES;
     let tail = &trimmed[cut_from..];
     format!("…[earlier output truncated]…\n{}", tail)
+}
+
+/// Fixed, cortex-independent filesystem path for the sidecar's MCP listener
+/// socket — `~/.graphnosis/mcp.sock`.
+///
+/// This path MUST NOT live inside the cortex folder. External MCP clients
+/// (Claude Desktop, Claude Code, Cursor) bake this exact path into their own
+/// global config when the user clicks "Connect", and only one sidecar runs at
+/// a time. A per-cortex path silently broke every configured client the
+/// moment the user opened a different cortex folder — a single stable path
+/// means one "Connect" keeps working across every cortex.
+///
+/// Kept short on purpose: macOS caps Unix socket paths at ~104 bytes, and
+/// `~/Library/Application Support/...` would eat most of that. The sidecar's
+/// MCP server `mkdir -p`s the parent directory before binding.
+///
+/// Mac App Store note: under the App Sandbox `~/.graphnosis/` is NOT writable
+/// (the current Developer ID / notarized build is unsandboxed, so it is fine
+/// there). A future sandboxed MAS build must revisit this — the sandbox
+/// container path is itself too long for `sun_path`, so MAS likely needs a
+/// localhost-TCP MCP transport instead of a filesystem socket. This function
+/// is the single place that decision has to land.
+pub fn mcp_socket_path() -> Result<PathBuf> {
+    let home = dirs::home_dir()
+        .ok_or_else(|| anyhow!("could not resolve the home directory for the MCP socket path"))?;
+    Ok(home.join(".graphnosis").join("mcp.sock"))
 }
 
 /// Resolve the path to the compiled MCP relay binary.
