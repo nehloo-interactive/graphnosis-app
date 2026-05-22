@@ -78,6 +78,9 @@ export interface PredictionResult {
   opportunities: string[];
   recommendation: string;
   referencedNodeIds: string[];
+  /** True when no Local LLM was available, so `recommendation` carries the
+   *  raw recalled memory rather than a synthesized risk/opportunity assessment. */
+  degraded?: boolean;
 }
 
 // ── LLM prompts ─────────────────────────────────────────────────────────────
@@ -262,6 +265,11 @@ export class BrainEngine {
   // Guards runFullScan() against overlapping on-demand triggers (e.g. the
   // user mashing Refresh, or a tab-open scan racing a manual one).
   private scanInFlight = false;
+  /** Flipped true the first time a full scan finishes. Until then the
+   *  duplicate-pair count is 0, so any vitality score would read artificially
+   *  high — the UI-facing getVitalityReport() withholds a number until this
+   *  is set rather than showing a misleading one at cortex open. */
+  private firstScanComplete = false;
   // Guards the (now genuinely expensive) duplicate scan against
   // overlapping runs — the boot warmup, the 20-min interval, and a
   // runFullScan can otherwise all enter it at once.
@@ -446,7 +454,12 @@ export class BrainEngine {
     this.reinforcement.enrichRecall(sub);
   }
 
-  async getVitalityReport(): Promise<VitalityReport> {
+  /** UI-facing vitality. Returns null until the first full scan has run —
+   *  before that the duplicate count is 0 and the score reads artificially
+   *  high, so the UI shows a "starting up" state instead of a misleading
+   *  number. The `__brain_done_fullscan__` frame makes the UI re-fetch. */
+  async getVitalityReport(): Promise<VitalityReport | null> {
+    if (!this.firstScanComplete) return null;
     return this.vitality.compute(this.duplicatePairs.length);
   }
 
@@ -546,7 +559,10 @@ export class BrainEngine {
         ].join('\n'),
       });
     } else {
-      synthesis = `*[Local AI not available — showing recalled context only]*\n\n${recalled.prompt}`;
+      synthesis =
+        `_The Local LLM is not enabled, so this is the raw memory Graphnosis recalled — ` +
+        `not a synthesized plan. Tell the user they can enable the Local LLM in Graphnosis ` +
+        `(the "Go Non-Deterministic" tab) for a full strategic plan._\n\n---\n\n${recalled.prompt}`;
     }
 
     return {
@@ -573,7 +589,9 @@ export class BrainEngine {
     }
 
     if (!this.llm || !(await this.pingLlm())) {
-      return { risks: [], opportunities: [], recommendation: recalled.prompt.slice(0, 200), referencedNodeIds };
+      // No Local LLM — cannot synthesize a structured assessment. Hand back
+      // the full recalled memory and flag it so the caller can tell the AI.
+      return { risks: [], opportunities: [], recommendation: recalled.prompt, referencedNodeIds, degraded: true };
     }
 
     const raw = await this.llm.complete({
@@ -686,6 +704,7 @@ export class BrainEngine {
       console.error('[brain] full scan error:', err);
     } finally {
       this.scanInFlight = false;
+      this.firstScanComplete = true;
       this.emitBrain('__brain_done_fullscan__');
     }
   }
@@ -1407,6 +1426,12 @@ export class BrainEngine {
 
   private async pingLlm(): Promise<boolean> {
     if (!this.llm) return false;
+    // The local LLM is opt-in. Even when Ollama is reachable, every
+    // LLM-backed brain feature (develop, predict, synapse, insight, healing
+    // review) stays off until the user explicitly enables it — and they all
+    // gate on pingLlm() before calling complete(), so this is the one place
+    // the master switch needs to be enforced.
+    if (this.host.getSettings().ai.llmEnabled !== true) return false;
     const llmWithPing = this.llm as { ping?: () => Promise<boolean> };
     if (typeof llmWithPing.ping === 'function') {
       return llmWithPing.ping();

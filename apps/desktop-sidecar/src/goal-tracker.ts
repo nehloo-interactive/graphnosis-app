@@ -105,8 +105,9 @@ export class GoalTracker {
         }
       }
 
-      // LLM milestone assessment (optional, requires Ollama)
-      if (!this.llm) continue;
+      // LLM milestone assessment — optional: needs Ollama AND the user's
+      // opt-in, since the local LLM is off by default.
+      if (!this.llm || this.host.getSettings().ai.llmEnabled !== true) continue;
       try {
         const recentContext = await this.host.recall(goal.title, {
           budget: { maxTokens: 500, maxNodes: 5 },

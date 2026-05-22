@@ -6,6 +6,7 @@ import os from 'node:os';
 import { z } from 'zod';
 import type { GraphnosisHost } from './host.js';
 import { ingestFile, ingestWeb, ingestClip } from './ingest.js';
+import { ingestGraphnosisDocs } from './docs-ingest.js';
 import type { BroadcastRawFn } from './events.js';
 import { mcpRegistry } from './mcp-registry.js';
 import { applyCorrection as runApplyCorrection } from './correction.js';
@@ -24,6 +25,10 @@ const Request = z.object({
   method: z.string(),
   params: z.unknown().optional(),
 });
+
+/** Fixed slug for the engram holding the ingested Graphnosis documentation.
+ *  Slug-like so it satisfies createGraph's filesystem-safety rules. */
+const DOCS_ENGRAM_ID = 'graphnosis-docs';
 
 /**
  * Walk an arbitrary IPC result and replace characters that produce invalid
@@ -817,6 +822,9 @@ async function dispatch(deps: IpcDeps, method: string, params: unknown): Promise
           reingestQuietMs: parsed.ai.reingestQuietMs ?? currentAi.reingestQuietMs,
           chunkSize: parsed.ai.chunkSize ?? currentAi.chunkSize,
           embedBatch: parsed.ai.embedBatch ?? currentAi.embedBatch,
+          // The local-LLM master switch is owned by the dedicated
+          // `llm:setEnabled` IPC — preserve it across a generic settings update.
+          llmEnabled: currentAi.llmEnabled,
         };
       }
       if (parsed.mobile) {
@@ -1184,15 +1192,31 @@ async function dispatch(deps: IpcDeps, method: string, params: unknown): Promise
           installedModels = (data.models ?? []).map(m => m.name);
         }
       } catch { /* Ollama not running or not installed */ }
-      const activeModel = deps.host.getSettings().ai?.llmModel ?? null;
+      const settings = deps.host.getSettings();
+      const activeModel = settings.ai?.llmModel ?? null;
       const { LLM_CATALOG } = await import('./local-llm.js');
-      return { ollamaReachable, installedModels, activeModel, catalog: LLM_CATALOG };
+      return {
+        ollamaReachable, installedModels, activeModel,
+        enabled: settings.ai.llmEnabled === true,
+        catalog: LLM_CATALOG,
+      };
     }
 
     case 'llm:setModel': {
       const { model } = z.object({ model: z.string().min(1) }).parse(params);
       const current = deps.host.getSettings();
       await deps.host.setSettings({ ai: { ...current.ai, llmModel: model } });
+      return { ok: true };
+    }
+
+    case 'llm:setEnabled': {
+      // The local LLM master switch. OFF by default; the App's Local LLM
+      // panel flips it on (behind a confirmation) once Ollama + a model are
+      // ready. Every LLM-backed feature gates on this — see pingLlm() and
+      // the mcpDeps.llm getter in the sidecar.
+      const { enabled } = z.object({ enabled: z.boolean() }).parse(params);
+      const current = deps.host.getSettings();
+      await deps.host.setSettings({ ai: { ...current.ai, llmEnabled: enabled } });
       return { ok: true };
     }
 
@@ -1222,6 +1246,79 @@ async function dispatch(deps: IpcDeps, method: string, params: unknown): Promise
         });
         child.on('error', reject);
       });
+    }
+
+    // ── Graphnosis docs ingest ───────────────────────────────────────────────
+    //
+    // On cortex unlock the App asks whether to offer ingesting the Graphnosis
+    // documentation site into a dedicated `graphnosis-docs` engram. The state
+    // machine below distinguishes "never offered" from "user declined" from
+    // "user deleted it" so we never nag a user who said no — while still
+    // auto-re-ingesting after an app update (docs may have changed).
+
+    case 'docs:checkOffer': {
+      const { appVersion } = z.object({ appVersion: z.string() }).parse(params ?? {});
+      const settings = deps.host.getSettings();
+      const exists = deps.host.listGraphs().includes(DOCS_ENGRAM_ID);
+      const docsState = settings.docsEngram;
+      let decision: 'offer' | 'reingest' | 'none';
+      if (exists) {
+        // Engram is present. Re-ingest only if it was last ingested under a
+        // different app version — the docs site may have changed since.
+        decision = docsState?.ingestedAppVersion !== appVersion ? 'reingest' : 'none';
+      } else if (docsState?.declined === true) {
+        // User explicitly clicked "Not now" — respect that, never re-offer.
+        decision = 'none';
+      } else if (typeof docsState?.ingestedAppVersion === 'string' && docsState.ingestedAppVersion.length > 0) {
+        // It was ingested before and is now gone ⇒ the user deleted the
+        // engram. Respect that deletion — don't silently recreate it.
+        decision = 'none';
+      } else {
+        // Never offered, never ingested, never declined → offer it.
+        decision = 'offer';
+      }
+      return { decision };
+    }
+
+    case 'docs:ingest': {
+      const { appVersion } = z.object({ appVersion: z.string() }).parse(params ?? {});
+      // Create the docs engram if it doesn't exist yet — mirror the
+      // create-then-set-metadata pattern from graphs.createWithTemplate so it
+      // shows up in the picker with a friendly name.
+      if (!deps.host.listGraphs().includes(DOCS_ENGRAM_ID)) {
+        await deps.host.createGraph(DOCS_ENGRAM_ID);
+        await deps.host.setGraphMetadata(DOCS_ENGRAM_ID, {
+          template: 'reading',
+          displayName: 'Graphnosis Docs',
+          createdAt: Date.now(),
+        });
+      }
+      const { ingested, failed } = await withEmbedding(() =>
+        ingestGraphnosisDocs(deps.host, DOCS_ENGRAM_ID),
+      );
+      // Record the app version we ingested under so a future app update
+      // triggers a re-ingest. Clearing `declined` is intentional: if the
+      // user previously declined and later ingested anyway, they no longer
+      // count as declined. setSettings deep-merges this partial.
+      await deps.host.setSettings({
+        docsEngram: { declined: false, ingestedAppVersion: appVersion },
+      });
+      return { ingested, failed };
+    }
+
+    case 'docs:decline': {
+      // User clicked "Not now". Persist the decline, preserving any existing
+      // ingestedAppVersion so a later re-ingest decision stays correct.
+      const current = deps.host.getSettings().docsEngram;
+      await deps.host.setSettings({
+        docsEngram: {
+          declined: true,
+          ...(typeof current?.ingestedAppVersion === 'string' && current.ingestedAppVersion.length > 0
+            ? { ingestedAppVersion: current.ingestedAppVersion }
+            : {}),
+        },
+      });
+      return { ok: true };
     }
 
     default:

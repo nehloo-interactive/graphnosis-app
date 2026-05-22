@@ -190,6 +190,14 @@ export interface AiSettings {
    */
   embedBatch: EmbedBatchPreset;
   /**
+   * Master switch for the local LLM. OFF by default — even when Ollama is
+   * installed and a model is running, Graphnosis never routes a memory
+   * through it until the user explicitly opts in (Go Non-Deterministic →
+   * Local LLM). The LLM is non-deterministic, so its use is a deliberate
+   * choice, not an automatic consequence of Ollama being detected.
+   */
+  llmEnabled: boolean;
+  /**
    * The Ollama model tag to use for brain features (synapse, insight, develop, predict).
    * Overrides the default from LLM_CATALOG. Set via Settings → Brain / Local AI.
    * Examples: "llama3.2:3b-instruct-q4_K_M", "qwen2.5:3b-instruct-q4_K_M"
@@ -296,6 +304,13 @@ export interface AppSettings {
    * sidecar auto-populates on first boot after the feature ships.
    */
   vscode?: VsCodeBridgeSettings;
+  /** Docs-engram ingest state. Absent on cortexes that never saw the offer. */
+  docsEngram?: {
+    /** true once the user clicked "Not now" on the docs-ingest offer. */
+    declined?: boolean;
+    /** App version at the last successful docs ingest. Drives auto-re-ingest. */
+    ingestedAppVersion?: string;
+  };
   /**
    * Alive Brain — background intelligence settings. Absent on older cortexes;
    * BrainEngine starts all activities immediately when unset (treats them
@@ -416,6 +431,9 @@ export const DEFAULT_SETTINGS: AppSettings = {
     // 'auto' picks per-machine on first use without the user having to
     // know what 256 vs 1024 means. They can override via Settings.
     embedBatch: 'auto',
+    // OFF by default — the local LLM is opt-in. Detection of a running
+    // Ollama never auto-enables it; the user turns it on deliberately.
+    llmEnabled: false,
   },
   graphMetadata: {},
 };
@@ -525,6 +543,9 @@ export function mergeWithDefaults(partial: Partial<AppSettings> | null | undefin
     ai.embedBatch === 'large' || ai.embedBatch === 'auto'
       ? ai.embedBatch
       : DEFAULT_SETTINGS.ai.embedBatch;
+  const llmEnabled = typeof ai.llmEnabled === 'boolean'
+    ? ai.llmEnabled
+    : DEFAULT_SETTINGS.ai.llmEnabled;
   const llmModel = typeof ai.llmModel === 'string' && ai.llmModel.length > 0
     ? ai.llmModel
     : undefined;
@@ -578,6 +599,20 @@ export function mergeWithDefaults(partial: Partial<AppSettings> | null | undefin
     };
   }
 
+  // Docs-engram ingest state — optional. Absent on cortexes that never saw
+  // the offer. Validate the two fields by type; drop anything malformed so a
+  // hand-edited settings.json can't corrupt the auto-re-ingest state machine.
+  let docsEngram: AppSettings['docsEngram'] | undefined;
+  if (partial?.docsEngram) {
+    const de = partial.docsEngram;
+    docsEngram = {
+      ...(typeof de.declined === 'boolean' ? { declined: de.declined } : {}),
+      ...(typeof de.ingestedAppVersion === 'string' && de.ingestedAppVersion.length > 0
+        ? { ingestedAppVersion: de.ingestedAppVersion }
+        : {}),
+    };
+  }
+
   // Brain / Alive Brain — pass through if present, validate individual fields.
   let brain: AppSettings['brain'] | undefined;
   if (partial?.brain) {
@@ -622,13 +657,14 @@ export function mergeWithDefaults(partial: Partial<AppSettings> | null | undefin
     ui: { inspectorDetail },
     ai: {
       useAsDefaultMemory, autoRelinkMaxNodes, autoReingestOnFileChange,
-      reingestQuietMs, chunkSize, embedBatch,
+      reingestQuietMs, chunkSize, embedBatch, llmEnabled,
       ...(llmModel !== undefined ? { llmModel } : {}),
     },
     graphMetadata,
     ...(mobile !== undefined ? { mobile } : {}),
     ...(connectors !== undefined ? { connectors } : {}),
     ...(vscode !== undefined ? { vscode } : {}),
+    ...(docsEngram !== undefined ? { docsEngram } : {}),
     ...(brain !== undefined ? { brain } : {}),
   };
 }

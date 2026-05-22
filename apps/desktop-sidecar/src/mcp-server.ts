@@ -4,7 +4,7 @@ import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprot
 import { z } from 'zod';
 import type { GraphnosisHost } from './host.js';
 import type { LocalLlm } from './correction.js';
-import { proposeCorrection, applyCorrection } from './correction.js';
+import { proposeCorrection, applyCorrection, type GnnCandidateExpander } from './correction.js';
 import { ingestClip } from './ingest.js';
 import { withEmbedding } from './embedding-queue.js';
 import { mcpRegistry } from './mcp-registry.js';
@@ -245,6 +245,53 @@ function resolveTargetEngram(host: GraphnosisHost, name: string): ResolveResult 
   return { kind: 'ambiguous', candidates: scored.slice(0, MAX_CANDIDATES) };
 }
 
+/**
+ * Builds a GNN candidate expander for `correct`. Given the recall hits, it
+ * returns Neural-Network-predicted neighbour memories — connections lexical
+ * recall missed — so the correction can consider them. Bounded to 8 extras;
+ * each carries the GNN edge probability so a strong prediction can be ranked
+ * above a weak recall hit.
+ */
+function buildGnnExpander(host: GraphnosisHost, brainEngine: BrainEngine): GnnCandidateExpander {
+  return async (recallCandidates) => {
+    const extras: Array<{ graphId: string; nodeId: string; text: string; gnnScore: number }> = [];
+    const seen = new Set(recallCandidates.map(c => `${c.graphId}::${c.nodeId}`));
+    const graphIds = [...new Set(recallCandidates.map(c => c.graphId))];
+    for (const graphId of graphIds) {
+      const predicted = brainEngine.getPredictedEdges(graphId);
+      if (predicted.length === 0) continue;
+      const recallIds = new Set(
+        recallCandidates.filter(c => c.graphId === graphId).map(c => c.nodeId),
+      );
+      // Index node text lazily — only when this graph actually contributes.
+      let textById: Map<string, string> | null = null;
+      const textOf = (id: string): string | undefined => {
+        if (!textById) {
+          textById = new Map();
+          for (const n of host.listNodes(graphId)) textById.set(n.id, n.contentPreview);
+        }
+        return textById.get(id);
+      };
+      for (const e of predicted) {
+        // Keep edges with exactly one endpoint among the recall hits — the
+        // other endpoint is a memory recall did not directly surface.
+        let neighbor: string | null = null;
+        if (recallIds.has(e.from) && !recallIds.has(e.to)) neighbor = e.to;
+        else if (recallIds.has(e.to) && !recallIds.has(e.from)) neighbor = e.from;
+        if (!neighbor) continue;
+        const key = `${graphId}::${neighbor}`;
+        if (seen.has(key)) continue;
+        const text = textOf(neighbor);
+        if (!text) continue; // node gone / no preview — skip
+        seen.add(key);
+        extras.push({ graphId, nodeId: neighbor, text, gnnScore: e.score });
+        if (extras.length >= 8) return extras;
+      }
+    }
+    return extras;
+  };
+}
+
 export interface McpDeps {
   host: GraphnosisHost;
   llm: () => LocalLlm | null;
@@ -420,7 +467,7 @@ export function createMcpServer(deps: McpDeps): Server {
       },
       {
         name: 'correct',
-        description: 'DETERMINISM — Non-deterministic: a local LLM parses the natural-language correction into a structured diff, so the proposed diff can vary between runs. The user always reviews and approves that diff before anything is written.\n\nPropose a CORRECTION to the user\'s Graphnosis memory in natural language. Returns a structured diff preview; nothing is written until the user opens the Graphnosis App and approves it.\n\nLANGUAGE: Works in any language Claude understands. Pass the user\'s correction in their ORIGINAL language; the local LLM that parses the diff is multilingual.\n\nWHEN TO CALL:\n• The user says you (or the graph) got something wrong about them — in any language. English: "actually, it was September not August"; Romanian: "de fapt, a fost în septembrie, nu august"; Spanish: "en realidad fue en septiembre, no agosto"; etc.\n• A recall result surfaced a memory that the user just contradicted in conversation. Pass the correction in plain language describing what should change.\n\nWHEN NOT TO CALL:\n• To add brand-new information unrelated to anything already in the graph → use `remember`.\n• To delete a memory wholesale → use `forget` (by sourceId) instead.\n• To "apply" your own preview — `apply` is normally driven by the App after the user clicks Approve, not by you. Only call `apply` if the user has explicitly told you they already approved a specific diff and asked you to commit it.\n\nThe natural-language correction is parsed by a local LLM into a structured diff (edit/supersede/delete operations on specific nodes). The user sees that diff in the deck at the top of the Graphnosis check-in pane and decides whether to apply it. You should NEVER call `remember` to "fix" something — that creates duplicate, conflicting nodes that pollute the graph.',
+        description: 'DETERMINISM — Conditional. Deterministic by default: with no Local LLM and no Neural Network enabled, `correct` deterministically supersedes the single closest-matching memory with the correction text (or records it as a new memory when nothing matches) — reproducible, no randomness, fully auditable. The optional Neural Network, when enabled, expands the candidate set with GNN-predicted related memories and may re-rank which memory is superseded — non-deterministic. The optional Local LLM, when enabled, instead authors a multi-part structured diff across several candidate memories — non-deterministic. The response\'s `mode` field reports which path ran ("deterministic", "gnn-expanded", or "llm-assisted"). Either way nothing is written until the user reviews and approves the diff.\n\nPropose a CORRECTION to the user\'s Graphnosis memory in natural language. Returns a structured diff preview; nothing is written until the user opens the Graphnosis App and approves it.\n\nLANGUAGE: Works in any language Claude understands. Pass the user\'s correction in their ORIGINAL language — both the deterministic recall match and the optional LLM parser are multilingual.\n\nWHEN TO CALL:\n• The user says you (or the graph) got something wrong about them — in any language. English: "actually, it was September not August"; Romanian: "de fapt, a fost în septembrie, nu august"; Spanish: "en realidad fue en septiembre, no agosto"; etc.\n• A recall result surfaced a memory that the user just contradicted in conversation. Pass the correction in plain language describing what should change.\n\nWHEN NOT TO CALL:\n• To add brand-new information unrelated to anything already in the graph → use `remember`.\n• To delete a memory wholesale → use `forget` (by sourceId) instead.\n• To "apply" your own preview — `apply` is normally driven by the App after the user clicks Approve, not by you. Only call `apply` if the user has explicitly told you they already approved a specific diff and asked you to commit it.\n\nThe correction becomes a structured diff (supersede/edit/delete/add operations on specific nodes) — produced deterministically by default, with the candidate set expanded by the Neural Network when enabled, or authored by the Local LLM when one is enabled. The user sees that diff in the deck at the top of the Graphnosis check-in pane and decides whether to apply it. You should NEVER call `remember` to "fix" something — that creates duplicate, conflicting nodes that pollute the graph.',
         inputSchema: {
           type: 'object',
           properties: {
@@ -543,7 +590,7 @@ export function createMcpServer(deps: McpDeps): Server {
       {
         name: 'vitality',
         description: 'DETERMINISM — Deterministic: the vitality score is a fixed formula over current graph state; identical state yields an identical score, no LLM, no randomness.\n\nReturn the current vitality score for the user\'s knowledge graph — a 0-100 measure of how alive and well-connected the engrams are. ' +
-          'Factors: node count (30%), edge density (30%), recent activity (20%), average confidence (20%), minus a duplicate-pair penalty. ' +
+          'Factors: connectivity (40%), average confidence (25%), recent activity (20%), and coherence — fewer unresolved duplicate pairs (15%). ' +
           'Call this when the user asks "how healthy is my brain?", "how active is my knowledge graph?", or "what\'s my vitality score?". ' +
           'Returns overall score plus per-engram breakdown.',
         inputSchema: {
@@ -707,15 +754,24 @@ export function createMcpServer(deps: McpDeps): Server {
       }
       case 'correct': {
         const args = CorrectInput.parse(req.params.arguments ?? {});
+        // Auto-switch. deps.llm() returns the Local LLM only when the user has
+        // enabled it for this cortex. The Neural Network, when enabled, supplies
+        // a GNN candidate expander. `correct` works in every combination and
+        // never throws for a missing model.
         const llm = deps.llm();
-        if (!llm) throw new Error('No local LLM is configured. Open Graphnosis App to install one.');
-        const { diff, candidates } = await proposeCorrection({
+        const gnnOn = deps.host.getSettings().brain?.neuralNetwork?.enabled === true;
+        const expandWithGnn = (gnnOn && deps.brainEngine)
+          ? buildGnnExpander(deps.host, deps.brainEngine)
+          : undefined;
+        const { diff, candidates, mode, targetGraphId } = await proposeCorrection({
           host: deps.host,
           llm,
           correction: args.correction,
           ...(args.graphId !== undefined ? { graphIdHint: args.graphId } : {}),
+          ...(expandWithGnn ? { expandWithGnn } : {}),
         });
-        const targetGraph = args.graphId ?? candidates[0]?.graphId ?? deps.defaultGraphId();
+        const targetGraph =
+          targetGraphId ?? args.graphId ?? candidates[0]?.graphId ?? deps.defaultGraphId();
         const diffId = `diff_${Date.now().toString(36)}`;
         deps.pendingDiffs.set(diffId, { graphId: targetGraph, diff, createdAt: Date.now() });
         // Surface to the App so it can refresh its pending-corrections
@@ -741,7 +797,7 @@ export function createMcpServer(deps: McpDeps): Server {
         return {
           content: [{
             type: 'text',
-            text: JSON.stringify({ diffId, preview: diff, candidates }, null, 2),
+            text: JSON.stringify({ diffId, mode, preview: diff, candidates }, null, 2),
           }],
         };
       }
@@ -818,6 +874,19 @@ export function createMcpServer(deps: McpDeps): Server {
           action: args.action,
           ...(args.graphIds ? { graphIds: args.graphIds } : {}),
         });
+        if (result.degraded) {
+          // No Local LLM — predict could not synthesise an assessment.
+          // Hand the AI the raw recalled memory plus a clear, actionable note.
+          const nodeNote = result.referencedNodeIds.length > 0
+            ? `\n\n_Recalled ${result.referencedNodeIds.length} memory node(s)._`
+            : '';
+          return { content: [{ type: 'text', text:
+            'The Local LLM is not enabled, so `predict` could not synthesise a risk/opportunity ' +
+            'assessment. Below is the raw memory Graphnosis recalled for this action — assess it ' +
+            'yourself, and let the user know they can enable the Local LLM in Graphnosis (the ' +
+            '"Go Non-Deterministic" tab) for a structured prediction.' + nodeNote +
+            '\n\n---\n\n' + (result.recommendation || 'No relevant memory found for this action.') }] };
+        }
         const text = [
           result.risks.length > 0 ? `**Risks:**\n${result.risks.map(r => `- ${r}`).join('\n')}` : '',
           result.opportunities.length > 0 ? `**Opportunities:**\n${result.opportunities.map(o => `- ${o}`).join('\n')}` : '',
@@ -830,6 +899,15 @@ export function createMcpServer(deps: McpDeps): Server {
         const { dismissed } = z.object({ dismissed: z.boolean().optional() }).parse(req.params.arguments ?? {});
         if (!deps.brainEngine) {
           return { content: [{ type: 'text', text: JSON.stringify([]) }] };
+        }
+        if (!deps.llm()) {
+          // Insights come from a background Local-LLM loop. With no LLM
+          // enabled the loop never runs — tell the AI plainly rather than
+          // returning a bare empty array it cannot interpret.
+          return { content: [{ type: 'text', text:
+            'The Local LLM is not enabled, so no insights are available — they are produced by a ' +
+            'background local-LLM analysis loop. Tell the user they can enable the Local LLM in ' +
+            'Graphnosis (the "Go Non-Deterministic" tab) to start generating insights.' }] };
         }
         const all = deps.brainEngine.getInsights();
         const filtered = dismissed ? all : all.filter(i => !i.dismissed);
