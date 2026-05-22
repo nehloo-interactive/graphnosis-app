@@ -12,8 +12,9 @@
 //! identical edges. That is exactly why it is opt-in and snapshot-guarded.
 //!
 //! It is NOT a message-passing graph neural network: features are computed
-//! deterministically per node pair (embedding similarity + classic
-//! link-prediction graph features); the MLP learns how to weigh them.
+//! deterministically per node pair (embedding similarity, classic
+//! link-prediction graph features, and a random-walk positional encoding);
+//! the MLP only learns how to weigh them.
 
 /** Deterministically-computed features for one candidate node pair. Each
  *  field is normalised to roughly [0, 1] by the caller. */
@@ -26,17 +27,23 @@ export interface PairFeatures {
   prefAttachment: number;
   /** Shared named-entity count, normalised. */
   sharedEntities: number;
+  /** Cosine similarity of the two nodes' random-walk positional encodings —
+   *  a deterministic, multi-hop structural-role match (RWPE; see
+   *  arXiv:2110.07875). Already in [0, 1]: RWPE entries are non-negative. */
+  rwpeSim: number;
 }
 
-const FEATURE_DIM = 4;
+const FEATURE_DIM = 5;
 const HIDDEN_DIM = 8;
 
 function featureVec(f: PairFeatures): Float64Array {
-  return Float64Array.of(f.cosine, f.commonNeighbors, f.prefAttachment, f.sharedEntities);
+  return Float64Array.of(
+    f.cosine, f.commonNeighbors, f.prefAttachment, f.sharedEntities, f.rwpeSim,
+  );
 }
 
 /**
- * A 4→8→1 MLP link-predictor. ReLU hidden layer, sigmoid output, trained
+ * A 5→8→1 MLP link-predictor. ReLU hidden layer, sigmoid output, trained
  * with full-batch gradient descent on binary cross-entropy.
  *
  * Index reads carry `!` — the indices are loop counters that are always in
