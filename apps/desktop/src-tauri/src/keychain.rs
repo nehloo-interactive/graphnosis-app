@@ -15,7 +15,7 @@
 //   - Equivalent to the macOS Keychain `-A` flag: any local process
 //     running as this user can read the file.
 //   - File is OUTSIDE the cortex folder, so it doesn't follow iCloud /
-//     Dropbox sync. Stolen Cortex folder still requires the passphrase
+//     Dropbox sync. Stolen cortex folder still requires the passphrase
 //     or 24-word recovery phrase to open.
 //   - When we ship code-signed release builds, switch back to keychain
 //     with `-T <signed-binary-path>` so only Graphnosis itself can read

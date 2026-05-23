@@ -78,7 +78,7 @@ pub async fn start_with_recovery(app: &AppHandle, cortex_dir: &Path, recovery_ph
 
 async fn start_inner(app: &AppHandle, cortex_dir: &Path, passphrase: &str, recovery_phrase: Option<&str>) -> Result<SidecarHandle> {
     let socket_path = cortex_dir.join("sidecar.sock");
-    // Cortex-independent MCP listener socket (see mcp_socket_path) — the path
+    // cortex-independent MCP listener socket (see mcp_socket_path) — the path
     // external clients bake into their config, stable across cortex switches.
     let mcp_socket = mcp_socket_path()?;
     // Stale socket left by a previous orphan? Remove it; the sidecar would recreate
@@ -158,7 +158,7 @@ async fn start_inner(app: &AppHandle, cortex_dir: &Path, passphrase: &str, recov
                 // Emit recognisable startup milestones to the frontend so the
                 // lock screen can show progress instead of a spinning bar.
                 let status: Option<BootStatus> = if line.contains("cortex lock acquired") {
-                    Some(BootStatus { step: "lock", detail: "Cortex secured" })
+                    Some(BootStatus { step: "lock", detail: "cortex secured" })
                 } else if line.contains("local embeddings ready") {
                     Some(BootStatus { step: "embeddings", detail: "AI embeddings ready" })
                 } else if line.contains("WARNING: local embeddings unavailable") {
@@ -276,7 +276,7 @@ fn classify_startup_failure(stderr_tail: &str, exit_code: Option<i32>) -> String
         return "Wrong recovery phrase. Check every word carefully — order matters — and try again."
             .to_string();
     }
-    // Cortex lock held by a competing process.
+    // cortex lock held by a competing process.
     if stderr_tail.contains("FATAL: could not acquire cortex lock")
         || stderr_tail.contains("another Graphnosis sidecar is already writing to this cortex")
     {

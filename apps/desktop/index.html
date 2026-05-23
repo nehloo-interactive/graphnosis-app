@@ -3,7 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Graphnosis: Your Local Encrypted Second Cortex</title>
+    <title>Graphnosis: Your Local Encrypted Second cortex</title>
     <style>
       :root {
         color-scheme: light dark;
@@ -1006,6 +1006,14 @@
         z-index: 100;
         padding: 24px;
       }
+      /* Confirmation dialogs that can fire while the settings modal is open
+         must paint above it. settings-modal is also z-index:100 but appears
+         later in the DOM, so same-level stacking order would bury these. */
+      #permanent-confirm-modal,
+      #quarantine-confirm-modal,
+      #tier-confirm-modal {
+        z-index: 200;
+      }
       .modal {
         background: var(--bg);
         border: 1px solid var(--border);
@@ -1132,6 +1140,78 @@
       .vscode-option-header { margin-bottom: 2px; }
       .vscode-option-label { font-size: 13px; font-weight: 600; color: var(--fg); }
       .badge-recommended { display: inline-block; margin-left: 6px; padding: 1px 6px; border-radius: 4px; font-size: 11px; font-weight: 600; background: var(--accent); color: #000; vertical-align: middle; }
+      /* Sensitivity tier badge in the topbar — color-coded PUBLIC / PERSONAL / SENSITIVE */
+      .sensitivity-badge {
+        display: inline-flex; align-items: center;
+        padding: 2px 8px; border-radius: 4px;
+        font-size: 10px; font-weight: 700; letter-spacing: 0.06em;
+        cursor: pointer; user-select: none;
+        border: 1px solid transparent;
+        transition: opacity 0.15s;
+      }
+      .sensitivity-badge[data-tier="public"]    { background: rgba(34,197,94,0.18); color: #22c55e; border-color: rgba(34,197,94,0.35); }
+      .sensitivity-badge[data-tier="personal"]  { background: rgba(234,179,8,0.18); color: #d4a004; border-color: rgba(234,179,8,0.35); }
+      .sensitivity-badge[data-tier="sensitive"] { background: rgba(239,68,68,0.18); color: #ef4444; border-color: rgba(239,68,68,0.35); }
+      .sensitivity-badge:hover { opacity: 0.75; }
+      /* Vertical stack: "Active engram:" label on top, tier badge below.
+         Sits to the LEFT of the engram dropdown. The badge is right-aligned
+         within the stack so its right edge sits under the right edge of the
+         "Active engram:" label (rather than left-aligned under "A"). */
+      .header-engram-stack {
+        display: inline-flex; flex-direction: column;
+        align-items: flex-end; justify-content: center;
+        gap: 3px; line-height: 1;
+      }
+      .header-engram-stack .header-engram-label { line-height: 1; }
+      .header-engram-stack .sensitivity-badge { padding: 1px 6px; font-size: 9px; }
+      /* Sensitivity popover — opens from the topbar badge */
+      .sensitivity-popover {
+        position: absolute; z-index: 9999;
+        background: var(--bg-elev); border: 1px solid var(--border); border-radius: 10px;
+        box-shadow: 0 12px 28px rgba(0,0,0,0.45);
+        padding: 14px; min-width: 320px;
+        display: flex; flex-direction: column; gap: 10px;
+      }
+      .sensitivity-popover.hidden { display: none; }
+      .sensitivity-popover .sp-header { font-size: 13px; font-weight: 700; color: var(--fg); }
+      .sensitivity-popover .sp-row { display: flex; flex-direction: column; gap: 6px; }
+      .sensitivity-popover .sp-tier-options { display: flex; gap: 6px; }
+      .sensitivity-popover .sp-tier-opt {
+        flex: 1; display: flex; flex-direction: column; align-items: center; gap: 2px;
+        padding: 8px 4px; border-radius: 6px; cursor: pointer;
+        border: 2px solid var(--border); background: var(--bg);
+        font-size: 11px; font-weight: 700; letter-spacing: 0.04em;
+        transition: border-color 0.15s, background 0.15s;
+      }
+      .sensitivity-popover .sp-tier-opt[data-tier="public"][aria-pressed="true"]    { border-color: #22c55e; background: rgba(34,197,94,0.12); color: #22c55e; }
+      .sensitivity-popover .sp-tier-opt[data-tier="personal"][aria-pressed="true"]  { border-color: #d4a004; background: rgba(234,179,8,0.12); color: #d4a004; }
+      .sensitivity-popover .sp-tier-opt[data-tier="sensitive"][aria-pressed="true"] { border-color: #ef4444; background: rgba(239,68,68,0.12); color: #ef4444; }
+      .sensitivity-popover .sp-tier-sub { font-size: 10px; font-weight: 400; color: var(--fg-dim); letter-spacing: normal; }
+      .sensitivity-popover .sp-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 4px; }
+      .consent-phrase-copy {
+        background: none; border: 1px solid var(--border); border-radius: 4px;
+        color: var(--fg-dim); cursor: pointer; padding: 2px 8px;
+        font-size: 11px; font-weight: 600; letter-spacing: 0.04em;
+        transition: background 0.15s, color 0.15s;
+      }
+      .consent-phrase-copy:hover { background: var(--bg); color: var(--fg); }
+      .consent-phrase-copy.copied { background: var(--ok, #4caf50); color: #fff; border-color: transparent; }
+      /* Consent section inside Settings modal */
+      .consent-phrase-box {
+        background: var(--bg-elev); border: 1px solid var(--border); border-radius: 8px;
+        padding: 10px 14px; margin-top: 8px; display: flex; align-items: center; gap: 12px;
+      }
+      .consent-phrase-word { font-size: 16px; font-weight: 700; font-family: ui-monospace, monospace; color: var(--fg); }
+      .consent-phrase-countdown { font-size: 12px; color: var(--fg-dim); white-space: nowrap; }
+      .consent-active-table { width: 100%; border-collapse: collapse; font-size: 14px; margin-top: 8px; }
+      .consent-active-table th { text-align: left; font-size: 12px; font-weight: 600; color: var(--fg-dim); padding: 4px 6px; border-bottom: 1px solid var(--border); }
+      .consent-active-table td { padding: 6px 6px; border-bottom: 1px solid color-mix(in oklab, var(--border) 50%, transparent); vertical-align: middle; }
+      .consent-active-table td:last-child { text-align: right; }
+      /* First-connect agent-type modal */
+      .agent-type-option { display: flex; flex-direction: column; gap: 4px; padding: 12px 14px; border-radius: 8px; border: 2px solid var(--border); cursor: pointer; flex: 1; background: var(--bg-elev); }
+      .agent-type-option:hover { border-color: var(--accent); }
+      .agent-type-option strong { font-size: 15px; }
+      .agent-type-option span { font-size: 13px; color: var(--fg-dim); }
       .mobile-step { display: none; }
       .mobile-step.active { display: block; }
       .mobile-badge {
@@ -1346,7 +1426,7 @@
       .header-engram-picker {
         font-size: 14px;
         font-weight: 600;
-        color: var(--fg);
+        color: #67e8f9; /* turquoise — matches the docs brand accent */
         background-color: var(--bg-elev);
         border: 1px solid var(--border);
         border-radius: 6px;
@@ -4397,12 +4477,12 @@
                width="120" height="120"
                style="margin-bottom: 20px; border-radius: 22px; opacity: 0.92; flex-shrink: 0; display: block;" />
           <h1>Graphnosis</h1>
-          <p class="subtitle" id="subtitle">Your local encrypted memory, indexed for deterministic recall</p>
+          <p class="subtitle" id="subtitle">Your local encrypted memory, indexed for deterministic recall — auditable</p>
           <div id="error" class="error hidden"></div>
           <div class="panel unlock-card">
             <p class="panel-title">Unlock your local encrypted memory</p>
             <div class="row">
-              <label for="cortex-dir" class="visually-hidden">Cortex folder path</label>
+              <label for="cortex-dir" class="visually-hidden">cortex folder path</label>
               <div class="pick-row">
                 <input type="text" id="cortex-dir" placeholder="/Users/you/GraphnosisCortex" />
                 <button id="btn-pick">Choose…</button>
@@ -4414,7 +4494,7 @@
                 <span id="touchid-hint" class="touchid-inline-hint hidden">Unlock with Touch ID →</span>
               </div>
               <div class="passphrase-input-wrap">
-                <input type="password" id="passphrase" placeholder="Your Graphnosis Cortex passphrase" />
+                <input type="password" id="passphrase" placeholder="Your Graphnosis cortex passphrase" />
                 <button id="btn-touchid-inline" class="touchid-inline-btn hidden" type="button"
                         title="Unlock with Touch ID" aria-label="Unlock with Touch ID">
                   <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
@@ -4429,7 +4509,7 @@
               </div>
               <p class="passphrase-warning">
                 <span class="passphrase-warning-icon">⚠</span>
-                Your passphrase is the <u>only</u> key to your Cortex. Graphnosis has no servers and no account reset — if you lose it, your 24-word recovery phrase is your fallback to regain access.
+                Your passphrase is the <u>only</u> key to your cortex. Graphnosis has no servers and no account reset — if you lose it, your 24-word recovery phrase is your fallback to regain access.
                 <br><br>
                 Keep both somewhere safe: a password manager (1Password, Bitwarden, Apple Keychain), a printed note stored securely, or both.
               </p>
@@ -4462,7 +4542,7 @@
                 <button id="btn-recovery-cancel">Cancel</button>
               </div>
               <p style="margin-top: 10px; font-size: 15px; color: var(--fg-dim); line-height: 1.5;">
-                After recovery, your Cortex is unlocked only for this session — the recovery phrase isn't stored. Your existing passphrase still works once you find it, and your 24-word phrase stays the same; we don't regenerate it.
+                After recovery, your cortex is unlocked only for this session — the recovery phrase isn't stored. Your existing passphrase still works once you find it, and your 24-word phrase stays the same; we don't regenerate it.
               </p>
             </div>
           </div>
@@ -4512,7 +4592,7 @@
             <div class="engram-suggest-title">
               <span class="engram-suggest-icon">📚</span>
               <span id="docs-offer-headline">
-                Add the Graphnosis docs to your Cortex? Your AI will be able to
+                Add the Graphnosis docs to your cortex? Your AI will be able to
                 answer questions about Graphnosis itself.
               </span>
             </div>
@@ -4528,13 +4608,16 @@
             <div class="app-title-row">
               <span class="app-title">Graphnosis</span>
             </div>
-            <span class="header-tagline">Your local encrypted memory, indexed for deterministic recall</span>
+            <span class="header-tagline">Your local encrypted memory, indexed for deterministic recall — auditable</span>
           </div>
           <div class="app-header-right">
-            <!-- Active engram picker cluster: muted label + dropdown.
-                 Sits LEFT of Add file as the prominent "where you're
-                 working" indicator. -->
-            <span class="header-engram-label">Active engram:</span>
+            <!-- Active engram picker cluster: vertical stack of "Active engram:"
+                 label on top and the sensitivity tier badge below, with the
+                 dropdown sitting to the right of both. -->
+            <div class="header-engram-stack">
+              <span class="header-engram-label">Active engram:</span>
+              <span id="sensitivity-badge" class="sensitivity-badge" style="display:none;" title="Click to change this engram's sensitivity tier"></span>
+            </div>
             <select id="atlas-graph-picker" class="header-engram-picker" title="Switch active engram"></select>
             <button id="btn-add-file" class="primary">Add file to engram…</button>
             <button id="btn-new-graph" title="Create a new engram — an independent neighborhood of memory">+ New engram</button>
@@ -4616,9 +4699,21 @@
                 <!-- The engram picker that used to live here has moved to
                      the top app header — visible from every view, smaller
                      footprint, single source of truth across panes. -->
-                <div class="g-search-wrap">
-                  <input type="search" id="g-search" placeholder="Look for a memory — ⌘K, ↑↓ to move, Enter to open" />
-                  <button id="g-search-clear" class="g-search-clear hidden" title="Clear search">×</button>
+                <div class="g-search-wrap" style="display: flex; flex-direction: column; gap: 4px;">
+                  <div style="position: relative;">
+                    <input type="search" id="g-search" placeholder="Look for a memory — ⌘K, ↑↓ to move, Enter to open" />
+                    <button id="g-search-clear" class="g-search-clear hidden" title="Clear search">×</button>
+                  </div>
+                  <div class="g-search-llm-options" style="display: flex; gap: 14px; align-items: center; font-size: 12px; color: var(--fg-dim); padding: 0 2px;">
+                    <label id="g-search-synth-wrap" style="display: flex; align-items: center; gap: 5px; cursor: pointer;" title="Local LLM is not ready. Enable in Settings → AI.">
+                      <input type="checkbox" id="g-search-synth" disabled />
+                      <span>🤖 Synthesize answer</span>
+                    </label>
+                    <label id="g-search-rerank-wrap" style="display: flex; align-items: center; gap: 5px; cursor: pointer;" title="Local LLM is not ready. Enable in Settings → AI.">
+                      <input type="checkbox" id="g-search-rerank" disabled />
+                      <span>Enhanced ranking</span>
+                    </label>
+                  </div>
                 </div>
                 <div id="g-health" class="g-health g-health-inline">
                   <div class="g-health-gauge">
@@ -5134,7 +5229,7 @@ ollama list</code></pre>
                 <p class="panel-title">Mobile & Remote Access</p>
                 <p class="subtitle" style="font-size: 15px; margin: -4px 0 10px;">
                   Connect Claude for iOS, Claude for Android, or any HTTP MCP-capable client
-                  to this Cortex over your local network or Tailscale VPN.
+                  to this cortex over your local network or Tailscale VPN.
                 </p>
                 <button id="btn-mobile-setup">Set up mobile access…</button>
               </div>
@@ -5164,7 +5259,7 @@ ollama list</code></pre>
               <div class="panel">
                 <p class="panel-title">Cortex tools</p>
                 <p class="subtitle" style="font-size: 15px; margin: -4px 0 10px;">
-                  Reconstruct lost memories from the encrypted op-log, refresh state, peek at Cortex files.
+                  Reconstruct lost memories from the encrypted op-log, refresh state, peek at cortex files.
                 </p>
                 <button id="btn-recover">Recover from op-log…</button>
                 <button id="btn-refresh" style="margin-left: 6px;">Refresh stats</button>
@@ -5174,11 +5269,11 @@ ollama list</code></pre>
               <div class="panel">
                 <p class="panel-title">Cortex snapshots</p>
                 <p class="subtitle" style="font-size: 15px; margin: -4px 0 10px;">
-                  Frozen point-in-time copies of your encrypted Cortex — every <code>.gai</code>,
+                  Frozen point-in-time copies of your encrypted cortex — every <code>.gai</code>,
                   <code>.bundle</code>, <code>.embcache</code>, <code>master.enc</code>,
                   <code>recovery.enc</code>, and settings file. Useful before a risky
                   re-ingest, a big correction batch, or trying a new ingest path. Snapshots live
-                  inside the Cortex folder so they're swept by the same sync as everything else.
+                  inside the cortex folder so they're swept by the same sync as everything else.
                 </p>
                 <button id="btn-snapshots-open">Manage snapshots…</button>
               </div>
@@ -5206,7 +5301,7 @@ ollama list</code></pre>
 
         <!-- Status bar -->
         <footer class="app-statusbar">
-          <span id="cortex-label" class="status-cortex" title="Current Cortex folder">cortex</span>
+          <span id="cortex-label" class="status-cortex" title="Current cortex folder">cortex</span>
           <span class="status-sep">·</span>
           <span class="status-search">⌘K to search nodes</span>
           <span id="status-saved" class="status-saved">—</span>
@@ -5225,8 +5320,8 @@ ollama list</code></pre>
         <div class="modal-header">
           <h2>Cortex snapshots</h2>
           <p class="subtitle">
-            Snapshots freeze a copy of every Cortex file at this moment. They sit inside
-            your Cortex folder under <code>.snapshots/</code> — encrypted, syncable, listable.
+            Snapshots freeze a copy of every cortex file at this moment. They sit inside
+            your cortex folder under <code>.snapshots/</code> — encrypted, syncable, listable.
           </p>
         </div>
         <div class="modal-body" id="snapshots-body">
@@ -5246,7 +5341,7 @@ ollama list</code></pre>
         <div class="modal-header">
           <h2>New engram</h2>
           <p class="subtitle">
-            An engram is an independent neighborhood of memory inside your Graphnosis Cortex — its
+            An engram is an independent neighborhood of memory inside your Graphnosis cortex — its
             own graph, with its own consolidation rules. Pick a template to seed it
             with sensible defaults; you can change anything later.
           </p>
@@ -5269,14 +5364,118 @@ ollama list</code></pre>
             <label for="gw-id">Internal ID</label>
             <input type="text" id="gw-id" placeholder="slug (lowercase letters, numbers, hyphens)" />
             <p class="subtitle" style="font-size: 14px; margin-top: 4px;">
-              Used as the filename inside your Graphnosis Cortex. Can't be changed later.
+              Used as the filename inside your Graphnosis cortex. Can't be changed later.
             </p>
+          </div>
+          <div class="row" style="margin-top: 10px;">
+            <label>Sensitivity tier <span class="subtitle" style="font-weight:normal;">(governs AI access and consent requirements)</span></label>
+            <div style="display: flex; gap: 8px; margin-top: 6px;">
+              <label style="flex:1; display:flex; align-items:center; gap:6px; cursor:pointer;">
+                <input type="radio" name="gw-tier" value="public" />
+                <span style="color:#22c55e; font-weight:600; font-size:13px;">Public</span>
+                <span class="subtitle" style="font-size:12px;">AI always has access</span>
+              </label>
+              <label style="flex:1; display:flex; align-items:center; gap:6px; cursor:pointer;">
+                <input type="radio" name="gw-tier" value="personal" checked />
+                <span style="color:#d4a004; font-weight:600; font-size:13px;">Personal</span>
+                <span class="subtitle" style="font-size:12px;">AI asks once, then remembers</span>
+              </label>
+              <label style="flex:1; display:flex; align-items:center; gap:6px; cursor:pointer;">
+                <input type="radio" name="gw-tier" value="sensitive" />
+                <span style="color:#ef4444; font-weight:600; font-size:13px;">Sensitive</span>
+                <span class="subtitle" style="font-size:12px;">AI asks every hour</span>
+              </label>
+            </div>
           </div>
         </div>
         <div class="modal-footer">
           <span class="filler" id="gw-note"></span>
           <button id="btn-gw-cancel">Cancel</button>
           <button id="btn-gw-create" class="primary" disabled>Create engram</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Sensitivity popover (A10): anchored to the topbar sensitivity badge. -->
+    <div id="sensitivity-popover" class="sensitivity-popover hidden">
+      <div class="sp-header" id="sp-engram-name">—</div>
+      <div class="sp-row">
+        <span style="font-size:12px; color:var(--fg-dim);">Sensitivity tier</span>
+        <div class="sp-tier-options">
+          <button class="sp-tier-opt" data-tier="public" aria-pressed="false">
+            PUBLIC
+            <span class="sp-tier-sub">AI always</span>
+          </button>
+          <button class="sp-tier-opt" data-tier="personal" aria-pressed="true">
+            PERSONAL
+            <span class="sp-tier-sub">ask once</span>
+          </button>
+          <button class="sp-tier-opt" data-tier="sensitive" aria-pressed="false">
+            SENSITIVE
+            <span class="sp-tier-sub">ask hourly</span>
+          </button>
+        </div>
+      </div>
+      <div class="sp-row">
+        <label for="sp-consent-interval" style="font-size:12px; color:var(--fg-dim);">Consent interval for this engram</label>
+        <select id="sp-consent-interval">
+          <option value="default">Default — use global setting</option>
+          <option value="0">Every access</option>
+          <option value="900000">Every 15 min</option>
+          <option value="1800000">Every 30 min</option>
+          <option value="3600000">Every hour</option>
+          <option value="14400000">Every 4 hours</option>
+          <option value="86400000">Once a day</option>
+          <option value="604800000">Once a week</option>
+          <option value="-1">Permanent — until revoked</option>
+        </select>
+      </div>
+      <div class="sp-actions">
+        <button id="btn-sp-cancel">Cancel</button>
+        <button id="btn-sp-save" class="primary">Save</button>
+      </div>
+    </div>
+
+    <!-- Permanent-consent confirmation modal (A3, A10). -->
+    <div id="permanent-confirm-modal" class="modal-backdrop hidden">
+      <div class="modal" style="max-width: 460px;">
+        <div class="modal-header">
+          <h2>Permanent access — confirm</h2>
+          <p class="subtitle" id="permanent-confirm-body">
+            AI clients will be able to access these memories without re-confirming, until you revoke.
+            Revoke anytime in Settings → AI.
+          </p>
+        </div>
+        <div class="modal-footer">
+          <span class="filler"></span>
+          <button id="btn-permanent-confirm-cancel">Cancel</button>
+          <button id="btn-permanent-confirm-ok" class="primary">Confirm</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- First-connect agent-type modal (A11): shown once per new AI client. -->
+    <div id="agent-type-modal" class="modal-backdrop hidden">
+      <div class="modal" style="max-width: 480px;">
+        <div class="modal-header">
+          <h2 id="agent-type-modal-title">New AI client connected</h2>
+          <p class="subtitle" id="agent-type-modal-subtitle">
+            Is this a chat assistant you talk to directly, or an autonomous agent that runs on its own?
+          </p>
+        </div>
+        <div class="modal-body" style="display: flex; gap: 12px;">
+          <button class="agent-type-option" id="btn-agent-type-chat">
+            <strong>Chat assistant</strong>
+            <span>You're in the conversation. Consent persists per your settings.</span>
+          </button>
+          <button class="agent-type-option" id="btn-agent-type-agent">
+            <strong>Autonomous agent</strong>
+            <span>Runs without you. Graphnosis will confirm access before every recall.</span>
+          </button>
+        </div>
+        <div class="modal-footer">
+          <span class="filler"></span>
+          <button id="btn-agent-type-skip">Skip — decide later</button>
         </div>
       </div>
     </div>
@@ -5308,12 +5507,12 @@ ollama list</code></pre>
       </div>
     </div>
 
-    <!-- Settings modal: per-Cortex preferences (content cache mode + size cap) -->
+    <!-- Settings modal: per-cortex preferences (content cache mode + size cap) -->
     <div id="settings-modal" class="modal-backdrop hidden">
       <div class="modal">
         <div class="modal-header">
           <h2>Settings</h2>
-          <p class="subtitle">Per-Cortex preferences. Stored at <code>&lt;cortex&gt;/settings.json</code>.</p>
+          <p class="subtitle">Per-cortex preferences. Stored at <code>&lt;cortex&gt;/settings.json</code>.</p>
         </div>
         <div class="modal-body" id="settings-body">
           <p class="panel-title" style="margin-top: 0;">Content cache</p>
@@ -5342,13 +5541,13 @@ ollama list</code></pre>
           <p class="panel-title" style="margin-top: 20px;">MCP relay timings</p>
           <p class="subtitle" style="margin-bottom: 12px;">
             How long the small relay process (the bridge between Claude Desktop and
-            your Cortex) waits before giving up. Changes apply the next time a client
+            your cortex) waits before giving up. Changes apply the next time a client
             spawns or reconnects a relay — current Claude sessions keep their old values.
           </p>
           <div class="row">
             <label for="relay-initial">
               Initial connect timeout
-              <span style="color: var(--fg-dim); font-weight: normal;"> — when an MCP client launches before the Cortex is unlocked</span>
+              <span style="color: var(--fg-dim); font-weight: normal;"> — when an MCP client launches before the cortex is unlocked</span>
             </label>
             <div style="display: flex; align-items: center; gap: 8px;">
               <input type="number" id="relay-initial" min="2" max="120" step="1" style="flex: 1;" />
@@ -5358,7 +5557,7 @@ ollama list</code></pre>
           <div class="row">
             <label for="relay-reconnect">
               Reconnect timeout
-              <span style="color: var(--fg-dim); font-weight: normal;"> — when the Cortex is locked or restarted mid-session</span>
+              <span style="color: var(--fg-dim); font-weight: normal;"> — when the cortex is locked or restarted mid-session</span>
             </label>
             <div style="display: flex; align-items: center; gap: 8px;">
               <input type="number" id="relay-reconnect" min="5" max="86400" step="1" style="flex: 1;" />
@@ -5390,7 +5589,7 @@ ollama list</code></pre>
               <input type="checkbox" id="ai-default-memory" />
               <strong>Use Graphnosis as my AI's default memory</strong> — recommended.
               Off = the AI sees the tools but treats them as one option among many; its
-              own memory features lead. Changes take effect on next Cortex unlock or after
+              own memory features lead. Changes take effect on next cortex unlock or after
               <em>Reconnect</em> below.
             </label>
           </div>
@@ -5474,6 +5673,129 @@ ollama list</code></pre>
                into the main Settings tab (side rail) so they're surfaced
                without requiring a popup. See <section data-pane="settings">. -->
 
+          <!-- AI consent phrases + interval configuration -->
+          <p class="panel-title" style="margin-top: 20px;">AI access & consent</p>
+          <p class="subtitle" style="margin-bottom: 10px;">
+            Before an AI client can read your personal or sensitive memories, Graphnosis requires
+            a time-limited phrase that only appears here — the AI cannot generate or know it in advance.
+          </p>
+
+          <div style="display: flex; gap: 12px; margin-bottom: 10px;">
+            <div style="flex: 1;">
+              <div style="font-size: 13px; font-weight: 600; color: var(--fg-dim); margin-bottom: 4px;">Personal phrase <span id="consent-phrase-personal-tier" style="font-weight:400;">(rotates every 24 h)</span></div>
+              <div class="consent-phrase-box" id="consent-phrase-personal-box">
+                <span class="consent-phrase-word" id="consent-phrase-personal">—</span>
+                <span class="consent-phrase-countdown" id="consent-phrase-personal-countdown"></span>
+                <button class="consent-phrase-copy" id="btn-copy-phrase-personal" data-tier="personal" style="margin-left:auto;" title="Copy this phrase to clipboard. Other apps on your machine may be able to read it from there.">Copy</button>
+              </div>
+            </div>
+            <div style="flex: 1;">
+              <div style="font-size: 13px; font-weight: 600; color: var(--fg-dim); margin-bottom: 4px;">Sensitive phrase <span style="font-weight:400;">(rotates every 1 h)</span></div>
+              <div class="consent-phrase-box" id="consent-phrase-sensitive-box">
+                <span class="consent-phrase-word" id="consent-phrase-sensitive">—</span>
+                <span class="consent-phrase-countdown" id="consent-phrase-sensitive-countdown"></span>
+                <button class="consent-phrase-copy" id="btn-copy-phrase-sensitive" data-tier="sensitive" style="margin-left:auto;" title="Copy this phrase to clipboard. Other apps on your machine may be able to read it from there.">Copy</button>
+              </div>
+            </div>
+          </div>
+
+          <div class="row" style="display: flex; align-items: center; gap: 10px; margin-bottom: 8px;">
+            <label for="consent-interval-personal" style="white-space: nowrap; font-size: 14px; min-width: 220px;">
+              Re-confirm <strong>personal</strong> data:
+            </label>
+            <select id="consent-interval-personal" style="flex: 0 0 auto;">
+              <option value="0">Every access</option>
+              <option value="900000">Every 15 min</option>
+              <option value="1800000">Every 30 min</option>
+              <option value="3600000">Every hour</option>
+              <option value="14400000">Every 4 hours</option>
+              <option value="86400000">Once a day</option>
+              <option value="604800000">Once a week</option>
+              <option value="2592000000">Once a month</option>
+              <option value="15552000000">Once every 6 months</option>
+              <option value="-1" selected>Permanent — until revoked</option>
+            </select>
+          </div>
+          <div class="row" style="display: flex; align-items: center; gap: 10px; margin-bottom: 8px;">
+            <label for="consent-interval-sensitive" style="white-space: nowrap; font-size: 14px; min-width: 220px;">
+              Re-confirm <strong>sensitive</strong> data:
+            </label>
+            <select id="consent-interval-sensitive" style="flex: 0 0 auto;">
+              <option value="0">Every access</option>
+              <option value="900000">Every 15 min</option>
+              <option value="1800000">Every 30 min</option>
+              <option value="3600000" selected>Every hour</option>
+              <option value="14400000">Every 4 hours</option>
+              <option value="86400000">Once a day</option>
+              <option value="604800000">Once a week</option>
+              <option value="2592000000">Once a month</option>
+              <option value="-1">Permanent — until revoked</option>
+            </select>
+          </div>
+
+          <p class="subtitle" style="font-size: 13px; margin: 4px 0 12px;" id="consent-interval-hint"></p>
+          <p class="subtitle" id="consent-phrase-error" style="font-size: 13px; color: var(--error); margin: 0 0 8px; display: none;"></p>
+
+          <p style="font-size: 13px; font-weight: 600; margin: 14px 0 6px;">Local LLM scope</p>
+          <p class="subtitle" style="font-size: 13px; margin: 0 0 8px;">
+            By default the Local LLM is available to in-app search AND to MCP tools (develop, predict, insights,
+            llm_query). Restrict it to in-app search only if you want smart local search without exposing the
+            LLM to connected AI clients.
+          </p>
+          <div class="row" style="margin-bottom: 14px;">
+            <label style="display: flex; align-items: center; gap: 8px;">
+              <input type="checkbox" id="search-llm-only" />
+              <span>Use Local LLM only for search</span>
+            </label>
+          </div>
+
+          <p style="font-size: 13px; font-weight: 600; margin: 14px 0 6px;">Optional session caps</p>
+          <p class="subtitle" style="font-size: 13px; margin: 0 0 8px;">
+            Extra backstops on top of the consent gate + rate limit. All off by default —
+            enable for an additional cumulative-volume guardrail per conversation.
+          </p>
+          <div class="row" style="display: flex; align-items: center; gap: 10px; margin-bottom: 6px;">
+            <label style="display: flex; align-items: center; gap: 8px; flex: 1;">
+              <input type="checkbox" id="session-token-cap-enabled" />
+              <span>Cap session at</span>
+            </label>
+            <input type="number" id="session-token-cap" min="1000" max="200000" step="1000" value="100000"
+                   style="width: 110px; padding: 4px 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg-elev); color: var(--fg);" disabled />
+            <span style="font-size: 13px; color: var(--fg-dim);">tokens</span>
+          </div>
+          <div class="row" style="display: flex; align-items: center; gap: 10px; margin-bottom: 6px;">
+            <label style="display: flex; align-items: center; gap: 8px; flex: 1;">
+              <input type="checkbox" id="session-node-cap-enabled" />
+              <span>Cap session at</span>
+            </label>
+            <input type="number" id="session-node-cap" min="10" max="5000" step="10" value="500"
+                   style="width: 110px; padding: 4px 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg-elev); color: var(--fg);" disabled />
+            <span style="font-size: 13px; color: var(--fg-dim);">nodes</span>
+          </div>
+          <div class="row" style="display: flex; align-items: center; gap: 10px; margin-bottom: 14px;">
+            <label style="display: flex; align-items: center; gap: 8px; flex: 1;">
+              <input type="checkbox" id="session-breadth-cap-enabled" />
+              <span>Cap session at</span>
+            </label>
+            <input type="number" id="session-breadth-cap" min="1" max="100" step="1" value="6"
+                   style="width: 110px; padding: 4px 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg-elev); color: var(--fg);" disabled />
+            <span style="font-size: 13px; color: var(--fg-dim);">distinct engrams</span>
+          </div>
+
+          <p style="font-size: 13px; font-weight: 600; margin: 14px 0 6px;">Active AI consents</p>
+          <div id="consent-active-list">
+            <p class="subtitle" style="font-size: 14px;">No active AI consents.</p>
+          </div>
+          <div style="margin-top: 10px; display: flex; gap: 8px;">
+            <button id="btn-revoke-all-consents" style="font-size: 13px; padding: 4px 10px;">Revoke all consents</button>
+            <button id="btn-view-consent-history" style="font-size: 13px; padding: 4px 10px;">View full history…</button>
+            <button id="btn-export-consent-records" style="font-size: 13px; padding: 4px 10px;">Export as JSON…</button>
+          </div>
+          <p class="subtitle" style="font-size: 12px; margin: 10px 0 0;">
+            🔒 Your consent records never leave your device. Nehloo has no access to them.
+            Export your records at any time as a JSON file for backup or transfer between devices.
+          </p>
+
           <p class="panel-title" style="margin-top: 20px;">Support</p>
           <p class="subtitle" style="margin-bottom: 12px;">
             Diagnostic tools for sending feedback to Graphnosis support. Active until the next app restart.
@@ -5494,7 +5816,7 @@ ollama list</code></pre>
     </div>
 
     <!-- Snapshot offer modal: shown before any operation that mutates the
-         Cortex in a way the user might want to roll back. The subtitle is
+         cortex in a way the user might want to roll back. The subtitle is
          set by JS depending on the trigger (ingest, recovery, passphrase
          change). The default copy below is the ingest-time variant.       -->
     <div id="snapshot-offer-modal" class="modal-backdrop hidden">
@@ -5502,7 +5824,7 @@ ollama list</code></pre>
         <div class="modal-header">
           <h2 id="snapshot-offer-title">Save a snapshot?</h2>
           <p class="subtitle" id="snapshot-offer-subtitle">
-            Pin the current state of your Cortex before ingesting. If this file changes
+            Pin the current state of your cortex before ingesting. If this file changes
             something you didn't expect, you can restore from the snapshot.
           </p>
         </div>
@@ -5649,7 +5971,7 @@ ollama list</code></pre>
       <div class="modal" style="max-width: 480px;">
         <div class="modal-header">
           <h2>Set a new passphrase?</h2>
-          <p class="subtitle">You unlocked your Cortex with the recovery phrase. While you're here, pick a new passphrase so you can unlock normally next time.</p>
+          <p class="subtitle">You unlocked your cortex with the recovery phrase. While you're here, pick a new passphrase so you can unlock normally next time.</p>
         </div>
         <div class="modal-body">
           <div class="row">
@@ -5681,7 +6003,7 @@ ollama list</code></pre>
       <div class="modal" style="max-width: 560px;">
         <div class="modal-header">
           <h2>🔐 Save your Recovery Phrase</h2>
-          <p class="subtitle">These 24 words are the <strong>only</strong> backup if you ever forget your passphrase. Graphnosis just generated them for your Cortex — write them down now.</p>
+          <p class="subtitle">These 24 words are the <strong>only</strong> backup if you ever forget your passphrase. Graphnosis just generated them for your cortex — write them down now.</p>
         </div>
         <div class="modal-body">
           <div class="recovery-phrase-alert">
@@ -5799,7 +6121,7 @@ ollama list</code></pre>
       <div class="modal" style="max-width: 560px;">
         <div class="modal-header">
           <h2>Mobile & Remote Access</h2>
-          <p class="subtitle">Connect Claude for iOS, Android, or any HTTP MCP client to this Cortex.</p>
+          <p class="subtitle">Connect Claude for iOS, Android, or any HTTP MCP client to this cortex.</p>
         </div>
         <div class="modal-body" id="mobile-setup-body">
           <!-- Step dots -->
@@ -5813,7 +6135,7 @@ ollama list</code></pre>
           <!-- Step 0: Enable HTTP bridge -->
           <div class="mobile-step active" id="mobile-step-0">
             <p style="font-size: 14px; line-height: 1.6; margin: 0 0 14px;">
-              Graphnosis can expose your Cortex's MCP tools (recall, remember, correct, apply,
+              Graphnosis can expose your cortex's MCP tools (recall, remember, correct, apply,
               forget, stats) over a local HTTP endpoint so mobile AI clients can connect.
               A random bearer token is generated once and never changes unless you regenerate it.
             </p>
@@ -5890,7 +6212,7 @@ ollama list</code></pre>
               <button class="copy-btn" id="mobile-token-reveal">Show</button>
             </div>
             <p class="subtitle" style="font-size: 15px; margin-bottom: 14px;">
-              Treat the token like a password — it grants full read/write access to your Cortex.
+              Treat the token like a password — it grants full read/write access to your cortex.
             </p>
             <p style="font-size: 14px; font-weight: 600; margin: 0 0 8px;">How to connect in Claude for iOS / Android</p>
             <ol class="mobile-client-steps">

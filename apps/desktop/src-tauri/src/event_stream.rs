@@ -178,7 +178,14 @@ async fn open_and_read(app: &AppHandle, socket_path: &Path) -> Result<()> {
             | "recovery.progress" | "recovery.done"
             | "engram.create-suggested"
             | "correction.proposed"
-            | "llm.pull-progress" => {
+            | "llm.pull-progress"
+            | "mcp.session-budget-exceeded"
+            | "mcp.session-budget-warning"
+            | "mcp.bulk-access-warning"
+            | "mcp.consent-granted"
+            | "mcp.consent-lockout"
+            | "mcp.recall-rate-limited"
+            | "mcp.session-replay-blocked" => {
                 // Forward the raw payload to the frontend as-is.
                 // The frontend matches on the event name to update the
                 // appropriate UI (toast for ingest, progress bar in the
