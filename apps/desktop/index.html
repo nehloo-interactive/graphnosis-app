@@ -943,20 +943,37 @@
       .rail-shortcut-btn:hover { background: rgba(106,179,200,0.15); color: #9fd8e8; border-color: rgba(106,179,200,0.3); }
       .rail-shortcut-btn.connected { background: rgba(106,179,200,0.2); color: #9fd8e8; border-color: rgba(106,179,200,0.5); font-weight: 600; }
       /* ── Empty engram onboarding card ────────────────────────────────── */
-      .g-deck-onboarding { padding: 24px; display: flex; flex-direction: column; gap: 16px; flex: 1; }
+      /* The onboarding card scrolls as a single unit when content exceeds
+         the deck area — chip list under "Ask your AI" can be tall (35 tools
+         across 9 groups). min-height:0 is critical for a flex child to
+         actually honor overflow:auto. */
+      .g-deck-onboarding {
+        padding: 24px;
+        display: flex;
+        flex-direction: column;
+        gap: 16px;
+        flex: 1;
+        min-height: 0;
+        overflow-y: auto;
+        overscroll-behavior: contain;
+      }
       .g-deck-onboarding-top { flex: 1; display: flex; flex-direction: column; gap: 14px; }
-      .g-deck-onboarding-tagline { font-size: 13px; color: rgba(237,237,237,0.55); text-align: center; }
+      .g-deck-onboarding-tagline { font-size: 15px; color: rgba(237,237,237,0.55); text-align: center; }
       .g-deck-onboarding-steps { display: flex; flex-direction: column; gap: 14px; }
       .g-deck-onboarding-step { display: flex; gap: 12px; align-items: flex-start; }
       .g-deck-onboarding-num { font-size: 13px; font-weight: 700; color: #6ab3c8; min-width: 18px; }
-      .g-deck-onboarding-step-body { font-size: 13px; color: rgba(237,237,237,0.75); line-height: 1.5; }
+      .g-deck-onboarding-step-body { font-size: 15px; color: rgba(237,237,237,0.75); line-height: 1.5; }
       .g-deck-onboarding-step-body strong { color: #ededed; }
       .g-deck-onboarding-bottom { display: flex; flex-direction: column; gap: 8px; }
       .g-deck-onboarding-cmds { display: flex; flex-direction: column; gap: 12px; }
+      /* The chip list itself no longer caps height — the parent
+         .g-deck-onboarding scrolls as a single unit, which is more
+         reliable across viewport sizes than a nested scroll. */
+      .g-deck-cmd-scroll { padding-right: 6px; }
       .g-deck-cmd-group { display: flex; flex-direction: column; gap: 6px; }
-      .g-deck-cmd-grouplabel { font-size: 10px; text-transform: uppercase; letter-spacing: .06em; color: rgba(237,237,237,0.4); }
+      .g-deck-cmd-grouplabel { font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: rgba(237,237,237,0.5); }
       .g-deck-cmd-chips { display: flex; flex-wrap: wrap; gap: 5px; }
-      .g-deck-cmd-note { font-size: 11px; line-height: 1.5; color: rgba(237,237,237,0.4); margin: 10px 0 0; max-width: 560px; }
+      .g-deck-cmd-note { font-size: 13px; line-height: 1.5; color: rgba(237,237,237,0.5); margin: 10px 0 0; max-width: 560px; }
       .g-deck-cmd-chip {
         font-family: monospace; font-size: 14px;
         padding: 4px 10px; border-radius: 5px;
@@ -1030,6 +1047,28 @@
       .modal-header h2 { margin: 0; font-size: 15px; font-weight: 600; }
       .modal-header .subtitle { margin: 4px 0 0; font-size: 14px; }
       .modal-body { padding: 16px 20px; overflow-y: auto; flex: 1; }
+      /* Tool-info modal: "Try saying…" examples block under the description.
+         Empty (no children) by default — JS injects items only when the
+         tool has examples in TOOL_INFO. */
+      .tool-info-examples { margin-top: 14px; display: flex; flex-direction: column; gap: 6px; }
+      .tool-info-examples:empty { display: none; }
+      .tool-info-examples-label {
+        font-size: 11px;
+        text-transform: uppercase;
+        letter-spacing: .06em;
+        color: var(--fg-dim);
+        margin: 0 0 2px;
+      }
+      .tool-info-example {
+        font-size: 13px;
+        font-style: italic;
+        line-height: 1.4;
+        color: var(--fg);
+        padding: 8px 10px;
+        background: color-mix(in oklab, var(--fg) 4%, transparent);
+        border-left: 2px solid var(--accent);
+        border-radius: 3px;
+      }
       .modal-footer {
         padding: 12px 20px;
         border-top: 1px solid var(--border);
@@ -1140,6 +1179,7 @@
       .vscode-option-header { margin-bottom: 2px; }
       .vscode-option-label { font-size: 13px; font-weight: 600; color: var(--fg); }
       .badge-recommended { display: inline-block; margin-left: 6px; padding: 1px 6px; border-radius: 4px; font-size: 11px; font-weight: 600; background: var(--accent); color: #000; vertical-align: middle; }
+
       /* Sensitivity tier badge in the topbar — color-coded PUBLIC / PERSONAL / SENSITIVE */
       .sensitivity-badge {
         display: inline-flex; align-items: center;
@@ -1356,7 +1396,7 @@
         gap: 8px;
         -webkit-app-region: drag;
       }
-      .app-header button, .app-header input, .app-header select { -webkit-app-region: no-drag; }
+      .app-header button, .app-header input, .app-header select { -webkit-app-region: no-drag; white-space: nowrap; }
       /* Two-row left column: title row on top (brain icon + app title),
          cortex+engram metadata on the row below. */
       .app-header-left {
@@ -1366,6 +1406,8 @@
         gap: 1px;
         font-weight: 600; font-size: 14px;
         min-width: 0; /* allow truncation */
+        flex: 1;
+        overflow: hidden;
       }
       .app-title-row {
         display: flex; align-items: center; gap: 8px;
@@ -1388,6 +1430,8 @@
         color: var(--fg-dim);
         font-weight: 400;
         white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
         /* No left padding — flush-left so the tagline aligns under the
            "Graphnosis" title. (Previously offset 26px to clear a brain
            icon that no longer sits in the title row.) */
@@ -1467,10 +1511,27 @@
         align-items: center;
       }
       .engram-picker-chevron {
-        margin-left: 6px;
+        margin-left: 4px;
         font-size: 9px;
         color: var(--fg-dim);
         line-height: 1;
+        flex-shrink: 0;
+      }
+      /* Custom picker button: flex so the label can truncate and the
+         chevron stays pinned to the right edge. */
+      button.header-engram-picker {
+        display: flex;
+        align-items: center;
+        overflow: hidden;
+        background-image: none; /* arrow handled by .engram-picker-chevron */
+        padding-right: 10px;
+      }
+      .engram-picker-button-label {
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        min-width: 0;
+        flex: 1;
       }
       .engram-picker-dropdown {
         position: absolute;
@@ -1500,12 +1561,31 @@
         padding: 6px 10px;
         border-radius: 4px;
         cursor: pointer;
-        white-space: nowrap;
-        overflow: hidden;
-        text-overflow: ellipsis;
+        /* Wrap long engram names onto multiple lines instead of cutting
+           them off with ellipsis — the dropdown is capped at max-width
+           320px and some names (UnpublishedRomania, Graphnosis-app-nf9p)
+           overflow that. word-break keeps even a single un-spaced name
+           breakable at any character so nothing escapes the panel. */
+        white-space: normal;
+        word-break: break-word;
+        line-height: 1.3;
       }
       .engram-picker-option:hover {
         background: color-mix(in oklab, var(--fg) 8%, transparent);
+      }
+      .engram-picker-option.disabled {
+        /* Pending engrams — listed for awareness but the sidecar hasn't
+           decrypted them into memory yet, so picking one would just
+           surface a "Graph not loaded" IPC error. Hard-coded grey (not
+           var(--fg-dim) which is only slightly darker than --fg and reads
+           as "normal" on this dark background) makes the disabled state
+           unmistakable. Drops the disabled flag on the next engrams-loading
+           event once that engram finishes loading. */
+        color: #6b7280 !important;
+        cursor: not-allowed;
+      }
+      .engram-picker-option.disabled:hover {
+        background: transparent;
       }
       .engram-picker-option.selected {
         background: color-mix(in oklab, var(--accent) 16%, transparent);
@@ -1525,7 +1605,7 @@
         background: var(--bg-elev);
         color: var(--fg);
       }
-      .app-header-right { display: flex; gap: 6px; align-items: center; }
+      .app-header-right { display: flex; gap: 6px; align-items: center; flex-shrink: 0; }
       .btn-help {
         width: 24px; height: 24px;
         border-radius: 50%;
@@ -1626,12 +1706,50 @@
         overflow: hidden;
         text-overflow: ellipsis;
       }
-      /* Settings button: margin-top:auto pins it to the bottom of the rail.
-         When the memory trace is hidden (display:none), this creates the gap
-         between the nav buttons and settings. When trace is visible, the
-         trace's flex:1 consumes all remaining space and the auto-margin
-         collapses to 0, so settings sits snugly below the trace. */
-      .rail-btn[data-mode="settings"] { margin-top: auto; flex-shrink: 0; }
+      /* Rail bottom row: pinned to the bottom of the sidebar via
+         margin-top:auto. Holds the MCP Tools + Settings buttons side by
+         side at 50/50 width. When the memory trace is hidden, the auto
+         margin creates the gap; when it's visible, the trace's flex:1
+         eats the space and the row sits snug below it. */
+      .rail-bottom-row {
+        margin-top: auto;
+        flex-shrink: 0;
+        display: flex;
+        gap: 4px;
+      }
+      .rail-btn-half {
+        flex: 1 1 0;
+        min-width: 0;
+        /* Override the rail-btn 3-column grid: a half-width slot doesn't
+           have room for the trailing spacer column. Switch to inline-flex
+           with center alignment so the icon + label sit together as a
+           single centered cluster instead of being pinned to the left. */
+        display: inline-flex !important;
+        align-items: center;
+        justify-content: center;
+        gap: 8px;
+        padding-top: 9px;
+        padding-bottom: 9px;
+      }
+      .rail-btn-half .rail-icon {
+        /* font-size only sets the gear (⚙) cleanly. Emoji like 🛠 ignore
+           font-size and render at their own scale, so we use width/height
+           to give both icons the same square footprint and let each
+           render at its natural size inside it. */
+        font-size: 16px;
+        line-height: 1;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 20px;
+        height: 20px;
+      }
+      .rail-btn-half .rail-label {
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        line-height: 1;
+      }
       .rail-section-label {
         font-size: 14px;
         text-transform: uppercase;
@@ -1797,7 +1915,10 @@
         position: absolute; inset: 0;
         width: 100%; height: 100%;
         z-index: 0; pointer-events: none;
-        opacity: 0.55;
+        /* Softened from 0.55 → 0.4 (≈75% of previous brightness) so the
+           ambient field reads as a backdrop instead of competing with
+           the vitality numbers in the foreground. */
+        opacity: 0.4;
       }
       .lb-vitality-ring {
         position: relative; z-index: 1;
@@ -1844,6 +1965,9 @@
         text-transform: uppercase; letter-spacing: 0.04em; color: var(--fg);
       }
       .lb-block { margin-top: 10px; }
+      /* Self-healing stats + "Needs your review" button on one line */
+      .lb-heal-row { display: flex; align-items: center; gap: 16px; margin-top: 10px; flex-wrap: wrap; }
+      .lb-heal-stats { flex: 1; min-width: 0; }
       .lb-empty {
         font-size: 13px; color: var(--fg-dim); font-style: italic;
         padding: 6px 0;
@@ -1965,24 +2089,38 @@
       /* Check-in dashboard → "Needs your review": near-duplicate pairs the
          autonomous brain could not safely merge on its own. The pair cards
          reuse the .lb-dup-card family. */
-      .g-needs-review { margin-bottom: 18px; position: relative; }
-      .g-needs-review.hidden { display: none; }
-      .g-needs-review-title { font-size: 13px; font-weight: 600; margin: 0 0 2px; padding-right: 24px; }
-      /* Dismiss (×) — top-right; hides the list until consolidation surfaces
-         a new pair, or until the next app launch. */
-      .g-needs-review-dismiss {
-        position: absolute; top: -2px; right: 0;
-        width: 20px; height: 20px; padding: 0;
-        border: none; background: transparent;
-        color: var(--fg-dim); font-size: 17px; line-height: 1;
-        cursor: pointer; border-radius: 4px;
-        display: flex; align-items: center; justify-content: center;
+      /* Brain tab pane needs relative positioning for the overlay. */
+      [data-gpane="brain"] { position: relative; }
+      /* Full-pane overlay — slides in when the user opens the review queue. */
+      .needs-review-overlay {
+        position: absolute; inset: 0; z-index: 20;
+        background: var(--bg); overflow-y: auto; padding: 16px 20px;
+        display: flex; flex-direction: column;
       }
-      .g-needs-review-dismiss:hover { color: var(--fg); background: var(--border); }
+      .needs-review-overlay.hidden { display: none; }
+      .needs-review-overlay-header {
+        display: flex; align-items: flex-start; gap: 10px; margin-bottom: 12px;
+      }
+      .needs-review-overlay-header h3 { margin: 0; font-size: 15px; flex: 1; }
+      .needs-review-overlay-header p { margin: 4px 0 0; font-size: 12px; color: var(--fg-dim); }
+      .needs-review-close {
+        width: 24px; height: 24px; padding: 0; flex-shrink: 0;
+        border: none; background: transparent; color: var(--fg-dim);
+        font-size: 20px; line-height: 1; cursor: pointer; border-radius: 4px;
+        display: flex; align-items: center; justify-content: center; margin-top: -2px;
+      }
+      .needs-review-close:hover { color: var(--fg); background: var(--border); }
+      .g-needs-review { position: relative; }
       .g-needs-review-sub {
         font-size: 12px; color: var(--fg-dim); margin: 0 0 10px; line-height: 1.45;
       }
       .g-nr-actions { display: flex; gap: 8px; flex-shrink: 0; }
+      /* Badge on the review button */
+      .needs-review-count {
+        display: inline-block; margin-left: 6px; padding: 1px 6px;
+        border-radius: 10px; font-size: 11px; font-weight: 700;
+        background: var(--accent); color: #000;
+      }
 
       /* (3) Scan-status line — countdown to the next background self-check,
          or the live phase label while a scan is running. */
@@ -4676,11 +4814,26 @@
               <div class="rail-get-connected-group" id="rail-gc-mobile"></div>
               <div class="rail-get-connected-group" id="rail-gc-connectors"></div>
             </div>
-            <button class="rail-btn" data-mode="settings" title="Preferences">
-              <span class="rail-icon">⚙</span>
-              <span class="rail-label">Settings</span>
-              <span></span>
-            </button>
+            <!-- Pinned-to-bottom row: MCP Tools + Settings share the rail's
+                 width 50/50. The row carries the margin-top:auto pin that the
+                 Settings button used to own when it was the only bottom item. -->
+            <div class="rail-bottom-row">
+              <button class="rail-btn rail-btn-half" data-mode="mcp-tools" title="Browse all MCP tools Graphnosis exposes">
+                <!-- ⚒︎ = U+2692 + U+FE0E (text variant selector). Forces the
+                     hammer-and-pick glyph to render monochrome line-art so it
+                     matches the weight of the gear (⚙) on the Settings
+                     button — the emoji form 🛠 renders full-color and at a
+                     different scale, breaking visual parity. -->
+                <span class="rail-icon">⚒︎</span>
+                <span class="rail-label">MCP Tools</span>
+                <span></span>
+              </button>
+              <button class="rail-btn rail-btn-half" data-mode="settings" title="Preferences">
+                <span class="rail-icon">⚙</span>
+                <span class="rail-label">Settings</span>
+                <span></span>
+              </button>
+            </div>
           </nav>
           <div class="app-canvas">
             <!-- Persistent error banner (any mode) -->
@@ -4704,15 +4857,18 @@
                     <input type="search" id="g-search" placeholder="Look for a memory — ⌘K, ↑↓ to move, Enter to open" />
                     <button id="g-search-clear" class="g-search-clear hidden" title="Clear search">×</button>
                   </div>
-                  <div class="g-search-llm-options" style="display: flex; gap: 14px; align-items: center; font-size: 12px; color: var(--fg-dim); padding: 0 2px;">
-                    <label id="g-search-synth-wrap" style="display: flex; align-items: center; gap: 5px; cursor: pointer;" title="Local LLM is not ready. Enable in Settings → AI.">
-                      <input type="checkbox" id="g-search-synth" disabled />
-                      <span>🤖 Synthesize answer</span>
-                    </label>
-                    <label id="g-search-rerank-wrap" style="display: flex; align-items: center; gap: 5px; cursor: pointer;" title="Local LLM is not ready. Enable in Settings → AI.">
-                      <input type="checkbox" id="g-search-rerank" disabled />
-                      <span>Enhanced ranking</span>
-                    </label>
+                  <div style="display: flex; flex-wrap: wrap; align-items: center; gap: 10px; padding: 0 2px;">
+                    <div class="g-search-llm-options" style="display: flex; gap: 14px; align-items: center; font-size: 12px; color: var(--fg-dim);">
+                      <label id="g-search-synth-wrap" style="display: flex; align-items: center; gap: 5px; cursor: pointer;" title="Local LLM is not ready. Enable in Settings → AI.">
+                        <input type="checkbox" id="g-search-synth" disabled />
+                        <span>🤖 Synthesize answer</span>
+                      </label>
+                      <label id="g-search-rerank-wrap" style="display: flex; align-items: center; gap: 5px; cursor: pointer;" title="Local LLM is not ready. Enable in Settings → AI.">
+                        <input type="checkbox" id="g-search-rerank" disabled />
+                        <span>Enhanced ranking</span>
+                      </label>
+                    </div>
+                    <button id="g-search-llm-btn" class="btn-sm" type="button" style="font-size: 11px; white-space: nowrap;" title="Enable a local AI model in Go Non-Deterministic">Local LLM…</button>
                   </div>
                 </div>
                 <div id="g-health" class="g-health g-health-inline">
@@ -4754,17 +4910,12 @@
                             <option value="source">Source A→Z</option>
                           </select>
                         </label>
+                        <button id="btn-search-results-close" class="needs-review-close" title="Clear search" aria-label="Clear search and return to dashboard">×</button>
                       </div>
                       <div id="g-list" class="g-list" tabindex="0"></div>
                     </div>
 
                     <div id="g-dashboard" class="g-dashboard">
-                      <!-- "Needs your review" — near-duplicate / possibly-
-                           conflicting memory pairs the autonomous brain
-                           could NOT safely merge on its own. Holistic
-                           across every engram; hidden entirely when empty.
-                           Populated by renderNeedsReview(). -->
-                      <div id="g-needs-review" class="g-needs-review hidden"></div>
                       <!-- Review deck: one card at a time, quick verdict.
                            Health gauge moved to the pane header; recap +
                            AI tools moved to the Status mode pane. The
@@ -4893,9 +5044,14 @@
                       <div class="lb-section">
                         <p class="lb-section-title">Self-healing</p>
                         <p class="brain-subtitle">
-                          Duplicate and redundant memories consolidation merged on its own — no prompts, no review queue. Nothing is lost: every merge is a soft-delete you can undo from the Recovery panel.
+                          Duplicate and redundant memories are merged automatically — no prompts. Pairs where a number, negation, or partial overlap made auto-merge unsafe are flagged for your call below. Nothing is ever lost: every merge is a soft-delete you can undo from the Recovery panel.
                         </p>
-                        <div id="lb-healing-log" class="lb-block"></div>
+                        <div class="lb-heal-row">
+                          <div id="lb-healing-log" class="lb-heal-stats"></div>
+                          <button id="btn-needs-review" class="btn-sm hidden" type="button">
+                            Needs your review <span id="needs-review-count" class="needs-review-count"></span>
+                          </button>
+                        </div>
                       </div>
 
                       <div class="lb-section">
@@ -4936,6 +5092,19 @@
                         <div id="lb-feed" class="lb-block"></div>
                       </div>
 
+                    </div>
+
+                    <!-- "Needs your review" overlay — triggered by the button in Self-healing.
+                         Covers the full brain tab pane; closed with the × button. -->
+                    <div id="needs-review-overlay" class="needs-review-overlay hidden">
+                      <div class="needs-review-overlay-header">
+                        <div style="flex:1">
+                          <h3 id="needs-review-overlay-title">Needs your review</h3>
+                          <p>Consolidation found these memories nearly identical but couldn't be sure they're the same fact — a number, a negation, or a partial overlap made it unsafe to merge automatically. You decide.</p>
+                        </div>
+                        <button id="btn-needs-review-close" class="needs-review-close" title="Close" aria-label="Close review panel">×</button>
+                      </div>
+                      <div id="g-needs-review" class="g-needs-review"></div>
                     </div>
                   </section>
 
@@ -5202,6 +5371,19 @@ ollama list</code></pre>
               </div>
             </section>
 
+            <!-- MCP TOOLS pane: full toolset reference. Content is rendered
+                 by main.ts (mcpToolsOnboardingHtml + wireMcpToolsOnboarding)
+                 the first time the user opens this pane — same markup the
+                 empty-engram Check-in card uses, kept in lockstep via the
+                 shared helper. -->
+            <section class="mode-pane hidden" data-pane="mcp-tools">
+              <header class="pane-header">
+                <h2>MCP Tools</h2>
+                <p class="brain-subtitle">Every tool Graphnosis exposes to your AI clients. Click any name for a short description.</p>
+              </header>
+              <div id="mcp-tools-content" class="panel" style="padding: 0; overflow: hidden;"></div>
+            </section>
+
             <!-- SETTINGS pane: actions + entry to settings modal -->
             <section class="mode-pane hidden" data-pane="settings">
               <header class="pane-header">
@@ -5304,7 +5486,7 @@ ollama list</code></pre>
           <span id="cortex-label" class="status-cortex" title="Current cortex folder">cortex</span>
           <span class="status-sep">·</span>
           <span class="status-search">⌘K to search nodes</span>
-          <span id="status-saved" class="status-saved">—</span>
+          <span id="status-saved" class="status-saved"></span>
           <span id="brain-vitality" style="display:none; font-size:12px; opacity:0.7; margin-left:8px; cursor:pointer;" title="Open Deterministic Consolidation tab">🧠 Vitality –</span>
           <span class="status-mcp">
             <span id="status-mcp-dot" class="status-dot"></span>
@@ -6053,14 +6235,22 @@ ollama list</code></pre>
     <!-- Tool explainer — opened by clicking a tool chip in the onboarding card. -->
     <div id="tool-info-modal" class="modal-backdrop hidden">
       <div class="modal" style="max-width: 460px;">
-        <div class="modal-header">
-          <h2 id="tool-info-name" style="font-family: monospace;">tool</h2>
-          <p class="subtitle" id="tool-info-determinism"></p>
+        <div class="modal-header" style="display:flex; justify-content:space-between; align-items:flex-start; gap:12px;">
+          <div style="flex:1; min-width:0;">
+            <h2 id="tool-info-name" style="font-family: monospace;">tool</h2>
+            <p class="subtitle" id="tool-info-determinism"></p>
+          </div>
+          <div style="display:flex; flex-direction:column; align-items:center; gap:2px; flex-shrink:0;">
+            <img src="/graphnosis-logo.png" alt="Graphnosis" width="32" height="32" style="border-radius:8px; opacity:0.9;" />
+            <span style="font-size:10px; color:var(--fg-dim); letter-spacing:.04em;">Graphnosis</span>
+          </div>
         </div>
         <div class="modal-body">
           <p id="tool-info-body" style="font-size: 14px; line-height: 1.6; margin: 0;"></p>
+          <div id="tool-info-examples" class="tool-info-examples"></div>
         </div>
         <div class="modal-footer">
+          <a id="tool-info-docs-link" href="#" style="font-size:12px; color:var(--fg-dim); text-decoration:none; border-bottom:1px dotted currentColor;" title="Open the full MCP Tools reference in your browser">📖 Full MCP Tools reference</a>
           <span class="filler"></span>
           <button id="tool-info-close" class="primary">Got it</button>
         </div>
