@@ -163,7 +163,15 @@ export async function startIpc(deps: IpcDeps): Promise<net.Server> {
 async function dispatch(deps: IpcDeps, method: string, params: unknown): Promise<unknown> {
   switch (method) {
     case 'graphs.list': return deps.host.listGraphs();
-    case 'graphs.listWithMetadata': return deps.host.graphsWithMetadata();
+    case 'graphs.listWithMetadata': {
+      // includeUnloaded surfaces engrams that have metadata but aren't loaded
+      // in memory yet (still in loadAllGraphsFromDisk's queue). The App opts
+      // in so the picker can show the full set during boot.
+      const args = z.object({ includeUnloaded: z.boolean().optional() })
+        .safeParse(params ?? {});
+      const includeUnloaded = args.success ? args.data.includeUnloaded === true : false;
+      return deps.host.graphsWithMetadata({ includeUnloaded });
+    }
     // Reconciliation cursor — returns {graphId: lastMutationTs} for all
     // loaded graphs. Cheap (memo read, microseconds). The App polls this
     // periodically as a safety net for the push-event channel: if a
