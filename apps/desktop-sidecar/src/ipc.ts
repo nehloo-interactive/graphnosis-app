@@ -14,6 +14,8 @@ import type { CorrectionDiff } from './correction.js';
 import { oplog } from '@nehloo-interactive/graphnosis-secure-sync';
 import { withEmbedding } from './embedding-queue.js';
 import type { ConnectorManager } from './connectors/manager.js';
+import { getConsentPhraseForTier } from './mcp-server.js';
+import { revokeConsent } from '@graphnosis-app/core/settings';
 
 // Local IPC between Tauri shell and Node sidecar. Newline-delimited JSON over a
 // Unix-domain socket on macOS/Linux (Windows uses a named pipe — same socket API).
@@ -90,6 +92,12 @@ export interface IpcDeps {
   connectorManager: ConnectorManager;
   /** Alive Brain engine. Null before the cortex is fully unlocked or if BrainEngine failed to start. */
   brainEngine?: import('./brain-engine.js').BrainEngine | null;
+  /**
+   * Lazy LLM accessor — returns the LocalLlm when the user has enabled it,
+   * null otherwise. Mirrors the pattern used by mcpDeps.llm. Used by the
+   * `ai.synthesizeSearchResults` and `ai.rerankSearchResults` IPCs.
+   */
+  llm?: () => import('./correction.js').LocalLlm | null;
 }
 
 export async function startIpc(deps: IpcDeps): Promise<net.Server> {
@@ -423,6 +431,137 @@ async function dispatch(deps: IpcDeps, method: string, params: unknown): Promise
       }).parse(params);
       await deps.host.setGraphTier(args.graphId, args.tier);
       return { ok: true };
+    }
+    case 'engram.setConfig': {
+      // Update an engram's sensitivity tier and/or per-graph consent interval.
+      // Both fields are optional; pass only the ones that changed.
+      // Write-protected from MCP — only reachable from the Tauri UI process.
+      const MAX_INTERVAL_MS = 15_552_000_000; // 6 months
+      const args = z.object({
+        engramId: z.string(),
+        tier: z.enum(['public', 'personal', 'sensitive']).optional(),
+        consentIntervalMs: z.union([
+          z.literal(-1),
+          z.number().int().min(0).max(MAX_INTERVAL_MS),
+        ]).optional(),
+        // When true, remove any per-graph consentIntervalMs override so the graph
+        // falls back to the global tier default. Mutually exclusive with consentIntervalMs.
+        clearConsentInterval: z.boolean().optional(),
+      }).parse(params);
+      await deps.host.updateEngramConfig(args.engramId, {
+        ...(args.tier !== undefined ? { tier: args.tier } : {}),
+        ...(args.consentIntervalMs !== undefined ? { consentIntervalMs: args.consentIntervalMs } : {}),
+        ...(args.clearConsentInterval ? { clearConsentInterval: true } : {}),
+      });
+      return { ok: true };
+    }
+    case 'ai.getConsentPhrase': {
+      // Returns the current consent phrase for a tier. Called only by the Tauri UI
+      // to display in Settings → AI → Consent Phrases. NEVER accessible via MCP.
+      const { tier } = z.object({ tier: z.enum(['personal', 'sensitive']) }).parse(params);
+      const hmacKey = await deps.host.getOrCreateConsentHmacKey();
+      return getConsentPhraseForTier(hmacKey, tier);
+    }
+    case 'ai.revokeConsents': {
+      // Soft-expire all (or specific) consent records. Revocation takes effect immediately.
+      // Optional filters: clientName and/or tier. Omit both to revoke everything.
+      const args = z.object({
+        clientName: z.string().optional(),
+        tier: z.enum(['personal', 'sensitive']).optional(),
+      }).parse(params ?? {});
+      const current = deps.host.getSettings();
+      const revoked = revokeConsent(
+        current.ai.dataAccessConsents,
+        args.clientName,
+        args.tier,
+      );
+      await deps.host.setSettings({ ai: { ...current.ai, dataAccessConsents: revoked } });
+      return { revoked: true, count: (current.ai.dataAccessConsents?.length ?? 0) - revoked.filter(r => !r.withdrawnAt).length };
+    }
+    case 'ai.getConsentHistory': {
+      // Returns all consent records (including revoked) for the consent history modal.
+      const current = deps.host.getSettings();
+      return { records: current.ai.dataAccessConsents ?? [] };
+    }
+    case 'ai.synthesizeSearchResults': {
+      // Local-LLM "answer the question with citations" path. Given a query and
+      // a small set of top hits, ask the LLM to write a 1-paragraph answer
+      // using ONLY the provided snippets. Citations point back to nodeIds.
+      // Never leaves the device.
+      const args = z.object({
+        query: z.string().min(1),
+        hits: z.array(z.object({
+          nodeId: z.string(),
+          text: z.string(),
+          sourceFile: z.string().optional(),
+          score: z.number().optional(),
+        })).min(1).max(15),
+      }).parse(params);
+      const llm = deps.llm?.() ?? null;
+      if (!llm) {
+        throw new Error('Local LLM is not enabled or not reachable. Configure in Settings → AI.');
+      }
+      const system =
+        'You are a precise research assistant working only with the snippets the user provides. ' +
+        'Write a SINGLE paragraph (<= 90 words) that answers the user\'s question grounded ONLY in those snippets. ' +
+        'After each claim, cite the snippet number in square brackets like [1], [2]. ' +
+        'If the snippets do not answer the question, say so plainly — do not invent facts. ' +
+        'No markdown headings, no lists, no preamble — just the paragraph.';
+      const numbered = args.hits
+        .map((h, i) => `[${i + 1}] ${h.text}${h.sourceFile ? ` (source: ${h.sourceFile})` : ''}`)
+        .join('\n\n');
+      const user = `Question: ${args.query}\n\nSnippets:\n${numbered}\n\nAnswer:`;
+      const synthesis = await llm.complete({ system, user });
+      return {
+        answer: synthesis.trim(),
+        citedNodeIds: args.hits.map(h => h.nodeId),
+      };
+    }
+    case 'ai.rerankSearchResults': {
+      // Local-LLM "re-order top-k by judged relevance" path. Cheaper than
+      // synthesis — the LLM returns a JSON array of nodeIds in best-first order.
+      const args = z.object({
+        query: z.string().min(1),
+        hits: z.array(z.object({
+          nodeId: z.string(),
+          text: z.string(),
+        })).min(1).max(30),
+      }).parse(params);
+      const llm = deps.llm?.() ?? null;
+      if (!llm) {
+        throw new Error('Local LLM is not enabled or not reachable. Configure in Settings → AI.');
+      }
+      const system =
+        'You re-rank a list of memory snippets by how directly they answer the user\'s question. ' +
+        'Return ONLY a JSON object with shape {"order":[snippet_number,...]} listing snippet numbers in best-first order. ' +
+        'Include every snippet exactly once. No commentary, no markdown.';
+      const numbered = args.hits.map((h, i) => `[${i + 1}] ${h.text}`).join('\n\n');
+      const user = `Question: ${args.query}\n\nSnippets:\n${numbered}\n\nRespond with the JSON object only.`;
+      const raw = await llm.complete({
+        system,
+        user,
+        jsonSchema: { type: 'object', properties: { order: { type: 'array', items: { type: 'number' } } }, required: ['order'] },
+      });
+      let order: number[] = [];
+      try {
+        const parsed = JSON.parse(raw) as { order?: unknown };
+        if (Array.isArray(parsed.order)) order = parsed.order.filter(n => typeof n === 'number') as number[];
+      } catch { /* fall through to identity order */ }
+      // Build the reordered nodeId list, falling back to original order for missing entries.
+      const orderedNodeIds: string[] = [];
+      const seen = new Set<number>();
+      for (const n of order) {
+        const idx = n - 1;
+        if (idx >= 0 && idx < args.hits.length && !seen.has(idx)) {
+          orderedNodeIds.push(args.hits[idx]!.nodeId);
+          seen.add(idx);
+        }
+      }
+      // Append any hits the LLM omitted, in original order, so nothing is lost.
+      for (let i = 0; i < args.hits.length; i++) {
+        if (!seen.has(i)) orderedNodeIds.push(args.hits[i]!.nodeId);
+      }
+      return { orderedNodeIds };
     }
     case 'graphs.rename': {
       const args = z.object({
@@ -788,6 +927,20 @@ async function dispatch(deps: IpcDeps, method: string, params: unknown): Promise
           reingestQuietMs: z.number().int().positive().optional(),
           chunkSize: z.enum(['fine', 'balanced', 'coarse']).optional(),
           embedBatch: z.enum(['small', 'medium', 'large', 'auto']).optional(),
+          sessionTokenCap: z.number().int().min(1000).max(200_000).optional(),
+          sessionNodeCap: z.number().int().min(10).max(5000).optional(),
+          // Consent interval settings — writable from the UI, blocked from MCP.
+          // -1 = permanent (until revoked); 0 = every access; positive = interval in ms.
+          consentIntervalSensitiveMs: z.union([
+            z.literal(-1),
+            z.number().int().min(0).max(15_552_000_000),
+          ]).optional(),
+          consentIntervalPersonalMs: z.union([
+            z.literal(-1),
+            z.number().int().min(0).max(15_552_000_000),
+          ]).optional(),
+          // AI client type — 'chat' (default) or 'agent' (always re-confirms per call).
+          clientTypes: z.record(z.string(), z.enum(['chat', 'agent'])).optional(),
         }).optional(),
         mobile: z.object({
           httpBridge: z.object({
@@ -825,6 +978,15 @@ async function dispatch(deps: IpcDeps, method: string, params: unknown): Promise
           // The local-LLM master switch is owned by the dedicated
           // `llm:setEnabled` IPC — preserve it across a generic settings update.
           llmEnabled: currentAi.llmEnabled,
+          ...(parsed.ai.sessionTokenCap !== undefined ? { sessionTokenCap: parsed.ai.sessionTokenCap } : currentAi.sessionTokenCap !== undefined ? { sessionTokenCap: currentAi.sessionTokenCap } : {}),
+          ...(parsed.ai.sessionNodeCap !== undefined ? { sessionNodeCap: parsed.ai.sessionNodeCap } : currentAi.sessionNodeCap !== undefined ? { sessionNodeCap: currentAi.sessionNodeCap } : {}),
+          // Consent interval settings — UI-writable, never overwritable via MCP.
+          ...(parsed.ai.consentIntervalSensitiveMs !== undefined ? { consentIntervalSensitiveMs: parsed.ai.consentIntervalSensitiveMs } : currentAi.consentIntervalSensitiveMs !== undefined ? { consentIntervalSensitiveMs: currentAi.consentIntervalSensitiveMs } : {}),
+          ...(parsed.ai.consentIntervalPersonalMs !== undefined ? { consentIntervalPersonalMs: parsed.ai.consentIntervalPersonalMs } : currentAi.consentIntervalPersonalMs !== undefined ? { consentIntervalPersonalMs: currentAi.consentIntervalPersonalMs } : {}),
+          ...(parsed.ai.clientTypes !== undefined ? { clientTypes: parsed.ai.clientTypes } : currentAi.clientTypes !== undefined ? { clientTypes: currentAi.clientTypes } : {}),
+          // dataAccessConsents — NEVER written via generic settings patch.
+          // Only writable via dedicated ai.revokeConsents and confirm_data_access MCP tool.
+          ...(currentAi.dataAccessConsents !== undefined ? { dataAccessConsents: currentAi.dataAccessConsents } : {}),
         };
       }
       if (parsed.mobile) {

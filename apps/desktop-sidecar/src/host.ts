@@ -11,6 +11,7 @@ import * as healingJournalMod from './healing-journal.js';
 import * as connectionStoreMod from './connection-store.js';
 import * as associationIndexMod from './association-index.js';
 import * as gnnStoreMod from './gnn-store.js';
+import { GllWriter } from './gll.js';
 
 const { deriveKey, encrypt, decrypt } = crypto;
 const { OpLogWriter } = oplog;
@@ -188,6 +189,8 @@ export class GraphnosisHost {
    */
   private readonly correctionsCount = new Map<GraphId, number>();
   private readonly oplogWriter: oplog.OpLogWriter;
+  /** Append-only LLM event log — one .gll file per engram. */
+  readonly gllWriter: GllWriter;
   private policyCfg: policy.PolicyConfig;
   private readonly embed: embeddings.EmbedFn;
   private readonly embedAdapterId: string;
@@ -213,6 +216,7 @@ export class GraphnosisHost {
       key: this.key,
       salt: this.salt,
     });
+    this.gllWriter = new GllWriter(opts.cortexDir, this.key, this.salt);
     this.embed = opts.embed ?? stubEmbed;
     this.embedAdapterId = opts.embedAdapterId ?? 'graphnosis-app:stub@384';
     this.embedDimensions = opts.embedDimensions ?? 384;
@@ -237,7 +241,7 @@ export class GraphnosisHost {
     const masterEncPath = path.join(opts.cortexDir, 'master.enc');
     const recoveryEncPath = path.join(opts.cortexDir, 'recovery.enc');
 
-    // ── Cortex unlock architecture ──────────────────────────────────────
+    // ── cortex unlock architecture ──────────────────────────────────────
     //
     // Two-tier key model (industry standard):
     //   passphrase ──Argon2id──▶ wrapKey ──decrypts──▶ master.enc ──▶ dataKey
@@ -815,6 +819,66 @@ export class GraphnosisHost {
     const graphs = this.policyCfg.graphs.filter((g) => g.graphId !== graphId);
     graphs.push({ graphId, shareWithAi: tier !== 'sensitive', tier });
     this.policyCfg = { ...this.policyCfg, graphs };
+  }
+
+  /** Update an engram's sensitivity tier and/or per-graph consent interval in
+   *  one call. Supersedes setGraphTier when both fields need updating together.
+   *  - tier: live policyCfg is patched immediately (no restart needed)
+   *  - consentIntervalMs: stored in metadata only; resolved by checkConsentOrThrow
+   *    at recall time using "stricter wins" against the global tier default */
+  async updateEngramConfig(
+    graphId: GraphId,
+    config: { tier?: 'public' | 'personal' | 'sensitive'; consentIntervalMs?: number; clearConsentInterval?: boolean },
+  ): Promise<void> {
+    if (!config.tier && config.consentIntervalMs === undefined && !config.clearConsentInterval) return;
+    const existing: settingsMod.GraphMetadata = this.settings.graphMetadata[graphId] ?? {
+      template: 'personal' as settingsMod.GraphTemplate,
+      displayName: graphId,
+      createdAt: 0,
+    };
+    const updated: settingsMod.GraphMetadata = {
+      ...existing,
+      ...(config.tier !== undefined ? { sensitivityTier: config.tier } : {}),
+      ...(config.consentIntervalMs !== undefined ? { consentIntervalMs: config.consentIntervalMs } : {}),
+    };
+    if (config.clearConsentInterval) {
+      delete (updated as { consentIntervalMs?: number }).consentIntervalMs;
+    }
+    await this.setGraphMetadata(graphId, updated);
+    if (config.tier !== undefined) {
+      const tier = config.tier;
+      const graphs = this.policyCfg.graphs.filter((g) => g.graphId !== graphId);
+      graphs.push({ graphId, shareWithAi: tier !== 'sensitive', tier });
+      this.policyCfg = { ...this.policyCfg, graphs };
+    }
+  }
+
+  /** Retrieve or generate (once, on first call) the HMAC key used for consent
+   *  phrase rotation. Stored in settings but NEVER exposed via MCP tools or IPC
+   *  responses — intentionally limited to the sidecar's phrase generation code.
+   *
+   *  Concurrency: the IPC layer calls this from two parallel `get_consent_phrase`
+   *  invocations (personal + sensitive) when the Settings panel opens. Without
+   *  serialization, both branches would generate a key and race on the atomic
+   *  settings.json rename — one wins, the other fails with ENOENT. We cache the
+   *  in-flight save promise so concurrent callers share the same write. */
+  private _hmacKeyInFlight: Promise<string> | null = null;
+
+  async getOrCreateConsentHmacKey(): Promise<string> {
+    if (this.settings.consentHmacKey) return this.settings.consentHmacKey;
+    if (this._hmacKeyInFlight) return this._hmacKeyInFlight;
+    this._hmacKeyInFlight = (async (): Promise<string> => {
+      // Re-check in case another waiter completed the write while we queued.
+      if (this.settings.consentHmacKey) return this.settings.consentHmacKey;
+      const key = randomBytes(32).toString('hex');
+      await this.setSettings({ consentHmacKey: key });
+      return key;
+    })();
+    try {
+      return await this._hmacKeyInFlight;
+    } finally {
+      this._hmacKeyInFlight = null;
+    }
   }
 
   /**
