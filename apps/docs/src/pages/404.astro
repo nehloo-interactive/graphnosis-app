@@ -1,0 +1,90 @@
+---
+import Layout from '../layouts/Layout.astro';
+import Nav from '../components/Nav.astro';
+import Footer from '../components/Footer.astro';
+---
+
+<Layout
+  title="Page not found — Graphnosis"
+  description="The page you're looking for doesn't exist."
+>
+  <Nav />
+  <main class="not-found">
+    <div class="not-found-inner">
+      <p class="not-found-code">404</p>
+      <h1 class="not-found-title">Page not found</h1>
+      <p class="not-found-sub">
+        The page you're looking for doesn't exist or has moved.
+      </p>
+      <div class="not-found-links">
+        <a href="/" class="not-found-btn-primary">Go home</a>
+        <a href="/getting-started/overview" class="not-found-btn-secondary">Read the docs</a>
+      </div>
+    </div>
+  </main>
+  <Footer />
+</Layout>
+
+<style>
+  .not-found {
+    min-height: 70vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    text-align: center;
+    padding: 4rem 1.5rem;
+  }
+  .not-found-inner {
+    max-width: 480px;
+  }
+  .not-found-code {
+    font-size: 7rem;
+    font-weight: 900;
+    line-height: 1;
+    margin: 0 0 1rem;
+    background: linear-gradient(135deg, #67e8f9 0%, #a78bfa 100%);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+  }
+  .not-found-title {
+    font-size: 1.75rem;
+    font-weight: 800;
+    color: #f0f0f5;
+    margin: 0 0 0.75rem;
+  }
+  .not-found-sub {
+    font-size: 1rem;
+    color: #c4c6d6;
+    margin: 0 0 2rem;
+    line-height: 1.6;
+  }
+  .not-found-links {
+    display: flex;
+    gap: 1rem;
+    justify-content: center;
+    flex-wrap: wrap;
+  }
+  .not-found-btn-primary {
+    padding: 0.65rem 1.5rem;
+    border-radius: 9999px;
+    background: #67e8f9;
+    color: #13131a;
+    font-weight: 700;
+    font-size: 0.9rem;
+    text-decoration: none;
+    transition: background 0.15s;
+  }
+  .not-found-btn-primary:hover { background: #4dd6e8; }
+  .not-found-btn-secondary {
+    padding: 0.65rem 1.5rem;
+    border-radius: 9999px;
+    border: 1px solid #2a2a3d;
+    color: #f0f0f5;
+    font-weight: 600;
+    font-size: 0.9rem;
+    text-decoration: none;
+    transition: border-color 0.15s;
+  }
+  .not-found-btn-secondary:hover { border-color: #67e8f9; }
+</style>
