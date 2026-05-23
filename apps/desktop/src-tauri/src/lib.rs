@@ -946,7 +946,10 @@ async fn purge_forgotten(
 }
 
 #[tauri::command]
-async fn list_graphs_with_metadata(state: State<'_, AppState>) -> Result<serde_json::Value, String> {
+async fn list_graphs_with_metadata(
+    state: State<'_, AppState>,
+    include_unloaded: Option<bool>,
+) -> Result<serde_json::Value, String> {
     let socket_path = {
         let inner = state.inner.lock().await;
         match &inner.cortex_dir {

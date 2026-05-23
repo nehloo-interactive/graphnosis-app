@@ -711,6 +711,11 @@ export class GraphnosisHost {
     return this.opts.adapter.inspectNodes(g.handle);
   }
 
+  /** Return the sourceId that a given node was derived from, or undefined when unknown. */
+  getNodeSource(graphId: GraphId, nodeId: string): string | undefined {
+    return this.must(graphId).sourceIndex.sourceOf(nodeId);
+  }
+
   /** Dual-graph edges (directed + undirected) — powers the Atlas wire-frame. */
   listEdges(graphId: GraphId): ReturnType<GraphnosisAdapter['inspectEdges']> {
     const g = this.must(graphId);
@@ -782,16 +787,36 @@ export class GraphnosisHost {
     await this.persistSettings(next);
   }
 
-  /** Combined view: every loaded graph + its metadata (or sensible defaults). */
-  graphsWithMetadata(): Array<{ graphId: GraphId; metadata: settingsMod.GraphMetadata }> {
-    return this.listGraphs().map((graphId) => ({
+  /**
+   * Combined view: every loaded graph + its metadata (or sensible defaults).
+   *
+   * With `includeUnloaded: true`, also include engrams that have a metadata
+   * entry in settings but haven't been loaded into memory yet (still queued
+   * by `loadAllGraphsFromDisk`). Each entry carries a `loaded` flag so the
+   * caller can distinguish ready-to-use engrams from ones still warming up.
+   * The engram picker uses this so the dropdown shows the full set during
+   * boot — otherwise it'd grow incrementally as each background load
+   * finished, which is jarring (and gives the impression engrams are
+   * appearing out of nowhere).
+   */
+  graphsWithMetadata(
+    opts: { includeUnloaded?: boolean } = {},
+  ): Array<{ graphId: GraphId; metadata: settingsMod.GraphMetadata; loaded: boolean }> {
+    const loadedSet = new Set<GraphId>(this.listGraphs());
+    const loadedRows = this.listGraphs().map((graphId) => ({
       graphId,
       metadata: this.settings.graphMetadata[graphId] ?? {
         template: 'personal' as settingsMod.GraphTemplate,
         displayName: graphId,
         createdAt: 0,
       },
+      loaded: true,
     }));
+    if (!opts.includeUnloaded) return loadedRows;
+    const pendingRows = Object.entries(this.settings.graphMetadata)
+      .filter(([graphId]) => !loadedSet.has(graphId))
+      .map(([graphId, metadata]) => ({ graphId, metadata, loaded: false }));
+    return [...loadedRows, ...pendingRows];
   }
 
   /**
@@ -1693,7 +1718,7 @@ export class GraphnosisHost {
     this.plasticityObserver = fn;
   }
 
-  async recall(query: string, opts?: { budget?: SubgraphBudget }): Promise<federation.FederatedSubgraph> {
+  async recall(query: string, opts?: { budget?: SubgraphBudget; onlyGraphIds?: string[]; exceptGraphIds?: string[] }): Promise<federation.FederatedSubgraph> {
     // Snapshot active-node IDs per graph BEFORE the federated query runs.
     // We use these to filter SDK results so soft-deleted (forgotten) nodes
     // never leak back into the AI's context. Without this, garbage
