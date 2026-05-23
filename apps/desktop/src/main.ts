@@ -209,7 +209,7 @@ interface GraphMetadata {
   archived?: boolean;
   sensitivityTier?: 'public' | 'personal' | 'sensitive';
 }
-interface GraphWithMetadata { graphId: string; metadata: GraphMetadata; }
+interface GraphWithMetadata { graphId: string; metadata: GraphMetadata; loaded?: boolean; }
 
 interface NodeRecord {
   id: string;
@@ -579,6 +579,11 @@ const els = {
   lbMemoryHealth: $<HTMLDivElement>('lb-memory-health'),
   lbNeuralNetwork: $<HTMLDivElement>('lb-neural-network'),
   gNeedsReview: $<HTMLDivElement>('g-needs-review'),
+  needsReviewOverlay: $<HTMLDivElement>('needs-review-overlay'),
+  needsReviewOverlayTitle: $<HTMLHeadingElement>('needs-review-overlay-title'),
+  needsReviewCount: $<HTMLSpanElement>('needs-review-count'),
+  btnNeedsReview: $<HTMLButtonElement>('btn-needs-review'),
+  btnNeedsReviewClose: $<HTMLButtonElement>('btn-needs-review-close'),
   lbInsights: $<HTMLDivElement>('lb-insights'),
   lbGoals: $<HTMLDivElement>('lb-goals'),
   lbFeed: $<HTMLDivElement>('lb-feed'),
@@ -617,6 +622,10 @@ const els = {
 // Current plan in the modal — kept in module scope so the Apply button can
 // figure out which checkboxes are still checked at click time.
 let currentRecoveryPlan: RecoveryPlan | null = null;
+
+// True between render(unlocked) and fetchGraphsMetadata() resolving.
+// Finally-blocks in unlock handlers check this before hiding unlockStatus.
+let unlockPending = false;
 
 // Brain engine state — refreshed by refreshBrainState()
 let brainVitalityReport: { overall: number; byGraph: Record<string, number>; computedAt: number } | null = null;
@@ -994,28 +1003,81 @@ function render(status: StatusSnapshot): void {
   }
 
   if (status.unlocked) {
-    els.viewUnlock.classList.add('hidden');
-    els.viewApp.classList.remove('hidden');
+    // If the app is already visible, a status-poll re-firing 'unlocked' is a
+    // no-op — don't restart the boot sequence and wipe any visible status text.
+    if (!els.viewApp.classList.contains('hidden')) return;
+    // Guard against re-entry during boot (status poll can fire multiple times).
+    if (unlockPending) return;
+    // Keep the lock screen visible while the default engram loads.
+    // Signal the finally-blocks in the unlock handlers not to hide unlockStatus yet.
+    unlockPending = true;
     els.cortexLabel.textContent = shortCortexLabel(status.cortex_dir ?? 'cortex');
-    refreshActiveEngramLabel();
-    void refreshStats();
+    els.bootStatusText.textContent = 'Loading your engram…';
+    els.unlockStatus.classList.remove('hidden');
     void syncForgetMode();
+
+    const showApp = () => {
+      unlockPending = false;
+      els.bootStatusText.textContent = '';
+      els.unlockStatus.classList.add('hidden');
+      els.viewUnlock.classList.add('hidden');
+      els.viewApp.classList.remove('hidden');
+      refreshActiveEngramLabel();
+      // Show vitality as loading immediately — refreshBrainState will update it.
+      brainVitalityReport = null; // ensure "Computing vitality…" state renders
+      renderLbVitality();         // paint the loading ring in the Brain tab
+      els.brainVitality.style.display = '';
+      els.brainVitality.textContent = '🧠 Vitality…';
+      els.brainVitality.style.opacity = '0.5';
+      void refreshStats();
+      void refreshConnectorsList();
+      startMcpPolling();
+      void refreshBrainState();
+      void refreshLlmStatus().then(() => void loadSearchLlmPreferences().then(syncSearchLlmCheckboxes));
+      void (async () => {
+        try {
+          const s = (await invoke('get_settings')) as AppSettings;
+          setClipboardCaptureEnabled(s.brain?.clipboardCapture?.enabled ?? false);
+        } catch { /* non-fatal */ }
+      })();
+      activateMode(currentMode);
+    };
+
     // Load engrams, then evaluate the Graphnosis-docs ingest offer — the
     // sidecar's decision depends on whether the `graphnosis-docs` engram is
     // present, so the offer check must run after graphs are loaded.
-    void fetchGraphsMetadata().then(() => { void checkDocsIngestOffer(); });
-    void refreshConnectorsList();
-    startMcpPolling();
-    void refreshBrainState();
-    void refreshLlmStatus().then(() => void loadSearchLlmPreferences().then(syncSearchLlmCheckboxes));
-    // Initialize clipboard capture from persisted settings.
-    void (async () => {
-      try {
-        const s = (await invoke('get_settings')) as AppSettings;
-        setClipboardCaptureEnabled(s.brain?.clipboardCapture?.enabled ?? false);
-      } catch { /* non-fatal */ }
-    })();
-    activateMode(currentMode);
+    const revealApp = async () => {
+      els.bootStatusText.textContent = 'Opening your cortex…';
+      await new Promise<void>((resolve) => { setTimeout(resolve, 350); });
+      showApp();
+      // Catch-up: if the session-saved engram loaded during boot (between
+      // pickAtlasGraph and showApp), promote it now. Re-fetch the live list
+      // because more engrams may have finished loading while boot was running.
+      const saved = localStorage.getItem(LAST_ENGRAM_KEY);
+      if (saved && saved !== atlasActiveGraph) {
+        try {
+          const graphs = await invoke<GraphWithMetadata[]>('list_graphs_with_metadata', { includeUnloaded: true });
+          loadedGraphs = graphs;
+          if (graphs.some((g) => !g.metadata.archived && g.graphId === saved)) {
+            await switchActiveEngram(saved);
+          } else {
+            syncEngramPicker();
+          }
+        } catch { /* non-fatal — handler will retry on next engrams-loading event */ }
+      }
+    };
+    void fetchGraphsMetadata().then(async () => {
+      // atlasActiveGraph is now set. Load nodes directly — don't go through
+      // pollGraphMutations() which returns early when its mutation-diff map is
+      // empty and the engram appears unchanged (common on first boot).
+      els.bootStatusText.textContent = 'Loading memories…';
+      if (atlasActiveGraph) {
+        await loadGraphnosisData(atlasActiveGraph);
+        applyGraphnosisFilter(); // fills the Check-in deck from the loaded data
+      }
+      void checkDocsIngestOffer();
+      await revealApp();
+    }).catch(() => void revealApp()); // show the app even if metadata fetch fails
   } else {
     els.viewApp.classList.add('hidden');
     els.viewUnlock.classList.remove('hidden');
@@ -1027,6 +1089,9 @@ function render(status: StatusSnapshot): void {
     // of a different cortex) re-evaluates the offer cleanly.
     docsOfferChecked = false;
     hideDocsOfferBanner();
+    // Hide the needs-review overlay so it doesn't bleed into the next unlock.
+    els.needsReviewOverlay?.classList.add('hidden');
+    els.btnNeedsReview?.classList.add('hidden');
     // Clear the memory trace — the left-rail recents list AND the right
     // detail pane — so a re-unlock starts with a clean slate, not the
     // previous session's navigation trail.
@@ -1097,10 +1162,27 @@ function syncEngramPicker(): void {
   const visibleGraphs = loadedGraphs
     .filter((g) => !g.metadata.archived)
     .sort((a, b) => (a.metadata.displayName ?? a.graphId).localeCompare(b.metadata.displayName ?? b.graphId));
+  // Engrams the sidecar reported via list_graphs_with_metadata({includeUnloaded:true})
+  // but hasn't yet decrypted into memory show up as disabled options, so the
+  // dropdown reflects the full set during boot instead of growing one entry
+  // at a time. `loaded` is undefined on older payloads (treated as loaded
+  // for back-compat) and explicitly false for pending entries.
+  // One flat alphabetical list. Pending engrams (not yet decrypted into
+  // memory) carry the native `disabled` attribute — the custom dropdown
+  // reads each <option>'s `disabled` DOM property and applies a greyed
+  // `.disabled` class to its own button. The native popover ignores this
+  // attribute on macOS, but the native popover isn't what the user sees:
+  // installCustomEngramPicker() replaces it with our own dropdown.
   els.atlasGraphPicker.innerHTML = visibleGraphs
-    .map((g) => `<option value="${escape(g.graphId)}">${escape(g.metadata.displayName ?? g.graphId)}</option>`)
+    .map((g) => {
+      const name = escape(g.metadata.displayName ?? g.graphId);
+      const disabled = g.loaded === false ? ' disabled' : '';
+      return `<option value="${escape(g.graphId)}"${disabled}>${name}</option>`;
+    })
     .join('');
-  if (!atlasActiveGraph || !visibleGraphs.some((g) => g.graphId === atlasActiveGraph)) {
+  // pickAtlasGraph already filters to loaded engrams, so we don't accidentally
+  // make a pending engram the active selection.
+  if (!atlasActiveGraph || !visibleGraphs.some((g) => g.graphId === atlasActiveGraph && g.loaded !== false)) {
     atlasActiveGraph = pickAtlasGraph();
   }
   if (atlasActiveGraph) els.atlasGraphPicker.value = atlasActiveGraph;
@@ -1180,18 +1262,199 @@ els.standaloneModal.addEventListener('click', (e) => {
 });
 
 /** Per-tool explanations shown in the tool-info modal (onboarding card). */
-const TOOL_INFO: Record<string, { determinism: string; body: string }> = {
-  recall: { determinism: 'Deterministic', body: 'Searches your encrypted memory and pulls back what is relevant to a question. The same query returns the same memories every time — no AI, no randomness.' },
-  remind: { determinism: 'Deterministic', body: 'The same search as recall, framed as "remind me about…" — past commitments, decisions, names, plans. Identical, reproducible results.' },
-  remember: { determinism: 'Deterministic', body: 'Saves a note into your memory so it persists across sessions and across every AI client you connect.' },
-  forget: { determinism: 'Deterministic', body: 'Removes a source — every memory derived from it is soft-deleted (recoverable) and drops out of future recalls.' },
-  stats: { determinism: 'Deterministic', body: 'Shows the ground-truth state of your engrams — total, active and soft-deleted node counts, with a sample of contents.' },
-  vitality: { determinism: 'Deterministic', body: 'A 0–100 score of how alive and well-connected your knowledge graph is. The same graph state always yields the same score.' },
-  apply: { determinism: 'Deterministic', body: 'Commits a correction you have already reviewed and approved. Normally driven by the app after you click Approve — rarely asked for directly.' },
-  develop: { determinism: 'Non-deterministic', body: 'Synthesises a strategic plan grounded in your memory, using a local AI. The memory it retrieves is exact; the written plan varies between runs.' },
-  predict: { determinism: 'Non-deterministic', body: 'Before you act, checks your memory for past failures, constraints and overlooked opportunities — via a local AI. Retrieval is exact; the assessment varies between runs.' },
-  insights: { determinism: 'Non-deterministic', body: 'Patterns, gaps and opportunities surfaced by a local-AI background loop. The set of insights changes as the loop re-runs.' },
-  correct: { determinism: 'Conditional', body: 'Proposes a fix to an existing memory as a diff you review and approve. Deterministic by default — it supersedes the closest-matching memory. Enabling the Local LLM upgrades it to a multi-memory diff that varies between runs.' },
+const TOOL_INFO: Record<string, { determinism: string; body: string; examples: string[] }> = {
+  // ── Core memory (deterministic) ─────────────────────────────────────
+  recall: {
+    determinism: 'Deterministic',
+    body: 'Searches your encrypted memory and pulls back what is relevant to a question. The same query returns the same memories every time — no AI, no randomness.',
+    examples: ['What do I know about the new pricing model?', 'What am I working on this week?', 'Pull up what I have on the migration plan.'],
+  },
+  remind: {
+    determinism: 'Deterministic',
+    body: 'The same search as recall, framed as "remind me about…" — past commitments, decisions, names, plans. Identical, reproducible results.',
+    examples: ['Remind me about my meeting with Sarah last month.', 'Remind me what I decided about the API redesign.', 'Amintește-mi de discuția cu Andrei.'],
+  },
+  remember: {
+    determinism: 'Deterministic',
+    body: 'Saves a note into your memory so it persists across sessions and across every AI client you connect.',
+    examples: ['Remember that I prefer tabs over spaces.', 'Save this to my Book Notes engram: chapter 3 needs a rewrite.', 'Note that we shipped v0.10 on March 5th.'],
+  },
+  forget: {
+    determinism: 'Deterministic',
+    body: 'Removes a source — every memory derived from it is soft-deleted (recoverable) and drops out of future recalls.',
+    examples: ['Forget everything I told you about the canceled redesign.', 'Remove my notes from that old draft PDF.'],
+  },
+  apply: {
+    determinism: 'Deterministic',
+    body: 'Commits a correction you have already reviewed and approved. Normally driven by the app after you click Approve — rarely asked for directly.',
+    examples: ['I approved the correction in the app — go ahead and apply it.'],
+  },
+  stats: {
+    determinism: 'Deterministic',
+    body: 'Shows the ground-truth state of your engrams — total, active and soft-deleted node counts, with a sample of contents.',
+    examples: ['Show me the state of my engrams.', 'How many memories do I have in my Work engram?'],
+  },
+  vitality: {
+    determinism: 'Deterministic',
+    body: 'A 0–100 score of how alive and well-connected your knowledge graph is. The same graph state always yields the same score.',
+    examples: ['What\'s my cortex vitality score?', 'How healthy is my knowledge graph right now?'],
+  },
+
+  // ── Engram discovery (deterministic) ────────────────────────────────
+  list_engrams: {
+    determinism: 'Deterministic',
+    body: 'Lists every engram in your cortex — names, sensitivity tiers, source counts, and archive state. AI clients call this to enumerate what exists before routing a save.',
+    examples: ['What engrams do I have?', 'Show me all my memory collections.'],
+  },
+  suggest_engram: {
+    determinism: 'Deterministic',
+    body: 'Recommends the best engram to save a note into, based on token similarity between the note text and existing engram names. A pre-check before remember to avoid the routing banner.',
+    examples: ['Where should I save this note about marathon training?', 'Which engram fits a quote from my book research?'],
+  },
+  browse_engram: {
+    determinism: 'Deterministic',
+    body: 'Lists every source ingested into a specific engram — file paths, clip refs, timestamps, IDs — newest first. Used before forget or transfer_source to find the right sourceId.',
+    examples: ['What\'s inside my Reading List engram?', 'List the sources I added to Work this month.'],
+  },
+  recent: {
+    determinism: 'Deterministic',
+    body: 'The most recently ingested sources across all engrams (or scoped to one). Answers "what did I just save?" and verifies an ingest succeeded.',
+    examples: ['What did I just save?', 'Show me the last 10 things I ingested across all engrams.'],
+  },
+  get_engram_schema: {
+    determinism: 'Deterministic',
+    body: 'Returns the metadata for one engram — display name, sensitivity tier, template, creation date. Used to confirm a tier before routing sensitive notes.',
+    examples: ['What sensitivity tier is my Personal engram on?', 'Show me the metadata for the Journal engram.'],
+  },
+
+  // ── Structured recall (deterministic) ───────────────────────────────
+  recall_structured: {
+    determinism: 'Deterministic',
+    body: 'Like recall, but results come back as a JSON array of node objects (nodeId, graphId, tier, score, text, sourceId) for programmatic processing.',
+    examples: ['Recall my Q4 roadmap notes and return them as JSON so I can sort them by score.'],
+  },
+  recall_with_citations: {
+    determinism: 'Deterministic',
+    body: 'Like recall, but each memory carries an inline citation to the source it was derived from — for traceable provenance per fact.',
+    examples: ['Tell me about the API redesign and cite the source for each fact.', 'What do I know about consensus algorithms, with citations?'],
+  },
+  compare_engrams: {
+    determinism: 'Deterministic',
+    body: 'Runs the same query against two engrams and returns the results side-by-side under separate headings — useful for contrasting work vs. personal, 2025 vs. 2026 plans, etc.',
+    examples: ['Compare what I know about Python in Work vs. Personal.', 'How do my 2025 goals compare to my 2026 goals?'],
+  },
+  cross_search: {
+    determinism: 'Deterministic',
+    body: 'Federated recall over a hand-picked subset of engrams, results grouped per engram. Use when the user names multiple collections in a query.',
+    examples: ['Search my Book Notes and Work engrams for distributed systems.', 'Look for "graph databases" across Reading List, Work, and Journal.'],
+  },
+
+  // ── Source operations (deterministic) ───────────────────────────────
+  find_source: {
+    determinism: 'Deterministic',
+    body: 'Finds sources by keyword substring match against sourceId, ref or kind — across all engrams or scoped to one. The lookup before forget / transfer_source / recall_source.',
+    examples: ['Where did I save that PDF about Raft?', 'Find any source with "meeting-notes" in its path.'],
+  },
+  recall_source: {
+    determinism: 'Deterministic',
+    body: 'Returns the FULL content of a single saved source — every chunk, in ingestion order, with no similarity cutoff. For when recall only surfaces fragments of a structured document.',
+    examples: ['Pull up the complete text of my Q4 planning doc.', 'Give me everything from the meeting note with sourceId clip:abc123.'],
+  },
+  transfer_source: {
+    determinism: 'Deterministic',
+    body: 'Moves a single source (and every memory derived from it) from one engram to another via the op-log. Recoverable.',
+    examples: ['Move that file from Inbox to Work.', 'I put that note in the wrong engram — move it to Personal.'],
+  },
+
+  // ── Engram operations (deterministic) ───────────────────────────────
+  merge_engrams: {
+    determinism: 'Deterministic',
+    body: 'Moves every source from one engram into another, leaving the source engram empty. Per-source error reporting — partial failures don\'t abort the whole merge.',
+    examples: ['Merge my Inbox into Work.', 'Consolidate the 2025-drafts engram into Journal.'],
+  },
+  ingest_batch: {
+    determinism: 'Deterministic',
+    body: 'Saves up to 20 notes in a single call, each with its own target engram. For bulk-importing a list of facts without one remember per item.',
+    examples: ['Save these 5 facts about the project in one go: …', 'Bulk-import this to-do list into my Work engram.'],
+  },
+  engram_summary: {
+    determinism: 'Deterministic',
+    body: 'A readable snapshot of an engram — node count, source count, and a sample of node previews. For orienting yourself before querying a new engram.',
+    examples: ['What\'s in my Reading List engram?', 'Give me a snapshot of the Journal engram before I search it.'],
+  },
+
+  // ── Brain maintenance (deterministic) ───────────────────────────────
+  duplicate_pairs: {
+    determinism: 'Deterministic',
+    body: 'Returns near-duplicate node pairs the brain engine has already flagged for review — high-confidence matches from the background scan. Resolve with correct (merge) or forget.',
+    examples: ['What does my brain think is duplicated?', 'Show me the pending duplicate pairs for review.'],
+  },
+  healing_journal: {
+    determinism: 'Deterministic',
+    body: 'The audit log of autonomous corrections the brain engine applied in the background — merges, confidence adjustments, edge repairs. "What has my brain fixed on its own?"',
+    examples: ['What has my brain fixed on its own lately?', 'Show me autonomous corrections from the last week.'],
+  },
+  gnn_status: {
+    determinism: 'Deterministic',
+    body: 'Reports whether the Graphnosis Neural Network is enabled, how many predicted edges it has computed, and when it last ran.',
+    examples: ['Is the neural network running?', 'How many edges has the GNN predicted?'],
+  },
+  confirm_data_access: {
+    determinism: 'Deterministic',
+    body: 'Validates the time-limited consent phrase the user types from Settings → AI → Consent Phrases. Required before AI clients can recall from personal or sensitive engrams.',
+    examples: ['(System-driven: the AI calls this with the consent phrase you typed in the app.)'],
+  },
+
+  // ── Approximate (similarity, no LLM) ────────────────────────────────
+  audit_memory: {
+    determinism: 'Approximate',
+    body: 'Detects near-duplicate content across engrams via vector similarity. Approximate — samples rather than exhaustively comparing every pair. Useful before a merge or for periodic memory hygiene.',
+    examples: ['Do I have duplicate notes anywhere?', 'Audit my cortex for near-duplicate content before I merge engrams.'],
+  },
+  check_duplicate: {
+    determinism: 'Approximate',
+    body: 'Before remember, checks whether very similar content already exists. Returns matches above the threshold so you can choose remember (new fact) or correct (update).',
+    examples: ['Before I save this note about Postgres tuning, is there anything similar already?'],
+  },
+
+  // ── Conditional (deterministic by default, LLM-aware) ───────────────
+  correct: {
+    determinism: 'Conditional',
+    body: 'Proposes a fix to an existing memory as a diff you review and approve. Deterministic by default — supersedes the closest-matching memory. Enabling the Local LLM upgrades it to a multi-memory diff that varies between runs.',
+    examples: ['Actually it was September, not August.', 'Update my note about the launch — it shipped on the 15th, not the 12th.', 'De fapt, am hotărât altceva — corectează nota despre buget.'],
+  },
+
+  // ── Non-deterministic (Local LLM required) ──────────────────────────
+  develop: {
+    determinism: 'Non-deterministic',
+    body: 'Synthesises a strategic plan grounded in your memory, using a local AI. The memory it retrieves is exact; the written plan varies between runs.',
+    examples: ['Develop a plan for my book launch using everything in my Book engram.', 'Draft a strategy for the Q3 product roll-out grounded in my Work memory.'],
+  },
+  predict: {
+    determinism: 'Non-deterministic',
+    body: 'Before you act, checks your memory for past failures, constraints and overlooked opportunities — via a local AI. Retrieval is exact; the assessment varies between runs.',
+    examples: ['Before I hire a contractor for the redesign, what risks should I watch for?', 'I\'m about to launch in Romania — what does my memory say I should know first?'],
+  },
+  insights: {
+    determinism: 'Non-deterministic',
+    body: 'Patterns, gaps and opportunities surfaced by a local-AI background loop. The set of insights changes as the loop re-runs.',
+    examples: ['What patterns has my brain noticed across my engrams?', 'Any pending insights I should review?'],
+  },
+  gnn_neighbors: {
+    determinism: 'Non-deterministic',
+    body: 'Returns nodes the Neural Network predicts are related to a query — structural connections that lexical/embedding recall did not surface. Edge probability score per result.',
+    examples: ['What else might be related to my notes on graph databases?', 'Use the neural network to find indirect connections to "consensus".'],
+  },
+  llm_query: {
+    determinism: 'Non-deterministic',
+    body: 'Recalls relevant memory then uses the local LLM to synthesise a direct answer from it — all locally, nothing leaves the device. Degrades to raw context when no LLM is running.',
+    examples: ['Use the local model to answer: what\'s the current state of my migration plan?', 'Synthesise an answer from my memory about the API redesign — keep it local.'],
+  },
+  llm_distill: {
+    determinism: 'Non-deterministic',
+    body: 'Pass arbitrary text to the local LLM and ask it to extract discrete facts worth remembering. Returns a JSON array ready for ingest_batch.',
+    examples: ['Extract the key facts from this meeting transcript for saving: …', 'Distill this article into bullet-point facts I can ingest.'],
+  },
 };
 
 /** Open the tool-explainer modal for a given MCP tool. */
@@ -1204,6 +1467,25 @@ function openToolInfoModal(tool: string): void {
   if (nameEl) nameEl.textContent = tool;
   if (detEl) detEl.textContent = `${info.determinism} tool`;
   if (bodyEl) bodyEl.textContent = info.body;
+  // Examples block: textContent on each item keeps user-quoted strings
+  // safe from any future injection paths. Block hides itself via :empty
+  // CSS when the tool has no examples (rare — most tools have 1-3).
+  const examplesEl = document.getElementById('tool-info-examples');
+  if (examplesEl) {
+    examplesEl.innerHTML = '';
+    if (info.examples.length > 0) {
+      const label = document.createElement('p');
+      label.className = 'tool-info-examples-label';
+      label.textContent = info.examples.length === 1 ? 'Try saying' : 'Try saying any of these';
+      examplesEl.appendChild(label);
+      for (const ex of info.examples) {
+        const row = document.createElement('div');
+        row.className = 'tool-info-example';
+        row.textContent = `“${ex}”`;
+        examplesEl.appendChild(row);
+      }
+    }
+  }
   document.getElementById('tool-info-modal')?.classList.remove('hidden');
 }
 document.getElementById('tool-info-close')?.addEventListener('click', () => {
@@ -1212,6 +1494,14 @@ document.getElementById('tool-info-close')?.addEventListener('click', () => {
 document.getElementById('tool-info-modal')?.addEventListener('click', (e) => {
   const m = document.getElementById('tool-info-modal');
   if (e.target === m) m?.classList.add('hidden');
+});
+// Footer "Full MCP Tools reference" link → open published docs in the
+// system browser. The anchor's href stays "#" so middle-click / right-click
+// don't navigate inside the WebView; we route through tauri-plugin-opener
+// (same pattern as the GitHub link in the graph wizard).
+document.getElementById('tool-info-docs-link')?.addEventListener('click', (e) => {
+  e.preventDefault();
+  void invoke('plugin:opener|open_url', { url: 'https://graphnosis.com/reference/mcp-tools/' });
 });
 
 function shortCortexLabel(p: string): string {
@@ -1223,7 +1513,7 @@ function shortCortexLabel(p: string): string {
 
 // ── View router ────────────────────────────────────────────────────────
 
-type Mode = 'atlas' | 'sources' | 'activity' | 'status' | 'settings';
+type Mode = 'atlas' | 'sources' | 'activity' | 'status' | 'settings' | 'mcp-tools';
 // Graphnosis (mode='atlas') is the default landing pane post-unlock. The
 // internal symbol stays 'atlas' for backwards compatibility with the
 // existing DOM data-pane attributes.
@@ -1262,6 +1552,17 @@ function activateMode(mode: Mode): void {
     // panels in sync with whatever happened elsewhere (recovery from
     // op-log, new ingest, startup-time quarantine, etc.).
     renderSettingsTab();
+  }
+  if (mode === 'mcp-tools') {
+    // Lazy-render the toolset once, then leave it alone — content is
+    // static (one entry per MCP tool with its determinism class) and
+    // re-rendering on every activation would lose the user's scroll
+    // position inside the chip list.
+    const host = document.getElementById('mcp-tools-content');
+    if (host && host.childElementCount === 0) {
+      host.innerHTML = mcpToolsOnboardingHtml();
+      wireMcpToolsOnboarding(host);
+    }
   }
 }
 
@@ -1537,10 +1838,6 @@ async function refreshStats(): Promise<void> {
     lastInspectorStats = data;
     updateGraphnosisForgottenRow();
     updateRecap(); // Corrections-applied lives on recap; refresh it too.
-    // Bump the "last refreshed" timestamp in the status bar.
-    if (els.statusSaved) {
-      els.statusSaved.textContent = `Refreshed ${new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`;
-    }
     if (data.sources.length === 0) {
       els.sourcesList.innerHTML = '<p class="subtitle">No sources yet. Use the `remember` MCP tool from Claude or drag a file in.</p>';
     } else {
@@ -1802,7 +2099,7 @@ async function refreshStats(): Promise<void> {
               toName = displayName;
               try {
                 await invoke('create_graph_with_template', { graphId: toGraphId, template: 'personal', displayName });
-                loadedGraphs = (await invoke('list_graphs_with_metadata')) as typeof loadedGraphs;
+                loadedGraphs = (await invoke('list_graphs_with_metadata', { includeUnloaded: true })) as typeof loadedGraphs;
                 syncEngramPicker();
               } catch (e) {
                 showError(`Could not create engram "${displayName}": ${e}`);
@@ -1925,6 +2222,7 @@ async function runBiometricUnlock(): Promise<void> {
   try {
     const status = await invoke<StatusSnapshot>('biometric_unlock', {
       cortexDir: els.cortexDir.value,
+      preferredDefaultGraph: localStorage.getItem(LAST_ENGRAM_KEY) ?? null,
     });
     rememberCortexDir(els.cortexDir.value);
     els.passphrase.value = '';
@@ -1935,9 +2233,9 @@ async function runBiometricUnlock(): Promise<void> {
     els.bootStatusText.textContent = '';
   } finally {
     if (inlineBtn) inlineBtn.disabled = false;
-    els.btnUnlock.disabled = false;
+    if (!unlockPending) els.btnUnlock.disabled = false;
     progressBar?.classList.add('hidden');
-    els.unlockStatus.classList.add('hidden');
+    if (!unlockPending) els.unlockStatus.classList.add('hidden');
   }
 }
 
@@ -1981,7 +2279,11 @@ async function attemptUnlock(): Promise<void> {
   els.unlockStatus.classList.remove('hidden');
   try {
     const status = (await invoke('unlock_cortex', {
-      args: { cortex_dir: els.cortexDir.value, passphrase: els.passphrase.value },
+      args: {
+        cortex_dir: els.cortexDir.value,
+        passphrase: els.passphrase.value,
+        preferred_default_graph: localStorage.getItem(LAST_ENGRAM_KEY) ?? null,
+      },
     })) as StatusSnapshot;
     // Persist for the next launch — see rememberCortexDir().
     rememberCortexDir(els.cortexDir.value);
@@ -2029,9 +2331,9 @@ async function attemptUnlock(): Promise<void> {
     showError(msg);
     els.bootStatusText.textContent = '';
   } finally {
-    els.btnUnlock.disabled = false;
+    if (!unlockPending) els.btnUnlock.disabled = false;
     progressBar?.classList.add('hidden');
-    els.unlockStatus.classList.add('hidden');
+    if (!unlockPending) els.unlockStatus.classList.add('hidden');
   }
 }
 
@@ -2527,7 +2829,7 @@ function renderSettingsGraphsList(): void {
       try {
         await invoke('set_graph_archived', { graphId, archived: nextArchived });
         // Refresh loadedGraphs so the picker and the list reflect the change.
-        loadedGraphs = (await invoke('list_graphs_with_metadata')) as GraphWithMetadata[];
+        loadedGraphs = (await invoke('list_graphs_with_metadata', { includeUnloaded: true })) as GraphWithMetadata[];
         // If we just archived the active graph, switch to a visible one.
         if (nextArchived && atlasActiveGraph === graphId) {
           atlasActiveGraph = pickAtlasGraph(); refreshActiveEngramLabel();
@@ -2712,7 +3014,7 @@ function renderSettingsGraphsList(): void {
         input.disabled = true;
         try {
           await invoke('delete_graph', { graphId });
-          loadedGraphs = (await invoke('list_graphs_with_metadata')) as GraphWithMetadata[];
+          loadedGraphs = (await invoke('list_graphs_with_metadata', { includeUnloaded: true })) as GraphWithMetadata[];
           if (atlasActiveGraph === graphId) {
             atlasActiveGraph = pickAtlasGraph(); refreshActiveEngramLabel();
             if (mainAtlas) { mainAtlas.dispose(); mainAtlas = null; }
@@ -3466,7 +3768,7 @@ els.passphrase.addEventListener('keydown', (e) => {
 
 async function fetchGraphsMetadata(): Promise<void> {
   try {
-    loadedGraphs = (await invoke('list_graphs_with_metadata')) as GraphWithMetadata[];
+    loadedGraphs = (await invoke('list_graphs_with_metadata', { includeUnloaded: true })) as GraphWithMetadata[];
     // Always keep the topbar picker in sync regardless of active pane.
     syncEngramPicker();
     // At unlock, render() fires fetchGraphsMetadata + activateMode in
@@ -3646,10 +3948,24 @@ let atlasActiveGraph: string | null = null;
 let atlasLoadedForGraph: string | null = null; // guards re-fetch when picker doesn't change
 let lastEdgesByGraph: Map<string, { directed: AtlasDirectedEdge[]; undirected: AtlasUndirectedEdge[] }> = new Map();
 
+const LAST_ENGRAM_KEY = 'graphnosis:lastActiveEngram';
+
 function pickAtlasGraph(): string | null {
-  // First non-archived engram is the default. The Atlas picker UI lets users
-  // switch at any time, and the choice persists in `atlasActiveGraph`.
-  return loadedGraphs.find((g) => !g.metadata.archived)?.graphId ?? null;
+  // Pending engrams (loaded === false from includeUnloaded:true) are visible in
+  // the picker for awareness but can't be the active graph until they finish
+  // loading — picking one would race against IPC and show nothing.
+  const available = loadedGraphs.filter((g) => !g.metadata.archived && g.loaded !== false);
+  // Restore last session's active engram if it's still available.
+  const saved = localStorage.getItem(LAST_ENGRAM_KEY);
+  if (saved && available.some((g) => g.graphId === saved)) return saved;
+  // Fall back to alphabetical first — matches what the picker displays.
+  const sorted = [...available].sort((a, b) =>
+    (a.metadata.displayName ?? a.graphId).localeCompare(b.metadata.displayName ?? b.graphId));
+  return sorted[0]?.graphId ?? null;
+}
+
+function persistActiveEngram(graphId: string): void {
+  try { localStorage.setItem(LAST_ENGRAM_KEY, graphId); } catch { /* storage full — ignore */ }
 }
 
 function nodesToAtlas(records: NodeRecord[]): AtlasNode[] {
@@ -4191,6 +4507,139 @@ function openRelTypePickerModal(onPick: (label: RelationshipLabel) => void): voi
   modal.classList.remove('hidden');
 }
 
+/**
+ * The "Ask your AI / here's your toolset" onboarding card. Rendered in two
+ * places: (a) inline in the Check-in deck card when the active engram has
+ * no usable memory yet, and (b) the dedicated MCP Tools rail page. Both
+ * surfaces want the same scroll behavior + chip → modal interaction, so
+ * the markup and wiring live here as small reusable helpers.
+ */
+function mcpToolsOnboardingHtml(): string {
+  return `
+    <div class="g-deck-onboarding">
+      <div class="g-deck-onboarding-top">
+        <p class="g-deck-onboarding-tagline">Your local encrypted memory, indexed for deterministic recall — auditable.</p>
+        <div class="g-deck-onboarding-steps">
+          <div class="g-deck-onboarding-step">
+            <span class="g-deck-onboarding-num">1</span>
+            <div class="g-deck-onboarding-step-body">
+              <strong>Connect an AI client or add a data source</strong> — so Graphnosis has something to remember.
+            </div>
+          </div>
+          <div class="g-deck-onboarding-step">
+            <span class="g-deck-onboarding-num">2</span>
+            <div class="g-deck-onboarding-step-body">
+              <strong>Ingest a file</strong> — drag a PDF, markdown file, or any document onto the app.
+              <div style="margin-top: 6px;"><button class="rail-shortcut-btn" data-mcp-onboarding-ingest>Add file to engram…</button></div>
+            </div>
+          </div>
+          <div class="g-deck-onboarding-step">
+            <span class="g-deck-onboarding-num">3</span>
+            <div class="g-deck-onboarding-step-body">
+              <strong>Ask your AI</strong> — open Claude, Cursor, or any connected client. Here's your full toolset:
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="g-deck-onboarding-bottom">
+        <div class="g-deck-onboarding-cmds g-deck-cmd-scroll">
+          <div class="g-deck-cmd-group">
+            <span class="g-deck-cmd-grouplabel">Core memory</span>
+            <div class="g-deck-cmd-chips">
+              <span class="g-deck-cmd-chip" data-tool="recall">recall</span>
+              <span class="g-deck-cmd-chip" data-tool="remind">remind</span>
+              <span class="g-deck-cmd-chip" data-tool="remember">remember</span>
+              <span class="g-deck-cmd-chip" data-tool="forget">forget</span>
+              <span class="g-deck-cmd-chip" data-tool="apply">apply</span>
+              <span class="g-deck-cmd-chip" data-tool="stats">stats</span>
+              <span class="g-deck-cmd-chip" data-tool="vitality">vitality</span>
+            </div>
+          </div>
+          <div class="g-deck-cmd-group">
+            <span class="g-deck-cmd-grouplabel">Engram discovery</span>
+            <div class="g-deck-cmd-chips">
+              <span class="g-deck-cmd-chip" data-tool="list_engrams">list_engrams</span>
+              <span class="g-deck-cmd-chip" data-tool="suggest_engram">suggest_engram</span>
+              <span class="g-deck-cmd-chip" data-tool="browse_engram">browse_engram</span>
+              <span class="g-deck-cmd-chip" data-tool="recent">recent</span>
+              <span class="g-deck-cmd-chip" data-tool="get_engram_schema">get_engram_schema</span>
+            </div>
+          </div>
+          <div class="g-deck-cmd-group">
+            <span class="g-deck-cmd-grouplabel">Structured recall</span>
+            <div class="g-deck-cmd-chips">
+              <span class="g-deck-cmd-chip" data-tool="recall_structured">recall_structured</span>
+              <span class="g-deck-cmd-chip" data-tool="recall_with_citations">recall_with_citations</span>
+              <span class="g-deck-cmd-chip" data-tool="compare_engrams">compare_engrams</span>
+              <span class="g-deck-cmd-chip" data-tool="cross_search">cross_search</span>
+            </div>
+          </div>
+          <div class="g-deck-cmd-group">
+            <span class="g-deck-cmd-grouplabel">Source operations</span>
+            <div class="g-deck-cmd-chips">
+              <span class="g-deck-cmd-chip" data-tool="find_source">find_source</span>
+              <span class="g-deck-cmd-chip" data-tool="recall_source">recall_source</span>
+              <span class="g-deck-cmd-chip" data-tool="transfer_source">transfer_source</span>
+            </div>
+          </div>
+          <div class="g-deck-cmd-group">
+            <span class="g-deck-cmd-grouplabel">Engram operations</span>
+            <div class="g-deck-cmd-chips">
+              <span class="g-deck-cmd-chip" data-tool="merge_engrams">merge_engrams</span>
+              <span class="g-deck-cmd-chip" data-tool="ingest_batch">ingest_batch</span>
+              <span class="g-deck-cmd-chip" data-tool="engram_summary">engram_summary</span>
+            </div>
+          </div>
+          <div class="g-deck-cmd-group">
+            <span class="g-deck-cmd-grouplabel">Brain maintenance</span>
+            <div class="g-deck-cmd-chips">
+              <span class="g-deck-cmd-chip" data-tool="duplicate_pairs">duplicate_pairs</span>
+              <span class="g-deck-cmd-chip" data-tool="healing_journal">healing_journal</span>
+              <span class="g-deck-cmd-chip" data-tool="gnn_status">gnn_status</span>
+              <span class="g-deck-cmd-chip" data-tool="confirm_data_access">confirm_data_access</span>
+            </div>
+          </div>
+          <div class="g-deck-cmd-group">
+            <span class="g-deck-cmd-grouplabel">Approximate (similarity)</span>
+            <div class="g-deck-cmd-chips">
+              <span class="g-deck-cmd-chip" data-tool="audit_memory">audit_memory</span>
+              <span class="g-deck-cmd-chip" data-tool="check_duplicate">check_duplicate</span>
+            </div>
+          </div>
+          <div class="g-deck-cmd-group">
+            <span class="g-deck-cmd-grouplabel">Conditional</span>
+            <div class="g-deck-cmd-chips">
+              <span class="g-deck-cmd-chip" data-tool="correct">correct</span>
+            </div>
+          </div>
+          <div class="g-deck-cmd-group">
+            <span class="g-deck-cmd-grouplabel">Non-deterministic (Local LLM)</span>
+            <div class="g-deck-cmd-chips">
+              <span class="g-deck-cmd-chip" data-tool="develop">develop</span>
+              <span class="g-deck-cmd-chip" data-tool="predict">predict</span>
+              <span class="g-deck-cmd-chip" data-tool="insights">insights</span>
+              <span class="g-deck-cmd-chip" data-tool="gnn_neighbors">gnn_neighbors</span>
+              <span class="g-deck-cmd-chip" data-tool="llm_query">llm_query</span>
+              <span class="g-deck-cmd-chip" data-tool="llm_distill">llm_distill</span>
+            </div>
+          </div>
+        </div>
+        <p class="g-deck-cmd-note">35 tools total. Deterministic and approximate tools work without any AI model. Conditional and non-deterministic tools use the optional Local LLM (or Neural Network); enabling them never changes how the deterministic tools behave.</p>
+      </div>
+    </div>`;
+}
+
+/** Wire the ingest button + tool chips inside a container that holds the
+ *  onboarding markup. Safe to call multiple times on the same container —
+ *  re-rendering the HTML wipes the previous listeners. */
+function wireMcpToolsOnboarding(container: HTMLElement): void {
+  container.querySelector<HTMLButtonElement>('[data-mcp-onboarding-ingest]')
+    ?.addEventListener('click', () => els.btnAddFile.click());
+  container.querySelectorAll<HTMLElement>('.g-deck-cmd-chip').forEach((chip) => {
+    chip.addEventListener('click', () => openToolInfoModal(chip.dataset['tool'] ?? ''));
+  });
+}
+
 function renderDeck(): void {
   // Sync nav button disabled states regardless of which branch we hit.
   syncDeckNavButtons();
@@ -4211,70 +4660,8 @@ function renderDeck(): void {
         && !hiddenRefs.has(n.sourceFile),
     );
     if (!hasVisibleMemory) {
-      els.gDeckCard.innerHTML = `
-        <div class="g-deck-onboarding">
-          <div class="g-deck-onboarding-top">
-            <p class="g-deck-onboarding-tagline">Your local encrypted memory, indexed for deterministic recall — auditable.</p>
-            <div class="g-deck-onboarding-steps">
-              <div class="g-deck-onboarding-step">
-                <span class="g-deck-onboarding-num">1</span>
-                <div class="g-deck-onboarding-step-body">
-                  <strong>Connect an AI client or add a data source</strong> — so Graphnosis has something to remember.
-                </div>
-              </div>
-              <div class="g-deck-onboarding-step">
-                <span class="g-deck-onboarding-num">2</span>
-                <div class="g-deck-onboarding-step-body">
-                  <strong>Ingest a file</strong> — drag a PDF, markdown file, or any document onto the app.
-                  <div style="margin-top: 6px;"><button id="ob-ingest-btn" class="rail-shortcut-btn">Add file to engram…</button></div>
-                </div>
-              </div>
-              <div class="g-deck-onboarding-step">
-                <span class="g-deck-onboarding-num">3</span>
-                <div class="g-deck-onboarding-step-body">
-                  <strong>Ask your AI</strong> — open Claude, Cursor, or any connected client. Here's your full toolset:
-                </div>
-              </div>
-            </div>
-          </div>
-          <div class="g-deck-onboarding-bottom">
-            <div class="g-deck-onboarding-cmds">
-              <div class="g-deck-cmd-group">
-                <span class="g-deck-cmd-grouplabel">Deterministic</span>
-                <div class="g-deck-cmd-chips">
-                  <span class="g-deck-cmd-chip" data-tool="recall">recall</span>
-                  <span class="g-deck-cmd-chip" data-tool="remind">remind</span>
-                  <span class="g-deck-cmd-chip" data-tool="remember">remember</span>
-                  <span class="g-deck-cmd-chip" data-tool="forget">forget</span>
-                  <span class="g-deck-cmd-chip" data-tool="stats">stats</span>
-                  <span class="g-deck-cmd-chip" data-tool="vitality">vitality</span>
-                  <span class="g-deck-cmd-chip" data-tool="apply">apply</span>
-                </div>
-              </div>
-              <div class="g-deck-cmd-group">
-                <span class="g-deck-cmd-grouplabel">Conditional</span>
-                <div class="g-deck-cmd-chips">
-                  <span class="g-deck-cmd-chip" data-tool="correct">correct</span>
-                </div>
-              </div>
-              <div class="g-deck-cmd-group">
-                <span class="g-deck-cmd-grouplabel">Non-deterministic</span>
-                <div class="g-deck-cmd-chips">
-                  <span class="g-deck-cmd-chip" data-tool="develop">develop</span>
-                  <span class="g-deck-cmd-chip" data-tool="predict">predict</span>
-                  <span class="g-deck-cmd-chip" data-tool="insights">insights</span>
-                </div>
-              </div>
-            </div>
-            <p class="g-deck-cmd-note">Deterministic tools always return the same answer — no AI model needed. The conditional and non-deterministic tools use the optional Local LLM; enabling it never changes how the deterministic tools behave.</p>
-          </div>
-        </div>`;
-      // Step 2 ingest button
-      document.getElementById('ob-ingest-btn')?.addEventListener('click', () => els.btnAddFile.click());
-      // Each tool chip opens an explanation modal.
-      els.gDeckCard.querySelectorAll<HTMLElement>('.g-deck-cmd-chip').forEach((chip) => {
-        chip.addEventListener('click', () => openToolInfoModal(chip.dataset['tool'] ?? ''));
-      });
+      els.gDeckCard.innerHTML = mcpToolsOnboardingHtml();
+      wireMcpToolsOnboarding(els.gDeckCard);
       return;
     }
 
@@ -5132,7 +5519,6 @@ function wireListRowHandlersFrom(startIndex: number): void {
 }
 
 function renderDashboard(): void {
-  void renderNeedsReview();
   renderHealth();
   rebuildDeckQueue();
   renderDeck();
@@ -7002,6 +7388,10 @@ function switchGraphnosisTab(tab: GraphnosisTab): void {
   // brain branch below re-enables them. Cheap to call unconditionally.
   neuronField.stop();
   stopScanTicker();
+  // Close the "Needs your review" overlay when navigating away from the Brain tab.
+  if (prevTab === 'brain' && tab !== 'brain') {
+    els.needsReviewOverlay?.classList.add('hidden');
+  }
   document.querySelectorAll<HTMLButtonElement>('.g-tab').forEach((b) => {
     b.classList.toggle('active', b.dataset['gtab'] === tab);
   });
@@ -7033,6 +7423,7 @@ function switchGraphnosisTab(tab: GraphnosisTab): void {
     neuronField.start();
     startScanTicker();
     void renderLivingBrain();
+    void refreshNeedsReviewBadge();
     // No scan kicked off on tab-open — the brain self-scans on its own:
     // the boot-grace sweep (~60s after unlock), the background intervals,
     // and the post-ingest debounced scan, plus "Scan now" for a manual run.
@@ -7278,7 +7669,18 @@ function renderAtlasLegend(): void {
 }
 
 els.atlasGraphPicker.addEventListener('change', () => void (async () => {
+  // Safety net: the picker also lists not-yet-loaded engrams as <option disabled>
+  // for awareness during boot. Native <select> shouldn't fire `change` on a
+  // disabled option, but if it ever does (custom dropdowns, keyboard nav
+  // edge cases), bail before we hit the sidecar with nodes.list for a graph
+  // that isn't in memory — that surfaces as "Graph not loaded" IPC errors.
+  const picked = loadedGraphs.find((g) => g.graphId === els.atlasGraphPicker.value);
+  if (picked && picked.loaded === false) {
+    els.atlasGraphPicker.value = atlasActiveGraph ?? '';
+    return;
+  }
   atlasActiveGraph = els.atlasGraphPicker.value;
+  persistActiveEngram(atlasActiveGraph);
   refreshActiveEngramLabel();
   graphnosisSelectedId = null;
   atlasSelectedId = null;
@@ -7382,6 +7784,16 @@ els.gSearchSortSelect.addEventListener('change', () => {
 });
 
 els.gSearchClear.addEventListener('click', () => {
+  els.gSearch.value = '';
+  els.gSearchClear.classList.add('hidden');
+  applyGraphnosisFilter();
+  els.gSearch.focus();
+});
+// Mirror of the in-input × clear, lives in the search-results header so
+// the user can dismiss the results panel without scrolling back up to the
+// textbox. Same effect: empties the query, re-runs the filter (which
+// hides the results panel and shows the dashboard), refocuses the input.
+document.getElementById('btn-search-results-close')?.addEventListener('click', () => {
   els.gSearch.value = '';
   els.gSearchClear.classList.add('hidden');
   applyGraphnosisFilter();
@@ -7703,9 +8115,12 @@ void listen<{ step: string; detail: string }>('graphnosis://sidecar-boot-status'
   els.bootStatusText.textContent = detail;
   els.unlockStatus.classList.remove('hidden');
   if (step === 'ready') {
-    // Socket is up — hide the status line shortly after; unlock command
-    // will resolve and the view transitions away.
-    setTimeout(() => els.unlockStatus.classList.add('hidden'), 1200);
+    // Socket is up — hide the status line shortly after, BUT only if the
+    // boot sequence hasn't already taken over (unlockPending = true means
+    // render() has started its own status messages — don't stomp on them).
+    setTimeout(() => {
+      if (!unlockPending) els.unlockStatus.classList.add('hidden');
+    }, 1200);
   }
 });
 
@@ -7787,6 +8202,63 @@ void listen<GraphMutationPayload>('graphnosis://graph-mutation', (evt) => {
 // and our subscription being established.
 void listen<EventStreamConnectedPayload>('graphnosis://event-stream-connected', () => {
   void pollGraphMutations();
+});
+
+// Background engram loading progress. The sidecar loads the default engram
+// first (~1-2s) then all others in parallel (~17-20s). We react to each event
+// so the UI shows data as soon as the first engram is available, and switches
+// to the session-saved engram the moment it becomes available.
+/**
+ * Switch the active engram in-place after boot — used by both the engrams-
+ * loading handler (when the saved engram becomes available) and the post-
+ * reveal catch-up check. Refreshes Check-in deck AND atlas view so the UI
+ * actually reflects the new engram (not just the picker label).
+ */
+async function switchActiveEngram(graphId: string): Promise<void> {
+  if (atlasActiveGraph === graphId) return;
+  atlasActiveGraph = graphId;
+  persistActiveEngram(graphId);
+  refreshActiveEngramLabel();
+  syncEngramPicker();
+  await loadGraphnosisData(graphId);
+  applyGraphnosisFilter();
+  if (currentMode === 'atlas') void refreshAtlasView();
+}
+
+void listen<{ loaded: number; total: number }>('graphnosis://engrams-loading', (evt) => {
+  const { loaded, total } = evt.payload;
+  const remaining = total - loaded;
+  const allDone = remaining <= 0;
+
+  // Status bar: always show a count so the user sees progress.
+  if (els.statusSaved) {
+    els.statusSaved.textContent = allDone
+      ? ''
+      : `Loading ${remaining} more engram${remaining === 1 ? '' : 's'}…`;
+  }
+
+  // During boot, the boot sequence owns atlasActiveGraph / loadedGraphs /
+  // view refreshes. Touching them here races against the boot's awaits and
+  // can either show empty data or freeze the lock screen mid-load. Just
+  // update the status bar; the post-reveal catch-up handles any switch.
+  if (unlockPending) return;
+
+  // Re-fetch + re-render the picker on EVERY event so each newly loaded
+  // engram moves from the "Loading…" group to the main list as soon as it
+  // becomes available. The previous gating on allDone meant the picker
+  // froze in its mid-load state until the final event — looked stuck.
+  const saved = localStorage.getItem(LAST_ENGRAM_KEY);
+  void invoke<GraphWithMetadata[]>('list_graphs_with_metadata', { includeUnloaded: true }).then((graphs) => {
+    loadedGraphs = graphs;
+    // Saved engram just became available and isn't active yet — promote it.
+    if (saved && saved !== atlasActiveGraph
+        && graphs.some((g) => !g.metadata.archived && g.graphId === saved && g.loaded !== false)) {
+      void switchActiveEngram(saved);
+      return;
+    }
+    syncEngramPicker();
+    if (allDone && currentMode === 'atlas') void refreshAtlasView();
+  });
 });
 
 // ── Sidecar IPC helper ────────────────────────────────────────────────────
@@ -7891,16 +8363,48 @@ async function refreshBrainState(): Promise<void> {
   } catch { /* non-fatal — brain may not be initialized yet */ }
 }
 
+/** Animate the vitality ring + score counter + status-bar chip from wherever
+ *  they currently sit to `target` over ~1.1 s (ease-out cubic). */
+function animateVitality(target: number): void {
+  const startScore = parseInt(els.lbVitalityScore.textContent ?? '0', 10) || 0;
+  const startV     = parseFloat(els.lbVitalityRing.style.getPropertyValue('--v') || '0') || 0;
+  const duration   = 1100;
+  const began      = performance.now();
+  const targetOpacity = 0.4 + (target / 100) * 0.6;
+
+  const tick = (now: number) => {
+    const t = Math.min((now - began) / duration, 1);
+    const ease = 1 - Math.pow(1 - t, 3); // cubic ease-out
+    const cur = Math.round(startScore + (target - startScore) * ease);
+    const curV = startV + (target - startV) * ease;
+
+    els.lbVitalityScore.textContent  = String(cur);
+    els.lbVitalityRing.style.setProperty('--v', String(curV));
+    els.brainVitality.textContent    = `🧠 Vitality ${cur}`;
+    els.brainVitality.style.opacity  = String(0.4 + (cur / 100) * 0.6);
+
+    if (t < 1) requestAnimationFrame(tick);
+    else {
+      // Snap to exact target to avoid floating-point drift.
+      els.lbVitalityScore.textContent = String(target);
+      els.lbVitalityRing.style.setProperty('--v', String(target));
+      els.brainVitality.textContent   = `🧠 Vitality ${target}`;
+      els.brainVitality.style.opacity = String(targetOpacity);
+      // Remove the fast-pulse scanning class now that the score is settled.
+      els.livingBrain.classList.remove('lb-scanning');
+    }
+  };
+  requestAnimationFrame(tick);
+}
+
 /** Status-bar chip + atlas animation + Autonomous Brain pane. Cheap; no IPC. */
 function updateBrainUI(): void {
   if (!brainVitalityReport) return;
   const v = brainVitalityReport.overall;
 
   els.brainVitality.style.display = '';
-  els.brainVitality.textContent = `🧠 Vitality ${v}`;
-  els.brainVitality.style.opacity = String(0.4 + (v / 100) * 0.6);
-
   mainAtlas?.setBrainVitality?.(v);
+  animateVitality(v);
 
   renderLivingBrainPane();
 }
@@ -7945,13 +8449,13 @@ function vitalityCopy(v: number): [string, string] {
 
 function renderLbVitality(): void {
   if (!brainVitalityReport) {
-    els.lbVitalityTitle.textContent = 'Brain is starting up…';
-    els.lbVitalityDetail.textContent = 'Give it a moment after unlocking, then hit Refresh.';
+    els.lbVitalityTitle.textContent = 'Computing vitality…';
+    els.lbVitalityDetail.textContent = 'Analysing your cortex — score will appear shortly.';
     els.lbBrainStats.style.display = 'none';
-    // Vitality not computed yet — show a neutral 0 (the ring stays at 0%,
-    // gray) until the first real score is calculated.
-    els.lbVitalityScore.textContent = '0';
+    els.lbVitalityScore.textContent = '…';
     els.lbVitalityRing.style.setProperty('--v', '0');
+    // Fast-pulse the ring so it reads as "in progress" not "broken".
+    els.livingBrain.classList.add('lb-scanning');
     return;
   }
   const v = brainVitalityReport.overall;
@@ -8103,75 +8607,77 @@ function renderLbHealingLog(): void {
     </div>`;
 }
 
-/** Check-in dashboard → "Needs your review": near-duplicate / possibly-
- *  conflicting memory pairs the autonomous brain could NOT safely merge
- *  on its own. Holistic across every engram. Each pair offers a real
- *  decision — merge them, or keep both. Hidden entirely when empty. */
-/** Pair IDs the user dismissed via the "Needs your review" × button. The list
- *  stays hidden until consolidation surfaces a pair NOT in this set (something
- *  new to review) — or until the next app launch, whichever comes first. */
-let dismissedReviewPairIds: Set<string> | null = null;
+/** Fetch the pending pair count and update the Self-healing button badge.
+ *  Called after brain scans complete and when the Brain tab is opened. */
+async function refreshNeedsReviewBadge(): Promise<void> {
+  if (!els.btnNeedsReview) return;
+  try {
+    const pairs = await ipcCall<BrainDuplicatePair[]>('brain:getDuplicatePairs', {});
+    if (pairs.length === 0) {
+      els.btnNeedsReview.classList.add('hidden');
+    } else {
+      els.needsReviewCount.textContent = String(pairs.length);
+      els.btnNeedsReview.classList.remove('hidden');
+    }
+  } catch {
+    els.btnNeedsReview.classList.add('hidden');
+  }
+}
 
+/** Open the "Needs your review" overlay inside the Deterministic Consolidation
+ *  tab. Fetches the current pair list, renders cards, and shows the overlay.
+ *  The button in Self-healing triggers this; it never auto-opens. */
 async function renderNeedsReview(): Promise<void> {
   const host = els.gNeedsReview;
-  if (!host) return;
+  const overlay = els.needsReviewOverlay;
+  if (!host || !overlay) return;
+  // Show the overlay immediately so the user gets feedback before the IPC call.
+  host.innerHTML = '<p class="lb-empty" style="display:flex;align-items:center;gap:8px;"><span class="boot-status-dot" style="width:8px;height:8px;flex-shrink:0;"></span>Loading memory pairs…</p>';
+  overlay.classList.remove('hidden');
   let pairs: BrainDuplicatePair[];
   try {
     pairs = await ipcCall<BrainDuplicatePair[]>('brain:getDuplicatePairs', {});
   } catch {
-    host.classList.add('hidden');
+    overlay.classList.add('hidden');
     return;
   }
   if (pairs.length === 0) {
-    host.classList.add('hidden');
-    host.innerHTML = '';
-    dismissedReviewPairIds = null; // nothing pending — reset the dismissal
+    overlay.classList.add('hidden');
+    host.innerHTML = '<p class="lb-empty">No pairs to review — everything looks good.</p>';
+    els.btnNeedsReview.classList.add('hidden');
     return;
   }
-  // Dismissed: stay hidden while every pending pair is one the user already
-  // dismissed. A pair from the next consolidation run clears the dismissal.
-  if (dismissedReviewPairIds !== null &&
-      pairs.every((p) => dismissedReviewPairIds?.has(p.id))) {
-    host.classList.add('hidden');
-    return;
-  }
-  dismissedReviewPairIds = null; // there is something to show — consume the dismissal
-  host.classList.remove('hidden');
-  host.innerHTML = `
-    <button class="g-needs-review-dismiss" title="Dismiss until consolidation finds something new" aria-label="Dismiss this list">×</button>
-    <p class="g-needs-review-title">Needs your review — ${pairs.length} memory pair${pairs.length === 1 ? '' : 's'}</p>
-    <p class="g-needs-review-sub">Consolidation found these memories nearly identical but couldn't be sure they're the same fact — a number, a negation, or a partial overlap made it unsafe to merge automatically. You decide.</p>
-    ${pairs.map((c) => `
-      <div class="lb-dup-card">
-        <div class="lb-dup-card-pair">
-          <div class="lb-snippet"><span class="lb-snippet-tag">A</span>${escape(clampText(c.snippetA, 160))}</div>
-          <div class="lb-snippet"><span class="lb-snippet-tag">B</span>${escape(clampText(c.snippetB, 160))}</div>
-        </div>
-        <div class="lb-dup-card-foot">
-          <span style="display:flex; align-items:center; gap:8px; min-width:0;">
-            <span class="lb-engram-chip" title="Engram">${escape(engramName(c.graphId))}</span>
-            <span class="brain-subtitle">${Math.round(c.similarity * 100)}% similar</span>
-          </span>
-          <span class="g-nr-actions">
-            <button class="btn-sm" data-nr-action="keep-both" data-nr-id="${escape(c.id)}" title="They're genuinely different memories — keep both, untouched.">Keep both</button>
-            <button class="btn-sm primary" data-nr-action="merge" data-nr-id="${escape(c.id)}" title="They're the same memory — merge into one. The duplicate is soft-deleted and stays recoverable.">Same memory — merge</button>
-          </span>
-        </div>
-      </div>`).join('')}
-  `;
-  host.querySelector('.g-needs-review-dismiss')?.addEventListener('click', () => {
-    // Remember exactly which pairs were on screen — the list re-appears only
-    // when consolidation later surfaces a pair that is NOT in this set.
-    dismissedReviewPairIds = new Set(pairs.map((p) => p.id));
-    host.classList.add('hidden');
-  });
+  // Update overlay title with live count.
+  els.needsReviewOverlayTitle.textContent =
+    `Needs your review — ${pairs.length} memory pair${pairs.length === 1 ? '' : 's'}`;
+  host.innerHTML = pairs.map((c) => `
+    <div class="lb-dup-card">
+      <div class="lb-dup-card-pair">
+        <div class="lb-snippet"><span class="lb-snippet-tag">A</span>${escape(clampText(c.snippetA, 160))}</div>
+        <div class="lb-snippet"><span class="lb-snippet-tag">B</span>${escape(clampText(c.snippetB, 160))}</div>
+      </div>
+      <div class="lb-dup-card-foot">
+        <span style="display:flex; align-items:center; gap:8px; min-width:0;">
+          <span class="lb-engram-chip" title="Engram">${escape(engramName(c.graphId))}</span>
+          <span class="brain-subtitle">${Math.round(c.similarity * 100)}% similar</span>
+        </span>
+        <span class="g-nr-actions">
+          <button class="btn-sm" data-nr-action="keep-both" data-nr-id="${escape(c.id)}"
+            title="They're genuinely different memories — keep both, untouched.">Keep both</button>
+          <button class="btn-sm primary" data-nr-action="merge" data-nr-id="${escape(c.id)}"
+            title="They're the same memory — merge into one. The duplicate is soft-deleted and stays recoverable.">Same memory — merge</button>
+        </span>
+      </div>
+    </div>`).join('');
+  overlay.classList.remove('hidden');
+  // Badge stays updated.
+  els.needsReviewCount.textContent = String(pairs.length);
+  els.btnNeedsReview.classList.remove('hidden');
   host.querySelectorAll<HTMLButtonElement>('[data-nr-action]').forEach((btn) => {
     btn.addEventListener('click', async () => {
       const id = btn.dataset['nrId'];
       const action = btn.dataset['nrAction'] as 'merge' | 'keep-both' | undefined;
       if (!id || !action) return;
-      // Collapse the card shut — reuses the .lb-healing "heals closed"
-      // transition: pin the measured height, then animate to zero.
       const card = btn.closest<HTMLElement>('.lb-dup-card');
       if (card) {
         card.style.maxHeight = `${card.scrollHeight}px`;
@@ -8179,8 +8685,7 @@ async function renderNeedsReview(): Promise<void> {
         requestAnimationFrame(() => { card.style.maxHeight = '0px'; });
       }
       try { await ipcCall('brain:resolveDuplicatePair', { id, action }); } catch { /* ignore */ }
-      // Re-render the block once the collapse finishes. A merge soft-
-      // deletes a node; the 3s graph-mutation poll refreshes the deck.
+      // Re-render after the collapse animation finishes.
       window.setTimeout(() => { void renderNeedsReview(); }, card ? 560 : 0);
     });
   });
@@ -8336,9 +8841,8 @@ function handleBrainFrame(graphId: string): void {
     // The event channel only carries graphId + ts — pull the fresh state.
     void refreshBrainState();
     void refreshBrainStatus();
-    // A completed scan may have changed the needs-review queue — refresh
-    // the Check-in block too if the user is currently looking at it.
-    if (graphnosisActiveTab === 'checkin') void renderNeedsReview();
+    // A completed scan may have changed the needs-review queue — update the badge.
+    void refreshNeedsReviewBadge();
     renderScanStatus();
   } else if (graphId === '__brain_synapse__') {
     flashSynapse();
@@ -8352,6 +8856,13 @@ function handleBrainFrame(graphId: string): void {
 els.btnLbRefresh.addEventListener('click', () => {
   void ipcCall('brain:runScan', {}).catch(() => { /* non-fatal */ });
   void renderLivingBrain();
+});
+
+// "Needs your review" button — opens the overlay.
+els.btnNeedsReview.addEventListener('click', () => { void renderNeedsReview(); });
+// Close button inside the overlay — hides it, leaves the badge count intact.
+els.btnNeedsReviewClose.addEventListener('click', () => {
+  els.needsReviewOverlay.classList.add('hidden');
 });
 
 // ── (3) Scan-status countdown line ─────────────────────────────────────────
@@ -8444,12 +8955,37 @@ function stopScanTicker(): void {
 
 // ── (7) Ambient neuron field ───────────────────────────────────────────────
 //
-// Drifting nodes + faint links + occasional firing pulses on the hero
-// canvas. Self-contained: only runs while the Autonomous Brain pane is
-// visible and the window is focused — never burns CPU off-screen.
+// Nodes drift very slowly across the full hero background like a living
+// cortex map. No attraction — pure Brownian motion. Each node pulses in
+// radius independently. Nodes allowed to drift beyond edges (canvas clips).
 const neuronField = (() => {
-  interface NeuronNode { x: number; y: number; vx: number; vy: number; }
+  const CLUSTER_COLORS = [
+    '#a78bfa', // violet
+    '#6ab3c8', // teal
+    '#f472b6', // pink
+    '#4ade80', // green
+    '#fb923c', // amber
+    '#60a5fa', // blue
+  ];
+  const CLUSTER_COUNT  = CLUSTER_COLORS.length;
+  const COUNT          = 56;    // nodes filling the background
+  const LINK_DIST      = 130;   // edge drawn when two nodes are within this distance
+  const WANDER         = 0.032; // random velocity nudge each tick — keeps drift very slow
+  const DAMPING        = 0.996; // high damping → terminal speed stays tiny
+  const BASE_R         = 2.4;   // node base radius (px)
+  const PULSE_AMP      = 1.6;   // radius oscillates ±1.6 px
+  const PULSE_SPD_MIN  = 0.005; // slowest pulse cycle
+  const PULSE_SPD_MAX  = 0.018; // fastest pulse cycle
+  const RESEED_MARGIN  = 140;   // re-seed a node when it drifts this far outside canvas
+
+  interface NeuronNode {
+    x: number; y: number; vx: number; vy: number;
+    cluster: number;
+    phase: number;      // current pulse phase (radians)
+    phaseSpd: number;   // pulse speed (rad/tick)
+  }
   interface Pulse { from: number; to: number; t: number; }
+
   let ctx: CanvasRenderingContext2D | null = null;
   let raf = 0;
   let running = false;
@@ -8457,32 +8993,45 @@ const neuronField = (() => {
   let h = 0;
   let nodes: NeuronNode[] = [];
   let pulses: Pulse[] = [];
-  const COUNT = 16;
-  const LINK_DIST = 130;
+
+  function hex2rgba(hex: string, alpha: number): string {
+    const r = parseInt(hex.slice(1, 3), 16);
+    const g = parseInt(hex.slice(3, 5), 16);
+    const b = parseInt(hex.slice(5, 7), 16);
+    return `rgba(${r},${g},${b},${alpha.toFixed(3)})`;
+  }
 
   function resize(): void {
     const cv = els.lbNeuronCanvas;
-    const rect = cv.getBoundingClientRect();
-    if (rect.width === 0 || rect.height === 0) return;
+    const parent = cv.parentElement;
+    if (!parent) return;
+    const pw = parent.clientWidth;
+    const ph = parent.clientHeight;
+    if (pw === 0 || ph === 0) return;
     const dpr = Math.min(window.devicePixelRatio || 1, 2);
-    w = rect.width;
-    h = rect.height;
-    cv.width = Math.round(w * dpr);
+    w = pw;
+    h = ph;
+    cv.width  = Math.round(w * dpr);
     cv.height = Math.round(h * dpr);
     ctx = cv.getContext('2d');
     ctx?.setTransform(dpr, 0, 0, dpr, 0, 0);
   }
 
+  function makeNode(ci: number): NeuronNode {
+    return {
+      x: Math.random() * w,
+      y: Math.random() * h,
+      vx: (Math.random() - 0.5) * 0.3,
+      vy: (Math.random() - 0.5) * 0.3,
+      cluster: ci,
+      phase: Math.random() * Math.PI * 2,
+      phaseSpd: PULSE_SPD_MIN + Math.random() * (PULSE_SPD_MAX - PULSE_SPD_MIN),
+    };
+  }
+
   function seed(): void {
     nodes = [];
-    for (let i = 0; i < COUNT; i++) {
-      nodes.push({
-        x: Math.random() * w,
-        y: Math.random() * h,
-        vx: (Math.random() - 0.5) * 0.22,
-        vy: (Math.random() - 0.5) * 0.22,
-      });
-    }
+    for (let i = 0; i < COUNT; i++) nodes.push(makeNode(i % CLUSTER_COUNT));
     pulses = [];
   }
 
@@ -8490,55 +9039,89 @@ const neuronField = (() => {
     if (!running || !ctx) return;
     ctx.clearRect(0, 0, w, h);
 
+    // Physics: pure slow Brownian drift, no walls, no attraction.
     for (const n of nodes) {
-      n.x += n.vx;
-      n.y += n.vy;
-      if (n.x < 0 || n.x > w) n.vx *= -1;
-      if (n.y < 0 || n.y > h) n.vy *= -1;
-      n.x = Math.max(0, Math.min(w, n.x));
-      n.y = Math.max(0, Math.min(h, n.y));
+      n.vx += (Math.random() - 0.5) * WANDER;
+      n.vy += (Math.random() - 0.5) * WANDER;
+      n.vx *= DAMPING;
+      n.vy *= DAMPING;
+      n.x  += n.vx;
+      n.y  += n.vy;
+      // Advance pulse phase.
+      n.phase = (n.phase + n.phaseSpd) % (Math.PI * 2);
+      // Re-seed from a random inside position if node drifts too far outside.
+      if (n.x < -RESEED_MARGIN || n.x > w + RESEED_MARGIN ||
+          n.y < -RESEED_MARGIN || n.y > h + RESEED_MARGIN) {
+        const replacement = makeNode(n.cluster);
+        n.x = replacement.x; n.y = replacement.y;
+        n.vx = replacement.vx; n.vy = replacement.vy;
+      }
     }
 
+    // Edges — same-cluster: colored; cross-cluster: dim gray.
     for (let i = 0; i < nodes.length; i++) {
       for (let j = i + 1; j < nodes.length; j++) {
         const a = nodes[i]!;
         const b = nodes[j]!;
         const d = Math.hypot(a.x - b.x, a.y - b.y);
-        if (d < LINK_DIST) {
-          ctx.strokeStyle = `rgba(106,179,200,${0.2 * (1 - d / LINK_DIST)})`;
-          ctx.lineWidth = 1;
-          ctx.beginPath();
-          ctx.moveTo(a.x, a.y);
-          ctx.lineTo(b.x, b.y);
-          ctx.stroke();
+        if (d >= LINK_DIST) continue;
+        const fade = 1 - d / LINK_DIST;
+        if (a.cluster === b.cluster) {
+          ctx.strokeStyle = hex2rgba(CLUSTER_COLORS[a.cluster]!, 0.30 * fade);
+          ctx.lineWidth   = 0.85;
+        } else {
+          ctx.strokeStyle = `rgba(155,165,185,${0.07 * fade})`;
+          ctx.lineWidth   = 0.45;
         }
+        ctx.beginPath();
+        ctx.moveTo(a.x, a.y);
+        ctx.lineTo(b.x, b.y);
+        ctx.stroke();
       }
     }
 
+    // Nodes — pulsing radius via per-node sine wave.
     for (const n of nodes) {
-      ctx.fillStyle = 'rgba(167,139,250,0.6)';
+      const r = BASE_R + PULSE_AMP * Math.sin(n.phase);
+      ctx.fillStyle = hex2rgba(CLUSTER_COLORS[n.cluster]!, 0.70);
       ctx.beginPath();
-      ctx.arc(n.x, n.y, 2, 0, Math.PI * 2);
+      ctx.arc(n.x, n.y, Math.max(0.5, r), 0, Math.PI * 2);
       ctx.fill();
     }
 
-    // Occasionally fire a pulse along a random pair of neurons.
-    if (Math.random() < 0.045 && nodes.length > 1) {
-      const from = Math.floor(Math.random() * nodes.length);
-      let to = Math.floor(Math.random() * nodes.length);
-      if (to === from) to = (to + 1) % nodes.length;
-      pulses.push({ from, to, t: 0 });
+    // Synapses — frequent slow-traveling pulse dots between nearby nodes.
+    // Spawn up to a few per tick so the field feels alive with directed traffic.
+    const spawnAttempts = 3;
+    for (let s = 0; s < spawnAttempts; s++) {
+      if (Math.random() < 0.10 && nodes.length > 1 && pulses.length < 24) {
+        // Prefer nearby pairs so the directed edge feels meaningful (rides
+        // along an actual link). Sample a few candidates and pick the closest.
+        const from = Math.floor(Math.random() * nodes.length);
+        let to = -1;
+        let bestD = Infinity;
+        for (let k = 0; k < 5; k++) {
+          const cand = Math.floor(Math.random() * nodes.length);
+          if (cand === from) continue;
+          const d = Math.hypot(nodes[from]!.x - nodes[cand]!.x, nodes[from]!.y - nodes[cand]!.y);
+          if (d < bestD) { bestD = d; to = cand; }
+        }
+        if (to >= 0) pulses.push({ from, to, t: 0 });
+      }
     }
     pulses = pulses.filter((p) => p.t <= 1);
     for (const p of pulses) {
-      p.t += 0.03;
+      p.t += 0.014; // slow, deliberate travel
       const a = nodes[p.from]!;
       const b = nodes[p.to]!;
       const x = a.x + (b.x - a.x) * p.t;
       const y = a.y + (b.y - a.y) * p.t;
-      ctx.fillStyle = 'rgba(120,220,240,0.9)';
+      ctx.fillStyle = 'rgba(120,230,255,0.90)';
       ctx.beginPath();
-      ctx.arc(x, y, 2.6, 0, Math.PI * 2);
+      ctx.arc(x, y, 2.5, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = 'rgba(120,230,255,0.15)';
+      ctx.beginPath();
+      ctx.arc(x, y, 7, 0, Math.PI * 2);
       ctx.fill();
     }
 
@@ -8547,10 +9130,16 @@ const neuronField = (() => {
 
   function start(): void {
     if (running) return;
-    // offsetParent is null when the pane (or an ancestor) is display:none.
-    if (els.lbNeuronCanvas.offsetParent === null) return;
+    // If the canvas or its parent isn't in the layout tree yet, retry next frame.
+    if (els.lbNeuronCanvas.offsetParent === null) {
+      requestAnimationFrame(() => start());
+      return;
+    }
     resize();
-    if (w === 0) return;
+    if (w === 0 || h === 0) {
+      requestAnimationFrame(() => start());
+      return;
+    }
     seed();
     running = true;
     tick();
@@ -9588,7 +10177,11 @@ void listen('graphnosis://unlocked-via-recovery', () => {
     els.unlockStatus.classList.remove('hidden');
     try {
       const result = await invoke<StatusSnapshot>('unlock_cortex_with_recovery', {
-        args: { cortex_dir: cortexDir, recovery_phrase: phrase },
+        args: {
+          cortex_dir: cortexDir,
+          recovery_phrase: phrase,
+          preferred_default_graph: localStorage.getItem(LAST_ENGRAM_KEY) ?? null,
+        },
       });
       // Persist for the next launch — same flow as the passphrase path.
       rememberCortexDir(cortexDir);
@@ -9604,7 +10197,7 @@ void listen('graphnosis://unlocked-via-recovery', () => {
     } finally {
       if (recoverBtn) recoverBtn.disabled = false;
       progressBar?.classList.add('hidden');
-      els.unlockStatus.classList.add('hidden');
+      if (!unlockPending) els.unlockStatus.classList.add('hidden');
     }
   });
 }
@@ -10034,12 +10627,20 @@ function installCustomEngramPicker(): void {
   const labelEl = btn.querySelector('.engram-picker-button-label') as HTMLSpanElement;
 
   // 2. Render dropdown options from the current state of the native select.
+  //    `opt.disabled` is true both when the <option> itself has `disabled`
+  //    AND when it's inside a `<optgroup disabled>` (DOM inheritance), so
+  //    this single check covers pending engrams marked either way.
   const renderOptions = (): void => {
     const opts = Array.from(sel.options);
-    dropdown.innerHTML = opts.map((o) => `
-      <button type="button" class="engram-picker-option${o.value === sel.value ? ' selected' : ''}" data-value="${escapeHtml(o.value)}" role="option" aria-selected="${o.value === sel.value}">${escapeHtml(o.text)}</button>
-    `).join('');
-    const curOpt = opts.find((o) => o.value === sel.value) ?? opts[0];
+    dropdown.innerHTML = opts.map((o) => {
+      const isDisabled = o.disabled;
+      const classes = ['engram-picker-option'];
+      if (o.value === sel.value) classes.push('selected');
+      if (isDisabled) classes.push('disabled');
+      const aria = isDisabled ? ' aria-disabled="true"' : '';
+      return `<button type="button" class="${classes.join(' ')}" data-value="${escapeHtml(o.value)}" role="option" aria-selected="${o.value === sel.value}"${aria}>${escapeHtml(o.text)}</button>`;
+    }).join('');
+    const curOpt = opts.find((o) => o.value === sel.value) ?? opts.find((o) => !o.disabled) ?? opts[0];
     labelEl.textContent = curOpt?.text ?? '—';
   };
 
@@ -10075,10 +10676,16 @@ function installCustomEngramPicker(): void {
     }
   });
 
-  // 6. Option click → set value, dispatch change, close.
+  // 6. Option click → set value, dispatch change, close. Disabled options
+  //    (pending engrams still loading in the sidecar) are ignored — the
+  //    dropdown stays open so the user can pick a different one.
   dropdown.addEventListener('click', (e) => {
     const opt = (e.target as HTMLElement | null)?.closest('.engram-picker-option') as HTMLButtonElement | null;
     if (!opt) return;
+    if (opt.classList.contains('disabled')) {
+      e.stopPropagation();
+      return;
+    }
     const v = opt.dataset['value'] ?? '';
     sel.value = v;  // intercepted setter re-renders + updates label
     sel.dispatchEvent(new Event('change', { bubbles: true }));
@@ -10660,7 +11267,7 @@ function collectConnectorFormData(kind: ConnectorKind): Partial<ConnectorConfigS
         const newGraphId = displayName.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') +
           '-' + Math.random().toString(36).slice(-4);
         await invoke('create_graph_with_template', { graphId: newGraphId, template: 'personal', displayName });
-        loadedGraphs = await invoke<GraphWithMetadata[]>('list_graphs_with_metadata');
+        loadedGraphs = await invoke<GraphWithMetadata[]>('list_graphs_with_metadata', { includeUnloaded: true });
         syncEngramPicker();
         config.graphId = newGraphId;
       }
@@ -10791,6 +11398,7 @@ function syncSearchLlmCheckboxes(): void {
   const synthWrap = document.getElementById('g-search-synth-wrap');
   const rerankWrap = document.getElementById('g-search-rerank-wrap');
   if (!synth || !rerank) return;
+  const llmBtn = document.getElementById('g-search-llm-btn') as HTMLButtonElement | null;
   if (brainLlmReady) {
     synth.disabled = false;
     rerank.disabled = false;
@@ -10800,16 +11408,18 @@ function syncSearchLlmCheckboxes(): void {
     if (rerankWrap) rerankWrap.title = 'Use Local LLM to re-order results by judged relevance.';
     if (synthWrap) synthWrap.style.opacity = '1';
     if (rerankWrap) rerankWrap.style.opacity = '1';
+    if (llmBtn) llmBtn.style.display = 'none';
   } else {
     synth.disabled = true;
     rerank.disabled = true;
     synth.checked = false;
     rerank.checked = false;
-    const reason = 'Local LLM is not ready. Enable in Settings → AI.';
+    const reason = 'Local LLM is not ready. Enable in Go Non-Deterministic.';
     if (synthWrap) synthWrap.title = reason;
     if (rerankWrap) rerankWrap.title = reason;
     if (synthWrap) synthWrap.style.opacity = '0.5';
     if (rerankWrap) rerankWrap.style.opacity = '0.5';
+    if (llmBtn) llmBtn.style.display = '';
   }
 }
 
@@ -10846,6 +11456,10 @@ document.getElementById('g-search-rerank')?.addEventListener('change', () => {
   searchLlmRerankEnabled = cb.checked;
   void persistSearchLlmPreference('searchLlmRerank', cb.checked);
   if (els.gSearch.value.trim().length > 0) applyGraphnosisFilter();
+});
+document.getElementById('g-search-llm-btn')?.addEventListener('click', () => {
+  activateMode('atlas');
+  switchGraphnosisTab('nondeterministic');
 });
 
 function renderSearchSynthesis(_query: string, answer: string, citedNodeIds: string[]): void {
