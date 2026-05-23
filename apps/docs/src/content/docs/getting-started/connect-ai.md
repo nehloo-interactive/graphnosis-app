@@ -1,6 +1,6 @@
 ---
 title: Connect Your AI
-description: Wire Graphnosis into Claude Desktop, Claude Code, Cursor, Zed, Cline, mobile, or any MCP-compatible client.
+description: Wire Graphnosis into Claude Desktop, Claude Code, Cursor, Kimi Code, Zed, Cline, mobile, or any MCP-compatible client.
 sidebar:
   order: 3
 ---
@@ -113,6 +113,30 @@ In your project root, create or edit `.cursor/mcp.json`:
 ```
 
 Reload the Cursor window. Graphnosis tools will appear in the MCP tools panel.
+
+## Kimi Code (CLI)
+
+Kimi Code CLI (`github.com/MoonshotAI/kimi-cli`) supports MCP natively and uses the same config shape as Claude Code. Create or edit `~/.kimi/mcp.json`:
+
+```json
+{
+  "mcpServers": {
+    "graphnosis": {
+      "command": "/Applications/Graphnosis.app/Contents/MacOS/graphnosis-sidecar",
+      "args": ["--mcp-stdio"],
+      "env": {
+        "GRAPHNOSIS_CORTEX_PATH": "/Users/you/Documents/MyCortex"
+      }
+    }
+  }
+}
+```
+
+Replace `/Users/you/Documents/MyCortex` with the path to your Cortex folder.
+
+Start a Kimi Code session and type `/mcp` to confirm `graphnosis` appears as a connected server with all tools listed. From that point, Kimi will call `recall`, `remember`, and the other Graphnosis tools the same way Claude Code does.
+
+The menu-bar tray's **Connect an AI client** wizard does not yet write Kimi's config automatically — add the snippet above by hand for now.
 
 ## GitHub Copilot (VS Code)
 
