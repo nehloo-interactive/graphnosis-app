@@ -33,7 +33,7 @@ The full `.gai` files never reach the AI. The AI only ever sees the scoped subgr
 
 ## Screenshots
 
-Unlock your Cortex with a passphrase or Touch ID, then work across four tabs — daily check-ins, the 3D engram, deterministic consolidation, and the optional non-deterministic layer.
+Unlock your cortex with a passphrase or Touch ID, then work across four tabs — daily check-ins, the 3D engram, deterministic consolidation, and the optional non-deterministic layer.
 
 ![Graphnosis — unlock screen](apps/docs/public/screenshots/01-unlock.png)
 
@@ -209,7 +209,7 @@ After saving, restart Claude Desktop. The MCP server appears as **Graphnosis** i
 | Variable | Purpose | Default |
 |---|---|---|
 | `GRAPHNOSIS_CORTEX` | Folder where encrypted graphs + op-log + caches live | (required) |
-| `GRAPHNOSIS_PASSPHRASE` | Cortex passphrase, used for Argon2id key derivation | (required) |
+| `GRAPHNOSIS_PASSPHRASE` | cortex passphrase, used for Argon2id key derivation | (required) |
 | `GRAPHNOSIS_DEVICE_ID` | Stable device identifier (op-log attribution + sync) | `<hostname>-<pid>` |
 | `GRAPHNOSIS_DEFAULT_GRAPH` | Graph ID for `remember` when none specified | `personal` |
 | `GRAPHNOSIS_POLICY` | Path to JSON with per-graph sensitivity tiers | (none — defaults apply) |

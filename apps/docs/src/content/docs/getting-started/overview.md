@@ -7,7 +7,7 @@ sidebar:
 
 Graphnosis gives any AI a persistent, private memory — without a cloud service, an account, or sending your data anywhere.
 
-## Graphnosis is your local encrypted memory, indexed for deterministic recall
+## Graphnosis is your local encrypted memory, indexed for deterministic recall — auditable
 
 Here is the problem with how AI "memory" has worked until now.
 
@@ -39,15 +39,15 @@ When you see the seahorse, think: *this is the part of the AI stack that remembe
 
 | Brain structure | Graphnosis equivalent | What it does |
 |---|---|---|
-| Neocortex (long-term store) | Your **Cortex folder** | Encrypted archive of all your knowledge — the `.gai` engram files |
+| Neocortex (long-term store) | Your **cortex folder** | Encrypted archive of all your knowledge — the `.gai` engram files |
 | Engrams (memory traces) | **Knowledge graph nodes** | Compact, semantically indexed representations of what you've ingested |
 | Hippocampus (encode + retrieve) | **Graphnosis sidecar** | Encodes raw content into engrams on ingest; retrieves relevant ones on recall |
-| Synapse (signal pathway) | **Graphnosis synapse** (the local background process) | The bridge between your AI client and your Cortex; only fires when the app is running and the Cortex is unlocked |
+| Synapse (signal pathway) | **Graphnosis synapse** (the local background process) | The bridge between your AI client and your cortex; only fires when the app is running and the cortex is unlocked |
 | Prefrontal cortex (reasoning) | Your **AI client** | Receives only the retrieved engrams it needs; reasons from there |
 
-The **synapse** is what we call Graphnosis' local sidecar process — the small program that runs in the background whenever the app is open. In the brain, a synapse is the active connection that passes a signal from one neuron to the next; in Graphnosis it is the active connection that passes a recall query from your AI client into the Cortex and the matched engrams back out. When the synapse is offline (app closed, Cortex locked, or sidecar crashed), no memory flows. The app's error messages refer to it by name — e.g. "Another Graphnosis synapse is already holding this cortex's lock" — so it helps to recognize the term.
+The **synapse** is what we call Graphnosis' local sidecar process — the small program that runs in the background whenever the app is open. In the brain, a synapse is the active connection that passes a signal from one neuron to the next; in Graphnosis it is the active connection that passes a recall query from your AI client into the cortex and the matched engrams back out. When the synapse is offline (app closed, cortex locked, or sidecar crashed), no memory flows. The app's error messages refer to it by name — e.g. "Another Graphnosis synapse is already holding this cortex's lock" — so it helps to recognize the term.
 
-When you ingest a PDF or document, Graphnosis doesn't hand the raw file to your AI — that's the old, expensive approach. It encodes the document into engrams: semantically compressed, binary-encrypted memory traces stored in the Cortex. The original file stays on your disk, untouched.
+When you ingest a PDF or document, Graphnosis doesn't hand the raw file to your AI — that's the old, expensive approach. It encodes the document into engrams: semantically compressed, binary-encrypted memory traces stored in the cortex. The original file stays on your disk, untouched.
 
 When you ask your AI a question, the hippocampus does its job: it searches the engram graph, finds the memory traces most relevant to what you're asking right now, and delivers a small, precise context block. Your AI reasons with current, targeted memory — not a stale document dump.
 
@@ -59,9 +59,9 @@ This is why Graphnosis responses feel different from naive retrieval-augmented g
 
 Most AI assistants are stateless by default. They don't remember what you told them last week, which documents you've been working with, or the decisions you've made. You end up re-explaining context in every conversation.
 
-Graphnosis solves this by sitting alongside your AI client as an MCP server. When a conversation starts, it quietly retrieves only the most semantically relevant engrams from your personal Cortex and surfaces them as context. Your AI responds as if it already knows the background.
+Graphnosis solves this by sitting alongside your AI client as an MCP server. When a conversation starts, it quietly retrieves only the most semantically relevant engrams from your personal cortex and surfaces them as context. Your AI responds as if it already knows the background.
 
-**Your data never leaves your device unless you are actively using an AI client.** Even then, Graphnosis sends only the small handful of memory nodes relevant to your specific question — not your full Cortex, not the original files, not anything unrelated to what you're asking at that moment. If you close the AI client or don't ask anything, nothing moves.
+**Your data never leaves your device unless you are actively using an AI client.** Even then, Graphnosis sends only the small handful of memory nodes relevant to your specific question — not your full cortex, not the original files, not anything unrelated to what you're asking at that moment. If you close the AI client or don't ask anything, nothing moves.
 
 Everything stays on your machine. No Nehloo servers are ever contacted.
 
@@ -69,25 +69,25 @@ Everything stays on your machine. No Nehloo servers are ever contacted.
 
 ### Cortex
 
-A **Cortex** is an encrypted local folder — named after the neocortex, the brain's long-term memory store. It holds your engram graph (the `.gai` binary files), embedding cache, op-log, and policy configuration — all encrypted at rest with libsodium `xchacha20poly1305`. The encryption key is derived from your passphrase using Argon2id.
+A **cortex** is an encrypted local folder — named after the neocortex, the brain's long-term memory store. It holds your engram graph (the `.gai` binary files), embedding cache, op-log, and policy configuration — all encrypted at rest with libsodium `xchacha20poly1305`. The encryption key is derived from your passphrase using Argon2id.
 
-You choose where the folder lives. You can have multiple Cortexes — for work, personal life, specific projects. Each is completely independent.
+You choose where the folder lives. You can have multiple cortexes — for work, personal life, specific projects. Each is completely independent.
 
 ### Engram graph
 
-Inside the Cortex, memories are stored as an **engram graph** — a knowledge graph where each node is a semantically indexed memory trace derived from something you've ingested. Nodes are binary-encoded (`.gai` format), not human-readable plain text.
+Inside the cortex, memories are stored as an **engram graph** — a knowledge graph where each node is a semantically indexed memory trace derived from something you've ingested. Nodes are binary-encoded (`.gai` format), not human-readable plain text.
 
 The files the app writes to disk are not plain `.gai` — they are encrypted with a `GNAPP\x01` envelope (xchacha20poly1305, Argon2id key derived from your passphrase) before being stored. This means:
 
-- **Your AI cannot read your Cortex directly**, even if it somehow had access to the files. The engrams are only surfaced through Graphnosis' retrieval layer.
-- **No tool can read your Cortex without your passphrase.** The encryption does not depend on the libraries being secret — `@nehloo/graphnosis` is open source under Apache-2.0, and `@nehloo-interactive/graphnosis-secure-sync` is source-available under FSL-1.1. Auditable crypto is stronger crypto.
-- **Power users can access their own data programmatically.** With both libraries and your passphrase, you can decrypt and parse your Cortex outside the app — for exports, custom tooling, or migration. This is intentional. Your data is not locked in.
+- **Your AI cannot read your cortex directly**, even if it somehow had access to the files. The engrams are only surfaced through Graphnosis' retrieval layer.
+- **No tool can read your cortex without your passphrase.** The encryption does not depend on the libraries being secret — `@nehloo/graphnosis` is open source under Apache-2.0, and `@nehloo-interactive/graphnosis-secure-sync` is source-available under FSL-1.1. Auditable crypto is stronger crypto.
+- **Power users can access their own data programmatically.** With both libraries and your passphrase, you can decrypt and parse your cortex outside the app — for exports, custom tooling, or migration. This is intentional. Your data is not locked in.
 
-The Cortex is also intentionally portable: the encryption salt is embedded in each file, not tied to the machine it was created on. Copy the folder to another machine, unlock it with your passphrase — it just works. The passphrase is the key, not the device. Treat it accordingly.
+The cortex is also intentionally portable: the encryption salt is embedded in each file, not tied to the machine it was created on. Copy the folder to another machine, unlock it with your passphrase — it just works. The passphrase is the key, not the device. Treat it accordingly.
 
 ### Graphs
 
-Inside a Cortex you can have multiple **graphs** — named subsets of the engram graph, each with its own sensitivity tier and token budget. Think of graphs as separate topics: `work`, `health`, `research`. When the AI calls `recall`, each graph's tier determines whether and how much of it can be surfaced.
+Inside a cortex you can have multiple **graphs** — named subsets of the engram graph, each with its own sensitivity tier and token budget. Think of graphs as separate topics: `work`, `health`, `research`. When the AI calls `recall`, each graph's tier determines whether and how much of it can be surfaced.
 
 ### How memories connect
 
@@ -95,7 +95,7 @@ A memory is only as useful as what it is connected to. Graphnosis links memories
 
 1. **Within an engram — a dual-graph of undirected and directed edges.** An engram (`.gai` file) is not a flat list of nodes; it is a graph with *two kinds* of connection. **Undirected** edges are associative — "these two memories are about the same thing" — symmetric, with no direction. **Directed, typed** edges carry both direction and meaning — `causes`, `contains`, `supersedes`, `depends-on`. Together they let recall do more than keyword matching: it can follow *how* your memories relate, not just *that* they relate. Both kinds are deterministic and live inside the encrypted `.gai` file.
 
-2. **Across engrams — multi-graph federation.** Your engrams are separated by topic, but they are not islands. Every `recall` is **federated**: it searches all accessible engrams at once and returns the best memories wherever they live. The background passes also weave **cross-engram connections** — links between related memories in *different* engrams — so a question grounded in your `work` engram can surface what you know in `research`. Federation is deterministic; the cross-engram links are stored encrypted alongside your Cortex.
+2. **Across engrams — multi-graph federation.** Your engrams are separated by topic, but they are not islands. Every `recall` is **federated**: it searches all accessible engrams at once and returns the best memories wherever they live. The background passes also weave **cross-engram connections** — links between related memories in *different* engrams — so a question grounded in your `work` engram can surface what you know in `research`. Federation is deterministic; the cross-engram links are stored encrypted alongside your cortex.
 
 3. **An optional third layer — the Neural Network overlay.** If you choose to enable it, the [Graphnosis Neural Network](/guides/indelibility-and-determinism/) adds a *third* set of connections: edges it *predicts* are likely real but not yet recorded. These are deliberately kept out of the deterministic `.gai` graph — they live in a separate `neural-network.gnn` overlay, are always clearly labelled, and can be discarded in one click. Layers 1 and 2 are deterministic and always on; layer 3 is non-deterministic and entirely opt-in.
 
@@ -109,7 +109,7 @@ When you open a conversation in your AI client, Graphnosis is running as an MCP 
 
 **This is the only moment when any memory content leaves your device** — and it travels only to the AI provider you are actively using, for the conversation you are actively having. It does not go to Nehloo Interactive. It does not go anywhere else. See [Using Graphnosis with AI Clients](/legal/third-party-ai/) for a full breakdown.
 
-For this to work, the Graphnosis app must be running and your Cortex must be unlocked. If the app is closed or the Cortex is locked, your AI client falls back to behaving as if Graphnosis isn't there.
+For this to work, the Graphnosis app must be running and your cortex must be unlocked. If the app is closed or the cortex is locked, your AI client falls back to behaving as if Graphnosis isn't there.
 
 ### Why pre-indexing makes AI clients more precise
 
@@ -126,7 +126,7 @@ The result: faster prompts, smaller context windows, lower API costs, and notice
 
 ### Deterministic Consolidation
 
-A Cortex you never tend slowly fills with clutter — the same fact saved twice, near-identical notes, memories with nothing linked to them. Graphnosis maintains the graph on its own: background passes merge memories that are provably duplicates, weave connections between related ones, and strengthen the links you use most. Nothing you deliberately add ever fades — a memory only grows more retrievable over time. Anything that needs a judgment call is routed to the Check-in tab rather than guessed at. See [Deterministic Consolidation](/guides/deterministic-consolidation/).
+A cortex you never tend slowly fills with clutter — the same fact saved twice, near-identical notes, memories with nothing linked to them. Graphnosis maintains the graph on its own: background passes merge memories that are provably duplicates, weave connections between related ones, and strengthen the links you use most. Nothing you deliberately add ever fades — a memory only grows more retrievable over time. Anything that needs a judgment call is routed to the Check-in tab rather than guessed at. See [Deterministic Consolidation](/guides/deterministic-consolidation/).
 
 ### Going non-deterministic (optional)
 
@@ -150,7 +150,7 @@ ChatGPT desktop has limited third-party MCP support as of early 2025. Check the 
 | Operating system | macOS 13 Ventura or later (Windows/Linux: planned) |
 | Architecture | Apple Silicon or Intel |
 | Node.js | 20 or later (bundled with the app) |
-| Disk space | ~200 MB for the app; Cortex size depends on your content |
+| Disk space | ~200 MB for the app; cortex size depends on your content |
 | Rust toolchain | Required only if building from source |
 
 The embedding model (ONNX, ~90 MB) and any optional local LLM for corrections run entirely offline. No GPU required, though an Apple Silicon Mac with Neural Engine will be noticeably faster for embeddings.

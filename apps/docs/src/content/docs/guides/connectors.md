@@ -1,6 +1,6 @@
 ---
 title: Auto-ingest from Your Tools
-description: Connect RSS, GitHub, Slack, Trello, Linear, or any webhook to grow your Cortex automatically — your credentials, your apps, encrypted at rest.
+description: Connect RSS, GitHub, Slack, Trello, Linear, or any webhook to grow your cortex automatically — your credentials, your apps, encrypted at rest.
 sidebar:
   order: 2
 ---
@@ -15,11 +15,11 @@ Every connector follows the same pattern:
 2. You choose a **target engram** for ingested events.
 3. You paste credentials (or accept an auto-generated webhook URL).
 4. Graphnosis pulls on a schedule (default: every 15 minutes) — or webhook-style connectors fire on push.
-5. Each new event becomes a memory node in your engram, available to every AI client connected to your Cortex.
+5. Each new event becomes a memory node in your engram, available to every AI client connected to your cortex.
 
 **Why BYO credentials.** Most cloud memory products use a "first-party OAuth app" model — you log into Slack via their app, they hold a token on your behalf, they're a 4th-party data processor in every workflow. Graphnosis goes the other way: **you create your own app/key** in each service's developer console and paste credentials into Graphnosis. The trade is 1–5 minutes of upfront setup-in-service per connector, and the win is **end-to-end privacy** — Graphnosis is never in the OAuth callback chain, the service-side relationship is between you and that service.
 
-**Credentials are encrypted at rest.** As of v0.6.1, every connector credential (PATs, tokens, API keys) is XChaCha20-Poly1305 encrypted with your Cortex data key before it touches disk. Same crypto primitive as your `.gai` memory files. You can safely sync your Cortex folder via iCloud Drive / Dropbox / S3 — cloud providers see ciphertext only.
+**Credentials are encrypted at rest.** As of v0.6.1, every connector credential (PATs, tokens, API keys) is XChaCha20-Poly1305 encrypted with your cortex data key before it touches disk. Same crypto primitive as your `.gai` memory files. You can safely sync your cortex folder via iCloud Drive / Dropbox / S3 — cloud providers see ciphertext only.
 
 ## RSS / Atom feeds — the simplest connector
 
@@ -262,7 +262,7 @@ The webhook URL is `localhost:3458` by default — only reachable from the same 
 
 ## Security and storage notes
 
-- **Credentials at rest:** XChaCha20-Poly1305 encrypted with your Cortex data key in `<cortex>/settings.json` (as a `credentialsEnc` blob). Cloud-sync-safe — providers only ever see ciphertext.
-- **In-memory credentials:** decrypted on Cortex unlock; held in memory for the connector to use. Never logged.
+- **Credentials at rest:** XChaCha20-Poly1305 encrypted with your cortex data key in `<cortex>/settings.json` (as a `credentialsEnc` blob). Cloud-sync-safe — providers only ever see ciphertext.
+- **In-memory credentials:** decrypted on cortex unlock; held in memory for the connector to use. Never logged.
 - **No telemetry:** connector calls go directly from your Mac to the service. Graphnosis has no server in the path.
 - **Per-connector revocation:** to revoke a connector's access, **Remove** it in Settings (deletes the credentials locally) AND revoke the token in the service's developer console (forces immediate cutoff even if the local copy somehow leaks).
