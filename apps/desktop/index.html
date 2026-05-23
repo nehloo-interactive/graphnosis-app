@@ -1188,6 +1188,29 @@
         display: flex; align-items: center; justify-content: center;
         top: 7px;
       }
+      .mobile-qr-block {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 6px;
+        margin: 4px 0 16px;
+      }
+      .mobile-qr-block img {
+        width: 160px;
+        height: 160px;
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        background: #fff;
+        display: block;
+      }
+      .mobile-qr-block img.hidden { display: none; }
+      .mobile-qr-caption {
+        font-size: 12px;
+        color: var(--fg-dim);
+        text-align: center;
+        max-width: 200px;
+        line-height: 1.4;
+      }
 
       /* =================================================================
          New app shell — rail + canvas + status bar
@@ -5848,9 +5871,13 @@ ollama list</code></pre>
 
           <!-- Step 2: Connection details -->
           <div class="mobile-step" id="mobile-step-2">
-            <p style="font-size: 14px; margin: 0 0 14px;">
+            <p style="font-size: 14px; margin: 0 0 12px;">
               Use these details to add Graphnosis as an MCP server in your mobile AI client.
             </p>
+            <div class="mobile-qr-block">
+              <img id="mobile-qr-img" alt="QR code for MCP Server URL" class="hidden" />
+              <p class="mobile-qr-caption">Scan to fill in the server URL on your phone</p>
+            </div>
             <p style="font-size: 14px; font-weight: 600; margin: 0 0 4px; color: var(--fg-dim);">MCP Server URL</p>
             <div class="copy-row">
               <span class="copy-field" id="mobile-mcp-url"></span>
