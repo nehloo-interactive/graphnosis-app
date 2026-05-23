@@ -5,7 +5,7 @@ sidebar:
   order: 4
 ---
 
-A Cortex you never tend slowly fills with clutter: the same fact saved three times, near-identical notes from a re-ingested feed, memories left floating with nothing linked to them. Graphnosis doesn't just *store* your memories — it keeps them **indelible**: permanent, well-connected, and ever more retrievable. A set of background passes runs on a schedule, **autonomously**, with no prompts and no buttons to press.
+A cortex you never tend slowly fills with clutter: the same fact saved three times, near-identical notes from a re-ingested feed, memories left floating with nothing linked to them. Graphnosis doesn't just *store* your memories — it keeps them **indelible**: permanent, well-connected, and ever more retrievable. A set of background passes runs on a schedule, **autonomously**, with no prompts and no buttons to press.
 
 The guiding principle is **strengthen, never weaken**. A memory you add grows *more* confident, *more* connected, and *more* integrated over time — through use, through corroboration, and through consolidation. Nothing fades from disuse. The only things that ever lower a memory's standing are explicit correctness events — a contradiction is detected, the memory is superseded, or you correct it — and those are audited and reversible, never silent decay.
 
@@ -13,7 +13,7 @@ The **Deterministic Consolidation** tab — the third tab in the main window —
 
 ## The Deterministic Consolidation tab
 
-It is a holistic view: it spans **every engram in your Cortex**, not just the one selected in the dropdown above. It shows:
+It is a holistic view: it spans **every engram in your cortex**, not just the one selected in the dropdown above. It shows:
 
 - **Memory health** — a retrieval-quality report: can you find what you need, is it trustworthy, is it well-integrated.
 - **Self-healing** — how many duplicate memories Graphnosis has merged on its own.
@@ -44,7 +44,7 @@ Reinforcement is **strengthen-only and saturating**: a connection climbs toward 
 
 ## Self-healing — merging duplicates
 
-The same fact often lands in your Cortex more than once: you re-ingest a file, a connector pulls an RSS item that was already there, an AI saves a note that paraphrases one you already had. Left alone, duplicates dilute recall.
+The same fact often lands in your cortex more than once: you re-ingest a file, a connector pulls an RSS item that was already there, an AI saves a note that paraphrases one you already had. Left alone, duplicates dilute recall.
 
 Graphnosis scans for near-duplicate memories in the background. When it finds two that are **provably the same**, it merges them **automatically** — no prompt:
 
@@ -65,7 +65,7 @@ Isolated memories — ones with nothing linked to them — are a weak spot. Alon
 
 ## Consolidation — the deep pass
 
-Once a day, a deeper **consolidation** pass integrates and tidies the Cortex. It is deterministic, and — like everything else here — it only ever *adds* or *tidies*, never weakens:
+Once a day, a deeper **consolidation** pass integrates and tidies the cortex. It is deterministic, and — like everything else here — it only ever *adds* or *tidies*, never weakens:
 
 - **Transitive inference** — if A leads to B and B leads to C, Graphnosis infers the A→C connection. Each memory becomes *more* connected.
 - **Community detection** — it reads how your memories cluster, feeding the Memory health metrics.
@@ -73,7 +73,7 @@ Once a day, a deeper **consolidation** pass integrates and tidies the Cortex. It
 
 ## Cross-engram connections
 
-Your engrams aren't islands. Graphnosis links memories **across** engrams when they share meaningful named entities or are highly similar in meaning — so a query about a topic in one engram can surface what you know about it in another. These cross-engram connections are reinforced by use, just like connections within an engram, and are stored encrypted alongside your Cortex.
+Your engrams aren't islands. Graphnosis links memories **across** engrams when they share meaningful named entities or are highly similar in meaning — so a query about a topic in one engram can surface what you know about it in another. These cross-engram connections are reinforced by use, just like connections within an engram, and are stored encrypted alongside your cortex.
 
 ## Memory decay — and why it no longer touches your memories
 

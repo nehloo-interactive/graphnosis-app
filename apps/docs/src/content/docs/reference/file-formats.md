@@ -9,7 +9,7 @@ This page documents the file formats Graphnosis creates and manages on disk. You
 
 ## `.gai` — Encrypted Graph Archive
 
-A `.gai` file is a portable export of one or more graphs from a Cortex. It is produced when you use **Export Graph** from the UI, and consumed when you **Import Graph** into another Cortex.
+A `.gai` file is a portable export of one or more graphs from a Cortex. It is produced when you use **Export Graph** from the UI, and consumed when you **Import Graph** into another cortex.
 
 ### Structure
 
@@ -35,17 +35,17 @@ The JSON header contains:
 }
 ```
 
-The encrypted payload is a MessagePack-serialized array of source and chunk records. It is encrypted with the exporting Cortex's key using xchacha20poly1305 secretstream.
+The encrypted payload is a MessagePack-serialized array of source and chunk records. It is encrypted with the exporting cortex's key using xchacha20poly1305 secretstream.
 
 :::note
-When importing a `.gai` file into a different Cortex, you must also provide the passphrase (or recovery phrase) of the exporting Cortex. The import UI prompts for this.
+When importing a `.gai` file into a different cortex, you must also provide the passphrase (or recovery phrase) of the exporting cortex. The import UI prompts for this.
 :::
 
 ## `.gnn` — Neural Network Prediction Overlay
 
 The **Graphnosis Neural Network (GNN)** is an opt-in, off-by-default link predictor. When you enable it from the **Go Non-Deterministic** tab, it trains a small model on your engrams and proposes connections it judges *likely real but not yet recorded*.
 
-Those predictions are **never written into the deterministic `.gai` graph.** They live in a separate overlay file, one per Cortex:
+Those predictions are **never written into the deterministic `.gai` graph.** They live in a separate overlay file, one per cortex:
 
 ```
 <cortex>/neural-network.gnn
@@ -61,7 +61,7 @@ Core recall traverses only `.gai`, so the same query always returns the same res
 
 ### Structure
 
-`.gnn` is encrypted with the Cortex data key using XChaCha20-Poly1305 — the same primitive as `.gai`, because it records node ids. Decrypted, it is a small versioned JSON envelope:
+`.gnn` is encrypted with the cortex data key using XChaCha20-Poly1305 — the same primitive as `.gai`, because it records node ids. Decrypted, it is a small versioned JSON envelope:
 
 ```json
 {
@@ -87,7 +87,7 @@ Deleting `neural-network.gnn` is safe — it only removes the prediction overlay
 
 ## Op-log
 
-The op-log is an append-only event log stored in `cortex.db` (SQLite, encrypted). Every mutation to the Cortex is recorded as an op-log event before it is applied.
+The op-log is an append-only event log stored in `cortex.db` (SQLite, encrypted). Every mutation to the cortex is recorded as an op-log event before it is applied.
 
 ### Event types
 
@@ -99,7 +99,7 @@ The op-log is an append-only event log stored in `cortex.db` (SQLite, encrypted)
 | `forget` | A chunk or source is deleted. |
 | `graph_create` | A new graph is created. |
 | `graph_config` | Graph settings (tier, token cap) are changed. |
-| `passphrase_change` | The Cortex passphrase is changed. |
+| `passphrase_change` | The cortex passphrase is changed. |
 | `recovery_apply` | A recovery operation is applied via `recover.js`. |
 
 ### Op-log record structure
@@ -118,7 +118,7 @@ The `payload` field is also encrypted. The schema of each payload type is define
 
 ## Model cache
 
-The local embedding model is stored in the `models/` subdirectory of your Cortex folder (unless the embedding cache directory is overridden with `GRAPHNOSIS_EMBED_CACHE`).
+The local embedding model is stored in the `models/` subdirectory of your cortex folder (unless the embedding cache directory is overridden with `GRAPHNOSIS_EMBED_CACHE`).
 
 ```
 <cortex>/models/
@@ -143,19 +143,19 @@ The Argon2id salt used to derive your **wrap key** from the passphrase. Public �
 
 ## `master.enc`
 
-The persistent **data key** for your Cortex, wrapped with the Argon2id wrap key derived from your passphrase. Cortex unlock flow:
+The persistent **data key** for your cortex, wrapped with the Argon2id wrap key derived from your passphrase. cortex unlock flow:
 
 ```
 passphrase + salt.bin ──Argon2id──▶ wrapKey ──decrypts──▶ master.enc ──▶ dataKey ──encrypts──▶ every .gai / .bundle / .embcache / content blob / op-log
 ```
 
-Two-tier design means a passphrase change rewrites only this 99-byte file — your engrams stay encrypted with the same data key and are never touched. Cortexes from before v0.3 don't have `master.enc`; the first unlock with v0.3+ auto-migrates by writing it.
+Two-tier design means a passphrase change rewrites only this 99-byte file — your engrams stay encrypted with the same data key and are never touched. cortexes from before v0.3 don't have `master.enc`; the first unlock with v0.3+ auto-migrates by writing it.
 
 ## `recovery.enc`
 
 The same data key, wrapped a second time with an Argon2id-derived key from your **24-word BIP-39 recovery phrase**. Independent of the passphrase path — entering the phrase unwraps `recovery.enc` directly to retrieve the data key, no passphrase needed. Generated once at cortex creation (or backfilled on the first v0.3 unlock for a pre-v0.3 cortex); regeneratable from **Settings → Recovery phrase**.
 
-If you lose **both** the passphrase and the recovery phrase, neither file can be opened by anyone and your Cortex is permanently inaccessible. By design.
+If you lose **both** the passphrase and the recovery phrase, neither file can be opened by anyone and your cortex is permanently inaccessible. By design.
 
 ## `.gai.corrupt-<timestamp>` / `.bundle.corrupt-<timestamp>`
 

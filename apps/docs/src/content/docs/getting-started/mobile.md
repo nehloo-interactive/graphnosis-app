@@ -1,11 +1,11 @@
 ---
 title: Connect from Your Phone
-description: Wire Claude for iOS, Claude for Android, or any HTTP MCP client into your Cortex over your local network or Tailscale VPN.
+description: Wire Claude for iOS, Claude for Android, or any HTTP MCP client into your cortex over your local network or Tailscale VPN.
 sidebar:
   order: 4
 ---
 
-Your Cortex lives on your Mac. Your phone can still read from it — when Graphnosis is running and unlocked on the Mac, your mobile AI client connects over the network (LAN at home, Tailscale anywhere else) and gets the same `recall` / `remember` / `correct` / `forget` tools your desktop AI does. Same memory, same answers, different device.
+Your cortex lives on your Mac. Your phone can still read from it — when Graphnosis is running and unlocked on the Mac, your mobile AI client connects over the network (LAN at home, Tailscale anywhere else) and gets the same `recall` / `remember` / `correct` / `forget` tools your desktop AI does. Same memory, same answers, different device.
 
 This page walks through the 3-step in-app wizard. If you've already enabled mobile access once, the wizard skips straight to the "copy URL + token" step on subsequent opens — no toggle-fiddling for re-pairing a new device.
 
@@ -13,12 +13,12 @@ This page walks through the 3-step in-app wizard. If you've already enabled mobi
 
 Two things should be true:
 
-1. **Graphnosis is running on your Mac with the Cortex unlocked.** Same rule as any AI client: the menu-bar icon must be visible and your passphrase entered.
+1. **Graphnosis is running on your Mac with the cortex unlocked.** Same rule as any AI client: the menu-bar icon must be visible and your passphrase entered.
 2. **Your phone can reach your Mac.** Either:
    - Same Wi-Fi network (LAN), OR
    - Both devices on Tailscale (recommended — works anywhere, not just home)
 
-Tailscale is free for personal use, takes ~5 minutes to install on both devices, and removes "I'm at a café and can't reach my Cortex" as a problem class. If you don't have it, the wizard surfaces a download link in Step 2.
+Tailscale is free for personal use, takes ~5 minutes to install on both devices, and removes "I'm at a café and can't reach my cortex" as a problem class. If you don't have it, the wizard surfaces a download link in Step 2.
 
 ## Step-by-step: the mobile setup wizard
 
@@ -51,7 +51,7 @@ Click **Save & Next**.
 
 Graphnosis auto-detects every network interface on your Mac and surfaces them in this order of preference:
 
-1. **Tailscale IP** (100.x.x.x range) — shown with an accent badge and a "great, use this one" tip. Tailscale traffic is end-to-end encrypted between your devices and routes through Tailscale's relay servers when direct connection isn't possible — gives you "Cortex anywhere" without exposing a port to the public internet.
+1. **Tailscale IP** (100.x.x.x range) — shown with an accent badge and a "great, use this one" tip. Tailscale traffic is end-to-end encrypted between your devices and routes through Tailscale's relay servers when direct connection isn't possible — gives you "cortex anywhere" without exposing a port to the public internet.
 2. **LAN IPs** (e.g. 192.168.1.x, 10.x.x.x) — usable from any device on the same Wi-Fi network.
 3. **No Tailscale detected?** The wizard surfaces a [tailscale.com/download](https://tailscale.com/download) link. We strongly recommend installing it before continuing if you'll ever leave your home network.
 
@@ -109,7 +109,7 @@ Devices that still have the old token will get `401 Unauthorized` on every reque
 ## Troubleshooting
 
 **Mobile client says "could not connect" / timeout**
-- Confirm Graphnosis is running and Cortex unlocked. Without unlock, the bridge accepts connections but every tool call returns "Cortex is locked."
+- Confirm Graphnosis is running and cortex unlocked. Without unlock, the bridge accepts connections but every tool call returns "cortex is locked."
 - Verify the IP you picked is reachable from the phone: open Safari on the phone, navigate to `http://<picked-ip>:3457/`. If you get a "401 Unauthorized" response, the IP is reachable and the bridge is up — the issue is the token. If you get a connection timeout, the IP isn't reachable (firewall, wrong interface choice, off-network).
 - If using Tailscale: confirm both devices show "Connected" in the Tailscale app.
 
@@ -117,4 +117,4 @@ Devices that still have the old token will get `401 Unauthorized` on every reque
 - The bearer token doesn't match. Re-open the wizard and re-copy the token; it may have rotated since you last copied it.
 
 **Tools listed but `recall` returns nothing**
-- Same as desktop: your Cortex may be empty (add files first) or the active engram is empty. Try a broader query.
+- Same as desktop: your cortex may be empty (add files first) or the active engram is empty. Try a broader query.
