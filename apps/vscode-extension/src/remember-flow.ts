@@ -29,7 +29,7 @@ export function registerRememberFlow(
 ): vscode.Disposable[] {
   statusBar = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 100);
   statusBar.command = 'graphnosis.saveResponse';
-  statusBar.tooltip = 'Click to save this to your Graphnosis Cortex';
+  statusBar.tooltip = 'Click to save this to your Graphnosis cortex';
 
   // "Save to memory" — works on the current selection or the last Copilot insertion.
   const saveCmd = vscode.commands.registerCommand('graphnosis.saveResponse', async () => {
