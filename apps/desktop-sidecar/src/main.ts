@@ -19,6 +19,7 @@ import { LLM_CATALOG, makeLlm } from './local-llm.js';
 import { workerEmbed, terminateEmbedWorker, LOCAL_EMBED_ID, LOCAL_EMBED_DIM } from './local-embed.js';
 import type { LocalLlm } from './correction.js';
 import type { CorrectionDiff } from './correction.js';
+import type { BroadcastRawFn } from './events.js';
 import { FileWatcher } from './file-watcher.js';
 import { BrainEngine } from './brain-engine.js';
 
@@ -73,6 +74,7 @@ async function loadAllGraphsFromDisk(
   host: GraphnosisHost,
   cortexDir: string,
   defaultGraphId: string,
+  broadcastRaw?: BroadcastRawFn,
 ): Promise<void> {
   const graphsDir = path.join(cortexDir, 'graphs');
   let entries: string[];
@@ -85,11 +87,16 @@ async function loadAllGraphsFromDisk(
     return;
   }
   const seen = new Set<string>(host.listGraphs());
-  // Collect the list of graphIds to load first; then dispatch them in
-  // parallel. Serial loading meant one slow / hung graph (e.g. a 20k-node
-  // engram whose embcache load was pathological) blocked every other
-  // graph from appearing in the picker. Parallel + per-graph try/catch
-  // means partial failure is partial visibility, not total invisibility.
+  // Collect the list of graphIds to load first; then dispatch them
+  // SEQUENTIALLY with a yield between each. Earlier this used Promise.all
+  // for parallelism, but host.loadGraph contains sync decryption that
+  // monopolizes the Node event loop — 12 concurrent loads starved the IPC
+  // socket for ~25s, freezing the lock screen on "Loading memories…" while
+  // the boot's list_nodes('personal') call sat in the IPC queue. Sequential
+  // + setImmediate yield lets IPC interleave so the default engram stays
+  // queryable throughout the background load. Per-graph try/catch keeps
+  // "partial failure is partial visibility" intact: one bad graph doesn't
+  // block the rest.
   const toLoad: string[] = [];
   for (const name of entries) {
     // Match both the canonical .gai and the legacy .aikg path; strip the
@@ -103,7 +110,14 @@ async function loadAllGraphsFromDisk(
     toLoad.push(graphId);
   }
 
-  await Promise.all(toLoad.map(async (graphId) => {
+  const total = toLoad.length;
+  let loaded = 0;
+
+  if (broadcastRaw && total > 0) {
+    broadcastRaw({ kind: 'engrams-loading', name: 'engrams-loading', payload: { loaded: 0, total } });
+  }
+
+  for (const graphId of toLoad) {
     const startedAt = Date.now();
     try {
       await host.loadGraph(graphId);
@@ -121,7 +135,15 @@ async function loadAllGraphsFromDisk(
       );
       if (err.stack) console.error(err.stack);
     }
-  }));
+    loaded++;
+    if (broadcastRaw) {
+      broadcastRaw({ kind: 'engrams-loading', name: 'engrams-loading', payload: { loaded, total } });
+    }
+    // Yield to the event loop so any pending IPC requests (notably the
+    // boot's list_nodes / list_edges for the default engram) can run
+    // before the next load locks the loop again.
+    await new Promise<void>((resolve) => setImmediate(resolve));
+  }
 }
 
 /**
@@ -324,6 +346,27 @@ async function main(): Promise<void> {
     await fs.chmod(pendingPath, 0o600);
   }
 
+  // Stale-preference guard: if the frontend asked for an engram that no
+  // longer exists on disk (e.g. user deleted it but localStorage still
+  // remembers it), silently fall back to 'personal'. Without this, the
+  // ENOENT branch below would happily createGraph(staleName) and stamp it
+  // with the 'personal' template metadata — a silent surprise where the
+  // user sees a new empty engram instead of their actual data.
+  if (env.defaultGraph !== 'personal') {
+    const candidatePath = path.join(env.cortexDir, 'graphs', `${env.defaultGraph}.gai`);
+    const legacyPath    = path.join(env.cortexDir, 'graphs', `${env.defaultGraph}.aikg`);
+    const exists = await Promise.all([
+      fs.access(candidatePath).then(() => true).catch(() => false),
+      fs.access(legacyPath).then(() => true).catch(() => false),
+    ]).then(([a, b]) => a || b);
+    if (!exists) {
+      console.error(
+        `[graphnosis-sidecar] preferred default '${env.defaultGraph}' not found on disk — falling back to 'personal'`,
+      );
+      env.defaultGraph = 'personal';
+    }
+  }
+
   // Ensure default graph exists/loads.
   //
   // CRITICAL: only fall back to createGraph if the file genuinely doesn't
@@ -374,31 +417,17 @@ async function main(): Promise<void> {
     }
   }
 
-  // Auto-load every other graph on disk. Without this, engrams created
-  // in past sessions sit unloaded — listGraphs() returns only the
-  // default + whatever else has been explicitly loaded, so the App's
-  // engram picker is missing entries even though their .gai files
-  // exist. Scan the graphs/ directory and load each, skipping anything
-  // that fails to decrypt (the per-graph error is logged but doesn't
-  // abort the rest of startup — partial availability is better than
-  // total failure for one corrupt file).
-  await loadAllGraphsFromDisk(host, env.cortexDir, env.defaultGraph);
-
-  // ── Backfill default metadata for any loaded graph without an entry ────
-  //
-  // Real-world bug class: cortexes created before the `graphMetadata`
-  // feature shipped — OR where the very first `setGraphMetadata(...)`
-  // call silently failed during initial setup — leave the graph in a
-  // ghost state: loaded into memory, present on disk, but invisible in
-  // the App's engram picker (which reads from `settings.graphMetadata`).
-  //
-  // Until today (May 2026 incident with the user's `personal` engram)
-  // the only recovery was a manual settings.json edit. This backfill is
-  // a one-shot self-heal at startup: walk every loaded graph; if its
-  // metadata is missing, write a sensible default so subsequent boots
-  // never re-hit the problem. Idempotent — graphs that already have
-  // metadata are skipped, so this is safe to run every startup.
+  // Backfill metadata for the default graph before IPC starts — the engram
+  // picker reads graphMetadata keys, so the default engram must have an entry
+  // or it won't appear in the picker at unlock time. Idempotent: skips graphs
+  // that already have metadata. Secondary engrams are backfilled later in the
+  // background task once they finish loading.
   await backfillGraphMetadata(host);
+
+  // Background load of all other engrams — starts after IPC is up so
+  // broadcastRaw is available for progress events. The default engram is
+  // already loaded and fully usable; the picker gains entries as each
+  // additional graph finishes decrypting.
 
   // Filesystem auto-reingest. Off by default; honors the
   // `ai.autoReingestOnFileChange` flag in settings.json. We wire the
@@ -545,6 +574,14 @@ async function main(): Promise<void> {
     llm: () => (host.getSettings().ai.llmEnabled === true ? llm : null),
   });
   console.error(`[graphnosis-sidecar] IPC listening on ${ipcSocketPath}`);
+
+  // Fire background engram load — intentionally not awaited so the sidecar
+  // is immediately usable on the default engram. broadcastRaw is live here,
+  // so the UI receives incremental progress events as each graph finishes.
+  void (async () => {
+    await loadAllGraphsFromDisk(host, env.cortexDir, env.defaultGraph, broadcastRaw);
+    await backfillGraphMetadata(host);
+  })();
 
   await connectorManager.start();
   brainEngine.start();

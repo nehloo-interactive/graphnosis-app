@@ -65,18 +65,18 @@ impl SidecarHandle {
     }
 }
 
-pub async fn start(app: &AppHandle, cortex_dir: &Path, passphrase: &str) -> Result<SidecarHandle> {
-    start_inner(app, cortex_dir, passphrase, None).await
+pub async fn start(app: &AppHandle, cortex_dir: &Path, passphrase: &str, preferred_default_graph: Option<&str>) -> Result<SidecarHandle> {
+    start_inner(app, cortex_dir, passphrase, None, preferred_default_graph).await
 }
 
 /// Start the sidecar in recovery mode: the user has their 24-word BIP-39
 /// phrase but has forgotten the passphrase. The sidecar reads `recovery.enc`
 /// from the cortex dir and decrypts it with this phrase to recover the data key.
-pub async fn start_with_recovery(app: &AppHandle, cortex_dir: &Path, recovery_phrase: &str) -> Result<SidecarHandle> {
-    start_inner(app, cortex_dir, "", Some(recovery_phrase)).await
+pub async fn start_with_recovery(app: &AppHandle, cortex_dir: &Path, recovery_phrase: &str, preferred_default_graph: Option<&str>) -> Result<SidecarHandle> {
+    start_inner(app, cortex_dir, "", Some(recovery_phrase), preferred_default_graph).await
 }
 
-async fn start_inner(app: &AppHandle, cortex_dir: &Path, passphrase: &str, recovery_phrase: Option<&str>) -> Result<SidecarHandle> {
+async fn start_inner(app: &AppHandle, cortex_dir: &Path, passphrase: &str, recovery_phrase: Option<&str>, preferred_default_graph: Option<&str>) -> Result<SidecarHandle> {
     let socket_path = cortex_dir.join("sidecar.sock");
     // cortex-independent MCP listener socket (see mcp_socket_path) — the path
     // external clients bake into their config, stable across cortex switches.
@@ -105,8 +105,18 @@ async fn start_inner(app: &AppHandle, cortex_dir: &Path, passphrase: &str, recov
         // Fixed, cortex-independent path so a client configured once stays
         // connected across every cortex folder (see mcp_socket_path).
         .env("GRAPHNOSIS_MCP_SOCKET", &mcp_socket)
-        // Default graph; the App could later make this user-configurable.
-        .env("GRAPHNOSIS_DEFAULT_GRAPH", "personal");
+        // Default graph: prefer the user's last-active engram from localStorage
+        // (passed in by the unlock command) so the lock screen "Loading
+        // memories…" loads the engram the user actually wants to see, instead
+        // of always loading "personal" first and then swapping later. Falls
+        // back to "personal" when no preference is set (first run, fresh
+        // install). The sidecar's startup graceful-create only triggers on
+        // ENOENT, so passing a missing graphId would create it — guarded
+        // by validation upstream in unlock_cortex.
+        .env(
+            "GRAPHNOSIS_DEFAULT_GRAPH",
+            preferred_default_graph.unwrap_or("personal"),
+        );
     if !dyld_search_path.is_empty() {
         #[cfg(target_os = "macos")]
         cmd.env("DYLD_FALLBACK_LIBRARY_PATH", &dyld_search_path);
@@ -158,7 +168,7 @@ async fn start_inner(app: &AppHandle, cortex_dir: &Path, passphrase: &str, recov
                 // Emit recognisable startup milestones to the frontend so the
                 // lock screen can show progress instead of a spinning bar.
                 let status: Option<BootStatus> = if line.contains("cortex lock acquired") {
-                    Some(BootStatus { step: "lock", detail: "cortex secured" })
+                    Some(BootStatus { step: "lock", detail: "Cortex secured" })
                 } else if line.contains("local embeddings ready") {
                     Some(BootStatus { step: "embeddings", detail: "AI embeddings ready" })
                 } else if line.contains("WARNING: local embeddings unavailable") {
