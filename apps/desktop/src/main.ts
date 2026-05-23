@@ -1,3 +1,4 @@
+import QRCode from 'qrcode';
 import { invoke } from '@tauri-apps/api/core';
 import { getVersion } from '@tauri-apps/api/app';
 import { listen } from '@tauri-apps/api/event';
@@ -9705,6 +9706,18 @@ function renderMobileStep2(): void {
   }
   const footerNote = $m<HTMLSpanElement>('mobile-footer-note');
   if (footerNote) footerNote.textContent = 'Changes take effect the next time the Cortex is unlocked.';
+
+  const qrImg = $m<HTMLImageElement>('mobile-qr-img');
+  if (qrImg) {
+    QRCode.toDataURL(url, { width: 200, margin: 2, color: { dark: '#000000', light: '#ffffff' } })
+      .then((dataUrl) => {
+        qrImg.src = dataUrl;
+        qrImg.classList.remove('hidden');
+      })
+      .catch(() => {
+        qrImg.classList.add('hidden');
+      });
+  }
 
   // VS Code / Copilot Chat config snippet. Always uses 127.0.0.1 — the
   // local bridge is always on loopback regardless of the mobile bind setting.
