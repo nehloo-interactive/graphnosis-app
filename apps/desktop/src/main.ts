@@ -148,23 +148,34 @@ interface AppSettings {
      *  priority routing block telling the AI to use Graphnosis as the
      *  default memory layer. Default true. */
     useAsDefaultMemory: boolean;
-    /** Cap on active node count above which the sidecar skips the
-     *  post-ingest cross-doc relink pass (entity Jaccard is O(N²)).
-     *  Default 5000. Set 0 to disable. Optional in the wire shape so
-     *  older clients can omit; the sidecar fills in the current value. */
     autoRelinkMaxNodes?: number;
-    /** When ON, the sidecar watches each file-backed source's disk path
-     *  and re-ingests automatically on save. Off by default; see the
-     *  Settings UI for the user-facing tradeoff. Optional on the wire
-     *  for the same forward-compat reason as autoRelinkMaxNodes. */
     autoReingestOnFileChange?: boolean;
-    /** Quiet period (ms): file must be unchanged this long before reingest fires.
-     *  Default 900 000 (15 min). Only relevant when autoReingestOnFileChange is on. */
     reingestQuietMs?: number;
-    /** SDK chunk-size preset: 'fine' / 'balanced' / 'coarse'. Default 'balanced'. */
     chunkSize?: 'fine' | 'balanced' | 'coarse';
-    /** SDK embed-batch preset: 'small' / 'medium' / 'large' / 'auto'. Default 'auto'. */
     embedBatch?: 'small' | 'medium' | 'large' | 'auto';
+    /** Opt-in session caps. All default false; off = no cap. */
+    sessionTokenCap?: number;
+    sessionTokenCapEnabled?: boolean;
+    sessionNodeCap?: number;
+    sessionNodeCapEnabled?: boolean;
+    sessionBreadthCap?: number;
+    sessionBreadthCapEnabled?: boolean;
+    /** Local LLM-assisted search. Both default false. UI greys out checkboxes when LLM not ready. */
+    searchLlmSynthesize?: boolean;
+    searchLlmRerank?: boolean;
+    /** Restrict Local LLM to in-app search only (disables develop/predict/insights/llm_query MCP tools). */
+    searchLlmOnly?: boolean;
+    /** How long a typed personal-tier consent is remembered. -1 = permanent. Default -1. */
+    consentIntervalPersonalMs?: number;
+    /** How long a typed sensitive-tier consent is remembered. 0 = every call. Default 3 600 000. */
+    consentIntervalSensitiveMs?: number;
+    /** Per AI client type: 'chat' (default) or 'agent' (forces per-call consent). */
+    clientTypes?: Record<string, 'chat' | 'agent'>;
+    /** Active consent records — populated by confirm_data_access MCP tool. */
+    dataAccessConsents?: Array<{
+      consentId: string; grantedAt: number; expiresAt: number;
+      withdrawnAt?: number; clientName: string; tier: string; windowMs: number;
+    }>;
   };
   graphMetadata?: Record<string, GraphMetadata>;
   brain?: {
@@ -996,7 +1007,7 @@ function render(status: StatusSnapshot): void {
     void refreshConnectorsList();
     startMcpPolling();
     void refreshBrainState();
-    void refreshLlmStatus();
+    void refreshLlmStatus().then(() => void loadSearchLlmPreferences().then(syncSearchLlmCheckboxes));
     // Initialize clipboard capture from persisted settings.
     void (async () => {
       try {
@@ -1057,14 +1068,26 @@ function render(status: StatusSnapshot): void {
  * loaded-graphs metadata, falling back to the raw graphId.
  */
 function refreshActiveEngramLabel(): void {
-  if (!els.activeEngramLabel) return;
   const id = atlasActiveGraph;
   if (!id) {
-    els.activeEngramLabel.textContent = '—';
+    if (els.activeEngramLabel) els.activeEngramLabel.textContent = '—';
+    updateSensitivityBadge(null);
     return;
   }
   const meta = loadedGraphs.find((g) => g.graphId === id);
-  els.activeEngramLabel.textContent = meta?.metadata.displayName ?? id;
+  if (els.activeEngramLabel) els.activeEngramLabel.textContent = meta?.metadata.displayName ?? id;
+  updateSensitivityBadge(meta?.metadata.sensitivityTier ?? 'personal');
+}
+
+function updateSensitivityBadge(tier: 'public' | 'personal' | 'sensitive' | null): void {
+  const badge = document.getElementById('sensitivity-badge') as HTMLSpanElement | null;
+  if (!badge) return;
+  if (!tier) { badge.style.display = 'none'; return; }
+  const labels: Record<string, string> = { public: 'PUBLIC', personal: 'PERSONAL', sensitive: 'SENSITIVE' };
+  badge.textContent = labels[tier] ?? tier.toUpperCase();
+  badge.dataset.tier = tier;
+  badge.style.display = 'inline-flex';
+  badge.title = `Sensitivity tier: ${tier}. Click to change tier or set consent interval.`;
 }
 
 /** Rebuild the topbar engram <select> options from loadedGraphs (sorted A-Z).
@@ -1363,8 +1386,10 @@ async function fetchMcpStatus(): Promise<void> {
   try {
     const r = (await invoke('mcp_status')) as { connections: McpConnection[] };
     renderMcpStatus(r.connections);
+    // First-connect detection: show agent-type modal for any new AI client.
+    checkFirstConnectClients([...liveMcpClients]);
   } catch (e) {
-    // Cortex was locked or sidecar gone — show a quiet idle state rather than
+    // cortex was locked or sidecar gone — show a quiet idle state rather than
     // spamming the error banner.
     els.gMcpList.innerHTML = `<p class="mcp-empty">MCP status unavailable: ${escape(String(e))}</p>`;
   }
@@ -1436,7 +1461,7 @@ async function fetchPendingCorrections(): Promise<void> {
       renderDeck();
     }
   } catch {
-    // Cortex locked / sidecar gone — clear pending state silently.
+    // cortex locked / sidecar gone — clear pending state silently.
     graphnosisPendingDiffs = [];
     updatePendingBadge(0);
   }
@@ -1885,7 +1910,7 @@ els.btnPick.addEventListener('click', async () => {
 // passphrase, run the normal unlock.
 async function runBiometricUnlock(): Promise<void> {
   if (!els.cortexDir.value.trim()) {
-    showError('Choose a Graphnosis Cortex folder first.');
+    showError('Choose a Graphnosis cortex folder first.');
     return;
   }
   showError(null);
@@ -1926,11 +1951,11 @@ els.btnUnlock.addEventListener('click', async () => {
   // Client-side guards. Sidecar would also reject these, but failing fast in
   // the UI is friendlier than a 30s wait for the timeout error.
   if (!els.cortexDir.value.trim()) {
-    showError('Choose a Graphnosis Cortex folder first.');
+    showError('Choose a Graphnosis cortex folder first.');
     return;
   }
   if (!els.passphrase.value) {
-    showError('Enter your Cortex passphrase.');
+    showError('Enter your cortex passphrase.');
     return;
   }
   await attemptUnlock();
@@ -1973,8 +1998,8 @@ async function attemptUnlock(): Promise<void> {
     const msg = String(e);
     // First-run friendly: if the cortex folder doesn't exist, don't dead-
     // end — offer to create it on the spot. The Rust error has the form
-    // "Cortex folder does not exist: <path>"; we parse and confirm.
-    const missingPrefix = 'Cortex folder does not exist:';
+    // "cortex folder does not exist: <path>"; we parse and confirm.
+    const missingPrefix = 'cortex folder does not exist:';
     const lacksPrefix = msg.indexOf(missingPrefix);
     if (lacksPrefix !== -1) {
       const path = msg.slice(lacksPrefix + missingPrefix.length).trim();
@@ -3103,7 +3128,7 @@ els.btnRecoveryApply.addEventListener('click', async () => {
     subtitle:
       "About to re-ingest " + sourceIds.length + " source" +
       (sourceIds.length === 1 ? '' : 's') +
-      ". A snapshot lets you roll back the entire Cortex if recovery " +
+      ". A snapshot lets you roll back the entire cortex if recovery " +
       "produces an unexpected state. Recommended for large recoveries.",
   });
 
@@ -3315,7 +3340,7 @@ function showSnapshotOffer(opts?: SnapshotOfferOptions): Promise<boolean> {
     // Restore default subtitle on every open in case a previous caller
     // customized it; if the caller wants a custom subtitle they pass one.
     const defaultSubtitle =
-      "Pin the current state of your Cortex before ingesting. If this file " +
+      "Pin the current state of your cortex before ingesting. If this file " +
       "changes something you didn't expect, you can restore from the snapshot.";
     if (subtitle) subtitle.textContent = opts?.subtitle ?? defaultSubtitle;
 
@@ -3461,7 +3486,7 @@ function openGraphWizard(): void {
   gwSelected = null;
   els.gwName.value = '';
   els.gwId.value = '';
-  els.gwNote.innerHTML = '🔒 <strong>Stays on your machine.</strong> Your engram is stored only in your local Cortex folder — never uploaded or synced. When you use Graphnosis with an AI client, relevant memories are shared with that AI to enrich your conversations. Nothing else leaves your device. <button id="gw-gh-link" style="background:none;border:none;padding:0;color:inherit;opacity:0.6;font-size:inherit;cursor:pointer;white-space:nowrap;text-decoration:underline;">View source on GitHub ↗</button>';
+  els.gwNote.innerHTML = '🔒 <strong>Stays on your machine.</strong> Your engram is stored only in your local cortex folder — never uploaded or synced. When you use Graphnosis with an AI client, relevant memories are shared with that AI to enrich your conversations. Nothing else leaves your device. <button id="gw-gh-link" style="background:none;border:none;padding:0;color:inherit;opacity:0.6;font-size:inherit;cursor:pointer;white-space:nowrap;text-decoration:underline;">View source on GitHub ↗</button>';
   document.getElementById('gw-gh-link')?.addEventListener('click', () => {
     void invoke('plugin:opener|open_url', { url: 'https://github.com/nehloo-interactive/graphnosis-app' });
   });
@@ -4189,7 +4214,7 @@ function renderDeck(): void {
       els.gDeckCard.innerHTML = `
         <div class="g-deck-onboarding">
           <div class="g-deck-onboarding-top">
-            <p class="g-deck-onboarding-tagline">Your local encrypted memory, indexed for deterministic recall.</p>
+            <p class="g-deck-onboarding-tagline">Your local encrypted memory, indexed for deterministic recall — auditable.</p>
             <div class="g-deck-onboarding-steps">
               <div class="g-deck-onboarding-step">
                 <span class="g-deck-onboarding-num">1</span>
@@ -4954,10 +4979,11 @@ function applyGraphnosisFilter(): void {
   const qRaw = els.gSearch.value.trim();
   const q = qRaw.toLowerCase();
 
-  // No query → show dashboard, hide results.
+  // No query → show dashboard, hide results, drop any stale synthesis box.
   if (q.length === 0) {
     els.gSearchResults.classList.add('hidden');
     els.gDashboard.classList.remove('hidden');
+    clearSearchSynthesis();
     renderDashboard();
     return;
   }
@@ -4994,6 +5020,8 @@ function applyGraphnosisFilter(): void {
   // mount more as the user scrolls. Keeps initial paint cheap even on huge
   // result sets, while removing the old "Show X more" cliff.
   renderListWithInfiniteScroll(filtered);
+  // Phase 2: opt-in LLM enhancements (synthesis + rerank) — no-ops if disabled.
+  void applyLlmSearchEnhancements(qRaw, filtered);
 }
 
 // ── Infinite-scroll list renderer ─────────────────────────────────────
@@ -5140,9 +5168,11 @@ async function runSemanticFallback(query: string, graphId: string): Promise<void
       `${rows.length} closest match${rows.length === 1 ? '' : 'es'} by meaning — no exact text match for "${query}"`;
     if (rows.length === 0) {
       els.gList.innerHTML = '<p class="subtitle">Nothing close enough. Try different words.</p>';
+      clearSearchSynthesis();
       return;
     }
     renderListWithInfiniteScroll(rows);
+    void applyLlmSearchEnhancements(query, rows);
   } catch (e) {
     if (myToken !== graphnosisSemanticToken) return;
     els.gList.innerHTML = `<p class="subtitle">Semantic search failed: ${escape(String(e))}</p>`;
@@ -8559,39 +8589,55 @@ let llmConfirmPending = false;
  */
 function renderLlmEnableBlock(reachable: boolean, hasModels: boolean, enabled: boolean): void {
   const host = els.llmEnableBlock;
-  if (!reachable || !hasModels) {
-    host.innerHTML = '<p class="brain-subtitle">Local LLM is <strong>off</strong>. '
-      + 'Finish the Ollama setup below, then you can turn it on here.</p>';
-  } else if (enabled) {
-    host.innerHTML = '<p class="brain-subtitle">Status: <strong>ON</strong> — Graphnosis is '
-      + 'using your local LLM for insights, new-connection forming, and the mixed / '
-      + 'non-deterministic tools.</p>'
-      + '<button data-llm="disable" class="btn-sm">Turn off</button>';
-  } else if (llmConfirmPending) {
-    host.innerHTML = '<p class="brain-subtitle"><strong>The local LLM is non-deterministic</strong> '
-      + '— the same memory can yield different results across runs. It runs entirely on your '
-      + 'device; nothing is ever sent to the cloud. Turn it on?</p>'
-      + '<div class="lb-goal-form-actions">'
-      + '<button data-llm="cancel" class="btn-sm">Cancel</button>'
-      + '<button data-llm="confirm" class="btn-sm primary">Enable Local LLM</button>'
-      + '</div>';
-  } else {
-    host.innerHTML = '<p class="brain-subtitle">Ollama is set up, but the local LLM is '
-      + '<strong>off</strong> — Graphnosis won’t route any memory through it until you turn '
-      + 'it on.</p>'
-      + '<button data-llm="enable" class="btn-sm">Enable Local LLM…</button>';
-  }
-  const on = (action: string, fn: () => void): void => {
+  const setupDone = reachable && hasModels;
+
+  // Checkbox-style master switch. When Ollama setup isn't done the checkbox is
+  // disabled + greyed out. Turning it ON for the first time (or after a Cancel)
+  // shows an inline confirmation; subsequent toggles are one-click via the
+  // checkbox itself. The non-deterministic warning lives in the helper text.
+  const opacityStyle = setupDone ? '' : 'style="opacity: 0.55;"';
+  const subtitle = !setupDone
+    ? 'Finish the Ollama setup below, then this becomes available.'
+    : enabled
+      ? 'On — Graphnosis is using your local LLM for non-deterministic features and (opt-in) search assistance.'
+      : llmConfirmPending
+        ? '<strong>The local LLM is non-deterministic</strong> — same memory can yield different results across runs. Runs entirely on your device.'
+        : 'Off — Graphnosis won’t route any memory through your local LLM until you switch it on.';
+
+  host.innerHTML =
+    `<label class="row" ${opacityStyle} style="display: flex; align-items: center; gap: 10px; font-size: 14px; cursor: ${setupDone ? 'pointer' : 'not-allowed'};">`
+    + `<input type="checkbox" data-llm="toggle" ${enabled ? 'checked' : ''} ${setupDone ? '' : 'disabled'} />`
+    + `<strong>Local LLM</strong>`
+    + `<span style="font-weight: 400; color: var(--fg-dim);">${enabled ? 'on' : 'off'}</span>`
+    + `</label>`
+    + `<p class="brain-subtitle" style="margin-top: 6px;">${subtitle}</p>`
+    + (llmConfirmPending
+      ? '<div class="lb-goal-form-actions" style="margin-top: 8px;">'
+        + '<button data-llm="cancel" class="btn-sm">Cancel</button>'
+        + '<button data-llm="confirm" class="btn-sm primary">Enable Local LLM</button>'
+        + '</div>'
+      : '');
+
+  const on = (action: string, fn: (ev: Event) => void): void => {
     host.querySelector(`[data-llm="${action}"]`)?.addEventListener('click', fn);
   };
-  on('enable', () => { llmConfirmPending = true; renderLlmEnableBlock(reachable, hasModels, enabled); });
+  on('toggle', (ev) => {
+    const cb = ev.currentTarget as HTMLInputElement;
+    if (!setupDone) { cb.checked = false; return; }
+    if (cb.checked && !enabled) {
+      // First-time turn-on requires confirmation. Bounce the checkbox back
+      // until they confirm.
+      cb.checked = false;
+      llmConfirmPending = true;
+      renderLlmEnableBlock(reachable, hasModels, enabled);
+    } else if (!cb.checked && enabled) {
+      void ipcCall('llm:setEnabled', { enabled: false }).then(() => { void refreshLlmStatus(); });
+    }
+  });
   on('cancel', () => { llmConfirmPending = false; renderLlmEnableBlock(reachable, hasModels, enabled); });
   on('confirm', () => {
     llmConfirmPending = false;
     void ipcCall('llm:setEnabled', { enabled: true }).then(() => { void refreshLlmStatus(); });
-  });
-  on('disable', () => {
-    void ipcCall('llm:setEnabled', { enabled: false }).then(() => { void refreshLlmStatus(); });
   });
 }
 
@@ -8610,6 +8656,7 @@ async function refreshLlmStatus(): Promise<void> {
       // LLM brain features need Ollama up, a model installed, AND the user's
       // explicit opt-in — detection alone never turns the local LLM on.
       brainLlmReady = hasModels && status.enabled;
+      syncSearchLlmCheckboxes();
       // Active-model row is only useful once at least one model is installed.
       els.ollamaModelRow.style.display = hasModels ? 'flex' : 'none';
       els.ollamaConnectedHelp.innerHTML = hasModels
@@ -8639,6 +8686,7 @@ async function refreshLlmStatus(): Promise<void> {
       els.ollamaConnectedHelp.style.display = 'none';
       els.ollamaNotInstalled.style.display = '';
       brainLlmReady = false;
+      syncSearchLlmCheckboxes();
       renderLlmEnableBlock(false, false, status.enabled);
     }
     renderRailGetConnected();
@@ -9174,6 +9222,45 @@ void listen<CorrectionProposedPayload>('graphnosis://correction-proposed', (ev) 
   });
 });
 
+// ── MCP session budget alerts ─────────────────────────────────────────────
+// Fires when an AI client is approaching or has exceeded the per-session
+// data cap. The budget resets when the AI starts a new conversation.
+
+void listen<{ tokensServed: number; nodesServed: number; sessionTokenCap: number; sessionNodeCap: number }>(
+  'graphnosis://mcp-session-budget-warning',
+  (ev) => {
+    if (!ev.payload) return;
+    const { tokensServed, sessionTokenCap } = ev.payload;
+    const pct = Math.round((tokensServed / sessionTokenCap) * 100);
+    const toastId = addIngestToast('AI memory access — high usage', `${pct}% of session budget used`);
+    finishIngestToast(toastId, 'success', `${pct}% of session data budget used — AI is accessing a lot of your memory this conversation`);
+  },
+);
+
+void listen<{ tokensServed: number; nodesServed: number; sessionTokenCap: number; sessionNodeCap: number }>(
+  'graphnosis://mcp-session-budget-exceeded',
+  (ev) => {
+    if (!ev.payload) return;
+    const { tokensServed, nodesServed, sessionTokenCap, sessionNodeCap } = ev.payload;
+    const toastId = addIngestToast('AI memory export blocked', `${tokensServed.toLocaleString()}/${sessionTokenCap.toLocaleString()} tokens · ${nodesServed}/${sessionNodeCap} nodes`);
+    finishIngestToast(toastId, 'error', 'Session data budget exceeded — bulk export prevented. Start a new conversation to reset.');
+    void notifyIfBackground({
+      title: 'Graphnosis — AI data export blocked',
+      body: `An AI client reached the session memory budget (${tokensServed.toLocaleString()} tokens). Bulk export prevented.`,
+    });
+  },
+);
+
+void listen<{ uniqueEngramsAccessed: number; tokensServed: number; nodesServed: number }>(
+  'graphnosis://mcp-bulk-access-warning',
+  (ev) => {
+    if (!ev.payload) return;
+    const { uniqueEngramsAccessed, tokensServed } = ev.payload;
+    const toastId = addIngestToast('AI memory breadth alert', `${uniqueEngramsAccessed} engrams · ${tokensServed.toLocaleString()} tokens this session`);
+    finishIngestToast(toastId, 'success', `An AI client accessed ${uniqueEngramsAccessed} different engrams this session — possible enumeration`);
+  },
+);
+
 // ── First-run guided tour ─────────────────────────────────────────────────
 //
 // Shows once (keyed on localStorage flag 'graphnosis_tour_done').
@@ -9182,23 +9269,23 @@ void listen<CorrectionProposedPayload>('graphnosis://correction-proposed', (ev) 
 const TOUR_STEPS: Array<{ title: string; body: string; connectArea?: boolean }> = [
   {
     title: 'Welcome to Graphnosis',
-    body: 'Your local encrypted memory, indexed for deterministic recall.\nThis quick tour takes about a minute.',
+    body: 'Your local encrypted memory, indexed for deterministic recall — auditable.\nThis quick tour takes about a minute.',
   },
   {
-    title: 'Your Cortex: a local, encrypted memory',
-    body: 'Choose a folder on your Mac. That\'s your Cortex — an encrypted memory storage, like the human brain\'s cortex, that stays entirely on your device. Never uploaded. Never shared.\n\nGraphnosis will give you a 24-word recovery phrase the first time you unlock it. Write it down — that\'s the only fallback if you ever forget your passphrase.',
+    title: 'Your cortex: a local, encrypted memory',
+    body: 'Choose a folder on your Mac. That\'s your cortex — an encrypted memory storage, like the human brain\'s cortex, that stays entirely on your device. Never uploaded. Never shared.\n\nGraphnosis will give you a 24-word recovery phrase the first time you unlock it. Write it down — that\'s the only fallback if you ever forget your passphrase.',
   },
   {
     title: 'Add your memories privately — and index them',
-    body: 'Add files, websites, or clips to your Cortex. Graphnosis extracts meaningful nodes — ideas, facts, references — and indexes them for your AI, like the human brain\'s hippocampus.\n\nWant your Cortex to grow on its own? Settings → Connectors lets you wire in RSS feeds, GitHub repos, Slack stars, Trello boards, Linear issues, or any webhook. Bring your own credentials — Graphnosis is just the receiver — and new items flow in on a 15-minute schedule, encrypted at rest.\n\n(Yes, that\'s why the logo is a seahorse. "Hippocampus" is Greek for seahorse — the brain region was named after the shape in 1564.)',
+    body: 'Add files, websites, or clips to your cortex. Graphnosis extracts meaningful nodes — ideas, facts, references — and indexes them for your AI, like the human brain\'s hippocampus.\n\nWant your cortex to grow on its own? Settings → Connectors lets you wire in RSS feeds, GitHub repos, Slack stars, Trello boards, Linear issues, or any webhook. Bring your own credentials — Graphnosis is just the receiver — and new items flow in on a 15-minute schedule, encrypted at rest.\n\n(Yes, that\'s why the logo is a seahorse. "Hippocampus" is Greek for seahorse — the brain region was named after the shape in 1564.)',
   },
   {
     title: 'Your AI now remembers you',
-    body: 'Connect any MCP-aware AI (Claude, Cursor, and more). When you start a conversation, Graphnosis retrieves and attaches the most relevant memories, like the human brain\'s prefrontal cortex. The AI answers as if it already knew you.\n\nThe bridge between your AI and your Cortex is the synapse — Graphnosis\' background process, named after the connections that pass signals between neurons in the brain. It only fires when your Cortex is unlocked and the app is running.\n\nBecause your files are already indexed inside Graphnosis, your AI doesn\'t have to re-parse the same PDFs, notes, or spreadsheets every prompt. Faster, more consistent, less token cost. Keep the app running with your Cortex unlocked while you use your AI client — closing the app means closing the memory.',
+    body: 'Connect any MCP-aware AI (Claude, Cursor, and more). When you start a conversation, Graphnosis retrieves and attaches the most relevant memories, like the human brain\'s prefrontal cortex. The AI answers as if it already knew you.\n\nThe bridge between your AI and your cortex is the synapse — Graphnosis\' background process, named after the connections that pass signals between neurons in the brain. It only fires when your cortex is unlocked and the app is running.\n\nBecause your files are already indexed inside Graphnosis, your AI doesn\'t have to re-parse the same PDFs, notes, or spreadsheets every prompt. Faster, more consistent, less token cost. Keep the app running with your cortex unlocked while you use your AI client — closing the app means closing the memory.',
   },
   {
     title: 'Your local, encrypted, private memory',
-    body: 'Your memory never leaves your device automatically. When your AI does recall something from your Graphnosis Cortex, only the relevant excerpt travels to that AI service — nothing more. Your Cortex files are passphrase-protected, so even if you ever choose to share or move them, they remain yours alone.',
+    body: 'Your memory never leaves your device automatically. When your AI does recall something from your Graphnosis cortex, only the relevant excerpt travels to that AI service — nothing more. Your cortex files are passphrase-protected, so even if you ever choose to share or move them, they remain yours alone.',
   },
   {
     title: 'Your local encrypted memory.\nIndexed for every AI tool.',
@@ -9413,7 +9500,7 @@ function showSetNewPassphraseModal(): void {
     // is atomic + reversible (the recovery phrase still works on the new
     // passphrase since it wraps the same dataKey), but a snapshot adds
     // defense against an unexpected outcome — and master.enc is the file
-    // the entire Cortex depends on for unlocking, so paranoia is cheap.
+    // the entire cortex depends on for unlocking, so paranoia is cheap.
     saveBtn.disabled = true;
     skipBtn.disabled = true;
     statusEl.textContent = 'Offering snapshot…';
@@ -9483,7 +9570,7 @@ void listen('graphnosis://unlocked-via-recovery', () => {
     const cortexDir = cortexDirInput?.value.trim() ?? '';
     const phrase = phraseInput?.value.trim() ?? '';
     if (!cortexDir) {
-      if (unlockStatus) unlockStatus.textContent = 'Choose a Cortex folder first.';
+      if (unlockStatus) unlockStatus.textContent = 'Choose a cortex folder first.';
       return;
     }
     const wordCount = phrase.split(/\s+/).filter(Boolean).length;
@@ -9705,7 +9792,7 @@ function renderMobileStep2(): void {
     tokEl.setAttribute('data-token', info.token);
   }
   const footerNote = $m<HTMLSpanElement>('mobile-footer-note');
-  if (footerNote) footerNote.textContent = 'Changes take effect the next time the Cortex is unlocked.';
+  if (footerNote) footerNote.textContent = 'Changes take effect the next time the cortex is unlocked.';
 
   const qrImg = $m<HTMLImageElement>('mobile-qr-img');
   if (qrImg) {
@@ -10683,5 +10770,886 @@ void (async () => {
       void getCurrentWindow().startDragging();
     });
   }
+}
+
+// ── Local LLM-assisted search (Phase 2) ──────────────────────────────────
+//
+// Two checkboxes inline with the search input let the user opt in to LLM
+// synthesis (paragraph answer with citations) and/or LLM reranking. Both
+// are greyed out when the Local LLM isn't ready. Toggling persists the
+// preference to settings and re-runs the active search instantly.
+
+let searchLlmSynthesizeEnabled = false;
+let searchLlmRerankEnabled = false;
+
+function syncSearchLlmCheckboxes(): void {
+  // DOM-only sync. The in-memory flags survive an LLM-off state so the user's
+  // preference is preserved when the LLM comes back — `loadSearchLlmPreferences`
+  // is the single writer for those flags.
+  const synth = document.getElementById('g-search-synth') as HTMLInputElement | null;
+  const rerank = document.getElementById('g-search-rerank') as HTMLInputElement | null;
+  const synthWrap = document.getElementById('g-search-synth-wrap');
+  const rerankWrap = document.getElementById('g-search-rerank-wrap');
+  if (!synth || !rerank) return;
+  if (brainLlmReady) {
+    synth.disabled = false;
+    rerank.disabled = false;
+    synth.checked = searchLlmSynthesizeEnabled;
+    rerank.checked = searchLlmRerankEnabled;
+    if (synthWrap) synthWrap.title = 'Use Local LLM to write a 1-paragraph answer with citations.';
+    if (rerankWrap) rerankWrap.title = 'Use Local LLM to re-order results by judged relevance.';
+    if (synthWrap) synthWrap.style.opacity = '1';
+    if (rerankWrap) rerankWrap.style.opacity = '1';
+  } else {
+    synth.disabled = true;
+    rerank.disabled = true;
+    synth.checked = false;
+    rerank.checked = false;
+    const reason = 'Local LLM is not ready. Enable in Settings → AI.';
+    if (synthWrap) synthWrap.title = reason;
+    if (rerankWrap) rerankWrap.title = reason;
+    if (synthWrap) synthWrap.style.opacity = '0.5';
+    if (rerankWrap) rerankWrap.style.opacity = '0.5';
+  }
+}
+
+async function loadSearchLlmPreferences(): Promise<void> {
+  try {
+    const s = (await invoke('get_settings')) as AppSettings;
+    searchLlmSynthesizeEnabled = s.ai?.searchLlmSynthesize === true;
+    searchLlmRerankEnabled = s.ai?.searchLlmRerank === true;
+    const synth = document.getElementById('g-search-synth') as HTMLInputElement | null;
+    const rerank = document.getElementById('g-search-rerank') as HTMLInputElement | null;
+    if (synth) synth.checked = searchLlmSynthesizeEnabled && brainLlmReady;
+    if (rerank) rerank.checked = searchLlmRerankEnabled && brainLlmReady;
+  } catch { /* settings unavailable — defaults stay false */ }
+}
+
+async function persistSearchLlmPreference(field: 'searchLlmSynthesize' | 'searchLlmRerank', value: boolean): Promise<void> {
+  try {
+    const current = (await invoke('get_settings')) as AppSettings;
+    await invoke('update_settings', {
+      settings: { ...current, ai: { ...current.ai, [field]: value } },
+    });
+  } catch { /* non-fatal */ }
+}
+
+document.getElementById('g-search-synth')?.addEventListener('change', () => {
+  const cb = document.getElementById('g-search-synth') as HTMLInputElement;
+  searchLlmSynthesizeEnabled = cb.checked;
+  void persistSearchLlmPreference('searchLlmSynthesize', cb.checked);
+  if (els.gSearch.value.trim().length > 0) applyGraphnosisFilter();
+  else if (!cb.checked) clearSearchSynthesis();
+});
+document.getElementById('g-search-rerank')?.addEventListener('change', () => {
+  const cb = document.getElementById('g-search-rerank') as HTMLInputElement;
+  searchLlmRerankEnabled = cb.checked;
+  void persistSearchLlmPreference('searchLlmRerank', cb.checked);
+  if (els.gSearch.value.trim().length > 0) applyGraphnosisFilter();
+});
+
+function renderSearchSynthesis(_query: string, answer: string, citedNodeIds: string[]): void {
+  const container = document.getElementById('g-search-results');
+  if (!container) return;
+  let synthBox = document.getElementById('g-search-synth-box') as HTMLDivElement | null;
+  if (!synthBox) {
+    synthBox = document.createElement('div');
+    synthBox.id = 'g-search-synth-box';
+    synthBox.style.cssText =
+      'margin: 0 0 10px; padding: 12px 14px; border-radius: 8px; ' +
+      'background: color-mix(in oklab, var(--accent) 8%, var(--bg-elev)); ' +
+      'border: 1px solid color-mix(in oklab, var(--accent) 35%, var(--border)); ' +
+      'font-size: 14px; line-height: 1.5;';
+    container.insertBefore(synthBox, container.firstChild);
+  }
+  synthBox.innerHTML =
+    '<div style="font-size: 11px; font-weight: 700; color: var(--accent); letter-spacing: 0.06em; margin-bottom: 4px;">🤖 LOCAL AI SUMMARY</div>' +
+    `<div style="color: var(--fg);">${escape(answer)}</div>` +
+    `<div style="font-size: 11px; color: var(--fg-dim); margin-top: 6px;">Grounded in ${citedNodeIds.length} memory node(s). Generated locally by your Ollama model — never leaves your device.</div>`;
+}
+
+function clearSearchSynthesis(): void {
+  document.getElementById('g-search-synth-box')?.remove();
+}
+
+// Called from applyGraphnosisFilter / runSemanticFallback after the deterministic
+// list has been rendered. Reranks the list and/or synthesises an answer, both opt-in.
+async function applyLlmSearchEnhancements(query: string, hits: NodeRecord[]): Promise<void> {
+  if (!brainLlmReady || hits.length === 0) {
+    clearSearchSynthesis();
+    return;
+  }
+  const llmHits = hits.slice(0, 15).map((n) => ({
+    nodeId: n.id,
+    text: n.contentPreview,
+    sourceFile: n.sourceFile,
+    score: n.confidence,
+  }));
+
+  if (searchLlmRerankEnabled) {
+    try {
+      const reranked = await ipcCall<{ orderedNodeIds: string[] }>(
+        'ai.rerankSearchResults',
+        { query, hits: llmHits.map((h) => ({ nodeId: h.nodeId, text: h.text })) },
+      );
+      const order = new Map(reranked.orderedNodeIds.map((id, i) => [id, i]));
+      const reordered = [...hits].sort((a, b) => {
+        const ai = order.get(a.id) ?? 999;
+        const bi = order.get(b.id) ?? 999;
+        return ai - bi;
+      });
+      graphnosisListRows = reordered;
+      renderListWithInfiniteScroll(reordered);
+    } catch (e) {
+      console.error('[search-rerank] failed:', e);
+    }
+  }
+
+  if (searchLlmSynthesizeEnabled) {
+    try {
+      renderSearchSynthesis(query, 'Thinking with your local AI…', []);
+      const syn = await ipcCall<{ answer: string; citedNodeIds: string[] }>(
+        'ai.synthesizeSearchResults',
+        { query, hits: llmHits },
+      );
+      renderSearchSynthesis(query, syn.answer, syn.citedNodeIds);
+    } catch (e) {
+      console.error('[search-synth] failed:', e);
+      clearSearchSynthesis();
+    }
+  } else {
+    clearSearchSynthesis();
+  }
+}
+
+// ── Permanent-consent confirmation modal (A3, A10) ────────────────────────
+// Returns true if user confirms, false if they cancel. Used for global
+// interval-permanent and per-engram interval-permanent flows.
+function confirmPermanent(bodyText: string): Promise<boolean> {
+  return new Promise((resolve) => {
+    const modal = document.getElementById('permanent-confirm-modal');
+    const body = document.getElementById('permanent-confirm-body');
+    const okBtn = document.getElementById('btn-permanent-confirm-ok') as HTMLButtonElement | null;
+    const cancelBtn = document.getElementById('btn-permanent-confirm-cancel') as HTMLButtonElement | null;
+    if (!modal || !okBtn || !cancelBtn) { resolve(true); return; }
+    if (body) body.textContent = bodyText;
+    modal.classList.remove('hidden');
+    const cleanup = () => {
+      modal.classList.add('hidden');
+      okBtn.onclick = null;
+      cancelBtn.onclick = null;
+    };
+    okBtn.onclick = () => { cleanup(); resolve(true); };
+    cancelBtn.onclick = () => { cleanup(); resolve(false); };
+  });
+}
+
+// ── Copy-to-clipboard for consent phrases (A3) ────────────────────────────
+let clipboardWarningShown = false;
+async function copyPhraseToClipboard(tier: 'personal' | 'sensitive'): Promise<void> {
+  const phraseEl = document.getElementById(`consent-phrase-${tier}`);
+  const phrase = phraseEl?.textContent?.trim();
+  if (!phrase || phrase === '—') return;
+  if (!clipboardWarningShown) {
+    const ok = await confirmPermanent(
+      'Heads up: any app on this machine with clipboard access can read this phrase while it sits in the clipboard. ' +
+      'Type it directly into your AI conversation when possible. Continue?',
+    );
+    if (!ok) return;
+    clipboardWarningShown = true;
+  }
+  try {
+    await navigator.clipboard.writeText(phrase);
+    const btn = document.getElementById(`btn-copy-phrase-${tier}`) as HTMLButtonElement | null;
+    if (btn) {
+      btn.classList.add('copied');
+      const orig = btn.textContent;
+      btn.textContent = 'Copied';
+      setTimeout(() => { btn.classList.remove('copied'); if (btn) btn.textContent = orig; }, 1500);
+    }
+  } catch (e) {
+    showError(`Could not copy: ${e}`);
+  }
+}
+document.getElementById('btn-copy-phrase-personal')?.addEventListener('click', () => void copyPhraseToClipboard('personal'));
+document.getElementById('btn-copy-phrase-sensitive')?.addEventListener('click', () => void copyPhraseToClipboard('sensitive'));
+
+// ── Sensitivity badge popover (A10) ───────────────────────────────────────
+// Click the topbar badge → small inline popover anchored under it.
+// Lets the user change tier AND set a per-engram consent interval override.
+
+let spSelectedTier: 'public' | 'personal' | 'sensitive' = 'personal';
+
+function openSensitivityPopover(): void {
+  const popover = document.getElementById('sensitivity-popover') as HTMLDivElement | null;
+  const badge = document.getElementById('sensitivity-badge') as HTMLSpanElement | null;
+  const nameEl = document.getElementById('sp-engram-name');
+  if (!popover || !badge || !atlasActiveGraph) return;
+
+  // Position under the badge.
+  const rect = badge.getBoundingClientRect();
+  popover.style.top = `${rect.bottom + 6}px`;
+  popover.style.left = `${Math.max(8, Math.min(rect.left, window.innerWidth - 340))}px`;
+
+  const meta = loadedGraphs.find((g) => g.graphId === atlasActiveGraph)?.metadata;
+  if (nameEl) nameEl.textContent = meta?.displayName ?? atlasActiveGraph;
+
+  // Initial tier selection.
+  spSelectedTier = (meta?.sensitivityTier ?? 'personal') as 'public' | 'personal' | 'sensitive';
+  popover.querySelectorAll<HTMLButtonElement>('.sp-tier-opt').forEach((btn) => {
+    btn.setAttribute('aria-pressed', btn.dataset.tier === spSelectedTier ? 'true' : 'false');
+  });
+
+  // Initial interval selection.
+  const intervalSel = document.getElementById('sp-consent-interval') as HTMLSelectElement | null;
+  const currentInterval = (meta as { consentIntervalMs?: number } | undefined)?.consentIntervalMs;
+  if (intervalSel) {
+    intervalSel.value = currentInterval === undefined ? 'default' : String(currentInterval);
+    // If saved value is not in the dropdown list, fall back to 'default'.
+    if (intervalSel.selectedIndex === -1) intervalSel.value = 'default';
+  }
+
+  popover.classList.remove('hidden');
+}
+
+function closeSensitivityPopover(): void {
+  document.getElementById('sensitivity-popover')?.classList.add('hidden');
+}
+
+document.getElementById('sensitivity-badge')?.addEventListener('click', (e) => {
+  e.stopPropagation();
+  openSensitivityPopover();
+});
+
+// Tier-option clicks set spSelectedTier and update aria-pressed.
+document.querySelectorAll<HTMLButtonElement>('#sensitivity-popover .sp-tier-opt').forEach((btn) => {
+  btn.addEventListener('click', () => {
+    spSelectedTier = btn.dataset.tier as 'public' | 'personal' | 'sensitive';
+    btn.parentElement?.querySelectorAll<HTMLButtonElement>('.sp-tier-opt').forEach((b) => {
+      b.setAttribute('aria-pressed', b.dataset.tier === spSelectedTier ? 'true' : 'false');
+    });
+  });
+});
+
+// Cancel + save handlers.
+document.getElementById('btn-sp-cancel')?.addEventListener('click', () => closeSensitivityPopover());
+
+document.getElementById('btn-sp-save')?.addEventListener('click', async () => {
+  if (!atlasActiveGraph) { closeSensitivityPopover(); return; }
+  const meta = loadedGraphs.find((g) => g.graphId === atlasActiveGraph);
+  if (!meta) { closeSensitivityPopover(); return; }
+  const intervalSel = document.getElementById('sp-consent-interval') as HTMLSelectElement | null;
+  const intervalValRaw = intervalSel?.value ?? 'default';
+
+  // Permanent confirmation if user picked Permanent.
+  if (intervalValRaw === '-1') {
+    const ok = await confirmPermanent(
+      `"${meta.metadata.displayName}" will be accessible to AI clients without re-confirmation, ` +
+      'until you revoke. Revoke anytime in Settings → AI.',
+    );
+    if (!ok) return;
+  }
+
+  closeSensitivityPopover();
+
+  // Build the engram_set_config call. Only send changed fields.
+  const currentTier = meta.metadata.sensitivityTier ?? 'personal';
+  const currentInterval = (meta.metadata as { consentIntervalMs?: number }).consentIntervalMs;
+
+  const sendable: {
+    engramId: string;
+    tier?: string;
+    consentIntervalMs?: number;
+    clearConsentInterval?: boolean;
+  } = { engramId: atlasActiveGraph };
+
+  if (spSelectedTier !== currentTier) sendable.tier = spSelectedTier;
+
+  if (intervalValRaw === 'default') {
+    if (currentInterval !== undefined) sendable.clearConsentInterval = true;
+  } else {
+    const newMs = parseInt(intervalValRaw, 10);
+    if (newMs !== currentInterval) sendable.consentIntervalMs = newMs;
+  }
+
+  // Nothing to save.
+  if (sendable.tier === undefined && sendable.consentIntervalMs === undefined && !sendable.clearConsentInterval) {
+    return;
+  }
+
+  try {
+    await invoke('engram_set_config', sendable);
+    if (sendable.tier) (meta.metadata as { sensitivityTier?: string }).sensitivityTier = sendable.tier;
+    if (sendable.clearConsentInterval) {
+      delete (meta.metadata as { consentIntervalMs?: number }).consentIntervalMs;
+    } else if (sendable.consentIntervalMs !== undefined) {
+      (meta.metadata as { consentIntervalMs?: number }).consentIntervalMs = sendable.consentIntervalMs;
+    }
+    updateSensitivityBadge(spSelectedTier);
+  } catch (e) {
+    showError(`Could not save engram config: ${e}`);
+  }
+});
+
+// Close popover on outside click or Escape.
+document.addEventListener('click', (e) => {
+  const popover = document.getElementById('sensitivity-popover');
+  if (!popover || popover.classList.contains('hidden')) return;
+  const target = e.target as HTMLElement;
+  if (popover.contains(target) || target.id === 'sensitivity-badge') return;
+  closeSensitivityPopover();
+});
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') closeSensitivityPopover();
+});
+
+// ── Consent phrase panel ──────────────────────────────────────────────────
+
+let consentPhraseTimer: ReturnType<typeof setInterval> | null = null;
+
+async function refreshConsentPhrases(): Promise<void> {
+  const personalEl = document.getElementById('consent-phrase-personal') as HTMLSpanElement | null;
+  const sensitiveEl = document.getElementById('consent-phrase-sensitive') as HTMLSpanElement | null;
+  const errEl = document.getElementById('consent-phrase-error') as HTMLParagraphElement | null;
+  if (!personalEl && !sensitiveEl) return;
+  if (errEl) { errEl.style.display = 'none'; errEl.textContent = ''; }
+
+  try {
+    const [personal, sensitive] = await Promise.all([
+      invoke<{ phrase: string; expiresAt: number }>('get_consent_phrase', { tier: 'personal' }),
+      invoke<{ phrase: string; expiresAt: number }>('get_consent_phrase', { tier: 'sensitive' }),
+    ]);
+    if (personalEl) personalEl.textContent = personal.phrase;
+    if (sensitiveEl) sensitiveEl.textContent = sensitive.phrase;
+    updatePhraseCountdown('personal', personal.expiresAt);
+    updatePhraseCountdown('sensitive', sensitive.expiresAt);
+  } catch (e) {
+    const msg = String(e);
+    if (errEl) {
+      errEl.style.display = 'block';
+      errEl.textContent = msg.includes('not found') || msg.includes('unknown command')
+        ? 'Consent phrase command not registered — restart Graphnosis (pnpm dev:desktop) to load the new build.'
+        : `Could not load consent phrases: ${msg}`;
+    }
+  }
+}
+
+function updatePhraseCountdown(tier: 'personal' | 'sensitive', expiresAt: number): void {
+  const el = document.getElementById(`consent-phrase-${tier}-countdown`) as HTMLSpanElement | null;
+  if (!el) return;
+  const msLeft = expiresAt - Date.now();
+  if (msLeft <= 0) { el.textContent = 'Rotating…'; return; }
+  const hLeft = Math.floor(msLeft / 3_600_000);
+  const mLeft = Math.floor((msLeft % 3_600_000) / 60_000);
+  const sLeft = Math.floor((msLeft % 60_000) / 1_000);
+  if (hLeft > 0) el.textContent = `expires in ${hLeft}h ${mLeft}m`;
+  else if (mLeft > 0) el.textContent = `expires in ${mLeft}m ${sLeft}s`;
+  else el.textContent = `expires in ${sLeft}s`;
+}
+
+function startConsentPhraseTimer(): void {
+  stopConsentPhraseTimer();
+  consentPhraseTimer = setInterval(() => {
+    // Refresh countdown every second; re-fetch phrase on the minute boundary.
+    const pEl = document.getElementById('consent-phrase-personal') as HTMLSpanElement | null;
+    const sEl = document.getElementById('consent-phrase-sensitive') as HTMLSpanElement | null;
+    if (!pEl && !sEl) { stopConsentPhraseTimer(); return; }
+    void refreshConsentPhrases();
+  }, 30_000); // refresh every 30s so countdown stays roughly accurate
+}
+
+function stopConsentPhraseTimer(): void {
+  if (consentPhraseTimer !== null) { clearInterval(consentPhraseTimer); consentPhraseTimer = null; }
+}
+
+// ── Active consent records rendering ─────────────────────────────────────
+
+function formatConsentExpiry(record: { expiresAt: number; windowMs: number }): string {
+  if (record.windowMs === -1 || record.expiresAt >= Number.MAX_SAFE_INTEGER - 1) return 'permanent';
+  if (record.expiresAt <= Date.now()) return 'expired';
+  return `expires ${new Date(record.expiresAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`;
+}
+
+function renderActiveConsents(consents: AppSettings['ai']['dataAccessConsents']): void {
+  const container = document.getElementById('consent-active-list');
+  if (!container) return;
+  const active = (consents ?? []).filter(
+    (c) => !c.withdrawnAt && (c.windowMs === -1 || c.expiresAt > Date.now()),
+  );
+  if (active.length === 0) {
+    container.innerHTML = '<p class="subtitle" style="font-size:14px;">No active AI consents.</p>';
+    return;
+  }
+  const tierColors: Record<string, string> = {
+    personal: '#d4a004', sensitive: '#ef4444', public: '#22c55e',
+  };
+  container.innerHTML = `
+    <table class="consent-active-table">
+      <thead><tr><th>AI client</th><th>Tier</th><th>Expiry</th><th></th></tr></thead>
+      <tbody>
+        ${active.map((c) => `
+          <tr>
+            <td>${escape(c.clientName)}</td>
+            <td><span style="color:${tierColors[c.tier] ?? 'inherit'}; font-weight:600;">${escape(c.tier)}</span></td>
+            <td style="font-size:13px; color:var(--fg-dim);">${formatConsentExpiry(c)}</td>
+            <td><button class="btn-revoke-one" data-consent-id="${escape(c.consentId)}" data-client="${escape(c.clientName)}" data-tier="${escape(c.tier)}" style="font-size:12px; padding:2px 8px;">Revoke</button></td>
+          </tr>
+        `).join('')}
+      </tbody>
+    </table>`;
+
+  container.querySelectorAll<HTMLButtonElement>('.btn-revoke-one').forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      const clientName = btn.dataset.client ?? '';
+      const tier = btn.dataset.tier as 'personal' | 'sensitive';
+      btn.disabled = true;
+      try {
+        await invoke('revoke_ai_consents', { clientName, tier });
+        const s = (await invoke('get_settings')) as AppSettings;
+        renderActiveConsents(s.ai?.dataAccessConsents);
+      } catch (e) {
+        showError(`Could not revoke: ${e}`);
+      } finally {
+        btn.disabled = false;
+      }
+    });
+  });
+}
+
+// ── Settings modal — AI consent wiring ───────────────────────────────────
+
+function describeInterval(tier: 'personal' | 'sensitive', value: string, optionLabel: string): string {
+  if (value === '-1') return `AI clients can access ${tier} data without re-confirming — until you revoke.`;
+  if (value === '0')  return `Graphnosis will ask for a phrase before every ${tier}-tier recall.`;
+  return `Graphnosis will remember ${tier} consent for ${optionLabel.toLowerCase()}, then ask again.`;
+}
+
+function updateConsentIntervalHint(): void {
+  const selP = document.getElementById('consent-interval-personal') as HTMLSelectElement | null;
+  const selS = document.getElementById('consent-interval-sensitive') as HTMLSelectElement | null;
+  const hint = document.getElementById('consent-interval-hint');
+  if (!hint) return;
+  const lines: string[] = [];
+  if (selP) lines.push(describeInterval('personal', selP.value, selP.options[selP.selectedIndex]?.text ?? ''));
+  if (selS) lines.push(describeInterval('sensitive', selS.value, selS.options[selS.selectedIndex]?.text ?? ''));
+  hint.textContent = lines.join(' · ');
+}
+
+// Extend Settings open to load consent data.
+const _originalSettingsOpen = els.btnSettings.onclick;
+els.btnSettings.addEventListener('click', async () => {
+  // Phrases
+  void refreshConsentPhrases();
+  startConsentPhraseTimer();
+
+  // Interval selectors
+  try {
+    const s = (await invoke('get_settings')) as AppSettings;
+    const iPersonal = document.getElementById('consent-interval-personal') as HTMLSelectElement | null;
+    const iSensitive = document.getElementById('consent-interval-sensitive') as HTMLSelectElement | null;
+    if (iPersonal) {
+      iPersonal.value = String(s.ai?.consentIntervalPersonalMs ?? -1);
+    }
+    if (iSensitive) {
+      iSensitive.value = String(s.ai?.consentIntervalSensitiveMs ?? 3_600_000);
+    }
+    updateConsentIntervalHint();
+    renderActiveConsents(s.ai?.dataAccessConsents);
+
+    // Use Local LLM only for search — single checkbox.
+    const llmOnlyCb = document.getElementById('search-llm-only') as HTMLInputElement | null;
+    if (llmOnlyCb) llmOnlyCb.checked = s.ai?.searchLlmOnly === true;
+
+    // Session caps — load each checkbox + numeric value, sync disabled state.
+    const capRows: Array<[string, keyof NonNullable<AppSettings['ai']>, keyof NonNullable<AppSettings['ai']>, number]> = [
+      ['session-token-cap', 'sessionTokenCap', 'sessionTokenCapEnabled', 100_000],
+      ['session-node-cap', 'sessionNodeCap', 'sessionNodeCapEnabled', 500],
+      ['session-breadth-cap', 'sessionBreadthCap', 'sessionBreadthCapEnabled', 6],
+    ];
+    for (const [id, valKey, enabledKey, fallback] of capRows) {
+      const cb = document.getElementById(`${id}-enabled`) as HTMLInputElement | null;
+      const num = document.getElementById(id) as HTMLInputElement | null;
+      if (!cb || !num) continue;
+      const aiAny = (s.ai ?? {}) as Record<string, unknown>;
+      const enabled = aiAny[enabledKey] === true;
+      const val = typeof aiAny[valKey] === 'number' ? (aiAny[valKey] as number) : fallback;
+      cb.checked = enabled;
+      num.value = String(val);
+      num.disabled = !enabled;
+    }
+  } catch { /* settings unavailable — leave defaults */ }
+});
+
+// Session-cap checkboxes: enable/disable the paired number input.
+for (const id of ['session-token-cap', 'session-node-cap', 'session-breadth-cap']) {
+  const cb = document.getElementById(`${id}-enabled`) as HTMLInputElement | null;
+  const num = document.getElementById(id) as HTMLInputElement | null;
+  if (!cb || !num) continue;
+  cb.addEventListener('change', () => { num.disabled = !cb.checked; });
+}
+
+// Interval hint updates live as dropdown changes.
+// Picking "Permanent" requires a brief confirmation modal.
+for (const id of ['consent-interval-personal', 'consent-interval-sensitive']) {
+  const sel = document.getElementById(id) as HTMLSelectElement | null;
+  if (!sel) continue;
+  let previousValue = sel.value;
+  sel.addEventListener('change', async () => {
+    if (sel.value === '-1' && previousValue !== '-1') {
+      const tier = id.endsWith('personal') ? 'personal' : 'sensitive';
+      const ok = await confirmPermanent(
+        `AI clients will be able to access ${tier} memories without re-confirming, until you revoke. ` +
+        'Revoke anytime in Settings → AI.',
+      );
+      if (!ok) {
+        sel.value = previousValue;
+        return;
+      }
+    }
+    previousValue = sel.value;
+    updateConsentIntervalHint();
+  });
+}
+
+// Stop phrase timer when modal closes.
+els.btnSettingsCancel.addEventListener('click', () => { stopConsentPhraseTimer(); });
+
+// Extend Settings save to persist consent interval settings.
+const _origSave = els.btnSettingsSave.onclick;
+void _origSave; // reference to suppress unused-variable lint
+els.btnSettingsSave.addEventListener('click', async () => {
+  const iPersonal = document.getElementById('consent-interval-personal') as HTMLSelectElement | null;
+  const iSensitive = document.getElementById('consent-interval-sensitive') as HTMLSelectElement | null;
+  if (!iPersonal && !iSensitive) return;
+  stopConsentPhraseTimer();
+  try {
+    const current = (await invoke('get_settings')) as AppSettings;
+    const pVal = parseInt(iPersonal?.value ?? '-1', 10);
+    const sVal = parseInt(iSensitive?.value ?? '3600000', 10);
+
+    // Session caps — read checkbox + number from DOM.
+    const readCap = (id: string, fallback: number): { enabled: boolean; value: number } => {
+      const cb = document.getElementById(`${id}-enabled`) as HTMLInputElement | null;
+      const num = document.getElementById(id) as HTMLInputElement | null;
+      const enabled = !!cb?.checked;
+      const value = num ? (parseInt(num.value, 10) || fallback) : fallback;
+      return { enabled, value };
+    };
+    const tokenCap = readCap('session-token-cap', 100_000);
+    const nodeCap = readCap('session-node-cap', 500);
+    const breadthCap = readCap('session-breadth-cap', 6);
+
+    // Use Local LLM only for search — single checkbox.
+    const llmOnlyCb = document.getElementById('search-llm-only') as HTMLInputElement | null;
+    const searchLlmOnly = !!llmOnlyCb?.checked;
+
+    await invoke('update_settings', {
+      settings: {
+        ...current,
+        ai: {
+          ...current.ai,
+          consentIntervalPersonalMs: isNaN(pVal) ? -1 : pVal,
+          consentIntervalSensitiveMs: isNaN(sVal) ? 3_600_000 : sVal,
+          sessionTokenCapEnabled: tokenCap.enabled,
+          sessionTokenCap: tokenCap.value,
+          sessionNodeCapEnabled: nodeCap.enabled,
+          sessionNodeCap: nodeCap.value,
+          sessionBreadthCapEnabled: breadthCap.enabled,
+          sessionBreadthCap: breadthCap.value,
+          searchLlmOnly,
+        },
+      },
+    });
+  } catch { /* save failure is already handled by main save handler */ }
+});
+
+// Revoke all consents button.
+document.getElementById('btn-revoke-all-consents')?.addEventListener('click', async () => {
+  const btn = document.getElementById('btn-revoke-all-consents') as HTMLButtonElement;
+  btn.disabled = true;
+  try {
+    await invoke('revoke_ai_consents', {});
+    const s = (await invoke('get_settings')) as AppSettings;
+    renderActiveConsents(s.ai?.dataAccessConsents);
+  } catch (e) {
+    showError(`Could not revoke: ${e}`);
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+// View consent history — shows all records including expired/withdrawn.
+document.getElementById('btn-view-consent-history')?.addEventListener('click', async () => {
+  try {
+    const history = await ipcCall<{ records: AppSettings['ai']['dataAccessConsents'] }>('ai.getConsentHistory', {});
+    const records = history?.records ?? [];
+    const rows = records
+      .sort((a, b) => b.grantedAt - a.grantedAt)
+      .map((r) => {
+        const status = r.withdrawnAt ? 'revoked' : (r.windowMs === -1 || r.expiresAt > Date.now()) ? 'active' : 'expired';
+        const statusColor = status === 'active' ? 'var(--ok)' : status === 'revoked' ? 'var(--error)' : 'var(--fg-dim)';
+        return `<tr>
+          <td>${new Date(r.grantedAt).toLocaleString()}</td>
+          <td>${escape(r.clientName)}</td>
+          <td>${escape(r.tier)}</td>
+          <td style="color:${statusColor}; font-size:13px;">${status}</td>
+        </tr>`;
+      }).join('');
+    showQuarantineConfirm({
+      title: 'Consent history',
+      subtitle: `${records.length} record${records.length === 1 ? '' : 's'} — all time`,
+      warningHtml: records.length === 0
+        ? '<p class="subtitle">No consent records yet.</p>'
+        : `<table class="consent-active-table"><thead><tr><th>Granted</th><th>Client</th><th>Tier</th><th>Status</th></tr></thead><tbody>${rows}</tbody></table>`,
+      confirmPhrase: '',
+      confirmLabel: 'Close',
+      onConfirm: async () => {},
+    });
+  } catch (e) {
+    showError(`Could not load consent history: ${e}`);
+  }
+});
+
+// A8 — Export consent records as JSON (local backup / device transfer).
+document.getElementById('btn-export-consent-records')?.addEventListener('click', async () => {
+  try {
+    const history = await ipcCall<{ records: AppSettings['ai']['dataAccessConsents'] }>('ai.getConsentHistory', {});
+    const records = history?.records ?? [];
+    const payload = JSON.stringify({
+      exportedAt: new Date().toISOString(),
+      notice: 'These consent records are stored locally on your device. Nehloo has no access to them.',
+      records,
+    }, null, 2);
+    const blob = new Blob([payload], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `graphnosis-consent-records-${new Date().toISOString().slice(0, 10)}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+  } catch (e) {
+    showError(`Could not export consent records: ${e}`);
+  }
+});
+
+// ── Consent event listeners ───────────────────────────────────────────────
+
+void listen<{ clientName: string; tier: string; expiresAt: number }>(
+  'graphnosis://mcp-consent-granted',
+  (ev) => {
+    if (!ev.payload) return;
+    const { clientName, tier, expiresAt } = ev.payload;
+    const until = expiresAt >= Number.MAX_SAFE_INTEGER - 1
+      ? 'permanently'
+      : `until ${new Date(expiresAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`;
+    const toastId = addIngestToast(
+      `${escape(clientName)} granted ${escape(tier)} access`,
+      `Valid ${until}. Revoke in Settings → AI.`,
+    );
+    finishIngestToast(toastId, 'success');
+    // Refresh active consents table if settings modal is open.
+    void (async () => {
+      try {
+        const s = (await invoke('get_settings')) as AppSettings;
+        renderActiveConsents(s.ai?.dataAccessConsents);
+      } catch { /* ignore */ }
+    })();
+  },
+);
+
+void listen<{ clientName: string; tier: string }>(
+  'graphnosis://mcp-consent-lockout',
+  (ev) => {
+    if (!ev.payload) return;
+    const { clientName, tier } = ev.payload;
+    const toastId = addIngestToast(
+      `Too many failed attempts — ${escape(clientName)} / ${escape(tier)}`,
+      'Consent reset. Check Settings → AI to re-grant access.',
+    );
+    finishIngestToast(toastId, 'error');
+    void notifyIfBackground({
+      title: 'Graphnosis — consent lockout',
+      body: `Too many failed phrase attempts for ${clientName} (${tier}). Access revoked.`,
+    });
+  },
+);
+
+// Recall rate limit — fires when a client exceeds 10 recalls per 60s.
+void listen<{ recentCalls: number; windowMs: number; maxPerWindow: number; waitMs: number }>(
+  'graphnosis://mcp-recall-rate-limited',
+  (ev) => {
+    if (!ev.payload) return;
+    const { recentCalls, maxPerWindow, waitMs } = ev.payload;
+    const waitS = Math.ceil(waitMs / 1000);
+    const toastId = addIngestToast(
+      'Recall rate limit hit',
+      `${recentCalls}/${maxPerWindow} recalls in the last minute. Throttled for ${waitS}s.`,
+    );
+    finishIngestToast(toastId, 'error');
+  },
+);
+
+// Session replay blocker — fires when a near-duplicate query is detected.
+void listen<{ similarity: number; previousQuery: string; ageSeconds: number }>(
+  'graphnosis://mcp-session-replay-blocked',
+  (ev) => {
+    if (!ev.payload) return;
+    const { similarity, ageSeconds } = ev.payload;
+    const toastId = addIngestToast(
+      'Session replay blocked',
+      `Query was ${Math.round(similarity * 100)}% similar to one issued ${ageSeconds}s ago. Modify your query.`,
+    );
+    finishIngestToast(toastId, 'error');
+  },
+);
+
+// ── First-connect agent-type modal (A11) ──────────────────────────────────
+
+const FIRST_CONNECT_KEY = 'graphnosis:seenClients';
+
+function getSeenClients(): Set<string> {
+  try { return new Set(JSON.parse(localStorage.getItem(FIRST_CONNECT_KEY) ?? '[]') as string[]); }
+  catch { return new Set(); }
+}
+
+function markClientSeen(clientName: string): void {
+  const seen = getSeenClients();
+  seen.add(clientName);
+  localStorage.setItem(FIRST_CONNECT_KEY, JSON.stringify([...seen]));
+}
+
+let pendingFirstConnectClient: string | null = null;
+
+function showAgentTypeModal(clientName: string): void {
+  const modal = document.getElementById('agent-type-modal') as HTMLDivElement | null;
+  if (!modal) return;
+  pendingFirstConnectClient = clientName;
+  const title = document.getElementById('agent-type-modal-title');
+  const subtitle = document.getElementById('agent-type-modal-subtitle');
+  if (title) title.textContent = `${clientName} connected`;
+  if (subtitle) subtitle.textContent =
+    `Is ${clientName} a chat assistant you talk to directly, or an autonomous agent that runs on its own?`;
+  modal.classList.remove('hidden');
+  // B6 — first-connect informational toast about the consent phrase system.
+  // Fires once per new client alongside the agent-type modal so the user
+  // knows upfront that personal/sensitive memories need a phrase to unlock.
+  const toastId = addIngestToast(
+    'Memory access requires confirmation',
+    'Personal & sensitive memories need a timed phrase — see Settings → AI → Consent Phrases.',
+  );
+  window.setTimeout(() => removeIngestToast(toastId), 8_000);
+}
+
+async function applyClientType(clientName: string, clientType: 'chat' | 'agent'): Promise<void> {
+  markClientSeen(clientName);
+  const modal = document.getElementById('agent-type-modal');
+  modal?.classList.add('hidden');
+  pendingFirstConnectClient = null;
+  try {
+    const s = (await invoke('get_settings')) as AppSettings;
+    const existing = s.ai?.clientTypes ?? {};
+    await invoke('update_settings', {
+      settings: {
+        ...s,
+        ai: { ...s.ai, clientTypes: { ...existing, [clientName]: clientType } },
+      },
+    });
+    if (clientType === 'agent') {
+      const toastId = addIngestToast(
+        `${clientName} — autonomous agent mode`,
+        'Graphnosis will confirm access before every recall.',
+      );
+      finishIngestToast(toastId, 'success');
+    }
+  } catch { /* non-fatal */ }
+}
+
+document.getElementById('btn-agent-type-chat')?.addEventListener('click', () => {
+  if (pendingFirstConnectClient) void applyClientType(pendingFirstConnectClient, 'chat');
+});
+document.getElementById('btn-agent-type-agent')?.addEventListener('click', () => {
+  if (pendingFirstConnectClient) void applyClientType(pendingFirstConnectClient, 'agent');
+});
+document.getElementById('btn-agent-type-skip')?.addEventListener('click', () => {
+  if (pendingFirstConnectClient) markClientSeen(pendingFirstConnectClient);
+  document.getElementById('agent-type-modal')?.classList.add('hidden');
+  pendingFirstConnectClient = null;
+});
+
+// Show agent-type modal on first MCP client connect.
+// The MCP registry broadcasts client name via the status poll; check there.
+// Names we never want to prompt for: transient handshake states, internal
+// agents the user doesn't directly use, and our own identity.
+const FIRST_CONNECT_SKIP = new Set([
+  'Graphnosis',
+  'Unknown client',
+  'Claude Skills agent', // background per-server agent — not user-facing
+]);
+
+function checkFirstConnectClients(clients: string[]): void {
+  const seen = getSeenClients();
+  for (const name of clients) {
+    if (!name) continue;
+    if (FIRST_CONNECT_SKIP.has(name)) continue;
+    if (seen.has(name)) continue;
+    showAgentTypeModal(name);
+    break; // show one modal at a time
+  }
+}
+
+// First-connect detection is wired into fetchMcpStatus above.
+
+// ── Graph wizard — tier selector (A12) ───────────────────────────────────
+
+let gwTier: 'public' | 'personal' | 'sensitive' = 'personal';
+
+// Wire tier radio buttons in the graph wizard.
+document.querySelectorAll<HTMLInputElement>('input[name="gw-tier"]').forEach((radio) => {
+  radio.addEventListener('change', () => {
+    if (radio.checked) gwTier = radio.value as 'public' | 'personal' | 'sensitive';
+  });
+});
+
+// Override the create button handler to pass tier after creation.
+// We do this by patching the success path: after `create_graph_with_template`
+// succeeds, call `engram_set_config` to set the tier if non-default.
+// The original handler is at line ~3524 and we cannot easily intercept it,
+// so instead we listen for the newly created graph to appear in loadedGraphs
+// Reset gwTier when wizard opens.
+document.getElementById('btn-new-graph')?.addEventListener('click', () => {
+  gwTier = 'personal';
+  // Reset tier radio to personal.
+  const radio = document.querySelector<HTMLInputElement>('input[name="gw-tier"][value="personal"]');
+  if (radio) { radio.checked = true; }
+}, { capture: true }); // capture: true fires before the openGraphWizard click
+
+// After engram creation, apply the chosen tier (if non-default) by polling
+// loadedGraphs until the new engram appears, then calling engram_set_config.
+{
+  document.getElementById('btn-gw-create')?.addEventListener('click', () => {
+    // Record the graphId before creation so we can patch it after.
+    const pendingGraphId = document.getElementById('gw-id') instanceof HTMLInputElement
+      ? (document.getElementById('gw-id') as HTMLInputElement).value.trim()
+      : null;
+    const pendingTier = gwTier;
+    if (!pendingGraphId || pendingTier === 'personal') return; // personal is the default, no patch needed
+    // Poll until the graph appears in loadedGraphs, then set tier.
+    const maxAttempts = 20;
+    let attempts = 0;
+    const poll = setInterval(async () => {
+      attempts++;
+      const found = loadedGraphs.find((g) => g.graphId === pendingGraphId);
+      if (found || attempts >= maxAttempts) {
+        clearInterval(poll);
+        if (found) {
+          try {
+            await invoke('engram_set_config', { engramId: pendingGraphId, tier: pendingTier });
+            found.metadata.sensitivityTier = pendingTier;
+            updateSensitivityBadge(pendingTier);
+          } catch { /* non-fatal — tier defaults to personal */ }
+        }
+      }
+    }, 300);
+  });
 }
 
