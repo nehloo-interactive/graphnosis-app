@@ -9,7 +9,7 @@ Information changes. Something you ingested six months ago may now be outdated. 
 
 ## What a correction is
 
-A correction is a natural-language statement of what is wrong and what it should be. Graphnosis turns that statement into a **diff** — a precise, structured set of changes — and shows it to you. **Nothing is written until you approve the diff.** No AI model, local or cloud, can modify your Cortex without your explicit confirmation.
+A correction is a natural-language statement of what is wrong and what it should be. Graphnosis turns that statement into a **diff** — a precise, structured set of changes — and shows it to you. **Nothing is written until you approve the diff.** No AI model, local or cloud, can modify your cortex without your explicit confirmation.
 
 A correction is one of the few **correctness events** that can change a memory's standing (see [Indelibility & Determinism](/guides/indelibility-and-determinism/)). It does this safely: the original memory is **superseded**, not erased.
 

@@ -59,6 +59,25 @@ Every engram carries a sensitivity tier — **public**, **personal**, or
   you. Treat what you recall as possibly partial — don't assume you can see
   everything the user has stored.
 
+## Consent before recall
+
+For `personal` and `sensitive` engrams, Graphnosis enforces a time-limited
+consent phrase before data is served. Any tool that returns memory data —
+`recall`, `remind`, `recall_structured`, `recall_with_citations`,
+`compare_engrams`, `cross_search`, `llm_query`, and others — may trigger this
+gate. If a tool returns a "⚠️ GRAPHNOSIS CONSENT REQUIRED" notice:
+
+1. **Present it in full** — do not summarize, shorten, or paraphrase it.
+2. **Tell the user** to open the Graphnosis app → Settings → AI → Consent Phrases.
+3. **Wait for the user to type the phrase.** Do not suggest, guess, or autocomplete it.
+4. **Call `confirm_data_access`** with exactly what they typed and the tier.
+5. **Only after a successful response**, retry the original recall.
+
+If the user types SKIP, acknowledge and do NOT retry the recall. Do not supply
+the phrase yourself. This protocol exists to ensure a human — not an AI —
+authorizes access to personal data. See also: the `CONSENT PROTOCOL` block in
+the MCP server instructions.
+
 ## The tools
 
 Core memory tools:
@@ -76,7 +95,7 @@ strategic planning and memory health; reach for those only when the user asks.
 
 ## When Graphnosis is not connected
 
-The tools work only while the Graphnosis app is open and the user's Cortex is
+The tools work only while the Graphnosis app is open and the user's cortex is
 unlocked. If they are unavailable, carry on as normal — but tell the user
 Graphnosis is not connected, and that they can open the app, unlock their
-Cortex, and then ask you to redo the last step so it gets recalled or saved.
+cortex, and then ask you to redo the last step so it gets recalled or saved.

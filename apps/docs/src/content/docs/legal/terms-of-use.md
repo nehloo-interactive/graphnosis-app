@@ -55,19 +55,19 @@ Graphnosis™, the Graphnosis logo, and "Nehloo Interactive" are trademarks of N
 
 ## 4. Your responsibilities
 
-### 4.1 Your Cortex data
+### 4.1 Your cortex data
 
 You are solely responsible for:
-- All content you ingest into your Cortex.
+- All content you ingest into your cortex.
 - Ensuring you have the rights to ingest and process that content.
-- Maintaining backups of your Cortex folder.
+- Maintaining backups of your cortex folder.
 - The security of your device, passphrase, and recovery phrase.
 
 ### 4.2 Passphrase and recovery phrase
 
-Graphnosis encrypts your Cortex with a key derived from your passphrase. Nehloo Interactive does not store your passphrase, recovery phrase, or encryption key. **If you lose both your passphrase and your 24-word recovery phrase, your data is permanently unrecoverable.** Nehloo Interactive cannot restore it. Safeguard your recovery phrase accordingly.
+Graphnosis encrypts your cortex with a key derived from your passphrase. Nehloo Interactive does not store your passphrase, recovery phrase, or encryption key. **If you lose both your passphrase and your 24-word recovery phrase, your data is permanently unrecoverable.** Nehloo Interactive cannot restore it. Safeguard your recovery phrase accordingly.
 
-### 4.3 Third-party AI clients
+### 4.3 Third-party AI clients and the consent gate
 
 Graphnosis is designed to work with third-party AI clients (e.g., Claude Desktop by Anthropic, ChatGPT by OpenAI, Cursor, and others) via the Model Context Protocol (MCP). When you connect Graphnosis to such a client:
 
@@ -76,13 +76,31 @@ Graphnosis is designed to work with third-party AI clients (e.g., Claude Desktop
 - Nehloo Interactive is not responsible for how any AI provider processes, uses, retains, or discloses information you share through their service.
 - You acknowledge that AI-generated responses may be inaccurate, incomplete, or misleading regardless of the memory context provided.
 
-### 4.4 Acceptable use
+**Informed consent via the phrase gate**: When you type a Graphnosis consent phrase, you are explicitly and personally authorizing the transmission of that memory content to the named AI provider. This authorization is yours — not Graphnosis's and not the AI's. Nehloo Interactive does not receive, transmit, see, store, or log the transmitted memory content and has no technical ability to access your cortex or the data you choose to share with AI providers. The complete description of the consent gate, configurable intervals, rate limit, session replay blocker, and optional session caps lives in [AI Access Controls](/guides/ai-access-controls).
+
+You acknowledge that the AI provider's privacy policy and terms of service govern their handling of your data, and that Nehloo is not a party to your agreement with the AI provider.
+
+### 4.4 Consent records
+
+Graphnosis stores consent records locally in your encrypted cortex, as immutable audit nodes. Each record contains: timestamp, AI client name, data tier, and consent interval — never memory content, never the consent phrase itself. These records exist on your device only. Nehloo cannot access, produce, or delete them. You can view, export, and revoke consent records in the Graphnosis app (Settings → AI → Data). You are responsible for maintaining your cortex backup, which includes your consent history.
+
+### 4.5 Acceptable use
 
 You agree not to use the Software to:
 - Ingest, store, or process content that infringes any third party's intellectual property rights.
 - Ingest, store, or process illegal content, including but not limited to content that violates privacy laws, export control laws, or laws governing the rights of third parties.
 - Circumvent or attack any security mechanism.
 - Facilitate harassment, abuse, or unlawful discrimination.
+
+---
+
+### 4.6 Nehloo's role
+
+**Nehloo Interactive is the developer and distributor of Graphnosis software. Nehloo is not a data controller or processor for data you store in your cortex or share with AI providers.** You are the controller of your own cortex data. Nehloo does not hold, process, or have access to your cortex data in any form. For data Nehloo does hold (your account email and newsletter subscription), Nehloo acts as data controller and complies with applicable law.
+
+### 4.7 Use of the latest version
+
+The consent and privacy protections described in these Terms apply to current and recent releases of Graphnosis. Older versions released before **v0.10** do not include the Layer 4 consent mechanism described in §4.3. Nehloo strongly recommends updating to the latest release. Nehloo is not liable for privacy outcomes arising from use of outdated software versions.
 
 ---
 
@@ -143,7 +161,7 @@ Graphnosis is compatible with third-party AI clients but has no affiliation with
 
 ### 8.3 Cloud storage providers
 
-If you choose to store your Cortex on a cloud service (iCloud, Dropbox, Google Drive, etc.), your use of that service is governed by that service's terms. Nehloo Interactive is not affiliated with any such provider.
+If you choose to store your cortex on a cloud service (iCloud, Dropbox, Google Drive, etc.), your use of that service is governed by that service's terms. Nehloo Interactive is not affiliated with any such provider.
 
 ### 8.4 Ollama and local LLMs
 

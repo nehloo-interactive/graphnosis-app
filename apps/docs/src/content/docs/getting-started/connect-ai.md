@@ -5,9 +5,9 @@ sidebar:
   order: 3
 ---
 
-Graphnosis exposes a local MCP server — what we call the **synapse**, the small background process that bridges your AI client and your Cortex. You connect your AI client to it once; after that, your memory is available in every conversation — as long as the app is running and your Cortex is unlocked.
+Graphnosis exposes a local MCP server — what we call the **synapse**, the small background process that bridges your AI client and your cortex. You connect your AI client to it once; after that, your memory is available in every conversation — as long as the app is running and your cortex is unlocked.
 
-The synapse takes its name from the brain: a synapse is the connection that passes a signal between neurons. In Graphnosis it's the connection that passes a recall query into the Cortex and the matched engrams back to your AI. No synapse, no memory exchange.
+The synapse takes its name from the brain: a synapse is the connection that passes a signal between neurons. In Graphnosis it's the connection that passes a recall query into the cortex and the matched engrams back to your AI. No synapse, no memory exchange.
 
 ## Why this beats dropping files into your AI client
 
@@ -22,13 +22,13 @@ This is the practical reason Graphnosis exists alongside the privacy story: AI c
 
 ## Before you start: the app must be running
 
-For any MCP-compatible AI client to read from your Cortex, **Graphnosis must be running on your Mac and your Cortex must be unlocked**.
+For any MCP-compatible AI client to read from your cortex, **Graphnosis must be running on your Mac and your cortex must be unlocked**.
 
 | Graphnosis state | What your AI client sees |
 |------------------|--------------------------|
-| App quit / not running | No Graphnosis tools. The AI behaves as if you don't have a Cortex. |
-| App running, Cortex locked | Graphnosis tools may appear but every `recall` returns "Cortex is locked." |
-| App running, Cortex unlocked | Full access to your memories. Only the chunks relevant to each prompt leave the app. |
+| App quit / not running | No Graphnosis tools. The AI behaves as if you don't have a cortex. |
+| App running, cortex locked | Graphnosis tools may appear but every `recall` returns "cortex is locked." |
+| App running, cortex unlocked | Full access to your memories. Only the chunks relevant to each prompt leave the app. |
 
 The Graphnosis main window can be closed (⌘W) — the app keeps running in your menu bar. To fully stop it, use the tray icon's **Quit** option. If you want Graphnosis to start automatically at login, enable that in **Settings → Auto-start**.
 
@@ -68,7 +68,7 @@ Add a `graphnosis` entry inside the `mcpServers` object:
 }
 ```
 
-Replace `/Users/you/Documents/MyCortex` with the path to your Cortex folder.
+Replace `/Users/you/Documents/MyCortex` with the path to your cortex folder.
 
 Restart Claude Desktop. On next launch you'll see a small plug icon in the bottom-left of the input field — that confirms the MCP connection is live.
 
@@ -124,7 +124,7 @@ Install the **Graphnosis** extension from the VS Code Marketplace (`nehloo-inter
 
 - Registers `graphnosis_recall` and `graphnosis_remember` as **LM tools** (VS Code 1.97+) so Copilot calls recall autonomously on relevant queries — no `@` prefix needed
 - Adds the `@graphnosis` **chat participant** for explicit queries (`@graphnosis what did I decide about auth?`) on VS Code 1.96+
-- Shows a **"Save to memory"** status bar shortcut after large Copilot code insertions, so you can capture architectural decisions back into your Cortex with one click
+- Shows a **"Save to memory"** status bar shortcut after large Copilot code insertions, so you can capture architectural decisions back into your cortex with one click
 
 After installing, open VS Code Settings, search `graphnosis`, and paste your bearer token into **Bearer Token**. The extension connects to Graphnosis' always-on local bridge (`127.0.0.1:3457`) — no mobile access setup required.
 
@@ -178,11 +178,11 @@ Any MCP 1.x client that supports stdio transport can connect. Use:
 
 - **Command:** `/Applications/Graphnosis.app/Contents/MacOS/graphnosis-sidecar`
 - **Args:** `["--mcp-stdio"]`
-- **Env:** `GRAPHNOSIS_CORTEX_PATH` set to your Cortex folder path
+- **Env:** `GRAPHNOSIS_CORTEX_PATH` set to your cortex folder path
 
 ## Connect from your phone (or any HTTP MCP client)
 
-Mobile AI clients (Claude for iOS, Claude for Android) and any other tool that speaks MCP over HTTP can reach your Cortex from a different device — your phone in your pocket, a browser extension on a different Mac, a remote scripting environment.
+Mobile AI clients (Claude for iOS, Claude for Android) and any other tool that speaks MCP over HTTP can reach your cortex from a different device — your phone in your pocket, a browser extension on a different Mac, a remote scripting environment.
 
 Graphnosis exposes an opt-in HTTP/SSE MCP server on port `3457` with bearer-token auth. The setup is **3 clicks** via the in-app wizard:
 
@@ -195,7 +195,7 @@ The wizard is fully detailed in **[Connect from your phone](/getting-started/mob
 
 **Why Tailscale is the recommended path:** the alternative — `all-interfaces` on your LAN — works at home but breaks the moment you leave the house. Tailscale gives you an encrypted overlay network that follows you everywhere without exposing a port to the public internet. Install it once on both devices; the wizard auto-detects the Tailscale IP.
 
-**The bearer token is unique per Cortex and auto-rotates** on every wizard re-open. Treat it like a password: revoke by toggling Mobile Access off and back on in Settings.
+**The bearer token is unique per cortex and auto-rotates** on every wizard re-open. Treat it like a password: revoke by toggling Mobile Access off and back on in Settings.
 
 ## The 7 MCP tools
 
@@ -203,13 +203,13 @@ Once connected, these tools are available to your AI:
 
 | Tool | What it does |
 |------|-------------|
-| `recall` | Semantic search over your Cortex. The AI calls this automatically when it needs context. Returns the top-k most relevant chunks. |
+| `recall` | Semantic search over your cortex. The AI calls this automatically when it needs context. Returns the top-k most relevant chunks. |
 | `remind` | Same as `recall` but tuned for "remind me about X" intent — biases toward recently-touched memories. |
 | `remember` | Store a new memory from within a conversation. Useful for saving decisions, notes, or facts mid-chat. Supports `target_engram` so the AI can route the note into a specific engram (with a user-confirmation banner if the name doesn't exist or is ambiguous — see below). |
 | `correct` | Propose a natural-language correction to an existing memory. Sends a diff to a local LLM and stores the proposed change for user review. Fires a notification when the app is in the background. |
 | `apply` | Apply a confirmed correction. Must be called after `correct` returns a correction ID. |
 | `forget` | Remove a specific memory by ID. |
-| `stats` | Return Cortex statistics: total sources, chunks, graphs, embedding model info. |
+| `stats` | Return cortex statistics: total sources, chunks, graphs, embedding model info. |
 
 ### Asking the AI to save into a specific engram
 
@@ -229,11 +229,11 @@ When sensitivity allows it, Graphnosis can inject context proactively — before
 
 If your client does not support proactive injection, the AI will use `recall` as a tool call in the first turn. Either way, your memory gets attached.
 
-## Add the Graphnosis docs to your Cortex
+## Add the Graphnosis docs to your cortex
 
-A connected AI client knows whatever is in your Cortex — but by default it knows nothing about Graphnosis itself. To fix that, the first time you unlock a Cortex the app offers to ingest the Graphnosis documentation into a dedicated `graphnosis-docs` engram. Accept, and your AI can answer "how do snapshots work?" or "what does the `correct` tool do?" straight from recall, using the same docs you are reading now.
+A connected AI client knows whatever is in your cortex — but by default it knows nothing about Graphnosis itself. To fix that, the first time you unlock a cortex the app offers to ingest the Graphnosis documentation into a dedicated `graphnosis-docs` engram. Accept, and your AI can answer "how do snapshots work?" or "what does the `correct` tool do?" straight from recall, using the same docs you are reading now.
 
-The documentation ships **bundled inside the app** — adding it is a fully offline operation with no network call. The `graphnosis-docs` engram lives in your Cortex like any other; it just is not built from your own content.
+The documentation ships **bundled inside the app** — adding it is a fully offline operation with no network call. The `graphnosis-docs` engram lives in your cortex like any other; it just is not built from your own content.
 
 It also stays current on its own. After an app update brings newer docs, the engram auto-refreshes to match. Two things it always respects:
 
@@ -255,17 +255,17 @@ Graphnosis is not just a memory you talk to — it's a memory that **grows on it
 | **Linear** | issues with priority/state/assignee/label filters | BYO Personal API Key |
 | **Webhook** | anything that can POST JSON (Zapier, IFTTT, custom scripts) | auto-generated unique URL |
 
-All connectors are configured in **Settings → Connectors** in the Graphnosis app. **Your credentials, your apps** — Graphnosis is never in the OAuth callback chain. Credentials are stored encrypted at rest in your Cortex (XChaCha20-Poly1305, same as your memory files).
+All connectors are configured in **Settings → Connectors** in the Graphnosis app. **Your credentials, your apps** — Graphnosis is never in the OAuth callback chain. Credentials are stored encrypted at rest in your cortex (XChaCha20-Poly1305, same as your memory files).
 
 Full setup walkthroughs for each connector: **[Auto-ingest from your tools](/guides/connectors/)**.
 
 ## Troubleshooting
 
 **The MCP connection isn't showing up in Claude Desktop**
-- Make sure Graphnosis is running (menu bar icon visible) and the Cortex is unlocked.
+- Make sure Graphnosis is running (menu bar icon visible) and the cortex is unlocked.
 - Verify the `command` path is correct: `ls /Applications/Graphnosis.app/Contents/MacOS/graphnosis-sidecar`
 - Check Claude Desktop logs at `~/Library/Logs/Claude/`.
 
 **`recall` returns no results**
-- Your Cortex may be empty. [Add some content](/guides/adding-content/) first.
-- The Cortex may be locked. Click the menu bar icon and unlock it.
+- Your cortex may be empty. [Add some content](/guides/adding-content/) first.
+- The cortex may be locked. Click the menu bar icon and unlock it.

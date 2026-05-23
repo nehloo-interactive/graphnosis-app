@@ -1,6 +1,6 @@
 ---
 title: Verify It Yourself
-description: Graphnosis' privacy promises are verifiable, not just asserted — watch the network, audit the encryption, and decrypt your own Cortex.
+description: Graphnosis' privacy promises are verifiable, not just asserted — watch the network, audit the encryption, and decrypt your own cortex.
 sidebar:
   order: 7
 ---
@@ -9,7 +9,7 @@ Graphnosis makes strong claims: your data stays on your machine, the encryption 
 
 ## Watch the network
 
-The strongest privacy claim Graphnosis makes is that your Cortex never leaves your device. You can confirm it directly.
+The strongest privacy claim Graphnosis makes is that your cortex never leaves your device. You can confirm it directly.
 
 Point a network monitor at the app — Little Snitch, the macOS Activity Monitor's Network tab, or `lsof -i` from a terminal. Outside of two cases, you will see no outbound traffic at all:
 
@@ -18,7 +18,7 @@ Point a network monitor at the app — Little Snitch, the macOS Activity Monitor
 
 That is the complete list — see [Privacy Policy §4](/legal/privacy-policy/) for the precise wording. There is no telemetry, no analytics, no update ping, no Nehloo Interactive endpoint.
 
-The simplest test of all: **turn Wi-Fi off.** Recall still works. Ingest still works. Adding the bundled Graphnosis docs to your Cortex still works. None of the core app needs a network, because none of it talks to a server.
+The simplest test of all: **turn Wi-Fi off.** Recall still works. Ingest still works. Adding the bundled Graphnosis docs to your cortex still works. None of the core app needs a network, because none of it talks to a server.
 
 ## Audit the encryption
 
@@ -27,13 +27,13 @@ You do not have to trust that the encryption is sound — you can read it. Both 
 - **`@nehloo/graphnosis`** — the engram graph engine and the `.gai` graph format. Open source under **Apache-2.0**.
 - **`@nehloo-interactive/graphnosis-secure-sync`** — the encryption layer: the `GNAPP\x01` envelope, **XChaCha20-Poly1305** for authenticated encryption, and **Argon2id** for deriving the key from your passphrase. Source-available under **FSL-1.1**.
 
-Both live in the GitHub organization at [github.com/nehloo-interactive](https://github.com/nehloo-interactive). The security of your Cortex does not depend on these libraries being secret — it depends only on your passphrase. Auditable crypto is stronger crypto: an algorithm anyone can inspect is one whose weaknesses surface and get fixed, rather than hiding.
+Both live in the GitHub organization at [github.com/nehloo-interactive](https://github.com/nehloo-interactive). The security of your cortex does not depend on these libraries being secret — it depends only on your passphrase. Auditable crypto is stronger crypto: an algorithm anyone can inspect is one whose weaknesses surface and get fixed, rather than hiding.
 
-## Decrypt your own Cortex
+## Decrypt your own cortex
 
 The clearest proof that your data is not locked in: you can read it yourself, without the Graphnosis app.
 
-With the two libraries above and your passphrase, you can decrypt and parse your `.gai` files directly — for exports, backups, custom tooling, or migrating to something else entirely. This is deliberate. Graphnosis is a place your memory lives, not a vault that holds it hostage. If the app vanished tomorrow, your Cortex would still be yours and still be readable.
+With the two libraries above and your passphrase, you can decrypt and parse your `.gai` files directly — for exports, backups, custom tooling, or migrating to something else entirely. This is deliberate. Graphnosis is a place your memory lives, not a vault that holds it hostage. If the app vanished tomorrow, your cortex would still be yours and still be readable.
 
 The on-disk layout — the `GNAPP\x01` envelope, the header, the encrypted payload — is documented in [File Formats](/reference/file-formats/), and the data-flow guarantees are spelled out in the [Privacy Policy](/legal/privacy-policy/).
 
