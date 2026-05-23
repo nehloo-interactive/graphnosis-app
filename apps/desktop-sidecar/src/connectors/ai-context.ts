@@ -8,7 +8,7 @@ import type { Connector, ConnectorEvent } from './interface.js';
  * AI context files connector.
  *
  * Scans project directories for standard AI assistant context files and
- * ingests them into the Cortex. Covers Claude Code (CLAUDE.md), Cursor
+ * ingests them into the cortex. Covers Claude Code (CLAUDE.md), Cursor
  * (.cursorrules), GitHub Copilot (.github/copilot-instructions.md),
  * OpenAI Agents (AGENTS.md), Windsurf (.windsurfrules), and more.
  *
