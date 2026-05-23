@@ -114,6 +114,44 @@ export interface UiSettings {
   inspectorDetail: InspectorDetail;
 }
 
+// ── Layer 4 Consent ───────────────────────────────────────────────────────────
+
+/**
+ * Immutable audit record of a single consent grant.
+ * Stored as append-only nodes in the cortex — never in settings.json directly.
+ * Nehloo never has access to these; they live on the user's device only.
+ */
+export interface ConsentRecord {
+  /** UUID v4 — unique per grant, used for revocation targeting. */
+  consentId: string;
+  /** Unix ms — when the phrase was typed and validated. */
+  grantedAt: number;
+  /**
+   * Unix ms expiry. For permanent grants: Number.MAX_SAFE_INTEGER.
+   * expiresAt === grantedAt means single-use (windowMs = 0).
+   */
+  expiresAt: number;
+  /** Unix ms — set when the user revokes this record. Absent = still active. */
+  withdrawnAt?: number;
+  /** AI client name, e.g. "claude-code", "cursor". */
+  clientName: string;
+  /** Data tier that was authorised. */
+  tier: 'personal' | 'sensitive';
+  /**
+   * ms duration used at grant time.
+   * -1 = permanent, 0 = single-use, positive = interval.
+   */
+  windowMs: number;
+  /** Human-readable purpose shown in audit log, e.g. "AI-assisted memory retrieval". */
+  purpose: string;
+  /** AI provider display name, e.g. "Anthropic Inc." */
+  recipientName: string;
+  /** 2-letter country code of the AI provider's primary servers, e.g. "US". */
+  recipientCountry: string;
+  /** Privacy-policy version slug at time of consent, e.g. "2025-05". */
+  consentVersion: string;
+}
+
 /**
  * AI-routing + post-ingest behavior settings.
  */
@@ -203,6 +241,85 @@ export interface AiSettings {
    * Examples: "llama3.2:3b-instruct-q4_K_M", "qwen2.5:3b-instruct-q4_K_M"
    */
   llmModel?: string;
+  /**
+   * Maximum tokens the MCP server will serve to a single AI client session
+   * before blocking further data reads. Prevents bulk graph exfiltration via
+   * repeated recall calls within one AI conversation.
+   *
+   * Default: 20 000 tokens (~40 typical recalls or 2-3 maxed-out ones).
+   * Power users doing large corpus analysis can raise this via settings.json.
+   * Min: 1 000 (below this the tools become unusable). Max: 200 000.
+   */
+  sessionTokenCap?: number;
+  /**
+   * Maximum nodes the MCP server will serve to a single AI client session.
+   * Paired with sessionTokenCap to bound both dimensions of data volume.
+   *
+   * Default: 150 nodes. Min: 10. Max: 5 000.
+   */
+  sessionNodeCap?: number;
+  /**
+   * Toggles for the three session caps. All default to FALSE (opt-in) — the
+   * primary defenses are now consent gate + rate limit + replay blocker. These
+   * caps are still useful for power users or extra-protective users who want
+   * an additional cumulative-volume backstop.
+   */
+  sessionTokenCapEnabled?: boolean;
+  sessionNodeCapEnabled?: boolean;
+  /**
+   * Local LLM-assisted search. Off by default; both gate on llmEnabled +
+   * Ollama reachability + a configured model. UI shows them as disabled
+   * checkboxes when the LLM isn't ready.
+   */
+  searchLlmSynthesize?: boolean;  // option B — paragraph answer with citations
+  searchLlmRerank?: boolean;      // option A — reorder top-k by LLM relevance
+  /**
+   * When true, the Local LLM is restricted to search-only paths. The MCP
+   * tools that drive non-deterministic features (develop, predict, insights,
+   * llm_query) refuse to run, but in-app search synthesis/ranking still uses
+   * the LLM. Lets users keep smart local search without exposing the LLM to
+   * connected AI clients.
+   */
+  searchLlmOnly?: boolean;
+  /**
+   * Engram breadth cap — how many distinct engrams a single session can touch
+   * before a warning fires. Default value 6 (kept for back-compat), but
+   * enforcement is opt-in via sessionBreadthCapEnabled.
+   */
+  sessionBreadthCap?: number;
+  sessionBreadthCapEnabled?: boolean;
+
+  // ── Layer 4 Consent ──────────────────────────────────────────────────────
+
+  /**
+   * Append-only consent audit records. Never deleted — only soft-expired via
+   * withdrawnAt. Stored as _consent_record nodes in the cortex, not here;
+   * this field is a runtime cache loaded by the sidecar on unlock.
+   * Write-protected from MCP — only writable via dedicated IPC cases.
+   */
+  dataAccessConsents?: ConsentRecord[];
+
+  /**
+   * How long (ms) a single personal-tier consent phrase entry is remembered
+   * before the gate re-prompts. -1 = permanent until revoked (default).
+   * 0 = every call. Range: 0–15_552_000_000 (6 months), or -1.
+   */
+  consentIntervalPersonalMs?: number;
+
+  /**
+   * How long (ms) a single sensitive-tier consent phrase entry is remembered.
+   * Default 3_600_000 (1 hour — matches the phrase rotation window).
+   * Range: 0–15_552_000_000, or -1 (permanent).
+   * Write-protected from MCP.
+   */
+  consentIntervalSensitiveMs?: number;
+
+  /**
+   * Per-client type classification. 'chat' = human-driven assistant (default);
+   * 'agent' = autonomous agent (forces every-call consent regardless of interval).
+   * Write-protected from MCP.
+   */
+  clientTypes?: Record<string, 'chat' | 'agent'>;
 }
 
 export type ChunkSizePreset = 'fine' | 'balanced' | 'coarse';
@@ -243,6 +360,15 @@ export interface GraphMetadata {
    *   sensitive — AI never sees this graph (0 tokens)
    */
   sensitivityTier?: 'public' | 'personal' | 'sensitive';
+
+  /**
+   * Per-graph consent interval override (ms). -1 = permanent, 0 = every call.
+   * When set, this overrides the global consentInterval{Personal|Sensitive}Ms
+   * for this specific graph. The stricter of (per-graph, global) always wins —
+   * i.e. whichever value is smaller (treating -1 as ∞ and 0 as strictest).
+   * Absent = use global default for this graph's tier.
+   */
+  consentIntervalMs?: number;
 }
 
 export interface HttpBridgeSettings {
@@ -304,6 +430,14 @@ export interface AppSettings {
    * sidecar auto-populates on first boot after the feature ships.
    */
   vscode?: VsCodeBridgeSettings;
+  /**
+   * HMAC-SHA256 secret key for rotating consent phrase generation.
+   * Hex-encoded 32 bytes. Generated once per cortex and stored here
+   * (inside the encrypted cortex on disk — encrypted at rest).
+   * NEVER exposed via any MCP tool, IPC response, or log line.
+   */
+  consentHmacKey?: string;
+
   /** Docs-engram ingest state. Absent on cortexes that never saw the offer. */
   docsEngram?: {
     /** true once the user clicked "Not now" on the docs-ingest offer. */
@@ -549,6 +683,58 @@ export function mergeWithDefaults(partial: Partial<AppSettings> | null | undefin
   const llmModel = typeof ai.llmModel === 'string' && ai.llmModel.length > 0
     ? ai.llmModel
     : undefined;
+  const sessionTokenCap = typeof ai.sessionTokenCap === 'number' && ai.sessionTokenCap > 0
+    ? Math.min(200_000, Math.max(1_000, Math.floor(ai.sessionTokenCap)))
+    : undefined;
+  const sessionNodeCap = typeof ai.sessionNodeCap === 'number' && ai.sessionNodeCap > 0
+    ? Math.min(5_000, Math.max(10, Math.floor(ai.sessionNodeCap)))
+    : undefined;
+  const sessionBreadthCap = typeof ai.sessionBreadthCap === 'number' && ai.sessionBreadthCap > 0
+    ? Math.min(100, Math.max(1, Math.floor(ai.sessionBreadthCap)))
+    : undefined;
+  const sessionTokenCapEnabled = typeof ai.sessionTokenCapEnabled === 'boolean'
+    ? ai.sessionTokenCapEnabled : undefined;
+  const sessionNodeCapEnabled = typeof ai.sessionNodeCapEnabled === 'boolean'
+    ? ai.sessionNodeCapEnabled : undefined;
+  const sessionBreadthCapEnabled = typeof ai.sessionBreadthCapEnabled === 'boolean'
+    ? ai.sessionBreadthCapEnabled : undefined;
+  const searchLlmSynthesize = typeof ai.searchLlmSynthesize === 'boolean'
+    ? ai.searchLlmSynthesize : undefined;
+  const searchLlmRerank = typeof ai.searchLlmRerank === 'boolean'
+    ? ai.searchLlmRerank : undefined;
+  const searchLlmOnly = typeof ai.searchLlmOnly === 'boolean'
+    ? ai.searchLlmOnly : undefined;
+
+  // Consent intervals: -1 (permanent), 0 (every call), or 0–15_552_000_000 ms.
+  const MAX_CONSENT_INTERVAL_MS = 15_552_000_000; // 6 months
+  const consentIntervalPersonalMs = clampConsentInterval(ai.consentIntervalPersonalMs);
+  const consentIntervalSensitiveMs = clampConsentInterval(ai.consentIntervalSensitiveMs);
+
+  // Consent records — pass through as-is (append-only, never mutated here).
+  const dataAccessConsents = Array.isArray(ai.dataAccessConsents)
+    ? (ai.dataAccessConsents as unknown[]).filter(isConsentRecord)
+    : undefined;
+
+  // Client type map — pass through, validate values.
+  const clientTypes = (ai.clientTypes && typeof ai.clientTypes === 'object')
+    ? Object.fromEntries(
+        Object.entries(ai.clientTypes)
+          .filter(([, v]) => v === 'chat' || v === 'agent') as [string, 'chat' | 'agent'][]
+      )
+    : undefined;
+
+  // Suppress unused warning for MAX_CONSENT_INTERVAL_MS (used inside clampConsentInterval).
+  void MAX_CONSENT_INTERVAL_MS;
+
+  // HMAC key for consent phrase rotation. Generated once per cortex and stored
+  // in settings.json. MUST be preserved across every setSettings call —
+  // dropping it means phrases shown to the user won't match phrases validated
+  // by confirm_data_access, breaking the entire consent flow.
+  // Validate as hex string (64 chars = 32 bytes); reject anything else.
+  const consentHmacKey = typeof partial?.consentHmacKey === 'string'
+      && /^[0-9a-f]+$/i.test(partial.consentHmacKey)
+    ? partial.consentHmacKey
+    : undefined;
 
   const graphMetadata = (partial?.graphMetadata && typeof partial.graphMetadata === 'object')
     ? partial.graphMetadata
@@ -659,8 +845,22 @@ export function mergeWithDefaults(partial: Partial<AppSettings> | null | undefin
       useAsDefaultMemory, autoRelinkMaxNodes, autoReingestOnFileChange,
       reingestQuietMs, chunkSize, embedBatch, llmEnabled,
       ...(llmModel !== undefined ? { llmModel } : {}),
+      ...(sessionTokenCap !== undefined ? { sessionTokenCap } : {}),
+      ...(sessionNodeCap !== undefined ? { sessionNodeCap } : {}),
+      ...(sessionBreadthCap !== undefined ? { sessionBreadthCap } : {}),
+      ...(sessionTokenCapEnabled !== undefined ? { sessionTokenCapEnabled } : {}),
+      ...(sessionNodeCapEnabled !== undefined ? { sessionNodeCapEnabled } : {}),
+      ...(sessionBreadthCapEnabled !== undefined ? { sessionBreadthCapEnabled } : {}),
+      ...(searchLlmSynthesize !== undefined ? { searchLlmSynthesize } : {}),
+      ...(searchLlmRerank !== undefined ? { searchLlmRerank } : {}),
+      ...(searchLlmOnly !== undefined ? { searchLlmOnly } : {}),
+      ...(consentIntervalPersonalMs !== undefined ? { consentIntervalPersonalMs } : {}),
+      ...(consentIntervalSensitiveMs !== undefined ? { consentIntervalSensitiveMs } : {}),
+      ...(dataAccessConsents !== undefined ? { dataAccessConsents } : {}),
+      ...(clientTypes !== undefined ? { clientTypes } : {}),
     },
     graphMetadata,
+    ...(consentHmacKey !== undefined ? { consentHmacKey } : {}),
     ...(mobile !== undefined ? { mobile } : {}),
     ...(connectors !== undefined ? { connectors } : {}),
     ...(vscode !== undefined ? { vscode } : {}),
@@ -671,6 +871,122 @@ export function mergeWithDefaults(partial: Partial<AppSettings> | null | undefin
 
 function clamp(n: number, lo: number, hi: number): number {
   return Math.max(lo, Math.min(hi, n));
+}
+
+function clampConsentInterval(v: unknown): number | undefined {
+  if (typeof v !== 'number') return undefined;
+  if (v === -1) return -1; // permanent sentinel
+  const MAX = 15_552_000_000; // 6 months
+  return Math.min(MAX, Math.max(0, Math.floor(v)));
+}
+
+function isConsentRecord(v: unknown): v is ConsentRecord {
+  if (!v || typeof v !== 'object') return false;
+  const r = v as Record<string, unknown>;
+  return (
+    typeof r['consentId'] === 'string' &&
+    typeof r['grantedAt'] === 'number' &&
+    typeof r['expiresAt'] === 'number' &&
+    typeof r['clientName'] === 'string' &&
+    (r['tier'] === 'personal' || r['tier'] === 'sensitive') &&
+    typeof r['windowMs'] === 'number'
+  );
+}
+
+// ── Layer 4 Consent helpers ───────────────────────────────────────────────────
+
+/**
+ * Returns true if the given client+tier combination has a current, non-expired,
+ * non-withdrawn consent record.
+ */
+export function hasValidConsent(
+  consents: ConsentRecord[] | undefined,
+  clientName: string,
+  tier: 'personal' | 'sensitive',
+): boolean {
+  if (!consents) return false;
+  const now = Date.now();
+  return consents.some(
+    (r) =>
+      r.clientName === clientName &&
+      r.tier === tier &&
+      r.withdrawnAt === undefined &&
+      r.expiresAt > now,
+  );
+}
+
+/**
+ * Creates a new ConsentRecord, soft-expiring any existing active record for the
+ * same (clientName, tier) pair (sets withdrawnAt = now). Returns the updated
+ * full array. The audit trail (including expired records) is always preserved.
+ */
+export function recordConsent(
+  existing: ConsentRecord[] | undefined,
+  clientName: string,
+  tier: 'personal' | 'sensitive',
+  windowMs: number,
+  recipientName: string,
+  recipientCountry: string,
+  consentVersion: string,
+): ConsentRecord[] {
+  const now = Date.now();
+  const expiresAt = windowMs === -1
+    ? Number.MAX_SAFE_INTEGER
+    : windowMs === 0
+      ? now  // single-use: expires immediately after grant
+      : now + windowMs;
+
+  const prior = (existing ?? []).map((r) =>
+    r.clientName === clientName && r.tier === tier && r.withdrawnAt === undefined
+      ? { ...r, withdrawnAt: now }
+      : r,
+  );
+
+  const record: ConsentRecord = {
+    consentId: generateUuid(),
+    grantedAt: now,
+    expiresAt,
+    clientName,
+    tier,
+    windowMs,
+    purpose: 'AI-assisted memory retrieval',
+    recipientName,
+    recipientCountry,
+    consentVersion,
+  };
+
+  return [...prior, record];
+}
+
+/**
+ * Soft-expires all active consent records for the given client+tier pair
+ * (sets withdrawnAt = now). If clientName and tier are both undefined,
+ * expires ALL active records (global revoke).
+ */
+export function revokeConsent(
+  existing: ConsentRecord[] | undefined,
+  clientName?: string,
+  tier?: 'personal' | 'sensitive',
+): ConsentRecord[] {
+  const now = Date.now();
+  return (existing ?? []).map((r) => {
+    if (r.withdrawnAt !== undefined) return r;
+    const matchClient = clientName === undefined || r.clientName === clientName;
+    const matchTier = tier === undefined || r.tier === tier;
+    return matchClient && matchTier ? { ...r, withdrawnAt: now } : r;
+  });
+}
+
+function generateUuid(): string {
+  // crypto.randomUUID is available in Node 14.17+ and all modern browsers.
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID();
+  }
+  // Fallback: random hex — good enough for a local audit trail.
+  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
+    const r = (Math.random() * 16) | 0;
+    return (c === 'x' ? r : (r & 0x3) | 0x8).toString(16);
+  });
 }
 
 /**
