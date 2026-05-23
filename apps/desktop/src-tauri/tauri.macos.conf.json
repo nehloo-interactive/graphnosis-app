@@ -1,0 +1,13 @@
+{
+  "bundle": {
+    "targets": ["dmg", "app"],
+    "resources": [
+      "resources/libonnxruntime.1.21.0.dylib"
+    ],
+    "macOS": {
+      "signingIdentity": "Developer ID Application: Nehloo Interactive LLC (C76ZLJ5UQW)",
+      "providerShortName": "C76ZLJ5UQW",
+      "entitlements": "entitlements.plist"
+    }
+  }
+}
