@@ -1,0 +1,14 @@
+{
+  "bundle": {
+    "targets": ["nsis", "msi"],
+    "resources": [
+      "resources/onnxruntime.dll"
+    ],
+    "windows": {
+      "nsis": {
+        "installMode": "perUserOrSystem",
+        "languages": ["English"]
+      }
+    }
+  }
+}

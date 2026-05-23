@@ -18,7 +18,7 @@ export function registerParticipant(
         return;
       }
 
-      response.progress('Searching your Cortex…');
+      response.progress('Searching your cortex…');
 
       let memory: string;
       try {
@@ -34,7 +34,7 @@ export function registerParticipant(
         return;
       }
 
-      response.markdown('**From your Graphnosis Cortex:**\n\n' + memory);
+      response.markdown('**From your Graphnosis cortex:**\n\n' + memory);
     },
   );
 

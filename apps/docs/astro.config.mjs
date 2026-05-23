@@ -44,6 +44,7 @@ export default defineConfig({
             { label: 'Indelibility & Determinism', slug: 'guides/indelibility-and-determinism' },
             { label: 'Deterministic Consolidation', slug: 'guides/deterministic-consolidation' },
             { label: 'Graphs & Sensitivity Tiers', slug: 'guides/graphs-and-tiers' },
+            { label: 'AI Access Controls', slug: 'guides/ai-access-controls' },
             { label: 'Keeping Your Cortex Safe', slug: 'guides/keeping-your-cortex-safe' },
             { label: 'Recovery', slug: 'guides/recovery' },
             { label: 'Verify It Yourself', slug: 'guides/verify-it-yourself' },

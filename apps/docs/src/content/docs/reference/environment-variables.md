@@ -7,14 +7,14 @@ sidebar:
 
 The Graphnosis sidecar (`graphnosis-sidecar`) reads its configuration from environment variables.
 
-**In normal use you do not set any of these.** The Graphnosis desktop app sets them automatically each time it spawns the sidecar for the active Cortex. They are documented here for headless / standalone runs and for debugging.
+**In normal use you do not set any of these.** The Graphnosis desktop app sets them automatically each time it spawns the sidecar for the active cortex. They are documented here for headless / standalone runs and for debugging.
 
-## Cortex & unlock
+## cortex & unlock
 
 | Variable | Required | Default | Description |
 |----------|----------|---------|-------------|
-| `GRAPHNOSIS_CORTEX` | Yes | — | Absolute path to the Cortex folder. The sidecar will not start without it. |
-| `GRAPHNOSIS_PASSPHRASE` | No | — | Unlocks the Cortex non-interactively. **Use only in trusted environments** — see the security note below. If unset, the app's unlock prompt is used. |
+| `GRAPHNOSIS_CORTEX` | Yes | — | Absolute path to the cortex folder. The sidecar will not start without it. |
+| `GRAPHNOSIS_PASSPHRASE` | No | — | Unlocks the cortex non-interactively. **Use only in trusted environments** — see the security note below. If unset, the app's unlock prompt is used. |
 | `GRAPHNOSIS_RECOVERY_PHRASE` | No | — | The 24-word recovery phrase, as an alternative to `GRAPHNOSIS_PASSPHRASE` for unlocking. |
 | `GRAPHNOSIS_DEVICE_ID` | No | `<hostname>-<pid>` | Identifier recorded in the op-log for changes made from this device. |
 | `GRAPHNOSIS_DEFAULT_GRAPH` | No | `personal` | The engram an ambient `remember` writes to when no target engram is given. |
@@ -41,7 +41,7 @@ The sidecar communicates over Unix domain sockets. The app assigns these paths; 
 
 | Variable | Required | Default | Description |
 |----------|----------|---------|-------------|
-| `GRAPHNOSIS_MCP_SOCKET` | No | `~/.graphnosis/mcp.sock` | Unix socket the MCP server listens on. The app sets this to a fixed per-user path so an MCP client configured once keeps working across Cortex switches. Falls back to `<cortex>/mcp.sock` when unset. |
+| `GRAPHNOSIS_MCP_SOCKET` | No | `~/.graphnosis/mcp.sock` | Unix socket the MCP server listens on. The app sets this to a fixed per-user path so an MCP client configured once keeps working across cortex switches. Falls back to `<cortex>/mcp.sock` when unset. |
 | `GRAPHNOSIS_IPC_SOCKET` | No | `<cortex>/sidecar.sock` | Unix socket for desktop-app ↔ sidecar IPC. |
 | `GRAPHNOSIS_EVENTS_SOCKET` | No | `<cortex>/events.sock` | Unix socket the sidecar emits live events on. |
 

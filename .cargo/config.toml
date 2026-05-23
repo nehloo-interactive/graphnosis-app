@@ -1,0 +1,14 @@
+# Cross-compilation configuration for Graphnosis.
+#
+# Windows builds from macOS:
+#   1. Install: cargo install cargo-xwin && rustup target add x86_64-pc-windows-msvc
+#   2. Build:   pnpm --filter @graphnosis-app/desktop tauri build --target x86_64-pc-windows-msvc
+#
+# cargo-xwin downloads the MSVC sysroot automatically (no Windows SDK needed).
+
+[target.x86_64-pc-windows-msvc]
+# Use cargo-xwin as the build runner when cross-compiling for Windows from
+# a non-Windows host. cargo-xwin fetches the MSVC headers from Microsoft's
+# CDN under the VS Build Tools EULA.
+# Uncomment and run `cargo install cargo-xwin` to enable cross-compilation:
+# runner = "cargo-xwin"

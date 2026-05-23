@@ -534,7 +534,16 @@ async function main(): Promise<void> {
   // Tauri shell IPC (custom JSON-RPC, not MCP).
   const ipcSocketPath = process.env.GRAPHNOSIS_IPC_SOCKET
     ?? path.join(env.cortexDir, 'sidecar.sock');
-  await startIpc({ host, socketPath: ipcSocketPath, pendingDiffs, restartMcpListener, broadcastRaw, connectorManager, brainEngine });
+  await startIpc({
+    host,
+    socketPath: ipcSocketPath,
+    pendingDiffs,
+    restartMcpListener,
+    broadcastRaw,
+    connectorManager,
+    brainEngine,
+    llm: () => (host.getSettings().ai.llmEnabled === true ? llm : null),
+  });
   console.error(`[graphnosis-sidecar] IPC listening on ${ipcSocketPath}`);
 
   await connectorManager.start();

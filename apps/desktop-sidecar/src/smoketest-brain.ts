@@ -311,13 +311,13 @@ The timeline is tight. Past projects slipped by about two months each.`;
     const model = new GnnLinkPredictor();
     const samples: Array<{ features: PairFeatures; label: 0 | 1 }> = [];
     for (let i = 0; i < 20; i++) {
-      samples.push({ features: { cosine: 0.9, commonNeighbors: 0.8, prefAttachment: 0.5, sharedEntities: 0.6 }, label: 1 });
-      samples.push({ features: { cosine: 0.05, commonNeighbors: 0, prefAttachment: 0.1, sharedEntities: 0 }, label: 0 });
+      samples.push({ features: { cosine: 0.9, commonNeighbors: 0.8, prefAttachment: 0.5, sharedEntities: 0.6, rwpeSim: 0.7 }, label: 1 });
+      samples.push({ features: { cosine: 0.05, commonNeighbors: 0, prefAttachment: 0.1, sharedEntities: 0, rwpeSim: 0.05 }, label: 0 });
     }
     const loss = model.train(samples);
     assert(Number.isFinite(loss), `MLP training loss must be finite, got ${loss}`);
-    const posScore = model.score({ cosine: 0.9, commonNeighbors: 0.8, prefAttachment: 0.5, sharedEntities: 0.6 });
-    const negScore = model.score({ cosine: 0.05, commonNeighbors: 0, prefAttachment: 0.1, sharedEntities: 0 });
+    const posScore = model.score({ cosine: 0.9, commonNeighbors: 0.8, prefAttachment: 0.5, sharedEntities: 0.6, rwpeSim: 0.7 });
+    const negScore = model.score({ cosine: 0.05, commonNeighbors: 0, prefAttachment: 0.1, sharedEntities: 0, rwpeSim: 0.05 });
     assert(posScore >= 0 && posScore <= 1 && negScore >= 0 && negScore <= 1, 'MLP scores must be in [0,1]');
     assert(posScore > negScore, 'MLP must learn to score the positive pattern above the negative');
     log('gnn-mlp', {

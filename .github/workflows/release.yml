@@ -80,6 +80,10 @@ jobs:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
           APPLE_TEAM_ID: C76ZLJ5UQW
+          # Tauri reads this to sign the .app.tar.gz update artifact.
+          # The private key content (not the path) goes in the secret.
+          # Key was generated without a password so no _PASSWORD var is needed.
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
         run: pnpm --filter @graphnosis-app/desktop tauri:build
 
       - name: Derive version and DMG filename
@@ -92,14 +96,56 @@ jobs:
           echo "semver=$SEMVER" >> $GITHUB_OUTPUT
           echo "dmg=$DMG" >> $GITHUB_OUTPUT
 
+      - name: Collect updater artifacts and generate latest.json
+        id: updater
+        run: |
+          SEMVER="${{ steps.meta.outputs.semver }}"
+          VERSION="${{ steps.meta.outputs.version }}"
+          BUNDLE_DIR="apps/desktop/src-tauri/target/release/bundle/macos"
+
+          # Tauri produces Graphnosis.app.tar.gz + .sig when TAURI_SIGNING_PRIVATE_KEY is set.
+          TAR_SRC="${BUNDLE_DIR}/Graphnosis.app.tar.gz"
+          SIG_SRC="${TAR_SRC}.sig"
+          TAR_DEST="${BUNDLE_DIR}/Graphnosis_${SEMVER}_aarch64.app.tar.gz"
+
+          if [ ! -f "$TAR_SRC" ]; then
+            echo "ERROR: $TAR_SRC not found. Was TAURI_SIGNING_PRIVATE_KEY set?" && exit 1
+          fi
+          mv "$TAR_SRC" "$TAR_DEST"
+
+          SIG=$(cat "$SIG_SRC")
+          PUB_DATE=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+
+          # Produce latest.json consumed by tauri-plugin-updater in shipped apps.
+          cat > latest.json << EOF
+          {
+            "version": "${SEMVER}",
+            "notes": "See full changelog: https://github.com/nehloo-interactive/graphnosis-app/releases/tag/${VERSION}",
+            "pub_date": "${PUB_DATE}",
+            "platforms": {
+              "darwin-aarch64": {
+                "signature": "${SIG}",
+                "url": "https://github.com/nehloo-interactive/graphnosis-app/releases/download/${VERSION}/Graphnosis_${SEMVER}_aarch64.app.tar.gz"
+              }
+            }
+          }
+          EOF
+
+          echo "tar_path=${TAR_DEST}" >> $GITHUB_OUTPUT
+
       - name: Create GitHub release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          DMG_PATH="apps/desktop/src-tauri/target/release/bundle/dmg/Graphnosis_${{ steps.meta.outputs.semver }}_aarch64.dmg"
-          gh release create ${{ steps.meta.outputs.version }} \
-            "$DMG_PATH#Graphnosis ${{ steps.meta.outputs.version }} (macOS Apple Silicon)" \
-            --title "Graphnosis ${{ steps.meta.outputs.version }}" \
+          SEMVER="${{ steps.meta.outputs.semver }}"
+          VERSION="${{ steps.meta.outputs.version }}"
+          DMG_PATH="apps/desktop/src-tauri/target/release/bundle/dmg/Graphnosis_${SEMVER}_aarch64.dmg"
+          TAR_PATH="${{ steps.updater.outputs.tar_path }}"
+          gh release create "$VERSION" \
+            "$DMG_PATH#Graphnosis ${VERSION} (macOS Apple Silicon)" \
+            "$TAR_PATH#Graphnosis ${VERSION} — Auto-Update bundle" \
+            "latest.json" \
+            --title "Graphnosis ${VERSION}" \
             --generate-notes
 
       - name: Update Cloudflare Pages env vars

@@ -1,11 +1,11 @@
 ---
 title: Adding Content
-description: How to ingest files, web pages, and clips into your Cortex.
+description: How to ingest files, web pages, and clips into your cortex.
 sidebar:
   order: 1
 ---
 
-Your Cortex is only useful if you put things in it. Graphnosis supports several ingest methods: files, URLs, and quick clips.
+Your cortex is only useful if you put things in it. Graphnosis supports several ingest methods: files, URLs, and quick clips.
 
 ## Supported file types
 
@@ -107,7 +107,7 @@ The pass is throttled and capped (`autoRelinkMaxNodes` in Settings, default 5,00
 
 ## Content caching: why it matters for recovery
 
-When you ingest a file, the raw bytes are also cached in your Cortex (encrypted, in `content/`) — by default for any source up to 512MB. This is the difference between:
+When you ingest a file, the raw bytes are also cached in your cortex (encrypted, in `content/`) — by default for any source up to 512MB. This is the difference between:
 
 - **Cache hit**: if you later move/delete the original file, or the `.gai` file is somehow damaged, you can rebuild from cache without ever touching the original source again. Fast, automatic, no user action beyond clicking "Recover" in the app.
 - **Cache miss** (e.g. you raised the cap, or disabled caching): recovery only works if the original file is still at the exact path you ingested it from. If it's moved, the source shows up as `file-missing` in the Recovery panel.
@@ -140,4 +140,4 @@ The move is non-destructive: all chunks, embeddings, and the content cache entry
 
 ## Removing a source
 
-Open the Source in the Graphnosis window and click **Remove**. This deletes all associated chunks and embeddings from the Cortex. The original file on disk is not touched.
+Open the Source in the Graphnosis window and click **Remove**. This deletes all associated chunks and embeddings from the cortex. The original file on disk is not touched.

@@ -1,7 +1,7 @@
 {
   "name": "graphnosis",
   "displayName": "Graphnosis — Personal Memory for Copilot",
-  "description": "Enriches every Copilot Chat prompt with context from your private, encrypted Graphnosis Cortex. Nothing leaves your device.",
+  "description": "Enriches every Copilot Chat prompt with context from your private, encrypted Graphnosis cortex. Nothing leaves your device.",
   "version": "0.1.0",
   "publisher": "nehloo-interactive",
   "license": "Apache-2.0",
@@ -21,7 +21,7 @@
       {
         "id": "graphnosis.assistant",
         "name": "graphnosis",
-        "description": "Search and save to your private, encrypted Graphnosis memory Cortex",
+        "description": "Search and save to your private, encrypted Graphnosis memory cortex",
         "isSticky": false
       }
     ],

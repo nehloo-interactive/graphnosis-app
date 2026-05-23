@@ -58,6 +58,11 @@ const GNN_SCORE_THRESHOLD = 0.75;
 const MIN_GNN_NODES = 12;
 /** Per-node cap on 2-hop candidates the GNN considers. */
 const GNN_CANDIDATES_PER_NODE = 20;
+/** Random-walk positional encoding (RWPE): walk length, and the largest
+ *  engram (active nodes) it is computed for. Above the cap, rwpeSim falls
+ *  back to 0 rather than paying the all-nodes return-probability cost. */
+const GNN_RWPE_STEPS = 8;
+const MAX_GNN_RWPE_NODES = 3000;
 
 /**
  * Cap on the recall result set folded into the co-activation accumulator
@@ -91,6 +96,9 @@ interface GnnGraphContext {
   predictedEdges: Array<{ from: string; to: string }>;
   embs: Map<string, number[]>;
   entities: Map<string, Set<string>>;
+  /** Random-walk positional encoding per node — a deterministic structural
+   *  fingerprint. Empty for engrams above MAX_GNN_RWPE_NODES. */
+  rwpe: Map<string, Float64Array>;
 }
 
 /**
@@ -900,22 +908,34 @@ export class ReinforcementEngine {
       entities.set(n.id, new Set((n.entities ?? []).map((e) => e.toLowerCase())));
     }
     const neighbors = new Map<string, Set<string>>();
-    for (const id of nodeIds) neighbors.set(id, new Set<string>());
+    const wadj = new Map<string, Map<string, number>>();
+    for (const id of nodeIds) {
+      neighbors.set(id, new Set<string>());
+      wadj.set(id, new Map<string, number>());
+    }
     const edgeSet = new Set<string>();
     const positivePairs: Array<[string, string]> = [];
-    const consider = (a: string, b: string): void => {
+    const consider = (a: string, b: string, weight: number): void => {
       if (a === b || !idSet.has(a) || !idSet.has(b)) return;
       neighbors.get(a)!.add(b);
       neighbors.get(b)!.add(a);
+      if (weight > 0) {
+        // Weighted undirected adjacency for RWPE — the strongest weight wins
+        // when the dual-graph connects the same pair more than once.
+        const wa = wadj.get(a)!;
+        const wb = wadj.get(b)!;
+        wa.set(b, Math.max(wa.get(b) ?? 0, weight));
+        wb.set(a, Math.max(wb.get(a) ?? 0, weight));
+      }
       const k = unorderedKey(a, b);
       if (edgeSet.has(k)) return;
       edgeSet.add(k);
       positivePairs.push([a, b]);
     };
     const edges = this.host.listEdges(graphId);
-    for (const e of edges.undirected) consider(e.a, e.b);
+    for (const e of edges.undirected) consider(e.a, e.b, e.weight);
     for (const e of edges.directed) {
-      if (!STRUCTURAL_DIRECTED_TYPES.has(e.type)) consider(e.from, e.to);
+      if (!STRUCTURAL_DIRECTED_TYPES.has(e.type)) consider(e.from, e.to, e.weight);
     }
     // The GNN overlay's own predictions for this engram — used to compute the
     // added/pruned delta against this run's fresh set. They are deliberately
@@ -928,7 +948,11 @@ export class ReinforcementEngine {
       if (pe.graphId !== graphId || !idSet.has(pe.from) || !idSet.has(pe.to)) continue;
       predictedEdges.push({ from: pe.from, to: pe.to });
     }
-    return { graphId, nodeIds, neighbors, edgeSet, positivePairs, predictedEdges, embs, entities };
+    const rwpe = computeRwpe(nodeIds, wadj);
+    return {
+      graphId, nodeIds, neighbors, edgeSet, positivePairs, predictedEdges,
+      embs, entities, rwpe,
+    };
   }
 
   /** Deterministic feature vector for a candidate pair within an engram. */
@@ -949,11 +973,15 @@ export class ReinforcementEngine {
     const [smallE, largeE] = eU.size <= eV.size ? [eU, eV] : [eV, eU];
     let shared = 0;
     for (const x of smallE) if (largeE.has(x)) shared += 1;
+    const pu = ctx.rwpe.get(u);
+    const pv = ctx.rwpe.get(v);
+    const rwpeSim = pu && pv ? rwpeCosine(pu, pv) : 0;
     return {
       cosine: cos,
       commonNeighbors: Math.min(1, common / 8),
       prefAttachment: Math.min(1, Math.log1p(nu.size * nv.size) / 8),
       sharedEntities: Math.min(1, shared / 4),
+      rwpeSim,
     };
   }
 
@@ -1089,4 +1117,80 @@ function sampleArray<T>(arr: ReadonlyArray<T>, max: number): T[] {
     copy[j] = tmp;
   }
   return copy.slice(0, max);
+}
+
+/**
+ * Random-walk positional encoding (RWPE) for every node — a deterministic,
+ * multi-hop structural fingerprint. For node i it is the vector of return
+ * probabilities [ (RW¹)ᵢᵢ … (RWᴷ)ᵢᵢ ], where RW = D⁻¹A is the random-walk
+ * matrix of the weighted undirected adjacency. See arXiv:2110.07875
+ * (GNN-LSPE), which uses RWPE as a *learnable* positional encoding inside
+ * message passing; here it stays a fixed feature the link-predictor MLP
+ * weighs. Fully deterministic, so it does not widen the GNN's
+ * non-deterministic surface. Skipped for engrams above MAX_GNN_RWPE_NODES —
+ * the returned map is then empty and rwpeSim falls back to 0.
+ *
+ * Computed by sparse power iteration per node (x₀ = eᵢ, xₖ = RW·xₖ₋₁), which
+ * stays cheap on the sparse memory graph without materialising RWᵏ.
+ */
+function computeRwpe(
+  nodeIds: string[],
+  wadj: Map<string, Map<string, number>>,
+  steps = GNN_RWPE_STEPS,
+): Map<string, Float64Array> {
+  const rwpe = new Map<string, Float64Array>();
+  if (nodeIds.length === 0 || nodeIds.length > MAX_GNN_RWPE_NODES) return rwpe;
+  // Weighted degree per node — the row sum that normalises RW = D⁻¹A.
+  const degree = new Map<string, number>();
+  for (const [node, nbrs] of wadj) {
+    let d = 0;
+    for (const w of nbrs.values()) d += w;
+    degree.set(node, d);
+  }
+  for (const start of nodeIds) {
+    const enc = new Float64Array(steps);
+    if ((degree.get(start) ?? 0) === 0) {
+      rwpe.set(start, enc); // isolated node — RWPE stays all-zero
+      continue;
+    }
+    // x holds the current walk distribution; record the return mass
+    // x[start] = (RWᵏ)_{start,start} after each step.
+    let x = new Map<string, number>([[start, 1]]);
+    for (let k = 0; k < steps; k++) {
+      const next = new Map<string, number>();
+      for (const [node, mass] of x) {
+        if (mass === 0) continue;
+        const nbrs = wadj.get(node);
+        if (!nbrs) continue;
+        for (const [nb, w] of nbrs) {
+          // degree(nb) > 0: `node` is one of nb's neighbours.
+          const moved = (w / degree.get(nb)!) * mass;
+          next.set(nb, (next.get(nb) ?? 0) + moved);
+        }
+      }
+      x = next;
+      enc[k] = x.get(start) ?? 0;
+    }
+    rwpe.set(start, enc);
+  }
+  return rwpe;
+}
+
+/** Zero-safe cosine similarity of two RWPE vectors. Entries are
+ *  non-negative, so the result is already in [0, 1]; an all-zero
+ *  (isolated-node) encoding yields 0. */
+function rwpeCosine(a: Float64Array, b: Float64Array): number {
+  let dot = 0;
+  let na = 0;
+  let nb = 0;
+  const len = Math.min(a.length, b.length);
+  for (let i = 0; i < len; i++) {
+    const x = a[i]!;
+    const y = b[i]!;
+    dot += x * y;
+    na += x * x;
+    nb += y * y;
+  }
+  if (na === 0 || nb === 0) return 0;
+  return dot / Math.sqrt(na * nb);
 }
