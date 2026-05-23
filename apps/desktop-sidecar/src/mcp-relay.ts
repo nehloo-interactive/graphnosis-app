@@ -199,8 +199,44 @@ class Relay {
       if (this.socket && this.socket.writable) {
         this.socket.write(line);
       } else {
-        // Sidecar is down — buffer for replay on reconnect.
-        this.pendingOutbound.push(line);
+        // Sidecar is down (cortex locked, restart, crash). If this line is a
+        // JSON-RPC REQUEST (has an `id`), respond immediately with an error so
+        // Claude doesn't sit waiting forever. NOTIFICATIONS (no `id`) we keep
+        // buffering for replay on reconnect — notifications don't expect a
+        // response, and dropping them silently is fine for short outages.
+        //
+        // Without this, locking Graphnosis mid-conversation makes the next
+        // tool call hang for up to reconnectWaitMs (default 24h) — terrible
+        // UX. Fast-fail lets the user re-issue after unlocking.
+        let requestId: string | number | undefined;
+        let methodName: string | undefined;
+        try {
+          const msg = JSON.parse(line.trim()) as { id?: unknown; method?: unknown };
+          if (typeof msg.id === 'string' || typeof msg.id === 'number') requestId = msg.id;
+          if (typeof msg.method === 'string') methodName = msg.method;
+        } catch { /* not JSON — keep buffering as a notification analog */ }
+
+        if (requestId !== undefined) {
+          // JSON-RPC error code -32000 is the convention for server-side errors.
+          const errorReply = JSON.stringify({
+            jsonrpc: '2.0',
+            id: requestId,
+            error: {
+              code: -32000,
+              message:
+                'Graphnosis is locked. Open the Graphnosis app and unlock your cortex, ' +
+                'then ask me to retry the previous step.',
+              data: { reason: 'cortex-locked', method: methodName },
+            },
+          }) + '\n';
+          process.stdout.write(errorReply);
+          process.stderr.write(
+            `[graphnosis-relay] fast-failed request id=${String(requestId)} method=${String(methodName)} — sidecar is not connected\n`,
+          );
+        } else {
+          // Notification — buffer for replay on reconnect.
+          this.pendingOutbound.push(line);
+        }
       }
     }
   }

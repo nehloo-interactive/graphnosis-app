@@ -9,6 +9,35 @@ import { ingestClip } from './ingest.js';
 import { withEmbedding } from './embedding-queue.js';
 import { mcpRegistry } from './mcp-registry.js';
 import type { BrainEngine } from './brain-engine.js';
+import { createHmac } from 'node:crypto';
+import { recordConsent, revokeConsent } from '@graphnosis-app/core/settings';
+import type { ConsentRecord } from '@graphnosis-app/core/settings';
+
+// ── Session-level data budget ─────────────────────────────────────────────────
+// These caps apply per MCP connection (i.e. per AI client session). They exist
+// to prevent an AI from systematically exfiltrating the entire personal graph
+// through repeated recall calls — regardless of how politely it asks.
+//
+// Normal usage (a few targeted recalls per conversation) never gets close.
+// A bulk-dump attempt hits the cap after 2–3 maxed-out recall calls.
+// Session breadth cap kept — a single conversation touching > 6 distinct engrams
+// is an enumeration signal regardless of total volume. Cheap to keep; almost never
+// trips in legitimate use.
+const SESSION_ENGRAM_BREADTH_CAP = 6;
+
+// Recall rate limit — max N recall calls per window per client. Catches burst
+// attacks where an agent fires many distinct queries in rapid succession.
+const RECALL_RATE_WINDOW_MS = 60_000;
+const RECALL_RATE_MAX = 10;
+
+// Session replay blocker — reject a recall whose query is too similar to one
+// recently seen from the same client. Catches systematic scans where an attacker
+// re-issues the same (or near-same) query repeatedly to exhaust the result set
+// or paginate through it. We use Jaccard similarity on token sets — semantically
+// blunt (won't catch synonym attacks) but effective against the practical
+// attack shapes: exact replays, reorderings, trivial paraphrases.
+const REPLAY_WINDOW_MS = 5 * 60_000;
+const REPLAY_JACCARD_THRESHOLD = 0.85;
 
 // MCP tools the App exposes to any AI client (Claude Desktop, Claude Code, Cursor, Zed, ...).
 //
@@ -107,6 +136,118 @@ const ForgetInput = z.object({
   graphId: z.string(),
   sourceId: z.string(),
 });
+<<<<<<< Updated upstream
+=======
+const BrowseEngramInput = z.object({
+  engram: z.string(),
+  limit: z.coerce.number().int().positive().max(100).optional(),
+});
+const RecentInput = z.object({
+  engram: z.string().optional(),
+  limit: z.coerce.number().int().positive().max(50).optional(),
+});
+const SuggestEngramInput = z.object({
+  text: z.string(),
+  top_k: z.coerce.number().int().positive().max(5).optional(),
+});
+const RecallStructuredInput = z.preprocess(
+  (raw: unknown) => {
+    if (typeof raw !== 'object' || raw === null) return raw;
+    const r = raw as Record<string, unknown>;
+    if (!r.query && (r.q || r.question)) return { ...r, query: r.q ?? r.question };
+    return raw;
+  },
+  z.object({
+    query: z.string(),
+    maxTokens: z.coerce.number().int().positive().max(8000).optional(),
+    maxNodes: z.coerce.number().int().positive().max(50).optional(),
+    only_engrams: z.array(z.string()).optional(),
+    except_engrams: z.array(z.string()).optional(),
+  }),
+);
+const RecallWithCitationsInput = RecallStructuredInput;
+const FindSourceInput = z.object({
+  keyword: z.string(),
+  engram: z.string().optional(),
+  limit: z.coerce.number().int().positive().max(50).optional(),
+});
+const RecallSourceInput = z.object({
+  sourceId: z.string(),
+  engram: z.string().optional(),
+});
+const CompareEngramsInput = z.object({
+  query: z.string(),
+  engram_a: z.string(),
+  engram_b: z.string(),
+  maxNodes: z.coerce.number().int().positive().max(20).optional(),
+});
+const EngramSummaryInput = z.object({
+  engram: z.string(),
+  sample_size: z.coerce.number().int().positive().max(30).optional(),
+});
+const CrossSearchInput = z.object({
+  query: z.string(),
+  engrams: z.array(z.string()).min(1),
+  maxNodes: z.coerce.number().int().positive().max(50).optional(),
+});
+const TransferSourceInput = z.object({
+  sourceId: z.string(),
+  from_engram: z.string(),
+  to_engram: z.string(),
+});
+const MergeEngramsInput = z.object({
+  from_engram: z.string(),
+  to_engram: z.string(),
+});
+const AuditMemoryInput = z.object({
+  engrams: z.array(z.string()).optional(),
+  threshold: z.coerce.number().min(0.5).max(1.0).optional(),
+});
+const CheckDuplicateInput = z.object({
+  text: z.string(),
+  engram: z.string().optional(),
+  threshold: z.coerce.number().min(0.5).max(1.0).optional(),
+});
+const IngestBatchInput = z.object({
+  items: z.array(z.object({
+    text: z.string(),
+    label: z.string().optional(),
+    target_engram: z.string().optional(),
+    graphId: z.string().optional(),
+  })).min(1).max(20),
+});
+const GetEngramSchemaInput = z.object({
+  engram: z.string(),
+});
+const DuplicatePairsInput = z.object({
+  limit: z.coerce.number().int().positive().max(50).optional(),
+});
+const HealingJournalInput = z.object({
+  limit: z.coerce.number().int().positive().max(50).optional(),
+});
+const GnnNeighborsInput = z.object({
+  query: z.string(),
+  engram: z.string().optional(),
+  limit: z.coerce.number().int().positive().max(20).optional(),
+});
+const LlmQueryInput = z.preprocess(
+  (raw: unknown) => {
+    if (typeof raw !== 'object' || raw === null) return raw;
+    const r = raw as Record<string, unknown>;
+    if (!r.question && r.query) return { ...r, question: r.query };
+    return raw;
+  },
+  z.object({
+    question: z.string(),
+    only_engrams: z.array(z.string()).optional(),
+    maxTokens: z.coerce.number().int().positive().max(8000).optional(),
+  }),
+);
+const LlmDistillInput = z.object({
+  text: z.string(),
+  target_engram: z.string().optional(),
+});
+>>>>>>> Stashed changes
 
 /**
  * Resolve a user-supplied engram name against the loaded graphs.
@@ -298,7 +439,7 @@ export interface McpDeps {
   /** Default graph for ambient remember when no graphId is provided. */
   defaultGraphId: () => string;
   /** UI hook so a "correction proposed" notification fires for the user to confirm. */
-  pendingDiffs: Map<string, { graphId: string; diff: import('./correction.js').CorrectionDiff; createdAt: number }>;
+  pendingDiffs: Map<string, { graphId: string; diff: import('./correction.js').CorrectionDiff; createdAt: number; mode?: 'deterministic' | 'gnn-expanded' | 'llm-assisted'; prompt?: string }>;
   /**
    * Emit a frame to all connected event-socket subscribers (currently
    * just the App's Rust event_stream forwarder). Used by `remember` to
@@ -319,6 +460,202 @@ export interface McpDeps {
  * so multiple Servers built from the same `deps` share one host + pendingDiffs
  * state — exactly what we want when one sidecar serves multiple MCP clients.
  */
+// ── Consent phrase engine ─────────────────────────────────────────────────────
+//
+// Generates a rotating human-readable consent phrase from an HMAC-SHA256 digest
+// of the cortex's secret key. The phrase is displayed ONLY in the Graphnosis app
+// UI — never returned via any MCP tool, IPC response, or log line. The AI client
+// relays what the user physically typed; it can never know the phrase in advance.
+//
+// Security:
+//   - 256 words → 256^3 = ~16.7M combinations per window
+//   - 5-attempt lockout eliminates brute force
+//   - Phrase rotates every 24h (personal) / 1h (sensitive)
+//   - Word list is public (FSL source-available) — security is from the HMAC key
+
+const PERSONAL_WINDOW_MS  = 24 * 60 * 60 * 1000; // 24 hours
+const SENSITIVE_WINDOW_MS =       60 * 60 * 1000; // 1 hour
+
+const CONSENT_WORD_LIST: readonly string[] = [
+  // A
+  'acorn','adapt','affix','agile','alarm','album','alert','align',
+  'alloy','amber','amend','ample','angel','angle','annex','anvil',
+  'apart','apple','apron','arbor','arena','arise','armor','aroma',
+  'array','asset','atlas','attic','audio','audit','awake','axiom',
+  // B
+  'badge','baker','banjo','basin','batch','baton','beach','bench',
+  'birch','blade','blank','blend','block','bloom','board','brave',
+  'bread','brick','brief','brine','brook','brush','build','burst',
+  // C
+  'cabin','cable','camel','canal','cargo','cedar','chain','chalk',
+  'charm','chart','chase','chess','chief','chill','chord','chunk',
+  'civic','clamp','clash','clasp','clean','clear','click','cliff',
+  'cloud','comet','coral','couch','count','court','crank','creek',
+  'crisp','cross','crown','crush','crust','cycle','dance','datum',
+  // D-E
+  'depot','depth','drift','drill','drink','drums','dunes','eagle',
+  'earth','ember','epoch','exact','extra',
+  // F
+  'feast','fence','fever','fiber','field','finch','fixed','flame',
+  'flash','fleet','flick','flock','flood','floor','flora','fluid',
+  'flute','focus','forge','forte','forum','fresh','frost','fruit',
+  // G
+  'gavel','gauge','gleam','glide','globe','grace','grade','grain',
+  'grasp','great','green','greet','grind','group','grove','guard',
+  'guild','gulch','gusto',
+  // H
+  'hatch','haven','heron','holly','honor','horde',
+  // I-J
+  'ideal','image','infer','inlet','input','ivory','jewel','joint',
+  'judge','jumbo','juror',
+  // K-L
+  'kayak','knife','knock','known','lance','large','laser','latch',
+  'layer','ledge','lemon','level','light','limit','linen','liver',
+  'local','lodge','logic','lunar',
+  // M
+  'maple','march','match','maxim','media','merge','metal','might',
+  'model','month','moral','motor','mount','muddy','mural','music',
+  // N-O
+  'nerve','nexus','niche','noble','noise','north','notch','novel',
+  'nudge','ocean','onset','optic','orbit','order','organ','outer',
+  'oxide','ozone',
+  // P
+  'panel','pause','pearl','pedal','perch','phase','pinch','pixel',
+  'pivot','place','plain','plank','plant','plaza','pluck','plume',
+  'point','polar','power','prism','probe','proud','pulse',
+  // Q-R
+  'quake','query','quiet','quota','radar','rapid','ratio','reach',
+  'realm','rebel','relay','resin','ridge','rivet','robot','rocky',
+  'rough','round','route','royal','ruddy','ruler','rural',
+  // S
+  'scout','serum','shard','sharp','sheen','shelf','shine','shock',
+  'shore','sigma','sixth','slash','sleek','slide','slope','smart',
+  'smoke','solar','solid','solve','south','spark','speak','spear',
+  'speck','speed','spell','spice','spike','spine','spire','spoke',
+  'spoon','sport','spray','squad','stack','staff','stage','stake',
+  'stalk','stamp','stand','stark','start','state','steam','steel',
+  'steep','stern','stick','still','stone','storm','stout','strap',
+  'stray','strip','strut','study','style','surge','swamp','swift',
+  'sword','swirl',
+  // T
+  'table','tapir','tardy','tempo','tense','tidal','tiger','trace',
+  'track','trail','train','trait','trawl','trend','trial','tribe',
+  'trove','truce','truly','trunk','trust','twist',
+  // U-V
+  'ultra','union','unity','upper','urban','usher','utter','valid',
+  'valor','valve','vault','viola','viral','vista','vivid','voice',
+  'volts','voter',
+  // W-Z
+  'wedge','weigh','weird','whirl','widen','winch','witch','witty',
+  'world','worth','wreck','yacht','yield','young','youth','zebra',
+  'zesty','zippy',
+] as const;
+
+/** AI client → privacy policy URL (best-effort; unknown clients get a generic notice). */
+const PROVIDER_PRIVACY_URLS: Record<string, string> = {
+  'claude-ai':   'https://www.anthropic.com/privacy',
+  'claude-code': 'https://www.anthropic.com/privacy',
+  'cursor':      'https://www.cursor.com/privacy',
+  'zed':         'https://zed.dev/privacy',
+  'continue':    'https://www.continue.dev/privacy',
+  'windsurf':    'https://www.codeium.com/privacy',
+};
+
+/** Generate the current consent phrase for a tier. Never logged or returned via MCP. */
+function generateConsentPhrase(hmacKey: string, tier: 'personal' | 'sensitive'): string {
+  const windowMs = tier === 'sensitive' ? SENSITIVE_WINDOW_MS : PERSONAL_WINDOW_MS;
+  const slot = Math.floor(Date.now() / windowMs);
+  const digest = createHmac('sha256', Buffer.from(hmacKey, 'hex'))
+    .update(`${tier}:${slot}`)
+    .digest();
+  const n = CONSENT_WORD_LIST.length;
+  return [digest[0]! % n, digest[1]! % n, digest[2]! % n]
+    .map((i) => CONSENT_WORD_LIST[i])
+    .join(' ');
+}
+
+/** Validate a user-typed phrase. Accepts current + previous window (60s grace). */
+function validateConsentPhrase(hmacKey: string, tier: 'personal' | 'sensitive', input: string): boolean {
+  const normalized = input.trim().toLowerCase();
+  if (!normalized) return false;
+  if (normalized === generateConsentPhrase(hmacKey, tier)) return true;
+  // Grace period: also accept previous window to handle boundary clock skew.
+  const windowMs = tier === 'sensitive' ? SENSITIVE_WINDOW_MS : PERSONAL_WINDOW_MS;
+  const prevSlot = Math.floor((Date.now() - 60_000) / windowMs);
+  const currSlot = Math.floor(Date.now() / windowMs);
+  if (prevSlot !== currSlot) {
+    const digest = createHmac('sha256', Buffer.from(hmacKey, 'hex'))
+      .update(`${tier}:${prevSlot}`)
+      .digest();
+    const n = CONSENT_WORD_LIST.length;
+    const prev = [digest[0]! % n, digest[1]! % n, digest[2]! % n]
+      .map((i) => CONSENT_WORD_LIST[i])
+      .join(' ');
+    if (normalized === prev) return true;
+  }
+  return false;
+}
+
+/**
+ * Check consent validity against the EFFECTIVE interval for this (client, tier),
+ * which is the stricter of: the stored record's own expiresAt, and the current
+ * effective interval computed from global settings + per-graph overrides.
+ */
+function checkConsentValid(
+  consents: ConsentRecord[] | undefined,
+  clientName: string,
+  tier: 'personal' | 'sensitive',
+  effectiveIntervalMs: number,
+): boolean {
+  if (!consents?.length) return false;
+  const now = Date.now();
+  return consents.some(
+    (r) =>
+      r.clientName === clientName &&
+      r.tier === tier &&
+      r.withdrawnAt === undefined &&
+      r.expiresAt > now &&
+      (effectiveIntervalMs === -1 || r.grantedAt + effectiveIntervalMs > now),
+  );
+}
+
+// In-memory failed-attempt tracker per (clientName:tier). Resets on sidecar restart.
+const _consentFailures = new Map<string, { count: number; windowStart: number }>();
+const LOCKOUT_MAX_ATTEMPTS = 5;
+const LOCKOUT_WINDOW_MS = 10 * 60_000; // 10 minutes
+
+function trackConsentFailure(
+  clientName: string,
+  tier: 'personal' | 'sensitive',
+): { lockedOut: boolean; count: number } {
+  const key = `${clientName}:${tier}`;
+  const now = Date.now();
+  const prev = _consentFailures.get(key);
+  if (!prev || now - prev.windowStart > LOCKOUT_WINDOW_MS) {
+    _consentFailures.set(key, { count: 1, windowStart: now });
+    return { lockedOut: false, count: 1 };
+  }
+  const count = prev.count + 1;
+  _consentFailures.set(key, { count, windowStart: prev.windowStart });
+  return { lockedOut: count >= LOCKOUT_MAX_ATTEMPTS, count };
+}
+
+function clearConsentFailures(clientName: string, tier: 'personal' | 'sensitive'): void {
+  _consentFailures.delete(`${clientName}:${tier}`);
+}
+
+/** Public API for ipc.ts: generate the phrase for a tier + compute its expiry time. */
+export function getConsentPhraseForTier(
+  hmacKey: string,
+  tier: 'personal' | 'sensitive',
+): { phrase: string; expiresAt: number } {
+  const windowMs = tier === 'sensitive' ? SENSITIVE_WINDOW_MS : PERSONAL_WINDOW_MS;
+  const slot = Math.floor(Date.now() / windowMs);
+  const phrase = generateConsentPhrase(hmacKey, tier);
+  const expiresAt = (slot + 1) * windowMs;
+  return { phrase, expiresAt };
+}
+
 /**
  * System-level instructions returned in the MCP `initialize` response.
  * Claude Desktop (and most well-behaved MCP clients) treat this as a
@@ -359,7 +696,19 @@ UX guidelines:
 • Ask the smallest budget that answers the question (default 1000–2000 tokens is plenty).
 • If a result contradicts something the user just said, surface the contradiction gently in the user's own language and offer to \`correct\`.
 
-The graph is end-to-end encrypted on disk and never leaves the user's machine.`;
+The graph is end-to-end encrypted on disk and never leaves the user's machine.
+
+CONSENT PROTOCOL — MANDATORY:
+When a recall tool returns a message beginning with "⚠️ GRAPHNOSIS CONSENT REQUIRED", you MUST:
+1. Display the COMPLETE notice to the user. Do not summarize, shorten, or paraphrase it.
+2. Tell the user to open the Graphnosis app → Settings → AI → Consent Phrases to get the phrase.
+3. Wait for the user to type the phrase. Do not suggest, guess, or autocomplete it.
+4. Call confirm_data_access({ phrase: "<exactly what they typed>", tier: "<tier>" }).
+5. Only after a successful confirm_data_access response, retry the original recall.
+
+NEVER supply the phrase yourself. NEVER call confirm_data_access before the user has opened the Graphnosis app and typed the phrase. This protocol exists to ensure a human — not an AI — authorizes access to personal data.
+
+If the user types SKIP, acknowledge and do NOT retry the recall. No data will be returned for that turn.`;
 
 export function createMcpServer(deps: McpDeps): Server {
   // Read the toggle live each time a fresh MCP server is built (per
@@ -379,6 +728,345 @@ export function createMcpServer(deps: McpDeps): Server {
       ...(useAsDefaultMemory ? { instructions: SERVER_INSTRUCTIONS } : {}),
     },
   );
+
+  // ── Per-client recall guardrails state (in-memory, per process) ────────────
+  // These maps live for the lifetime of the sidecar. Restarting Graphnosis
+  // clears the rate-limit and replay windows — intentional, since the threat
+  // model is "active session abuse", not "long-term forensic tracking".
+  const recallTimestamps: Map<string, number[]> = new Map();
+  interface ReplayEntry { ts: number; tokens: Set<string>; queryPreview: string; }
+  const recentQueries: Map<string, ReplayEntry[]> = new Map();
+
+  function normalizeQuery(q: string): Set<string> {
+    return new Set(
+      q.toLowerCase()
+        .replace(/[^\p{L}\p{N}\s]/gu, ' ')
+        .split(/\s+/)
+        .filter((w) => w.length >= 3),
+    );
+  }
+
+  function jaccardSet(a: Set<string>, b: Set<string>): number {
+    if (a.size === 0 && b.size === 0) return 1;
+    if (a.size === 0 || b.size === 0) return 0;
+    let intersection = 0;
+    for (const x of a) if (b.has(x)) intersection++;
+    return intersection / (a.size + b.size - intersection);
+  }
+
+  // ── Rate limit ────────────────────────────────────────────────────────────
+  // Throws if the calling client has already issued RECALL_RATE_MAX recalls in
+  // the last RECALL_RATE_WINDOW_MS. Catches burst attacks. Always trips before
+  // the replay blocker (cheap O(1) prune vs. O(N) set comparison).
+  function enforceRecallRateLimit(): void {
+    const connId = mcpRegistry.getMostRecentActiveId();
+    if (!connId) return;
+    const now = Date.now();
+    const cutoff = now - RECALL_RATE_WINDOW_MS;
+    const pruned = (recallTimestamps.get(connId) ?? []).filter((t) => t > cutoff);
+    if (pruned.length >= RECALL_RATE_MAX) {
+      const oldest = pruned[0]!;
+      const waitMs = oldest + RECALL_RATE_WINDOW_MS - now;
+      if (deps.broadcastRaw) {
+        deps.broadcastRaw({
+          kind: 'mcp.recall-rate-limited',
+          name: connId,
+          payload: {
+            recentCalls: pruned.length,
+            windowMs: RECALL_RATE_WINDOW_MS,
+            maxPerWindow: RECALL_RATE_MAX,
+            waitMs,
+          },
+        });
+      }
+      console.error(`[rate-limit] EXCEEDED connId=${connId} count=${pruned.length}/${RECALL_RATE_MAX}`);
+      throw new Error(
+        `Recall rate limit exceeded — ${pruned.length} recalls in the last ${Math.round(RECALL_RATE_WINDOW_MS / 1000)}s. ` +
+        `Maximum is ${RECALL_RATE_MAX} per ${Math.round(RECALL_RATE_WINDOW_MS / 1000)}s. ` +
+        `Wait ~${Math.ceil(waitMs / 1000)}s and try again. ` +
+        `This is a Graphnosis security guardrail.`,
+      );
+    }
+    pruned.push(now);
+    recallTimestamps.set(connId, pruned);
+  }
+
+  // ── Session replay blocker ────────────────────────────────────────────────
+  // Throws if the user's query is highly similar (Jaccard ≥ 0.85) to one issued
+  // in the last REPLAY_WINDOW_MS by the same client. Catches systematic memory
+  // scraping via repeated/near-repeated queries.
+  function enforceReplayBlocker(query: string): void {
+    const connId = mcpRegistry.getMostRecentActiveId();
+    if (!connId) return;
+    const now = Date.now();
+    const cutoff = now - REPLAY_WINDOW_MS;
+    const pruned = (recentQueries.get(connId) ?? []).filter((e) => e.ts > cutoff);
+    const tokens = normalizeQuery(query);
+    if (tokens.size === 0) {
+      recentQueries.set(connId, pruned);
+      return;
+    }
+    for (const prev of pruned) {
+      const sim = jaccardSet(tokens, prev.tokens);
+      if (sim >= REPLAY_JACCARD_THRESHOLD) {
+        const ageS = Math.round((now - prev.ts) / 1000);
+        if (deps.broadcastRaw) {
+          deps.broadcastRaw({
+            kind: 'mcp.session-replay-blocked',
+            name: connId,
+            payload: {
+              similarity: Math.round(sim * 100) / 100,
+              previousQuery: prev.queryPreview,
+              ageSeconds: ageS,
+            },
+          });
+        }
+        console.error(`[replay] BLOCKED connId=${connId} sim=${sim.toFixed(2)} ageS=${ageS}`);
+        throw new Error(
+          `Session replay detected — this query is ${Math.round(sim * 100)}% similar to one issued ${ageS}s ago ` +
+          `(previous: "${prev.queryPreview}"). Modify your query meaningfully or wait ${Math.round(REPLAY_WINDOW_MS / 60_000)} min. ` +
+          `This is a Graphnosis security guardrail that prevents systematic memory scraping.`,
+        );
+      }
+    }
+    pruned.push({ ts: now, tokens, queryPreview: query.slice(0, 80) });
+    recentQueries.set(connId, pruned);
+  }
+
+  // ── Session-cap enforcement (opt-in by user) ──────────────────────────────
+  //
+  // All three caps default to disabled. Power users / extra-protective users
+  // can enable them in Settings → AI to add cumulative-volume backstops on top
+  // of the consent gate + rate limit + replay blocker.
+  //
+  // Tracked stats are recorded regardless of enable state so the UI can show
+  // "how much did this conversation consume" even when no cap is enforced.
+  function enforceSessionBudget(tokens: number, nodes: number, engramId?: string): void {
+    const connId = mcpRegistry.getMostRecentActiveId();
+    if (!connId) return;
+    const stats = mcpRegistry.trackDataServed(connId, tokens, nodes);
+    const aiSettings = deps.host.getSettings().ai;
+
+    // Token cap — only enforced when user opted in.
+    if (aiSettings.sessionTokenCapEnabled === true) {
+      const cap = aiSettings.sessionTokenCap ?? 100_000;
+      if (stats.tokensServed > cap) {
+        if (deps.broadcastRaw) {
+          deps.broadcastRaw({
+            kind: 'mcp.session-budget-exceeded',
+            name: connId,
+            payload: {
+              tokensServed: stats.tokensServed,
+              nodesServed: stats.nodesServed,
+              sessionTokenCap: cap,
+              sessionNodeCap: aiSettings.sessionNodeCap ?? 500,
+            },
+          });
+        }
+        throw new Error(
+          `Session token cap exceeded (${stats.tokensServed.toLocaleString()}/${cap.toLocaleString()} tokens). ` +
+          `Start a new conversation to reset. Configurable in Settings → AI.`,
+        );
+      }
+    }
+
+    // Node cap — only enforced when user opted in.
+    if (aiSettings.sessionNodeCapEnabled === true) {
+      const cap = aiSettings.sessionNodeCap ?? 500;
+      if (stats.nodesServed > cap) {
+        if (deps.broadcastRaw) {
+          deps.broadcastRaw({
+            kind: 'mcp.session-budget-exceeded',
+            name: connId,
+            payload: {
+              tokensServed: stats.tokensServed,
+              nodesServed: stats.nodesServed,
+              sessionTokenCap: aiSettings.sessionTokenCap ?? 100_000,
+              sessionNodeCap: cap,
+            },
+          });
+        }
+        throw new Error(
+          `Session node cap exceeded (${stats.nodesServed}/${cap} nodes). ` +
+          `Start a new conversation to reset. Configurable in Settings → AI.`,
+        );
+      }
+    }
+
+    // Breadth cap — only enforced when user opted in. Tracking always happens
+    // because it's cheap and useful for the UI's "this session touched N engrams" stat.
+    if (engramId) {
+      const breadth = mcpRegistry.trackEngramAccess(connId, engramId);
+      if (aiSettings.sessionBreadthCapEnabled === true) {
+        const cap = aiSettings.sessionBreadthCap ?? SESSION_ENGRAM_BREADTH_CAP;
+        if (breadth > cap) {
+          if (deps.broadcastRaw) {
+            deps.broadcastRaw({
+              kind: 'mcp.bulk-access-warning',
+              name: connId,
+              payload: {
+                uniqueEngramsAccessed: breadth,
+                tokensServed: stats.tokensServed,
+                nodesServed: stats.nodesServed,
+              },
+            });
+          }
+          throw new Error(
+            `Session engram-breadth cap exceeded (${breadth}/${cap} engrams). ` +
+            `Start a new conversation to reset. Configurable in Settings → AI.`,
+          );
+        }
+      }
+    }
+  }
+
+  // ── Layer 4 Consent gate ──────────────────────────────────────────────────
+  //
+  // Called BEFORE any response that contains personal or sensitive memory data.
+  // Throws an MCP error carrying the full consent notice when consent is absent
+  // or expired. Returns a footer string (appended to the result) when consent is valid.
+  //
+  // Security invariant: this function NEVER returns the phrase — it only validates
+  // phrases supplied by the user through confirm_data_access. The phrase lives only
+  // in the Graphnosis App UI (a separate OS process the AI cannot reach programmatically).
+  //
+  // "Stricter wins" for per-graph consent interval overrides:
+  //   effective_interval = min(per-graph consentIntervalMs, global tier default)
+  //   A per-graph value of -1 (permanent) is treated as "not set" (no override).
+  // ── Search-only LLM gate ──────────────────────────────────────────────────
+  // When the user has set `searchLlmOnly: true`, the Local LLM is reserved
+  // exclusively for in-app search (synthesis + rerank). MCP tools that would
+  // otherwise consume the LLM (develop, predict, insights, llm_query) must
+  // refuse, even if the LLM is technically reachable.
+  function refuseIfLlmRestrictedToSearch(toolName: string): void {
+    if (deps.host.getSettings().ai.searchLlmOnly === true) {
+      throw new Error(
+        `${toolName} is disabled: the user has restricted the Local LLM to in-app search only. ` +
+        `Use the deterministic tools (recall, remember, correct) instead, or ask the user to disable ` +
+        `"Use Local LLM only for search" in Settings → AI.`,
+      );
+    }
+  }
+
+  async function checkConsentOrThrow(onlyGraphIds: string[] | null): Promise<{ consentFooter: string }> {
+    const settings = deps.host.getSettings();
+    const clientName = mcpRegistry.getMostRecentClientName() ?? 'unknown-client';
+    const clientType = settings.ai.clientTypes?.[clientName] ?? 'chat';
+    const consents = settings.ai.dataAccessConsents;
+
+    // Determine the set of graphs this call will touch.
+    const graphIds = onlyGraphIds ?? deps.host.listGraphs();
+
+    // Build a map of tier → effective consent interval.
+    // Only personal/sensitive tiers require consent; public is always allowed.
+    const tierIntervals = new Map<'personal' | 'sensitive', number>();
+    for (const graphId of graphIds) {
+      const meta = deps.host.getGraphMetadata(graphId);
+      const tier = (meta as any)?.sensitivityTier as string | undefined;
+      if (tier !== 'personal' && tier !== 'sensitive') continue;
+      const t = tier as 'personal' | 'sensitive';
+
+      let current = tierIntervals.get(t);
+      if (current === undefined) {
+        // Autonomous agents always re-confirm; chat uses the user's setting.
+        current = clientType === 'agent' ? 0
+          : t === 'sensitive'
+            ? (settings.ai.consentIntervalSensitiveMs ?? 3_600_000)
+            : (settings.ai.consentIntervalPersonalMs ?? -1);
+      }
+      // Per-graph override: stricter wins (smaller ms = stricter; -1 = permanent = skip).
+      const perGraph = (meta as any)?.consentIntervalMs as number | undefined;
+      if (perGraph !== undefined && perGraph !== -1) {
+        if (current === -1 || perGraph < current) current = perGraph;
+      }
+      tierIntervals.set(t, current);
+    }
+
+    if (tierIntervals.size === 0) return { consentFooter: '' }; // all public
+
+    const missingTiers: Array<'personal' | 'sensitive'> = [];
+    for (const [tier, effectiveIntervalMs] of tierIntervals) {
+      if (!checkConsentValid(consents, clientName, tier, effectiveIntervalMs)) {
+        missingTiers.push(tier);
+      }
+    }
+
+    if (missingTiers.length === 0) {
+      // All consents valid — build a compact footer for the response.
+      const footerParts: string[] = [];
+      for (const [tier] of tierIntervals) {
+        const record = consents?.find(
+          (r) => r.clientName === clientName && r.tier === tier && !r.withdrawnAt && r.expiresAt > Date.now(),
+        );
+        if (record) {
+          const until = record.expiresAt >= Number.MAX_SAFE_INTEGER - 1
+            ? 'permanently'
+            : `until ${new Date(record.expiresAt).toLocaleTimeString()}`;
+          footerParts.push(`${tier} access: ${until}`);
+        }
+      }
+      const footer = footerParts.length
+        ? `\n\n[${clientName} — ${footerParts.join(', ')}. Revoke in Settings → AI.]`
+        : '';
+      return { consentFooter: footer };
+    }
+
+    // Build the consent notice. Distinguish first-time from re-prompt.
+    const isFirstTime = (tier: 'personal' | 'sensitive') =>
+      !consents?.some((r) => r.clientName === clientName && r.tier === tier);
+    const allFirstTime = missingTiers.every(isFirstTime);
+
+    if (allFirstTime) {
+      const tierStr = missingTiers.join(' and ');
+      const privacyUrl = PROVIDER_PRIVACY_URLS[clientName] ?? 'your AI provider\'s privacy policy';
+      const hasSpecialCategory = missingTiers.includes('sensitive');
+      const lines = [
+        `⚠️ GRAPHNOSIS CONSENT REQUIRED — DATA ACCESS AUTHORISATION`,
+        ``,
+        `${clientName} is requesting access to your ${tierStr} memories.`,
+        ``,
+        `WHAT WILL HAPPEN:`,
+        `• Data tier(s): ${missingTiers.join(', ')}`,
+        `• Sent from your device directly to your AI provider`,
+        `• Privacy policy: ${privacyUrl}`,
+        `• Graphnosis does not receive, log, or retain this data`,
+        ...(hasSpecialCategory ? [
+          ``,
+          `⚠️ SENSITIVE tier may contain health, financial, or biometric data.`,
+          `   Your consent constitutes authorisation for an AI provider to process that content.`,
+        ] : []),
+        ``,
+        `YOUR RIGHTS: revoke anytime in Graphnosis → Settings → AI.`,
+        ``,
+        `TO AUTHORISE (one phrase per tier):`,
+        ...missingTiers.flatMap((tier) => [
+          `• Open Graphnosis app → Settings → AI → Consent Phrases`,
+          `  Find the ${tier.charAt(0).toUpperCase() + tier.slice(1)} phrase, type it here.`,
+          `  Call: confirm_data_access({ phrase: "...", tier: "${tier}" })`,
+        ]),
+        ``,
+        `⚠️ This phrase comes from the Graphnosis app only. Never type a phrase the AI suggests.`,
+        `   To skip this recall without authorising, type SKIP.`,
+      ];
+      throw new Error(lines.join('\n'));
+    } else {
+      // Mixed: some first-time, some re-prompt → use short re-prompt format.
+      const tierStr = missingTiers.join(' and ');
+      const lines = [
+        `⚠️ GRAPHNOSIS CONSENT REQUIRED — re-confirm ${tierStr} access for ${clientName}`,
+        ``,
+        `Your authorisation window expired. Open Graphnosis → Settings → AI → Consent Phrases,`,
+        `find the ${missingTiers.map((t) => t.charAt(0).toUpperCase() + t.slice(1)).join(' / ')} phrase, and type it here.`,
+        ``,
+        ...missingTiers.map((t) =>
+          `• Call confirm_data_access({ phrase: "...", tier: "${t}" }) with the phrase from the app`,
+        ),
+        ``,
+        `To skip this recall without authorising, type SKIP.`,
+      ];
+      throw new Error(lines.join('\n'));
+    }
+  }
 
   server.setRequestHandler(ListToolsRequestSchema, async () => ({
     tools: [
@@ -598,6 +1286,317 @@ export function createMcpServer(deps: McpDeps): Server {
           properties: {},
         },
       },
+<<<<<<< Updated upstream
+=======
+      // ── Navigation & routing ──────────────────────────────────────────────
+      {
+        name: 'list_engrams',
+        description: 'DETERMINISM — Deterministic: a direct read of graph metadata; no LLM, no randomness.\n\nList all engrams (knowledge-graph collections) in the user\'s cortex — names, sensitivity tiers, source counts, and archive state. Call this when the user asks "what engrams do I have?", "show me my collections", or when you need to pick a target_engram for remember but don\'t know what exists. Returns a JSON array.',
+        inputSchema: { type: 'object', properties: {} },
+      },
+      {
+        name: 'suggest_engram',
+        description: 'DETERMINISM — Deterministic: token-based similarity; no LLM.\n\nRecommend the best engram(s) to route a new note into, based on lexical similarity between the note text and engram names. Call this before remember when you\'re unsure which engram fits — saves a round trip through the banner flow. Returns a ranked short-list with match scores.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            text: { type: 'string', description: 'The note or summary text you\'re about to remember.' },
+            top_k: { type: 'number', description: 'How many suggestions to return. Default 3, max 5.' },
+          },
+          required: ['text'],
+        },
+      },
+      {
+        name: 'browse_engram',
+        description: 'DETERMINISM — Deterministic: a direct read of the source index; no LLM, no randomness.\n\nList every source ingested into a specific engram — file paths, clip refs, timestamps, and IDs — newest first. Use this before forget (to confirm a sourceId), before transfer_source, or when the user wants to audit what\'s in an engram.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            engram: { type: 'string', description: 'Engram slug or display name (fuzzy-matched).' },
+            limit: { type: 'number', description: 'Max sources to return. Default 20.' },
+          },
+          required: ['engram'],
+        },
+      },
+      {
+        name: 'recent',
+        description: 'DETERMINISM — Deterministic: a direct read of the source index; no LLM.\n\nReturn the most recently ingested sources across all engrams, or scoped to one engram. Useful for "what did I just save?", onboarding audits, or confirming a remember succeeded.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            engram: { type: 'string', description: 'Optional: restrict to one engram (slug or display name).' },
+            limit: { type: 'number', description: 'Number of sources to return. Default 10, max 50.' },
+          },
+        },
+      },
+      {
+        name: 'get_engram_schema',
+        description: 'DETERMINISM — Deterministic: a direct read of engram metadata; no LLM.\n\nReturn the metadata for a specific engram — display name, sensitivity tier, template, and creation date. Use this before routing sensitive notes to confirm the correct tier, or to inspect a template before batch-ingesting structured notes.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            engram: { type: 'string', description: 'Engram slug or display name (fuzzy-matched).' },
+          },
+          required: ['engram'],
+        },
+      },
+      // ── Advanced recall ───────────────────────────────────────────────────
+      {
+        name: 'recall_structured',
+        description: 'DETERMINISM — Same as recall: deterministic by default, optional non-deterministic Neural Network appendix.\n\nLike recall, but returns the results as a JSON array of node objects (nodeId, graphId, tier, score, text, sourceId) instead of a prompt-ready prose block. Use when you need to programmatically process, filter, sort, or display recall results — e.g. building a table, computing statistics, or choosing which sourceIds to forward to a follow-up tool. Accepts the same only_engrams / except_engrams scope filters as recall.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            query: { type: 'string' },
+            maxTokens: { type: 'number', description: 'Token budget. Default 2000.' },
+            maxNodes: { type: 'number', description: 'Max nodes per graph. Default 20.' },
+            only_engrams: { type: 'array', items: { type: 'string' }, description: 'Restrict to these engrams.' },
+            except_engrams: { type: 'array', items: { type: 'string' }, description: 'Exclude these engrams.' },
+          },
+          required: ['query'],
+        },
+      },
+      {
+        name: 'recall_with_citations',
+        description: 'DETERMINISM — Same as recall: deterministic by default.\n\nLike recall, but each memory node is followed by an inline citation: the sourceId it was derived from (e.g. "[clip:abc123]"). Use when you want to offer the user traceable provenance — "this came from source X" — or when a downstream tool needs source attribution per fact. Accepts the same scope filters as recall.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            query: { type: 'string' },
+            maxTokens: { type: 'number', description: 'Token budget. Default 2000.' },
+            maxNodes: { type: 'number', description: 'Max nodes per engram. Default 20.' },
+            only_engrams: { type: 'array', items: { type: 'string' }, description: 'Restrict to these engrams.' },
+            except_engrams: { type: 'array', items: { type: 'string' }, description: 'Exclude these engrams.' },
+          },
+          required: ['query'],
+        },
+      },
+      {
+        name: 'compare_engrams',
+        description: 'DETERMINISM — Same as recall: deterministic by default.\n\nRun the same query against two different engrams and return the results side-by-side under separate headings. Use when the user wants to contrast what they remember in one context vs. another (e.g. "work" vs. "personal", "2025 plans" vs. "2026 plans"), or when helping the user decide which engram to route a new note into.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            query: { type: 'string' },
+            engram_a: { type: 'string', description: 'First engram (slug or display name).' },
+            engram_b: { type: 'string', description: 'Second engram (slug or display name).' },
+            maxNodes: { type: 'number', description: 'Max nodes per engram. Default 10.' },
+          },
+          required: ['query', 'engram_a', 'engram_b'],
+        },
+      },
+      {
+        name: 'cross_search',
+        description: 'DETERMINISM — Same as recall: deterministic by default.\n\nRun a federated recall over a specific subset of engrams (rather than all of them), with results grouped and labelled per engram. Use when the user names multiple collections in a query ("check my book notes and my work notes"), or when you want to search a hand-picked set without polluting results with unrelated engrams.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            query: { type: 'string' },
+            engrams: { type: 'array', items: { type: 'string' }, description: 'Engram slugs or display names to search (at least one).' },
+            maxNodes: { type: 'number', description: 'Total max nodes to return. Default 20.' },
+          },
+          required: ['query', 'engrams'],
+        },
+      },
+      // ── Source management ─────────────────────────────────────────────────
+      {
+        name: 'find_source',
+        description: 'DETERMINISM — Deterministic: a keyword scan of the source index; no LLM.\n\nFind sources by a keyword substring match against sourceId, ref (label/path/URL), or kind — across all engrams or scoped to one. Use this before forget (to get the exact sourceId), before transfer_source, or when the user asks "where is that file/clip/note?" Returns a list of matching sources with their engram, timestamp, and ID.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            keyword: { type: 'string', description: 'Substring to match against sourceId, ref, or kind (case-insensitive).' },
+            engram: { type: 'string', description: 'Optional: restrict to one engram.' },
+            limit: { type: 'number', description: 'Max results. Default 10.' },
+          },
+          required: ['keyword'],
+        },
+      },
+      {
+        name: 'recall_source',
+        description: 'DETERMINISM — Deterministic: fetches every memory node derived from one source document; no LLM, no scoring.\n\nReturn the FULL content of a single saved source — every chunk, in ingestion order, with no similarity cutoff. Use this when recall returns only fragments of a structured document (a plan, a list, a meeting note) and you need the complete text. Requires the exact sourceId — use find_source first if unsure.\n\nWHEN TO USE OVER recall:\n• The user asks for "the full note/doc/plan about X" and recall keeps returning partial results.\n• You got a sourceId from find_source or recall_with_citations and want everything from that source.\n• A structured list or numbered plan was saved as one clip and recall is only surfacing individual items.\n\nWHEN NOT TO USE:\n• Exploratory search ("what do I know about X?") — use recall instead.\n• You don\'t have a sourceId — use find_source first.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            sourceId: { type: 'string', description: 'The exact sourceId (e.g. "clip:abc123:label"). Use find_source to locate it if unsure.' },
+            engram: { type: 'string', description: 'Optional: scope the search to one engram (slug or display name). Speeds up lookup on large cortexes.' },
+          },
+          required: ['sourceId'],
+        },
+      },
+      {
+        name: 'transfer_source',
+        description: 'DETERMINISM — Deterministic: moves one source between engrams via the op-log; recoverable.\n\nMove a single source (and all its derived memory nodes) from one engram to another. Use when the user says "move that note to my work engram" or "I put that in the wrong place." Requires the exact sourceId — use find_source or browse_engram first if unsure.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            sourceId: { type: 'string', description: 'The sourceId to move (e.g. "clip:abc123").' },
+            from_engram: { type: 'string', description: 'Source engram (slug or display name).' },
+            to_engram: { type: 'string', description: 'Destination engram (slug or display name).' },
+          },
+          required: ['sourceId', 'from_engram', 'to_engram'],
+        },
+      },
+      {
+        name: 'merge_engrams',
+        description: 'DETERMINISM — Deterministic: iterates sources and moves each via op-log; recoverable per-source.\n\nMove ALL sources from one engram into another, then leave the source engram empty. Use when the user wants to consolidate two collections ("merge my inbox into work"). Each source is moved individually — partial failures are reported per-source, not as an all-or-nothing abort.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            from_engram: { type: 'string', description: 'The engram to drain (slug or display name).' },
+            to_engram: { type: 'string', description: 'The destination engram (slug or display name).' },
+          },
+          required: ['from_engram', 'to_engram'],
+        },
+      },
+      {
+        name: 'ingest_batch',
+        description: 'DETERMINISM — Deterministic: same ingest path as remember; no LLM.\n\nSave multiple notes in a single call — up to 20 items per batch. Each item may have its own target_engram. Useful when the user wants to bulk-import a list of facts, decisions, or to-dos without an individual remember call per item. Returns a per-item success/error summary.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            items: {
+              type: 'array',
+              description: 'Notes to ingest. Max 20.',
+              items: {
+                type: 'object',
+                properties: {
+                  text: { type: 'string' },
+                  label: { type: 'string', description: 'Human-readable label for the Sources list.' },
+                  target_engram: { type: 'string', description: 'Engram name (fuzzy-matched). Falls back to default engram.' },
+                  graphId: { type: 'string', description: 'Exact engram slug (overrides target_engram).' },
+                },
+                required: ['text'],
+              },
+            },
+          },
+          required: ['items'],
+        },
+      },
+      // ── Memory health ─────────────────────────────────────────────────────
+      {
+        name: 'engram_summary',
+        description: 'DETERMINISM — Deterministic: a direct read of node previews; no LLM.\n\nReturn a readable snapshot of what\'s stored in a specific engram — node count, source count, and a sample of node content previews. Use when the user asks "what\'s in my X engram?", when deciding whether to merge or split an engram, or to orient yourself before querying a new engram.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            engram: { type: 'string', description: 'Engram slug or display name (fuzzy-matched).' },
+            sample_size: { type: 'number', description: 'Number of node previews to include. Default 20, max 30.' },
+          },
+          required: ['engram'],
+        },
+      },
+      {
+        name: 'audit_memory',
+        description: 'DETERMINISM — Approximate: uses vector similarity across engrams; results depend on embedding state. No LLM.\n\nDetect near-duplicate content across engrams by sampling top nodes from each engram and cross-searching them in all others above a similarity threshold. Use when the user asks "do I have duplicate notes?", before a merge, or for periodic memory hygiene. Note: this is approximate — it samples rather than exhaustively comparing every pair.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            engrams: { type: 'array', items: { type: 'string' }, description: 'Optional: restrict audit to these engrams (slugs or names). Default: all non-archived, non-sensitive engrams.' },
+            threshold: { type: 'number', description: 'Similarity threshold 0.5–1.0. Default 0.85. Lower = more matches, more noise.' },
+          },
+        },
+      },
+      {
+        name: 'check_duplicate',
+        description: 'DETERMINISM — Approximate: uses vector similarity; results depend on embedding state. No LLM.\n\nBefore calling remember, check whether very similar content already exists in one or all engrams. Returns matching nodes above the threshold so the user can decide whether to remember (new fact) or correct (updating an existing one). Helps prevent duplicate-node pollution.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            text: { type: 'string', description: 'The note text you\'re about to remember.' },
+            engram: { type: 'string', description: 'Optional: restrict check to one engram.' },
+            threshold: { type: 'number', description: 'Similarity threshold 0.5–1.0. Default 0.85.' },
+          },
+          required: ['text'],
+        },
+      },
+      {
+        name: 'duplicate_pairs',
+        description: 'DETERMINISM — Deterministic: reads the brain engine\'s already-computed queue; no LLM.\n\nReturn near-duplicate node pairs the brain engine has already flagged for review — these are high-confidence matches computed by the background scan, not ad-hoc searches. Use when the user asks "what does my brain think is duplicated?" or as part of a memory-hygiene workflow. To resolve: call correct to merge, or forget to remove one side. Requires the brain engine to be running (Graphnosis app open).',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            limit: { type: 'number', description: 'Max pairs to return. Default 20.' },
+          },
+        },
+      },
+      {
+        name: 'healing_journal',
+        description: 'DETERMINISM — Deterministic: reads a fixed audit log; no LLM.\n\nReturn the audit log of autonomous corrections the brain engine applied in the background — merges, confidence adjustments, and edge repairs the system made without explicit user prompting. Use when the user asks "what has my brain fixed on its own?" or to verify that a scheduled consolidation ran. Requires the brain engine to be running.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            limit: { type: 'number', description: 'Max records to return. Default 20.' },
+          },
+        },
+      },
+      // ── On-demand LLM & GNN ───────────────────────────────────────────────
+      {
+        name: 'gnn_status',
+        description: 'DETERMINISM — Deterministic: reads Neural Network state; no LLM.\n\nCheck whether the Graphnosis Neural Network is enabled, how many predicted edges it has computed, and when it last ran. Use before calling gnn_neighbors to confirm the GNN has data, or when the user asks "is the neural network running?". Requires the brain engine to be running.',
+        inputSchema: { type: 'object', properties: {} },
+      },
+      {
+        name: 'gnn_neighbors',
+        description: 'DETERMINISM — Non-deterministic: Neural Network edge predictions vary between runs.\n\nReturn nodes the Neural Network predicts are related to a query — connections that lexical/embedding recall did not surface directly. Use when the user asks "what else might be related to X?" or when recall returns thin results and you want to explore the graph\'s structural neighborhood. Each result includes the GNN edge probability score. Requires the brain engine with Neural Network enabled.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            query: { type: 'string', description: 'Topic or question to find GNN-predicted neighbors for.' },
+            engram: { type: 'string', description: 'Optional: restrict to one engram.' },
+            limit: { type: 'number', description: 'Max neighbors to return. Default 10.' },
+          },
+          required: ['query'],
+        },
+      },
+      {
+        name: 'llm_query',
+        description: 'DETERMINISM — Non-deterministic: local LLM synthesis varies between runs.\n\nRecall relevant memory for a question, then use the local LLM to synthesise a direct answer from that recalled context — all locally, nothing leaves the device. Use when the user wants an AI-synthesised answer grounded in their own memory, not just raw recalled nodes. If the local LLM is not running, returns the raw recalled context with a note explaining the degraded mode. Requires the brain engine to be running.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            question: { type: 'string', description: 'The question to answer from memory.' },
+            only_engrams: { type: 'array', items: { type: 'string' }, description: 'Optional: restrict recall to these engrams.' },
+            maxTokens: { type: 'number', description: 'Token budget for recalled context. Default 2000.' },
+          },
+          required: ['question'],
+        },
+      },
+      {
+        name: 'llm_distill',
+        description: 'DETERMINISM — Non-deterministic: local LLM extraction varies between runs.\n\nPass arbitrary text to the local LLM and ask it to extract discrete, self-contained facts worth remembering. Returns a JSON array of { text, label } objects ready to pass to ingest_batch or remember — all locally, nothing leaves the device. Use when the user pastes a long document, meeting notes, or conversation and asks you to extract key facts for saving. Degrades gracefully when no local LLM is running. Requires the brain engine to be running.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            text: { type: 'string', description: 'Text to extract facts from.' },
+            target_engram: { type: 'string', description: 'Optional: suggested engram for the extracted facts (included in the output).' },
+          },
+          required: ['text'],
+        },
+      },
+      {
+        name: 'confirm_data_access',
+        description: `Called after the user has physically looked at the Graphnosis app and typed the time-limited consent phrase shown in Settings → AI → Consent Phrases. Validates the phrase and stores a consent record.
+
+WHEN TO CALL: Only after displaying the full GRAPHNOSIS CONSENT REQUIRED notice to the user and they have opened the Graphnosis app, read the phrase, and typed it here.
+NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
+        inputSchema: {
+          type: 'object',
+          properties: {
+            phrase: {
+              type: 'string',
+              description: 'The exact phrase the user typed (from Graphnosis app → Settings → AI → Consent Phrases). Pass it as-is; do not modify, trim, or guess.',
+            },
+            tier: {
+              type: 'string',
+              enum: ['personal', 'sensitive'],
+              description: 'The data tier being authorised, as stated in the consent notice.',
+            },
+          },
+          required: ['phrase', 'tier'],
+        },
+      },
+>>>>>>> Stashed changes
     ],
   }));
 
@@ -617,15 +1616,36 @@ export function createMcpServer(deps: McpDeps): Server {
           maxTokens: args.maxTokens ?? 2000,
           maxNodes: args.maxNodes ?? 20,
         };
+<<<<<<< Updated upstream
         const sub = await withEmbedding(() => deps.host.recall(args.query, { budget }));
+=======
+        const only = args.only_engrams?.length ? resolveEngramList(deps.host, args.only_engrams) : null;
+        const except = (!only && args.except_engrams?.length) ? resolveEngramList(deps.host, args.except_engrams) : null;
+        enforceRecallRateLimit();
+        enforceReplayBlocker(args.query);
+        const { consentFooter } = await checkConsentOrThrow(only?.resolved ?? null);
+        const sub = await withEmbedding(() => deps.host.recall(args.query, {
+          budget,
+          ...(only?.resolved.length ? { onlyGraphIds: only.resolved } : {}),
+          ...(except?.resolved?.length ? { exceptGraphIds: except.resolved } : {}),
+        }));
+        const scopeWarnings = [...(only?.warnings ?? []), ...(except?.warnings ?? [])];
+>>>>>>> Stashed changes
         // Emit a structured audit line to stderr — the desktop inspector tails this.
         console.error(`[${toolName}] q=${JSON.stringify(args.query)} requested=${budget.maxNodes}n/${budget.maxTokens}t served=${sub.nodesIncluded}n/${sub.tokensUsed}t graphs=${JSON.stringify(sub.audit)}`);
+        enforceSessionBudget(sub.tokensUsed, sub.nodesIncluded);
         const auditFooter =
           '\n\n---\n' +
           `Attached ${sub.nodesIncluded} memory node(s) / ${sub.tokensUsed} tokens across ${sub.audit.length} graph(s). ` +
           `Per-graph (tier · nodes · tokens): ` +
+<<<<<<< Updated upstream
           sub.audit.map(a => `${a.graphId} · ${a.tier} · ${a.nodesIncluded}n · ${a.tokensIncluded}t`).join(', ') + '.';
         return { content: [{ type: 'text', text: sub.prompt + auditFooter }] };
+=======
+          sub.audit.map(a => `${a.graphId} · ${a.tier} · ${a.nodesIncluded}n · ${a.tokensIncluded}t`).join(', ') +
+          (scopeWarnings.length ? ` Scope warnings: ${scopeWarnings.join(' ')}` : '') + '.';
+        return { content: [{ type: 'text', text: sub.prompt + auditFooter + consentFooter }] };
+>>>>>>> Stashed changes
       }
       case 'remember': {
         const args = RememberInput.parse(req.params.arguments ?? {});
@@ -773,7 +1793,7 @@ export function createMcpServer(deps: McpDeps): Server {
         const targetGraph =
           targetGraphId ?? args.graphId ?? candidates[0]?.graphId ?? deps.defaultGraphId();
         const diffId = `diff_${Date.now().toString(36)}`;
-        deps.pendingDiffs.set(diffId, { graphId: targetGraph, diff, createdAt: Date.now() });
+        deps.pendingDiffs.set(diffId, { graphId: targetGraph, diff, createdAt: Date.now(), mode, prompt: args.correction });
         // Surface to the App so it can refresh its pending-corrections
         // panel immediately AND fire a system notification when the
         // window's in the background. Without this broadcast the user
@@ -811,6 +1831,8 @@ export function createMcpServer(deps: McpDeps): Server {
           graphId: pending.graphId,
           diff: pending.diff,
           ...(correctedBy ? { correctedBy } : {}),
+          ...(pending.mode ? { mode: pending.mode } : {}),
+          ...(pending.prompt ? { prompt: pending.prompt } : {}),
         });
         deps.pendingDiffs.delete(args.diffId);
         return { content: [{ type: 'text', text: 'Applied.' }] };
@@ -834,6 +1856,7 @@ export function createMcpServer(deps: McpDeps): Server {
         return { content: [{ type: 'text', text: JSON.stringify({ graphs: summary }, null, 2) }] };
       }
       case 'develop': {
+        refuseIfLlmRestrictedToSearch('develop');
         const args = z.object({
           context: z.string().min(1),
           strategy: z.string().min(1),
@@ -863,6 +1886,7 @@ export function createMcpServer(deps: McpDeps): Server {
         };
       }
       case 'predict': {
+        refuseIfLlmRestrictedToSearch('predict');
         const args = z.object({
           action: z.string().min(1),
           graphIds: z.array(z.string()).optional(),
@@ -896,6 +1920,7 @@ export function createMcpServer(deps: McpDeps): Server {
         return { content: [{ type: 'text', text }] };
       }
       case 'insights': {
+        refuseIfLlmRestrictedToSearch('insights');
         const { dismissed } = z.object({ dismissed: z.boolean().optional() }).parse(req.params.arguments ?? {});
         if (!deps.brainEngine) {
           return { content: [{ type: 'text', text: JSON.stringify([]) }] };
@@ -920,6 +1945,689 @@ export function createMcpServer(deps: McpDeps): Server {
         const report = await deps.brainEngine.computeVitality();
         return { content: [{ type: 'text', text: JSON.stringify(report, null, 2) }] };
       }
+<<<<<<< Updated upstream
+=======
+      // ── Navigation & routing ──────────────────────────────────────────────
+      case 'list_engrams': {
+        const statsByGraph = new Map(deps.host.stats().graphs.map(g => [g.graphId, g]));
+        const rows = deps.host.graphsWithMetadata().map(({ graphId, metadata }) => ({
+          graphId,
+          displayName: metadata.displayName ?? graphId,
+          tier: metadata.sensitivityTier ?? 'personal',
+          template: metadata.template,
+          archived: metadata.archived ?? false,
+          sources: deps.host.listSources(graphId).length,
+          lastMutationAt: statsByGraph.get(graphId)?.lastMutationAt,
+        }));
+        return { content: [{ type: 'text', text: JSON.stringify(rows, null, 2) }] };
+      }
+      case 'suggest_engram': {
+        const args = SuggestEngramInput.parse(req.params.arguments ?? {});
+        const topK = args.top_k ?? 3;
+        const textTokens = tokenize(args.text);
+        const candidates = deps.host.graphsWithMetadata()
+          .filter(({ metadata }) => !metadata.archived && metadata.sensitivityTier !== 'sensitive')
+          .map(({ graphId, metadata }) => {
+            const display = metadata.displayName ?? graphId;
+            const nameTokens = [...tokenize(graphId), ...tokenize(display)];
+            const score = jaccard(textTokens, nameTokens);
+            const sources = deps.host.listSources(graphId).length;
+            return { graphId, displayName: display, score, sources };
+          })
+          .sort((a, b) => b.score - a.score || b.sources - a.sources)
+          .slice(0, topK);
+        const out = candidates.map(c =>
+          `• ${c.displayName} (${c.graphId}) — relevance ${(c.score * 100).toFixed(0)}%, ${c.sources} source(s)`
+        ).join('\n');
+        return { content: [{ type: 'text', text: candidates.length
+          ? `Suggested engrams:\n\n${out}\n\nPass the chosen graphId as graphId, or displayName as target_engram, to remember.`
+          : 'No accessible non-archived engrams found.'
+        }] };
+      }
+      case 'browse_engram': {
+        const args = BrowseEngramInput.parse(req.params.arguments ?? {});
+        const res = requireEngram(deps.host, args.engram);
+        if ('error' in res) return res.error;
+        enforceSessionBudget(0, 0, res.graphId);
+        const meta = deps.host.getGraphMetadata(res.graphId);
+        const sources = deps.host.listSources(res.graphId);
+        const limit = args.limit ?? 20;
+        const sorted = [...sources].sort((a, b) => b.ingestedAt - a.ingestedAt).slice(0, limit);
+        const rows = sorted.map(s =>
+          `• [${s.kind}] ${s.ref}  |  ${new Date(s.ingestedAt).toISOString()}${s.addedBy ? `  |  via ${s.addedBy}` : ''}  |  id: ${s.sourceId}`
+        ).join('\n');
+        return { content: [{ type: 'text', text:
+          `Engram: ${meta?.displayName ?? res.graphId} (${res.graphId}) — ${sources.length} source(s), showing ${sorted.length}\n\n${rows || '(no sources yet)'}`
+        }] };
+      }
+      case 'recent': {
+        const args = RecentInput.parse(req.params.arguments ?? {});
+        let graphIdFilter: string | undefined;
+        if (args.engram) {
+          const res = requireEngram(deps.host, args.engram);
+          if ('error' in res) return res.error;
+          graphIdFilter = res.graphId;
+        }
+        const sources = deps.host.listSources(graphIdFilter);
+        const limit = args.limit ?? 10;
+        const sorted = [...sources].sort((a, b) => b.ingestedAt - a.ingestedAt).slice(0, limit);
+        const rows = sorted.map(s => {
+          const label = deps.host.getGraphMetadata(s.graphId)?.displayName ?? s.graphId;
+          return `• ${new Date(s.ingestedAt).toISOString()}  [${s.kind}]  ${s.ref}  (${label})`;
+        }).join('\n');
+        const scope = graphIdFilter
+          ? (deps.host.getGraphMetadata(graphIdFilter)?.displayName ?? graphIdFilter)
+          : 'all engrams';
+        return { content: [{ type: 'text', text:
+          `Recent — ${scope} (${sorted.length} of ${sources.length} total):\n\n${rows || '(nothing yet)'}`
+        }] };
+      }
+      case 'get_engram_schema': {
+        const args = GetEngramSchemaInput.parse(req.params.arguments ?? {});
+        const res = requireEngram(deps.host, args.engram);
+        if ('error' in res) return res.error;
+        const meta = deps.host.getGraphMetadata(res.graphId);
+        return { content: [{ type: 'text', text: JSON.stringify({
+          graphId: res.graphId,
+          displayName: meta?.displayName ?? res.graphId,
+          template: meta?.template,
+          sensitivityTier: (meta as any)?.sensitivityTier ?? 'personal',
+          archived: (meta as any)?.archived ?? false,
+          createdAt: (meta as any)?.createdAt,
+        }, null, 2) }] };
+      }
+      // ── Advanced recall ───────────────────────────────────────────────────
+      case 'recall_structured': {
+        const args = RecallStructuredInput.parse(req.params.arguments ?? {});
+        const only = args.only_engrams?.length ? resolveEngramList(deps.host, args.only_engrams) : null;
+        const except = (!only && args.except_engrams?.length) ? resolveEngramList(deps.host, args.except_engrams) : null;
+        enforceRecallRateLimit();
+        enforceReplayBlocker(args.query);
+        const { consentFooter: rsFooter } = await checkConsentOrThrow(only?.resolved ?? null);
+        const allIds = deps.host.listGraphs();
+        const scopedIds = only ? only.resolved : allIds.filter(id => !(except?.resolved ?? []).includes(id));
+        const k = Math.ceil(((args.maxNodes ?? 20)) / Math.max(1, scopedIds.length));
+        const nodes: unknown[] = [];
+        for (const graphId of scopedIds) {
+          const meta = deps.host.getGraphMetadata(graphId);
+          const hits = await withEmbedding(() => deps.host.searchNodes(graphId, args.query, k));
+          for (const n of hits) {
+            const sourceId = deps.host.getNodeSource(graphId, n.nodeId);
+            nodes.push({
+              graphId,
+              engram: meta?.displayName ?? graphId,
+              tier: (meta as any)?.sensitivityTier ?? 'personal',
+              nodeId: n.nodeId,
+              score: n.score,
+              text: n.text,
+              sourceId,
+              ...(n.type ? { type: n.type } : {}),
+            });
+          }
+        }
+        nodes.sort((a: any, b: any) => b.score - a.score);
+        const warnings = [...(only?.warnings ?? []), ...(except?.warnings ?? [])];
+        const estTokens = Math.ceil(nodes.reduce((sum: number, n: any) => sum + (n.text?.length ?? 0), 0) / 4);
+        enforceSessionBudget(estTokens, nodes.length);
+        const rsResult = { nodes, nodesIncluded: nodes.length, ...(warnings.length ? { warnings } : {}) };
+        return { content: [{ type: 'text', text: JSON.stringify(rsResult, null, 2) + rsFooter }] };
+      }
+      case 'recall_with_citations': {
+        const args = RecallWithCitationsInput.parse(req.params.arguments ?? {});
+        const only = args.only_engrams?.length ? resolveEngramList(deps.host, args.only_engrams) : null;
+        const except = (!only && args.except_engrams?.length) ? resolveEngramList(deps.host, args.except_engrams) : null;
+        enforceRecallRateLimit();
+        enforceReplayBlocker(args.query);
+        const { consentFooter: rwcFooter } = await checkConsentOrThrow(only?.resolved ?? null);
+        const allIds = deps.host.listGraphs();
+        const scopedIds = only ? only.resolved : allIds.filter(id => !(except?.resolved ?? []).includes(id));
+        const k = Math.ceil(((args.maxNodes ?? 20)) / Math.max(1, scopedIds.length));
+        const sections: string[] = [];
+        for (const graphId of scopedIds) {
+          const meta = deps.host.getGraphMetadata(graphId);
+          const hits = await withEmbedding(() => deps.host.searchNodes(graphId, args.query, k));
+          if (!hits.length) continue;
+          const header = `### ${meta?.displayName ?? graphId}`;
+          const lines = hits.map(n => {
+            const sourceId = deps.host.getNodeSource(graphId, n.nodeId);
+            return `${n.text}${sourceId ? ` [${sourceId}]` : ''}`;
+          });
+          sections.push(`${header}\n\n${lines.join('\n\n')}`);
+        }
+        const citationText = sections.join('\n\n---\n\n');
+        const estCitationTokens = Math.ceil(citationText.length / 4);
+        const citationNodeCount = sections.reduce((sum, s) => sum + s.split('\n\n').length - 1, 0);
+        enforceSessionBudget(estCitationTokens, citationNodeCount);
+        return { content: [{ type: 'text', text: (sections.length ? citationText : '(no matching memories found)') + rwcFooter }] };
+      }
+      case 'compare_engrams': {
+        const args = CompareEngramsInput.parse(req.params.arguments ?? {});
+        const resA = requireEngram(deps.host, args.engram_a);
+        if ('error' in resA) return resA.error;
+        const resB = requireEngram(deps.host, args.engram_b);
+        if ('error' in resB) return resB.error;
+        enforceRecallRateLimit();
+        enforceReplayBlocker(args.query);
+        const { consentFooter: ceFooter } = await checkConsentOrThrow([resA.graphId, resB.graphId]);
+        const budget = { maxNodes: args.maxNodes ?? 10, maxTokens: 4000 };
+        const [subA, subB] = await Promise.all([
+          withEmbedding(() => deps.host.recall(args.query, { budget, onlyGraphIds: [resA.graphId] })),
+          withEmbedding(() => deps.host.recall(args.query, { budget, onlyGraphIds: [resB.graphId] })),
+        ]);
+        const metaA = deps.host.getGraphMetadata(resA.graphId);
+        const metaB = deps.host.getGraphMetadata(resB.graphId);
+        enforceSessionBudget(subA.tokensUsed + subB.tokensUsed, subA.nodesIncluded + subB.nodesIncluded);
+        return { content: [{ type: 'text', text:
+          `## ${metaA?.displayName ?? resA.graphId}\n\n${subA.prompt || '(no results)'}\n\n` +
+          `## ${metaB?.displayName ?? resB.graphId}\n\n${subB.prompt || '(no results)'}` + ceFooter
+        }] };
+      }
+      case 'cross_search': {
+        const args = CrossSearchInput.parse(req.params.arguments ?? {});
+        const { resolved, warnings } = resolveEngramList(deps.host, args.engrams);
+        if (!resolved.length) {
+          return mcpError(`No engrams matched. Warnings: ${warnings.join(' ')}`);
+        }
+        enforceRecallRateLimit();
+        enforceReplayBlocker(args.query);
+        const { consentFooter: csFooter } = await checkConsentOrThrow(resolved);
+        const budget = { maxNodes: args.maxNodes ?? 20, maxTokens: 4000 };
+        const sub = await withEmbedding(() => deps.host.recall(args.query, { budget, onlyGraphIds: resolved }));
+        enforceSessionBudget(sub.tokensUsed, sub.nodesIncluded);
+        return { content: [{ type: 'text', text:
+          sub.prompt +
+          `\n\n---\nScope: ${resolved.map(id => deps.host.getGraphMetadata(id)?.displayName ?? id).join(', ')}` +
+          (warnings.length ? `\nSkipped: ${warnings.join(' ')}` : '') +
+          csFooter
+        }] };
+      }
+      // ── Source management ─────────────────────────────────────────────────
+      case 'find_source': {
+        const args = FindSourceInput.parse(req.params.arguments ?? {});
+        let graphIdFilter: string | undefined;
+        if (args.engram) {
+          const res = requireEngram(deps.host, args.engram);
+          if ('error' in res) return res.error;
+          graphIdFilter = res.graphId;
+        }
+        const kw = args.keyword.toLowerCase();
+        const matches = deps.host.listSources(graphIdFilter)
+          .filter(s => s.sourceId.toLowerCase().includes(kw) ||
+                       s.ref.toLowerCase().includes(kw) ||
+                       s.kind.toLowerCase().includes(kw))
+          .slice(0, args.limit ?? 10);
+        if (!matches.length) {
+          return { content: [{ type: 'text', text: `No sources matched "${args.keyword}".` }] };
+        }
+        const rows = matches.map(s => {
+          const label = deps.host.getGraphMetadata(s.graphId)?.displayName ?? s.graphId;
+          return `• [${s.kind}] ${s.ref}  |  (${label})  |  ${new Date(s.ingestedAt).toISOString()}  |  id: ${s.sourceId}`;
+        }).join('\n');
+        return { content: [{ type: 'text', text: `Found ${matches.length} source(s):\n\n${rows}` }] };
+      }
+      case 'recall_source': {
+        const args = RecallSourceInput.parse(req.params.arguments ?? {});
+        let graphIdFilter: string | undefined;
+        if (args.engram) {
+          const res = requireEngram(deps.host, args.engram);
+          if ('error' in res) return res.error;
+          graphIdFilter = res.graphId;
+        }
+        const rec = deps.host.listSources(graphIdFilter).find(s => s.sourceId === args.sourceId);
+        if (!rec) {
+          return mcpError(
+            `Source "${args.sourceId}" not found${graphIdFilter ? ` in engram "${args.engram}"` : ''}. ` +
+            `Use find_source to locate it by keyword.`,
+          );
+        }
+        const { consentFooter: rsrcFooter } = await checkConsentOrThrow([rec.graphId]);
+        const meta = deps.host.getGraphMetadata(rec.graphId);
+        const now = Date.now();
+        const nodeMap = new Map(
+          deps.host.listNodes(rec.graphId)
+            .filter(n => n.confidence > 0.2 && (!n.validUntil || n.validUntil > now))
+            .map(n => [n.id, n]),
+        );
+        // Return nodes in ingestion order (rec.nodeIds preserves chunk sequence).
+        const chunks = rec.nodeIds
+          .map(id => nodeMap.get(id))
+          .filter((n): n is NonNullable<typeof n> => n !== undefined)
+          .map(n => n.contentPreview);
+        if (!chunks.length) {
+          return { content: [{ type: 'text', text: `Source "${args.sourceId}" exists but all its nodes have been soft-deleted (forgotten).` }] };
+        }
+        const header =
+          `# Source: ${rec.ref}\n` +
+          `Engram: ${meta?.displayName ?? rec.graphId} | Kind: ${rec.kind} | ` +
+          `Saved: ${new Date(rec.ingestedAt).toLocaleString()} | Chunks: ${chunks.length}`;
+        const body = chunks.join('\n\n---\n\n');
+        const totalText = `${header}\n\n${body}`;
+        enforceSessionBudget(Math.ceil(totalText.length / 4), chunks.length);
+        return { content: [{ type: 'text', text: totalText + rsrcFooter }] };
+      }
+      case 'transfer_source': {
+        const args = TransferSourceInput.parse(req.params.arguments ?? {});
+        const resFrom = requireEngram(deps.host, args.from_engram);
+        if ('error' in resFrom) return resFrom.error;
+        const resTo = requireEngram(deps.host, args.to_engram);
+        if ('error' in resTo) return resTo.error;
+        const newRecord = await deps.host.moveSource(resFrom.graphId, args.sourceId, resTo.graphId);
+        const metaTo = deps.host.getGraphMetadata(resTo.graphId);
+        return { content: [{ type: 'text', text:
+          `Moved source ${args.sourceId} to ${metaTo?.displayName ?? resTo.graphId}. New sourceId: ${newRecord.sourceId}`
+        }] };
+      }
+      case 'merge_engrams': {
+        const args = MergeEngramsInput.parse(req.params.arguments ?? {});
+        const resFrom = requireEngram(deps.host, args.from_engram);
+        if ('error' in resFrom) return resFrom.error;
+        const resTo = requireEngram(deps.host, args.to_engram);
+        if ('error' in resTo) return resTo.error;
+        const sources = deps.host.listSources(resFrom.graphId);
+        const results: string[] = [];
+        for (const s of sources) {
+          try {
+            await deps.host.moveSource(resFrom.graphId, s.sourceId, resTo.graphId);
+            results.push(`✓ ${s.sourceId}`);
+          } catch (err) {
+            results.push(`✗ ${s.sourceId}: ${(err as Error).message}`);
+          }
+        }
+        const metaTo = deps.host.getGraphMetadata(resTo.graphId);
+        return { content: [{ type: 'text', text:
+          `Merged ${sources.length} source(s) into ${metaTo?.displayName ?? resTo.graphId}:\n${results.join('\n') || '(nothing to move)'}`
+        }] };
+      }
+      case 'ingest_batch': {
+        const args = IngestBatchInput.parse(req.params.arguments ?? {});
+        const mcpClientName = mcpRegistry.getMostRecentClientName();
+        const results: Array<{ index: number; status: 'ok' | 'error'; detail: string }> = [];
+        for (const [i, item] of args.items.entries()) {
+          try {
+            const knownGraphs = deps.host.listGraphs();
+            let graphId: string | null = null;
+            const nameHint = (item.graphId && !knownGraphs.includes(item.graphId))
+              ? item.graphId : item.target_engram ?? null;
+            if (item.graphId && knownGraphs.includes(item.graphId)) graphId = item.graphId;
+            if (!graphId && nameHint) {
+              const r = resolveTargetEngram(deps.host, nameHint);
+              if (r.kind === 'exact') graphId = r.graphId;
+              else {
+                results.push({ index: i, status: 'error', detail: `Engram "${nameHint}" not found — skipped` });
+                continue;
+              }
+            }
+            if (!graphId) graphId = deps.defaultGraphId();
+            const rec = await withEmbedding(() =>
+              ingestClip(deps.host, graphId!, item.text, item.label ?? 'Batch note', {
+                ...(mcpClientName ? { addedBy: mcpClientName } : {}),
+              })
+            );
+            results.push({ index: i, status: 'ok', detail: `Saved as ${(rec as any).sourceId} in ${graphId}` });
+          } catch (err) {
+            results.push({ index: i, status: 'error', detail: (err as Error).message });
+          }
+        }
+        const ok = results.filter(r => r.status === 'ok').length;
+        const summary = `Ingested ${ok} of ${args.items.length} item(s).\n\n` +
+          results.map(r => `[${r.index}] ${r.status}: ${r.detail}`).join('\n');
+        return { content: [{ type: 'text', text: summary }] };
+      }
+      // ── Memory health ─────────────────────────────────────────────────────
+      case 'engram_summary': {
+        const args = EngramSummaryInput.parse(req.params.arguments ?? {});
+        const res = requireEngram(deps.host, args.engram);
+        if ('error' in res) return res.error;
+        const meta = deps.host.getGraphMetadata(res.graphId);
+        const nodes = deps.host.listNodes(res.graphId);
+        const active = (nodes as any[]).filter((n: any) => (n.confidence ?? 1) > 0.2);
+        const sample = active.slice(0, args.sample_size ?? 20);
+        const rows = sample.map((n: any) => `• ${(n.contentPreview ?? n.text ?? n.id ?? '').toString().slice(0, 100)}`).join('\n');
+        return { content: [{ type: 'text', text:
+          `Engram: ${meta?.displayName ?? res.graphId}\n` +
+          `${active.length} active node(s) across ${deps.host.listSources(res.graphId).length} source(s)\n\n` +
+          `Sample:\n${rows || '(empty)'}`
+        }] };
+      }
+      case 'audit_memory': {
+        const args = AuditMemoryInput.parse(req.params.arguments ?? {});
+        const threshold = args.threshold ?? 0.85;
+        let graphIds = deps.host.listGraphs().filter(id => {
+          const m = deps.host.getGraphMetadata(id);
+          return !(m as any)?.archived && (m as any)?.sensitivityTier !== 'sensitive';
+        });
+        if (args.engrams?.length) {
+          const { resolved } = resolveEngramList(deps.host, args.engrams);
+          graphIds = graphIds.filter(id => resolved.includes(id));
+        }
+        const duplicates: string[] = [];
+        const graphPairs: Array<[string, string]> = [];
+        for (let i = 0; i < graphIds.length; i++) {
+          for (let j = i + 1; j < graphIds.length; j++) {
+            const a = graphIds[i], b = graphIds[j];
+            if (a && b) graphPairs.push([a, b]);
+          }
+        }
+        for (const [a, b] of graphPairs) {
+            const nodesA = deps.host.listNodes(a) as any[];
+            const activeA = nodesA.filter((n: any) => (n.confidence ?? 1) > 0.2).slice(0, 5);
+            for (const node of activeA) {
+              const nodeText = (node.contentPreview ?? node.text ?? '').toString();
+              if (!nodeText) continue;
+              const hits = await withEmbedding(() => deps.host.searchNodes(b, nodeText, 3));
+              for (const hit of hits) {
+                if (hit.score >= threshold) {
+                  const srcA = deps.host.getNodeSource(a, node.id);
+                  const srcB = deps.host.getNodeSource(b, hit.nodeId);
+                  duplicates.push(
+                    `Score ${hit.score.toFixed(2)} | ${deps.host.getGraphMetadata(a)?.displayName ?? a}${srcA ? ` [${srcA}]` : ''} ↔ ${deps.host.getGraphMetadata(b)?.displayName ?? b}${srcB ? ` [${srcB}]` : ''}\n  "${nodeText.slice(0, 80)}…"`
+                  );
+                  if (duplicates.length >= 20) break;
+                }
+              }
+              if (duplicates.length >= 20) break;
+            }
+            if (duplicates.length >= 20) break;
+          }
+        return { content: [{ type: 'text', text: duplicates.length
+          ? `Found ${duplicates.length} near-duplicate pair(s) (threshold ${threshold}):\n\n${duplicates.join('\n\n')}`
+          : `No near-duplicates found across ${graphIds.length} engram(s) at threshold ${threshold}.`
+        }] };
+      }
+      case 'check_duplicate': {
+
+        const args = CheckDuplicateInput.parse(req.params.arguments ?? {});
+        const threshold = args.threshold ?? 0.85;
+        let graphIds = deps.host.listGraphs();
+        if (args.engram) {
+          const res = requireEngram(deps.host, args.engram);
+          if ('error' in res) return res.error;
+          graphIds = [res.graphId];
+        }
+        const hits: string[] = [];
+        for (const graphId of graphIds) {
+          const results = await withEmbedding(() => deps.host.searchNodes(graphId, args.text, 3));
+          for (const r of results) {
+            if (r.score >= threshold) {
+              const meta = deps.host.getGraphMetadata(graphId);
+              const sourceId = deps.host.getNodeSource(graphId, r.nodeId);
+              hits.push(`Score ${r.score.toFixed(2)} in ${meta?.displayName ?? graphId}${sourceId ? ` [${sourceId}]` : ''}:\n  "${r.text.slice(0, 120)}"`);
+            }
+          }
+        }
+        return { content: [{ type: 'text', text: hits.length
+          ? `Similar content found — consider calling correct instead of remember:\n\n${hits.join('\n\n')}`
+          : `No duplicates found above threshold ${threshold}. Safe to call remember.`
+        }] };
+      }
+      case 'duplicate_pairs': {
+        if (!deps.brainEngine) {
+          return mcpError('Brain engine is not available. Open the Graphnosis app to enable it.');
+        }
+        const args = DuplicatePairsInput.parse(req.params.arguments ?? {});
+        const pairs = deps.brainEngine.getDuplicatePairs().slice(0, args.limit ?? 20);
+        if (!pairs.length) {
+          return { content: [{ type: 'text', text: 'No duplicate pairs queued for review.' }] };
+        }
+        const rows = pairs.map((p: any) =>
+          `• [${p.id}] score ${p.score?.toFixed(2) ?? '?'}\n` +
+          `  A: "${(p.nodeA?.text ?? p.nodeAId ?? '').toString().slice(0, 80)}" (${p.graphIdA})\n` +
+          `  B: "${(p.nodeB?.text ?? p.nodeBId ?? '').toString().slice(0, 80)}" (${p.graphIdB})`
+        ).join('\n\n');
+        return { content: [{ type: 'text', text:
+          `${pairs.length} duplicate pair(s) awaiting review:\n\n${rows}\n\n` +
+          `To resolve: call correct to merge, or forget to remove one side.`
+        }] };
+      }
+      case 'healing_journal': {
+        if (!deps.brainEngine) {
+          return mcpError('Brain engine is not available. Open the Graphnosis app to enable it.');
+        }
+        const args = HealingJournalInput.parse(req.params.arguments ?? {});
+        const journal = deps.brainEngine.getHealingJournal().slice(0, args.limit ?? 20);
+        if (!journal.length) {
+          return { content: [{ type: 'text', text: 'No autonomous heals recorded yet.' }] };
+        }
+        const rows = journal.map((r: any) =>
+          `• ${new Date(r.healedAt ?? r.at ?? 0).toISOString()}  ${r.kind ?? r.type ?? 'heal'}  ${r.graphId ?? ''}  ${(r.summary ?? JSON.stringify(r)).toString().slice(0, 100)}`
+        ).join('\n');
+        return { content: [{ type: 'text', text: `Healing journal (${journal.length} record(s)):\n\n${rows}` }] };
+      }
+      // ── On-demand LLM & GNN ───────────────────────────────────────────────
+      case 'gnn_status': {
+        if (!deps.brainEngine) {
+          return mcpError('Brain engine is not available. Open the Graphnosis app to enable it.');
+        }
+        const status = deps.brainEngine.getNeuralNetworkStatus();
+        return { content: [{ type: 'text', text: JSON.stringify(status, null, 2) }] };
+      }
+      case 'gnn_neighbors': {
+        if (!deps.brainEngine) {
+          return mcpError('Brain engine is not available. Open the Graphnosis app to enable it.');
+        }
+        const args = GnnNeighborsInput.parse(req.params.arguments ?? {});
+        let graphIds = deps.host.listGraphs();
+        if (args.engram) {
+          const res = requireEngram(deps.host, args.engram);
+          if ('error' in res) return res.error;
+          graphIds = [res.graphId];
+        }
+        const limit = args.limit ?? 10;
+        const neighbors: string[] = [];
+        for (const graphId of graphIds) {
+          const seeds = await withEmbedding(() => deps.host.searchNodes(graphId, args.query, 5));
+          const seedIds = new Set(seeds.map(s => s.nodeId));
+          const edges = deps.brainEngine.getPredictedEdges(graphId) as unknown as Array<{ from: string; to: string; score: number }>;
+          // Build lazy text index from listNodes
+          let textById: Map<string, string> | null = null;
+          const textOf = (id: string): string | undefined => {
+            if (!textById) {
+              textById = new Map();
+              for (const n of deps.host.listNodes(graphId) as any[]) {
+                textById.set(n.id, n.contentPreview ?? n.text ?? '');
+              }
+            }
+            return textById.get(id);
+          };
+          for (const edge of edges) {
+            const neighborId = seedIds.has(edge.from) ? edge.to
+              : seedIds.has(edge.to) ? edge.from
+              : null;
+            if (!neighborId) continue;
+            const text = textOf(neighborId);
+            if (!text) continue;
+            const meta = deps.host.getGraphMetadata(graphId);
+            neighbors.push(
+              `Score ${edge.score.toFixed(2)} | ${meta?.displayName ?? graphId}\n` +
+              `  "${text.slice(0, 100)}"`
+            );
+            if (neighbors.length >= limit) break;
+          }
+          if (neighbors.length >= limit) break;
+        }
+        return { content: [{ type: 'text', text: neighbors.length
+          ? `GNN-predicted neighbors for "${args.query}":\n\n${neighbors.join('\n\n')}`
+          : `No GNN-predicted neighbors found. The Neural Network may not have run yet — check gnn_status.`
+        }] };
+      }
+      case 'llm_query': {
+        refuseIfLlmRestrictedToSearch('llm_query');
+        if (!deps.brainEngine) {
+          return mcpError('Brain engine is not available. Use recall instead.');
+        }
+        const args = LlmQueryInput.parse(req.params.arguments ?? {});
+        const only = args.only_engrams?.length ? resolveEngramList(deps.host, args.only_engrams) : null;
+        enforceRecallRateLimit();
+        enforceReplayBlocker(args.question);
+        const { consentFooter: lqFooter } = await checkConsentOrThrow(only?.resolved ?? null);
+        const llmAvailable = !!deps.llm();
+        if (!llmAvailable) {
+          const sub = await withEmbedding(() => deps.host.recall(args.question, {
+            budget: { maxTokens: args.maxTokens ?? 2000, maxNodes: 20 },
+            ...(only?.resolved.length ? { onlyGraphIds: only.resolved } : {}),
+          }));
+          enforceSessionBudget(sub.tokensUsed, sub.nodesIncluded);
+          return { content: [{ type: 'text', text:
+            '(Local LLM unavailable — returning raw recalled context. Enable the LLM in Graphnosis for synthesis.)\n\n' + sub.prompt + lqFooter
+          }] };
+        }
+        const result = await deps.brainEngine.runDevelop({
+          context: args.question,
+          strategy: '',
+          goals: '',
+          ...(only?.resolved.length ? { graphIds: only.resolved } : {}),
+        });
+        enforceSessionBudget(Math.ceil(result.synthesisMarkdown.length / 4), result.referencedNodeIds.length);
+        return { content: [{ type: 'text', text: result.synthesisMarkdown + lqFooter }] };
+      }
+      case 'llm_distill': {
+        if (!deps.brainEngine) {
+          return mcpError('Brain engine is not available.');
+        }
+        const args = LlmDistillInput.parse(req.params.arguments ?? {});
+        const engramHint = args.target_engram
+          ? (() => {
+              const r = resolveTargetEngram(deps.host, args.target_engram);
+              return r.kind === 'exact' ? r.graphId : undefined;
+            })()
+          : undefined;
+        if (!deps.llm()) {
+          return { content: [{ type: 'text', text: '(Local LLM unavailable — no distillation possible. Enable the LLM in Graphnosis.)' }] };
+        }
+        const result = await deps.brainEngine.runDevelop({
+          context: args.text,
+          strategy: 'Extract discrete, self-contained facts worth remembering.',
+          goals: 'Return a JSON array of { text, label } objects — one per fact. No prose, just the array.',
+          ...(engramHint ? { graphIds: [engramHint] } : {}),
+        });
+        const raw = result.synthesisMarkdown;
+        let display: string;
+        try {
+          const match = raw.match(/\[[\s\S]*\]/);
+          if (match) {
+            const facts: Array<{ text: string; label?: string }> = JSON.parse(match[0]);
+            display = `Extracted ${facts.length} fact(s)` +
+              (engramHint ? ` — suggested engram: ${engramHint}` : '') +
+              `\n\nCall ingest_batch or remember for each:\n\n` +
+              JSON.stringify(facts.map(f => ({ ...f, ...(engramHint ? { graphId: engramHint } : {}) })), null, 2);
+          } else {
+            display = `LLM output (parse as facts manually):\n\n${raw}`;
+          }
+        } catch {
+          display = `LLM output (parse as facts manually):\n\n${raw}`;
+        }
+        return { content: [{ type: 'text', text: display }] };
+      }
+      case 'confirm_data_access': {
+        const { phrase, tier } = z.object({
+          phrase: z.string(),
+          tier: z.enum(['personal', 'sensitive']),
+        }).parse(req.params.arguments ?? {});
+
+        const clientName = mcpRegistry.getMostRecentClientName() ?? 'unknown-client';
+
+        // A5 — SKIP keyword: user opts out gracefully without consuming a
+        // failure attempt or storing consent. The notice text already tells
+        // the user to type SKIP; honour it here so it doesn't get treated as
+        // a wrong phrase and count toward the 5-attempt lockout.
+        if (phrase.trim().toUpperCase() === 'SKIP') {
+          return { content: [{ type: 'text', text:
+            `Skipped — no ${tier} data will be returned for this request and no consent was stored. ` +
+            `Do NOT retry the recall. Continue the conversation without that context.`,
+          }] };
+        }
+
+        const hmacKey = await deps.host.getOrCreateConsentHmacKey();
+
+        if (!validateConsentPhrase(hmacKey, tier, phrase)) {
+          const { lockedOut, count } = trackConsentFailure(clientName, tier);
+          if (lockedOut) {
+            // Revoke this (client, tier) pair and broadcast lockout event.
+            const settings = deps.host.getSettings();
+            const revoked = revokeConsent(settings.ai.dataAccessConsents, clientName, tier);
+            await deps.host.setSettings({ ai: { ...settings.ai, dataAccessConsents: revoked } });
+            if (deps.broadcastRaw) {
+              deps.broadcastRaw({
+                kind: 'mcp.consent-lockout',
+                name: clientName,
+                payload: { clientName, tier, failedAttempts: count },
+              });
+            }
+            return mcpError(
+              `Too many failed phrase attempts for ${clientName} / ${tier} (${count}). ` +
+              `Consent has been revoked for this client and tier. ` +
+              `Check Settings → AI in the Graphnosis app.`,
+            );
+          }
+          const windowMs = tier === 'sensitive' ? SENSITIVE_WINDOW_MS : PERSONAL_WINDOW_MS;
+          const windowDesc = tier === 'sensitive' ? '1 hour' : '24 hours';
+          return mcpError(
+            `Phrase did not match the current Graphnosis consent phrase for tier "${tier}". ` +
+            `Attempt ${count} of ${LOCKOUT_MAX_ATTEMPTS}. ` +
+            `Phrases rotate every ${windowDesc} — if the window just changed, ask the user to ` +
+            `check the Graphnosis app again. Do not guess.`,
+          );
+        }
+
+        // Valid phrase — clear failures and record consent.
+        clearConsentFailures(clientName, tier);
+
+        // Compute effective window for this (client, tier) — same "stricter wins" logic.
+        const settings = deps.host.getSettings();
+        const clientType = settings.ai.clientTypes?.[clientName] ?? 'chat';
+        let windowMs: number = clientType === 'agent' ? 0
+          : tier === 'sensitive'
+            ? (settings.ai.consentIntervalSensitiveMs ?? 3_600_000)
+            : (settings.ai.consentIntervalPersonalMs ?? -1);
+
+        // Per-graph stricter wins across all loaded graphs of this tier.
+        for (const graphId of deps.host.listGraphs()) {
+          const meta = deps.host.getGraphMetadata(graphId);
+          const graphTier = (meta as any)?.sensitivityTier as string | undefined;
+          if (graphTier !== tier) continue;
+          const perGraph = (meta as any)?.consentIntervalMs as number | undefined;
+          if (perGraph !== undefined && perGraph !== -1) {
+            if (windowMs === -1 || perGraph < windowMs) windowMs = perGraph;
+          }
+        }
+
+        const recipientName = clientName.startsWith('claude') ? 'Anthropic Inc.' : clientName;
+        const updatedConsents = recordConsent(
+          settings.ai.dataAccessConsents,
+          clientName,
+          tier,
+          windowMs,
+          recipientName,
+          'US',
+          '2025-05',
+        );
+        await deps.host.setSettings({ ai: { ...settings.ai, dataAccessConsents: updatedConsents } });
+
+        if (deps.broadcastRaw) {
+          deps.broadcastRaw({
+            kind: 'mcp.consent-granted',
+            name: clientName,
+            payload: {
+              clientName,
+              tier,
+              expiresAt: updatedConsents.find(
+                (r) => r.clientName === clientName && r.tier === tier && !r.withdrawnAt,
+              )?.expiresAt ?? -1,
+            },
+          });
+        }
+
+        const expiresAt = updatedConsents.find(
+          (r) => r.clientName === clientName && r.tier === tier && !r.withdrawnAt,
+        )?.expiresAt ?? -1;
+        const until = expiresAt >= Number.MAX_SAFE_INTEGER - 1
+          ? 'permanently (until revoked)'
+          : `until ${new Date(expiresAt).toLocaleString()}`;
+        return { content: [{ type: 'text', text:
+          `Consent recorded for ${tier} engrams. Valid ${until}. You may now retry the original recall.`
+        }] };
+      }
+>>>>>>> Stashed changes
       default:
         throw new Error(`Unknown tool: ${req.params.name}`);
     }

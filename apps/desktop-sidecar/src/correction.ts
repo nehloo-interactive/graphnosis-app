@@ -264,6 +264,10 @@ export async function applyCorrection(opts: {
    *  the underlying host.applyCorrection emits. Undefined when the user
    *  applied the correction directly via the App UI. */
   correctedBy?: string;
+  /** The user-facing correction text that was passed to the `correct` tool. */
+  prompt?: string;
+  /** Resolution mode from proposeCorrection. */
+  mode?: 'deterministic' | 'gnn-expanded' | 'llm-assisted';
 }): Promise<void> {
   const adds: AppendDocumentInput[] = (opts.diff.adds ?? []).map(a => ({
     kind: 'markdown' as const,
@@ -276,6 +280,30 @@ export async function applyCorrection(opts: {
     { adds, edits },
     opts.correctedBy ? { correctedBy: opts.correctedBy } : undefined,
   );
+  const ts = Date.now();
+  const gllBase = {
+    timestamp: ts,
+    graphId: opts.graphId,
+    originatingTool: 'apply' as const,
+    ...(opts.prompt ? { prompt: opts.prompt } : {}),
+    ...(opts.mode ? { mode: opts.mode } : {}),
+    ...(opts.correctedBy ? { clientName: opts.correctedBy } : {}),
+  };
+  for (const edit of edits) {
+    await opts.host.gllWriter.append({
+      ...gllBase,
+      operation: edit.kind === 'delete' ? 'deleteNode' : edit.kind === 'supersede' ? 'supersede' : 'editNode',
+      targetNodeIds: [edit.nodeId],
+      after: edit.kind === 'delete' ? {} : { content: edit.content, reason: edit.reason },
+    });
+  }
+  for (const add of adds) {
+    await opts.host.gllWriter.append({
+      ...gllBase,
+      operation: 'addNode',
+      after: { content: add.content, sourceRef: add.sourceRef },
+    });
+  }
 }
 
 function extractJson(raw: string): unknown {

@@ -319,11 +319,24 @@ export async function ingestClip(
     content = `# ${label}\n\n${text}`;
   }
 
-  return host.ingest(graphId, sourceKind, sourceRef, {
+  const rec = await host.ingest(graphId, sourceKind, sourceRef, {
     kind,
     content,
     sourceRef,
   }, opts?.addedBy ? { addedBy: opts.addedBy } : undefined);
+  if (opts?.addedBy) {
+    await host.gllWriter.append({
+      timestamp: Date.now(),
+      graphId,
+      operation: 'ingestSource',
+      originatingTool: 'remember',
+      targetSourceId: rec.sourceId,
+      targetNodeIds: rec.nodeIds,
+      after: { label, textLength: text.length },
+      clientName: opts.addedBy,
+    });
+  }
+  return rec;
 }
 
 // ── Inline PDF parser (compiled-binary fallback) ─────────────────────────────
