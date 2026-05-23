@@ -2,6 +2,8 @@
 //!
 //! Shows a status row at the top of the dropdown ("Locked" / "Unlocked · cortex"),
 //! plus actions: Show window, Open cortex in Finder, Lock cortex, Quit.
+//! Also surfaces an "Update Available" item (or "Check for Updates") depending
+//! on whether a pending update has been detected by the background checker.
 
 use tauri::{
     menu::{Menu, MenuItem, PredefinedMenuItem},
@@ -17,7 +19,7 @@ pub fn create(app: &AppHandle) -> tauri::Result<()> {
         unlocked: false,
         cortex_dir: None,
         sidecar_running: false,
-    })?;
+    }, None)?;
 
     // Use the dedicated menu-bar icon (18×18, designed as a template image)
     // so it fits naturally alongside other menu-bar icons and adapts to
@@ -55,15 +57,26 @@ pub fn create(app: &AppHandle) -> tauri::Result<()> {
 /// Rebuild the tray menu in place to reflect new status.
 ///
 /// Called from `unlock_cortex` and `lock_cortex` so the user immediately sees
-/// state changes without having to reopen the dropdown.
+/// state changes without having to reopen the dropdown. Automatically reads
+/// any pending update version from `UpdateState` (if registered) to show
+/// "Update Available — vX.Y.Z" instead of the normal "Check for Updates" item.
 pub fn refresh_status(app: &AppHandle, status: &StatusSnapshot) {
     let Some(tray) = app.tray_by_id("graphnosis-tray") else { return };
-    if let Ok(menu) = build_menu(app, status) {
+    // Read the pending update version synchronously from UpdateState.
+    let update_version: Option<String> = app
+        .try_state::<crate::UpdateState>()
+        .and_then(|s| {
+            s.available_version
+                .lock()
+                .ok()
+                .and_then(|guard| guard.as_ref().map(|v| v.clone()))
+        });
+    if let Ok(menu) = build_menu(app, status, update_version.as_deref()) {
         let _ = tray.set_menu(Some(menu));
     }
 }
 
-fn build_menu(app: &AppHandle, status: &StatusSnapshot) -> tauri::Result<Menu<Wry>> {
+fn build_menu(app: &AppHandle, status: &StatusSnapshot, update_version: Option<&str>) -> tauri::Result<Menu<Wry>> {
     let status_label = if status.unlocked {
         let cortex = status
             .cortex_dir
@@ -91,9 +104,20 @@ fn build_menu(app: &AppHandle, status: &StatusSnapshot) -> tauri::Result<Menu<Wr
         None::<&str>,
     )?;
     let lock_item = MenuItem::with_id(app, "lock", "Lock cortex", status.unlocked, None::<&str>)?;
+
+    // Update item: shows the new version when available, otherwise offers a
+    // manual check. Same "updates" event ID in both states — the handler
+    // inspects UpdateState to decide whether to install or check.
+    let update_label = match update_version {
+        Some(v) => format!("Update Available — v{}", v),
+        None => "Check for Updates".to_string(),
+    };
+    let update_item = MenuItem::with_id(app, "updates", &update_label, true, None::<&str>)?;
+
     let quit_item = MenuItem::with_id(app, "quit", "Quit Graphnosis", true, Some("CmdOrCtrl+Q"))?;
     let sep1 = PredefinedMenuItem::separator(app)?;
     let sep2 = PredefinedMenuItem::separator(app)?;
+    let sep3 = PredefinedMenuItem::separator(app)?;
 
     Menu::with_items(
         app,
@@ -104,6 +128,8 @@ fn build_menu(app: &AppHandle, status: &StatusSnapshot) -> tauri::Result<Menu<Wr
             &open_folder_item,
             &lock_item,
             &sep2,
+            &update_item,
+            &sep3,
             &quit_item,
         ],
     )
@@ -154,6 +180,62 @@ fn on_menu_event(app: &AppHandle, id: &str) {
                 use tauri::Emitter;
                 let _ = app_clone.emit("graphnosis://status", &snapshot);
                 refresh_status(&app_clone, &snapshot);
+            });
+        }
+        "updates" => {
+            // If a pending update is already known, prompt to install it.
+            // Otherwise, run a fresh check.
+            let app_clone = app.clone();
+            tauri::async_runtime::spawn(async move {
+                let pending = app_clone
+                    .try_state::<crate::UpdateState>()
+                    .and_then(|s| {
+                        s.available_version
+                            .lock()
+                            .ok()
+                            .and_then(|guard| guard.as_ref().map(|v| v.clone()))
+                    });
+
+                if let Some(version) = pending {
+                    // Confirm with the user before downloading.
+                    use tauri_plugin_dialog::DialogExt;
+                    let confirmed = app_clone
+                        .dialog()
+                        .message(&format!(
+                            "Graphnosis {} is ready to install.\n\
+                             Click OK to download and restart.",
+                            version
+                        ))
+                        .title("Update Available")
+                        .blocking_show();
+
+                    if confirmed {
+                        use tauri_plugin_updater::UpdaterExt;
+                        match app_clone.updater() {
+                            Ok(updater) => match updater.check().await {
+                                Ok(Some(update)) => {
+                                    if let Err(e) = update
+                                        .download_and_install(|_, _| {}, || {})
+                                        .await
+                                    {
+                                        eprintln!("[updater] install failed: {}", e);
+                                    }
+                                    // App restarts automatically after install.
+                                }
+                                Ok(None) => {
+                                    // Version was already installed (unlikely but harmless).
+                                }
+                                Err(e) => eprintln!("[updater] re-check before install failed: {}", e),
+                            },
+                            Err(e) => eprintln!("[updater] could not get updater: {}", e),
+                        }
+                    }
+                } else {
+                    // No pending update cached — run a silent check now.
+                    if let Err(e) = crate::run_update_check(app_clone).await {
+                        eprintln!("[updater] manual check failed: {}", e);
+                    }
+                }
             });
         }
         "quit" => {

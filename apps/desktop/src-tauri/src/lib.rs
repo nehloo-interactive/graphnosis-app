@@ -29,6 +29,13 @@ pub struct AppState {
     inner: Arc<AsyncMutex<AppInner>>,
 }
 
+/// Separate managed state for a pending auto-update (if any). Kept outside
+/// `AppInner` (and outside the async Mutex) so the tray can read it
+/// synchronously without awaiting the inner lock.
+pub struct UpdateState {
+    pub available_version: std::sync::Mutex<Option<String>>,
+}
+
 #[derive(Default)]
 struct AppInner {
     cortex_dir: Option<PathBuf>,
@@ -85,7 +92,7 @@ async fn unlock_cortex(
 ) -> Result<StatusSnapshot, String> {
     let cortex_dir = PathBuf::from(&args.cortex_dir);
     if !cortex_dir.is_dir() {
-        return Err(format!("Cortex folder does not exist: {}", args.cortex_dir));
+        return Err(format!("cortex folder does not exist: {}", args.cortex_dir));
     }
 
     // Persist the passphrase locally so subsequent launches can offer
@@ -188,7 +195,7 @@ async fn unlock_cortex_with_recovery(
 ) -> Result<StatusSnapshot, String> {
     let cortex_dir = PathBuf::from(&args.cortex_dir);
     if !cortex_dir.is_dir() {
-        return Err(format!("Cortex folder does not exist: {}", args.cortex_dir));
+        return Err(format!("cortex folder does not exist: {}", args.cortex_dir));
     }
     // Validate the cortex has a recovery.enc before spawning the sidecar.
     if !cortex_dir.join("recovery.enc").exists() {
@@ -244,7 +251,7 @@ async fn suggest_cortex_path() -> Result<String, String> {
 /// component is a file, etc.) — those bubble to the frontend so the user
 /// sees the specific reason instead of a generic "unlock failed."
 ///
-/// Called by the frontend after the unlock click hits "Cortex folder does
+/// Called by the frontend after the unlock click hits "cortex folder does
 /// not exist" and the user confirms creation. We deliberately don't
 /// auto-create on every unlock — making folder creation an explicit
 /// user decision avoids the trap where a typo'd path silently materialises
@@ -295,7 +302,7 @@ async fn biometric_unlock(
     state: State<'_, AppState>,
     cortex_dir: String,
 ) -> Result<StatusSnapshot, String> {
-    let ok = biometric::prompt(&app, "Unlock your Graphnosis Cortex")
+    let ok = biometric::prompt(&app, "Unlock your Graphnosis cortex")
         .await
         .map_err(|e| e.to_string())?;
     if !ok {
@@ -508,7 +515,7 @@ async fn lock_cortex(app: AppHandle, state: State<'_, AppState>) -> Result<Statu
     //   - The user explicitly changes the passphrase (passphrase rotation
     //     replaces the cache on success)
     //   - The user disables Touch ID for this cortex (future Settings flow)
-    //   - The user deletes the Cortex (also a future flow)
+    //   - The user deletes the cortex (also a future flow)
     // For now: persist until one of those happens.
     let snapshot = StatusSnapshot {
         unlocked: false,
@@ -1975,6 +1982,79 @@ async fn set_graph_tier(
 }
 
 #[tauri::command]
+async fn get_consent_phrase(
+    state: State<'_, AppState>,
+    tier: String,
+) -> Result<serde_json::Value, String> {
+    let socket_path = {
+        let inner = state.inner.lock().await;
+        match &inner.cortex_dir {
+            Some(vd) => vd.join("sidecar.sock"),
+            None => return Err("cortex is locked".to_string()),
+        }
+    };
+    let params = serde_json::json!({ "tier": tier });
+    ipc_client::request(&socket_path, "ai.getConsentPhrase", params)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn revoke_ai_consents(
+    state: State<'_, AppState>,
+    client_name: Option<String>,
+    tier: Option<String>,
+) -> Result<serde_json::Value, String> {
+    let socket_path = {
+        let inner = state.inner.lock().await;
+        match &inner.cortex_dir {
+            Some(vd) => vd.join("sidecar.sock"),
+            None => return Err("cortex is locked".to_string()),
+        }
+    };
+    let mut params = serde_json::Map::new();
+    if let Some(cn) = client_name {
+        params.insert("clientName".to_string(), serde_json::json!(cn));
+    }
+    if let Some(t) = tier {
+        params.insert("tier".to_string(), serde_json::json!(t));
+    }
+    ipc_client::request(&socket_path, "ai.revokeConsents", serde_json::Value::Object(params))
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn engram_set_config(
+    state: State<'_, AppState>,
+    engram_id: String,
+    tier: Option<String>,
+    consent_interval_ms: Option<i64>,
+    clear_consent_interval: Option<bool>,
+) -> Result<serde_json::Value, String> {
+    let socket_path = {
+        let inner = state.inner.lock().await;
+        match &inner.cortex_dir {
+            Some(vd) => vd.join("sidecar.sock"),
+            None => return Err("cortex is locked".to_string()),
+        }
+    };
+    let mut params = serde_json::json!({ "engramId": engram_id });
+    if let Some(t) = tier {
+        params["tier"] = serde_json::json!(t);
+    }
+    if let Some(ms) = consent_interval_ms {
+        params["consentIntervalMs"] = serde_json::json!(ms);
+    }
+    if let Some(true) = clear_consent_interval {
+        params["clearConsentInterval"] = serde_json::json!(true);
+    }
+    ipc_client::request(&socket_path, "engram.setConfig", params)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 async fn move_source(
     state: State<'_, AppState>,
     from_graph_id: String,
@@ -2022,6 +2102,64 @@ async fn delete_graph(
         .map_err(|e| e.to_string())
 }
 
+/// Trigger a manual update check from the frontend (Settings, About, etc.).
+/// Returns the new version string if an update is available, or None.
+/// Also stores the result in UpdateState and refreshes the tray.
+#[tauri::command]
+async fn check_for_updates(app: AppHandle) -> Result<Option<String>, String> {
+    match run_update_check(app).await {
+        Ok(v) => Ok(v),
+        Err(e) => {
+            eprintln!("[updater] check failed: {}", e);
+            Err(e.to_string())
+        }
+    }
+}
+
+/// Core update check logic — shared by the startup background check and the
+/// `check_for_updates` Tauri command. Fetches `latest.json`, compares it to
+/// the running version, and if a newer build is available:
+///   1. Stores the version in UpdateState so the tray can reflect it.
+///   2. Refreshes the tray menu to show "Update Available".
+///   3. Posts a macOS notification so the user notices even with the window hidden.
+///
+/// Returns `Some(version)` if an update was found, `None` otherwise.
+async fn run_update_check(app: AppHandle) -> anyhow::Result<Option<String>> {
+    use tauri_plugin_updater::UpdaterExt;
+    let update = app.updater()?.check().await?;
+    let Some(update) = update else { return Ok(None) };
+
+    let version = update.version.clone();
+
+    // Persist so the tray and install flow can reference it without re-checking.
+    if let Some(s) = app.try_state::<UpdateState>() {
+        if let Ok(mut v) = s.available_version.lock() {
+            *v = Some(version.clone());
+        }
+    }
+
+    // Refresh tray: read current app status then rebuild the menu.
+    {
+        let state = app.state::<AppState>();
+        let snapshot = current_status(&state).await;
+        tray::refresh_status(&app, &snapshot);
+    }
+
+    // Notify the user even when the window is hidden.
+    use tauri_plugin_notification::NotificationExt;
+    let _ = app
+        .notification()
+        .builder()
+        .title("Graphnosis Update Available")
+        .body(&format!(
+            "Version {} is ready. Open the menu-bar icon to install.",
+            version
+        ))
+        .show();
+
+    Ok(Some(version))
+}
+
 async fn current_status(state: &State<'_, AppState>) -> StatusSnapshot {
     let inner = state.inner.lock().await;
     StatusSnapshot {
@@ -2040,11 +2178,13 @@ async fn current_status(state: &State<'_, AppState>) -> StatusSnapshot {
 pub fn run() {
     tauri::Builder::default()
         .manage(AppState::default())
+        .manage(UpdateState { available_version: std::sync::Mutex::new(None) })
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_notification::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .plugin(tauri_plugin_autostart::init(
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
@@ -2111,10 +2251,14 @@ pub fn run() {
             open_external_url,
             set_graph_archived,
             set_graph_tier,
+            get_consent_phrase,
+            revoke_ai_consents,
+            engram_set_config,
             rename_graph,
             move_source,
             delete_graph,
             sidecar_ipc_call,
+            check_for_updates,
         ])
         .setup(|app| {
             // Full-blown Mac app: regular activation so we get a Dock icon,
@@ -2145,6 +2289,17 @@ pub fn run() {
             }
             // Tray icon + menu.
             tray::create(app.handle())?;
+            // Silent background update check — delayed so it doesn't race
+            // startup I/O. Fires 15 s after the app is ready.
+            {
+                let handle = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    tokio::time::sleep(std::time::Duration::from_secs(15)).await;
+                    if let Err(e) = run_update_check(handle).await {
+                        eprintln!("[updater] background check failed: {}", e);
+                    }
+                });
+            }
             Ok(())
         })
         .on_window_event(|window, event| {
