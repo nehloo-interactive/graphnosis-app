@@ -179,6 +179,7 @@ async fn open_and_read(app: &AppHandle, socket_path: &Path) -> Result<()> {
             | "engram.create-suggested"
             | "correction.proposed"
             | "llm.pull-progress"
+            | "engrams-loading"
             | "mcp.session-budget-exceeded"
             | "mcp.session-budget-warning"
             | "mcp.bulk-access-warning"

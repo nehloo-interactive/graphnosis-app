@@ -55,12 +55,20 @@ struct AppInner {
 pub struct UnlockArgs {
     pub cortex_dir: String,
     pub passphrase: String,
+    /// User's last-active engram from localStorage. Tells the sidecar which
+    /// engram to load FIRST (during "Loading memories…") so the lock screen
+    /// disappears with the right engram already showing — instead of always
+    /// loading "personal" first and then swapping mid-session.
+    #[serde(default)]
+    pub preferred_default_graph: Option<String>,
 }
 
 #[derive(Serialize, Deserialize)]
 pub struct RecoveryUnlockArgs {
     pub cortex_dir: String,
     pub recovery_phrase: String,
+    #[serde(default)]
+    pub preferred_default_graph: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -106,7 +114,7 @@ async fn unlock_cortex(
     // Spawn the supervised Node sidecar. The sidecar acquires an exclusive
     // cortex lock on its own, so if another sidecar is already running against
     // the same cortex, this call will fail visibly.
-    let handle = sidecar::start(&app, &cortex_dir, &args.passphrase)
+    let handle = sidecar::start(&app, &cortex_dir, &args.passphrase, args.preferred_default_graph.as_deref())
         .await
         .map_err(|e| e.to_string())?;
 
@@ -206,7 +214,7 @@ async fn unlock_cortex_with_recovery(
         );
     }
 
-    let handle = sidecar::start_with_recovery(&app, &cortex_dir, &args.recovery_phrase)
+    let handle = sidecar::start_with_recovery(&app, &cortex_dir, &args.recovery_phrase, args.preferred_default_graph.as_deref())
         .await
         .map_err(|e| e.to_string())?;
 
@@ -301,6 +309,7 @@ async fn biometric_unlock(
     app: AppHandle,
     state: State<'_, AppState>,
     cortex_dir: String,
+    preferred_default_graph: Option<String>,
 ) -> Result<StatusSnapshot, String> {
     let ok = biometric::prompt(&app, "Unlock your Graphnosis cortex")
         .await
@@ -311,7 +320,7 @@ async fn biometric_unlock(
     let passphrase = keychain::load_passphrase(&cortex_dir)
         .map_err(|e| e.to_string())?
         .ok_or_else(|| "no saved passphrase for this cortex".to_string())?;
-    let args = UnlockArgs { cortex_dir, passphrase };
+    let args = UnlockArgs { cortex_dir, passphrase, preferred_default_graph };
     unlock_cortex(app, state, args).await
 }
 
