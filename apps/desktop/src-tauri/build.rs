@@ -352,9 +352,8 @@ fn build_node_binary(binary_name: &str, entry_relative: &str) {
         Some(p) => p,
         None => {
             println!(
-                "cargo:warning=bun not found (looked in ~/.bun/bin and PATH); \
-                 {} build SKIPPED. Install with \
-                 `curl -fsSL https://bun.sh/install | bash`.",
+                "cargo:warning=bun not found (looked in ~/.bun/bin, %USERPROFILE%\\.bun\\bin, and PATH); \
+                 {} build SKIPPED. Install from https://bun.sh",
                 binary_name
             );
             return;
@@ -434,21 +433,32 @@ fn rust_triple_to_bun_target(triple: &str) -> String {
 
 /// Find Bun in common locations. Returns None if not found.
 fn locate_bun() -> Option<std::path::PathBuf> {
-    // 1. Default install path from bun.sh/install
+    let bun_exe = if cfg!(windows) { "bun.exe" } else { "bun" };
+
+    // 1. Default install path (~/.bun/bin/bun or %USERPROFILE%\.bun\bin\bun.exe)
     if let Some(home) = dirs_home() {
-        let local = home.join(".bun").join("bin").join("bun");
+        let local = home.join(".bun").join("bin").join(bun_exe);
         if local.exists() { return Some(local); }
     }
-    // 2. Homebrew (Apple Silicon)
-    let brew_arm = std::path::PathBuf::from("/opt/homebrew/bin/bun");
-    if brew_arm.exists() { return Some(brew_arm); }
-    // 3. Homebrew (Intel)
-    let brew_intel = std::path::PathBuf::from("/usr/local/bin/bun");
-    if brew_intel.exists() { return Some(brew_intel); }
-    // 4. PATH fallback — `which bun`
-    if let Ok(out) = std::process::Command::new("which").arg("bun").output() {
+    // 2. Homebrew (Apple Silicon / Intel — macOS only)
+    #[cfg(not(windows))]
+    {
+        let brew_arm = std::path::PathBuf::from("/opt/homebrew/bin/bun");
+        if brew_arm.exists() { return Some(brew_arm); }
+        let brew_intel = std::path::PathBuf::from("/usr/local/bin/bun");
+        if brew_intel.exists() { return Some(brew_intel); }
+    }
+    // 3. PATH fallback — `where` on Windows, `which` elsewhere
+    let finder = if cfg!(windows) { "where" } else { "which" };
+    if let Ok(out) = std::process::Command::new(finder).arg("bun").output() {
         if out.status.success() {
-            let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
+            // `where` may return multiple lines; take the first non-empty one
+            let s = String::from_utf8_lossy(&out.stdout)
+                .lines()
+                .find(|l| !l.trim().is_empty())
+                .unwrap_or("")
+                .trim()
+                .to_string();
             if !s.is_empty() {
                 let p = std::path::PathBuf::from(s);
                 if p.exists() { return Some(p); }
@@ -458,10 +468,14 @@ fn locate_bun() -> Option<std::path::PathBuf> {
     None
 }
 
-/// Tiny re-implementation of dirs::home_dir for build.rs — we don't want to
-/// pull a dependency into build-dependencies just for this.
+/// Tiny re-implementation of dirs::home_dir for build.rs.
+/// Windows uses USERPROFILE; Unix uses HOME.
 fn dirs_home() -> Option<std::path::PathBuf> {
-    std::env::var_os("HOME").map(std::path::PathBuf::from)
+    if cfg!(windows) {
+        std::env::var_os("USERPROFILE").map(std::path::PathBuf::from)
+    } else {
+        std::env::var_os("HOME").map(std::path::PathBuf::from)
+    }
 }
 
 /// Copy the onnxruntime shared library next to the sidecar binary (both in
