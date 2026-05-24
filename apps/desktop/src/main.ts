@@ -5040,7 +5040,7 @@ function mcpToolsOnboardingHtml(): string {
             </div>
           </div>
         </div>
-        <p class="g-deck-cmd-note">35 tools total. Deterministic and approximate tools work without any AI model. Conditional and non-deterministic tools use the optional Local LLM (or Neural Network); enabling them never changes how the deterministic tools behave.</p>
+        <p class="g-deck-cmd-note">34 tools total. Deterministic and approximate tools work without any AI model. Conditional and non-deterministic tools use the optional Local LLM (or Neural Network); enabling them never changes how the deterministic tools behave.</p>
       </div>
     </div>`;
 }
