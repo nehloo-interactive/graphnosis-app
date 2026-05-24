@@ -1,5 +1,6 @@
 import type { GraphnosisHost } from './host.js';
 import type { AppSettings } from '@graphnosis-app/core/settings';
+import { redactPair } from './log-redact.js';
 
 /**
  * Source kinds whose nodes are genuinely ephemeral — unconfirmed ambient
@@ -97,7 +98,7 @@ export class TemporalEngine {
           await this.host.applyDecayCorrection(graphId, node.id, node.contentPreview, newConfidence);
           nodesDecayed++;
         } catch (err) {
-          console.error(`[brain:temporal] decay failed for ${graphId}/${node.id}:`, err);
+          console.error(`[brain:temporal] decay failed for ${redactPair(graphId, node.id)}:`, err);
         }
       }
 

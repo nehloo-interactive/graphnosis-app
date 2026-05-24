@@ -1,7 +1,7 @@
 // Only file in the App that imports the `@nehloo/graphnosis` SDK directly.
 // Verified against v0.2.3.
 
-import { Graphnosis } from '@nehloo/graphnosis';
+import { Graphnosis, serializeSubgraph } from '@nehloo/graphnosis';
 import type { EmbeddingAdapter, GraphNode, NodeId } from '@nehloo/graphnosis';
 import type {
   GraphnosisAdapter,
@@ -11,6 +11,7 @@ import type {
   AppendDocumentResult,
   BuildEmbeddingsAdapterOpts,
   QueryResult,
+  RichQueryResult,
   CorrectionEdit,
 } from './graphnosis-adapter.js';
 import type { EmbedFn } from '@graphnosis-app/core/embeddings';
@@ -149,6 +150,70 @@ export class GraphnosisImpl implements GraphnosisAdapter {
         ...(n.source.section !== undefined ? { section: n.source.section } : {}),
       },
     }));
+  }
+
+  async queryRich(handle: GraphHandle, query: string, k: number): Promise<RichQueryResult> {
+    const h = handle as Internal;
+    if (!h.built) h.instance.build(h.graphId);
+    const res = h.instance.hasEmbeddings()
+      ? await h.instance.queryHybrid(query, { maxNodes: k }).catch((e: Error) => {
+          console.error(`[graphnosis-sidecar] queryHybrid failed (${e.message}) — falling back to TF-IDF`);
+          return h.instance.query(query, { maxNodes: k });
+        })
+      : h.instance.query(query, { maxNodes: k });
+
+    const scores = new Map<string, number>(
+      res.seeds.map((s: { nodeId: string; score: number }) => [s.nodeId, s.score]),
+    );
+
+    const candidates: QueryResult[] = res.subgraph.nodes.map((n: GraphNode) => ({
+      nodeId: n.id,
+      score: scores.get(n.id) ?? 0,
+      text: n.content,
+      type: n.type,
+      source: {
+        file: n.source.file,
+        ...(n.source.line !== undefined ? { line: n.source.line } : {}),
+        ...(n.source.section !== undefined ? { section: n.source.section } : {}),
+      },
+    }));
+
+    // Capture the SDK subgraph data in a closure so the adapter surface stays
+    // free of SDK types. The host calls rich.serialize(selectedIds) after
+    // federation budget filtering to get a prompt block for exactly those nodes.
+    const sdkNodes = res.subgraph.nodes as GraphNode[];
+    const sdkDirected = res.subgraph.directedEdges as Array<{ id: string; from: string; to: string; type: string; weight: number }>;
+    const sdkUndirected = res.subgraph.undirectedEdges as Array<{ id: string; nodes: [string, string]; type: string; weight: number }>;
+
+    const rich: RichQueryResult['rich'] = {
+      directedEdges: sdkDirected.map(e => ({ id: e.id, from: e.from, to: e.to, type: e.type as import('./graphnosis-adapter.js').DirectedEdgeType, weight: e.weight })),
+      undirectedEdges: sdkUndirected.map(e => ({ id: e.id, nodes: e.nodes, type: e.type as import('./graphnosis-adapter.js').UndirectedEdgeType, weight: e.weight })),
+      scores,
+      serialize(nodeIds: Set<string>): string {
+        const filteredNodes = sdkNodes.filter(n => nodeIds.has(n.id));
+        const filteredDirected = sdkDirected.filter(e => nodeIds.has(e.from) && nodeIds.has(e.to));
+        const filteredUndirected = sdkUndirected.filter(e => nodeIds.has(e.nodes[0]) && nodeIds.has(e.nodes[1]));
+        return serializeSubgraph(
+          filteredNodes,
+          filteredDirected as Parameters<typeof serializeSubgraph>[1],
+          filteredUndirected as Parameters<typeof serializeSubgraph>[2],
+          scores,
+        ).serialized;
+      },
+      getNodeData(nodeIds: Set<string>): import('./graphnosis-adapter.js').NodeMergeData[] {
+        return sdkNodes
+          .filter(n => nodeIds.has(n.id))
+          .map(n => ({
+            id: n.id,
+            content: n.content,
+            type: n.type,
+            entities: n.entities ?? [],
+            score: scores.get(n.id) ?? 0,
+          }));
+      },
+    };
+
+    return { candidates, rich };
   }
 
   async applyCorrection(handle: GraphHandle, edit: CorrectionEdit): Promise<void> {

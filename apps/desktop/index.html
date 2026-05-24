@@ -2033,6 +2033,25 @@
       /* Terminal-route alternative to the point-and-click model setup. */
       .ollama-cli-box { margin-top: 14px; }
       .ollama-cli-title { font-size: 13px; font-weight: 600; margin: 0 0 4px; }
+      /* Platform tabs inside Prefer the Terminal? — flat, underlined-on-active. */
+      .ollama-cli-tab {
+        background: transparent;
+        border: none;
+        padding: 6px 10px;
+        font: inherit;
+        font-size: 12px;
+        color: var(--fg-dim, #888);
+        cursor: pointer;
+        border-bottom: 2px solid transparent;
+        margin-bottom: -1px; /* overlap the box's bottom border */
+        transition: color 120ms, border-color 120ms;
+      }
+      .ollama-cli-tab:hover { color: var(--fg, #ddd); }
+      .ollama-cli-tab[aria-selected="true"] {
+        color: var(--fg, #ddd);
+        border-bottom-color: var(--accent, #5b8def);
+        font-weight: 600;
+      }
       .ollama-cli-intro, .ollama-cli-foot {
         font-size: 12px; color: var(--fg-dim); line-height: 1.5; margin: 0 0 8px;
       }
@@ -2377,6 +2396,10 @@
       }
 
       /* Status bar at the bottom of the shell. */
+      @keyframes graphnosis-pulse {
+        0%, 100% { opacity: 0.4; transform: scale(0.9); }
+        50%      { opacity: 1;   transform: scale(1.1); }
+      }
       .app-statusbar {
         display: flex;
         gap: 16px;
@@ -3061,10 +3084,30 @@
         font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
         margin: 0 0 12px;
       }
+      /* Pending-correction ops list — scrollable when long. The deck-card
+         is `flex-direction: column` with `min-height: 0`, so giving
+         g-pending-ops `flex: 1 1 auto; overflow-y: auto` lets the diff
+         body scroll independently while the action buttons stay pinned
+         at the bottom. Without this, multi-op diffs (5+ edits/adds) push
+         Approve/Reject/Skip below the visible area where the user can't
+         reach them. */
+      .g-pending-ops {
+        flex: 1 1 auto;
+        min-height: 0;
+        overflow-y: auto;
+        padding-right: 4px;
+      }
       .g-deck-actions {
         display: flex;
         gap: 6px;
         flex-wrap: wrap;
+        flex: 0 0 auto;
+        padding-top: 10px;
+        margin-top: 6px;
+        border-top: 1px solid var(--border);
+        background: var(--bg);
+        position: sticky;
+        bottom: 0;
       }
       .g-deck-actions button {
         flex: 1;
@@ -5343,7 +5386,7 @@
                         <span>Enhanced ranking</span>
                       </label>
                     </div>
-                    <button id="g-search-llm-btn" class="btn-sm" type="button" style="font-size: 11px; white-space: nowrap;" title="Enable a local AI model in Go Non-Deterministic">Local LLM…</button>
+                    <button id="g-search-llm-btn" class="btn-sm" type="button" style="font-size: 11px; white-space: nowrap;" title="Enable a local AI model in Non-Deterministic Aid">Local LLM…</button>
                   </div>
                 </div>
                 <div id="g-health" class="g-health g-health-inline">
@@ -5367,7 +5410,7 @@
                     <button class="g-tab active" data-gtab="checkin">Check-in</button>
                     <button class="g-tab" data-gtab="atlas">3D Engram</button>
                     <button class="g-tab" data-gtab="brain">Deterministic Consolidation</button>
-                    <button class="g-tab" data-gtab="nondeterministic">Go Non-Deterministic</button>
+                    <button class="g-tab" data-gtab="nondeterministic">Non-Deterministic Aid</button>
                   </div>
 
                   <!-- CHECK-IN DASHBOARD (default) -->
@@ -5587,22 +5630,63 @@
                   <section class="g-tab-pane hidden" data-gpane="nondeterministic">
                     <div id="non-deterministic">
                       <p class="lb-scope-note">
-                        ⚡ <strong>Non-deterministic by choice.</strong> Everything in
-                        this tab is <strong>off by default</strong>. The deterministic
-                        core never changes — these layers add probabilistic prediction
-                        and local-AI reasoning on top, and you switch them on yourself.
+                        ⚡ <strong>Optional AI-powered aid.</strong> Everything in
+                        this tab is <strong>off by default</strong>. Each capability
+                        is independently toggleable — some are non-mutating (recall
+                        enrichment rewrites your query but never touches your memory),
+                        others write to separate overlay layers (insights, predictions
+                        land in <code>.gnn</code> / <code>.gll</code>, never in your
+                        canonical engrams). Your attested memory is only ever changed
+                        when you approve a correction yourself.
                       </p>
 
                       <div class="lb-section">
-                        <p class="lb-section-title">Graphnosis Neural Network</p>
+                        <p class="lb-section-title">Graphnosis Neural Network (.GNN)</p>
                         <p class="brain-subtitle">
                           A trained neural network that predicts likely-missing
                           connections. Its predictions are non-deterministic and live
                           in a separate encrypted overlay — never mixed into the
                           deterministic graph. Off by default; a snapshot of every
                           engram is saved before it is ever enabled.
+                          <br><br>
+                          <em>What is the <code>.gnn</code> file?</em> It's an encrypted
+                          overlay stored alongside your cortex at
+                          <code>&lt;cortex&gt;/neural-network.gnn</code>. It holds only
+                          the neural network's predicted edges between your existing
+                          memories — never your actual notes, never anything written
+                          into the canonical <code>.gai</code> engrams. Deleting the
+                          file returns your cortex to the pre-GNN state byte-for-byte.
                         </p>
                         <div id="lb-neural-network" class="lb-block"></div>
+                      </div>
+
+                      <div class="lb-section">
+                        <p class="lb-section-title">Graphnosis Local Layer (.GLL)</p>
+                        <p class="brain-subtitle">
+                          Periodically the local LLM proposes new connections between
+                          memories that look semantically related. Predictions land in
+                          the <code>.gll</code> overlay — your canonical engram is never
+                          touched. Review each below: <strong>Accept</strong> promotes
+                          the prediction into the canonical graph as a real directed
+                          edge, <strong>Reject</strong> deletes it from the overlay
+                          permanently. Requires the
+                          <em>Predict edges autonomously</em> capability under Local LLM.
+                          <br><br>
+                          <em>What is the <code>.gll</code> file?</em> An encrypted
+                          overlay at <code>&lt;cortex&gt;/local-layer.gll</code> that
+                          holds the local LLM's predicted edges (and, in future
+                          iterations, synthesized assertions). Same crypto envelope as
+                          your engrams, but kept architecturally separate: the LLM
+                          cannot mutate your attested memory in <code>.gai</code>.
+                          Deleting the file returns your cortex to the pre-LLM-overlay
+                          state.
+                        </p>
+                        <div style="display:flex; align-items:center; gap:10px; margin-bottom:10px;">
+                          <button id="btn-gll-run-now" class="btn-sm">Run prediction now</button>
+                          <button id="btn-gll-refresh" class="btn-sm">Refresh list</button>
+                          <span id="gll-predicted-count" class="brain-subtitle" style="margin:0; font-size:12px;"></span>
+                        </div>
+                        <div id="gll-predicted-list" class="lb-block"></div>
                       </div>
 
                       <div class="lb-section">
@@ -5622,10 +5706,14 @@
                           sent to the cloud. Setup is free and one-time.
                         </p>
                         <div id="llm-enable-block" class="llm-enable-block" style="margin-bottom: 12px;"></div>
-                        <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 10px;">
-                          <span style="font-size: 14px; min-width: 120px;">Ollama</span>
-                          <span id="ollama-status-badge">Checking…</span>
-                          <button id="btn-ollama-recheck" class="btn-sm">Recheck</button>
+                        <div id="llm-cap-block" class="llm-cap-block" style="margin-bottom: 12px;"></div>
+                        <!-- Hidden offscreen — kept for compatibility with code that still
+                             reads ollama-status-badge / btn-ollama-recheck refs. The visible
+                             status + recheck now live inside the Local LLM card (rendered by
+                             renderLlmEnableBlock in main.ts). -->
+                        <div style="position:absolute; left:-9999px; visibility:hidden;">
+                          <span id="ollama-status-badge"></span>
+                          <button id="btn-ollama-recheck"></button>
                         </div>
 
                         <!-- Shown when Ollama IS connected — explains the model rows below. -->
@@ -5690,30 +5778,97 @@
                         </div>
 
                         <!-- Terminal route — shown regardless of detection state for users
-                             who would rather set the model up from the command line. -->
+                             who would rather set the model up from the command line.
+                             Horizontal tabs cover the major platforms; the common model-pull
+                             commands appear once below, since they're identical everywhere. -->
                         <div class="ollama-cli-box">
                           <p class="ollama-cli-title">Prefer the Terminal?</p>
                           <p class="ollama-cli-intro">
-                            Once Ollama is installed you can download and run a model from a
-                            terminal — Graphnosis detects it automatically. Open Terminal
-                            (macOS) or PowerShell (Windows) and run:
+                            Pick your platform — Graphnosis auto-detects Ollama once it's
+                            installed and running.
                           </p>
-                          <pre class="ollama-cli"><code><span class="cli-comment"># 1. Download the recommended model (one-time, ~2 GB)</span>
-ollama pull llama3.2:3b
+                          <div class="ollama-cli-tabs" role="tablist" style="display:flex; gap:4px; margin-bottom:8px; border-bottom:1px solid var(--border);">
+                            <button class="ollama-cli-tab" data-cli-tab="macos" role="tab" aria-selected="true">macOS</button>
+                            <button class="ollama-cli-tab" data-cli-tab="windows" role="tab" aria-selected="false">Windows</button>
+                            <button class="ollama-cli-tab" data-cli-tab="linux" role="tab" aria-selected="false">Linux</button>
+                            <button class="ollama-cli-tab" data-cli-tab="ubuntu" role="tab" aria-selected="false">Ubuntu / Debian</button>
+                            <button class="ollama-cli-tab" data-cli-tab="docker" role="tab" aria-selected="false">Docker</button>
+                          </div>
 
-<span class="cli-comment"># 2. Run it — this also starts Ollama's background service</span>
-ollama run llama3.2:3b
+                          <div class="ollama-cli-pane" data-cli-pane="macos">
+<pre class="ollama-cli"><code><span class="cli-comment"># Install via Homebrew (recommended)</span>
+brew install ollama
+
+<span class="cli-comment"># Or download the .dmg from ollama.com and drag to Applications</span>
+
+<span class="cli-comment"># Start the background service</span>
+ollama serve   <span class="cli-comment"># (skip this if the menu-bar app is already running)</span></code></pre>
+                          </div>
+
+                          <div class="ollama-cli-pane" data-cli-pane="windows" style="display:none;">
+<pre class="ollama-cli"><code><span class="cli-comment"># Option A — winget (Windows 10+ / PowerShell)</span>
+winget install Ollama.Ollama
+
+<span class="cli-comment"># Option B — download the installer from ollama.com</span>
+<span class="cli-comment"># and run OllamaSetup.exe</span>
+
+<span class="cli-comment"># Ollama runs automatically as a Windows service after install.</span>
+<span class="cli-comment"># Confirm it's running:</span>
+ollama list</code></pre>
+                          </div>
+
+                          <div class="ollama-cli-pane" data-cli-pane="linux" style="display:none;">
+<pre class="ollama-cli"><code><span class="cli-comment"># Official install script — works on most distros</span>
+curl -fsSL https://ollama.com/install.sh | sh
+
+<span class="cli-comment"># The script installs Ollama as a systemd service and starts it.</span>
+<span class="cli-comment"># Confirm:</span>
+systemctl status ollama
+ollama list</code></pre>
+                          </div>
+
+                          <div class="ollama-cli-pane" data-cli-pane="ubuntu" style="display:none;">
+<pre class="ollama-cli"><code><span class="cli-comment"># Ubuntu / Debian — same install script as Linux</span>
+curl -fsSL https://ollama.com/install.sh | sh
+
+<span class="cli-comment"># If you prefer to skip the script and install manually,</span>
+<span class="cli-comment"># the script's contents are at https://ollama.com/install.sh</span>
+
+<span class="cli-comment"># Confirm the systemd unit is running:</span>
+sudo systemctl status ollama
+ollama list</code></pre>
+                          </div>
+
+                          <div class="ollama-cli-pane" data-cli-pane="docker" style="display:none;">
+<pre class="ollama-cli"><code><span class="cli-comment"># CPU-only</span>
+docker run -d -v ollama:/root/.ollama -p 11434:11434 \
+  --name ollama ollama/ollama
+
+<span class="cli-comment"># GPU (NVIDIA — requires nvidia-container-toolkit)</span>
+docker run -d --gpus=all -v ollama:/root/.ollama \
+  -p 11434:11434 --name ollama ollama/ollama
+
+<span class="cli-comment"># Pull / run inside the container</span>
+docker exec -it ollama ollama pull llama3.2:3b</code></pre>
+                          </div>
+
+                          <p class="ollama-cli-intro" style="margin-top:14px;">
+                            Once installed, pull a model — same commands on every platform:
+                          </p>
+<pre class="ollama-cli"><code><span class="cli-comment"># Recommended (~2 GB)</span>
+ollama pull llama3.2:3b
 
 <span class="cli-comment"># Lighter option for older machines (~800 MB)</span>
 ollama pull llama3.2:1b
 
 <span class="cli-comment"># See which models you have / confirm Ollama is up</span>
 ollama list</code></pre>
+
                           <p class="ollama-cli-foot">
                             Ollama serves on <code>http://127.0.0.1:11434</code>. After a model
                             is pulled and Ollama is running, click <strong>Recheck</strong>
-                            above — the status turns green and the model appears in the
-                            <strong>Active model</strong> list.
+                            in the <strong>Local LLM</strong> card above — the status turns
+                            green and the model appears in the <strong>Active model</strong> list.
                           </p>
                         </div>
                       </div>
@@ -5987,10 +6142,32 @@ ollama list</code></pre>
           <span class="status-sep">·</span>
           <span class="status-search">⌘K to search nodes</span>
           <span id="status-saved" class="status-saved"></span>
+          <!-- Live background-process line. Hidden when nothing is running;
+               otherwise shows e.g. "Self-healing: scanning for duplicates…"
+               or "GLL: predicting edges…". Driven from handleBrainFrame
+               via brainActivePhases — categories: Self-healing, Consolidation,
+               Insights, GLL, GNN. Click jumps to Deterministic Consolidation
+               tab so the user can see the schedule and recent activity. -->
+          <span id="status-process" class="status-process" style="margin-left:auto; display:none; font-size:12px; opacity:0.75; cursor:pointer; align-items:center; gap:6px;" title="Background process — click for the live activity feed.">
+            <span class="status-process-dot" style="width:6px; height:6px; border-radius:50%; background:var(--accent, #5b8def); display:inline-block; animation: graphnosis-pulse 1.4s ease-in-out infinite;"></span>
+            <span id="status-process-text"></span>
+          </span>
           <!-- App version pill, sits left of Vitality. Populated in main.ts
-               from __APP_VERSION__ (vite-injected at build from package.json). -->
-          <span id="status-version" class="status-version" title="About Graphnosis" style="margin-left:auto; font-size:12px; opacity:0.6; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; transition: opacity 100ms;" onmouseenter="this.style.opacity='1';this.style.textDecoration='underline'" onmouseleave="this.style.opacity='0.6';this.style.textDecoration='none'"></span>
+               from __APP_VERSION__ (vite-injected at build from package.json).
+               margin-left dropped because status-process now claims the
+               left-stretch slot when visible; version stays anchored next
+               to vitality. -->
+          <span id="status-version" class="status-version" title="About Graphnosis" style="margin-left:8px; font-size:12px; opacity:0.6; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; transition: opacity 100ms;" onmouseenter="this.style.opacity='1';this.style.textDecoration='underline'" onmouseleave="this.style.opacity='0.6';this.style.textDecoration='none'"></span>
           <span id="brain-vitality" style="display:none; font-size:12px; opacity:0.7; margin-left:8px; cursor:pointer;" title="Open Deterministic Consolidation tab">🧠 Vitality –</span>
+          <!-- Layered intelligence pills — visible only when the user has
+               turned on the matching capability in Non-Deterministic Aid.
+               Hover shows the full name; click jumps to the toggle. -->
+          <!-- Pill backgrounds use the same colors as the Graphnosis wordmark
+               gradient endpoints (.app-title): turquoise #6ab3c8 (start) for
+               GLL, purple #a78bfa (end) for GNN. Same brand identity, distinct
+               between the two overlay layers. -->
+          <span id="status-gll-pill" class="status-layer-pill" style="display:none; font-size:11px; font-weight:700; padding:2px 8px; margin-left:8px; border-radius:10px; background:#6ab3c8; color:#000; cursor:pointer; letter-spacing:0.04em;" title="Graphnosis Local Layer — local LLM overlay on top of your engrams. Click to open Non-Deterministic Aid.">GLL</span>
+          <span id="status-gnn-pill" class="status-layer-pill" style="display:none; font-size:11px; font-weight:700; padding:2px 8px; margin-left:6px; border-radius:10px; background:#a78bfa; color:#000; cursor:pointer; letter-spacing:0.04em;" title="Graphnosis Neural Network — predicted-edge overlay on top of your engrams. Click to open Non-Deterministic Aid.">GNN</span>
           <span class="status-mcp">
             <span id="status-mcp-dot" class="status-dot"></span>
             <span id="status-mcp-text">checking clients…</span>
@@ -5998,6 +6175,55 @@ ollama list</code></pre>
         </footer>
       </section>
     </main>
+
+    <!-- Embedding model switch progress. Listens on the
+         graphnosis://embedding-switch-progress event channel. -->
+    <div id="embedding-switch-modal" class="modal-backdrop hidden">
+      <div class="modal" style="max-width:520px;">
+        <div class="modal-header">
+          <h2>Switching search model</h2>
+          <p class="subtitle">One-time operation. Your memory is being re-embedded with the new model.</p>
+        </div>
+        <div class="modal-body" style="padding:20px;">
+          <p id="embedding-switch-phase" style="font-weight:600; margin:0 0 8px;">Starting…</p>
+          <p id="embedding-switch-detail" class="subtitle" style="margin:0 0 12px; font-size:13px;">Snapshotting your engrams first so the old vectors stay recoverable.</p>
+          <div style="width:100%; height:10px; background:var(--bg-2,#222); border-radius:5px; overflow:hidden;">
+            <div id="embedding-switch-bar" style="width:0%; height:100%; background:var(--accent,#5b8def); transition:width 200ms;"></div>
+          </div>
+          <p id="embedding-switch-counter" class="subtitle" style="margin:8px 0 0; font-size:12px;"></p>
+        </div>
+        <div class="modal-footer" style="padding:14px 20px;">
+          <span class="filler"></span>
+          <button id="embedding-switch-cancel" class="btn-sm">Cancel</button>
+          <button id="embedding-switch-close" class="btn-sm" disabled>Close</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Reingest-all progress modal. Listens on
+         graphnosis://reingest-progress. -->
+    <div id="reingest-modal" class="modal-backdrop hidden">
+      <div class="modal" style="max-width:560px;">
+        <div class="modal-header">
+          <h2>Reingesting your memory</h2>
+          <p class="subtitle">Re-chunking and re-embedding existing sources with current settings.</p>
+        </div>
+        <div class="modal-body" style="padding:20px;">
+          <p id="reingest-phase" style="font-weight:600; margin:0 0 8px;">Starting…</p>
+          <p id="reingest-detail" class="subtitle" style="margin:0 0 12px; font-size:13px;">Taking a snapshot of every engram first.</p>
+          <div style="width:100%; height:10px; background:var(--bg-2,#222); border-radius:5px; overflow:hidden;">
+            <div id="reingest-bar" style="width:0%; height:100%; background:var(--accent,#5b8def); transition:width 200ms;"></div>
+          </div>
+          <p id="reingest-counter" class="subtitle" style="margin:8px 0 0; font-size:12px;"></p>
+          <div id="reingest-summary" style="display:none; margin-top:14px; padding:10px; background:var(--bg-2,#1a1a1a); border-radius:6px; font-size:12px;"></div>
+        </div>
+        <div class="modal-footer" style="padding:14px 20px;">
+          <span class="filler"></span>
+          <button id="reingest-cancel" class="btn-sm">Cancel</button>
+          <button id="reingest-close" class="btn-sm" disabled>Close</button>
+        </div>
+      </div>
+    </div>
 
     <!-- Snapshots: list / create. Restore lands in a follow-up session — too easy to footgun without a careful flow. -->
     <div id="snapshots-modal" class="modal-backdrop hidden">
@@ -6238,12 +6464,36 @@ ollama list</code></pre>
           </div><!-- /section: memory storage -->
 
           <div class="settings-section">
+          <p class="settings-section-label">Search model</p>
+          <p class="subtitle" style="margin-bottom: 12px;">
+            Which on-device embedding model powers semantic recall. The default is
+            tuned for English notes and is fast and lightweight. Switch to the
+            multilingual model if you regularly store memories in more than one
+            language — it dramatically improves cross-language recall but takes
+            longer to download and uses more memory.
+            <br><br>
+            <strong>Switching triggers a one-time re-embed of every engram.</strong>
+            A snapshot is taken first so the old vectors are recoverable.
+          </p>
+          <div id="embedding-picker" style="display:flex; flex-direction:column; gap:10px;">
+            <!-- Populated by refreshEmbeddingStatus(). Layout:
+                 ○ English-first (recommended for English-only users)
+                   BGE-small-en-v1.5 · 30 MB · fast
+                 ● Multilingual (recommended if you store notes in multiple languages)
+                   multilingual-e5-large · 2200 MB · cross-language ready
+                 [ Apply ]   (status text on right) -->
+          </div>
+          </div><!-- /section: search model -->
+
+          <div class="settings-section">
           <p class="settings-section-label">Ingest</p>
           <p class="subtitle" style="margin-bottom: 12px;">
             How aggressively the SDK splits documents into memory nodes, and how
             many texts it groups into each embedding model call. Sensible defaults
             cover most users; tune if ingest feels slow or recall feels imprecise.
-            Changes apply to the <em>next</em> file you ingest — existing nodes keep their previous shape.
+            Changes apply to the <em>next</em> file you ingest. To apply the
+            current chunk size to memory you've already saved, use
+            <strong>Reingest all sources</strong> below.
           </p>
           <div class="row" style="display: flex; align-items: center; gap: 10px; margin-bottom: 10px;">
             <label for="ai-chunk-size" style="white-space: nowrap; font-size: 14px; min-width: 160px;">
@@ -6265,6 +6515,22 @@ ollama list</code></pre>
               <option value="medium">Medium — 256/call (default)</option>
               <option value="large">Large — 1024/call (≥ 32 GB RAM)</option>
             </select>
+          </div>
+
+          <p class="panel-title" style="margin-top: 18px;">Reingest all sources</p>
+          <p class="subtitle" style="margin-bottom: 12px;">
+            Re-chunk and re-embed every source you've previously saved, using the
+            current Chunk size, embedding model, and SDK improvements. Useful
+            after changing chunk size or upgrading the search model. A snapshot
+            is taken first so the old chunks/vectors are recoverable.
+            <br><br>
+            Sources whose original content wasn't cached (e.g. you have
+            <em>Cache content</em> set to off) are skipped — they'd need to be
+            re-ingested from the source file or URL.
+          </p>
+          <div class="row" style="display:flex; align-items:center; gap:10px;">
+            <button id="btn-reingest-all" class="btn-sm">Reingest all sources</button>
+            <span id="reingest-all-note" class="subtitle" style="margin:0; font-size:12px;"></span>
           </div>
 
           <p class="panel-title" style="margin-top: 18px;">File-source auto-reingest</p>
@@ -6784,6 +7050,33 @@ ollama list</code></pre>
         <div class="modal-footer">
           <a id="tool-info-docs-link" href="#" style="font-size:12px; color:var(--fg-dim); text-decoration:none; border-bottom:1px dotted currentColor; margin-right:auto;" title="Open the full MCP Tools reference in your browser">📖 Full MCP Tools reference</a>
           <button id="tool-info-close" class="primary">Got it</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Update available modal — shown when run_update_check emits
+         `graphnosis://update-available` with the new version string.
+         "Install & Restart" calls install_update; "Later" dismisses. -->
+    <div id="update-available-modal" class="modal-backdrop hidden">
+      <div class="modal" style="max-width: 420px;">
+        <div class="modal-header" style="display:flex; justify-content:space-between; align-items:flex-start; gap:12px;">
+          <div style="flex:1; min-width:0;">
+            <h2 style="font-size:16px; margin:0 0 4px;">Update available</h2>
+            <p class="subtitle" id="update-available-version" style="margin:0;"></p>
+          </div>
+          <div style="display:flex; flex-direction:column; align-items:center; gap:3px; flex-shrink:0;">
+            <img src="/graphnosis-logo.png" alt="Graphnosis" width="32" height="32" style="border-radius:8px; opacity:0.9;" />
+            <span style="font-size:10px; color:var(--fg-dim); letter-spacing:.04em;">Graphnosis</span>
+          </div>
+        </div>
+        <div class="modal-body">
+          <p style="font-size:14px; line-height:1.6; margin:0;">
+            A new version of Graphnosis is ready to install. The app will download the update and restart automatically — your cortex stays safe and encrypted throughout.
+          </p>
+        </div>
+        <div class="modal-footer">
+          <button id="update-later-btn" class="secondary" style="margin-right:auto;">Later</button>
+          <button id="update-install-btn" class="primary">Install &amp; Restart</button>
         </div>
       </div>
     </div>

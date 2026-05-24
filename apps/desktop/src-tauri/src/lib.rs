@@ -2152,6 +2152,22 @@ async fn delete_graph(
 
 /// Trigger a manual update check from the frontend (Settings, About, etc.).
 /// Returns the new version string if an update is available, or None.
+/// Downloads and installs the pending update, then restarts the app.
+/// Called from the in-app update modal when the user clicks "Install & Restart".
+/// Re-checks the endpoint so we always install from a fresh manifest.
+#[tauri::command]
+async fn install_update(app: AppHandle) -> Result<(), String> {
+    use tauri_plugin_updater::UpdaterExt;
+    let updater = app.updater().map_err(|e| e.to_string())?;
+    match updater.check().await.map_err(|e| e.to_string())? {
+        Some(update) => update
+            .download_and_install(|_, _| {}, || {})
+            .await
+            .map_err(|e| e.to_string()),
+        None => Err("No update available".to_string()),
+    }
+}
+
 /// Also stores the result in UpdateState and refreshes the tray.
 #[tauri::command]
 async fn check_for_updates(app: AppHandle) -> Result<Option<String>, String> {
@@ -2204,6 +2220,9 @@ async fn run_update_check(app: AppHandle) -> anyhow::Result<Option<String>> {
             version
         ))
         .show();
+
+    // Emit to the frontend so the in-app update modal can appear.
+    let _ = app.emit("graphnosis://update-available", version.clone());
 
     Ok(Some(version))
 }
@@ -2308,6 +2327,7 @@ pub fn run() {
             delete_graph,
             sidecar_ipc_call,
             check_for_updates,
+            install_update,
         ])
         .setup(|app| {
             // Full-blown Mac app: regular activation so we get a Dock icon,

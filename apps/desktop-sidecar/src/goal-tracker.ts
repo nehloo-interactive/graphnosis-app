@@ -1,5 +1,6 @@
 import type { GraphnosisHost } from './host.js';
 import type { LocalLlm } from './correction.js';
+import { settings as settingsMod } from '@graphnosis-app/core';
 
 interface PlanSummary {
   context: string;
@@ -107,7 +108,9 @@ export class GoalTracker {
 
       // LLM milestone assessment — optional: needs Ollama AND the user's
       // opt-in, since the local LLM is off by default.
-      if (!this.llm || this.host.getSettings().ai.llmEnabled !== true) continue;
+      // Goal milestone assessment uses the same `insights` capability gate
+      // as the rest of the brain-engine background loops.
+      if (!this.llm || !settingsMod.resolveLlmCapabilities(this.host.getSettings()).insights) continue;
       try {
         const recentContext = await this.host.recall(goal.title, {
           budget: { maxTokens: 500, maxNodes: 5 },

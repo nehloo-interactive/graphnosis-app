@@ -62,8 +62,23 @@ if (process.env['GRAPHNOSIS_WORKER_ROLE']) {
   );
 }
 
-export const LOCAL_EMBED_ID = 'graphnosis-app:bge-small-en-v1.5@384:document';
-export const LOCAL_EMBED_DIM = 384;
+// ── Model identity derived from env ──────────────────────────────────────────
+//
+// GRAPHNOSIS_EMBED_MODEL is set by main.ts BEFORE this module is imported —
+// it reads the cortex's settings.json early in boot and forwards the user's
+// choice ('english' | 'multilingual'). embed-worker.ts reads the same env
+// var so parent and child agree on model + dimension.
+//
+// IDs are cortex-stable strings; the SDK uses them to detect "did the model
+// change?" — when the user switches models, this string changes and every
+// engram's cached embeddings get invalidated and rebuilt.
+function selectedModel(): 'english' | 'multilingual' {
+  return process.env.GRAPHNOSIS_EMBED_MODEL === 'multilingual' ? 'multilingual' : 'english';
+}
+export const LOCAL_EMBED_ID = selectedModel() === 'multilingual'
+  ? 'graphnosis-app:multilingual-e5-large@1024:document'
+  : 'graphnosis-app:bge-small-en-v1.5@384:document';
+export const LOCAL_EMBED_DIM = selectedModel() === 'multilingual' ? 1024 : 384;
 
 function defaultCacheDir(): string {
   const home = os.homedir();
@@ -270,6 +285,72 @@ export const workerEmbed: EmbedFn = (text: string): Promise<number[]> => {
     });
   });
 };
+
+/**
+ * Current effective model + ID + dim. Reads the live env var so callers
+ * after a `switchEmbedModel` get the new values. The boot-time exports
+ * (LOCAL_EMBED_ID / LOCAL_EMBED_DIM) stay as they were — they're for the
+ * one-time host construction at boot, not for re-checking after a switch.
+ */
+export function currentEmbedModel(): { model: 'english' | 'multilingual'; id: string; dim: number } {
+  const model = selectedModel();
+  return {
+    model,
+    id: model === 'multilingual'
+      ? 'graphnosis-app:multilingual-e5-large@1024:document'
+      : 'graphnosis-app:bge-small-en-v1.5@384:document',
+    dim: model === 'multilingual' ? 1024 : 384,
+  };
+}
+
+/**
+ * Switch the embedding model at runtime. Terminates every running worker,
+ * sets the env var to the new choice, and respawns the pool fresh — the
+ * new workers pick up the env var on import and load the corresponding
+ * fastembed model on init (downloading it on first use).
+ *
+ * Returns once at least one new worker has reached 'ready', so the caller
+ * can immediately start issuing embed requests. The other slots fill in
+ * the background via spawnNextInitial(), same as boot.
+ *
+ * The host's embedAdapterId is NOT updated here — call host.setEmbedAdapter()
+ * with currentEmbedModel() afterwards, then trigger re-embed of every graph.
+ */
+export async function switchEmbedModel(model: 'english' | 'multilingual'): Promise<void> {
+  process.env.GRAPHNOSIS_EMBED_MODEL = model;
+  // Stop the initial-fill loop and tear down current workers.
+  await terminateEmbedWorker();
+  // Reset pool state.
+  for (let i = 0; i < WORKER_COUNT; i++) {
+    workers[i] = undefined;
+    slotFailures[i] = 0;
+  }
+  initialFillNext = 0;
+  // Spawn first slot; the rest chain via spawnNextInitial on 'ready'. Wait
+  // for at least the first to be ready so callers don't race ahead.
+  await new Promise<void>((resolve, reject) => {
+    const timeout = setTimeout(
+      () => reject(new Error('embedding model switch: first worker did not become ready in 60 s')),
+      60_000,
+    );
+    spawnNextInitial();
+    const slot0 = workers[0];
+    if (!slot0) {
+      clearTimeout(timeout);
+      reject(new Error('embedding model switch: failed to spawn worker'));
+      return;
+    }
+    const onReady = (msg: { type?: string }): void => {
+      if (msg.type === 'ready') {
+        slot0.off('message', onReady);
+        clearTimeout(timeout);
+        resolve();
+      }
+    };
+    slot0.on('message', onReady);
+  });
+  console.error(`[local-embed] switched to model='${model}'`);
+}
 
 /**
  * Gracefully terminate all embedding child processes. Call on sidecar shutdown
