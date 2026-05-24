@@ -313,8 +313,8 @@ Remove a **source** from an engram. Every node derived from that source is soft-
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `graphId` | string | Yes | The engram the source lives in. |
-| `sourceId` | string | Yes | The source to remove. Use `stats` with `includeNodes` to enumerate sources if you do not have the id. |
+| `graphId` | string | Yes | The engram **slug** (e.g. `personal`, `rss-ai`, `work`) — not a node ID or hash. Use `list_engrams` or `stats` to see valid slugs. |
+| `sourceId` | string | Yes | The exact source ID from the source index — not a display label or node hash. **Always call `find_source` first** to look it up; never construct or guess this value. |
 
 ### Return
 
@@ -328,6 +328,7 @@ Forgot 7 nodes from source clip:abc123.
 
 - This is a **soft delete** — the op-log records a `forget` event and the user can restore the source via the app's Recover flow. Nothing is permanently destroyed.
 - `forget` removes the *whole* source. To remove a single memory inside a multi-fact source, use `correct` with a delete operation instead.
+- **Always call `find_source` before `forget`** to get both the exact `sourceId` and the engram slug. Passing a wrong value silently does nothing — no error, zero nodes deleted.
 - Confirm with the user before calling unless they have explicitly named the source.
 
 ### Example
@@ -588,10 +589,14 @@ The op-log primitives — find, fetch, and move whole sources between engrams. A
 
 ### `find_source`
 
-Find sources by a keyword substring match against sourceId, ref (label/path/URL), or kind — across all engrams or scoped to one. The lookup before `forget`, `transfer_source`, or `recall_source`.
+Find sources by a keyword substring match against sourceId, ref (label/path/URL), or kind — across all engrams or scoped to one. Returns each match with its exact engram slug, sourceId, kind, and timestamp.
 
-- **Parameters:** `keyword` (required) · `engram` (optional) · `limit` (default 10).
+- **Parameters:** `keyword` (required) · `engram` (optional, narrows the search to one engram) · `limit` (default 10).
 - **Try saying:** *"Where did I save that PDF about Raft?"*
+
+:::tip[Call this before `forget`]
+Always call `find_source` before `forget` or `transfer_source`. Use the returned `graphId` (engram slug) and `sourceId` verbatim — never construct or guess either value from a node hash or display label.
+:::
 
 ### `recall_source`
 
