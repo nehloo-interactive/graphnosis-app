@@ -5,14 +5,30 @@ sidebar:
   order: 1
 ---
 
-The Graphnosis sidecar exposes **eleven tools** via the Model Context Protocol. Every connected MCP client — Claude Desktop, Claude Code, Cursor, and anything else that speaks MCP — sees the same eleven. What a tool can actually reach is still governed by each engram's sensitivity tier and its "share with AI" setting.
+The Graphnosis sidecar exposes **35 tools** via the Model Context Protocol, organised into nine functional categories. Every connected MCP client — Claude Desktop, Claude Code, Cursor, and anything else that speaks MCP — sees the same 35. What a tool can actually reach is still governed by each engram's sensitivity tier and the [consent gate](/guides/ai-access-controls/#2-the-consent-gate) — by default a one-click in-app prompt for `sensitive`-tier recalls, silent for `personal` and `public`.
+
+You can browse the full toolset inside the app too: open the **MCP Tools** button in the left sidebar (next to Settings). Each tool name opens a short explainer with example prompts you can paste straight into your AI client.
+
+## At a glance — the 35 tools
+
+| Category | Tools |
+|---|---|
+| **Core memory** (7) | [`recall`](#recall) · [`remind`](#remind) · [`remember`](#remember) · [`forget`](#forget) · [`apply`](#apply) · [`stats`](#stats) · [`vitality`](#vitality) |
+| **Engram discovery** (5) | [`list_engrams`](#list_engrams) · [`suggest_engram`](#suggest_engram) · [`browse_engram`](#browse_engram) · [`recent`](#recent) · [`get_engram_schema`](#get_engram_schema) |
+| **Structured recall** (4) | [`recall_structured`](#recall_structured) · [`recall_with_citations`](#recall_with_citations) · [`compare_engrams`](#compare_engrams) · [`cross_search`](#cross_search) |
+| **Source operations** (3) | [`find_source`](#find_source) · [`recall_source`](#recall_source) · [`transfer_source`](#transfer_source) |
+| **Engram operations** (3) | [`merge_engrams`](#merge_engrams) · [`ingest_batch`](#ingest_batch) · [`engram_summary`](#engram_summary) |
+| **Brain maintenance** (3) | [`duplicate_pairs`](#duplicate_pairs) · [`healing_journal`](#healing_journal) · [`gnn_status`](#gnn_status) |
+| **Approximate** (2) | [`audit_memory`](#audit_memory) · [`check_duplicate`](#check_duplicate) |
+| **Conditional** (1) | [`correct`](#correct) |
+| **Non-deterministic** (7) | [`develop`](#develop) · [`predict`](#predict) · [`insights`](#insights) · [`gnn_neighbors`](#gnn_neighbors) · [`llm_query`](#llm_query) · [`llm_distill`](#llm_distill) · [`confirm_data_access`](#confirm_data_access) |
 
 ## How results are returned
 
 Every tool returns a standard MCP **text content block**. The `text` is one of two things, noted per tool below:
 
-- **Plain text** — a ready-to-read string (`recall`, `remind`, `remember`, `apply`, `forget`, `develop`, `predict`).
-- **A JSON string** — structured data the client can parse (`correct`, `stats`, `insights`, `vitality`).
+- **Plain text** — a ready-to-read string (`recall`, `remind`, `remember`, `apply`, `forget`, `develop`, `predict`, `llm_query`, `confirm_data_access`).
+- **A JSON string** — structured data the client can parse (everything else).
 
 There is no separate "return object" — the JSON examples below show what that `text` string contains once parsed.
 
@@ -20,12 +36,12 @@ There is no separate "return object" — the JSON examples below show what that 
 
 Graphnosis sorts its tools into four determinism tiers. Each tool states its own tier in the description an AI client sees, so the client knows exactly what it is invoking:
 
-| Tier | Tools | What it means |
+| Tier | What it means | Tools |
 |---|---|---|
-| **Deterministic** | `recall`, `remind`, `remember`, `apply`, `forget`, `stats`, `vitality` | Identical input always produces an identical result — no LLM, no randomness, fully auditable. |
-| **Conditional** | `correct` | Deterministic by default — supersedes the single closest-matching memory. Enabling the optional Neural Network (which widens the candidate set) or the optional Local LLM (which authors a multi-edit diff) makes it non-deterministic. The result's `mode` field reports which path ran. |
-| **Mixed** | `develop`, `predict` | Memory retrieval is deterministic and auditable, but a local LLM then synthesises the prose, so wording varies run to run. With no local LLM running, both degrade to a deterministic raw-context dump. |
-| **Non-deterministic** | `insights` | A background local-LLM loop produces these; the tool only retrieves what was already computed — it never triggers a scan itself. |
+| **Deterministic** | Identical input always produces an identical result — no LLM, no randomness, fully auditable. | All Core memory, Engram discovery, Structured recall, Source operations, Engram operations, Brain maintenance tools; plus `confirm_data_access`. |
+| **Approximate** | Vector-similarity scan — given the same embedding state, results are reproducible. No LLM involved. | `audit_memory`, `check_duplicate` |
+| **Conditional** | Deterministic by default — `correct` supersedes the single closest-matching memory. Enabling the optional Neural Network (which widens the candidate set) or the optional Local LLM (which authors a multi-edit diff) makes it non-deterministic. The result's `mode` field reports which path ran. | `correct` |
+| **Non-deterministic** | Needs the optional Local LLM (or Neural Network). Retrieval is exact and auditable; the synthesised output varies between runs. Degrades to raw context when the LLM is off. | `develop`, `predict`, `insights`, `gnn_neighbors`, `llm_query`, `llm_distill` |
 
 One nuance for the deterministic tier: if the user has enabled the optional [Graphnosis Neural Network](/guides/indelibility-and-determinism/), `recall` and `remind` may append a separate, clearly-labelled "Neural-network predictions" block. That appendix is the only non-deterministic part, and it is never mixed into the deterministic results.
 
@@ -487,3 +503,210 @@ A JSON string:
 
 - **Everyday —** You ask "how healthy is my memory overall?" — `vitality` returns a 0–100 score, and a 74 on your personal engram nudges you to tidy up loosely connected notes.
 - **Technical —** Tracking memory quality over time, you ask the AI for the current vitality — `vitality` reports the per-engram breakdown, and a dip flags a build-up of unresolved duplicate pairs dragging down the coherence component.
+
+---
+
+## Engram discovery
+
+These five tools let an AI client navigate your cortex without needing to guess engram names. All deterministic — metadata reads only.
+
+### `list_engrams`
+
+Lists every engram in your cortex — names, sensitivity tiers, source counts, archive state. Use before routing a `remember` if you don't already know what exists.
+
+- **Returns:** JSON array of engram objects.
+- **Try saying:** *"What engrams do I have?"* · *"Show me all my memory collections."*
+
+### `suggest_engram`
+
+Recommends the best engram to save a note into, based on token similarity between the note text and existing engram names. A pre-check before `remember` so the AI can avoid the routing banner when there's an obvious fit.
+
+- **Parameters:** `text` (required) · `top_k` (optional, default 3, max 5).
+- **Returns:** JSON-ranked short-list with match scores.
+- **Try saying:** *"Where should I save this note about marathon training?"*
+
+### `browse_engram`
+
+Lists every source ingested into a specific engram — file paths, clip refs, timestamps, IDs — newest first. The right lookup before `forget` or `transfer_source` when you need the exact sourceId.
+
+- **Parameters:** `engram` (required, slug or display name; fuzzy-matched) · `limit` (optional, default 20).
+- **Try saying:** *"What's inside my Reading List engram?"*
+
+### `recent`
+
+The most recently ingested sources across all engrams, or scoped to one. Answers "what did I just save?" and verifies an ingest succeeded.
+
+- **Parameters:** `engram` (optional) · `limit` (optional, default 10, max 50).
+- **Try saying:** *"What did I just save?"*
+
+### `get_engram_schema`
+
+Returns the metadata for one engram — display name, sensitivity tier, template, creation date. Used to confirm a tier before routing sensitive notes.
+
+- **Parameters:** `engram` (required, slug or display name).
+- **Try saying:** *"What sensitivity tier is my Personal engram on?"*
+
+---
+
+## Structured recall
+
+Four variants on `recall` for when the AI needs more than the standard prose context block.
+
+### `recall_structured`
+
+Like `recall`, but results come back as a JSON array of node objects (`nodeId`, `graphId`, `tier`, `score`, `text`, `sourceId`) for programmatic processing — sorting by score, computing statistics, choosing which sourceIds to forward to a follow-up tool.
+
+- **Parameters:** `query` (required) · `maxTokens` (default 2000) · `maxNodes` per graph (default 20) · `only_engrams` / `except_engrams` (optional scope filters).
+- **Try saying:** *"Recall my Q4 roadmap notes as JSON so I can sort them by score."*
+
+### `recall_with_citations`
+
+Like `recall`, but each memory carries an inline citation to the source it was derived from (e.g. `[clip:abc123]`) — for traceable provenance per fact.
+
+- **Parameters:** same as `recall_structured`.
+- **Try saying:** *"Tell me about the API redesign and cite the source for each fact."*
+
+### `compare_engrams`
+
+Runs the same query against two engrams and returns the results side-by-side under separate headings — useful for contrasting work vs. personal, 2025 vs. 2026 plans, etc.
+
+- **Parameters:** `query` · `engram_a` · `engram_b` · `maxNodes` (default 10).
+- **Try saying:** *"Compare what I know about Python in Work vs. Personal."*
+
+### `cross_search`
+
+Federated recall over a hand-picked subset of engrams (not all), with results grouped and labelled per engram. Use when the user names multiple collections in a query.
+
+- **Parameters:** `query` · `engrams` (array, at least one) · `maxNodes` (default 20 total).
+- **Try saying:** *"Search my Book Notes and Work engrams for distributed systems."*
+
+---
+
+## Source operations
+
+The op-log primitives — find, fetch, and move whole sources between engrams. All deterministic, all recoverable.
+
+### `find_source`
+
+Find sources by a keyword substring match against sourceId, ref (label/path/URL), or kind — across all engrams or scoped to one. The lookup before `forget`, `transfer_source`, or `recall_source`.
+
+- **Parameters:** `keyword` (required) · `engram` (optional) · `limit` (default 10).
+- **Try saying:** *"Where did I save that PDF about Raft?"*
+
+### `recall_source`
+
+Returns the FULL content of a single saved source — every chunk, in ingestion order, with no similarity cutoff. Use when `recall` keeps returning partial results for a structured document (a plan, a numbered list, a meeting note) and you need the complete text.
+
+- **Parameters:** `sourceId` (required, exact — use `find_source` first if unsure) · `engram` (optional, speeds up large cortexes).
+- **Try saying:** *"Pull up the complete text of my Q4 planning doc."*
+
+### `transfer_source`
+
+Moves a single source (and every memory derived from it) from one engram to another via the op-log. Recoverable per-source.
+
+- **Parameters:** `sourceId` · `from_engram` · `to_engram`.
+- **Try saying:** *"Move that file from Inbox to Work."*
+
+---
+
+## Engram operations
+
+### `merge_engrams`
+
+Moves every source from one engram into another, leaving the source engram empty. Per-source error reporting — one bad source doesn't abort the whole merge.
+
+- **Parameters:** `from_engram` · `to_engram`.
+- **Try saying:** *"Merge my Inbox into Work."*
+
+### `ingest_batch`
+
+Saves multiple notes in a single call — up to 20 items per batch, each with its own `target_engram`. For bulk-importing a list of facts without one `remember` per item.
+
+- **Parameters:** `items` (array, max 20).
+- **Returns:** JSON per-item success/error summary.
+- **Try saying:** *"Save these 5 facts about the project in one go: …"*
+
+### `engram_summary`
+
+A readable snapshot of an engram — node count, source count, and a sample of node-content previews. For orienting yourself before querying a new engram.
+
+- **Parameters:** `engram` (required).
+- **Try saying:** *"What's in my Reading List engram?"*
+
+---
+
+## Brain maintenance
+
+Read-only windows into the autonomous brain engine that runs in the background while the app is open.
+
+### `duplicate_pairs`
+
+Near-duplicate node pairs the brain engine has already flagged for review — high-confidence matches from the background scan, not ad-hoc searches. Resolve with `correct` (merge) or `forget` (remove one side). Requires the brain engine to be running.
+
+- **Try saying:** *"What does my brain think is duplicated?"*
+
+### `healing_journal`
+
+Audit log of autonomous corrections the brain engine applied in the background — merges, confidence adjustments, edge repairs. *"What has my brain fixed on its own?"*
+
+- **Try saying:** *"Show me autonomous corrections from the last week."*
+
+### `gnn_status`
+
+Reports whether the Graphnosis Neural Network is enabled, how many predicted edges it has computed, and when it last ran. Use before `gnn_neighbors` to confirm the GNN has data.
+
+- **Try saying:** *"Is the neural network running?"*
+
+### `confirm_data_access`
+
+System-driven, **headless-fallback only**. The primary consent flow in v0.10+ is the **in-app one-click prompt** that pops automatically in the Graphnosis app when a gated recall fires — the AI client never calls this tool in normal desktop use.
+
+This tool exists for environments without a GUI (sidecar running over SSH, in a Docker container, in CI) where the user can't see the modal. In those cases the consent gate returns the legacy `"⚠️ GRAPHNOSIS CONSENT REQUIRED"` message instructing the user to read the current phrase from **Settings → AI → Consent Phrases** in the app and have the AI invoke `confirm_data_access({ phrase, tier })`. Validates the phrase locally and stores a consent record for the (client, tier) pair. AI clients never invent or guess the phrase. See [AI Access Controls](/guides/ai-access-controls/) for the full protocol.
+
+- **Parameters:** `phrase` (the exact phrase the user typed) · `tier` (`personal` or `sensitive`).
+
+---
+
+## Approximate
+
+Vector-similarity scans across the cortex — deterministic given the embedding state, no LLM involved.
+
+### `audit_memory`
+
+Detects near-duplicate content across engrams by sampling top nodes from each engram and cross-searching them in all others above a similarity threshold. Approximate — samples rather than exhaustively comparing every pair. Useful before a merge or for periodic memory hygiene.
+
+- **Try saying:** *"Do I have duplicate notes anywhere?"*
+
+### `check_duplicate`
+
+Before `remember`, checks whether very similar content already exists in one engram or all of them. Returns matches above the threshold so the user can choose `remember` (new fact) or `correct` (update existing). Helps prevent duplicate-node pollution.
+
+- **Parameters:** `text` · `engram` (optional).
+- **Try saying:** *"Before I save this note about Postgres tuning, is there anything similar already?"*
+
+---
+
+## Non-deterministic — Local LLM tools
+
+The remaining synthesis tools require the optional [Local LLM](/getting-started/connect-ai/) (Ollama). All computation stays on device — nothing leaves the machine. Each degrades gracefully when the LLM is off (raw context dump with a note explaining how to enable synthesis).
+
+### `gnn_neighbors`
+
+Returns nodes the Neural Network predicts are related to a query — structural connections that lexical/embedding recall didn't surface. Each result includes the GNN edge-probability score.
+
+- **Parameters:** `query` · `top_k` (default 10).
+- **Try saying:** *"What else might be related to my notes on graph databases?"*
+
+### `llm_query`
+
+Recalls relevant memory then uses the local LLM to synthesise a direct answer from that recalled context — entirely locally. Use when the user wants an AI-synthesised answer grounded in their own memory, not just raw recalled nodes.
+
+- **Parameters:** `query` · `maxNodes` (optional).
+- **Try saying:** *"Use the local model to answer: what's the current state of my migration plan?"*
+
+### `llm_distill`
+
+Pass arbitrary text to the local LLM and ask it to extract discrete, self-contained facts worth remembering. Returns a JSON array of `{text, label}` objects ready to pass to `ingest_batch` or `remember`.
+
+- **Parameters:** `text` · `target_engram` (optional).
+- **Try saying:** *"Extract the key facts from this meeting transcript for saving: …"*
