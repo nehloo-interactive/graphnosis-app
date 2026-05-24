@@ -45,7 +45,12 @@
     "externalBin": [
       "binaries/graphnosis-sidecar",
       "binaries/graphnosis-mcp-relay"
-    ]
+    ],
+    "windows": {
+      "nsis": {
+        "installMode": "currentUser"
+      }
+    }
   },
   "plugins": {
     "updater": {
