@@ -96,11 +96,21 @@ If you need a new engram as the destination, select **New Engram…** from the d
 
 Moving a source is instant and non-destructive. All chunks, embeddings, and cached content travel with it. The AI clients reflect the new location on the next `recall` call — no restart or re-ingest needed. The moved source is governed by the destination engram's sensitivity tier immediately after the move.
 
+**Cross-engram connections are rebuilt immediately after every move.** When a source moves, Graphnosis removes its old cross-engram links (they referenced the now-deleted node IDs in the origin engram), re-ingests the content into the destination with fresh node IDs, and immediately runs a cross-engram linking pass — without waiting for the next scheduled pass (every 6 hours). Related memories in other engrams are re-connected automatically. You don't need to trigger anything manually.
+
 Typical reasons to move a source:
 
 - You ingested a work document into `personal` by accident — move it to `work`
 - A research paper turned out to be closely related to a specific project — move it into that project's engram for tighter recall
 - You're splitting a large general-purpose engram into topic-specific ones over time
+
+## Archiving an engram
+
+Archiving hides an engram from all in-app pickers and dropdowns — sources, the engram switcher, the 3D view — without touching its data. The graph file, all nodes, embeddings, and cross-engram connections remain exactly as they were. Nothing is removed, weakened, or re-indexed.
+
+Archiving is fully reversible: click **Unarchive** and the engram reappears immediately with all its connections intact. Cross-engram links survive the archive/unarchive cycle unchanged.
+
+Only **Delete** permanently removes an engram and purges its cross-engram connections from the store.
 
 ## Which graphs does a client see?
 
