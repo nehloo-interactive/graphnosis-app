@@ -181,8 +181,12 @@ export async function proposeCorrection(opts: {
   /** Engram the diff targets, when the path could determine one. */
   targetGraphId?: string | null;
 }> {
+  // When the caller named a target engram, scope candidate recall to that
+  // engram only. Without this, cross-engram nodes out-rank the target and
+  // the correction either lands in the wrong engram or misses entirely.
   const subgraph = await opts.host.recall(opts.correction, {
     budget: { maxTokens: 1500, maxNodes: opts.candidateK ?? 8 },
+    ...(opts.graphIdHint ? { onlyGraphIds: [opts.graphIdHint] } : {}),
   });
   const recallCandidates: { graphId: string; nodeId: string; text: string }[] = [];
   for (const [graphId, items] of subgraph.byGraph) {

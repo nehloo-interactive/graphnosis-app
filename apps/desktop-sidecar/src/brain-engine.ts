@@ -6,6 +6,9 @@ import { VitalityScorer, type VitalityReport } from './vitality.js';
 import { TemporalEngine } from './temporal-engine.js';
 import { GoalTracker } from './goal-tracker.js';
 import { findSimilarPairs } from './duplicate-scan.js';
+import { settings as settingsMod } from '@graphnosis-app/core';
+import { predictEdgesForEngram, edgePredictionEnabled } from './edge-prediction.js';
+import { redactId } from './log-redact.js';
 import { ReinforcementEngine } from './reinforcement-engine.js';
 import { MemoryHealthScorer, type MemoryHealth } from './memory-health.js';
 import {
@@ -232,6 +235,22 @@ const REINFORCE_INTERVAL_MS = 30 * 60 * 1000;       // 30 min
 const CROSS_ENGRAM_INTERVAL_MS = 6 * 60 * 60 * 1000; // 6 h
 // Graphnosis Neural Network — daily, and only once the user has enabled it.
 const GNN_INTERVAL_MS = 24 * 60 * 60 * 1000;        // 24 h
+const EDGE_PREDICTION_INTERVAL_MS = 60 * 60 * 1000;  // 60 min — LLM is expensive
+
+// LLM timeout for the per-engram synapse + insight passes. Was 15s
+// (llmCompleteWithTimeout default), but on a 16-engram cortex with a slow
+// LLM that meant 16 × 15s = 4 minutes of pegged CPU before the loop bailed —
+// the literal "fans spun up" symptom the user reported. 8s matches
+// edge-prediction's timeout and is enough for a 3B model to complete a
+// short structured response when it's actually working.
+const SYNAPSE_INSIGHT_TIMEOUT_MS = 8_000;
+
+// Bail synapse + insight passes after this many consecutive LLM timeouts.
+// Ollama wedged on one prompt usually means it's wedged on the next too;
+// burning the rest of the engrams costs minutes for no benefit. Next
+// scheduled tick (45 min / 6 hr) starts a fresh attempt with a fresh
+// timeout counter.
+const MAX_CONSECUTIVE_LLM_TIMEOUTS = 2;
 
 export class BrainEngine {
   private readonly vitality: VitalityScorer;
@@ -289,6 +308,10 @@ export class BrainEngine {
   private consolidationTimer: NodeJS.Timeout | null = null;
   private crossEngramTimer: NodeJS.Timeout | null = null;
   private gnnTimer: NodeJS.Timeout | null = null;
+  private edgePredictionTimer: NodeJS.Timeout | null = null;
+  /** Round-robin cursor for per-engram edge-prediction. One engram per tick
+   *  keeps LLM cost bounded and gives every engram its turn over time. */
+  private edgePredictionCursor = 0;
   // Debounce timer for the post-ingest duplicate scan — see
   // notifyIngestComplete(). A one-shot setTimeout, reset on each ingest.
   private ingestScanTimer: NodeJS.Timeout | null = null;
@@ -333,7 +356,11 @@ export class BrainEngine {
       // don't all pin the CPU at once in the post-boot window, and coalesces
       // with any scan the user triggered by opening the Brain tab early.
       // Temporal decay runs alongside (runFullScan excludes it by design).
-      void this.runFullScan();
+      // skipLlmLoops: the very first sweep avoids synapse + insight to
+      // prevent boot-time fan-spin from Ollama timeouts across many engrams.
+      // The scheduled synapse (45 min) and insight (6 hr) timers below take
+      // over from there.
+      void this.runFullScan({ skipLlmLoops: true });
       void this.runTemporalDecay();
     }, BOOT_GRACE_MS);
     this.warmupTimer.unref();
@@ -390,11 +417,25 @@ export class BrainEngine {
       GNN_INTERVAL_MS,
     ).unref();
 
-    // Emit initial vitality once boot has settled — vitality.compute()
-    // walks every node and the op-log, so keep it clear of the load path.
-    setTimeout(() => {
-      void this.emitVitality();
-    }, 12_000).unref();
+    // Local-LLM edge prediction (Batch 3 of GLL arc). Self-gates on
+    // llmCapabilities.edgePrediction (default OFF) inside runEdgePrediction;
+    // the timer fires regardless but does nothing until the user opts in.
+    // One engram per tick (round-robin) to keep LLM cost bounded.
+    this.edgePredictionTimer = setInterval(
+      () => { void this.runEdgePrediction(); },
+      EDGE_PREDICTION_INTERVAL_MS,
+    ).unref();
+
+    // Two vitality emissions on boot:
+    //   - 2 s in: a fast initial paint so the UI flips from "Computing
+    //     vitality…" to a real number as soon as engrams are loaded.
+    //     duplicatePairs may still be 0 (the scan hasn't run), so the score
+    //     is a slight over-estimate; the second emit corrects it.
+    //   - 12 s in: the original emit, retained as a refinement pass after
+    //     boot settles. Cheap and ensures we re-paint with whatever extra
+    //     state was loaded in the intervening window.
+    setTimeout(() => { void this.emitVitality(); }, 2_000).unref();
+    setTimeout(() => { void this.emitVitality(); }, 12_000).unref();
   }
 
   stop(): void {
@@ -402,12 +443,13 @@ export class BrainEngine {
     this.warmupTimer = null;
     if (this.ingestScanTimer) clearTimeout(this.ingestScanTimer);
     this.ingestScanTimer = null;
-    for (const t of [this.duplicateScanTimer, this.synapseTimer, this.insightTimer, this.temporalTimer, this.goalTimer, this.reinforceTimer, this.consolidationTimer, this.crossEngramTimer, this.gnnTimer]) {
+    for (const t of [this.duplicateScanTimer, this.synapseTimer, this.insightTimer, this.temporalTimer, this.goalTimer, this.reinforceTimer, this.consolidationTimer, this.crossEngramTimer, this.gnnTimer, this.edgePredictionTimer]) {
       if (t) clearInterval(t);
     }
     this.duplicateScanTimer = null;
     this.synapseTimer = null;
     this.insightTimer = null;
+    this.edgePredictionTimer = null;
     this.temporalTimer = null;
     this.goalTimer = null;
     this.reinforceTimer = null;
@@ -454,12 +496,19 @@ export class BrainEngine {
     this.reinforcement.enrichRecall(sub);
   }
 
-  /** UI-facing vitality. Returns null until the first full scan has run —
-   *  before that the duplicate count is 0 and the score reads artificially
-   *  high, so the UI shows a "starting up" state instead of a misleading
-   *  number. The `__brain_done_fullscan__` frame makes the UI re-fetch. */
+  /** UI-facing vitality. Earlier versions held this back until the first
+   *  full scan had run (to avoid an artificially-high score when no
+   *  duplicates had been counted yet). That left the UI stuck on
+   *  "Computing vitality…" for the entire warmup + full-scan window —
+   *  multiple minutes on a populated cortex with slow LLM passes.
+   *
+   *  We now return the report immediately, using the current best-known
+   *  duplicate count (0 when no scan has run yet). The "duplicates" pillar
+   *  ticks up the next time the user (or the scheduled timer) triggers a
+   *  scan; the `__brain_done_fullscan__` frame still drives a re-fetch so
+   *  the refined number lands then. Trade: a slight initial over-estimate
+   *  on the duplicates pillar in exchange for an immediately-useful UI. */
   async getVitalityReport(): Promise<VitalityReport | null> {
-    if (!this.firstScanComplete) return null;
     return this.vitality.compute(this.duplicatePairs.length);
   }
 
@@ -547,7 +596,7 @@ export class BrainEngine {
 
     let synthesis: string;
     if (this.llm && await this.pingLlm()) {
-      synthesis = await this.llm.complete({
+      synthesis = await this.llmCompleteWithTimeout({
         system: DEVELOP_SYSTEM_PROMPT,
         user: [
           `Context/Topic: ${params.context}`,
@@ -594,7 +643,7 @@ export class BrainEngine {
       return { risks: [], opportunities: [], recommendation: recalled.prompt, referencedNodeIds, degraded: true };
     }
 
-    const raw = await this.llm.complete({
+    const raw = await this.llmCompleteWithTimeout({
       system: PREDICT_SYSTEM_PROMPT,
       user: [
         `Planned action: ${params.action}`,
@@ -704,14 +753,23 @@ export class BrainEngine {
    * process, not a "scan", and re-running it on every tab open would be
    * noise. The background 24h timer still handles it.
    */
-  async runFullScan(): Promise<void> {
+  async runFullScan(opts: { skipLlmLoops?: boolean } = {}): Promise<void> {
     if (this.scanInFlight) return;
     this.scanInFlight = true;
     this.emitBrain('__brain_start_fullscan__');
     try {
       await this.runDuplicateScan();
-      await this.runSynapse();
-      await this.runInsight();
+      // LLM-backed passes (synapse, insight) can stall on Ollama hangs and
+      // each timeout costs 8-15 s × N engrams. Skipped during boot warmup
+      // so the very first sweep can't pin the CPU for minutes (the original
+      // "fans spun up" symptom). The user's "Scan now" button DOES include
+      // them — manual triggers express the user's intent to wait. And the
+      // scheduled synapse/insight timers (45 min / 6 hr) still fire normally
+      // so the boot-skip just defers the first LLM pass, doesn't disable it.
+      if (!opts.skipLlmLoops) {
+        await this.runSynapse();
+        await this.runInsight();
+      }
       await this.runGoalCheck();
       await this.reinforcement.runReinforcementPass();
       await this.reinforcement.runConsolidationPass();
@@ -958,11 +1016,11 @@ export class BrainEngine {
               this.sessionAutoLinksFormed += woven;
               autoLinkedThisRun += woven;
             } catch (err) {
-              console.error(`[brain] auto-link failed on ${graphId}:`, err);
+              console.error(`[brain] auto-link failed on engram[${redactId(graphId)}]:`, err);
             }
           }
         } catch (err) {
-          console.error(`[brain] duplicate scan error on ${graphId}:`, err);
+          console.error(`[brain] duplicate scan error on engram[${redactId(graphId)}]:`, err);
         }
         await yieldToLoop();
       }
@@ -1282,9 +1340,18 @@ export class BrainEngine {
     this.emitActivity('synapse', 'start');
     let totalNewEdges = 0;
     const now = Date.now();
+    // Bail the pass after MAX_CONSECUTIVE_LLM_TIMEOUTS timeouts in a row —
+    // Ollama is clearly wedged and the remaining engrams would each cost
+    // another 8s of pegged CPU for no benefit. The next scheduled tick
+    // (45 min later) will retry from scratch.
+    let consecutiveTimeouts = 0;
 
     for (const graphId of this.host.listGraphs()) {
       if (totalNewEdges >= MAX_SYNAPSE_EDGES_PER_RUN) break;
+      if (consecutiveTimeouts >= MAX_CONSECUTIVE_LLM_TIMEOUTS) {
+        console.error(`[brain] synapse: bailing after ${consecutiveTimeouts} consecutive LLM timeouts — Ollama wedged. Will retry next cycle.`);
+        break;
+      }
       try {
         const nodes = this.host.listNodes(graphId);
         const active = nodes.filter(n =>
@@ -1314,11 +1381,25 @@ export class BrainEngine {
           .map(n => `- [${n.id}] ${n.contentPreview.slice(0, 120)}`)
           .join('\n');
 
-        const raw = await this.llm.complete({
-          system: SYNAPSE_SYSTEM_PROMPT,
-          user: `Nodes from engram "${graphId}":\n${nodesList}\n\nWhich pairs share a deep conceptual relationship?`,
-          jsonSchema: { type: 'array' },
-        });
+        let raw: string;
+        try {
+          raw = await this.llmCompleteWithTimeout({
+            system: SYNAPSE_SYSTEM_PROMPT,
+            user: `Nodes from engram "${graphId}":\n${nodesList}\n\nWhich pairs share a deep conceptual relationship?`,
+            jsonSchema: { type: 'array' },
+          }, SYNAPSE_INSIGHT_TIMEOUT_MS);
+          // Successful call — reset the consecutive-timeout counter.
+          consecutiveTimeouts = 0;
+        } catch (err) {
+          // Distinguish a timeout (our explicit "LLM call exceeded …ms") from
+          // a parse/network error — only timeouts trigger the bail counter,
+          // because they cost a full timeout window of wasted compute. Other
+          // errors are usually instant and benign.
+          if ((err as Error).message?.includes('LLM call exceeded')) {
+            consecutiveTimeouts++;
+          }
+          throw err;
+        }
 
         let pairs: Array<{ fromNodeId: string; toNodeId: string; reasoning: string }> = [];
         try { pairs = JSON.parse(extractJsonArr(raw)) as typeof pairs; } catch { continue; }
@@ -1342,7 +1423,7 @@ export class BrainEngine {
           } catch { /* single edge failure is non-fatal */ }
         }
       } catch (err) {
-        console.error(`[brain] synapse error on ${graphId}:`, err);
+        console.error(`[brain] synapse error on engram[${redactId(graphId)}]:`, err);
       }
     }
 
@@ -1352,13 +1433,56 @@ export class BrainEngine {
     await this.emitVitality();
   }
 
+  /**
+   * Local-LLM edge prediction loop. Self-gates on `llmCapabilities.edgePrediction`
+   * (default OFF). Picks one engram per tick in round-robin order so LLM
+   * cost stays bounded — a cortex with 12 engrams takes 12 hours to cover
+   * all of them once at the default 60-min cadence. New predictions land
+   * in the `.gll` overlay for the user to review.
+   *
+   * Idempotent: predicted edges that already exist in `.gll` are filtered
+   * out by `predictEdgesForEngram` before the LLM is asked.
+   */
+  async runEdgePrediction(): Promise<void> {
+    if (!this.llm) return;
+    if (!edgePredictionEnabled(this.host)) return;
+    if (!(await this.pingLlm())) return;
+    const graphIds = this.host.listGraphs();
+    if (graphIds.length === 0) return;
+    const graphId = graphIds[this.edgePredictionCursor % graphIds.length]!;
+    this.edgePredictionCursor = (this.edgePredictionCursor + 1) % graphIds.length;
+    this.emitActivity('edge-prediction', 'start');
+    try {
+      const { candidatesScanned, predicted } = await predictEdgesForEngram(this.host, this.llm, graphId);
+      console.error(`[brain] edge-prediction on engram[${redactId(graphId)}]: scanned=${candidatesScanned}, predicted=${predicted.length}`);
+      this.emitActivity('edge-prediction', 'done');
+      if (predicted.length > 0) {
+        // Surface freshly-predicted edges as a brain event so the UI can
+        // refresh the review queue without polling.
+        this.emitBrain(graphId);
+      }
+    } catch (e) {
+      console.error(`[brain] edge-prediction failed on engram[${redactId(graphId)}]: ${(e as Error).message}`);
+      this.emitActivity('edge-prediction', 'done');
+    }
+  }
+
   private async runInsight(): Promise<void> {
     if (!this.llm) return;
     if (!(await this.pingLlm())) return;
 
     this.emitActivity('insight', 'start');
+    // Same bail-on-consecutive-timeouts pattern as runSynapse. Insight
+    // sends long prompts (30 nodes × ~200 chars) so it's the most likely
+    // to time out on a slow Ollama model. With 16 engrams in the cortex,
+    // bailing after 2 consecutive saves ~14×8s = 112s of wasted CPU.
+    let consecutiveTimeouts = 0;
 
     for (const graphId of this.host.listGraphs()) {
+      if (consecutiveTimeouts >= MAX_CONSECUTIVE_LLM_TIMEOUTS) {
+        console.error(`[brain] insight: bailing after ${consecutiveTimeouts} consecutive LLM timeouts — Ollama wedged. Will retry next cycle.`);
+        break;
+      }
       try {
         // Search within this graph using searchNodes (per-graph, not federated)
         const topNodes = await this.host.searchNodes(
@@ -1372,11 +1496,20 @@ export class BrainEngine {
           .map(n => `- [${n.nodeId}] ${n.text.slice(0, 200)}`)
           .join('\n');
 
-        const raw = await this.llm.complete({
-          system: INSIGHT_SYSTEM_PROMPT,
-          user: `Nodes from engram "${graphId}":\n${nodesList}\n\nWhat patterns, gaps, or opportunities are noteworthy?`,
-          jsonSchema: { type: 'array' },
-        });
+        let raw: string;
+        try {
+          raw = await this.llmCompleteWithTimeout({
+            system: INSIGHT_SYSTEM_PROMPT,
+            user: `Nodes from engram "${graphId}":\n${nodesList}\n\nWhat patterns, gaps, or opportunities are noteworthy?`,
+            jsonSchema: { type: 'array' },
+          }, SYNAPSE_INSIGHT_TIMEOUT_MS);
+          consecutiveTimeouts = 0;
+        } catch (err) {
+          if ((err as Error).message?.includes('LLM call exceeded')) {
+            consecutiveTimeouts++;
+          }
+          throw err;
+        }
 
         let parsedInsights: Array<{
           kind: string;
@@ -1403,7 +1536,7 @@ export class BrainEngine {
           });
         }
       } catch (err) {
-        console.error(`[brain] insight error on ${graphId}:`, err);
+        console.error(`[brain] insight error on engram[${redactId(graphId)}]:`, err);
       }
     }
 
@@ -1450,6 +1583,31 @@ export class BrainEngine {
 
   // ── Helpers ────────────────────────────────────────────────────────────────
 
+  /**
+   * LLM complete with a hard timeout. Brain-engine LLM calls used to hang
+   * indefinitely when Ollama was slow — `runSynapse` / `runInsight` would
+   * stay in the "running" phase forever, the UI's `__brain_done_*__` event
+   * never fired, and the chip persisted (e.g. "🔬 Synthesizing insights…"
+   * for minutes). All in-engine LLM calls now route through this so the
+   * worst case is a single bounded timeout per call, not a stuck process.
+   *
+   * Default 15 s — generous for a 3B-param Ollama call; the synapse /
+   * insight prompts are short enough that anything beyond this is a hang
+   * rather than a slow inference.
+   */
+  private async llmCompleteWithTimeout(
+    input: { system: string; user: string; jsonSchema?: unknown },
+    timeoutMs = 15_000,
+  ): Promise<string> {
+    if (!this.llm) throw new Error('LLM not available');
+    return Promise.race([
+      this.llm.complete(input),
+      new Promise<string>((_, reject) =>
+        setTimeout(() => reject(new Error(`LLM call exceeded ${timeoutMs}ms`)), timeoutMs),
+      ),
+    ]);
+  }
+
   private async pingLlm(): Promise<boolean> {
     if (!this.llm) return false;
     // The local LLM is opt-in. Even when Ollama is reachable, every
@@ -1457,7 +1615,12 @@ export class BrainEngine {
     // review) stays off until the user explicitly enables it — and they all
     // gate on pingLlm() before calling complete(), so this is the one place
     // the master switch needs to be enforced.
-    if (this.host.getSettings().ai.llmEnabled !== true) return false;
+    // Brain-engine LLM loops (synapse, insight, healing review, predict,
+    // develop) all map to the `insights` capability — they generate
+    // suggestions or surface patterns from the user's memory. Per-capability
+    // resolution means the user can keep recall enrichment on while turning
+    // off these autonomous background loops.
+    if (!settingsMod.resolveLlmCapabilities(this.host.getSettings()).insights) return false;
     const llmWithPing = this.llm as { ping?: () => Promise<boolean> };
     if (typeof llmWithPing.ping === 'function') {
       return llmWithPing.ping();

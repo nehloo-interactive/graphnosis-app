@@ -20,18 +20,31 @@ import { FlagEmbedding, EmbeddingModel } from 'fastembed';
 
 // Passed from parent via env — always set when spawned by local-embed.ts.
 const cacheDir: string = process.env.GRAPHNOSIS_EMBED_CACHE_DIR ?? process.env.HOME ?? '/tmp';
-const DIM = 384;
 
-// Initialise the model eagerly so the first request doesn't pay the load cost.
+// ── Model selection (parameterized via env) ─────────────────────────────────
+//
+// The parent (local-embed.ts) sets GRAPHNOSIS_EMBED_MODEL before spawning:
+//   'english'       → BGE-small-en-v1.5 (384-dim, ~30 MB) — default.
+//   'multilingual'  → multilingual-e5-large (1024-dim, ~2.2 GB) — opt-in.
+//
+// The dimension must match the parent's LOCAL_EMBED_DIM, which derives the
+// same value from the same env var, so the SDK's vector index gets the
+// right size at init.
+const MODEL_CHOICE = (process.env.GRAPHNOSIS_EMBED_MODEL ?? 'english') as 'english' | 'multilingual';
+const MODEL_TAG = MODEL_CHOICE === 'multilingual'
+  ? EmbeddingModel.MLE5Large
+  : EmbeddingModel.BGESmallENV15;
+const DIM = MODEL_CHOICE === 'multilingual' ? 1024 : 384;
+
 const modelReady: Promise<FlagEmbedding> = (async () => {
   await fs.mkdir(cacheDir, { recursive: true });
   const model = await FlagEmbedding.init({
-    model: EmbeddingModel.BGESmallENV15,
+    model: MODEL_TAG,
     cacheDir: cacheDir,           // always a string (env var or defaultCacheDir in parent)
     showDownloadProgress: false,  // stdout is the MCP transport; logs go to stderr
     maxLength: 512,
   });
-  process.send?.({ type: 'ready' });
+  process.send?.({ type: 'ready', model: MODEL_CHOICE, dim: DIM });
   return model;
 })();
 

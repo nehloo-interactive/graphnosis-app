@@ -50,6 +50,11 @@ pub struct SidecarHandle {
     child: Child,
     pub socket_path: PathBuf,
     pub events_socket_path: PathBuf,
+    /// Cortex directory this sidecar is locked to. Stored so shutdown() can
+    /// remove the proper-lockfile lock file directly — child.kill() sends
+    /// SIGKILL (not SIGTERM), so the sidecar's SIGTERM handler never runs and
+    /// proper-lockfile never gets a chance to release the lock on its own.
+    cortex_dir: PathBuf,
     /// Ring buffer of the sidecar's most-recent stderr lines. Used for
     /// classifying startup failures into friendlier user-facing messages
     /// even when the process dies via signal (no clean exit code).
@@ -60,8 +65,16 @@ impl SidecarHandle {
     pub async fn shutdown(mut self) -> Result<()> {
         let _ = self.child.kill().await;
         let _ = self.child.wait().await;
-        // Sidecar releases its cortex lock on SIGTERM; we also tidy the socket files.
-        // On Windows the "paths" are TCP addresses — nothing to remove from disk.
+        // child.kill() sends SIGKILL — the sidecar's SIGTERM handler never
+        // runs, so proper-lockfile never releases `.lockfile.lock`. Delete it
+        // here so the next unlock can acquire the lock immediately instead of
+        // waiting for the 10s stale timeout (or failing outright).
+        // proper-lockfile creates a .lockfile.lock DIRECTORY (atomic mkdir),
+        // not a regular file — use remove_dir, not remove_file.
+        let lock_file = self.cortex_dir.join(".lockfile.lock");
+        let _ = std::fs::remove_dir(&lock_file);
+        // Tidy socket files. On Windows the "paths" are TCP addresses —
+        // nothing to remove from disk.
         #[cfg(unix)]
         {
             let _ = std::fs::remove_file(&self.socket_path);
@@ -285,6 +298,7 @@ async fn start_inner(app: &AppHandle, cortex_dir: &Path, passphrase: &str, recov
         child,
         socket_path,
         events_socket_path,
+        cortex_dir: cortex_dir.to_path_buf(),
         _stderr_buffer: stderr_buffer,
     })
 }

@@ -1,6 +1,6 @@
 # Graphnosis memory — instructions for AI assistants
 
-v0.10.0
+v0.10.3
 
 This project uses **Graphnosis** as its long-term memory: a local, encrypted
 memory store the user owns and controls, reached through MCP tools. Treat
@@ -14,6 +14,68 @@ preferences, prior work, "what did we say about X?" — call `recall` (or
 `remind`) **first**, before you answer. Do this even when your own conversation
 history looks empty: Graphnosis is the authoritative store, and it persists
 across sessions and across AI clients. Prefer recalled memory over guessing.
+
+## Formulate the query well
+
+Recall quality depends heavily on how you phrase the query. The user's
+utterance is often not the best query string. Before calling `recall`,
+`remind`, or any other search tool, do this:
+
+**Strip the framing.** "Remind me where Nelu lived" is a request, not a
+query. Pass only the semantic content: `unde a locuit Nelu` or
+`Nelu lived where`. Drop "remind me", "what did I say about", "do you
+know if", and equivalent phrasings in any language.
+
+**Match the language the memory was stored in.** The lexical index does not
+bridge languages. If the user asks in one language but may have stored the
+note in another, you need to query in both.
+
+You usually don't know upfront which language the memory is in. Use this
+heuristic:
+
+  1. **If you've seen the user's memory in this session**, query in the
+     language(s) you saw. The audit footer of past recalls reveals the
+     content language.
+  2. **If you don't know**, query in the user's current input language AND
+     in any other language the user has used with you before in this
+     conversation. When in genuine doubt, include English as a fallback —
+     it's the most common second language for technical / international
+     users.
+  3. **If a recall returns zero results**, retry once with the query
+     translated into one or two other plausible languages before telling
+     the user nothing was found. Many "zero result" cases are language
+     mismatches, not missing memory.
+
+Examples (the principle is the same regardless of language pair):
+
+  User (English) asks about a note stored in Spanish:
+    First try:  `Nelu live home location vive casa ubicación dónde`
+
+  User (Japanese) asks about a note stored in English:
+    First try:  `プロジェクト marketing project マーケティング 提案`
+
+  User (Arabic) asks about a note stored in French:
+    First try:  `مشروع تسويق projet marketing proposition`
+
+Translate the key content words; keep proper nouns (names, places,
+projects) in their original form and exact spelling — don't transliterate
+"Nelu" to "ネル" or "نيلو". The lexical index matches them as-is.
+
+**Add 1–2 synonyms in the same language.** TF-IDF has no semantic awareness.
+"locuit" won't match "trăit"; "live" won't match "reside". Add the obvious
+near-synonyms inline.
+
+**Keep the query short and dense.** 3–8 content words is the sweet spot.
+Avoid filler ("the", "a", "is"), avoid full natural-language questions,
+avoid punctuation. The query is fed to a lexical index and an embedding
+model — both prefer compact intent over complete sentences.
+
+**Anchor on proper nouns.** Names of people, places, projects, and concrete
+identifiers (URLs, file names, dates) are the strongest signal. If the user
+mentions one, always include it verbatim — exact spelling and capitalization.
+
+This costs you nothing and dramatically improves recall, especially for
+small or cross-language engrams. The user does not need to do this — you do.
 
 ## Remember — proactively, in the user's words
 
@@ -31,6 +93,12 @@ Write each as a short, self-contained note, in the user's own words where you
 can. Route topic-specific notes to the right engram with `target_engram`. When
 you are unsure which engram fits, either ask the user, or call `stats` to see
 the existing engrams and pick the one that best matches the note.
+
+**Preserve the user's language when saving.** Don't translate the note into
+English "for safekeeping" — save it in whatever language the user used.
+The recall side compensates for language mismatches; the storage side
+should not destroy the original phrasing. If the user mixes languages in
+one note, keep the mix.
 
 ## Keep the memory clean
 
@@ -159,6 +227,116 @@ and shapes the audit footer.
 - `gnn_neighbors` — nodes the Neural Network predicts are related to a query.
 - `llm_query` — synthesised answer from recall, computed locally.
 - `llm_distill` — extract discrete facts from arbitrary text, ready for `ingest_batch`.
+
+## The local LLM — what it does, what it does not
+
+Graphnosis can use a **local LLM** (Ollama, running on the user's machine) to
+make several features smarter. The LLM never sees anything outside the
+device; if the user hasn't installed Ollama, all of these features simply
+stay off.
+
+The user controls each capability independently in
+**Graphnosis → Go Non-Deterministic → Local LLM**:
+
+| Capability | What it does | Touches the graph? |
+|---|---|---|
+| **Recall enrichment** | Rewrites your query at recall time (synonyms, cross-language, strip framing) | **No** — purely retrieval |
+| **Correction parsing** | Upgrades `correct` to author multi-memory diffs | Only after the user approves the diff |
+| **Distillation** | Powers `llm_distill` — extracts structured facts from text | No — returns text to you |
+| **Insights / predictions** | Powers `insights`, `develop`, `predict`, `llm_query` | Writes to the LLM overlay, not the canonical engram |
+| **Edge prediction** | Background loop proposes connections between co-recalled nodes | Writes to the `.gll` overlay, never to `.gai` |
+
+What follows from this for AI clients:
+
+- **Don't assume the local LLM is on.** When you call `insights`, `develop`,
+  `predict`, `llm_query`, or `llm_distill` and get "Local LLM unavailable",
+  it's because the user has either disabled the master switch or that specific
+  capability. Surface the situation plainly and suggest the relevant toggle
+  path; never pretend the feature ran.
+- **Recall enrichment, when on, is invisible to you.** Your query gets
+  rewritten server-side before it hits the index. A short `_enriched: "..." → "..."_`
+  footer appears in the recall response so you can see what actually ran.
+  Treat it as informational; don't try to undo it.
+- **Predictions and inferred edges live in overlays, not in canonical memory.**
+  When a future version surfaces them in recall, they will carry a visible
+  "from LLM inference" / "from neural prediction" badge. The user's
+  attested memory in `.gai` is never mutated by the LLM.
+
+## Layered memory: `.gai`, `.gnn`, `.gll`
+
+Graphnosis splits a user's memory into three physical layers, each with a
+different determinism contract. Treat them differently in your responses.
+
+| Layer | File | Contains | Mutable by |
+|---|---|---|---|
+| Canonical | `.gai` | Every memory the user attested (or that you saved on their behalf via `remember`) | Only the user, via explicit corrections |
+| Neural network overlay | `.gnn` | Predicted edges from a local graph neural network | The neural network's training pass; user discards via UI |
+| Local LLM overlay | `.gll` | Predicted edges + synthesized assertions from the local LLM | The LLM's inference loops; user discards via UI |
+
+The LLM cannot mutate `.gai`. The neural network cannot mutate `.gai`. The
+only path to a change in attested memory is a `correct` diff the user reviews
+and approves. This is structural, not procedural — different files, different
+write privileges.
+
+### How recall surfaces the layers
+
+When you call `recall`, `remind`, `cross_search`, or `compare_engrams`, the
+response is built in two parts:
+
+1. **The attested subgraph** — `=== KNOWLEDGE SUBGRAPH ===` per engram,
+   drawn purely from `.gai`. This is the authoritative answer to the user's
+   query and is byte-deterministic given the same query + cortex state.
+
+2. **The inferred layer** — when overlay data intersects the recall result, a
+   single appended block:
+
+   ```
+   --- INFERRED LAYER (overlays — NOT attested memory) ---
+   ### Engram name
+     [gll·assertion 78%] Synthesized fact text from [node-id, …]
+     [gll·edge 65%] node-a —[elaborates]→ node-b
+     [gnn·edge 81%] node-c —→ node-d
+   ```
+
+What you should do with the inferred layer:
+
+- **Cite it as a prediction, not a fact.** "Based on a local-LLM inference
+  with ~78% confidence" — never "you said X" when X is from a `[gll]` row.
+- **Prefer attested content when there's a conflict.** If `.gai` says the
+  user lives in Bucharest and a `[gll·assertion]` infers Cluj, the canonical
+  memory wins. Mention the discrepancy and offer `correct` if appropriate.
+- **Don't `remember` an inferred row.** That would promote a probabilistic
+  prediction into attested memory — exactly the failure mode the overlay
+  architecture exists to prevent. If the user explicitly confirms the
+  inference is correct, then save the user's confirmation as a new
+  attested memory via `remember`.
+- **Don't try to `forget` an inferred row.** `forget` operates on `.gai`
+  node ids only. To wipe overlay content, the user uses the overlay
+  controls in Non-Deterministic Aid.
+
+If the overlay block is absent from a recall response, either no overlay
+data intersected the result, or the user has the relevant capability off.
+Either way, answer from the attested subgraph alone.
+
+### Autonomous edge prediction
+
+When the user has the **edgePrediction** capability enabled (opt-in, off by
+default), a background loop runs once an hour: it picks one engram, finds
+pairs of semantically-similar nodes that don't already have an edge
+between them, and asks the local LLM whether those pairs are actually
+related. Pairs the LLM confirms — with a relationship label and a confidence
+score — get written to the `.gll` overlay as predicted edges.
+
+The user reviews these in **Non-Deterministic Aid → Local LLM predicted
+edges**. Accept removes from the review queue (and is the path that will
+promote to canonical `.gai` in a future iteration). Reject deletes from the
+overlay permanently.
+
+You won't usually need to interact with this loop directly — it surfaces
+through the normal recall path's `[gll·edge N%]` rows in the inferred-layer
+block. But if a user asks "what's the AI suggesting about my memory?", the
+answer lives in that review queue, and predictions become visible to recall
+the moment they're written.
 
 ## When Graphnosis is not connected
 

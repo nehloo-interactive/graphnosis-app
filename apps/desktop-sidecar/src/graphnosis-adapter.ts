@@ -79,6 +79,53 @@ export interface QueryResult {
   source?: { file: string; line?: number; section?: string };
 }
 
+/**
+ * Per-graph rich subgraph returned by `queryRich()`. Exposes the edges that
+ * the SDK's traversal recovered alongside the flat candidate list, plus a
+ * `serialize()` closure that re-runs `serializeSubgraph` on an arbitrary
+ * subset of node IDs — used by the host after federation budget filtering to
+ * produce a === KNOWLEDGE SUBGRAPH === prompt block containing only the
+ * budget-selected nodes and the edges that connect them.
+ *
+ * SDK types stay inside `graphnosis-impl.ts`; the adapter surface uses plain
+ * scalars and the edge-type unions already defined here.
+ */
+/** Flat node data extracted from the SDK subgraph for cross-graph analysis. */
+export interface NodeMergeData {
+  id: string;
+  content: string;
+  type?: string;
+  /** Entities the SDK extracted during ingest (proper nouns, dates, technical terms, …). */
+  entities: string[];
+  score: number;
+}
+
+export interface RichSubgraph {
+  directedEdges: Array<{ id: string; from: string; to: string; type: DirectedEdgeType; weight: number }>;
+  undirectedEdges: Array<{ id: string; nodes: [string, string]; type: UndirectedEdgeType; weight: number }>;
+  /** Score map over all traversal nodes (seeds have their TF-IDF/embedding score; expansion nodes 0). */
+  scores: Map<string, number>;
+  /**
+   * Re-serialize to the rich KNOWLEDGE SUBGRAPH text format using only the
+   * provided node IDs. Edges where either endpoint is not in the set are
+   * omitted automatically. Call this after federation budget selection with
+   * the winning nodeIds for that graph.
+   */
+  serialize(nodeIds: Set<string>): string;
+  /**
+   * Returns flat node data (including SDK-extracted entities) for the given
+   * node IDs. Used by the host to detect cross-graph entity overlap after
+   * federation has selected the budget-winning nodes from each graph.
+   * Keeps SDK types inside graphnosis-impl.ts — caller receives plain objects.
+   */
+  getNodeData(nodeIds: Set<string>): NodeMergeData[];
+}
+
+export interface RichQueryResult {
+  candidates: QueryResult[];
+  rich: RichSubgraph;
+}
+
 export interface CorrectionEdit {
   /** "edit" replaces content in place; "supersede" creates a new node and links old→new; "delete" soft-deletes. */
   kind: 'edit' | 'supersede' | 'delete';
@@ -100,6 +147,14 @@ export interface GraphnosisAdapter {
   appendDocument(handle: GraphHandle, input: AppendDocumentInput, opts?: AppendDocumentOptions): Promise<AppendDocumentResult>;
 
   query(handle: GraphHandle, query: string, k: number): Promise<QueryResult[]>;
+
+  /**
+   * Like `query()` but also returns the traversal's edge structure and a
+   * `serialize()` closure for rich === KNOWLEDGE SUBGRAPH === rendering.
+   * Use this in the recall path so the federation prompt carries relationship
+   * context between nodes instead of flat bullet points.
+   */
+  queryRich(handle: GraphHandle, query: string, k: number): Promise<RichQueryResult>;
 
   applyCorrection(handle: GraphHandle, edit: CorrectionEdit): Promise<void>;
 

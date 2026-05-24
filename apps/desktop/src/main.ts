@@ -588,6 +588,10 @@ const els = {
   offlineSourcesModal: $<HTMLDivElement>('offline-sources-modal'),
   // Brain / Alive — status bar
   brainVitality: $<HTMLSpanElement>('brain-vitality'),
+  statusGllPill: $<HTMLSpanElement>('status-gll-pill'),
+  statusGnnPill: $<HTMLSpanElement>('status-gnn-pill'),
+  statusProcess: $<HTMLSpanElement>('status-process'),
+  statusProcessText: $<HTMLSpanElement>('status-process-text'),
   // App version pill, sits left of brainVitality. Filled once on module load
   // from the vite-injected __APP_VERSION__ (defined in vite.config.ts).
   statusVersion: $<HTMLSpanElement>('status-version'),
@@ -622,6 +626,7 @@ const els = {
   btnNewGoal: $<HTMLButtonElement>('btn-new-goal'),
   // Ollama settings
   llmEnableBlock: $<HTMLDivElement>('llm-enable-block'),
+  llmCapBlock: $<HTMLDivElement>('llm-cap-block'),
   ollamaStatusBadge: $<HTMLSpanElement>('ollama-status-badge'),
   ollamaModelRow: $<HTMLDivElement>('ollama-model-row'),
   ollamaModelSelect: $<HTMLSelectElement>('ollama-model-select'),
@@ -1119,6 +1124,12 @@ function render(status: StatusSnapshot): void {
     els.viewUnlock.classList.remove('hidden');
     stopMcpPolling();
     setClipboardCaptureEnabled(false); // stop polling on lock
+    // Re-enable the unlock button — it may have been left disabled from the
+    // previous unlock flow (the finally-block guard keeps it disabled while
+    // unlockPending is true, so by the time showApp() clears that flag the
+    // button is already hidden inside the app view).
+    els.btnUnlock.disabled = false;
+    unlockPending = false;
     // Clear ephemeral disable state on lock so a re-unlock starts fresh.
     disabledSources.clear();
     // Reset the docs-offer guard + hide its banner so a re-unlock (possibly
@@ -3188,11 +3199,63 @@ function renderSettingsGraphsList(): void {
         <button class="btn-graph-archive" data-sgr-id="${escape(g.graphId)}" data-archived="${archived}">
           ${archived ? 'Unarchive' : 'Archive'}
         </button>
+        <button class="btn-graph-reingest" data-sgr-id="${escape(g.graphId)}" data-name="${escape(g.metadata.displayName)}" title="Re-chunk + re-embed every source in this engram using current Search model + Chunk size settings.">
+          Reingest
+        </button>
         <button class="btn-graph-delete" data-sgr-id="${escape(g.graphId)}" data-name="${escape(g.metadata.displayName)}">
           Delete
         </button>
       </div>`;
   }).join('');
+
+  // ── Per-engram Reingest ──────────────────────────────────────────────────
+  // Re-uses the engram:reingestAll IPC (already wired in Batch 5) and the
+  // shared reingest-progress modal. The modal's listener doesn't care
+  // whether the IPC was whole-cortex or one-engram — the broadcast payload
+  // shape is the same (graphIndex=0, graphsTotal=1 for the per-engram case).
+  container.querySelectorAll<HTMLButtonElement>('.btn-graph-reingest').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const graphId = btn.dataset['sgrId'] ?? '';
+      const displayName = btn.dataset['name'] ?? graphId;
+      if (!graphId) return;
+      if (!confirm(`Reingest every source in "${displayName}"?\n\nRe-chunks and re-embeds using current settings (Search model, Chunk size). A snapshot of this engram is taken first. Sources whose original content wasn't cached are skipped.`)) return;
+      // Open the same modal the whole-cortex Reingest uses, then call the
+      // per-engram IPC instead of the cortex-wide one.
+      const modal = document.getElementById('reingest-modal');
+      const phaseEl = document.getElementById('reingest-phase');
+      const detailEl = document.getElementById('reingest-detail');
+      const barEl = document.getElementById('reingest-bar');
+      const counterEl = document.getElementById('reingest-counter');
+      const summaryEl = document.getElementById('reingest-summary');
+      const closeBtn = document.getElementById('reingest-close') as HTMLButtonElement | null;
+      const cancelBtn = document.getElementById('reingest-cancel') as HTMLButtonElement | null;
+      if (!modal || !phaseEl || !detailEl || !barEl || !counterEl || !summaryEl || !closeBtn || !cancelBtn) return;
+      modal.classList.remove('hidden');
+      closeBtn.disabled = true;
+      closeBtn.onclick = () => modal.classList.add('hidden');
+      // Same cancel wiring as the whole-cortex path — reingest:cancel is
+      // operation-agnostic; the host's currentReingestAbort signal covers
+      // either reingestAllSources or reingestAllGraphs equally.
+      cancelBtn.disabled = false;
+      cancelBtn.textContent = 'Cancel';
+      cancelBtn.onclick = () => {
+        cancelBtn.disabled = true;
+        cancelBtn.textContent = 'Cancelling…';
+        void ipcCall('reingest:cancel', {}).catch(() => { /* non-fatal */ });
+      };
+      phaseEl.textContent = `Reingesting "${displayName}"…`;
+      detailEl.textContent = 'Snapshotting this engram first.';
+      barEl.style.width = '0%';
+      counterEl.textContent = '';
+      summaryEl.style.display = 'none';
+      summaryEl.innerHTML = '';
+      void ipcCall('engram:reingestAll', { graphId }).catch((err) => {
+        closeBtn.disabled = false;
+        phaseEl.textContent = 'Reingest failed';
+        detailEl.textContent = String((err as Error).message ?? err);
+      });
+    });
+  });
 
   // ── Archive / Unarchive ──────────────────────────────────────────────────
   container.querySelectorAll<HTMLButtonElement>('.btn-graph-archive').forEach((btn) => {
@@ -3445,7 +3508,79 @@ els.btnSettings.addEventListener('click', async () => {
   }
   void refreshLlmStatus();
   startOllamaStatusPoll();
+  void refreshEmbeddingPicker();
 });
+
+/**
+ * Search model picker (Settings → Search model). Renders two radio rows for
+ * English-first vs Multilingual, plus an Apply button. Clicking Apply opens
+ * the re-embedding progress modal and kicks off `embedding:setModel`. Skipped
+ * silently if the picker host element isn't in the DOM (no settings panel
+ * open).
+ */
+interface EmbeddingStatus {
+  active: { model: 'english' | 'multilingual'; id: string; dim: number };
+  stored: 'english' | 'multilingual';
+  needsApply: boolean;
+  catalog: Array<{ id: 'english' | 'multilingual'; label: string; description: string; sizeMb: number }>;
+}
+async function refreshEmbeddingPicker(): Promise<void> {
+  const host = document.getElementById('embedding-picker');
+  if (!host) return;
+  let status: EmbeddingStatus;
+  try {
+    status = await ipcCall<EmbeddingStatus>('embedding:status', {});
+  } catch {
+    host.innerHTML = '<p class="subtitle">Could not read embedding status.</p>';
+    return;
+  }
+  // Track the user's pending selection in the radio group; defaults to active.
+  let pendingChoice: 'english' | 'multilingual' = status.active.model;
+  const row = (opt: EmbeddingStatus['catalog'][number]): string => {
+    const active = opt.id === status.active.model;
+    const sizeText = opt.sizeMb >= 1000
+      ? `${(opt.sizeMb / 1000).toFixed(1)} GB`
+      : `${opt.sizeMb} MB`;
+    return `<label style="display:flex; align-items:flex-start; gap:10px; padding:10px 12px; border:1px solid var(--border); border-radius:8px; cursor:pointer;${active ? ' background:rgba(91,141,239,0.08);' : ''}">`
+      + `<input type="radio" name="embedding-choice" value="${opt.id}" ${active ? 'checked' : ''} style="margin-top:3px;" />`
+      + `<span style="display:flex; flex-direction:column; gap:3px;">`
+      + `<strong style="font-size:13px;">${opt.label}${active ? ' · <em style="color:var(--ok);font-weight:normal;">active</em>' : ''}</strong>`
+      + `<span class="subtitle" style="font-size:12px; margin:0;">${opt.description}</span>`
+      + `<span class="subtitle" style="font-size:11px; margin:0; opacity:0.7;">Download: ${sizeText}</span>`
+      + `</span>`
+      + `</label>`;
+  };
+  host.innerHTML =
+    status.catalog.map(row).join('')
+    + `<div style="display:flex; align-items:center; gap:10px; margin-top:8px;">`
+    + `<button id="embedding-apply" class="btn-sm primary" disabled>Apply</button>`
+    + `<span id="embedding-apply-note" class="subtitle" style="margin:0; font-size:12px;"></span>`
+    + `</div>`;
+  const applyBtn = host.querySelector<HTMLButtonElement>('#embedding-apply');
+  const note = host.querySelector<HTMLSpanElement>('#embedding-apply-note');
+  const radios = host.querySelectorAll<HTMLInputElement>('input[name="embedding-choice"]');
+  const updateApplyState = (): void => {
+    if (!applyBtn) return;
+    applyBtn.disabled = pendingChoice === status.active.model;
+    if (note) {
+      note.textContent = applyBtn.disabled
+        ? 'No change selected.'
+        : `Will re-embed every engram with ${pendingChoice === 'multilingual' ? 'multilingual-e5-large' : 'BGE-small-en-v1.5'}.`;
+    }
+  };
+  radios.forEach((r) => {
+    r.addEventListener('change', () => {
+      if (r.checked) {
+        pendingChoice = r.value as 'english' | 'multilingual';
+        updateApplyState();
+      }
+    });
+  });
+  applyBtn?.addEventListener('click', () => {
+    openEmbeddingProgressModal(pendingChoice);
+  });
+  updateApplyState();
+}
 
 // ── Settings tab (mode-pane data-pane="settings") render ───────────────────
 //
@@ -8510,15 +8645,60 @@ async function refreshSnapshots(): Promise<void> {
       return;
     }
     els.snapshotsBody.innerHTML = r.snapshots.map((s) => `
-      <div class="snapshot-row">
-        <div>
-          <div><code>${escape(s.id)}</code></div>
+      <div class="snapshot-row" style="display:flex; align-items:center; gap:12px; padding:8px 0;">
+        <div style="flex:1; min-width:0;">
+          <div style="overflow:hidden; text-overflow:ellipsis;"><code>${escape(s.id)}</code></div>
           <div class="snapshot-meta">${escape(new Date(s.createdAt).toLocaleString())}</div>
         </div>
         <div class="snapshot-meta">${s.fileCount} files</div>
         <div class="snapshot-meta">${formatBytes(s.sizeBytes)}</div>
+        <button class="btn-sm btn-snapshot-restore" data-snap-id="${escape(s.id)}" title="Replace the current engrams with this snapshot. A new safety snapshot is taken first.">Restore</button>
+        <button class="btn-sm btn-snapshot-delete" data-snap-id="${escape(s.id)}" title="Permanently delete this snapshot.">Delete</button>
       </div>
     `).join('');
+    // Wire Restore + Delete buttons (delegated per-row would also work; this
+    // is more explicit and the list isn't huge).
+    els.snapshotsBody.querySelectorAll<HTMLButtonElement>('.btn-snapshot-restore').forEach((btn) => {
+      btn.addEventListener('click', async () => {
+        const label = btn.dataset['snapId'] ?? '';
+        if (!label) return;
+        if (!confirm(
+          `Restore engrams from snapshot "${label}"?\n\n` +
+          `This REPLACES the current .gai files with the snapshot's copies. ` +
+          `A fresh safety snapshot of the current state is taken first, so this ` +
+          `action is itself reversible.\n\n` +
+          `Engrams will reload from the restored disk state on next access.`,
+        )) return;
+        btn.disabled = true;
+        btn.textContent = 'Restoring…';
+        try {
+          const result = await ipcCall<{ ok: boolean; restored: number; safetySnapshot: string }>('snapshots:restore', { label });
+          els.snapshotsNote.textContent = result.ok
+            ? `Restored ${result.restored} engram(s). Safety snapshot created.`
+            : 'Restore failed.';
+          await refreshSnapshots();
+        } catch (e) {
+          els.snapshotsNote.textContent = `Restore failed: ${(e as Error).message ?? e}`;
+          btn.disabled = false;
+          btn.textContent = 'Restore';
+        }
+      });
+    });
+    els.snapshotsBody.querySelectorAll<HTMLButtonElement>('.btn-snapshot-delete').forEach((btn) => {
+      btn.addEventListener('click', async () => {
+        const label = btn.dataset['snapId'] ?? '';
+        if (!label) return;
+        if (!confirm(`Permanently delete snapshot "${label}"? This cannot be undone.`)) return;
+        btn.disabled = true;
+        try {
+          await ipcCall('snapshots:delete', { label });
+          await refreshSnapshots();
+        } catch (e) {
+          els.snapshotsNote.textContent = `Delete failed: ${(e as Error).message ?? e}`;
+          btn.disabled = false;
+        }
+      });
+    });
   } catch (e) {
     els.snapshotsBody.innerHTML = `<p class="error">${escape(String(e))}</p>`;
   }
@@ -8909,6 +9089,43 @@ type ConsentPromptPayload = {
   suggestedDurations: Array<{ tier: string; durationMs: number }>;
   privacyUrl: string | null;
 };
+// ── In-app update modal ───────────────────────────────────────────────────
+// Rust emits `graphnosis://update-available` with the new version string
+// immediately after updating the tray and posting the OS notification.
+{
+  const modal  = document.getElementById('update-available-modal');
+  const verEl  = document.getElementById('update-available-version');
+  const installBtn = document.getElementById('update-install-btn');
+  const laterBtn   = document.getElementById('update-later-btn');
+
+  void listen<string>('graphnosis://update-available', (evt) => {
+    if (!modal) return;
+    if (verEl) verEl.textContent = `Version ${evt.payload} is ready`;
+    modal.classList.remove('hidden');
+  });
+
+  installBtn?.addEventListener('click', async () => {
+    if (installBtn) {
+      (installBtn as HTMLButtonElement).disabled = true;
+      installBtn.textContent = 'Installing…';
+    }
+    try {
+      await invoke('install_update');
+      // App restarts automatically — no further UI needed.
+    } catch (e) {
+      if (installBtn) {
+        (installBtn as HTMLButtonElement).disabled = false;
+        installBtn.textContent = 'Install & Restart';
+      }
+      showError(`Update failed: ${e}`);
+    }
+  });
+
+  laterBtn?.addEventListener('click', () => {
+    modal?.classList.add('hidden');
+  });
+}
+
 let activeConsentPromptId: string | null = null;
 void listen<ConsentPromptPayload>('graphnosis://consent-prompt', (evt) => {
   const p = evt.payload;
@@ -9154,28 +9371,123 @@ const BRAIN_PHASE_LABELS: Record<string, string> = {
   consolidate: 'Consolidating memory',
   'cross-engram': 'Linking engrams',
   'neural-network': 'Graphnosis Neural Network',
+  'edge-prediction': 'Predicting edges',
 };
+
+/**
+ * Status-bar process line — categorization for each background phase.
+ * Maps the raw phase name (from brain-engine's emitActivity frames) to a
+ * user-facing prefix that groups by determinism layer:
+ *   - "Self-healing" — deterministic duplicate detection + connection weaving
+ *   - "Consolidation" — deterministic reinforcement, decay, cross-engram
+ *   - "Insights" — LLM-backed pattern surfacing
+ *   - "GLL" — local LLM overlay work (edge prediction, synapse)
+ *   - "GNN" — neural-network overlay work
+ * The label after the colon is the verb form ("scanning for duplicates")
+ * so the status reads "Self-healing: scanning for duplicates…" naturally.
+ */
+interface PhaseLine { prefix: string; verb: string; tone: 'det' | 'gll' | 'gnn' | 'llm' }
+const PHASE_LINE: Record<string, PhaseLine> = {
+  'duplicate-scan': { prefix: 'Self-healing', verb: 'scanning for duplicates',   tone: 'det' },
+  'auto-heal':      { prefix: 'Self-healing', verb: 'merging a duplicate',       tone: 'det' },
+  'auto-link':      { prefix: 'Self-healing', verb: 'weaving connections',       tone: 'det' },
+  'healing-review': { prefix: 'Self-healing', verb: 're-checking past merges',   tone: 'llm' },
+  temporal:         { prefix: 'Consolidation', verb: 'applying memory decay',    tone: 'det' },
+  'goal-check':     { prefix: 'Consolidation', verb: 'checking goals',           tone: 'det' },
+  reinforce:        { prefix: 'Consolidation', verb: 'strengthening connections',tone: 'det' },
+  consolidate:      { prefix: 'Consolidation', verb: 'consolidating memory',     tone: 'det' },
+  'cross-engram':   { prefix: 'Consolidation', verb: 'linking engrams',          tone: 'det' },
+  synapse:          { prefix: 'GLL',           verb: 'forming new connections',  tone: 'gll' },
+  insight:          { prefix: 'Insights',      verb: 'synthesizing patterns',    tone: 'llm' },
+  'edge-prediction':{ prefix: 'GLL',           verb: 'predicting edges',         tone: 'gll' },
+  'neural-network': { prefix: 'GNN',           verb: 'training',                 tone: 'gnn' },
+  fullscan:         { prefix: 'Background',    verb: 'running a self-scan',      tone: 'det' },
+};
+
+/** Dot color per category — matches the visual identity of GLL / GNN pills
+ *  (which use the Graphnosis wordmark gradient endpoints) so the user can
+ *  read the dot at a glance. */
+const PHASE_TONE_COLOR: Record<PhaseLine['tone'], string> = {
+  det:  '#9aa4ad',  // grey-ish for deterministic
+  llm:  '#6ab3c8',  // turquoise — matches GLL pill (and the wordmark start)
+  gll:  '#6ab3c8',
+  gnn:  '#a78bfa',  // purple — matches GNN pill (and the wordmark end)
+};
+
+/**
+ * Paint the status-bar process line from brainActivePhases. Hidden when
+ * nothing is running. When multiple phases are active simultaneously,
+ * shows the most user-relevant one (LLM/GNN over deterministic, since
+ * deterministic passes are quick and the user is more curious about
+ * the slow heavy work). Re-rendered from handleBrainFrame on every
+ * start/done event.
+ */
+function renderStatusProcess(): void {
+  const wrap = els.statusProcess;
+  const text = els.statusProcessText;
+  if (!wrap || !text) return;
+  if (brainActivePhases.size === 0) {
+    wrap.style.display = 'none';
+    return;
+  }
+  // Pick the most "interesting" active phase. Order of priority:
+  // GNN > GLL > Insights/LLM > deterministic. The 'fullscan' wrapper
+  // gets the lowest priority because it's a container, not an actual
+  // unit of work.
+  const TONE_PRIORITY: Record<PhaseLine['tone'], number> = { gnn: 4, gll: 3, llm: 2, det: 1 };
+  let chosen: { phase: string; line: PhaseLine } | null = null;
+  for (const phase of brainActivePhases) {
+    const line = PHASE_LINE[phase];
+    if (!line) continue;
+    if (phase === 'fullscan' && brainActivePhases.size > 1) continue; // suppress wrapper when sub-phases exist
+    if (!chosen || TONE_PRIORITY[line.tone] > TONE_PRIORITY[chosen.line.tone]) {
+      chosen = { phase, line };
+    }
+  }
+  if (!chosen) {
+    wrap.style.display = 'none';
+    return;
+  }
+  wrap.style.display = 'flex';
+  text.textContent = `${chosen.line.prefix}: ${chosen.line.verb}…`;
+  const dot = wrap.querySelector<HTMLElement>('.status-process-dot');
+  if (dot) dot.style.background = PHASE_TONE_COLOR[chosen.line.tone];
+}
 
 /** Pull all brain state from the sidecar into module cache, then repaint. */
 async function refreshBrainState(): Promise<void> {
-  try {
-    const [vitality, insights, goals, healingJournal, memoryHealth, neuralNetwork] = await Promise.all([
-      ipcCall<typeof brainVitalityReport>('brain:getVitality', {}),
-      ipcCall<typeof brainInsights>('brain:getInsights', {}),
-      ipcCall<BrainGoal[]>('brain:listGoals', {}),
-      ipcCall<BrainHealingRecord[]>('brain:getHealingJournal', {}),
-      ipcCall<typeof brainMemoryHealth>('brain:getMemoryHealth', {}),
-      ipcCall<typeof brainNeuralNetworkStatus>('brain:getNeuralNetworkStatus', {}),
-    ]);
-    brainVitalityReport = vitality;
-    brainInsights = insights;
-    brainGoals = goals;
-    brainHealingJournal = healingJournal;
-    brainMemoryHealth = memoryHealth;
-    brainNeuralNetworkStatus = neuralNetwork;
-    updateBrainUI();
-    renderRailGetConnected();
-  } catch { /* non-fatal — brain may not be initialized yet */ }
+  // Each panel applies its own IPC result independently. The previous
+  // Promise.all-then-assign pattern meant that ONE slow IPC (memory health
+  // walks the whole graph; vitality used to block on first-scan completion)
+  // stalled every panel — vitality, insights, GNN, all stuck on their
+  // "Loading…" placeholders. Promise.allSettled paints each panel as soon
+  // as its own call returns, and a failure on one doesn't poison the rest.
+  const fetchers: Array<{ name: string; promise: Promise<unknown>; apply: (v: unknown) => void }> = [
+    { name: 'vitality',     promise: ipcCall('brain:getVitality', {}),             apply: (v) => { brainVitalityReport = v as typeof brainVitalityReport; } },
+    { name: 'insights',     promise: ipcCall('brain:getInsights', {}),             apply: (v) => { brainInsights = v as typeof brainInsights; } },
+    { name: 'goals',        promise: ipcCall('brain:listGoals', {}),               apply: (v) => { brainGoals = v as BrainGoal[]; } },
+    { name: 'healing',      promise: ipcCall('brain:getHealingJournal', {}),       apply: (v) => { brainHealingJournal = v as BrainHealingRecord[]; } },
+    { name: 'memoryHealth', promise: ipcCall('brain:getMemoryHealth', {}),         apply: (v) => { brainMemoryHealth = v as typeof brainMemoryHealth; } },
+    { name: 'gnn',          promise: ipcCall('brain:getNeuralNetworkStatus', {}),  apply: (v) => { brainNeuralNetworkStatus = v as typeof brainNeuralNetworkStatus; } },
+  ];
+  // Each panel paints as soon as its own data arrives. We still need a
+  // single combined paint at the end so any cross-pane derived state
+  // (rail connect chips, layer pills) sees the full picture.
+  await Promise.all(fetchers.map(async (f) => {
+    try {
+      const v = await f.promise;
+      f.apply(v);
+      // Repaint after each one — cheap, and means each panel flips out of
+      // its placeholder the instant its data lands rather than waiting on
+      // the slowest sibling.
+      updateBrainUI();
+    } catch (e) {
+      // A single panel failing should never wedge the others. Log + move on.
+      console.error(`[refreshBrainState] ${f.name} fetch failed: ${(e as Error).message}`);
+    }
+  }));
+  renderRailGetConnected();
+  refreshLayerPills();
 }
 
 /** Animate the vitality ring + score counter + status-bar chip from wherever
@@ -9214,13 +9526,19 @@ function animateVitality(target: number): void {
 
 /** Status-bar chip + atlas animation + Autonomous Brain pane. Cheap; no IPC. */
 function updateBrainUI(): void {
-  if (!brainVitalityReport) return;
-  const v = brainVitalityReport.overall;
-
-  els.brainVitality.style.display = '';
-  mainAtlas?.setBrainVitality?.(v);
-  animateVitality(v);
-
+  // Vitality-dependent UI (status bar chip, atlas overlay, vitality ring)
+  // only repaints when we actually have a number. But the rest of the
+  // Autonomous-Brain pane (GNN status, insights, healing log, memory
+  // health) must repaint regardless — otherwise a fresh `enable` click
+  // can land its IPC update without the UI reflecting it, because vitality
+  // happened to be null in that moment. That was the "Snapshot & enable
+  // reverts to Enable…" bug.
+  if (brainVitalityReport) {
+    const v = brainVitalityReport.overall;
+    els.brainVitality.style.display = '';
+    mainAtlas?.setBrainVitality?.(v);
+    animateVitality(v);
+  }
   renderLivingBrainPane();
 }
 
@@ -9645,6 +9963,7 @@ function handleBrainFrame(graphId: string): void {
     // feed row of its own; the sub-phases provide the feed detail.
     if (phase !== 'fullscan') addFeedStart(phase);
     renderScanStatus();
+    renderStatusProcess();
   } else if (graphId.startsWith('__brain_done_')) {
     // phase is '' for the bare '__brain_done__' vitality frame.
     const phase = graphId.slice('__brain_done_'.length, -2);
@@ -9653,6 +9972,7 @@ function handleBrainFrame(graphId: string): void {
       if (phase !== 'fullscan') addFeedDone(phase);
     }
     if (brainActivePhases.size === 0) els.livingBrain.classList.remove('lb-scanning');
+    renderStatusProcess();
     // The event channel only carries graphId + ts — pull the fresh state.
     void refreshBrainState();
     void refreshBrainStatus();
@@ -10010,18 +10330,25 @@ function renderLlmEnableBlock(reachable: boolean, hasModels: boolean, enabled: b
       + `</div>`
       + `</div>`;
   } else {
-    // Normal state: compact card with checkbox toggle.
+    // Normal state: compact card with checkbox toggle. The right-hand status
+    // chip combines two signals so the user never confuses "Ollama is
+    // reachable" with "the master LLM toggle is on" — both have to be true
+    // for any LLM-backed feature (insights, synapses, edge prediction) to
+    // actually work. Previous wording ("● Ollama connected" alone) misled
+    // users into thinking the LLM was on when only Ollama was up.
     const dimmed = setupDone ? '' : ' style="opacity: 0.55;"';
-    const statusLabel = !setupDone
-      ? '<span class="llm-enable-card-status">Ollama setup required</span>'
-      : enabled
-        ? '<span class="llm-enable-card-status" style="color: var(--ok);">● on</span>'
-        : '<span class="llm-enable-card-status">off</span>';
+    const statusChip = (() => {
+      if (!reachable) return `<span class="llm-enable-card-status" style="color: var(--err, #d04a4a);">● Ollama not detected</span>`;
+      if (!hasModels)  return `<span class="llm-enable-card-status" style="color: #d6a728;">● Ollama up · no model installed</span>`;
+      if (!enabled)    return `<span class="llm-enable-card-status" style="color: #d6a728;">● Ollama ready · master toggle OFF</span>`;
+      return `<span class="llm-enable-card-status" style="color: var(--ok, #3aa67a);">● ON · Ollama ready</span>`;
+    })();
+    const recheckBtn = `<button data-llm="recheck" class="btn-sm" style="margin-left:10px;">Recheck</button>`;
     const subtitle = !setupDone
       ? '<p class="brain-subtitle" style="margin: 6px 0 0; padding: 0 14px 12px;">Finish the Ollama setup below to enable the local LLM.</p>'
       : enabled
-        ? '<p class="brain-subtitle" style="margin: 6px 0 0; padding: 0 14px 12px;">Graphnosis is routing non-deterministic features through your local model. Runs entirely on your device.</p>'
-        : '<p class="brain-subtitle" style="margin: 6px 0 0; padding: 0 14px 12px;">Off — Graphnosis won\'t route any memory through your local LLM until you switch it on.</p>';
+        ? '<p class="brain-subtitle" style="margin: 6px 0 0; padding: 0 14px 12px;">On — Graphnosis is routing the enabled capabilities through your local model. Runs entirely on your device.</p>'
+        : '<p class="brain-subtitle" style="margin: 6px 0 0; padding: 0 14px 12px;">Off — check the box on the left to enable. Graphnosis won\'t route any memory through the local LLM until you do.</p>';
 
     host.innerHTML =
       `<div class="llm-enable-card${enabled ? ' llm-card-active' : ''}"${dimmed}>`
@@ -10029,7 +10356,10 @@ function renderLlmEnableBlock(reachable: boolean, hasModels: boolean, enabled: b
       + `<input type="checkbox" data-llm="toggle" ${enabled ? 'checked' : ''} ${setupDone ? '' : 'disabled'} />`
       + `<strong>Local LLM</strong>`
       + `</label>`
-      + statusLabel
+      + `<span style="display:flex; align-items:center;">`
+      + statusChip
+      + recheckBtn
+      + `</span>`
       + `</div>`
       + subtitle;
   }
@@ -10049,6 +10379,7 @@ function renderLlmEnableBlock(reachable: boolean, hasModels: boolean, enabled: b
       void ipcCall('llm:setEnabled', { enabled: false }).then(() => { void refreshLlmStatus(); });
     }
   });
+  on('recheck', () => { void refreshLlmStatus(); });
   on('cancel', () => { llmConfirmPending = false; renderLlmEnableBlock(reachable, hasModels, enabled); });
   on('confirm', () => {
     llmConfirmPending = false;
@@ -10056,9 +10387,91 @@ function renderLlmEnableBlock(reachable: boolean, hasModels: boolean, enabled: b
   });
 }
 
+/**
+ * Refresh the layered-intelligence pills in the status bar. Each pill is
+ * visible only when its corresponding capability is on:
+ *   - GLL pill ⇒ master Local LLM toggle is on
+ *   - GNN pill ⇒ Graphnosis Neural Network is on
+ *
+ * Both pills are click-through to the Non-Deterministic Aid tab where the
+ * relevant toggle lives. Cheap function — called from refreshLlmStatus AND
+ * refreshBrainState so the pills react to either kind of state change.
+ */
+function refreshLayerPills(): void {
+  const llmOn = brainLlmReady;
+  const gnnOn = brainNeuralNetworkStatus?.enabled === true;
+  if (els.statusGllPill) {
+    els.statusGllPill.style.display = llmOn ? '' : 'none';
+  }
+  if (els.statusGnnPill) {
+    els.statusGnnPill.style.display = gnnOn ? '' : 'none';
+  }
+}
+
+interface LlmCapabilityFlags {
+  recallEnrichment: boolean;
+  correctionParsing: boolean;
+  distillation: boolean;
+  insights: boolean;
+  edgePrediction: boolean;
+}
+
+/**
+ * Per-capability checkboxes under the master Local LLM toggle. Each capability
+ * maps to one of the side-effect classes:
+ *   - Recall enrichment: NO graph mutation (query rewrite at recall time)
+ *   - Correction parsing: proposes diffs the user must approve
+ *   - Distillation: returns text to the AI client
+ *   - Insights: writes only to the LLM event/overlay layer
+ *   - Edge prediction: opt-in autonomous loop, writes to .gll overlay
+ *
+ * The whole block is dimmed (and inputs disabled) when the master switch is
+ * off — turning master on restores prior per-capability choices because the
+ * settings are persisted independently.
+ */
+function renderLlmCapabilityBlock(masterEnabled: boolean, caps: LlmCapabilityFlags | undefined): void {
+  const hostEl = els.llmCapBlock;
+  if (!hostEl) return;
+  // No caps from older sidecars — leave the block empty rather than guessing.
+  if (!caps) { hostEl.innerHTML = ''; return; }
+  const dim = masterEnabled ? '' : ' opacity: 0.5;';
+  const disabledAttr = masterEnabled ? '' : 'disabled';
+  const row = (id: keyof LlmCapabilityFlags, title: string, blurb: string): string =>
+    `<label class="llm-cap-row" style="display:flex; gap:10px; align-items:flex-start; padding:8px 14px; cursor:${masterEnabled ? 'pointer' : 'not-allowed'};">`
+    + `<input type="checkbox" data-cap="${id}" ${caps[id] ? 'checked' : ''} ${disabledAttr} style="margin-top:3px;" />`
+    + `<span style="display:flex; flex-direction:column; gap:2px;">`
+    + `<strong style="font-size:13px;">${title}</strong>`
+    + `<span class="brain-subtitle" style="font-size:12px; margin:0;">${blurb}</span>`
+    + `</span>`
+    + `</label>`;
+  hostEl.innerHTML =
+    `<div class="llm-cap-card" style="border:1px solid var(--border); border-radius:8px;${dim}">`
+    + `<div style="padding:10px 14px 6px; font-size:11px; text-transform:uppercase; letter-spacing:0.08em; color:var(--muted);">Capabilities</div>`
+    + row('recallEnrichment', 'Enrich recall queries',
+          'Rewrites your query at recall time — adds synonyms, translates across languages, strips framing. <em>No changes to your memory.</em>')
+    + row('correctionParsing', 'Parse corrections',
+          'Upgrades the <code>correct</code> tool to author multi-memory diffs. You always review and approve before anything is written.')
+    + row('distillation', 'Distill facts from text',
+          'Lets AI clients call <code>llm_distill</code> to extract structured facts from raw text.')
+    + row('insights', 'Surface insights and predictions',
+          'Background loop that finds patterns, gaps, and opportunities. Powers <code>insights</code>, <code>develop</code>, <code>predict</code>, <code>llm_query</code>. Writes only to the LLM overlay, never to your engrams.')
+    + row('edgePrediction', 'Predict edges autonomously',
+          'Opt-in. A background loop proposes new connections between co-recalled memories. Predictions land in the <code>.gll</code> overlay — separate from your canonical engram, fully reversible.')
+    + `</div>`;
+  hostEl.querySelectorAll<HTMLInputElement>('input[data-cap]').forEach((cb) => {
+    cb.addEventListener('change', () => {
+      const capability = cb.dataset.cap as keyof LlmCapabilityFlags;
+      const enabled = cb.checked;
+      void ipcCall('llm:setCapability', { capability, enabled })
+        .then(() => { void refreshLlmStatus(); })
+        .catch(() => { void refreshLlmStatus(); });
+    });
+  });
+}
+
 async function refreshLlmStatus(): Promise<void> {
   try {
-    const status = await ipcCall<{ ollamaReachable: boolean; installedModels: string[]; activeModel: string | null; enabled: boolean; catalog?: Array<{ id: string; name: string }> }>('llm:status', {});
+    const status = await ipcCall<{ ollamaReachable: boolean; installedModels: string[]; activeModel: string | null; enabled: boolean; capabilities?: LlmCapabilityFlags; catalog?: Array<{ id: string; name: string }> }>('llm:status', {});
 
     if (status.ollamaReachable) {
       els.ollamaStatusBadge.textContent = '● Connected';
@@ -10096,6 +10509,7 @@ async function refreshLlmStatus(): Promise<void> {
         els.ollamaModelSelect.appendChild(opt);
       }
       renderLlmEnableBlock(true, hasModels, status.enabled);
+      renderLlmCapabilityBlock(status.enabled, status.capabilities);
     } else {
       els.ollamaStatusBadge.textContent = '● Not detected';
       els.ollamaStatusBadge.className = 'err';
@@ -10107,8 +10521,10 @@ async function refreshLlmStatus(): Promise<void> {
       ollamaReadyForSearch = false;
       syncSearchLlmCheckboxes();
       renderLlmEnableBlock(false, false, status.enabled);
+      renderLlmCapabilityBlock(status.enabled, status.capabilities);
     }
     renderRailGetConnected();
+    refreshLayerPills();
   } catch { /* non-fatal */ }
 }
 
@@ -10118,6 +10534,24 @@ els.btnOllamaRecheck.addEventListener('click', () => {
   els.ollamaStatusBadge.textContent = 'Checking…';
   els.ollamaStatusBadge.className = '';
   void refreshLlmStatus();
+});
+
+// Platform tabs inside Prefer the Terminal? — flip the visible pane and
+// aria-selected based on the clicked tab. Delegated so we don't bind one
+// listener per tab.
+document.addEventListener('click', (ev) => {
+  const target = ev.target as HTMLElement | null;
+  if (!target?.matches('.ollama-cli-tab')) return;
+  const tabId = target.dataset.cliTab;
+  if (!tabId) return;
+  const root = target.closest('.ollama-cli-box');
+  if (!root) return;
+  root.querySelectorAll<HTMLElement>('.ollama-cli-tab').forEach((t) => {
+    t.setAttribute('aria-selected', t.dataset.cliTab === tabId ? 'true' : 'false');
+  });
+  root.querySelectorAll<HTMLElement>('.ollama-cli-pane').forEach((p) => {
+    p.style.display = p.dataset.cliPane === tabId ? '' : 'none';
+  });
 });
 
 els.btnOllamaApplyModel.addEventListener('click', async () => {
@@ -10150,6 +10584,403 @@ void listen<LlmPullProgressPayload>('graphnosis://llm-pull-progress', (evt) => {
   }
 });
 
+// ── Embedding model switch progress ────────────────────────────────────────
+//
+// Driven by the 'embedding.switch-progress' event channel forwarded from the
+// sidecar. Phases: 'snapshot' → 'downloading-model' → 'reembedding' (per-
+// engram counter) → 'done'. The modal is opened by the Settings → Search
+// model Apply button (openEmbeddingProgressModal).
+interface EmbeddingSwitchProgressPayload {
+  phase: 'snapshot' | 'downloading-model' | 'reembedding' | 'done';
+  model?: 'english' | 'multilingual';
+  graphId?: string;
+  index?: number;
+  total?: number;
+  nodesInGraph?: number;
+  graphsRebuilt?: number;
+  cancelled?: boolean;
+  errors?: Array<{ graphId: string; error: string }>;
+}
+function openEmbeddingProgressModal(target: 'english' | 'multilingual'): void {
+  const modal = document.getElementById('embedding-switch-modal');
+  const phaseEl = document.getElementById('embedding-switch-phase');
+  const detailEl = document.getElementById('embedding-switch-detail');
+  const barEl = document.getElementById('embedding-switch-bar');
+  const counterEl = document.getElementById('embedding-switch-counter');
+  const closeBtn = document.getElementById('embedding-switch-close') as HTMLButtonElement | null;
+  const cancelBtn = document.getElementById('embedding-switch-cancel') as HTMLButtonElement | null;
+  if (!modal || !phaseEl || !detailEl || !barEl || !counterEl || !closeBtn || !cancelBtn) return;
+  modal.classList.remove('hidden');
+  closeBtn.disabled = true;
+  closeBtn.onclick = () => {
+    modal.classList.add('hidden');
+    void refreshEmbeddingPicker();
+  };
+  // Cancel: fire the cooperative abort. The host loop bails between
+  // engrams; the 'done' progress event will fire with cancelled=true and
+  // re-enable the Close button.
+  cancelBtn.disabled = false;
+  cancelBtn.onclick = () => {
+    cancelBtn.disabled = true;
+    cancelBtn.textContent = 'Cancelling…';
+    void ipcCall('embedding:cancelSwitch', {}).catch(() => { /* non-fatal */ });
+  };
+  phaseEl.textContent = 'Starting…';
+  detailEl.textContent = `Switching to ${target === 'multilingual' ? 'multilingual-e5-large' : 'BGE-small-en-v1.5'}.`;
+  barEl.style.width = '0%';
+  counterEl.textContent = '';
+  void ipcCall<{ ok: boolean; switched: boolean; graphsRebuilt?: number; errors?: Array<{ graphId: string; error: string }> }>('embedding:setModel', { model: target })
+    .then((result) => {
+      // The 'done' progress event will also flip the close button — this
+      // is the fallback in case the event arrived earlier or got lost.
+      closeBtn.disabled = false;
+      if (!result.switched) {
+        phaseEl.textContent = 'No change';
+        detailEl.textContent = 'That model was already active.';
+      }
+    })
+    .catch((err) => {
+      closeBtn.disabled = false;
+      phaseEl.textContent = 'Switch failed';
+      detailEl.textContent = String((err as Error).message ?? err);
+    });
+}
+void listen<EmbeddingSwitchProgressPayload>('graphnosis://embedding-switch-progress', (evt) => {
+  const phaseEl = document.getElementById('embedding-switch-phase');
+  const detailEl = document.getElementById('embedding-switch-detail');
+  const barEl = document.getElementById('embedding-switch-bar');
+  const counterEl = document.getElementById('embedding-switch-counter');
+  const closeBtn = document.getElementById('embedding-switch-close') as HTMLButtonElement | null;
+  if (!phaseEl || !detailEl || !barEl || !counterEl || !closeBtn) return;
+  const p = evt.payload;
+  switch (p.phase) {
+    case 'snapshot':
+      phaseEl.textContent = 'Snapshotting engrams…';
+      detailEl.textContent = 'Saving the current vectors so they\'re recoverable.';
+      barEl.style.width = '5%';
+      break;
+    case 'downloading-model':
+      phaseEl.textContent = 'Loading new model…';
+      detailEl.textContent = p.model === 'multilingual'
+        ? 'First time: downloading multilingual-e5-large (~2.2 GB). Cached for next time.'
+        : 'First time: downloading BGE-small-en-v1.5 (~30 MB). Cached for next time.';
+      barEl.style.width = '15%';
+      break;
+    case 'reembedding': {
+      const idx = p.index ?? 0;
+      const total = p.total ?? 1;
+      const pct = Math.min(95, 20 + Math.round((idx / Math.max(1, total)) * 75));
+      barEl.style.width = `${pct}%`;
+      phaseEl.textContent = 'Re-embedding your memory…';
+      if (p.graphId) {
+        detailEl.textContent = `Engram: ${p.graphId} (${idx + 1} of ${total}, ${p.nodesInGraph ?? '?'} nodes)`;
+      } else {
+        detailEl.textContent = 'Finishing…';
+      }
+      counterEl.textContent = `${idx} / ${total} engrams done`;
+      break;
+    }
+    case 'done': {
+      barEl.style.width = '100%';
+      phaseEl.textContent = p.cancelled ? 'Cancelled' : 'Done';
+      const errs = p.errors ?? [];
+      if (p.cancelled) {
+        detailEl.textContent = `Cancelled after re-embedding ${p.graphsRebuilt ?? 0} engrams. The remaining engrams kept their old vectors (recoverable from the snapshot if needed).`;
+      } else {
+        detailEl.textContent = errs.length === 0
+          ? `Re-embedded ${p.graphsRebuilt ?? 0} engrams. Your memory now uses the new model.`
+          : `Re-embedded ${p.graphsRebuilt ?? 0} engrams; ${errs.length} failed: ${errs.map((e) => e.graphId).join(', ')}.`;
+      }
+      counterEl.textContent = '';
+      closeBtn.disabled = false;
+      // Reset the cancel button so it isn't stuck on "Cancelling…" if the
+      // user reopens the modal for a future operation.
+      const cancelBtn = document.getElementById('embedding-switch-cancel') as HTMLButtonElement | null;
+      if (cancelBtn) { cancelBtn.disabled = true; cancelBtn.textContent = 'Cancel'; }
+      break;
+    }
+  }
+});
+
+// ── GLL predicted edges (review queue) ──────────────────────────────────────
+//
+// Populated by the autonomous edge-prediction loop in brain-engine (gated on
+// llmCapabilities.edgePrediction). Each row carries the relationship label
+// the LLM proposed + a confidence percent + previews of both endpoints, and
+// Accept / Reject buttons. Refreshed on demand via the buttons; no live
+// subscription (low-frequency content, doesn't need it).
+interface GllPredictedEdgeRow {
+  id: string;
+  graphId: string;
+  from: string;
+  to: string;
+  relationship: string;
+  score: number;
+  createdAt: number;
+  modelTag?: string;
+  fromPreview: string;
+  toPreview: string;
+}
+async function refreshGllPredictedEdges(): Promise<void> {
+  const listEl = document.getElementById('gll-predicted-list');
+  const countEl = document.getElementById('gll-predicted-count');
+  if (!listEl) return;
+  let edges: GllPredictedEdgeRow[];
+  try {
+    const result = await ipcCall<{ edges: GllPredictedEdgeRow[] } | undefined>('gll:listPredictedEdges', {});
+    // Be defensive: the IPC can return undefined when the sidecar is still
+    // booting or the cortex isn't unlocked yet. Show a useful "waiting"
+    // state rather than the bare word "undefined" — that was the actual
+    // bug behind "Could not load predicted edges: undefined".
+    if (!result || !Array.isArray(result.edges)) {
+      listEl.innerHTML = '<p class="brain-subtitle">Predicted edges aren\'t available yet. This usually means the sidecar is still warming up or the cortex isn\'t fully loaded — click <strong>Refresh list</strong> in a moment.</p>';
+      if (countEl) countEl.textContent = '';
+      return;
+    }
+    edges = result.edges;
+  } catch (e) {
+    // Robust error formatting — Tauri's invoke can reject with strings,
+    // bare objects, or Errors. Cover all three shapes so the user never
+    // sees a literal "undefined".
+    const message = e instanceof Error
+      ? (e.message || e.name || 'unknown error')
+      : (typeof e === 'string'
+          ? e
+          : (e && typeof e === 'object' ? JSON.stringify(e) : 'unknown error'));
+    listEl.innerHTML = `<p class="brain-subtitle">Could not load predicted edges: ${message}. If you just opened the app, click <strong>Refresh list</strong> after a moment.</p>`;
+    if (countEl) countEl.textContent = '';
+    return;
+  }
+  if (countEl) {
+    countEl.textContent = edges.length === 0
+      ? 'No predictions yet.'
+      : `${edges.length} pending`;
+  }
+  if (edges.length === 0) {
+    listEl.innerHTML = '<p class="brain-subtitle">Nothing predicted yet. Either prediction hasn\'t run, or the LLM didn\'t find anything worth proposing in the latest scan.</p>';
+    return;
+  }
+  const trimPreview = (s: string): string => s.length > 90 ? s.slice(0, 87) + '…' : s;
+  listEl.innerHTML = edges.map((e) => {
+    const pct = Math.round(e.score * 100);
+    const when = new Date(e.createdAt).toLocaleString();
+    return `<div class="gll-edge-row" data-edge-id="${e.id}" data-score="${e.score}" data-relationship="${e.relationship.replace(/"/g, '&quot;')}" style="border:1px solid var(--border); border-radius:8px; padding:10px 12px; margin-bottom:8px;">`
+      + `<div style="display:flex; justify-content:space-between; align-items:flex-start; gap:10px;">`
+      + `<div style="font-size:12px; opacity:0.7;"><strong>${e.graphId}</strong> · ${when} · <em>${pct}% confidence</em></div>`
+      + `<div style="display:flex; gap:6px;">`
+      + `<button data-gll-action="accept" data-edge-id="${e.id}" class="btn-sm primary">Accept</button>`
+      + `<button data-gll-action="reject" data-edge-id="${e.id}" class="btn-sm">Reject</button>`
+      + `</div>`
+      + `</div>`
+      + `<div style="margin-top:8px; font-size:13px;">`
+      + `<div style="margin-bottom:4px;"><strong>A:</strong> ${trimPreview(e.fromPreview)}</div>`
+      + `<div style="font-weight:600; color:var(--accent,#5b8def); margin:4px 0;">↓ ${e.relationship}</div>`
+      + `<div><strong>B:</strong> ${trimPreview(e.toPreview)}</div>`
+      + `</div>`
+      + `</div>`;
+  }).join('');
+}
+/** Confidence below this triggers a confirmation dialog before promoting a
+ *  predicted edge to .gai. High-confidence accepts go straight through —
+ *  the user already exercised judgment by clicking Accept. Lower-confidence
+ *  ones get an explicit "are you sure?" so a fat-finger click on a 55%
+ *  prediction doesn't permanently write a wrong edge into canonical memory. */
+const GLL_HIGH_CONFIDENCE = 0.75;
+
+document.addEventListener('click', (ev) => {
+  const target = ev.target as HTMLElement | null;
+  if (!target?.matches('[data-gll-action]')) return;
+  const action = target.dataset.gllAction;
+  const id = target.dataset.edgeId;
+  if (!action || !id) return;
+  if (action === 'reject') {
+    void ipcCall('gll:rejectPredictedEdge', { id }).then(() => { void refreshGllPredictedEdges(); });
+    return;
+  }
+  // Accept path. Read the row's confidence + relationship from the data-*
+  // attributes we put on the row when rendering so we can decide whether
+  // to confirm.
+  const row = target.closest<HTMLElement>('.gll-edge-row');
+  const score = row ? parseFloat(row.dataset.score ?? '0') : 0;
+  const relationship = row?.dataset.relationship ?? 'related';
+  if (score < GLL_HIGH_CONFIDENCE) {
+    const pct = Math.round(score * 100);
+    const ok = confirm(
+      `Promote this prediction to your canonical graph?\n\n` +
+      `Confidence: ${pct}% (below the ${Math.round(GLL_HIGH_CONFIDENCE * 100)}% high-confidence bar)\n` +
+      `Relationship: "${relationship}"\n\n` +
+      `Once promoted, the edge lives in your engram and is treated as your attested memory. ` +
+      `You can always remove it later via the engram inspector, but the action is recorded in the op-log.\n\n` +
+      `Promote anyway?`,
+    );
+    if (!ok) return;
+  }
+  void ipcCall('gll:acceptPredictedEdge', { id }).then((result: unknown) => {
+    void refreshGllPredictedEdges();
+    // Surface the structural edge type the heuristic picked, so the user
+    // sees what was actually written (relationship label preserved as
+    // evidence, but the SDK enum slot is one of a fixed set).
+    const r = result as { ok?: boolean; edgeType?: string; reason?: string } | undefined;
+    if (r?.ok && r.edgeType) {
+      // Quiet success — no toast; the row disappearing is the feedback.
+      console.log(`[gll] promoted as [${r.edgeType}: "${relationship}"]`);
+    } else if (r && !r.ok) {
+      alert(`Could not promote: ${r.reason ?? 'unknown error'}`);
+    }
+  });
+});
+const btnGllRunNow = document.getElementById('btn-gll-run-now') as HTMLButtonElement | null;
+btnGllRunNow?.addEventListener('click', () => {
+  btnGllRunNow.disabled = true;
+  btnGllRunNow.textContent = 'Predicting…';
+  void ipcCall('gll:runPredictionNow', {})
+    .then(() => { void refreshGllPredictedEdges(); })
+    .finally(() => {
+      btnGllRunNow.disabled = false;
+      btnGllRunNow.textContent = 'Run prediction now';
+    });
+});
+document.getElementById('btn-gll-refresh')?.addEventListener('click', () => {
+  void refreshGllPredictedEdges();
+});
+// Initial render once after first paint; subsequent refreshes are
+// button-driven (low-frequency content; no need to subscribe to events).
+// Delay 5s so the sidecar IPC is reliably up before we ask — the previous
+// 2s window raced cortex-unlock and produced a "could not load: undefined"
+// flash on slow boots.
+setTimeout(() => { void refreshGllPredictedEdges(); }, 5_000);
+
+// ── Reingest-all progress ──────────────────────────────────────────────────
+//
+// Driven by the 'reingest.progress' event channel. Phases:
+// 'snapshot' → 'reingesting' (per-source counter) → 'done' (with summary).
+// Triggered by the "Reingest all sources" button in Settings → Ingest.
+interface ReingestPerGraphResult {
+  graphId: string;
+  reingested: number;
+  skipped: Array<{ sourceId: string; reason: string }>;
+  failed: Array<{ sourceId: string; error: string }>;
+}
+interface ReingestProgressPayload {
+  phase: 'snapshot' | 'reingesting' | 'done';
+  graphId?: string;
+  graphIndex?: number;
+  graphsTotal?: number;
+  sourceId?: string;
+  ref?: string;
+  index?: number;
+  total?: number;
+  reingested?: number;
+  cancelled?: boolean;
+  skipped?: number | Array<{ sourceId: string; reason: string }>;
+  failed?: number | Array<{ sourceId: string; error: string }>;
+  perGraph?: ReingestPerGraphResult[];
+}
+function openReingestModal(): void {
+  const modal = document.getElementById('reingest-modal');
+  const phaseEl = document.getElementById('reingest-phase');
+  const detailEl = document.getElementById('reingest-detail');
+  const barEl = document.getElementById('reingest-bar');
+  const counterEl = document.getElementById('reingest-counter');
+  const summaryEl = document.getElementById('reingest-summary');
+  const closeBtn = document.getElementById('reingest-close') as HTMLButtonElement | null;
+  const cancelBtn = document.getElementById('reingest-cancel') as HTMLButtonElement | null;
+  if (!modal || !phaseEl || !detailEl || !barEl || !counterEl || !summaryEl || !closeBtn || !cancelBtn) return;
+  modal.classList.remove('hidden');
+  closeBtn.disabled = true;
+  closeBtn.onclick = () => modal.classList.add('hidden');
+  // Cancel is enabled for the duration of the operation; the done event
+  // re-disables and resets the label so a subsequent run starts clean.
+  cancelBtn.disabled = false;
+  cancelBtn.textContent = 'Cancel';
+  cancelBtn.onclick = () => {
+    cancelBtn.disabled = true;
+    cancelBtn.textContent = 'Cancelling…';
+    void ipcCall('reingest:cancel', {}).catch(() => { /* non-fatal */ });
+  };
+  phaseEl.textContent = 'Starting…';
+  detailEl.textContent = 'Taking a snapshot of every engram first.';
+  barEl.style.width = '0%';
+  counterEl.textContent = '';
+  summaryEl.style.display = 'none';
+  summaryEl.innerHTML = '';
+  void ipcCall('engrams:reingestAll', {}).catch((err) => {
+    closeBtn.disabled = false;
+    phaseEl.textContent = 'Reingest failed';
+    detailEl.textContent = String((err as Error).message ?? err);
+  });
+}
+void listen<ReingestProgressPayload>('graphnosis://reingest-progress', (evt) => {
+  const phaseEl = document.getElementById('reingest-phase');
+  const detailEl = document.getElementById('reingest-detail');
+  const barEl = document.getElementById('reingest-bar');
+  const counterEl = document.getElementById('reingest-counter');
+  const summaryEl = document.getElementById('reingest-summary');
+  const closeBtn = document.getElementById('reingest-close') as HTMLButtonElement | null;
+  if (!phaseEl || !detailEl || !barEl || !counterEl || !summaryEl || !closeBtn) return;
+  const p = evt.payload;
+  switch (p.phase) {
+    case 'snapshot':
+      phaseEl.textContent = 'Snapshotting engrams…';
+      detailEl.textContent = 'Saving current chunks/vectors so they\'re recoverable.';
+      barEl.style.width = '5%';
+      break;
+    case 'reingesting': {
+      const gi = p.graphIndex ?? 0;
+      const gt = Math.max(1, p.graphsTotal ?? 1);
+      const idx = p.index ?? 0;
+      const total = Math.max(1, p.total ?? 1);
+      // Outer (engram) progress: 10% → 95% across all engrams. Inner (source)
+      // progress is added proportionally inside the current engram's slot.
+      const outer = 10 + (gi / gt) * 85;
+      const innerSlot = (1 / gt) * 85;
+      const pct = Math.min(95, outer + (idx / total) * innerSlot);
+      barEl.style.width = `${pct}%`;
+      phaseEl.textContent = 'Reingesting your memory…';
+      if (p.sourceId) {
+        detailEl.textContent = `${p.graphId ?? ''} — ${p.ref ?? p.sourceId} (${idx + 1} of ${total})`;
+      } else {
+        detailEl.textContent = `Engram ${gi + 1} of ${gt}: finishing up…`;
+      }
+      counterEl.textContent = `Engram ${gi + 1} / ${gt} · Source ${Math.min(idx + 1, total)} / ${total}`;
+      break;
+    }
+    case 'done': {
+      barEl.style.width = '100%';
+      phaseEl.textContent = p.cancelled ? 'Cancelled' : 'Done';
+      const reingested = p.reingested ?? 0;
+      const skippedCount = typeof p.skipped === 'number' ? p.skipped : (p.skipped?.length ?? 0);
+      const failedCount = typeof p.failed === 'number' ? p.failed : (p.failed?.length ?? 0);
+      detailEl.textContent = p.cancelled
+        ? `Cancelled after reingesting ${reingested} source(s). ${skippedCount} skipped before cancel. Remaining sources kept their old chunks (recoverable from snapshot).`
+        : `Reingested ${reingested} source(s). ${skippedCount} skipped. ${failedCount} failed.`;
+      counterEl.textContent = '';
+      // Reset the cancel button so a future reingest starts clean.
+      const cancelBtn = document.getElementById('reingest-cancel') as HTMLButtonElement | null;
+      if (cancelBtn) { cancelBtn.disabled = true; cancelBtn.textContent = 'Cancel'; }
+      // Detailed per-engram summary when we have the structured data.
+      if (Array.isArray(p.perGraph) && p.perGraph.length > 0) {
+        const rows = p.perGraph.map((g) => {
+          const parts: string[] = [`<strong>${g.graphId}</strong>: ${g.reingested} reingested`];
+          if (g.skipped.length > 0) parts.push(`${g.skipped.length} skipped`);
+          if (g.failed.length > 0) parts.push(`${g.failed.length} failed`);
+          return `<div style="margin-bottom:4px;">${parts.join(' · ')}</div>`;
+        });
+        summaryEl.innerHTML = rows.join('');
+        summaryEl.style.display = '';
+      }
+      closeBtn.disabled = false;
+      break;
+    }
+  }
+});
+
+const btnReingestAll = document.getElementById('btn-reingest-all') as HTMLButtonElement | null;
+btnReingestAll?.addEventListener('click', () => {
+  if (!confirm('Reingest every source across every engram?\n\nThis re-chunks and re-embeds all your saved memory using current settings. A snapshot is taken first. Can take several minutes on large cortexes.')) return;
+  openReingestModal();
+});
+
 els.btnOllamaPull.addEventListener('click', async () => {
   const model = els.ollamaPullSelect.value;
   if (!model) return;
@@ -10179,6 +11010,24 @@ els.brainVitality.addEventListener('click', () => {
   // Jump to the Autonomous Brain tab from the status bar chip.
   activateMode('atlas');
   switchGraphnosisTab('brain');
+});
+
+// Background-process line — same target as the vitality chip; the
+// Deterministic Consolidation tab is where the live feed + schedule live.
+els.statusProcess?.addEventListener('click', () => {
+  activateMode('atlas');
+  switchGraphnosisTab('brain');
+});
+
+// Layered intelligence pills — jump straight to the Non-Deterministic Aid
+// tab where the matching toggle (Local LLM master / GNN enable) lives.
+els.statusGllPill?.addEventListener('click', () => {
+  activateMode('atlas');
+  switchGraphnosisTab('nondeterministic');
+});
+els.statusGnnPill?.addEventListener('click', () => {
+  activateMode('atlas');
+  switchGraphnosisTab('nondeterministic');
 });
 
 // ── Clipboard ambient capture ──────────────────────────────────────────────
@@ -12240,14 +13089,14 @@ function syncSearchLlmCheckboxes(): void {
   } else {
     if (synthBtn) {
       synthBtn.disabled = true;
-      synthBtn.title = 'Ollama is not running or has no model. Start Ollama and click Recheck in Go Non-Deterministic.';
+      synthBtn.title = 'Ollama is not running or has no model. Start Ollama and click Recheck in Non-Deterministic Aid.';
     }
     if (rerank) {
       rerank.disabled = true;
       rerank.checked = false;
     }
     searchLlmRerankEnabled = false;
-    const reason = 'Ollama is not running or has no model. Start Ollama and click Recheck in Go Non-Deterministic.';
+    const reason = 'Ollama is not running or has no model. Start Ollama and click Recheck in Non-Deterministic Aid.';
     if (rerankWrap) {
       rerankWrap.title = reason;
       rerankWrap.classList.add('rerank-disabled');

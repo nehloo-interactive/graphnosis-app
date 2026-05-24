@@ -1952,10 +1952,33 @@ export class Atlas {
       }
       if (same) return;
     }
-    const validIds = new Set(this.allNodes.map((n) => n.id));
+    // Defensive: drop predicted edges whose endpoint nodes either don't exist
+    // OR don't yet have a usable 3D position. d3-force assigns x/y/z over
+    // ticks; a freshly-loaded engram + a stale .gnn overlay referencing
+    // never-positioned (e.g. soft-deleted) nodes would render as lines
+    // flying off to screen corners — the symptom we hit when nodes the
+    // GNN predicted edges to had been forgotten via `forget` / `forgetSource`
+    // without the overlay being pruned. Real fix lives at the overlay-prune
+    // layer; this is the renderer's belt-and-suspenders.
+    const positionedById = new Map<string, AtlasNode>();
+    for (const n of this.allNodes) {
+      const x = (n as { x?: number }).x;
+      const y = (n as { y?: number }).y;
+      const z = (n as { z?: number }).z;
+      // d3-force assigns x/y/z to finite numbers after the first tick. Until
+      // then they're undefined (or NaN if a calc failed). Either way we
+      // skip — better to hide the edge than draw it at origin/infinity.
+      if (Number.isFinite(x) && Number.isFinite(y) && Number.isFinite(z)) {
+        positionedById.set(n.id, n);
+      }
+    }
     const out: AtlasLink[] = [];
+    let droppedNoPosition = 0;
     for (const p of predicted) {
-      if (!validIds.has(p.from) || !validIds.has(p.to)) continue;
+      if (!positionedById.has(p.from) || !positionedById.has(p.to)) {
+        droppedNoPosition += 1;
+        continue;
+      }
       out.push({
         id: `p:${p.id}`,
         source: p.from,
@@ -1965,6 +1988,9 @@ export class Atlas {
         category: 'predicted',
         weight: p.score,
       });
+    }
+    if (droppedNoPosition > 0) {
+      console.warn(`[atlas] dropped ${droppedNoPosition} predicted edge(s) with unpositioned endpoints — likely stale .gnn overlay entries for soft-deleted nodes`);
     }
     // Stale line handles — the new AtlasLink objects are fresh references, so
     // linkThreeObject re-fires for every predicted edge and repopulates this.

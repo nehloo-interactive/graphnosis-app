@@ -5,7 +5,7 @@ import os from 'node:os';
 import { promises as fs } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import lockfile from 'proper-lockfile';
-import { embeddings } from '@graphnosis-app/core';
+import { embeddings, settings as settingsMod } from '@graphnosis-app/core';
 import { policy } from '@nehloo-interactive/graphnosis-secure-sync';
 import { GraphnosisHost } from './host.js';
 import { GraphnosisImpl } from './graphnosis-impl.js';
@@ -17,7 +17,7 @@ import { mcpRegistry } from './mcp-registry.js';
 import { startHttpMcpServer } from './mcp-http-server.js';
 import { ConnectorManager } from './connectors/manager.js';
 import { LLM_CATALOG, makeLlm } from './local-llm.js';
-import { workerEmbed, terminateEmbedWorker, LOCAL_EMBED_ID, LOCAL_EMBED_DIM } from './local-embed.js';
+import { workerEmbed, terminateEmbedWorker, LOCAL_EMBED_ID, LOCAL_EMBED_DIM, switchEmbedModel, currentEmbedModel } from './local-embed.js';
 import type { LocalLlm } from './correction.js';
 import type { CorrectionDiff } from './correction.js';
 import type { BroadcastRawFn } from './events.js';
@@ -309,8 +309,26 @@ async function main(): Promise<void> {
     }
   }
 
-  // Local embedding model — real semantic search via fastembed (ONNX, BGE-small-en-v1.5).
-  // First call downloads the model (~33MB) to the cache dir; subsequent calls are offline.
+  // Peek the cortex's settings for the user's embeddingModel choice BEFORE
+  // the embed probe. The default-spawned worker pool came up on 'english'
+  // (BGE-small) because local-embed.ts is imported eagerly; if the user has
+  // 'multilingual' selected, switch the pool now — one round of restart is
+  // cheap and avoids a transient mismatch where probe vectors are 384-dim
+  // but the rest of the run expects 1024-dim.
+  try {
+    const peeked = await settingsMod.loadSettings(env.cortexDir);
+    const choice = peeked.ai.embeddingModel ?? 'english';
+    if (choice !== currentEmbedModel().model) {
+      console.error(`[graphnosis-sidecar] switching embed model to '${choice}' per settings`);
+      await switchEmbedModel(choice);
+    }
+  } catch (e) {
+    console.error(`[graphnosis-sidecar] could not peek settings for embedding model: ${(e as Error).message} — staying on default`);
+  }
+
+  // Local embedding model — real semantic search via fastembed (ONNX).
+  // Model + dim depend on the user's embeddingModel setting (peek above).
+  // First call downloads the model to the cache dir; subsequent calls are offline.
   // If init fails (e.g., onnxruntime native binary missing on this platform), we degrade
   // to the SHA-derived stub so the server still boots — TF-IDF still works.
   let embedFn = embeddings.stubEmbed;
@@ -318,17 +336,23 @@ async function main(): Promise<void> {
   let embedDimensions = 384;
   if (process.env.GRAPHNOSIS_EMBED_DISABLE !== '1') {
     try {
+      // Read live values (post-switch) — LOCAL_EMBED_ID/DIM are boot-time
+      // snapshots and may not reflect the in-effect model after a switch.
+      const live = currentEmbedModel();
       // Probe with a tiny embed so any model-download / native-binary issue surfaces at boot.
       const probe = await workerEmbed('graphnosis boot probe');
-      if (probe.length !== LOCAL_EMBED_DIM) throw new Error(`unexpected embedding dim ${probe.length}`);
+      if (probe.length !== live.dim) throw new Error(`unexpected embedding dim ${probe.length} (expected ${live.dim} for ${live.model})`);
       embedFn = workerEmbed;
-      embedAdapterId = LOCAL_EMBED_ID;
-      embedDimensions = LOCAL_EMBED_DIM;
-      console.error(`[graphnosis-sidecar] local embeddings ready (${LOCAL_EMBED_ID})`);
+      embedAdapterId = live.id;
+      embedDimensions = live.dim;
+      console.error(`[graphnosis-sidecar] local embeddings ready (${live.id})`);
     } catch (e) {
       console.error(`[graphnosis-sidecar] WARNING: local embeddings unavailable (${(e as Error).message}) — falling back to TF-IDF-only retrieval. Set GRAPHNOSIS_EMBED_DISABLE=1 to silence.`);
     }
   }
+  // Reference the boot-time constants to avoid unused-import errors; they
+  // remain valid as the pre-switch default for the very first session.
+  void LOCAL_EMBED_ID; void LOCAL_EMBED_DIM;
 
   const { host, recoveryPhrase } = await GraphnosisHost.open({
     cortexDir: env.cortexDir,
@@ -477,12 +501,23 @@ async function main(): Promise<void> {
   // Wire recall → reinforcement: every federated recall feeds the
   // co-activation accumulator so co-recalled memories strengthen.
   host.setPlasticityObserver((sub) => brainEngine.onRecall(sub));
+  // Hand the host a getter for the local LLM. The host calls it lazily on
+  // each recall so the master toggle and per-capability flags are evaluated
+  // from current settings — toggling Ollama in the UI takes effect on the
+  // very next recall without a sidecar restart.
+  host.setLocalLlmGetter(() => llm);
 
   const mcpDeps = {
     host,
     // The local LLM is opt-in — `correct` and any other LLM-backed MCP tool
     // sees null until the user enables it, even when Ollama is reachable.
-    llm: () => (host.getSettings().ai.llmEnabled === true ? llm : null),
+    // Capability-aware getter: returns the LLM only when (a) master switch on
+    // AND (b) the specific capability the caller declared is enabled. Lets the
+    // user keep e.g. `correctionParsing` on while turning off `insights`.
+    llm: (capability: import('./mcp-server.js').LlmCapability) => {
+      const caps = settingsMod.resolveLlmCapabilities(host.getSettings());
+      return caps[capability] ? llm : null;
+    },
     defaultGraphId: () => env.defaultGraph,
     pendingDiffs,
     broadcastRaw,

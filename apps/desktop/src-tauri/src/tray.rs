@@ -6,6 +6,7 @@
 //! on whether a pending update has been detected by the background checker.
 
 use tauri::{
+    Emitter,
     menu::{Menu, MenuItem, PredefinedMenuItem},
     tray::TrayIconBuilder,
     AppHandle, Manager, Wry,
@@ -183,10 +184,17 @@ fn on_menu_event(app: &AppHandle, id: &str) {
             });
         }
         "updates" => {
-            // If a pending update is already known, prompt to install it.
-            // Otherwise, run a fresh check.
+            // Bring the main window to the front, then either re-emit the
+            // pending version (so the in-app modal appears) or run a fresh
+            // check (which emits the event itself if an update is found).
             let app_clone = app.clone();
             tauri::async_runtime::spawn(async move {
+                // Always try to surface the main window so the modal is visible.
+                if let Some(win) = app_clone.get_webview_window("main") {
+                    let _ = win.show();
+                    let _ = win.set_focus();
+                }
+
                 let pending = app_clone
                     .try_state::<crate::UpdateState>()
                     .and_then(|s| {
@@ -197,41 +205,12 @@ fn on_menu_event(app: &AppHandle, id: &str) {
                     });
 
                 if let Some(version) = pending {
-                    // Confirm with the user before downloading.
-                    use tauri_plugin_dialog::DialogExt;
-                    let confirmed = app_clone
-                        .dialog()
-                        .message(&format!(
-                            "Graphnosis {} is ready to install.\n\
-                             Click OK to download and restart.",
-                            version
-                        ))
-                        .title("Update Available")
-                        .blocking_show();
-
-                    if confirmed {
-                        use tauri_plugin_updater::UpdaterExt;
-                        match app_clone.updater() {
-                            Ok(updater) => match updater.check().await {
-                                Ok(Some(update)) => {
-                                    if let Err(e) = update
-                                        .download_and_install(|_, _| {}, || {})
-                                        .await
-                                    {
-                                        eprintln!("[updater] install failed: {}", e);
-                                    }
-                                    // App restarts automatically after install.
-                                }
-                                Ok(None) => {
-                                    // Version was already installed (unlikely but harmless).
-                                }
-                                Err(e) => eprintln!("[updater] re-check before install failed: {}", e),
-                            },
-                            Err(e) => eprintln!("[updater] could not get updater: {}", e),
-                        }
-                    }
+                    // Re-emit so the in-app modal appears (or re-appears if
+                    // the user previously dismissed it with "Later").
+                    let _ = app_clone.emit("graphnosis://update-available", version);
                 } else {
                     // No pending update cached — run a silent check now.
+                    // run_update_check emits the event itself if an update is found.
                     if let Err(e) = crate::run_update_check(app_clone).await {
                         eprintln!("[updater] manual check failed: {}", e);
                     }
