@@ -1585,11 +1585,6 @@ const TOOL_INFO: Record<string, { determinism: string; body: string; examples: s
   },
 
   // ── Engram operations (deterministic) ───────────────────────────────
-  merge_engrams: {
-    determinism: 'Deterministic',
-    body: 'Moves every source from one engram into another, leaving the source engram empty. Per-source error reporting — partial failures don\'t abort the whole merge.',
-    examples: ['Merge my Inbox into Work.', 'Consolidate the 2025-drafts engram into Journal.'],
-  },
   ingest_batch: {
     determinism: 'Deterministic',
     body: 'Saves up to 20 notes in a single call, each with its own target engram. For bulk-importing a list of facts without one remember per item.',
@@ -5007,7 +5002,6 @@ function mcpToolsOnboardingHtml(): string {
           <div class="g-deck-cmd-group">
             <span class="g-deck-cmd-grouplabel">Engram operations</span>
             <div class="g-deck-cmd-chips">
-              <span class="g-deck-cmd-chip" data-tool="merge_engrams">merge_engrams</span>
               <span class="g-deck-cmd-chip" data-tool="ingest_batch">ingest_batch</span>
               <span class="g-deck-cmd-chip" data-tool="engram_summary">engram_summary</span>
             </div>
