@@ -1,0 +1,58 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Graphnosis",
+  "version": "0.9.0",
+  "identifier": "app.graphnosis",
+  "build": {
+    "frontendDist": "../dist",
+    "devUrl": "http://localhost:5173",
+    "beforeDevCommand": "pnpm --filter @graphnosis-app/desktop dev",
+    "beforeBuildCommand": "pnpm --filter @graphnosis-app/desktop build"
+  },
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "Graphnosis: Your Local Encrypted Second Cortex",
+        "width": 1280,
+        "height": 760,
+        "minWidth": 1280,
+        "minHeight": 760,
+        "resizable": true,
+        "visible": true,
+        "titleBarStyle": "Overlay"
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["nsis"],
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.ico",
+      "icons/icon.png"
+    ],
+    "category": "Productivity",
+    "shortDescription": "Personal second memory",
+    "longDescription": "Local-first encrypted personal memory graph that attaches relevant context to your AI conversations.",
+    "publisher": "Nehloo Interactive LLC",
+    "copyright": "Copyright © 2026 Nehloo Interactive LLC",
+    "externalBin": [
+      "binaries/graphnosis-sidecar",
+      "binaries/graphnosis-mcp-relay"
+    ]
+  },
+  "plugins": {
+    "updater": {
+      "endpoints": [
+        "https://github.com/nehloo-interactive/graphnosis-app/releases/latest/download/latest.json"
+      ],
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEJFN0M4ODc3MEEzRkVFNwpSV1RuL3FOd2g0am5DenErQWMyOUdYcStzTk82V2VGK1pOSmlHOTJKSndZR3VLQXRiNEJqWFVGTQo="
+    }
+  }
+}
