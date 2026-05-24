@@ -55,7 +55,10 @@ export async function startSocketMcpServer(opts: {
       console.error(`[graphnosis-sidecar] MCP socket client error: ${err.message}`);
     });
 
-    const connId = mcpRegistry.register('socket');
+    // `destroy()` is the kicker — fires the same 'close' handler below,
+    // which triggers `unregister`. Lets the idle sweep + the AI-tools
+    // panel's × button force-close this connection.
+    const connId = mcpRegistry.register('socket', () => socket.destroy());
     socket.on('close', () => mcpRegistry.unregister(connId));
 
     const transport = new SocketServerTransport(socket);

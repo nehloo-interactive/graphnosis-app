@@ -320,6 +320,65 @@ export interface AiSettings {
    * Write-protected from MCP.
    */
   clientTypes?: Record<string, 'chat' | 'agent'>;
+
+  /**
+   * Per-client default policy for the in-app consent prompt UX (the
+   * "Option 1 + Option 3" replacement for forced phrase typing). Looked
+   * up by `checkConsentOrThrow` in the sidecar — when an entry exists,
+   * the user's recorded choice short-circuits the prompt:
+   *   - `always-allow`   → silently grant + proceed (no modal at all)
+   *   - `ask-grant-1h`   → modal appears; Allow grants for 1 hour
+   *   - `ask-grant-1d`   → modal appears; Allow grants for 24 hours
+   *   - `ask-every-time` → modal appears; Allow grants for this single recall
+   *   - `never-allow`    → blocks immediately, no modal
+   * Set on first-connect via a one-time chooser, editable later in
+   * Settings → AI. Write-protected from MCP.
+   */
+  clientPolicies?: Record<string, ClientPolicy>;
+
+  /**
+   * Off by default. When true, personal-tier recalls are also gated by
+   * the in-app consent prompt (Option 1 + 3 flow) — same modal, same
+   * per-client policies, plus the first-connect chooser pops for new
+   * clients. Sensitive-tier recalls are always gated regardless of this
+   * setting (Art. 9 special-category data; the friction is the point).
+   *
+   * Default OFF reflects: the user already made two affirmative,
+   * informed decisions to expose memory to the AI — installed
+   * Graphnosis, added the MCP server to their AI client's config — and
+   * the AI client itself shows its own consent dialog the first time a
+   * tool runs. For most users that's sufficient. This toggle is for
+   * users who want every personal-tier recall to require an explicit
+   * in-app click anyway.
+   */
+  extraPrecautionMode?: boolean;
+}
+
+export type ConsentPolicyChoice =
+  | 'always-allow'
+  | 'ask-grant-1h'
+  | 'ask-grant-1d'
+  | 'ask-every-time'
+  | 'never-allow';
+
+export interface ClientPolicy {
+  /** Policy for personal-tier engrams. Default 'ask-grant-1h'. */
+  personalTier: ConsentPolicyChoice;
+  /** Policy for sensitive-tier engrams. Default 'ask-every-time'. */
+  sensitiveTier: ConsentPolicyChoice;
+  /** When the user first saved this policy (or Graphnosis seeded it). */
+  firstSeenAt: number;
+}
+
+/** Mapping from a policy choice to the consent window it grants on Allow. */
+export function policyGrantMs(choice: ConsentPolicyChoice): number | null {
+  switch (choice) {
+    case 'always-allow':   return Number.MAX_SAFE_INTEGER; // permanent
+    case 'ask-grant-1h':   return 3_600_000;
+    case 'ask-grant-1d':   return 86_400_000;
+    case 'ask-every-time': return 0;     // single-use
+    case 'never-allow':    return null;  // never granted
+  }
 }
 
 export type ChunkSizePreset = 'fine' | 'balanced' | 'coarse';
@@ -723,6 +782,25 @@ export function mergeWithDefaults(partial: Partial<AppSettings> | null | undefin
       )
     : undefined;
 
+  // Per-client consent policies — pass through, validate each entry.
+  const validPolicies: ConsentPolicyChoice[] = [
+    'always-allow', 'ask-grant-1h', 'ask-grant-1d', 'ask-every-time', 'never-allow',
+  ];
+  const clientPolicies = (ai.clientPolicies && typeof ai.clientPolicies === 'object')
+    ? Object.fromEntries(
+        Object.entries(ai.clientPolicies)
+          .filter(([, v]) => v && typeof v === 'object'
+            && validPolicies.includes((v as ClientPolicy).personalTier)
+            && validPolicies.includes((v as ClientPolicy).sensitiveTier))
+          .map(([k, v]) => [k, {
+            personalTier: (v as ClientPolicy).personalTier,
+            sensitiveTier: (v as ClientPolicy).sensitiveTier,
+            firstSeenAt: typeof (v as ClientPolicy).firstSeenAt === 'number'
+              ? (v as ClientPolicy).firstSeenAt : Date.now(),
+          } as ClientPolicy])
+      )
+    : undefined;
+
   // Suppress unused warning for MAX_CONSENT_INTERVAL_MS (used inside clampConsentInterval).
   void MAX_CONSENT_INTERVAL_MS;
 
@@ -858,6 +936,8 @@ export function mergeWithDefaults(partial: Partial<AppSettings> | null | undefin
       ...(consentIntervalSensitiveMs !== undefined ? { consentIntervalSensitiveMs } : {}),
       ...(dataAccessConsents !== undefined ? { dataAccessConsents } : {}),
       ...(clientTypes !== undefined ? { clientTypes } : {}),
+      ...(clientPolicies !== undefined ? { clientPolicies } : {}),
+      ...(typeof ai.extraPrecautionMode === 'boolean' ? { extraPrecautionMode: ai.extraPrecautionMode } : {}),
     },
     graphMetadata,
     ...(consentHmacKey !== undefined ? { consentHmacKey } : {}),

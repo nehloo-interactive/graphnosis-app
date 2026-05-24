@@ -13,6 +13,7 @@ import { startIpc } from './ipc.js';
 import { startEvents } from './events.js';
 import { startStdioMcpServer } from './mcp-server.js';
 import { startSocketMcpServer } from './mcp-socket-server.js';
+import { mcpRegistry } from './mcp-registry.js';
 import { startHttpMcpServer } from './mcp-http-server.js';
 import { ConnectorManager } from './connectors/manager.js';
 import { LLM_CATALOG, makeLlm } from './local-llm.js';
@@ -587,6 +588,14 @@ async function main(): Promise<void> {
   brainEngine.start();
   process.on('SIGINT', () => { void connectorManager.stop(); brainEngine.stop(); });
   process.on('SIGTERM', () => { void connectorManager.stop(); brainEngine.stop(); });
+
+  // (Previously: a 60s timer that force-closed MCP connections idle > 15
+  // min. Removed in favor of an amber-bubble idle indicator in the
+  // desktop UI — see renderMcpStatus() — which keeps stale entries
+  // visible but visually distinct, while letting the user decide whether
+  // to manually kick them via the × button. `mcpRegistry.sweepIdle()`
+  // remains available as a method if a future caller wants explicit
+  // bulk cleanup, just not on a timer.)
 
   // MCP server over stdio — the legacy path. Stays active so existing
   // configurations (where Claude Desktop spawns this binary directly) keep

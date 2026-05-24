@@ -957,7 +957,8 @@ async fn list_graphs_with_metadata(
             None => return Err("cortex is locked".to_string()),
         }
     };
-    ipc_client::request(&socket_path, "graphs.listWithMetadata", serde_json::Value::Null)
+    let params = serde_json::json!({ "includeUnloaded": include_unloaded.unwrap_or(false) });
+    ipc_client::request(&socket_path, "graphs.listWithMetadata", params)
         .await
         .map_err(|e| e.to_string())
 }
@@ -2303,6 +2304,8 @@ pub fn run() {
             tray::create(app.handle())?;
             // Silent background update check — delayed so it doesn't race
             // startup I/O. Fires 15 s after the app is ready.
+            // Skipped in debug builds: no `latest.json` exists until a release is published.
+            #[cfg(not(debug_assertions))]
             {
                 let handle = app.handle().clone();
                 tauri::async_runtime::spawn(async move {

@@ -61,11 +61,22 @@ Every engram carries a sensitivity tier — **public**, **personal**, or
 
 ## Consent before recall
 
-For `personal` and `sensitive` engrams, Graphnosis enforces a time-limited
-consent phrase before data is served. Any tool that returns memory data —
-`recall`, `remind`, `recall_structured`, `recall_with_citations`,
-`compare_engrams`, `cross_search`, `llm_query`, and others — may trigger this
-gate. If a tool returns a "⚠️ GRAPHNOSIS CONSENT REQUIRED" notice:
+`public` and `personal` engrams are served without an extra prompt — the user
+installing Graphnosis and adding it to their AI client's MCP config is already
+two affirmative, informed actions for routine personal data.
+
+`sensitive` engrams (health, financial, biometric — GDPR Art. 9 special
+category) are gated by an explicit, one-click consent the user gives **in the
+Graphnosis app itself** (a modal pops with Allow / Deny / Allow-for-1h /
+Allow-for-today). Most of the time you will simply receive the recall results
+once they click Allow. You don't need to do anything special.
+
+A small number of headless setups (sidecar over SSH, in CI, in Docker without a
+GUI) still use the legacy phrase-typing fallback. In those cases — and only
+then — any tool that returns memory data (`recall`, `remind`,
+`recall_structured`, `recall_with_citations`, `compare_engrams`,
+`cross_search`, `llm_query`, and others) may return a "⚠️ GRAPHNOSIS CONSENT
+REQUIRED" notice instead of data. If you see that notice:
 
 1. **Present it in full** — do not summarize, shorten, or paraphrase it.
 2. **Tell the user** to open the Graphnosis app → Settings → AI → Consent Phrases.
@@ -74,24 +85,80 @@ gate. If a tool returns a "⚠️ GRAPHNOSIS CONSENT REQUIRED" notice:
 5. **Only after a successful response**, retry the original recall.
 
 If the user types SKIP, acknowledge and do NOT retry the recall. Do not supply
-the phrase yourself. This protocol exists to ensure a human — not an AI —
-authorizes access to personal data. See also: the `CONSENT PROTOCOL` block in
-the MCP server instructions.
+the phrase yourself. The protocol — modal or phrase — exists to ensure a
+**human, not an AI**, authorizes access to special-category data.
+
+Federated recall ("just search everything") automatically excludes any
+sensitive engram you don't have consent for, so the gate only fires when you
+explicitly named a sensitive engram via `only_engrams` or `target_engram`.
 
 ## The tools
 
-Core memory tools:
+Graphnosis exposes **35 MCP tools** across 9 functional groups. Use the right
+tool for the user's intent — the tool you pick is a soft signal to the user
+and shapes the audit footer.
 
-- `recall` / `remind` — search the memory.
-- `remember` — save a new memory.
-- `correct` — propose a reviewed fix to an existing memory.
-- `forget` — remove a whole source.
-- `stats` — list the engrams and what they hold; useful for choosing a `target_engram`.
+**Core memory** (use these for most everyday turns):
 
-`apply` commits a correction the user has already reviewed — the Graphnosis app
-normally drives it, so you rarely call it directly. Graphnosis also offers
-optional analysis tools — `develop`, `predict`, `insights`, and `vitality` — for
-strategic planning and memory health; reach for those only when the user asks.
+- `recall` — semantic search across the user's engrams. Returns a ready-to-read context block.
+- `remind` — alias for `recall`, framed as "remind me about…". Same input + same results.
+- `remember` — save a new memory. Pass `target_engram` whenever the note has a topical home (e.g. "Book Notes", "Work decisions").
+- `forget` — remove a whole source (and every memory derived from it). Soft-delete; recoverable from the op-log.
+- `apply` — commits a correction the user has already approved. The Graphnosis app normally drives this; AI clients rarely call it directly.
+- `stats` — engram inventory + node counts. Useful before picking a `target_engram` and for debugging "where did my notes go?"
+- `vitality` — 0–100 score of how alive and well-connected the cortex is.
+
+**Engram discovery** (use before routing a save, or when the user asks "what do I have?"):
+
+- `list_engrams` — every engram with names, tiers, source counts.
+- `suggest_engram` — recommends the best engram for a given note (lexical match).
+- `browse_engram` — lists every source inside one engram, newest first.
+- `recent` — most recently ingested sources across all engrams.
+- `get_engram_schema` — metadata for one engram (tier, template, display name).
+
+**Structured recall** (use when you need machine-shaped results or finer scoping):
+
+- `recall_structured` — `recall` but returns a JSON array of node objects.
+- `recall_with_citations` — `recall` with inline source citations per fact.
+- `compare_engrams` — same query against two engrams, results side-by-side.
+- `cross_search` — federated `recall` over a hand-picked subset of engrams.
+
+**Source operations** (act on a whole saved source — file, URL, clip):
+
+- `find_source` — keyword substring search across source IDs / refs / kinds.
+- `recall_source` — full content of one source, in ingestion order (use when `recall` fragments a structured document).
+- `transfer_source` — move a source from one engram to another.
+
+**Engram operations**:
+
+- `merge_engrams` — move every source from one engram into another.
+- `ingest_batch` — save up to 20 notes in one call, each with its own `target_engram`.
+- `engram_summary` — readable snapshot of one engram (counts + node previews).
+
+**Brain maintenance** (read-only windows into the background brain engine):
+
+- `duplicate_pairs` — pairs the brain has flagged as near-duplicates pending the user's review.
+- `healing_journal` — audit log of autonomous corrections the brain made on its own.
+- `gnn_status` — is the Graphnosis Neural Network enabled, how many edges predicted, last run.
+- `confirm_data_access` — headless-fallback consent confirmation (see "Consent before recall" above).
+
+**Approximate** (similarity scans, no LLM — useful before saves / merges):
+
+- `audit_memory` — detect near-duplicate content across engrams.
+- `check_duplicate` — before `remember`, check whether something similar already exists.
+
+**Conditional** (deterministic by default, LLM-aware when enabled):
+
+- `correct` — propose a reviewed fix to existing memory as a structured diff. **Never use `remember` to "fix" something — that creates duplicate conflicting nodes.** Always `correct`.
+
+**Non-deterministic** (require the optional Local LLM running on the user's machine):
+
+- `develop` — strategic plan grounded in the user's memory.
+- `predict` — risks + opportunities for an action the user is about to take.
+- `insights` — patterns / gaps / opportunities a background LLM loop surfaced.
+- `gnn_neighbors` — nodes the Neural Network predicts are related to a query.
+- `llm_query` — synthesised answer from recall, computed locally.
+- `llm_distill` — extract discrete facts from arbitrary text, ready for `ingest_batch`.
 
 ## When Graphnosis is not connected
 

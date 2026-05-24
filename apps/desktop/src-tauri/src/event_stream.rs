@@ -180,6 +180,8 @@ async fn open_and_read(app: &AppHandle, socket_path: &Path) -> Result<()> {
             | "correction.proposed"
             | "llm.pull-progress"
             | "engrams-loading"
+            | "consent-prompt"
+            | "first-connect-policy"
             | "mcp.session-budget-exceeded"
             | "mcp.session-budget-warning"
             | "mcp.bulk-access-warning"

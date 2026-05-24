@@ -10,7 +10,8 @@ import { withEmbedding } from './embedding-queue.js';
 import { mcpRegistry } from './mcp-registry.js';
 import type { BrainEngine } from './brain-engine.js';
 import { createHmac } from 'node:crypto';
-import { recordConsent, revokeConsent } from '@graphnosis-app/core/settings';
+import { recordConsent, revokeConsent, policyGrantMs, type ClientPolicy, type ConsentPolicyChoice } from '@graphnosis-app/core/settings';
+import { registerPrompt as registerConsentPrompt } from './consent-prompts.js';
 import type { ConsentRecord } from '@graphnosis-app/core/settings';
 
 // ── Session-level data budget ─────────────────────────────────────────────────
@@ -36,8 +37,13 @@ const RECALL_RATE_MAX = 10;
 // or paginate through it. We use Jaccard similarity on token sets — semantically
 // blunt (won't catch synonym attacks) but effective against the practical
 // attack shapes: exact replays, reorderings, trivial paraphrases.
-const REPLAY_WINDOW_MS = 5 * 60_000;
+// Replay blocker: short window, count-based threshold. A user (or AI)
+// re-running the same query once or twice is a normal retry; the 3rd
+// identical query inside 60s starts to look like scraping. The 10-req/60s
+// rate limit is a separate layer that catches slow-drip patterns.
+const REPLAY_WINDOW_MS = 60_000;        // was 5 * 60_000
 const REPLAY_JACCARD_THRESHOLD = 0.85;
+const REPLAY_ALLOWED_REPEATS = 2;       // block the (N+1)-th similar query in the window
 
 // MCP tools the App exposes to any AI client (Claude Desktop, Claude Code, Cursor, Zed, ...).
 //
@@ -122,6 +128,8 @@ const RecallInput = z.preprocess(
     query: z.string(),
     maxTokens: z.coerce.number().int().positive().max(8000).optional(),
     maxNodes: z.coerce.number().int().positive().max(50).optional(),
+    only_engrams: z.array(z.string()).optional(),
+    except_engrams: z.array(z.string()).optional(),
   }),
 );
 const CorrectInput = z.object({
@@ -136,8 +144,6 @@ const ForgetInput = z.object({
   graphId: z.string(),
   sourceId: z.string(),
 });
-<<<<<<< Updated upstream
-=======
 const BrowseEngramInput = z.object({
   engram: z.string(),
   limit: z.coerce.number().int().positive().max(100).optional(),
@@ -247,7 +253,6 @@ const LlmDistillInput = z.object({
   text: z.string(),
   target_engram: z.string().optional(),
 });
->>>>>>> Stashed changes
 
 /**
  * Resolve a user-supplied engram name against the loaded graphs.
@@ -393,6 +398,57 @@ function resolveTargetEngram(host: GraphnosisHost, name: string): ResolveResult 
  * each carries the GNN edge probability so a strong prediction can be ranked
  * above a weak recall hit.
  */
+
+function mcpError(text: string) {
+  return { content: [{ type: 'text' as const, text }], isError: true as const };
+}
+
+/**
+ * Consent-required signal. Thrown by `checkConsentOrThrow` and caught in
+ * the CallTool dispatcher so the structured notice ends up as a normal
+ * tool-call response with `isError: true` — instead of a JSON-RPC
+ * `-32603 Internal Error`. Claude (and most MCP clients) render generic
+ * `-32603` failures as "Tool execution failed" without surfacing the
+ * embedded message, so the user never saw the actual consent
+ * instructions. Returning via the tool-result path keeps the full text
+ * in the AI's context where the consent protocol expects it.
+ */
+class ConsentRequiredError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'ConsentRequiredError';
+  }
+}
+
+function resolveEngramList(
+  host: GraphnosisHost,
+  names: string[],
+): { resolved: string[]; warnings: string[] } {
+  const resolved: string[] = [];
+  const warnings: string[] = [];
+  for (const name of names) {
+    const r = resolveTargetEngram(host, name);
+    if (r.kind === 'exact') resolved.push(r.graphId);
+    else if (r.kind === 'ambiguous') {
+      const first = r.candidates[0];
+      if (first) resolved.push(first.graphId);
+    } else {
+      warnings.push(`No engram matched "${name}" — skipped.`);
+    }
+  }
+  return { resolved, warnings };
+}
+
+function requireEngram(
+  host: GraphnosisHost,
+  name: string,
+): { graphId: string } | { error: ReturnType<typeof mcpError> } {
+  const r = resolveTargetEngram(host, name);
+  if (r.kind === 'exact') return { graphId: r.graphId };
+  if (r.kind === 'none') return { error: mcpError(`No engram matched "${name}". Call list_engrams to see available engrams.`) };
+  return { error: mcpError(`Ambiguous: did you mean ${r.candidates.map(c => `"${c.displayName}" (${c.graphId})`).join(', ')}?`) };
+}
+
 function buildGnnExpander(host: GraphnosisHost, brainEngine: BrainEngine): GnnCandidateExpander {
   return async (recallCandidates) => {
     const extras: Array<{ graphId: string; nodeId: string; text: string; gnnScore: number }> = [];
@@ -806,28 +862,41 @@ export function createMcpServer(deps: McpDeps): Server {
       recentQueries.set(connId, pruned);
       return;
     }
+    // Count how many recent queries are similar enough to this one.
+    // We block ONLY when the count is already at REPLAY_ALLOWED_REPEATS —
+    // i.e. this incoming call would be the 3rd identical query in the
+    // window. First two identical queries pass (natural retries).
+    let mostRecentSimilar: typeof pruned[number] | null = null;
+    let similarCount = 0;
     for (const prev of pruned) {
       const sim = jaccardSet(tokens, prev.tokens);
       if (sim >= REPLAY_JACCARD_THRESHOLD) {
-        const ageS = Math.round((now - prev.ts) / 1000);
-        if (deps.broadcastRaw) {
-          deps.broadcastRaw({
-            kind: 'mcp.session-replay-blocked',
-            name: connId,
-            payload: {
-              similarity: Math.round(sim * 100) / 100,
-              previousQuery: prev.queryPreview,
-              ageSeconds: ageS,
-            },
-          });
-        }
-        console.error(`[replay] BLOCKED connId=${connId} sim=${sim.toFixed(2)} ageS=${ageS}`);
-        throw new Error(
-          `Session replay detected — this query is ${Math.round(sim * 100)}% similar to one issued ${ageS}s ago ` +
-          `(previous: "${prev.queryPreview}"). Modify your query meaningfully or wait ${Math.round(REPLAY_WINDOW_MS / 60_000)} min. ` +
-          `This is a Graphnosis security guardrail that prevents systematic memory scraping.`,
-        );
+        similarCount += 1;
+        if (!mostRecentSimilar || prev.ts > mostRecentSimilar.ts) mostRecentSimilar = prev;
       }
+    }
+    if (similarCount >= REPLAY_ALLOWED_REPEATS && mostRecentSimilar) {
+      const ref = mostRecentSimilar;
+      const ageS = Math.round((now - ref.ts) / 1000);
+      const sim = jaccardSet(tokens, ref.tokens);
+      if (deps.broadcastRaw) {
+        deps.broadcastRaw({
+          kind: 'mcp.session-replay-blocked',
+          name: connId,
+          payload: {
+            similarity: Math.round(sim * 100) / 100,
+            previousQuery: ref.queryPreview,
+            ageSeconds: ageS,
+            priorRepeats: similarCount,
+          },
+        });
+      }
+      console.error(`[replay] BLOCKED connId=${connId} sim=${sim.toFixed(2)} repeats=${similarCount} ageS=${ageS}`);
+      throw new Error(
+        `Session replay detected — this is the ${similarCount + 1}th identical query in ${Math.round(REPLAY_WINDOW_MS / 1000)} seconds. ` +
+        `Modify your query meaningfully or wait ${Math.round(REPLAY_WINDOW_MS / 1000)}s. ` +
+        `This is a Graphnosis security guardrail that prevents systematic memory scraping.`,
+      );
     }
     pruned.push({ ts: now, tokens, queryPreview: query.slice(0, 80) });
     recentQueries.set(connId, pruned);
@@ -948,23 +1017,58 @@ export function createMcpServer(deps: McpDeps): Server {
     }
   }
 
-  async function checkConsentOrThrow(onlyGraphIds: string[] | null): Promise<{ consentFooter: string }> {
+  async function checkConsentOrThrow(onlyGraphIds: string[] | null): Promise<{
+    consentFooter: string;
+    /**
+     * Graphs the caller should ADD to its `exceptGraphIds` recall option.
+     * Populated when a federated recall touches gated-tier engrams the AI
+     * has no current consent for: instead of asking — which would surprise
+     * the user with a sensitive prompt for an unrelated personal query —
+     * we silently exclude those engrams from this recall. The AI gets
+     * results from the tiers it CAN read; the user can explicitly point
+     * at the gated engram ("look in my Health engram") to trigger a
+     * proper consent prompt via `only_engrams`.
+     */
+    autoExceptGraphIds: string[];
+  }> {
     const settings = deps.host.getSettings();
     const clientName = mcpRegistry.getMostRecentClientName() ?? 'unknown-client';
     const clientType = settings.ai.clientTypes?.[clientName] ?? 'chat';
     const consents = settings.ai.dataAccessConsents;
 
-    // Determine the set of graphs this call will touch.
+    // `isExplicit` — the AI named specific engrams via `only_engrams`. We
+    // treat that as intent to access those engrams and surface a consent
+    // prompt for any gated tier among them. `!isExplicit` is federated
+    // recall ("just search everything"); for federated calls we silently
+    // exclude gated-but-un-consented engrams instead of prompting.
+    const isExplicit = onlyGraphIds !== null;
     const graphIds = onlyGraphIds ?? deps.host.listGraphs();
 
-    // Build a map of tier → effective consent interval.
-    // Only personal/sensitive tiers require consent; public is always allowed.
+    // Which tiers actually require an in-app consent gate?
+    //   - public:    never (always allowed)
+    //   - personal:  only when the user has opted into extra-precaution
+    //                mode. Default OFF — the AI client's own consent UX
+    //                (Claude Desktop's "allow this tool" dialog, the
+    //                config-file edit they did to install the MCP server)
+    //                already constitutes two affirmative actions for
+    //                personal-tier access.
+    //   - sensitive: always (Art. 9 special-category data — the friction
+    //                is the point regardless of mode).
+    const extraPrecaution = settings.ai.extraPrecautionMode === true;
+    const gatedTiers = new Set<'personal' | 'sensitive'>(['sensitive']);
+    if (extraPrecaution) gatedTiers.add('personal');
+
+    // Walk the candidate engrams. For each gated tier without current
+    // consent, decide between "prompt the user" (explicit recall) and
+    // "auto-exclude" (federated recall).
     const tierIntervals = new Map<'personal' | 'sensitive', number>();
+    const autoExceptGraphIds: string[] = [];
     for (const graphId of graphIds) {
       const meta = deps.host.getGraphMetadata(graphId);
       const tier = (meta as any)?.sensitivityTier as string | undefined;
       if (tier !== 'personal' && tier !== 'sensitive') continue;
       const t = tier as 'personal' | 'sensitive';
+      if (!gatedTiers.has(t)) continue; // free pass for this tier
 
       let current = tierIntervals.get(t);
       if (current === undefined) {
@@ -980,14 +1084,49 @@ export function createMcpServer(deps: McpDeps): Server {
         if (current === -1 || perGraph < current) current = perGraph;
       }
       tierIntervals.set(t, current);
+
+      // Federated recall (no explicit engram list) + gated tier + no
+      // current consent → silently exclude this engram from the recall
+      // and don't add its tier to the prompt set. The recall still runs
+      // (over the un-gated tiers) and returns whatever it finds.
+      if (!isExplicit && !checkConsentValid(consents, clientName, t, current)) {
+        autoExceptGraphIds.push(graphId);
+      }
     }
 
-    if (tierIntervals.size === 0) return { consentFooter: '' }; // all public
+    if (tierIntervals.size === 0) return { consentFooter: '', autoExceptGraphIds }; // all public
 
     const missingTiers: Array<'personal' | 'sensitive'> = [];
     for (const [tier, effectiveIntervalMs] of tierIntervals) {
       if (!checkConsentValid(consents, clientName, tier, effectiveIntervalMs)) {
+        // If we already decided to auto-exclude every engram of this
+        // tier (federated recall path), don't escalate to a prompt.
+        // Otherwise (explicit recall) the prompt is the right outcome.
+        if (!isExplicit) continue;
         missingTiers.push(tier);
+      }
+    }
+
+    // First-connect detection: only meaningful when the consent flow
+    // actually runs. In default (non-extra-precaution) mode the personal
+    // tier is free, so a chat client that only touches personal engrams
+    // would still see the chooser pop unnecessarily. Gate on
+    // extraPrecaution OR on this call needing sensitive-tier consent.
+    const consentFlowRuns = extraPrecaution || missingTiers.includes('sensitive');
+    if (consentFlowRuns && missingTiers.length > 0 && !settings.ai.clientPolicies?.[clientName]) {
+      const seeded: ClientPolicy = {
+        personalTier: 'ask-grant-1h',
+        sensitiveTier: 'ask-every-time',
+        firstSeenAt: Date.now(),
+      };
+      const nextPolicies = { ...(settings.ai.clientPolicies ?? {}), [clientName]: seeded };
+      void deps.host.setSettings({ ai: { ...settings.ai, clientPolicies: nextPolicies } });
+      if (deps.broadcastRaw) {
+        deps.broadcastRaw({
+          kind: 'first-connect-policy',
+          name: 'first-connect-policy',
+          payload: { clientName, policy: seeded },
+        });
       }
     }
 
@@ -1008,7 +1147,103 @@ export function createMcpServer(deps: McpDeps): Server {
       const footer = footerParts.length
         ? `\n\n[${clientName} — ${footerParts.join(', ')}. Revoke in Settings → AI.]`
         : '';
-      return { consentFooter: footer };
+      return { consentFooter: footer, autoExceptGraphIds };
+    }
+
+    // ── Policy short-circuit (Option 3) ──────────────────────────────
+    // If the user has set `always-allow` for this client+tier, silently
+    // record the consent and proceed (no modal, no prompt). If they've
+    // set `never-allow`, surface a brief denial without prompting.
+    const policy = settings.ai.clientPolicies?.[clientName];
+    if (policy) {
+      const blockedTiers: Array<'personal' | 'sensitive'> = [];
+      const autoAllow: Array<{ tier: 'personal' | 'sensitive'; choice: ConsentPolicyChoice }> = [];
+      const promptTiers: Array<'personal' | 'sensitive'> = [];
+      for (const tier of missingTiers) {
+        const choice = tier === 'personal' ? policy.personalTier : policy.sensitiveTier;
+        if (choice === 'never-allow') blockedTiers.push(tier);
+        else if (choice === 'always-allow') autoAllow.push({ tier, choice });
+        else promptTiers.push(tier);
+      }
+      if (blockedTiers.length > 0) {
+        throw new ConsentRequiredError(
+          `${clientName} is denied access to ${blockedTiers.join(' and ')} tier engrams by your policy. Change in Graphnosis → Settings → AI → Client policies.`,
+        );
+      }
+      if (autoAllow.length > 0) {
+        let nextConsents = settings.ai.dataAccessConsents ?? [];
+        const recipientName = clientName.startsWith('claude') ? 'Anthropic Inc.' : clientName;
+        for (const { tier, choice } of autoAllow) {
+          const windowMs = policyGrantMs(choice) ?? -1;
+          nextConsents = recordConsent(nextConsents, clientName, tier, windowMs, recipientName, 'US', '2025-05');
+        }
+        await deps.host.setSettings({ ai: { ...settings.ai, dataAccessConsents: nextConsents } });
+        // Remove auto-allowed tiers from missingTiers so the prompt below
+        // only handles what actually needs the user's decision.
+        for (const { tier } of autoAllow) {
+          const idx = missingTiers.indexOf(tier);
+          if (idx >= 0) missingTiers.splice(idx, 1);
+        }
+        if (missingTiers.length === 0) {
+          // Everything auto-allowed — return a synthetic footer the
+          // caller can append (mirrors the "valid" path above).
+          const footerParts = autoAllow.map(({ tier }) => `${tier} access: just granted by policy`);
+          return { consentFooter: `\n\n[${clientName} — ${footerParts.join(', ')}. Revoke in Settings → AI.]`, autoExceptGraphIds };
+        }
+      }
+    }
+
+    // ── In-app prompt (Option 1) ─────────────────────────────────────
+    // Try the modal first — if a Tauri frontend is connected, the user
+    // gets a single-click approval dialog instead of phrase typing.
+    // Falls back to phrase typing on timeout (headless sidecar) or if
+    // the user explicitly denies (so the existing CONSENT REQUIRED
+    // message reaches the AI and the user can still opt to type).
+    if (deps.broadcastRaw && missingTiers.length > 0) {
+      const promptPolicy = policy ?? null;
+      // Suggested grant durations to show on the modal — preserves the
+      // user's per-tier policy default ("Allow for 1 hour" etc.).
+      const suggestedDurations = missingTiers.map((tier) => {
+        const choice = promptPolicy
+          ? (tier === 'personal' ? promptPolicy.personalTier : promptPolicy.sensitiveTier)
+          : (tier === 'personal' ? 'ask-grant-1h' : 'ask-every-time');
+        return { tier, durationMs: policyGrantMs(choice) ?? 3_600_000 };
+      });
+      const { meta, choice } = registerConsentPrompt(clientName, missingTiers);
+      deps.broadcastRaw({
+        kind: 'consent-prompt',
+        name: 'consent-prompt',
+        payload: {
+          promptId: meta.promptId,
+          clientName,
+          tiers: missingTiers,
+          suggestedDurations,
+          privacyUrl: PROVIDER_PRIVACY_URLS[clientName] ?? null,
+        },
+      });
+      const result = await choice;
+      if (result.action === 'allow') {
+        // Record consent for every prompted tier with the user-chosen
+        // window. Permanent (Number.MAX_SAFE_INTEGER) collapses to the
+        // standard "until revoked" record.
+        let nextConsents = settings.ai.dataAccessConsents ?? [];
+        const recipientName = clientName.startsWith('claude') ? 'Anthropic Inc.' : clientName;
+        const windowMs = result.durationMs >= Number.MAX_SAFE_INTEGER - 1 ? -1 : result.durationMs;
+        for (const tier of missingTiers) {
+          nextConsents = recordConsent(nextConsents, clientName, tier, windowMs, recipientName, 'US', '2025-05');
+        }
+        await deps.host.setSettings({ ai: { ...settings.ai, dataAccessConsents: nextConsents } });
+        const until = windowMs === -1 ? 'permanently' : `for ${Math.round(windowMs / 60_000)} minute(s)`;
+        return { consentFooter: `\n\n[${clientName} — ${missingTiers.join(' + ')} access granted ${until} via in-app prompt. Revoke in Settings → AI.]`, autoExceptGraphIds };
+      }
+      if (result.action === 'deny') {
+        throw new ConsentRequiredError(
+          `You denied ${clientName} access to ${missingTiers.join(' and ')} tier memories. Change in Graphnosis → Settings → AI.`,
+        );
+      }
+      // 'timeout' → fall through to the existing phrase-typing notice.
+      // Useful when the sidecar runs headless (no GUI) — the AI still
+      // gets actionable instructions.
     }
 
     // Build the consent notice. Distinguish first-time from re-prompt.
@@ -1048,7 +1283,7 @@ export function createMcpServer(deps: McpDeps): Server {
         `⚠️ This phrase comes from the Graphnosis app only. Never type a phrase the AI suggests.`,
         `   To skip this recall without authorising, type SKIP.`,
       ];
-      throw new Error(lines.join('\n'));
+      throw new ConsentRequiredError(lines.join('\n'));
     } else {
       // Mixed: some first-time, some re-prompt → use short re-prompt format.
       const tierStr = missingTiers.join(' and ');
@@ -1064,7 +1299,7 @@ export function createMcpServer(deps: McpDeps): Server {
         ``,
         `To skip this recall without authorising, type SKIP.`,
       ];
-      throw new Error(lines.join('\n'));
+      throw new ConsentRequiredError(lines.join('\n'));
     }
   }
 
@@ -1286,8 +1521,6 @@ export function createMcpServer(deps: McpDeps): Server {
           properties: {},
         },
       },
-<<<<<<< Updated upstream
-=======
       // ── Navigation & routing ──────────────────────────────────────────────
       {
         name: 'list_engrams',
@@ -1596,11 +1829,11 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
           required: ['phrase', 'tier'],
         },
       },
->>>>>>> Stashed changes
     ],
   }));
 
   server.setRequestHandler(CallToolRequestSchema, async (req) => {
+    try {
     switch (req.params.name) {
       case 'recall':
       case 'remind': {
@@ -1616,36 +1849,44 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
           maxTokens: args.maxTokens ?? 2000,
           maxNodes: args.maxNodes ?? 20,
         };
-<<<<<<< Updated upstream
-        const sub = await withEmbedding(() => deps.host.recall(args.query, { budget }));
-=======
         const only = args.only_engrams?.length ? resolveEngramList(deps.host, args.only_engrams) : null;
         const except = (!only && args.except_engrams?.length) ? resolveEngramList(deps.host, args.except_engrams) : null;
         enforceRecallRateLimit();
         enforceReplayBlocker(args.query);
-        const { consentFooter } = await checkConsentOrThrow(only?.resolved ?? null);
+        const { consentFooter, autoExceptGraphIds } = await checkConsentOrThrow(only?.resolved ?? null);
+        // Merge any auto-excluded engrams (e.g. un-consented sensitive
+        // tier on a federated recall) with the AI-provided exceptions.
+        const mergedExcept = [...(except?.resolved ?? []), ...autoExceptGraphIds];
         const sub = await withEmbedding(() => deps.host.recall(args.query, {
           budget,
           ...(only?.resolved.length ? { onlyGraphIds: only.resolved } : {}),
-          ...(except?.resolved?.length ? { exceptGraphIds: except.resolved } : {}),
+          ...(mergedExcept.length ? { exceptGraphIds: mergedExcept } : {}),
         }));
         const scopeWarnings = [...(only?.warnings ?? []), ...(except?.warnings ?? [])];
->>>>>>> Stashed changes
-        // Emit a structured audit line to stderr — the desktop inspector tails this.
-        console.error(`[${toolName}] q=${JSON.stringify(args.query)} requested=${budget.maxNodes}n/${budget.maxTokens}t served=${sub.nodesIncluded}n/${sub.tokensUsed}t graphs=${JSON.stringify(sub.audit)}`);
+        // Structured audit line for the desktop inspector. PRIVACY: the
+        // user's actual query is NOT logged (it would land in dev terminals,
+        // crash reports, and the App-as-parent stderr buffer). We log only
+        // its length + a stable short hash so the inspector can correlate
+        // identical calls without retaining content. Engram names are
+        // intentionally not logged either — they're user-chosen labels
+        // that may themselves leak topic info (e.g. "health-bloodwork").
+        // Counts and tier rollups are kept because they're useful for
+        // "why did recall return nothing?" debugging and reveal nothing
+        // about the user.
+        const tierSummary = sub.audit.reduce<Record<string, { n: number; t: number }>>((acc, a) => {
+          const slot = acc[a.tier] ?? (acc[a.tier] = { n: 0, t: 0 });
+          slot.n += a.nodesIncluded; slot.t += a.tokensIncluded;
+          return acc;
+        }, {});
+        console.error(`[${toolName}] qLen=${args.query.length} requested=${budget.maxNodes}n/${budget.maxTokens}t served=${sub.nodesIncluded}n/${sub.tokensUsed}t tiers=${JSON.stringify(tierSummary)} graphs=${sub.audit.length}`);
         enforceSessionBudget(sub.tokensUsed, sub.nodesIncluded);
         const auditFooter =
           '\n\n---\n' +
           `Attached ${sub.nodesIncluded} memory node(s) / ${sub.tokensUsed} tokens across ${sub.audit.length} graph(s). ` +
           `Per-graph (tier · nodes · tokens): ` +
-<<<<<<< Updated upstream
-          sub.audit.map(a => `${a.graphId} · ${a.tier} · ${a.nodesIncluded}n · ${a.tokensIncluded}t`).join(', ') + '.';
-        return { content: [{ type: 'text', text: sub.prompt + auditFooter }] };
-=======
           sub.audit.map(a => `${a.graphId} · ${a.tier} · ${a.nodesIncluded}n · ${a.tokensIncluded}t`).join(', ') +
           (scopeWarnings.length ? ` Scope warnings: ${scopeWarnings.join(' ')}` : '') + '.';
         return { content: [{ type: 'text', text: sub.prompt + auditFooter + consentFooter }] };
->>>>>>> Stashed changes
       }
       case 'remember': {
         const args = RememberInput.parse(req.params.arguments ?? {});
@@ -1945,8 +2186,6 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
         const report = await deps.brainEngine.computeVitality();
         return { content: [{ type: 'text', text: JSON.stringify(report, null, 2) }] };
       }
-<<<<<<< Updated upstream
-=======
       // ── Navigation & routing ──────────────────────────────────────────────
       case 'list_engrams': {
         const statsByGraph = new Map(deps.host.stats().graphs.map(g => [g.graphId, g]));
@@ -2043,9 +2282,10 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
         const except = (!only && args.except_engrams?.length) ? resolveEngramList(deps.host, args.except_engrams) : null;
         enforceRecallRateLimit();
         enforceReplayBlocker(args.query);
-        const { consentFooter: rsFooter } = await checkConsentOrThrow(only?.resolved ?? null);
+        const { consentFooter: rsFooter, autoExceptGraphIds: rsAutoExcept } = await checkConsentOrThrow(only?.resolved ?? null);
         const allIds = deps.host.listGraphs();
-        const scopedIds = only ? only.resolved : allIds.filter(id => !(except?.resolved ?? []).includes(id));
+        const rsExcept = new Set([...(except?.resolved ?? []), ...rsAutoExcept]);
+        const scopedIds = only ? only.resolved : allIds.filter(id => !rsExcept.has(id));
         const k = Math.ceil(((args.maxNodes ?? 20)) / Math.max(1, scopedIds.length));
         const nodes: unknown[] = [];
         for (const graphId of scopedIds) {
@@ -2078,9 +2318,10 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
         const except = (!only && args.except_engrams?.length) ? resolveEngramList(deps.host, args.except_engrams) : null;
         enforceRecallRateLimit();
         enforceReplayBlocker(args.query);
-        const { consentFooter: rwcFooter } = await checkConsentOrThrow(only?.resolved ?? null);
+        const { consentFooter: rwcFooter, autoExceptGraphIds: rwcAutoExcept } = await checkConsentOrThrow(only?.resolved ?? null);
         const allIds = deps.host.listGraphs();
-        const scopedIds = only ? only.resolved : allIds.filter(id => !(except?.resolved ?? []).includes(id));
+        const rwcExcept = new Set([...(except?.resolved ?? []), ...rwcAutoExcept]);
+        const scopedIds = only ? only.resolved : allIds.filter(id => !rwcExcept.has(id));
         const k = Math.ceil(((args.maxNodes ?? 20)) / Math.max(1, scopedIds.length));
         const sections: string[] = [];
         for (const graphId of scopedIds) {
@@ -2459,12 +2700,13 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
         const only = args.only_engrams?.length ? resolveEngramList(deps.host, args.only_engrams) : null;
         enforceRecallRateLimit();
         enforceReplayBlocker(args.question);
-        const { consentFooter: lqFooter } = await checkConsentOrThrow(only?.resolved ?? null);
+        const { consentFooter: lqFooter, autoExceptGraphIds: lqAutoExcept } = await checkConsentOrThrow(only?.resolved ?? null);
         const llmAvailable = !!deps.llm();
         if (!llmAvailable) {
           const sub = await withEmbedding(() => deps.host.recall(args.question, {
             budget: { maxTokens: args.maxTokens ?? 2000, maxNodes: 20 },
             ...(only?.resolved.length ? { onlyGraphIds: only.resolved } : {}),
+            ...(lqAutoExcept.length ? { exceptGraphIds: lqAutoExcept } : {}),
           }));
           enforceSessionBudget(sub.tokensUsed, sub.nodesIncluded);
           return { content: [{ type: 'text', text:
@@ -2627,9 +2869,16 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
           `Consent recorded for ${tier} engrams. Valid ${until}. You may now retry the original recall.`
         }] };
       }
->>>>>>> Stashed changes
       default:
         throw new Error(`Unknown tool: ${req.params.name}`);
+    }
+    } catch (e) {
+      // Consent gate: surface the full notice text as a normal tool result
+      // (isError:true). The SDK would otherwise turn the throw into a
+      // JSON-RPC -32603 that clients render as "Tool execution failed",
+      // hiding the actual consent instructions the user needs.
+      if (e instanceof ConsentRequiredError) return mcpError(e.message);
+      throw e;
     }
   });
 
