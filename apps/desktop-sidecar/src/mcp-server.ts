@@ -142,7 +142,17 @@ const ApplyInput = z.object({
 });
 const ForgetInput = z.object({
   graphId: z.string(),
-  nodeIds: z.union([z.string(), z.array(z.string())]).transform(v => (Array.isArray(v) ? v : [v])),
+  // Some MCP clients serialize arrays as a JSON string (e.g. '["A","B","C"]')
+  // rather than a native JSON array. The transform unwraps that case so batch
+  // deletes work instead of silently treating the whole JSON string as one nodeId.
+  nodeIds: z.union([z.string(), z.array(z.string())]).transform(v => {
+    if (Array.isArray(v)) return v;
+    try {
+      const parsed = JSON.parse(v);
+      if (Array.isArray(parsed) && parsed.every((x: unknown) => typeof x === 'string')) return parsed as string[];
+    } catch {}
+    return [v];
+  }),
 }).refine(d => d.nodeIds.length >= 1 && d.nodeIds.length <= 20, {
   message: 'Provide between 1 and 20 nodeIds per call.',
 });
@@ -490,9 +500,22 @@ function buildGnnExpander(host: GraphnosisHost, brainEngine: BrainEngine): GnnCa
   };
 }
 
+/**
+ * Local-LLM capability requested by a call site. Each MCP tool that hits the
+ * LLM passes the capability it represents; `deps.llm(cap)` returns the LLM
+ * only when (a) the master switch is on AND (b) that specific capability
+ * is enabled in settings. Replaces the old single-toggle gate so users can
+ * keep e.g. `recallEnrichment` on while disabling autonomous `insights`.
+ */
+export type LlmCapability =
+  | 'correctionParsing'
+  | 'distillation'
+  | 'insights'
+  | 'edgePrediction';
+
 export interface McpDeps {
   host: GraphnosisHost;
-  llm: () => LocalLlm | null;
+  llm: (capability: LlmCapability) => LocalLlm | null;
   /** Default graph for ambient remember when no graphId is provided. */
   defaultGraphId: () => string;
   /** UI hook so a "correction proposed" notification fires for the user to confirm. */
@@ -1867,6 +1890,10 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
         const budget = {
           maxTokens: args.maxTokens ?? 2000,
           maxNodes: args.maxNodes ?? 20,
+          // Reserve a token floor per engram so small engrams (e.g. a 3-node
+          // personal note) are not fully crowded out by larger high-scoring
+          // engrams (docs, coding) that exhaust the budget first.
+          perGraphMinTokens: 150,
         };
         const only = args.only_engrams?.length ? resolveEngramList(deps.host, args.only_engrams) : null;
         const except = (!only && args.except_engrams?.length) ? resolveEngramList(deps.host, args.except_engrams) : null;
@@ -2039,7 +2066,7 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
         // enabled it for this cortex. The Neural Network, when enabled, supplies
         // a GNN candidate expander. `correct` works in every combination and
         // never throws for a missing model.
-        const llm = deps.llm();
+        const llm = deps.llm('correctionParsing');
         const gnnOn = deps.host.getSettings().brain?.neuralNetwork?.enabled === true;
         const expandWithGnn = (gnnOn && deps.brainEngine)
           ? buildGnnExpander(deps.host, deps.brainEngine)
@@ -2191,7 +2218,7 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
         if (!deps.brainEngine) {
           return { content: [{ type: 'text', text: JSON.stringify([]) }] };
         }
-        if (!deps.llm()) {
+        if (!deps.llm('insights')) {
           // Insights come from a background Local-LLM loop. With no LLM
           // enabled the loop never runs — tell the AI plainly rather than
           // returning a bare empty array it cannot interpret.
@@ -2334,7 +2361,14 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
         const warnings = [...(only?.warnings ?? []), ...(except?.warnings ?? [])];
         const estTokens = Math.ceil(nodes.reduce((sum: number, n: any) => sum + (n.text?.length ?? 0), 0) / 4);
         enforceSessionBudget(estTokens, nodes.length);
-        const rsResult = { nodes, nodesIncluded: nodes.length, ...(warnings.length ? { warnings } : {}) };
+        // Zero-result hint: surface the same diagnostic the federated recall
+        // path attaches (language mismatch, phrasing, local-LLM toggle) via
+        // an _notice field — keeps the JSON shape stable for callers that
+        // ignore it while making the hint visible to the AI client.
+        const rsResult: Record<string, unknown> = { nodes, nodesIncluded: nodes.length, ...(warnings.length ? { warnings } : {}) };
+        if (nodes.length === 0 && args.query.trim().length >= 3 && deps.host.listGraphs().length > 0) {
+          rsResult._notice = deps.host.zeroResultHint();
+        }
         return { content: [{ type: 'text', text: JSON.stringify(rsResult, null, 2) + rsFooter }] };
       }
       case 'recall_with_citations': {
@@ -2364,7 +2398,12 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
         const estCitationTokens = Math.ceil(citationText.length / 4);
         const citationNodeCount = sections.reduce((sum, s) => sum + s.split('\n\n').length - 1, 0);
         enforceSessionBudget(estCitationTokens, citationNodeCount);
-        return { content: [{ type: 'text', text: (sections.length ? citationText : '(no matching memories found)') + rwcFooter }] };
+        const rwcBody = sections.length
+          ? citationText
+          : (args.query.trim().length >= 3 && deps.host.listGraphs().length > 0
+              ? '(no matching memories found)\n\n' + deps.host.zeroResultHint()
+              : '(no matching memories found)');
+        return { content: [{ type: 'text', text: rwcBody + rwcFooter }] };
       }
       case 'compare_engrams': {
         const args = CompareEngramsInput.parse(req.params.arguments ?? {});
@@ -2741,7 +2780,7 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
         enforceRecallRateLimit();
         enforceReplayBlocker(args.question);
         const { consentFooter: lqFooter, autoExceptGraphIds: lqAutoExcept } = await checkConsentOrThrow(only?.resolved ?? null);
-        const llmAvailable = !!deps.llm();
+        const llmAvailable = !!deps.llm('insights');
         if (!llmAvailable) {
           const sub = await withEmbedding(() => deps.host.recall(args.question, {
             budget: { maxTokens: args.maxTokens ?? 2000, maxNodes: 20 },
@@ -2773,8 +2812,8 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
               return r.kind === 'exact' ? r.graphId : undefined;
             })()
           : undefined;
-        if (!deps.llm()) {
-          return { content: [{ type: 'text', text: '(Local LLM unavailable — no distillation possible. Enable the LLM in Graphnosis.)' }] };
+        if (!deps.llm('distillation')) {
+          return { content: [{ type: 'text', text: '(Local LLM unavailable — no distillation possible. Enable the LLM in Graphnosis → Settings → AI → Local LLM, with the Distillation capability on.)' }] };
         }
         const result = await deps.brainEngine.runDevelop({
           context: args.text,

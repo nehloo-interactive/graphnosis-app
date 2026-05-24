@@ -236,6 +236,58 @@ export interface AiSettings {
    */
   llmEnabled: boolean;
   /**
+   * Which embedding model the sidecar's local embed worker should run.
+   *
+   *   - 'english'       → BGE-small-en-v1.5, 384-dim, ~30 MB.
+   *                       Fast, low-RAM, English-leaning. Default for back-
+   *                       compat — existing cortexes inherit this on upgrade.
+   *   - 'multilingual'  → multilingual-e5-large, 1024-dim, ~2.2 GB.
+   *                       Strong cross-language recall — query in English
+   *                       against notes stored in Romanian/Japanese/Arabic
+   *                       and the index actually matches. Heavy download
+   *                       (one-time) and slightly slower per embed.
+   *
+   * Switching this triggers a full re-embed of every engram (the SDK's
+   * embedAdapterId changes, which invalidates the on-disk vector cache).
+   * The migration is mediated by a Settings → Search model panel that
+   * snapshots first and reports progress.
+   *
+   * Absent = 'english' (no change for existing cortexes).
+   */
+  embeddingModel?: 'english' | 'multilingual';
+  /**
+   * Per-capability toggles for the local LLM. The master `llmEnabled` switch
+   * is still required — these refine WHAT the LLM is allowed to do once on.
+   *
+   * Capabilities split along the side-effect axis:
+   *   - `recallEnrichment`   — query rewrite / synonym expansion / translation
+   *                            at recall time. NO graph mutation. Default ON.
+   *   - `correctionParsing`  — `correct` tool's LLM mode. Produces diff
+   *                            proposals; user approves before any write.
+   *                            Default ON.
+   *   - `distillation`       — `llm_distill` extracts facts from text.
+   *                            Returns text to the AI client. Default ON.
+   *   - `insights`           — `insights`, `develop`, `predict`, `llm_query`.
+   *                            Writes appear only in the .gll overlay (or
+   *                            event log), never in the canonical .gai.
+   *                            Default ON.
+   *   - `edgePrediction`     — background loop proposes edges between
+   *                            co-recalled nodes; writes to .gll overlay.
+   *                            Default OFF (opt-in).
+   *
+   * Absent / partial map ⇒ defaults applied via `resolveLlmCapabilities`.
+   * Legacy cortexes with only `llmEnabled` get sensible defaults that
+   * preserve the previous all-or-nothing behavior (everything except
+   * edgePrediction enabled when `llmEnabled` is true).
+   */
+  llmCapabilities?: {
+    recallEnrichment?: boolean;
+    correctionParsing?: boolean;
+    distillation?: boolean;
+    insights?: boolean;
+    edgePrediction?: boolean;
+  };
+  /**
    * The Ollama model tag to use for brain features (synapse, insight, develop, predict).
    * Overrides the default from LLM_CATALOG. Set via Settings → Brain / Local AI.
    * Examples: "llama3.2:3b-instruct-q4_K_M", "qwen2.5:3b-instruct-q4_K_M"
@@ -739,9 +791,28 @@ export function mergeWithDefaults(partial: Partial<AppSettings> | null | undefin
   const llmEnabled = typeof ai.llmEnabled === 'boolean'
     ? ai.llmEnabled
     : DEFAULT_SETTINGS.ai.llmEnabled;
+  // llmCapabilities: filter unknown keys, coerce each to boolean. Undefined
+  // values are preserved (the resolver fills them in with side-effect-aware
+  // defaults at read time, so users who never touched the panel inherit the
+  // right behavior without us writing every key to disk).
+  let llmCapabilities: AiSettings['llmCapabilities'] | undefined;
+  if (ai.llmCapabilities && typeof ai.llmCapabilities === 'object') {
+    const src = ai.llmCapabilities;
+    const out: NonNullable<AiSettings['llmCapabilities']> = {};
+    if (typeof src.recallEnrichment === 'boolean') out.recallEnrichment = src.recallEnrichment;
+    if (typeof src.correctionParsing === 'boolean') out.correctionParsing = src.correctionParsing;
+    if (typeof src.distillation === 'boolean') out.distillation = src.distillation;
+    if (typeof src.insights === 'boolean') out.insights = src.insights;
+    if (typeof src.edgePrediction === 'boolean') out.edgePrediction = src.edgePrediction;
+    if (Object.keys(out).length > 0) llmCapabilities = out;
+  }
   const llmModel = typeof ai.llmModel === 'string' && ai.llmModel.length > 0
     ? ai.llmModel
     : undefined;
+  const embeddingModel: AiSettings['embeddingModel'] | undefined =
+    ai.embeddingModel === 'english' || ai.embeddingModel === 'multilingual'
+      ? ai.embeddingModel
+      : undefined;
   const sessionTokenCap = typeof ai.sessionTokenCap === 'number' && ai.sessionTokenCap > 0
     ? Math.min(200_000, Math.max(1_000, Math.floor(ai.sessionTokenCap)))
     : undefined;
@@ -922,7 +993,9 @@ export function mergeWithDefaults(partial: Partial<AppSettings> | null | undefin
     ai: {
       useAsDefaultMemory, autoRelinkMaxNodes, autoReingestOnFileChange,
       reingestQuietMs, chunkSize, embedBatch, llmEnabled,
+      ...(llmCapabilities !== undefined ? { llmCapabilities } : {}),
       ...(llmModel !== undefined ? { llmModel } : {}),
+      ...(embeddingModel !== undefined ? { embeddingModel } : {}),
       ...(sessionTokenCap !== undefined ? { sessionTokenCap } : {}),
       ...(sessionNodeCap !== undefined ? { sessionNodeCap } : {}),
       ...(sessionBreadthCap !== undefined ? { sessionBreadthCap } : {}),
@@ -946,6 +1019,51 @@ export function mergeWithDefaults(partial: Partial<AppSettings> | null | undefin
     ...(vscode !== undefined ? { vscode } : {}),
     ...(docsEngram !== undefined ? { docsEngram } : {}),
     ...(brain !== undefined ? { brain } : {}),
+  };
+}
+
+/**
+ * Resolved (gap-filled) local-LLM capability flags. Every capability is a
+ * concrete boolean — defaults are applied here so callers don't repeat the
+ * "&& settings.ai.llmCapabilities?.X ?? defaultForX" dance everywhere.
+ *
+ * Rules:
+ *   - When the master switch (`ai.llmEnabled`) is false, EVERY capability
+ *     resolves to false regardless of the stored map. The master toggle
+ *     short-circuits — even legacy cortexes with `llmCapabilities` set
+ *     can't bypass it. Treat this as the kill switch.
+ *   - When the master switch is true and a capability key is absent from
+ *     the stored map, the default applies: ON for the four non-mutating /
+ *     overlay-only capabilities, OFF for `edgePrediction` (the only one
+ *     that runs an autonomous background loop).
+ *   - Explicit `false` in the stored map always wins over the default.
+ */
+export interface ResolvedLlmCapabilities {
+  recallEnrichment: boolean;
+  correctionParsing: boolean;
+  distillation: boolean;
+  insights: boolean;
+  edgePrediction: boolean;
+}
+
+export function resolveLlmCapabilities(settings: AppSettings): ResolvedLlmCapabilities {
+  const master = settings.ai.llmEnabled === true;
+  if (!master) {
+    return {
+      recallEnrichment: false,
+      correctionParsing: false,
+      distillation: false,
+      insights: false,
+      edgePrediction: false,
+    };
+  }
+  const c = settings.ai.llmCapabilities ?? {};
+  return {
+    recallEnrichment: c.recallEnrichment ?? true,
+    correctionParsing: c.correctionParsing ?? true,
+    distillation: c.distillation ?? true,
+    insights: c.insights ?? true,
+    edgePrediction: c.edgePrediction ?? false,
   };
 }
 

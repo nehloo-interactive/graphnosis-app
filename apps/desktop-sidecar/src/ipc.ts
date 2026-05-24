@@ -32,6 +32,15 @@ const Request = z.object({
  *  Slug-like so it satisfies createGraph's filesystem-safety rules. */
 const DOCS_ENGRAM_ID = 'graphnosis-docs';
 
+// Cooperative cancellation handles for long-running operations. Each is a
+// module-scope `AbortController | null` because only one of each operation
+// can run at a time (we serialize via the running loop's existence — kicking
+// off a new switch while one is in flight would replace the controller and
+// the prior signal would never fire). The cancel IPC handlers call
+// `.abort()` on these; the host loops poll between engrams and bail.
+let currentEmbeddingSwitchAbort: AbortController | null = null;
+let currentReingestAbort: AbortController | null = null;
+
 /**
  * Walk an arbitrary IPC result and replace characters that produce invalid
  * JSON when round-tripped through a strict parser (serde_json on the Tauri
@@ -1630,9 +1639,15 @@ async function dispatch(deps: IpcDeps, method: string, params: unknown): Promise
       const settings = deps.host.getSettings();
       const activeModel = settings.ai?.llmModel ?? null;
       const { LLM_CATALOG } = await import('./local-llm.js');
+      // Resolved capability flags (with defaults applied) — UI uses these to
+      // render the per-capability checkboxes under the master toggle without
+      // having to know the default-on/default-off rules.
+      const { resolveLlmCapabilities } = await import('@graphnosis-app/core').then(m => m.settings);
+      const capabilities = resolveLlmCapabilities(settings);
       return {
         ollamaReachable, installedModels, activeModel,
         enabled: settings.ai.llmEnabled === true,
+        capabilities,
         catalog: LLM_CATALOG,
       };
     }
@@ -1653,6 +1668,331 @@ async function dispatch(deps: IpcDeps, method: string, params: unknown): Promise
       const current = deps.host.getSettings();
       await deps.host.setSettings({ ai: { ...current.ai, llmEnabled: enabled } });
       return { ok: true };
+    }
+
+    case 'llm:setCapability': {
+      // Per-capability toggle for the local LLM. The master switch must be on
+      // for any capability to take effect — resolveLlmCapabilities short-
+      // circuits everything to false when the master is off. We still persist
+      // the per-capability preference so flipping the master back on restores
+      // the user's prior fine-grained choices.
+      const { capability, enabled } = z.object({
+        capability: z.enum(['recallEnrichment', 'correctionParsing', 'distillation', 'insights', 'edgePrediction']),
+        enabled: z.boolean(),
+      }).parse(params);
+      const current = deps.host.getSettings();
+      const existing = current.ai.llmCapabilities ?? {};
+      await deps.host.setSettings({
+        ai: {
+          ...current.ai,
+          llmCapabilities: { ...existing, [capability]: enabled },
+        },
+      });
+      return { ok: true };
+    }
+
+    case 'embedding:status': {
+      // Reports the live embedding model + dim so the Settings → Search model
+      // panel can render the current state without guessing. Read from the
+      // running pool (post-switch values), not boot-time constants.
+      const { currentEmbedModel } = await import('./local-embed.js');
+      const live = currentEmbedModel();
+      const settings = deps.host.getSettings();
+      const stored = settings.ai.embeddingModel ?? 'english';
+      return {
+        active: live,
+        stored,
+        // Reflect whether a re-embed would be triggered if the user clicks Apply
+        // for the stored value (i.e., stored differs from active because the
+        // sidecar hasn't restarted yet).
+        needsApply: stored !== live.model,
+        catalog: [
+          { id: 'english', label: 'English-first (recommended for English-only users)',
+            description: 'BGE-small-en-v1.5 · 384-dim · ~30 MB download.',
+            sizeMb: 30 },
+          { id: 'multilingual', label: 'Multilingual (recommended if you store notes in multiple languages)',
+            description: 'multilingual-e5-large · 1024-dim · ~2.2 GB download. Cross-language recall works without the local LLM.',
+            sizeMb: 2200 },
+        ],
+      };
+    }
+
+    case 'embedding:cancelSwitch': {
+      // Cancel an in-flight embedding switch. The actual cancellation is
+      // cooperative — the host loop checks the AbortSignal between engrams,
+      // so this fires the abort and the loop bails after the current engram
+      // finishes. The progress event with phase='done' will carry
+      // `cancelled: true` so the UI can render the partial-completion state.
+      currentEmbeddingSwitchAbort?.abort();
+      return { ok: true };
+    }
+
+    case 'embedding:setModel': {
+      // Switch the embedding model and re-embed every engram. This is the
+      // user-facing entry point for the Search model picker. Sequence:
+      //   1. Snapshot every graph (recovery if something goes wrong)
+      //   2. Swap the embed-worker pool to the new model
+      //   3. Update the host's adapter id + dimensions
+      //   4. Re-embed every engram, emitting progress events
+      //   5. Persist the user's choice to settings.json
+      // Progress events fire on broadcastRaw so the Settings UI can drive
+      // a progress modal in real time.
+      const { model } = z.object({ model: z.enum(['english', 'multilingual']) }).parse(params);
+      const { switchEmbedModel, currentEmbedModel, workerEmbed } = await import('./local-embed.js');
+      const before = currentEmbedModel();
+      if (before.model === model) {
+        // No-op switch — just persist the choice (covers re-applying the same
+        // value, e.g. on first explicit user selection of the default).
+        const current = deps.host.getSettings();
+        await deps.host.setSettings({ ai: { ...current.ai, embeddingModel: model } });
+        return { ok: true, switched: false };
+      }
+
+      deps.broadcastRaw({
+        kind: 'embedding.switch-progress',
+        name: 'embedding.switch-progress',
+        payload: { phase: 'snapshot' },
+      });
+      try { await deps.host.snapshotGraphs(`pre-embed-switch-${model}`); } catch (e) {
+        console.error(`[ipc] embedding:setModel snapshot failed (non-fatal): ${(e as Error).message}`);
+      }
+
+      deps.broadcastRaw({
+        kind: 'embedding.switch-progress',
+        name: 'embedding.switch-progress',
+        payload: { phase: 'downloading-model', model },
+      });
+      await switchEmbedModel(model);
+      const after = currentEmbedModel();
+      deps.host.setEmbedAdapter(workerEmbed, after.id, after.dim);
+
+      deps.broadcastRaw({
+        kind: 'embedding.switch-progress',
+        name: 'embedding.switch-progress',
+        payload: { phase: 'reembedding', model },
+      });
+      // Install a fresh abort controller for this switch. The cancel IPC
+      // handler aborts it; the host loop polls signal.aborted between
+      // engrams and bails. The controller is cleared after the switch
+      // returns (either normally or cancelled) so the next switch starts
+      // with a clean slate.
+      currentEmbeddingSwitchAbort = new AbortController();
+      const result = await deps.host.reembedAllGraphs((evt) => {
+        deps.broadcastRaw({
+          kind: 'embedding.switch-progress',
+          name: 'embedding.switch-progress',
+          payload: { phase: 'reembedding', model, ...evt },
+        });
+      }, currentEmbeddingSwitchAbort.signal);
+      currentEmbeddingSwitchAbort = null;
+
+      const current = deps.host.getSettings();
+      await deps.host.setSettings({ ai: { ...current.ai, embeddingModel: model } });
+
+      deps.broadcastRaw({
+        kind: 'embedding.switch-progress',
+        name: 'embedding.switch-progress',
+        payload: { phase: 'done', model, ...result },
+      });
+      return { ok: true, switched: true, ...result };
+    }
+
+    case 'gll:listPredictedEdges': {
+      // List every GLL-predicted edge across the cortex, newest first.
+      // Used by the Non-Deterministic Aid → predicted edges review surface.
+      const overlay = await deps.host.loadGllOverlay();
+      const edges = overlay.edges
+        .slice()
+        .sort((a, b) => b.createdAt - a.createdAt);
+      // Inflate with short content previews on both endpoints — the UI
+      // needs them to render the row without N additional IPC calls.
+      const enriched = edges.map((e) => {
+        const inspected = deps.host.listNodes(e.graphId);
+        const fromNode = inspected.find((n) => n.id === e.from);
+        const toNode = inspected.find((n) => n.id === e.to);
+        return {
+          ...e,
+          fromPreview: fromNode?.contentPreview ?? '',
+          toPreview: toNode?.contentPreview ?? '',
+        };
+      });
+      return { edges: enriched };
+    }
+
+    case 'gll:acceptPredictedEdge': {
+      const { id } = z.object({ id: z.string().min(1) }).parse(params);
+      const { acceptPredictedEdge } = await import('./edge-prediction.js');
+      const result = await acceptPredictedEdge(deps.host, id);
+      return result;
+    }
+
+    case 'gll:rejectPredictedEdge': {
+      const { id } = z.object({ id: z.string().min(1) }).parse(params);
+      const { rejectPredictedEdge } = await import('./edge-prediction.js');
+      const result = await rejectPredictedEdge(deps.host, id);
+      return result;
+    }
+
+    case 'gll:listAssertions': {
+      // Newest-first listing of all GLL assertions. Used by the assertion
+      // review surface (forthcoming UI batch) and exposable to AI clients
+      // for tools that want to inspect what synthesized facts are pending.
+      const overlay = await deps.host.loadGllOverlay();
+      const assertions = overlay.assertions.slice().sort((a, b) => b.createdAt - a.createdAt);
+      return { assertions };
+    }
+
+    case 'gll:writeAssertion': {
+      // The writer endpoint AI clients (via MCP) and the App's own flows
+      // can call to deposit an LLM-derived assertion into the .gll overlay.
+      // This is the path "distill facts → review → promote-or-discard" runs
+      // through. The host validates that the graphId exists (no orphan
+      // assertions) and clamps the score to [0, 1].
+      const { graphId, content, derivedFrom, score, modelTag } = z.object({
+        graphId: z.string().min(1),
+        content: z.string().min(1).max(2000),
+        derivedFrom: z.array(z.string()).default([]),
+        score: z.number().min(0).max(1),
+        modelTag: z.string().optional(),
+      }).parse(params);
+      const created = await deps.host.addGllAssertion({
+        graphId,
+        content,
+        derivedFrom,
+        score,
+        ...(modelTag !== undefined ? { modelTag } : {}),
+      });
+      return { ok: true, assertion: created };
+    }
+
+    case 'gll:removeAssertion': {
+      const { id } = z.object({ id: z.string().min(1) }).parse(params);
+      const result = await deps.host.removeGllAssertion(id);
+      return result;
+    }
+
+    case 'gll:runPredictionNow': {
+      // Manual kick — same as waiting for the 60-min scheduler. Useful for
+      // demos and for users who just turned the capability on and want
+      // immediate output. Self-gates on the capability flag inside
+      // runEdgePrediction so this can't bypass the user's opt-in.
+      if (!deps.brainEngine) return { ok: false, reason: 'brain engine not available' };
+      await deps.brainEngine.runEdgePrediction();
+      return { ok: true };
+    }
+
+    case 'snapshots:restore': {
+      // Restore .gai files from a snapshot over the canonical graphs/ dir.
+      // Takes a snapshot LABEL (the folder name returned by listSnapshots),
+      // not an absolute path — keeps the IPC surface free of path-traversal
+      // risk. The host takes a fresh safety snapshot first so a wrong-row
+      // click is recoverable.
+      const { label } = z.object({ label: z.string().min(1) }).parse(params);
+      const result = await deps.host.restoreSnapshot(label);
+      return { ok: true, ...result };
+    }
+
+    case 'snapshots:delete': {
+      const { label } = z.object({ label: z.string().min(1) }).parse(params);
+      await deps.host.deleteSnapshot(label);
+      return { ok: true };
+    }
+
+    case 'engram:reingest': {
+      // Reingest one source by sourceId. Per-source path — invoked from the
+      // Sources tab's per-row Reingest button or from automation. Does NOT
+      // snapshot — the existing per-source Reingest button doesn't either,
+      // and snapshotting on every single-source call would create snapshot
+      // sprawl. The whole-cortex 'engrams:reingestAll' path below DOES
+      // snapshot first because the blast radius is bigger.
+      const { graphId, sourceId } = z.object({
+        graphId: z.string().min(1),
+        sourceId: z.string().min(1),
+      }).parse(params);
+      const result = await deps.host.reingestSource(graphId, sourceId);
+      return { ok: true, result };
+    }
+
+    case 'reingest:cancel': {
+      // Cooperative cancel for any in-flight reingest (whole-cortex OR
+      // per-engram — both share the abort controller because only one
+      // reingest can run at a time anyway).
+      currentReingestAbort?.abort();
+      return { ok: true };
+    }
+
+    case 'engrams:reingestAll': {
+      // Reingest every source across every loaded engram. Snapshots first
+      // (the old chunks/vectors remain recoverable). Progress events fire
+      // on broadcastRaw so the UI can drive a progress modal in real time.
+      // Skipped sources (content cache unavailable) and failures are
+      // surfaced in the final response so the UI can show a summary.
+      deps.broadcastRaw({
+        kind: 'reingest.progress',
+        name: 'reingest.progress',
+        payload: { phase: 'snapshot' },
+      });
+      try { await deps.host.snapshotGraphs(`pre-reingest-all`); } catch (e) {
+        console.error(`[ipc] engrams:reingestAll snapshot failed (non-fatal): ${(e as Error).message}`);
+      }
+      deps.broadcastRaw({
+        kind: 'reingest.progress',
+        name: 'reingest.progress',
+        payload: { phase: 'reingesting' },
+      });
+      currentReingestAbort = new AbortController();
+      const result = await deps.host.reingestAllGraphs((evt) => {
+        deps.broadcastRaw({
+          kind: 'reingest.progress',
+          name: 'reingest.progress',
+          payload: { phase: 'reingesting', ...evt },
+        });
+      }, currentReingestAbort.signal);
+      currentReingestAbort = null;
+      deps.broadcastRaw({
+        kind: 'reingest.progress',
+        name: 'reingest.progress',
+        payload: { phase: 'done', ...result },
+      });
+      return { ok: true, ...result };
+    }
+
+    case 'engram:reingestAll': {
+      // Per-engram variant — same as engrams:reingestAll but scoped to one
+      // graph. Snapshots that one engram's files. Useful for users who
+      // want to test the migration on a small engram before doing the
+      // whole cortex.
+      const { graphId } = z.object({ graphId: z.string().min(1) }).parse(params);
+      deps.broadcastRaw({
+        kind: 'reingest.progress',
+        name: 'reingest.progress',
+        payload: { phase: 'snapshot', graphId },
+      });
+      try { await deps.host.snapshotGraphs(`pre-reingest-${graphId}`); } catch (e) {
+        console.error(`[ipc] engram:reingestAll snapshot failed (non-fatal): ${(e as Error).message}`);
+      }
+      deps.broadcastRaw({
+        kind: 'reingest.progress',
+        name: 'reingest.progress',
+        payload: { phase: 'reingesting', graphId },
+      });
+      currentReingestAbort = new AbortController();
+      const result = await deps.host.reingestAllSources(graphId, (evt) => {
+        deps.broadcastRaw({
+          kind: 'reingest.progress',
+          name: 'reingest.progress',
+          // Wrap into the same shape as the whole-cortex path (graphIndex/total = 1/1)
+          // so the UI listener can render uniformly.
+          payload: { phase: 'reingesting', graphIndex: 0, graphsTotal: 1, ...evt },
+        });
+      }, currentReingestAbort.signal);
+      currentReingestAbort = null;
+      deps.broadcastRaw({
+        kind: 'reingest.progress',
+        name: 'reingest.progress',
+        payload: { phase: 'done', perGraph: [{ graphId, ...result }], reingested: result.reingested, skipped: result.skipped.length, failed: result.failed.length },
+      });
+      return { ok: true, ...result };
     }
 
     case 'llm:pullModel': {

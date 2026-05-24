@@ -24,6 +24,7 @@ import nodeFs from 'node:fs';
 import type { FSWatcher } from 'node:fs';
 import type { GraphnosisHost } from './host.js';
 import { ingestFile } from './ingest.js';
+import { redactId } from './log-redact.js';
 
 // Quick burst-collapse debounce: collapses the editor's rapid "save →
 // autosave → save" burst (VS Code, Obsidian, Vim) into a single event.
@@ -169,7 +170,7 @@ export class FileWatcher {
       // around.
       watcher = nodeFs.watch(filePath, { persistent: false });
     } catch (e) {
-      console.error(`[file-watcher] failed to watch ${filePath}: ${(e as Error).message}`);
+      console.error(`[file-watcher] failed to watch file[${redactId(filePath)}]: ${(e as Error).message}`);
       return;
     }
 
@@ -202,7 +203,7 @@ export class FileWatcher {
     });
 
     watcher.on('error', (e) => {
-      console.error(`[file-watcher] watcher error on ${filePath}: ${e.message}`);
+      console.error(`[file-watcher] watcher error on file[${redactId(filePath)}]: ${e.message}`);
       this.unwatchPath(filePath);
     });
   }
@@ -226,7 +227,7 @@ export class FileWatcher {
     try {
       stat = await fs.stat(filePath);
     } catch {
-      console.error(`[file-watcher] ${filePath} disappeared; unwatching.`);
+      console.error(`[file-watcher] file[${redactId(filePath)}] disappeared; unwatching.`);
       this.unwatchPath(filePath);
       return;
     }
@@ -242,7 +243,7 @@ export class FileWatcher {
 
     const key = this.bySources.get(filePath);
     if (!key) return; // raced with unwatchPath
-    console.error(`[file-watcher] reingesting ${filePath} (graph=${key.graphId}, source=${key.sourceId})`);
+    console.error(`[file-watcher] reingesting file[${redactId(filePath)}] (engram=${redactId(key.graphId)}, source=${redactId(key.sourceId)})`);
     try {
       // forgetSource clears the existing nodes; ingestFile re-reads from
       // disk. Both save(), so the App's push-event channel sees two
@@ -253,7 +254,7 @@ export class FileWatcher {
       const record = await ingestFile(this.host, key.graphId, filePath, { triggeredBy: 'user:ingest' });
       this.bySources.set(filePath, { graphId: record.graphId, sourceId: record.sourceId });
     } catch (e) {
-      console.error(`[file-watcher] reingest failed for ${filePath}: ${(e as Error).message}`);
+      console.error(`[file-watcher] reingest failed for file[${redactId(filePath)}]: ${(e as Error).message}`);
     }
   }
 }

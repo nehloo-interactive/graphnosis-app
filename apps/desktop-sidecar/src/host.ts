@@ -11,6 +11,8 @@ import * as healingJournalMod from './healing-journal.js';
 import * as connectionStoreMod from './connection-store.js';
 import * as associationIndexMod from './association-index.js';
 import * as gnnStoreMod from './gnn-store.js';
+import * as gllOverlayMod from './gll-overlay.js';
+import { redactId, redactPair } from './log-redact.js';
 import { GllWriter } from './gll.js';
 
 const { deriveKey, encrypt, decrypt } = crypto;
@@ -192,9 +194,13 @@ export class GraphnosisHost {
   /** Append-only LLM event log — one .gll file per engram. */
   readonly gllWriter: GllWriter;
   private policyCfg: policy.PolicyConfig;
-  private readonly embed: embeddings.EmbedFn;
-  private readonly embedAdapterId: string;
-  private readonly embedDimensions: number;
+  // Mutable so runtime model switches (Settings → Search model) can update
+  // them without rebuilding the host. The actual re-embed of every graph
+  // is driven by reembedAllGraphs() below; these fields keep the in-memory
+  // values in sync so subsequent load/build calls use the new id + dim + fn.
+  private embed: embeddings.EmbedFn;
+  private embedAdapterId: string;
+  private embedDimensions: number;
   private settings: settingsMod.AppSettings;
   /** Optional filesystem watcher — see SourceLifecycleListener. Null when
    *  the watcher feature isn't wired (smoke tests, headless tools). */
@@ -628,6 +634,82 @@ export class GraphnosisHost {
     await writeFileAtomic(file, Buffer.from(blob));
   }
 
+  /** Load + decrypt the Graphnosis Local Layer (LLM overlay). Empty if none yet. */
+  async loadGllOverlay(): Promise<{ edges: gllOverlayMod.GllPredictedEdge[]; assertions: gllOverlayMod.GllAssertion[] }> {
+    const file = path.join(this.opts.cortexDir, gllOverlayMod.GLL_OVERLAY_FILE);
+    let blob: Buffer;
+    try {
+      blob = await fs.readFile(file);
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code === 'ENOENT') return { edges: [], assertions: [] };
+      console.error(`[host] could not read GLL overlay: ${(e as Error).message}`);
+      return { edges: [], assertions: [] };
+    }
+    return gllOverlayMod.decodeGllOverlay(new Uint8Array(blob), this.key);
+  }
+
+  /** Encrypt + atomically write the Graphnosis Local Layer (LLM overlay). */
+  async saveGllOverlay(
+    edges: gllOverlayMod.GllPredictedEdge[],
+    assertions: gllOverlayMod.GllAssertion[],
+  ): Promise<void> {
+    const file = path.join(this.opts.cortexDir, gllOverlayMod.GLL_OVERLAY_FILE);
+    const blob = await gllOverlayMod.encodeGllOverlay(edges, assertions, this.key);
+    await writeFileAtomic(file, Buffer.from(blob));
+  }
+
+  /**
+   * Append a synthesized assertion to the GLL overlay. Assertions are
+   * LLM-derived facts that draw from existing nodes but aren't anchored to
+   * any single source — distinct from attested .gai nodes. They surface in
+   * recall with the [gll·assertion N%] badge and are explicitly NOT to be
+   * `remember`'d into canonical memory by AI clients (that would promote a
+   * prediction into truth, breaking the overlay invariant).
+   *
+   * Caller responsibility:
+   *   - `derivedFrom`: ideally a non-empty list of canonical node ids that
+   *     supported the assertion. Empty arrays are allowed (pure synthesis)
+   *     but the merge layer will be less useful — assertions get surfaced
+   *     when their `derivedFrom` intersects the recall result.
+   *   - `score`: model confidence 0-1. Used in the [gll·assertion N%] badge.
+   *
+   * Returns the new assertion (with its generated id).
+   */
+  async addGllAssertion(input: {
+    graphId: GraphId;
+    content: string;
+    derivedFrom: string[];
+    score: number;
+    modelTag?: string;
+  }): Promise<gllOverlayMod.GllAssertion> {
+    // Validate graphId exists — refuse to attach assertions to engrams the
+    // user has deleted. Avoids orphan overlay entries.
+    if (!this.graphs.has(input.graphId)) {
+      throw new Error(`addGllAssertion: unknown engram ${input.graphId}`);
+    }
+    const assertion = gllOverlayMod.makeGllAssertion({
+      graphId: input.graphId,
+      content: input.content.trim(),
+      derivedFrom: input.derivedFrom,
+      score: Math.max(0, Math.min(1, input.score)),
+      createdAt: Date.now(),
+      ...(input.modelTag !== undefined ? { modelTag: input.modelTag } : {}),
+    });
+    const current = await this.loadGllOverlay();
+    await this.saveGllOverlay(current.edges, [...current.assertions, assertion]);
+    return assertion;
+  }
+
+  /** Remove an assertion from the GLL overlay by id. Used by the UI's
+   *  reject/dismiss path on the assertion review surface. */
+  async removeGllAssertion(assertionId: string): Promise<{ ok: boolean }> {
+    const current = await this.loadGllOverlay();
+    const remaining = current.assertions.filter((a) => a.id !== assertionId);
+    if (remaining.length === current.assertions.length) return { ok: false };
+    await this.saveGllOverlay(current.edges, remaining);
+    return { ok: true };
+  }
+
   /**
    * Copy every engram's `.gai` file into `<cortexDir>/snapshots/<label>-<ts>/`
    * — the safety snapshot taken before the Graphnosis Neural Network is first
@@ -645,7 +727,11 @@ export class GraphnosisHost {
     }
     const safe = `${label.replace(/[^a-zA-Z0-9_-]/g, '_')}-${Date.now()}`;
     const graphsDir = path.join(this.opts.cortexDir, 'graphs');
-    const destDir = path.join(this.opts.cortexDir, 'snapshots', safe);
+    // Unified snapshot location: .snapshots/ matches the existing
+    // listSnapshots() helper + the Rust list_snapshots Tauri command, so
+    // pre-operation safety snapshots (GNN enable, embedding migration,
+    // reingest-all, restore-safety) become visible in the Snapshots panel.
+    const destDir = path.join(this.opts.cortexDir, '.snapshots', safe);
     await fs.mkdir(destDir, { recursive: true });
     let files: string[];
     try {
@@ -659,6 +745,132 @@ export class GraphnosisHost {
       await fs.copyFile(path.join(graphsDir, f), path.join(destDir, f));
     }
     return destDir;
+  }
+
+  /**
+   * Restore every .gai file from a snapshot. Copies them over the current
+   * canonical paths under `<cortex>/graphs/`, then drops the in-memory graph
+   * cache so the next access reloads from the restored disk state. Returns
+   * the count of files restored.
+   *
+   * Safety:
+   *   - Takes a NEW snapshot of the current state first ("pre-restore-<label>")
+   *     so the restore itself is reversible if the user clicked the wrong row.
+   *   - Skips engrams currently being mutated by an in-flight save (best
+   *     effort via `dirty` flag — concurrent writes during a restore are
+   *     not supported and the UI should disable other actions while this runs).
+   */
+  async restoreSnapshot(snapshotLabel: string): Promise<{ restored: number; safetySnapshot: string }> {
+    // Defensive: snapshot label MUST be a plain folder name with no path
+    // separators or `..` — anything else and we refuse, no matter how the
+    // request reached us. Eliminates path-traversal risk from the IPC
+    // surface.
+    if (snapshotLabel.includes('/') || snapshotLabel.includes('\\') || snapshotLabel.includes('..')) {
+      throw new Error(`invalid snapshot label: ${snapshotLabel}`);
+    }
+    // Unified `.snapshots/` location — matches listSnapshots() + snapshotGraphs().
+    const snapshotsDir = path.join(this.opts.cortexDir, '.snapshots');
+    const normalized = path.join(snapshotsDir, snapshotLabel);
+    // Step 1: safety snapshot of current state so this operation is undoable.
+    const safetySnapshot = await this.snapshotGraphs(`pre-restore-${snapshotLabel}`);
+    // Step 2: copy snapshot .gai files over the canonical graphs/ directory.
+    const graphsDir = path.join(this.opts.cortexDir, 'graphs');
+    await fs.mkdir(graphsDir, { recursive: true });
+    let files: string[];
+    try {
+      files = await fs.readdir(normalized);
+    } catch (e) {
+      throw new Error(`snapshot directory unreadable: ${(e as Error).message}`);
+    }
+    let restored = 0;
+    for (const f of files) {
+      if (!f.endsWith('.gai')) continue;
+      await fs.copyFile(path.join(normalized, f), path.join(graphsDir, f));
+      restored += 1;
+    }
+    // Step 3: drop in-memory graph cache so next loadGraph reads fresh from disk.
+    // The brain engine's reinforcement / cross-engram stores reference node ids
+    // that may no longer exist in the restored state — we don't proactively
+    // prune them; subsequent passes will skip stale entries naturally.
+    this.graphs.clear();
+    console.error(`[host] restored ${restored} engram(s) from snapshot ${snapshotLabel}; in-memory cache cleared, next access reloads from disk`);
+    return { restored, safetySnapshot };
+  }
+
+  /** Permanently delete a snapshot directory by label (folder name). */
+  async deleteSnapshot(snapshotLabel: string): Promise<void> {
+    if (snapshotLabel.includes('/') || snapshotLabel.includes('\\') || snapshotLabel.includes('..')) {
+      throw new Error(`invalid snapshot label: ${snapshotLabel}`);
+    }
+    const snapshotsDir = path.join(this.opts.cortexDir, '.snapshots');
+    const target = path.join(snapshotsDir, snapshotLabel);
+    await fs.rm(target, { recursive: true, force: true });
+  }
+
+  // ── Embedding adapter switch (runtime model swap) ───────────────────────
+  //
+  // Update the in-memory embed function + adapter id + dimensions. Does NOT
+  // re-embed any graph on its own — call `reembedAllGraphs()` afterwards to
+  // rebuild every engram's vector index against the new model. Splitting
+  // these lets the caller stage the switch (snapshot → set adapter → re-embed
+  // with progress events) without the host imposing the order.
+  setEmbedAdapter(embed: embeddings.EmbedFn, adapterId: string, dimensions: number): void {
+    this.embed = embed;
+    this.embedAdapterId = adapterId;
+    this.embedDimensions = dimensions;
+    console.error(`[host] embed adapter switched: ${adapterId} (${dimensions}d)`);
+  }
+
+  /**
+   * Re-build embeddings for every loaded engram against the current
+   * `embedAdapterId`. The SDK detects the id change and discards every
+   * cached vector before re-running `embed()` over each node's content.
+   *
+   * Per-engram progress is reported via `onProgress`. Sequential, not
+   * parallel — concurrent ONNX inference across multiple workers can race
+   * the C++ mutex (see queryChain in recall) and re-embed is heavy enough
+   * that throughput is dominated by the worker pool's capacity anyway.
+   */
+  async reembedAllGraphs(
+    onProgress?: (event: { graphId: string; index: number; total: number; nodesInGraph: number }) => void,
+    signal?: AbortSignal,
+  ): Promise<{ graphsRebuilt: number; cancelled: boolean; errors: Array<{ graphId: string; error: string }> }> {
+    const graphIds = this.listGraphs();
+    const errors: Array<{ graphId: string; error: string }> = [];
+    let rebuilt = 0;
+    let cancelled = false;
+    for (let i = 0; i < graphIds.length; i++) {
+      if (signal?.aborted) { cancelled = true; break; }
+      const graphId = graphIds[i]!;
+      const g = this.graphs.get(graphId);
+      if (!g) continue;
+      // Use the inspector to get node count for the progress event.
+      const nodes = this.opts.adapter.inspectNodes(g.handle);
+      onProgress?.({ graphId, index: i, total: graphIds.length, nodesInGraph: nodes.length });
+      try {
+        // Reset the embedding cache for this graph — a model change invalidates
+        // every cached vector. Without this, the SDK's buildEmbeddings would
+        // happily reuse 384-dim vectors against a 1024-dim model and produce
+        // a corrupt index.
+        g.cache = new EmbeddingCache({ path: this.cachePath(graphId), key: this.key, salt: this.salt });
+        await this.opts.adapter.buildEmbeddings(g.handle, {
+          embed: cached(this.embed, g.cache),
+          dimensions: this.embedDimensions,
+          id: this.embedAdapterId,
+          batchSize: this.settings.ai.embedBatch,
+        });
+        g.dirty = true;
+        await this.save(graphId);
+        rebuilt += 1;
+      } catch (e) {
+        const error = (e as Error).message;
+        console.error(`[host] reembedAllGraphs: engram[${redactId(graphId)}] failed: ${error}`);
+        errors.push({ graphId, error });
+      }
+    }
+    // Final progress event so the UI can flip from "embedding…" to "done".
+    onProgress?.({ graphId: '', index: graphIds.length, total: graphIds.length, nodesInGraph: 0 });
+    return { graphsRebuilt: rebuilt, cancelled, errors };
   }
 
   // ── Search ──────────────────────────────────────────────────────────────
@@ -766,7 +978,7 @@ export class GraphnosisHost {
       g.dirty = true;
       await this.save(graphId);
     } catch (err) {
-      console.error(`[brain] reinforceNode(${graphId}/${nodeId}) failed:`, err);
+      console.error(`[brain] reinforceNode(${redactPair(graphId, nodeId)}) failed:`, err);
     }
   }
 
@@ -968,6 +1180,18 @@ export class GraphnosisHost {
     } catch (e) {
       console.error(`[graphnosis-host] deleteGraph: could not prune GNN store: ${(e as Error).message}`);
     }
+
+    // Purge stale GLL overlay entries that referenced this graph.
+    try {
+      const gll = await this.loadGllOverlay();
+      const cleanedGllEdges = gll.edges.filter((e) => e.graphId !== graphId);
+      const cleanedGllAssertions = gll.assertions.filter((a) => a.graphId !== graphId);
+      if (cleanedGllEdges.length !== gll.edges.length || cleanedGllAssertions.length !== gll.assertions.length) {
+        await this.saveGllOverlay(cleanedGllEdges, cleanedGllAssertions);
+      }
+    } catch (e) {
+      console.error(`[graphnosis-host] deleteGraph: could not prune GLL overlay: ${(e as Error).message}`);
+    }
   }
 
   /** Update settings, persist to <cortex>/settings.json, return the merged result. */
@@ -1156,7 +1380,7 @@ export class GraphnosisHost {
       const err = e as NodeJS.ErrnoException;
       if (err.code !== 'ENOENT') throw err;
       bytes = await fs.readFile(this.legacyGraphPath(graphId));
-      console.error(`[graphnosis-host] loaded legacy ${graphId}.aikg — will migrate to .gai on next save`);
+      console.error(`[graphnosis-host] loaded legacy engram[${redactId(graphId)}].aikg — will migrate to .gai on next save`);
     }
     const aikgPlain = await decrypt(new Uint8Array(bytes), this.key);
     // Inner SDK HMAC key (independent of outer encryption) — derived from data key + a fixed label.
@@ -1248,7 +1472,7 @@ export class GraphnosisHost {
         batchSize: this.settings.ai.embedBatch,
       });
     } catch (e) {
-      console.error(`[graphnosis-host] could not build embeddings on load for ${graphId}: ${(e as Error).message} — query will use TF-IDF only.`);
+      console.error(`[graphnosis-host] could not build embeddings on load for engram[${redactId(graphId)}]: ${(e as Error).message} — query will use TF-IDF only.`);
     }
   }
 
@@ -1575,7 +1799,7 @@ export class GraphnosisHost {
       return;
     }
     const p = this.runRelink(graphId).catch((e) => {
-      console.error(`[host] auto-relink failed for ${graphId}: ${(e as Error).message}`);
+      console.error(`[host] auto-relink failed for engram[${redactId(graphId)}]: ${(e as Error).message}`);
     }).finally(() => {
       this.relinkInFlight.delete(graphId);
       if (this.relinkPending.delete(graphId)) {
@@ -1594,7 +1818,7 @@ export class GraphnosisHost {
       // Log skip reasons at debug — useful when users wonder why their
       // big engram isn't getting auto-linked.
       console.error(
-        `[host] auto-relink skipped for ${graphId}: ${result.skipReason} ` +
+        `[host] auto-relink skipped for engram[${redactId(graphId)}]: ${result.skipReason} ` +
         `(active=${result.activeNodes}, cap=${maxNodes})`,
       );
       return;
@@ -1624,8 +1848,125 @@ export class GraphnosisHost {
     g.dirty = true;
     await this.save(graphId);
     console.error(
-      `[host] auto-relink wove ${result.newEdges.length} edges across ${result.activeNodes} active nodes in ${graphId}`,
+      `[host] auto-relink wove ${result.newEdges.length} edges across ${result.activeNodes} active nodes in engram[${redactId(graphId)}]`,
     );
+  }
+
+  // ── Re-ingest (re-chunk + re-embed from cached content) ─────────────────
+  //
+  // Different from re-embed (Batch 4): re-embed runs new vectors over
+  // EXISTING chunks. Re-ingest recreates the chunks themselves from the
+  // original source content, then re-embeds. Use cases:
+  //   - User switched chunk size and wants existing memory to use the new
+  //     setting.
+  //   - SDK shipped better section detection / NER and they want their
+  //     existing memory to benefit.
+  //   - User suspects ingest-time decisions were wrong for a specific source.
+  //
+  // Requires the cached content blob for each source (the encrypted .bin
+  // at <cortex>/content/<sourceId>.bin). Sources whose cache was off or
+  // expired are skipped with a clear reason.
+  //
+  // Atomicity: soft-delete current nodes BEFORE the new ingest. If the new
+  // ingest fails the old nodes stay soft-deleted (recoverable from the
+  // op-log / snapshot). We don't try to roll back inside the host — that's
+  // the snapshot machinery's job.
+
+  /** Reingest one source from its cached content blob. Throws when the
+   *  cache is unavailable so the caller can decide how to surface that
+   *  (skip in a loop, error to the user in single-source mode). */
+  async reingestSource(graphId: GraphId, sourceId: string): Promise<{ skipped: false; newNodeIds: string[] } | { skipped: true; reason: string }> {
+    const g = this.must(graphId);
+    const record = g.sourceIndex.get(sourceId);
+    if (!record) {
+      return { skipped: true, reason: 'source not found in index' };
+    }
+    const blob = await this.readContentBlob(sourceId);
+    if (!blob) {
+      return { skipped: true, reason: 'content cache unavailable (cache was off or expired at ingest time)' };
+    }
+    // Soft-delete the existing nodes for this source so the new ingest's
+    // chunks replace them. forgetSource also wipes the cache blob — but we
+    // already loaded it into memory above, so the order is safe.
+    await this.forgetSource(graphId, sourceId, { triggeredBy: 'user:reingest' });
+    // Reconstruct AppendDocumentInput from the cache header + bytes.
+    const docInput: AppendDocumentInput = {
+      kind: blob.header.docKind,
+      content: blob.header.docKind === 'pdf'
+        ? Buffer.from(blob.content)
+        : new TextDecoder().decode(blob.content),
+      sourceRef: record.ref,
+    };
+    const result = await this.ingest(
+      graphId,
+      record.kind,
+      record.ref,
+      docInput,
+      { triggeredBy: 'user:reingest', ...(record.addedBy ? { addedBy: record.addedBy } : {}) },
+    );
+    return { skipped: false, newNodeIds: result.nodeIds };
+  }
+
+  /** Reingest every source in one engram. Progress fires before each
+   *  source so the UI can name the current item. */
+  async reingestAllSources(
+    graphId: GraphId,
+    onProgress?: (event: { graphId: string; sourceId: string; ref: string; index: number; total: number }) => void,
+    signal?: AbortSignal,
+  ): Promise<{ reingested: number; cancelled: boolean; skipped: Array<{ sourceId: string; reason: string }>; failed: Array<{ sourceId: string; error: string }> }> {
+    const g = this.must(graphId);
+    // Snapshot the source list NOW — reingest mutates sourceIndex (forget +
+    // re-add with the same sourceId), so iterating live would be brittle.
+    const sourcesToProcess = g.sourceIndex.list().slice();
+    let reingested = 0;
+    let cancelled = false;
+    const skipped: Array<{ sourceId: string; reason: string }> = [];
+    const failed: Array<{ sourceId: string; error: string }> = [];
+    for (let i = 0; i < sourcesToProcess.length; i++) {
+      if (signal?.aborted) { cancelled = true; break; }
+      const src = sourcesToProcess[i]!;
+      onProgress?.({ graphId, sourceId: src.sourceId, ref: src.ref, index: i, total: sourcesToProcess.length });
+      try {
+        const result = await this.reingestSource(graphId, src.sourceId);
+        if (result.skipped) {
+          skipped.push({ sourceId: src.sourceId, reason: result.reason });
+        } else {
+          reingested += 1;
+        }
+      } catch (e) {
+        failed.push({ sourceId: src.sourceId, error: (e as Error).message });
+        console.error(`[host] reingestAllSources(${redactPair(graphId, src.sourceId)}) failed: ${(e as Error).message}`);
+      }
+    }
+    onProgress?.({ graphId, sourceId: '', ref: '', index: sourcesToProcess.length, total: sourcesToProcess.length });
+    return { reingested, cancelled, skipped, failed };
+  }
+
+  /** Reingest every source across every loaded engram. Sequential — keeps
+   *  the worker pool happy and progress events monotonic. */
+  async reingestAllGraphs(
+    onProgress?: (event: { graphId: string; graphIndex: number; graphsTotal: number; sourceId: string; ref: string; index: number; total: number }) => void,
+    signal?: AbortSignal,
+  ): Promise<{ reingested: number; cancelled: boolean; skipped: number; failed: number; perGraph: Array<{ graphId: string; reingested: number; skipped: Array<{ sourceId: string; reason: string }>; failed: Array<{ sourceId: string; error: string }> }> }> {
+    const graphIds = this.listGraphs();
+    let totalReingested = 0;
+    let totalSkipped = 0;
+    let totalFailed = 0;
+    let cancelled = false;
+    const perGraph: Array<{ graphId: string; reingested: number; skipped: Array<{ sourceId: string; reason: string }>; failed: Array<{ sourceId: string; error: string }> }> = [];
+    for (let gi = 0; gi < graphIds.length; gi++) {
+      if (signal?.aborted) { cancelled = true; break; }
+      const graphId = graphIds[gi]!;
+      const result = await this.reingestAllSources(graphId, (evt) => {
+        onProgress?.({ graphIndex: gi, graphsTotal: graphIds.length, ...evt });
+      }, signal);
+      totalReingested += result.reingested;
+      totalSkipped += result.skipped.length;
+      totalFailed += result.failed.length;
+      perGraph.push({ graphId, ...result });
+      if (result.cancelled) { cancelled = true; break; }
+    }
+    return { reingested: totalReingested, cancelled, skipped: totalSkipped, failed: totalFailed, perGraph };
   }
 
   async forgetSource(graphId: GraphId, sourceId: string, opts?: { triggeredBy?: string }): Promise<{ nodeIds: string[] }> {
@@ -1745,21 +2086,27 @@ export class GraphnosisHost {
         triggeredBy: 'user:ingest',
       });
     } else {
-      // Non-file sources (clip, ai-conversation): read encrypted blob first,
-      // then forget (which deletes the blob), then ingest from memory.
+      // Non-file sources (clip, ai-conversation): prefer the encrypted blob
+      // (exact original bytes). Fall back to reconstructing from embedded node
+      // text when the blob is absent (e.g. caching was off when the clip was
+      // saved, or the blob was pruned). Node text is always in memory.
       const blob = await this.readContentBlob(sourceId);
-      if (!blob) {
-        throw new Error(
-          `Cannot move source ${sourceId} (${rec.kind}): no cached content available. ` +
-          `Try forgetting and re-ingesting it instead.`,
-        );
+      let input: AppendDocumentInput;
+      if (blob) {
+        input = { kind: blob.header.docKind, content: blob.content, sourceRef: blob.header.ref };
+      } else {
+        const allNodes = this.listNodes(fromGraphId) as Array<{ id: string; text?: string; contentPreview?: string }>;
+        const nodeTexts = allNodes
+          .filter((n) => this.getNodeSource(fromGraphId, n.id) === sourceId)
+          .map((n) => n.text ?? n.contentPreview ?? '')
+          .filter(Boolean);
+        if (!nodeTexts.length) {
+          throw new Error(
+            `Cannot move source ${sourceId} (${rec.kind}): no cached content and no recoverable node text available.`,
+          );
+        }
+        input = { kind: 'markdown', content: nodeTexts.join('\n\n'), sourceRef: rec.ref };
       }
-      const { header, content } = blob;
-      const input: AppendDocumentInput = {
-        kind: header.docKind,
-        content,
-        sourceRef: header.ref,
-      };
       ({ nodeIds: forgottenNodeIds } = await this.forgetSource(fromGraphId, sourceId, { triggeredBy: 'user:ingest' }));
       newRecord = await this.ingest(toGraphId, rec.kind, rec.ref, input, { triggeredBy: 'user:ingest' });
     }
@@ -1781,7 +2128,47 @@ export class GraphnosisHost {
     this.plasticityObserver = fn;
   }
 
-  async recall(query: string, opts?: { budget?: SubgraphBudget; onlyGraphIds?: string[]; exceptGraphIds?: string[] }): Promise<federation.FederatedSubgraph> {
+  /**
+   * Optional local-LLM getter wired by the sidecar at boot. Returns the
+   * shared OllamaLlm instance, or null if the user hasn't installed Ollama.
+   * The host calls it lazily on recall so the master toggle + capability
+   * flags are always evaluated from current settings, never cached.
+   */
+  private llmGetter: (() => import('./correction.js').LocalLlm | null) | undefined;
+
+  /** Register the local-LLM getter. Called once at sidecar startup. */
+  setLocalLlmGetter(fn: () => import('./correction.js').LocalLlm | null): void {
+    this.llmGetter = fn;
+  }
+
+  async recall(query: string, opts?: { budget?: SubgraphBudget; onlyGraphIds?: string[]; exceptGraphIds?: string[]; perGraphAnchorMax?: number }): Promise<federation.FederatedSubgraph> {
+    // ── Recall enrichment (non-mutating) ─────────────────────────────────
+    // When the user has llmEnabled + llmCapabilities.recallEnrichment on AND
+    // Ollama is reachable, ask the LLM to rewrite the raw user query into a
+    // search-friendlier string: strip framing, add synonyms in the same
+    // language, add cross-language translations for proper nouns and key
+    // content words. The graph is never touched — this is pure query
+    // augmentation. Falls back silently to the original query on any error,
+    // any timeout, or any setting that disables the path. The audit footer
+    // records when enrichment ran so the AI client / user can see it.
+    let effectiveQuery = query;
+    let enrichmentNote: string | null = null;
+    const caps = settingsMod.resolveLlmCapabilities(this.settings);
+    if (caps.recallEnrichment && this.llmGetter) {
+      const llm = this.llmGetter();
+      if (llm) {
+        try {
+          const enriched = await enrichRecallQuery(llm, query);
+          if (enriched && enriched !== query) {
+            effectiveQuery = enriched;
+            enrichmentNote = `enriched: "${query}" → "${enriched}"`;
+          }
+        } catch (e) {
+          // Non-fatal — recall must still work when the LLM is slow or down.
+          console.error(`[host] recall enrichment failed, using raw query: ${(e as Error).message}`);
+        }
+      }
+    }
     // Snapshot active-node IDs per graph BEFORE the federated query runs.
     // We use these to filter SDK results so soft-deleted (forgotten) nodes
     // never leak back into the AI's context. Without this, garbage
@@ -1791,26 +2178,176 @@ export class GraphnosisHost {
     for (const graphId of this.listGraphs()) {
       activeByGraph.set(graphId, this.activeNodeIds(graphId));
     }
+    // federatedQuery fires runQuery for every graph in parallel (Promise.all).
+    // queryHybrid uses ONNX which is NOT safe for concurrent invocations —
+    // simultaneous calls race on a shared C++ mutex and silently return empty
+    // results (or crash the process). Serialize per-graph adapter calls using
+    // a local promise chain scoped to this recall, so Promise.all starts all
+    // callbacks concurrently but each one waits for the previous ONNX call to
+    // finish. A local chain avoids deadlocking the global withEmbedding queue
+    // (which already holds the lock for the duration of this host.recall call).
+    let queryChain: Promise<void> = Promise.resolve();
+    // Capture per-graph rich subgraph data (edges + serialize closure) so we
+    // can build a === KNOWLEDGE SUBGRAPH === prompt after federation narrows
+    // the node set to the budget-selected subset.
+    const perGraphRich = new Map<GraphId, import('./graphnosis-adapter.js').RichSubgraph>();
+    // Entity extraction: run once on the ORIGINAL query (not the enriched
+    // version). Anchor matching is about literal-identifier preservation;
+    // the LLM rewrite may strip or duplicate proper nouns, so we anchor on
+    // what the user actually typed.
+    const queryEntities = extractQueryEntities(query);
+    const perGraphAnchorMax = opts?.perGraphAnchorMax ?? 3;
+    let anchorCountTotal = 0;
     const runner: federation.FederatedQueryRunner = {
       runQuery: async (graphId, q, k) => {
-        const g = this.must(graphId);
-        const active = activeByGraph.get(graphId) ?? new Set<string>();
-        // Same over-fetch as searchNodes — recover real top-k after dropping
-        // forgotten matches without making the SDK call quadratic.
-        const raw = await this.opts.adapter.query(g.handle, q, k * 3);
-        return raw
-          .filter((r) => active.has(r.nodeId))
-          .slice(0, k)
-          .map((r) => ({ graphId, nodeId: r.nodeId, score: r.score, text: r.text, ...(r.type !== undefined ? { type: r.type } : {}) }));
+        const result = queryChain.then(async () => {
+          const g = this.must(graphId);
+          const active = activeByGraph.get(graphId) ?? new Set<string>();
+          // queryRich = queryHybrid/query + edge capture + serialize closure.
+          // Same 3× over-fetch as searchNodes to recover real top-k after
+          // dropping soft-deleted nodes without making the SDK call quadratic.
+          const { candidates: raw, rich } = await this.opts.adapter.queryRich(g.handle, q, k * 3);
+          perGraphRich.set(graphId, rich);
+          const ranked = raw
+            .filter((r) => active.has(r.nodeId))
+            .slice(0, k)
+            .map((r) => ({ graphId, nodeId: r.nodeId, score: r.score, text: r.text, ...(r.type !== undefined ? { type: r.type } : {}) }));
+          // Entity-anchored seeds: prepend any literal-entity matches that
+          // weren't already in the top-k. Carries ANCHOR_SCORE so federation
+          // budget treats them as priority. The total candidate count stays
+          // capped at k (anchors displace lower-scored tail entries) so we
+          // don't accidentally inflate the budget the SDK was asked to spend.
+          if (queryEntities.length === 0 || perGraphAnchorMax <= 0) return ranked;
+          const inspected = this.opts.adapter.inspectNodes(g.handle);
+          const anchors = selectAnchorNodes(inspected, active, queryEntities, perGraphAnchorMax);
+          if (anchors.length === 0) return ranked;
+          const existingIds = new Set(ranked.map((r) => r.nodeId));
+          const fresh = anchors
+            .filter((a) => !existingIds.has(a.nodeId))
+            .map((a) => ({ graphId, nodeId: a.nodeId, score: ANCHOR_SCORE, text: a.text }));
+          anchorCountTotal += fresh.length;
+          // Anchors first, then top-(k - anchors.length) from the regular
+          // ranking. Keeps the per-engram candidate count at k for federation.
+          if (fresh.length === 0) return ranked;
+          const tailCap = Math.max(0, k - fresh.length);
+          return [...fresh, ...ranked.slice(0, tailCap)];
+        });
+        queryChain = result.then(() => undefined, () => undefined);
+        return result;
       },
     };
-    const sub = await federatedQuery(runner, this.listGraphs(), query, this.policyCfg, opts?.budget);
+    // Apply onlyGraphIds / exceptGraphIds scope. Without this filter,
+    // cross_search and compare_engrams ignore the caller's engram list and
+    // run a full federated recall over every graph — the scope footer in
+    // the response looked correct but the actual retrieval was not scoped.
+    const allGraphIds = this.listGraphs();
+    const scopedGraphIds = opts?.onlyGraphIds?.length
+      ? allGraphIds.filter(id => opts.onlyGraphIds!.includes(id))
+      : opts?.exceptGraphIds?.length
+        ? allGraphIds.filter(id => !opts.exceptGraphIds!.includes(id))
+        : allGraphIds;
+    const sub = await federatedQuery(runner, scopedGraphIds, effectiveQuery, this.policyCfg, opts?.budget);
     try {
       this.plasticityObserver?.(sub);
     } catch (err) {
       console.error(`[host] plasticity observer failed: ${(err as Error).message}`);
     }
-    return sub;
+
+    // Replace the federation module's flat bullet-point renderPrompt with the
+    // SDK's rich === KNOWLEDGE SUBGRAPH === format. We re-serialize per graph
+    // using only the budget-selected node IDs so the prompt stays within the
+    // token budget and edge references point only to nodes the AI can see.
+    let richPrompt = buildRichRecallPrompt(sub.byGraph, perGraphRich, (graphId) => this.getGraphMetadata(graphId)?.displayName ?? graphId);
+    // ── Overlay merge (GLL + GNN) ───────────────────────────────────────────
+    // Load both overlays once and surface any entries that touch the
+    // budget-selected node set. Entries are badged [gll] / [gnn] so the AI
+    // client never confuses inferred content with attested memory. Failures
+    // are non-fatal — overlay data is non-authoritative; recall must still
+    // return canonical results.
+    let overlaySection: string | null = null;
+    try {
+      const includedIdsByGraph = new Map<string, Set<string>>();
+      for (const [graphId, nodes] of sub.byGraph) {
+        if (nodes.length === 0) continue;
+        includedIdsByGraph.set(graphId, new Set(nodes.map((n) => n.nodeId)));
+      }
+      if (includedIdsByGraph.size > 0) {
+        const [gll, gnn] = await Promise.all([
+          this.loadGllOverlay(),
+          this.loadGnnStore(),
+        ]);
+        overlaySection = buildOverlaySection(
+          includedIdsByGraph,
+          gll,
+          gnn,
+          (graphId) => this.getGraphMetadata(graphId)?.displayName ?? graphId,
+        );
+      }
+    } catch (err) {
+      console.error(`[host] overlay merge failed (non-fatal): ${(err as Error).message}`);
+    }
+    if (overlaySection) {
+      richPrompt = (richPrompt ? richPrompt + '\n\n' : '') + overlaySection;
+    }
+    // Zero-result hint: when nothing came back, append a short diagnostic so
+    // the AI client can relay likely causes (language mismatch, phrasing,
+    // missing memory) to the user — and surface the local LLM as the missing
+    // enrichment layer when it's disabled. Suppressed for queries shorter
+    // than 3 chars (garbage) and when there are no engrams at all (first-run).
+    if (sub.nodesIncluded === 0 && query.trim().length >= 3 && this.listGraphs().length > 0) {
+      richPrompt = (richPrompt ? richPrompt + '\n\n' : '') + this.zeroResultHint();
+    }
+    // Enrichment audit trail: surface the rewrite to the AI client so it can
+    // see what query actually hit the index. Useful for debugging "why did
+    // this recall return X?" without exposing the LLM call internals.
+    if (enrichmentNote) {
+      richPrompt = (richPrompt ? richPrompt + '\n\n' : '') + `_${enrichmentNote}_`;
+    }
+    // Anchor audit trail: when literal-entity matches force-included nodes,
+    // mention it. Helps the AI / user understand why a particular memory
+    // surfaced even when its TF-IDF score was unremarkable.
+    if (anchorCountTotal > 0) {
+      richPrompt = (richPrompt ? richPrompt + '\n\n' : '') + `_anchored ${anchorCountTotal} node(s) on entities: ${queryEntities.join(', ')}_`;
+    }
+    return { ...sub, prompt: richPrompt };
+  }
+
+  /**
+   * Diagnostic block appended to zero-result recalls. Explains the common
+   * causes (language mismatch, phrasing, missing memory) and — when the
+   * local LLM is off — points the user at the toggle that would add a
+   * semantic reranking layer. Public so the MCP-server JSON-returning
+   * tools (recall_structured, recall_with_citations) can reuse the same
+   * copy and stay consistent.
+   */
+  zeroResultHint(): string {
+    const llmEnabled = this.settings.ai.llmEnabled === true;
+    if (llmEnabled) {
+      return (
+        'ℹ️ No memories matched this query, even with local LLM reranking.\n' +
+        '   The information is likely not stored, or is in an engram you don\'t\n' +
+        '   have access to. Try `stats` to see what engrams exist, or rephrase\n' +
+        '   the query — different synonyms, the proper nouns the user mentioned\n' +
+        '   verbatim, or the same query translated into the language the user\n' +
+        '   typically writes notes in.'
+      );
+    }
+    return (
+      'ℹ️ No memories matched this query. A few possible reasons:\n\n' +
+      '  • The memory may be stored in a different language than the query.\n' +
+      '    The lexical index does not bridge languages — try querying with\n' +
+      '    the key content words translated into the language(s) the user\n' +
+      '    typically writes notes in. Proper nouns stay as-is.\n' +
+      '  • The query may be phrased differently than the stored note.\n' +
+      '    Try rephrasing with synonyms, or include the key proper nouns\n' +
+      '    (names, projects, places) verbatim.\n' +
+      '  • The memory may genuinely not be there — try `stats` or\n' +
+      '    `list_engrams` to see what\'s stored.\n\n' +
+      '💡 For higher-quality recall across phrasings and languages, the user\n' +
+      '   can enable the local LLM in Graphnosis → Settings → AI → Local LLM.\n' +
+      '   This adds a semantic reranking layer that bridges synonyms,\n' +
+      '   languages, and paraphrases — without sending any data off-device.'
+    );
   }
 
   // Correction model mirrors the SDK: content-only edits with a reason; deletes are soft.
@@ -1834,17 +2371,18 @@ export class GraphnosisHost {
       ...(opts?.correctedBy ? { correctedBy: opts.correctedBy } : {}),
       ...(opts?.triggeredBy ? { triggeredBy: opts.triggeredBy } : {}),
     };
-    const ingestOpts = { chunkSize: this.settings.ai.chunkSize };
+    // Route correction-adds through the full ingest path so each add gets a
+    // source record in sourceIndex. Without this, correction-origin nodes are
+    // invisible to browse_engram (which reads sourceIndex) and to
+    // transfer_source (which needs a sourceId to move content).
     for (const add of patches.adds ?? []) {
-      const result = await this.opts.adapter.appendDocument(g.handle, add, ingestOpts);
-      for (const n of result.newNodeIds) {
-        this.oplogWriter.emit({
-          graphId,
-          op: 'addNode',
-          target: { kind: 'node', id: n },
-          after: { ref: add.sourceRef, ...attribution },
-        });
-      }
+      await this.ingest(
+        graphId,
+        'clip',
+        add.sourceRef ?? `correction:${Date.now()}`,
+        add,
+        { triggeredBy: opts?.triggeredBy ?? 'user:correct', ...(opts?.correctedBy ? { addedBy: opts.correctedBy } : {}) },
+      );
     }
     let correctionDelta = 0;
     for (const edit of patches.edits ?? []) {
@@ -2997,6 +3535,375 @@ export class GraphnosisHost {
   }
 }
 
+// ── Rich recall prompt builder ───────────────────────────────────────────────
+//
+// Replaces the federation module's flat bullet-point renderPrompt with the
+// SDK's === KNOWLEDGE SUBGRAPH === format per engram, plus a cross-graph
+// connections section that surfaces entity overlap between budget-selected
+// nodes from different engrams.
+//
+// Flow:
+//   1. Per-graph: serializeSubgraph(budget-filtered nodes + intra-graph edges)
+//   2. Cross-graph: entity overlap detection over ALL selected nodes across
+//      graphs. The secure-sync federation is the backbone that decides which
+//      nodes matter; this layer makes the implicit semantic connections explicit.
+//
+// Falls back to flat bullets for any graph whose rich subgraph wasn't captured.
+function buildRichRecallPrompt(
+  byGraph: Map<string, Array<{ nodeId: string; text: string }>>,
+  perGraphRich: Map<string, import('./graphnosis-adapter.js').RichSubgraph>,
+  displayName: (graphId: string) => string,
+): string {
+  type NodeMergeData = import('./graphnosis-adapter.js').NodeMergeData;
+
+  const sections: string[] = [
+    '# Graphnosis context',
+    'The following memories from the user\'s personal knowledge graphs may be relevant.',
+  ];
+
+  // ── Per-graph rich sections ──────────────────────────────────────────────
+  // Collect node data for cross-graph analysis while we're iterating.
+  const perGraphNodes = new Map<string, NodeMergeData[]>();
+  for (const [graphId, nodes] of byGraph) {
+    if (nodes.length === 0) continue;
+    sections.push(`\n## ${displayName(graphId)}`);
+    const rich = perGraphRich.get(graphId);
+    if (rich) {
+      const selectedIds = new Set(nodes.map(n => n.nodeId));
+      sections.push(rich.serialize(selectedIds));
+      perGraphNodes.set(graphId, rich.getNodeData(selectedIds));
+    } else {
+      for (const n of nodes) sections.push(`- ${n.text}`);
+    }
+  }
+
+  // ── Cross-graph entity connections ────────────────────────────────────────
+  // Only meaningful when 2+ graphs contributed nodes.
+  if (perGraphNodes.size >= 2) {
+    const crossSection = buildCrossGraphSection(perGraphNodes, displayName);
+    if (crossSection) sections.push(crossSection);
+  }
+
+  return sections.join('\n');
+}
+
+/**
+ * Detects entity overlap between budget-selected nodes from different engrams.
+ * Returns a formatted section string, or null when there are no cross-graph
+ * connections (common when only one engram has relevant content).
+ *
+ * Algorithm:
+ *   1. Build entity → [(graphId, nodeId, preview)] from SDK-extracted entities.
+ *   2. Entities that appear in 2+ different graphs are cross-graph connections.
+ *   3. Render as a readable list so the AI can see which facts across engrams
+ *      refer to the same person / place / concept.
+ *
+ * Uses the entities field populated by the SDK's NER pass during ingest, so
+ * cross-graph detection is as rich as the ingested content allows.
+ */
+function buildCrossGraphSection(
+  perGraphNodes: Map<string, import('./graphnosis-adapter.js').NodeMergeData[]>,
+  displayName: (graphId: string) => string,
+): string | null {
+  // entity (normalized) → Map<graphId, content previews>
+  const entityIndex = new Map<string, Map<string, string[]>>();
+
+  for (const [graphId, nodes] of perGraphNodes) {
+    for (const node of nodes) {
+      for (const raw of node.entities) {
+        const entity = raw.trim();
+        if (entity.length < 3) continue;
+        let graphMap = entityIndex.get(entity);
+        if (!graphMap) { graphMap = new Map(); entityIndex.set(entity, graphMap); }
+        const previews = graphMap.get(graphId) ?? [];
+        // Short preview: first 60 chars of node content
+        const preview = node.content.length > 60 ? node.content.slice(0, 57) + '…' : node.content;
+        if (!previews.includes(preview)) previews.push(preview);
+        graphMap.set(graphId, previews);
+      }
+    }
+  }
+
+  // Keep only entities that appear in 2+ distinct graphs
+  const crossEntityLines: string[] = [];
+  for (const [entity, graphMap] of entityIndex) {
+    if (graphMap.size < 2) continue;
+    const parts: string[] = [];
+    for (const [graphId, previews] of graphMap) {
+      parts.push(`${displayName(graphId)}: "${previews[0]}"`);
+    }
+    crossEntityLines.push(`  "${entity}" → ${parts.join(' | ')}`);
+  }
+
+  if (crossEntityLines.length === 0) return null;
+
+  return [
+    '\n--- CROSS-GRAPH CONNECTIONS ---',
+    'Entities shared across engrams (federation via secure-sync, entity overlap detected by app layer):',
+    ...crossEntityLines,
+  ].join('\n');
+}
+
+// ── Overlay merge (GLL + GNN → recall prompt) ───────────────────────────────
+//
+// Both overlays are non-authoritative — they hold probabilistic outputs that
+// must never blend silently into the canonical recall. So instead of merging
+// them into the per-graph rich subgraph section, we append a dedicated
+// "INFERRED LAYER" footer where every line carries a [gll] or [gnn] badge
+// plus a score the AI can use to weight its response.
+//
+// We surface only overlay entries that TOUCH the budget-selected node set —
+// otherwise the section would balloon with predictions about memories the AI
+// can't see anyway. For assertions: at least one of their `derivedFrom` ids
+// must be in the included set. For edges: both endpoints must be included.
+//
+// Returns null when no overlay entry intersects the included set, so the
+// caller can suppress the section entirely (no empty "INFERRED LAYER" header).
+function buildOverlaySection(
+  includedIdsByGraph: Map<string, Set<string>>,
+  gll: { edges: gllOverlayMod.GllPredictedEdge[]; assertions: gllOverlayMod.GllAssertion[] },
+  gnn: gnnStoreMod.PredictedEdge[],
+  displayName: (graphId: string) => string,
+): string | null {
+  // Map graph → list of overlay rows so we can render per-engram blocks.
+  const rowsByGraph = new Map<string, string[]>();
+  const pushRow = (graphId: string, row: string): void => {
+    const arr = rowsByGraph.get(graphId) ?? [];
+    arr.push(row);
+    rowsByGraph.set(graphId, arr);
+  };
+
+  // GLL assertions — synthesized facts the local LLM drew from canonical nodes.
+  for (const a of gll.assertions) {
+    const includedSet = includedIdsByGraph.get(a.graphId);
+    if (!includedSet) continue;
+    const overlap = a.derivedFrom.filter((id) => includedSet.has(id));
+    // Surface an assertion only when at least one of its source nodes is in
+    // the recall result OR when derivedFrom is empty (pure synthesis bound
+    // to this engram). Otherwise we'd flood the AI with predictions about
+    // unrelated parts of the graph.
+    if (a.derivedFrom.length > 0 && overlap.length === 0) continue;
+    const scorePct = Math.round(a.score * 100);
+    const fromRef = overlap.length > 0 ? ` from [${overlap.slice(0, 3).join(', ')}]` : '';
+    pushRow(a.graphId, `  [gll·assertion ${scorePct}%] ${a.content}${fromRef}`);
+  }
+
+  // GLL predicted edges — relationships the LLM inferred between attested
+  // nodes. Only surface when both endpoints are in the included set so the
+  // AI can actually map the edge to nodes it's seeing.
+  for (const e of gll.edges) {
+    const includedSet = includedIdsByGraph.get(e.graphId);
+    if (!includedSet) continue;
+    if (!includedSet.has(e.from) || !includedSet.has(e.to)) continue;
+    const scorePct = Math.round(e.score * 100);
+    pushRow(e.graphId, `  [gll·edge ${scorePct}%] ${e.from} —[${e.relationship}]→ ${e.to}`);
+  }
+
+  // GNN predicted edges — neural-network inferred connections. Same gating
+  // as GLL edges: both endpoints must be in the included set.
+  for (const e of gnn) {
+    const includedSet = includedIdsByGraph.get(e.graphId);
+    if (!includedSet) continue;
+    if (!includedSet.has(e.from) || !includedSet.has(e.to)) continue;
+    const scorePct = Math.round(e.score * 100);
+    pushRow(e.graphId, `  [gnn·edge ${scorePct}%] ${e.from} —→ ${e.to}`);
+  }
+
+  if (rowsByGraph.size === 0) return null;
+
+  const sections: string[] = [
+    '--- INFERRED LAYER (overlays — NOT attested memory) ---',
+    'These are probabilistic predictions and synthesized assertions from the',
+    'local LLM (.gll) and neural network (.gnn) overlays. They are NEVER',
+    'written to the canonical engram. Treat them as hints, not facts; the',
+    'attested memory above is the authoritative source.',
+  ];
+  for (const [graphId, rows] of rowsByGraph) {
+    sections.push(`\n### ${displayName(graphId)}`);
+    sections.push(...rows);
+  }
+  return sections.join('\n');
+}
+
+// ── Entity-anchored seed inclusion (deterministic) ──────────────────────────
+//
+// A pre-ranking pass that force-includes any node whose extracted entities or
+// content literally contains an entity from the query. This is the cheap
+// deterministic answer to the failure mode "query mentions 'Nelu', node
+// content is 'Nelu a locuit pe Aleea Plaiului', and yet recall returns
+// nothing because TF-IDF scored the node low and the embedding model is
+// English-first."
+//
+// Crucially: this works WITHOUT the local LLM, in any language, for any user.
+// It complements `enrichRecallQuery` (which only helps when Ollama is on) by
+// covering the same failure deterministically. With both enabled, enrichment
+// widens the lexical/embedding match and anchoring guarantees literal entity
+// matches survive ranking — the two compose cleanly.
+//
+// Anchor selection rules:
+//   - Entities extracted from the raw query (capitalized words ≥ 3 chars,
+//     quoted strings, hyphenated names, all-caps acronyms ≥ 2 chars,
+//     ISO-ish dates).
+//   - For each engram, match candidate nodes via (a) SDK-extracted
+//     entities[] (case-insensitive) and (b) contentPreview substring scan
+//     (case-insensitive) as a fallback for nodes whose NER pass missed
+//     something.
+//   - Cap per engram via `perGraphAnchorMax` (default 3) to keep the budget
+//     allocation honest.
+//   - Anchor results carry a synthetic score (ANCHOR_SCORE) high enough to
+//     guarantee they survive the federation's per-graph top-k cut. The
+//     federation budget still applies — anchors and regular candidates
+//     compete for tokens, but anchors win ties.
+
+const ANCHOR_SCORE = 99;
+
+// Tiny stopword list — only used to gate lowercase candidate tokens that
+// might sneak through capitalization heuristics. Capitalized words always
+// pass (even "The" or "And") because the federation cap dedupes/limits them.
+const ENTITY_STOPWORDS = new Set([
+  'the', 'and', 'for', 'with', 'this', 'that', 'from', 'have',
+  'are', 'was', 'were', 'has', 'had', 'not', 'but', 'all', 'any',
+]);
+
+export function extractQueryEntities(query: string): string[] {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  const add = (entity: string): void => {
+    const trimmed = entity.trim();
+    if (trimmed.length < 2) return;
+    const key = trimmed.toLowerCase();
+    if (seen.has(key)) return;
+    if (ENTITY_STOPWORDS.has(key)) return;
+    seen.add(key);
+    out.push(trimmed);
+  };
+  // 1. Quoted phrases — strongest signal, treat as single entity.
+  for (const m of query.matchAll(/["'`]([^"'`]{2,})["'`]/g)) {
+    add(m[1] ?? '');
+  }
+  // 2. Capitalized multi-word sequences (e.g. "New York", "Aleea Plaiului").
+  for (const m of query.matchAll(/\b[A-ZĂÂÎȘȚĂÄÖÜß][\p{L}'-]+(?:\s+[A-ZĂÂÎȘȚĂÄÖÜß][\p{L}'-]+)+\b/gu)) {
+    add(m[0]);
+  }
+  // 3. Single capitalized tokens ≥ 3 chars (Nelu, London, OpenAI).
+  for (const m of query.matchAll(/\b[A-ZĂÂÎȘȚĂÄÖÜß][\p{L}'-]{2,}\b/gu)) {
+    add(m[0]);
+  }
+  // 4. All-caps acronyms ≥ 2 chars (MCP, GDPR, AI).
+  for (const m of query.matchAll(/\b[A-ZĂÂÎȘȚ]{2,}\b/g)) {
+    add(m[0]);
+  }
+  // 5. Hyphenated compound names (Anne-Marie, Jean-Luc).
+  for (const m of query.matchAll(/\b[\p{L}]{2,}(?:-[\p{L}]{2,})+\b/gu)) {
+    add(m[0]);
+  }
+  // 6. Date-ish patterns (2024-03-15, 15/03/2024).
+  for (const m of query.matchAll(/\b\d{2,4}[-/]\d{1,2}[-/]\d{1,4}\b/g)) {
+    add(m[0]);
+  }
+  return out;
+}
+
+/**
+ * Find anchor nodes for one engram. Returns at most `max` node descriptors
+ * whose entities or content literally match one of the query entities.
+ * Order: SDK-entity hits first (stronger signal), then content-substring hits.
+ */
+function selectAnchorNodes(
+  inspected: ReturnType<GraphnosisAdapter['inspectNodes']>,
+  active: Set<string>,
+  entities: string[],
+  max: number,
+): Array<{ nodeId: string; text: string }> {
+  if (entities.length === 0 || max <= 0) return [];
+  const lowerEntities = entities.map((e) => e.toLowerCase());
+  const entityHits: Array<{ nodeId: string; text: string }> = [];
+  const contentHits: Array<{ nodeId: string; text: string }> = [];
+  for (const node of inspected) {
+    if (!active.has(node.id)) continue;
+    const nodeEntitiesLower = (node.entities ?? []).map((e) => e.toLowerCase());
+    const entityMatch = lowerEntities.some((q) =>
+      nodeEntitiesLower.some((ne) => ne === q || ne.includes(q) || q.includes(ne)),
+    );
+    if (entityMatch) {
+      entityHits.push({ nodeId: node.id, text: node.contentPreview });
+      continue;
+    }
+    const contentLower = node.contentPreview.toLowerCase();
+    if (lowerEntities.some((q) => contentLower.includes(q))) {
+      contentHits.push({ nodeId: node.id, text: node.contentPreview });
+    }
+  }
+  return [...entityHits, ...contentHits].slice(0, max);
+}
+
+// ── Recall enrichment (local LLM, non-mutating) ─────────────────────────────
+//
+// Asks the local LLM to rewrite the raw user query into a search-friendlier
+// string before it hits the lexical + embedding index. The transformation
+// rules match the AI-client guidance in GRAPHNOSIS.md:
+//
+//   1. Strip framing words ("remind me", "what did I say about", etc.)
+//   2. Add 1–2 synonyms in the same language as the query
+//   3. If the query contains language hints, also include translated content
+//      words in 1–2 other plausible languages — proper nouns stay verbatim
+//
+// The graph is never touched. Output replaces the query string fed to the
+// federated retrieval; the original query is preserved for audit, the
+// rewritten one shows up in the "_enriched: ..._" footer.
+//
+// Guard rails:
+//   - Hard 3-second timeout — recall must not become "wait for the LLM"
+//   - Cap output at 200 chars; longer output is treated as a malformed
+//     response and we fall back to the original query
+//   - Strip leading/trailing punctuation and newlines; the LLM sometimes
+//     wraps with "Here is the query:" preamble despite the system prompt
+const ENRICHMENT_TIMEOUT_MS = 3000;
+const ENRICHMENT_SYSTEM_PROMPT = `You rewrite a search query for a personal knowledge-graph lookup.
+
+Rules:
+1. Strip framing words ("remind me", "what did I say about", "do you know if", and equivalents in any language). Keep only the semantic content.
+2. Keep the language(s) of the original query.
+3. Add 1-2 close synonyms in the same language to widen lexical matches.
+4. If the query mentions a topic that the user might have stored in a different language, also include 2-3 translated content words from one other plausible language (English is a good fallback).
+5. Keep proper nouns (names of people, places, projects) VERBATIM — exact spelling and capitalization. Never transliterate.
+6. Output ONLY the rewritten query string. No preamble, no explanation, no quotes, no markdown. 3-12 content words, space-separated.
+
+Examples:
+Input: "remind me where Nelu lived"
+Output: Nelu lived where home location locuit unde
+
+Input: "aminteste-mi unde a locuit nelu"
+Output: Nelu unde locuit trait casa locuinta lived home
+
+Input: "what did I say about the marketing project?"
+Output: marketing project campaign proiect marketing campanie`;
+
+async function enrichRecallQuery(
+  llm: import('./correction.js').LocalLlm,
+  query: string,
+): Promise<string | null> {
+  // Wrap the LLM call in a timeout so a hung Ollama can't block recall.
+  // 3 seconds is generous for a 3B model on modest hardware.
+  const completion = await Promise.race([
+    llm.complete({ system: ENRICHMENT_SYSTEM_PROMPT, user: query }),
+    new Promise<string>((_, reject) =>
+      setTimeout(() => reject(new Error(`enrichment timed out after ${ENRICHMENT_TIMEOUT_MS}ms`)), ENRICHMENT_TIMEOUT_MS),
+    ),
+  ]);
+  const cleaned = completion
+    .trim()
+    .replace(/^["'`]+|["'`]+$/g, '') // strip surrounding quotes
+    .replace(/^Output:\s*/i, '')      // drop common preamble
+    .replace(/\n.*/s, '')             // first line only — guard against multi-line output
+    .trim();
+  // Sanity: empty, too long, or identical to input ⇒ no useful enrichment.
+  if (!cleaned || cleaned.length > 200 || cleaned.toLowerCase() === query.toLowerCase()) {
+    return null;
+  }
+  return cleaned;
+}
+
 // ── Atomic file write helper ────────────────────────────────────────────────
 //
 // Writes data to a sibling .tmp path, fsync's it to disk, then atomically
@@ -3011,7 +3918,15 @@ export class GraphnosisHost {
 // file's bytes only partially on stable storage. We open + write + fsync
 // + close + rename — the standard atomic-write pattern.
 async function writeFileAtomic(target: string, data: Buffer): Promise<void> {
-  const tmp = `${target}.tmp-${process.pid}-${Date.now()}`;
+  // The tmp suffix MUST be unique per concurrent call to the same target.
+  // The old `${pid}-${Date.now()}` shape collided when two saves of the same
+  // graph happened in the same millisecond — observed when snapshotGraphs
+  // looped save() across engrams while a background auto-relink save was
+  // also in flight. Both calls computed the same tmp name, opened the same
+  // file with 'w', then both tried to rename it; the second rename failed
+  // with ENOENT because the file was already gone. Adding 8 random bytes
+  // makes collisions impossible even within the same millisecond.
+  const tmp = `${target}.tmp-${process.pid}-${Date.now()}-${randomBytes(4).toString('hex')}`;
   const fh = await fs.open(tmp, 'w', 0o600);
   try {
     await fh.writeFile(data);
