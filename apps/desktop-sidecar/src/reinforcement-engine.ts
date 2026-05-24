@@ -521,21 +521,52 @@ export class ReinforcementEngine {
       }
       const store = this.crossEngramConnections;
       const graphIds = this.host.listGraphs();
+
+      // ── Stale-entry cleanup ────────────────────────────────────────────────
+      // Build a set of every currently-live node across all engrams. Any
+      // connection anchored to a soft-deleted node (confidence ≤ 0.2 or
+      // expired) is inert — it can never be recalled or reinforced. Prune
+      // these silently so they don't accumulate indefinitely. This also
+      // cleans up cruft from sources moved before the fix that recorded
+      // forgottenNodeIds and triggered an immediate cross-engram pass.
+      if (store.length > 0) {
+        const now = Date.now();
+        const liveNodes = new Set<string>();
+        for (const gid of graphIds) {
+          for (const n of this.host.listNodes(gid)) {
+            if (n.confidence > 0.2 && (n.validUntil === undefined || n.validUntil > now)) {
+              liveNodes.add(`${gid}#${n.id}`);
+            }
+          }
+        }
+        const before = store.length;
+        const pruned = store.filter(
+          (c) => liveNodes.has(`${c.graphA}#${c.nodeA}`) && liveNodes.has(`${c.graphB}#${c.nodeB}`),
+        );
+        if (pruned.length !== before) {
+          this.crossEngramConnections = pruned;
+          this.crossEngramDirty = true;
+          console.error(
+            `[cross-engram] pruned ${before - pruned.length} stale connection(s) anchored to soft-deleted nodes`,
+          );
+        }
+      }
+      // ── Discovery pass ────────────────────────────────────────────────────
       if (graphIds.length >= 2) {
         const existing = new Set(
-          store.map((c) => crossKey(c.graphA, c.nodeA, c.graphB, c.nodeB)),
+          this.crossEngramConnections.map((c) => crossKey(c.graphA, c.nodeA, c.graphB, c.nodeB)),
         );
         const formed: CrossEngramConnection[] = [];
         await this.formCrossEngramByEmbedding(graphIds, cfg, existing, formed);
         this.formCrossEngramByEntity(graphIds, existing, formed);
         if (formed.length > 0) {
-          store.push(...formed);
+          this.crossEngramConnections.push(...formed);
           this.sessionCrossEngram += formed.length;
           this.crossEngramDirty = true;
         }
       }
       if (this.crossEngramDirty) {
-        await this.host.saveConnectionStore(store);
+        await this.host.saveConnectionStore(this.crossEngramConnections);
         this.crossEngramDirty = false;
         await this.persistLastRun('crossEngram');
       }

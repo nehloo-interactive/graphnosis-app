@@ -489,9 +489,10 @@
       }
       .sources-grow-hint-link:hover { text-decoration: underline; }
       .sources-grow-hint-sep { color: var(--fg-dim); opacity: 0.5; }
-      .sources-filter-bar { margin: 8px 0 6px; }
-      .sources-filter-bar input[type="search"] { width: 100%; padding: 6px 9px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg-elev); color: var(--fg); font-family: inherit; font-size: 14px; box-sizing: border-box; }
+      .sources-filter-bar { margin: 8px 0 6px; display: flex; gap: 6px; align-items: center; }
+      .sources-filter-bar input[type="search"] { flex: 1; padding: 6px 9px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg-elev); color: var(--fg); font-family: inherit; font-size: 14px; box-sizing: border-box; min-width: 0; }
       .sources-filter-bar input[type="search"]::placeholder { color: var(--fg-dim); }
+      .sources-engram-select { flex-shrink: 0; padding: 6px 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg-elev); color: var(--fg); font-family: inherit; font-size: 14px; max-width: 160px; cursor: pointer; }
       .sources-engram-heading { font-size: 15px; font-weight: 600; color: var(--fg-dim); text-transform: uppercase; letter-spacing: 0.05em; padding-bottom: 4px; margin-bottom: 2px; border-bottom: 1px solid var(--border); position: sticky; top: -20px; background: var(--bg); z-index: 1; padding-top: 20px; }
       .source-row { display: flex; align-items: center; gap: 8px; padding: 6px 0; font-size: 14px; }
       .source-row-disabled .source-name { opacity: 0.4; }
@@ -545,11 +546,40 @@
       }
       /* Inline two-step forget confirmation inside a .source-row.
          Replaces the .btn-forget in-place; collapses on Escape / blur. */
-      .source-row-forget-confirm {
+      .source-row-forget-confirm,
+      .source-row-reingest-confirm {
         display: flex;
         align-items: center;
-        gap: 5px;
+        gap: 10px;
         flex-shrink: 0;
+      }
+      .source-row-reingest-label {
+        font-size: 13px;
+        color: var(--fg-dim);
+        white-space: nowrap;
+      }
+      .source-row-reingest-cancel,
+      .source-row-reingest-go {
+        font-size: 13px;
+        padding: 2px 10px;
+        border-radius: 4px;
+        cursor: pointer;
+        white-space: nowrap;
+        flex-shrink: 0;
+      }
+      .source-row-reingest-cancel {
+        background: transparent;
+        color: var(--fg-dim);
+        border: 1px solid var(--border);
+      }
+      .source-row-reingest-cancel:hover { color: var(--fg); }
+      .source-row-reingest-go {
+        background: transparent;
+        color: var(--accent);
+        border: 1px solid color-mix(in oklab, var(--accent) 60%, var(--border));
+      }
+      .source-row-reingest-go:hover {
+        background: color-mix(in oklab, var(--accent) 15%, transparent);
       }
       .source-row-forget-input {
         width: 130px;
@@ -614,9 +644,9 @@
         font-size: 15px;
         padding: 2px 4px;
         border-radius: 4px;
-        border: 1px solid var(--border);
+        border: 1px solid color-mix(in oklab, var(--accent) 40%, var(--border));
         background: var(--bg-2);
-        color: var(--fg);
+        color: var(--accent);
       }
       .source-row-move-go {
         font-size: 15px;
@@ -2539,6 +2569,86 @@
         padding: 2px 6px;
       }
       .g-search-clear:hover { color: var(--fg); }
+
+      /* Synthesize answer trigger button — sits inline with the search options */
+      .g-search-synth-btn {
+        /* Reset WebKit/Safari's native push-button UA styles so our explicit
+           height + inline-flex fully control sizing — matching the label chip. */
+        -webkit-appearance: none;
+        appearance: none;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        height: 24px;
+        min-height: 0;
+        overflow: hidden;
+        font-size: 12px;
+        line-height: 1;
+        padding: 0 10px;
+        border-radius: 6px;
+        border: 1px solid rgba(106,179,200,0.35);
+        background: rgba(106,179,200,0.08);
+        color: var(--accent);
+        cursor: pointer;
+        white-space: nowrap;
+        box-sizing: border-box;
+        transition: background 0.15s, border-color 0.15s;
+      }
+      .g-search-synth-btn:hover:not(:disabled) {
+        background: rgba(106,179,200,0.18);
+        border-color: rgba(106,179,200,0.6);
+      }
+      .g-search-synth-btn:disabled {
+        opacity: 0.4;
+        cursor: default;
+        color: var(--fg-dim);
+        border-color: rgba(255,255,255,0.1);
+        background: transparent;
+      }
+
+      /* Enhanced ranking chip — same geometry as the Synthesize button.
+         Checkbox is visible and accent-tinted; :has(:checked) darkens the fill. */
+      .g-search-rerank-chip {
+        display: inline-flex;
+        align-items: center;
+        gap: 5px;
+        height: 24px;
+        font-size: 12px;
+        line-height: 1;
+        padding: 0 10px;
+        border-radius: 6px;
+        border: 1px solid rgba(106,179,200,0.35);
+        background: rgba(106,179,200,0.08);
+        color: var(--accent);
+        cursor: pointer;
+        white-space: nowrap;
+        user-select: none;
+        box-sizing: border-box;
+        transition: background 0.15s, border-color 0.15s;
+      }
+      .g-search-rerank-chip input[type="checkbox"] {
+        margin: 0;
+        accent-color: var(--accent);
+        cursor: pointer;
+        flex-shrink: 0;
+      }
+      .g-search-rerank-chip:hover:not(.rerank-disabled) {
+        background: rgba(106,179,200,0.18);
+        border-color: rgba(106,179,200,0.6);
+      }
+      .g-search-rerank-chip:has(:checked) {
+        background: rgba(106,179,200,0.22);
+        border-color: rgba(106,179,200,0.7);
+        font-weight: 600;
+      }
+      .g-search-rerank-chip.rerank-disabled {
+        opacity: 0.4;
+        cursor: default;
+        color: var(--fg-dim);
+        border-color: rgba(255,255,255,0.1);
+        background: transparent;
+      }
+      .g-search-rerank-chip.rerank-disabled input[type="checkbox"] { cursor: default; }
 
       /* Main: tabs+content on left, detail pane right. Sized to fill the
          remaining space inside the flex-column atlas pane so the children
@@ -5012,12 +5122,9 @@
                     <button id="g-search-clear" class="g-search-clear hidden" title="Clear search">×</button>
                   </div>
                   <div style="display: flex; flex-wrap: wrap; align-items: center; gap: 10px; padding: 0 2px;">
-                    <div class="g-search-llm-options" style="display: flex; gap: 14px; align-items: center; font-size: 12px; color: var(--fg-dim);">
-                      <label id="g-search-synth-wrap" style="display: flex; align-items: center; gap: 5px; cursor: pointer;" title="Local LLM is not ready. Enable in Settings → AI.">
-                        <input type="checkbox" id="g-search-synth" disabled />
-                        <span>🤖 Synthesize answer</span>
-                      </label>
-                      <label id="g-search-rerank-wrap" style="display: flex; align-items: center; gap: 5px; cursor: pointer;" title="Local LLM is not ready. Enable in Settings → AI.">
+                    <div class="g-search-llm-options" style="display: flex; gap: 10px; align-items: center; font-size: 12px; color: var(--fg-dim);">
+                      <button id="g-search-synth-btn" class="g-search-synth-btn" disabled title="Local LLM is not ready. Enable in Settings → AI.">🤖 Synthesize answer</button>
+                      <label id="g-search-rerank-wrap" class="g-search-rerank-chip" title="Local LLM is not ready. Enable in Settings → AI.">
                         <input type="checkbox" id="g-search-rerank" disabled />
                         <span>Enhanced ranking</span>
                       </label>
@@ -5438,6 +5545,9 @@ ollama list</code></pre>
               </div>
               <div class="sources-filter-bar">
                 <input type="search" id="sources-filter" placeholder="Filter sources…" autocomplete="off" />
+                <select id="sources-engram-select" class="sources-engram-select" title="Filter by engram">
+                  <option value="">All engrams</option>
+                </select>
               </div>
               <div id="sources-list"><p class="subtitle">Loading…</p></div>
             </section>

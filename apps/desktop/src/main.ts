@@ -446,6 +446,7 @@ const els = {
   activeEngramLabel: $<HTMLSpanElement>('active-engram-label'),
   sourcesList: $<HTMLDivElement>('sources-list'),
   sourcesFilter: $<HTMLInputElement>('sources-filter'),
+  sourcesEngramSelect: $<HTMLSelectElement>('sources-engram-select'),
   dropZone: $<HTMLDivElement>('drop-zone'),
   toastStack: $<HTMLDivElement>('g-toast-stack'),
   btnRecover: $<HTMLButtonElement>('btn-recover'),
@@ -690,6 +691,7 @@ let mcpPollTimer: ReturnType<typeof setInterval> | null = null;
 // the IPC on every recap update. Updated by refreshStats().
 let lastInspectorStats: StatsSummary | null = null;
 let sourcesFilterTerm = '';
+let sourcesEngramFilter = ''; // graphId of the selected engram, '' = all
 
 function showError(msg: string | null): void {
   if (!msg) {
@@ -1217,6 +1219,54 @@ function syncEngramPicker(): void {
   }
   if (atlasActiveGraph) els.atlasGraphPicker.value = atlasActiveGraph;
   refreshActiveEngramLabel();
+  // Keep the Sources pane dropdown in sync — it shows the same engram list
+  // and must update as more engrams finish loading during boot.
+  syncSourcesEngramDropdown();
+}
+
+function syncSourcesEngramDropdown(): void {
+  const sel = els.sourcesEngramSelect;
+  const current = sel.value; // preserve current selection if still valid
+  sel.innerHTML = '<option value="">All engrams</option>';
+  const ordered = loadedGraphs
+    .filter((g) => !g.metadata.archived)
+    .sort((a, b) => (a.metadata.displayName ?? a.graphId).localeCompare(b.metadata.displayName ?? b.graphId));
+  for (const g of ordered) {
+    const opt = document.createElement('option');
+    opt.value = g.graphId;
+    opt.textContent = g.metadata.displayName ?? g.graphId;
+    if (g.loaded === false) opt.disabled = true;
+    sel.appendChild(opt);
+  }
+  // Restore selection if the previously selected engram still exists;
+  // otherwise fall back to the active engram (mirrors the top-bar picker).
+  if (current && ordered.some((g) => g.graphId === current)) {
+    sel.value = current;
+    sourcesEngramFilter = current;
+  } else if (atlasActiveGraph && ordered.some((g) => g.graphId === atlasActiveGraph)) {
+    sel.value = atlasActiveGraph;
+    sourcesEngramFilter = atlasActiveGraph;
+  } else {
+    sel.value = '';
+    sourcesEngramFilter = '';
+  }
+
+  // If the Sources pane is open, make sure the list reflects the current filter.
+  // When an engram finishes loading, its sources weren't in the DOM yet (they
+  // were missing from the inspector_stats snapshot at the time refreshStats()
+  // last ran). If the selected engram has no group element in the list, rebuild
+  // the list from scratch so newly-available sources show up. If the group is
+  // already there, just re-apply the filter (cheaper — no IPC roundtrip).
+  if (currentMode === 'sources') {
+    const hasGroup = sourcesEngramFilter === ''
+      || Array.from(els.sourcesList.querySelectorAll<HTMLElement>('.sources-engram-group'))
+           .some((g) => g.dataset['graphId'] === sourcesEngramFilter);
+    if (!hasGroup) {
+      void refreshStats(); // rebuilt from fresh inspector_stats — group now included
+    } else {
+      applySourcesFilter(); // group exists; just update visibility
+    }
+  }
 }
 
 /** Live "Get connected" state — which integrations are currently active.
@@ -1224,6 +1274,9 @@ function syncEngramPicker(): void {
  *  refreshes; each one re-renders the sidebar status list. */
 let liveMcpClients = new Set<string>();
 let liveIdleClients = new Set<string>();
+/** Friendly name of the most recently active (non-idle) client — persists
+ *  when all clients become idle so the status bar still shows a useful name. */
+let lastNonIdleClient: string | null = null;
 let installedConnectorKinds = new Set<ConnectorKind>();
 
 /**
@@ -1293,15 +1346,11 @@ function renderRailGetConnected(): void {
     els.railGcAimode.appendChild(makeChip('Graphnosis Neural Network', true, openNonDeterministic));
   }
 
-  // AI clients — lit when a live relay from that client is connected;
-  // amber-pulsing when connected but idle.
-  const makeClientChip = (label: string, onClick: () => void): HTMLButtonElement => {
-    const connected = liveMcpClients.has(label);
-    const idle = connected && liveIdleClients.has(label);
-    const chip = makeChip(label, connected, onClick);
-    if (idle) chip.classList.add('idle');
-    return chip;
-  };
+  // AI clients — lit when a live relay from that client is connected.
+  // Idle state is intentionally not shown on sidebar chips — connected
+  // is connected regardless of recent activity.
+  const makeClientChip = (label: string, onClick: () => void): HTMLButtonElement =>
+    makeChip(label, liveMcpClients.has(label), onClick);
   els.railGcClients.innerHTML = '';
   els.railGcClients.appendChild(makeClientChip('Claude Desktop', () => openConfigureClientModal('claude-desktop')));
   els.railGcClients.appendChild(makeClientChip('Claude Code', () => openConfigureClientModal('claude-code')));
@@ -1695,7 +1744,17 @@ function activateMode(mode: Mode): void {
     p.classList.toggle('hidden', p.dataset.pane !== mode);
   });
   // Lazy-load per mode
-  if (mode === 'sources') void refreshStats(); // sources list rendered inside refreshStats payload
+  if (mode === 'sources') {
+    // Default the engram dropdown to the active engram each time the
+    // Sources page is entered so the user immediately sees their current
+    // context. refreshStats() rebuilds the dropdown options and will
+    // honour this pre-set selection value.
+    if (atlasActiveGraph) {
+      sourcesEngramFilter = atlasActiveGraph;
+      els.sourcesEngramSelect.value = atlasActiveGraph;
+    }
+    void refreshStats();
+  }
   if (mode === 'atlas') {
     // Returning to the 3D Engram from another left-sidebar screen — reset it
     // to a neutral view (no selection/emphasis); the camera is left alone.
@@ -1789,6 +1848,17 @@ function renderMcpStatus(connections: McpConnection[]): void {
       .filter(([, conns]) => conns.every((c) => nowShared - c.lastActivityAt >= MCP_IDLE_MS_SHARED))
       .map(([name]) => name),
   );
+  // Track the most recently active client so the status bar can show a useful
+  // name even when all clients are idle or disconnect.
+  const activeClients = [...clientConns.keys()].filter((name) => !liveIdleClients.has(name));
+  if (activeClients.length > 0) {
+    // Pick the one with the most recent activity.
+    lastNonIdleClient = activeClients.reduce((best, name) => {
+      const bestLast = Math.max(...(clientConns.get(best) ?? []).map((c) => c.lastActivityAt));
+      const nameLast = Math.max(...(clientConns.get(name) ?? []).map((c) => c.lastActivityAt));
+      return nameLast > bestLast ? name : best;
+    });
+  }
   updateStatusBar(connections);
   // Mirror the live client set into the sidebar's Get-connected status list.
   liveMcpClients = new Set(connections.map((c) => friendlyClient(c.clientName)));
@@ -2091,6 +2161,10 @@ async function refreshStats(): Promise<void> {
         ...[...byEngram.keys()].filter((id) => !groupOrder.includes(id)),
       ];
 
+      // The Sources engram dropdown is kept in sync by syncSourcesEngramDropdown()
+      // (called from syncEngramPicker() whenever loadedGraphs changes) so we
+      // don't need to rebuild it here — just apply the current filter state.
+
       const renderSourceRow = (s: SourceRecord): string => {
         // Reingest is only meaningful for file-backed sources: the
         // SDK can re-read the disk path. URLs would need a fresh
@@ -2137,7 +2211,7 @@ async function refreshStats(): Promise<void> {
         const displayName = loadedGraphs.find((g) => g.graphId === graphId)?.metadata.displayName ?? graphId;
         const sources = byEngram.get(graphId)!;
         return `
-          <div class="sources-engram-group">
+          <div class="sources-engram-group" data-graph-id="${escape(graphId)}">
             <div class="sources-engram-heading">${escape(displayName)}</div>
             ${sources.map(renderSourceRow).join('')}
           </div>`;
@@ -2187,13 +2261,19 @@ async function refreshStats(): Promise<void> {
           widget.className = 'source-row-forget-confirm';
           widget.innerHTML =
             `<input type="text" class="source-row-forget-input" placeholder='type "forget" to confirm' autocomplete="off" spellcheck="false" />` +
+            `<button class="source-row-forget-cancel">Cancel</button>` +
             `<button class="source-row-forget-go" disabled>Forget</button>`;
 
-          const input = widget.querySelector<HTMLInputElement>('.source-row-forget-input')!;
-          const goBtn = widget.querySelector<HTMLButtonElement>('.source-row-forget-go')!;
+          const input     = widget.querySelector<HTMLInputElement>('.source-row-forget-input')!;
+          const cancelBtn = widget.querySelector<HTMLButtonElement>('.source-row-forget-cancel')!;
+          const goBtn     = widget.querySelector<HTMLButtonElement>('.source-row-forget-go')!;
 
-          // Hide the original Forget button and insert the widget after it.
+          // Hide Forget button + sibling action buttons while confirming.
+          const forgetsiblingBtns = Array.from(
+            row.querySelectorAll<HTMLElement>('.btn-show-finder, .btn-reingest, .btn-move-source'),
+          );
           btn.style.display = 'none';
+          forgetsiblingBtns.forEach((b) => { b.style.display = 'none'; });
           btn.insertAdjacentElement('afterend', widget);
           input.focus();
 
@@ -2202,11 +2282,14 @@ async function refreshStats(): Promise<void> {
             goBtn.disabled = input.value.trim().toLowerCase() !== 'forget';
           });
 
-          // Collapse helper — removes widget, restores button, no action.
+          // Collapse helper — removes widget, restores all buttons, no action.
           const collapse = (): void => {
             widget.remove();
             btn.style.display = '';
+            forgetsiblingBtns.forEach((b) => { b.style.display = ''; });
           };
+
+          cancelBtn.addEventListener('click', () => collapse());
 
           // Escape collapses; Enter confirms if enabled.
           input.addEventListener('keydown', (e: KeyboardEvent) => {
@@ -2245,32 +2328,65 @@ async function refreshStats(): Promise<void> {
           });
         });
       });
-      // Reingest button: forget + re-read the file from disk. Surface
-      // progress via the same toast plumbing the drag-drop path uses, so
-      // long PDF re-parses don't look like a frozen UI.
+      // Reingest button: shows an inline confirmation before re-reading the
+      // file from disk. Progress is surfaced via the same toast plumbing the
+      // drag-drop path uses so long PDF re-parses don't look like a frozen UI.
       els.sourcesList.querySelectorAll<HTMLButtonElement>('.btn-reingest').forEach((btn) => {
-        btn.addEventListener('click', async () => {
+        btn.addEventListener('click', () => {
           const graphId = btn.dataset.graphId ?? '';
           const sourceId = btn.dataset.sourceId ?? '';
           const ref = btn.dataset.ref ?? sourceId;
           if (!graphId || !sourceId) return;
-          const fileName = ref.split('/').pop() ?? ref;
-          btn.disabled = true;
-          btn.textContent = 'Reingesting…';
-          const toastId = addIngestToast(`Reingesting ${fileName}…`);
-          try {
-            const result = (await invoke('reingest_source', { graphId, sourceId })) as {
-              nodeIds?: string[];
-            };
-            const n = result?.nodeIds?.length ?? 0;
-            finishIngestToast(toastId, 'success', n > 0 ? `Re-saved ${n} node${n === 1 ? '' : 's'}` : 'Reingested');
-            await refreshStats();
-          } catch (e) {
-            finishIngestToast(toastId, 'error', String(e));
-            showError(`Reingest failed: ${e}`);
-            btn.disabled = false;
-            btn.textContent = 'Reingest';
-          }
+
+          const row = btn.closest<HTMLDivElement>('.source-row');
+          if (!row || row.querySelector('.source-row-reingest-confirm')) return;
+
+          const widget = document.createElement('div');
+          widget.className = 'source-row-reingest-confirm';
+          widget.innerHTML =
+            `<span class="source-row-reingest-label">Re-read file and replace nodes?</span>` +
+            `<button class="source-row-reingest-cancel">Cancel</button>` +
+            `<button class="source-row-reingest-go">Reingest</button>`;
+
+          const cancelBtn = widget.querySelector<HTMLButtonElement>('.source-row-reingest-cancel')!;
+          const goBtn     = widget.querySelector<HTMLButtonElement>('.source-row-reingest-go')!;
+
+          const reingestSiblings = Array.from(
+            row.querySelectorAll<HTMLElement>('.btn-show-finder, .btn-move-source, .btn-forget'),
+          );
+          btn.style.display = 'none';
+          reingestSiblings.forEach((b) => { b.style.display = 'none'; });
+          btn.insertAdjacentElement('afterend', widget);
+
+          const collapse = (): void => {
+            widget.remove();
+            btn.style.display = '';
+            reingestSiblings.forEach((b) => { b.style.display = ''; });
+          };
+
+          cancelBtn.addEventListener('click', () => collapse());
+
+          goBtn.addEventListener('click', async () => {
+            widget.remove();
+            const fileName = ref.split('/').pop() ?? ref;
+            btn.disabled = true;
+            btn.style.display = '';
+            btn.textContent = 'Reingesting…';
+            reingestSiblings.forEach((b) => { b.style.display = ''; (b as HTMLButtonElement).disabled = true; });
+            const toastId = addIngestToast(`Reingesting ${fileName}…`);
+            try {
+              const result = (await invoke('reingest_source', { graphId, sourceId })) as { nodeIds?: string[] };
+              const n = result?.nodeIds?.length ?? 0;
+              finishIngestToast(toastId, 'success', n > 0 ? `Re-saved ${n} node${n === 1 ? '' : 's'}` : 'Reingested');
+              await refreshStats();
+            } catch (e) {
+              finishIngestToast(toastId, 'error', String(e));
+              showError(`Reingest failed: ${e}`);
+              btn.disabled = false;
+              btn.textContent = 'Reingest';
+              reingestSiblings.forEach((b) => { (b as HTMLButtonElement).disabled = false; });
+            }
+          });
         });
       });
       // Move-to: inline engram picker that replaces the button row temporarily.
@@ -2289,13 +2405,13 @@ async function refreshStats(): Promise<void> {
           picker.className = 'source-row-move-picker';
           picker.innerHTML =
             `<span class="source-row-move-label">Move to:</span>` +
+            `<input type="text" class="source-row-move-name-input" placeholder="New engram name…" style="display:none" />` +
             `<select class="source-row-move-select">` +
-            `<option value="__new__">New Engram…</option>` +
             [...targets].sort((a, b) => (a.metadata.displayName ?? a.graphId).localeCompare(b.metadata.displayName ?? b.graphId)).map((g) =>
               `<option value="${escape(g.graphId)}">${escape(g.metadata.displayName || g.graphId)}</option>`
             ).join('') +
+            `<option value="__new__">New Engram…</option>` +
             `</select>` +
-            `<input type="text" class="source-row-move-name-input" placeholder="New engram name…" style="display:none" />` +
             `<button class="source-row-move-go">Move</button>` +
             `<button class="source-row-move-cancel">Cancel</button>`;
 
@@ -2304,16 +2420,30 @@ async function refreshStats(): Promise<void> {
           const goBtn     = picker.querySelector<HTMLButtonElement>('.source-row-move-go')!;
           const cancelBtn = picker.querySelector<HTMLButtonElement>('.source-row-move-cancel')!;
 
-          select.addEventListener('change', () => {
-            nameInput.style.display = select.value === '__new__' ? '' : 'none';
-          });
+          const syncNameInput = () => {
+            const isNew = select.value === '__new__';
+            nameInput.style.display = isNew ? '' : 'none';
+            select.style.display = isNew ? 'none' : '';
+            if (isNew) nameInput.focus();
+          };
+          select.addEventListener('change', syncNameInput);
 
+          // Hide all other action buttons in this row while the picker is open.
+          const siblingBtns = Array.from(
+            row.querySelectorAll<HTMLElement>('.btn-show-finder, .btn-reingest, .btn-forget'),
+          );
           btn.style.display = 'none';
+          siblingBtns.forEach((b) => { b.style.display = 'none'; });
           row.appendChild(picker);
+          // Apply initial visibility — "New Engram…" is the first option so
+          // the name input must be shown straight away without waiting for a
+          // change event that will never fire on the initial render.
+          syncNameInput();
 
           cancelBtn.addEventListener('click', () => {
             picker.remove();
             btn.style.display = '';
+            siblingBtns.forEach((b) => { b.style.display = ''; });
           });
 
           goBtn.addEventListener('click', async () => {
@@ -2344,10 +2474,18 @@ async function refreshStats(): Promise<void> {
             btn.textContent = 'Moving…';
             try {
               await invoke('move_source', { fromGraphId, sourceId, toGraphId });
-              const canvas = document.querySelector<HTMLElement>('.app-canvas');
-              const savedScroll = canvas?.scrollTop ?? 0;
-              await refreshStats();
-              if (canvas) canvas.scrollTop = savedScroll;
+              // Gray out the row in place — don't re-render the whole list.
+              // The row stays visible so the user can see what moved and where.
+              const nameEl = row.querySelector<HTMLElement>('.source-name');
+              if (nameEl) {
+                nameEl.style.opacity = '0.4';
+                nameEl.title = `Moved to ${toName}`;
+              }
+              // Remove all action buttons — row is now read-only.
+              row.querySelectorAll<HTMLElement>(
+                '.btn-show-finder, .btn-reingest, .btn-move-source, .btn-forget',
+              ).forEach((b) => b.remove());
+              btn.remove();
             } catch (e) {
               showError(`Move to "${toName}" failed: ${e}`);
               btn.disabled = false;
@@ -2381,13 +2519,17 @@ function applySourcesFilter(): void {
   els.sourcesList.querySelectorAll<HTMLElement>('[data-source-id]').forEach((row) => {
     const ref = (row.dataset.ref ?? '').toLowerCase();
     const name = (row.querySelector('.source-name')?.textContent ?? '').toLowerCase();
-    row.style.display = (!term || ref.includes(term) || name.includes(term)) ? '' : 'none';
+    const textMatch = !term || ref.includes(term) || name.includes(term);
+    row.style.display = textMatch ? '' : 'none';
   });
-  // Hide engram group headings when none of their source rows match
+  // Show/hide entire engram groups based on engram filter + whether any
+  // source rows in the group survived the text filter.
   els.sourcesList.querySelectorAll<HTMLElement>('.sources-engram-group').forEach((group) => {
-    const hasVisible = !term || Array.from(group.querySelectorAll<HTMLElement>('[data-source-id]'))
+    const graphId = group.dataset['graphId'] ?? '';
+    const engramMatch = !sourcesEngramFilter || graphId === sourcesEngramFilter;
+    const hasVisibleRow = Array.from(group.querySelectorAll<HTMLElement>('[data-source-id]'))
       .some((r) => r.style.display !== 'none');
-    group.style.display = hasVisible ? '' : 'none';
+    group.style.display = (engramMatch && (!term || hasVisibleRow)) ? '' : 'none';
   });
 }
 
@@ -2401,6 +2543,11 @@ function escape(s: string): string {
 
 els.sourcesFilter.addEventListener('input', () => {
   sourcesFilterTerm = els.sourcesFilter.value.trim();
+  applySourcesFilter();
+});
+
+els.sourcesEngramSelect.addEventListener('change', () => {
+  sourcesEngramFilter = els.sourcesEngramSelect.value;
   applySourcesFilter();
 });
 
@@ -4137,31 +4284,39 @@ function updateStatusBar(connections: McpConnection[]): void {
   if (!els.statusMcpDot) return;
   const railIndicator = document.getElementById('rail-mcp-indicator');
   if (connections.length === 0) {
-    // Status bar
-    els.statusMcpDot.className = 'status-dot';
-    els.statusMcpText.textContent = 'No AI client connected';
-    // Rail indicator
-    if (railIndicator) {
-      railIndicator.innerHTML =
-        '<span class="rail-mcp-dot"></span><span class="rail-mcp-name">No client</span>';
+    if (lastNonIdleClient) {
+      // Show the last known active client — no dot change, no alarming "No client" text.
+      els.statusMcpDot.className = 'status-dot';
+      els.statusMcpText.textContent = lastNonIdleClient;
+      if (railIndicator) {
+        railIndicator.innerHTML =
+          `<span class="rail-mcp-dot"></span><span class="rail-mcp-name" title="${escape(lastNonIdleClient)}">${escape(lastNonIdleClient)}</span>`;
+      }
+    } else {
+      // Status bar — truly no client ever connected this session.
+      els.statusMcpDot.className = 'status-dot';
+      els.statusMcpText.textContent = 'No AI client connected';
+      if (railIndicator) {
+        railIndicator.innerHTML =
+          '<span class="rail-mcp-dot"></span><span class="rail-mcp-name">No client</span>';
+      }
     }
   } else {
-    // Pick the first alphabetically by friendly display name so the shown
-    // client is deterministic when multiple are connected.
-    const sorted = [...connections].sort((a, b) =>
+    // Prefer an actively non-idle client; fall back to any connected client.
+    // If all are idle, still show the most recently active one (no idle styling).
+    const nonIdle = connections.filter((c) => !liveIdleClients.has(friendlyClient(c.clientName)));
+    const pool = nonIdle.length > 0 ? nonIdle : connections;
+    const sorted = [...pool].sort((a, b) =>
       friendlyClient(a.clientName).localeCompare(friendlyClient(b.clientName))
     );
     const primary = friendlyClient(sorted[0]?.clientName);
-    // If ALL connections to the primary client are idle, show amber pulsating dot.
-    const primaryIsIdle = liveIdleClients.has(primary);
-    // Status bar
-    els.statusMcpDot.className = primaryIsIdle ? 'status-dot idle' : 'status-dot ok';
+    // Status bar — always show as "ok" (connected); idle is not surfaced here.
+    els.statusMcpDot.className = 'status-dot ok';
     els.statusMcpText.textContent = primary;
     // Rail indicator — same info, compact form
     if (railIndicator) {
-      const railDotClass = primaryIsIdle ? 'rail-mcp-dot connected idle' : 'rail-mcp-dot connected';
       railIndicator.innerHTML =
-        `<span class="${railDotClass}"></span><span class="rail-mcp-name" title="${escape(primary)}">${escape(primary)}</span>`;
+        `<span class="rail-mcp-dot connected"></span><span class="rail-mcp-name" title="${escape(primary)}">${escape(primary)}</span>`;
     }
   }
 }
@@ -11804,46 +11959,42 @@ void (async () => {
 // are greyed out when the Local LLM isn't ready. Toggling persists the
 // preference to settings and re-runs the active search instantly.
 
-let searchLlmSynthesizeEnabled = false;
 let searchLlmRerankEnabled = false;
 
 function syncSearchLlmCheckboxes(): void {
-  // DOM-only sync. The in-memory flags survive an LLM-off state so the user's
-  // preference is preserved when the LLM comes back — `loadSearchLlmPreferences`
-  // is the single writer for those flags.
-  const synth = document.getElementById('g-search-synth') as HTMLInputElement | null;
+  // "Synthesize answer" is now a button — enable/disable it based on Ollama state.
+  // "Enhanced ranking" remains a persistent checkbox preference.
+  const synthBtn = document.getElementById('g-search-synth-btn') as HTMLButtonElement | null;
   const rerank = document.getElementById('g-search-rerank') as HTMLInputElement | null;
-  const synthWrap = document.getElementById('g-search-synth-wrap');
   const rerankWrap = document.getElementById('g-search-rerank-wrap');
-  if (!synth || !rerank) return;
   const llmBtn = document.getElementById('g-search-llm-btn') as HTMLButtonElement | null;
-  // Search features (Synthesize, Enhanced ranking) only need Ollama + a model.
-  // Background brain features require the explicit Local LLM toggle (brainLlmReady).
+  // Search features only need Ollama + a model (not the explicit Local LLM master toggle).
   if (ollamaReadyForSearch) {
-    synth.disabled = false;
-    rerank.disabled = false;
-    synth.checked = searchLlmSynthesizeEnabled;
-    rerank.checked = searchLlmRerankEnabled;
-    if (synthWrap) synthWrap.title = 'Use Local LLM to write a 1-paragraph answer with citations.';
-    if (rerankWrap) rerankWrap.title = 'Use Local LLM to re-order results by judged relevance.';
-    if (synthWrap) synthWrap.style.opacity = '1';
-    if (rerankWrap) rerankWrap.style.opacity = '1';
+    if (synthBtn) {
+      synthBtn.disabled = false;
+      synthBtn.title = 'Write a 1-paragraph answer with citations using your local AI (or press Enter in the search box).';
+    }
+    if (rerank) rerank.disabled = false;
+    if (rerankWrap) {
+      rerankWrap.title = 'Use Local LLM to re-order results by judged relevance.';
+      rerankWrap.classList.remove('rerank-disabled');
+    }
     if (llmBtn) llmBtn.style.display = 'none';
   } else {
-    synth.disabled = true;
-    rerank.disabled = true;
-    synth.checked = false;
-    rerank.checked = false;
-    // Reset in-memory flags so the boxes stay unchecked if Ollama comes back —
-    // the user must explicitly opt back in rather than having them silently
-    // re-enable on the next status poll.
-    searchLlmSynthesizeEnabled = false;
+    if (synthBtn) {
+      synthBtn.disabled = true;
+      synthBtn.title = 'Ollama is not running or has no model. Start Ollama and click Recheck in Go Non-Deterministic.';
+    }
+    if (rerank) {
+      rerank.disabled = true;
+      rerank.checked = false;
+    }
     searchLlmRerankEnabled = false;
     const reason = 'Ollama is not running or has no model. Start Ollama and click Recheck in Go Non-Deterministic.';
-    if (synthWrap) synthWrap.title = reason;
-    if (rerankWrap) rerankWrap.title = reason;
-    if (synthWrap) synthWrap.style.opacity = '0.5';
-    if (rerankWrap) rerankWrap.style.opacity = '0.5';
+    if (rerankWrap) {
+      rerankWrap.title = reason;
+      rerankWrap.classList.add('rerank-disabled');
+    }
     if (llmBtn) llmBtn.style.display = '';
   }
 }
@@ -11851,11 +12002,9 @@ function syncSearchLlmCheckboxes(): void {
 async function loadSearchLlmPreferences(): Promise<void> {
   try {
     const s = (await invoke('get_settings')) as AppSettings;
-    searchLlmSynthesizeEnabled = s.ai?.searchLlmSynthesize === true;
+    // Synthesize answer is now a button (no persistent preference); rerank stays.
     searchLlmRerankEnabled = s.ai?.searchLlmRerank === true;
-    const synth = document.getElementById('g-search-synth') as HTMLInputElement | null;
     const rerank = document.getElementById('g-search-rerank') as HTMLInputElement | null;
-    if (synth) synth.checked = searchLlmSynthesizeEnabled && ollamaReadyForSearch;
     if (rerank) rerank.checked = searchLlmRerankEnabled && ollamaReadyForSearch;
   } catch { /* settings unavailable — defaults stay false */ }
 }
@@ -11869,16 +12018,10 @@ async function persistSearchLlmPreference(field: 'searchLlmSynthesize' | 'search
   } catch { /* non-fatal */ }
 }
 
-document.getElementById('g-search-synth')?.addEventListener('change', () => {
-  const cb = document.getElementById('g-search-synth') as HTMLInputElement;
-  searchLlmSynthesizeEnabled = cb.checked;
-  void persistSearchLlmPreference('searchLlmSynthesize', cb.checked);
+// Synthesize answer button — same action as pressing Enter in the search box.
+document.getElementById('g-search-synth-btn')?.addEventListener('click', () => {
   const q = els.gSearch.value.trim();
-  if (!cb.checked) {
-    clearSearchSynthesis();
-  } else if (q.length > 0 && graphnosisListRows.length > 0) {
-    // Checking the box with an active query is an explicit user action —
-    // trigger immediately rather than waiting for Enter.
+  if (q.length > 0 && graphnosisListRows.length > 0) {
     void applyLlmSearchEnhancements(q, graphnosisListRows);
   }
 });
@@ -11954,7 +12097,8 @@ async function applyLlmSearchEnhancements(query: string, hits: NodeRecord[]): Pr
     }
   }
 
-  if (searchLlmSynthesizeEnabled) {
+  // Synthesize is now always triggered on Enter / button click — no checkbox gate.
+  if (ollamaReadyForSearch) {
     try {
       renderSearchSynthesis(query, 'Thinking with your local AI…', []);
       const syn = await ipcCall<{ answer: string; citedNodeIds: string[] }>(
