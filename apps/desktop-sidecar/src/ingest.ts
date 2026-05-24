@@ -63,6 +63,8 @@ export interface IngestFileOpts {
    * Default: identity — runs fn immediately.
    */
   wrapIngest?: <T>(fn: () => Promise<T>) => Promise<T>;
+  /** Who/what initiated this ingest — threads into the op-log `triggeredBy` field. */
+  triggeredBy?: string;
 }
 
 /** How many pages to embed per chunk. Each chunk's ONNX call is serialized
@@ -88,7 +90,7 @@ export async function ingestFile(host: GraphnosisHost, graphId: string, filePath
   } else if (CSV_EXTS.has(ext)) {
     input = { kind: 'csv', content: await fs.readFile(filePath, 'utf8'), sourceRef: filePath };
   } else if (PDF_EXTS.has(ext)) {
-    return ingestPdfWithProgress(host, graphId, filePath, opts.onProgress, opts.onEmbeddingStart, opts.onEmbeddingChunk, wrap);
+    return ingestPdfWithProgress(host, graphId, filePath, opts.onProgress, opts.onEmbeddingStart, opts.onEmbeddingChunk, wrap, opts.triggeredBy);
   } else if (DOCX_EXTS.has(ext)) {
     // Word documents: convert to markdown via mammoth so the SDK gets clean
     // structured text. mammoth understands paragraphs, headings, lists,
@@ -109,7 +111,7 @@ export async function ingestFile(host: GraphnosisHost, graphId: string, filePath
   }
   // All non-PDF paths reach here. wrap serializes the ONNX embedding call
   // while allowing file reads above to happen outside the mutex.
-  return wrap(() => host.ingest(graphId, 'file', filePath, input));
+  return wrap(() => host.ingest(graphId, 'file', filePath, input, opts.triggeredBy ? { triggeredBy: opts.triggeredBy } : undefined));
 }
 
 /**
@@ -134,6 +136,7 @@ async function ingestPdfWithProgress(
   onEmbeddingStart?: (pagesExtracted: number) => void,
   onEmbeddingChunk?: (chunksDone: number, totalChunks: number, nodesTotal: number) => void,
   wrap: <T>(fn: () => Promise<T>) => Promise<T> = (fn) => fn(),
+  triggeredBy?: string,
 ) {
   // ── Phase 1: Parse all pages ─────────────────────────────────────────────
   // Two paths: worker_threads in dev mode, inline in compiled-binary mode.
@@ -178,7 +181,7 @@ async function ingestPdfWithProgress(
     }
   }
 
-  return host.ingestChunked(graphId, 'file', filePath, chunkInputs, wrap, onEmbeddingChunk);
+  return host.ingestChunked(graphId, 'file', filePath, chunkInputs, wrap, onEmbeddingChunk, triggeredBy ? { triggeredBy } : undefined);
 }
 
 /**
@@ -212,16 +215,19 @@ export interface WebIngestInput {
   html?: string;
   /** Optional selected text — overrides full-page extraction. */
   selection?: string;
+  /** Who/what initiated this ingest — threads into the op-log `triggeredBy` field. */
+  triggeredBy?: string;
 }
 
 export async function ingestWeb(host: GraphnosisHost, graphId: string, web: WebIngestInput) {
+  const trigOpts = web.triggeredBy ? { triggeredBy: web.triggeredBy } : undefined;
   if (web.selection && web.selection.trim()) {
     const md = `# Clip from ${web.url}\n\n${web.selection}`;
     return host.ingest(graphId, 'url', web.url, {
       kind: 'markdown',
       content: md,
       sourceRef: web.url,
-    });
+    }, trigOpts);
   }
 
   const html = web.html ?? (await fetchWithReadabilityFallback(web.url));
@@ -248,7 +254,7 @@ export async function ingestWeb(host: GraphnosisHost, graphId: string, web: WebI
     kind: 'markdown',
     content,
     sourceRef: web.url,
-  });
+  }, trigOpts);
 }
 
 async function fetchWithReadabilityFallback(url: string): Promise<string> {
@@ -292,7 +298,7 @@ export async function ingestClip(
   graphId: string,
   text: string,
   label: string,
-  opts?: { addedBy?: string; sourceKind?: 'clip' | 'ai-conversation' },
+  opts?: { addedBy?: string; sourceKind?: 'clip' | 'ai-conversation'; triggeredBy?: string },
 ) {
   const sourceKind = opts?.sourceKind ?? 'clip';
   // Prefix the source ref so Sources-list filtering + the recovery panel
@@ -323,7 +329,10 @@ export async function ingestClip(
     kind,
     content,
     sourceRef,
-  }, opts?.addedBy ? { addedBy: opts.addedBy } : undefined);
+  }, {
+    ...(opts?.addedBy ? { addedBy: opts.addedBy } : {}),
+    ...(opts?.triggeredBy ? { triggeredBy: opts.triggeredBy } : {}),
+  });
   if (opts?.addedBy) {
     await host.gllWriter.append({
       timestamp: Date.now(),

@@ -51,7 +51,7 @@ const REPLAY_ALLOWED_REPEATS = 2;       // block the (N+1)-th similar query in t
 // - remember  : user-invoked "save this" inside an AI conversation
 // - correct   : process a natural-language correction and return a preview diff (no write)
 // - apply     : commit a previously-previewed diff after the user confirms in the app
-// - forget    : remove a source and everything derived from it
+// - forget    : soft-delete one or more specific memory nodes (never an entire source)
 //
 // The MCP layer never writes without explicit user-side confirmation for mutations
 // except `remember` (which the user themselves invoked from the conversation).
@@ -142,7 +142,9 @@ const ApplyInput = z.object({
 });
 const ForgetInput = z.object({
   graphId: z.string(),
-  sourceId: z.string(),
+  nodeIds: z.union([z.string(), z.array(z.string())]).transform(v => (Array.isArray(v) ? v : [v])),
+}).refine(d => d.nodeIds.length >= 1 && d.nodeIds.length <= 20, {
+  message: 'Provide between 1 and 20 nodeIds per call.',
 });
 const BrowseEngramInput = z.object({
   engram: z.string(),
@@ -173,9 +175,12 @@ const RecallStructuredInput = z.preprocess(
 );
 const RecallWithCitationsInput = RecallStructuredInput;
 const FindSourceInput = z.object({
-  keyword: z.string(),
+  keyword: z.string().optional(),
+  content: z.string().optional(),
   engram: z.string().optional(),
   limit: z.coerce.number().int().positive().max(50).optional(),
+}).refine(d => d.keyword || d.content, {
+  message: 'Provide at least one of: keyword (metadata search) or content (semantic node-content search).',
 });
 const RecallSourceInput = z.object({
   sourceId: z.string(),
@@ -198,10 +203,6 @@ const CrossSearchInput = z.object({
 });
 const TransferSourceInput = z.object({
   sourceId: z.string(),
-  from_engram: z.string(),
-  to_engram: z.string(),
-});
-const MergeEngramsInput = z.object({
   from_engram: z.string(),
   to_engram: z.string(),
 });
@@ -1411,7 +1412,7 @@ export function createMcpServer(deps: McpDeps): Server {
       },
       {
         name: 'correct',
-        description: 'DETERMINISM — Conditional. Deterministic by default: with no Local LLM and no Neural Network enabled, `correct` deterministically supersedes the single closest-matching memory with the correction text (or records it as a new memory when nothing matches) — reproducible, no randomness, fully auditable. The optional Neural Network, when enabled, expands the candidate set with GNN-predicted related memories and may re-rank which memory is superseded — non-deterministic. The optional Local LLM, when enabled, instead authors a multi-part structured diff across several candidate memories — non-deterministic. The response\'s `mode` field reports which path ran ("deterministic", "gnn-expanded", or "llm-assisted"). Either way nothing is written until the user reviews and approves the diff.\n\nPropose a CORRECTION to the user\'s Graphnosis memory in natural language. Returns a structured diff preview; nothing is written until the user opens the Graphnosis App and approves it.\n\nLANGUAGE: Works in any language Claude understands. Pass the user\'s correction in their ORIGINAL language — both the deterministic recall match and the optional LLM parser are multilingual.\n\nWHEN TO CALL:\n• The user says you (or the graph) got something wrong about them — in any language. English: "actually, it was September not August"; Romanian: "de fapt, a fost în septembrie, nu august"; Spanish: "en realidad fue en septiembre, no agosto"; etc.\n• A recall result surfaced a memory that the user just contradicted in conversation. Pass the correction in plain language describing what should change.\n\nWHEN NOT TO CALL:\n• To add brand-new information unrelated to anything already in the graph → use `remember`.\n• To delete a memory wholesale → use `forget` (by sourceId) instead.\n• To "apply" your own preview — `apply` is normally driven by the App after the user clicks Approve, not by you. Only call `apply` if the user has explicitly told you they already approved a specific diff and asked you to commit it.\n\nThe correction becomes a structured diff (supersede/edit/delete/add operations on specific nodes) — produced deterministically by default, with the candidate set expanded by the Neural Network when enabled, or authored by the Local LLM when one is enabled. The user sees that diff in the deck at the top of the Graphnosis check-in pane and decides whether to apply it. You should NEVER call `remember` to "fix" something — that creates duplicate, conflicting nodes that pollute the graph.',
+        description: 'DETERMINISM — Conditional. Deterministic by default: with no Local LLM and no Neural Network enabled, `correct` deterministically supersedes the single closest-matching memory with the correction text (or records it as a new memory when nothing matches) — reproducible, no randomness, fully auditable. The optional Neural Network, when enabled, expands the candidate set with GNN-predicted related memories and may re-rank which memory is superseded — non-deterministic. The optional Local LLM, when enabled, instead authors a multi-part structured diff across several candidate memories — non-deterministic. The response\'s `mode` field reports which path ran ("deterministic", "gnn-expanded", or "llm-assisted"). Either way nothing is written until the user reviews and approves the diff.\n\nPropose a CORRECTION to the user\'s Graphnosis memory in natural language. Returns a structured diff preview; nothing is written until the user opens the Graphnosis App and approves it.\n\nLANGUAGE: Works in any language Claude understands. Pass the user\'s correction in their ORIGINAL language — both the deterministic recall match and the optional LLM parser are multilingual.\n\nWHEN TO CALL:\n• The user says you (or the graph) got something wrong about them — in any language. English: "actually, it was September not August"; Romanian: "de fapt, a fost în septembrie, nu august"; Spanish: "en realidad fue en septiembre, no agosto"; etc.\n• A recall result surfaced a memory that the user just contradicted in conversation. Pass the correction in plain language describing what should change.\n\nWHEN NOT TO CALL:\n• To add brand-new information unrelated to anything already in the graph → use `remember`.\n• To delete one or more specific memory nodes → use `forget` (by nodeIds from `recall_structured`) instead.\n• To "apply" your own preview — `apply` is normally driven by the App after the user clicks Approve, not by you. Only call `apply` if the user has explicitly told you they already approved a specific diff and asked you to commit it.\n\nThe correction becomes a structured diff (supersede/edit/delete/add operations on specific nodes) — produced deterministically by default, with the candidate set expanded by the Neural Network when enabled, or authored by the Local LLM when one is enabled. The user sees that diff in the deck at the top of the Graphnosis check-in pane and decides whether to apply it. You should NEVER call `remember` to "fix" something — that creates duplicate, conflicting nodes that pollute the graph.',
         inputSchema: {
           type: 'object',
           properties: {
@@ -1435,14 +1436,23 @@ export function createMcpServer(deps: McpDeps): Server {
       },
       {
         name: 'forget',
-        description: 'DETERMINISM — Deterministic: removing the same source always yields the same result; no LLM, no randomness, and the soft-delete is recoverable from the op-log.\n\nRemove a source from the user\'s graph — every node that was derived from that source gets soft-deleted (recoverable from the op-log) and removed from future recall results.\n\nLANGUAGE: Works in any language. Trigger on the "make this go away" intent regardless of the phrasing.\n\nPARAMETERS — get these right or the call silently does nothing:\n• `graphId` — the engram SLUG (e.g. "personal", "rss-ai", "book-notes"), NOT a node ID or hash. Use `stats` or `list_engrams` to see valid slugs.\n• `sourceId` — the exact source ID from the source index, NOT a node ID or display label. Use `find_source` to look it up by keyword BEFORE calling forget. Never guess either value.\n\nWHEN TO CALL:\n• The user says "forget about X", "remove my notes on Y", "wipe everything I told you about Z" — or equivalents in any language — and you can identify a specific source (file path, URL, clip ID) that backs it.\n• The user is cleaning up an experimental ingest they don\'t want polluting recall anymore.\n\nWHEN NOT TO CALL:\n• To remove a single memory inside a multi-fact source → use `correct` with a delete operation instead. `forget` removes the WHOLE source.\n• Without first calling `find_source` to get the exact sourceId. Never construct or guess a sourceId from a node hash, display label, or recall result.\n• If the user only said something like "I changed my mind about that" — that\'s ambiguous; ask whether they want to forget the whole source or just amend a specific memory.\n\nThis is a soft delete by default — the user can recover via the Graphnosis App\'s Recover flow if they change their mind. Confirm with the user before calling unless they\'ve explicitly named the source.',
+        description: 'DETERMINISM — Deterministic: soft-deleting the same node always yields the same result; no LLM, no randomness, and the delete is recoverable from the op-log.\n\nSurgically soft-delete one or more specific memory nodes from the user\'s graph. Only the listed nodes are removed — the rest of the source they came from is untouched. This is the ONLY node-level deletion available to AI clients. Deleting an entire source is a user-only action performed in the Graphnosis app UI (Sources page) — never attempt source-level deletion via this tool.\n\nLANGUAGE: Works in any language. Trigger on the "make this go away" intent regardless of the phrasing.\n\nPARAMETERS:\n• `graphId` — the engram SLUG (e.g. "personal", "rss-ai", "book-notes"). Use `stats` or `list_engrams` to see valid slugs.\n• `nodeIds` — one nodeId string or an array of up to 20 nodeId strings. Node IDs come from `recall_structured` results. Never guess a nodeId.\n\nHOW TO GET nodeIds — always call `recall_structured` first:\n1. Call `recall_structured(query="<what the user described>", graphId="<engram>")` — this returns a JSON array where each item has a `nodeId` field.\n2. Show the user the matching node(s) and confirm which one(s) to remove before calling `forget`.\n3. Call `forget(graphId="<engram>", nodeIds=["<id1>", ...])` with the confirmed IDs.\n\nNever skip the `recall_structured` step. Never guess a nodeId. Never pass a sourceId — that field does not exist on this tool.\n\nWHEN TO CALL:\n• The user says "forget about X", "remove that note", "wipe what I said about Y" — or equivalents in any language — and you have confirmed the specific node(s) via `recall_structured`.\n• Removing an outdated fragment, a stale todo, an incorrect fact — anything where the user wants surgical node-level removal without touching the rest of the source.\n\nWHEN NOT TO CALL:\n• To FIX content (not delete it) → use `correct` instead.\n• To remove an entire ingested file, URL, or clip → direct the user to the Sources page in the Graphnosis app — that is a user-only action.\n• Before confirming the matching node(s) with the user — always show them what will be deleted first.\n\nThis is a soft delete — the user can recover deleted nodes via the Graphnosis App\'s Recover flow.',
         inputSchema: {
           type: 'object',
           properties: {
-            graphId: { type: 'string' },
-            sourceId: { type: 'string' },
+            graphId: {
+              type: 'string',
+              description: 'Engram SLUG (e.g. "personal", "work"). Use stats or list_engrams to find valid slugs.',
+            },
+            nodeIds: {
+              oneOf: [
+                { type: 'string', description: 'Single nodeId to delete.' },
+                { type: 'array', items: { type: 'string' }, minItems: 1, maxItems: 20, description: 'Array of nodeIds to delete (max 20).' },
+              ],
+              description: 'Node ID(s) from recall_structured results. Never guess.',
+            },
           },
-          required: ['graphId', 'sourceId'],
+          required: ['graphId', 'nodeIds'],
         },
       },
       {
@@ -1562,7 +1572,7 @@ export function createMcpServer(deps: McpDeps): Server {
       },
       {
         name: 'browse_engram',
-        description: 'DETERMINISM — Deterministic: a direct read of the source index; no LLM, no randomness.\n\nList every source ingested into a specific engram — file paths, clip refs, timestamps, and IDs — newest first. Use this before forget (to confirm a sourceId), before transfer_source, or when the user wants to audit what\'s in an engram.',
+        description: 'DETERMINISM — Deterministic: a direct read of the source index; no LLM, no randomness.\n\nList every source ingested into a specific engram — file paths, clip refs, timestamps, and IDs — newest first. Use this before transfer_source or when the user wants to audit what\'s in an engram. To forget specific memory nodes use `recall_structured` (to get nodeIds) → `forget`.',
         inputSchema: {
           type: 'object',
           properties: {
@@ -1655,20 +1665,20 @@ export function createMcpServer(deps: McpDeps): Server {
       // ── Source management ─────────────────────────────────────────────────
       {
         name: 'find_source',
-        description: 'DETERMINISM — Deterministic: a keyword scan of the source index; no LLM.\n\nFind sources by a keyword substring match against sourceId, ref (label/path/URL), or kind — across all engrams or scoped to one. Returns each match with its exact engram slug, sourceId, kind, and timestamp.\n\nCALL THIS BEFORE `forget` OR `transfer_source` — always. Never construct or guess a sourceId from a node hash, display label, or recall result; look it up here first. Use the returned `graphId` (engram slug) and `sourceId` verbatim when calling `forget`.',
+        description: 'DETERMINISM — keyword path: deterministic metadata scan, no LLM. content path: semantic embedding search over node text, non-deterministic when the Neural Network is enabled.\n\nFind sources by EITHER metadata keyword OR node-content description — across all engrams or scoped to one. Returns each match with its exact engram slug, sourceId, kind, and timestamp. Use the returned `graphId` + `sourceId` verbatim when calling `transfer_source` or when auditing what is in an engram.\n\nNOTE: `forget` no longer accepts a sourceId. To forget specific memory fragments, use `recall_structured` to get nodeIds, then call `forget(nodeIds=[...])`. To remove an entire source, direct the user to the Sources page in the Graphnosis app.\n\nTWO SEARCH PATHS — choose the right one:\n• `keyword` — substring match against sourceId, ref (file path/URL/label), and kind. Use when the user identifies the source by its reference: "the PDF I uploaded last week", "the URL about X", "clip:abc123".\n• `content` — semantic search over the TEXT of memory nodes derived from each source. Use when the user describes the source by what it SAYS: "the note about the UX polish todo", "what I saved about the Windows build". This is the correct path when keyword search returns nothing because the user described content, not metadata.\n• Both can be passed together — keyword narrows by metadata first, content re-ranks or extends the results.\n\nCALL THIS BEFORE `transfer_source` — always. Never guess a sourceId.',
         inputSchema: {
           type: 'object',
           properties: {
-            keyword: { type: 'string', description: 'Substring to match against sourceId, ref, or kind (case-insensitive).' },
+            keyword: { type: 'string', description: 'Substring to match against sourceId, ref, or kind (case-insensitive). Use when the user identifies the source by reference (path, URL, label).' },
+            content: { type: 'string', description: 'Semantic query matched against node content. Use when the user describes the source by what it says, not by its file path or label.' },
             engram: { type: 'string', description: 'Optional: restrict to one engram.' },
             limit: { type: 'number', description: 'Max results. Default 10.' },
           },
-          required: ['keyword'],
         },
       },
       {
         name: 'recall_source',
-        description: 'DETERMINISM — Deterministic: fetches every memory node derived from one source document; no LLM, no scoring.\n\nReturn the FULL content of a single saved source — every chunk, in ingestion order, with no similarity cutoff. Use this when recall returns only fragments of a structured document (a plan, a list, a meeting note) and you need the complete text. Requires the exact sourceId — use find_source first if unsure.\n\nWHEN TO USE OVER recall:\n• The user asks for "the full note/doc/plan about X" and recall keeps returning partial results.\n• You got a sourceId from find_source or recall_with_citations and want everything from that source.\n• A structured list or numbered plan was saved as one clip and recall is only surfacing individual items.\n\nWHEN NOT TO USE:\n• Exploratory search ("what do I know about X?") — use recall instead.\n• You don\'t have a sourceId — use find_source first.',
+        description: 'DETERMINISM — Deterministic: fetches every memory node derived from one source document; no LLM, no scoring.\n\nReturn the FULL content of a single saved source — every chunk, in ingestion order, with no similarity cutoff. Use this when recall returns only fragments of a structured document (a plan, a list, a meeting note) and you need the complete text. Requires the exact sourceId — use find_source first if unsure.\n\nWHEN TO USE OVER recall:\n• The user asks for "the full note/doc/plan about X" and recall keeps returning partial results.\n• You got a sourceId from find_source (keyword or content path) or recall_with_citations and want everything from that source.\n• A structured list or numbered plan was saved as one clip and recall is only surfacing individual items.\n\nWHEN NOT TO USE:\n• Exploratory search ("what do I know about X?") — use recall instead.\n• You don\'t have a sourceId — use find_source(keyword=...) for reference-based lookup or find_source(content=...) for content-described lookup.',
         inputSchema: {
           type: 'object',
           properties: {
@@ -1689,18 +1699,6 @@ export function createMcpServer(deps: McpDeps): Server {
             to_engram: { type: 'string', description: 'Destination engram (slug or display name).' },
           },
           required: ['sourceId', 'from_engram', 'to_engram'],
-        },
-      },
-      {
-        name: 'merge_engrams',
-        description: 'DETERMINISM — Deterministic: iterates sources and moves each via op-log; recoverable per-source.\n\nMove ALL sources from one engram into another, then leave the source engram empty. Use when the user wants to consolidate two collections ("merge my inbox into work"). Each source is moved individually — partial failures are reported per-source, not as an all-or-nothing abort.',
-        inputSchema: {
-          type: 'object',
-          properties: {
-            from_engram: { type: 'string', description: 'The engram to drain (slug or display name).' },
-            to_engram: { type: 'string', description: 'The destination engram (slug or display name).' },
-          },
-          required: ['from_engram', 'to_engram'],
         },
       },
       {
@@ -1766,7 +1764,7 @@ export function createMcpServer(deps: McpDeps): Server {
       },
       {
         name: 'duplicate_pairs',
-        description: 'DETERMINISM — Deterministic: reads the brain engine\'s already-computed queue; no LLM.\n\nReturn near-duplicate node pairs the brain engine has already flagged for review — these are high-confidence matches computed by the background scan, not ad-hoc searches. Use when the user asks "what does my brain think is duplicated?" or as part of a memory-hygiene workflow. To resolve: call correct to merge, or forget to remove one side. Requires the brain engine to be running (Graphnosis app open).',
+        description: 'DETERMINISM — Deterministic: reads the brain engine\'s already-computed queue; no LLM.\n\nReturn near-duplicate node pairs the brain engine has already flagged for review — these are high-confidence matches computed by the background scan, not ad-hoc searches. Use when the user asks "what does my brain think is duplicated?" or as part of a memory-hygiene workflow. To resolve: call correct to merge, or forget(nodeIds=[nodeId]) to remove one side. Requires the brain engine to be running (Graphnosis app open).',
         inputSchema: {
           type: 'object',
           properties: {
@@ -2022,6 +2020,7 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
           ingestClip(deps.host, graphId, args.text, args.label, {
             ...(addedBy ? { addedBy } : {}),
             sourceKind,
+            triggeredBy: 'mcp:remember',
           })
         ) as import('@graphnosis-app/core').SourceRecord & { contradictions?: unknown[] };
         let msg = `Saved to ${graphId} as ${rec.sourceId}.`;
@@ -2095,14 +2094,19 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
           ...(correctedBy ? { correctedBy } : {}),
           ...(pending.mode ? { mode: pending.mode } : {}),
           ...(pending.prompt ? { prompt: pending.prompt } : {}),
+          triggeredBy: 'mcp:correct',
         });
         deps.pendingDiffs.delete(args.diffId);
         return { content: [{ type: 'text', text: 'Applied.' }] };
       }
       case 'forget': {
         const args = ForgetInput.parse(req.params.arguments ?? {});
-        const { nodeIds } = await deps.host.forgetSource(args.graphId, args.sourceId);
-        return { content: [{ type: 'text', text: `Forgot ${nodeIds.length} nodes from source ${args.sourceId}.` }] };
+        await deps.host.applyCorrection(
+          args.graphId,
+          { edits: args.nodeIds.map(id => ({ kind: 'delete' as const, nodeId: id, reason: 'forgotten by AI client' })) },
+          { triggeredBy: 'mcp:forget' },
+        );
+        return { content: [{ type: 'text', text: `Forgot ${args.nodeIds.length} node${args.nodeIds.length === 1 ? '' : 's'}: ${args.nodeIds.join(', ')}.` }] };
       }
       case 'stats': {
         const { includeNodes } = z.object({ includeNodes: z.coerce.boolean().optional() }).parse(req.params.arguments ?? {});
@@ -2412,14 +2416,44 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
           if ('error' in res) return res.error;
           graphIdFilter = res.graphId;
         }
-        const kw = args.keyword.toLowerCase();
-        const matches = deps.host.listSources(graphIdFilter)
-          .filter(s => s.sourceId.toLowerCase().includes(kw) ||
-                       s.ref.toLowerCase().includes(kw) ||
-                       s.kind.toLowerCase().includes(kw))
-          .slice(0, args.limit ?? 10);
+        const limit = args.limit ?? 10;
+
+        // --- metadata keyword path (deterministic) ---
+        const keywordMatches: import('@graphnosis-app/core').SourceRecord[] = args.keyword
+          ? (() => {
+              const kw = args.keyword.toLowerCase();
+              return deps.host.listSources(graphIdFilter)
+                .filter(s => s.sourceId.toLowerCase().includes(kw) ||
+                             s.ref.toLowerCase().includes(kw) ||
+                             s.kind.toLowerCase().includes(kw));
+            })()
+          : [];
+
+        // --- content semantic path (embedding search over node text) ---
+        const seenSourceIds = new Set(keywordMatches.map(m => m.sourceId));
+        const contentMatches: import('@graphnosis-app/core').SourceRecord[] = [];
+        if (args.content) {
+          const graphIds = graphIdFilter ? [graphIdFilter] : deps.host.listGraphs();
+          const k = Math.ceil(limit / Math.max(1, graphIds.length));
+          for (const graphId of graphIds) {
+            const hits = await withEmbedding(() => deps.host.searchNodes(graphId, args.content!, k));
+            for (const n of hits) {
+              const sourceId = deps.host.getNodeSource(graphId, n.nodeId);
+              if (sourceId && !seenSourceIds.has(sourceId)) {
+                seenSourceIds.add(sourceId);
+                const src = deps.host.listSources(graphId).find(s => s.sourceId === sourceId);
+                if (src) contentMatches.push(src);
+              }
+            }
+          }
+        }
+
+        const matches = [...keywordMatches, ...contentMatches].slice(0, limit);
         if (!matches.length) {
-          return { content: [{ type: 'text', text: `No sources matched "${args.keyword}".` }] };
+          const hint = args.keyword && !args.content
+            ? ` (tip: if you searched by reference but the user described the memory by content, retry with the \`content\` parameter instead of \`keyword\`)`
+            : '';
+          return { content: [{ type: 'text', text: `No sources matched.${hint}` }] };
         }
         const rows = matches.map(s => {
           const label = deps.host.getGraphMetadata(s.graphId)?.displayName ?? s.graphId;
@@ -2484,27 +2518,6 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
           `Moved source ${args.sourceId} to ${metaTo?.displayName ?? resTo.graphId}. New sourceId: ${newRecord.sourceId}`
         }] };
       }
-      case 'merge_engrams': {
-        const args = MergeEngramsInput.parse(req.params.arguments ?? {});
-        const resFrom = requireEngram(deps.host, args.from_engram);
-        if ('error' in resFrom) return resFrom.error;
-        const resTo = requireEngram(deps.host, args.to_engram);
-        if ('error' in resTo) return resTo.error;
-        const sources = deps.host.listSources(resFrom.graphId);
-        const results: string[] = [];
-        for (const s of sources) {
-          try {
-            await deps.host.moveSource(resFrom.graphId, s.sourceId, resTo.graphId);
-            results.push(`✓ ${s.sourceId}`);
-          } catch (err) {
-            results.push(`✗ ${s.sourceId}: ${(err as Error).message}`);
-          }
-        }
-        const metaTo = deps.host.getGraphMetadata(resTo.graphId);
-        return { content: [{ type: 'text', text:
-          `Merged ${sources.length} source(s) into ${metaTo?.displayName ?? resTo.graphId}:\n${results.join('\n') || '(nothing to move)'}`
-        }] };
-      }
       case 'ingest_batch': {
         const args = IngestBatchInput.parse(req.params.arguments ?? {});
         const mcpClientName = mcpRegistry.getMostRecentClientName();
@@ -2528,6 +2541,7 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
             const rec = await withEmbedding(() =>
               ingestClip(deps.host, graphId!, item.text, item.label ?? 'Batch note', {
                 ...(mcpClientName ? { addedBy: mcpClientName } : {}),
+                triggeredBy: 'mcp:remember',
               })
             );
             results.push({ index: i, status: 'ok', detail: `Saved as ${(rec as any).sourceId} in ${graphId}` });
@@ -2643,7 +2657,7 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
         ).join('\n\n');
         return { content: [{ type: 'text', text:
           `${pairs.length} duplicate pair(s) awaiting review:\n\n${rows}\n\n` +
-          `To resolve: call correct to merge, or forget to remove one side.`
+          `To resolve: call correct to merge, or forget(nodeIds=[nodeId]) to remove one side.`
         }] };
       }
       case 'healing_journal': {

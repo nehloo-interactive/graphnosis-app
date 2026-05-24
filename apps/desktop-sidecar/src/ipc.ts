@@ -327,6 +327,7 @@ async function dispatch(deps: IpcDeps, method: string, params: unknown): Promise
       const rec = await withEmbedding(() =>
         ingestClip(deps.host, args.graphId, args.text, args.label, {
           sourceKind: args.sourceKind ?? 'clip',
+          triggeredBy: 'user:ingest',
         }),
       );
       return {
@@ -370,7 +371,7 @@ async function dispatch(deps: IpcDeps, method: string, params: unknown): Promise
           content: args.content,
           reason: args.reason ?? 'Direct edit from Graphnosis App',
         }],
-      });
+      }, { triggeredBy: 'user:correct' });
       return { ok: true };
     }
     case 'node.softDelete': {
@@ -388,7 +389,7 @@ async function dispatch(deps: IpcDeps, method: string, params: unknown): Promise
           nodeId: args.nodeId,
           reason: args.reason ?? 'Forgotten from Graphnosis App',
         }],
-      });
+      }, { triggeredBy: 'user:forget' });
       return { ok: true };
     }
     case 'node.link': {
@@ -488,6 +489,172 @@ async function dispatch(deps: IpcDeps, method: string, params: unknown): Promise
       // client-side and benefits from showing every event for "all" filter.
       const events = await deps.host.listOplogEvents();
       return { events };
+    }
+    case 'activity.log': {
+      const args = z.object({
+        graphId: z.string(),
+        limit: z.number().int().nonnegative().optional(),
+        offset: z.number().int().nonnegative().optional(),
+        ops: z.array(z.enum(['add', 'edit', 'delete', 'edge'])).optional(),
+        search: z.string().optional(),
+      }).parse(params ?? {});
+
+      const limit = args.limit ?? 50;
+      const offset = args.offset ?? 0;
+
+      // 1. Fetch all events and filter to this graph.
+      const allEvents = await deps.host.listOplogEvents();
+      let events = allEvents.filter(ev => ev.graphId === args.graphId);
+
+      // 2. Apply op-type filter.
+      if (args.ops && args.ops.length > 0) {
+        const opKindSet = new Set<string>();
+        for (const opFilter of args.ops) {
+          if (opFilter === 'add')    { opKindSet.add('ingestSource'); opKindSet.add('addNode'); }
+          if (opFilter === 'edit')   { opKindSet.add('editNode');     opKindSet.add('supersede'); }
+          if (opFilter === 'delete') { opKindSet.add('deleteNode');   opKindSet.add('forgetSource'); }
+          if (opFilter === 'edge')   { opKindSet.add('addEdge');      opKindSet.add('deleteEdge'); }
+        }
+        events = events.filter(ev => opKindSet.has(ev.op));
+      }
+
+      // 3. Sort newest-first.
+      events = events.slice().sort((a, b) => b.ts - a.ts);
+
+      // 4. Build sourceId → ref map for enrichment.
+      const sources = deps.host.listSources(args.graphId);
+      const sourceRefMap = new Map<string, string>();
+      for (const src of sources) {
+        sourceRefMap.set(src.sourceId, src.ref);
+      }
+
+      // 5. Group addNode events under their ingestSource event.
+      //    Collect addNode events keyed by (after as any).sourceId.
+      const addNodesBySourceId = new Map<string, typeof events>();
+      for (const ev of events) {
+        if (ev.op === 'addNode') {
+          const sid = (ev.after as Record<string, unknown> | undefined)?.sourceId as string | undefined;
+          if (sid) {
+            const bucket = addNodesBySourceId.get(sid) ?? [];
+            bucket.push(ev);
+            addNodesBySourceId.set(sid, bucket);
+          }
+        }
+      }
+
+      // Identify sourceIds covered by an ingestSource event in this set.
+      const ingestSourceIds = new Set<string>();
+      for (const ev of events) {
+        if (ev.op === 'ingestSource') {
+          ingestSourceIds.add(ev.target.id);
+        }
+      }
+
+      interface ActivityEntry {
+        id: string;
+        ts: number;
+        op: string;
+        graphId: string;
+        target: { kind: string; id: string };
+        preview?: string | undefined;
+        sourceRef?: string | undefined;
+        nodeCount?: number | undefined;
+        triggeredBy?: string | undefined;
+        nodes?: Array<{ id: string; ts: number; target: { kind: string; id: string }; preview?: string | undefined }>;
+      }
+
+      const entries: ActivityEntry[] = [];
+
+      for (const ev of events) {
+        if (ev.op === 'addNode') {
+          // If this node belongs to an ingestSource that appeared in the same
+          // filtered set, it will be grouped — skip the standalone row.
+          const sid = (ev.after as Record<string, unknown> | undefined)?.sourceId as string | undefined;
+          if (sid && ingestSourceIds.has(sid)) continue;
+        }
+
+        if (ev.op === 'ingestSource') {
+          const sourceId = ev.target.id;
+          const childNodes = addNodesBySourceId.get(sourceId) ?? [];
+          const ingestTriggeredBy = (ev.after as Record<string, unknown> | undefined)?.triggeredBy as string | undefined;
+
+          const nodeEntries = childNodes.map(n => {
+            const nPreview = deps.host.getNodeSource(args.graphId, n.target.id) !== undefined
+              ? ((n.after as Record<string, unknown> | undefined)?.contentPreview as string | undefined)
+              : undefined;
+            return {
+              id: n.id,
+              ts: n.ts,
+              target: n.target,
+              preview: nPreview,
+            };
+          });
+
+          entries.push({
+            id: ev.id,
+            ts: ev.ts,
+            op: 'ingestGroup',
+            graphId: ev.graphId,
+            target: ev.target,
+            sourceRef: sourceRefMap.get(sourceId),
+            nodeCount: childNodes.length,
+            ...(ingestTriggeredBy !== undefined ? { triggeredBy: ingestTriggeredBy } : {}),
+            nodes: nodeEntries,
+          });
+          continue;
+        }
+
+        // All other event types: build a plain ActivityEntry.
+        let preview: string | undefined;
+        let sourceRef: string | undefined;
+
+        if (ev.op === 'deleteNode') {
+          preview = (ev.before as Record<string, unknown> | undefined)?.preview as string | undefined;
+          const sid = (ev.before as Record<string, unknown> | undefined)?.sourceId as string | undefined;
+          if (sid) sourceRef = sourceRefMap.get(sid);
+        } else if (ev.op === 'addNode') {
+          preview = (ev.after as Record<string, unknown> | undefined)?.contentPreview as string | undefined;
+          const sid = (ev.after as Record<string, unknown> | undefined)?.sourceId as string | undefined;
+          if (sid) sourceRef = sourceRefMap.get(sid);
+        } else if (ev.op === 'editNode' || ev.op === 'supersede') {
+          preview = (ev.after as Record<string, unknown> | undefined)?.contentPreview as string | undefined;
+        } else if (ev.op === 'forgetSource') {
+          preview = (ev.before as Record<string, unknown> | undefined)?.ref as string | undefined;
+        }
+
+        const evTriggeredBy = (ev.after as Record<string, unknown> | undefined)?.triggeredBy as string | undefined;
+        entries.push({
+          id: ev.id,
+          ts: ev.ts,
+          op: ev.op,
+          graphId: ev.graphId,
+          target: ev.target,
+          preview,
+          sourceRef,
+          ...(evTriggeredBy !== undefined ? { triggeredBy: evTriggeredBy } : {}),
+        });
+      }
+
+      // 6. Apply search filter.
+      let filtered = entries;
+      if (args.search && args.search.length > 0) {
+        const needle = args.search.toLowerCase();
+        filtered = entries.filter(e =>
+          (e.preview ?? '').toLowerCase().includes(needle) ||
+          (e.sourceRef ?? '').toLowerCase().includes(needle) ||
+          ((e.target as { id: string }).id ?? '').toLowerCase().includes(needle),
+        );
+      }
+
+      // 7. Paginate.
+      const total = filtered.length;
+      const page = filtered.slice(offset, offset + limit);
+
+      return {
+        entries: page,
+        total,
+        hasMore: offset + limit < total,
+      };
     }
     case 'snapshots.list': {
       return { snapshots: await deps.host.listSnapshots() };
@@ -713,6 +880,7 @@ async function dispatch(deps: IpcDeps, method: string, params: unknown): Promise
             // per-page progress events fire even while another embedding
             // op is in flight.
             wrapIngest: (fn) => withEmbedding(fn),
+            triggeredBy: 'user:ingest',
           });
           const nodeCount = (result as { nodeIds?: string[] }).nodeIds?.length ?? 0;
           deps.broadcastRaw({
@@ -746,6 +914,7 @@ async function dispatch(deps: IpcDeps, method: string, params: unknown): Promise
         url: args.url,
         ...(args.html !== undefined ? { html: args.html } : {}),
         ...(args.selection !== undefined ? { selection: args.selection } : {}),
+        triggeredBy: 'user:ingest',
       }));
     }
     case 'ingest.clip': {
@@ -754,7 +923,7 @@ async function dispatch(deps: IpcDeps, method: string, params: unknown): Promise
         text: z.string(),
         label: z.string().default('Clip'),
       }).parse(params);
-      return withEmbedding(() => ingestClip(deps.host, graphId, text, label));
+      return withEmbedding(() => ingestClip(deps.host, graphId, text, label, { triggeredBy: 'user:ingest' }));
     }
     case 'stats.summary': {
       // Used by the Tauri inspector — lighter than `stats` with `includeNodes`.
@@ -785,7 +954,7 @@ async function dispatch(deps: IpcDeps, method: string, params: unknown): Promise
     }
     case 'sources.forget': {
       const { graphId, sourceId } = z.object({ graphId: z.string(), sourceId: z.string() }).parse(params);
-      const result = await deps.host.forgetSource(graphId, sourceId);
+      const result = await deps.host.forgetSource(graphId, sourceId, { triggeredBy: 'user:forget' });
       // Purge in-memory ghost edges from the brain engine's live caches.
       // host.forgetSource already cleaned the on-disk stores.
       if (result.nodeIds.length > 0) {
@@ -816,10 +985,11 @@ async function dispatch(deps: IpcDeps, method: string, params: unknown): Promise
       // double-up against the fresh node ids. Save() fires inside both
       // calls, so the push-event channel emits two mutation ticks; the
       // App's pollGraphMutations will pick up the second one and refresh.
-      await deps.host.forgetSource(graphId, sourceId);
+      await deps.host.forgetSource(graphId, sourceId, { triggeredBy: 'user:ingest' });
       const ref = source.ref;
       const record = await ingestFile(deps.host, graphId, ref, {
         wrapIngest: (fn) => withEmbedding(fn),
+        triggeredBy: 'user:ingest',
       });
       return record;
     }
