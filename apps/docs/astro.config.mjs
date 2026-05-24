@@ -50,7 +50,6 @@ export default defineConfig({
             { label: 'Correcting Memories', slug: 'guides/correcting-memories' },
             { label: 'Indelibility & Determinism', slug: 'guides/indelibility-and-determinism' },
             { label: 'Deterministic Consolidation', slug: 'guides/deterministic-consolidation' },
-            { label: 'Autonomous Upkeep', slug: 'guides/autonomous-upkeep' },
             { label: 'Graphs & Sensitivity Tiers', slug: 'guides/graphs-and-tiers' },
             { label: 'AI Access Controls', slug: 'guides/ai-access-controls' },
             { label: 'Boot & Engram Loading', slug: 'guides/boot-and-engram-loading' },

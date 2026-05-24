@@ -75,6 +75,12 @@ Once a day, a deeper **consolidation** pass integrates and tidies the cortex. It
 
 Your engrams aren't islands. Graphnosis links memories **across** engrams when they share meaningful named entities or are highly similar in meaning — so a query about a topic in one engram can surface what you know about it in another. These cross-engram connections are reinforced by use, just like connections within an engram, and are stored encrypted alongside your cortex.
 
+**When a source moves between engrams**, Graphnosis removes the old cross-engram links (they referenced the origin's now-deleted node IDs) and immediately runs a fresh cross-engram linking pass once the content is re-ingested in the destination — so related memories in other engrams are re-connected right away, without waiting for the next scheduled 6-hour pass.
+
+**Archiving an engram** leaves all cross-engram connections intact. Archive is purely a visibility toggle — the graph file, nodes, and connection store are untouched. Unarchiving restores the engram with all connections exactly as they were. Only a permanent **Delete** purges cross-engram connections.
+
+**Stale-entry cleanup** runs automatically as part of every cross-engram linking pass. Any connection anchored to a soft-deleted node (from a forgotten or moved source) is pruned silently before new connections are discovered. This keeps the connection store lean without requiring any manual action — including cleaning up connections from sources moved before this automatic rebuild was introduced.
+
 ## Memory decay — and why it no longer touches your memories
 
 Earlier versions slowly decayed the confidence of memories you hadn't recalled in a long time. Under Deterministic Consolidation, **that no longer happens to anything you've added**. A memory you deliberately saved — a file, a URL, a clip, a saved conversation — never loses confidence from disuse. The decay machinery remains only for a future *ambient capture* feature (unconfirmed, auto-captured content), which is the only thing that should ever be allowed to fade.
