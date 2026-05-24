@@ -3297,6 +3297,7 @@ els.btnSettings.addEventListener('click', async () => {
     els.settingsFooterNote.textContent = `Could not read settings: ${e}`;
   }
   void refreshLlmStatus();
+  startOllamaStatusPoll();
 });
 
 // ── Settings tab (mode-pane data-pane="settings") render ───────────────────
@@ -3567,6 +3568,7 @@ els.aiAutoReingest.addEventListener('change', () => {
 });
 
 els.btnSettingsCancel.addEventListener('click', () => {
+  stopOllamaStatusPoll();
   els.settingsModal.classList.add('hidden');
 });
 
@@ -3619,6 +3621,7 @@ els.btnSettingsSave.addEventListener('click', async () => {
       else mainAtlas.stopOrbitDebugHUD?.();
     }
     els.settingsFooterNote.textContent = 'Saved.';
+    stopOllamaStatusPoll();
     setTimeout(() => els.settingsModal.classList.add('hidden'), 350);
   } catch (e) {
     els.settingsFooterNote.textContent = `Save failed: ${e}`;
@@ -5666,8 +5669,9 @@ function applyGraphnosisFilter(): void {
   // mount more as the user scrolls. Keeps initial paint cheap even on huge
   // result sets, while removing the old "Show X more" cliff.
   renderListWithInfiniteScroll(filtered);
-  // Phase 2: opt-in LLM enhancements (synthesis + rerank) — no-ops if disabled.
-  void applyLlmSearchEnhancements(qRaw, filtered);
+  // LLM enhancements (synthesis + rerank) are triggered by Enter key, not
+  // by every keystroke. Clear any stale synthesis from a previous query.
+  clearSearchSynthesis();
 }
 
 // ── Infinite-scroll list renderer ─────────────────────────────────────
@@ -5717,7 +5721,7 @@ function appendNextListBatch(): void {
   const oldSentinel = els.gList.querySelector('.g-list-sentinel');
   if (oldSentinel) oldSentinel.remove();
 
-  const html = listScrollSource.slice(start, end).map(renderListRow).join('');
+  const html = listScrollSource.slice(start, end).map((n, i) => renderListRow(n, start + i + 1)).join('');
   els.gList.insertAdjacentHTML('beforeend', html);
   listScrollDisplayed = end;
 
@@ -5817,7 +5821,8 @@ async function runSemanticFallback(query: string, graphId: string): Promise<void
       return;
     }
     renderListWithInfiniteScroll(rows);
-    void applyLlmSearchEnhancements(query, rows);
+    // LLM enhancements are Enter-key-triggered — don't fire here automatically.
+    clearSearchSynthesis();
   } catch (e) {
     if (myToken !== graphnosisSemanticToken) return;
     els.gList.innerHTML = `<p class="subtitle">Semantic search failed: ${escape(String(e))}</p>`;
@@ -5826,7 +5831,7 @@ async function runSemanticFallback(query: string, graphId: string): Promise<void
 
 // ── List row rendering (shared by search results) ────────────────────
 
-function renderListRow(n: NodeRecord): string {
+function renderListRow(n: NodeRecord, rowIndex?: number): string {
   const isActive = n.confidence > 0.2 && (n.validUntil === undefined || n.validUntil > Date.now());
   const confidenceDot = !isActive
     ? '○○○'
@@ -5843,8 +5848,11 @@ function renderListRow(n: NodeRecord): string {
   const metaLine = n.section
     ? `${sourceLabel ? `${escape(sourceLabel)} <span style="opacity: 0.55;">›</span> ` : ''}${escape(n.section)}`
     : escape(sourceLabel);
+  // Show 1-based row number above the confidence dots when in search results,
+  // so citations like [3] in the AI summary can be traced to the right row.
+  const numLabel = rowIndex !== undefined ? `<span class="g-row-num">${rowIndex}</span>` : '';
   return `<div class="g-list-row${selected}${softCls}" data-node-id="${escape(n.id)}" tabindex="-1">
-    <span class="g-row-conf" title="trust ${n.confidence.toFixed(2)}">${confidenceDot}</span>
+    <span class="g-row-conf" title="trust ${n.confidence.toFixed(2)}">${numLabel}${confidenceDot}</span>
     <div>
       <div class="g-row-text">${escape(cleanContent)}</div>
       ${metaLine ? `<div class="g-row-meta"><span class="g-row-source" title="${escape(renderBreadcrumbPlain(n))}">${metaLine}</span></div>` : ''}
@@ -8022,9 +8030,9 @@ els.btnAtlasAlive.addEventListener('click', () => {
 // ── Search input + ⌘K + clear ─────────────────────────────────────────
 
 els.gSearch.addEventListener('focus', () => {
-  // Search box is always visible above both tabs. If the user clicks into it
-  // while on the Atlas tab, switch to Check-in so results are visible.
-  if (graphnosisActiveTab === 'atlas') switchGraphnosisTab('checkin');
+  // Search box is always visible above all tabs. Focusing it from any
+  // non-checkin tab switches to Check-in so results are immediately visible.
+  if (graphnosisActiveTab !== 'checkin') switchGraphnosisTab('checkin');
 });
 
 els.gSearch.addEventListener('input', () => {
@@ -8032,8 +8040,17 @@ els.gSearch.addEventListener('input', () => {
   const hasValue = els.gSearch.value.length > 0;
   els.gSearchClear.classList.toggle('hidden', !hasValue);
   // 140ms gives a fluid feel without re-rendering on every keystroke when
-  // typing fast.
+  // typing fast. LLM enhancements are NOT triggered here — Enter key only.
   graphnosisSearchTimer = setTimeout(() => applyGraphnosisFilter(), 140);
+});
+
+els.gSearch.addEventListener('keydown', (e) => {
+  if (e.key !== 'Enter') return;
+  e.preventDefault();
+  const q = els.gSearch.value.trim();
+  if (q.length === 0 || graphnosisListRows.length === 0) return;
+  // Enter with a live result set → run LLM enhancements if opted in.
+  void applyLlmSearchEnhancements(q, graphnosisListRows);
 });
 
 // Sort dropdown — re-apply the filter when the user picks a new order.
@@ -8122,9 +8139,9 @@ document.addEventListener('keydown', (e) => {
     return;
   }
 
-  // Typing a printable character while looking at the 3D graph → auto-switch
+  // Typing a printable character while on a non-search tab → auto-switch
   // to Check-in so the keystroke lands in the search field naturally.
-  if (graphnosisActiveTab === 'atlas' && !e.metaKey && !e.ctrlKey && !e.altKey && e.key.length === 1) {
+  if (graphnosisActiveTab !== 'checkin' && !e.metaKey && !e.ctrlKey && !e.altKey && e.key.length === 1) {
     switchGraphnosisTab('checkin');
     els.gSearch.focus();
     // Don't preventDefault — the character propagates into the now-focused search input.
@@ -8692,6 +8709,24 @@ let scanTickerTimer: ReturnType<typeof setInterval> | null = null;
 // honest "this is expected, not broken" copy on LLM-only brain features
 // (insights, synapse formation). Refreshed by refreshLlmStatus().
 let brainLlmReady = false;
+// Ollama is up and has at least one model — gates on-demand search features
+// (Synthesize answer, Enhanced ranking) independently of the LLM master
+// switch. Background autonomous features still require brainLlmReady.
+let ollamaReadyForSearch = false;
+// Periodic poll that keeps the Ollama status badge current while the
+// settings modal is open. Started on open, cleared on close.
+let ollamaStatusPollTimer: ReturnType<typeof setInterval> | null = null;
+
+function startOllamaStatusPoll(): void {
+  if (ollamaStatusPollTimer !== null) return; // already running
+  ollamaStatusPollTimer = setInterval(() => { void refreshLlmStatus(); }, 30_000);
+}
+function stopOllamaStatusPoll(): void {
+  if (ollamaStatusPollTimer !== null) {
+    clearInterval(ollamaStatusPollTimer);
+    ollamaStatusPollTimer = null;
+  }
+}
 
 const BRAIN_PHASE_LABELS: Record<string, string> = {
   fullscan: 'Running a full self-scan',
@@ -9548,32 +9583,44 @@ function renderLlmEnableBlock(reachable: boolean, hasModels: boolean, enabled: b
   const host = els.llmEnableBlock;
   const setupDone = reachable && hasModels;
 
-  // Checkbox-style master switch. When Ollama setup isn't done the checkbox is
-  // disabled + greyed out. Turning it ON for the first time (or after a Cancel)
-  // shows an inline confirmation; subsequent toggles are one-click via the
-  // checkbox itself. The non-deterministic warning lives in the helper text.
-  const opacityStyle = setupDone ? '' : 'style="opacity: 0.55;"';
-  const subtitle = !setupDone
-    ? 'Finish the Ollama setup below, then this becomes available.'
-    : enabled
-      ? 'On — Graphnosis is using your local LLM for non-deterministic features and (opt-in) search assistance.'
-      : llmConfirmPending
-        ? '<strong>The local LLM is non-deterministic</strong> — same memory can yield different results across runs. Runs entirely on your device.'
-        : 'Off — Graphnosis won’t route any memory through your local LLM until you switch it on.';
+  if (llmConfirmPending) {
+    // Confirmation state: show an inline card explaining the non-determinism
+    // risk; Cancel bounces back, Confirm enables.
+    host.innerHTML =
+      `<div class="llm-confirm-inline">`
+      + `<p><strong>Before you enable the local LLM</strong> — the local AI model is non-deterministic. `
+      + `The same memory can yield slightly different results across runs. `
+      + `Everything runs entirely on your device; nothing is sent to the cloud. `
+      + `A snapshot of your cortex is saved before the first enable.</p>`
+      + `<div class="lb-goal-form-actions">`
+      + `<button data-llm="cancel" class="btn-sm">Cancel</button>`
+      + `<button data-llm="confirm" class="btn-sm primary">Enable Local LLM</button>`
+      + `</div>`
+      + `</div>`;
+  } else {
+    // Normal state: compact card with checkbox toggle.
+    const dimmed = setupDone ? '' : ' style="opacity: 0.55;"';
+    const statusLabel = !setupDone
+      ? '<span class="llm-enable-card-status">Ollama setup required</span>'
+      : enabled
+        ? '<span class="llm-enable-card-status" style="color: var(--ok);">● on</span>'
+        : '<span class="llm-enable-card-status">off</span>';
+    const subtitle = !setupDone
+      ? '<p class="brain-subtitle" style="margin: 6px 0 0; padding: 0 14px 12px;">Finish the Ollama setup below to enable the local LLM.</p>'
+      : enabled
+        ? '<p class="brain-subtitle" style="margin: 6px 0 0; padding: 0 14px 12px;">Graphnosis is routing non-deterministic features through your local model. Runs entirely on your device.</p>'
+        : '<p class="brain-subtitle" style="margin: 6px 0 0; padding: 0 14px 12px;">Off — Graphnosis won\'t route any memory through your local LLM until you switch it on.</p>';
 
-  host.innerHTML =
-    `<label class="row" ${opacityStyle} style="display: flex; align-items: center; gap: 10px; font-size: 14px; cursor: ${setupDone ? 'pointer' : 'not-allowed'};">`
-    + `<input type="checkbox" data-llm="toggle" ${enabled ? 'checked' : ''} ${setupDone ? '' : 'disabled'} />`
-    + `<strong>Local LLM</strong>`
-    + `<span style="font-weight: 400; color: var(--fg-dim);">${enabled ? 'on' : 'off'}</span>`
-    + `</label>`
-    + `<p class="brain-subtitle" style="margin-top: 6px;">${subtitle}</p>`
-    + (llmConfirmPending
-      ? '<div class="lb-goal-form-actions" style="margin-top: 8px;">'
-        + '<button data-llm="cancel" class="btn-sm">Cancel</button>'
-        + '<button data-llm="confirm" class="btn-sm primary">Enable Local LLM</button>'
-        + '</div>'
-      : '');
+    host.innerHTML =
+      `<div class="llm-enable-card${enabled ? ' llm-card-active' : ''}"${dimmed}>`
+      + `<label class="llm-enable-card-label" style="cursor: ${setupDone ? 'pointer' : 'not-allowed'};">`
+      + `<input type="checkbox" data-llm="toggle" ${enabled ? 'checked' : ''} ${setupDone ? '' : 'disabled'} />`
+      + `<strong>Local LLM</strong>`
+      + `</label>`
+      + statusLabel
+      + `</div>`
+      + subtitle;
+  }
 
   const on = (action: string, fn: (ev: Event) => void): void => {
     host.querySelector(`[data-llm="${action}"]`)?.addEventListener('click', fn);
@@ -9582,8 +9629,7 @@ function renderLlmEnableBlock(reachable: boolean, hasModels: boolean, enabled: b
     const cb = ev.currentTarget as HTMLInputElement;
     if (!setupDone) { cb.checked = false; return; }
     if (cb.checked && !enabled) {
-      // First-time turn-on requires confirmation. Bounce the checkbox back
-      // until they confirm.
+      // Turning on requires a one-time confirmation — bounce checkbox back.
       cb.checked = false;
       llmConfirmPending = true;
       renderLlmEnableBlock(reachable, hasModels, enabled);
@@ -9610,9 +9656,12 @@ async function refreshLlmStatus(): Promise<void> {
       els.ollamaConnectedHelp.style.display = '';
 
       const hasModels = status.installedModels.length > 0;
-      // LLM brain features need Ollama up, a model installed, AND the user's
-      // explicit opt-in — detection alone never turns the local LLM on.
+      // Background brain features (insights, synapse formation) need Ollama up,
+      // a model installed, AND the user's explicit opt-in toggle.
       brainLlmReady = hasModels && status.enabled;
+      // On-demand search features (Synthesize, Enhanced ranking) only need
+      // Ollama up + a model — no master-switch required.
+      ollamaReadyForSearch = hasModels;
       syncSearchLlmCheckboxes();
       // Active-model row is only useful once at least one model is installed.
       els.ollamaModelRow.style.display = hasModels ? 'flex' : 'none';
@@ -9643,6 +9692,7 @@ async function refreshLlmStatus(): Promise<void> {
       els.ollamaConnectedHelp.style.display = 'none';
       els.ollamaNotInstalled.style.display = '';
       brainLlmReady = false;
+      ollamaReadyForSearch = false;
       syncSearchLlmCheckboxes();
       renderLlmEnableBlock(false, false, status.enabled);
     }
@@ -11767,7 +11817,9 @@ function syncSearchLlmCheckboxes(): void {
   const rerankWrap = document.getElementById('g-search-rerank-wrap');
   if (!synth || !rerank) return;
   const llmBtn = document.getElementById('g-search-llm-btn') as HTMLButtonElement | null;
-  if (brainLlmReady) {
+  // Search features (Synthesize, Enhanced ranking) only need Ollama + a model.
+  // Background brain features require the explicit Local LLM toggle (brainLlmReady).
+  if (ollamaReadyForSearch) {
     synth.disabled = false;
     rerank.disabled = false;
     synth.checked = searchLlmSynthesizeEnabled;
@@ -11782,7 +11834,12 @@ function syncSearchLlmCheckboxes(): void {
     rerank.disabled = true;
     synth.checked = false;
     rerank.checked = false;
-    const reason = 'Local LLM is not ready. Enable in Go Non-Deterministic.';
+    // Reset in-memory flags so the boxes stay unchecked if Ollama comes back —
+    // the user must explicitly opt back in rather than having them silently
+    // re-enable on the next status poll.
+    searchLlmSynthesizeEnabled = false;
+    searchLlmRerankEnabled = false;
+    const reason = 'Ollama is not running or has no model. Start Ollama and click Recheck in Go Non-Deterministic.';
     if (synthWrap) synthWrap.title = reason;
     if (rerankWrap) rerankWrap.title = reason;
     if (synthWrap) synthWrap.style.opacity = '0.5';
@@ -11798,8 +11855,8 @@ async function loadSearchLlmPreferences(): Promise<void> {
     searchLlmRerankEnabled = s.ai?.searchLlmRerank === true;
     const synth = document.getElementById('g-search-synth') as HTMLInputElement | null;
     const rerank = document.getElementById('g-search-rerank') as HTMLInputElement | null;
-    if (synth) synth.checked = searchLlmSynthesizeEnabled && brainLlmReady;
-    if (rerank) rerank.checked = searchLlmRerankEnabled && brainLlmReady;
+    if (synth) synth.checked = searchLlmSynthesizeEnabled && ollamaReadyForSearch;
+    if (rerank) rerank.checked = searchLlmRerankEnabled && ollamaReadyForSearch;
   } catch { /* settings unavailable — defaults stay false */ }
 }
 
@@ -11816,14 +11873,24 @@ document.getElementById('g-search-synth')?.addEventListener('change', () => {
   const cb = document.getElementById('g-search-synth') as HTMLInputElement;
   searchLlmSynthesizeEnabled = cb.checked;
   void persistSearchLlmPreference('searchLlmSynthesize', cb.checked);
-  if (els.gSearch.value.trim().length > 0) applyGraphnosisFilter();
-  else if (!cb.checked) clearSearchSynthesis();
+  const q = els.gSearch.value.trim();
+  if (!cb.checked) {
+    clearSearchSynthesis();
+  } else if (q.length > 0 && graphnosisListRows.length > 0) {
+    // Checking the box with an active query is an explicit user action —
+    // trigger immediately rather than waiting for Enter.
+    void applyLlmSearchEnhancements(q, graphnosisListRows);
+  }
 });
 document.getElementById('g-search-rerank')?.addEventListener('change', () => {
   const cb = document.getElementById('g-search-rerank') as HTMLInputElement;
   searchLlmRerankEnabled = cb.checked;
   void persistSearchLlmPreference('searchLlmRerank', cb.checked);
-  if (els.gSearch.value.trim().length > 0) applyGraphnosisFilter();
+  const q = els.gSearch.value.trim();
+  if (q.length > 0 && graphnosisListRows.length > 0) {
+    // Same as synth: toggling rerank with active results applies immediately.
+    void applyLlmSearchEnhancements(q, graphnosisListRows);
+  }
 });
 document.getElementById('g-search-llm-btn')?.addEventListener('click', () => {
   activateMode('atlas');
@@ -11857,7 +11924,7 @@ function clearSearchSynthesis(): void {
 // Called from applyGraphnosisFilter / runSemanticFallback after the deterministic
 // list has been rendered. Reranks the list and/or synthesises an answer, both opt-in.
 async function applyLlmSearchEnhancements(query: string, hits: NodeRecord[]): Promise<void> {
-  if (!brainLlmReady || hits.length === 0) {
+  if (!ollamaReadyForSearch || hits.length === 0) {
     clearSearchSynthesis();
     return;
   }
