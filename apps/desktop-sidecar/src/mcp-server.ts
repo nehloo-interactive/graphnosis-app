@@ -11,7 +11,7 @@ import { mcpRegistry } from './mcp-registry.js';
 import type { BrainEngine } from './brain-engine.js';
 import { createHmac } from 'node:crypto';
 import { recordConsent, revokeConsent, policyGrantMs, type ClientPolicy, type ConsentPolicyChoice } from '@graphnosis-app/core/settings';
-import { registerPrompt as registerConsentPrompt } from './consent-prompts.js';
+import { registerPrompt as registerConsentPrompt, listPendingPrompts } from './consent-prompts.js';
 import type { ConsentRecord } from '@graphnosis-app/core/settings';
 
 // ── Session-level data budget ─────────────────────────────────────────────────
@@ -1194,56 +1194,77 @@ export function createMcpServer(deps: McpDeps): Server {
     }
 
     // ── In-app prompt (Option 1) ─────────────────────────────────────
-    // Try the modal first — if a Tauri frontend is connected, the user
-    // gets a single-click approval dialog instead of phrase typing.
-    // Falls back to phrase typing on timeout (headless sidecar) or if
-    // the user explicitly denies (so the existing CONSENT REQUIRED
-    // message reaches the AI and the user can still opt to type).
+    // When the Tauri frontend is connected we fire a non-blocking consent
+    // prompt: the modal appears in the Graphnosis app, and we return
+    // immediately so the AI client can tell the user to approve it.
+    // Consent is recorded in the background when the user clicks Allow;
+    // the AI retries the tool call and succeeds without further friction.
+    //
+    // Headless fallback (no GUI / timeout): the AI still receives the
+    // phrase-typing instructions below.
     if (deps.broadcastRaw && missingTiers.length > 0) {
       const promptPolicy = policy ?? null;
-      // Suggested grant durations to show on the modal — preserves the
-      // user's per-tier policy default ("Allow for 1 hour" etc.).
       const suggestedDurations = missingTiers.map((tier) => {
         const choice = promptPolicy
           ? (tier === 'personal' ? promptPolicy.personalTier : promptPolicy.sensitiveTier)
           : (tier === 'personal' ? 'ask-grant-1h' : 'ask-every-time');
         return { tier, durationMs: policyGrantMs(choice) ?? 3_600_000 };
       });
-      const { meta, choice } = registerConsentPrompt(clientName, missingTiers);
-      deps.broadcastRaw({
-        kind: 'consent-prompt',
-        name: 'consent-prompt',
-        payload: {
-          promptId: meta.promptId,
-          clientName,
-          tiers: missingTiers,
-          suggestedDurations,
-          privacyUrl: PROVIDER_PRIVACY_URLS[clientName] ?? null,
-        },
-      });
-      const result = await choice;
-      if (result.action === 'allow') {
-        // Record consent for every prompted tier with the user-chosen
-        // window. Permanent (Number.MAX_SAFE_INTEGER) collapses to the
-        // standard "until revoked" record.
-        let nextConsents = settings.ai.dataAccessConsents ?? [];
-        const recipientName = clientName.startsWith('claude') ? 'Anthropic Inc.' : clientName;
-        const windowMs = result.durationMs >= Number.MAX_SAFE_INTEGER - 1 ? -1 : result.durationMs;
-        for (const tier of missingTiers) {
-          nextConsents = recordConsent(nextConsents, clientName, tier, windowMs, recipientName, 'US', '2025-05');
-        }
-        await deps.host.setSettings({ ai: { ...settings.ai, dataAccessConsents: nextConsents } });
-        const until = windowMs === -1 ? 'permanently' : `for ${Math.round(windowMs / 60_000)} minute(s)`;
-        return { consentFooter: `\n\n[${clientName} — ${missingTiers.join(' + ')} access granted ${until} via in-app prompt. Revoke in Settings → AI.]`, autoExceptGraphIds };
+
+      // Deduplication: if a prompt for this client+tiers is already
+      // pending (AI retried before the user clicked), skip registering a
+      // second modal and just re-throw the same instruction.
+      const tierSet = new Set(missingTiers);
+      const alreadyPending = listPendingPrompts().some(
+        (p) => p.clientName === clientName && p.tiers.length === missingTiers.length
+          && p.tiers.every((t) => tierSet.has(t)),
+      );
+
+      if (!alreadyPending) {
+        const { meta, choice } = registerConsentPrompt(clientName, missingTiers);
+        deps.broadcastRaw({
+          kind: 'consent-prompt',
+          name: 'consent-prompt',
+          payload: {
+            promptId: meta.promptId,
+            clientName,
+            tiers: missingTiers,
+            suggestedDurations,
+            privacyUrl: PROVIDER_PRIVACY_URLS[clientName] ?? null,
+          },
+        });
+
+        // Record consent in the background when the user clicks Allow —
+        // detached from this MCP call so we can return immediately.
+        void choice.then(async (result) => {
+          if (result.action !== 'allow') return;
+          const current = deps.host.getSettings();
+          let nextConsents = current.ai.dataAccessConsents ?? [];
+          const recipientName = clientName.startsWith('claude') ? 'Anthropic Inc.' : clientName;
+          const windowMs = result.durationMs >= Number.MAX_SAFE_INTEGER - 1 ? -1 : result.durationMs;
+          for (const tier of missingTiers) {
+            nextConsents = recordConsent(nextConsents, clientName, tier, windowMs, recipientName, 'US', '2025-05');
+          }
+          await deps.host.setSettings({ ai: { ...current.ai, dataAccessConsents: nextConsents } });
+        }).catch((e: unknown) => {
+          console.error('[consent] background recording failed:', (e as Error).message);
+        });
       }
-      if (result.action === 'deny') {
-        throw new ConsentRequiredError(
-          `You denied ${clientName} access to ${missingTiers.join(' and ')} tier memories. Change in Graphnosis → Settings → AI.`,
-        );
-      }
-      // 'timeout' → fall through to the existing phrase-typing notice.
-      // Useful when the sidecar runs headless (no GUI) — the AI still
-      // gets actionable instructions.
+
+      // Return immediately — don't block the AI client while the user
+      // looks at the modal. The AI should tell the user to approve it in
+      // Graphnosis, then retry this tool call.
+      const tierLabel = missingTiers.join(' and ');
+      throw new ConsentRequiredError(
+        `⚠️ GRAPHNOSIS CONSENT NEEDED\n\n` +
+        `A consent prompt has appeared in the Graphnosis app asking you to approve ` +
+        `${clientName}'s access to your ${tierLabel} memories.\n\n` +
+        `Please tell the user:\n` +
+        `  → Check the Graphnosis app — an Allow / Deny dialog should be visible.\n` +
+        `  → Click Allow to proceed, or Deny to block this request.\n\n` +
+        `Once approved, retry this tool call and it will continue automatically.\n` +
+        `The prompt stays open for 60 seconds.`,
+      );
     }
 
     // Build the consent notice. Distinguish first-time from re-prompt.
@@ -2452,7 +2473,12 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
         if ('error' in resFrom) return resFrom.error;
         const resTo = requireEngram(deps.host, args.to_engram);
         if ('error' in resTo) return resTo.error;
-        const newRecord = await deps.host.moveSource(resFrom.graphId, args.sourceId, resTo.graphId);
+        const { newRecord, forgottenNodeIds } = await deps.host.moveSource(resFrom.graphId, args.sourceId, resTo.graphId);
+        // Sync in-memory cross-engram cache and rebuild links for the moved nodes.
+        if (forgottenNodeIds.length > 0) {
+          deps.brainEngine?.purgeDeletedNodes(forgottenNodeIds);
+        }
+        deps.brainEngine?.runCrossEngramNow();
         const metaTo = deps.host.getGraphMetadata(resTo.graphId);
         return { content: [{ type: 'text', text:
           `Moved source ${args.sourceId} to ${metaTo?.displayName ?? resTo.graphId}. New sourceId: ${newRecord.sourceId}`

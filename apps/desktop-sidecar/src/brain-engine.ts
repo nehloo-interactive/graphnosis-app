@@ -732,6 +732,16 @@ export class BrainEngine {
     void this.reinforcement.runConsolidationPass();
   }
 
+  /**
+   * Trigger a cross-engram linking pass immediately — called after a source
+   * moves between engrams so the re-ingested nodes get re-linked to other
+   * engrams without waiting for the next background timer tick.
+   * Fire-and-forget; the pass emits its own start/done frames.
+   */
+  runCrossEngramNow(): void {
+    void this.reinforcement.runCrossEngramPass();
+  }
+
   /** Snapshot for the UI's scan-status line: are we scanning, when did each
    *  loop last run, how often each loop runs, and aggregate stats. */
   getStatus(): {

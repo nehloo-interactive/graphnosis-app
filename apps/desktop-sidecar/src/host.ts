@@ -1714,7 +1714,11 @@ export class GraphnosisHost {
    * content blob is decrypted here BEFORE the forget so it isn't deleted.
    * Throws if a non-file source has no cached content.
    */
-  async moveSource(fromGraphId: GraphId, sourceId: string, toGraphId: GraphId): Promise<SourceRecord> {
+  async moveSource(
+    fromGraphId: GraphId,
+    sourceId: string,
+    toGraphId: GraphId,
+  ): Promise<{ newRecord: SourceRecord; forgottenNodeIds: string[] }> {
     if (fromGraphId === toGraphId) throw new Error('Source and destination engram must be different.');
     const fromG = this.must(fromGraphId);
     this.must(toGraphId); // ensure destination exists
@@ -1723,12 +1727,13 @@ export class GraphnosisHost {
     if (!rec) throw new Error(`Source ${sourceId} not found in engram ${fromGraphId}.`);
 
     let newRecord: SourceRecord;
+    let forgottenNodeIds: string[];
 
     if (rec.kind === 'file') {
       // File sources: re-read from disk into target, then forget from source.
       const { ingestFile } = await import('./ingest.js');
       const { withEmbedding } = await import('./embedding-queue.js');
-      await this.forgetSource(fromGraphId, sourceId);
+      ({ nodeIds: forgottenNodeIds } = await this.forgetSource(fromGraphId, sourceId));
       newRecord = await ingestFile(this, toGraphId, rec.ref, {
         wrapIngest: (fn) => withEmbedding(fn),
       });
@@ -1748,12 +1753,12 @@ export class GraphnosisHost {
         content,
         sourceRef: header.ref,
       };
-      await this.forgetSource(fromGraphId, sourceId);
+      ({ nodeIds: forgottenNodeIds } = await this.forgetSource(fromGraphId, sourceId));
       newRecord = await this.ingest(toGraphId, rec.kind, rec.ref, input);
     }
 
     this.kickoffRelink(toGraphId);
-    return newRecord;
+    return { newRecord, forgottenNodeIds };
   }
 
   /**
