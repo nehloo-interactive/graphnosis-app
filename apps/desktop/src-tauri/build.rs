@@ -365,15 +365,36 @@ fn build_node_binary(binary_name: &str, entry_relative: &str) {
         binary_name, bun_target, binary_path.display()
     );
 
+    // On Windows targets, ask Bun to bake the "Windows GUI subsystem" flag
+    // into the PE so Windows never allocates a console window for the
+    // resulting binary. Without this, both the sidecar (spawned by Rust)
+    // and the MCP relay (spawned by Claude Desktop) pop up a black console
+    // window every launch. Rust's CREATE_NO_WINDOW spawn flag handles our
+    // own spawn, but only the PE subsystem flag covers the relay because
+    // we don't control how Claude Desktop spawns it.
+    //
+    // Important caveat: Bun's --windows-hide-console only takes effect when
+    // building NATIVELY on Windows. When cross-compiling from macOS or Linux
+    // (`--target=bun-windows-x64` from a non-Windows host), the flag is a
+    // silent no-op — Bun reuses the upstream Windows-built bun binary
+    // wholesale and can't rewrite its PE subsystem. So the relay window will
+    // still pop up on Claude Desktop spawn unless the release is built on a
+    // Windows runner. The sidecar window is suppressed in both cases via the
+    // Rust spawn flag in sidecar.rs.
+    let mut bun_args: Vec<String> = vec![
+        "build".to_string(),
+        entry_path.to_string_lossy().into_owned(),
+        "--compile".to_string(),
+        format!("--target={}", bun_target),
+    ];
+    if bun_target.starts_with("bun-windows-") {
+        bun_args.push("--windows-hide-console".to_string());
+    }
+    bun_args.push("--outfile".to_string());
+
     let status = Command::new(&bun)
         .current_dir(&sidecar_dir)
-        .args([
-            "build",
-            entry_path.to_string_lossy().as_ref(),
-            "--compile",
-            &format!("--target={}", bun_target),
-            "--outfile",
-        ])
+        .args(&bun_args)
         .arg(&binary_path)
         .status();
 
