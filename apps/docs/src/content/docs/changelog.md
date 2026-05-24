@@ -51,6 +51,44 @@ Theme: **auditable by construction.** Graphnosis now has a layered access-contro
 - **HMAC secret generation.** Older cortexes that pre-date v0.10 will generate a fresh consent secret on first unlock. No user action required.
 - **Consent records.** Cortexes with no `dataAccessConsents` field are treated as having no granted consents. The first recall from an AI client triggers the first-time notice.
 
+### Added (later in the v0.10 cycle)
+
+- **35 MCP tools across 9 categories.** The toolset expanded from the original 11 to 35: full Engram discovery (`list_engrams`, `suggest_engram`, `browse_engram`, `recent`, `get_engram_schema`); structured recall variants (`recall_structured`, `recall_with_citations`, `compare_engrams`, `cross_search`); source operations (`find_source`, `recall_source`, `transfer_source`); engram operations (`merge_engrams`, `ingest_batch`, `engram_summary`); brain maintenance (`duplicate_pairs`, `healing_journal`, `gnn_status`); approximate similarity (`audit_memory`, `check_duplicate`); and Local-LLM-backed (`gnn_neighbors`, `llm_query`, `llm_distill`). Full reference: [/reference/mcp-tools](/reference/mcp-tools/).
+- **In-app MCP Tools browser.** New **MCP Tools** button in the left sidebar (next to Settings) opens a dedicated page listing every tool grouped by category. Click any tool name for a short description, determinism class, and 1–3 example prompts you can paste straight into your AI client. A logo and link to the published reference sit in the explainer modal.
+- **Boot loads your last-active engram first.** Graphnosis now remembers which engram you had selected and loads it as the default on next unlock — instead of always loading `personal` and swapping mid-session. The lock screen reveals with the correct engram already showing. See [Boot & engram loading](/guides/boot-and-engram-loading/).
+- **Sequential background engram loading.** Secondary engrams load one at a time with event-loop yields between each, so the desktop app's first `list_nodes` call doesn't sit queued behind 12 concurrent decryption jobs. Reveals the lock screen in ~3 seconds instead of 25–30 seconds on cortexes with many engrams. Status bar shows a live "Loading N more engrams…" countdown while the rest stream in.
+- **Engram picker shows pending engrams.** The active-engram dropdown now lists every engram immediately on unlock — the ones still loading appear greyed out and aren't clickable until they finish. As each engram loads, it becomes selectable in place; positions stay alphabetical, no reshuffling.
+- **"Local LLM…" button replaces the static search-row hint.** The previous "Requires a local AI model — enable in Go Non-Deterministic" cluttering the search row is now a small "Local LLM…" button that takes you directly to the toggle.
+- **Search-results × close button.** A close button in the search-results header mirrors the in-input × — clears the query and returns to the dashboard without scrolling back up to the input.
+- **Needs Your Review overlay polish.** The button now shows an immediate loading placeholder while the overlay populates (previously opened empty for ~1s), and the overlay auto-closes when you switch away from the Deterministic Consolidation tab.
+
+### Changed (later in the v0.10 cycle)
+
+- **Background neuron-field animation rewritten.** The ambient "cortex simulation" behind the vitality card now uses pure Brownian motion with per-node pulsation and short directed-edge synapse pulses, replacing the prior attraction-based simulation that collapsed nodes into 2D lines. Softened opacity so it reads as a backdrop, not foreground noise.
+- **"Cortex secured" capitalization.** Lock-screen boot status now reads "Cortex secured" instead of "cortex secured".
+
+### Fixed (later in the v0.10 cycle)
+
+- **Lock-screen freeze during boot.** Fixed a regression where the lock screen would sit on "Loading memories…" for the full duration of secondary engram loading (25–30s on large cortexes). The sidecar was using `Promise.all` for 12 concurrent decryption jobs, saturating the Node event loop and starving the IPC socket so the boot's `list_nodes('personal')` call sat queued. Sequential loading + `setImmediate` yields between each load lets IPC interleave.
+- **Stale localStorage engram preference.** If you deleted the engram you'd last selected, the next boot would silently create a fresh empty engram with that name (because the sidecar's first-run create path triggered on ENOENT). Now falls back to `personal` instead.
+
+### Changed (consent UX overhaul, later in the v0.10 cycle)
+
+- **Personal-tier recalls are silent by default.** Installing Graphnosis and adding the MCP server to your AI client's config is already two affirmative, informed actions for personal-tier access — extra per-recall prompts were friction without privacy gain. The consent gate now only fires for `sensitive`-tier recalls (Article 9 special-category data, where the friction is the point).
+- **In-app consent modal replaces forced phrase typing.** When the gate does fire (sensitive recall, or any recall in extra-precaution mode), the Graphnosis app pops a one-click prompt: **Deny / Allow once / Allow for 1 hour / Allow for today**. The old phrase-typing flow is preserved as a headless fallback for SSH / CI / no-GUI sessions.
+- **First-connect policy chooser.** The first time a never-seen AI client triggers the consent flow, the app pops a one-time chooser so you can set per-tier defaults (always-allow / ask-1h / ask-1d / ask-every-time / never-allow). Editable later in Settings → AI → Client policies. Doesn't pop for clients that only touch personal data in the default mode (because there's no consent flow to seed).
+- **Federated recall silently scopes to consented tiers.** When the AI doesn't name specific engrams (federated `recall(query)`), Graphnosis silently excludes any un-consented sensitive engrams from the search instead of firing a prompt. The AI gets results from what it can read; the prompt only fires when the AI explicitly names a sensitive engram via `only_engrams` — i.e. when the access is deliberate. Stops the surprise where merely *having* a sensitive engram in your cortex caused every personal-data query to prompt.
+- **Settings → AI → Extra precaution mode.** New checkbox for users who want the old behaviour back — gates `personal`-tier recalls behind the same in-app prompt + per-client policies + first-connect chooser. Off by default.
+- **Session replay blocker tuned for natural retries.** Window shortened from 5 min to **60 seconds**; threshold changed from "any 85%-similar query blocks" to "**3rd** 85%-similar query within the window blocks". First two identical queries pass (legitimate retries); sustained 3rd+ is the scraping pattern.
+- **MCP consent errors now render correctly in Claude's UI.** The consent-required notice was being returned as a JSON-RPC `-32603 Internal Error`, which Claude renders as a generic "Tool execution failed" with no detail. Now returned as a proper tool result with `isError: true` so the full notice (with instructions, privacy policy link, etc.) reaches the AI client's UI and the user.
+- **Background neuron-field animation softened.** Opacity dropped from 0.55 → 0.2 so the ambient "cortex simulation" reads as a true backdrop and the foreground vitality numbers / "Your cortex is thriving" lead the eye instead.
+
+### Added (connection lifecycle, later in the v0.10 cycle)
+
+- **Amber idle indicator on MCP connections.** AI tools panel rows turn amber + show `· Idle Xm` (compact format: `47s` / `12m` / `3h`) when a connection hasn't seen a request in 15+ min. Returns to green pulse automatically on the next request. Replaces the previous behaviour where idle connections were force-closed silently — now you can see they're idle and decide what to do.
+- **× force-close button per MCP connection.** Hover any row in the AI tools panel to reveal a × button; one click force-closes that connection. **Non-destructive** — the relay (Claude Desktop's MCP subprocess, etc.) auto-reconnects on its next tool call and a fresh row appears. Use it to clear stale entries left over from AI clients that removed the connector but didn't kill their relay subprocess (notably Claude Desktop until you restart it). Hidden for `stdio` transport (we can't force-close a process Claude spawned directly).
+- **Relay reconnect window: indefinite.** The MCP relay used to give up after 24 hours of waiting for the sidecar to come back. Now it parks forever (only exits when Claude itself closes its stdin pipe). Cost is one idle Node process per Claude-session-ever — negligible. Means closing Graphnosis for a week and reopening it just works: your AI clients reconnect on their next tool call, no Claude restart needed. Power users can still set a finite timeout via `GRAPHNOSIS_RELAY_RECONNECT_MS` env var or `settings.json:mcpRelay.reconnectMs`.
+
 ---
 
 ## v0.9 — Deterministic Consolidation

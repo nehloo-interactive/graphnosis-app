@@ -117,12 +117,15 @@ By default, a `sensitive` graph is fully blocked from AI access — the AI recei
 
 ### 5.4 Layer 4 data access controls
 
-Starting in Graphnosis **v0.10**, before any AI client can retrieve memories from `personal` or `sensitive` engrams, Graphnosis enforces a layered access-control stack that requires **active confirmation from you — not the AI.** A full technical walkthrough lives at [AI Access Controls](/guides/ai-access-controls); the summary:
+Starting in Graphnosis **v0.10**, before any AI client can retrieve memories from `sensitive` engrams, Graphnosis enforces a layered access-control stack that requires **active confirmation from you — not the AI.** Personal-tier engrams flow without an extra per-recall prompt (your decision to install Graphnosis and add it to your AI client's MCP configuration constitutes the informed consent for routine access); users who want every personal-tier recall gated too can enable **Extra precaution mode** in Settings → AI. A full technical walkthrough lives at [AI Access Controls](/guides/ai-access-controls); the summary:
 
-- **Consent phrase gate.** A 3-word time-limited phrase is displayed only inside the Graphnosis app (Settings → AI → Consent Phrases). You look at the app, read the phrase, and type it into the AI conversation. Phrases rotate every 24 hours for `personal` engrams and every 1 hour for `sensitive` engrams. They are generated locally via `HMAC-SHA256(per-cortex-secret, tier + ":" + time-window)`. The secret never leaves your device and is not exposed via any MCP tool.
-- **Configurable re-confirmation intervals.** Pick how long a typed confirmation is remembered before re-prompting: every access, 15 min, 30 min, 1 hour, 4 hours, daily, weekly, monthly, 6 months, or permanent. Per-engram overrides are supported and the stricter setting always wins.
+- **In-app consent prompt (primary).** When a `sensitive`-tier recall fires (or any gated recall in extra-precaution mode), the Graphnosis app pops a modal naming the AI client, the tiers requested, and the AI provider's privacy policy, with buttons **Deny / Allow once / Allow for 1 hour / Allow for today**. One click resolves it; the recall proceeds or errors cleanly.
+- **Per-client default policy.** The first time a new AI client triggers the gate, the app offers a one-time chooser per tier (always-allow / ask-1h / ask-1d / ask-every-time / never-allow). Editable later in Settings → AI → Client policies.
+- **Consent phrase gate (headless fallback).** When the in-app prompt cannot reach a window (sidecar over SSH, in Docker, in CI), the gate falls back to a 3-word time-limited phrase displayed only in the Graphnosis app (Settings → AI → Consent Phrases) that you type into the AI conversation. Phrases rotate every 24 hours for `personal` engrams and every 1 hour for `sensitive`. Generated locally via `HMAC-SHA256(per-cortex-secret, tier + ":" + time-window)`. The secret never leaves your device and is not exposed via any MCP tool.
+- **Federated recall is silently scoped.** A `recall` that does not name specific engrams excludes un-consented sensitive engrams from the search entirely rather than firing a prompt; the AI gets results only from tiers it can read. The prompt fires when the AI explicitly names a sensitive engram via `only_engrams` — i.e. when access is deliberate.
+- **Configurable re-confirmation intervals.** When you choose **Allow for 1 hour / for today** on the modal, the grant lasts that long. The legacy interval settings (Settings → AI) still govern phrase-typed grants and per-engram overrides. The stricter setting always wins.
 - **Recall rate limit.** Each AI client is capped at 10 recall-class calls per 60-second window.
-- **Session replay blocker.** Recalls whose query is ≥ 85% similar (Jaccard token set) to one issued in the last 5 minutes by the same client are rejected.
+- **Session replay blocker.** Recalls are blocked when the same query is repeated 3+ times within a 60-second window by the same client (Jaccard token-set similarity ≥ 0.85). First two identical queries pass as natural retries.
 - **5-attempt lockout.** Five consecutive failed phrase attempts for the same (client, tier) pair within 10 minutes revoke that pair's consent and notify you.
 - **Optional cumulative session caps.** Token cap, node cap, and engram-breadth cap — all off by default; available in Settings → AI for power users who want extra backstops.
 
@@ -136,7 +139,7 @@ You can revoke all AI consents at any time from Settings → AI. Revocation is i
 
 ### 5.5 International data transfers (made by you, not by Nehloo)
 
-Nehloo Interactive does not transfer your data anywhere. When you authorize an AI client via the consent phrase, your data travels directly from your device to the AI provider's servers — a transfer made by you, using your own AI account and credentials, outside Nehloo's infrastructure.
+Nehloo Interactive does not transfer your data anywhere. When you authorize an AI client (by clicking Allow on the in-app consent prompt, or in headless setups by typing the consent phrase), your data travels directly from your device to the AI provider's servers — a transfer made by you, using your own AI account and credentials, outside Nehloo's infrastructure.
 
 **EU/UK users**: This transfer is made under your agreement with the AI provider. For US-based providers, check their privacy policy and Data Processing Addendum for the applicable transfer mechanism (Standard Contractual Clauses, adequacy decision, etc.). Graphnosis's consent gate ensures you have full information before any transfer occurs.
 
@@ -144,7 +147,7 @@ Nehloo Interactive does not transfer your data anywhere. When you authorize an A
 
 ### 5.6 Special category and sensitive data
 
-If your sensitive-tier engrams contain health, financial, political, biometric, or other sensitive information (per GDPR Article 9 or equivalent local law), the Graphnosis consent phrase constitutes your explicit, active authorization to share that data with the named AI provider. This is your decision — Nehloo does not evaluate or control the content of your memories.
+If your sensitive-tier engrams contain health, financial, political, biometric, or other sensitive information (per GDPR Article 9 or equivalent local law), the Graphnosis consent action — your click on the in-app prompt's Allow button, or the phrase you type into the AI conversation in headless setups — constitutes your explicit, active authorization to share that data with the named AI provider. This is your decision — Nehloo does not evaluate or control the content of your memories.
 
 We recommend assigning the `sensitive` tier and the shortest appropriate re-confirmation interval to any engram of this nature.
 
@@ -257,7 +260,7 @@ Nehloo Interactive collects: your email address (newsletter/account). We do **no
 
 **cortex data**: stored only on your device. Nehloo has no copy and cannot respond to CCPA requests about cortex content — it is not in our possession. Use the Graphnosis app to export or delete your memories.
 
-**"Do Not Sell or Share My Personal Information"**: Graphnosis does not sell data. AI sharing requires your explicit, active consent via the phrase gate (see §5.4). You can revoke at any time in Settings → AI.
+**"Do Not Sell or Share My Personal Information"**: Graphnosis does not sell data. AI sharing of sensitive-tier data requires your explicit, active consent via the in-app prompt (or phrase fallback) — see §5.4. You can revoke at any time in Settings → AI.
 
 **California resident requests** about newsletter/account email: contact privacy@graphnosis.com with subject "CCPA Request."
 
@@ -271,7 +274,7 @@ Nehloo Interactive collects: your email address (newsletter/account). We do **no
 
 **China (PIPL)**: Graphnosis does not geofence users by country. Users in mainland China should consult local PIPL cross-border data transfer requirements before enabling AI integrations. Nehloo is not responsible for the user's compliance with local law.
 
-**All other regions**: The consent phrase gate ensures no cortex data is forwarded to any AI provider without your active approval, regardless of jurisdiction. Contact privacy@graphnosis.com for region-specific questions about Nehloo's account data.
+**All other regions**: The consent gate (in-app prompt + phrase fallback) ensures no sensitive cortex data is forwarded to any AI provider without your active approval, regardless of jurisdiction. Contact privacy@graphnosis.com for region-specific questions about Nehloo's account data.
 
 ## 13. Changes to this policy
 

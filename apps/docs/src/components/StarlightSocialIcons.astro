@@ -1,0 +1,89 @@
+---
+/**
+ * Override for Starlight's <SocialIcons /> header slot.
+ *
+ * Renders a "Download vX.Y.Z" pill to the LEFT of the default social
+ * icons (the GitHub mark). The pill text comes from the desktop app's
+ * `tauri.conf.json` at build time so it stays in sync with the actual
+ * shipped binary version without manual edits to docs.
+ *
+ * The version-read pattern is the same one Nav.astro uses on the
+ * landing page — fail-quiet (empty string) when the file isn't where
+ * we expect, so docs builds don't break if the desktop app moves.
+ */
+import Default from '@astrojs/starlight/components/SocialIcons.astro';
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
+
+let version = '';
+try {
+  const conf = JSON.parse(
+    readFileSync(resolve('../../apps/desktop/src-tauri/tauri.conf.json'), 'utf8'),
+  );
+  version = conf.version ? `v${conf.version}` : '';
+} catch { /* docs site built standalone — skip the pill, keep GitHub icon */ }
+---
+
+{version && (
+  <a
+    href="/download/mac"
+    class="sl-download-pill"
+    title={`Download Graphnosis ${version}`}
+    aria-label={`Download Graphnosis ${version}`}
+  >
+    <span class="sl-download-pill-label">Download</span>
+    <span class="sl-download-pill-version">{version}</span>
+  </a>
+)}
+
+<Default><slot /></Default>
+
+<style>
+  /* Filled pill with a fixed dark-cyan background + white text in both
+     light and dark Starlight themes. Earlier draft used translucent
+     accent fills which gave cyan-on-cyan in light mode (unreadable)
+     and faint outlines in dark mode. Hard-coded colors here guarantee
+     ≥7:1 contrast on either background. */
+  .sl-download-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    margin-right: 8px;
+    padding: 5px 12px;
+    border-radius: 999px;
+    border: 1px solid transparent;
+    background: #0e7490;       /* cyan-700 — solid, accessible in both themes */
+    color: #ffffff;
+    font-size: 12px;
+    font-weight: 600;
+    line-height: 1;
+    text-decoration: none;
+    white-space: nowrap;
+    transition: background 80ms, transform 80ms;
+  }
+  .sl-download-pill:hover {
+    background: #0891b2;       /* cyan-600 — slightly brighter on hover */
+    color: #ffffff;
+  }
+  .sl-download-pill:active {
+    background: #155e75;       /* cyan-800 — pressed feedback */
+  }
+  .sl-download-pill:focus-visible {
+    outline: 2px solid #67e8f9;
+    outline-offset: 2px;
+  }
+  .sl-download-pill-label {
+    font-weight: 700;
+  }
+  .sl-download-pill-version {
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-weight: 500;
+    opacity: 0.85;
+  }
+  /* On narrow viewports collapse the word "Download" so the pill stays
+     compact — version-only is still recognisable as the download link. */
+  @media (max-width: 50rem) {
+    .sl-download-pill-label { display: none; }
+    .sl-download-pill { padding: 4px 8px; }
+  }
+</style>
