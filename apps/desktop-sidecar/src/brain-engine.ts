@@ -656,6 +656,22 @@ export class BrainEngine {
     return this.reinforcement.removeGnnEdges();
   }
 
+  /**
+   * Purge all in-memory references to a deleted engram. Call this immediately
+   * after host.deleteGraph() so ghost edges don't survive until the next boot.
+   */
+  purgeDeletedGraph(graphId: string): void {
+    this.reinforcement.purgeDeletedGraph(graphId);
+  }
+
+  /**
+   * Purge in-memory connections and GNN edges anchored to soft-deleted nodes.
+   * Call this immediately after host.forgetSource() returns its nodeIds.
+   */
+  purgeDeletedNodes(nodeIds: string[]): void {
+    this.reinforcement.purgeDeletedNodes(nodeIds);
+  }
+
   /** Neural-network state for the UI: on/off, predicted-edge count, last run. */
   getNeuralNetworkStatus(): {
     enabled: boolean;
