@@ -268,6 +268,8 @@ export async function applyCorrection(opts: {
   prompt?: string;
   /** Resolution mode from proposeCorrection. */
   mode?: 'deterministic' | 'gnn-expanded' | 'llm-assisted';
+  /** Who/what initiated this correction — threads into the op-log `triggeredBy` field. */
+  triggeredBy?: string;
 }): Promise<void> {
   const adds: AppendDocumentInput[] = (opts.diff.adds ?? []).map(a => ({
     kind: 'markdown' as const,
@@ -278,7 +280,10 @@ export async function applyCorrection(opts: {
   await opts.host.applyCorrection(
     opts.graphId,
     { adds, edits },
-    opts.correctedBy ? { correctedBy: opts.correctedBy } : undefined,
+    {
+      ...(opts.correctedBy ? { correctedBy: opts.correctedBy } : {}),
+      ...(opts.triggeredBy ? { triggeredBy: opts.triggeredBy } : {}),
+    },
   );
   const ts = Date.now();
   const gllBase = {

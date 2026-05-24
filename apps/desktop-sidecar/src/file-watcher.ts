@@ -249,8 +249,8 @@ export class FileWatcher {
       // mutation ticks. makeSourceId is deterministic from (kind, ref),
       // so the new record has the same sourceId — we still re-bind for
       // safety in case host implementation changes.
-      await this.host.forgetSource(key.graphId, key.sourceId);
-      const record = await ingestFile(this.host, key.graphId, filePath);
+      await this.host.forgetSource(key.graphId, key.sourceId, { triggeredBy: 'user:ingest' });
+      const record = await ingestFile(this.host, key.graphId, filePath, { triggeredBy: 'user:ingest' });
       this.bySources.set(filePath, { graphId: record.graphId, sourceId: record.sourceId });
     } catch (e) {
       console.error(`[file-watcher] reingest failed for ${filePath}: ${(e as Error).message}`);
