@@ -73,7 +73,7 @@ And the recall / remember loop, working live with an AI client:
 │    → PDF parsing offloaded to a worker_threads Worker (pure JS, safe)      │
 │    → ONNX inference runs in a pool of forked child processes (N-API safe)  │
 │  - federated query across all user graphs with tier-capped budgets         │
-│  - MCP server over stdio: 35 tools in 9 categories (recall, remember,      │
+│  - MCP server over stdio: 34 tools in 9 categories (recall, remember,      │
 │    correct, apply, forget, stats, list_engrams, recall_with_citations,     │
 │    compare_engrams, audit_memory, llm_query, … see /reference/mcp-tools)   │
 └────────────────────────────────┬───────────────────────────────────────────┘
@@ -110,7 +110,7 @@ apps/
       embed-worker.ts   Forked child: owns one fastembed / ONNX session
       embedding-queue.ts  Mutex: serializes ONNX calls between concurrent ingests
       ipc.ts            Unix-socket JSON-RPC server for Tauri shell
-      mcp-server.ts     35 MCP tool definitions in 9 categories (recall, …)
+      mcp-server.ts     34 MCP tool definitions in 9 categories (recall, …)
 packages/
   graphnosis-app-core/  Crypto, op-log, source index, federation,
                         sensitivity tiers, embeddings cache, policy
@@ -120,7 +120,7 @@ packages/
 
 ## MCP tools exposed to AI clients
 
-The sidecar exposes **35 tools** in 9 functional categories. The desktop app
+The sidecar exposes **34 tools** in 9 functional categories. The desktop app
 ships an in-app browser for them (left sidebar → **MCP Tools**), and the
 full reference with parameters, return shapes, and example prompts lives
 at [graphnosis.com/reference/mcp-tools](https://graphnosis.com/reference/mcp-tools/).
@@ -160,7 +160,7 @@ flows for the four most common:
 | **ChatGPT** | Coming soon | Browser extension |
 | **Gemini** | Coming soon | Browser extension |
 
-Every connection sees the same 35 tools above; what each client can
+Every connection sees the same 34 tools above; what each client can
 actually read is governed by the [consent gate](https://graphnosis.com/guides/ai-access-controls/)
 (silent for personal-tier engrams, one-click in-app modal for sensitive).
 
@@ -290,7 +290,7 @@ Optional `policy.json` for per-graph sensitivity tiers:
 }
 ```
 
-After saving, restart Claude Desktop. The MCP server appears as **Graphnosis** in the tool picker with 35 tools.
+After saving, restart Claude Desktop. The MCP server appears as **Graphnosis** in the tool picker with 34 tools.
 
 ---
 
