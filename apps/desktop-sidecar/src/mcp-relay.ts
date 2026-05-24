@@ -40,7 +40,13 @@ const FALLBACK_INITIAL_WAIT_MS = 10_000;
 // ~400ms poll interval the per-day CPU cost is negligible. Old default
 // (60s) meant a 1-hour stepping-away forced a Claude restart; that was
 // an unforced UX loss. Users can still dial this lower in Settings.
-const FALLBACK_RECONNECT_WAIT_MS = 24 * 60 * 60 * 1000;
+// Infinity — the relay sits idle until the sidecar comes back, never
+// gives up on its own. Cost is one parked Node process per Claude
+// session ever opened (small; the loop is just `await delay(400ms)`
+// in a tight retry). Users who want a finite timeout can still set
+// it via the `GRAPHNOSIS_RELAY_RECONNECT_MS` env var or
+// `settings.json:mcpRelay.reconnectMs`.
+const FALLBACK_RECONNECT_WAIT_MS = Infinity;
 const POLL_INTERVAL_MS = 400;
 const PROGRESS_LOG_EVERY_MS = 3_000;
 
@@ -82,9 +88,10 @@ function resolveTimings(): { initialWaitMs: number; reconnectMs: number } {
 }
 
 const { initialWaitMs, reconnectMs: reconnectWaitMs } = resolveTimings();
+const fmtBudget = (ms: number): string => Number.isFinite(ms) ? `${Math.round(ms / 1000)}s` : 'unbounded';
 process.stderr.write(
-  `[graphnosis-relay] timings: initial=${Math.round(initialWaitMs / 1000)}s, ` +
-  `reconnect=${Math.round(reconnectWaitMs / 1000)}s\n`,
+  `[graphnosis-relay] timings: initial=${fmtBudget(initialWaitMs)}, ` +
+  `reconnect=${fmtBudget(reconnectWaitMs)}\n`,
 );
 
 class Relay {
@@ -287,7 +294,7 @@ class Relay {
 
     process.stderr.write(
       `[graphnosis-relay] sidecar disconnected — keeping Claude attached and ` +
-      `waiting up to ${Math.round(reconnectWaitMs / 1000)}s for the App to come back…\n`,
+      `waiting ${Number.isFinite(reconnectWaitMs) ? `up to ${Math.round(reconnectWaitMs / 1000)}s` : 'indefinitely'} for the App to come back…\n`,
     );
 
     const ok = await waitForSocket(reconnectWaitMs);
@@ -339,7 +346,7 @@ async function waitForSocket(waitMs: number): Promise<boolean> {
     if (elapsed - lastLog >= PROGRESS_LOG_EVERY_MS) {
       process.stderr.write(
         `[graphnosis-relay] socket ${socketPath} not ready — ` +
-        `still waiting (${Math.round(elapsed / 1000)}s elapsed, ${Math.round(waitMs / 1000)}s budget)\n`,
+        `still waiting (${Math.round(elapsed / 1000)}s elapsed, ${Number.isFinite(waitMs) ? `${Math.round(waitMs / 1000)}s budget` : 'no budget'})\n`,
       );
       lastLog = elapsed;
     }

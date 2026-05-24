@@ -162,6 +162,68 @@ export async function startIpc(deps: IpcDeps): Promise<net.Server> {
 
 async function dispatch(deps: IpcDeps, method: string, params: unknown): Promise<unknown> {
   switch (method) {
+    // ── Consent prompt resolution (in-app modal flow) ──────────────────
+    case 'consent.resolvePrompt': {
+      // Frontend → sidecar: user clicked Allow/Deny on the consent modal.
+      // The MCP server's pending Promise resolves with this choice and the
+      // recall it was blocking proceeds (or errors with a clean "denied").
+      const { resolvePrompt } = await import('./consent-prompts.js');
+      const args = z.object({
+        promptId: z.string().min(1),
+        action: z.enum(['allow', 'deny']),
+        // Required when action === 'allow'. Ignored otherwise.
+        durationMs: z.number().int().nonnegative().optional(),
+      }).parse(params ?? {});
+      const choice = args.action === 'allow'
+        ? { action: 'allow' as const, durationMs: args.durationMs ?? 3_600_000 }
+        : { action: 'deny' as const };
+      return { resolved: resolvePrompt(args.promptId, choice) };
+    }
+    case 'consent.listPendingPrompts': {
+      const { listPendingPrompts } = await import('./consent-prompts.js');
+      return listPendingPrompts();
+    }
+
+    // ── Per-client consent policy (first-connect + Settings → AI edit) ─
+    case 'ai.setClientPolicy': {
+      const policyChoice = z.enum([
+        'always-allow', 'ask-grant-1h', 'ask-grant-1d', 'ask-every-time', 'never-allow',
+      ]);
+      const args = z.object({
+        clientName: z.string().min(1),
+        personalTier: policyChoice,
+        sensitiveTier: policyChoice,
+      }).parse(params ?? {});
+      const current = deps.host.getSettings();
+      const nextPolicies = {
+        ...(current.ai.clientPolicies ?? {}),
+        [args.clientName]: {
+          personalTier: args.personalTier,
+          sensitiveTier: args.sensitiveTier,
+          firstSeenAt:
+            current.ai.clientPolicies?.[args.clientName]?.firstSeenAt ?? Date.now(),
+        },
+      };
+      await deps.host.setSettings({ ai: { ...current.ai, clientPolicies: nextPolicies } });
+      return { ok: true };
+    }
+    case 'ai.getClientPolicies': {
+      return deps.host.getSettings().ai.clientPolicies ?? {};
+    }
+
+    // ── MCP connection lifecycle ───────────────────────────────────────
+    case 'mcp.disconnect': {
+      // Frontend × button: force-close one MCP connection. The relay
+      // (Claude Desktop / Cursor / Zed) auto-reconnects on its next
+      // tool call, so this is non-destructive — UX is "kick the stale
+      // entry out of the panel; if the AI is actually still active it
+      // reappears on its next request".
+      const { mcpRegistry: registry } = await import('./mcp-registry.js');
+      const args = z.object({ connId: z.string().min(1) }).parse(params ?? {});
+      const kicked = registry.kick(args.connId);
+      return { kicked };
+    }
+
     case 'graphs.list': return deps.host.listGraphs();
     case 'graphs.listWithMetadata': {
       // includeUnloaded surfaces engrams that have metadata but aren't loaded
