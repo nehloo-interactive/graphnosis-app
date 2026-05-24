@@ -1807,18 +1807,15 @@ export class Atlas {
     // canvas can stay at 0×0. Re-apply size on every data swap so render
     // ticks always have correct WebGL viewport dimensions.
     this.applySize();
-    // Incremental update (< 15% new nodes, positions carried forward from
-    // previous render): use a gentle alpha bump so new nodes settle into
-    // place without disturbing the existing layout. Full reheat only when
-    // the majority of positions are unknown — first load, engram switch, or
-    // a large batch ingest.
-    const isIncremental = newNodeCount / Math.max(1, this.allNodes.length) < 0.15;
-    if (isIncremental) {
-      const currentAlpha = (this.graph.d3Alpha?.() as number | undefined) ?? 0;
-      this.graph.d3Alpha?.(Math.min(0.35, currentAlpha + 0.15));
-    } else {
-      this.graph.d3ReheatSimulation();
-    }
+    // Always reheat the simulation after a data update. Now that positions are
+    // carried forward via getPositionMap() → nodesToAtlas(), the reheat starts
+    // from the well-spread current positions rather than near cluster centers,
+    // so it converges back to a spread layout instead of collapsing into blobs.
+    // The old "soft alpha bump" path caused the cluster force to run against
+    // un-anchored nodes (sub-anchors are cleared above and not restored until
+    // setEdges() runs) which pulled everything into tight cluster blobs.
+    void newNodeCount; // still tracked for future use; not needed for branching
+    this.graph.d3ReheatSimulation();
   }
 
   setEdges(directed: AtlasDirectedEdge[], undirected: AtlasUndirectedEdge[]): void {
