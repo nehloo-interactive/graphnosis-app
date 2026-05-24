@@ -49,6 +49,7 @@ const STDERR_BUFFER_LINES: usize = 200;
 pub struct SidecarHandle {
     child: Child,
     pub socket_path: PathBuf,
+    pub events_socket_path: PathBuf,
     /// Ring buffer of the sidecar's most-recent stderr lines. Used for
     /// classifying startup failures into friendlier user-facing messages
     /// even when the process dies via signal (no clean exit code).
@@ -59,10 +60,25 @@ impl SidecarHandle {
     pub async fn shutdown(mut self) -> Result<()> {
         let _ = self.child.kill().await;
         let _ = self.child.wait().await;
-        // Sidecar releases its cortex lock on SIGTERM; we also tidy the socket file.
-        let _ = std::fs::remove_file(&self.socket_path);
+        // Sidecar releases its cortex lock on SIGTERM; we also tidy the socket files.
+        // On Windows the "paths" are TCP addresses — nothing to remove from disk.
+        #[cfg(unix)]
+        {
+            let _ = std::fs::remove_file(&self.socket_path);
+            let _ = std::fs::remove_file(&self.events_socket_path);
+        }
         Ok(())
     }
+}
+
+/// Allocate a free loopback port by binding to port 0 and immediately
+/// releasing the listener. Used on Windows where Unix sockets are unavailable.
+#[cfg(windows)]
+fn alloc_local_port() -> Result<u16> {
+    use std::net::TcpListener;
+    let l = TcpListener::bind("127.0.0.1:0")
+        .context("allocate local TCP port for IPC")?;
+    Ok(l.local_addr()?.port())
 }
 
 pub async fn start(app: &AppHandle, cortex_dir: &Path, passphrase: &str, preferred_default_graph: Option<&str>) -> Result<SidecarHandle> {
@@ -77,12 +93,29 @@ pub async fn start_with_recovery(app: &AppHandle, cortex_dir: &Path, recovery_ph
 }
 
 async fn start_inner(app: &AppHandle, cortex_dir: &Path, passphrase: &str, recovery_phrase: Option<&str>, preferred_default_graph: Option<&str>) -> Result<SidecarHandle> {
-    let socket_path = cortex_dir.join("sidecar.sock");
+    // On Unix: Unix domain sockets in the cortex directory.
+    // On Windows: TCP loopback ports (UnixStream is not available).
+    #[cfg(unix)]
+    let (socket_path, events_socket_path) = (
+        cortex_dir.join("sidecar.sock"),
+        cortex_dir.join("events.sock"),
+    );
+    #[cfg(windows)]
+    let (socket_path, events_socket_path) = {
+        let ipc_port = alloc_local_port()?;
+        let evt_port = alloc_local_port()?;
+        (
+            PathBuf::from(format!("127.0.0.1:{}", ipc_port)),
+            PathBuf::from(format!("127.0.0.1:{}", evt_port)),
+        )
+    };
+
     // cortex-independent MCP listener socket (see mcp_socket_path) — the path
     // external clients bake into their config, stable across cortex switches.
     let mcp_socket = mcp_socket_path()?;
     // Stale socket left by a previous orphan? Remove it; the sidecar would recreate
     // it cleanly, but having it pre-existing can mask the "is the new sidecar up?" check.
+    #[cfg(unix)]
     let _ = std::fs::remove_file(&socket_path);
 
     let binary = resolve_sidecar_path()?;
@@ -116,7 +149,8 @@ async fn start_inner(app: &AppHandle, cortex_dir: &Path, passphrase: &str, recov
         .env(
             "GRAPHNOSIS_DEFAULT_GRAPH",
             preferred_default_graph.unwrap_or("personal"),
-        );
+        )
+        .env("GRAPHNOSIS_EVENTS_SOCKET", &events_socket_path);
     if !dyld_search_path.is_empty() {
         #[cfg(target_os = "macos")]
         cmd.env("DYLD_FALLBACK_LIBRARY_PATH", &dyld_search_path);
@@ -201,7 +235,19 @@ async fn start_inner(app: &AppHandle, cortex_dir: &Path, passphrase: &str, recov
     let max = Duration::from_secs(90);
     let mut last_tick_s: u64 = 0;
     loop {
-        if socket_path.exists() {
+        // On Unix: wait for the socket file to appear.
+        // On Windows: socket_path is a TCP address — probe with a quick connect.
+        #[cfg(unix)]
+        let ready = socket_path.exists();
+        #[cfg(windows)]
+        let ready = {
+            let addr = socket_path.to_string_lossy().to_string();
+            std::net::TcpStream::connect_timeout(
+                &addr.parse().unwrap_or(std::net::SocketAddr::from(([127, 0, 0, 1], 0))),
+                Duration::from_millis(50),
+            ).is_ok()
+        };
+        if ready {
             break;
         }
         // Emit a generic "still loading" heartbeat every 5s so the UI
@@ -238,6 +284,7 @@ async fn start_inner(app: &AppHandle, cortex_dir: &Path, passphrase: &str, recov
     Ok(SidecarHandle {
         child,
         socket_path,
+        events_socket_path,
         _stderr_buffer: stderr_buffer,
     })
 }

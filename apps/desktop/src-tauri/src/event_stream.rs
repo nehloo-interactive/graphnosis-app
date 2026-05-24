@@ -19,7 +19,6 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tauri::{AppHandle, Emitter};
 use tokio::io::{AsyncBufReadExt, BufReader};
-use tokio::net::UnixStream;
 use tokio::sync::Notify;
 use tokio::task::JoinHandle;
 use tokio::time::timeout;
@@ -77,10 +76,9 @@ impl EventStreamHandle {
 /// The reader keeps trying to connect — if the sidecar isn't up yet at the
 /// time of unlock (race), the first connect will fail and we retry. Bounded
 /// backoff caps at 5s between attempts.
-pub fn spawn(app: AppHandle, cortex_dir: PathBuf) -> EventStreamHandle {
+pub fn spawn(app: AppHandle, socket_path: PathBuf) -> EventStreamHandle {
     let cancel = Arc::new(Notify::new());
     let cancel_inner = cancel.clone();
-    let socket_path = cortex_dir.join("events.sock");
 
     let join = tokio::spawn(async move {
         let mut backoff_ms: u64 = 100;
@@ -131,9 +129,18 @@ pub fn spawn(app: AppHandle, cortex_dir: PathBuf) -> EventStreamHandle {
 }
 
 async fn open_and_read(app: &AppHandle, socket_path: &Path) -> Result<()> {
-    let stream = UnixStream::connect(socket_path)
+    #[cfg(unix)]
+    let stream = tokio::net::UnixStream::connect(socket_path)
         .await
         .with_context(|| format!("connect to events socket at {}", socket_path.display()))?;
+    #[cfg(windows)]
+    let stream = {
+        let addr = socket_path.to_str()
+            .ok_or_else(|| anyhow::anyhow!("events socket address is not valid UTF-8"))?;
+        tokio::net::TcpStream::connect(addr)
+            .await
+            .with_context(|| format!("connect to events socket at {}", addr))?
+    };
     let reader = BufReader::new(stream);
     let mut lines = reader.lines();
     while let Some(line) = lines.next_line().await? {

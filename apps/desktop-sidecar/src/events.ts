@@ -60,9 +60,16 @@ export interface EventsDeps {
   socketPath: string;
 }
 
+/** Returns true when socketPath is a TCP address like "127.0.0.1:PORT". */
+function isTcpAddress(socketPath: string): boolean {
+  return /^\d{1,3}(?:\.\d{1,3}){3}:\d+$/.test(socketPath);
+}
+
 export async function startEvents(deps: EventsDeps): Promise<{ server: net.Server; broadcastRaw: BroadcastRawFn }> {
-  await fs.mkdir(path.dirname(deps.socketPath), { recursive: true });
-  await fs.rm(deps.socketPath, { force: true });
+  if (!isTcpAddress(deps.socketPath)) {
+    await fs.mkdir(path.dirname(deps.socketPath), { recursive: true });
+    await fs.rm(deps.socketPath, { force: true });
+  }
 
   const sockets = new Set<net.Socket>();
   const state: ThrottleState = {
@@ -170,9 +177,17 @@ export async function startEvents(deps: EventsDeps): Promise<{ server: net.Serve
 
   return new Promise((resolve, reject) => {
     server.once('error', reject);
-    server.listen(deps.socketPath, () => {
+    const onListening = () => {
       console.error(`[graphnosis-sidecar] events socket listening on ${deps.socketPath}`);
       resolve({ server, broadcastRaw });
-    });
+    };
+    if (isTcpAddress(deps.socketPath)) {
+      const colonIdx = deps.socketPath.lastIndexOf(':');
+      const host = deps.socketPath.slice(0, colonIdx);
+      const port = parseInt(deps.socketPath.slice(colonIdx + 1), 10);
+      server.listen(port, host, onListening);
+    } else {
+      server.listen(deps.socketPath, onListening);
+    }
   });
 }
