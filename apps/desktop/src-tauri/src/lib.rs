@@ -130,12 +130,13 @@ async fn unlock_cortex(
             prev.shutdown().await;
         }
         inner.cortex_dir = Some(cortex_dir.clone());
+        let events_path = handle.events_socket_path.clone();
         inner.sidecar = Some(handle);
         inner.unlocked_via_recovery = false;
         // Spawn the push-event reader for this cortex. It tolerates the
         // sidecar's events socket not being up yet — bounded backoff
         // retries until either it connects or cortex lock cancels it.
-        inner.event_stream = Some(event_stream::spawn(app.clone(), cortex_dir.clone()));
+        inner.event_stream = Some(event_stream::spawn(app.clone(), events_path));
     }
 
     // First-run detection: the sidecar writes `.recovery-pending` with the
@@ -227,9 +228,10 @@ async fn unlock_cortex_with_recovery(
             prev.shutdown().await;
         }
         inner.cortex_dir = Some(cortex_dir.clone());
+        let events_path = handle.events_socket_path.clone();
         inner.sidecar = Some(handle);
         inner.unlocked_via_recovery = true;
-        inner.event_stream = Some(event_stream::spawn(app.clone(), cortex_dir.clone()));
+        inner.event_stream = Some(event_stream::spawn(app.clone(), events_path));
     }
 
     let snapshot = current_status(&state).await;
@@ -345,9 +347,12 @@ async fn change_passphrase(
 ) -> Result<serde_json::Value, String> {
     let (socket_path, cortex_dir, skip_old_check) = {
         let inner = state.inner.lock().await;
+        let socket_path = inner.sidecar.as_ref()
+            .map(|h| h.socket_path.clone())
+            .ok_or_else(|| "cortex is locked".to_string())?;
         let cd = inner.cortex_dir.clone()
             .ok_or_else(|| "cortex is locked".to_string())?;
-        (cd.join("sidecar.sock"), cd, inner.unlocked_via_recovery)
+        (socket_path, cd, inner.unlocked_via_recovery)
     };
 
     // If we're not in a recovery session, the user must supply the old
@@ -412,8 +417,8 @@ async fn change_passphrase(
 async fn regenerate_recovery_phrase(state: State<'_, AppState>) -> Result<String, String> {
     let socket_path = {
         let inner = state.inner.lock().await;
-        match &inner.cortex_dir {
-            Some(vd) => vd.join("sidecar.sock"),
+        match inner.sidecar.as_ref() {
+            Some(h) => h.socket_path.clone(),
             None => return Err("cortex is locked".to_string()),
         }
     };
@@ -440,8 +445,8 @@ async fn regenerate_recovery_phrase(state: State<'_, AppState>) -> Result<String
 async fn list_quarantine(state: State<'_, AppState>) -> Result<serde_json::Value, String> {
     let socket_path = {
         let inner = state.inner.lock().await;
-        match &inner.cortex_dir {
-            Some(vd) => vd.join("sidecar.sock"),
+        match inner.sidecar.as_ref() {
+            Some(h) => h.socket_path.clone(),
             None => return Err("cortex is locked".to_string()),
         }
     };
@@ -465,8 +470,8 @@ async fn delete_quarantine(
 ) -> Result<serde_json::Value, String> {
     let socket_path = {
         let inner = state.inner.lock().await;
-        match &inner.cortex_dir {
-            Some(vd) => vd.join("sidecar.sock"),
+        match inner.sidecar.as_ref() {
+            Some(h) => h.socket_path.clone(),
             None => return Err("cortex is locked".to_string()),
         }
     };
@@ -490,8 +495,8 @@ async fn restore_quarantine(
 ) -> Result<serde_json::Value, String> {
     let socket_path = {
         let inner = state.inner.lock().await;
-        match &inner.cortex_dir {
-            Some(vd) => vd.join("sidecar.sock"),
+        match inner.sidecar.as_ref() {
+            Some(h) => h.socket_path.clone(),
             None => return Err("cortex is locked".to_string()),
         }
     };
@@ -549,8 +554,8 @@ async fn status(state: State<'_, AppState>) -> Result<StatusSnapshot, String> {
 async fn node_cursor(state: State<'_, AppState>) -> Result<serde_json::Value, String> {
     let socket_path = {
         let inner = state.inner.lock().await;
-        match &inner.cortex_dir {
-            Some(vd) => vd.join("sidecar.sock"),
+        match inner.sidecar.as_ref() {
+            Some(h) => h.socket_path.clone(),
             None => return Err("cortex is locked".to_string()),
         }
     };
@@ -568,8 +573,8 @@ async fn node_cursor(state: State<'_, AppState>) -> Result<serde_json::Value, St
 async fn inspector_stats(state: State<'_, AppState>) -> Result<serde_json::Value, String> {
     let socket_path = {
         let inner = state.inner.lock().await;
-        match &inner.cortex_dir {
-            Some(vd) => vd.join("sidecar.sock"),
+        match inner.sidecar.as_ref() {
+            Some(h) => h.socket_path.clone(),
             None => return Err("cortex is locked".to_string()),
         }
     };
@@ -593,8 +598,8 @@ async fn ingest_file(
 ) -> Result<serde_json::Value, String> {
     let socket_path = {
         let inner = state.inner.lock().await;
-        match &inner.cortex_dir {
-            Some(vd) => vd.join("sidecar.sock"),
+        match inner.sidecar.as_ref() {
+            Some(h) => h.socket_path.clone(),
             None => return Err("cortex is locked".to_string()),
         }
     };
@@ -929,8 +934,8 @@ async fn purge_forgotten(
 ) -> Result<serde_json::Value, String> {
     let socket_path = {
         let inner = state.inner.lock().await;
-        match &inner.cortex_dir {
-            Some(vd) => vd.join("sidecar.sock"),
+        match inner.sidecar.as_ref() {
+            Some(h) => h.socket_path.clone(),
             None => return Err("cortex is locked".to_string()),
         }
     };
@@ -952,8 +957,8 @@ async fn list_graphs_with_metadata(
 ) -> Result<serde_json::Value, String> {
     let socket_path = {
         let inner = state.inner.lock().await;
-        match &inner.cortex_dir {
-            Some(vd) => vd.join("sidecar.sock"),
+        match inner.sidecar.as_ref() {
+            Some(h) => h.socket_path.clone(),
             None => return Err("cortex is locked".to_string()),
         }
     };
@@ -972,8 +977,8 @@ async fn create_graph_with_template(
 ) -> Result<serde_json::Value, String> {
     let socket_path = {
         let inner = state.inner.lock().await;
-        match &inner.cortex_dir {
-            Some(vd) => vd.join("sidecar.sock"),
+        match inner.sidecar.as_ref() {
+            Some(h) => h.socket_path.clone(),
             None => return Err("cortex is locked".to_string()),
         }
     };
@@ -1024,8 +1029,8 @@ async fn accept_engram_suggestion(
 ) -> Result<serde_json::Value, String> {
     let socket_path = {
         let inner = state.inner.lock().await;
-        match &inner.cortex_dir {
-            Some(vd) => vd.join("sidecar.sock"),
+        match inner.sidecar.as_ref() {
+            Some(h) => h.socket_path.clone(),
             None => return Err("cortex is locked".to_string()),
         }
     };
@@ -1062,8 +1067,8 @@ async fn search_nodes(
 ) -> Result<serde_json::Value, String> {
     let socket_path = {
         let inner = state.inner.lock().await;
-        match &inner.cortex_dir {
-            Some(vd) => vd.join("sidecar.sock"),
+        match inner.sidecar.as_ref() {
+            Some(h) => h.socket_path.clone(),
             None => return Err("cortex is locked".to_string()),
         }
     };
@@ -1092,8 +1097,8 @@ async fn node_direct_edit(
 ) -> Result<serde_json::Value, String> {
     let socket_path = {
         let inner = state.inner.lock().await;
-        match &inner.cortex_dir {
-            Some(vd) => vd.join("sidecar.sock"),
+        match inner.sidecar.as_ref() {
+            Some(h) => h.socket_path.clone(),
             None => return Err("cortex is locked".to_string()),
         }
     };
@@ -1124,8 +1129,8 @@ async fn node_soft_delete(
 ) -> Result<serde_json::Value, String> {
     let socket_path = {
         let inner = state.inner.lock().await;
-        match &inner.cortex_dir {
-            Some(vd) => vd.join("sidecar.sock"),
+        match inner.sidecar.as_ref() {
+            Some(h) => h.socket_path.clone(),
             None => return Err("cortex is locked".to_string()),
         }
     };
@@ -1160,8 +1165,8 @@ async fn node_link(
 ) -> Result<serde_json::Value, String> {
     let socket_path = {
         let inner = state.inner.lock().await;
-        match &inner.cortex_dir {
-            Some(vd) => vd.join("sidecar.sock"),
+        match inner.sidecar.as_ref() {
+            Some(h) => h.socket_path.clone(),
             None => return Err("cortex is locked".to_string()),
         }
     };
@@ -1201,8 +1206,8 @@ async fn node_link_directed(
 ) -> Result<serde_json::Value, String> {
     let socket_path = {
         let inner = state.inner.lock().await;
-        match &inner.cortex_dir {
-            Some(vd) => vd.join("sidecar.sock"),
+        match inner.sidecar.as_ref() {
+            Some(h) => h.socket_path.clone(),
             None => return Err("cortex is locked".to_string()),
         }
     };
@@ -1237,8 +1242,8 @@ async fn node_unlink(
 ) -> Result<serde_json::Value, String> {
     let socket_path = {
         let inner = state.inner.lock().await;
-        match &inner.cortex_dir {
-            Some(vd) => vd.join("sidecar.sock"),
+        match inner.sidecar.as_ref() {
+            Some(h) => h.socket_path.clone(),
             None => return Err("cortex is locked".to_string()),
         }
     };
@@ -1263,8 +1268,8 @@ async fn list_edges(
 ) -> Result<serde_json::Value, String> {
     let socket_path = {
         let inner = state.inner.lock().await;
-        match &inner.cortex_dir {
-            Some(vd) => vd.join("sidecar.sock"),
+        match inner.sidecar.as_ref() {
+            Some(h) => h.socket_path.clone(),
             None => return Err("cortex is locked".to_string()),
         }
     };
@@ -1283,8 +1288,8 @@ async fn list_edges(
 async fn list_activity(state: State<'_, AppState>) -> Result<serde_json::Value, String> {
     let socket_path = {
         let inner = state.inner.lock().await;
-        match &inner.cortex_dir {
-            Some(vd) => vd.join("sidecar.sock"),
+        match inner.sidecar.as_ref() {
+            Some(h) => h.socket_path.clone(),
             None => return Err("cortex is locked".to_string()),
         }
     };
@@ -1303,8 +1308,8 @@ async fn list_activity(state: State<'_, AppState>) -> Result<serde_json::Value, 
 async fn list_snapshots(state: State<'_, AppState>) -> Result<serde_json::Value, String> {
     let socket_path = {
         let inner = state.inner.lock().await;
-        match &inner.cortex_dir {
-            Some(vd) => vd.join("sidecar.sock"),
+        match inner.sidecar.as_ref() {
+            Some(h) => h.socket_path.clone(),
             None => return Err("cortex is locked".to_string()),
         }
     };
@@ -1322,8 +1327,8 @@ async fn list_snapshots(state: State<'_, AppState>) -> Result<serde_json::Value,
 async fn create_snapshot(state: State<'_, AppState>) -> Result<serde_json::Value, String> {
     let socket_path = {
         let inner = state.inner.lock().await;
-        match &inner.cortex_dir {
-            Some(vd) => vd.join("sidecar.sock"),
+        match inner.sidecar.as_ref() {
+            Some(h) => h.socket_path.clone(),
             None => return Err("cortex is locked".to_string()),
         }
     };
@@ -1346,8 +1351,8 @@ async fn list_nodes(
 ) -> Result<serde_json::Value, String> {
     let socket_path = {
         let inner = state.inner.lock().await;
-        match &inner.cortex_dir {
-            Some(vd) => vd.join("sidecar.sock"),
+        match inner.sidecar.as_ref() {
+            Some(h) => h.socket_path.clone(),
             None => return Err("cortex is locked".to_string()),
         }
     };
@@ -1371,8 +1376,8 @@ async fn list_pending_corrections(
 ) -> Result<serde_json::Value, String> {
     let socket_path = {
         let inner = state.inner.lock().await;
-        match &inner.cortex_dir {
-            Some(vd) => vd.join("sidecar.sock"),
+        match inner.sidecar.as_ref() {
+            Some(h) => h.socket_path.clone(),
             None => return Err("cortex is locked".to_string()),
         }
     };
@@ -1388,8 +1393,8 @@ async fn apply_correction(
 ) -> Result<serde_json::Value, String> {
     let socket_path = {
         let inner = state.inner.lock().await;
-        match &inner.cortex_dir {
-            Some(vd) => vd.join("sidecar.sock"),
+        match inner.sidecar.as_ref() {
+            Some(h) => h.socket_path.clone(),
             None => return Err("cortex is locked".to_string()),
         }
     };
@@ -1413,8 +1418,8 @@ async fn reject_correction(
 ) -> Result<serde_json::Value, String> {
     let socket_path = {
         let inner = state.inner.lock().await;
-        match &inner.cortex_dir {
-            Some(vd) => vd.join("sidecar.sock"),
+        match inner.sidecar.as_ref() {
+            Some(h) => h.socket_path.clone(),
             None => return Err("cortex is locked".to_string()),
         }
     };
@@ -1433,8 +1438,8 @@ async fn reject_correction(
 async fn mcp_restart_listener(state: State<'_, AppState>) -> Result<serde_json::Value, String> {
     let socket_path = {
         let inner = state.inner.lock().await;
-        match &inner.cortex_dir {
-            Some(vd) => vd.join("sidecar.sock"),
+        match inner.sidecar.as_ref() {
+            Some(h) => h.socket_path.clone(),
             None => return Err("cortex is locked".to_string()),
         }
     };
@@ -1459,8 +1464,8 @@ async fn sidecar_ipc_call(
 ) -> Result<serde_json::Value, String> {
     let socket_path = {
         let inner = state.inner.lock().await;
-        match &inner.cortex_dir {
-            Some(vd) => vd.join("sidecar.sock"),
+        match inner.sidecar.as_ref() {
+            Some(h) => h.socket_path.clone(),
             None => return Err("cortex is locked".to_string()),
         }
     };
@@ -1481,8 +1486,8 @@ async fn sidecar_ipc_call(
 async fn mcp_status(state: State<'_, AppState>) -> Result<serde_json::Value, String> {
     let socket_path = {
         let inner = state.inner.lock().await;
-        match &inner.cortex_dir {
-            Some(vd) => vd.join("sidecar.sock"),
+        match inner.sidecar.as_ref() {
+            Some(h) => h.socket_path.clone(),
             None => return Err("cortex is locked".to_string()),
         }
     };
@@ -1499,8 +1504,8 @@ async fn forget_source(
 ) -> Result<serde_json::Value, String> {
     let socket_path = {
         let inner = state.inner.lock().await;
-        match &inner.cortex_dir {
-            Some(vd) => vd.join("sidecar.sock"),
+        match inner.sidecar.as_ref() {
+            Some(h) => h.socket_path.clone(),
             None => return Err("cortex is locked".to_string()),
         }
     };
@@ -1525,8 +1530,8 @@ async fn reingest_source(
 ) -> Result<serde_json::Value, String> {
     let socket_path = {
         let inner = state.inner.lock().await;
-        match &inner.cortex_dir {
-            Some(vd) => vd.join("sidecar.sock"),
+        match inner.sidecar.as_ref() {
+            Some(h) => h.socket_path.clone(),
             None => return Err("cortex is locked".to_string()),
         }
     };
@@ -1548,8 +1553,8 @@ async fn reingest_source(
 async fn get_settings(state: State<'_, AppState>) -> Result<serde_json::Value, String> {
     let socket_path = {
         let inner = state.inner.lock().await;
-        match &inner.cortex_dir {
-            Some(vd) => vd.join("sidecar.sock"),
+        match inner.sidecar.as_ref() {
+            Some(h) => h.socket_path.clone(),
             None => return Err("cortex is locked".to_string()),
         }
     };
@@ -1565,8 +1570,8 @@ async fn update_settings(
 ) -> Result<serde_json::Value, String> {
     let socket_path = {
         let inner = state.inner.lock().await;
-        match &inner.cortex_dir {
-            Some(vd) => vd.join("sidecar.sock"),
+        match inner.sidecar.as_ref() {
+            Some(h) => h.socket_path.clone(),
             None => return Err("cortex is locked".to_string()),
         }
     };
@@ -1579,8 +1584,8 @@ async fn update_settings(
 async fn get_mobile_connection_info(state: State<'_, AppState>) -> Result<serde_json::Value, String> {
     let socket_path = {
         let inner = state.inner.lock().await;
-        match &inner.cortex_dir {
-            Some(vd) => vd.join("sidecar.sock"),
+        match inner.sidecar.as_ref() {
+            Some(h) => h.socket_path.clone(),
             None => return Err("cortex is locked".to_string()),
         }
     };
@@ -1606,8 +1611,8 @@ async fn get_mobile_connection_info(state: State<'_, AppState>) -> Result<serde_
 async fn list_connectors(state: State<'_, AppState>) -> Result<serde_json::Value, String> {
     let socket_path = {
         let inner = state.inner.lock().await;
-        match &inner.cortex_dir {
-            Some(vd) => vd.join("sidecar.sock"),
+        match inner.sidecar.as_ref() {
+            Some(h) => h.socket_path.clone(),
             None => return Err("cortex is locked".to_string()),
         }
     };
@@ -1628,8 +1633,8 @@ async fn install_connector(
 ) -> Result<serde_json::Value, String> {
     let socket_path = {
         let inner = state.inner.lock().await;
-        match &inner.cortex_dir {
-            Some(vd) => vd.join("sidecar.sock"),
+        match inner.sidecar.as_ref() {
+            Some(h) => h.socket_path.clone(),
             None => return Err("cortex is locked".to_string()),
         }
     };
@@ -1650,8 +1655,8 @@ async fn remove_connector(
 ) -> Result<serde_json::Value, String> {
     let socket_path = {
         let inner = state.inner.lock().await;
-        match &inner.cortex_dir {
-            Some(vd) => vd.join("sidecar.sock"),
+        match inner.sidecar.as_ref() {
+            Some(h) => h.socket_path.clone(),
             None => return Err("cortex is locked".to_string()),
         }
     };
@@ -1672,8 +1677,8 @@ async fn trigger_connector_pull(
 ) -> Result<serde_json::Value, String> {
     let socket_path = {
         let inner = state.inner.lock().await;
-        match &inner.cortex_dir {
-            Some(vd) => vd.join("sidecar.sock"),
+        match inner.sidecar.as_ref() {
+            Some(h) => h.socket_path.clone(),
             None => return Err("cortex is locked".to_string()),
         }
     };
@@ -1696,8 +1701,8 @@ async fn get_connector_auth_url(
 ) -> Result<serde_json::Value, String> {
     let socket_path = {
         let inner = state.inner.lock().await;
-        match &inner.cortex_dir {
-            Some(vd) => vd.join("sidecar.sock"),
+        match inner.sidecar.as_ref() {
+            Some(h) => h.socket_path.clone(),
             None => return Err("cortex is locked".to_string()),
         }
     };
@@ -1719,8 +1724,8 @@ async fn get_connector_auth_url(
 async fn recovery_plan(state: State<'_, AppState>) -> Result<serde_json::Value, String> {
     let socket_path = {
         let inner = state.inner.lock().await;
-        match &inner.cortex_dir {
-            Some(vd) => vd.join("sidecar.sock"),
+        match inner.sidecar.as_ref() {
+            Some(h) => h.socket_path.clone(),
             None => return Err("cortex is locked".to_string()),
         }
     };
@@ -1746,8 +1751,8 @@ async fn recovery_apply(
 ) -> Result<serde_json::Value, String> {
     let socket_path = {
         let inner = state.inner.lock().await;
-        match &inner.cortex_dir {
-            Some(vd) => vd.join("sidecar.sock"),
+        match inner.sidecar.as_ref() {
+            Some(h) => h.socket_path.clone(),
             None => return Err("cortex is locked".to_string()),
         }
     };
@@ -1975,8 +1980,8 @@ async fn set_graph_archived(
 ) -> Result<serde_json::Value, String> {
     let socket_path = {
         let inner = state.inner.lock().await;
-        match &inner.cortex_dir {
-            Some(vd) => vd.join("sidecar.sock"),
+        match inner.sidecar.as_ref() {
+            Some(h) => h.socket_path.clone(),
             None => return Err("cortex is locked".to_string()),
         }
     };
@@ -1994,8 +1999,8 @@ async fn rename_graph(
 ) -> Result<serde_json::Value, String> {
     let socket_path = {
         let inner = state.inner.lock().await;
-        match &inner.cortex_dir {
-            Some(vd) => vd.join("sidecar.sock"),
+        match inner.sidecar.as_ref() {
+            Some(h) => h.socket_path.clone(),
             None => return Err("cortex is locked".to_string()),
         }
     };
@@ -2013,8 +2018,8 @@ async fn set_graph_tier(
 ) -> Result<serde_json::Value, String> {
     let socket_path = {
         let inner = state.inner.lock().await;
-        match &inner.cortex_dir {
-            Some(vd) => vd.join("sidecar.sock"),
+        match inner.sidecar.as_ref() {
+            Some(h) => h.socket_path.clone(),
             None => return Err("cortex is locked".to_string()),
         }
     };
@@ -2031,8 +2036,8 @@ async fn get_consent_phrase(
 ) -> Result<serde_json::Value, String> {
     let socket_path = {
         let inner = state.inner.lock().await;
-        match &inner.cortex_dir {
-            Some(vd) => vd.join("sidecar.sock"),
+        match inner.sidecar.as_ref() {
+            Some(h) => h.socket_path.clone(),
             None => return Err("cortex is locked".to_string()),
         }
     };
@@ -2050,8 +2055,8 @@ async fn revoke_ai_consents(
 ) -> Result<serde_json::Value, String> {
     let socket_path = {
         let inner = state.inner.lock().await;
-        match &inner.cortex_dir {
-            Some(vd) => vd.join("sidecar.sock"),
+        match inner.sidecar.as_ref() {
+            Some(h) => h.socket_path.clone(),
             None => return Err("cortex is locked".to_string()),
         }
     };
@@ -2077,8 +2082,8 @@ async fn engram_set_config(
 ) -> Result<serde_json::Value, String> {
     let socket_path = {
         let inner = state.inner.lock().await;
-        match &inner.cortex_dir {
-            Some(vd) => vd.join("sidecar.sock"),
+        match inner.sidecar.as_ref() {
+            Some(h) => h.socket_path.clone(),
             None => return Err("cortex is locked".to_string()),
         }
     };
@@ -2106,8 +2111,8 @@ async fn move_source(
 ) -> Result<serde_json::Value, String> {
     let socket_path = {
         let inner = state.inner.lock().await;
-        match &inner.cortex_dir {
-            Some(vd) => vd.join("sidecar.sock"),
+        match inner.sidecar.as_ref() {
+            Some(h) => h.socket_path.clone(),
             None => return Err("cortex is locked".to_string()),
         }
     };
@@ -2128,8 +2133,8 @@ async fn delete_graph(
 ) -> Result<serde_json::Value, String> {
     let socket_path = {
         let inner = state.inner.lock().await;
-        match &inner.cortex_dir {
-            Some(vd) => vd.join("sidecar.sock"),
+        match inner.sidecar.as_ref() {
+            Some(h) => h.socket_path.clone(),
             None => return Err("cortex is locked".to_string()),
         }
     };

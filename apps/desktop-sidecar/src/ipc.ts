@@ -100,9 +100,16 @@ export interface IpcDeps {
   llm?: () => import('./correction.js').LocalLlm | null;
 }
 
+/** Returns true when socketPath is a TCP address like "127.0.0.1:PORT". */
+function isTcpAddress(socketPath: string): boolean {
+  return /^\d{1,3}(?:\.\d{1,3}){3}:\d+$/.test(socketPath);
+}
+
 export async function startIpc(deps: IpcDeps): Promise<net.Server> {
-  await fs.mkdir(path.dirname(deps.socketPath), { recursive: true });
-  await fs.rm(deps.socketPath, { force: true });
+  if (!isTcpAddress(deps.socketPath)) {
+    await fs.mkdir(path.dirname(deps.socketPath), { recursive: true });
+    await fs.rm(deps.socketPath, { force: true });
+  }
 
   const server = net.createServer((sock) => {
     // EPIPE / ECONNRESET = client closed before we finished writing.
@@ -156,7 +163,14 @@ export async function startIpc(deps: IpcDeps): Promise<net.Server> {
 
   return new Promise((resolve, reject) => {
     server.once('error', reject);
-    server.listen(deps.socketPath, () => resolve(server));
+    if (isTcpAddress(deps.socketPath)) {
+      const colonIdx = deps.socketPath.lastIndexOf(':');
+      const host = deps.socketPath.slice(0, colonIdx);
+      const port = parseInt(deps.socketPath.slice(colonIdx + 1), 10);
+      server.listen(port, host, () => resolve(server));
+    } else {
+      server.listen(deps.socketPath, () => resolve(server));
+    }
   });
 }
 
@@ -815,7 +829,17 @@ async function dispatch(deps: IpcDeps, method: string, params: unknown): Promise
         sourceId: z.string(),
         toGraphId: z.string(),
       }).parse(params);
-      return deps.host.moveSource(fromGraphId, sourceId, toGraphId);
+      const { newRecord, forgottenNodeIds } = await deps.host.moveSource(fromGraphId, sourceId, toGraphId);
+      // Purge the in-memory cross-engram cache of stale entries anchored to
+      // the old node IDs (the on-disk store was already cleaned inside
+      // host.forgetSource, but ReinforcementEngine holds a live copy).
+      if (forgottenNodeIds.length > 0) {
+        deps.brainEngine?.purgeDeletedNodes(forgottenNodeIds);
+      }
+      // Re-link the re-ingested nodes across engrams immediately — don't wait
+      // for the background cross-engram timer (could be hours away).
+      deps.brainEngine?.runCrossEngramNow();
+      return newRecord;
     }
     case 'corrections.list': {
       // Return every pending diff so the App can render its approval panel.

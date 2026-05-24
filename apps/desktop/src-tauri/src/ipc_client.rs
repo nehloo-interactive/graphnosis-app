@@ -12,7 +12,6 @@ use anyhow::{anyhow, Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::net::UnixStream;
 use tokio::time::{timeout, Duration};
 
 #[derive(Serialize)]
@@ -52,11 +51,20 @@ pub async fn request_with_timeout(
     params: Value,
     timeout_dur: Duration,
 ) -> Result<Value> {
-    let stream = UnixStream::connect(socket_path)
+    #[cfg(unix)]
+    let stream = tokio::net::UnixStream::connect(socket_path)
         .await
         .with_context(|| format!("connect to sidecar at {}", socket_path.display()))?;
+    #[cfg(windows)]
+    let stream = {
+        let addr = socket_path.to_str()
+            .ok_or_else(|| anyhow!("socket address is not valid UTF-8"))?;
+        tokio::net::TcpStream::connect(addr)
+            .await
+            .with_context(|| format!("connect to sidecar at {}", addr))?
+    };
 
-    let (read_half, mut write_half) = stream.into_split();
+    let (read_half, mut write_half) = tokio::io::split(stream);
 
     let payload = serde_json::to_vec(&Request {
         id: 1,
