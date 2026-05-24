@@ -508,6 +508,10 @@ const els = {
   gRecapTended: $<HTMLSpanElement>('g-recap-tended'),
   gRecapForgotten: $<HTMLDivElement>('g-recap-forgotten'),
   gMcpList: $<HTMLDivElement>('g-mcp-list'),
+  // Activity log
+  gActivitySearch: $<HTMLInputElement>('g-activity-search'),
+  gActivityList: $<HTMLDivElement>('g-activity-list'),
+  gActivityMore: $<HTMLButtonElement>('g-activity-more'),
   gDetail: $<HTMLElement>('g-detail'),
   gDetailBody: $<HTMLDivElement>('g-detail-body'),
   // Atlas (3D) sub-tab
@@ -1769,6 +1773,7 @@ function activateMode(mode: Mode): void {
     void refreshStats();
     updateRecap();
     void fetchMcpStatus();
+    void refreshActivityLog(true);
   }
   if (mode === 'settings') {
     // Engrams management, recovery phrase, quarantine cleanup — see
@@ -8006,23 +8011,23 @@ function renderAtlasLegend(): void {
   if (counts.predicted > 0) cats.push('predicted');
   els.atlasLegendList.innerHTML = cats.map((c) => {
     const swatch = `#${CATEGORY_COLOR[c].toString(16).padStart(6, '0')}`;
-    const cls = vis[c] ? '' : 'off';
-    return `<div class="legend-row ${cls}" data-cat="${c}">
+    const locked = mainAtlas?.isCategoryHardLocked(c) ?? false;
+    const cls = [locked ? 'locked' : vis[c] ? '' : 'off'].filter(Boolean).join(' ');
+    const title = locked ? `Too many edges to render (> 10,000). Use the app to manage this engram's size.` : '';
+    return `<div class="legend-row ${cls}" data-cat="${c}" ${title ? `title="${title}"` : ''}>
       <span class="legend-swatch" style="background: ${swatch};"></span>
       <span>${escape(CATEGORY_LABEL[c])}</span>
       <span class="legend-count">${counts[c]}</span>
     </div>`;
   }).join('');
   els.atlasLegendList.querySelectorAll<HTMLElement>('.legend-row').forEach((row) => {
-    row.addEventListener('mouseenter', () => {
-      const cat = row.dataset['cat'] as EdgeCategory | undefined;
-      if (cat) mainAtlas?.hoverCategory(cat);
-    });
+    const cat = row.dataset['cat'] as EdgeCategory | undefined;
+    if (!cat || (mainAtlas?.isCategoryHardLocked(cat) ?? false)) return; // locked rows get no events
+    row.addEventListener('mouseenter', () => mainAtlas?.hoverCategory(cat));
     row.addEventListener('mouseleave', () => mainAtlas?.hoverCategory(null));
     row.addEventListener('click', (e) => {
       mainAtlas?.hoverCategory(null); // clear preview on click-commit
-      const cat = row.dataset['cat'] as EdgeCategory | undefined;
-      if (!cat || !mainAtlas) return;
+      if (!mainAtlas) return;
       // Cmd/Ctrl-click: additive toggle (multi-select). Plain click: isolate
       // — show only this category, hide every other. Matches the Photoshop /
       // Figma / iTunes convention for filterable legend rows.
@@ -8589,6 +8594,259 @@ if (typeof window !== 'undefined') {
   window.addEventListener('focus', () => mainAtlas?.resumeAnimation());
 }
 
+// ── Activity log ───────────────────────────────────────────────────
+
+type ActivityOpKind = 'addNode' | 'editNode' | 'deleteNode' | 'addEdge' | 'deleteEdge'
+  | 'supersede' | 'merge' | 'ingestSource' | 'forgetSource' | 'ingestGroup';
+
+interface ActivityEntry {
+  id: string;
+  ts: number;
+  op: ActivityOpKind;
+  target: { kind: string; id: string };
+  preview?: string;
+  sourceRef?: string;
+  nodeCount?: number;
+  triggeredBy?: string;
+  nodes?: Array<{ id: string; ts: number; target: { kind: string; id: string }; preview?: string }>;
+}
+
+interface ActivityLogResult {
+  entries: ActivityEntry[];
+  total: number;
+  hasMore: boolean;
+}
+
+const ACTIVITY_PAGE_SIZE = 20;
+let activityFilter: string = 'all';
+let activitySearch: string = '';
+let activityOffset: number = 0;
+let activityEntries: ActivityEntry[] = [];
+let activityScrollObserver: IntersectionObserver | null = null;
+
+/** Map op kind → filter category */
+function opToFilter(op: ActivityOpKind): string {
+  if (op === 'ingestSource' || op === 'addNode' || op === 'ingestGroup') return 'add';
+  if (op === 'editNode' || op === 'supersede') return 'edit';
+  if (op === 'deleteNode' || op === 'forgetSource') return 'delete';
+  if (op === 'addEdge' || op === 'deleteEdge') return 'edge';
+  return 'add';
+}
+
+/** Icon + CSS class for each op */
+function opMeta(op: ActivityOpKind): { icon: string; cls: string; label: string } {
+  switch (op) {
+    case 'ingestGroup':   return { icon: '↓', cls: 'op-add',    label: 'Ingested' };
+    case 'ingestSource':  return { icon: '↓', cls: 'op-add',    label: 'Ingested' };
+    case 'addNode':       return { icon: '+', cls: 'op-add',    label: 'Node added' };
+    case 'editNode':      return { icon: '✎', cls: 'op-edit',   label: 'Edited' };
+    case 'supersede':     return { icon: '↻', cls: 'op-edit',   label: 'Corrected' };
+    case 'deleteNode':    return { icon: '−', cls: 'op-delete', label: 'Node deleted' };
+    case 'forgetSource':  return { icon: '✕', cls: 'op-delete', label: 'Forgotten' };
+    case 'addEdge':       return { icon: '⟵', cls: 'op-edge',   label: 'Edge added' };
+    case 'deleteEdge':    return { icon: '⟶', cls: 'op-edge',   label: 'Edge removed' };
+    default:              return { icon: '·', cls: 'op-edit',   label: op };
+  }
+}
+
+function relativeTime(ts: number): string {
+  const diff = Date.now() - ts;
+  const s = Math.floor(diff / 1000);
+  if (s < 60) return 'just now';
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m}m ago`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return `${h}h ago`;
+  const d = Math.floor(h / 24);
+  if (d < 7) return `${d}d ago`;
+  return new Date(ts).toLocaleDateString();
+}
+
+function triggeredByLabel(tb: string | undefined): { text: string; cls: string } | null {
+  if (!tb) return null;
+  if (tb.startsWith('mcp:'))       return { text: `Claude · ${tb.slice(4)}`, cls: 'tb-mcp' };
+  if (tb.startsWith('brain:'))     return { text: `Brain · ${tb.slice(6)}`, cls: 'tb-brain' };
+  if (tb.startsWith('connector:')) return { text: `Connector${tb.length > 10 ? ': ' + tb.slice(10) : ''}`, cls: 'tb-connector' };
+  if (tb.startsWith('user:'))      return { text: 'You', cls: '' };
+  return { text: tb, cls: '' };
+}
+
+function renderActivityEntry(e: ActivityEntry): string {
+  const { icon, cls, label } = opMeta(e.op);
+  const nodeCountBadge = e.nodeCount != null
+    ? ` <span style="font-weight:400;opacity:0.7">· ${e.nodeCount} node${e.nodeCount === 1 ? '' : 's'}</span>`
+    : '';
+  const preview = e.preview
+    ? `<div class="g-activity-preview">${escHtml(truncate(e.preview, 180))}</div>` : '';
+  const tb = triggeredByLabel(e.triggeredBy);
+  const tbBadge = tb
+    ? `<span class="g-activity-triggered ${tb.cls}">${escHtml(tb.text)}</span>` : '';
+  const sourceRefSpan = e.sourceRef
+    ? `<span class="g-activity-meta-sep">·</span><span>${escHtml(truncate(e.sourceRef, 36))}</span>` : '';
+
+  const expandId = `act-nodes-${escHtml(e.id)}`;
+  const expandBtn = (e.nodes?.length)
+    ? `<button class="g-activity-expand-btn" onclick="
+        const el=document.getElementById('${expandId}');
+        if(el){el.hidden=!el.hidden;this.textContent=el.hidden?'▸ ${e.nodeCount ?? e.nodes.length} nodes':'▾ Hide nodes';}
+       ">▸ ${e.nodeCount ?? e.nodes.length} nodes</button>`
+    : '';
+  const nodeRows = (e.nodes?.length)
+    ? `<div id="${expandId}" class="g-activity-nodes" hidden>${
+        e.nodes.slice(0, 10).map(n =>
+          `<div class="g-activity-node-row">${escHtml(truncate(n.preview ?? n.target.id, 120))}</div>`
+        ).join('') +
+        (e.nodes.length > 10 ? `<div class="g-activity-node-row" style="opacity:0.45">…and ${e.nodes.length - 10} more</div>` : '')
+      }</div>`
+    : '';
+
+  // "Open in Sources" action for ingest rows with a known source ref
+  const openSourceBtn = (e.op === 'ingestGroup' || e.op === 'ingestSource') && e.sourceRef
+    ? `<button class="g-activity-action" data-action="open-source" data-source-ref="${escHtml(e.sourceRef)}">Open in Sources ↗</button>`
+    : '';
+
+  return `<div class="g-activity-entry">
+    <span class="g-activity-icon ${cls}">${icon}</span>
+    <div class="g-activity-body">
+      <div class="g-activity-top">
+        <span class="g-activity-label">${escHtml(label)}${nodeCountBadge}</span>
+        <span class="g-activity-time">${relativeTime(e.ts)}</span>
+      </div>
+      ${preview}
+      ${expandBtn}${nodeRows}
+      ${openSourceBtn}
+      <div class="g-activity-meta">${tbBadge}${sourceRefSpan}</div>
+    </div>
+  </div>`;
+}
+
+function escHtml(s: string): string {
+  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+
+function truncate(s: string, max: number): string {
+  return s.length > max ? s.slice(0, max - 1) + '…' : s;
+}
+
+function activitySetupScrollObserver(): void {
+  // Disconnect any previous observer before creating a new one.
+  activityScrollObserver?.disconnect();
+  activityScrollObserver = null;
+
+  const sentinel = els.gActivityList.querySelector<HTMLDivElement>('.g-activity-sentinel');
+  if (!sentinel) return;
+
+  activityScrollObserver = new IntersectionObserver(
+    (entries) => {
+      if (entries[0]?.isIntersecting) {
+        void refreshActivityLog(false);
+      }
+    },
+    { root: els.gActivityList, threshold: 0.1 },
+  );
+  activityScrollObserver.observe(sentinel);
+}
+
+async function refreshActivityLog(reset = false): Promise<void> {
+  if (!atlasActiveGraph) return;
+  if (reset) {
+    activityScrollObserver?.disconnect();
+    activityScrollObserver = null;
+    activityOffset = 0;
+    activityEntries = [];
+  }
+
+  const ops: string[] = activityFilter === 'all' ? [] :
+    activityFilter === 'add'    ? ['add'] :
+    activityFilter === 'edit'   ? ['edit'] :
+    activityFilter === 'delete' ? ['delete'] :
+    activityFilter === 'edge'   ? ['edge'] : [];
+
+  let result: ActivityLogResult;
+  try {
+    result = await ipcCall<ActivityLogResult>('activity.log', {
+      graphId: atlasActiveGraph,
+      limit: ACTIVITY_PAGE_SIZE,
+      offset: activityOffset,
+      ops: ops.length ? ops : undefined,
+      search: activitySearch.trim() || undefined,
+    });
+  } catch {
+    if (reset) {
+      els.gActivityList.innerHTML = '<p class="subtitle" style="padding:16px 0;text-align:center">Could not load activity log.</p>';
+    }
+    return;
+  }
+
+  if (reset) activityEntries = result.entries;
+  else activityEntries = [...activityEntries, ...result.entries];
+
+  if (activityEntries.length === 0) {
+    els.gActivityList.innerHTML = '<p class="subtitle" style="padding:16px 0;text-align:center">No activity recorded yet.</p>';
+    return;
+  }
+
+  activityOffset += result.entries.length;
+
+  // Append new rows (on reset, rebuild everything).
+  if (reset) {
+    els.gActivityList.innerHTML = activityEntries.map(renderActivityEntry).join('');
+  } else {
+    // Remove existing sentinel before appending new rows.
+    els.gActivityList.querySelector('.g-activity-sentinel')?.remove();
+    const frag = document.createDocumentFragment();
+    const tmp = document.createElement('div');
+    tmp.innerHTML = result.entries.map(renderActivityEntry).join('');
+    while (tmp.firstChild) frag.appendChild(tmp.firstChild);
+    els.gActivityList.appendChild(frag);
+  }
+
+  // Append scroll sentinel if there are more items.
+  if (result.hasMore) {
+    const sentinel = document.createElement('div');
+    sentinel.className = 'g-activity-sentinel';
+    els.gActivityList.appendChild(sentinel);
+    activitySetupScrollObserver();
+  }
+}
+
+// Event delegation for action buttons inside the list (survives innerHTML rebuilds).
+els.gActivityList.addEventListener('click', (e) => {
+  const btn = (e.target as HTMLElement).closest<HTMLButtonElement>('[data-action]');
+  if (!btn) return;
+  if (btn.dataset['action'] === 'open-source') {
+    const ref = btn.dataset['sourceRef'] ?? '';
+    if (ref) {
+      // Pre-fill the sources filter and navigate to Sources pane.
+      sourcesFilterTerm = ref;
+      els.sourcesFilter.value = ref;
+      activateMode('sources');
+    }
+  }
+});
+
+// Wire filter chips
+document.querySelectorAll<HTMLButtonElement>('.g-activity-chip').forEach((btn) => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('.g-activity-chip').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    activityFilter = btn.dataset['filter'] ?? 'all';
+    void refreshActivityLog(true);
+  });
+});
+
+// Wire search (debounced)
+{
+  let searchTimer: ReturnType<typeof setTimeout> | null = null;
+  els.gActivitySearch.addEventListener('input', () => {
+    if (searchTimer) clearTimeout(searchTimer);
+    searchTimer = setTimeout(() => {
+      activitySearch = els.gActivitySearch.value;
+      void refreshActivityLog(true);
+    }, 280);
+  });
+}
+
 // ── Mutation push-channel ───────────────────────────────────────────
 //
 // The sidecar broadcasts a `graphnosis://graph-mutation` Tauri event
@@ -8630,6 +8888,11 @@ void listen<GraphMutationPayload>('graphnosis://graph-mutation', (evt) => {
   // active-engram-changed predicate against the full cursor set
   // returned by inspector_stats and only repaints when relevant.
   void pollGraphMutations();
+  // Live-refresh the Activity Log if the Status pane is open and the
+  // mutation targets the currently displayed engram.
+  if (currentMode === 'status' && graphId === atlasActiveGraph) {
+    void refreshActivityLog(true);
+  }
 });
 
 // Hello frame fires once per event-stream (re)connect. Run a full
