@@ -1821,6 +1821,36 @@ async fn open_external_url(app: AppHandle, url: String) -> Result<(), String> {
         .map_err(|e| format!("could not open url: {e}"))
 }
 
+/// Show a native Save dialog, then write `content` to the chosen path.
+/// Returns `Ok(true)` if the file was saved, `Ok(false)` if the user cancelled.
+#[tauri::command]
+async fn save_json_file(
+    app: AppHandle,
+    default_name: String,
+    content: String,
+) -> Result<bool, String> {
+    use tauri_plugin_dialog::DialogExt;
+    use std::fs;
+
+    let path = app
+        .dialog()
+        .file()
+        .set_file_name(&default_name)
+        .add_filter("JSON", &["json"])
+        .blocking_save_file();
+
+    match path {
+        Some(p) => {
+            let dest = p.as_path()
+                .ok_or_else(|| "invalid path".to_string())?;
+            fs::write(dest, content.as_bytes())
+                .map_err(|e| format!("could not write file: {e}"))?;
+            Ok(true)
+        }
+        None => Ok(false), // user cancelled
+    }
+}
+
 /// Install the macOS application menu with "Graphnosis" as the app name.
 ///
 /// Without this, the first menu item reads "graphnosis-app" (the Rust
@@ -2262,6 +2292,7 @@ pub fn run() {
             show_window,
             open_about_window,
             open_external_url,
+            save_json_file,
             set_graph_archived,
             set_graph_tier,
             get_consent_phrase,

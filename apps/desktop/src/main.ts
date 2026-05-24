@@ -3497,9 +3497,11 @@ interface QuarantineConfirmOptions {
 
 function showQuarantineConfirm(opts: QuarantineConfirmOptions): void {
   const modal = document.getElementById('quarantine-confirm-modal') as HTMLDivElement | null;
+  const modalInner = document.getElementById('qcm-modal-inner') as HTMLDivElement | null;
   const titleEl = document.getElementById('qcm-title');
   const subtitleEl = document.getElementById('qcm-subtitle');
   const warningEl = document.getElementById('qcm-warning');
+  const confirmRow = document.getElementById('qcm-confirm-row') as HTMLDivElement | null;
   const inputLabel = document.getElementById('qcm-input-label');
   const input = document.getElementById('qcm-input') as HTMLInputElement | null;
   const statusEl = document.getElementById('qcm-status');
@@ -3507,20 +3509,31 @@ function showQuarantineConfirm(opts: QuarantineConfirmOptions): void {
   const confirmBtn = document.getElementById('btn-qcm-confirm') as HTMLButtonElement | null;
   if (!modal || !titleEl || !subtitleEl || !warningEl || !inputLabel || !input || !statusEl || !cancelBtn || !confirmBtn) return;
 
+  const readOnly = opts.confirmPhrase === '';
+
   titleEl.textContent = opts.title;
   subtitleEl.textContent = opts.subtitle;
   warningEl.innerHTML = opts.warningHtml;
-  inputLabel.innerHTML = `Type <code style="font-family: ui-monospace, monospace; padding: 1px 5px; background: var(--bg-elev); border-radius: 3px;">${escape(opts.confirmPhrase)}</code> to confirm:`;
-  input.value = '';
-  input.placeholder = opts.confirmPhrase;
   statusEl.textContent = '';
-  confirmBtn.textContent = opts.confirmLabel;
-  confirmBtn.disabled = true;
 
-  const onInput = (): void => {
-    confirmBtn.disabled = input.value.trim() !== opts.confirmPhrase;
-  };
-  input.oninput = onInput;
+  // Read-only mode (e.g. consent history): hide input row, show only Close.
+  if (confirmRow) confirmRow.style.display = readOnly ? 'none' : '';
+  if (modalInner) modalInner.style.maxWidth = readOnly ? '640px' : '480px';
+  cancelBtn.style.display = readOnly ? 'none' : '';
+  confirmBtn.textContent = readOnly ? 'Close' : opts.confirmLabel;
+  confirmBtn.disabled = false;
+
+  input.oninput = null;
+
+  if (!readOnly) {
+    input.value = '';
+    input.placeholder = opts.confirmPhrase;
+    inputLabel.innerHTML = `Type <code style="font-family: ui-monospace, monospace; padding: 1px 5px; background: var(--bg-elev); border-radius: 3px;">${escape(opts.confirmPhrase)}</code> to confirm:`;
+    confirmBtn.disabled = true;
+    input.oninput = (): void => {
+      confirmBtn.disabled = input.value.trim() !== opts.confirmPhrase;
+    };
+  }
 
   const close = (): void => {
     modal.classList.add('hidden');
@@ -3529,6 +3542,7 @@ function showQuarantineConfirm(opts: QuarantineConfirmOptions): void {
 
   cancelBtn.onclick = close;
   confirmBtn.onclick = async () => {
+    if (readOnly) { close(); return; }
     confirmBtn.disabled = true;
     cancelBtn.disabled = true;
     statusEl.textContent = 'Working…';
@@ -3544,7 +3558,7 @@ function showQuarantineConfirm(opts: QuarantineConfirmOptions): void {
   };
 
   modal.classList.remove('hidden');
-  input.focus();
+  if (!readOnly) input.focus();
 }
 
 // Show/hide the quiet-period selector whenever the checkbox changes.
@@ -4202,16 +4216,27 @@ function persistActiveEngram(graphId: string): void {
   try { localStorage.setItem(LAST_ENGRAM_KEY, graphId); } catch { /* storage full — ignore */ }
 }
 
-function nodesToAtlas(records: NodeRecord[]): AtlasNode[] {
+function nodesToAtlas(
+  records: NodeRecord[],
+  posMap?: Map<string, { x: number; y: number; z: number }>,
+): AtlasNode[] {
   const now = Date.now();
   return records
     .filter((n) => n.confidence > 0.2 && (n.validUntil === undefined || n.validUntil > now))
-    .map((n) => ({
-      id: n.id,
-      text: n.contentPreview,
-      sourceFile: n.sourceFile,
-      confidence: n.confidence,
-    }));
+    .map((n) => {
+      const pos = posMap?.get(n.id);
+      return {
+        id: n.id,
+        text: n.contentPreview,
+        sourceFile: n.sourceFile,
+        confidence: n.confidence,
+        // Carry forward known positions so setNodes() can detect existing
+        // nodes without re-seeding them near the cluster center. This is the
+        // key fix for the "blobs on every MCP ingest" problem: without this,
+        // every refresh looked like a full re-layout to the atlas.
+        ...(pos !== undefined ? { x: pos.x, y: pos.y, z: pos.z } : {}),
+      };
+    });
 }
 
 async function fetchActiveNodes(graphId: string): Promise<NodeRecord[]> {
@@ -7713,7 +7738,11 @@ async function mountAtlasIfNeeded(): Promise<boolean> {
 
 function pushDataIntoAtlas(): void {
   if (!mainAtlas || !atlasActiveGraph) return;
-  const nodes = nodesToAtlas(graphnosisAllNodes);
+  // Snapshot current node positions BEFORE overwriting allNodes, so existing
+  // nodes carry their settled simulation positions into the next render.
+  // Without this, every setNodes() call looked like a full re-layout.
+  const posMap = mainAtlas.getPositionMap();
+  const nodes = nodesToAtlas(graphnosisAllNodes, posMap);
   mainAtlas.setNodes(nodes);
   const edges = lastEdgesByGraph.get(atlasActiveGraph);
   if (edges) {
@@ -12115,6 +12144,38 @@ function stopConsentPhraseTimer(): void {
   if (consentPhraseTimer !== null) { clearInterval(consentPhraseTimer); consentPhraseTimer = null; }
 }
 
+// ── Active consent list auto-refresh ─────────────────────────────────────
+// The consent table is rendered on modal open and then kept live.
+// Two timers work together:
+//   • clockTimer (5 s) — re-renders from cached data, no IPC round-trip.
+//     Catches consents that expired since the last IPC fetch.
+//   • fetchTimer (15 s) — re-fetches settings from the sidecar and re-renders,
+//     so newly-granted or newly-revoked consents appear without reopening.
+let consentListClockTimer: ReturnType<typeof setInterval> | null = null;
+let consentListFetchTimer: ReturnType<typeof setInterval> | null = null;
+// Last-fetched consent array; clock timer re-renders from this without IPC.
+let _cachedConsents: AppSettings['ai']['dataAccessConsents'] = [];
+
+function startConsentListTimer(): void {
+  stopConsentListTimer();
+  // Clock-only re-render every 5 s — cheap, no IPC.
+  consentListClockTimer = setInterval(() => {
+    renderActiveConsents(_cachedConsents);
+  }, 5_000);
+  // Full re-fetch every 15 s to pick up grants/revocations from AI clients.
+  consentListFetchTimer = setInterval(() => {
+    void invoke('get_settings').then((s) => {
+      _cachedConsents = (s as AppSettings).ai?.dataAccessConsents ?? [];
+      renderActiveConsents(_cachedConsents);
+    });
+  }, 15_000);
+}
+
+function stopConsentListTimer(): void {
+  if (consentListClockTimer !== null) { clearInterval(consentListClockTimer); consentListClockTimer = null; }
+  if (consentListFetchTimer !== null) { clearInterval(consentListFetchTimer); consentListFetchTimer = null; }
+}
+
 // ── Active consent records rendering ─────────────────────────────────────
 
 function formatConsentExpiry(record: { expiresAt: number; windowMs: number }): string {
@@ -12126,8 +12187,12 @@ function formatConsentExpiry(record: { expiresAt: number; windowMs: number }): s
 function renderActiveConsents(consents: AppSettings['ai']['dataAccessConsents']): void {
   const container = document.getElementById('consent-active-list');
   if (!container) return;
+  const now = Date.now();
+  // Hard expiry gate: exclude withdrawn records AND any record whose
+  // expiresAt is in the past regardless of windowMs value.
   const active = (consents ?? []).filter(
-    (c) => !c.withdrawnAt && (c.windowMs === -1 || c.expiresAt > Date.now()),
+    (c) => !c.withdrawnAt &&
+           (c.windowMs === -1 || (typeof c.expiresAt === 'number' && c.expiresAt > now)),
   );
   if (active.length === 0) {
     container.innerHTML = '<p class="subtitle" style="font-size:14px;">No active AI consents.</p>';
@@ -12159,7 +12224,8 @@ function renderActiveConsents(consents: AppSettings['ai']['dataAccessConsents'])
       try {
         await invoke('revoke_ai_consents', { clientName, tier });
         const s = (await invoke('get_settings')) as AppSettings;
-        renderActiveConsents(s.ai?.dataAccessConsents);
+        _cachedConsents = s.ai?.dataAccessConsents ?? [];
+        renderActiveConsents(_cachedConsents);
       } catch (e) {
         showError(`Could not revoke: ${e}`);
       } finally {
@@ -12194,6 +12260,7 @@ els.btnSettings.addEventListener('click', async () => {
   // Phrases
   void refreshConsentPhrases();
   startConsentPhraseTimer();
+  startConsentListTimer();
 
   // Interval selectors
   try {
@@ -12207,7 +12274,8 @@ els.btnSettings.addEventListener('click', async () => {
       iSensitive.value = String(s.ai?.consentIntervalSensitiveMs ?? 3_600_000);
     }
     updateConsentIntervalHint();
-    renderActiveConsents(s.ai?.dataAccessConsents);
+    _cachedConsents = s.ai?.dataAccessConsents ?? [];
+    renderActiveConsents(_cachedConsents);
 
     // Extra-precaution mode toggle — gates personal-tier recall behind the
     // in-app consent modal (off by default, sensitive tier always gated).
@@ -12276,8 +12344,8 @@ for (const id of ['consent-interval-personal', 'consent-interval-sensitive']) {
   });
 }
 
-// Stop phrase timer when modal closes.
-els.btnSettingsCancel.addEventListener('click', () => { stopConsentPhraseTimer(); });
+// Stop timers when modal closes.
+els.btnSettingsCancel.addEventListener('click', () => { stopConsentPhraseTimer(); stopConsentListTimer(); });
 
 // Extend Settings save to persist consent interval settings.
 const _origSave = els.btnSettingsSave.onclick;
@@ -12287,6 +12355,7 @@ els.btnSettingsSave.addEventListener('click', async () => {
   const iSensitive = document.getElementById('consent-interval-sensitive') as HTMLSelectElement | null;
   if (!iPersonal && !iSensitive) return;
   stopConsentPhraseTimer();
+  stopConsentListTimer();
   try {
     const current = (await invoke('get_settings')) as AppSettings;
     const pVal = parseInt(iPersonal?.value ?? '-1', 10);
@@ -12335,7 +12404,8 @@ document.getElementById('btn-revoke-all-consents')?.addEventListener('click', as
   try {
     await invoke('revoke_ai_consents', {});
     const s = (await invoke('get_settings')) as AppSettings;
-    renderActiveConsents(s.ai?.dataAccessConsents);
+    _cachedConsents = s.ai?.dataAccessConsents ?? [];
+    renderActiveConsents(_cachedConsents);
   } catch (e) {
     showError(`Could not revoke: ${e}`);
   } finally {
@@ -12385,13 +12455,9 @@ document.getElementById('btn-export-consent-records')?.addEventListener('click',
       notice: 'These consent records are stored locally on your device. Nehloo has no access to them.',
       records,
     }, null, 2);
-    const blob = new Blob([payload], { type: 'application/json' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `graphnosis-consent-records-${new Date().toISOString().slice(0, 10)}.json`;
-    a.click();
-    URL.revokeObjectURL(url);
+    const defaultName = `graphnosis-consent-records-${new Date().toISOString().slice(0, 10)}.json`;
+    // Tauri WebViews don't support blob-URL downloads — use the native save dialog.
+    await invoke('save_json_file', { defaultName, content: payload });
   } catch (e) {
     showError(`Could not export consent records: ${e}`);
   }
@@ -12416,7 +12482,8 @@ void listen<{ clientName: string; tier: string; expiresAt: number }>(
     void (async () => {
       try {
         const s = (await invoke('get_settings')) as AppSettings;
-        renderActiveConsents(s.ai?.dataAccessConsents);
+        _cachedConsents = s.ai?.dataAccessConsents ?? [];
+        renderActiveConsents(_cachedConsents);
       } catch { /* ignore */ }
     })();
   },
