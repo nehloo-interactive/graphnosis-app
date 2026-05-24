@@ -1,13 +1,16 @@
 {
   "bundle": {
     "targets": ["nsis", "msi"],
+    "externalBin": [
+      "binaries/graphnosis-sidecar",
+      "binaries/graphnosis-mcp-relay"
+    ],
     "resources": [
       "resources/onnxruntime.dll"
     ],
     "windows": {
       "nsis": {
-        "installMode": "perUserOrSystem",
-        "languages": ["English"]
+        "installMode": "currentUser"
       }
     }
   }
