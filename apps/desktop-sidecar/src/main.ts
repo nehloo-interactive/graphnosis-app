@@ -113,30 +113,29 @@ async function loadAllGraphsFromDisk(
 
   const total = toLoad.length;
   let loaded = 0;
+  let failed = 0;
+  const batchStart = Date.now();
 
   if (broadcastRaw && total > 0) {
     broadcastRaw({ kind: 'engrams-loading', name: 'engrams-loading', payload: { loaded: 0, total } });
   }
 
   for (const graphId of toLoad) {
-    const startedAt = Date.now();
     try {
       await host.loadGraph(graphId);
-      console.error(
-        `[graphnosis-sidecar] loaded engram '${graphId}' from disk (${Date.now() - startedAt}ms)`,
-      );
+      loaded++;
     } catch (e) {
       const err = e as Error;
-      // Stack trace included — when a graph silently doesn't show up in
-      // the picker, the user's first stop is the dev terminal, and the
-      // bare message often doesn't pinpoint which step failed (decrypt /
-      // loadFromBuffer / bundle / cache).
+      // Keep the graphId in error logs — when an engram silently doesn't
+      // show up in the picker, the user needs to know which one failed.
+      // Stack trace included so the terminal shows exactly which step
+      // failed (decrypt / loadFromBuffer / bundle / cache).
       console.error(
         `[graphnosis-sidecar] FAILED to load engram '${graphId}': ${err.message}`,
       );
       if (err.stack) console.error(err.stack);
+      failed++;
     }
-    loaded++;
     if (broadcastRaw) {
       broadcastRaw({ kind: 'engrams-loading', name: 'engrams-loading', payload: { loaded, total } });
     }
@@ -144,6 +143,14 @@ async function loadAllGraphsFromDisk(
     // boot's list_nodes / list_edges for the default engram) can run
     // before the next load locks the loop again.
     await new Promise<void>((resolve) => setImmediate(resolve));
+  }
+
+  if (total > 0) {
+    const elapsed = Date.now() - batchStart;
+    const failNote = failed > 0 ? `, ${failed} failed` : '';
+    console.error(
+      `[graphnosis-sidecar] loaded ${loaded}/${total} engrams from disk (${elapsed}ms${failNote})`,
+    );
   }
 }
 
@@ -380,18 +387,15 @@ async function main(): Promise<void> {
   try {
     const t0 = Date.now();
     await host.loadGraph(env.defaultGraph);
-    // Surface the default-graph load explicitly so the startup log lists
-    // ALL engrams (was previously silent for the default — confusing when
-    // diagnosing "where did my data go?" because the default appears
-    // missing from the boot log even when it loaded fine).
+    // Log default-engram load time without exposing the engram slug.
     try {
       const nodeCount = host.listNodes(env.defaultGraph).length;
       console.error(
-        `[graphnosis-sidecar] loaded engram '${env.defaultGraph}' (default) from disk (${Date.now() - t0}ms, ${nodeCount} nodes)`,
+        `[graphnosis-sidecar] loaded default engram from disk (${Date.now() - t0}ms, ${nodeCount} nodes)`,
       );
     } catch {
       console.error(
-        `[graphnosis-sidecar] loaded engram '${env.defaultGraph}' (default) from disk (${Date.now() - t0}ms)`,
+        `[graphnosis-sidecar] loaded default engram from disk (${Date.now() - t0}ms)`,
       );
     }
   } catch (e) {

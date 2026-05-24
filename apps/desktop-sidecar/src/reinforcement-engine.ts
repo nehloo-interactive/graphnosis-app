@@ -1066,6 +1066,44 @@ export class ReinforcementEngine {
     return this.gnnEdges?.length ?? 0;
   }
 
+  /**
+   * Purge all in-memory state that references a deleted engram.
+   * Called by the IPC layer immediately after host.deleteGraph() so the
+   * next brain cycle / recall doesn't see ghost edges or connections.
+   * The on-disk stores are already cleaned by host.deleteGraph().
+   */
+  purgeDeletedGraph(graphId: string): void {
+    if (this.crossEngramConnections !== null) {
+      this.crossEngramConnections = this.crossEngramConnections.filter(
+        (c) => c.graphA !== graphId && c.graphB !== graphId,
+      );
+    }
+    if (this.gnnEdges !== null) {
+      this.gnnEdges = this.gnnEdges.filter((e) => e.graphId !== graphId);
+    }
+  }
+
+  /**
+   * Purge all in-memory state that references soft-deleted nodes.
+   * Called by the IPC layer after host.forgetSource() so the brain engine's
+   * live caches don't retain connections anchored to permanently-invisible nodes.
+   * The on-disk stores are already cleaned inside host.forgetSource().
+   */
+  purgeDeletedNodes(nodeIds: string[]): void {
+    if (nodeIds.length === 0) return;
+    const forgotten = new Set(nodeIds);
+    if (this.crossEngramConnections !== null) {
+      this.crossEngramConnections = this.crossEngramConnections.filter(
+        (c) => !forgotten.has(c.nodeA) && !forgotten.has(c.nodeB),
+      );
+    }
+    if (this.gnnEdges !== null) {
+      this.gnnEdges = this.gnnEdges.filter(
+        (e) => !forgotten.has(e.from) && !forgotten.has(e.to),
+      );
+    }
+  }
+
   /** The GNN overlay — predicted connections, for the 3D Engram. */
   getPredictedEdges(): readonly PredictedEdge[] {
     return this.gnnEdges ?? [];
