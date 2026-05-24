@@ -197,6 +197,11 @@ function positionDashedLink(
 // reheat. Long enough that normal cursor hovering doesn't constantly
 // restart physics (which would fight the breathing / jelly effects).
 const SUPPRESS_AFTER_MOVE_MS = 5_000;
+// Edge count above which a category is permanently hard-locked:
+// never rendered, never toggled on, hover skipped entirely.
+// Below this the auto-hide tier still applies (e.g. semantic > 5 K is
+// hidden by default but the user can re-enable it up to this ceiling).
+const EDGE_HARD_LOCK_THRESHOLD = 10_000;
 // How long after an empty-canvas click. Much longer — clicking empty
 // space is a deliberate "stop" gesture, the user wants stillness.
 const SUPPRESS_AFTER_CLICK_MS = 30_000;
@@ -370,6 +375,8 @@ export class Atlas {
     reasoning: true, structure: true, social: true, temporal: true, semantic: true, identity: true,
     predicted: true,
   };
+  /** Per-category edge counts, refreshed in setEdges. Used by isCategoryHardLocked(). */
+  private categoryEdgeCounts = new Map<EdgeCategory, number>();
   /** Source visibility — keyed by sourceFile (or empty string for "no source"). */
   private sourceVisible = new Map<string, boolean>();
   /**
@@ -413,6 +420,15 @@ export class Atlas {
   private previewLegendSource: string | null = null;
   /** Cached set: node ids that have at least one link in the previewed category. */
   private previewCatNodeIds = new Set<string>();
+  /**
+   * Guards a single pending `graph.refresh()` scheduled via rAF.
+   * Rapid mouseenter/mouseleave (e.g. Cmd+Tab while over the legend) can
+   * fire hover callbacks several times per frame. Without this guard each
+   * call clears all color caches and triggers a full re-evaluation of every
+   * node/link callback — with 65K+ edges that blocks the main thread.
+   * `scheduleRefresh()` coalesces any burst into one rAF tick.
+   */
+  private pendingRefresh = false;
   /**
    * Node currently being dragged. Used to:
    *   - Boost its size + brightness for visual feedback ("you're holding this one").
@@ -686,7 +702,20 @@ export class Atlas {
       return this.visibleNodeIds.has(n.id);
     });
     g.linkVisibility((l: AtlasLink) => {
-      if (this.previewLegendCategory !== null || this.previewLegendSource !== null) return true;
+      // Hard-locked categories are never rendered under any circumstance —
+      // not by toggle, not by hover, not by peek-through. Check this first
+      // before any other visibility logic.
+      if (this.isCategoryHardLocked(l.category)) return false;
+      // During a legend hover we want hidden edges to "peek through" so the
+      // user can see all links for the hovered source/category. BUT with large
+      // graphs (>10 K links) forcing ALL links visible in one refresh call
+      // causes THREE.js to allocate geometry buffers for tens of thousands of
+      // newly-visible edges on the main thread — a hard freeze. For large
+      // graphs the color callbacks already apply the dim/bright emphasis on
+      // visible links, which is sufficient feedback without the peek-through.
+      if (this.previewLegendCategory !== null || this.previewLegendSource !== null) {
+        if (this.allLinks.length <= 10_000) return true;
+      }
       return this.visibleLinkIds.has(l.id);
     });
     g.nodeOpacity(0.92);
@@ -1917,14 +1946,25 @@ export class Atlas {
     this.computeNodeDegrees();
     this.computeSubAnchors(); // needs both allNodes + allLinks — called here
 
-    // Auto-hide semantic edges when the graph is large enough that rendering
-    // them all tanks framerate. The category legend shows them as off so the
-    // user can re-enable. Threshold: >5K semantic edges (≈25K total edges).
-    const semanticCount = this.realLinks.filter(l => l.category === 'semantic').length;
-    if (semanticCount > 5000 && this.categoryVisible['semantic']) {
-      this.categoryVisible['semantic'] = false;
-    } else if (semanticCount <= 5000 && !this.categoryVisible['semantic']) {
-      this.categoryVisible['semantic'] = true;
+    // Recompute per-category counts used by isCategoryHardLocked().
+    this.categoryEdgeCounts.clear();
+    for (const l of this.realLinks) {
+      this.categoryEdgeCounts.set(l.category, (this.categoryEdgeCounts.get(l.category) ?? 0) + 1);
+    }
+
+    // Hard-lock any category that exceeds EDGE_HARD_LOCK_THRESHOLD: force
+    // visibility off and never allow it to be re-enabled by any UI action.
+    // Below the threshold, apply per-category auto-hide rules (e.g. semantic
+    // edges hidden by default when > 5 K but below the hard-lock ceiling).
+    for (const [cat, count] of this.categoryEdgeCounts) {
+      if (count > EDGE_HARD_LOCK_THRESHOLD) {
+        this.categoryVisible[cat as EdgeCategory] = false; // enforce lock
+      } else if (cat === 'semantic' && count > 5000) {
+        // Auto-hide tier: large but below hard-lock — off by default, user can re-enable.
+        if (this.categoryVisible['semantic']) this.categoryVisible['semantic'] = false;
+      } else if (cat === 'semantic' && count <= 5000) {
+        if (!this.categoryVisible['semantic']) this.categoryVisible['semantic'] = true;
+      }
     }
 
     this.refreshGraph();
@@ -2316,7 +2356,14 @@ export class Atlas {
 
   // ── Filters (UI calls these from the legend) ─────────────────────────
 
+  /** True when a category has more than EDGE_HARD_LOCK_THRESHOLD edges.
+   *  Hard-locked categories are never rendered and cannot be toggled on. */
+  isCategoryHardLocked(category: EdgeCategory): boolean {
+    return (this.categoryEdgeCounts.get(category) ?? 0) > EDGE_HARD_LOCK_THRESHOLD;
+  }
+
   setCategoryVisible(category: EdgeCategory, visible: boolean): void {
+    if (visible && this.isCategoryHardLocked(category)) return; // silently enforce lock
     this.categoryVisible[category] = visible;
     // Recompute visibility sets and redraw — do NOT call graphData or
     // reheat the simulation so node positions are preserved in place.
@@ -2332,10 +2379,25 @@ export class Atlas {
     this.graph.refresh();
   }
   /**
+   * Schedule a single `graph.refresh()` on the next animation frame.
+   * Multiple calls within the same frame collapse into one repaint —
+   * safe for rapid mouseenter/mouseleave bursts and Cmd+Tab focus cycles.
+   */
+  private scheduleRefresh(): void {
+    if (this.pendingRefresh) return;
+    this.pendingRefresh = true;
+    requestAnimationFrame(() => {
+      this.pendingRefresh = false;
+      this.graph.refresh();
+    });
+  }
+
+  /**
    * Called on mouseenter/mouseleave of a legend category row.
    * Null clears the preview and restores normal rendering.
    */
   hoverCategory(cat: EdgeCategory | null): void {
+    if (cat !== null && this.isCategoryHardLocked(cat)) return; // hard-locked — no hover effect
     if (this.previewLegendCategory === cat) return;
     this.previewLegendCategory = cat;
     this.previewLegendSource = null;
@@ -2356,7 +2418,7 @@ export class Atlas {
     this.linkColorCache.clear();
     this.particleColorCache.clear();
     this.particleCountCache.clear();
-    this.graph.refresh();
+    this.scheduleRefresh();
   }
 
   /**
@@ -2372,7 +2434,7 @@ export class Atlas {
     this.linkColorCache.clear();
     this.particleColorCache.clear();
     this.particleCountCache.clear();
-    this.graph.refresh();
+    this.scheduleRefresh();
   }
 
   /** Returns each source with stable color + counts for legend rendering. */
