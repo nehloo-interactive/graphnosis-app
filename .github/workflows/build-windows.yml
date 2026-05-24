@@ -79,15 +79,15 @@ jobs:
         id: find
         shell: pwsh
         run: |
-          $nsis = Get-ChildItem -Recurse -Filter "*.exe" `
-            apps/desktop/src-tauri/target/release/bundle/nsis |
+          $msi = Get-ChildItem -Recurse -Filter "*.msi" `
+            apps/desktop/src-tauri/target/release/bundle/msi |
             Select-Object -First 1
-          if (-not $nsis) {
-            Write-Error "NSIS installer not found"
+          if (-not $msi) {
+            Write-Error "MSI installer not found"
             exit 1
           }
-          echo "path=$($nsis.FullName)" >> $env:GITHUB_OUTPUT
-          echo "name=$($nsis.Name)" >> $env:GITHUB_OUTPUT
+          echo "path=$($msi.FullName)" >> $env:GITHUB_OUTPUT
+          echo "name=$($msi.Name)" >> $env:GITHUB_OUTPUT
 
       - name: Upload installer artifact
         uses: actions/upload-artifact@v4
