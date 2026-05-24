@@ -9,7 +9,7 @@ The Graphnosis sidecar exposes **34 tools** via the Model Context Protocol, orga
 
 You can browse the full toolset inside the app too: open the **MCP Tools** button in the left sidebar (next to Settings). Each tool name opens a short explainer with example prompts you can paste straight into your AI client.
 
-## At a glance — the 35 tools
+## At a glance — the 34 tools
 
 | Category | Tools |
 |---|---|
