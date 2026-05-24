@@ -171,6 +171,9 @@ interface AppSettings {
     consentIntervalSensitiveMs?: number;
     /** Per AI client type: 'chat' (default) or 'agent' (forces per-call consent). */
     clientTypes?: Record<string, 'chat' | 'agent'>;
+    /** Power-user toggle: gate personal-tier recalls behind the in-app consent
+     *  modal too. Off by default — sensitive tier is always gated regardless. */
+    extraPrecautionMode?: boolean;
     /** Active consent records — populated by confirm_data_access MCP tool. */
     dataAccessConsents?: Array<{
       consentId: string; grantedAt: number; expiresAt: number;
@@ -418,6 +421,11 @@ interface PurgeReport {
 
 // ---- DOM helpers --------------------------------------------------------
 
+// Vite-injected at build (vite.config.ts `define`). Reads from
+// apps/desktop/package.json#version so the status-bar pill stays in sync
+// with the released app version without a Tauri IPC roundtrip.
+declare const __APP_VERSION__: string;
+
 const $ = <T extends HTMLElement>(id: string): T => document.getElementById(id) as T;
 
 const els = {
@@ -560,12 +568,24 @@ const els = {
   tourNext: $<HTMLButtonElement>('tour-next'),
   railGetConnected: $<HTMLDivElement>('rail-get-connected'),
   railGcClients: $<HTMLDivElement>('rail-gc-clients'),
-  railGcMobile: $<HTMLDivElement>('rail-gc-mobile'),
+  // (railGcMobile slot removed — the Mobile access chip was retired from
+  // the rail. The feature itself is still reachable from the menu-bar
+  // tray and the Settings pane; no need to clutter the connect rail.)
+  // New top-of-rail slot for app-level mode chips (Standalone, Local &
+  // offline) — these describe the whole app's posture, not specific
+  // integrations, so they sit above the AI clients / Data sources labels.
+  railGcMode: $<HTMLDivElement>('rail-gc-mode'),
   railGcConnectors: $<HTMLDivElement>('rail-gc-connectors'),
   railGcAimode: $<HTMLDivElement>('rail-gc-aimode'),
   standaloneModal: $<HTMLDivElement>('standalone-modal'),
+  // Local & offline explainer modal — opened from the rail chip of the
+  // same name. Pure documentation; no per-source UI lives here.
+  offlineSourcesModal: $<HTMLDivElement>('offline-sources-modal'),
   // Brain / Alive — status bar
   brainVitality: $<HTMLSpanElement>('brain-vitality'),
+  // App version pill, sits left of brainVitality. Filled once on module load
+  // from the vite-injected __APP_VERSION__ (defined in vite.config.ts).
+  statusVersion: $<HTMLSpanElement>('status-version'),
   // Autonomous Brain pane
   livingBrain: $<HTMLDivElement>('living-brain'),
   lbNeuronCanvas: $<HTMLCanvasElement>('lb-neuron-canvas'),
@@ -618,6 +638,9 @@ const els = {
   lbStatDecayWhen: $<HTMLSpanElement>('lb-stat-decay-when'),
   lbStatSynapses: $<HTMLSpanElement>('lb-stat-synapses'),
 };
+
+// Fill the version pill in the status bar. `v0.9.0` style. One-time setup.
+if (els.statusVersion) els.statusVersion.textContent = `v${__APP_VERSION__}`;
 
 // Current plan in the modal — kept in module scope so the Apply button can
 // figure out which checkboxes are still checked at click time.
@@ -1219,14 +1242,42 @@ function renderRailGetConnected(): void {
   const llmOn = brainLlmReady;
   const gnnOn = brainNeuralNetworkStatus?.enabled === true;
 
-  // AI mode: Standalone is the deterministic default — lit only while nothing
-  // else is connected. The opt-in non-deterministic layers (Local LLM,
-  // Graphnosis Neural Network) appear here once they are switched on.
-  els.railGcAimode.innerHTML = '';
-  const anythingElse = llmOn || gnnOn || liveMcpClients.size > 0 || installedConnectorKinds.size > 0;
-  els.railGcAimode.appendChild(makeChip('Standalone', !anythingElse, () => {
+  // Top-of-rail mode chips: Standalone + Local & offline. These sit above
+  // the AI clients label because they describe app-wide posture, not a
+  // specific connector / client. Standalone gates on AI clients + LLM +
+  // GNN (NOT on data connectors — connectors are incoming auto-ingest,
+  // don't change the output posture).
+  const aiClientConnected = liveMcpClients.size > 0;
+  const standaloneDisabled = llmOn || gnnOn || aiClientConnected;
+  els.railGcMode.innerHTML = '';
+  const standaloneChip = makeChip('Standalone', !standaloneDisabled, () => {
+    // Surface the connection state to the modal so its copy reads correctly
+    // ("right now you're standalone" vs "you have N AI clients connected").
+    els.standaloneModal.dataset['aiClientConnected'] = aiClientConnected ? '1' : '0';
+    els.standaloneModal.dataset['llmOn'] = llmOn ? '1' : '0';
+    els.standaloneModal.dataset['gnnOn'] = gnnOn ? '1' : '0';
+    updateStandaloneModalCopy();
     els.standaloneModal.classList.remove('hidden');
+  });
+  // Dim the chip so the user visually understands "we're past standalone now"
+  // — still clickable (opens the explainer modal so they can read what
+  // standalone means and what each layered-on capability adds).
+  if (standaloneDisabled) standaloneChip.classList.add('dimmed');
+  els.railGcMode.appendChild(standaloneChip);
+  // Local & offline — info chip that opens an explainer modal listing
+  // every category of off-the-grid data the user can plug in (Home
+  // Assistant, MQTT, NAS, scanned PDFs, sensors, lab instruments, local
+  // databases…) via existing infrastructure (drag-drop files, the
+  // Webhook connector, mounted folders). Never shows "connected" — it's
+  // pure documentation that lives in the sidebar so users discover it.
+  els.railGcMode.appendChild(makeChip('Local & offline', false, () => {
+    els.offlineSourcesModal?.classList.remove('hidden');
   }));
+
+  // AI mode addendum: Local LLM / Neural Network chips when they're
+  // enabled. These live UNDER the "AI clients" header because they're
+  // about AI capability (synthesis / edge prediction).
+  els.railGcAimode.innerHTML = '';
   if (llmOn) {
     els.railGcAimode.appendChild(makeChip('Local LLM', true, openNonDeterministic));
   }
@@ -1240,8 +1291,8 @@ function renderRailGetConnected(): void {
   els.railGcClients.appendChild(makeChip('Claude Code', liveMcpClients.has('Claude Code'), () => openConfigureClientModal('claude-code')));
   els.railGcClients.appendChild(makeChip('Cursor', liveMcpClients.has('Cursor'), () => openConfigureClientModal('cursor')));
 
-  els.railGcMobile.innerHTML = '';
-  els.railGcMobile.appendChild(makeChip('Mobile access', false, () => void openMobileWizard()));
+  // (Mobile-access chip removed from the rail; the feature is still
+  // available from the menu-bar tray and from Settings → Mobile.)
 
   // Connectors — lit when installed.
   els.railGcConnectors.innerHTML = '';
@@ -1260,6 +1311,104 @@ document.getElementById('standalone-modal-close')
 els.standaloneModal.addEventListener('click', (e) => {
   if (e.target === els.standaloneModal) els.standaloneModal.classList.add('hidden');
 });
+
+// Local & offline explainer modal — same dismiss pattern. The docs link
+// routes through the Tauri opener so the full guide opens in the system
+// browser (rather than navigating inside the WebView).
+document.getElementById('offline-sources-modal-close')
+  ?.addEventListener('click', () => els.offlineSourcesModal.classList.add('hidden'));
+els.offlineSourcesModal?.addEventListener('click', (e) => {
+  if (e.target === els.offlineSourcesModal) els.offlineSourcesModal.classList.add('hidden');
+});
+document.getElementById('offline-sources-docs-link')?.addEventListener('click', (e) => {
+  e.preventDefault();
+  void invoke('plugin:opener|open_url', { url: 'https://graphnosis.com/guides/connect-offline-sources/' });
+});
+
+/**
+ * Render the standalone-mode explainer modal's body + header copy based on
+ * what's currently wired up. Three states:
+ *   - Pure standalone (no AI clients, no LLM, no GNN): "Right now you ARE
+ *     standalone — here's what works with zero AI setup."
+ *   - Layered on (AI client connected OR LLM/GNN enabled): "Standalone is
+ *     your fallback floor — even with N AI client(s) connected, you can
+ *     disconnect everything and the deterministic stack keeps working."
+ *
+ * Reads the boolean flags from data attributes the rail chip-handler set
+ * just before unhiding the modal (see renderRailGetConnected).
+ */
+function updateStandaloneModalCopy(): void {
+  const modal = els.standaloneModal;
+  const aiConnected = modal.dataset['aiClientConnected'] === '1';
+  const llmOn = modal.dataset['llmOn'] === '1';
+  const gnnOn = modal.dataset['gnnOn'] === '1';
+  const titleEl = document.getElementById('standalone-modal-title');
+  const subtitleEl = document.getElementById('standalone-modal-subtitle');
+  const bodyEl = document.getElementById('standalone-modal-body');
+  if (!titleEl || !subtitleEl || !bodyEl) return;
+
+  // Build a short human list of what's layered on, for the connected-state
+  // copy. Order matches what the user would see in the rail (LLM, GNN,
+  // then AI clients).
+  const layeredOn: string[] = [];
+  if (llmOn) layeredOn.push('<strong>Local LLM</strong>');
+  if (gnnOn) layeredOn.push('<strong>Neural Network</strong>');
+  if (aiConnected) {
+    const n = liveMcpClients.size;
+    layeredOn.push(`<strong>${n} AI client${n === 1 ? '' : 's'}</strong>`);
+  }
+  const isStandalone = layeredOn.length === 0;
+
+  const standaloneBullets = `
+    <ul style="font-size: 14px; color: var(--fg-dim); line-height: 1.6; margin: 0 0 12px; padding-left: 20px;">
+      <li>recall, remember, correct, forget — every MCP tool</li>
+      <li>encryption at rest and the recoverable op-log</li>
+      <li>semantic search and the 3D engram map</li>
+      <li>autonomous duplicate-merging, memory decay, and goal deadline tracking</li>
+      <li>auto-ingest connectors (RSS, GitHub, Slack, Trello, Linear, Obsidian, GBrain, webhooks) — they feed the cortex but don't change its standalone posture</li>
+    </ul>`;
+
+  if (isStandalone) {
+    titleEl.textContent = 'Standalone — the default mode';
+    subtitleEl.textContent = 'Graphnosis is fully functional with no AI model installed.';
+    bodyEl.innerHTML = `
+      <p style="font-size: 14px; line-height: 1.6; margin: 0 0 12px;">
+        Right now Graphnosis runs <strong>100% standalone</strong>. Everything you have used
+        so far is <strong>deterministic, local, and encrypted</strong> — your data never
+        leaves this machine and no AI model is required.
+      </p>
+      <p style="font-size: 14px; line-height: 1.6; margin: 0 0 6px;">Works with zero AI setup:</p>
+      ${standaloneBullets}
+      <p style="font-size: 14px; line-height: 1.6; margin: 0;">
+        A local LLM is <strong>optional</strong>. Add one with the <strong>Local LLM</strong>
+        button to unlock insights, automatic new-connection forming, and
+        second-opinion review of its own healing decisions — it still runs entirely on
+        your machine.
+      </p>`;
+  } else {
+    titleEl.textContent = 'Standalone — your fallback floor';
+    subtitleEl.textContent = `Graphnosis is currently layered with ${layeredOn.length} non-standalone capabilit${layeredOn.length === 1 ? 'y' : 'ies'}.`;
+    bodyEl.innerHTML = `
+      <p style="font-size: 14px; line-height: 1.6; margin: 0 0 12px;">
+        You currently have ${layeredOn.join(' + ')} active.
+        That layered capability is <strong>opt-in on top of standalone</strong>, not a replacement for it.
+        If you disconnect everything, Graphnosis keeps running deterministically — no functionality loss,
+        no data loss, no AI model required.
+      </p>
+      <p style="font-size: 14px; line-height: 1.6; margin: 0 0 6px;">The standalone floor under everything:</p>
+      ${standaloneBullets}
+      <p style="font-size: 14px; line-height: 1.6; margin: 0 0 12px; color: var(--fg-dim);">
+        ${aiConnected ? 'Your <strong>AI clients</strong> read from this cortex via MCP — every recall returns the same nodes regardless of which client asked, and every access is in the audit log.' : ''}
+        ${llmOn ? '<br>The <strong>Local LLM</strong> runs on your machine — no cloud calls, no API keys.' : ''}
+        ${gnnOn ? '<br>The <strong>Neural Network</strong> proposes related-edge predictions in a clearly-labelled, separate block — never mixed into deterministic results.' : ''}
+      </p>
+      <p style="font-size: 14px; line-height: 1.6; margin: 0;">
+        Connectors (RSS, GitHub, Slack, Trello, …) don't take you out of standalone — they're
+        <strong>incoming auto-ingest</strong>, feeding the cortex on a schedule but never reading from it
+        or adding non-determinism.
+      </p>`;
+  }
+}
 
 /** Per-tool explanations shown in the tool-info modal (onboarding card). */
 const TOOL_INFO: Record<string, { determinism: string; body: string; examples: string[] }> = {
@@ -1596,6 +1745,17 @@ function friendlyClient(name?: string): string {
   return name;
 }
 
+/** Compact idle-age formatter for the MCP rows: "47s" / "12m" / "3h" / "2d". */
+function formatIdleDuration(ms: number): string {
+  const s = Math.round(ms / 1000);
+  if (s < 60) return `${s}s`;
+  const m = Math.round(s / 60);
+  if (m < 60) return `${m}m`;
+  const h = Math.round(m / 60);
+  if (h < 48) return `${h}h`;
+  return `${Math.round(h / 24)}d`;
+}
+
 function renderMcpStatus(connections: McpConnection[]): void {
   updateStatusBar(connections);
   // Mirror the live client set into the sidebar's Get-connected status list.
@@ -1625,6 +1785,15 @@ function renderMcpStatus(connections: McpConnection[]): void {
     btn?.addEventListener('click', () => void handleMcpReconnect(btn));
     return;
   }
+  // Idle threshold for the amber-bubble visual. A connection that hasn't
+  // exchanged a tool call in this long isn't actively in use right now —
+  // could be the user idle in Claude, or could be a relay subprocess
+  // surviving past the AI client removing the connector. Either way the
+  // amber tells you "this row isn't going anywhere on its own; manually
+  // × it if you want it gone." Re-greens automatically on the next
+  // request the relay forwards.
+  const MCP_IDLE_MS = 15 * 60_000;
+  const now = Date.now();
   target.innerHTML = connections
     .map((c) => {
       const name = friendlyClient(c.clientName);
@@ -1632,15 +1801,45 @@ function renderMcpStatus(connections: McpConnection[]): void {
       const since = new Date(c.connectedAt).toLocaleTimeString();
       const reqs = c.requestCount === 1 ? '1 request' : `${c.requestCount} requests`;
       const transportLabel = c.transport === 'stdio' ? 'stdio (legacy)' : 'relay';
+      const idleMs = now - c.lastActivityAt;
+      const isIdle = idleMs >= MCP_IDLE_MS;
+      const idleLabel = isIdle
+        ? ` · <span class="mcp-idle-tag">Idle ${formatIdleDuration(idleMs)}</span>`
+        : '';
+      const dotClass = isIdle ? 'mcp-dot mcp-dot-idle' : 'mcp-dot';
+      const dotTitle = isIdle ? `Idle ${formatIdleDuration(idleMs)} — no requests since last activity` : 'Live';
+      // stdio transport has no kicker — Claude spawned this process directly,
+      // we can't force-close it from here. Hide the × for those rows.
+      const showKick = c.transport !== 'stdio';
+      const kickBtn = showKick
+        ? `<button class="mcp-kick" data-conn-id="${escape(c.id)}" title="Force-close this connection. The AI client's relay auto-reconnects on its next request — this just clears stale entries." aria-label="Disconnect ${escape(name)}">×</button>`
+        : '';
       return `<div class="mcp-row">
-        <span class="mcp-dot" title="Live"></span>
+        <span class="${dotClass}" title="${dotTitle}"></span>
         <div style="flex: 1; min-width: 0;">
           <div class="mcp-client-name">${escape(name)}${version}</div>
-          <div class="mcp-meta">Connected ${since} · ${reqs} · ${transportLabel}</div>
+          <div class="mcp-meta">Connected ${since} · ${reqs} · ${transportLabel}${idleLabel}</div>
         </div>
+        ${kickBtn}
       </div>`;
     })
     .join('');
+  // Wire kick buttons. Force-close is non-destructive: the relay
+  // auto-reconnects on the next MCP tool call (see mcp-relay.ts), so the
+  // user doesn't need to touch anything in their AI client.
+  target.querySelectorAll<HTMLButtonElement>('.mcp-kick').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const connId = btn.dataset['connId'];
+      if (!connId) return;
+      btn.disabled = true;
+      void ipcCall('mcp.disconnect', { connId })
+        .then(() => fetchMcpStatus())
+        .catch((e) => {
+          console.error('mcp.disconnect failed', e);
+          btn.disabled = false;
+        });
+    });
+  });
 }
 
 async function handleMcpReconnect(btn: HTMLButtonElement): Promise<void> {
@@ -8204,6 +8403,111 @@ void listen<EventStreamConnectedPayload>('graphnosis://event-stream-connected', 
   void pollGraphMutations();
 });
 
+// ── Layer-4 consent: in-app prompt (replaces phrase typing when GUI is up) ──
+// Sidecar emits this when an AI client hits the consent gate AND the user's
+// per-client policy says "ask". One click on the modal resolves the prompt;
+// the AI's recall call proceeds (Allow) or errors cleanly (Deny). On timeout
+// (no response in 60s) the sidecar falls back to phrase typing — that path
+// stays alive for headless / SSH / CI setups with no desktop window.
+type ConsentPromptPayload = {
+  promptId: string;
+  clientName: string;
+  tiers: Array<'personal' | 'sensitive'>;
+  suggestedDurations: Array<{ tier: string; durationMs: number }>;
+  privacyUrl: string | null;
+};
+let activeConsentPromptId: string | null = null;
+void listen<ConsentPromptPayload>('graphnosis://consent-prompt', (evt) => {
+  const p = evt.payload;
+  activeConsentPromptId = p.promptId;
+  const titleEl = document.getElementById('consent-prompt-title');
+  const subEl = document.getElementById('consent-prompt-subtitle');
+  const tiersEl = document.getElementById('consent-prompt-tiers');
+  const privEl = document.getElementById('consent-prompt-privacy') as HTMLAnchorElement | null;
+  if (titleEl) titleEl.textContent = `${p.clientName} wants to read your memories`;
+  if (subEl) subEl.textContent = `Access requested: ${p.tiers.join(' + ')} tier${p.tiers.length === 1 ? '' : 's'}`;
+  if (tiersEl) {
+    tiersEl.innerHTML = p.tiers.map((t) =>
+      `<span class="consent-tier-pill${t === 'sensitive' ? ' sensitive' : ''}">${t === 'sensitive' ? '⚠ ' : ''}${t.toUpperCase()} tier</span>`,
+    ).join('');
+  }
+  if (privEl) {
+    if (p.privacyUrl) {
+      privEl.href = p.privacyUrl;
+      privEl.style.display = '';
+    } else {
+      privEl.style.display = 'none';
+    }
+  }
+  document.getElementById('consent-prompt-modal')?.classList.remove('hidden');
+  // Bring the window to focus so the user sees the modal even if they
+  // were in the AI client when the request fired.
+  window.focus();
+});
+async function resolveConsentPrompt(action: 'allow' | 'deny', durationMs?: number): Promise<void> {
+  if (!activeConsentPromptId) return;
+  const id = activeConsentPromptId;
+  activeConsentPromptId = null;
+  document.getElementById('consent-prompt-modal')?.classList.add('hidden');
+  try {
+    await ipcCall('consent.resolvePrompt', {
+      promptId: id,
+      action,
+      ...(durationMs !== undefined ? { durationMs } : {}),
+    });
+  } catch (e) {
+    console.error('consent.resolvePrompt failed', e);
+  }
+}
+document.getElementById('consent-prompt-deny')?.addEventListener('click', () => void resolveConsentPrompt('deny'));
+document.getElementById('consent-prompt-once')?.addEventListener('click', () => void resolveConsentPrompt('allow', 0));
+document.getElementById('consent-prompt-1h')?.addEventListener('click', () => void resolveConsentPrompt('allow', 3_600_000));
+document.getElementById('consent-prompt-1d')?.addEventListener('click', () => void resolveConsentPrompt('allow', 86_400_000));
+// External link routed through Tauri opener — same pattern as the MCP
+// Tools docs link, keeps the WebView from navigating itself.
+document.getElementById('consent-prompt-privacy')?.addEventListener('click', (e) => {
+  const a = e.currentTarget as HTMLAnchorElement;
+  if (a.href && a.href !== '#') {
+    e.preventDefault();
+    void invoke('plugin:opener|open_url', { url: a.href });
+  }
+});
+
+// ── First-connect policy chooser (Option 3) ─────────────────────────────────
+// Pops once per never-before-seen AI client. The sidecar seeds a default
+// policy at first contact; this modal lets the user override it before
+// the next recall. Saving the form writes back via `ai.setClientPolicy`.
+type FirstConnectPayload = {
+  clientName: string;
+  policy: { personalTier: string; sensitiveTier: string; firstSeenAt: number };
+};
+let activeFirstConnectClient: string | null = null;
+void listen<FirstConnectPayload>('graphnosis://first-connect-policy', (evt) => {
+  const p = evt.payload;
+  activeFirstConnectClient = p.clientName;
+  const titleEl = document.getElementById('first-connect-title');
+  if (titleEl) titleEl.textContent = `${p.clientName} is connecting for the first time`;
+  const personalSel = document.getElementById('first-connect-personal') as HTMLSelectElement | null;
+  const sensitiveSel = document.getElementById('first-connect-sensitive') as HTMLSelectElement | null;
+  if (personalSel) personalSel.value = p.policy.personalTier;
+  if (sensitiveSel) sensitiveSel.value = p.policy.sensitiveTier;
+  document.getElementById('first-connect-modal')?.classList.remove('hidden');
+  window.focus();
+});
+document.getElementById('first-connect-save')?.addEventListener('click', () => {
+  const personalSel = document.getElementById('first-connect-personal') as HTMLSelectElement | null;
+  const sensitiveSel = document.getElementById('first-connect-sensitive') as HTMLSelectElement | null;
+  if (!activeFirstConnectClient || !personalSel || !sensitiveSel) return;
+  const clientName = activeFirstConnectClient;
+  activeFirstConnectClient = null;
+  document.getElementById('first-connect-modal')?.classList.add('hidden');
+  void ipcCall('ai.setClientPolicy', {
+    clientName,
+    personalTier: personalSel.value,
+    sensitiveTier: sensitiveSel.value,
+  }).catch((e) => console.error('ai.setClientPolicy failed', e));
+});
+
 // Background engram loading progress. The sidecar loads the default engram
 // first (~1-2s) then all others in parallel (~17-20s). We react to each event
 // so the UI shows data as soon as the first engram is available, and switches
@@ -11869,6 +12173,18 @@ els.btnSettings.addEventListener('click', async () => {
     }
     updateConsentIntervalHint();
     renderActiveConsents(s.ai?.dataAccessConsents);
+
+    // Extra-precaution mode toggle — gates personal-tier recall behind the
+    // in-app consent modal (off by default, sensitive tier always gated).
+    const extraCb = document.getElementById('extra-precaution-mode') as HTMLInputElement | null;
+    if (extraCb) {
+      extraCb.checked = s.ai?.extraPrecautionMode === true;
+      extraCb.onchange = () => {
+        void invoke('update_settings', {
+          patch: { ai: { extraPrecautionMode: extraCb.checked } },
+        }).catch((e) => console.error('extraPrecautionMode update failed', e));
+      };
+    }
 
     // Use Local LLM only for search — single checkbox.
     const llmOnlyCb = document.getElementById('search-llm-only') as HTMLInputElement | null;
