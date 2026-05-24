@@ -1,6 +1,6 @@
 [package]
 name = "graphnosis-app"
-version = "0.8.1"
+version = "0.10.0"
 description = "Graphnosis — personal second memory"
 authors = ["Nehloo Interactive LLC"]
 # Custom string — FSL-1.1-Apache-2.0 isn't a registered SPDX id (yet),
