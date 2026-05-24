@@ -1971,6 +1971,35 @@
         border-left: 2px solid var(--ok); padding: 6px 0 6px 10px;
         margin: 4px 0 10px;
       }
+      /* Local LLM master-switch card — sits above the Ollama status row */
+      .llm-enable-card {
+        display: flex; align-items: center; justify-content: space-between;
+        gap: 12px;
+        background: var(--bg-elev);
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        padding: 12px 14px;
+        margin-bottom: 12px;
+      }
+      .llm-enable-card.llm-card-active {
+        border-color: var(--accent);
+        box-shadow: 0 0 0 1px var(--accent);
+      }
+      .llm-enable-card-label {
+        display: flex; align-items: center; gap: 10px;
+        font-size: 14px; font-weight: 600; cursor: pointer; flex: 1;
+      }
+      .llm-enable-card-label input[type="checkbox"] { flex-shrink: 0; }
+      .llm-enable-card-status {
+        font-size: 12px; font-weight: 400; color: var(--fg-dim);
+        white-space: nowrap;
+      }
+      .llm-confirm-inline {
+        background: var(--bg-elev); border: 1px solid var(--border);
+        border-radius: 8px; padding: 12px 14px; margin-bottom: 12px;
+      }
+      .llm-confirm-inline p { font-size: 13px; line-height: 1.55; margin: 0 0 10px; }
+      .llm-confirm-inline .lb-goal-form-actions { margin: 0; }
       /* Terminal-route alternative to the point-and-click model setup. */
       .ollama-cli-box { margin-top: 14px; }
       .ollama-cli-title { font-size: 13px; font-weight: 600; margin: 0 0 4px; }
@@ -2634,6 +2663,18 @@
         font-size: 14px;
         align-self: start;
         margin-top: 2px;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 1px;
+      }
+      .g-row-num {
+        font-size: 10px;
+        font-weight: 700;
+        color: var(--accent);
+        opacity: 0.7;
+        line-height: 1;
+        letter-spacing: 0;
       }
       .g-row-text { color: var(--fg); font-size: 14px; line-height: 1.4; }
       .g-row-meta { color: var(--fg-dim); font-size: 15px; margin-top: 3px; }
