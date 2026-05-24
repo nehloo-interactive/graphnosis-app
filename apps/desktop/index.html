@@ -1091,7 +1091,7 @@
       }
       .modal-header h2 { margin: 0; font-size: 15px; font-weight: 600; }
       .modal-header .subtitle { margin: 4px 0 0; font-size: 14px; }
-      .modal-body { padding: 16px 20px; overflow-y: auto; flex: 1; }
+      .modal-body { padding: 12px 16px; overflow-y: auto; flex: 1; }
       /* Consent prompt — tier pills shown inside the modal body listing
          which sensitivity tiers the AI is asking to read. */
       .consent-tier-pill {
@@ -1330,6 +1330,19 @@
       }
       .consent-phrase-word { font-size: 16px; font-weight: 700; font-family: ui-monospace, monospace; color: var(--fg); }
       .consent-phrase-countdown { font-size: 12px; color: var(--fg-dim); white-space: nowrap; }
+      /* ── Settings modal sections ──────────────────────────────────────── */
+      .settings-section {
+        background: var(--bg-elev);
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        padding: 16px 18px;
+        margin-bottom: 14px;
+      }
+      .settings-section.no-top-border { /* keep class for compat, no extra rules needed */ }
+      .settings-section-label {
+        font-size: 10px; font-weight: 700; letter-spacing: 0.10em; text-transform: uppercase;
+        color: var(--fg-dim); opacity: 0.85; margin: 0 0 14px; padding: 0;
+      }
       .consent-active-table { width: 100%; border-collapse: collapse; font-size: 14px; margin-top: 8px; }
       .consent-active-table th { text-align: left; font-size: 12px; font-weight: 600; color: var(--fg-dim); padding: 4px 6px; border-bottom: 1px solid var(--border); }
       .consent-active-table td { padding: 6px 6px; border-bottom: 1px solid color-mix(in oklab, var(--border) 50%, transparent); vertical-align: middle; }
@@ -5800,7 +5813,8 @@ ollama list</code></pre>
           <p class="subtitle">Per-cortex preferences. Stored at <code>&lt;cortex&gt;/settings.json</code>.</p>
         </div>
         <div class="modal-body" id="settings-body">
-          <p class="panel-title" style="margin-top: 0;">Content cache</p>
+          <div class="settings-section no-top-border">
+          <p class="settings-section-label">Memory storage</p>
           <p class="subtitle" style="margin-bottom: 12px;">
             Cached source content lets the App rebuild your graph from the encrypted op-log
             after accidental data loss — including for pasted text and AI-conversation snippets
@@ -5823,34 +5837,7 @@ ollama list</code></pre>
             </select>
           </div>
 
-          <p class="panel-title" style="margin-top: 20px;">MCP relay timings</p>
-          <p class="subtitle" style="margin-bottom: 12px;">
-            How long the small relay process (the bridge between Claude Desktop and
-            your cortex) waits before giving up. Changes apply the next time a client
-            spawns or reconnects a relay — current Claude sessions keep their old values.
-          </p>
-          <div class="row">
-            <label for="relay-initial">
-              Initial connect timeout
-              <span style="color: var(--fg-dim); font-weight: normal;"> — when an MCP client launches before the cortex is unlocked</span>
-            </label>
-            <div style="display: flex; align-items: center; gap: 8px;">
-              <input type="number" id="relay-initial" min="2" max="120" step="1" style="flex: 1;" />
-              <span style="color: var(--fg-dim); font-size: 14px;">seconds (2–120, default 10)</span>
-            </div>
-          </div>
-          <div class="row">
-            <label for="relay-reconnect">
-              Reconnect timeout
-              <span style="color: var(--fg-dim); font-weight: normal;"> — when the cortex is locked or restarted mid-session</span>
-            </label>
-            <div style="display: flex; align-items: center; gap: 8px;">
-              <input type="number" id="relay-reconnect" min="5" max="86400" step="1" style="flex: 1;" />
-              <span style="color: var(--fg-dim); font-size: 14px;">seconds (5–86400, default 86400 = 24h)</span>
-            </div>
-          </div>
-
-          <p class="panel-title" style="margin-top: 20px;">When you Forget a source</p>
+          <p class="panel-title" style="margin-top: 18px;">When you Forget a source</p>
           <p class="subtitle" style="margin-bottom: 12px;">
             Forgotten memories are soft-deleted first — confidence drops to zero and they
             never appear in recall. They stay on disk until physically purged, which gives
@@ -5861,25 +5848,39 @@ ollama list</code></pre>
             <label style="margin-top: 8px;"><input type="radio" name="forget-mode" value="purge" /> <strong>Purge immediately</strong> — slow; rebuilds the graph after every Forget. Requires <em>Cache everything</em> above.</label>
           </div>
 
-          <p class="panel-title" style="margin-top: 20px;">AI client routing</p>
+          </div><!-- /section: memory storage -->
+
+          <div class="settings-section">
+          <p class="settings-section-label">Ingest</p>
           <p class="subtitle" style="margin-bottom: 12px;">
-            How aggressively Claude Desktop (and other MCP-aware AI clients) should reach
-            for Graphnosis tools. With this on, the AI gets a system-prompt-level hint to
-            use Graphnosis as your default memory layer — proactively calling <code>recall</code>
-            before answering personal-context questions and <code>correct</code> instead of
-            <code>remember</code> when fixing earlier statements.
+            How aggressively the SDK splits documents into memory nodes, and how
+            many texts it groups into each embedding model call. Sensible defaults
+            cover most users; tune if ingest feels slow or recall feels imprecise.
+            Changes apply to the <em>next</em> file you ingest — existing nodes keep their previous shape.
           </p>
-          <div class="row">
-            <label>
-              <input type="checkbox" id="ai-default-memory" />
-              <strong>Use Graphnosis as my AI's default memory</strong> — recommended.
-              Off = the AI sees the tools but treats them as one option among many; its
-              own memory features lead. Changes take effect on next cortex unlock or after
-              <em>Reconnect</em> below.
+          <div class="row" style="display: flex; align-items: center; gap: 10px; margin-bottom: 10px;">
+            <label for="ai-chunk-size" style="white-space: nowrap; font-size: 14px; min-width: 160px;">
+              Chunk size:
             </label>
+            <select id="ai-chunk-size" style="flex: 0 0 auto;">
+              <option value="fine">Fine — small nodes (~300 chars), best recall, slower ingest</option>
+              <option value="balanced" selected>Balanced — default (~500 chars)</option>
+              <option value="coarse">Coarse — large nodes (~2500 chars), faster, less precise recall</option>
+            </select>
+          </div>
+          <div class="row" style="display: flex; align-items: center; gap: 10px; margin-bottom: 10px;">
+            <label for="ai-embed-batch" style="white-space: nowrap; font-size: 14px; min-width: 160px;">
+              Embed batch size:
+            </label>
+            <select id="ai-embed-batch" style="flex: 0 0 auto;">
+              <option value="auto" selected>Auto — pick from RAM (recommended)</option>
+              <option value="small">Small — 64/call (low memory, frequent progress)</option>
+              <option value="medium">Medium — 256/call (default)</option>
+              <option value="large">Large — 1024/call (≥ 32 GB RAM)</option>
+            </select>
           </div>
 
-          <p class="panel-title" style="margin-top: 20px;">File-source auto-reingest</p>
+          <p class="panel-title" style="margin-top: 18px;">File-source auto-reingest</p>
           <p class="subtitle" style="margin-bottom: 12px;">
             When a file you've ingested changes on disk, Graphnosis can re-read it
             automatically — same flow as the <em>Reingest</em> button in the Sources tab.
@@ -5908,38 +5909,7 @@ ollama list</code></pre>
             </select>
           </div>
 
-          <p class="panel-title" style="margin-top: 20px;">Ingest performance</p>
-          <p class="subtitle" style="margin-bottom: 12px;">
-            How aggressively the SDK splits documents into memory nodes, and how
-            many texts it groups into each embedding model call. Sensible defaults
-            cover most users; tune if ingest feels slow or recall feels imprecise.
-            Changes apply to the <em>next</em> file you ingest — existing nodes keep their previous shape.
-          </p>
-          <div class="row" style="display: flex; align-items: center; gap: 10px; margin-bottom: 10px;">
-            <label for="ai-chunk-size" style="white-space: nowrap; font-size: 14px; min-width: 160px;">
-              Chunk size:
-            </label>
-            <select id="ai-chunk-size" style="flex: 0 0 auto;">
-              <option value="fine">Fine — small nodes (~300 chars), best recall, slower ingest</option>
-              <option value="balanced" selected>Balanced — default (~500 chars)</option>
-              <option value="coarse">Coarse — large nodes (~2500 chars), faster, less precise recall</option>
-            </select>
-          </div>
-          <div class="row" style="display: flex; align-items: center; gap: 10px;">
-            <label for="ai-embed-batch" style="white-space: nowrap; font-size: 14px; min-width: 160px;">
-              Embed batch size:
-            </label>
-            <select id="ai-embed-batch" style="flex: 0 0 auto;">
-              <option value="auto" selected>Auto — pick from RAM (recommended)</option>
-              <option value="small">Small — 64/call (low memory, frequent progress)</option>
-              <option value="medium">Medium — 256/call (default)</option>
-              <option value="large">Large — 1024/call (≥ 32 GB RAM)</option>
-            </select>
-          </div>
-
-
-          <!-- Clipboard capture — disabled by default, user opt-in -->
-          <p class="panel-title" style="margin-top: 20px;">Clipboard Capture</p>
+          <p class="panel-title" style="margin-top: 18px;">Clipboard capture</p>
           <p class="subtitle" style="margin-bottom: 10px;">
             When enabled, Graphnosis watches your clipboard while it's in focus.
             Any text you copy that's longer than a sentence is offered for saving as a memory.
@@ -5958,8 +5928,59 @@ ollama list</code></pre>
                into the main Settings tab (side rail) so they're surfaced
                without requiring a popup. See <section data-pane="settings">. -->
 
-          <!-- AI consent phrases + interval configuration -->
-          <p class="panel-title" style="margin-top: 20px;">AI access & consent</p>
+          </div><!-- /section: ingest -->
+
+          <div class="settings-section">
+          <p class="settings-section-label">AI client</p>
+          <p class="panel-title" style="margin-top: 0;">MCP relay timings</p>
+          <p class="subtitle" style="margin-bottom: 12px;">
+            How long the small relay process (the bridge between Claude Desktop and
+            your cortex) waits before giving up. Changes apply the next time a client
+            spawns or reconnects a relay — current Claude sessions keep their old values.
+          </p>
+          <div class="row">
+            <label for="relay-initial">
+              Initial connect timeout
+              <span style="color: var(--fg-dim); font-weight: normal;"> — when an MCP client launches before the cortex is unlocked</span>
+            </label>
+            <div style="display: flex; align-items: center; gap: 8px;">
+              <input type="number" id="relay-initial" min="2" max="120" step="1" style="flex: 1;" />
+              <span style="color: var(--fg-dim); font-size: 14px;">seconds (2–120, default 10)</span>
+            </div>
+          </div>
+          <div class="row">
+            <label for="relay-reconnect">
+              Reconnect timeout
+              <span style="color: var(--fg-dim); font-weight: normal;"> — when the cortex is locked or restarted mid-session</span>
+            </label>
+            <div style="display: flex; align-items: center; gap: 8px;">
+              <input type="number" id="relay-reconnect" min="5" max="86400" step="1" style="flex: 1;" />
+              <span style="color: var(--fg-dim); font-size: 14px;">seconds (5–86400, default 86400 = 24h)</span>
+            </div>
+          </div>
+
+          <p class="panel-title" style="margin-top: 18px;">AI client routing</p>
+          <p class="subtitle" style="margin-bottom: 12px;">
+            How aggressively Claude Desktop (and other MCP-aware AI clients) should reach
+            for Graphnosis tools. With this on, the AI gets a system-prompt-level hint to
+            use Graphnosis as your default memory layer — proactively calling <code>recall</code>
+            before answering personal-context questions and <code>correct</code> instead of
+            <code>remember</code> when fixing earlier statements.
+          </p>
+          <div class="row">
+            <label>
+              <input type="checkbox" id="ai-default-memory" />
+              <strong>Use Graphnosis as my AI's default memory</strong> — recommended.
+              Off = the AI sees the tools but treats them as one option among many; its
+              own memory features lead. Changes take effect on next cortex unlock or after
+              <em>Reconnect</em> below.
+            </label>
+          </div>
+
+          </div><!-- /section: AI client -->
+
+          <div class="settings-section">
+          <p class="settings-section-label">AI access & consent</p>
           <p class="subtitle" style="margin-bottom: 10px;">
             <strong>Personal-tier memories</strong> are shared with your connected AI clients without an extra prompt — you already gave consent by installing Graphnosis and adding it to your AI client's config.
             <strong>Sensitive-tier memories</strong> (health, financial, biometric) always require an in-app click before each grant.
@@ -6081,7 +6102,10 @@ ollama list</code></pre>
             <span style="font-size: 13px; color: var(--fg-dim);">distinct engrams</span>
           </div>
 
-          <p style="font-size: 13px; font-weight: 600; margin: 14px 0 6px;">Active AI consents</p>
+          </div><!-- /section: AI access & consent -->
+
+          <div class="settings-section">
+          <p class="settings-section-label">Active AI consents</p>
           <div id="consent-active-list">
             <p class="subtitle" style="font-size: 14px;">No active AI consents.</p>
           </div>
@@ -6095,7 +6119,10 @@ ollama list</code></pre>
             Export your records at any time as a JSON file for backup or transfer between devices.
           </p>
 
-          <p class="panel-title" style="margin-top: 20px;">Support</p>
+          </div><!-- /section: active consents -->
+
+          <div class="settings-section">
+          <p class="settings-section-label">Support</p>
           <p class="subtitle" style="margin-bottom: 12px;">
             Diagnostic tools for sending feedback to Graphnosis support. Active until the next app restart.
           </p>
@@ -6105,6 +6132,7 @@ ollama list</code></pre>
               <strong>Show orbit diagnostic overlay</strong> — displays live camera, pivot, and motion data in the 3D graph view. Enable before recording a screen capture for support.
             </label>
           </div>
+          </div><!-- /section: support -->
         </div>
         <div class="modal-footer">
           <span class="filler" id="settings-footer-note"></span>
@@ -6240,14 +6268,14 @@ ollama list</code></pre>
          (e.g. "delete davinci-manual") before the action button enables.
          Reused for delete + restore; the message text is set by JS.       -->
     <div id="quarantine-confirm-modal" class="modal-backdrop hidden">
-      <div class="modal" style="max-width: 480px;">
+      <div class="modal" id="qcm-modal-inner" style="max-width: 480px;">
         <div class="modal-header">
           <h2 id="qcm-title">Confirm</h2>
           <p class="subtitle" id="qcm-subtitle"></p>
         </div>
         <div class="modal-body">
           <div id="qcm-warning" class="recovery-phrase-alert" style="margin-bottom: 14px;"></div>
-          <div class="row">
+          <div class="row" id="qcm-confirm-row">
             <label for="qcm-input" id="qcm-input-label">Type the phrase to confirm:</label>
             <input type="text" id="qcm-input" spellcheck="false" autocorrect="off" autocapitalize="off" />
           </div>

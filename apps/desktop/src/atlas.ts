@@ -342,6 +342,20 @@ export class Atlas {
   private graph: ForceGraph3DInstance;
   private allNodes: AtlasNode[] = [];
   private allLinks: AtlasLink[] = [];
+
+  /** Return current x/y/z for every already-positioned node. Used by
+   *  pushDataIntoAtlas() in main.ts to carry positions forward across
+   *  incremental refreshes so nodes don't re-seed from the cluster center
+   *  on every MCP ingest event. */
+  getPositionMap(): Map<string, { x: number; y: number; z: number }> {
+    const map = new Map<string, { x: number; y: number; z: number }>();
+    for (const n of this.allNodes) {
+      if (n.x !== undefined && n.y !== undefined && n.z !== undefined) {
+        map.set(n.id, { x: n.x, y: n.y, z: n.z });
+      }
+    }
+    return map;
+  }
   /** SDK edges (the deterministic `.gai` graph) — the real connections. */
   private realLinks: AtlasLink[] = [];
   /** GNN-predicted edges (the `.gnn` overlay) — a separate, dashed,
@@ -1694,27 +1708,36 @@ export class Atlas {
     // Radius scales with layoutScale so more files = wider ring.
     if (!this.opts.compact) {
       const sourceKeys = [...new Set(this.allNodes.map((n) => n.sourceFile ?? ''))];
-      // Ring radius scaled up 3.3× from the old 150 so clusters sit far
-      // enough apart to feel like distinct islands in space. TILT lifts
-      // alternating clusters above/below the XZ plane so the layout has
-      // real Z-depth — the user has to orbit the camera to see them all.
-      const CLUSTER_R = 2000 * this.layoutScale;
-      // Each cluster center gets a deterministic Y position drawn from a
-      // seeded hash so the vertical spread is irregular (not just alternating
-      // ±1) — this breaks the flat-ring appearance when there are many sources.
-      this.clusterCenters.clear();
-      sourceKeys.forEach((key, i) => {
-        const angle = (i / sourceKeys.length) * 2 * Math.PI;
-        // Y: a pseudo-random ±CLUSTER_R*1.6 scaled by hash so no two clusters
-        // sit on the same horizontal plane. Range ≈ ±3200 units.
-        const yHash = hashStrToFloat(key, 99);   // dedicated seed
-        const yOffset = (yHash * 2 - 1) * CLUSTER_R * 1.6;
-        this.clusterCenters.set(key, {
-          x: Math.cos(angle) * CLUSTER_R,
-          y: yOffset,
-          z: Math.sin(angle) * CLUSTER_R,
+      // Only recompute cluster-ring positions when the SOURCE SET changes.
+      // Re-running this on every incremental refresh (e.g. an MCP remember
+      // adding one node) would shift every cluster's ring angle, making all
+      // existing clusters teleport — the main visual cause of the blob collapse.
+      const newKeyFingerprint = [...sourceKeys].sort().join('|');
+      const oldKeyFingerprint = [...this.clusterCenters.keys()].sort().join('|');
+      const sourcesChanged = newKeyFingerprint !== oldKeyFingerprint;
+      if (sourcesChanged) {
+        // Ring radius scaled up 3.3× from the old 150 so clusters sit far
+        // enough apart to feel like distinct islands in space. TILT lifts
+        // alternating clusters above/below the XZ plane so the layout has
+        // real Z-depth — the user has to orbit the camera to see them all.
+        const CLUSTER_R = 2000 * this.layoutScale;
+        // Each cluster center gets a deterministic Y position drawn from a
+        // seeded hash so the vertical spread is irregular (not just alternating
+        // ±1) — this breaks the flat-ring appearance when there are many sources.
+        this.clusterCenters.clear();
+        sourceKeys.forEach((key, i) => {
+          const angle = (i / sourceKeys.length) * 2 * Math.PI;
+          // Y: a pseudo-random ±CLUSTER_R*1.6 scaled by hash so no two clusters
+          // sit on the same horizontal plane. Range ≈ ±3200 units.
+          const yHash = hashStrToFloat(key, 99);   // dedicated seed
+          const yOffset = (yHash * 2 - 1) * CLUSTER_R * 1.6;
+          this.clusterCenters.set(key, {
+            x: Math.cos(angle) * CLUSTER_R,
+            y: yOffset,
+            z: Math.sin(angle) * CLUSTER_R,
+          });
         });
-      });
+      }
     }
 
     // Sub-anchors are computed in computeSubAnchors(), called from setEdges()
@@ -1722,7 +1745,20 @@ export class Atlas {
     // here so the cluster force pulls toward cluster centers during the brief
     // window before setEdges() arrives.
     this.nodeSubAnchors.clear();
-    this.explosionStartTime = Date.now();
+    // Only restart the explosion animation when new source files appear —
+    // not on every incremental node add from an AI client. This prevents the
+    // animation timer resetting mid-render every time the AI saves a memory.
+    const newKeyFingerprint2 = [...new Set(this.allNodes.map((n) => n.sourceFile ?? ''))].sort().join('|');
+    const oldKeyFingerprint2 = [...this.clusterCenters.keys()].sort().join('|');
+    if (newKeyFingerprint2 !== oldKeyFingerprint2) this.explosionStartTime = Date.now();
+
+    // ── Count truly-new nodes BEFORE seeding ─────────────────────────────
+    // Nodes whose positions were carried forward from the previous render
+    // (via getPositionMap() in main.ts) already have x/y/z set. Count those
+    // that don't — they are genuinely new and need to be seeded.
+    const newNodeCount = this.allNodes.filter(
+      (n) => n.x === undefined || n.y === undefined || n.z === undefined,
+    ).length;
 
     // ── Sphere seeding near cluster anchor ───────────────────────────────
     // New nodes start close to their cluster center so the explosion
@@ -1771,10 +1807,18 @@ export class Atlas {
     // canvas can stay at 0×0. Re-apply size on every data swap so render
     // ticks always have correct WebGL viewport dimensions.
     this.applySize();
-    // Kick the simulation so the new scaling actually expands the layout
-    // instead of letting it sit at the old positions until the user nudges
-    // something.
-    this.graph.d3ReheatSimulation();
+    // Incremental update (< 15% new nodes, positions carried forward from
+    // previous render): use a gentle alpha bump so new nodes settle into
+    // place without disturbing the existing layout. Full reheat only when
+    // the majority of positions are unknown — first load, engram switch, or
+    // a large batch ingest.
+    const isIncremental = newNodeCount / Math.max(1, this.allNodes.length) < 0.15;
+    if (isIncremental) {
+      const currentAlpha = (this.graph.d3Alpha?.() as number | undefined) ?? 0;
+      this.graph.d3Alpha?.(Math.min(0.35, currentAlpha + 0.15));
+    } else {
+      this.graph.d3ReheatSimulation();
+    }
   }
 
   setEdges(directed: AtlasDirectedEdge[], undirected: AtlasUndirectedEdge[]): void {
