@@ -38,8 +38,16 @@ class McpRegistry {
   private connections = new Map<string, McpConnection>();
   /** Tracks distinct engram IDs accessed per connection for breadth detection. */
   private engramSets = new Map<string, Set<string>>();
+  /**
+   * Per-connection close handler. Set by the transport (socket / http /
+   * stdio) at register time so `kick()` and the idle sweep can disconnect
+   * a specific connection. The relay's auto-reconnect picks it back up on
+   * the next request, so closing is non-destructive — the AI client
+   * sees a brief blip at most, no UI interaction required.
+   */
+  private kickers = new Map<string, () => void>();
 
-  register(transport: McpTransportKind): string {
+  register(transport: McpTransportKind, kicker?: () => void): string {
     const id = randomUUID();
     const now = Date.now();
     this.connections.set(id, {
@@ -53,6 +61,7 @@ class McpRegistry {
       uniqueEngramsAccessed: 0,
     });
     this.engramSets.set(id, new Set());
+    if (kicker) this.kickers.set(id, kicker);
     return id;
   }
 
@@ -73,6 +82,43 @@ class McpRegistry {
   unregister(id: string): void {
     this.connections.delete(id);
     this.engramSets.delete(id);
+    this.kickers.delete(id);
+  }
+
+  /**
+   * Close a specific connection's transport. Returns true if a kicker was
+   * registered, false if the connection is unknown / kicker-less (e.g.
+   * stdio path which doesn't expose one). The actual `unregister` is
+   * triggered by the transport's own `close` event, not by us — so this
+   * is idempotent and safe to call multiple times.
+   */
+  kick(id: string): boolean {
+    const fn = this.kickers.get(id);
+    if (!fn) return false;
+    try { fn(); } catch { /* socket already gone — fine */ }
+    return true;
+  }
+
+  /**
+   * Sweep idle connections. Force-closes any whose `lastActivityAt` is
+   * older than `idleMs`. Returns the list of closed connection IDs.
+   * Called from a periodic timer in main.ts to clean up zombie
+   * connections left over from AI clients that didn't terminate their
+   * relay subprocess on disconnect (notably Claude Desktop after the
+   * user removes the connector — the relay survives until Claude
+   * restarts, so the sidecar's "live connections" panel showed stale
+   * entries indefinitely without this sweep).
+   */
+  sweepIdle(idleMs: number): string[] {
+    const cutoff = Date.now() - idleMs;
+    const closed: string[] = [];
+    for (const c of this.connections.values()) {
+      if (c.lastActivityAt < cutoff && this.kickers.has(c.id)) {
+        this.kick(c.id);
+        closed.push(c.id);
+      }
+    }
+    return closed;
   }
 
   list(): McpConnection[] {

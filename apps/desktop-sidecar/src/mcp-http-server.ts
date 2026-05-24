@@ -207,9 +207,12 @@ export async function startHttpMcpServer(opts: HttpBridgeOptions): Promise<http.
     }
 
     // ── New session ────────────────────────────────────────────────────────────
-    const connId = mcpRegistry.register('http');
+    // Kicker: closing the transport triggers its `onclose` below, which
+    // unregisters the connection. Used by the idle sweep + UI × button.
+    let transport: StreamableHTTPServerTransport;
+    const connId = mcpRegistry.register('http', () => void transport?.close());
 
-    const transport = new StreamableHTTPServerTransport({
+    transport = new StreamableHTTPServerTransport({
       sessionIdGenerator: () => randomUUID(),
       onsessioninitialized: (sid) => {
         sessions.set(sid, { transport, connId, lastActivityAt: Date.now() });
