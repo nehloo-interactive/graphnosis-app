@@ -646,6 +646,9 @@ async function dispatch(deps: IpcDeps, method: string, params: unknown): Promise
     case 'graphs.delete': {
       const args = z.object({ graphId: z.string() }).parse(params);
       await deps.host.deleteGraph(args.graphId);
+      // Purge in-memory ghost edges from the brain engine's live caches.
+      // host.deleteGraph already cleaned the on-disk stores above.
+      deps.brainEngine?.purgeDeletedGraph(args.graphId);
       return { ok: true };
     }
     case 'graphs.load': {
@@ -768,7 +771,13 @@ async function dispatch(deps: IpcDeps, method: string, params: unknown): Promise
     }
     case 'sources.forget': {
       const { graphId, sourceId } = z.object({ graphId: z.string(), sourceId: z.string() }).parse(params);
-      return deps.host.forgetSource(graphId, sourceId);
+      const result = await deps.host.forgetSource(graphId, sourceId);
+      // Purge in-memory ghost edges from the brain engine's live caches.
+      // host.forgetSource already cleaned the on-disk stores.
+      if (result.nodeIds.length > 0) {
+        deps.brainEngine?.purgeDeletedNodes(result.nodeIds);
+      }
+      return result;
     }
     case 'sources.reingest': {
       // "Forget + re-read from disk" round-trip. Surfaces re-chunked

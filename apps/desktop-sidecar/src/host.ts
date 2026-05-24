@@ -946,6 +946,28 @@ export class GraphnosisHost {
     const { [graphId]: _removed, ...rest } = this.settings.graphMetadata;
     const next = { ...this.settings, graphMetadata: rest };
     await this.persistSettings(next);
+
+    // Purge stale cross-engram connections that referenced this graph.
+    try {
+      const connections = await this.loadConnectionStore();
+      const cleaned = connections.filter((c) => c.graphA !== graphId && c.graphB !== graphId);
+      if (cleaned.length !== connections.length) {
+        await this.saveConnectionStore(cleaned);
+      }
+    } catch (e) {
+      console.error(`[graphnosis-host] deleteGraph: could not prune connection store: ${(e as Error).message}`);
+    }
+
+    // Purge stale GNN predicted edges that referenced this graph.
+    try {
+      const gnnEdges = await this.loadGnnStore();
+      const cleanedEdges = gnnEdges.filter((e) => e.graphId !== graphId);
+      if (cleanedEdges.length !== gnnEdges.length) {
+        await this.saveGnnStore(cleanedEdges);
+      }
+    } catch (e) {
+      console.error(`[graphnosis-host] deleteGraph: could not prune GNN store: ${(e as Error).message}`);
+    }
   }
 
   /** Update settings, persist to <cortex>/settings.json, return the merged result. */
@@ -1630,6 +1652,35 @@ export class GraphnosisHost {
     await this.deleteContentBlob(sourceId);
     g.dirty = true;
     await this.save(graphId);
+
+    // Prune cross-engram connections and GNN edges that reference the
+    // now-forgotten nodes. They're soft-deleted (confidence 0, never recalled)
+    // so any cross-engram link anchored to one of them is permanently inert.
+    if (nodeIds.length > 0) {
+      const forgottenSet = new Set(nodeIds);
+      try {
+        const connections = await this.loadConnectionStore();
+        const cleanedConns = connections.filter(
+          (c) => !forgottenSet.has(c.nodeA) && !forgottenSet.has(c.nodeB),
+        );
+        if (cleanedConns.length !== connections.length) {
+          await this.saveConnectionStore(cleanedConns);
+        }
+      } catch (e) {
+        console.error(`[graphnosis-host] forgetSource: could not prune connection store: ${(e as Error).message}`);
+      }
+      try {
+        const gnnEdges = await this.loadGnnStore();
+        const cleanedEdges = gnnEdges.filter(
+          (e) => !forgottenSet.has(e.from) && !forgottenSet.has(e.to),
+        );
+        if (cleanedEdges.length !== gnnEdges.length) {
+          await this.saveGnnStore(cleanedEdges);
+        }
+      } catch (e) {
+        console.error(`[graphnosis-host] forgetSource: could not prune GNN store: ${(e as Error).message}`);
+      }
+    }
 
     // Tell the file-watcher to stop watching this path. Doing this AFTER
     // save() (vs. before) means the path stays in the watch set during
