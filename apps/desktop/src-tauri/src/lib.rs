@@ -1927,7 +1927,7 @@ async fn open_about_window(app: AppHandle) -> Result<(), String> {
         tauri::WebviewUrl::App("about.html".into()),
     )
         .title("About Graphnosis")
-        .inner_size(480.0, 360.0)
+        .inner_size(480.0, 400.0)
         .resizable(false)
         .maximizable(false)
         .minimizable(false)

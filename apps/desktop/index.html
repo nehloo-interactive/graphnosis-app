@@ -419,6 +419,7 @@
          restarting Claude itself). */
       .mcp-kick {
         flex-shrink: 0;
+        display: inline-flex; align-items: center; justify-content: center;
         width: 22px; height: 22px;
         border: none; background: transparent;
         color: var(--fg-dim);
@@ -975,6 +976,12 @@
       }
       .rail-shortcut-btn:hover { background: rgba(106,179,200,0.15); color: #9fd8e8; border-color: rgba(106,179,200,0.3); }
       .rail-shortcut-btn.connected { background: rgba(106,179,200,0.2); color: #9fd8e8; border-color: rgba(106,179,200,0.5); font-weight: 600; }
+      /* Idle state — AI client connected but no recent activity; amber tint. */
+      .rail-shortcut-btn.connected.idle { background: rgba(245,158,11,0.12); color: #f59e0b; border-color: rgba(245,158,11,0.4); animation: rail-idle-pulse 3s ease-in-out infinite; }
+      @keyframes rail-idle-pulse {
+        0%, 100% { opacity: 1; }
+        50% { opacity: 0.55; }
+      }
       /* Dimmed state — used by the Standalone chip once at least one AI
          client / connector / Local LLM is wired up. Visually says "we're
          past standalone now." Still clickable (the explainer modal). */
@@ -2328,6 +2335,11 @@
       .status-dot.ok {
         background: var(--ok);
         animation: mcp-pulse 2s ease-in-out infinite;
+      }
+      /* Idle: amber slow-pulse — client connected but no recent activity. */
+      .status-dot.idle {
+        background: #f59e0b;
+        animation: mcp-pulse-idle 3s ease-in-out infinite;
       }
       .status-dot.warn { background: #eab308; }
       .status-dot.error { background: var(--error); }
@@ -4698,7 +4710,7 @@
           <p class="subtitle" id="subtitle">Your local encrypted memory, indexed for deterministic recall — auditable</p>
           <div id="error" class="error hidden"></div>
           <div class="panel unlock-card">
-            <p class="panel-title">Unlock your local encrypted memory</p>
+            <p class="panel-title">Unlock your local encrypted cortex</p>
             <div class="row">
               <label for="cortex-dir" class="visually-hidden">cortex folder path</label>
               <div class="pick-row">
@@ -4766,7 +4778,7 @@
           </div>
           <p class="unlock-footer">
             &copy; 2026 Nehloo Interactive LLC. All rights reserved.<br>
-            <span style="opacity: 0.7;">Graphnosis is a local, private, encrypted memory system.<br>Read the docs at <a href="https://graphnosis.com" target="_blank" style="color: #fff; text-decoration: underline; opacity: 0.8;">graphnosis.com</a></span>
+            <span style="opacity: 0.7;">Graphnosis <span id="lock-version"></span><br>Read the docs at <a href="https://graphnosis.com" target="_blank" style="color: #fff; text-decoration: underline; opacity: 0.8;">graphnosis.com</a></span>
           </p>
         </div>
       </section>
@@ -5577,7 +5589,7 @@ ollama list</code></pre>
           <span id="status-saved" class="status-saved"></span>
           <!-- App version pill, sits left of Vitality. Populated in main.ts
                from __APP_VERSION__ (vite-injected at build from package.json). -->
-          <span id="status-version" class="status-version" title="Graphnosis app version" style="margin-left:auto; font-size:12px; opacity:0.6; font-family: ui-monospace, SFMono-Regular, Menlo, monospace;"></span>
+          <span id="status-version" class="status-version" title="About Graphnosis" style="margin-left:auto; font-size:12px; opacity:0.6; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; transition: opacity 100ms;" onmouseenter="this.style.opacity='1';this.style.textDecoration='underline'" onmouseleave="this.style.opacity='0.6';this.style.textDecoration='none'"></span>
           <span id="brain-vitality" style="display:none; font-size:12px; opacity:0.7; margin-left:8px; cursor:pointer;" title="Open Deterministic Consolidation tab">🧠 Vitality –</span>
           <span class="status-mcp">
             <span id="status-mcp-dot" class="status-dot"></span>

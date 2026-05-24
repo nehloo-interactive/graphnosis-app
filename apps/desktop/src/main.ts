@@ -640,7 +640,14 @@ const els = {
 };
 
 // Fill the version pill in the status bar. `v0.9.0` style. One-time setup.
-if (els.statusVersion) els.statusVersion.textContent = `v${__APP_VERSION__}`;
+if (els.statusVersion) {
+  els.statusVersion.textContent = `v${__APP_VERSION__}`;
+  els.statusVersion.style.cursor = 'pointer';
+  els.statusVersion.title = 'About Graphnosis';
+  els.statusVersion.addEventListener('click', () => void invoke('open_about_window'));
+}
+const lockVersion = document.getElementById('lock-version');
+if (lockVersion) lockVersion.textContent = `v${__APP_VERSION__}`;
 
 // Current plan in the modal — kept in module scope so the Apply button can
 // figure out which checkboxes are still checked at click time.
@@ -1216,6 +1223,7 @@ function syncEngramPicker(): void {
  *  Updated by the MCP poll, the connector refresh, and the brain/LLM
  *  refreshes; each one re-renders the sidebar status list. */
 let liveMcpClients = new Set<string>();
+let liveIdleClients = new Set<string>();
 let installedConnectorKinds = new Set<ConnectorKind>();
 
 /**
@@ -1285,11 +1293,19 @@ function renderRailGetConnected(): void {
     els.railGcAimode.appendChild(makeChip('Graphnosis Neural Network', true, openNonDeterministic));
   }
 
-  // AI clients — lit when a live relay from that client is connected.
+  // AI clients — lit when a live relay from that client is connected;
+  // amber-pulsing when connected but idle.
+  const makeClientChip = (label: string, onClick: () => void): HTMLButtonElement => {
+    const connected = liveMcpClients.has(label);
+    const idle = connected && liveIdleClients.has(label);
+    const chip = makeChip(label, connected, onClick);
+    if (idle) chip.classList.add('idle');
+    return chip;
+  };
   els.railGcClients.innerHTML = '';
-  els.railGcClients.appendChild(makeChip('Claude Desktop', liveMcpClients.has('Claude Desktop'), () => openConfigureClientModal('claude-desktop')));
-  els.railGcClients.appendChild(makeChip('Claude Code', liveMcpClients.has('Claude Code'), () => openConfigureClientModal('claude-code')));
-  els.railGcClients.appendChild(makeChip('Cursor', liveMcpClients.has('Cursor'), () => openConfigureClientModal('cursor')));
+  els.railGcClients.appendChild(makeClientChip('Claude Desktop', () => openConfigureClientModal('claude-desktop')));
+  els.railGcClients.appendChild(makeClientChip('Claude Code', () => openConfigureClientModal('claude-code')));
+  els.railGcClients.appendChild(makeClientChip('Cursor', () => openConfigureClientModal('cursor')));
 
   // (Mobile-access chip removed from the rail; the feature is still
   // available from the menu-bar tray and from Settings → Mobile.)
@@ -1757,6 +1773,22 @@ function formatIdleDuration(ms: number): string {
 }
 
 function renderMcpStatus(connections: McpConnection[]): void {
+  // Compute per-client idle state before updating any UI so both the status
+  // bar and the rail chips get the same picture in this render pass.
+  const MCP_IDLE_MS_SHARED = 15 * 60_000;
+  const nowShared = Date.now();
+  // A client is idle when ALL its connections have been inactive long enough.
+  const clientConns = new Map<string, McpConnection[]>();
+  for (const c of connections) {
+    const name = friendlyClient(c.clientName);
+    if (!clientConns.has(name)) clientConns.set(name, []);
+    clientConns.get(name)!.push(c);
+  }
+  liveIdleClients = new Set(
+    [...clientConns.entries()]
+      .filter(([, conns]) => conns.every((c) => nowShared - c.lastActivityAt >= MCP_IDLE_MS_SHARED))
+      .map(([name]) => name),
+  );
   updateStatusBar(connections);
   // Mirror the live client set into the sidebar's Get-connected status list.
   liveMcpClients = new Set(connections.map((c) => friendlyClient(c.clientName)));
@@ -4103,13 +4135,16 @@ function updateStatusBar(connections: McpConnection[]): void {
       friendlyClient(a.clientName).localeCompare(friendlyClient(b.clientName))
     );
     const primary = friendlyClient(sorted[0]?.clientName);
+    // If ALL connections to the primary client are idle, show amber pulsating dot.
+    const primaryIsIdle = liveIdleClients.has(primary);
     // Status bar
-    els.statusMcpDot.className = 'status-dot ok';
+    els.statusMcpDot.className = primaryIsIdle ? 'status-dot idle' : 'status-dot ok';
     els.statusMcpText.textContent = primary;
     // Rail indicator — same info, compact form
     if (railIndicator) {
+      const railDotClass = primaryIsIdle ? 'rail-mcp-dot connected idle' : 'rail-mcp-dot connected';
       railIndicator.innerHTML =
-        `<span class="rail-mcp-dot connected"></span><span class="rail-mcp-name" title="${escape(primary)}">${escape(primary)}</span>`;
+        `<span class="${railDotClass}"></span><span class="rail-mcp-name" title="${escape(primary)}">${escape(primary)}</span>`;
     }
   }
 }
