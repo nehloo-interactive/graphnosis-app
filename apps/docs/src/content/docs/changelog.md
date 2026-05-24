@@ -11,6 +11,23 @@ Conventions: **Added** = new features, **Changed** = behavior or UX shifts, **Fi
 
 ---
 
+## v0.10.1 — Boot stability and UI polish
+
+Patch release fixing issues found in installed v0.10.0 DMGs.
+
+### Fixed
+
+- **Consent toast storm on first launch.** Dozens of "Memory access requires confirmation" popups appeared on boot because `markClientSeen()` was deferred until the user clicked through the first-connect modal — meanwhile the background poller kept firing a new modal for each engram that finished loading. The fix: mark the client as seen immediately when the modal opens, and add a guard so only one first-connect modal can be pending at a time.
+- **3D node tooltip stuck at top of canvas.** The node label was rendering at a fixed position in the top-left corner of the 3D view instead of floating near the cursor. The graph library's internal `d3.pointer()` returns incorrect coordinates in the Tauri production webview; replaced with a custom `.atlas-node-tip` element positioned via `mousemove` using raw `clientX/clientY − getBoundingClientRect()`.
+- **QR code blank in mobile setup.** The QR code in the mobile/remote setup wizard (Step 3) rendered as a white blank. The Tauri CSP's `default-src 'self'` blocked the `data:` URL the QR library writes into an `<img>` element. Fixed by adding `img-src 'self' data: blob:` to the CSP.
+- **Graphnosis Docs duplicated on app update.** Every time the app detected a newer bundled docs version and re-ingested, it appended a new copy of the docs to the existing `graphnosis-docs` engram instead of replacing it. The `docs:ingest` handler now purges all existing sources in that engram before re-ingesting.
+- **Sidebar logo not centered.** The Graphnosis logo in the left sidebar was visually offset. Fixed the wrapper to use `display:flex; justify-content:center` instead of relying on `margin:auto` inside the flex column.
+- **`forget` tool modal described source-level behavior.** The in-app MCP Tools browser entry for `forget` still said the tool removes a source. Updated to describe node-level soft-delete, the `recall_structured` prerequisite for finding node IDs, and that removing an entire source is a user-only action in the Sources page.
+- **MCP Tools modal brand badge layout.** The Graphnosis logo and wordmark now appear as a top-right badge (logo above label) with `align-items:flex-start` on the header, cleanly separated from the tool name on the left. The "Full MCP Tools reference" docs link is flush left in the footer via `margin-right:auto`.
+- **Updater bundle missing from CI.** The release workflow was not producing the `.app.tar.gz` needed by the Tauri updater endpoint. Added `"createUpdaterArtifacts": true` to `tauri.conf.json`.
+
+---
+
 ## v0.10 — Consent, Activity Log, and safer AI tools
 
 ### Added
