@@ -412,11 +412,44 @@
         border-bottom: 1px solid var(--border);
       }
       .mcp-row:last-child { border-bottom: 0; }
+      /* Force-close button per AI tools connection. Non-destructive — the
+         relay auto-reconnects on the next tool call, so this is just for
+         clearing stale rows the relay subprocess didn't realize were dead
+         (notably Claude Desktop after removing the connector but before
+         restarting Claude itself). */
+      .mcp-kick {
+        flex-shrink: 0;
+        width: 22px; height: 22px;
+        border: none; background: transparent;
+        color: var(--fg-dim);
+        font-size: 16px; line-height: 1;
+        border-radius: 4px; cursor: pointer;
+        opacity: 0.5;
+        transition: opacity 80ms, background 80ms, color 80ms;
+      }
+      .mcp-row:hover .mcp-kick { opacity: 1; }
+      .mcp-kick:hover { background: color-mix(in oklab, #ef4444 14%, transparent); color: #fca5a5; }
+      .mcp-kick:disabled { opacity: 0.3; cursor: wait; }
       .mcp-dot {
         width: 8px; height: 8px; border-radius: 50%;
         background: var(--ok);
         flex-shrink: 0;
         animation: mcp-pulse 2s ease-in-out infinite;
+      }
+      /* Idle bubble: same pulse, amber colour. Used when an MCP
+         connection hasn't seen activity in a while — the relay is
+         still attached, just not actively forwarding anything. */
+      .mcp-dot-idle {
+        background: #f59e0b;
+        animation: mcp-pulse-idle 3s ease-in-out infinite;
+      }
+      @keyframes mcp-pulse-idle {
+        0%, 100% { opacity: 0.85; box-shadow: 0 0 0 0 rgba(245, 158, 11, 0.35); }
+        50%      { opacity: 0.55; box-shadow: 0 0 0 4px rgba(245, 158, 11, 0); }
+      }
+      .mcp-idle-tag {
+        color: #f59e0b;
+        font-weight: 500;
       }
       @keyframes mcp-pulse {
         0%, 100% { opacity: 1; }
@@ -942,6 +975,11 @@
       }
       .rail-shortcut-btn:hover { background: rgba(106,179,200,0.15); color: #9fd8e8; border-color: rgba(106,179,200,0.3); }
       .rail-shortcut-btn.connected { background: rgba(106,179,200,0.2); color: #9fd8e8; border-color: rgba(106,179,200,0.5); font-weight: 600; }
+      /* Dimmed state — used by the Standalone chip once at least one AI
+         client / connector / Local LLM is wired up. Visually says "we're
+         past standalone now." Still clickable (the explainer modal). */
+      .rail-shortcut-btn.dimmed { opacity: 0.2; }
+      .rail-shortcut-btn.dimmed:hover { opacity: 0.7; }
       /* ── Empty engram onboarding card ────────────────────────────────── */
       /* The onboarding card scrolls as a single unit when content exceeds
          the deck area — chip list under "Ask your AI" can be tall (35 tools
@@ -1047,6 +1085,48 @@
       .modal-header h2 { margin: 0; font-size: 15px; font-weight: 600; }
       .modal-header .subtitle { margin: 4px 0 0; font-size: 14px; }
       .modal-body { padding: 16px 20px; overflow-y: auto; flex: 1; }
+      /* Consent prompt — tier pills shown inside the modal body listing
+         which sensitivity tiers the AI is asking to read. */
+      .consent-tier-pill {
+        display: inline-flex; align-items: center; gap: 6px;
+        padding: 4px 10px; border-radius: 999px;
+        font-size: 12px; font-weight: 600;
+        background: color-mix(in oklab, var(--accent) 12%, transparent);
+        color: var(--fg);
+        border: 1px solid color-mix(in oklab, var(--accent) 30%, transparent);
+        width: fit-content;
+      }
+      .consent-tier-pill.sensitive {
+        background: color-mix(in oklab, #f59e0b 14%, transparent);
+        border-color: color-mix(in oklab, #f59e0b 35%, transparent);
+      }
+      /* First-connect policy chooser — one row per tier with label + select. */
+      .first-connect-row {
+        display: flex; align-items: center; gap: 16px;
+        padding: 12px 0;
+        border-bottom: 1px solid var(--border);
+      }
+      .first-connect-row:last-child { border-bottom: none; }
+      .first-connect-label { flex: 1; min-width: 0; }
+      .first-connect-label strong { font-size: 14px; }
+      .first-connect-label p {
+        margin: 2px 0 0; font-size: 12px; color: var(--fg-dim); line-height: 1.4;
+      }
+      .first-connect-select {
+        background: var(--bg);
+        color: var(--fg);
+        border: 1px solid var(--border);
+        border-radius: 4px;
+        padding: 6px 8px;
+        font-size: 13px;
+        min-width: 220px;
+      }
+      /* Local & offline modal — category list with subtle separators. */
+      .offline-cat-list { display: flex; flex-direction: column; gap: 0; }
+      .offline-cat { padding: 10px 0; border-bottom: 1px dashed var(--border); }
+      .offline-cat:last-child { border-bottom: none; }
+      .offline-cat-name { font-size: 14px; font-weight: 600; color: var(--fg); margin-bottom: 2px; }
+      .offline-cat-how  { font-size: 13px; color: var(--fg-dim); line-height: 1.5; }
       /* Tool-info modal: "Try saying…" examples block under the description.
          Empty (no children) by default — JS injects items only when the
          tool has examples in TOOL_INFO. */
@@ -1915,10 +1995,10 @@
         position: absolute; inset: 0;
         width: 100%; height: 100%;
         z-index: 0; pointer-events: none;
-        /* Softened from 0.55 → 0.4 (≈75% of previous brightness) so the
-           ambient field reads as a backdrop instead of competing with
-           the vitality numbers in the foreground. */
-        opacity: 0.4;
+        /* Softened progressively: 0.55 → 0.4 → 0.2 (halved again here)
+           so the ambient field really sits as a backdrop and the
+           vitality numbers / "Your cortex is thriving" line read first. */
+        opacity: 0.2;
       }
       .lb-vitality-ring {
         position: relative; z-index: 1;
@@ -4808,10 +4888,18 @@
               <div id="g-memory-trace-list" class="g-memory-trace-list"></div>
             </div>
             <div id="rail-get-connected" class="rail-get-connected">
-              <div class="rail-get-connected-label">Get connected</div>
+              <!-- Mode chips above any label — these describe the posture
+                   of the whole app (standalone / how data flows in from
+                   off-the-grid sources), not specific integrations.
+                   The Local LLM + Neural Network chips render below
+                   inside #rail-gc-aimode when they're turned on. -->
+              <div class="rail-get-connected-group" id="rail-gc-mode"></div>
+              <div class="rail-get-connected-label" style="margin-top: 8px;">AI clients</div>
               <div class="rail-get-connected-group" id="rail-gc-aimode"></div>
               <div class="rail-get-connected-group" id="rail-gc-clients"></div>
-              <div class="rail-get-connected-group" id="rail-gc-mobile"></div>
+              <!-- Data sources section: AI clients READ from the cortex;
+                   data sources FEED it. -->
+              <div class="rail-get-connected-label" style="margin-top: 8px;">Data sources</div>
               <div class="rail-get-connected-group" id="rail-gc-connectors"></div>
             </div>
             <!-- Pinned-to-bottom row: MCP Tools + Settings share the rail's
@@ -5487,6 +5575,9 @@ ollama list</code></pre>
           <span class="status-sep">·</span>
           <span class="status-search">⌘K to search nodes</span>
           <span id="status-saved" class="status-saved"></span>
+          <!-- App version pill, sits left of Vitality. Populated in main.ts
+               from __APP_VERSION__ (vite-injected at build from package.json). -->
+          <span id="status-version" class="status-version" title="Graphnosis app version" style="margin-left:auto; font-size:12px; opacity:0.6; font-family: ui-monospace, SFMono-Regular, Menlo, monospace;"></span>
           <span id="brain-vitality" style="display:none; font-size:12px; opacity:0.7; margin-left:8px; cursor:pointer;" title="Open Deterministic Consolidation tab">🧠 Vitality –</span>
           <span class="status-mcp">
             <span id="status-mcp-dot" class="status-dot"></span>
@@ -5858,8 +5949,22 @@ ollama list</code></pre>
           <!-- AI consent phrases + interval configuration -->
           <p class="panel-title" style="margin-top: 20px;">AI access & consent</p>
           <p class="subtitle" style="margin-bottom: 10px;">
-            Before an AI client can read your personal or sensitive memories, Graphnosis requires
-            a time-limited phrase that only appears here — the AI cannot generate or know it in advance.
+            <strong>Personal-tier memories</strong> are shared with your connected AI clients without an extra prompt — you already gave consent by installing Graphnosis and adding it to your AI client's config.
+            <strong>Sensitive-tier memories</strong> (health, financial, biometric) always require an in-app click before each grant.
+          </p>
+
+          <!-- Power-user toggle: extra precaution mode for personal tier too. -->
+          <div style="display:flex; align-items:flex-start; gap:10px; padding:10px 12px; margin-bottom:14px; background:color-mix(in oklab, var(--fg) 4%, transparent); border-radius:6px;">
+            <input type="checkbox" id="extra-precaution-mode" style="margin-top:3px; flex-shrink:0;" />
+            <label for="extra-precaution-mode" style="font-size:13px; line-height:1.45; cursor:pointer;">
+              <strong>Extra precaution mode</strong> — require an in-app consent click for <em>personal-tier</em> recalls too (not just sensitive).
+              Use this if you want every AI access logged behind an explicit click, even for routine notes.
+              <span style="display:block; font-size:12px; color:var(--fg-dim); margin-top:4px;">When off (default), only sensitive-tier recalls trigger the in-app prompt. The AI client's own MCP consent dialog covers personal-tier access.</span>
+            </label>
+          </div>
+
+          <p class="subtitle" style="font-size:12px; margin:0 0 10px; color:var(--fg-dim);">
+            Phrases below are a headless fallback — used when the in-app prompt can't reach a window (sidecar running over SSH, CI, etc.) or for sensitive-tier grants you want to type rather than click.
           </p>
 
           <div style="display: flex; gap: 12px; margin-bottom: 10px;">
@@ -6257,32 +6362,165 @@ ollama list</code></pre>
       </div>
     </div>
 
+    <!-- Consent prompt (Option 1) — pops when an AI client tries to read
+         personal/sensitive memories without a current grant. Sidecar emits
+         `graphnosis://consent-prompt`; one click resolves it. Replaces the
+         old phrase-typing flow for users with the desktop app open. -->
+    <div id="consent-prompt-modal" class="modal-backdrop hidden">
+      <div class="modal" style="max-width: 520px;">
+        <div class="modal-header" style="display:flex; align-items:flex-start; gap:12px;">
+          <div style="flex:1; min-width:0;">
+            <h2 id="consent-prompt-title" style="font-size:16px;">An AI client wants to read your memories</h2>
+            <p class="subtitle" id="consent-prompt-subtitle"></p>
+          </div>
+          <img src="/graphnosis-logo.png" alt="Graphnosis" width="32" height="32" style="border-radius:8px; opacity:0.9; flex-shrink:0;" />
+        </div>
+        <div class="modal-body">
+          <p style="font-size:13px; line-height:1.5; margin:0 0 12px; color:var(--fg-dim);">
+            Your selected memories will be sent <strong>from your Mac directly to the AI provider</strong>.
+            Graphnosis itself receives, logs, and retains nothing.
+          </p>
+          <div id="consent-prompt-tiers" style="display:flex; flex-direction:column; gap:6px; margin:0 0 12px;"></div>
+          <p style="font-size:12px; line-height:1.4; margin:0; color:var(--fg-dim);">
+            <a id="consent-prompt-privacy" href="#" style="color:var(--fg-dim); text-decoration:underline;" target="_blank">Provider privacy policy ↗</a>
+            &nbsp;·&nbsp;
+            You can revoke anytime in <strong>Settings → AI</strong>.
+          </p>
+        </div>
+        <div class="modal-footer" style="flex-wrap:wrap; gap:6px;">
+          <button id="consent-prompt-deny" class="btn-sm" style="margin-right:auto;">Deny</button>
+          <button id="consent-prompt-once" class="btn-sm">Allow once</button>
+          <button id="consent-prompt-1h" class="btn-sm">Allow for 1 hour</button>
+          <button id="consent-prompt-1d" class="primary">Allow for today</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- First-connect policy chooser (Option 3) — pops once the very first
+         time a new AI client connects. Lets the user set a per-tier default
+         so future recalls don't keep prompting. Editable later in
+         Settings → AI → Client policies. -->
+    <div id="first-connect-modal" class="modal-backdrop hidden">
+      <div class="modal" style="max-width: 560px;">
+        <div class="modal-header" style="display:flex; align-items:flex-start; gap:12px;">
+          <div style="flex:1; min-width:0;">
+            <h2 id="first-connect-title" style="font-size:16px;">A new AI client is connecting</h2>
+            <p class="subtitle">Set its default access policy. You'll be asked the first time it tries to recall — this just decides what you see after that. Editable in Settings → AI.</p>
+          </div>
+          <img src="/graphnosis-logo.png" alt="Graphnosis" width="32" height="32" style="border-radius:8px; opacity:0.9; flex-shrink:0;" />
+        </div>
+        <div class="modal-body">
+          <div class="first-connect-row">
+            <div class="first-connect-label">
+              <strong>Personal tier</strong>
+              <p>Notes, decisions, work context. Default recommended.</p>
+            </div>
+            <select id="first-connect-personal" class="first-connect-select">
+              <option value="ask-grant-1h" selected>Ask, then allow for 1 hour</option>
+              <option value="ask-grant-1d">Ask, then allow for today</option>
+              <option value="ask-every-time">Ask every time</option>
+              <option value="always-allow">Always allow (no prompts)</option>
+              <option value="never-allow">Never allow</option>
+            </select>
+          </div>
+          <div class="first-connect-row">
+            <div class="first-connect-label">
+              <strong>Sensitive tier</strong>
+              <p>Health, financial, biometric. Tighter by default.</p>
+            </div>
+            <select id="first-connect-sensitive" class="first-connect-select">
+              <option value="ask-every-time" selected>Ask every time</option>
+              <option value="ask-grant-1h">Ask, then allow for 1 hour</option>
+              <option value="ask-grant-1d">Ask, then allow for today</option>
+              <option value="always-allow">Always allow (no prompts)</option>
+              <option value="never-allow">Never allow</option>
+            </select>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <span class="filler"></span>
+          <button id="first-connect-save" class="primary">Save policy</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Local & offline sources — opened from the "Local & offline" chip
+         in the sidebar. Pure educational modal: explains the categories
+         of off-the-grid data Graphnosis can ingest via existing
+         infrastructure (drag-drop, mounted folders, the Webhook
+         connector). No specific connector UI here; concrete recipes
+         live in the full /guides/connect-offline-sources docs page. -->
+    <div id="offline-sources-modal" class="modal-backdrop hidden">
+      <div class="modal" style="max-width: 640px;">
+        <div class="modal-header">
+          <h2>Local &amp; offline sources</h2>
+          <p class="subtitle">Anything you can pipe into a file or a webhook can feed Graphnosis — no cloud round-trip, no API keys.</p>
+        </div>
+        <div class="modal-body">
+          <p style="font-size: 14px; line-height: 1.55; margin: 0 0 16px;">
+            The connectors under <strong>Data sources</strong> all talk to cloud SaaS. But your cortex
+            doesn't have to. Graphnosis runs entirely on your machine — and so do these patterns
+            for plugging in off-the-grid data. Use them as starting points; the full guide has
+            scripts and step-by-step setup for each.
+          </p>
+          <div class="offline-cat-list">
+            <div class="offline-cat">
+              <div class="offline-cat-name">📁 Local files &amp; folders</div>
+              <div class="offline-cat-how">Drag files onto the app, or use the <strong>Obsidian</strong> / <strong>AI Context Files</strong> / <strong>GBrain</strong> connectors below. Folders re-scan on schedule.</div>
+            </div>
+            <div class="offline-cat">
+              <div class="offline-cat-name">🏠 Smart-home (Home Assistant, MQTT)</div>
+              <div class="offline-cat-how">Point the <strong>Webhook</strong> connector at a small bridge script that subscribes to your MQTT broker and POSTs events. Or just watch the broker's log file as plain text.</div>
+            </div>
+            <div class="offline-cat">
+              <div class="offline-cat-name">🌡 Sensors / IoT / lab / agricultural</div>
+              <div class="offline-cat-how">Anything emitting JSON lines to a file or hitting a webhook becomes a source. A 5-line script reading a serial sensor and POSTing once a minute is enough.</div>
+            </div>
+            <div class="offline-cat">
+              <div class="offline-cat-name">💾 NAS / network drives</div>
+              <div class="offline-cat-how">Mount the share as a local folder; treat it as <em>Local files</em>. Graphnosis re-scans on schedule, same as Obsidian.</div>
+            </div>
+            <div class="offline-cat">
+              <div class="offline-cat-name">📄 Scanned PDFs / paper records</div>
+              <div class="offline-cat-how">Drop the PDF onto the app — OCR runs locally, no cloud round-trip. Handwritten notes, intake forms, contracts, grant reports — all become searchable.</div>
+            </div>
+            <div class="offline-cat">
+              <div class="offline-cat-name">🗄 Local databases (SQLite, Postgres on LAN)</div>
+              <div class="offline-cat-how">Export to JSON or CSV + drop, or point the <strong>Webhook</strong> connector at a small query-and-POST script on a cron.</div>
+            </div>
+            <div class="offline-cat">
+              <div class="offline-cat-name">📝 Local notes apps (Apple Notes, Bear, Logseq, Notion local cache)</div>
+              <div class="offline-cat-how">Most have CLI export tools — pipe the output to a watched folder and Graphnosis ingests new entries automatically.</div>
+            </div>
+            <div class="offline-cat">
+              <div class="offline-cat-name">📻 Router syslog, DVR transcripts, audio recordings</div>
+              <div class="offline-cat-how">Any structured log on disk + a watcher script. Audio: transcribe locally with <em>whisper.cpp</em> first; drop the transcript folder.</div>
+            </div>
+          </div>
+          <p style="font-size: 13px; line-height: 1.55; margin: 16px 0 0; color: var(--fg-dim);">
+            Everything in this list runs end-to-end on your machine. No cloud round-trip, no API keys,
+            no data leaving the network. The only thing Graphnosis needs is a file or an HTTP webhook —
+            what's on the other side of either is up to you.
+          </p>
+        </div>
+        <div class="modal-footer">
+          <a id="offline-sources-docs-link" href="#" style="font-size:13px; color:var(--fg-dim); text-decoration:none; border-bottom:1px dotted currentColor;" title="Open the full Connect Offline Sources guide">📖 Full guide — scripts &amp; step-by-step setup</a>
+          <span class="filler"></span>
+          <button id="offline-sources-modal-close" class="primary">Got it</button>
+        </div>
+      </div>
+    </div>
+
     <div id="standalone-modal" class="modal-backdrop hidden">
       <div class="modal" style="max-width: 520px;">
         <div class="modal-header">
-          <h2>Standalone — the default mode</h2>
-          <p class="subtitle">Graphnosis is fully functional with no AI model installed.</p>
+          <h2 id="standalone-modal-title">Standalone — the default mode</h2>
+          <p class="subtitle" id="standalone-modal-subtitle">Graphnosis is fully functional with no AI model installed.</p>
         </div>
-        <div class="modal-body">
-          <p style="font-size: 14px; line-height: 1.6; margin: 0 0 12px;">
-            Right now Graphnosis runs <strong>100% standalone</strong>. Everything you have used
-            so far is <strong>deterministic, local, and encrypted</strong> — your data never
-            leaves this machine and no AI model is required.
-          </p>
-          <p style="font-size: 14px; line-height: 1.6; margin: 0 0 6px;">Works with zero AI setup:</p>
-          <ul style="font-size: 14px; color: var(--fg-dim); line-height: 1.6; margin: 0 0 12px; padding-left: 20px;">
-            <li>recall, remember, correct, forget — every MCP tool</li>
-            <li>encryption at rest and the recoverable op-log</li>
-            <li>semantic search and the 3D engram map</li>
-            <li>autonomous duplicate-merging, memory decay, and goal deadline tracking</li>
-          </ul>
-          <p style="font-size: 14px; line-height: 1.6; margin: 0;">
-            A local LLM is <strong>optional</strong>. Add one with the <strong>Local LLM</strong>
-            button to unlock insights, automatic new-connection forming, and
-            second-opinion review of its own healing decisions — it still runs entirely on
-            your machine.
-          </p>
-        </div>
+        <!-- Body is rendered by updateStandaloneModalCopy() in main.ts so we
+             can show different text when AI clients / Local LLM / GNN are
+             active vs. when the user is in pure standalone mode. -->
+        <div class="modal-body" id="standalone-modal-body"></div>
         <div class="modal-footer">
           <button id="standalone-modal-close" class="btn-primary">Got it</button>
         </div>

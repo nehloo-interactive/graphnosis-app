@@ -1,4 +1,9 @@
 import { defineConfig } from 'vite';
+import { readFileSync } from 'node:fs';
+
+// Inject the desktop package.json version at build time so the frontend
+// can show it in the status bar without an extra Tauri IPC roundtrip.
+const pkgVersion = JSON.parse(readFileSync('./package.json', 'utf8')).version;
 
 export default defineConfig({
   clearScreen: false,
@@ -17,6 +22,11 @@ export default defineConfig({
     },
   },
   envPrefix: ['VITE_', 'TAURI_'],
+  define: {
+    // Surfaces in main.ts as __APP_VERSION__ — used to render the version
+    // pill in the status bar (left of Vitality). Resolved at build time.
+    __APP_VERSION__: JSON.stringify(pkgVersion),
+  },
   build: {
     target: 'safari15',
     minify: 'esbuild',
