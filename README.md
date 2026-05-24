@@ -73,7 +73,9 @@ And the recall / remember loop, working live with an AI client:
 │    → PDF parsing offloaded to a worker_threads Worker (pure JS, safe)      │
 │    → ONNX inference runs in a pool of forked child processes (N-API safe)  │
 │  - federated query across all user graphs with tier-capped budgets         │
-│  - MCP server over stdio: recall, remember, correct, apply, forget, stats  │
+│  - MCP server over stdio: 35 tools in 9 categories (recall, remember,      │
+│    correct, apply, forget, stats, list_engrams, recall_with_citations,     │
+│    compare_engrams, audit_memory, llm_query, … see /reference/mcp-tools)   │
 └────────────────────────────────┬───────────────────────────────────────────┘
                                  │
                                  ▼
@@ -108,7 +110,7 @@ apps/
       embed-worker.ts   Forked child: owns one fastembed / ONNX session
       embedding-queue.ts  Mutex: serializes ONNX calls between concurrent ingests
       ipc.ts            Unix-socket JSON-RPC server for Tauri shell
-      mcp-registry.ts   MCP tool definitions (recall, remember, correct, …)
+      mcp-server.ts     35 MCP tool definitions in 9 categories (recall, …)
 packages/
   graphnosis-app-core/  Crypto, op-log, source index, federation,
                         sensitivity tiers, embeddings cache, policy
@@ -118,14 +120,102 @@ packages/
 
 ## MCP tools exposed to AI clients
 
-| Tool | Purpose |
+The sidecar exposes **35 tools** in 9 functional categories. The desktop app
+ships an in-app browser for them (left sidebar → **MCP Tools**), and the
+full reference with parameters, return shapes, and example prompts lives
+at [graphnosis.com/reference/mcp-tools](https://graphnosis.com/reference/mcp-tools/).
+
+| Category | Tools |
 |---|---|
-| `recall` | Federated semantic search across user graphs; subject to per-graph tier caps. Hard limits: `maxNodes ≤ 50`, `maxTokens ≤ 8000`. Sensitive graphs are clamped further (≤ 5 nodes / 500 tokens). Each response includes an audit footer showing exactly which graphs contributed. |
-| `remember` | Save a note from the current AI conversation. Surfaces contradictions if the SDK detects them. |
-| `correct` | Natural-language correction → bundled local LLM produces a structured diff → preview returned. No write happens here. |
-| `apply` | Commit a previewed correction after user confirmation. |
-| `forget` | Remove a source and all nodes derived from it (soft-delete per SDK semantics). |
-| `stats` | Ground-truth inspection: total / active / soft-deleted node counts per graph, sources, and previews. Used to debug "where did my nodes go?" |
+| **Core memory** | `recall` · `remind` · `remember` · `forget` · `apply` · `stats` · `vitality` |
+| **Engram discovery** | `list_engrams` · `suggest_engram` · `browse_engram` · `recent` · `get_engram_schema` |
+| **Structured recall** | `recall_structured` · `recall_with_citations` · `compare_engrams` · `cross_search` |
+| **Source operations** | `find_source` · `recall_source` · `transfer_source` |
+| **Engram operations** | `merge_engrams` · `ingest_batch` · `engram_summary` |
+| **Brain maintenance** | `duplicate_pairs` · `healing_journal` · `gnn_status` · `confirm_data_access` |
+| **Approximate** (similarity, no LLM) | `audit_memory` · `check_duplicate` |
+| **Conditional** (deterministic by default, LLM-aware) | `correct` |
+| **Non-deterministic** (Local LLM required) | `develop` · `predict` · `insights` · `gnn_neighbors` · `llm_query` · `llm_distill` |
+
+`recall` has the hardest caps: `maxNodes ≤ 50`, `maxTokens ≤ 8000`,
+clamped further on sensitive engrams (≤ 5 nodes / 500 tokens). Every
+recall returns an audit footer showing per-graph attribution.
+
+---
+
+## AI clients that read from your cortex
+
+Any MCP-aware AI client speaks Graphnosis natively — no API keys, no
+custom plugin. The desktop app ships first-day-supported configuration
+flows for the four most common:
+
+| Client | Status | Setup |
+|---|---|---|
+| **Claude Desktop** | Supported | Settings → AI clients → Configure Claude Desktop |
+| **Claude Code** | Supported | Settings → AI clients → Configure Claude Code |
+| **Cursor** | Supported | Settings → AI clients → Configure Cursor |
+| **Zed** | Supported | Standard MCP config — see docs |
+| **Any MCP-aware tool** | Supported | Standard MCP config — point at the relay |
+| **VS Code / Copilot Chat** | Supported (HTTP bridge) | Bundled Graphnosis VS Code extension |
+| **ChatGPT** | Coming soon | Browser extension |
+| **Gemini** | Coming soon | Browser extension |
+
+Every connection sees the same 35 tools above; what each client can
+actually read is governed by the [consent gate](https://graphnosis.com/guides/ai-access-controls/)
+(silent for personal-tier engrams, one-click in-app modal for sensitive).
+
+---
+
+## Data sources (cloud auto-ingest)
+
+Built-in connectors poll or receive on a schedule and route incoming
+content into the engram of your choice. All credentials stay on-device,
+encrypted alongside your cortex.
+
+| Connector | What it pulls | Mode |
+|---|---|---|
+| **RSS** | Any RSS / Atom feed | Pull, configurable cadence |
+| **GitHub** | Issues, PRs, comments, commits | Pull |
+| **Slack** | Channel exports, DMs, threads | Pull |
+| **Trello** | Cards, comments, attachments | Pull |
+| **Linear** | Tickets, comments, project updates | Pull |
+| **Obsidian** | Watched vault — every note saves as it changes | Watch |
+| **GBrain** | Local Git repo of plain-text notes | Watch |
+| **AI Context Files** | `CLAUDE.md`, `AGENTS.md`, `CURSOR_RULES`, `GEMINI.md`, etc. | Watch |
+| **Webhook** | Generic HTTP endpoint — `POST` JSON, becomes a memory | Receive |
+
+Each connector has its own routing UI (target engram, sensitivity tier,
+schedule). Connectors are **incoming only** — they feed the cortex but
+never read from it, so adding more never changes Graphnosis's output
+posture (still Standalone for MCP purposes). Full guide:
+[graphnosis.com/guides/connectors](https://graphnosis.com/guides/connectors/).
+
+---
+
+## Local & offline sources
+
+The connectors above all talk to cloud SaaS. But Graphnosis itself runs
+entirely on-device, and so can the data feeding it. Anything that can
+write to a file or hit an HTTP webhook becomes a source — no API keys,
+no network round-trip, no data leaving your machine.
+
+| Category | Pattern |
+|---|---|
+| **Local files & folders** | Drag onto the app, or use Obsidian / AI Context Files / GBrain connectors above |
+| **NAS / network drives** | Mount as folder; watch the path |
+| **Scanned PDFs / paper records** | Drop the PDF — OCR runs locally, no cloud |
+| **Smart-home (Home Assistant, MQTT, Zigbee, Z-Wave)** | Bridge script subscribes to MQTT and POSTs to the Webhook connector |
+| **Sensors / IoT / lab instruments / agriculture** | Tiny reader script (serial, USB, network) POSTs to Webhook |
+| **Local databases (SQLite, Postgres on LAN, DuckDB)** | Cron-driven export to JSON/CSV + folder watch, or query-and-POST script |
+| **On-device notes apps (Apple Notes, Bear, Logseq, Notion local cache)** | App's CLI export → watched folder |
+| **Logs (router syslog, security cam DVR, audio recordings)** | Tail script → Webhook; for audio, transcribe locally with whisper.cpp first |
+| **Industrial protocols (OPC-UA, Modbus, LoRaWAN)** | Bridge script per protocol → Webhook |
+
+The desktop app surfaces this whole set in the sidebar via the **Local &
+offline** chip (next to Standalone), with an explainer modal listing the
+categories. The full guide with copy-paste scripts and step-by-step
+setup for each pattern lives at
+[graphnosis.com/guides/connect-offline-sources](https://graphnosis.com/guides/connect-offline-sources/).
 
 ---
 
@@ -200,7 +290,7 @@ Optional `policy.json` for per-graph sensitivity tiers:
 }
 ```
 
-After saving, restart Claude Desktop. The MCP server appears as **Graphnosis** in the tool picker with 6 tools.
+After saving, restart Claude Desktop. The MCP server appears as **Graphnosis** in the tool picker with 35 tools.
 
 ---
 

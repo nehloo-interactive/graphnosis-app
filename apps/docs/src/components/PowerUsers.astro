@@ -135,51 +135,145 @@
     <!-- MCP tools -->
     <div class="mb-12">
       <h3 class="text-lg font-bold text-white mb-2">What AI clients can do with Graphnosis</h3>
-      <p class="text-[#c4c6d6] text-sm mb-8">All eleven tools your AI can use — the deterministic set works out of the box; the opt-in set adds a local LLM. Every call is visible in the audit log.</p>
+      <p class="text-[#c4c6d6] text-sm mb-8">
+        All <span class="text-[#f0f0f5] font-semibold">35 MCP tools</span> across 9 functional categories. The deterministic + approximate sets work out of the box;
+        the conditional and non-deterministic sets use the optional local LLM (or Neural Network). Every call is visible in the audit log.
+        Click any tool for parameters, return shape, and example prompts.
+      </p>
 
-      <!-- Deterministic — the default -->
-      <div class="mb-4">
-        <p class="text-xs font-mono tracking-widest uppercase text-[#67e8f9] mb-1">Deterministic · the default</p>
-        <p class="text-sm text-[#c4c6d6]">Reproducible and auditable — identical input, identical result, no AI model required.</p>
-      </div>
-      <div class="grid grid-cols-1 sm:grid-cols-3 gap-4">
-        {[
-          { name: 'recall', desc: 'Surface relevant context for the current prompt' },
-          { name: 'remind', desc: 'Alias for recall — responds to "remind me about X"' },
-          { name: 'remember', desc: 'Save a new fact or note to your graph' },
-          { name: 'correct', desc: 'Propose a change — previewed, user-approved before write' },
-          { name: 'forget', desc: 'Soft-delete a source and all nodes derived from it' },
-          { name: 'stats', desc: 'Inspect node counts and graph state' },
-          { name: 'apply', desc: 'Commit a reviewed correction diff to the graph' },
-          { name: 'vitality', desc: 'Score how alive and well-connected your memory is' },
-        ].map((tool) => (
-          <a href="/reference/mcp-tools" class="bg-[#13131a] border border-[#2a2a3d] hover:border-[#67e8f9]/40 rounded-lg p-5 flex flex-col gap-3 transition-colors group">
-            <code class="text-[#67e8f9] text-lg font-mono font-bold">{tool.name}</code>
-            <p class="text-[#c4c6d6] text-base leading-relaxed">{tool.desc}</p>
-          </a>
-        ))}
-      </div>
+      {[
+        {
+          color: '#67e8f9',
+          label: 'Core memory',
+          determinism: 'Deterministic · the default',
+          desc: 'Reproducible and auditable — identical input, identical result, no AI model required.',
+          tools: [
+            { name: 'recall', desc: 'Surface relevant context for the current prompt' },
+            { name: 'remind', desc: 'Alias for recall — responds to "remind me about X"' },
+            { name: 'remember', desc: 'Save a new fact or note to your graph' },
+            { name: 'forget', desc: 'Soft-delete a source and every node derived from it' },
+            { name: 'apply', desc: 'Commit a reviewed correction diff to the graph' },
+            { name: 'stats', desc: 'Inspect engram inventory, node counts, sources' },
+            { name: 'vitality', desc: '0–100 score of how alive and well-connected memory is' },
+          ],
+        },
+        {
+          color: '#67e8f9',
+          label: 'Engram discovery',
+          determinism: 'Deterministic · navigation',
+          desc: 'Lets the AI find its way around your cortex without guessing names.',
+          tools: [
+            { name: 'list_engrams', desc: 'Every engram with tier + source counts' },
+            { name: 'suggest_engram', desc: 'Best engram to save a note into' },
+            { name: 'browse_engram', desc: 'Sources inside one engram, newest first' },
+            { name: 'recent', desc: 'Most recently ingested sources across all engrams' },
+            { name: 'get_engram_schema', desc: 'Metadata for one engram (tier, template, name)' },
+          ],
+        },
+        {
+          color: '#67e8f9',
+          label: 'Structured recall',
+          determinism: 'Deterministic · advanced',
+          desc: 'Variants of recall for when the AI needs more than a prose context block.',
+          tools: [
+            { name: 'recall_structured', desc: 'Recall returned as a JSON array of node objects' },
+            { name: 'recall_with_citations', desc: 'Recall with inline source citation per fact' },
+            { name: 'compare_engrams', desc: 'Same query against two engrams, side-by-side' },
+            { name: 'cross_search', desc: 'Federated recall over a hand-picked subset' },
+          ],
+        },
+        {
+          color: '#67e8f9',
+          label: 'Source operations',
+          determinism: 'Deterministic · op-log primitives',
+          desc: 'Act on a whole saved source — file, URL, clip. All recoverable.',
+          tools: [
+            { name: 'find_source', desc: 'Keyword substring search across source IDs / refs' },
+            { name: 'recall_source', desc: 'Full content of one source, in ingestion order' },
+            { name: 'transfer_source', desc: 'Move a source from one engram to another' },
+          ],
+        },
+        {
+          color: '#67e8f9',
+          label: 'Engram operations',
+          determinism: 'Deterministic · bulk',
+          desc: 'Engram-level moves and consolidations.',
+          tools: [
+            { name: 'merge_engrams', desc: 'Move every source from one engram into another' },
+            { name: 'ingest_batch', desc: 'Save up to 20 notes in one call, each routed' },
+            { name: 'engram_summary', desc: 'Readable snapshot — counts + node previews' },
+          ],
+        },
+        {
+          color: '#67e8f9',
+          label: 'Brain maintenance',
+          determinism: 'Deterministic · brain windows',
+          desc: 'Read-only views into the autonomous brain engine + consent gate.',
+          tools: [
+            { name: 'duplicate_pairs', desc: 'Near-duplicate pairs the brain flagged for review' },
+            { name: 'healing_journal', desc: 'Audit log of autonomous corrections the brain made' },
+            { name: 'gnn_status', desc: 'Neural Network state + predicted-edge count' },
+            { name: 'confirm_data_access', desc: 'Headless-fallback consent for sensitive engrams' },
+          ],
+        },
+        {
+          color: '#a78bfa',
+          label: 'Approximate',
+          determinism: 'Vector similarity · no LLM',
+          desc: 'Similarity scans across the cortex — deterministic given the embedding state.',
+          tools: [
+            { name: 'audit_memory', desc: 'Detect near-duplicate content across engrams' },
+            { name: 'check_duplicate', desc: 'Pre-flight check before remember — anything similar?' },
+          ],
+        },
+        {
+          color: '#a78bfa',
+          label: 'Conditional',
+          determinism: 'Deterministic by default · LLM-aware',
+          desc: 'Deterministic when no LLM/GNN is enabled; richer multi-edit diff when they are.',
+          tools: [
+            { name: 'correct', desc: 'Propose a structured diff — user-approved before any write' },
+          ],
+        },
+        {
+          color: '#a78bfa',
+          label: 'Non-deterministic',
+          determinism: 'Local LLM required · opt-in',
+          desc: 'Retrieval stays deterministic; the local LLM (Ollama) produces the prose, so output varies between runs. Off by default.',
+          tools: [
+            { name: 'develop', desc: 'Draft a strategic plan grounded in your memory' },
+            { name: 'predict', desc: 'Risks and opportunities before you act' },
+            { name: 'insights', desc: 'Patterns, gaps, conflicts surfaced by the background loop' },
+            { name: 'gnn_neighbors', desc: 'Neural Network–predicted related nodes' },
+            { name: 'llm_query', desc: 'Local-LLM synthesised answer grounded in recall' },
+            { name: 'llm_distill', desc: 'Local-LLM fact extraction — ready for ingest_batch' },
+          ],
+        },
+      ].map((cat) => (
+        <div class="mb-8">
+          <div class="mb-3">
+            <p class="text-xs font-mono tracking-widest uppercase mb-1" style={`color:${cat.color};`}>{cat.label} · <span class="opacity-70">{cat.determinism}</span></p>
+            <p class="text-sm text-[#c4c6d6]">{cat.desc}</p>
+          </div>
+          <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+            {cat.tools.map((tool) => (
+              <a
+                href="/reference/mcp-tools"
+                class="bg-[#13131a] border border-[#2a2a3d] rounded-lg p-3 flex flex-col gap-1.5 transition-colors group"
+                style={`--hover-border:${cat.color};`}
+                onmouseover="this.style.borderColor=this.style.getPropertyValue('--hover-border')+'66'"
+                onmouseout="this.style.borderColor=''"
+              >
+                <code class="text-sm font-mono font-bold" style={`color:${cat.color};`}>{tool.name}</code>
+                <p class="text-[#c4c6d6] text-xs leading-relaxed">{tool.desc}</p>
+              </a>
+            ))}
+          </div>
+        </div>
+      ))}
 
-      <!-- Non-deterministic — opt-in -->
-      <div class="mb-4 mt-10">
-        <p class="text-xs font-mono tracking-widest uppercase text-[#a78bfa] mb-1">Non-deterministic · opt-in</p>
-        <p class="text-sm text-[#c4c6d6]">Off by default. Retrieval stays deterministic; an optional local LLM then produces the prose, so the wording varies run to run.</p>
-      </div>
-      <div class="grid grid-cols-1 sm:grid-cols-3 gap-4">
-        {[
-          { name: 'develop', desc: 'Draft a strategic plan grounded in your memory' },
-          { name: 'predict', desc: 'Assess risks and opportunities before you act' },
-          { name: 'insights', desc: 'Surface patterns, gaps, and conflicts across your memory' },
-        ].map((tool) => (
-          <a href="/reference/mcp-tools" class="bg-[#13131a] border border-[#2a2a3d] hover:border-[#a78bfa]/40 rounded-lg p-5 flex flex-col gap-3 transition-colors group">
-            <code class="text-[#a78bfa] text-lg font-mono font-bold">{tool.name}</code>
-            <p class="text-[#c4c6d6] text-base leading-relaxed">{tool.desc}</p>
-          </a>
-        ))}
-      </div>
-
-      <p class="text-base text-[#a0a0b8] mt-8">
-        <code class="text-[#67e8f9] font-mono">correct</code> is deterministic by default — it returns a diff for review, and nothing is written until you approve it in the app; the optional Neural Network or local LLM can widen it. <code class="text-[#67e8f9] font-mono">forget</code> is a soft delete — nodes stay recoverable from the op-log.
+      <p class="text-sm text-[#a0a0b8] mt-8">
+        <code class="text-[#67e8f9] font-mono">correct</code> is deterministic by default — it returns a diff for review, and nothing is written until you approve it in the app; the optional Neural Network or local LLM can widen it. <code class="text-[#67e8f9] font-mono">forget</code> is a soft delete — nodes stay recoverable from the op-log. Full reference: <a href="/reference/mcp-tools" class="text-[#67e8f9] hover:underline">/reference/mcp-tools</a>.
       </p>
     </div>
 

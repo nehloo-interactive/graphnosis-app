@@ -59,6 +59,10 @@ try {
       <div class="grid grid-cols-1 md:grid-cols-3 gap-4 text-left mb-12 mt-0">
 
         <article class="bg-[#1c1c27] border border-[#2a2a3d] rounded-xl p-6 flex flex-col gap-4">
+          <div class="text-center flex flex-col items-center gap-1.5">
+            <span class="inline-block text-base font-black tracking-[0.22em] uppercase px-4 py-1.5 rounded-md bg-[#67e8f9]/10 text-[#67e8f9] border border-[#67e8f9]/30">● Online</span>
+            <span class="text-xs font-mono text-[#52525b] uppercase tracking-wider">SaaS sources</span>
+          </div>
           <div class="flex items-center gap-2 text-sm text-[#c4c6d6] font-mono flex-wrap">
             <span>flow</span>
             <span class="text-[#36C5F0] font-semibold">Slack</span>
@@ -83,34 +87,42 @@ try {
         </article>
 
         <article class="bg-[#1c1c27] border border-[#2a2a3d] rounded-xl p-6 flex flex-col gap-4">
+          <div class="text-center flex flex-col items-center gap-1.5">
+            <span class="inline-block text-base font-black tracking-[0.22em] uppercase px-4 py-1.5 rounded-md bg-[#a78bfa]/10 text-[#a78bfa] border border-[#a78bfa]/30">○ Offline</span>
+            <span class="text-xs font-mono text-[#52525b] uppercase tracking-wider">LAN · sensors · local LLM</span>
+          </div>
           <div class="flex items-center gap-2 text-sm text-[#c4c6d6] font-mono flex-wrap">
             <span>flow</span>
-            <span class="text-[#5E6AD2] font-semibold">Linear</span>
+            <span class="text-[#a78bfa] font-semibold">Home Assistant</span>
             <span>+</span>
-            <span class="text-[#0079BF] font-semibold">Trello</span>
+            <span class="text-[#a78bfa] font-semibold">MQTT logs</span>
+            <span>+</span>
+            <span class="text-[#a78bfa] font-semibold">NAS notes</span>
             <span>→</span>
-            <span class="text-[#D97757] font-semibold">Claude Desktop</span>
-            <span>+</span>
-            <span class="text-[#6366F1] font-semibold">Cursor</span>
-            <span>+</span>
-            <span class="text-[#238636] font-semibold">Copilot</span>
-            <span>+</span>
-            <span class="text-[#0EA5E9] font-semibold">Zed</span>
+            <span class="text-[#a78bfa] font-semibold">Local LLM (Ollama)</span>
           </div>
-          <p class="text-[#f0f0f5] text-xl font-semibold leading-snug">"The Fed just moved. Which positions are exposed? Apply the hedges."</p>
-          <p class="text-[#c4c6d6] text-base leading-relaxed">You <u>auto-ingest</u> your <span class="font-semibold" style="color:#5E6AD2">Linear</span> research tickets and <span class="font-semibold" style="color:#0079BF">Trello</span> deal pipeline into Graphnosis. The Fed announces a surprise rate hike. In <span class="font-semibold" style="color:#D97757">Claude Desktop</span>: <span class="bg-amber-400/20 text-amber-100 font-mono text-base px-1.5 py-0.5 rounded">remind me which positions carry duration risk above threshold</span> — it surfaces two exposed holdings, one flagged three weeks ago in a <span class="font-semibold" style="color:#5E6AD2">Linear</span> ticket you'd forgotten. You move to <span class="font-semibold" style="color:#6366F1">Cursor</span> where <span class="font-semibold" style="color:#238636">Copilot</span> already has the context: <span class="bg-amber-400/20 text-amber-100 font-mono text-base px-1.5 py-0.5 rounded">recall the duration analysis and apply hedging scenarios to the model</span> — no re-briefing. You validate the output in <span class="font-semibold" style="color:#0EA5E9">Zed</span>: <span class="bg-amber-400/20 text-amber-100 font-mono text-base px-1.5 py-0.5 rounded">recall our mandate constraints before I commit this change</span> — the full context is already there.</p>
+          <p class="text-[#f0f0f5] text-xl font-semibold leading-snug">"Why does the upstairs heater kick on at 3 AM every week? Stop it."</p>
+          <p class="text-[#c4c6d6] text-base leading-relaxed">Your home runs on <span class="font-semibold" style="color:#a78bfa">Home Assistant</span> on a Raspberry Pi, with motion sensors, temperature probes, and a smart thermostat all talking <span class="font-semibold" style="color:#a78bfa">MQTT</span> over your LAN. You <u>auto-ingest</u> the broker's event logs, your Home Assistant automation YAMLs, and your handwritten notes about quirks of the boiler — all from your <span class="font-semibold" style="color:#a78bfa">NAS</span>, never the cloud. Graphnosis indexes everything as a private engram. You ask the bundled <span class="font-semibold" style="color:#a78bfa">local LLM</span>: <span class="bg-amber-400/20 text-amber-100 font-mono text-base px-1.5 py-0.5 rounded">recall what triggers the heater between 2 and 4 AM</span> — it correlates the motion-sensor false-positives in the hallway with the "heat-on-presence" rule you wrote six months ago and forgot about. You tell it: <span class="bg-amber-400/20 text-amber-100 font-mono text-base px-1.5 py-0.5 rounded">correct the automation — ignore hallway motion between midnight and 6 AM</span>. Diff approved, YAML patched, broker reloaded. No data ever leaves your house.</p>
           <div class="flex gap-2 mt-auto flex-wrap">
-            <span class="text-sm font-mono px-3 py-1 rounded bg-[#13131a] text-[#67e8f9] border border-[#2a2a3d]">ingest</span>
-            <span class="text-sm font-mono px-3 py-1 rounded bg-[#13131a] text-[#67e8f9] border border-[#2a2a3d]">remind</span>
-            <span class="text-sm font-mono px-3 py-1 rounded bg-[#13131a] text-[#67e8f9] border border-[#2a2a3d]">recall</span>
+            <span class="text-sm font-mono px-3 py-1 rounded bg-[#13131a] text-[#a78bfa] border border-[#2a2a3d]">ingest</span>
+            <span class="text-sm font-mono px-3 py-1 rounded bg-[#13131a] text-[#a78bfa] border border-[#2a2a3d]">recall</span>
+            <span class="text-sm font-mono px-3 py-1 rounded bg-[#13131a] text-[#a78bfa] border border-[#2a2a3d]">correct</span>
           </div>
         </article>
 
         <article class="bg-[#1c1c27] border border-[#2a2a3d] rounded-xl p-6 flex flex-col gap-4">
+          <div class="text-center flex flex-col items-center gap-1.5">
+            <span class="inline-block text-base font-black tracking-[0.22em] uppercase px-4 py-1.5 rounded-md bg-gradient-to-r from-[#67e8f9]/15 to-[#a78bfa]/15 text-[#f0f0f5] border border-[#67e8f9]/30">◐ Online + Offline</span>
+            <span class="text-xs font-mono text-[#52525b] uppercase tracking-wider">Nonprofit · hybrid</span>
+          </div>
           <div class="flex items-center gap-2 text-sm text-[#c4c6d6] font-mono flex-wrap">
             <span>flow</span>
             <span class="text-[#36C5F0] font-semibold">Slack</span>
             <span>+</span>
+            <span class="text-[#a78bfa] font-semibold">scanned files</span>
+            <span>+</span>
+            <span class="text-[#a78bfa] font-semibold">local docs</span>
+            <span>→</span>
             <span class="text-[#D97757] font-semibold">Claude Code</span>
             <span>+</span>
             <span class="text-[#D97757] font-semibold">Claude Desktop</span>
@@ -120,7 +132,7 @@ try {
             <span class="text-[#D97757] font-semibold">Claude Cowork</span>
           </div>
           <p class="text-[#f0f0f5] text-xl font-semibold leading-snug">"Our key volunteer left. Who holds the knowledge — and what's at risk?"</p>
-          <p class="text-[#c4c6d6] text-base leading-relaxed">You <u>auto-ingest</u> your <span class="font-semibold" style="color:#36C5F0">Slack</span> channels and program docs into Graphnosis. Maria resigns on short notice. In <span class="font-semibold" style="color:#D97757">Claude Code</span>: <span class="bg-amber-400/20 text-amber-100 font-mono text-base px-1.5 py-0.5 rounded">correct the org chart — Maria is no longer the lead for the youth literacy program</span> — every reference updates. Before the board call, <span class="font-semibold" style="color:#D97757">Claude Desktop</span>: <span class="bg-amber-400/20 text-amber-100 font-mono text-base px-1.5 py-0.5 rounded">recall everything Maria owned and flag what's at risk</span> — three programs and an unfinished grant surface instantly. You pick up the grant draft in <span class="font-semibold" style="color:#0EA5E9">Zed</span>, then close in <span class="font-semibold" style="color:#D97757">Claude Cowork</span>: <span class="bg-amber-400/20 text-amber-100 font-mono text-base px-1.5 py-0.5 rounded">draft an onboarding brief for Maria's replacement</span> — shipped before her last day.</p>
+          <p class="text-[#c4c6d6] text-base leading-relaxed">Your literacy nonprofit lives partly in <span class="font-semibold" style="color:#36C5F0">Slack</span> volunteer channels and partly in <span class="font-semibold" style="color:#a78bfa">scanned paper files</span> on a shared drive — intake forms, grant reports, handwritten meeting minutes Maria kept for years. You <u>auto-ingest</u> both the Slack export <em>and</em> the scanned PDFs (OCR'd locally) into Graphnosis. Maria resigns on short notice. In <span class="font-semibold" style="color:#D97757">Claude Code</span>: <span class="bg-amber-400/20 text-amber-100 font-mono text-base px-1.5 py-0.5 rounded">correct the org chart — Maria is no longer the lead for the youth literacy program</span> — every reference updates. Before the board call, <span class="font-semibold" style="color:#D97757">Claude Desktop</span>: <span class="bg-amber-400/20 text-amber-100 font-mono text-base px-1.5 py-0.5 rounded">recall everything Maria owned and flag what's at risk</span> — three programs and an unfinished grant surface instantly, alongside two signed donor commitments buried in the scanned files. You pick up the grant draft in <span class="font-semibold" style="color:#0EA5E9">Zed</span>, then close in <span class="font-semibold" style="color:#D97757">Claude Cowork</span>: <span class="bg-amber-400/20 text-amber-100 font-mono text-base px-1.5 py-0.5 rounded">draft an onboarding brief for Maria's replacement</span> — shipped before her last day. The hybrid pipeline kept the cloud out of the donor records while still letting your team's online tools see what they need.</p>
           <div class="flex gap-2 mt-auto flex-wrap">
             <span class="text-sm font-mono px-3 py-1 rounded bg-[#13131a] text-[#67e8f9] border border-[#2a2a3d]">ingest</span>
             <span class="text-sm font-mono px-3 py-1 rounded bg-[#13131a] text-[#67e8f9] border border-[#2a2a3d]">correct</span>
@@ -490,17 +502,22 @@ try {
     tx(748, 215, 'recall / remind',             C.human, 11, 'normal', true);
 
     // ── Tools box text (cx=160) ──
-    tx(160, 264, 'your ⚙️ context',          C.tools, 15, '700');
-    tx(160, 284, 'Slack · GitHub',         C.white,  13);
-    tx(160, 301, 'Linear · RSS',           C.white,  13);
-    tx(160, 318, 'Trello · Webhook',       C.white,  13);
-    tx(160, 335, 'Obsidian · GBrain',      C.white,  13);
-    tx(160, 352, 'CLAUDE.md · AGENTS.md',  C.white,  13);
-    tx(160, 369, 'CURSOR_RULES · GEMINI.md', C.white, 13);
-    amber( 85, 285, words[0], 11);
-    amber( 85, 299, words[1], 11);
-    amber(232, 285, words[2], 11);
-    amber(232, 299, words[3], 11);
+    // Layout: online SaaS first, then a couple of OFFLINE rows
+    // (homelab + local files), then AI-rule files. Spacing tightened to
+    // 14px so 8 rows fit inside the 148px-tall box without crowding.
+    tx(160, 262, 'your ⚙️ context',           C.tools, 15, '700');
+    tx(160, 282, 'Slack · GitHub',          C.white,  12);
+    tx(160, 296, 'Linear · RSS',            C.white,  12);
+    tx(160, 310, 'Trello · Webhook',        C.white,  12);
+    tx(160, 324, 'Sensors · MQTT',          C.tools,  12);
+    tx(160, 338, 'NAS · PDF scans',         C.tools,  12);
+    tx(160, 352, 'Obsidian · GBrain',       C.white,  12);
+    tx(160, 366, 'CLAUDE.md · AGENTS.md',   C.white,  12);
+    tx(160, 380, 'CURSOR_RULES · GEMINI.md', C.white, 12);
+    amber( 85, 283, words[0], 11);
+    amber( 85, 297, words[1], 11);
+    amber(232, 283, words[2], 11);
+    amber(232, 297, words[3], 11);
 
     // ── AI agents box text (cx=500) ──
     tx(500, 260, '⚡',               C.ai,    22);
@@ -578,19 +595,21 @@ try {
     tx(128, 318, 'auto-ingest',     C.human, 10, 'normal', true);
     tx(272, 318, 'recall / remind', C.human, 10, 'normal', true);
 
-    tx(97, 357, 'your ⚙️ context',           C.tools, 13, '700');
-    tx(97, 375, 'Slack · GitHub',         C.white,  12);
-    tx(97, 391, 'Linear · RSS',           C.white,  12);
-    tx(97, 407, 'Trello · Webhook',       C.white,  12);
-    tx(97, 423, 'Obsidian · GBrain',      C.white,  12);
-    tx(97, 439, 'CLAUDE.md · AGENTS.md',  C.white,  12);
-    tx(97, 455, 'CURSOR_RULES · GEMINI.md', C.white, 12);
-    tx(97, 471, 'auto-ingest',             C.human,  12);
-    tx(97, 487, 'remember',                C.human,  12);
-    amber( 35, 397, words[0], 10);
-    amber( 35, 410, words[1], 10);
-    amber(157, 397, words[2], 10);
-    amber(157, 410, words[3], 10);
+    tx(97, 355, 'your ⚙️ context',           C.tools, 13, '700');
+    tx(97, 372, 'Slack · GitHub',          C.white,  11);
+    tx(97, 385, 'Linear · RSS',            C.white,  11);
+    tx(97, 398, 'Trello · Webhook',        C.white,  11);
+    tx(97, 411, 'Sensors · MQTT',          C.tools,  11);
+    tx(97, 424, 'NAS · PDF scans',         C.tools,  11);
+    tx(97, 437, 'Obsidian · GBrain',       C.white,  11);
+    tx(97, 450, 'CLAUDE.md · AGENTS.md',   C.white,  11);
+    tx(97, 463, 'CURSOR_RULES · GEMINI.md', C.white, 11);
+    tx(97, 478, 'auto-ingest',             C.human,  12);
+    tx(97, 494, 'remember',                C.human,  12);
+    amber( 35, 392, words[0], 10);
+    amber( 35, 405, words[1], 10);
+    amber(157, 392, words[2], 10);
+    amber(157, 405, words[3], 10);
 
     tx(302, 354, '🔀',              C.ai,    18);
     tx(302, 370, 'all clients',     C.human, 13, '700');

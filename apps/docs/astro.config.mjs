@@ -19,6 +19,12 @@ export default defineConfig({
       customCss: ['./src/styles/custom.css'],
       components: {
         Footer: './src/components/StarlightFooter.astro',
+        // Wraps the default SocialIcons (the GitHub mark in the top
+        // header) with a "Download vX.Y.Z" pill rendered to its LEFT.
+        // Version is read from apps/desktop/src-tauri/tauri.conf.json
+        // at build time so docs always advertise the actual shipped
+        // binary version.
+        SocialIcons: './src/components/StarlightSocialIcons.astro',
       },
       social: {
         github: 'https://github.com/nehloo-interactive/graphnosis-app',
@@ -39,12 +45,15 @@ export default defineConfig({
           items: [
             { label: 'Memory Across AI Clients', slug: 'guides/memory-across-ai-clients' },
             { label: 'Auto-ingest from Your Tools', slug: 'guides/connectors' },
+            { label: 'Connect Offline Sources', slug: 'guides/connect-offline-sources' },
             { label: 'Adding Content', slug: 'guides/adding-content' },
             { label: 'Correcting Memories', slug: 'guides/correcting-memories' },
             { label: 'Indelibility & Determinism', slug: 'guides/indelibility-and-determinism' },
             { label: 'Deterministic Consolidation', slug: 'guides/deterministic-consolidation' },
+            { label: 'Autonomous Upkeep', slug: 'guides/autonomous-upkeep' },
             { label: 'Graphs & Sensitivity Tiers', slug: 'guides/graphs-and-tiers' },
             { label: 'AI Access Controls', slug: 'guides/ai-access-controls' },
+            { label: 'Boot & Engram Loading', slug: 'guides/boot-and-engram-loading' },
             { label: 'Keeping Your Cortex Safe', slug: 'guides/keeping-your-cortex-safe' },
             { label: 'Recovery', slug: 'guides/recovery' },
             { label: 'Verify It Yourself', slug: 'guides/verify-it-yourself' },
