@@ -1016,10 +1016,20 @@ export function recordConsent(
       ? now  // single-use: expires immediately after grant
       : now + windowMs;
 
-  const prior = (existing ?? []).map((r) =>
+  // Soft-expire any prior active record for this client+tier pair so only
+  // one active consent per client+tier exists at a time.
+  const softExpired = (existing ?? []).map((r) =>
     r.clientName === clientName && r.tier === tier && r.withdrawnAt === undefined
       ? { ...r, withdrawnAt: now }
       : r,
+  );
+
+  // Prune records that are both expired AND withdrawn — they have no active
+  // effect and keeping them forever inflates settings.json. Keep the last 30
+  // days of history so the "View full history" panel stays meaningful.
+  const KEEP_MS = 30 * 24 * 60 * 60 * 1_000;
+  const prior = softExpired.filter(
+    (r) => r.withdrawnAt === undefined || (now - (r.withdrawnAt ?? 0)) < KEEP_MS,
   );
 
   const record: ConsentRecord = {
