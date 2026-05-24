@@ -1717,10 +1717,23 @@ async function dispatch(deps: IpcDeps, method: string, params: unknown): Promise
 
     case 'docs:ingest': {
       const { appVersion } = z.object({ appVersion: z.string() }).parse(params ?? {});
-      // Create the docs engram if it doesn't exist yet — mirror the
-      // create-then-set-metadata pattern from graphs.createWithTemplate so it
-      // shows up in the picker with a friendly name.
-      if (!deps.host.listGraphs().includes(DOCS_ENGRAM_ID)) {
+      const docsExists = deps.host.listGraphs().includes(DOCS_ENGRAM_ID);
+      if (docsExists) {
+        // Engram already exists (re-ingest after app update). Purge all
+        // existing sources first so we replace, not duplicate. Each page
+        // uses a stable `graphnosis-docs:<slug>` sourceRef — removing them
+        // before re-ingesting keeps the engram clean regardless of whether
+        // pages were added, removed, or renamed between releases.
+        const existingSources = deps.host.listSources(DOCS_ENGRAM_ID);
+        for (const src of existingSources) {
+          await deps.host.forgetSource(DOCS_ENGRAM_ID, src.sourceId, {
+            triggeredBy: 'user:ingest',
+          });
+        }
+      } else {
+        // Create the docs engram — mirror the create-then-set-metadata
+        // pattern from graphs.createWithTemplate so it shows up in the
+        // picker with a friendly name.
         await deps.host.createGraph(DOCS_ENGRAM_ID);
         await deps.host.setGraphMetadata(DOCS_ENGRAM_ID, {
           template: 'reading',

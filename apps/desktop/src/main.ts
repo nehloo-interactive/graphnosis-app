@@ -1499,8 +1499,8 @@ const TOOL_INFO: Record<string, { determinism: string; body: string; examples: s
   },
   forget: {
     determinism: 'Deterministic',
-    body: 'Removes a source — every memory derived from it is soft-deleted (recoverable) and drops out of future recalls.',
-    examples: ['Forget everything I told you about the canceled redesign.', 'Remove my notes from that old draft PDF.'],
+    body: 'Surgically removes one or more specific memory nodes — soft-deleted (recoverable) and gone from future recalls. Always call recall_structured first to find the exact nodeIds; never guess them. Removing an entire source (file, URL, clip) is a user-only action in the Sources page — this tool operates at the node level only.',
+    examples: ['That note about the canceled redesign is stale — find its node and forget it.', 'Remove that specific outdated deadline fact from my Work engram.'],
   },
   apply: {
     determinism: 'Deterministic',
@@ -13023,6 +13023,10 @@ let pendingFirstConnectClient: string | null = null;
 function showAgentTypeModal(clientName: string): void {
   const modal = document.getElementById('agent-type-modal') as HTMLDivElement | null;
   if (!modal) return;
+  // Mark seen immediately so that subsequent fetchMcpStatus polls (which run
+  // before the user clicks anything) don't re-fire this modal and its toast.
+  // The agent-type preference (chat/agent) is recorded separately in applyClientType.
+  markClientSeen(clientName);
   pendingFirstConnectClient = clientName;
   const title = document.getElementById('agent-type-modal-title');
   const subtitle = document.getElementById('agent-type-modal-subtitle');
@@ -13087,6 +13091,8 @@ const FIRST_CONNECT_SKIP = new Set([
 ]);
 
 function checkFirstConnectClients(clients: string[]): void {
+  // Don't stack modals — wait until the user dismisses the current one.
+  if (pendingFirstConnectClient !== null) return;
   const seen = getSeenClients();
   for (const name of clients) {
     if (!name) continue;

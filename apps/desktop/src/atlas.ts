@@ -719,9 +719,12 @@ export class Atlas {
       return this.visibleLinkIds.has(l.id);
     });
     g.nodeOpacity(0.92);
-    // 3d-force-graph supports a `nodeLabel` callback that renders a tooltip
-    // on hover. Keep it compact — first 120 chars of the memory content.
-    g.nodeLabel((n: AtlasNode) => this.escapeHtml(n.text.slice(0, 160)) + (n.text.length > 160 ? '…' : ''));
+    // Disable the library's built-in nodeLabel tooltip — it uses d3.pointer()
+    // internally, which produces wrong coordinates in the production Tauri
+    // webview (tooltip stuck at the top of the canvas). We manage our own
+    // tooltip div instead, positioned with raw clientX/clientY.
+    g.nodeLabel('');
+    this.initNodeTooltip();
 
     // Links: colored by category, width by weight, with arrowheads on
     // directional links sized proportional to weight.
@@ -1546,6 +1549,57 @@ export class Atlas {
     // No ctrls.update() call needed: TC's render loop handles it, and
     // since _eye = cam−target is unchanged, there is nothing to correct.
   };
+
+  private nodeTipEl: HTMLDivElement | null = null;
+  private nodeTipText: string | null = null;
+
+  private initNodeTooltip(): void {
+    const container = this.opts.container;
+
+    // Create the tooltip div once and attach it to the container.
+    const tip = document.createElement('div');
+    tip.className = 'atlas-node-tip';
+    tip.style.display = 'none';
+    container.appendChild(tip);
+    this.nodeTipEl = tip;
+
+    // onNodeHover: set content (library fires this on raycaster hits).
+    this.graph.onNodeHover((node) => {
+      const n = node as AtlasNode | null;
+      if (!n) {
+        this.nodeTipText = null;
+        tip.style.display = 'none';
+        return;
+      }
+      const raw = n.text ?? '';
+      this.nodeTipText = raw.length > 200 ? raw.slice(0, 200) + '…' : raw;
+      tip.textContent = this.nodeTipText;
+      tip.style.display = 'block';
+    });
+
+    // mousemove: position using clientX/clientY - containerRect to avoid
+    // the d3.pointer coordinate bug in the production Tauri webview.
+    container.addEventListener('mousemove', (e: MouseEvent) => {
+      if (!this.nodeTipText || !this.nodeTipEl) return;
+      const rect = container.getBoundingClientRect();
+      const x = e.clientX - rect.left;
+      const y = e.clientY - rect.top;
+      const w = rect.width;
+      const h = rect.height;
+      const tipW = tip.offsetWidth || 260;
+      const tipH = tip.offsetHeight || 48;
+      // Flip left/above when near the right or bottom edge.
+      const left = x + tipW + 18 > w ? x - tipW - 6 : x + 14;
+      const top  = y + tipH + 24 > h ? y - tipH - 6 : y + 18;
+      tip.style.left = `${Math.max(0, left)}px`;
+      tip.style.top  = `${Math.max(0, top)}px`;
+    });
+
+    container.addEventListener('mouseleave', () => {
+      this.nodeTipText = null;
+      if (this.nodeTipEl) this.nodeTipEl.style.display = 'none';
+    });
+  }
 
   private wireEvents(): void {
     const g = this.graph;
