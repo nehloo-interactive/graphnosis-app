@@ -576,7 +576,10 @@ async function main(): Promise<void> {
     broadcastRaw,
     connectorManager,
     brainEngine,
-    llm: () => (host.getSettings().ai.llmEnabled === true ? llm : null),
+    // Search features (synthesize, rerank) only need Ollama reachable with a
+    // model — no master toggle required. The full llmEnabled gate lives on the
+    // MCP getter above and on the BrainEngine; IPC search calls bypass it.
+    llm: () => llm,
   });
   console.error(`[graphnosis-sidecar] IPC listening on ${ipcSocketPath}`);
 
