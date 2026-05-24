@@ -131,7 +131,7 @@ at [graphnosis.com/reference/mcp-tools](https://graphnosis.com/reference/mcp-too
 | **Engram discovery** | `list_engrams` · `suggest_engram` · `browse_engram` · `recent` · `get_engram_schema` |
 | **Structured recall** | `recall_structured` · `recall_with_citations` · `compare_engrams` · `cross_search` |
 | **Source operations** | `find_source` · `recall_source` · `transfer_source` |
-| **Engram operations** | `merge_engrams` · `ingest_batch` · `engram_summary` |
+| **Engram operations** | `ingest_batch` · `engram_summary` |
 | **Brain maintenance** | `duplicate_pairs` · `healing_journal` · `gnn_status` · `confirm_data_access` |
 | **Approximate** (similarity, no LLM) | `audit_memory` · `check_duplicate` |
 | **Conditional** (deterministic by default, LLM-aware) | `correct` |
