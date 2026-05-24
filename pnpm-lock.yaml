@@ -4,9 +4,6 @@ settings:
   autoInstallPeers: true
   excludeLinksFromLockfile: false
 
-overrides:
-  '@nehloo/graphnosis': file:/Users/nelulazar/Developer/Graphnosis
-
 packageExtensionsChecksum: sha256-/OPRwZbRgAfd6g7UgtS2Xr69OW74ut+6UJjUKXjgNC8=
 
 patchedDependencies:
@@ -85,8 +82,8 @@ importers:
         specifier: https://github.com/nehloo-interactive/graphnosis-secure-sync.git#v0.1.2
         version: https://codeload.github.com/nehloo-interactive/graphnosis-secure-sync/tar.gz/ed79dfc898d2782b5a6ea92102d58a3e32bba531
       '@nehloo/graphnosis':
-        specifier: file:/Users/nelulazar/Developer/Graphnosis
-        version: file:../Graphnosis(@napi-rs/canvas@0.1.80)
+        specifier: ^0.5.3
+        version: 0.5.3(@napi-rs/canvas@0.1.80)
       '@scure/bip39':
         specifier: ^1.4.0
         version: 1.6.0
@@ -1491,8 +1488,8 @@ packages:
     resolution: {tarball: https://codeload.github.com/nehloo-interactive/graphnosis-secure-sync/tar.gz/ed79dfc898d2782b5a6ea92102d58a3e32bba531}
     version: 0.1.2
 
-  '@nehloo/graphnosis@file:../Graphnosis':
-    resolution: {directory: ../Graphnosis, type: directory}
+  '@nehloo/graphnosis@0.5.3':
+    resolution: {integrity: sha512-F5zhXR9J1BbM+kcg25+NvdFGD/ZNrV4KSctakUvTx8NJ2zQpa0wHXXGyx9vA8ymatl4PxS/sSykQCCaYpQXwNQ==}
     peerDependencies:
       '@ai-sdk/openai': '>=3.0.0'
       ai: '>=6.0.0'
@@ -6540,7 +6537,7 @@ snapshots:
     dependencies:
       libsodium-wrappers-sumo: 0.7.16(patch_hash=da53431d2a81810a70c17c15ac5454840c9f42daf0a3fab0968df8c896f11123)
 
-  '@nehloo/graphnosis@file:../Graphnosis(@napi-rs/canvas@0.1.80)':
+  '@nehloo/graphnosis@0.5.3(@napi-rs/canvas@0.1.80)':
     dependencies:
       cheerio: 1.2.0
       exif-parser: 0.1.12

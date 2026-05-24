@@ -23,10 +23,8 @@
       "onnxruntime-node",
       "wtf_wikipedia"
     ],
-    "_comment_overrides": "Local override active: @nehloo/graphnosis points to the local clone while serializeSubgraph export is pre-release (added to SDK main, not yet published). Remove override and bump the version pin in apps/desktop-sidecar/package.json once v0.5.3+ is published to npm.",
-    "overrides": {
-      "@nehloo/graphnosis": "file:/Users/nelulazar/Developer/Graphnosis"
-    },
+    "_comment_overrides": "All overrides removed (May 2026). Previously: secure-sync pinned to a local working copy until v0.1.2 shipped with the static-import libsodium fix; @nehloo/graphnosis pinned to a local working copy while serializeSubgraph export + log-redact were pre-release in v0.5.3. Both deps are now consumed from their tagged npm releases — see apps/desktop-sidecar/package.json. Keep this empty `overrides` block so future maintainers see the trail; pnpm tolerates empty objects fine.",
+    "overrides": {},
     "_comment_packageExtensions": "libsodium-wrappers-sumo@0.7.16 ships a broken ESM entry (relative import to ./libsodium-sumo.mjs that the package doesn't include in its files array). Force its `.` export to point to the CJS file in ALL conditions so bundlers (Bun --compile, Vite, etc.) never pick the broken .mjs. Without this, `bun build --compile` of the sidecar fails with 'Could not resolve ./libsodium-sumo.mjs'.",
     "packageExtensions": {
       "libsodium-wrappers-sumo": {
