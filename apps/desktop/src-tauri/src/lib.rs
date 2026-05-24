@@ -894,17 +894,20 @@ async fn configure_mcp_client(
 
 /// Where each supported MCP client stores its config on this OS.
 ///
-/// All three macOS paths are the upstream-documented locations:
+/// macOS paths are the upstream-documented locations:
 ///   - Claude Desktop: `~/Library/Application Support/Claude/claude_desktop_config.json`
 ///   - Claude Code:    `~/.claude.json` (user-level; CLI also supports
 ///                     project-scoped `.mcp.json` we don't touch)
 ///   - Cursor:         `~/.cursor/mcp.json` (user-level)
 ///
-/// Windows + Linux paths are different (Cursor lives at
-/// `%APPDATA%\Cursor\User\globalStorage\` on Windows; Claude Desktop
-/// uses `%APPDATA%\Claude\`). Wire them up alongside the Windows / Linux
-/// build targets — for now we return None on those platforms and the
-/// command surfaces a clear "not supported yet" error.
+/// Windows mirrors macOS for the dotfile-based clients (Claude Code and
+/// Cursor both use `%USERPROFILE%\<dotfile>` on every platform) and uses
+/// `%APPDATA%\Claude\` for Claude Desktop — Anthropic's documented Windows
+/// location, equivalent to macOS's Application Support folder.
+///
+/// Linux is still unsupported (Claude Desktop isn't officially distributed
+/// for Linux) — the command surfaces a clear "not supported yet" error
+/// when this returns None.
 #[cfg(target_os = "macos")]
 fn mcp_client_config_path(client: McpClient) -> Option<PathBuf> {
     let home = dirs::home_dir()?;
@@ -919,9 +922,63 @@ fn mcp_client_config_path(client: McpClient) -> Option<PathBuf> {
     })
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(target_os = "windows")]
+fn mcp_client_config_path(client: McpClient) -> Option<PathBuf> {
+    Some(match client {
+        // Claude Desktop on Windows ships in two installer formats and the
+        // config file lives in a different place depending on which the user
+        // has installed:
+        //   1. Microsoft Store / MSIX packaged app (most users — what
+        //      claude.ai/download serves). Sandbox-redirects %APPDATA% to
+        //      %LOCALAPPDATA%\Packages\Claude_<publisher-hash>\LocalCache\
+        //      Roaming\Claude\. The legacy %APPDATA%\Claude\ file is
+        //      invisible to the packaged app.
+        //   2. Legacy MSI installer (older / enterprise installs). Config at
+        //      the standard %APPDATA%\Claude\ location.
+        // Helper probes for the packaged-app folder first and falls back to
+        // the MSI path when no Claude_* package is installed. Writing to the
+        // wrong one is silently broken — Claude reads only the path matching
+        // its install kind.
+        McpClient::ClaudeDesktop => windows_claude_desktop_config_path()?,
+        // Claude Code and Cursor both use a dotfile in the user's home
+        // directory on every platform, so the path shape matches macOS —
+        // dirs::home_dir() returns %USERPROFILE% on Windows.
+        McpClient::ClaudeCode => dirs::home_dir()?.join(".claude.json"),
+        McpClient::Cursor => dirs::home_dir()?.join(".cursor").join("mcp.json"),
+    })
+}
+
+/// Resolve the Claude Desktop config-file path on Windows, accounting for
+/// the Store/MSIX packaged-app sandbox redirection. See callsite for the
+/// background — `Packages\Claude_*` only exists when Claude was installed
+/// from the Microsoft Store, so its presence is the deciding signal.
+#[cfg(target_os = "windows")]
+fn windows_claude_desktop_config_path() -> Option<PathBuf> {
+    let local_appdata = dirs::data_local_dir()?;
+    let packages = local_appdata.join("Packages");
+    if let Ok(entries) = std::fs::read_dir(&packages) {
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            let n = name.to_string_lossy();
+            if n.starts_with("Claude_") && entry.path().is_dir() {
+                return Some(
+                    entry.path()
+                        .join("LocalCache")
+                        .join("Roaming")
+                        .join("Claude")
+                        .join("claude_desktop_config.json"),
+                );
+            }
+        }
+    }
+    // Fall back to legacy MSI install path. dirs::config_dir() returns
+    // %APPDATA% (= C:\Users\<user>\AppData\Roaming) on Windows.
+    Some(dirs::config_dir()?.join("Claude").join("claude_desktop_config.json"))
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
 fn mcp_client_config_path(_client: McpClient) -> Option<PathBuf> {
-    // TODO: wire up Windows + Linux paths when those builds ship.
+    // TODO: wire up Linux paths when that build ships.
     None
 }
 
