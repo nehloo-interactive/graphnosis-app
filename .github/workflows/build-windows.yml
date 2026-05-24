@@ -1,0 +1,97 @@
+name: Build (Windows)
+
+# Manual trigger for Windows test builds.
+# Produces an unsigned NSIS installer as a downloadable artifact.
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: 'Branch or tag to build (default: main)'
+        required: false
+        default: 'main'
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.ref }}
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v3
+        with:
+          version: 10
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install Rust (stable, x86_64-pc-windows-msvc)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - name: Install Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build workspace core package
+        run: pnpm --filter @graphnosis-app/core build
+
+      # Stage onnxruntime.dll so the sidecar can load ONNX embeddings at
+      # runtime. Falls back to a TF-IDF-only warning if not found — the build
+      # still succeeds. The dll is NOT listed in tauri-windows.conf.json
+      # resources because build.rs also copies it; explicit staging here
+      # is belt-and-suspenders for CI.
+      - name: Stage onnxruntime.dll (optional)
+        shell: pwsh
+        run: |
+          $dest = "apps/desktop/src-tauri/resources"
+          New-Item -ItemType Directory -Force -Path $dest | Out-Null
+          $dll = Get-ChildItem -Recurse -Filter "onnxruntime.dll" node_modules/.pnpm `
+            -ErrorAction SilentlyContinue |
+            Where-Object { $_.FullName -match "win32.x64" } |
+            Select-Object -First 1
+          if ($dll) {
+            Copy-Item $dll.FullName "$dest/onnxruntime.dll"
+            Write-Host "Staged $($dll.FullName) -> $dest/onnxruntime.dll"
+          } else {
+            Write-Warning "onnxruntime.dll not found — embeddings will use TF-IDF fallback"
+          }
+
+      - name: Build (Windows NSIS installer)
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+        run: pnpm --filter @graphnosis-app/desktop tauri:build -- --config src-tauri/tauri-windows.conf.json
+
+      - name: Find installer
+        id: find
+        shell: pwsh
+        run: |
+          $nsis = Get-ChildItem -Recurse -Filter "*.exe" `
+            apps/desktop/src-tauri/target/release/bundle/nsis |
+            Select-Object -First 1
+          if (-not $nsis) {
+            Write-Error "NSIS installer not found"
+            exit 1
+          }
+          echo "path=$($nsis.FullName)" >> $env:GITHUB_OUTPUT
+          echo "name=$($nsis.Name)" >> $env:GITHUB_OUTPUT
+
+      - name: Upload installer artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.find.outputs.name }}
+          path: ${{ steps.find.outputs.path }}
+          retention-days: 14
