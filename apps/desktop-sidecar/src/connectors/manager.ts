@@ -206,6 +206,7 @@ export class ConnectorManager {
           ingestClip(this.host, cfg.graphId, ev.text, ev.label, {
             addedBy: `connector:${cfg.kind}`,
             sourceKind: ev.sourceKind ?? 'clip',
+            triggeredBy: `connector:${cfg.kind}`,
           }),
         );
         count++;

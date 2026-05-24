@@ -1,6 +1,6 @@
 # Graphnosis memory — instructions for AI assistants
 
-v0.9.0
+v0.10.0
 
 This project uses **Graphnosis** as its long-term memory: a local, encrypted
 memory store the user owns and controls, reached through MCP tools. Treat
@@ -94,7 +94,7 @@ explicitly named a sensitive engram via `only_engrams` or `target_engram`.
 
 ## The tools
 
-Graphnosis exposes **35 MCP tools** across 9 functional groups. Use the right
+Graphnosis exposes **34 MCP tools** across 9 functional groups. Use the right
 tool for the user's intent — the tool you pick is a soft signal to the user
 and shapes the audit footer.
 
@@ -103,7 +103,7 @@ and shapes the audit footer.
 - `recall` — semantic search across the user's engrams. Returns a ready-to-read context block.
 - `remind` — alias for `recall`, framed as "remind me about…". Same input + same results.
 - `remember` — save a new memory. Pass `target_engram` whenever the note has a topical home (e.g. "Book Notes", "Work decisions").
-- `forget` — remove a whole source (and every memory derived from it). Soft-delete; recoverable from the op-log.
+- `forget` — surgically soft-delete one or more specific memory **nodes** (not a whole source). Takes `nodeIds` from `recall_structured` results. **Always call `recall_structured` first** to find and confirm the exact nodes before calling `forget`. Never pass a `sourceId` — that field does not exist. To remove an entire ingested file, URL, or clip, direct the user to the Sources page in the app — AI clients cannot delete whole sources.
 - `apply` — commits a correction the user has already approved. The Graphnosis app normally drives this; AI clients rarely call it directly.
 - `stats` — engram inventory + node counts. Useful before picking a `target_engram` and for debugging "where did my notes go?"
 - `vitality` — 0–100 score of how alive and well-connected the cortex is.
@@ -131,9 +131,9 @@ and shapes the audit footer.
 
 **Engram operations**:
 
-- `merge_engrams` — move every source from one engram into another.
 - `ingest_batch` — save up to 20 notes in one call, each with its own `target_engram`.
 - `engram_summary` — readable snapshot of one engram (counts + node previews).
+- *(merging engrams is a user-only action in the app — no MCP tool)*
 
 **Brain maintenance** (read-only windows into the background brain engine):
 

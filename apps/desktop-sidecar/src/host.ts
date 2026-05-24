@@ -761,7 +761,7 @@ export class GraphnosisHost {
         graphId,
         op: 'editNode',
         target: { kind: 'node', id: nodeId },
-        after: { confidence: newConfidence, reason: 'brain:reinforcement' },
+        after: { confidence: newConfidence, reason: 'brain:reinforcement', triggeredBy: 'brain:reinforcement' },
       });
       g.dirty = true;
       await this.save(graphId);
@@ -1325,7 +1325,7 @@ export class GraphnosisHost {
     kind: SourceRecord['kind'],
     ref: string,
     input: AppendDocumentInput,
-    opts?: { addedBy?: string },
+    opts?: { addedBy?: string; triggeredBy?: string },
   ): Promise<SourceRecord> {
     const g = this.must(graphId);
     const sourceId = makeSourceId(kind, ref);
@@ -1385,18 +1385,19 @@ export class GraphnosisHost {
     g.sourceIndex.add(record);
     g.dirty = true;
 
+    const trigAttr = opts?.triggeredBy ? { triggeredBy: opts.triggeredBy } : {};
     this.oplogWriter.emit({
       graphId,
       op: 'ingestSource',
       target: { kind: 'source', id: sourceId },
-      after: record,
+      after: { ...record, ...trigAttr },
     });
     for (const nodeId of result.newNodeIds) {
       this.oplogWriter.emit({
         graphId,
         op: 'addNode',
         target: { kind: 'node', id: nodeId },
-        after: { sourceId },
+        after: { sourceId, ...trigAttr },
       });
     }
 
@@ -1463,7 +1464,7 @@ export class GraphnosisHost {
     chunks: AppendDocumentInput[],
     wrap: <T>(fn: () => Promise<T>) => Promise<T>,
     onChunk?: (chunksDone: number, totalChunks: number, nodesTotal: number) => void,
-    opts?: { addedBy?: string },
+    opts?: { addedBy?: string; triggeredBy?: string },
   ): Promise<SourceRecord> {
     if (chunks.length === 0) throw new Error('ingestChunked: at least one chunk required');
     const g = this.must(graphId);
@@ -1511,18 +1512,19 @@ export class GraphnosisHost {
     g.sourceIndex.add(record);
     g.dirty = true;
 
+    const trigAttrChunked = opts?.triggeredBy ? { triggeredBy: opts.triggeredBy } : {};
     this.oplogWriter.emit({
       graphId,
       op: 'ingestSource',
       target: { kind: 'source', id: sourceId },
-      after: record,
+      after: { ...record, ...trigAttrChunked },
     });
     for (const nodeId of allNodeIds) {
       this.oplogWriter.emit({
         graphId,
         op: 'addNode',
         target: { kind: 'node', id: nodeId },
-        after: { sourceId },
+        after: { sourceId, ...trigAttrChunked },
       });
     }
 
@@ -1626,26 +1628,30 @@ export class GraphnosisHost {
     );
   }
 
-  async forgetSource(graphId: GraphId, sourceId: string): Promise<{ nodeIds: string[] }> {
+  async forgetSource(graphId: GraphId, sourceId: string, opts?: { triggeredBy?: string }): Promise<{ nodeIds: string[] }> {
     const g = this.must(graphId);
     // Grab the ref BEFORE the forget so we can notify the file-watcher.
     // sourceIndex.forget() removes the record; we'd otherwise lose the path.
     const priorRecord = g.sourceIndex.get(sourceId);
     const nodeIds = g.sourceIndex.forget(sourceId);
+    const forgetTrigAttr = opts?.triggeredBy ? { triggeredBy: opts.triggeredBy } : {};
     for (const nodeId of nodeIds) {
+      // Capture the content preview BEFORE soft-deleting so the activity log can show it.
+      const contentPreview = this.opts.adapter.inspectNodes(g.handle).find(n => n.id === nodeId)?.contentPreview;
       // Soft-delete in Graphnosis: node stays for audit, confidence drops, won't be returned by queries.
       await this.opts.adapter.applyCorrection(g.handle, { kind: 'delete', nodeId, reason: `forget source ${sourceId}` });
       this.oplogWriter.emit({
         graphId,
         op: 'deleteNode',
         target: { kind: 'node', id: nodeId },
-        before: { sourceId },
+        before: { sourceId, preview: contentPreview, ...forgetTrigAttr },
       });
     }
     this.oplogWriter.emit({
       graphId,
       op: 'forgetSource',
       target: { kind: 'source', id: sourceId },
+      before: { ref: priorRecord?.ref, kind: priorRecord?.kind, nodeCount: nodeIds.length, ...forgetTrigAttr },
     });
     // Forget means forget everywhere — drop the cached content blob too.
     // If the user re-ingests later, we'll cache a fresh copy.
@@ -1733,9 +1739,10 @@ export class GraphnosisHost {
       // File sources: re-read from disk into target, then forget from source.
       const { ingestFile } = await import('./ingest.js');
       const { withEmbedding } = await import('./embedding-queue.js');
-      ({ nodeIds: forgottenNodeIds } = await this.forgetSource(fromGraphId, sourceId));
+      ({ nodeIds: forgottenNodeIds } = await this.forgetSource(fromGraphId, sourceId, { triggeredBy: 'user:ingest' }));
       newRecord = await ingestFile(this, toGraphId, rec.ref, {
         wrapIngest: (fn) => withEmbedding(fn),
+        triggeredBy: 'user:ingest',
       });
     } else {
       // Non-file sources (clip, ai-conversation): read encrypted blob first,
@@ -1753,8 +1760,8 @@ export class GraphnosisHost {
         content,
         sourceRef: header.ref,
       };
-      ({ nodeIds: forgottenNodeIds } = await this.forgetSource(fromGraphId, sourceId));
-      newRecord = await this.ingest(toGraphId, rec.kind, rec.ref, input);
+      ({ nodeIds: forgottenNodeIds } = await this.forgetSource(fromGraphId, sourceId, { triggeredBy: 'user:ingest' }));
+      newRecord = await this.ingest(toGraphId, rec.kind, rec.ref, input, { triggeredBy: 'user:ingest' });
     }
 
     this.kickoffRelink(toGraphId);
@@ -1815,7 +1822,7 @@ export class GraphnosisHost {
   async applyCorrection(
     graphId: GraphId,
     patches: { adds?: AppendDocumentInput[]; edits?: CorrectionEdit[] },
-    opts?: { correctedBy?: string },
+    opts?: { correctedBy?: string; triggeredBy?: string },
   ): Promise<void> {
     const g = this.must(graphId);
     // Attribution: every op-log event emitted by this call carries the
@@ -1823,7 +1830,10 @@ export class GraphnosisHost {
     // (e.g. "claude-ai"). Lets the audit log show "Claude edited this
     // node" alongside the content/reason. The field is silently omitted
     // when the user applied the correction directly via the App UI.
-    const attribution = opts?.correctedBy ? { correctedBy: opts.correctedBy } : {};
+    const attribution = {
+      ...(opts?.correctedBy ? { correctedBy: opts.correctedBy } : {}),
+      ...(opts?.triggeredBy ? { triggeredBy: opts.triggeredBy } : {}),
+    };
     const ingestOpts = { chunkSize: this.settings.ai.chunkSize };
     for (const add of patches.adds ?? []) {
       const result = await this.opts.adapter.appendDocument(g.handle, add, ingestOpts);
@@ -1927,7 +1937,7 @@ export class GraphnosisHost {
       graphId,
       op: 'editNode',
       target: { kind: 'node', id: nodeId },
-      after: { confidence: newConfidence, reason: 'brain:temporal-decay' },
+      after: { confidence: newConfidence, reason: 'brain:temporal-decay', triggeredBy: 'brain:reinforcement' },
     });
     g.dirty = true;
     await this.save(graphId);

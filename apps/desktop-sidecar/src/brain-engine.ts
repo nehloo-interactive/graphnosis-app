@@ -520,7 +520,7 @@ export class BrainEngine {
               nodeId: supersededId,
               reason: 'user-confirmed duplicate (Check-in review)',
             }],
-          });
+          }, { triggeredBy: 'user:correct' });
         } catch (err) {
           console.error('[brain] resolveDuplicatePair merge failed:', err);
         }
@@ -1034,7 +1034,7 @@ export class BrainEngine {
         nodeId: act.supersededId,
         reason: `autonomous-healing (${act.rule}): ${act.decisionReason}`,
       }],
-    });
+    }, { triggeredBy: 'brain:consolidation' });
     this.healingJournal.push(makeHealingRecord({
       graphId: act.graphId,
       healedAt: Date.now(),
@@ -1205,7 +1205,7 @@ export class BrainEngine {
             content: record.supersededContentSnapshot,
             reason: `healing-review: reversed (heal ${record.id})`,
           }],
-        });
+        }, { triggeredBy: 'brain:consolidation' });
         return { verdict: 'reversed', note: note ?? 'deterministic rule kept the wrong node' };
 
       case 'resynthesized': {
@@ -1224,7 +1224,7 @@ export class BrainEngine {
             content: combinedText,
             reason: `healing-review: resynthesized (heal ${record.id})`,
           }],
-        });
+        }, { triggeredBy: 'brain:consolidation' });
         return { verdict: 'resynthesized', note: note ?? 'rewrote a cleaner combined memory' };
       }
 
