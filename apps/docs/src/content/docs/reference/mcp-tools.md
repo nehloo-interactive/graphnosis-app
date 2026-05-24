@@ -5,7 +5,7 @@ sidebar:
   order: 1
 ---
 
-The Graphnosis sidecar exposes **35 tools** via the Model Context Protocol, organised into nine functional categories. Every connected MCP client — Claude Desktop, Claude Code, Cursor, and anything else that speaks MCP — sees the same 35. What a tool can actually reach is still governed by each engram's sensitivity tier and the [consent gate](/guides/ai-access-controls/#2-the-consent-gate) — by default a one-click in-app prompt for `sensitive`-tier recalls, silent for `personal` and `public`.
+The Graphnosis sidecar exposes **34 tools** via the Model Context Protocol, organised into nine functional categories. Every connected MCP client — Claude Desktop, Claude Code, Cursor, and anything else that speaks MCP — sees the same 34. What a tool can actually reach is still governed by each engram's sensitivity tier and the [consent gate](/guides/ai-access-controls/#2-the-consent-gate) — by default a one-click in-app prompt for `sensitive`-tier recalls, silent for `personal` and `public`.
 
 You can browse the full toolset inside the app too: open the **MCP Tools** button in the left sidebar (next to Settings). Each tool name opens a short explainer with example prompts you can paste straight into your AI client.
 
@@ -17,7 +17,7 @@ You can browse the full toolset inside the app too: open the **MCP Tools** butto
 | **Engram discovery** (5) | [`list_engrams`](#list_engrams) · [`suggest_engram`](#suggest_engram) · [`browse_engram`](#browse_engram) · [`recent`](#recent) · [`get_engram_schema`](#get_engram_schema) |
 | **Structured recall** (4) | [`recall_structured`](#recall_structured) · [`recall_with_citations`](#recall_with_citations) · [`compare_engrams`](#compare_engrams) · [`cross_search`](#cross_search) |
 | **Source operations** (3) | [`find_source`](#find_source) · [`recall_source`](#recall_source) · [`transfer_source`](#transfer_source) |
-| **Engram operations** (3) | [`merge_engrams`](#merge_engrams) · [`ingest_batch`](#ingest_batch) · [`engram_summary`](#engram_summary) |
+| **Engram operations** (2) | [`ingest_batch`](#ingest_batch) · [`engram_summary`](#engram_summary) |
 | **Brain maintenance** (3) | [`duplicate_pairs`](#duplicate_pairs) · [`healing_journal`](#healing_journal) · [`gnn_status`](#gnn_status) |
 | **Approximate** (2) | [`audit_memory`](#audit_memory) · [`check_duplicate`](#check_duplicate) |
 | **Conditional** (1) | [`correct`](#correct) |
@@ -305,31 +305,48 @@ Applied.
 
 ## `forget`
 
-**Determinism: deterministic.** Removing the same source always yields the same result — no LLM, no randomness, and the soft-delete is recoverable from the op-log.
+**Determinism: deterministic.** Soft-deleting the same node always yields the same result — no LLM, no randomness, and the delete is recoverable from the op-log.
 
-Remove a **source** from an engram. Every node derived from that source is soft-deleted and dropped from future recall results.
+Surgically soft-delete **one or more specific memory nodes** from an engram. Only the listed nodes are removed — the rest of the source they came from is completely untouched.
+
+:::caution[Node-level only — sources are user-only]
+`forget` operates at the **node level**, not the source level. Removing an entire ingested file, URL, or clip is a **user-only action** done from the Sources page in the Graphnosis app. An AI client has no API to delete a whole source — by design.
+
+This matters: if a source has 500 nodes and the user only wants one stale fact gone, `forget` removes just that node. The other 499 are untouched.
+:::
 
 ### Parameters
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `graphId` | string | Yes | The engram **slug** (e.g. `personal`, `rss-ai`, `work`) — not a node ID or hash. Use `list_engrams` or `stats` to see valid slugs. |
-| `sourceId` | string | Yes | The exact source ID from the source index — not a display label or node hash. **Always call `find_source` first** to look it up; never construct or guess this value. |
+| `graphId` | string | Yes | The engram **slug** (e.g. `personal`, `rss-ai`, `work`). Use `list_engrams` or `stats` to see valid slugs. |
+| `nodeIds` | string or string[] | Yes | One nodeId or an array of up to 20 nodeIds. Node IDs come from `recall_structured` results — never guess or construct them. |
+
+### How to get nodeIds — always use `recall_structured` first
+
+```text
+1. Call recall_structured(query="<what the user described>", graphId="<engram>")
+2. Show the user the matching node(s) — confirm which ones to remove.
+3. Call forget(graphId="<engram>", nodeIds=["<id1>", "<id2>", ...])
+```
+
+Never skip the `recall_structured` step. Never pass a `sourceId` — that field does not exist on this tool.
 
 ### Return
 
-Plain text reporting how many nodes were soft-deleted:
+Plain text confirming how many nodes were soft-deleted:
 
 ```text
-Forgot 7 nodes from source clip:abc123.
+Forgot 1 node: node_abc123.
+Forgot 3 nodes: node_abc123, node_def456, node_ghi789.
 ```
 
 ### Notes
 
-- This is a **soft delete** — the op-log records a `forget` event and the user can restore the source via the app's Recover flow. Nothing is permanently destroyed.
-- `forget` removes the *whole* source. To remove a single memory inside a multi-fact source, use `correct` with a delete operation instead.
-- **Always call `find_source` before `forget`** to get both the exact `sourceId` and the engram slug. Passing a wrong value silently does nothing — no error, zero nodes deleted.
-- Confirm with the user before calling unless they have explicitly named the source.
+- This is a **soft delete** — the user can recover deleted nodes via the app's Recover flow. Nothing is permanently destroyed.
+- `forget` removes only the nodes you name. The source record and every other node from that source remain intact.
+- Always confirm with the user which node(s) to remove before calling.
+- To fix content rather than delete it, use `correct` instead.
 
 ### Example
 
@@ -338,15 +355,15 @@ Forgot 7 nodes from source clip:abc123.
   "tool": "forget",
   "arguments": {
     "graphId": "work",
-    "sourceId": "clip:abc123"
+    "nodeIds": ["node_abc123"]
   }
 }
 ```
 
 ### Examples in practice
 
-- **Everyday —** You ingested an old rental lease that no longer applies. You tell your AI "drop the lease document from my files" — `forget` soft-deletes every node from that source so it stops surfacing in recall, and you can still restore it via Recover if needed.
-- **Technical —** A stale API spec you imported keeps polluting answers with outdated endpoints. You ask the AI to remove that whole document — `forget` clears the entire source at once, rather than correcting each fact one by one.
+- **Everyday —** You saved a to-do that's no longer relevant. You tell your AI "remove that note about the UX polish cleanup" — the AI calls `recall_structured` to find the exact node, shows you the text to confirm, then calls `forget` with just that nodeId. Your other notes from the same session are untouched.
+- **Surgical cleanup —** An ingested document has one outdated fact that keeps surfacing in recall. Rather than re-ingesting the whole document, the AI finds the specific node with `recall_structured` and removes it with `forget`. The rest of the document's 40+ nodes stay in place.
 
 ---
 
@@ -528,7 +545,7 @@ Recommends the best engram to save a note into, based on token similarity betwee
 
 ### `browse_engram`
 
-Lists every source ingested into a specific engram — file paths, clip refs, timestamps, IDs — newest first. The right lookup before `forget` or `transfer_source` when you need the exact sourceId.
+Lists every source ingested into a specific engram — file paths, clip refs, timestamps, IDs — newest first. The right lookup before `transfer_source` when you need the exact sourceId. To forget specific memory nodes, use `recall_structured` → `forget` instead.
 
 - **Parameters:** `engram` (required, slug or display name; fuzzy-matched) · `limit` (optional, default 20).
 - **Try saying:** *"What's inside my Reading List engram?"*
@@ -594,8 +611,10 @@ Find sources by a keyword substring match against sourceId, ref (label/path/URL)
 - **Parameters:** `keyword` (required) · `engram` (optional, narrows the search to one engram) · `limit` (default 10).
 - **Try saying:** *"Where did I save that PDF about Raft?"*
 
-:::tip[Call this before `forget`]
-Always call `find_source` before `forget` or `transfer_source`. Use the returned `graphId` (engram slug) and `sourceId` verbatim — never construct or guess either value from a node hash or display label.
+:::tip[Call this before `transfer_source`]
+Always call `find_source` before `transfer_source`. Use the returned `graphId` (engram slug) and `sourceId` verbatim — never construct or guess either value.
+
+To **forget** specific memories, use `recall_structured` (not `find_source`) — it returns `nodeId` values, which is what `forget` accepts.
 :::
 
 ### `recall_source`
@@ -616,12 +635,9 @@ Moves a single source (and every memory derived from it) from one engram to anot
 
 ## Engram operations
 
-### `merge_engrams`
-
-Moves every source from one engram into another, leaving the source engram empty. Per-source error reporting — one bad source doesn't abort the whole merge.
-
-- **Parameters:** `from_engram` · `to_engram`.
-- **Try saying:** *"Merge my Inbox into Work."*
+:::note[Merging engrams is a user-only action]
+Merging an entire engram into another is done from **Settings → Engrams** in the Graphnosis app — AI clients cannot trigger this operation. This keeps a broad, hard-to-reverse action under explicit user control.
+:::
 
 ### `ingest_batch`
 
@@ -646,7 +662,7 @@ Read-only windows into the autonomous brain engine that runs in the background w
 
 ### `duplicate_pairs`
 
-Near-duplicate node pairs the brain engine has already flagged for review — high-confidence matches from the background scan, not ad-hoc searches. Resolve with `correct` (merge) or `forget` (remove one side). Requires the brain engine to be running.
+Near-duplicate node pairs the brain engine has already flagged for review — high-confidence matches from the background scan, not ad-hoc searches. Resolve with `correct` (merge) or `forget(nodeIds=[nodeId])` (remove one side). Requires the brain engine to be running.
 
 - **Try saying:** *"What does my brain think is duplicated?"*
 
