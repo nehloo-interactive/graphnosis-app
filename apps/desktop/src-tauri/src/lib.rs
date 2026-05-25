@@ -245,6 +245,14 @@ async fn unlock_cortex_with_recovery(
 
 /// Suggest a sensible default cortex-folder path for a brand-new user
 /// (`~/GraphnosisCortex`). The folder doesn't need to exist yet — the
+/// Returns true when the given path exists as a directory on disk.
+/// Called by the lock screen immediately after pre-filling the last-used
+/// cortex path so it can warn the user before they attempt to unlock.
+#[tauri::command]
+async fn check_path_exists(path: String) -> bool {
+    std::path::Path::new(&path).is_dir()
+}
+
 /// lock screen offers to create it on first unlock via `create_cortex_dir`.
 /// Used by the lock screen to pre-fill the cortex-folder input when the
 /// user hasn't picked one before.
@@ -443,21 +451,80 @@ async fn regenerate_recovery_phrase(state: State<'_, AppState>) -> Result<String
 /// section so the user can review and decide whether to delete or restore.
 #[tauri::command]
 async fn list_quarantine(state: State<'_, AppState>) -> Result<serde_json::Value, String> {
-    let socket_path = {
+    // Implemented in Rust directly (reads the filesystem) so it works even
+    // when the Node sidecar's event loop is blocked by an ONNX embedding pass.
+    // The sidecar's quarantine.list IPC had a 15s timeout that fired whenever
+    // an ingest was in progress — this path has no timeout at all.
+    let cortex_dir = {
         let inner = state.inner.lock().await;
-        match inner.sidecar.as_ref() {
-            Some(h) => h.socket_path.clone(),
+        match inner.cortex_dir.as_ref() {
+            Some(d) => d.clone(),
             None => return Err("cortex is locked".to_string()),
         }
     };
-    ipc_client::request_with_timeout(
-        &socket_path,
-        "quarantine.list",
-        serde_json::Value::Null,
-        std::time::Duration::from_secs(15),
-    )
-        .await
-        .map_err(|e| e.to_string())
+
+    let graphs_dir = cortex_dir.join("graphs");
+
+    // Read all live graph IDs (files named "<id>.gai").
+    let mut live_ids = std::collections::HashSet::new();
+    if let Ok(rd) = std::fs::read_dir(&graphs_dir) {
+        for entry in rd.flatten() {
+            let name = entry.file_name();
+            let s = name.to_string_lossy();
+            if let Some(stem) = s.strip_suffix(".gai") {
+                if !stem.contains('.') {
+                    live_ids.insert(stem.to_string());
+                }
+            }
+        }
+    }
+
+    // Manual match: "<engramId>.<gai|bundle>.corrupt-<digits>"
+    // We look for the last occurrence of either ".gai.corrupt-" or
+    // ".bundle.corrupt-" so that engram IDs containing dots still work.
+    let mut items: Vec<serde_json::Value> = vec![];
+    if let Ok(rd) = std::fs::read_dir(&graphs_dir) {
+        for entry in rd.flatten() {
+            let name = entry.file_name();
+            let s = name.to_string_lossy().to_string();
+
+            // Determine which suffix marker is present and where.
+            let parsed = if let Some(pos) = s.rfind(".gai.corrupt-") {
+                let ts_part = &s[pos + ".gai.corrupt-".len()..];
+                if ts_part.chars().all(|c| c.is_ascii_digit()) && !ts_part.is_empty() {
+                    Some((&s[..pos], "gai", ts_part))
+                } else { None }
+            } else if let Some(pos) = s.rfind(".bundle.corrupt-") {
+                let ts_part = &s[pos + ".bundle.corrupt-".len()..];
+                if ts_part.chars().all(|c| c.is_ascii_digit()) && !ts_part.is_empty() {
+                    Some((&s[..pos], "bundle", ts_part))
+                } else { None }
+            } else { None };
+
+            if let Some((engram_id, kind, ts_str)) = parsed {
+                let timestamp: u64 = ts_str.parse().unwrap_or(0);
+                let size_bytes = entry.metadata().map(|m| m.len()).unwrap_or(0);
+                let live_engram_exists = live_ids.contains(engram_id);
+                items.push(serde_json::json!({
+                    "name":             s,
+                    "engramId":         engram_id,
+                    "kind":             kind,
+                    "timestamp":        timestamp,
+                    "sizeBytes":        size_bytes,
+                    "liveEngramExists": live_engram_exists,
+                }));
+            }
+        }
+    }
+
+    // Sort newest-first by timestamp.
+    items.sort_by(|a, b| {
+        let ta = a["timestamp"].as_u64().unwrap_or(0);
+        let tb = b["timestamp"].as_u64().unwrap_or(0);
+        tb.cmp(&ta)
+    });
+
+    Ok(serde_json::json!({ "items": items }))
 }
 
 /// Permanently delete one quarantined file. The frontend is responsible for
@@ -1115,6 +1182,94 @@ async fn accept_engram_suggestion(
         .map_err(|e| e.to_string())
 }
 
+/// Post a system notification for an engram-create-suggested event that
+/// includes an **Accept** action button (macOS only).
+///
+/// On macOS the notification uses `mac-notification-sys` with
+/// `MainButton::SingleAction("Accept")` so the user can approve the new
+/// engram without opening the App. When they click Accept the Rust thread
+/// emits `graphnosis://engram-notification-accepted`; the frontend listener
+/// calls `accept_engram_suggestion` with the same payload.
+///
+/// On Windows / Linux there are no action buttons — a plain informational
+/// notification is sent instead (user must open the App to act).
+#[tauri::command]
+async fn show_engram_action_notification(
+    app: AppHandle,
+    graph_id: String,
+    template: String,
+    display_name: String,
+    text: String,
+    label: String,
+    source_kind: Option<String>,
+    suggested_name: String,
+    requested_by: Option<String>,
+) -> Result<(), String> {
+    let who = requested_by
+        .as_deref()
+        .unwrap_or("An AI client")
+        .to_string();
+    let notification_body = format!(
+        "{} wants to save into a new engram \"{}\". Accept to create it.",
+        who, suggested_name
+    );
+
+    #[cfg(target_os = "macos")]
+    {
+        let app_clone = app.clone();
+        let body_owned = notification_body.clone();
+        std::thread::spawn(move || {
+            let result = mac_notification_sys::Notification::new()
+                .title("Graphnosis — confirmation needed")
+                .message(&body_owned)
+                .main_button(mac_notification_sys::MainButton::SingleAction("Accept"))
+                .wait_for_click(true)
+                .send();
+            match result {
+                Ok(mac_notification_sys::NotificationResponse::ActionButton(_)) => {
+                    // User clicked Accept — emit event; the frontend calls
+                    // accept_engram_suggestion with the stored payload.
+                    let payload = serde_json::json!({
+                        "graphId": graph_id,
+                        "template": template,
+                        "displayName": display_name,
+                        "text": text,
+                        "label": label,
+                        "sourceKind": source_kind,
+                    });
+                    let _ = app_clone.emit(
+                        "graphnosis://engram-notification-accepted",
+                        payload,
+                    );
+                }
+                Ok(mac_notification_sys::NotificationResponse::Click) => {
+                    // Notification body click — bring the window up so the
+                    // in-app banner is visible.
+                    if let Some(win) = app_clone.get_webview_window("main") {
+                        let _ = win.show();
+                        let _ = win.set_focus();
+                    }
+                }
+                _ => {}
+            }
+        });
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        // No action buttons on Windows / Linux — plain notification; user
+        // opens the App to act on the in-app banner.
+        use tauri_plugin_notification::NotificationExt;
+        let _ = app
+            .notification()
+            .builder()
+            .title("Graphnosis — confirmation needed")
+            .body(&notification_body)
+            .show();
+    }
+
+    Ok(())
+}
+
 #[tauri::command]
 async fn search_nodes(
     state: State<'_, AppState>,
@@ -1363,21 +1518,83 @@ async fn list_activity(state: State<'_, AppState>) -> Result<serde_json::Value, 
 
 #[tauri::command]
 async fn list_snapshots(state: State<'_, AppState>) -> Result<serde_json::Value, String> {
-    let socket_path = {
+    // Implemented in Rust directly (reads the filesystem) so it works even
+    // when the Node sidecar's event loop is blocked by an ONNX embedding pass.
+    // The sidecar's snapshots.list IPC had a 30s timeout that fired whenever
+    // an ingest was in progress — this path has no timeout at all.
+    let cortex_dir = {
         let inner = state.inner.lock().await;
-        match inner.sidecar.as_ref() {
-            Some(h) => h.socket_path.clone(),
+        match inner.cortex_dir.as_ref() {
+            Some(d) => d.clone(),
             None => return Err("cortex is locked".to_string()),
         }
     };
-    ipc_client::request_with_timeout(
-        &socket_path,
-        "snapshots.list",
-        serde_json::Value::Null,
-        std::time::Duration::from_secs(30),
-    )
-        .await
-        .map_err(|e| e.to_string())
+
+    let snapshots_dir = cortex_dir.join(".snapshots");
+    if !snapshots_dir.exists() {
+        return Ok(serde_json::json!({ "snapshots": [] }));
+    }
+
+    let mut snapshots: Vec<serde_json::Value> = vec![];
+
+    let rd = std::fs::read_dir(&snapshots_dir).map_err(|e| e.to_string())?;
+    for entry in rd.flatten() {
+        let name = entry.file_name();
+        let id = name.to_string_lossy().to_string();
+        if id.starts_with('.') {
+            continue;
+        }
+        let full = entry.path();
+        if !full.is_dir() {
+            continue;
+        }
+
+        // Get creation time (fallback to mtime on platforms without birthtime).
+        let created_at_ms = entry.metadata()
+            .ok()
+            .and_then(|m| {
+                m.created()
+                    .or_else(|_| m.modified())
+                    .ok()
+            })
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0);
+
+        // Walk the snapshot directory to accumulate size + file count.
+        let mut size_bytes: u64 = 0;
+        let mut file_count: u64 = 0;
+        let mut stack = vec![full.clone()];
+        while let Some(dir) = stack.pop() {
+            if let Ok(children) = std::fs::read_dir(&dir) {
+                for child in children.flatten() {
+                    let cp = child.path();
+                    if cp.is_dir() {
+                        stack.push(cp);
+                    } else if let Ok(meta) = child.metadata() {
+                        size_bytes += meta.len();
+                        file_count += 1;
+                    }
+                }
+            }
+        }
+
+        snapshots.push(serde_json::json!({
+            "id":         id,
+            "createdAt":  created_at_ms,
+            "sizeBytes":  size_bytes,
+            "fileCount":  file_count,
+        }));
+    }
+
+    // Sort newest-first.
+    snapshots.sort_by(|a, b| {
+        let ta = a["createdAt"].as_u64().unwrap_or(0);
+        let tb = b["createdAt"].as_u64().unwrap_or(0);
+        tb.cmp(&ta)
+    });
+
+    Ok(serde_json::json!({ "snapshots": snapshots }))
 }
 
 #[tauri::command]
@@ -1530,7 +1747,10 @@ async fn sidecar_ipc_call(
         &socket_path,
         &method,
         params,
-        std::time::Duration::from_secs(120),
+        // 300 s: covers docs:ingest (24 pages × ~5 s embedding each) plus
+        // startup contention when other engrams are loading concurrently.
+        // The previous 120 s limit was tight enough to fire on cold starts.
+        std::time::Duration::from_secs(300),
     )
     .await
     .map_err(|e| e.to_string())
@@ -1926,14 +2146,28 @@ async fn save_json_file(
 #[cfg(target_os = "macos")]
 fn install_app_menu(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
     use tauri::menu::{
-        AboutMetadataBuilder, MenuBuilder, MenuItemBuilder, PredefinedMenuItem, SubmenuBuilder,
+        AboutMetadataBuilder, CheckMenuItem, MenuBuilder, MenuItemBuilder,
+        PredefinedMenuItem, SubmenuBuilder,
     };
+    use tauri_plugin_autostart::ManagerExt;
 
     let about_item = MenuItemBuilder::with_id("graphnosis-about", "About Graphnosis")
         .build(app)?;
 
+    let launch_at_login_checked = app.autolaunch().is_enabled().unwrap_or(false);
+    let launch_at_login_item = CheckMenuItem::with_id(
+        app,
+        "graphnosis-launch-at-login",
+        "Launch at Login",
+        true,
+        launch_at_login_checked,
+        None::<&str>,
+    )?;
+
     let app_submenu = SubmenuBuilder::new(app, "Graphnosis")
         .item(&about_item)
+        .separator()
+        .item(&launch_at_login_item)
         .separator()
         .services()
         .separator()
@@ -1972,14 +2206,38 @@ fn install_app_menu(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
 
     app.set_menu(menu)?;
 
-    // Route the custom "About Graphnosis" click to the rich HTML panel.
+    // Route custom app-menu clicks.
     let app_for_handler = app.clone();
     app.on_menu_event(move |_app, event| {
-        if event.id() == "graphnosis-about" {
-            let app_inner = app_for_handler.clone();
-            tauri::async_runtime::spawn(async move {
-                let _ = open_about_window(app_inner).await;
-            });
+        match event.id().as_ref() {
+            "graphnosis-about" => {
+                let app_inner = app_for_handler.clone();
+                tauri::async_runtime::spawn(async move {
+                    let _ = open_about_window(app_inner).await;
+                });
+            }
+            "graphnosis-launch-at-login" => {
+                use tauri_plugin_autostart::ManagerExt;
+                let autolaunch = app_for_handler.autolaunch();
+                let currently = autolaunch.is_enabled().unwrap_or(false);
+                if currently { let _ = autolaunch.disable(); } else { let _ = autolaunch.enable(); }
+                // Sync the tray checkmark to match.
+                let new_state = autolaunch.is_enabled().unwrap_or(!currently);
+                let app_inner = app_for_handler.clone();
+                tauri::async_runtime::spawn(async move {
+                    let state = app_inner.state::<AppState>();
+                    let snapshot = {
+                        let inner = state.inner.lock().await;
+                        StatusSnapshot {
+                            unlocked: inner.sidecar.is_some(),
+                            cortex_dir: inner.cortex_dir.as_ref().map(|p| p.to_string_lossy().into_owned()),
+                            sidecar_running: inner.sidecar.is_some(),
+                        }
+                    };
+                    tray::refresh_status_with_autostart(&app_inner, &snapshot, new_state);
+                });
+            }
+            _ => {}
         }
     });
 
@@ -2019,7 +2277,7 @@ async fn open_about_window(app: AppHandle) -> Result<(), String> {
         tauri::WebviewUrl::App("about.html".into()),
     )
         .title("About Graphnosis")
-        .inner_size(480.0, 400.0)
+        .inner_size(480.0, 500.0)
         .resizable(false)
         .maximizable(false)
         .minimizable(false)
@@ -2178,9 +2436,17 @@ async fn move_source(
         "sourceId": source_id,
         "toGraphId": to_graph_id,
     });
-    ipc_client::request(&socket_path, "sources.move", params)
-        .await
-        .map_err(|e| e.to_string())
+    // Moving a source involves forgetSource (soft-delete + disk write) then
+    // re-ingest into the destination engram — can take well over 5s for
+    // large sources, so use a generous budget instead of the default 5s.
+    ipc_client::request_with_timeout(
+        &socket_path,
+        "sources.move",
+        params,
+        std::time::Duration::from_secs(60),
+    )
+    .await
+    .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -2267,16 +2533,42 @@ async fn run_update_check(app: AppHandle) -> anyhow::Result<Option<String>> {
     }
 
     // Notify the user even when the window is hidden.
-    use tauri_plugin_notification::NotificationExt;
-    let _ = app
-        .notification()
-        .builder()
-        .title("Graphnosis Update Available")
-        .body(&format!(
-            "Version {} is ready. Open the menu-bar icon to install.",
-            version
-        ))
-        .show();
+    // On macOS: use mac-notification-sys directly with wait_for_click so
+    // clicking the banner re-opens the panel to show the in-app update modal.
+    #[cfg(target_os = "macos")]
+    {
+        let app_clone = app.clone();
+        let version_str = version.clone();
+        std::thread::spawn(move || {
+            let result = mac_notification_sys::Notification::new()
+                .title("Graphnosis Update Available")
+                .message(&format!(
+                    "Version {} is ready. Click to install.",
+                    version_str
+                ))
+                .wait_for_click(true)
+                .send();
+            if let Ok(mac_notification_sys::NotificationResponse::Click) = result {
+                if let Some(win) = app_clone.get_webview_window("main") {
+                    let _ = win.show();
+                    let _ = win.set_focus();
+                }
+            }
+        });
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        use tauri_plugin_notification::NotificationExt;
+        let _ = app
+            .notification()
+            .builder()
+            .title("Graphnosis Update Available")
+            .body(&format!(
+                "Version {} is ready. Open the menu-bar icon to install.",
+                version
+            ))
+            .show();
+    }
 
     // Emit to the frontend so the in-app update modal can appear.
     let _ = app.emit("graphnosis://update-available", version.clone());
@@ -2316,6 +2608,7 @@ pub fn run() {
         ))
         .invoke_handler(tauri::generate_handler![
             pick_cortex_folder,
+            check_path_exists,
             suggest_cortex_path,
             create_cortex_dir,
             unlock_cortex,
@@ -2346,6 +2639,7 @@ pub fn run() {
             list_graphs_with_metadata,
             create_graph_with_template,
             accept_engram_suggestion,
+            show_engram_action_notification,
             search_nodes,
             list_nodes,
             list_edges,
@@ -2431,26 +2725,69 @@ pub fn run() {
             Ok(())
         })
         .on_window_event(|window, event| {
-            // Close button hides the window rather than quitting the app —
+            // Close button hides the MAIN window rather than quitting the app —
             // we're a menu-bar resident; quit is via the tray "Quit" item.
+            // Secondary windows (About, etc.) are allowed to close normally —
+            // intercepting their CloseRequested fires the "Synapse is running"
+            // notification spuriously and produces a macOS "Choose Application"
+            // dialog from mac_notification_sys's use_default URL handler.
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                if window.label() != "main" {
+                    // Let the window close and destroy itself naturally.
+                    return;
+                }
                 let _ = window.hide();
                 api.prevent_close();
                 // Let the user know the app is still alive so AI clients,
                 // agents, and connectors keep working without the window open.
-                use tauri_plugin_notification::NotificationExt;
-                let _ = window
-                    .app_handle()
-                    .notification()
-                    .builder()
-                    .title("Graphnosis Synapse is running")
-                    .body("Your AI clients, agents, and connectors stay active. Reopen anytime from the menu bar icon.")
-                    .show();
+                // On macOS: send via mac-notification-sys with wait_for_click so
+                // clicking the notification banner re-opens the panel immediately.
+                #[cfg(target_os = "macos")]
+                {
+                    let app_clone = window.app_handle().clone();
+                    std::thread::spawn(move || {
+                        let result = mac_notification_sys::Notification::new()
+                            .title("Graphnosis Synapse is running")
+                            .message("Your AI clients, agents, and connectors stay active. Click to reopen.")
+                            .wait_for_click(true)
+                            .send();
+                        if let Ok(mac_notification_sys::NotificationResponse::Click) = result {
+                            if let Some(win) = app_clone.get_webview_window("main") {
+                                let _ = win.show();
+                                let _ = win.set_focus();
+                            }
+                        }
+                    });
+                }
+                #[cfg(not(target_os = "macos"))]
+                {
+                    use tauri_plugin_notification::NotificationExt;
+                    let _ = window
+                        .app_handle()
+                        .notification()
+                        .builder()
+                        .title("Graphnosis Synapse is running")
+                        .body("Your AI clients, agents, and connectors stay active. Reopen anytime from the menu bar icon.")
+                        .show();
+                }
             }
         })
         .build(tauri::generate_context!())
         .expect("error while running Graphnosis")
         .run(|app_handle, event| {
+            // Dock-icon click (or Cmd+Tab → click) after the window has been
+            // hidden: bring the main window back to the front. macOS fires
+            // `Reopen` when the app is already running and the user activates
+            // it via the Dock or the application switcher.
+            if let tauri::RunEvent::Reopen { has_visible_windows, .. } = &event {
+                if !has_visible_windows {
+                    if let Some(win) = app_handle.get_webview_window("main") {
+                        let _ = win.show();
+                        let _ = win.set_focus();
+                    }
+                }
+            }
+
             // Intercept every exit path (tray Quit, Cmd+Q, macOS App > Quit,
             // app.exit() from a command, etc.) and synchronously shut down
             // the sidecar. The tray Quit handler does this too, but Cmd+Q

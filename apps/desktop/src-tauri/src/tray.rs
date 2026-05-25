@@ -7,20 +7,27 @@
 
 use tauri::{
     Emitter,
-    menu::{Menu, MenuItem, PredefinedMenuItem},
+    menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem},
     tray::TrayIconBuilder,
     AppHandle, Manager, Wry,
 };
+use tauri_plugin_autostart::ManagerExt;
 
 use crate::{AppState, StatusSnapshot};
 
+/// Read the current autostart state, defaulting to false on any error.
+fn autostart_enabled(app: &AppHandle) -> bool {
+    app.autolaunch().is_enabled().unwrap_or(false)
+}
+
 /// Build the tray icon + menu and register event handlers.
 pub fn create(app: &AppHandle) -> tauri::Result<()> {
+    let launch_at_login = autostart_enabled(app);
     let menu = build_menu(app, &StatusSnapshot {
         unlocked: false,
         cortex_dir: None,
         sidecar_running: false,
-    }, None)?;
+    }, None, launch_at_login)?;
 
     // Use the dedicated menu-bar icon (18×18, designed as a template image)
     // so it fits naturally alongside other menu-bar icons and adapts to
@@ -55,6 +62,24 @@ pub fn create(app: &AppHandle) -> tauri::Result<()> {
     Ok(())
 }
 
+/// Like `refresh_status` but accepts a pre-read autostart state — avoids a
+/// second plist read when the caller just toggled autostart and already knows
+/// the new value.
+pub fn refresh_status_with_autostart(app: &AppHandle, status: &StatusSnapshot, launch_at_login: bool) {
+    let Some(tray) = app.tray_by_id("graphnosis-tray") else { return };
+    let update_version: Option<String> = app
+        .try_state::<crate::UpdateState>()
+        .and_then(|s| {
+            s.available_version
+                .lock()
+                .ok()
+                .and_then(|guard| guard.as_ref().map(|v| v.clone()))
+        });
+    if let Ok(menu) = build_menu(app, status, update_version.as_deref(), launch_at_login) {
+        let _ = tray.set_menu(Some(menu));
+    }
+}
+
 /// Rebuild the tray menu in place to reflect new status.
 ///
 /// Called from `unlock_cortex` and `lock_cortex` so the user immediately sees
@@ -72,12 +97,13 @@ pub fn refresh_status(app: &AppHandle, status: &StatusSnapshot) {
                 .ok()
                 .and_then(|guard| guard.as_ref().map(|v| v.clone()))
         });
-    if let Ok(menu) = build_menu(app, status, update_version.as_deref()) {
+    let launch_at_login = autostart_enabled(app);
+    if let Ok(menu) = build_menu(app, status, update_version.as_deref(), launch_at_login) {
         let _ = tray.set_menu(Some(menu));
     }
 }
 
-fn build_menu(app: &AppHandle, status: &StatusSnapshot, update_version: Option<&str>) -> tauri::Result<Menu<Wry>> {
+fn build_menu(app: &AppHandle, status: &StatusSnapshot, update_version: Option<&str>, launch_at_login: bool) -> tauri::Result<Menu<Wry>> {
     let status_label = if status.unlocked {
         let cortex = status
             .cortex_dir
@@ -115,10 +141,19 @@ fn build_menu(app: &AppHandle, status: &StatusSnapshot, update_version: Option<&
     };
     let update_item = MenuItem::with_id(app, "updates", &update_label, true, None::<&str>)?;
 
+    let launch_item = CheckMenuItem::with_id(
+        app,
+        "launch_at_login",
+        "Launch at Login",
+        true,
+        launch_at_login,
+        None::<&str>,
+    )?;
     let quit_item = MenuItem::with_id(app, "quit", "Quit Graphnosis", true, Some("CmdOrCtrl+Q"))?;
     let sep1 = PredefinedMenuItem::separator(app)?;
     let sep2 = PredefinedMenuItem::separator(app)?;
     let sep3 = PredefinedMenuItem::separator(app)?;
+    let sep4 = PredefinedMenuItem::separator(app)?;
 
     Menu::with_items(
         app,
@@ -129,8 +164,10 @@ fn build_menu(app: &AppHandle, status: &StatusSnapshot, update_version: Option<&
             &open_folder_item,
             &lock_item,
             &sep2,
-            &update_item,
+            &launch_item,
             &sep3,
+            &update_item,
+            &sep4,
             &quit_item,
         ],
     )
@@ -181,6 +218,45 @@ fn on_menu_event(app: &AppHandle, id: &str) {
                 use tauri::Emitter;
                 let _ = app_clone.emit("graphnosis://status", &snapshot);
                 refresh_status(&app_clone, &snapshot);
+            });
+        }
+        "launch_at_login" => {
+            // Toggle autostart and immediately refresh the tray so the
+            // checkmark flips without the user having to reopen the menu.
+            let autostart = app.autolaunch();
+            let currently_enabled = autostart.is_enabled().unwrap_or(false);
+            if currently_enabled {
+                let _ = autostart.disable();
+            } else {
+                let _ = autostart.enable();
+            }
+            // Read back the real state (in case enable/disable failed) to
+            // keep the checkmark honest.
+            let new_state = autostart.is_enabled().unwrap_or(!currently_enabled);
+            let app_clone = app.clone();
+            tauri::async_runtime::spawn(async move {
+                let state = app_clone.state::<AppState>();
+                let snapshot = {
+                    let inner = state.inner.lock().await;
+                    StatusSnapshot {
+                        unlocked: inner.sidecar.is_some(),
+                        cortex_dir: inner.cortex_dir.as_ref().map(|p| p.to_string_lossy().into_owned()),
+                        sidecar_running: inner.sidecar.is_some(),
+                    }
+                };
+                if let Some(tray) = app_clone.tray_by_id("graphnosis-tray") {
+                    let update_version: Option<String> = app_clone
+                        .try_state::<crate::UpdateState>()
+                        .and_then(|s| {
+                            s.available_version
+                                .lock()
+                                .ok()
+                                .and_then(|guard| guard.as_ref().map(|v| v.clone()))
+                        });
+                    if let Ok(menu) = build_menu(&app_clone, &snapshot, update_version.as_deref(), new_state) {
+                        let _ = tray.set_menu(Some(menu));
+                    }
+                }
             });
         }
         "updates" => {
