@@ -600,6 +600,20 @@ export interface AppSettings {
       /** When true, clipboard is polled while the app is focused. Default false. */
       enabled: boolean;
     };
+    /**
+     * Last successful vitality compute. Persisted each time BrainEngine
+     * emits vitality and read on the next boot so the user sees their
+     * familiar score immediately instead of an inflated "0 duplicates"
+     * estimate (which would later drop to the real value once the post-
+     * boot duplicate scan completes). The animateVitality UI smoothly
+     * transitions from this cached number to the next live compute.
+     */
+    lastVitality?: {
+      /** Overall vitality score, 0-100. */
+      overall: number;
+      /** Unix ms when this was computed. */
+      computedAt: number;
+    };
   };
 }
 
@@ -982,6 +996,18 @@ export function mergeWithDefaults(partial: Partial<AppSettings> | null | undefin
           enabled: typeof b.neuralNetwork.enabled === 'boolean' ? b.neuralNetwork.enabled : false,
         },
       } : {}),
+      ...(b.lastVitality !== undefined
+          && typeof b.lastVitality.overall === 'number'
+          && Number.isFinite(b.lastVitality.overall)
+          && typeof b.lastVitality.computedAt === 'number'
+        ? {
+            lastVitality: {
+              // Clamp to a valid percent range; reject NaN/Infinity defensively.
+              overall: Math.max(0, Math.min(100, b.lastVitality.overall)),
+              computedAt: b.lastVitality.computedAt,
+            },
+          }
+        : {}),
     };
   }
 
