@@ -429,7 +429,13 @@ declare const __APP_VERSION__: string;
 const $ = <T extends HTMLElement>(id: string): T => document.getElementById(id) as T;
 
 const els = {
-  err: $<HTMLDivElement>('error'),
+  // Two error banners, one per view. Kept separate (rather than a single
+  // shared element) because the unlock view and the app view live in
+  // different DOM sub-trees and only one is visible at a time. showError()
+  // routes to whichever view is currently visible so messages from the
+  // unlocked app don't bleed into the lock screen on re-lock.
+  errUnlock: $<HTMLDivElement>('error-unlock'),
+  errApp: $<HTMLDivElement>('error-app'),
   viewUnlock: $<HTMLElement>('view-unlock'),
   viewApp: $<HTMLElement>('view-app'),
   cortexDir: $<HTMLInputElement>('cortex-dir'),
@@ -703,12 +709,22 @@ let sourcesFilterTerm = '';
 let sourcesEngramFilter = ''; // graphId of the selected engram, '' = all
 
 function showError(msg: string | null): void {
+  // Target whichever banner sits inside the currently-visible view. When
+  // the unlock view is showing, that's #error-unlock; otherwise #error-app.
+  // We always clear the other one so a stale message from a previous view
+  // can't re-appear on the next view transition.
+  const unlockVisible = !els.viewUnlock.classList.contains('hidden');
+  const active = unlockVisible ? els.errUnlock : els.errApp;
+  const inactive = unlockVisible ? els.errApp : els.errUnlock;
+  inactive.textContent = '';
+  inactive.classList.add('hidden');
   if (!msg) {
-    els.err.classList.add('hidden');
+    active.textContent = '';
+    active.classList.add('hidden');
     return;
   }
-  els.err.textContent = msg;
-  els.err.classList.remove('hidden');
+  active.textContent = msg;
+  active.classList.remove('hidden');
 }
 
 // ── Ingest toast queue ──────────────────────────────────────────────
@@ -1063,6 +1079,10 @@ function render(status: StatusSnapshot): void {
       els.unlockStatus.classList.add('hidden');
       els.viewUnlock.classList.add('hidden');
       els.viewApp.classList.remove('hidden');
+      // Clear any stale error from either banner so a fresh unlock starts
+      // with a clean slate. Without this, a wrong-passphrase message from
+      // the previous attempt would survive into the unlocked app view.
+      showError(null);
       refreshActiveEngramLabel();
       // Show vitality as loading immediately — refreshBrainState will update it.
       brainVitalityReport = null; // ensure "Computing vitality…" state renders
@@ -1122,6 +1142,12 @@ function render(status: StatusSnapshot): void {
   } else {
     els.viewApp.classList.add('hidden');
     els.viewUnlock.classList.remove('hidden');
+    // Clear any stale error from either banner so re-locking shows a
+    // clean lock screen. Without this, the lock-screen banner would
+    // surface the last in-app error (a Move/Forget/Reingest failure)
+    // the moment the user re-locks — the bug fixed alongside the
+    // duplicate-id rewrite above.
+    showError(null);
     stopMcpPolling();
     setClipboardCaptureEnabled(false); // stop polling on lock
     // Re-enable the unlock button — it may have been left disabled from the
