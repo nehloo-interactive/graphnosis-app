@@ -1,6 +1,18 @@
 // Only file in the App that imports the `@nehloo/graphnosis` SDK directly.
 // Verified against v0.2.3.
 
+/**
+ * Escape regex metacharacters in a user-supplied query string before passing
+ * it to SDK methods that internally call `expandQuery` / `new RegExp(word)`.
+ * Without this, queries containing `+`, `*`, `?`, `(`, `[`, etc. throw
+ * "Invalid regular expression: nothing to repeat" — crashing the IPC call.
+ * Escaping only affects the regex expansion inside the SDK; semantic/embedding
+ * search is unaffected (it operates on the raw token vector, not the regex).
+ */
+function sanitizeQuery(q: string): string {
+  return q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
 import { Graphnosis, serializeSubgraph } from '@nehloo/graphnosis';
 import type { EmbeddingAdapter, GraphNode, NodeId } from '@nehloo/graphnosis';
 import type {
@@ -128,16 +140,17 @@ export class GraphnosisImpl implements GraphnosisAdapter {
   async query(handle: GraphHandle, query: string, k: number): Promise<QueryResult[]> {
     const h = handle as Internal;
     if (!h.built) h.instance.build(h.graphId);
+    const safeQuery = sanitizeQuery(query);
     // Prefer hybrid (TF-IDF + embeddings) when an embedding index is attached — covers
     // semantic queries where the user's wording doesn't share tokens with the content.
     // Fall back to TF-IDF when no embeddings are available, or if hybrid throws (e.g.,
     // adapter id mismatch between cached and current embed function).
     const res = h.instance.hasEmbeddings()
-      ? await h.instance.queryHybrid(query, { maxNodes: k }).catch((e: Error) => {
+      ? await h.instance.queryHybrid(safeQuery, { maxNodes: k }).catch((e: Error) => {
           console.error(`[graphnosis-sidecar] queryHybrid failed (${e.message}) — falling back to TF-IDF`);
-          return h.instance.query(query, { maxNodes: k });
+          return h.instance.query(safeQuery, { maxNodes: k });
         })
-      : h.instance.query(query, { maxNodes: k });
+      : h.instance.query(safeQuery, { maxNodes: k });
     return res.subgraph.nodes.map((n: GraphNode) => ({
       nodeId: n.id,
       // Seeds carry scores; non-seed expansion nodes don't. Look up if present, else 0.
@@ -155,12 +168,13 @@ export class GraphnosisImpl implements GraphnosisAdapter {
   async queryRich(handle: GraphHandle, query: string, k: number): Promise<RichQueryResult> {
     const h = handle as Internal;
     if (!h.built) h.instance.build(h.graphId);
+    const safeQuery = sanitizeQuery(query);
     const res = h.instance.hasEmbeddings()
-      ? await h.instance.queryHybrid(query, { maxNodes: k }).catch((e: Error) => {
+      ? await h.instance.queryHybrid(safeQuery, { maxNodes: k }).catch((e: Error) => {
           console.error(`[graphnosis-sidecar] queryHybrid failed (${e.message}) — falling back to TF-IDF`);
-          return h.instance.query(query, { maxNodes: k });
+          return h.instance.query(safeQuery, { maxNodes: k });
         })
-      : h.instance.query(query, { maxNodes: k });
+      : h.instance.query(safeQuery, { maxNodes: k });
 
     const scores = new Map<string, number>(
       res.seeds.map((s: { nodeId: string; score: number }) => [s.nodeId, s.score]),
@@ -299,7 +313,7 @@ export class GraphnosisImpl implements GraphnosisAdapter {
         id,
         confidence: n.confidence,
         sourceFile: n.source.file,
-        contentPreview: n.content.length > 120 ? n.content.slice(0, 117) + '…' : n.content,
+        contentPreview: n.content.length > 500 ? n.content.slice(0, 497) + '…' : n.content,
       };
       if (n.validUntil !== undefined) rec.validUntil = n.validUntil;
       if (n.source.section) rec.section = n.source.section;

@@ -17,7 +17,7 @@ import { mcpRegistry } from './mcp-registry.js';
 import { startHttpMcpServer } from './mcp-http-server.js';
 import { ConnectorManager } from './connectors/manager.js';
 import { LLM_CATALOG, makeLlm } from './local-llm.js';
-import { workerEmbed, terminateEmbedWorker, LOCAL_EMBED_ID, LOCAL_EMBED_DIM, switchEmbedModel, currentEmbedModel } from './local-embed.js';
+import { workerEmbed, terminateEmbedWorker, LOCAL_EMBED_ID, LOCAL_EMBED_DIM, switchEmbedModel, currentEmbedModel, setWorkerCount } from './local-embed.js';
 import type { LocalLlm } from './correction.js';
 import type { CorrectionDiff } from './correction.js';
 import type { BroadcastRawFn } from './events.js';
@@ -325,8 +325,24 @@ async function main(): Promise<void> {
     await terminateEmbedWorker().catch(() => { /* non-fatal on shutdown */ });
     try { await releaseLock(); } catch { /* lock already released */ }
   };
-  process.on('SIGINT', () => { void safeRelease().then(() => process.exit(0)); });
-  process.on('SIGTERM', () => { void safeRelease().then(() => process.exit(0)); });
+  // Remove orphan .tmp-* files left by a previous interrupted writeFileAtomic.
+  // We hold the cortex lock here so no competing writer exists.
+  const graphsDir = path.join(env.cortexDir, 'graphs');
+  try {
+    const dirEntries = await fs.readdir(graphsDir);
+    await Promise.all(
+      dirEntries
+        .filter(f => f.includes('.tmp-'))
+        .map(f => fs.unlink(path.join(graphsDir, f)).catch(() => {})),
+    );
+  } catch { /* graphs dir may not exist yet on first run — non-fatal */ }
+
+  // Shallow pre-brain handlers: cover the window between lock acquisition and
+  // brain/connector startup. Replaced by gracefulShutdown below once the full
+  // stack is live. We use a flag so the late handler suppresses these.
+  let fullShutdownReady = false;
+  process.on('SIGINT',  () => { if (!fullShutdownReady) void safeRelease().then(() => process.exit(0)); });
+  process.on('SIGTERM', () => { if (!fullShutdownReady) void safeRelease().then(() => process.exit(0)); });
   process.on('beforeExit', () => { void safeRelease(); });
 
   // Final safety net for orphan-sidecar prevention. If our parent (the Tauri
@@ -527,11 +543,19 @@ async function main(): Promise<void> {
   const initialSettings = host.getSettings();
   fileWatcher.setEnabled(initialSettings.ai.autoReingestOnFileChange);
   fileWatcher.setQuietMs(initialSettings.ai.reingestQuietMs);
+  // Apply saved embed worker count now (the pool already spawned with the
+  // env-var default; setWorkerCount resizes it to match user preference).
+  if (initialSettings.ai.embedWorkers !== undefined) {
+    setWorkerCount(initialSettings.ai.embedWorkers);
+  }
   // Re-evaluate on every settings change so toggling the flag or
   // adjusting the quiet period takes effect immediately.
   host.onSettingsChanged((s) => {
     fileWatcher.setEnabled(s.ai.autoReingestOnFileChange);
     fileWatcher.setQuietMs(s.ai.reingestQuietMs);
+    if (s.ai.embedWorkers !== undefined) {
+      setWorkerCount(s.ai.embedWorkers);
+    }
   });
   process.on('SIGINT', () => fileWatcher.dispose());
   process.on('SIGTERM', () => fileWatcher.dispose());
@@ -604,13 +628,15 @@ async function main(): Promise<void> {
   // Optional HTTP bridge for mobile and remote MCP clients. Disabled by
   // default; user enables in Settings → "Mobile & Remote". Requires a
   // sidecar restart to take effect (same as mcpRelay settings).
+  // Token is passed as a live getter so Revoke & Regenerate takes effect
+  // immediately on the running server without a restart.
   const httpBridgeCfg = host.getSettings().mobile?.httpBridge;
   if (httpBridgeCfg?.enabled && httpBridgeCfg.token) {
     const httpServer = await startHttpMcpServer({
       deps: mcpDeps,
       port: httpBridgeCfg.port,
       host: httpBridgeCfg.host,
-      token: httpBridgeCfg.token,
+      token: () => host.getSettings().mobile?.httpBridge?.token ?? '',
       allowedOrigins: httpBridgeCfg.allowedOrigins,
     });
     process.on('SIGINT', () => httpServer.close());
@@ -688,8 +714,24 @@ async function main(): Promise<void> {
 
   await connectorManager.start();
   brainEngine.start();
-  process.on('SIGINT', () => { void connectorManager.stop(); brainEngine.stop(); });
-  process.on('SIGTERM', () => { void connectorManager.stop(); brainEngine.stop(); });
+
+  // Full graceful shutdown: flush dirty graphs, stop brain + connectors, then
+  // release the lock and exit. Replaces the shallow pre-brain handlers above.
+  fullShutdownReady = true;
+  let shuttingDown = false;
+  const gracefulShutdown = async (): Promise<void> => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    brainEngine.stop();
+    await connectorManager.stop().catch(() => {});
+    for (const graphId of host.listGraphs()) {
+      try { await host.save(graphId); } catch { /* best-effort — don't block exit */ }
+    }
+    await safeRelease();
+    process.exit(0);
+  };
+  process.on('SIGINT',  () => { void gracefulShutdown(); });
+  process.on('SIGTERM', () => { void gracefulShutdown(); });
 
   // (Previously: a 60s timer that force-closed MCP connections idle > 15
   // min. Removed in favor of an amber-bubble idle indicator in the
