@@ -114,6 +114,12 @@ async function loadAllGraphsFromDisk(
   const total = toLoad.length;
   let loaded = 0;
   let failed = 0;
+  // Track engrams whose .gai was quarantined during this load attempt — those
+  // are the ones that suffered an interrupted write (force-quit, lid-close
+  // mid-save, etc.) and need an automatic op-log replay. Distinct from
+  // "failed for another reason" (decryption, bundle parse, etc.) which we
+  // can't auto-recover from.
+  const quarantinedIds: string[] = [];
   const batchStart = Date.now();
 
   if (broadcastRaw && total > 0) {
@@ -126,6 +132,16 @@ async function loadAllGraphsFromDisk(
       loaded++;
     } catch (e) {
       const err = e as Error;
+      // host.loadGraph throws a synthesized ENOENT with the marker phrase
+      // "quarantined" when the .gai integrity check fails (auto-quarantine
+      // path in host.ts). Catch that specific case so we can auto-recover
+      // below instead of leaving the user staring at a misleading
+      // "wrong passphrase" message on the next boot.
+      const isQuarantineRecoverable = err.message.includes('quarantined')
+        || err.message.includes('Recover from op-log');
+      if (isQuarantineRecoverable) {
+        quarantinedIds.push(graphId);
+      }
       // Keep the graphId in error logs — when an engram silently doesn't
       // show up in the picker, the user needs to know which one failed.
       // Stack trace included so the terminal shows exactly which step
@@ -151,6 +167,50 @@ async function loadAllGraphsFromDisk(
     console.error(
       `[graphnosis-sidecar] loaded ${loaded}/${total} engrams from disk (${elapsed}ms${failNote})`,
     );
+  }
+
+  // Auto-recover quarantined engrams from the op-log. The user previously
+  // had to: (1) see a scary "wrong passphrase or corrupted cortex file"
+  // message at startup, (2) realise that was misleading, (3) find the
+  // "Recover from op-log" button buried in settings, (4) click it.
+  // Now they see a friendly post-load toast that says "Rebuilt N engram(s)
+  // from your op-log after an interrupted shutdown — your memory is intact".
+  //
+  // applyRecovery() with no args rebuilds every recoverable source across
+  // every engram, which is exactly what we want here. Failures are
+  // non-fatal: each source recovery is independent; partial success is
+  // better than no recovery, and the user still has the .gai.corrupt-<ts>
+  // backups + .snapshots/ as further fallbacks.
+  if (quarantinedIds.length > 0) {
+    console.error(
+      `[graphnosis-sidecar] auto-recovering ${quarantinedIds.length} quarantined engram(s) via op-log replay…`,
+    );
+    try {
+      const report = await host.applyRecovery();
+      console.error(
+        `[graphnosis-sidecar] auto-recovery: attempted=${report.attempted}, recovered=${report.recovered}, skipped=${report.skipped}, failed=${report.failed}`,
+      );
+      if (broadcastRaw) {
+        broadcastRaw({
+          kind: 'cortex.recovered-from-quarantine',
+          name: 'cortex.recovered-from-quarantine',
+          payload: {
+            quarantinedEngrams: quarantinedIds.length,
+            sourcesAttempted: report.attempted,
+            sourcesRecovered: report.recovered,
+            sourcesSkipped: report.skipped,
+            sourcesFailed: report.failed,
+          },
+        });
+      }
+    } catch (e) {
+      // Auto-recovery itself failed — leave the engrams in their
+      // quarantined state and let the user click the manual "Recover from
+      // op-log" button. Logged loudly so it's visible in dev logs.
+      console.error(
+        `[graphnosis-sidecar] auto-recovery FAILED: ${(e as Error).message} — manual recovery required (Settings → Recover from op-log)`,
+      );
+    }
   }
 }
 
