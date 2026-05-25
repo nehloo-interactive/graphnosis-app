@@ -168,11 +168,11 @@ and shapes the audit footer.
 
 **Core memory** (use these for most everyday turns):
 
-- `recall` — semantic search across the user's engrams. Returns a ready-to-read context block.
-- `remind` — alias for `recall`, framed as "remind me about…". Same input + same results.
-- `dig_deeper` — the "look harder" escalation. Use when `recall` returned thin results, when the user's query references a document by name (filename, paper, project), or when the question spans multiple engrams. Internally orchestrates content recall + source-filename expansion + cross-engram entity hop. Returns more nodes with a full provenance breakdown. If results look off, the meta-instruction tells you to flag it to the user — that's the developer-feedback channel.
+- `recall` — semantic search across the user's engrams. Returns a ready-to-read context block. **Escalation policy**: if `recall` returns 0–3 nodes (or returns nodes that don't actually answer the question), DO NOT say "no results". Call `dig_deeper` with the same query first. Most "nothing found" cases are language / phrasing mismatches that `dig_deeper`'s expansion catches. **Tool loading note**: `dig_deeper` is in the same tool group — if your client uses deferred schema loading, load `dig_deeper` via `tool_search` before the first `recall` call so the escalation path is ready.
+- `remind` — alias for `recall`, framed as "remind me about…". Same input + same results. Same escalation policy: thin result → escalate to `dig_deeper` before telling the user the memory isn't there.
+- `dig_deeper` — the "look harder" escalation. Use when `recall` returned thin results, when the user's query references a document by name (filename, paper, project), or when the question spans multiple engrams. Internally orchestrates content recall + source-filename expansion + cross-engram entity hop. Returns more nodes with a full provenance breakdown. If results look off, the meta-instruction tells you to flag it to the user — that's the developer-feedback channel. **💡 source hint**: if any recall or dig_deeper response contains a "💡 The query entities also match source-file names…" line with sourceIds, **STOP — you MUST call `recall_source` with those IDs before composing your answer**. That hint means a whole document is relevant; the fragment you received is not sufficient.
 - `remember` — save a new memory. Pass `target_engram` whenever the note has a topical home (e.g. "Book Notes", "Work decisions").
-- `forget` — surgically soft-delete one or more specific memory **nodes** (not a whole source). Takes `nodeIds` from `recall_structured` results. **Always call `recall_structured` first** to find and confirm the exact nodes before calling `forget`. Never pass a `sourceId` — that field does not exist. To remove an entire ingested file, URL, or clip, direct the user to the Sources page in the app — AI clients cannot delete whole sources.
+- `forget` — surgically soft-delete one or more specific memory **nodes** (not a whole source). **Always call `recall_structured` first**, then pass the result as `items: [{nodeId, preview}]` — `preview` is the first ~120 chars of `node.text`. Most MCP clients show the request payload to the user in a consent prompt; without the preview, the user sees only opaque IDs and is essentially clicking blind. The legacy `nodeIds: [...]` shape still works but the response will nag you to switch. Never pass a `sourceId` — that field does not exist. To remove an entire ingested file, URL, or clip, direct the user to the Sources page in the app — AI clients cannot delete whole sources.
 - `apply` — commits a correction the user has already approved. The Graphnosis app normally drives this; AI clients rarely call it directly.
 - `stats` — engram inventory + node counts. Useful before picking a `target_engram` and for debugging "where did my notes go?"
 - `vitality` — 0–100 score of how alive and well-connected the cortex is.
@@ -195,7 +195,7 @@ and shapes the audit footer.
 **Source operations** (act on a whole saved source — file, URL, clip):
 
 - `find_source` — keyword substring search across source IDs / refs / kinds.
-- `recall_source` — full content of one source, in ingestion order (use when `recall` fragments a structured document).
+- `recall_source` — full content of one source, in ingestion order (use when `recall` fragments a structured document, or when a 💡 hint in any recall response named specific sourceIds — in that case, **do not respond until you have called this tool**).
 - `transfer_source` — move a source from one engram to another.
 
 **Engram operations**:
@@ -226,7 +226,7 @@ and shapes the audit footer.
 - `predict` — risks + opportunities for an action the user is about to take.
 - `insights` — patterns / gaps / opportunities a background LLM loop surfaced.
 - `gnn_neighbors` — nodes the Neural Network predicts are related to a query.
-- `llm_query` — synthesised answer from recall, computed locally.
+- `llm_query` — synthesised answer from recall, computed locally. **Prefer this over raw `recall` when the question requires assembling facts from multiple nodes or engrams into a single coherent answer** — e.g. "summarise everything I know about X", "compare my notes on A vs B", or "what's the pattern across my decisions?". For point-lookup questions ("what did I say about X?"), plain `recall` is faster and sufficient.
 - `llm_distill` — extract discrete facts from arbitrary text, ready for `ingest_batch`.
 
 ## The local LLM — what it does, what it does not

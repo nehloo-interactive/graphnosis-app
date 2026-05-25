@@ -105,6 +105,21 @@ export const MAX_RELAY_RECONNECT_MS = 24 * 60 * 60 * 1000;   // 24 h
 
 export type InspectorDetail = 'simple' | 'detailed';
 
+/**
+ * User-chosen color scheme for the desktop UI.
+ *   - 'auto'  — follow the OS `prefers-color-scheme` (default; matches the
+ *               original behavior so existing users see no change on update).
+ *   - 'light' — force light mode regardless of OS.
+ *   - 'dark'  — force dark mode regardless of OS.
+ *
+ * Applied at the document root as a `data-theme` attribute by the shell on
+ * boot and on every settings update. CSS tokens (`--bg`, `--fg`, `--accent`,
+ * etc.) are defined for both themes; the attribute switches which block
+ * cascades. 'auto' leaves the attribute unset so the existing
+ * `prefers-color-scheme` media query continues to drive the choice.
+ */
+export type UiTheme = 'auto' | 'light' | 'dark';
+
 export interface UiSettings {
   /**
    * How much information the Nodes inspector reveals. Simple = content +
@@ -112,6 +127,12 @@ export interface UiSettings {
    * embedding cluster, op-log lineage, contradictions, type tags.
    */
   inspectorDetail: InspectorDetail;
+  /**
+   * Color scheme. See `UiTheme` for semantics. Default: 'auto'. Toggle
+   * exposed in the bottom-left of the status bar and in Settings →
+   * Preferences.
+   */
+  theme: UiTheme;
 }
 
 // ── Layer 4 Consent ───────────────────────────────────────────────────────────
@@ -227,6 +248,12 @@ export interface AiSettings {
    *   - 'auto'   → totalmem-based: ≥32 GB → large, ≥16 GB → medium, else small
    */
   embedBatch: EmbedBatchPreset;
+  /**
+   * How many parallel embedding worker processes to run.
+   * 1 = serial (lowest RAM), 2 = default, 3–4 = high-throughput on fast
+   * machines. Change takes effect on the next sidecar restart.
+   */
+  embedWorkers?: number;
   /**
    * Master switch for the local LLM. OFF by default — even when Ollama is
    * installed and a model is running, Graphnosis never routes a memory
@@ -670,6 +697,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   },
   ui: {
     inspectorDetail: 'simple',
+    theme: 'auto',
   },
   ai: {
     // ON by default — the user installed Graphnosis specifically to be
@@ -768,6 +796,10 @@ export function mergeWithDefaults(partial: Partial<AppSettings> | null | undefin
     ui.inspectorDetail === 'simple' || ui.inspectorDetail === 'detailed'
       ? ui.inspectorDetail
       : DEFAULT_SETTINGS.ui.inspectorDetail;
+  const theme: UiTheme =
+    ui.theme === 'light' || ui.theme === 'dark' || ui.theme === 'auto'
+      ? ui.theme
+      : DEFAULT_SETTINGS.ui.theme;
 
   // AI routing: default ON for older cortexes that didn't have this field —
   // matches the behavior they were already getting (the SERVER_INSTRUCTIONS
@@ -1008,6 +1040,12 @@ export function mergeWithDefaults(partial: Partial<AppSettings> | null | undefin
             },
           }
         : {}),
+      // Clipboard capture — opt-in, off by default. Must be explicitly
+      // threaded through here or mergeWithDefaults silently drops it on
+      // every setSettings/loadSettings call, making the toggle non-persistent.
+      ...(b.clipboardCapture !== undefined
+        ? { clipboardCapture: { enabled: typeof b.clipboardCapture.enabled === 'boolean' ? b.clipboardCapture.enabled : false } }
+        : {}),
     };
   }
 
@@ -1015,7 +1053,7 @@ export function mergeWithDefaults(partial: Partial<AppSettings> | null | undefin
     contentCache: { mode, maxBytesPerSource },
     forget: { mode: forgetMode },
     mcpRelay: { initialWaitMs, reconnectMs },
-    ui: { inspectorDetail },
+    ui: { inspectorDetail, theme },
     ai: {
       useAsDefaultMemory, autoRelinkMaxNodes, autoReingestOnFileChange,
       reingestQuietMs, chunkSize, embedBatch, llmEnabled,
