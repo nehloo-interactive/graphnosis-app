@@ -111,6 +111,34 @@ const RememberInput = z.preprocess(
     kind: z.enum(['clip', 'ai-conversation']).optional(),
   }),
 );
+/**
+ * Tolerant string-array schema. Accepts:
+ *   - A real string array: `["iaADN", "personal"]` (the intended shape)
+ *   - A stringified JSON array: `'["iaADN", "personal"]'` (some AI clients
+ *     serialize array parameters as strings before sending — observed in
+ *     practice with Claude Desktop on certain tool calls)
+ *   - A single bare string: `"iaADN"` (treated as a one-element array,
+ *     for AI clients that pass a single value without wrapping)
+ *
+ * Without this tolerance, the second + third cases fail Zod validation with
+ * "expected array, got string" and the tool surfaces an opaque "Tool
+ * execution failed" to the AI. Now they parse cleanly and the AI's intent
+ * is respected.
+ */
+const tolerantStringArray = z.preprocess((val: unknown) => {
+  if (typeof val !== 'string') return val;
+  const trimmed = val.trim();
+  // JSON-array-shaped string → try to parse.
+  if (trimmed.startsWith('[') && trimmed.endsWith(']')) {
+    try {
+      const parsed = JSON.parse(trimmed);
+      if (Array.isArray(parsed)) return parsed;
+    } catch { /* fall through to single-string interpretation */ }
+  }
+  // Bare string → wrap as single-element array.
+  return [val];
+}, z.array(z.string()).optional());
+
 // Coerce so that AI clients sending stringified numbers (a common MCP foot-gun)
 // don't fail validation. zod.coerce parses '50' -> 50, '5000.0' -> 5000.
 // Also accept `q` / `question` aliases for `query` for the same lazy-load
@@ -128,8 +156,8 @@ const RecallInput = z.preprocess(
     query: z.string(),
     maxTokens: z.coerce.number().int().positive().max(8000).optional(),
     maxNodes: z.coerce.number().int().positive().max(50).optional(),
-    only_engrams: z.array(z.string()).optional(),
-    except_engrams: z.array(z.string()).optional(),
+    only_engrams: tolerantStringArray,
+    except_engrams: tolerantStringArray,
   }),
 );
 const CorrectInput = z.object({
@@ -179,8 +207,8 @@ const RecallStructuredInput = z.preprocess(
     query: z.string(),
     maxTokens: z.coerce.number().int().positive().max(8000).optional(),
     maxNodes: z.coerce.number().int().positive().max(50).optional(),
-    only_engrams: z.array(z.string()).optional(),
-    except_engrams: z.array(z.string()).optional(),
+    only_engrams: tolerantStringArray,
+    except_engrams: tolerantStringArray,
   }),
 );
 const RecallWithCitationsInput = RecallStructuredInput;
@@ -256,7 +284,7 @@ const LlmQueryInput = z.preprocess(
   },
   z.object({
     question: z.string(),
-    only_engrams: z.array(z.string()).optional(),
+    only_engrams: tolerantStringArray,
     maxTokens: z.coerce.number().int().positive().max(8000).optional(),
   }),
 );
@@ -412,6 +440,104 @@ function resolveTargetEngram(host: GraphnosisHost, name: string): ResolveResult 
 
 function mcpError(text: string) {
   return { content: [{ type: 'text' as const, text }], isError: true as const };
+}
+
+// ── Anomaly heads-up ──────────────────────────────────────────────────────
+//
+// A handful of tool results carry signals that are hard for the AI to judge
+// on its own — a recall that scanned 8 engrams and returned 2 nodes, a
+// `correct` that found zero candidates for the asserted fact, a vitality
+// drop of 30 points since the previous call. Each of those is plausibly a
+// real anomaly the user should hear about, AND a feedback loop into the
+// developer (Nelu) about where the app's retrieval / scoring / scheduling
+// is misbehaving.
+//
+// The heads-up is opt-in per signal: `anomalyHeadsUp` returns null in the
+// normal case and a one-line "⚠️ _Heads-up for the user: ..._" string only
+// when a real signal fires. Tools append it (or not) to their existing
+// response footer; the AI then surfaces it to the user verbatim per the
+// note "tell the user, ask them to report back."
+//
+// DO NOT spam this. Every false positive trains the AI to ignore the next
+// real one. Thresholds below are deliberately conservative — they fire on
+// situations where, if you saw the numbers yourself, you'd raise an eyebrow.
+type AnomalySignals =
+  | {
+      kind: 'recall';
+      nodesReturned: number;
+      nodesRequested: number;
+      engramsContributing: number;
+      engramsSearched: number;
+      query: string;
+      tool: string; // 'recall' | 'remind' | 'recall_structured' | …
+    }
+  | { kind: 'correct'; candidatesFound: number }
+  | { kind: 'vitality'; overall: number; previous: number | null };
+
+// Tracks the vitality reading from the previous `vitality` call so we can
+// flag sudden drops. Per-process; resets on sidecar restart, which is fine —
+// boot-time vitality is already noisy and we don't want false alarms there.
+let _lastVitalityReading: number | null = null;
+
+function anomalyHeadsUp(s: AnomalySignals): string | null {
+  if (s.kind === 'recall') {
+    // Thin federation: scanned many places, returned almost nothing. Most
+    // common cause is language mismatch (English query, Romanian memory)
+    // or off-topic phrasing. Worth flagging because a sparse answer looks
+    // authoritative to the AI but is usually retrieval misbehavior.
+    if (s.nodesReturned <= 2 && s.nodesRequested >= 10 && s.engramsSearched >= 3) {
+      return (
+        `\n\n⚠️ _Heads-up for the user: \`${s.tool}\` searched ${s.engramsSearched} engrams ` +
+        `but returned only ${s.nodesReturned} node(s) for a request of ${s.nodesRequested}. ` +
+        `Possible causes: query language doesn't match how the memory was stored, ` +
+        `phrasing is too different from the original notes, or the relevant engram ` +
+        `genuinely has nothing on this. If you're sure the memory exists, mention it ` +
+        `to the developer — this is the kind of recall miss the team is actively tuning._`
+      );
+    }
+    // Dominance: many engrams searched, only one contributed. Usually fine
+    // (the topic really does live in one place) but occasionally a sign that
+    // a more relevant engram was crowded out by per-graph token floors or
+    // an embedding-model mismatch. Threshold deliberately high so we only
+    // flag the egregious cases.
+    if (
+      s.engramsContributing === 1 &&
+      s.engramsSearched >= 6 &&
+      s.nodesReturned >= 5
+    ) {
+      return (
+        `\n\n⚠️ _Heads-up for the user: all ${s.nodesReturned} returned nodes came from a single engram ` +
+        `despite ${s.engramsSearched} being searched. If you expected results from another engram, ` +
+        `consider scoping the recall with \`only_engrams\` or letting the developer know which engram ` +
+        `you thought should have contributed._`
+      );
+    }
+    return null;
+  }
+  if (s.kind === 'correct') {
+    if (s.candidatesFound === 0) {
+      return (
+        `\n\n⚠️ _Heads-up for the user: \`correct\` found no existing memory nodes that match ` +
+        `the asserted fact. The correction was saved as a pending diff anyway, but it may not ` +
+        `actually supersede anything. If you expected an existing memory to be replaced, the ` +
+        `engram hint may be wrong, or the original note is phrased very differently — worth ` +
+        `flagging to the developer if this keeps happening._`
+      );
+    }
+    return null;
+  }
+  if (s.kind === 'vitality') {
+    if (s.previous !== null && s.overall < s.previous - 15) {
+      return (
+        `\n\n⚠️ _Heads-up for the user: vitality dropped from ${s.previous} to ${s.overall} ` +
+        `since the last check (>15 points). Common causes: a large source was just ingested ` +
+        `and is still settling, or a background brain pass detected staleness. If the drop ` +
+        `persists across several checks without a clear trigger, mention it to the developer._`
+      );
+    }
+    return null;
+  }
+  return null;
 }
 
 /**
@@ -1403,6 +1529,21 @@ export function createMcpServer(deps: McpDeps): Server {
         },
       },
       {
+        name: 'dig_deeper',
+        description: 'DETERMINISM — Same as `recall`: deterministic content match + entity anchoring; the optional Graphnosis Neural Network appendix is the only non-deterministic part and is clearly labelled.\n\nThe "look harder" escalation when `recall` returns thin results or when the user\'s question is document-targeted rather than fact-targeted. Internally orchestrates THREE stages on top of regular recall:\n  1. Standard content recall (federated TF-IDF + multilingual embeddings + entity anchoring + optional GNN graph expansion)\n  2. Source-filename expansion — for any source whose filename matches a query entity (e.g. user asks about "Virginia" and there\'s a `Virginia Linul thesis.pdf` source), pulls representative chunks from that source\n  3. Cross-engram entity hop — walks the cross-engram connection store to surface related nodes from OTHER engrams via shared entities\n\nReturns a unified subgraph with a full PROVENANCE FOOTER breaking down what came from where. The footer also includes a meta-instruction to surface ANOMALIES to the user (e.g. when the indirect-expansion stages dominate over direct content match — a sign the speculative side eclipsed the deterministic one and the user should validate the result). This is the user-feedback channel: if results seem off, the AI tells the user, the user reports the failure mode, the developer learns.\n\nWHEN TO USE (vs `recall`):\n• Regular `recall` returned 0-3 nodes but the user clearly has relevant memory ("I have a whole engram about this!")\n• The user\'s question references a document by NAME (file, paper, project) rather than its content — `recall` indexes content, not filenames\n• Cross-domain queries that span multiple engrams ("everything about Năsăud across my engrams")\n• When the user explicitly asks to "dig deeper", "look harder", "search everything", "across all my notes"\n\nWHEN NOT TO USE:\n• Quick recall — `recall` is faster and predictable\n• Saving (use `remember`), correcting (use `correct`), deleting (use `forget`)\n• Asking about a specific known source — use `recall_source` directly\n\nSame caps as `recall` (max 50 nodes / 8000 tokens) but the per-stage caps inside dig_deeper are individually bounded so no single stage floods the result.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            query: { type: 'string', description: 'Natural-language query in the user\'s language. dig_deeper folds diacritics, so ASCII-typed queries match Unicode content (and vice versa).' },
+            maxTokens: { type: 'number', minimum: 100, maximum: 8000, description: 'Token budget. Default 3000 — dig_deeper typically returns more than recall because of the expansion stages.' },
+            maxNodes: { type: 'number', minimum: 1, maximum: 50, description: 'Max content-stage nodes. Default 20. The expansion stages have their own per-stage caps.' },
+            only_engrams: { type: 'array', items: { type: 'string' }, description: 'Optional: restrict to these engrams.' },
+            except_engrams: { type: 'array', items: { type: 'string' }, description: 'Optional: exclude these engrams.' },
+          },
+          required: ['query'],
+        },
+      },
+      {
         name: 'remember',
         description: 'DETERMINISM — Deterministic: saving the same note produces the same memory; no LLM and no randomness are involved, and every write is auditable.\n\nAdd a note to the user\'s personal Graphnosis memory so it persists across sessions.\n\nROUTING: When the note belongs to a topic / project / collection (not a generic default), pass `target_engram` with a human-friendly name (e.g. "Book Notes", "Trip 2027", "Work decisions"). If the engram exists Graphnosis writes immediately; if not, the user gets a one-click banner to create it. NEVER silently dump topic-specific memories into the default engram — that pollutes recall later. Without `target_engram` or `graphId`, the note goes to the user\'s default engram (a fallback, not a recommendation).\n\nLANGUAGE: Works in any language Claude understands. Trigger on intent, not on the English phrase. Save the note in the user\'s ORIGINAL language — don\'t translate to English first. The graph\'s entity extraction + embeddings are multilingual.\n\nWHEN TO CALL:\n• The user explicitly asks to save / note / remember something. English: "remember this", "save this", "note that…", "for future reference". Equivalents in other languages count: Romanian "ține minte că…" / "notează…", Spanish "recuerda esto" / "guarda…", French "souviens-toi de…" / "note…", German "merke dir…" / "speichere…", Mandarin "记住这个" / "保存…", Arabic "تذكر هذا" / "احفظ…", etc.\n• The user shares a meaningful new fact about themselves, their work, plans, preferences, or commitments that they would clearly want retained — ASK first if unsure rather than assuming.\n• You just helped the user reach a decision or learn something durable; offering to save it is a courteous follow-up.\n\nWHEN NOT TO USE:\n• If you\'re FIXING / UPDATING / SUPERSEDING something the user previously said → use `correct` instead. Calling `remember` for a correction creates a duplicate, conflicting node — the App will flag it and the user has to clean up after you.\n• Ephemeral conversation chatter, jokes, hypotheticals, and "what if" prompts. Memory is not a conversation log.\n• Anything the user didn\'t agree to save. When in doubt, ask.\n\nFORMATTING:\n• Prefer a single concise paragraph (< 500 chars, no markdown headers). Short notes ingest as ONE node — clean and dense.\n• Use markdown headers only when the note has genuine multi-section structure worth indexing separately. Each `#` heading creates an additional node.\n• Do NOT prepend a `# {title}` heading just to label the note — pass that as the `label` field instead.\n\nThe response flags contradictions detected against existing memory; if any appear, surface them to the user and offer `correct` or `forget` as the next step.',
         inputSchema: {
@@ -1926,13 +2067,104 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
         }, {});
         console.error(`[${toolName}] qLen=${args.query.length} requested=${budget.maxNodes}n/${budget.maxTokens}t served=${sub.nodesIncluded}n/${sub.tokensUsed}t tiers=${JSON.stringify(tierSummary)} graphs=${sub.audit.length}`);
         enforceSessionBudget(sub.tokensUsed, sub.nodesIncluded);
+        // Audit footer — only list engrams that ACTUALLY contributed nodes
+        // to this recall. The full sub.audit roster includes every engram
+        // the federation iterated, most of which contribute zero on any
+        // given query. Returning the whole list to the AI client leaked
+        // every engram name the user has (including engrams the AI should
+        // arguably never know exist) AND added noise — 14 "0n · 0t" entries
+        // for every 2 useful ones. The contributing engram names are
+        // already visible in the prompt body as `## <displayName>` section
+        // headers, so this footer is purely informational + tier signal.
+        const contributing = sub.audit.filter((a) => a.nodesIncluded > 0);
+        const skippedCount = sub.audit.length - contributing.length;
+        const perGraphPart = contributing.length > 0
+          ? ` Per-graph (tier · nodes · tokens): ${contributing.map(a => `${a.graphId} · ${a.tier} · ${a.nodesIncluded}n · ${a.tokensIncluded}t`).join(', ')}.`
+          : '';
+        const skippedPart = skippedCount > 0
+          ? ` (${skippedCount} other engram${skippedCount === 1 ? '' : 's'} searched, no matches.)`
+          : '';
         const auditFooter =
           '\n\n---\n' +
-          `Attached ${sub.nodesIncluded} memory node(s) / ${sub.tokensUsed} tokens across ${sub.audit.length} graph(s). ` +
-          `Per-graph (tier · nodes · tokens): ` +
-          sub.audit.map(a => `${a.graphId} · ${a.tier} · ${a.nodesIncluded}n · ${a.tokensIncluded}t`).join(', ') +
-          (scopeWarnings.length ? ` Scope warnings: ${scopeWarnings.join(' ')}` : '') + '.';
-        return { content: [{ type: 'text', text: sub.prompt + auditFooter + consentFooter }] };
+          `Attached ${sub.nodesIncluded} memory node(s) / ${sub.tokensUsed} tokens across ${contributing.length} graph(s).` +
+          perGraphPart +
+          skippedPart +
+          (scopeWarnings.length ? ` Scope warnings: ${scopeWarnings.join(' ')}` : '');
+        const headsUp = anomalyHeadsUp({
+          kind: 'recall',
+          nodesReturned: sub.nodesIncluded,
+          nodesRequested: budget.maxNodes,
+          engramsContributing: contributing.length,
+          engramsSearched: sub.audit.length,
+          query: args.query,
+          tool: toolName,
+        }) ?? '';
+        return { content: [{ type: 'text', text: sub.prompt + auditFooter + headsUp + consentFooter }] };
+      }
+      case 'dig_deeper': {
+        // Multi-strategy retrieval. Same input shape as recall + only/except
+        // engrams + a higher default token budget (3000 vs recall's 2000)
+        // because the pipeline naturally returns more.
+        const args = RecallInput.parse(req.params.arguments ?? {});
+        const budget = {
+          maxTokens: args.maxTokens ?? 3000,
+          maxNodes: args.maxNodes ?? 20,
+          perGraphMinTokens: 150,
+        };
+        const only = args.only_engrams?.length ? resolveEngramList(deps.host, args.only_engrams) : null;
+        const except = (!only && args.except_engrams?.length) ? resolveEngramList(deps.host, args.except_engrams) : null;
+        enforceRecallRateLimit();
+        enforceReplayBlocker(args.query);
+        const { consentFooter, autoExceptGraphIds } = await checkConsentOrThrow(only?.resolved ?? null);
+        const mergedExcept = [...(except?.resolved ?? []), ...autoExceptGraphIds];
+        const sub = await withEmbedding(() => deps.host.digDeeper(args.query, {
+          budget,
+          ...(only?.resolved.length ? { onlyGraphIds: only.resolved } : {}),
+          ...(mergedExcept.length ? { exceptGraphIds: mergedExcept } : {}),
+        }));
+        const scopeWarnings = [...(only?.warnings ?? []), ...(except?.warnings ?? [])];
+        // Structured log line for power-user debugging — single line per
+        // dig_deeper call, no PII, redacted engram refs. Devs grep this
+        // when investigating user reports about over-/under-expansion.
+        const prov = sub.digDeeperProvenance;
+        console.error(
+          `[dig_deeper] qLen=${args.query.length} ` +
+          `content=${prov.contentMatch.nodes}n@${prov.contentMatch.avgScore.toFixed(2)} ` +
+          `sourceFilename=${prov.sourceFilenameExpansion.nodes}n ` +
+          `crossEngram=${prov.crossEngramEntityHop.nodes}n ` +
+          `total=${sub.nodesIncluded}n/${sub.tokensUsed}t`,
+        );
+        enforceSessionBudget(sub.tokensUsed, sub.nodesIncluded);
+        const contributing = sub.audit.filter((a) => a.nodesIncluded > 0);
+        const skippedCount = sub.audit.length - contributing.length;
+        const perGraphPart = contributing.length > 0
+          ? ` Per-graph (tier · nodes · tokens): ${contributing.map(a => `${a.graphId} · ${a.tier} · ${a.nodesIncluded}n · ${a.tokensIncluded}t`).join(', ')}.`
+          : '';
+        const skippedPart = skippedCount > 0
+          ? ` (${skippedCount} other engram${skippedCount === 1 ? '' : 's'} searched, no matches.)`
+          : '';
+        const auditFooter =
+          '\n\n---\n' +
+          `Attached ${sub.nodesIncluded} memory node(s) / ${sub.tokensUsed} tokens across ${contributing.length} graph(s) — via dig_deeper (multi-strategy).` +
+          perGraphPart +
+          skippedPart +
+          (scopeWarnings.length ? ` Scope warnings: ${scopeWarnings.join(' ')}` : '');
+        // dig_deeper already emits its own strategy-mix heads-up inside the
+        // prompt body (when direct-content recall returned few nodes and most
+        // results came from source-filename / cross-engram expansion). On top
+        // of that, the shared anomaly check fires for the "wide-search, thin
+        // return" case so the user hears about it even when expansion didn't
+        // pad the response.
+        const ddHeadsUp = anomalyHeadsUp({
+          kind: 'recall',
+          nodesReturned: sub.nodesIncluded,
+          nodesRequested: budget.maxNodes,
+          engramsContributing: contributing.length,
+          engramsSearched: sub.audit.length,
+          query: args.query,
+          tool: 'dig_deeper',
+        }) ?? '';
+        return { content: [{ type: 'text', text: sub.prompt + auditFooter + ddHeadsUp + consentFooter }] };
       }
       case 'remember': {
         const args = RememberInput.parse(req.params.arguments ?? {});
@@ -2102,10 +2334,11 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
             },
           });
         }
+        const correctHeadsUp = anomalyHeadsUp({ kind: 'correct', candidatesFound: candidates.length });
         return {
           content: [{
             type: 'text',
-            text: JSON.stringify({ diffId, mode, preview: diff, candidates }, null, 2),
+            text: JSON.stringify({ diffId, mode, preview: diff, candidates }, null, 2) + (correctHeadsUp ?? ''),
           }],
         };
       }
@@ -2236,7 +2469,13 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
           return { content: [{ type: 'text', text: JSON.stringify({ overall: 0, byGraph: {}, computedAt: Date.now() }) }] };
         }
         const report = await deps.brainEngine.computeVitality();
-        return { content: [{ type: 'text', text: JSON.stringify(report, null, 2) }] };
+        const vitalityHeadsUp = anomalyHeadsUp({
+          kind: 'vitality',
+          overall: report.overall,
+          previous: _lastVitalityReading,
+        }) ?? '';
+        _lastVitalityReading = report.overall;
+        return { content: [{ type: 'text', text: JSON.stringify(report, null, 2) + vitalityHeadsUp }] };
       }
       // ── Navigation & routing ──────────────────────────────────────────────
       case 'list_engrams': {
@@ -2369,6 +2608,20 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
         if (nodes.length === 0 && args.query.trim().length >= 3 && deps.host.listGraphs().length > 0) {
           rsResult._notice = deps.host.zeroResultHint();
         }
+        // Same anomaly check as the prose recall — but for structured callers
+        // we inject it into the JSON shape via `_headsUp` so the field is
+        // ignorable by code yet visible to AI clients rendering the response.
+        const rsContributing = new Set(nodes.map((n: any) => n.graphId)).size;
+        const rsHeadsUp = anomalyHeadsUp({
+          kind: 'recall',
+          nodesReturned: nodes.length,
+          nodesRequested: args.maxNodes ?? 20,
+          engramsContributing: rsContributing,
+          engramsSearched: scopedIds.length,
+          query: args.query,
+          tool: 'recall_structured',
+        });
+        if (rsHeadsUp) rsResult._headsUp = rsHeadsUp.replace(/^\n\n/, '').replace(/^⚠️ _/, '').replace(/_$/, '');
         return { content: [{ type: 'text', text: JSON.stringify(rsResult, null, 2) + rsFooter }] };
       }
       case 'recall_with_citations': {
@@ -2403,7 +2656,16 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
           : (args.query.trim().length >= 3 && deps.host.listGraphs().length > 0
               ? '(no matching memories found)\n\n' + deps.host.zeroResultHint()
               : '(no matching memories found)');
-        return { content: [{ type: 'text', text: rwcBody + rwcFooter }] };
+        const rwcHeadsUp = anomalyHeadsUp({
+          kind: 'recall',
+          nodesReturned: citationNodeCount,
+          nodesRequested: args.maxNodes ?? 20,
+          engramsContributing: sections.length,
+          engramsSearched: scopedIds.length,
+          query: args.query,
+          tool: 'recall_with_citations',
+        }) ?? '';
+        return { content: [{ type: 'text', text: rwcBody + rwcHeadsUp + rwcFooter }] };
       }
       case 'compare_engrams': {
         const args = CompareEngramsInput.parse(req.params.arguments ?? {});
@@ -2422,9 +2684,19 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
         const metaA = deps.host.getGraphMetadata(resA.graphId);
         const metaB = deps.host.getGraphMetadata(resB.graphId);
         enforceSessionBudget(subA.tokensUsed + subB.tokensUsed, subA.nodesIncluded + subB.nodesIncluded);
+        // compare_engrams specifically: heads-up only if BOTH sides came up
+        // empty. A single-side miss is the whole point of the tool ("X has
+        // it, Y doesn't"); two misses on a real query usually means the
+        // wrong engrams were picked.
+        const ceHeadsUp = (subA.nodesIncluded === 0 && subB.nodesIncluded === 0)
+          ? `\n\n⚠️ _Heads-up for the user: neither engram returned any matches for this query. ` +
+            `If you expected at least one to have something, you may be comparing the wrong engrams — ` +
+            `try \`list_engrams\` to see what's available, or mention to the developer that this ` +
+            `query feels like it should hit one of these two._`
+          : '';
         return { content: [{ type: 'text', text:
           `## ${metaA?.displayName ?? resA.graphId}\n\n${subA.prompt || '(no results)'}\n\n` +
-          `## ${metaB?.displayName ?? resB.graphId}\n\n${subB.prompt || '(no results)'}` + ceFooter
+          `## ${metaB?.displayName ?? resB.graphId}\n\n${subB.prompt || '(no results)'}` + ceHeadsUp + ceFooter
         }] };
       }
       case 'cross_search': {
@@ -2439,10 +2711,21 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
         const budget = { maxNodes: args.maxNodes ?? 20, maxTokens: 4000 };
         const sub = await withEmbedding(() => deps.host.recall(args.query, { budget, onlyGraphIds: resolved }));
         enforceSessionBudget(sub.tokensUsed, sub.nodesIncluded);
+        const csContributing = sub.audit.filter(a => a.nodesIncluded > 0).length;
+        const csHeadsUp = anomalyHeadsUp({
+          kind: 'recall',
+          nodesReturned: sub.nodesIncluded,
+          nodesRequested: budget.maxNodes,
+          engramsContributing: csContributing,
+          engramsSearched: resolved.length,
+          query: args.query,
+          tool: 'cross_search',
+        }) ?? '';
         return { content: [{ type: 'text', text:
           sub.prompt +
           `\n\n---\nScope: ${resolved.map(id => deps.host.getGraphMetadata(id)?.displayName ?? id).join(', ')}` +
           (warnings.length ? `\nSkipped: ${warnings.join(' ')}` : '') +
+          csHeadsUp +
           csFooter
         }] };
       }
