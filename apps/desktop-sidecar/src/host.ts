@@ -2198,6 +2198,27 @@ export class GraphnosisHost {
     const queryEntities = extractQueryEntities(query);
     const perGraphAnchorMax = opts?.perGraphAnchorMax ?? 3;
     let anchorCountTotal = 0;
+    // GNN-driven recall (Batch 11): build a recall-grade adjacency from the
+    // .gnn overlay so each engram's runQuery can do graph expansion +
+    // anchor extension. Gated on neuralNetwork.enabled — when GNN is off,
+    // adj is undefined and the expansion/extension code paths no-op.
+    let gnnAdj: GnnRecallAdjacency | undefined;
+    let gnnExpansionCountTotal = 0;
+    if (this.settings.brain?.neuralNetwork?.enabled === true) {
+      try {
+        const gnnEdges = await this.loadGnnStore();
+        if (gnnEdges.length > 0) {
+          // Scope the adjacency to the engrams we'll actually query — saves
+          // a tiny bit of memory on cortexes with many engrams.
+          const scoped = new Set(opts?.onlyGraphIds ?? this.listGraphs());
+          gnnAdj = buildGnnRecallAdjacency(gnnEdges, scoped);
+        }
+      } catch (e) {
+        // Overlay load failure is non-fatal — recall still works without
+        // GNN assist, just without the expansion/extension behavior.
+        console.error(`[host] recall: GNN adjacency build failed (non-fatal): ${(e as Error).message}`);
+      }
+    }
     const runner: federation.FederatedQueryRunner = {
       runQuery: async (graphId, q, k) => {
         const result = queryChain.then(async () => {
@@ -2212,25 +2233,79 @@ export class GraphnosisHost {
             .filter((r) => active.has(r.nodeId))
             .slice(0, k)
             .map((r) => ({ graphId, nodeId: r.nodeId, score: r.score, text: r.text, ...(r.type !== undefined ? { type: r.type } : {}) }));
-          // Entity-anchored seeds: prepend any literal-entity matches that
-          // weren't already in the top-k. Carries ANCHOR_SCORE so federation
-          // budget treats them as priority. The total candidate count stays
-          // capped at k (anchors displace lower-scored tail entries) so we
-          // don't accidentally inflate the budget the SDK was asked to spend.
-          if (queryEntities.length === 0 || perGraphAnchorMax <= 0) return ranked;
+          // Lookup we'll need for both entity anchoring AND GNN expansion.
           const inspected = this.opts.adapter.inspectNodes(g.handle);
-          const anchors = selectAnchorNodes(inspected, active, queryEntities, perGraphAnchorMax);
-          if (anchors.length === 0) return ranked;
+          const perGraphAdj = gnnAdj?.get(graphId);
+
+          // Step 1: entity-anchored seeds (deterministic). Prepend any
+          // literal-entity matches that weren't already in the top-k.
+          // Carries ANCHOR_SCORE so federation budget treats them as
+          // priority.
+          let fresh: Array<{ graphId: string; nodeId: string; score: number; text: string; type?: string }> = [];
           const existingIds = new Set(ranked.map((r) => r.nodeId));
-          const fresh = anchors
-            .filter((a) => !existingIds.has(a.nodeId))
-            .map((a) => ({ graphId, nodeId: a.nodeId, score: ANCHOR_SCORE, text: a.text }));
-          anchorCountTotal += fresh.length;
-          // Anchors first, then top-(k - anchors.length) from the regular
-          // ranking. Keeps the per-engram candidate count at k for federation.
-          if (fresh.length === 0) return ranked;
-          const tailCap = Math.max(0, k - fresh.length);
-          return [...fresh, ...ranked.slice(0, tailCap)];
+          if (queryEntities.length > 0 && perGraphAnchorMax > 0) {
+            const anchors = selectAnchorNodes(inspected, active, queryEntities, perGraphAnchorMax);
+            fresh = anchors
+              .filter((a) => !existingIds.has(a.nodeId))
+              .map((a) => ({ graphId, nodeId: a.nodeId, score: ANCHOR_SCORE, text: a.text }));
+            for (const a of fresh) existingIds.add(a.nodeId);
+            anchorCountTotal += fresh.length;
+          }
+
+          // Step 2: GNN anchor extension (Batch 11). For each anchor node,
+          // pull up to GNN_ANCHOR_EXPANSION_PER_SEED recall-grade neighbors.
+          // They get ANCHOR_SCORE too — same priority — because if the GNN
+          // is confident-enough they're related to a literal-entity match,
+          // they're "anchor-adjacent" and deserve the same forced inclusion.
+          if (perGraphAdj && fresh.length > 0) {
+            const anchorNeighbors = expandViaGnn(
+              perGraphAdj,
+              inspected,
+              active,
+              fresh.map((a) => a.nodeId),
+              existingIds,
+              GNN_ANCHOR_EXPANSION_PER_SEED,
+            );
+            for (const n of anchorNeighbors) {
+              existingIds.add(n.nodeId);
+              fresh.push({ graphId, nodeId: n.nodeId, score: ANCHOR_SCORE, text: n.text });
+              gnnExpansionCountTotal += 1;
+            }
+          }
+
+          // Step 3: GNN graph expansion (Batch 11). For each top-k node,
+          // pull up to GNN_EXPANSION_PER_SEED recall-grade neighbors that
+          // weren't already in the candidate pool. They get GNN_EXPANSION_SCORE
+          // — high enough to be considered by federation budget, low enough
+          // that strong organic matches still win.
+          let expansion: Array<{ graphId: string; nodeId: string; score: number; text: string }> = [];
+          if (perGraphAdj && ranked.length > 0) {
+            const expansionNodes = expandViaGnn(
+              perGraphAdj,
+              inspected,
+              active,
+              ranked.map((r) => r.nodeId),
+              existingIds,
+              GNN_EXPANSION_PER_SEED,
+            );
+            expansion = expansionNodes.map((n) => ({
+              graphId,
+              nodeId: n.nodeId,
+              score: GNN_EXPANSION_SCORE,
+              text: n.text,
+            }));
+            gnnExpansionCountTotal += expansion.length;
+          }
+
+          // Composition: anchors (+ their GNN neighbors) first, then top-k
+          // ranked, then GNN-expanded. Keep total at k for federation budget
+          // honesty — when expansion exists, it displaces lower-scored tail
+          // entries from `ranked`. When expansion is huge it might also
+          // displace some ranked items, which is intentional: the GNN
+          // expansion is the user-requested precision boost.
+          if (fresh.length === 0 && expansion.length === 0) return ranked;
+          const tailBudget = Math.max(0, k - fresh.length - expansion.length);
+          return [...fresh, ...ranked.slice(0, tailBudget), ...expansion];
         });
         queryChain = result.then(() => undefined, () => undefined);
         return result;
@@ -2309,7 +2384,263 @@ export class GraphnosisHost {
     if (anchorCountTotal > 0) {
       richPrompt = (richPrompt ? richPrompt + '\n\n' : '') + `_anchored ${anchorCountTotal} node(s) on entities: ${queryEntities.join(', ')}_`;
     }
+    // Source-filename hint: when a query entity matches a SOURCE FILENAME
+    // (not the chunk content), the AI may be asking about a document by
+    // its name. recall() can only see the chunks where the entity appears
+    // IN THE TEXT — not the rest of the document. Tell the AI it can pull
+    // the full source via recall_source if that's what the user actually
+    // wants. Suppressed when the matched source is already heavily
+    // represented in the result (avoids nagging on already-satisfied queries).
+    if (queryEntities.length > 0) {
+      const filenameHints = detectSourceFilenameMatches(
+        this,
+        scopedGraphIds,
+        queryEntities,
+        sub.byGraph,
+      );
+      if (filenameHints.length > 0) {
+        const list = filenameHints
+          .slice(0, 3) // cap to avoid overwhelming
+          .map((h) => `"${h.refLabel}" (${h.matchedOn})`)
+          .join(', ');
+        const more = filenameHints.length > 3 ? ` (+ ${filenameHints.length - 3} more)` : '';
+        richPrompt = (richPrompt ? richPrompt + '\n\n' : '') +
+          `💡 _The query entities also match source-file names: ${list}${more}. ` +
+          `recall() only surfaces chunks where the entity is in the chunk's text content. ` +
+          `For the full document(s), use \`find_source(content:"…")\` or \`recall_source(sourceId)\`._`;
+      }
+    }
+    // GNN-recall audit trail (Batch 11): surfaces when the neural network's
+    // predicted edges actively brought in additional nodes (graph expansion
+    // or anchor extension). Distinct from the existing inferred-layer
+    // [gnn·edge] rows, which only DISPLAY predictions; this number reflects
+    // predictions that changed WHICH NODES were recalled.
+    if (gnnExpansionCountTotal > 0) {
+      richPrompt = (richPrompt ? richPrompt + '\n\n' : '') + `_GNN expanded recall by ${gnnExpansionCountTotal} node(s) at ≥${Math.round(GNN_RECALL_THRESHOLD * 100)}% confidence_`;
+    }
     return { ...sub, prompt: richPrompt };
+  }
+
+  /**
+   * dig_deeper — the multi-strategy retrieval pipeline. Composes:
+   *
+   *   Stage 1: standard recall() — content match + entity anchoring
+   *            + GNN expansion (already a pipeline of its own)
+   *   Stage 2: source-filename expansion — for any source whose filename
+   *            matches a query entity, pull representative chunks from
+   *            that source (not all, but enough to give context)
+   *   Stage 3: cross-engram entity hop — for entities that surfaced in
+   *            stages 1/2, walk the cross-engram connection store to find
+   *            related nodes in OTHER engrams, pull those too
+   *
+   * The result is a unified subgraph with full provenance — the prompt's
+   * trailing footer breaks down what came from where so the AI can tell
+   * the user "I found N memories via direct match, M via document context,
+   * K via shared entities across engrams."
+   *
+   * Meta-instruction in the footer asks the AI to flag anomalies to the
+   * user (e.g., when GNN expansion contributed the bulk of results, which
+   * is a sign the deterministic side was thin and the speculative side
+   * dominated). The user gets feedback they can act on; the dev gets
+   * real-world failure-mode signal via user reports.
+   *
+   * NOT a replacement for recall() — that stays the fast, predictable
+   * default. dig_deeper is the "look harder" escalation when recall returns
+   * thin or when the user's question is document-targeted rather than
+   * fact-targeted.
+   */
+  async digDeeper(query: string, opts?: { budget?: SubgraphBudget; onlyGraphIds?: string[]; exceptGraphIds?: string[] }): Promise<federation.FederatedSubgraph & {
+    digDeeperProvenance: {
+      contentMatch: { nodes: number; avgScore: number };
+      sourceFilenameExpansion: { nodes: number; sources: string[] };
+      crossEngramEntityHop: { nodes: number; viaEntities: string[]; sourceEngrams: number };
+    };
+  }> {
+    // Stage 1: standard recall. This already does entity anchoring + GNN
+    // expansion at recall-grade threshold (Batch 11). We use it as the
+    // foundation and layer additional stages on top.
+    const stage1 = await this.recall(query, opts);
+
+    // Snapshot what came from stage 1 so subsequent stages don't double-add.
+    const includedNodeIds = new Set<string>();
+    let stage1ScoreSum = 0;
+    let stage1ScoreCount = 0;
+    for (const nodes of stage1.byGraph.values()) {
+      for (const n of nodes) {
+        includedNodeIds.add(`${n.nodeId}`); // node ids are graph-unique enough for this dedupe
+        if (typeof (n as { score?: number }).score === 'number') {
+          stage1ScoreSum += (n as { score: number }).score;
+          stage1ScoreCount += 1;
+        }
+      }
+    }
+    const stage1AvgScore = stage1ScoreCount > 0 ? stage1ScoreSum / stage1ScoreCount : 0;
+
+    // Resolve effective engram scope.
+    const allGraphIds = this.listGraphs();
+    const scopedGraphIds = opts?.onlyGraphIds?.length
+      ? allGraphIds.filter((id) => opts.onlyGraphIds!.includes(id))
+      : opts?.exceptGraphIds?.length
+        ? allGraphIds.filter((id) => !opts.exceptGraphIds!.includes(id))
+        : allGraphIds;
+
+    const queryEntities = extractQueryEntities(query);
+
+    // ── Stage 2: source-filename expansion ─────────────────────────────
+    // For sources whose filename matches a query entity, pull up to
+    // DIG_DEEPER_PER_SOURCE_CAP representative chunks. "Representative"
+    // = top-scoring against the query via this graph's own queryHybrid,
+    // already deduplicated against stage 1.
+    const stage2NewByGraph = new Map<string, Array<{ nodeId: string; text: string }>>();
+    const stage2Sources: string[] = [];
+    if (queryEntities.length > 0) {
+      const filenameHints = detectSourceFilenameMatches(this, scopedGraphIds, queryEntities, stage1.byGraph);
+      for (const hint of filenameHints) {
+        // Use recall_source-style content pull: get the full source's nodes,
+        // pick the first DIG_DEEPER_PER_SOURCE_CAP that aren't already in
+        // stage 1. Lightweight — no extra TF-IDF/embedding call.
+        const sources = this.listSources(hint.graphId);
+        const src = sources.find((s) => s.sourceId === hint.sourceId);
+        if (!src) continue;
+        const g = this.must(hint.graphId);
+        const active = this.activeNodeIds(hint.graphId);
+        const inspected = this.opts.adapter.inspectNodes(g.handle);
+        const previewById = new Map(inspected.map((n) => [n.id, n.contentPreview]));
+        const fresh: Array<{ nodeId: string; text: string }> = [];
+        for (const nodeId of src.nodeIds) {
+          if (fresh.length >= DIG_DEEPER_PER_SOURCE_CAP) break;
+          if (includedNodeIds.has(nodeId)) continue;
+          if (!active.has(nodeId)) continue;
+          const text = previewById.get(nodeId);
+          if (!text) continue;
+          fresh.push({ nodeId, text });
+          includedNodeIds.add(nodeId);
+        }
+        if (fresh.length > 0) {
+          const arr = stage2NewByGraph.get(hint.graphId) ?? [];
+          arr.push(...fresh);
+          stage2NewByGraph.set(hint.graphId, arr);
+          stage2Sources.push(hint.refLabel);
+        }
+      }
+    }
+    const stage2NodeCount = Array.from(stage2NewByGraph.values()).reduce((sum, arr) => sum + arr.length, 0);
+
+    // ── Stage 3: cross-engram entity hop ───────────────────────────────
+    // Walk the cross-engram connection store for connections whose
+    // sharedEntities overlap with any query entity. For each match,
+    // include the OTHER side's node (the one not already in the result).
+    // Cap total contributions to DIG_DEEPER_CROSS_ENGRAM_CAP.
+    const stage3NewByGraph = new Map<string, Array<{ nodeId: string; text: string }>>();
+    const stage3ViaEntities = new Set<string>();
+    const stage3SourceEngrams = new Set<string>();
+    let stage3Count = 0;
+    if (queryEntities.length > 0) {
+      try {
+        const connections = await this.loadConnectionStore();
+        const foldedEntities = new Set(queryEntities.map((e) => foldDiacritics(e).toLowerCase()));
+        for (const conn of connections) {
+          if (stage3Count >= DIG_DEEPER_CROSS_ENGRAM_CAP) break;
+          if (!conn.sharedEntities || conn.sharedEntities.length === 0) continue;
+          // Match on any shared entity that overlaps the query (folded).
+          const matchedEntity = conn.sharedEntities.find((e) =>
+            foldedEntities.has(foldDiacritics(e).toLowerCase()),
+          );
+          if (!matchedEntity) continue;
+          // Pick the side that's NOT already in the result. If both sides
+          // are in scope but only one is included by stage 1/2, pull the
+          // other.
+          const sides: Array<{ graphId: string; nodeId: string }> = [
+            { graphId: conn.graphA, nodeId: conn.nodeA },
+            { graphId: conn.graphB, nodeId: conn.nodeB },
+          ];
+          for (const side of sides) {
+            if (stage3Count >= DIG_DEEPER_CROSS_ENGRAM_CAP) break;
+            if (includedNodeIds.has(side.nodeId)) continue;
+            if (!scopedGraphIds.includes(side.graphId)) continue;
+            const g = this.graphs.get(side.graphId);
+            if (!g) continue;
+            const active = this.activeNodeIds(side.graphId);
+            if (!active.has(side.nodeId)) continue;
+            const inspected = this.opts.adapter.inspectNodes(g.handle);
+            const node = inspected.find((n) => n.id === side.nodeId);
+            if (!node) continue;
+            const arr = stage3NewByGraph.get(side.graphId) ?? [];
+            arr.push({ nodeId: side.nodeId, text: node.contentPreview });
+            stage3NewByGraph.set(side.graphId, arr);
+            includedNodeIds.add(side.nodeId);
+            stage3ViaEntities.add(matchedEntity);
+            stage3SourceEngrams.add(side.graphId);
+            stage3Count += 1;
+          }
+        }
+      } catch (e) {
+        console.error(`[host] digDeeper: cross-engram entity hop failed (non-fatal): ${(e as Error).message}`);
+      }
+    }
+
+    // ── Compose unified prompt ─────────────────────────────────────────
+    // Stage 1's prompt already includes proper section structure. We
+    // append stage 2 + stage 3 nodes as additional sections + a clearly-
+    // labeled provenance footer + meta-instruction for the AI.
+    const sections: string[] = [stage1.prompt];
+
+    if (stage2NodeCount > 0) {
+      sections.push('\n## DIG_DEEPER — Source-filename expansion');
+      for (const [graphId, nodes] of stage2NewByGraph) {
+        const dn = this.getGraphMetadata(graphId)?.displayName ?? graphId;
+        sections.push(`### ${dn} (additional chunks from matched source filenames)`);
+        for (const n of nodes) sections.push(`- ${n.text}`);
+      }
+    }
+
+    if (stage3Count > 0) {
+      sections.push('\n## DIG_DEEPER — Cross-engram entity hop');
+      sections.push(`_Pulled via shared entities: ${[...stage3ViaEntities].join(', ')}_`);
+      for (const [graphId, nodes] of stage3NewByGraph) {
+        const dn = this.getGraphMetadata(graphId)?.displayName ?? graphId;
+        sections.push(`### ${dn}`);
+        for (const n of nodes) sections.push(`- ${n.text}`);
+      }
+    }
+
+    // Provenance footer + meta-instruction for the AI.
+    const provenance = {
+      contentMatch: { nodes: stage1.nodesIncluded, avgScore: stage1AvgScore },
+      sourceFilenameExpansion: { nodes: stage2NodeCount, sources: stage2Sources },
+      crossEngramEntityHop: { nodes: stage3Count, viaEntities: [...stage3ViaEntities], sourceEngrams: stage3SourceEngrams.size },
+    };
+
+    sections.push('\n---');
+    sections.push('🔍 _dig_deeper provenance:_');
+    sections.push(`_• Content match (recall): ${provenance.contentMatch.nodes} nodes, avg score ${provenance.contentMatch.avgScore.toFixed(2)}_`);
+    if (stage2NodeCount > 0) {
+      sections.push(`_• Source-filename expansion: ${stage2NodeCount} nodes from ${stage2Sources.length} source(s): ${stage2Sources.slice(0, 3).join(', ')}${stage2Sources.length > 3 ? '…' : ''}_`);
+    } else {
+      sections.push(`_• Source-filename expansion: 0 nodes (no source filenames matched query entities)_`);
+    }
+    if (stage3Count > 0) {
+      sections.push(`_• Cross-engram entity hop: ${stage3Count} nodes via ${stage3ViaEntities.size} shared entit${stage3ViaEntities.size === 1 ? 'y' : 'ies'} across ${stage3SourceEngrams.size} engram(s)_`);
+    } else {
+      sections.push(`_• Cross-engram entity hop: 0 nodes (no shared-entity connections matched)_`);
+    }
+
+    // Meta-instruction to the AI to surface anomalies for user feedback.
+    const totalNew = stage2NodeCount + stage3Count;
+    if (totalNew > stage1.nodesIncluded * 2 && stage1.nodesIncluded < 3) {
+      // Stage 1 was thin and the expansion stages dominated — speculative
+      // territory. Tell the user so they can validate / report.
+      sections.push(`\n⚠️ _Heads-up for the user: the direct content match returned few nodes; most of this result came from indirect expansion (source-filename or cross-engram entity hop). The AI client should flag this to the user so they can confirm whether these expanded results are actually relevant — and report mismatches to the developer if they are consistently off-base._`);
+    }
+
+    return {
+      ...stage1,
+      prompt: sections.join('\n'),
+      // Also bump the federation counts so the caller's audit numbers
+      // reflect the full pipeline.
+      nodesIncluded: stage1.nodesIncluded + totalNew,
+      digDeeperProvenance: provenance,
+    };
   }
 
   /**
@@ -3757,6 +4088,119 @@ function buildOverlaySection(
 
 const ANCHOR_SCORE = 99;
 
+// ── GNN-driven recall (Batch 11) ────────────────────────────────────────────
+//
+// The GNN overlay (.gnn) is read at recall-time to actually IMPROVE recall,
+// not just decorate it with hints in the inferred-layer section.
+//
+// Two integration points, both in host.recall():
+//   1. Graph expansion: each top-k node's recall-grade GNN neighbors get
+//      added as additional candidates. Catches the "obviously related but
+//      not directly mentioned" memories the deterministic match missed.
+//   2. Anchor extension: each entity-anchor node's recall-grade GNN
+//      neighbors also become anchors. Extends "Nelu" anchoring to include
+//      nodes the GNN learned are tightly related to Nelu-mentioning nodes.
+//
+// Tightly-bounded by a recall-grade confidence threshold (stricter than
+// the broader display/persistence threshold) so low-confidence predictions
+// don't pollute retrieval. Also gated by `brain.neuralNetwork.enabled` —
+// no-op when GNN is off so users who haven't opted in see no behavior
+// change.
+
+/** Stricter than the broader GNN_SCORE_THRESHOLD used at training/persist
+ *  time. Only predictions above this confidence are allowed to influence
+ *  WHICH NODES GET RETRIEVED — the broader set is fine for visualization
+ *  and AI-client hints, but recall must be conservative. */
+const GNN_RECALL_THRESHOLD = 0.85;
+/** Max GNN-predicted neighbors added per top-k seed during recall expansion.
+ *  Keeps the candidate pool from blowing up — a top-k of 20 with 3 expansions
+ *  each adds up to 60 candidates, well within federation budget allocation. */
+const GNN_EXPANSION_PER_SEED = 3;
+/** Max GNN-predicted neighbors added per entity anchor during anchor
+ *  extension. Smaller than EXPANSION_PER_SEED because anchors are already
+ *  forced-included; their neighbors are bonus inclusions. */
+const GNN_ANCHOR_EXPANSION_PER_SEED = 2;
+/** Synthetic score for GNN-expansion candidates. Above typical TF-IDF noise
+ *  (~0.5 floor) so they get federation budget consideration, below ANCHOR_SCORE
+ *  (99) so true anchors still win, below the highest organic matches so a
+ *  perfect TF-IDF hit isn't displaced by a graph-expansion neighbor. */
+const GNN_EXPANSION_SCORE = 1.5;
+
+// ── dig_deeper tuning ───────────────────────────────────────────────────────
+// Max chunks to pull per source-filename-matched source. Set conservatively
+// so a single matched source doesn't eclipse content matches from elsewhere.
+const DIG_DEEPER_PER_SOURCE_CAP = 5;
+// Max total nodes pulled via cross-engram entity hop. Bounded because the
+// connection store can be large and we don't want one entity to flood the
+// result with N nodes from N other engrams.
+const DIG_DEEPER_CROSS_ENGRAM_CAP = 10;
+
+/** Adjacency view over the GNN overlay, scoped to recall-grade edges only.
+ *  Built once at the start of recall() and reused inside every runQuery
+ *  callback. O(E) build, O(1) lookups thereafter. */
+type GnnRecallAdjacency = Map<string, Map<string, Array<{ neighborId: string; score: number }>>>;
+
+function buildGnnRecallAdjacency(
+  gnnEdges: gnnStoreMod.PredictedEdge[],
+  graphIds: Set<string>,
+): GnnRecallAdjacency {
+  const out: GnnRecallAdjacency = new Map();
+  for (const e of gnnEdges) {
+    if (!graphIds.has(e.graphId)) continue;
+    if (e.score < GNN_RECALL_THRESHOLD) continue;
+    let perGraph = out.get(e.graphId);
+    if (!perGraph) { perGraph = new Map(); out.set(e.graphId, perGraph); }
+    // Undirected: add both directions so any-direction lookup works.
+    const pushNeighbor = (a: string, b: string): void => {
+      let arr = perGraph!.get(a);
+      if (!arr) { arr = []; perGraph!.set(a, arr); }
+      arr.push({ neighborId: b, score: e.score });
+    };
+    pushNeighbor(e.from, e.to);
+    pushNeighbor(e.to, e.from);
+  }
+  // Sort each adjacency list by score desc so consumers can take top-N
+  // without re-sorting per lookup.
+  for (const perGraph of out.values()) {
+    for (const arr of perGraph.values()) {
+      arr.sort((a, b) => b.score - a.score);
+    }
+  }
+  return out;
+}
+
+/** Pull up to `perSeedMax` recall-grade neighbors per seed nodeId, dedup
+ *  across seeds, drop any already in `existingIds`. Returns the chosen
+ *  neighbors with their text content (looked up from `inspected`). */
+function expandViaGnn(
+  adj: Map<string, Array<{ neighborId: string; score: number }>> | undefined,
+  inspected: ReturnType<GraphnosisAdapter['inspectNodes']>,
+  active: Set<string>,
+  seedIds: string[],
+  existingIds: Set<string>,
+  perSeedMax: number,
+): Array<{ nodeId: string; text: string }> {
+  if (!adj || seedIds.length === 0 || perSeedMax <= 0) return [];
+  const chosen = new Map<string, string>(); // nodeId → contentPreview
+  const textById = new Map<string, string>();
+  for (const n of inspected) textById.set(n.id, n.contentPreview);
+  for (const seed of seedIds) {
+    const neighbors = adj.get(seed);
+    if (!neighbors) continue;
+    let added = 0;
+    for (const { neighborId } of neighbors) {
+      if (added >= perSeedMax) break;
+      if (existingIds.has(neighborId) || chosen.has(neighborId)) continue;
+      if (!active.has(neighborId)) continue;
+      const text = textById.get(neighborId);
+      if (!text) continue;
+      chosen.set(neighborId, text);
+      added += 1;
+    }
+  }
+  return Array.from(chosen, ([nodeId, text]) => ({ nodeId, text }));
+}
+
 // Tiny stopword list — only used to gate lowercase candidate tokens that
 // might sneak through capitalization heuristics. Capitalized words always
 // pass (even "The" or "And") because the federation cap dedupes/limits them.
@@ -3765,13 +4209,33 @@ const ENTITY_STOPWORDS = new Set([
   'are', 'was', 'were', 'has', 'had', 'not', 'but', 'all', 'any',
 ]);
 
+/**
+ * Strip diacritics via NFD normalization → drop combining marks. Folds
+ * "România" → "Romania", "São Paulo" → "Sao Paulo", "Zürich" → "Zurich",
+ * "Łukasz" → "Lukasz", etc. Used during entity extraction + anchor matching
+ * so a user typing the ASCII form of a proper noun still anchors on the
+ * Unicode-with-diacritics form stored in nodes (and vice-versa).
+ *
+ * Critical for any non-English content. Until the SDK's TF-IDF tokenizer
+ * also folds, this lives only in our entity-anchoring layer — but anchoring
+ * is the deterministic floor that catches the worst failure mode ("query
+ * mentions Bistrița, node content uses Bistrița, recall returns 0").
+ */
+function foldDiacritics(s: string): string {
+  return s.normalize('NFD').replace(/[̀-ͯ]/g, '');
+}
+
 export function extractQueryEntities(query: string): string[] {
   const out: string[] = [];
   const seen = new Set<string>();
   const add = (entity: string): void => {
     const trimmed = entity.trim();
     if (trimmed.length < 2) return;
-    const key = trimmed.toLowerCase();
+    // Dedup AND stopword-check on the diacritic-folded lowercase form so
+    // "România" and "Romania" collapse to one entity (whichever came first
+    // is what gets preserved in the output for downstream matching, but
+    // both forms are caught).
+    const key = foldDiacritics(trimmed).toLowerCase();
     if (seen.has(key)) return;
     if (ENTITY_STOPWORDS.has(key)) return;
     seen.add(key);
@@ -3816,25 +4280,98 @@ function selectAnchorNodes(
   max: number,
 ): Array<{ nodeId: string; text: string }> {
   if (entities.length === 0 || max <= 0) return [];
-  const lowerEntities = entities.map((e) => e.toLowerCase());
+  // Fold diacritics on BOTH sides so an ASCII-typed query ("Romania",
+  // "Bistrita") matches Unicode content ("România", "Bistrița"), and vice
+  // versa. Without this, recall on any non-English content with diacritics
+  // (Romanian, French, German, Polish, Vietnamese, etc.) silently misses
+  // even the most obvious literal-entity hits.
+  const foldedEntities = entities.map((e) => foldDiacritics(e).toLowerCase());
   const entityHits: Array<{ nodeId: string; text: string }> = [];
   const contentHits: Array<{ nodeId: string; text: string }> = [];
   for (const node of inspected) {
     if (!active.has(node.id)) continue;
-    const nodeEntitiesLower = (node.entities ?? []).map((e) => e.toLowerCase());
-    const entityMatch = lowerEntities.some((q) =>
-      nodeEntitiesLower.some((ne) => ne === q || ne.includes(q) || q.includes(ne)),
+    const nodeEntitiesFolded = (node.entities ?? []).map((e) => foldDiacritics(e).toLowerCase());
+    const entityMatch = foldedEntities.some((q) =>
+      nodeEntitiesFolded.some((ne) => ne === q || ne.includes(q) || q.includes(ne)),
     );
     if (entityMatch) {
       entityHits.push({ nodeId: node.id, text: node.contentPreview });
       continue;
     }
-    const contentLower = node.contentPreview.toLowerCase();
-    if (lowerEntities.some((q) => contentLower.includes(q))) {
+    const contentFolded = foldDiacritics(node.contentPreview).toLowerCase();
+    if (foldedEntities.some((q) => contentFolded.includes(q))) {
       contentHits.push({ nodeId: node.id, text: node.contentPreview });
     }
   }
   return [...entityHits, ...contentHits].slice(0, max);
+}
+
+// ── Source-filename match detection ─────────────────────────────────────────
+//
+// "Why did Virginia return 3 nodes from an engram of 1,362 chunks from the
+// 'Virginia Linul thesis'?" → because TF-IDF indexes chunk CONTENT, not
+// source FILENAMES. The engram's source ref is `/.../Virginia Linul/
+// Teza doctorat Virginia Linul DIN ISTORICUL...pdf` — every chunk shares
+// that ref — but only the chunks where her name appears literally in the
+// body text get content-matched.
+//
+// This detector spots that case: scans the source list of each scoped
+// engram for refs whose filename/path contains a query entity, and reports
+// which ones are heavily-represented by the document but NOT well-served
+// by the content-level recall. The recall response then shows a hint
+// pointing the AI at recall_source / find_source — the right tool for
+// "give me everything from that named document."
+//
+// Important non-action: this DOES NOT change retrieval. We're not inflating
+// the candidate pool with source-filename matches. That's a separate (much
+// larger) discussion — see the "smart recall redesign" deferred item.
+function detectSourceFilenameMatches(
+  host: GraphnosisHost,
+  scopedGraphIds: string[],
+  queryEntities: string[],
+  byGraph: Map<string, Array<{ nodeId: string }>>,
+): Array<{ graphId: string; sourceId: string; refLabel: string; matchedOn: string }> {
+  if (queryEntities.length === 0) return [];
+  const foldedEntities = queryEntities.map((e) => foldDiacritics(e).toLowerCase());
+  const out: Array<{ graphId: string; sourceId: string; refLabel: string; matchedOn: string }> = [];
+  // For each engram, walk its sources; check filename/path against entities.
+  // Then we count how many of THIS engram's recalled nodes came from this
+  // source — if "most of the document" already surfaced via content match,
+  // suppress the hint (the user got what they wanted).
+  for (const graphId of scopedGraphIds) {
+    // Skip engrams that aren't loaded (listSources throws on unknown graph)
+    if (!host.listGraphs().includes(graphId)) continue;
+    const recalledIds = new Set((byGraph.get(graphId) ?? []).map((n) => n.nodeId));
+    const sources = host.listSources(graphId);
+    for (const src of sources) {
+      const ref = src.ref ?? '';
+      if (!ref) continue;
+      const refFolded = foldDiacritics(ref).toLowerCase();
+      const matched = foldedEntities.find((q) => refFolded.includes(q));
+      if (!matched) continue;
+      // The SourceRecord already carries the full nodeIds list — use it directly.
+      const srcNodeIds = src.nodeIds ?? [];
+      if (srcNodeIds.length === 0) continue;
+      const recalledFromSource = srcNodeIds.filter((id) => recalledIds.has(id)).length;
+      // Heuristic: suppress the hint when ≥ 30% of source chunks are already
+      // in the result (the user is getting good coverage). Below that, the
+      // hint is genuinely useful ("only 3 of 1362 surfaced — try recall_source").
+      const coverageRatio = recalledFromSource / srcNodeIds.length;
+      if (coverageRatio >= 0.30) continue;
+      // Use the basename of the file path for a cleaner label, but fall back
+      // to the full ref if it's not path-shaped (e.g., URL).
+      const basename = ref.includes('/')
+        ? ref.split('/').pop() ?? ref
+        : ref;
+      out.push({
+        graphId,
+        sourceId: src.sourceId,
+        refLabel: basename.length > 60 ? basename.slice(0, 57) + '…' : basename,
+        matchedOn: matched,
+      });
+    }
+  }
+  return out;
 }
 
 // ── Recall enrichment (local LLM, non-mutating) ─────────────────────────────

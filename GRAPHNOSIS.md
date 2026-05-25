@@ -162,7 +162,7 @@ explicitly named a sensitive engram via `only_engrams` or `target_engram`.
 
 ## The tools
 
-Graphnosis exposes **34 MCP tools** across 9 functional groups. Use the right
+Graphnosis exposes **35 MCP tools** across 9 functional groups. Use the right
 tool for the user's intent — the tool you pick is a soft signal to the user
 and shapes the audit footer.
 
@@ -170,6 +170,7 @@ and shapes the audit footer.
 
 - `recall` — semantic search across the user's engrams. Returns a ready-to-read context block.
 - `remind` — alias for `recall`, framed as "remind me about…". Same input + same results.
+- `dig_deeper` — the "look harder" escalation. Use when `recall` returned thin results, when the user's query references a document by name (filename, paper, project), or when the question spans multiple engrams. Internally orchestrates content recall + source-filename expansion + cross-engram entity hop. Returns more nodes with a full provenance breakdown. If results look off, the meta-instruction tells you to flag it to the user — that's the developer-feedback channel.
 - `remember` — save a new memory. Pass `target_engram` whenever the note has a topical home (e.g. "Book Notes", "Work decisions").
 - `forget` — surgically soft-delete one or more specific memory **nodes** (not a whole source). Takes `nodeIds` from `recall_structured` results. **Always call `recall_structured` first** to find and confirm the exact nodes before calling `forget`. Never pass a `sourceId` — that field does not exist. To remove an entire ingested file, URL, or clip, direct the user to the Sources page in the app — AI clients cannot delete whole sources.
 - `apply` — commits a correction the user has already approved. The Graphnosis app normally drives this; AI clients rarely call it directly.
