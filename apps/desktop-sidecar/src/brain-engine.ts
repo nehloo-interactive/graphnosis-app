@@ -289,6 +289,12 @@ export class BrainEngine {
    *  high — the UI-facing getVitalityReport() withholds a number until this
    *  is set rather than showing a misleading one at cortex open. */
   private firstScanComplete = false;
+  /** Flips true after the FIRST duplicate scan completes — independent of
+   *  the heavy full-scan completion. Used by getVitalityReport to decide
+   *  whether to substitute the persisted cached score (pre-scan) or use
+   *  the live compute (post-scan). The duplicate scan is fast + deterministic,
+   *  so this flips within seconds of boot. */
+  private firstDuplicateScanComplete = false;
   // Guards the (now genuinely expensive) duplicate scan against
   // overlapping runs — the boot warmup, the 20-min interval, and a
   // runFullScan can otherwise all enter it at once.
@@ -496,20 +502,35 @@ export class BrainEngine {
     this.reinforcement.enrichRecall(sub);
   }
 
-  /** UI-facing vitality. Earlier versions held this back until the first
-   *  full scan had run (to avoid an artificially-high score when no
-   *  duplicates had been counted yet). That left the UI stuck on
-   *  "Computing vitality…" for the entire warmup + full-scan window —
-   *  multiple minutes on a populated cortex with slow LLM passes.
+  /** UI-facing vitality.
    *
-   *  We now return the report immediately, using the current best-known
-   *  duplicate count (0 when no scan has run yet). The "duplicates" pillar
-   *  ticks up the next time the user (or the scheduled timer) triggers a
-   *  scan; the `__brain_done_fullscan__` frame still drives a re-fetch so
-   *  the refined number lands then. Trade: a slight initial over-estimate
-   *  on the duplicates pillar in exchange for an immediately-useful UI. */
+   *  Two-stage strategy to avoid the "97 on boot → 75 after first scan" UX
+   *  whiplash:
+   *
+   *    Stage 1 (cold boot, no scan yet): if we have a persisted
+   *      `brain.lastVitality` from the previous session, fabricate a
+   *      VitalityReport using THAT overall score with the live pillar
+   *      breakdown. The score the user sees is the truthful one they left
+   *      with, not a 97 that pretends 0 duplicates.
+   *    Stage 2 (after the first duplicate scan completes):
+   *      `firstDuplicateScanComplete` flips to true → real compute uses
+   *      the actual duplicate count. The UI's animateVitality smoothly
+   *      transitions from the cached value to the live one.
+   *
+   *  Persistence lives in emitVitality below — every successful compute
+   *  writes the result back to settings.brain.lastVitality. */
   async getVitalityReport(): Promise<VitalityReport | null> {
-    return this.vitality.compute(this.duplicatePairs.length);
+    const report = await this.vitality.compute(this.duplicatePairs.length);
+    if (!this.firstDuplicateScanComplete) {
+      const cached = this.host.getSettings().brain?.lastVitality;
+      if (cached && typeof cached.overall === 'number') {
+        // Substitute the cached overall but preserve the live pillar
+        // breakdown — the per-pillar numbers are useful even pre-scan,
+        // it's only the AGGREGATE score that lies when dup-count is 0.
+        return { ...report, overall: cached.overall };
+      }
+    }
+    return report;
   }
 
   getInsights(): Insight[] {
@@ -1061,6 +1082,9 @@ export class BrainEngine {
       }
       this.vitality.invalidate();
       await this.persistLastRun('duplicateScan');
+      // First duplicate scan done — getVitalityReport now uses live data
+      // instead of the cached previous-session score.
+      this.firstDuplicateScanComplete = true;
     } finally {
       this.duplicateScanRunning = false;
     }
@@ -1654,7 +1678,23 @@ export class BrainEngine {
     // The event channel only carries graphId + ts, so the report itself
     // can't ride along — the UI fetches it when it sees the done frame.
     try {
-      await this.vitality.compute(this.duplicatePairs.length);
+      const report = await this.vitality.compute(this.duplicatePairs.length);
+      // Persist the live score so the NEXT cold boot can substitute it for
+      // the inflated pre-scan estimate. Only persist after the first
+      // duplicate scan has completed — otherwise we'd save the same
+      // inflated number we're trying to avoid. Best-effort: a failed
+      // settings write is non-fatal (next compute will retry).
+      if (this.firstDuplicateScanComplete && report && typeof report.overall === 'number') {
+        try {
+          const current = this.host.getSettings();
+          await this.host.setSettings({
+            brain: {
+              ...current.brain,
+              lastVitality: { overall: report.overall, computedAt: Date.now() },
+            },
+          });
+        } catch { /* non-fatal — next compute will try again */ }
+      }
     } catch { /* non-fatal */ }
     this.emitBrain('__brain_done__');
   }
