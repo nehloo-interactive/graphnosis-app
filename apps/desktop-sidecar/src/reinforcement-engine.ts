@@ -51,7 +51,37 @@ const MAX_ENRICHMENT_PER_GRAPH = 4;
 const MAX_GNN_TRAIN_POS = 400;
 const MAX_GNN_TRAIN_NEG = 400;
 const MAX_GNN_CANDIDATES = 15_000;
-const MAX_GNN_EDGES_PER_RUN = 200;
+/** Adaptive cap on predicted edges PERSISTED per engram per GNN run.
+ *
+ *  Earlier this was a flat 200 across all engrams. That left small engrams
+ *  (~50 nodes) with disproportionately dense prediction graphs while large
+ *  engrams (~10k nodes) had a sparse hint layer relative to their structure.
+ *
+ *  Now: ~10% of active nodes, with a floor of 100 and ceiling of 2000.
+ *  - 50-node engram   → 100 predicted edges  (floor)
+ *  - 500-node engram  → 100 predicted edges  (rounds up to floor)
+ *  - 1000-node engram → 100 predicted edges  (still at floor)
+ *  - 2000-node engram → 200 predicted edges  (10%)
+ *  - 5000-node engram → 500 predicted edges
+ *  - 20000-node engram → 2000 predicted edges (ceiling)
+ *
+ *  Storage at the ceiling: 2000 edges × ~120 bytes encoded = 240 KB per
+ *  engram, bounded total even on a 50-engram cortex.
+ *
+ *  Quality vs noise: the GNN_SCORE_THRESHOLD filter runs FIRST, so this
+ *  cap only limits the top-N of an already-confidence-filtered set. A
+ *  future Batch 11 (GNN participates in recall) will layer a stricter
+ *  RECALL-grade threshold ON TOP — the broad cap here governs storage +
+ *  visualization, the recall slice will be a tighter quality subset. */
+const MIN_GNN_EDGES_PER_RUN = 100;
+const MAX_GNN_EDGES_PER_RUN = 2000;
+const GNN_EDGES_PER_NODE_RATIO = 0.10;
+function adaptiveGnnCap(activeNodes: number): number {
+  return Math.max(
+    MIN_GNN_EDGES_PER_RUN,
+    Math.min(MAX_GNN_EDGES_PER_RUN, Math.round(activeNodes * GNN_EDGES_PER_NODE_RATIO)),
+  );
+}
 /** Minimum predicted probability for the GNN to add an edge. */
 const GNN_SCORE_THRESHOLD = 0.75;
 /** Smallest graph (active nodes) the GNN will train on. */
@@ -1051,7 +1081,7 @@ export class ReinforcementEngine {
       .map(([a, b]) => ({ a, b, score: model.score(this.gnnFeatures(ctx, a, b)) }))
       .filter((c) => c.score >= GNN_SCORE_THRESHOLD)
       .sort((x, y) => y.score - x.score)
-      .slice(0, MAX_GNN_EDGES_PER_RUN);
+      .slice(0, adaptiveGnnCap(ctx.nodeIds.length));
     // Delta vs. this engram's previous overlay slice.
     const oldPairs = new Set(ctx.predictedEdges.map((p) => unorderedKey(p.from, p.to)));
     const newPairs = new Set(scored.map((c) => unorderedKey(c.a, c.b)));

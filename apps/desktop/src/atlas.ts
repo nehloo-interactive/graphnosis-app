@@ -373,7 +373,16 @@ export class Atlas {
   private predictedLineObjs = new Map<string, THREE.Line>();
   private categoryVisible: Record<EdgeCategory, boolean> = {
     reasoning: true, structure: true, social: true, temporal: true, semantic: true, identity: true,
-    predicted: true,
+    // Predicted edges (GNN overlay) are hidden by default. They're a
+    // probabilistic OVERLAY on top of the deterministic graph — surfacing
+    // them on by default would mix two visually-indistinguishable signal
+    // classes (real edges + predictions) and clutter the view. Users who
+    // want to see them toggle the "Predicted" category in the legend.
+    // This is distinct from the auto-hide threshold (>5K semantic edges
+    // gets hidden but can be re-enabled by toggle) — predicted is a
+    // qualitative class decision, always-hidden by default regardless of
+    // count.
+    predicted: false,
   };
   /** Per-category edge counts, refreshed in setEdges. Used by isCategoryHardLocked(). */
   private categoryEdgeCounts = new Map<EdgeCategory, number>();
@@ -965,7 +974,12 @@ export class Atlas {
       g.enableNodeDrag(false);
       g.enableNavigationControls(false);
     } else {
-      g.enableNodeDrag(true);
+      // Default: clicking and dragging anywhere (including on nodes) rotates
+      // the camera. Holding Cmd/Ctrl while dragging temporarily enables
+      // node-drag (grab + move + pin on release). See onModKeyDown below.
+      // Rationale: orbiting was being hijacked when the user happened to
+      // click on a node — most of the time they wanted to rotate, not pin.
+      g.enableNodeDrag(false);
       // Disable trackball's built-in wheel zoom — we replace it with a
       // cursor-aware lerp below. Trackball's default zoom dollies along
       // the camera direction toward the FIXED target; we want zoom to
@@ -1023,25 +1037,38 @@ export class Atlas {
           mb.MIDDLE = 2;
           mb.RIGHT = 2;
         }
-        // Ctrl/Cmd + left-drag also pans. We toggle LEFT's mapping while
-        // the modifier is held. window-level so the user can press the
-        // key before clicking the canvas; cleanup happens in dispose().
+        // Cmd/Ctrl held: temporarily enable node-drag so the user can grab
+        // a node and reposition it (drop pins the node where released —
+        // see onNodeDragEnd). Released: back to plain-drag-rotates.
+        // window-level listeners so the user can press the key BEFORE
+        // clicking the canvas; cleanup happens in dispose().
+        //
+        // Pan is no longer bound to Cmd — right-drag still pans (mb.RIGHT
+        // was set to 2 above), and middle-drag too. Pan via Cmd is no
+        // longer needed; the user can always two-finger pan or right-drag.
         this.onModKeyDown = (e: KeyboardEvent) => {
           if (e.key === 'Control' || e.key === 'Meta') {
-            if (mb) mb.LEFT = 2; // PAN
+            g.enableNodeDrag(true);
+            // Visual feedback — cursor becomes 'grab' so the user knows
+            // they're in node-move mode. Resets on keyup / blur.
+            this.opts.container.style.cursor = 'grab';
           }
         };
         this.onModKeyUp = (e: KeyboardEvent) => {
           if (e.key === 'Control' || e.key === 'Meta') {
-            if (mb) mb.LEFT = 0; // ROTATE
+            g.enableNodeDrag(false);
+            this.opts.container.style.cursor = '';
           }
         };
         window.addEventListener('keydown', this.onModKeyDown);
         window.addEventListener('keyup', this.onModKeyUp);
         // Belt-and-suspenders: if the window loses focus while the user
-        // is holding Ctrl, reset to ROTATE so they don't end up "stuck"
-        // in pan mode next time they click.
-        window.addEventListener('blur', () => { if (mb) mb.LEFT = 0; });
+        // is holding Cmd/Ctrl, reset to the default (no node-drag) so they
+        // don't come back to find dragging unexpectedly pinning nodes.
+        window.addEventListener('blur', () => {
+          g.enableNodeDrag(false);
+          this.opts.container.style.cursor = '';
+        });
       }
       // We attach the custom wheel handler on the host container (not the
       // canvas the library injects, which can change identity) — passive:
