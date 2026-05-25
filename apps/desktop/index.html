@@ -4,30 +4,41 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Graphnosis: Your Local Encrypted Second cortex</title>
-    <style>
-      :root {
-        color-scheme: light dark;
-        --bg: #ffffff;
-        --bg-elev: #f7f7f8;
-        --fg: #1a1a1a;
-        --fg-dim: #5b5b5b;
-        --accent: #1a4f63;
-        --border: rgba(0, 0, 0, 0.08);
-        --error: #b91c1c;
-        --ok: #15803d;
-      }
-      @media (prefers-color-scheme: dark) {
-        :root {
-          --bg: #1a1a1c;
-          --bg-elev: #232327;
-          --fg: #ededed;
-          --fg-dim: #9a9a9c;
-          --accent: #6ab3c8;
-          --border: rgba(255, 255, 255, 0.1);
-          --error: #f87171;
-          --ok: #4ade80;
+    <!-- Apply stored theme synchronously — runs before CSS is parsed so
+         the webview never flashes the wrong background. Must be a plain
+         script (not type="module") so it executes immediately, blocking
+         the parser just long enough to stamp data-theme on <html>. -->
+    <script>
+      (function () {
+        var s = localStorage.getItem('graphnosis:theme');
+        var t = (s === 'light' || s === 'dark' || s === 'auto') ? s : 'dark';
+        if (t !== 'auto') document.documentElement.setAttribute('data-theme', t);
+        // Stamp the OS platform synchronously before first paint so CSS
+        // platform overrides (e.g. .platform-windows .app-header) apply
+        // without a layout flash. navigator.userAgent is reliable in Tauri.
+        if (navigator.userAgent.indexOf('Windows') !== -1) {
+          document.documentElement.classList.add('platform-windows');
         }
-      }
+      })();
+    </script>
+    <!-- Theme tokens — every color the app uses lives in this file as a
+         named CSS custom property. Loaded BEFORE the inline style block
+         so the inline rules can reference --color-* tokens directly. -->
+    <link rel="stylesheet" href="/src/theme-tokens.css" />
+    <style>
+      /* ─── Theme tokens are loaded from /src/theme-tokens.css ──────────────
+         All colors live there as named tokens. Three theme states:
+         'light' / 'dark' / 'auto' (no attribute → follows prefers-color-scheme).
+         The main.ts shell writes `data-theme` on <html>.
+
+         Brand semantics:
+           --color-brand-turquoise  → canonical memory / primary actions
+           --color-brand-purple     → AI-augmented / non-deterministic
+
+         DO NOT hardcode hex/rgba in component styles. Add a token to
+         theme-tokens.css instead. Existing short aliases (--bg, --fg,
+         --accent, --error, --ok, --warn, etc.) are kept in the tokens
+         file and continue to work. */
       * { box-sizing: border-box; }
       body {
         margin: 0;
@@ -57,8 +68,28 @@
         transition: background 80ms;
       }
       button:hover { background: color-mix(in oklab, var(--accent) 8%, transparent); }
-      button.primary { background: var(--accent); color: color-mix(in oklab, var(--accent) 12%, black); border-color: transparent; }
+      button.primary { background: color-mix(in oklab, var(--accent) 72%, white); color: white; border-color: transparent; }
       button.primary:hover { background: color-mix(in oklab, var(--accent) 88%, white); }
+      :root[data-theme="dark"] button.primary,
+      :root[data-theme="dark"] button.primary:hover { background: var(--accent); color: color-mix(in oklab, var(--accent) 12%, black); }
+      @media (prefers-color-scheme: dark) {
+        :root:not([data-theme="light"]) button.primary,
+        :root:not([data-theme="light"]) button.primary:hover { background: var(--accent); color: color-mix(in oklab, var(--accent) 12%, black); }
+      }
+      /* Secondary brand: purple for AI/inferred/non-deterministic actions
+         (e.g. "Synthesize answer", Local-LLM-driven things). Used sparingly
+         so the semantic split between turquoise and purple stays readable. */
+      button.ai { background: var(--ai-accent); color: var(--ai-accent-contrast); border-color: transparent; }
+      button.ai:hover { background: color-mix(in oklab, var(--ai-accent) 85%, black); }
+      button.ai-outline {
+        background: var(--ai-accent-soft);
+        color: var(--ai-accent);
+        border-color: color-mix(in oklab, var(--ai-accent) 35%, var(--border));
+      }
+      button.ai-outline:hover {
+        background: color-mix(in oklab, var(--ai-accent) 18%, transparent);
+        border-color: color-mix(in oklab, var(--ai-accent) 55%, var(--border));
+      }
       /* Destructive / cortex-management style — visibly red so it reads as
          "careful, this opens engram delete & quarantine cleanup". Not full
          saturation — the button isn't itself destructive, it opens a panel
@@ -76,7 +107,10 @@
       .actions { display: flex; gap: 8px; align-items: center; }
       .pick-row { display: flex; gap: 8px; }
       .pick-row input { flex: 1; }
-      .error { color: var(--error); padding: 8px 10px; border-radius: 6px; background: color-mix(in oklab, var(--error) 10%, transparent); margin-bottom: 16px; font-size: 14px; white-space: pre-wrap; word-break: break-word; max-height: 280px; overflow-y: auto; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; line-height: 1.45; }
+      .error { color: var(--error); padding: 8px 10px; border-radius: 6px; background: color-mix(in oklab, var(--error) 10%, transparent); margin-bottom: 16px; font-size: 14px; white-space: pre-wrap; word-break: break-word; max-height: 280px; overflow-y: auto; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; line-height: 1.45; display: flex; align-items: flex-start; gap: 8px; }
+      .error .error-msg-text { flex: 1; min-width: 0; }
+      .error .error-dismiss-btn { flex-shrink: 0; background: none; border: none; color: var(--error); opacity: 0.7; cursor: pointer; font-size: 18px; line-height: 1; padding: 0 2px; margin-top: -1px; }
+      .error .error-dismiss-btn:hover { opacity: 1; }
       .ok-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--ok); margin-right: 6px; }
       .dim-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--fg-dim); margin-right: 6px; }
       .panel { background: var(--bg-elev); border: 1px solid var(--border); border-radius: 8px; padding: 16px; margin-bottom: 16px; }
@@ -111,12 +145,12 @@
         /* Apple's TouchID icon is a coral / salmon red — match that hue so
            the user immediately associates the glyph with the OS biometric
            rather than a generic icon. */
-        color: #ff5b5b;
+        color: var(--color-status-error-strong);
         cursor: pointer;
       }
       .touchid-inline-btn:hover {
-        background: rgba(255, 91, 91, 0.12);
-        color: #ff8080;
+        background: var(--color-status-destructive-soft);
+        color: var(--color-status-error-bright);
       }
       .touchid-inline-btn.hidden { display: none; }
       .touchid-inline-btn:active { transform: translateY(-50%) scale(0.92); }
@@ -135,7 +169,7 @@
         white-space: nowrap;
       }
       .touchid-inline-hint.hidden { display: none; }
-      .passphrase-warning { margin: 10px 0 0; padding: 10px 12px; background: rgba(255,200,0,0.07); border-left: 3px solid rgba(255,200,0,0.5); border-radius: 0 6px 6px 0; font-size: 11.5px; line-height: 1.6; color: var(--fg-dim); }
+      .passphrase-warning { margin: 10px 0 0; padding: 10px 12px; background: var(--color-status-warn-yellow); border-left: 3px solid var(--color-status-warn-border); border-radius: 0 6px 6px 0; font-size: 11.5px; line-height: 1.6; color: var(--fg-dim); }
       .passphrase-warning u { color: var(--fg-dim); font-style: normal; font-weight: 400; text-decoration: underline; text-underline-offset: 2px; }
       .passphrase-warning-icon { margin-right: 4px; opacity: 0.7; }
 
@@ -362,7 +396,7 @@
         margin-right: 6px;
       }
       .diff-op-kind.edit { background: color-mix(in oklab, var(--accent) 25%, transparent); color: var(--accent); }
-      .diff-op-kind.supersede { background: color-mix(in oklab, #a855f7 30%, transparent); color: #a855f7; }
+      .diff-op-kind.supersede { background: color-mix(in oklab, var(--color-brand-purple-bright) 30%, transparent); color: var(--color-brand-purple-bright); }
       .diff-op-kind.delete { background: color-mix(in oklab, var(--error) 25%, transparent); color: var(--error); }
       .diff-op-kind.add { background: color-mix(in oklab, var(--ok) 25%, transparent); color: var(--ok); }
       .diff-op-content {
@@ -429,7 +463,7 @@
         transition: opacity 80ms, background 80ms, color 80ms;
       }
       .mcp-row:hover .mcp-kick { opacity: 1; }
-      .mcp-kick:hover { background: color-mix(in oklab, #ef4444 14%, transparent); color: #fca5a5; }
+      .mcp-kick:hover { background: color-mix(in oklab, var(--color-status-error) 14%, transparent); color: var(--color-status-error-pale); }
       .mcp-kick:disabled { opacity: 0.3; cursor: wait; }
       .mcp-dot {
         width: 8px; height: 8px; border-radius: 50%;
@@ -441,15 +475,15 @@
          connection hasn't seen activity in a while — the relay is
          still attached, just not actively forwarding anything. */
       .mcp-dot-idle {
-        background: #f59e0b;
+        background: var(--color-status-warn-amber);
         animation: mcp-pulse-idle 3s ease-in-out infinite;
       }
       @keyframes mcp-pulse-idle {
-        0%, 100% { opacity: 0.85; box-shadow: 0 0 0 0 rgba(245, 158, 11, 0.35); }
-        50%      { opacity: 0.55; box-shadow: 0 0 0 4px rgba(245, 158, 11, 0); }
+        0%, 100% { opacity: 0.85; box-shadow: 0 0 0 0 var(--color-status-warn-border); }
+        50%      { opacity: 0.55; box-shadow: 0 0 0 4px var(--color-status-warn-soft); }
       }
       .mcp-idle-tag {
-        color: #f59e0b;
+        color: var(--color-status-warn-amber);
         font-weight: 500;
       }
       @keyframes mcp-pulse {
@@ -499,6 +533,7 @@
       .source-row-disabled .source-meta { opacity: 0.4; }
       .source-name { color: var(--fg); flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
       .source-meta { color: var(--fg-dim); white-space: nowrap; }
+      .source-moved-label { color: var(--fg-dim); font-size: 13px; white-space: nowrap; font-style: italic; }
       /* Attribution chip for AI-client-added sources (remember/correct
          via MCP). Soft turquoise tint so it's clearly informational, not
          clickable; matches the seahorse-logo accent. */
@@ -600,15 +635,15 @@
         border-radius: 4px;
         border: 1px solid color-mix(in oklab, var(--error) 60%, var(--border));
         background: transparent;
-        color: var(--error, #e05555);
+        color: var(--error, var(--color-status-destructive));
         cursor: pointer;
         white-space: nowrap;
         flex-shrink: 0;
         transition: background 0.12s, color 0.12s;
       }
       .source-row-forget-go:not(:disabled):hover {
-        background: color-mix(in oklab, var(--error, #e05555) 85%, transparent);
-        color: #fff;
+        background: color-mix(in oklab, var(--error, var(--color-status-destructive)) 85%, transparent);
+        color: var(--color-fg-on-accent);
       }
       .source-row-forget-go:disabled {
         opacity: 0.35;
@@ -660,7 +695,7 @@
       }
       .source-row-move-go:hover {
         background: color-mix(in oklab, var(--accent) 85%, transparent);
-        color: #fff;
+        color: var(--color-fg-on-accent);
       }
       .source-row-move-cancel {
         font-size: 15px;
@@ -708,7 +743,7 @@
         font-size: 14px;
         font-weight: 500;
         background: var(--bg);
-        border: 1px solid var(--accent, #67e8f9);
+        border: 1px solid var(--accent, var(--color-brand-turquoise-bright));
         border-radius: 4px;
         color: var(--fg);
         padding: 1px 6px;
@@ -757,11 +792,11 @@
         color: var(--fg);
       }
       .btn-graph-delete {
-        color: #e05555;
-        border-color: #e05555;
+        color: var(--color-status-destructive);
+        border-color: var(--color-status-destructive);
       }
       .btn-graph-delete:hover {
-        background: color-mix(in oklab, #e05555 15%, transparent);
+        background: color-mix(in oklab, var(--color-status-destructive) 15%, transparent);
       }
       /* Inline type-to-confirm delete form */
       .settings-graph-row {
@@ -787,29 +822,29 @@
         font-size: 14px;
         padding: 3px 8px;
         border-radius: 5px;
-        border: 1px solid #e05555;
+        border: 1px solid var(--color-status-destructive);
         background: transparent;
         color: var(--fg);
         outline: none;
       }
       .sgr-confirm-input:focus {
-        box-shadow: 0 0 0 2px color-mix(in oklab, #e05555 30%, transparent);
+        box-shadow: 0 0 0 2px color-mix(in oklab, var(--color-status-destructive) 30%, transparent);
       }
       .sgr-confirm-go {
         font-size: 15px;
         padding: 3px 10px;
         border-radius: 5px;
-        border: 1px solid #e05555;
+        border: 1px solid var(--color-status-destructive);
         background: transparent;
-        color: #e05555;
+        color: var(--color-status-destructive);
         cursor: pointer;
         white-space: nowrap;
         flex-shrink: 0;
         transition: background 0.15s, color 0.15s;
       }
       .sgr-confirm-go:not(:disabled):hover {
-        background: #e05555;
-        color: #fff;
+        background: var(--color-status-destructive);
+        color: var(--color-fg-on-accent);
       }
       .sgr-confirm-go:disabled {
         opacity: 0.38;
@@ -872,7 +907,7 @@
       .tour-backdrop {
         position: absolute;
         inset: 0;
-        background: rgba(0, 0, 0, 0.72);
+        background: var(--color-modal-scrim-deep);
         backdrop-filter: blur(2px);
       }
       .tour-card {
@@ -882,18 +917,18 @@
         max-width: 480px;
         height: 680px;
         margin: 24px;
-        background: #1c1c1e;
-        border: 1px solid rgba(255, 255, 255, 0.10);
+        background: var(--color-surface-card);
+        border: 1px solid var(--color-border);
         border-radius: 14px;
         padding: 32px;
-        box-shadow: 0 24px 64px rgba(0, 0, 0, 0.55), 0 4px 16px rgba(0, 0, 0, 0.3);
+        box-shadow: 0 24px 64px var(--color-modal-scrim), 0 4px 16px var(--color-overlay-strong);
         display: flex;
         flex-direction: column;
       }
       @media (prefers-color-scheme: light) {
         .tour-card {
-          background: #1c1c1e; /* keep dark card even in light system mode */
-          color: #ededed;
+          background: var(--color-surface-card); /* keep dark card even in light system mode */
+          color: var(--color-fg-on-dark);
         }
       }
       .tour-step-indicator {
@@ -905,17 +940,17 @@
         width: 6px;
         height: 6px;
         border-radius: 50%;
-        background: rgba(255, 255, 255, 0.22);
+        background: var(--color-border-strong);
         transition: background 200ms, transform 200ms;
       }
       .tour-dot.active {
-        background: #6ab3c8;
+        background: var(--color-brand-turquoise-pale);
         transform: scale(1.3);
       }
       .tour-title {
         font-size: 17px;
         font-weight: 700;
-        color: #ededed;
+        color: var(--color-fg-on-dark);
         margin: 0 0 10px;
         letter-spacing: -0.02em;
         line-height: 1.3;
@@ -924,7 +959,7 @@
       .tour-body {
         font-size: 16px;
         line-height: 1.65;
-        color: rgba(237, 237, 237, 0.72);
+        color: var(--color-fg-dim);
         margin: 0 0 16px;
         white-space: pre-line;
         flex: 1;
@@ -946,7 +981,7 @@
       .tour-btn-skip {
         font: inherit;
         font-size: 14px;
-        color: rgba(237, 237, 237, 0.40);
+        color: var(--color-fg-dim);
         background: transparent;
         border: none;
         cursor: pointer;
@@ -955,59 +990,59 @@
         transition: color 120ms;
         flex-shrink: 0;
       }
-      .tour-btn-skip:hover { color: rgba(237, 237, 237, 0.70); background: transparent; }
+      .tour-btn-skip:hover { color: var(--color-fg-dim); background: transparent; }
       .tour-btn-secondary {
         font: inherit;
         font-size: 14px;
         padding: 8px 16px;
         border-radius: 7px;
-        background: rgba(255, 255, 255, 0.06);
-        border: 1px solid rgba(255, 255, 255, 0.12);
-        color: rgba(237, 237, 237, 0.80);
+        background: var(--color-overlay-light);
+        border: 1px solid var(--color-border);
+        color: var(--color-fg-dim);
         cursor: pointer;
         transition: background 100ms;
       }
-      .tour-btn-secondary:hover { background: rgba(255, 255, 255, 0.11); }
+      .tour-btn-secondary:hover { background: var(--color-border); }
       .tour-btn-primary {
         font: inherit;
         font-size: 14px;
         font-weight: 600;
         padding: 8px 18px;
         border-radius: 7px;
-        background: #6ab3c8;
+        background: var(--color-brand-turquoise-pale);
         border: 1px solid transparent;
-        color: #0f2028;
+        color: var(--color-surface-deep);
         cursor: pointer;
         transition: background 100ms;
         white-space: nowrap;
       }
-      .tour-btn-primary:hover { background: #7ec4d6; }
+      .tour-btn-primary:hover { background: var(--color-brand-turquoise-mid); }
       .tour-connect-area { display: none; flex-direction: column; gap: 8px; margin-bottom: 12px; overflow-y: auto; }
       .tour-connect-area.visible { display: flex; }
       .tour-connect-group { display: flex; flex-wrap: wrap; gap: 6px; }
-      .tour-connect-label { font-size: 11px; color: rgba(237,237,237,0.45); text-transform: uppercase; letter-spacing: .06em; margin-bottom: 2px; }
+      .tour-connect-label { font-size: 11px; color: var(--color-fg-dim); text-transform: uppercase; letter-spacing: .06em; margin-bottom: 2px; }
       .tour-connect-btn {
         font: inherit; font-size: 15px; font-weight: 500;
         padding: 8px 14px; border-radius: 7px;
-        background: rgba(106,179,200,0.12); border: 1px solid rgba(106,179,200,0.30);
-        color: #9fd8e8; cursor: pointer; transition: background 100ms;
+        background: var(--color-brand-turquoise-soft); border: 1px solid var(--color-brand-turquoise-soft);
+        color: var(--color-brand-turquoise-pale); cursor: pointer; transition: background 100ms;
       }
-      .tour-connect-btn:hover { background: rgba(106,179,200,0.22); }
+      .tour-connect-btn:hover { background: var(--color-brand-turquoise-soft); }
       /* ── Sidebar get-connected shortcuts ─────────────────────────────── */
       .rail-get-connected { padding: 10px 8px 4px; display: flex; flex-direction: column; gap: 6px; }
-      .rail-get-connected-label { font-size: 10px; color: rgba(237,237,237,0.35); text-transform: uppercase; letter-spacing: .07em; padding: 0 2px 2px; }
+      .rail-get-connected-label { font-size: 10px; color: var(--color-fg-dim); text-transform: uppercase; letter-spacing: .07em; padding: 0 2px 2px; }
       .rail-get-connected-group { display: flex; flex-wrap: wrap; gap: 4px; }
       .rail-shortcut-btn {
         font: inherit; font-size: 14px;
         padding: 5px 11px; border-radius: 5px;
-        background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.10);
-        color: rgba(237,237,237,0.65); cursor: pointer; transition: background 100ms, color 100ms;
+        background: var(--color-overlay-light); border: 1px solid var(--color-border);
+        color: var(--color-fg-dim); cursor: pointer; transition: background 100ms, color 100ms;
         white-space: nowrap;
       }
-      .rail-shortcut-btn:hover { background: rgba(106,179,200,0.15); color: #9fd8e8; border-color: rgba(106,179,200,0.3); }
-      .rail-shortcut-btn.connected { background: rgba(106,179,200,0.2); color: #9fd8e8; border-color: rgba(106,179,200,0.5); font-weight: 600; }
+      .rail-shortcut-btn:hover { background: rgba(106,179,200,0.15); color: var(--fg); border-color: rgba(106,179,200,0.3); }
+      .rail-shortcut-btn.connected { background: rgba(106,179,200,0.2); color: var(--fg); border-color: rgba(106,179,200,0.5); }
       /* Idle state — AI client connected but no recent activity; amber tint. */
-      .rail-shortcut-btn.connected.idle { background: rgba(245,158,11,0.12); color: #f59e0b; border-color: rgba(245,158,11,0.4); animation: rail-idle-pulse 3s ease-in-out infinite; }
+      .rail-shortcut-btn.connected.idle { background: var(--color-status-warn-soft); color: var(--color-status-warn-amber); border-color: var(--color-status-warn-border); animation: rail-idle-pulse 3s ease-in-out infinite; }
       @keyframes rail-idle-pulse {
         0%, 100% { opacity: 1; }
         50% { opacity: 0.55; }
@@ -1033,12 +1068,12 @@
         overscroll-behavior: contain;
       }
       .g-deck-onboarding-top { flex: 1; display: flex; flex-direction: column; gap: 14px; }
-      .g-deck-onboarding-tagline { font-size: 15px; color: rgba(237,237,237,0.55); text-align: center; }
+      .g-deck-onboarding-tagline { font-size: 15px; color: var(--color-fg-dim); text-align: center; }
       .g-deck-onboarding-steps { display: flex; flex-direction: column; gap: 14px; }
       .g-deck-onboarding-step { display: flex; gap: 12px; align-items: flex-start; }
-      .g-deck-onboarding-num { font-size: 13px; font-weight: 700; color: #6ab3c8; min-width: 18px; }
-      .g-deck-onboarding-step-body { font-size: 15px; color: rgba(237,237,237,0.75); line-height: 1.5; }
-      .g-deck-onboarding-step-body strong { color: #ededed; }
+      .g-deck-onboarding-num { font-size: 13px; font-weight: 700; color: var(--color-brand-turquoise-mid); min-width: 18px; }
+      .g-deck-onboarding-step-body { font-size: 15px; color: var(--color-fg-dim); line-height: 1.5; }
+      .g-deck-onboarding-step-body strong { color: var(--color-fg); }
       .g-deck-onboarding-bottom { display: flex; flex-direction: column; gap: 8px; }
       .g-deck-onboarding-cmds { display: flex; flex-direction: column; gap: 12px; }
       /* The chip list itself no longer caps height — the parent
@@ -1046,20 +1081,20 @@
          reliable across viewport sizes than a nested scroll. */
       .g-deck-cmd-scroll { padding-right: 6px; }
       .g-deck-cmd-group { display: flex; flex-direction: column; gap: 6px; }
-      .g-deck-cmd-grouplabel { font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: rgba(237,237,237,0.5); }
+      .g-deck-cmd-grouplabel { font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: var(--color-fg-dim); }
       .g-deck-cmd-chips { display: flex; flex-wrap: wrap; gap: 5px; }
-      .g-deck-cmd-note { font-size: 13px; line-height: 1.5; color: rgba(237,237,237,0.5); margin: 10px 0 0; max-width: 560px; }
+      .g-deck-cmd-note { font-size: 13px; line-height: 1.5; color: var(--color-fg-dim); margin: 10px 0 0; max-width: 560px; }
       .g-deck-cmd-chip {
         font-family: monospace; font-size: 14px;
         padding: 4px 10px; border-radius: 5px;
-        background: rgba(106,179,200,0.06); border: 1px solid rgba(106,179,200,0.15);
-        color: rgba(159,216,232,0.5); cursor: pointer;
+        background: var(--color-brand-turquoise-soft); border: 1px solid var(--color-brand-turquoise-mid);
+        color: var(--color-brand-turquoise-mid); cursor: pointer;
         transition: background 150ms, border-color 150ms, color 300ms, opacity 400ms;
       }
-      .g-deck-cmd-chip:hover { background: rgba(106,179,200,0.16); border-color: rgba(106,179,200,0.3); color: #9fd8e8; }
+      .g-deck-cmd-chip:hover { background: var(--color-brand-turquoise); border-color: var(--color-brand-turquoise); color: var(--color-fg-on-accent); }
       .g-deck-cmd-chip.copied {
-        background: rgba(80,200,120,0.14); border-color: rgba(80,200,120,0.35);
-        color: #7de0a0;
+        background: var(--color-status-ok-soft); border-color: var(--color-status-ok-border);
+        color: var(--color-status-ok-mint);
       }
       .g-deck-onboarding-connect { display: flex; flex-wrap: wrap; gap: 6px; }
       /* ──────────────────────────────────────────────────────────────── */
@@ -1093,7 +1128,7 @@
          UI stays single-page; no router needed. */
       .modal-backdrop {
         position: fixed; inset: 0;
-        background: rgba(0,0,0,0.4);
+        background: var(--color-overlay-heavy);
         display: flex; align-items: center; justify-content: center;
         z-index: 100;
         padding: 24px;
@@ -1114,6 +1149,7 @@
         max-height: 90vh;
         display: flex; flex-direction: column;
         overflow: hidden;
+        box-shadow: 0 24px 64px var(--color-modal-scrim), 0 4px 16px var(--color-overlay-strong);
       }
       .modal-header {
         padding: 16px 20px;
@@ -1134,8 +1170,8 @@
         width: fit-content;
       }
       .consent-tier-pill.sensitive {
-        background: color-mix(in oklab, #f59e0b 14%, transparent);
-        border-color: color-mix(in oklab, #f59e0b 35%, transparent);
+        background: color-mix(in oklab, var(--color-status-warn-amber) 14%, transparent);
+        border-color: color-mix(in oklab, var(--color-status-warn-amber) 35%, transparent);
       }
       /* First-connect policy chooser — one row per tier with label + select. */
       .first-connect-row {
@@ -1169,6 +1205,38 @@
          tool has examples in TOOL_INFO. */
       .tool-info-examples { margin-top: 14px; display: flex; flex-direction: column; gap: 6px; }
       .tool-info-examples:empty { display: none; }
+      /* Tool-info modal layout — kept in CSS (not inline style="") so Vite's
+         HTML processing and the Tauri asset protocol can't silently drop them,
+         which caused the logo+title to render side-by-side and the docs link
+         to appear on the wrong side in production bundles. */
+      .tool-info-modal-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: flex-start;
+        gap: 12px;
+      }
+      .tool-info-modal-header > div:first-child { flex: 1; min-width: 0; }
+      .tool-info-logo-col {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 3px;
+        flex-shrink: 0;
+      }
+      .tool-info-logo-col span {
+        font-size: 10px;
+        color: var(--fg-dim);
+        letter-spacing: 0.04em;
+      }
+      /* Docs link sits on the LEFT of the footer — margin-right:auto in a
+         flex-end container would work in dev but is stripped in prod builds. */
+      .tool-info-docs-link {
+        font-size: 12px;
+        color: var(--fg-dim);
+        text-decoration: none;
+        border-bottom: 1px dotted currentColor;
+        margin-right: auto;
+      }
       .tool-info-examples-label {
         font-size: 11px;
         text-transform: uppercase;
@@ -1192,7 +1260,7 @@
         display: flex; gap: 8px; justify-content: flex-end;
         align-items: center;
       }
-      .modal-footer .filler { flex: 1; color: var(--fg-dim); font-size: 15px; line-height: 1.45; max-width: 340px; }
+      .modal-footer .filler { flex: 1; color: var(--fg-dim); font-size: 15px; line-height: 1.45; }
       /* The engram-create dialog's privacy note is a longer paragraph — render it a notch smaller. */
       #gw-note { font-size: 13px; line-height: 1.4; }
       /* Pinned name/id block between the scrolling template list and the footer */
@@ -1254,7 +1322,7 @@
         transition: background 0.2s;
       }
       .wizard-step-dot.active { background: var(--accent); }
-      .wizard-step-dot.done { background: var(--ok, #4caf50); }
+      .wizard-step-dot.done { background: var(--ok, var(--color-status-ok-bright)); }
       .wizard-step-label {
         font-size: 15px; color: var(--fg-dim);
         margin-left: 2px;
@@ -1290,12 +1358,16 @@
         cursor: pointer;
         transition: background 0.15s;
       }
-      .copy-btn:hover { background: var(--accent); color: #fff; border-color: var(--accent); }
-      .copy-btn.copied { background: var(--ok, #4caf50); color: #fff; border-color: transparent; }
+      .copy-btn:hover { background: var(--accent); color: var(--color-fg-on-accent); border-color: var(--accent); }
+      .copy-btn.copied { background: var(--ok, var(--color-status-ok-bright)); color: var(--color-fg-on-accent); border-color: transparent; }
       .vscode-option { background: var(--bg-elev); border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; }
       .vscode-option-header { margin-bottom: 2px; }
       .vscode-option-label { font-size: 13px; font-weight: 600; color: var(--fg); }
-      .badge-recommended { display: inline-block; margin-left: 6px; padding: 1px 6px; border-radius: 4px; font-size: 11px; font-weight: 600; background: var(--accent); color: #000; vertical-align: middle; }
+      .badge-recommended { display: inline-block; margin-left: 6px; padding: 1px 6px; border-radius: 4px; font-size: 11px; font-weight: 600; background: color-mix(in oklab, var(--accent) 72%, white); color: white; vertical-align: middle; }
+      :root[data-theme="dark"] .badge-recommended { background: var(--accent); color: color-mix(in oklab, var(--accent) 12%, black); }
+      @media (prefers-color-scheme: dark) {
+        :root:not([data-theme="light"]) .badge-recommended { background: var(--accent); color: color-mix(in oklab, var(--accent) 12%, black); }
+      }
 
       /* Sensitivity tier badge in the topbar — color-coded PUBLIC / PERSONAL / SENSITIVE */
       .sensitivity-badge {
@@ -1306,9 +1378,9 @@
         border: 1px solid transparent;
         transition: opacity 0.15s;
       }
-      .sensitivity-badge[data-tier="public"]    { background: rgba(34,197,94,0.18); color: #22c55e; border-color: rgba(34,197,94,0.35); }
-      .sensitivity-badge[data-tier="personal"]  { background: rgba(234,179,8,0.18); color: #d4a004; border-color: rgba(234,179,8,0.35); }
-      .sensitivity-badge[data-tier="sensitive"] { background: rgba(239,68,68,0.18); color: #ef4444; border-color: rgba(239,68,68,0.35); }
+      .sensitivity-badge[data-tier="public"]    { background: var(--color-status-ok-soft); color: var(--color-status-ok-bright); border-color: var(--color-status-ok-border); }
+      .sensitivity-badge[data-tier="personal"]  { background: var(--color-status-warn-soft); color: var(--color-status-warn-gold); border-color: var(--color-status-warn-border); }
+      .sensitivity-badge[data-tier="sensitive"] { background: var(--color-status-error-soft); color: var(--color-status-error); border-color: var(--color-status-error-border); }
       .sensitivity-badge:hover { opacity: 0.75; }
       /* Vertical stack: "Active engram:" label on top, tier badge below.
          Sits to the LEFT of the engram dropdown. The badge is right-aligned
@@ -1325,7 +1397,7 @@
       .sensitivity-popover {
         position: absolute; z-index: 9999;
         background: var(--bg-elev); border: 1px solid var(--border); border-radius: 10px;
-        box-shadow: 0 12px 28px rgba(0,0,0,0.45);
+        box-shadow: 0 12px 28px var(--color-overlay-heavy);
         padding: 14px; min-width: 320px;
         display: flex; flex-direction: column; gap: 10px;
       }
@@ -1340,9 +1412,9 @@
         font-size: 11px; font-weight: 700; letter-spacing: 0.04em;
         transition: border-color 0.15s, background 0.15s;
       }
-      .sensitivity-popover .sp-tier-opt[data-tier="public"][aria-pressed="true"]    { border-color: #22c55e; background: rgba(34,197,94,0.12); color: #22c55e; }
-      .sensitivity-popover .sp-tier-opt[data-tier="personal"][aria-pressed="true"]  { border-color: #d4a004; background: rgba(234,179,8,0.12); color: #d4a004; }
-      .sensitivity-popover .sp-tier-opt[data-tier="sensitive"][aria-pressed="true"] { border-color: #ef4444; background: rgba(239,68,68,0.12); color: #ef4444; }
+      .sensitivity-popover .sp-tier-opt[data-tier="public"][aria-pressed="true"]    { border-color: var(--color-status-ok-bright); background: var(--color-status-ok-soft); color: var(--color-status-ok-bright); }
+      .sensitivity-popover .sp-tier-opt[data-tier="personal"][aria-pressed="true"]  { border-color: var(--color-status-warn-gold); background: var(--color-status-warn-soft); color: var(--color-status-warn-gold); }
+      .sensitivity-popover .sp-tier-opt[data-tier="sensitive"][aria-pressed="true"] { border-color: var(--color-status-error); background: var(--color-status-error-soft); color: var(--color-status-error); }
       .sensitivity-popover .sp-tier-sub { font-size: 10px; font-weight: 400; color: var(--fg-dim); letter-spacing: normal; }
       .sensitivity-popover .sp-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 4px; }
       .consent-phrase-copy {
@@ -1352,7 +1424,7 @@
         transition: background 0.15s, color 0.15s;
       }
       .consent-phrase-copy:hover { background: var(--bg); color: var(--fg); }
-      .consent-phrase-copy.copied { background: var(--ok, #4caf50); color: #fff; border-color: transparent; }
+      .consent-phrase-copy.copied { background: var(--ok, var(--color-status-ok-bright)); color: var(--color-fg-on-accent); border-color: transparent; }
       /* Consent section inside Settings modal */
       .consent-phrase-box {
         background: var(--bg-elev); border: 1px solid var(--border); border-radius: 8px;
@@ -1392,7 +1464,7 @@
         font-weight: 600;
         margin-left: 6px;
       }
-      .mobile-badge.on { background: var(--ok, #4caf50); color: #fff; }
+      .mobile-badge.on { background: var(--ok, var(--color-status-ok-bright)); color: var(--color-fg-on-accent); }
       .mobile-badge.off { background: var(--border); color: var(--fg-dim); }
       .mobile-ip-row {
         padding: 6px 10px;
@@ -1431,7 +1503,7 @@
         position: absolute; left: 0;
         width: 18px; height: 18px;
         background: var(--accent);
-        color: #fff;
+        color: var(--color-fg-on-accent);
         border-radius: 50%;
         font-size: 14px;
         font-weight: 700;
@@ -1450,7 +1522,7 @@
         height: 160px;
         border: 1px solid var(--border);
         border-radius: 8px;
-        background: #fff;
+        background: var(--color-bg-elev);
         display: block;
       }
       .mobile-qr-block img.hidden { display: none; }
@@ -1527,6 +1599,9 @@
         -webkit-app-region: drag;
       }
       .app-header button, .app-header input, .app-header select { -webkit-app-region: no-drag; white-space: nowrap; }
+      /* Windows: no traffic-light strip on the left — use a normal left padding
+         so the title/tagline sit flush-left rather than indented 88px for Mac. */
+      .platform-windows .app-header { padding-left: 16px; }
       /* Two-row left column: title row on top (brain icon + app title),
          cortex+engram metadata on the row below. */
       .app-header-left {
@@ -1544,8 +1619,9 @@
       }
       .app-title {
         font-size: 18px;
-        font-weight: 700;
-        background: linear-gradient(135deg, #6ab3c8 0%, #a78bfa 100%);
+        font-weight: 800;
+        letter-spacing: -0.3px;
+        background: linear-gradient(135deg, var(--color-brand-turquoise-mid) 0%, var(--color-brand-purple) 100%);
         -webkit-background-clip: text;
         -webkit-text-fill-color: transparent;
         background-clip: text;
@@ -1600,7 +1676,7 @@
       .header-engram-picker {
         font-size: 14px;
         font-weight: 600;
-        color: #67e8f9; /* turquoise — matches the docs brand accent */
+        color: var(--color-brand-turquoise-bright); /* turquoise — matches the docs brand accent */
         background-color: var(--bg-elev);
         border: 1px solid var(--border);
         border-radius: 6px;
@@ -1675,7 +1751,7 @@
         background: var(--bg-elev);
         border: 1px solid var(--border);
         border-radius: 8px;
-        box-shadow: 0 8px 24px rgba(0, 0, 0, 0.25);
+        box-shadow: 0 8px 24px var(--color-overlay-strong);
         padding: 4px;
         display: flex;
         flex-direction: column;
@@ -1711,7 +1787,7 @@
            as "normal" on this dark background) makes the disabled state
            unmistakable. Drops the disabled flag on the next engrams-loading
            event once that engram finishes loading. */
-        color: #6b7280 !important;
+        color: var(--color-fg-faint) !important;
         cursor: not-allowed;
       }
       .engram-picker-option.disabled:hover {
@@ -1832,6 +1908,10 @@
         background: var(--ok);
         animation: mcp-pulse 2s ease-in-out infinite;
       }
+      .rail-mcp-indicator .rail-mcp-dot.idle {
+        background: var(--color-status-warn-amber);
+        animation: mcp-pulse-idle 3s ease-in-out infinite;
+      }
       .rail-mcp-indicator .rail-mcp-name {
         overflow: hidden;
         text-overflow: ellipsis;
@@ -1941,6 +2021,12 @@
         overflow-y: auto;
         padding: 10px 24px 20px;
         background: var(--bg);
+        /* min-height:0 is required for overflow-y:auto to work inside a grid
+           cell. Without it, grid items use min-height:auto and expand to fit
+           content instead of scrolling. macOS WebKit is lenient; WebView2
+           (Windows/Chromium) is strict — this one line fixes MCP Tools (and
+           any other pane) not being scrollable on Windows. */
+        min-height: 0;
       }
       .mode-pane { display: block; max-width: 900px; margin: 0 auto; }
       .mode-pane.hidden { display: none; }
@@ -2040,16 +2126,16 @@
         padding: 6px 10px;
         font: inherit;
         font-size: 12px;
-        color: var(--fg-dim, #888);
+        color: var(--fg-dim, var(--color-fg-muted));
         cursor: pointer;
         border-bottom: 2px solid transparent;
         margin-bottom: -1px; /* overlap the box's bottom border */
         transition: color 120ms, border-color 120ms;
       }
-      .ollama-cli-tab:hover { color: var(--fg, #ddd); }
+      .ollama-cli-tab:hover { color: var(--fg, var(--color-fg-faint)); }
       .ollama-cli-tab[aria-selected="true"] {
-        color: var(--fg, #ddd);
-        border-bottom-color: var(--accent, #5b8def);
+        color: var(--fg, var(--color-fg-faint));
+        border-bottom-color: var(--accent, var(--color-status-info));
         font-weight: 600;
       }
       .ollama-cli-intro, .ollama-cli-foot {
@@ -2261,8 +2347,8 @@
         color: var(--ok);
       }
       .lb-heal-verdict.overturned {
-        background: color-mix(in oklab, #d9a445 22%, transparent);
-        color: #d9a445;
+        background: color-mix(in oklab, var(--color-status-warn-gold) 22%, transparent);
+        color: var(--color-status-warn-gold);
       }
       /* Check-in dashboard → "Needs your review": near-duplicate pairs the
          autonomous brain could not safely merge on its own. The pair cards
@@ -2297,7 +2383,7 @@
       .needs-review-count {
         display: inline-block; margin-left: 6px; padding: 1px 6px;
         border-radius: 10px; font-size: 11px; font-weight: 700;
-        background: var(--accent); color: #000;
+        background: var(--accent); color: var(--color-surface-inverse);
       }
 
       /* (3) Scan-status line — countdown to the next background self-check,
@@ -2332,8 +2418,8 @@
       .lb-feed-item { animation: lb-feed-in 0.35s ease-out; }
       /* (6) Synapse feed item — visually distinct from scan-phase rows. */
       .lb-feed-item.lb-feed-synapse {
-        border-left-color: #a78bfa;
-        background: color-mix(in oklab, #a78bfa 12%, transparent);
+        border-left-color: var(--color-brand-purple-warm);
+        background: color-mix(in oklab, var(--color-brand-purple-warm) 12%, transparent);
         color: var(--fg);
       }
 
@@ -2353,7 +2439,7 @@
       /* (6) Synapse-formation flash — the ring throws a brief ripple when
          a new connection forms. Layered on top of the breathing pulse. */
       @keyframes lb-synapse-flash {
-        0%   { box-shadow: 0 0 0 0 color-mix(in oklab, #a78bfa 70%, transparent); }
+        0%   { box-shadow: 0 0 0 0 color-mix(in oklab, var(--color-brand-purple-warm) 70%, transparent); }
         100% { box-shadow: 0 0 0 18px transparent; }
       }
       .lb-vitality-ring.lb-synapse-pulse {
@@ -2363,6 +2449,22 @@
       #living-brain.lb-scanning .lb-vitality-ring.lb-synapse-pulse {
         animation: lb-ring-breathe 1.5s ease-in-out infinite,
                    lb-synapse-flash 0.95s ease-out;
+      }
+
+      /* Light-mode: give the hero card a subtle cool-gray gradient so the
+         floating dots read against a warmer surface (same pattern as the
+         atlas light-mode background). Dark mode keeps the default --bg-elev. */
+      :root[data-theme="light"] .lb-hero {
+        background:
+          radial-gradient(ellipse at 70% 30%, rgba(8, 145, 178, 0.06), transparent 55%),
+          linear-gradient(135deg, #e2e8f0 0%, #f1f5f9 60%, #f8fafc 100%);
+      }
+      @media (prefers-color-scheme: light) {
+        :root:not([data-theme="dark"]) .lb-hero {
+          background:
+            radial-gradient(ellipse at 70% 30%, rgba(8, 145, 178, 0.06), transparent 55%),
+            linear-gradient(135deg, #e2e8f0 0%, #f1f5f9 60%, #f8fafc 100%);
+        }
       }
 
       /* Respect reduced-motion: drop the ambient + pulse animations. */
@@ -2418,7 +2520,6 @@
         display: flex;
         align-items: center;
         gap: 6px;
-        margin-left: auto;
         white-space: nowrap;
       }
       .status-dot {
@@ -2433,11 +2534,86 @@
       }
       /* Idle: amber slow-pulse — client connected but no recent activity. */
       .status-dot.idle {
-        background: #f59e0b;
+        background: var(--color-status-warn-amber);
         animation: mcp-pulse-idle 3s ease-in-out infinite;
       }
-      .status-dot.warn { background: #eab308; }
+      .status-dot.warn { background: var(--warn); }
       .status-dot.error { background: var(--error); }
+
+      /* ── Status-bar theme toggle ─────────────────────────────────────────
+         Three-state button (auto · light · dark). main.ts adds
+         data-theme-state="auto|light|dark" so the CSS can show the matching
+         icon. Frameless to fit the status bar's quiet visual weight. */
+      .status-theme-toggle {
+        appearance: none;
+        background: transparent;
+        border: none;
+        padding: 2px 6px;
+        margin: 0;
+        border-radius: 4px;
+        cursor: pointer;
+        font-size: 14px;
+        line-height: 1;
+        color: var(--fg-dim);
+        opacity: 0.7;
+        transition: opacity 100ms, background 100ms, color 100ms;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 22px;
+        height: 22px;
+      }
+      .status-theme-toggle:hover {
+        opacity: 1;
+        background: var(--accent-soft);
+        color: var(--accent);
+      }
+      .status-theme-toggle .theme-icon-auto,
+      .status-theme-toggle .theme-icon-light,
+      .status-theme-toggle .theme-icon-dark { display: none; }
+      .status-theme-toggle[data-theme-state="auto"]  .theme-icon-auto  { display: inline; }
+      .status-theme-toggle[data-theme-state="light"] .theme-icon-light { display: inline; }
+      .status-theme-toggle[data-theme-state="dark"]  .theme-icon-dark  { display: inline; }
+
+      /* ── Settings → Appearance picker ───────────────────────────────────
+         Three-option radio group rendered as bordered cards. Selected card
+         lights up with --accent. */
+      .appearance-picker {
+        display: flex;
+        gap: 10px;
+        flex-wrap: wrap;
+      }
+      .appearance-option {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 8px 14px;
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        background: var(--bg-elev);
+        cursor: pointer;
+        transition: background 100ms, border-color 100ms;
+      }
+      .appearance-option:hover {
+        background: var(--accent-soft);
+        border-color: color-mix(in oklab, var(--accent) 30%, var(--border));
+      }
+      .appearance-option input[type="radio"] {
+        position: absolute;
+        opacity: 0;
+        pointer-events: none;
+      }
+      .appearance-option:has(input:checked) {
+        background: var(--accent-soft);
+        border-color: var(--accent);
+        color: var(--accent);
+      }
+      .appearance-swatch {
+        font-size: 16px;
+        line-height: 1;
+      }
+      .appearance-label small { color: var(--fg-dim); font-weight: 400; }
+      .appearance-option:has(input:checked) .appearance-label small { color: inherit; opacity: 0.75; }
 
       /* Nodes view */
       .nodes-toolbar {
@@ -2534,7 +2710,7 @@
       }
       .gt-tier.free { background: color-mix(in oklab, var(--ok) 18%, transparent); color: var(--ok); }
       .gt-tier.power { background: color-mix(in oklab, var(--accent) 22%, transparent); color: var(--accent); }
-      .gt-tier.enterprise { background: color-mix(in oklab, #a855f7 22%, transparent); color: #a855f7; }
+      .gt-tier.enterprise { background: color-mix(in oklab, var(--color-brand-purple-bright) 22%, transparent); color: var(--color-brand-purple-bright); }
       .graph-template-card.locked { opacity: 0.55; cursor: not-allowed; }
       .graph-template-card.locked:hover { border-color: var(--border); }
 
@@ -2811,6 +2987,26 @@
       }
       .g-row-text { color: var(--fg); font-size: 14px; line-height: 1.4; }
       .g-row-meta { color: var(--fg-dim); font-size: 15px; margin-top: 3px; }
+      /* Citation links inside the AI summary → scroll to result row */
+      .synth-cite {
+        /* Reset all default <button> chrome */
+        all: unset;
+        /* Plain inline text link */
+        color: var(--accent);
+        font-weight: 600;
+        font-size: 0.88em;
+        cursor: pointer;
+        text-decoration: underline;
+        text-decoration-style: dotted;
+        text-underline-offset: 2px;
+      }
+      .synth-cite:hover { text-decoration-style: solid; }
+      /* Flash the referenced row when a citation is clicked */
+      @keyframes cite-flash {
+        0%   { background: color-mix(in oklab, var(--accent) 22%, var(--bg-elev)); }
+        100% { background: transparent; }
+      }
+      .g-row-cite-flash { animation: cite-flash 1.2s ease-out forwards; }
       .g-row-source {
         font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
         font-size: 14px;
@@ -2865,7 +3061,7 @@
       }
       .g-health-grade.a { color: var(--ok); }
       .g-health-grade.b { color: var(--accent); }
-      .g-health-grade.c { color: #d9a445; }       /* warm yellow */
+      .g-health-grade.c { color: var(--color-status-warn-gold); }       /* warm yellow */
       .g-health-grade.d { color: var(--error); }
       .g-health-meter {
         width: 72px;
@@ -3069,14 +3265,18 @@
         color: var(--fg);
         margin: 0 0 10px;
         padding: 10px 12px;
-        background: var(--bg);
+        background: color-mix(in oklab, var(--accent) 14%, var(--bg-elev));
         border-left: 2px solid var(--accent);
         border-radius: 0 4px 4px 0;
         cursor: pointer;
         transition: background 0.15s;
+        /* Long node text scrolls within the card rather than pushing the
+           candidate panel and meta row off-screen. ~10 lines visible. */
+        max-height: 10em;
+        overflow-y: auto;
       }
       .g-deck-content:hover {
-        background: color-mix(in oklab, var(--accent) 6%, var(--bg));
+        background: color-mix(in oklab, var(--accent) 22%, var(--bg-elev));
       }
       .g-deck-meta {
         font-size: 14px;
@@ -3163,11 +3363,11 @@
         z-index: 250;
         max-width: 520px;
         width: calc(100% - 32px);
-        background: var(--bg);
+        background: color-mix(in oklab, var(--accent) 6%, var(--bg-elev));
         border: 1px solid var(--border);
         border-left: 3px solid var(--accent);
         border-radius: 10px;
-        box-shadow: 0 12px 36px rgba(0,0,0,0.22);
+        box-shadow: 0 12px 36px var(--color-overlay-strong);
         padding: 12px 14px;
         font-size: 14px;
         color: var(--fg);
@@ -3252,9 +3452,9 @@
         text-transform: uppercase;
         letter-spacing: 0.04em;
       }
-      .connector-row-status.enabled { color: #4ade80; background: color-mix(in oklab, #4ade80 12%, transparent); }
+      .connector-row-status.enabled { color: var(--color-status-ok); background: color-mix(in oklab, var(--color-status-ok) 12%, transparent); }
       .connector-row-status.disabled { color: var(--fg-dim); background: color-mix(in oklab, var(--fg-dim) 12%, transparent); }
-      .connector-row-status.error    { color: #f87171; background: color-mix(in oklab, #f87171 12%, transparent); }
+      .connector-row-status.error    { color: var(--color-status-error); background: color-mix(in oklab, var(--color-status-error) 12%, transparent); }
       .connector-row-status.pulling  { color: var(--accent); background: color-mix(in oklab, var(--accent) 14%, transparent); }
       .connector-row-meta { color: var(--fg-dim); font-size: 15px; }
       .connector-row-actions { display: flex; gap: 4px; flex-shrink: 0; }
@@ -3268,8 +3468,8 @@
         cursor: pointer;
       }
       .connector-row-actions button:hover { background: color-mix(in oklab, var(--fg) 6%, transparent); }
-      .connector-row-actions button.danger { color: #f87171; }
-      .connector-row-actions button.danger:hover { background: color-mix(in oklab, #f87171 12%, transparent); }
+      .connector-row-actions button.danger { color: var(--color-status-error); }
+      .connector-row-actions button.danger:hover { background: color-mix(in oklab, var(--color-status-error) 12%, transparent); }
 
       .connectors-add-row {
         display: flex;
@@ -3359,7 +3559,7 @@
         border-left: 3px solid var(--fg-dim);
         border-radius: 8px;
         padding: 10px 12px;
-        box-shadow: 0 6px 24px rgba(0,0,0,0.18);
+        box-shadow: 0 6px 24px var(--color-border-strong);
         font-size: 14px;
         color: var(--fg);
         display: grid;
@@ -3425,14 +3625,14 @@
         to { transform: rotate(360deg); }
       }
       .g-toast--success {
-        border-left-color: var(--ok, #4caf50);
+        border-left-color: var(--ok, var(--color-status-ok-bright));
       }
-      .g-toast--success .g-toast-icon { color: var(--ok, #4caf50); }
+      .g-toast--success .g-toast-icon { color: var(--ok, var(--color-status-ok-bright)); }
       .g-toast--success .g-toast-icon::before { content: "✓"; }
       .g-toast--error {
-        border-left-color: #d33;
+        border-left-color: var(--color-status-error);
       }
-      .g-toast--error .g-toast-icon { color: #d33; }
+      .g-toast--error .g-toast-icon { color: var(--color-status-error); }
       .g-toast--error .g-toast-icon::before { content: "✕"; }
       /* Progress bar — spans the full toast width below the text rows.
          grid-column: 1/-1 breaks out of the icon/body/close columns. */
@@ -3550,16 +3750,15 @@
         line-height: 1.55;
         margin: 0;
         flex: 1 1 0;
-        /* Scroll instead of clamp so longer memories are fully readable.
-           The candidate panel grew taller with the intro-padding trim;
-           let the text actually use that height. */
+        /* Cap candidate text so it never pushes the relationship buttons
+           and meta chips off-screen. Capped at ~6 lines; overflow scrolls. */
         overflow-y: auto;
-        max-height: none;
+        max-height: 6em;
         cursor: pointer;
         border-radius: 4px;
         transition: background 0.15s;
         /* Color is inherited from the .g-deck-content rule above
-           (#d4a82c) — applied to both source and candidate texts. */
+           (var(--color-status-warn-gold)) — applied to both source and candidate texts. */
       }
       .g-deck-trivia-text:hover {
         background: color-mix(in oklab, var(--accent) 8%, transparent);
@@ -3588,11 +3787,7 @@
         line-height: 1.2;
         border-radius: 4px;
       }
-      .g-deck-trivia-actions.deck-forget-confirm .deck-forget-confirm-msg {
-        font-size: 15px;
-        color: var(--fg-dim);
-        margin-right: 2px;
-      }
+      /* .deck-forget-confirm-msg removed — "Sure?" label merged into the button text */
       /* Metadata chips on the candidate panel — purposely muted/grayed so
          they read as INFORMATION, not as clickable buttons. The relationship
          buttons next to them carry the turquoise accent; if the chips also
@@ -3641,7 +3836,7 @@
       .g-deck-content,
       .g-deck-trivia-text,
       .g-detail-content {
-        color: #d4a82c;
+        color: var(--color-status-warn-gold);
       }
       /* When the rel-type picker is opened from the Check-in deck, we want
          the user to still see the source + candidate previews in the main
@@ -3658,7 +3853,7 @@
         margin: 0;
         max-width: none;
         max-height: none;
-        box-shadow: -8px 0 24px rgba(0,0,0,0.35);
+        box-shadow: -8px 0 24px var(--color-overlay-heavy);
       }
       /* Relationship-type picker rows (modal opened from candidate panel's
          "Other…"). Tall enough to read, hoverable, label + direction hint. */
@@ -3705,8 +3900,19 @@
         color: var(--fg-dim);
         cursor: pointer;
       }
-      .g-deck-trivia-forget { color: #e05555; border-color: #e05555; }
-      .g-deck-trivia-forget:hover { background: color-mix(in oklab, #e05555 12%, transparent); }
+      .g-deck-trivia-forget { color: var(--color-status-destructive); border-color: var(--color-status-destructive); }
+      .g-deck-trivia-forget:hover { background: color-mix(in oklab, var(--color-status-destructive) 12%, transparent); }
+      /* Confirmed-state forget button — pre-filled reddish so the user knows
+         this click is the real one. Matches the app-wide button.danger style. */
+      .deck-forget-sure {
+        background: color-mix(in oklab, var(--error) 12%, transparent);
+        color: var(--error) !important;
+        border-color: color-mix(in oklab, var(--error) 45%, var(--border)) !important;
+      }
+      .deck-forget-sure:hover {
+        background: color-mix(in oklab, var(--error) 22%, transparent) !important;
+        border-color: color-mix(in oklab, var(--error) 65%, var(--border)) !important;
+      }
       .g-deck-trivia-skip:hover { background: color-mix(in oklab, var(--fg-dim) 12%, transparent); color: var(--fg); }
       .g-deck-trivia-rel {
         display: flex;
@@ -3817,7 +4023,7 @@
         border-color: color-mix(in oklab, var(--accent) 55%, var(--border));
       }
       .g-suggest-row.needs-pick.selected {
-        border-color: color-mix(in oklab, #d9a445 60%, var(--border));
+        border-color: color-mix(in oklab, var(--color-status-warn-gold) 60%, var(--border));
       }
       .g-suggest-check {
         display: flex;
@@ -3865,8 +4071,8 @@
         background: color-mix(in oklab, var(--accent) 25%, var(--bg));
       }
       .g-suggest-type-pill.needs-pick {
-        background: color-mix(in oklab, #d9a445 18%, var(--bg));
-        border-color: color-mix(in oklab, #d9a445 55%, var(--border));
+        background: color-mix(in oklab, var(--color-status-warn-gold) 18%, var(--bg));
+        border-color: color-mix(in oklab, var(--color-status-warn-gold) 55%, var(--border));
         color: var(--fg);
       }
 
@@ -3900,7 +4106,7 @@
       }
       .g-detail-suggest .g-suggest-actions {
         flex: 0 0 auto;
-        background: rgba(17, 20, 29, 0.78);          /* var(--bg-elev) @ 78% */
+        background: var(--bg-elev);
         backdrop-filter: blur(8px) saturate(140%);
         -webkit-backdrop-filter: blur(8px) saturate(140%);
         border-top: 1px solid color-mix(in oklab, var(--border) 70%, transparent);
@@ -3931,6 +4137,8 @@
         flex: 1;
         font-size: 14px;
         padding: 7px 10px;
+        color: var(--fg);
+        font-weight: 400;
       }
       .g-suggest-cancel {
         font-size: 14px;
@@ -3939,7 +4147,7 @@
       .g-suggest-warn {
         margin: 6px 0 0;
         font-size: 14px;
-        color: color-mix(in oklab, #d9a445 70%, var(--fg-dim));
+        color: color-mix(in oklab, var(--color-status-warn-gold) 70%, var(--fg-dim));
         font-style: italic;
       }
 
@@ -3957,7 +4165,7 @@
         background: var(--bg-elev);
         border: 1px solid var(--border);
         border-radius: 8px;
-        box-shadow: 0 6px 24px rgba(0, 0, 0, 0.35);
+        box-shadow: 0 6px 24px var(--color-overlay-heavy);
         padding: 10px;
         font-size: 14px;
       }
@@ -4140,15 +4348,15 @@
         border-radius: 5px;
         border: 1px solid color-mix(in oklab, var(--error) 60%, var(--border));
         background: transparent;
-        color: var(--error, #e05555);
+        color: var(--error, var(--color-status-destructive));
         cursor: pointer;
         white-space: nowrap;
         flex-shrink: 0;
         transition: background 0.15s, color 0.15s;
       }
       .g-forget-go:not(:disabled):hover {
-        background: color-mix(in oklab, var(--error, #e05555) 85%, transparent);
-        color: #fff;
+        background: color-mix(in oklab, var(--error, var(--color-status-destructive)) 85%, transparent);
+        color: var(--color-fg-on-accent);
       }
       .g-forget-go:disabled {
         opacity: 0.35;
@@ -4179,6 +4387,29 @@
         100% { box-shadow: 0 0 0 12px transparent; }
       }
       .g-deck.flash { animation: g-pulse-ok 500ms ease-out; }
+
+      /* GLL / GNN status-bar pills — always visible, dimmed when inactive */
+      @keyframes pill-pulse {
+        0%, 100% { opacity: 1; }
+        50%       { opacity: 0.45; }
+      }
+      .status-layer-pill {
+        display: inline-block;
+        font-size: 11px;
+        font-weight: 700;
+        padding: 2px 8px;
+        border-radius: 10px;
+        cursor: pointer;
+        letter-spacing: 0.04em;
+        transition: opacity 200ms, filter 200ms;
+      }
+      .status-layer-pill.pill-inactive {
+        opacity: 0.3;
+        filter: grayscale(0.85);
+      }
+      .status-layer-pill.pill-pulsing {
+        animation: pill-pulse 1.6s ease-in-out infinite;
+      }
 
       /* Recap — quiet numbers, no flames or streaks */
       .g-recap {
@@ -4559,6 +4790,16 @@
         display: flex;
         flex-direction: column;
         min-height: 0;
+        /* overflow-y:auto makes .g-detail the scroll container for the
+           panel. This is required for two reasons:
+           (1) position:sticky on .g-detail-header anchors to the nearest
+               scrollable ancestor — without this, sticky pins to the
+               viewport instead of the panel.
+           (2) .g-main has overflow:hidden which clips any overflow from the
+               grid cell. Adding a scroll here prevents the action row and
+               connections section from being invisibly clipped when the
+               content block is tall. */
+        overflow-y: auto;
       }
       .g-detail-body {
         flex: 1 1 0;
@@ -4636,9 +4877,11 @@
         white-space: pre-wrap;
         word-break: break-word;
         /* Cap height so very long memories scroll inside the sticky
-           header instead of pushing the action row out of the viewport.
-           The connections list below still scrolls independently. */
-        max-height: 38vh;
+           header instead of pushing the action row and connections section
+           out of view. 200px ≈ 6-7 lines — comfortable to read, compact
+           enough to always leave room for the action buttons and connections
+           below, regardless of panel height. */
+        max-height: 200px;
         overflow-y: auto;
       }
       .g-detail-meta {
@@ -4718,11 +4961,11 @@
       }
       .g-detail-conn-section { margin-top: 12px; }
       .g-detail-conn-section-predicted {
-        border-left: 2px solid rgba(163,230,53,0.55);
+        border-left: 2px solid var(--color-brand-purple);
         padding-left: 8px; margin-left: -2px;
-        background: rgba(163,230,53,0.05); border-radius: 4px;
+        background: var(--color-brand-purple-soft); border-radius: 4px;
       }
-      .g-detail-conn-section-predicted .g-detail-conn-title { color: #a3e635; }
+      .g-detail-conn-section-predicted .g-detail-conn-title { color: var(--color-brand-purple); }
       .g-detail-conn-title {
         font-size: 13px;
         text-transform: uppercase;
@@ -4809,11 +5052,11 @@
       }
       .atlas-toolbar .filler { flex: 1; }
       #btn-atlas-reset.node-selected {
-        background: var(--accent, #67e8f9);
-        color: #13131a;
+        background: var(--accent, var(--color-brand-turquoise-bright));
+        color: var(--color-surface-card);
         font-weight: 700;
-        border-color: var(--accent, #67e8f9);
-        box-shadow: 0 0 8px rgba(103,232,249,0.4);
+        border-color: var(--accent, var(--color-brand-turquoise-bright));
+        box-shadow: 0 0 8px var(--color-brand-turquoise-soft);
       }
       .atlas-toolbar select {
         padding: 5px 8px;
@@ -4829,14 +5072,14 @@
          button so dragging through the strip still rotates the canvas. */
       .atlas-nav-help {
         position: absolute;
-        left: 50%;
-        bottom: 8px;
-        transform: translateX(-50%);
+        left: 0;
+        right: 0;
+        bottom: 0;
         z-index: 4;
-        padding: 5px 28px 5px 12px;
-        background: rgba(10, 12, 18, 0.55);
-        border: 1px solid color-mix(in oklab, var(--border) 80%, transparent);
-        border-radius: 6px;
+        padding: 5px 32px 5px 12px;
+        background: var(--color-modal-scrim-deep);
+        border-top: 1px solid color-mix(in oklab, var(--border) 80%, transparent);
+        border-radius: 0 0 8px 8px;
         font-size: 10.5px;
         color: var(--fg-dim);
         line-height: 1.4;
@@ -4879,7 +5122,7 @@
         border-radius: 3px;
         pointer-events: auto;          /* the only clickable element on the strip */
       }
-      .atlas-nav-close:hover { background: rgba(255,255,255,0.05); color: var(--fg); }
+      .atlas-nav-close:hover { background: var(--color-overlay-light); color: var(--fg); }
 
       .atlas-stage {
         position: relative;
@@ -4894,6 +5137,38 @@
         border: 1px solid var(--border);
         border-radius: 8px;
         overflow: hidden;
+      }
+      /* Light-mode only: soft diagonal gradient across light grays so the
+         colored nodes pop without a harsh dark background. Dark mode unchanged. */
+      :root[data-theme="light"] .atlas-stage {
+        background:
+          radial-gradient(ellipse at 35% 35%, rgba(8, 145, 178, 0.09), transparent 60%),
+          linear-gradient(135deg, #cbd5e1 0%, #e2e8f0 55%, #f1f5f9 100%);
+      }
+      @media (prefers-color-scheme: light) {
+        :root:not([data-theme="dark"]) .atlas-stage {
+          background:
+            radial-gradient(ellipse at 35% 35%, rgba(8, 145, 178, 0.09), transparent 60%),
+            linear-gradient(135deg, #cbd5e1 0%, #e2e8f0 55%, #f1f5f9 100%);
+        }
+      }
+      /* Help bar sits on a near-opaque dark scrim in both modes — force
+         light text so it reads on that dark background. */
+      :root[data-theme="light"] .atlas-nav-help,
+      :root[data-theme="light"] .atlas-nav-row kbd,
+      :root[data-theme="light"] .atlas-nav-close { color: rgba(255,255,255,0.85); }
+      :root[data-theme="light"] .atlas-nav-row kbd {
+        background: rgba(255,255,255,0.12);
+        border-color: rgba(255,255,255,0.22);
+      }
+      @media (prefers-color-scheme: light) {
+        :root:not([data-theme="dark"]) .atlas-nav-help,
+        :root:not([data-theme="dark"]) .atlas-nav-row kbd,
+        :root:not([data-theme="dark"]) .atlas-nav-close { color: rgba(255,255,255,0.85); }
+        :root:not([data-theme="dark"]) .atlas-nav-row kbd {
+          background: rgba(255,255,255,0.12);
+          border-color: rgba(255,255,255,0.22);
+        }
       }
       .atlas-container {
         position: absolute;
@@ -5087,7 +5362,7 @@
       .activity-row .ar-dot.ingestSource { background: var(--ok); }
       .activity-row .ar-dot.forgetSource { background: var(--error); }
       .activity-row .ar-dot.editNode { background: var(--accent); }
-      .activity-row .ar-dot.supersede { background: #a855f7; }
+      .activity-row .ar-dot.supersede { background: var(--color-brand-purple-bright); }
       .activity-row .ar-dot.addNode { background: var(--fg-dim); }
       .activity-row .ar-dot.deleteNode { background: var(--error); opacity: 0.6; }
       .activity-row .ar-detail {
@@ -5138,6 +5413,11 @@
                 <input type="text" id="cortex-dir" placeholder="/Users/you/GraphnosisCortex" />
                 <button id="btn-pick">Choose…</button>
               </div>
+              <!-- Shown only when the pre-filled last-used path no longer exists
+                   on disk. Hidden by default; JS probes via check_path_exists. -->
+              <p id="cortex-missing-notice" class="hidden" style="margin:6px 0 0; font-size:12px; color:var(--color-status-warn-border); line-height:1.5;">
+                This folder was moved or deleted. Choose a new location or re-create it.
+              </p>
             </div>
             <div class="row">
               <div class="passphrase-label-row">
@@ -5162,7 +5442,7 @@
                 <span class="passphrase-warning-icon">⚠</span>
                 Your passphrase is the <u>only</u> key to your cortex. Graphnosis has no servers and no account reset — if you lose it, your 24-word recovery phrase is your fallback to regain access.
                 <br><br>
-                Keep both somewhere safe: a password manager (1Password, Bitwarden, Apple Keychain), a printed note stored securely, or both.
+                Keep both somewhere safe: a trusted password manager, a printed note stored securely, or both.
               </p>
             </div>
             <div class="actions">
@@ -5199,7 +5479,7 @@
           </div>
           <p class="unlock-footer">
             &copy; 2026 Nehloo Interactive LLC. All rights reserved.<br>
-            <span style="opacity: 0.7;">Graphnosis <span id="lock-version"></span><br>Read the docs at <a href="https://graphnosis.com" target="_blank" style="color: #fff; text-decoration: underline; opacity: 0.8;">graphnosis.com</a></span>
+            <span style="opacity: 0.7;">Graphnosis&#8482; <span id="lock-version"></span><br>Read the docs at <a href="https://graphnosis.com" target="_blank" style="color: var(--accent); text-decoration: underline;">graphnosis.com</a></span>
           </p>
         </div>
       </section>
@@ -5281,11 +5561,13 @@
         <!-- Body: rail + canvas -->
         <div class="app-body">
           <nav class="app-rail">
-            <!-- Graphnosis identity mark at the top of the sidebar -->
-            <div style="width: 100%; box-sizing: border-box; padding: 6px; flex-shrink:0; display:flex; justify-content:center;">
+            <!-- Graphnosis identity mark at the top of the sidebar.
+                 margin:0 auto on a display:block img is the most cross-browser-
+                 reliable centering technique — avoids flexbox quirks on Windows. -->
+            <div style="width: 100%; box-sizing: border-box; padding: 6px; flex-shrink:0;">
               <img src="/graphnosis-logo.png" alt="Graphnosis"
                    width="72" height="72"
-                   style="border-radius: 14px; opacity: 0.85; display: block;"
+                   style="border-radius: 14px; opacity: 0.85; display: block; margin: 0 auto;"
                    title="Graphnosis" />
             </div>
             <button class="rail-btn active" data-mode="atlas" title="Memory check-in dashboard + 3D map">
@@ -5380,12 +5662,12 @@
                      footprint, single source of truth across panes. -->
                 <div class="g-search-wrap" style="display: flex; flex-direction: column; gap: 4px;">
                   <div style="position: relative;">
-                    <input type="search" id="g-search" placeholder="Look for a memory — ⌘K, ↑↓ to move, Enter to open" />
+                    <input type="search" id="g-search" placeholder="Look for a memory — ⌘F, ↑↓ to move, Enter to open" />
                     <button id="g-search-clear" class="g-search-clear hidden" title="Clear search">×</button>
                   </div>
-                  <div style="display: flex; flex-wrap: wrap; align-items: center; gap: 10px; padding: 0 2px;">
+                  <div style="display: flex; flex-wrap: nowrap; align-items: center; gap: 10px; padding: 0 2px;">
                     <div class="g-search-llm-options" style="display: flex; gap: 10px; align-items: center; font-size: 12px; color: var(--fg-dim);">
-                      <button id="g-search-synth-btn" class="g-search-synth-btn" disabled title="Local LLM is not ready. Enable in Settings → AI.">🤖 Synthesize answer</button>
+                      <button id="g-search-synth-btn" class="g-search-synth-btn" disabled title="Local LLM is not ready. Enable in Settings → AI.">🤖 Summarize results</button>
                       <label id="g-search-rerank-wrap" class="g-search-rerank-chip" title="Local LLM is not ready. Enable in Settings → AI.">
                         <input type="checkbox" id="g-search-rerank" disabled />
                         <span>Enhanced ranking</span>
@@ -5485,7 +5767,7 @@
                       <div id="atlas-nav-help" class="atlas-nav-help">
                         <button id="btn-atlas-nav-close" class="atlas-nav-close" title="Hide">×</button>
                         <div class="atlas-nav-row"><kbd>drag</kbd> <span>rotate</span></div>
-                        <div class="atlas-nav-row"><kbd>⇧</kbd>+<kbd>drag</kbd> <span>pan</span></div>
+                        <div class="atlas-nav-row"><kbd>⌃</kbd>+<kbd>drag</kbd> <span>pan</span></div>
                         <div class="atlas-nav-row"><kbd>scroll</kbd> <span>zoom</span></div>
                         <div class="atlas-nav-row"><kbd>click</kbd> <span>select</span></div>
                         <div class="atlas-nav-row"><kbd>Esc</kbd> <span>deselect</span></div>
@@ -5922,6 +6204,7 @@ ollama list</code></pre>
                 <select id="sources-engram-select" class="sources-engram-select" title="Filter by engram">
                   <option value="">All engrams</option>
                 </select>
+                <button id="sources-reingest-all-btn" class="btn-sm" title="Re-chunk and re-embed every source in all engrams using current settings">Reingest all</button>
               </div>
               <div id="sources-list"><p class="subtitle">Loading…</p></div>
             </section>
@@ -6057,6 +6340,33 @@ ollama list</code></pre>
                 </p>
                 <button id="btn-settings" class="primary">Open preferences…</button>
               </div>
+              <!-- Appearance: inline theme picker. Mirrors the bottom-left
+                   status-bar toggle but exposes the named choice explicitly,
+                   which is useful when discovering the feature. Wired in
+                   main.ts via wireThemeToggle(). -->
+              <div class="panel" id="settings-panel-appearance">
+                <p class="panel-title">Appearance</p>
+                <p class="subtitle" style="font-size: 15px; margin: -4px 0 10px;">
+                  Color scheme. Auto follows your macOS setting; Light and Dark force a fixed mode.
+                </p>
+                <div class="appearance-picker" role="radiogroup" aria-label="Color scheme">
+                  <label class="appearance-option">
+                    <input type="radio" name="ui-theme" value="auto" />
+                    <span class="appearance-swatch appearance-swatch-auto" aria-hidden="true">◐</span>
+                    <span class="appearance-label">Auto <small>(follow OS)</small></span>
+                  </label>
+                  <label class="appearance-option">
+                    <input type="radio" name="ui-theme" value="light" />
+                    <span class="appearance-swatch appearance-swatch-light" aria-hidden="true">☀</span>
+                    <span class="appearance-label">Light</span>
+                  </label>
+                  <label class="appearance-option">
+                    <input type="radio" name="ui-theme" value="dark" />
+                    <span class="appearance-swatch appearance-swatch-dark" aria-hidden="true">☾</span>
+                    <span class="appearance-label">Dark</span>
+                  </label>
+                </div>
+              </div>
               <div class="panel" id="settings-panel-ai-clients">
                 <p class="panel-title">AI client integration</p>
                 <p class="subtitle" style="font-size: 15px; margin: -4px 0 10px;">
@@ -6143,37 +6453,47 @@ ollama list</code></pre>
 
         <!-- Status bar -->
         <footer class="app-statusbar">
+          <!-- Theme toggle. Three-state: auto → light → dark → auto.
+               Click cycles; icon and tooltip reflect the current state.
+               Wired in main.ts by applyTheme() + applyThemeAttribute().
+               Sits to the LEFT of the cortex label so it's the first
+               thing the eye hits when scanning the status bar. -->
+          <button
+            id="btn-theme-toggle"
+            class="status-theme-toggle"
+            type="button"
+            aria-label="Toggle theme"
+            title="Theme: auto (click to cycle)"
+          >
+            <span class="theme-icon-auto"  aria-hidden="true">◐</span>
+            <span class="theme-icon-light" aria-hidden="true">☀</span>
+            <span class="theme-icon-dark"  aria-hidden="true">☾</span>
+          </button>
           <span id="cortex-label" class="status-cortex" title="Current cortex folder">cortex</span>
-          <span class="status-sep">·</span>
-          <span class="status-search">⌘K to search nodes</span>
-          <span id="status-saved" class="status-saved"></span>
+          <!-- Everything from here right is right-aligned. margin-left:auto on
+               status-saved pushes it (and all subsequent flex items) to the far
+               right, so only the theme toggle + cortex label stay on the left. -->
+          <span id="status-saved" class="status-saved" style="margin-left:auto;"></span>
           <!-- Live background-process line. Hidden when nothing is running;
                otherwise shows e.g. "Self-healing: scanning for duplicates…"
                or "GLL: predicting edges…". Driven from handleBrainFrame
                via brainActivePhases — categories: Self-healing, Consolidation,
                Insights, GLL, GNN. Click jumps to Deterministic Consolidation
                tab so the user can see the schedule and recent activity. -->
-          <span id="status-process" class="status-process" style="margin-left:auto; display:none; font-size:12px; opacity:0.75; cursor:pointer; align-items:center; gap:6px;" title="Background process — click for the live activity feed.">
-            <span class="status-process-dot" style="width:6px; height:6px; border-radius:50%; background:var(--accent, #5b8def); display:inline-block; animation: graphnosis-pulse 1.4s ease-in-out infinite;"></span>
+          <span id="status-process" class="status-process" style="display:none; font-size:12px; opacity:0.75; cursor:pointer; align-items:center; gap:6px;" title="Background process — click for the live activity feed.">
+            <span class="status-process-dot" style="width:6px; height:6px; border-radius:50%; background:var(--accent, var(--color-status-info)); display:inline-block; animation: graphnosis-pulse 1.4s ease-in-out infinite;"></span>
             <span id="status-process-text"></span>
           </span>
           <!-- App version pill, sits left of Vitality. Populated in main.ts
-               from __APP_VERSION__ (vite-injected at build from package.json).
-               margin-left dropped because status-process now claims the
-               left-stretch slot when visible; version stays anchored next
-               to vitality. -->
+               from __APP_VERSION__ (vite-injected at build from package.json). -->
           <span id="status-version" class="status-version" title="About Graphnosis" style="margin-left:8px; font-size:12px; opacity:0.6; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; transition: opacity 100ms;" onmouseenter="this.style.opacity='1';this.style.textDecoration='underline'" onmouseleave="this.style.opacity='0.6';this.style.textDecoration='none'"></span>
           <span id="brain-vitality" style="display:none; font-size:12px; opacity:0.7; margin-left:8px; cursor:pointer;" title="Open Deterministic Consolidation tab">🧠 Vitality –</span>
-          <!-- Layered intelligence pills — visible only when the user has
-               turned on the matching capability in Non-Deterministic Aid.
-               Hover shows the full name; click jumps to the toggle. -->
-          <!-- Pill backgrounds use the same colors as the Graphnosis wordmark
-               gradient endpoints (.app-title): turquoise #6ab3c8 (start) for
-               GLL, purple #a78bfa (end) for GNN. Same brand identity, distinct
-               between the two overlay layers. -->
-          <span id="status-gll-pill" class="status-layer-pill" style="display:none; font-size:11px; font-weight:700; padding:2px 8px; margin-left:8px; border-radius:10px; background:#6ab3c8; color:#000; cursor:pointer; letter-spacing:0.04em;" title="Graphnosis Local Layer — local LLM overlay on top of your engrams. Click to open Non-Deterministic Aid.">GLL</span>
-          <span id="status-gnn-pill" class="status-layer-pill" style="display:none; font-size:11px; font-weight:700; padding:2px 8px; margin-left:6px; border-radius:10px; background:#a78bfa; color:#000; cursor:pointer; letter-spacing:0.04em;" title="Graphnosis Neural Network — predicted-edge overlay on top of your engrams. Click to open Non-Deterministic Aid.">GNN</span>
-          <span class="status-mcp">
+          <!-- Layered intelligence pills — GLL (turquoise) and GNN (purple).
+               Pill backgrounds match the Graphnosis wordmark gradient endpoints.
+               Always rendered; toggled between pill-inactive and pill-pulsing. -->
+          <span id="status-gll-pill" class="status-layer-pill pill-inactive" style="margin-left:10px; margin-right:4px; background:var(--color-brand-turquoise-pale); color:#000;" title="Graphnosis Local Layer — local LLM overlay on top of your engrams. Click to open Non-Deterministic Aid.">GLL</span>
+          <span id="status-gnn-pill" class="status-layer-pill pill-inactive" style="margin-right:10px; background:var(--color-brand-purple-warm); color:#000;" title="Graphnosis Neural Network — predicted-edge overlay on top of your engrams. Click to open Non-Deterministic Aid.">GNN</span>
+          <span class="status-mcp" id="status-mcp-area" style="cursor:pointer;" title="Go to Status page">
             <span id="status-mcp-dot" class="status-dot"></span>
             <span id="status-mcp-text">checking clients…</span>
           </span>
@@ -6192,8 +6512,8 @@ ollama list</code></pre>
         <div class="modal-body" style="padding:20px;">
           <p id="embedding-switch-phase" style="font-weight:600; margin:0 0 8px;">Starting…</p>
           <p id="embedding-switch-detail" class="subtitle" style="margin:0 0 12px; font-size:13px;">Snapshotting your engrams first so the old vectors stay recoverable.</p>
-          <div style="width:100%; height:10px; background:var(--bg-2,#222); border-radius:5px; overflow:hidden;">
-            <div id="embedding-switch-bar" style="width:0%; height:100%; background:var(--accent,#5b8def); transition:width 200ms;"></div>
+          <div style="width:100%; height:10px; background:var(--bg); border-radius:5px; overflow:hidden;">
+            <div id="embedding-switch-bar" style="width:0%; height:100%; background:var(--accent,var(--color-status-info)); transition:width 200ms;"></div>
           </div>
           <p id="embedding-switch-counter" class="subtitle" style="margin:8px 0 0; font-size:12px;"></p>
         </div>
@@ -6216,11 +6536,11 @@ ollama list</code></pre>
         <div class="modal-body" style="padding:20px;">
           <p id="reingest-phase" style="font-weight:600; margin:0 0 8px;">Starting…</p>
           <p id="reingest-detail" class="subtitle" style="margin:0 0 12px; font-size:13px;">Taking a snapshot of every engram first.</p>
-          <div style="width:100%; height:10px; background:var(--bg-2,#222); border-radius:5px; overflow:hidden;">
-            <div id="reingest-bar" style="width:0%; height:100%; background:var(--accent,#5b8def); transition:width 200ms;"></div>
+          <div style="width:100%; height:10px; background:var(--bg); border-radius:5px; overflow:hidden;">
+            <div id="reingest-bar" style="width:0%; height:100%; background:var(--accent,var(--color-status-info)); transition:width 200ms;"></div>
           </div>
           <p id="reingest-counter" class="subtitle" style="margin:8px 0 0; font-size:12px;"></p>
-          <div id="reingest-summary" style="display:none; margin-top:14px; padding:10px; background:var(--bg-2,#1a1a1a); border-radius:6px; font-size:12px;"></div>
+          <div id="reingest-summary" style="display:none; margin-top:14px; padding:10px; background:var(--bg); border-radius:6px; font-size:12px; color:var(--fg);"></div>
         </div>
         <div class="modal-footer" style="padding:14px 20px;">
           <span class="filler"></span>
@@ -6288,17 +6608,17 @@ ollama list</code></pre>
             <div style="display: flex; gap: 8px; margin-top: 6px;">
               <label style="flex:1; display:flex; align-items:center; gap:6px; cursor:pointer;">
                 <input type="radio" name="gw-tier" value="public" />
-                <span style="color:#22c55e; font-weight:600; font-size:13px;">Public</span>
+                <span style="color:var(--color-status-ok-bright); font-weight:600; font-size:13px;">Public</span>
                 <span class="subtitle" style="font-size:12px;">AI always has access</span>
               </label>
               <label style="flex:1; display:flex; align-items:center; gap:6px; cursor:pointer;">
                 <input type="radio" name="gw-tier" value="personal" checked />
-                <span style="color:#d4a004; font-weight:600; font-size:13px;">Personal</span>
+                <span style="color:var(--color-status-warn-gold); font-weight:600; font-size:13px;">Personal</span>
                 <span class="subtitle" style="font-size:12px;">AI asks once, then remembers</span>
               </label>
               <label style="flex:1; display:flex; align-items:center; gap:6px; cursor:pointer;">
                 <input type="radio" name="gw-tier" value="sensitive" />
-                <span style="color:#ef4444; font-weight:600; font-size:13px;">Sensitive</span>
+                <span style="color:var(--color-status-error); font-weight:600; font-size:13px;">Sensitive</span>
                 <span class="subtitle" style="font-size:12px;">AI asks every hour</span>
               </label>
             </div>
@@ -6521,6 +6841,19 @@ ollama list</code></pre>
               <option value="large">Large — 1024/call (≥ 32 GB RAM)</option>
             </select>
           </div>
+          <div class="row" style="display: flex; align-items: center; gap: 10px; margin-bottom: 10px;">
+            <label for="ai-embed-workers" style="white-space: nowrap; font-size: 14px; min-width: 160px;">
+              Embed workers:
+            </label>
+            <input type="range" id="ai-embed-workers" min="1" max="4" step="1" value="2"
+              style="flex: 0 0 120px;" />
+            <span id="ai-embed-workers-val" style="font-size: 13px; min-width: 90px; color: var(--fg-dim);">2 workers</span>
+          </div>
+          <p class="subtitle" style="margin-bottom: 10px; margin-top: -4px;">
+            Parallel workers for the local embedding engine. 1 = lowest RAM / serial,
+            2 = default, 3–4 = faster bulk ingest on capable machines. Change takes
+            effect immediately without restarting.
+          </p>
 
           <p class="panel-title" style="margin-top: 18px;">Reingest all sources</p>
           <p class="subtitle" style="margin-bottom: 12px;">
@@ -7038,14 +7371,14 @@ ollama list</code></pre>
     <!-- Tool explainer — opened by clicking a tool chip in the onboarding card. -->
     <div id="tool-info-modal" class="modal-backdrop hidden">
       <div class="modal" style="max-width: 460px;">
-        <div class="modal-header" style="display:flex; justify-content:space-between; align-items:flex-start; gap:12px;">
-          <div style="flex:1; min-width:0;">
+        <div class="modal-header tool-info-modal-header">
+          <div>
             <h2 id="tool-info-name" style="font-family: monospace;">tool</h2>
             <p class="subtitle" id="tool-info-determinism"></p>
           </div>
-          <div style="display:flex; flex-direction:column; align-items:center; gap:3px; flex-shrink:0;">
+          <div class="tool-info-logo-col">
             <img src="/graphnosis-logo.png" alt="Graphnosis" width="32" height="32" style="border-radius:8px; opacity:0.9;" />
-            <span style="font-size:10px; color:var(--fg-dim); letter-spacing:.04em;">Graphnosis</span>
+            <span>Graphnosis</span>
           </div>
         </div>
         <div class="modal-body">
@@ -7053,7 +7386,7 @@ ollama list</code></pre>
           <div id="tool-info-examples" class="tool-info-examples"></div>
         </div>
         <div class="modal-footer">
-          <a id="tool-info-docs-link" href="#" style="font-size:12px; color:var(--fg-dim); text-decoration:none; border-bottom:1px dotted currentColor; margin-right:auto;" title="Open the full MCP Tools reference in your browser">📖 Full MCP Tools reference</a>
+          <a id="tool-info-docs-link" class="tool-info-docs-link" href="#" title="Open the full MCP Tools reference in your browser">📖 Full MCP Tools reference</a>
           <button id="tool-info-close" class="primary">Got it</button>
         </div>
       </div>
@@ -7289,7 +7622,7 @@ ollama list</code></pre>
             <p style="font-size: 14px; line-height: 1.6; margin: 0 0 14px;">
               Graphnosis can expose your cortex's MCP tools (recall, remember, correct, apply,
               forget, stats) over a local HTTP endpoint so mobile AI clients can connect.
-              A random bearer token is generated once and never changes unless you regenerate it.
+              A random bearer token is generated on first enable. Use <strong>Revoke &amp; Regenerate</strong> in Step 3 to rotate it at any time.
             </p>
             <div class="row" style="margin-bottom: 0;">
               <label style="display: flex; align-items: center; gap: 10px; cursor: pointer;">
@@ -7363,9 +7696,13 @@ ollama list</code></pre>
               <button class="copy-btn" data-copy-target="mobile-mcp-token">Copy</button>
               <button class="copy-btn" id="mobile-token-reveal">Show</button>
             </div>
-            <p class="subtitle" style="font-size: 15px; margin-bottom: 14px;">
+            <p class="subtitle" style="font-size: 15px; margin-bottom: 8px;">
               Treat the token like a password — it grants full read/write access to your cortex.
             </p>
+            <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 14px;">
+              <button id="btn-mobile-revoke-token" class="copy-btn" style="color: var(--red, #e05252);">Revoke &amp; Regenerate</button>
+              <span id="mobile-revoke-note" style="font-size: 13px; color: var(--fg-dim);"></span>
+            </div>
             <p style="font-size: 14px; font-weight: 600; margin: 0 0 8px;">How to connect in Claude for iOS / Android</p>
             <ol class="mobile-client-steps">
               <li>Open Claude → Settings → <strong>Claude.ai account</strong> → <strong>MCP Servers</strong></li>
@@ -7388,8 +7725,8 @@ ollama list</code></pre>
                   Also adds the <code>@graphnosis</code> participant and a "Save to memory" status bar shortcut.
                 </p>
                 <div style="display: flex; gap: 8px; flex-wrap: wrap;">
-                  <button class="copy-btn" id="btn-open-vscode-extension" style="background: var(--accent); color: #000;">Install extension</button>
-                  <button class="copy-btn" id="btn-copy-vscode-token" style="background: transparent; border: 1px solid var(--border);">Copy token</button>
+                  <button class="copy-btn primary" id="btn-open-vscode-extension">Install extension</button>
+                  <button class="copy-btn" id="btn-copy-vscode-token">Copy token</button>
                 </div>
                 <p class="subtitle" style="margin: 6px 0 0; font-size: 13px;">
                   After installing: open VS Code Settings → search <code>graphnosis</code> → paste the token above into <strong>Bearer Token</strong>.
@@ -7446,17 +7783,21 @@ ollama list</code></pre>
 
     <!-- Sensitivity tier explanation modal -->
     <div id="tier-confirm-modal" class="modal-backdrop hidden">
-      <div class="modal" style="max-width: 440px;">
-        <p class="modal-header" style="margin:0 0 4px;">Change sensitivity tier</p>
-        <p id="tier-confirm-engram" style="font-size:11px; color:var(--fg-dim); margin:0 0 16px; font-family:monospace;"></p>
-
-        <div id="tier-confirm-body" style="display:flex; flex-direction:column; gap:12px; margin-bottom:20px;">
-          <!-- filled by JS -->
+      <div class="modal" style="max-width: 480px;">
+        <div class="modal-header">
+          <h2>Change sensitivity tier</h2>
         </div>
+        <div class="modal-body" style="padding: 24px 28px;">
+          <p id="tier-confirm-engram" style="font-size:22px; font-weight:700; color:var(--fg); margin:0 0 20px;"></p>
 
-        <div style="display:flex; gap:8px; justify-content:flex-end;">
-          <button id="tier-confirm-cancel" class="btn-secondary">Cancel</button>
-          <button id="tier-confirm-ok" class="btn-primary">Confirm</button>
+          <div id="tier-confirm-body" style="display:flex; flex-direction:column; gap:12px; margin-bottom:24px;">
+            <!-- filled by JS -->
+          </div>
+
+          <div style="display:flex; gap:8px; justify-content:flex-end;">
+            <button id="tier-confirm-cancel" class="btn-secondary">Cancel</button>
+            <button id="tier-confirm-ok" class="btn-primary">Confirm</button>
+          </div>
         </div>
       </div>
     </div>
