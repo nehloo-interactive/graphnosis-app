@@ -9,7 +9,9 @@ export interface HttpBridgeOptions {
   deps: McpDeps;
   port: number;
   host: string;
-  token: string;
+  /** Pass a getter function so token rotation takes effect immediately without
+   *  restarting the server — the auth check calls it on every request. */
+  token: string | (() => string);
   allowedOrigins: string[];
 }
 
@@ -114,7 +116,8 @@ export async function startHttpMcpServer(opts: HttpBridgeOptions): Promise<http.
   const server = http.createServer(async (req, res) => {
     // ── Auth ─────────────────────────────────────────────────────────────────
     const authHeader = (req.headers['authorization'] as string | undefined) ?? '';
-    if (authHeader !== `Bearer ${opts.token}`) {
+    const expectedToken = typeof opts.token === 'function' ? opts.token() : opts.token;
+    if (!expectedToken || authHeader !== `Bearer ${expectedToken}`) {
       rejectUnauthorized(res);
       return;
     }

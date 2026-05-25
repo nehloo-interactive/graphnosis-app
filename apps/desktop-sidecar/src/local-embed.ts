@@ -90,7 +90,7 @@ function defaultCacheDir(): string {
 
 // ── Pool configuration ───────────────────────────────────────────────────────
 
-const WORKER_COUNT = Math.max(1, Number(process.env.GRAPHNOSIS_EMBED_WORKERS ?? 2));
+let WORKER_COUNT = Math.max(1, Number(process.env.GRAPHNOSIS_EMBED_WORKERS ?? 2));
 const cacheDir = process.env.GRAPHNOSIS_EMBED_CACHE ?? defaultCacheDir();
 const workerScriptPath = fileURLToPath(new URL('./embed-worker.js', import.meta.url));
 
@@ -369,4 +369,54 @@ export async function terminateEmbedWorker(): Promise<void> {
           }),
     ),
   );
+}
+
+/**
+ * Resize the worker pool at runtime. Safe to call after startup.
+ *
+ * - Shrink: kills excess workers immediately; the remaining slots carry on.
+ * - Grow: adds empty slots and kick-starts the initial fill for the new ones.
+ *   New workers use the same fastembed model that is currently active.
+ * - No-op when `n` equals the current count.
+ *
+ * Change is not persisted here — the caller (ipc settings-change handler)
+ * is responsible for writing `ai.embedWorkers` to settings.json.
+ */
+export function setWorkerCount(n: number): void {
+  const target = Math.max(1, Math.min(4, Math.round(n)));
+  if (target === WORKER_COUNT) return;
+
+  if (target < WORKER_COUNT) {
+    // Shrink: kill excess slots.
+    for (let i = target; i < WORKER_COUNT; i++) {
+      const w = workers[i];
+      if (w) {
+        w.kill('SIGTERM');
+        workers[i] = undefined;
+      }
+    }
+    workers.length = target;
+    slotFailures.length = target;
+    WORKER_COUNT = target;
+    // Cap the fill pointer so spawnNextInitial doesn't try to spawn slots
+    // that no longer exist.
+    if (initialFillNext > WORKER_COUNT) initialFillNext = WORKER_COUNT;
+  } else {
+    // Grow: extend arrays first, then spawn the new slots.
+    while (workers.length < target) {
+      workers.push(undefined);
+      slotFailures.push(0);
+    }
+    WORKER_COUNT = target;
+    // If the initial fill already finished for the old count, kick off the
+    // new slots now.  Otherwise they'll be picked up by spawnNextInitial
+    // automatically as the earlier slots settle.
+    while (initialFillNext < WORKER_COUNT) {
+      const idx = initialFillNext;
+      initialFillNext += 1;
+      workers[idx] = spawnWorker(idx);
+    }
+  }
+
+  console.error(`[local-embed] worker pool resized to ${WORKER_COUNT}`);
 }

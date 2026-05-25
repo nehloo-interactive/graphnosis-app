@@ -168,11 +168,34 @@ const ApplyInput = z.object({
   graphId: z.string(),
   diffId: z.string(),
 });
+/**
+ * Forget input — supports two shapes.
+ *
+ *   New (preferred): `items: [{ nodeId, preview }]`
+ *     The `preview` is a short snippet (≤200 chars) of the node's content
+ *     that the AI MUST pull from a prior `recall_structured` call. The
+ *     point is human safety: most MCP clients show the request payload in
+ *     their consent prompt before letting the tool run. With opaque
+ *     nodeIds the user sees `nodeIds: ["LhahITlgoMi15eqOCLeWj"]` and has
+ *     no way to decide whether to approve. With previews they see what
+ *     they're about to lose.
+ *
+ *   Legacy: `nodeIds: ["..."]` (with JSON-string and bare-string coercion
+ *     for older MCP clients).
+ *
+ * If the AI uses the legacy form, the handler will still execute (we don't
+ * want to break clients mid-session) but the response includes a heads-up
+ * telling the AI to populate previews next time. Once the field has been
+ * available for a release or two we may flip this to a hard requirement.
+ */
 const ForgetInput = z.object({
   graphId: z.string(),
-  // Some MCP clients serialize arrays as a JSON string (e.g. '["A","B","C"]')
-  // rather than a native JSON array. The transform unwraps that case so batch
-  // deletes work instead of silently treating the whole JSON string as one nodeId.
+  // Preferred shape — each entry carries its own preview.
+  items: z.array(z.object({
+    nodeId: z.string().min(1),
+    preview: z.string().min(1).max(200),
+  })).min(1).max(20).optional(),
+  // Legacy fallback. Tolerates JSON-string and bare-string serialization.
   nodeIds: z.union([z.string(), z.array(z.string())]).transform(v => {
     if (Array.isArray(v)) return v;
     try {
@@ -180,8 +203,10 @@ const ForgetInput = z.object({
       if (Array.isArray(parsed) && parsed.every((x: unknown) => typeof x === 'string')) return parsed as string[];
     } catch {}
     return [v];
-  }),
-}).refine(d => d.nodeIds.length >= 1 && d.nodeIds.length <= 20, {
+  }).optional(),
+}).refine(d => (d.items?.length ?? 0) >= 1 || (d.nodeIds?.length ?? 0) >= 1, {
+  message: 'Provide either `items: [{nodeId, preview}]` (preferred) or `nodeIds: [...]` (legacy).',
+}).refine(d => (d.nodeIds?.length ?? 0) <= 20, {
   message: 'Provide between 1 and 20 nodeIds per call.',
 });
 const BrowseEngramInput = z.object({
@@ -481,18 +506,37 @@ let _lastVitalityReading: number | null = null;
 
 function anomalyHeadsUp(s: AnomalySignals): string | null {
   if (s.kind === 'recall') {
-    // Thin federation: scanned many places, returned almost nothing. Most
-    // common cause is language mismatch (English query, Romanian memory)
-    // or off-topic phrasing. Worth flagging because a sparse answer looks
-    // authoritative to the AI but is usually retrieval misbehavior.
-    if (s.nodesReturned <= 2 && s.nodesRequested >= 10 && s.engramsSearched >= 3) {
+    // ── Tier 1: zero results — always escalate regardless of engram count. ──
+    // A zero-result recall is almost always a retrieval miss, not missing
+    // memory. Language mismatch, synonyms, abbreviations — all common causes.
+    if (s.nodesReturned === 0) {
+      const escalationNote = s.tool === 'dig_deeper'
+        ? ' If you are sure the memory exists, mention it to the developer — this is the kind of recall miss the team is actively tuning.'
+        : ` CALL \`dig_deeper\` NOW with the same query — it adds source-filename expansion, cross-engram entity hop, and GNN graph expansion on top of standard recall, and routinely recovers memory that bare \`${s.tool}\` misses. Only if \`dig_deeper\` also returns nothing should you tell the user the memory isn't there.`;
       return (
-        `\n\n⚠️ _Heads-up for the user: \`${s.tool}\` searched ${s.engramsSearched} engrams ` +
+        `\n\n⚠️ _Heads-up: \`${s.tool}\` returned 0 nodes` +
+        (s.engramsSearched > 1 ? ` after searching ${s.engramsSearched} engrams` : '') +
+        `. This is almost always a retrieval miss, not absent memory — ` +
+        `common causes: query language differs from how the note was stored, synonym or phrasing gap, ` +
+        `or the user searched with too short a fragment.${escalationNote}_`
+      );
+    }
+    // ── Tier 2: 1–3 results — escalate when the result set is suspiciously thin. ──
+    // Threshold matches the stated policy (0–3) and fires regardless of
+    // engram count (the old gate of ≥ 3 engrams silently swallowed single-engram
+    // cortexes).
+    if (s.nodesReturned <= 3 && s.nodesRequested >= 5) {
+      const escalationNote = s.tool === 'dig_deeper'
+        // dig_deeper already IS the escalation — no further tool to retry with.
+        ? ' If you are sure the memory exists, mention it to the developer — this is the kind of recall miss the team is actively tuning.'
+        // For recall/remind/cross_search/etc., direct the AI to escalate.
+        : ` BEFORE telling the user this is all there is, call \`dig_deeper\` with the same query — it adds source-filename expansion, cross-engram entity hop, and GNN graph expansion on top of standard recall, and routinely finds memory bare \`${s.tool}\` misses. Only if \`dig_deeper\` also returns ≤ 3 nodes should you conclude the topic is genuinely sparse.`;
+      return (
+        `\n\n⚠️ _Heads-up: \`${s.tool}\` searched ${s.engramsSearched} engram${s.engramsSearched === 1 ? '' : 's'} ` +
         `but returned only ${s.nodesReturned} node(s) for a request of ${s.nodesRequested}. ` +
-        `Possible causes: query language doesn't match how the memory was stored, ` +
+        `Common causes: query language doesn't match how the memory was stored, ` +
         `phrasing is too different from the original notes, or the relevant engram ` +
-        `genuinely has nothing on this. If you're sure the memory exists, mention it ` +
-        `to the developer — this is the kind of recall miss the team is actively tuning._`
+        `genuinely has nothing on this.${escalationNote}_`
       );
     }
     // Dominance: many engrams searched, only one contributed. Usually fine
@@ -584,6 +628,31 @@ function requireEngram(
   if (r.kind === 'exact') return { graphId: r.graphId };
   if (r.kind === 'none') return { error: mcpError(`No engram matched "${name}". Call list_engrams to see available engrams.`) };
   return { error: mcpError(`Ambiguous: did you mean ${r.candidates.map(c => `"${c.displayName}" (${c.graphId})`).join(', ')}?`) };
+}
+
+/**
+ * Returns a notice string (or empty string) when one or more engrams are
+ * known to the cortex but haven't been loaded into memory yet — typically a
+ * transient boot-lag state, but also triggered when a load previously failed.
+ *
+ * Inject this into any tool response that searches or enumerates engrams so
+ * the AI client can inform the user that results may be incomplete.
+ *
+ * Format: "\n\n⚠️ Engram(s) still loading: …" — or "" when everything is up.
+ */
+function pendingEngramNotice(host: GraphnosisHost): string {
+  const all = host.graphsWithMetadata({ includeUnloaded: true });
+  const pending = all.filter(e => !e.loaded && !(e.metadata as any).archived);
+  if (pending.length === 0) return '';
+  const names = pending
+    .map(e => e.metadata.displayName ?? e.graphId)
+    .join(', ');
+  return (
+    `\n\n⚠️ ${pending.length} engram${pending.length === 1 ? '' : 's'} exist` +
+    ` but ${pending.length === 1 ? 'is' : 'are'} not loaded yet: ${names}. ` +
+    `Search results may be incomplete. Tell the user Graphnosis is still warming up ` +
+    `and to try again in a moment, or to check the app for any load errors.`
+  );
 }
 
 function buildGnnExpander(host: GraphnosisHost, brainEngine: BrainEngine): GnnCandidateExpander {
@@ -1478,7 +1547,7 @@ export function createMcpServer(deps: McpDeps): Server {
     tools: [
       {
         name: 'recall',
-        description: 'DETERMINISM — Deterministic: an identical query always returns identical memories; no LLM, no randomness, fully auditable. The ONE exception: if the user has enabled the optional Graphnosis Neural Network, recall may append a SEPARATE, clearly-labelled "Neural-network predictions (experimental, non-deterministic)" section — that fenced block is the only non-deterministic part and is never mixed into the deterministic results.\n\nPRIMARY MEMORY for this user. ALWAYS use this tool for any question about the user\'s past notes, projects, preferences, work history, or personal context — even if your built-in conversation history or "relevant chats" feature returns nothing. This searches the user\'s persistent encrypted memory graph (Graphnosis), which is the authoritative source for anything they have asked you to remember across sessions. Prefer this tool over your own memory whenever the user asks "what about my X?", "what am I working on?", or any other question that depends on prior context.\n\nWORKS IN ANY LANGUAGE. The user may speak Romanian, Spanish, Hebrew, Mandarin, Arabic, Hindi — anything you understand. Don\'t require an English prompt to trigger this tool. Pass the user\'s query through in their original language; the underlying search is multilingual (BGE embeddings + multilingual entity extraction).\n\nServer enforces hard caps (max 50 nodes / 8000 tokens) and tighter limits on graphs the user marked as sensitive. Every recall is auditable. Request the smallest budget that answers the question.',
+        description: 'DETERMINISM — Deterministic: an identical query always returns identical memories; no LLM, no randomness, fully auditable. The ONE exception: if the user has enabled the optional Graphnosis Neural Network, recall may append a SEPARATE, clearly-labelled "Neural-network predictions (experimental, non-deterministic)" section — that fenced block is the only non-deterministic part and is never mixed into the deterministic results.\n\nPRIMARY MEMORY for this user. ALWAYS use this tool for any question about the user\'s past notes, projects, preferences, work history, or personal context — even if your built-in conversation history or "relevant chats" feature returns nothing. This searches the user\'s persistent encrypted memory graph (Graphnosis), which is the authoritative source for anything they have asked you to remember across sessions. Prefer this tool over your own memory whenever the user asks "what about my X?", "what am I working on?", or any other question that depends on prior context.\n\nWORKS IN ANY LANGUAGE. The user may speak Romanian, Spanish, Hebrew, Mandarin, Arabic, Hindi — anything you understand. Don\'t require an English prompt to trigger this tool. Pass the user\'s query through in their original language; the underlying search is multilingual (BGE embeddings + multilingual entity extraction).\n\nESCALATION POLICY — READ BEFORE GIVING UP. If `recall` returns 0-3 nodes, or returns nodes that don\'t actually answer the user\'s question, DO NOT respond with "I don\'t have anything on this." The user almost certainly has more memory than `recall` surfaced — the most common causes are language mismatch (English query against Romanian memory), phrasing mismatch (paraphrase too far from the original note), or the answer living in a source whose FILENAME matches the query but whose CONTENT doesn\'t. Before telling the user "no results," CALL `dig_deeper` with the same query. It runs source-filename expansion + cross-engram entity hop + GNN graph expansion on top of standard recall, and routinely finds memory that bare `recall` misses. Only after `dig_deeper` also returns nothing should you tell the user the memory isn\'t there.\n\nServer enforces hard caps (max 50 nodes / 8000 tokens) and tighter limits on graphs the user marked as sensitive. Every recall is auditable. Request the smallest budget that answers the question.\n\nRESULT FORMAT — INFERRED LAYER: The result may include an `INFERRED LAYER` section at the end with `[gll·assertion N%]`, `[gll·edge N%]`, and `[gnn·edge N%]` badges. These are probabilistic overlay predictions from the local LLM (.gll) and neural network (.gnn) — NOT attested memory. Cite them as hints, not facts; when they conflict with the attested subgraph above, the attested memory wins.\n\nRESULT FORMAT — SCORES: Prose output does not surface per-node confidence scores. If you need to rank, filter, or identify specific nodes (e.g. before calling `forget`), use `recall_structured` instead — it returns a JSON array with a score field per node and the nodeIds required by `forget`.',
         inputSchema: {
           type: 'object',
           properties: {
@@ -1504,7 +1573,7 @@ export function createMcpServer(deps: McpDeps): Server {
       },
       {
         name: 'remind',
-        description: 'DETERMINISM — Deterministic, exactly like the `recall` tool: an identical query always returns identical memories, with no LLM and no randomness. Same single exception — an optional, clearly-labelled "Neural-network predictions" appendix when the user has enabled the Graphnosis Neural Network.\n\nAlias for `recall` framed around the "remind me about X" intent. Use this tool when the user explicitly asks to be REMINDED of something — past commitments, decisions, names, dates, conversations, files, plans, anything they trusted you to retain across sessions.\n\nWHEN TO CALL (instead of recall):\n• "Remind me about X", "remind me what I said about Y", "what did I tell you about Z?"\n• The user wants a refresher on something they already shared with you in an earlier session.\n• Equivalent phrasings in ANY language — e.g. Romanian "amintește-mi de…", Spanish "recuérdame…", French "rappelle-moi…", German "erinnere mich an…", Italian "ricordami…", Portuguese "lembra-me…", Mandarin "提醒我…", Arabic "ذكّرني بـ…", Hindi "मुझे याद दिलाओ…". Don\'t require English phrasing.\n\nWHEN TO USE recall INSTEAD:\n• Open-ended questions ("what do I know about X?", "what am I working on?"). `recall` reads slightly less like a reminder.\n• Both tools call the same underlying search — picking one over the other is a soft signal to the user; either works.\n\nSame input schema + same caps as `recall`.',
+        description: 'DETERMINISM — Deterministic, exactly like the `recall` tool: an identical query always returns identical memories, with no LLM and no randomness. Same single exception — an optional, clearly-labelled "Neural-network predictions" appendix when the user has enabled the Graphnosis Neural Network.\n\nAlias for `recall` framed around the "remind me about X" intent. Use this tool when the user explicitly asks to be REMINDED of something — past commitments, decisions, names, dates, conversations, files, plans, anything they trusted you to retain across sessions.\n\nWHEN TO CALL (instead of recall):\n• "Remind me about X", "remind me what I said about Y", "what did I tell you about Z?"\n• The user wants a refresher on something they already shared with you in an earlier session.\n• Equivalent phrasings in ANY language — e.g. Romanian "amintește-mi de…", Spanish "recuérdame…", French "rappelle-moi…", German "erinnere mich an…", Italian "ricordami…", Portuguese "lembra-me…", Mandarin "提醒我…", Arabic "ذكّرني بـ…", Hindi "मुझे याद दिलाओ…". Don\'t require English phrasing.\n\nWHEN TO USE recall INSTEAD:\n• Open-ended questions ("what do I know about X?", "what am I working on?"). `recall` reads slightly less like a reminder.\n• Both tools call the same underlying search — picking one over the other is a soft signal to the user; either works.\n\nESCALATION POLICY (same as `recall`) — if this tool returns 0-3 nodes or returns nodes that don\'t actually answer the user, DO NOT respond "I don\'t have anything on this." Call `dig_deeper` with the same query before giving up. Most "nothing found" cases are language / phrasing mismatches that `dig_deeper`\'s source-filename + cross-engram + GNN expansion catches. Only after `dig_deeper` also comes up empty should you tell the user the memory isn\'t there.\n\nSame input schema + same caps as `recall`.',
         inputSchema: {
           type: 'object',
           properties: {
@@ -1530,7 +1599,7 @@ export function createMcpServer(deps: McpDeps): Server {
       },
       {
         name: 'dig_deeper',
-        description: 'DETERMINISM — Same as `recall`: deterministic content match + entity anchoring; the optional Graphnosis Neural Network appendix is the only non-deterministic part and is clearly labelled.\n\nThe "look harder" escalation when `recall` returns thin results or when the user\'s question is document-targeted rather than fact-targeted. Internally orchestrates THREE stages on top of regular recall:\n  1. Standard content recall (federated TF-IDF + multilingual embeddings + entity anchoring + optional GNN graph expansion)\n  2. Source-filename expansion — for any source whose filename matches a query entity (e.g. user asks about "Virginia" and there\'s a `Virginia Linul thesis.pdf` source), pulls representative chunks from that source\n  3. Cross-engram entity hop — walks the cross-engram connection store to surface related nodes from OTHER engrams via shared entities\n\nReturns a unified subgraph with a full PROVENANCE FOOTER breaking down what came from where. The footer also includes a meta-instruction to surface ANOMALIES to the user (e.g. when the indirect-expansion stages dominate over direct content match — a sign the speculative side eclipsed the deterministic one and the user should validate the result). This is the user-feedback channel: if results seem off, the AI tells the user, the user reports the failure mode, the developer learns.\n\nWHEN TO USE (vs `recall`):\n• Regular `recall` returned 0-3 nodes but the user clearly has relevant memory ("I have a whole engram about this!")\n• The user\'s question references a document by NAME (file, paper, project) rather than its content — `recall` indexes content, not filenames\n• Cross-domain queries that span multiple engrams ("everything about Năsăud across my engrams")\n• When the user explicitly asks to "dig deeper", "look harder", "search everything", "across all my notes"\n\nWHEN NOT TO USE:\n• Quick recall — `recall` is faster and predictable\n• Saving (use `remember`), correcting (use `correct`), deleting (use `forget`)\n• Asking about a specific known source — use `recall_source` directly\n\nSame caps as `recall` (max 50 nodes / 8000 tokens) but the per-stage caps inside dig_deeper are individually bounded so no single stage floods the result.',
+        description: 'DETERMINISM — Same as `recall`: deterministic content match + entity anchoring; the optional Graphnosis Neural Network appendix is the only non-deterministic part and is clearly labelled.\n\nThe "look harder" escalation when `recall` returns thin results or when the user\'s question is document-targeted rather than fact-targeted. Internally orchestrates THREE stages on top of regular recall:\n  1. Standard content recall (federated TF-IDF + multilingual embeddings + entity anchoring + optional GNN graph expansion)\n  2. Source-filename expansion — for any source whose filename matches a query entity (e.g. user asks about "Virginia" and there\'s a `Virginia Linul thesis.pdf` source), pulls representative chunks from that source\n  3. Cross-engram entity hop — walks the cross-engram connection store to surface related nodes from OTHER engrams via shared entities\n\nReturns a unified subgraph with a full PROVENANCE FOOTER breaking down what came from where. The footer also includes a meta-instruction to surface ANOMALIES to the user (e.g. when the indirect-expansion stages dominate over direct content match — a sign the speculative side eclipsed the deterministic one and the user should validate the result). This is the user-feedback channel: if results seem off, the AI tells the user, the user reports the failure mode, the developer learns.\n\nWHEN TO USE (vs `recall`):\n• Regular `recall` returned 0-3 nodes but the user clearly has relevant memory ("I have a whole engram about this!")\n• The user\'s question references a document by NAME (file, paper, project) rather than its content — `recall` indexes content, not filenames\n• Cross-domain queries that span multiple engrams ("everything about Năsăud across my engrams")\n• When the user explicitly asks to "dig deeper", "look harder", "search everything", "across all my notes"\n\nWHEN NOT TO USE:\n• Quick recall — `recall` is faster and predictable\n• Saving (use `remember`), correcting (use `correct`), deleting (use `forget`)\n• Asking about a specific known source — use `recall_source` directly\n\nSame caps as `recall` (max 50 nodes / 8000 tokens) but the per-stage caps inside dig_deeper are individually bounded so no single stage floods the result.\n\nACT ON THE ⚠️ BLOCK: If the output includes a ⚠️ warning block at the end, indirect expansion (stage 2/3) dominated over the direct content match. Do NOT present those results as attested fact — flag to the user that the results are speculative and ask them to confirm relevance before acting on them.',
         inputSchema: {
           type: 'object',
           properties: {
@@ -1600,7 +1669,7 @@ export function createMcpServer(deps: McpDeps): Server {
       },
       {
         name: 'forget',
-        description: 'DETERMINISM — Deterministic: soft-deleting the same node always yields the same result; no LLM, no randomness, and the delete is recoverable from the op-log.\n\nSurgically soft-delete one or more specific memory nodes from the user\'s graph. Only the listed nodes are removed — the rest of the source they came from is untouched. This is the ONLY node-level deletion available to AI clients. Deleting an entire source is a user-only action performed in the Graphnosis app UI (Sources page) — never attempt source-level deletion via this tool.\n\nLANGUAGE: Works in any language. Trigger on the "make this go away" intent regardless of the phrasing.\n\nPARAMETERS:\n• `graphId` — the engram SLUG (e.g. "personal", "rss-ai", "book-notes"). Use `stats` or `list_engrams` to see valid slugs.\n• `nodeIds` — one nodeId string or an array of up to 20 nodeId strings. Node IDs come from `recall_structured` results. Never guess a nodeId.\n\nHOW TO GET nodeIds — always call `recall_structured` first:\n1. Call `recall_structured(query="<what the user described>", graphId="<engram>")` — this returns a JSON array where each item has a `nodeId` field.\n2. Show the user the matching node(s) and confirm which one(s) to remove before calling `forget`.\n3. Call `forget(graphId="<engram>", nodeIds=["<id1>", ...])` with the confirmed IDs.\n\nNever skip the `recall_structured` step. Never guess a nodeId. Never pass a sourceId — that field does not exist on this tool.\n\nWHEN TO CALL:\n• The user says "forget about X", "remove that note", "wipe what I said about Y" — or equivalents in any language — and you have confirmed the specific node(s) via `recall_structured`.\n• Removing an outdated fragment, a stale todo, an incorrect fact — anything where the user wants surgical node-level removal without touching the rest of the source.\n\nWHEN NOT TO CALL:\n• To FIX content (not delete it) → use `correct` instead.\n• To remove an entire ingested file, URL, or clip → direct the user to the Sources page in the Graphnosis app — that is a user-only action.\n• Before confirming the matching node(s) with the user — always show them what will be deleted first.\n\nThis is a soft delete — the user can recover deleted nodes via the Graphnosis App\'s Recover flow.',
+        description: 'DETERMINISM — Deterministic: soft-deleting the same node always yields the same result; no LLM, no randomness, and the delete is recoverable from the op-log.\n\nSurgically soft-delete one or more specific memory nodes from the user\'s graph. Only the listed nodes are removed — the rest of the source they came from is untouched. This is the ONLY node-level deletion available to AI clients. Deleting an entire source is a user-only action performed in the Graphnosis app UI (Sources page) — never attempt source-level deletion via this tool.\n\nLANGUAGE: Works in any language. Trigger on the "make this go away" intent regardless of the phrasing.\n\nSAFETY-CRITICAL — USE `items` WITH PREVIEWS. Most MCP clients show the AI\'s request payload to the user in a consent prompt before letting the tool run. If you call this with bare `nodeIds: ["LhahITl…"]`, the user sees opaque IDs and cannot decide whether to approve — they\'re essentially clicking blind. ALWAYS use the `items` form instead and populate each entry with a short content preview pulled from your prior `recall_structured` result. The preview is the user\'s safety net.\n\nPARAMETERS:\n• `graphId` — the engram SLUG (e.g. "personal", "rss-ai", "book-notes"). Use `stats` or `list_engrams` to see valid slugs.\n• `items` — array of `{ nodeId, preview }` objects (PREFERRED). `preview` is the first ~120 characters of the node\'s text content from `recall_structured`. Keep it ≤200 chars; trim/ellipsize longer text.\n• `nodeIds` — LEGACY: array of nodeId strings without previews. Still accepted but the response will tell you to switch to `items` next time.\n\nHOW TO USE (the right way):\n1. Call `recall_structured(query="<what the user described>", graphId="<engram>")` — returns a JSON array of nodes with `nodeId` AND `text`.\n2. Show the user the matching node text(s) and confirm which to remove.\n3. Call `forget(graphId="<engram>", items=[{nodeId: "<id1>", preview: "<first 120 chars of node.text>"}, ...])`.\n\nNever skip step 1. Never guess a nodeId. Never pass a sourceId — that field does not exist on this tool.\n\nWHEN TO CALL:\n• The user says "forget about X", "remove that note", "wipe what I said about Y" — or equivalents in any language — and you have confirmed the specific node(s) via `recall_structured`.\n• Removing an outdated fragment, a stale todo, an incorrect fact — anything where the user wants surgical node-level removal without touching the rest of the source.\n\nWHEN NOT TO CALL:\n• To FIX content (not delete it) → use `correct` instead.\n• To remove an entire ingested file, URL, or clip → direct the user to the Sources page in the Graphnosis app — that is a user-only action.\n• Before confirming the matching node(s) with the user — always show them what will be deleted first.\n\nThis is a soft delete — the user can recover deleted nodes via the Graphnosis App\'s Recover flow.',
         inputSchema: {
           type: 'object',
           properties: {
@@ -1608,15 +1677,29 @@ export function createMcpServer(deps: McpDeps): Server {
               type: 'string',
               description: 'Engram SLUG (e.g. "personal", "work"). Use stats or list_engrams to find valid slugs.',
             },
+            items: {
+              type: 'array',
+              minItems: 1,
+              maxItems: 20,
+              description: 'PREFERRED. Each entry pairs a nodeId with a short content preview (≤200 chars) from recall_structured. The preview appears in the user\'s consent prompt so they can decide what to approve.',
+              items: {
+                type: 'object',
+                properties: {
+                  nodeId: { type: 'string', description: 'NodeId from recall_structured. Never guess.' },
+                  preview: { type: 'string', description: 'First ~120 chars of the node\'s text. The user reads this to confirm the deletion.' },
+                },
+                required: ['nodeId', 'preview'],
+              },
+            },
             nodeIds: {
               oneOf: [
                 { type: 'string', description: 'Single nodeId to delete.' },
                 { type: 'array', items: { type: 'string' }, minItems: 1, maxItems: 20, description: 'Array of nodeIds to delete (max 20).' },
               ],
-              description: 'Node ID(s) from recall_structured results. Never guess.',
+              description: 'LEGACY (use `items` instead). Bare nodeIds with no previews — the user sees only opaque IDs in their consent prompt.',
             },
           },
-          required: ['graphId', 'nodeIds'],
+          required: ['graphId'],
         },
       },
       {
@@ -1771,7 +1854,7 @@ export function createMcpServer(deps: McpDeps): Server {
       // ── Advanced recall ───────────────────────────────────────────────────
       {
         name: 'recall_structured',
-        description: 'DETERMINISM — Same as recall: deterministic by default, optional non-deterministic Neural Network appendix.\n\nLike recall, but returns the results as a JSON array of node objects (nodeId, graphId, tier, score, text, sourceId) instead of a prompt-ready prose block. Use when you need to programmatically process, filter, sort, or display recall results — e.g. building a table, computing statistics, or choosing which sourceIds to forward to a follow-up tool. Accepts the same only_engrams / except_engrams scope filters as recall.',
+        description: 'DETERMINISM — Same as recall: deterministic by default, optional non-deterministic Neural Network appendix.\n\nLike recall, but returns the results as a JSON array of node objects (nodeId, graphId, tier, score, text, sourceId) instead of a prompt-ready prose block. Use when you need to programmatically process, filter, sort, or display recall results — e.g. building a table, computing statistics, or choosing which sourceIds to forward to a follow-up tool. Accepts the same only_engrams / except_engrams scope filters as recall.\n\nAlso the correct tool to call before `forget` — recall_structured gives you the exact nodeIds you must pass to forget. Never try to forget based on prose recall output; it contains no nodeIds.',
         inputSchema: {
           type: 'object',
           properties: {
@@ -1786,7 +1869,7 @@ export function createMcpServer(deps: McpDeps): Server {
       },
       {
         name: 'recall_with_citations',
-        description: 'DETERMINISM — Same as recall: deterministic by default.\n\nLike recall, but each memory node is followed by an inline citation: the sourceId it was derived from (e.g. "[clip:abc123]"). Use when you want to offer the user traceable provenance — "this came from source X" — or when a downstream tool needs source attribution per fact. Accepts the same scope filters as recall.',
+        description: 'DETERMINISM — Same as recall: deterministic by default.\n\nLike recall, but each memory node is followed by an inline citation: the sourceId and label it was derived from (e.g. "[clip:abc123·location-notes]"). Use when you want to offer the user traceable provenance — "this came from source X" — or when a downstream tool needs source attribution per fact. Example output line: "Nelu lived in Bucharest in 2019 [clip:abc123·location-notes]." Accepts the same scope filters as recall.',
         inputSchema: {
           type: 'object',
           properties: {
@@ -1842,11 +1925,11 @@ export function createMcpServer(deps: McpDeps): Server {
       },
       {
         name: 'recall_source',
-        description: 'DETERMINISM — Deterministic: fetches every memory node derived from one source document; no LLM, no scoring.\n\nReturn the FULL content of a single saved source — every chunk, in ingestion order, with no similarity cutoff. Use this when recall returns only fragments of a structured document (a plan, a list, a meeting note) and you need the complete text. Requires the exact sourceId — use find_source first if unsure.\n\nWHEN TO USE OVER recall:\n• The user asks for "the full note/doc/plan about X" and recall keeps returning partial results.\n• You got a sourceId from find_source (keyword or content path) or recall_with_citations and want everything from that source.\n• A structured list or numbered plan was saved as one clip and recall is only surfacing individual items.\n\nWHEN NOT TO USE:\n• Exploratory search ("what do I know about X?") — use recall instead.\n• You don\'t have a sourceId — use find_source(keyword=...) for reference-based lookup or find_source(content=...) for content-described lookup.',
+        description: 'DETERMINISM — Deterministic: fetches every memory node derived from one source document; no LLM, no scoring.\n\nReturn the FULL content of a single saved source — every chunk, in ingestion order, with no similarity cutoff. Use this when recall returns only fragments of a structured document (a plan, a list, a meeting note) and you need the complete text. Requires the exact sourceId — use find_source first if unsure.\n\nSOURCEID FORMAT — sourceId is always `kind:numericId:label`, e.g. `clip:1779225683078:My Note Title` or `ai-conversation:1779093613903:Session Name`. NEVER pass a bare display name or title as the sourceId — that will always fail. The only reliable places to obtain a real sourceId are: (1) the 💡 source-file hint block at the bottom of a recall/dig_deeper response (those strings ARE valid sourceIds), (2) results from find_source, or (3) node objects from recall_structured which include a sourceId field. The `src:` labels inside recall node lines (e.g. `[n1|fact|0.73|src:My Note Title]`) are human-readable titles, NOT sourceIds — do not pass them here.\n\nWHEN TO USE OVER recall:\n• The user asks for "the full note/doc/plan about X" and recall keeps returning partial results.\n• You got a sourceId from find_source (keyword or content path) or recall_with_citations and want everything from that source.\n• A structured list or numbered plan was saved as one clip and recall is only surfacing individual items.\n• A recall or dig_deeper response included a 💡 hint naming specific sourceIds — in that case, call this tool before composing your answer.\n\nWHEN NOT TO USE:\n• Exploratory search ("what do I know about X?") — use recall instead.\n• You don\'t have a confirmed sourceId — use find_source(keyword=...) first, never guess.',
         inputSchema: {
           type: 'object',
           properties: {
-            sourceId: { type: 'string', description: 'The exact sourceId (e.g. "clip:abc123:label"). Use find_source to locate it if unsure.' },
+            sourceId: { type: 'string', description: 'The exact sourceId in the format "kind:numericId:label" (e.g. "clip:1779225683078:My Note Title"). Get this from find_source, from recall_structured node objects, or from the 💡 hint block in a recall response. Never pass a bare display name — it will always fail.' },
             engram: { type: 'string', description: 'Optional: scope the search to one engram (slug or display name). Speeds up lookup on large cortexes.' },
           },
           required: ['sourceId'],
@@ -1867,7 +1950,7 @@ export function createMcpServer(deps: McpDeps): Server {
       },
       {
         name: 'ingest_batch',
-        description: 'DETERMINISM — Deterministic: same ingest path as remember; no LLM.\n\nSave multiple notes in a single call — up to 20 items per batch. Each item may have its own target_engram. Useful when the user wants to bulk-import a list of facts, decisions, or to-dos without an individual remember call per item. Returns a per-item success/error summary.',
+        description: 'DETERMINISM — Deterministic: same ingest path as remember; no LLM.\n\nSave multiple notes in a single call — up to 20 items per batch. Each item may have its own target_engram. Useful when the user wants to bulk-import a list of facts, decisions, or to-dos without an individual remember call per item. Returns a per-item success/error summary.\n\nWHEN TO USE (vs `remember`):\n• Prefer ingest_batch over calling `remember` N times whenever you have 2 or more notes to save in the same turn — it is atomic, contradiction-checked per item, and produces a per-item success/error report.\n• Good fit for bulk-import flows: logs, sensor readings, lists of facts, decisions from a meeting. Each item may target a different engram.\n• Still use `remember` for a single note — ingest_batch of 1 is fine but adds no value.',
         inputSchema: {
           type: 'object',
           properties: {
@@ -2099,7 +2182,7 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
           query: args.query,
           tool: toolName,
         }) ?? '';
-        return { content: [{ type: 'text', text: sub.prompt + auditFooter + headsUp + consentFooter }] };
+        return { content: [{ type: 'text', text: sub.prompt + auditFooter + headsUp + pendingEngramNotice(deps.host) + consentFooter }] };
       }
       case 'dig_deeper': {
         // Multi-strategy retrieval. Same input shape as recall + only/except
@@ -2164,7 +2247,7 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
           query: args.query,
           tool: 'dig_deeper',
         }) ?? '';
-        return { content: [{ type: 'text', text: sub.prompt + auditFooter + ddHeadsUp + consentFooter }] };
+        return { content: [{ type: 'text', text: sub.prompt + auditFooter + ddHeadsUp + pendingEngramNotice(deps.host) + consentFooter }] };
       }
       case 'remember': {
         const args = RememberInput.parse(req.params.arguments ?? {});
@@ -2361,12 +2444,50 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
       }
       case 'forget': {
         const args = ForgetInput.parse(req.params.arguments ?? {});
+        // Coalesce the two accepted shapes into one normalized list. `items`
+        // wins when both are present (it's the safer payload — has previews).
+        const usedItemsShape = (args.items?.length ?? 0) > 0;
+        const targets: Array<{ nodeId: string; preview?: string }> = usedItemsShape
+          ? args.items!.map(i => ({ nodeId: i.nodeId, preview: i.preview }))
+          : (args.nodeIds ?? []).map(id => ({ nodeId: id }));
+        if (targets.length === 0) {
+          return mcpError('forget requires either `items: [{nodeId, preview}]` (preferred) or `nodeIds: [...]` (legacy).');
+        }
         await deps.host.applyCorrection(
           args.graphId,
-          { edits: args.nodeIds.map(id => ({ kind: 'delete' as const, nodeId: id, reason: 'forgotten by AI client' })) },
+          { edits: targets.map(t => ({ kind: 'delete' as const, nodeId: t.nodeId, reason: 'forgotten by AI client' })) },
           { triggeredBy: 'mcp:forget' },
         );
-        return { content: [{ type: 'text', text: `Forgot ${args.nodeIds.length} node${args.nodeIds.length === 1 ? '' : 's'}: ${args.nodeIds.join(', ')}.` }] };
+        // Build a response that surfaces what was removed. When we have
+        // previews, echo them back so the user (and any later audit) can
+        // see what content actually got soft-deleted, not just opaque IDs.
+        const lines: string[] = [];
+        lines.push(`Forgot ${targets.length} node${targets.length === 1 ? '' : 's'} from "${args.graphId}":`);
+        for (const t of targets) {
+          if (t.preview) {
+            // Trim preview to a single visible line; keep it under ~140 chars.
+            const oneLine = t.preview.replace(/\s+/g, ' ').trim().slice(0, 140);
+            const ellipsis = t.preview.length > 140 ? '…' : '';
+            lines.push(`  • [${t.nodeId}] ${oneLine}${ellipsis}`);
+          } else {
+            lines.push(`  • [${t.nodeId}]`);
+          }
+        }
+        // Nudge AIs still using the legacy shape to upgrade. This is the
+        // user-safety channel: opaque-ID deletes are hard for the user to
+        // approve safely, so we make sure the AI hears about it.
+        if (!usedItemsShape) {
+          lines.push('');
+          lines.push(
+            '⚠️ _Heads-up: this call used the legacy `nodeIds` shape with no content previews. ' +
+            'Most MCP clients show your request payload to the user in a consent prompt before ' +
+            'running the tool — with bare nodeIds the user sees only opaque strings and cannot ' +
+            'tell what they\'re about to approve. Next time, use `items: [{nodeId, preview}]` ' +
+            'where `preview` is the first ~120 chars of node text from `recall_structured`. ' +
+            'The user (and the developer) will thank you._'
+          );
+        }
+        return { content: [{ type: 'text', text: lines.join('\n') }] };
       }
       case 'stats': {
         const { includeNodes } = z.object({ includeNodes: z.coerce.boolean().optional() }).parse(req.params.arguments ?? {});
@@ -2379,7 +2500,8 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
           sources: g.sources,
           ...(includeNodes ? { nodes: g.nodes.slice(0, 20) } : {}),
         }));
-        return { content: [{ type: 'text', text: JSON.stringify({ graphs: summary }, null, 2) }] };
+        const notice = pendingEngramNotice(deps.host);
+        return { content: [{ type: 'text', text: JSON.stringify({ graphs: summary }, null, 2) + notice }] };
       }
       case 'develop': {
         refuseIfLlmRestrictedToSearch('develop');
@@ -2480,16 +2602,18 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
       // ── Navigation & routing ──────────────────────────────────────────────
       case 'list_engrams': {
         const statsByGraph = new Map(deps.host.stats().graphs.map(g => [g.graphId, g]));
-        const rows = deps.host.graphsWithMetadata().map(({ graphId, metadata }) => ({
+        const rows = deps.host.graphsWithMetadata({ includeUnloaded: true }).map(({ graphId, metadata, loaded }) => ({
           graphId,
           displayName: metadata.displayName ?? graphId,
-          tier: metadata.sensitivityTier ?? 'personal',
+          tier: (metadata as any).sensitivityTier ?? 'personal',
           template: metadata.template,
-          archived: metadata.archived ?? false,
-          sources: deps.host.listSources(graphId).length,
+          archived: (metadata as any).archived ?? false,
+          loaded,
+          sources: loaded ? deps.host.listSources(graphId).length : null,
           lastMutationAt: statsByGraph.get(graphId)?.lastMutationAt,
         }));
-        return { content: [{ type: 'text', text: JSON.stringify(rows, null, 2) }] };
+        const notice = pendingEngramNotice(deps.host);
+        return { content: [{ type: 'text', text: JSON.stringify(rows, null, 2) + notice }] };
       }
       case 'suggest_engram': {
         const args = SuggestEngramInput.parse(req.params.arguments ?? {});
@@ -2622,6 +2746,8 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
           tool: 'recall_structured',
         });
         if (rsHeadsUp) rsResult._headsUp = rsHeadsUp.replace(/^\n\n/, '').replace(/^⚠️ _/, '').replace(/_$/, '');
+        const rsPendingNotice = pendingEngramNotice(deps.host);
+        if (rsPendingNotice) rsResult._pendingEngrams = rsPendingNotice.trim();
         return { content: [{ type: 'text', text: JSON.stringify(rsResult, null, 2) + rsFooter }] };
       }
       case 'recall_with_citations': {
@@ -2791,11 +2917,58 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
           if ('error' in res) return res.error;
           graphIdFilter = res.graphId;
         }
-        const rec = deps.host.listSources(graphIdFilter).find(s => s.sourceId === args.sourceId);
+        // Tolerant source resolution — AI clients in the wild pass three
+        // different things as `sourceId`:
+        //   1. The canonical sourceId from listSources / find_source
+        //      (`clip:<24-char-hash>`, `file:<24-char-hash>`, etc.).
+        //   2. The `ref` string they saw in a recall response's `src:` tag,
+        //      which for clips looks like `clip:<timestamp>:<label>` — that
+        //      is the source REF, NOT the canonical id.
+        //   3. A TRUNCATED form of (2) that ends in `…` because the AI
+        //      client's UI truncated the visible string before the AI
+        //      copied it back. Common with long clip labels.
+        //
+        // We try all three in order. Truncated matches require the input to
+        // end with `…` (or `...`) and to uniquely prefix exactly one ref —
+        // never disambiguate silently. This single resolver buys us a much
+        // higher success rate on recall_source calls than strict equality.
+        const sources = deps.host.listSources(graphIdFilter);
+        const stripEllipsis = (s: string): string =>
+          s.replace(/(?:…|\.{3})\s*$/u, '');
+        const target = args.sourceId;
+        const targetStripped = stripEllipsis(target);
+        const wasTruncated = target !== targetStripped;
+        // Pass 1: exact match on sourceId (canonical).
+        let rec = sources.find(s => s.sourceId === target);
+        // Pass 2: exact match on ref (the form emitted in recall `src:` tags).
+        if (!rec) rec = sources.find(s => s.ref === target);
+        // Pass 3: prefix match on ref after stripping a trailing ellipsis.
+        // Only accept if exactly one source matches — never silently pick
+        // the first of several.
+        if (!rec && wasTruncated && targetStripped.length >= 8) {
+          const prefixMatches = sources.filter(s => s.ref.startsWith(targetStripped));
+          if (prefixMatches.length === 1) {
+            rec = prefixMatches[0];
+          } else if (prefixMatches.length > 1) {
+            return mcpError(
+              `Source "${target}" was truncated and matches ${prefixMatches.length} ` +
+              `sources. Call find_source(content="…") with a more specific term, ` +
+              `or use one of these exact sourceIds: ` +
+              prefixMatches.slice(0, 5).map(s => `"${s.sourceId}"`).join(', ') +
+              (prefixMatches.length > 5 ? `, …` : '') + '.',
+            );
+          }
+        }
         if (!rec) {
+          const hint = target.includes(':') && /:\d{10,}:/.test(target)
+            ? ` (heads-up: the value you passed looks like a source REF — ` +
+              `the \`clip:<timestamp>:<label>\` string from a recall \`src:\` ` +
+              `tag — not a canonical sourceId. Call find_source(content="…") ` +
+              `to get the real sourceId.)`
+            : '';
           return mcpError(
-            `Source "${args.sourceId}" not found${graphIdFilter ? ` in engram "${args.engram}"` : ''}. ` +
-            `Use find_source to locate it by keyword.`,
+            `Source "${target}" not found${graphIdFilter ? ` in engram "${args.engram}"` : ''}. ` +
+            `Use find_source to locate it by keyword or content.${hint}`,
           );
         }
         const { consentFooter: rsrcFooter } = await checkConsentOrThrow([rec.graphId]);

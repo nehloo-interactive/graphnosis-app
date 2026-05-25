@@ -28,16 +28,29 @@ export async function ingestGraphnosisDocs(
     // memory even when the body has no top-level heading of its own.
     const content = doc.title ? `# ${doc.title}\n\n${doc.markdown}` : doc.markdown;
     try {
-      await host.ingest(graphId, 'file', sourceRef, {
+      await host.ingest(graphId, 'clip', sourceRef, {
         kind: 'markdown',
         content,
         sourceRef,
+      }, {
+        // Suppress the per-document relink debounce. Without this flag,
+        // every page ingest fires kickoffRelink — and because embedding
+        // each page takes 2-5s (longer than the 1500ms debounce window),
+        // a full O(N²) relink pass fires between every page. 24 relink
+        // passes on a growing engram adds 60-120s to the ingest and causes
+        // the IPC timeout. One relink after all 24 pages is sufficient.
+        skipAutoRelink: true,
       });
       ingested++;
     } catch (e) {
       failed++;
       console.error(`[docs-ingest] failed to ingest ${doc.slug}:`, e);
     }
+  }
+  // Single relink pass after all pages are ingested — picks up cross-page
+  // entity overlaps in one shot instead of 24 incremental passes.
+  if (ingested > 0) {
+    host.triggerRelink(graphId);
   }
   return { ingested, failed };
 }
