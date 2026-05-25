@@ -9265,6 +9265,35 @@ async function switchActiveEngram(graphId: string): Promise<void> {
   if (currentMode === 'atlas') void refreshAtlasView();
 }
 
+// Auto-recovery from interrupted shutdown — fired by the sidecar after it
+// notices one or more engrams were auto-quarantined during boot load (their
+// .gai files failed integrity checks, almost always because of a force-quit
+// or lid-close mid-save) and then successfully replayed the op-log to
+// rebuild them. The user sees a friendly toast instead of the alarming
+// "Synapse failed during startup. Most likely cause: wrong passphrase or
+// a corrupted cortex file." Rust message — because the sidecar no longer
+// fails startup at all in that case.
+interface QuarantineRecoveredPayload {
+  quarantinedEngrams: number;
+  sourcesAttempted: number;
+  sourcesRecovered: number;
+  sourcesSkipped: number;
+  sourcesFailed: number;
+}
+void listen<QuarantineRecoveredPayload>('graphnosis://cortex-recovered-from-quarantine', (evt) => {
+  const p = evt.payload;
+  const engramWord = p.quarantinedEngrams === 1 ? 'engram' : 'engrams';
+  const sourceWord = p.sourcesRecovered === 1 ? 'memory' : 'memories';
+  const label = `Recovered ${p.quarantinedEngrams} ${engramWord} from op-log`;
+  const message = p.sourcesFailed === 0
+    ? `Rebuilt ${p.sourcesRecovered} ${sourceWord} after an interrupted shutdown. Your memory is intact.`
+    : `Rebuilt ${p.sourcesRecovered} ${sourceWord}, ${p.sourcesFailed} could not be recovered. The original quarantined files are in your cortex folder as .gai.corrupt-* for forensics.`;
+  const id = addIngestToast(label, message);
+  // Show as success unless any sources failed — in that case keep it as an
+  // error so the user notices + reads the message.
+  finishIngestToast(id, p.sourcesFailed === 0 ? 'success' : 'error');
+});
+
 void listen<{ loaded: number; total: number }>('graphnosis://engrams-loading', (evt) => {
   const { loaded, total } = evt.payload;
   const remaining = total - loaded;
