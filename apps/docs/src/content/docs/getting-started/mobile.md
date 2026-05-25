@@ -1,11 +1,11 @@
 ---
 title: Connect from Your Phone
-description: Wire Claude for iOS, Claude for Android, or any HTTP MCP client into your cortex over your local network or Tailscale VPN.
+description: Wire Claude for iOS, Claude for Android, or any HTTP MCP client into your cortex over your local network, Tailscale, or Cloudflare Tunnel.
 sidebar:
   order: 4
 ---
 
-Your cortex lives on your Mac. Your phone can still read from it — when Graphnosis is running and unlocked on the Mac, your mobile AI client connects over the network (LAN at home, Tailscale anywhere else) and gets the same `recall` / `remember` / `correct` / `forget` tools your desktop AI does. Same memory, same answers, different device.
+Your cortex lives on your Mac. Your phone can still read from it — when Graphnosis is running and unlocked on the Mac, your mobile AI client connects over the network and gets the same `recall` / `remember` / `correct` / `forget` tools your desktop AI does. Same memory, same answers, different device.
 
 This page walks through the 3-step in-app wizard. If you've already enabled mobile access once, the wizard skips straight to the "copy URL + token" step on subsequent opens — no toggle-fiddling for re-pairing a new device.
 
@@ -88,14 +88,37 @@ Same flow — Settings → MCP Servers → Add server → fill in URL and Bearer
 
 Open the wizard again later — it skips to Step 3 since the bridge is already on. Copy the URL + token to the new device. No need to re-enable or re-configure anything.
 
+## Without Tailscale
+
+**LAN only (home or office Wi-Fi):** if your phone and Mac are always on the same network, you don't need Tailscale at all. Use your LAN IP from Step 2 and leave it at that. The limitation: it stops working the moment your phone leaves that network.
+
+**Remote access without Tailscale — Cloudflare Tunnel:** Cloudflare's `cloudflared` tool punches an encrypted HTTPS tunnel from Cloudflare's edge to your Mac. Free for personal use, no port forwarding, no router config.
+
+1. Install `cloudflared` on your Mac:
+   ```sh
+   brew install cloudflared
+   ```
+2. In Graphnosis, run the wizard with **Bind: Loopback only** (127.0.0.1) — the tunnel talks to localhost, so you don't need `all-interfaces`.
+3. In a terminal, start a quick tunnel to the bridge port:
+   ```sh
+   cloudflared tunnel --url http://localhost:3457
+   ```
+   `cloudflared` prints a public `https://….trycloudflare.com` URL. That's your MCP Server URL.
+4. Paste that URL (with your bearer token) into your mobile AI client the same way as Step 3.
+
+A few caveats:
+- **Quick tunnels are ephemeral** — the URL changes every time you restart `cloudflared`. For a stable URL, set up a [named tunnel](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/get-started/) with a free Cloudflare account and a domain you control.
+- Traffic is encrypted end-to-end (Cloudflare terminates TLS), but Cloudflare does see the unencrypted request before it reaches your Mac. If that's a concern, use Tailscale (WireGuard, peer-to-peer — Tailscale's servers only relay metadata).
+- Stop the tunnel when you're not using it. The bridge itself stays local.
+
 ## Revoking access
 
 To cut off a device that has the token:
 
 1. Open **Settings → Mobile & Remote Access → "Set up mobile access…"**
-2. Step 1: toggle **Enable** off, then **Save & Next**
-3. Step 1 again: toggle **Enable** back on, **Save & Next**
-4. Step 3 now shows a **new** bearer token — the old one no longer works
+2. The wizard opens to Step 3 (since the bridge is already on)
+3. Click **Revoke & Regenerate** below the token field
+4. The token rotates immediately — the old one stops working at once
 
 Devices that still have the old token will get `401 Unauthorized` on every request. Re-paste the new token only on devices you trust.
 
@@ -114,7 +137,7 @@ Devices that still have the old token will get `401 Unauthorized` on every reque
 - If using Tailscale: confirm both devices show "Connected" in the Tailscale app.
 
 **Connected but tools return 401**
-- The bearer token doesn't match. Re-open the wizard and re-copy the token; it may have rotated since you last copied it.
+- The bearer token doesn't match. Re-open the wizard and re-copy the token from Step 3.
 
 **Tools listed but `recall` returns nothing**
 - Same as desktop: your cortex may be empty (add files first) or the active engram is empty. Try a broader query.
