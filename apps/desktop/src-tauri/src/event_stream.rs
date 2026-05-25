@@ -188,6 +188,7 @@ async fn open_and_read(app: &AppHandle, socket_path: &Path) -> Result<()> {
             | "llm.pull-progress"
             | "embedding.switch-progress"
             | "reingest.progress"
+            | "cortex.recovered-from-quarantine"
             | "engrams-loading"
             | "consent-prompt"
             | "first-connect-policy"

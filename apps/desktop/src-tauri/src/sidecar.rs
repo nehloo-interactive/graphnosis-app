@@ -371,6 +371,37 @@ fn classify_startup_failure(stderr_tail: &str, exit_code: Option<i32>) -> String
                 any leftover `graphnosis-sidecar` process from Activity Monitor."
             .to_string();
     }
+    // Auto-recovery backstop: the sidecar's loadAllGraphsFromDisk already
+    // catches `.gai` integrity failures, quarantines the bad file, and
+    // auto-runs applyRecovery() to rebuild from the op-log — in 95% of
+    // cases the user never sees this error at all. But if applyRecovery
+    // itself fails (op-log also damaged, ran out of disk during rebuild,
+    // unrecoverable source), the sidecar exits with code 1 leaving the
+    // user staring at the generic "wrong passphrase" fallback. Detect the
+    // quarantine marker in the stderr tail and swap in an honest message.
+    if stderr_tail.contains("quarantined corrupt engram")
+        || stderr_tail.contains("auto-recovery FAILED")
+    {
+        let display_tail = trimmed_stderr_for_display(stderr_tail);
+        let suffix = if display_tail.is_empty() {
+            String::new()
+        } else {
+            format!("\n\nSynapse stderr (last lines):\n{}", display_tail)
+        };
+        return format!(
+            "Graphnosis tried to recover from an interrupted shutdown but couldn't \
+             fully rebuild your cortex. One or more engram files were quarantined \
+             (moved to .gai.corrupt-<ts> for forensics) and an automatic op-log \
+             replay was attempted, but at least one source couldn't be recovered. \
+             Your encrypted source content is still safe in the cortex folder. \
+             Try: (1) launch Graphnosis again — the recovery pass retries on each \
+             boot; (2) if the issue persists, open Settings → Recover from op-log \
+             and review the failed-source list. The quarantined files are not \
+             deleted — they're kept as .gai.corrupt-<ts> in your cortex's graphs/ \
+             folder for manual recovery.{}",
+            suffix,
+        );
+    }
     // Missing env var, missing node binary, etc. — bubble up.
     if stderr_tail.contains("Missing env var") {
         return format!("Synapse reported a missing configuration value. \
