@@ -187,7 +187,7 @@ export class ReinforcementEngine {
   /** Set when the association index changed and needs persisting. */
   private associationDirty = false;
 
-  private gnnRunning = false;
+  gnnRunning = false;
   /** Edges added by the Graphnosis Neural Network this session. */
   sessionGnnEdges = 0;
   /** Summary of the most recent neural-network run, for the UI. */

@@ -208,6 +208,21 @@ export class GraphnosisHost {
   /** Settings-change listeners — fired AFTER persistence + in-memory swap
    *  so consumers (the file-watcher) always see the canonical new value. */
   private readonly settingsListeners = new Set<(s: settingsMod.AppSettings) => void>();
+  /**
+   * Serialises concurrent setSettings() calls.
+   *
+   * Problem: the brain engine fires frequent background writes
+   * (`{ brain: { lastVitality, lastRun, … } }`) that read this.settings
+   * BEFORE a concurrent user-initiated write has committed its result.
+   * The stale merge then wins the disk race and clobbers fields like
+   * `ai.autoReingestOnFileChange` that the user just changed.
+   *
+   * Fix: chain every setSettings call onto the previous one so each
+   * write starts only after the prior write has committed to both disk
+   * and this.settings. The merge inside each call therefore always sees
+   * the latest committed state, never a stale snapshot.
+   */
+  private settingsWriteQueue: Promise<void> = Promise.resolve();
 
   private constructor(
     private readonly opts: HostOptions,
@@ -569,6 +584,41 @@ export class GraphnosisHost {
     const file = path.join(this.opts.cortexDir, healingJournalMod.HEALING_JOURNAL_FILE);
     const blob = await healingJournalMod.encodeHealingJournal(records, this.key);
     await writeFileAtomic(file, Buffer.from(blob));
+  }
+
+  // ── Brain insights ───────────────────────────────────────────────────────
+  //
+  // Insights are AI-generated observations (patterns, gaps, opportunities,
+  // conflicts) produced by the local LLM over the user's engrams. They are
+  // stored as plain JSON — no encryption — since they are LLM output derived
+  // from the user's memory, not attested memory itself. Same pattern as
+  // healing journal but simpler (no custom binary codec needed).
+
+  private static readonly INSIGHTS_FILE = 'brain-insights.json';
+
+  /** Load persisted insights. Returns [] if no file exists yet. */
+  async loadInsights<T>(): Promise<T[]> {
+    const file = path.join(this.opts.cortexDir, GraphnosisHost.INSIGHTS_FILE);
+    let raw: string;
+    try {
+      raw = await fs.readFile(file, 'utf8');
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code === 'ENOENT') return [];
+      console.error(`[host] could not read brain insights: ${(e as Error).message}`);
+      return [];
+    }
+    try {
+      return JSON.parse(raw) as T[];
+    } catch {
+      console.error('[host] brain-insights.json is malformed — starting fresh');
+      return [];
+    }
+  }
+
+  /** Atomically write insights to disk. */
+  async saveInsights<T>(insights: T[]): Promise<void> {
+    const file = path.join(this.opts.cortexDir, GraphnosisHost.INSIGHTS_FILE);
+    await writeFileAtomic(file, Buffer.from(JSON.stringify(insights)));
   }
 
   /** Load + decrypt the cross-engram connection store. [] if none exists yet. */
@@ -1196,13 +1246,32 @@ export class GraphnosisHost {
 
   /** Update settings, persist to <cortex>/settings.json, return the merged result. */
   async setSettings(partial: Partial<settingsMod.AppSettings>): Promise<settingsMod.AppSettings> {
-    // Shallow merge per top-level key — keeps contentCache fully replaced if
-    // the caller passes one, while leaving room for future top-level keys.
-    const next: settingsMod.AppSettings = settingsMod.mergeWithDefaults({
-      ...this.settings,
-      ...partial,
-    });
-    await this.persistSettings(next);
+    // Serialise through settingsWriteQueue so concurrent callers (the brain
+    // engine fires background writes every few seconds) always merge from the
+    // latest committed this.settings, never from a stale snapshot captured
+    // before a concurrent write committed. Without this, a brain-engine write
+    // in flight at the same time as a user preference save reads the old
+    // this.settings and its disk write can land after the user's write,
+    // silently reverting fields like ai.autoReingestOnFileChange to false.
+    let resolveSlot!: () => void;
+    const slot = new Promise<void>(r => { resolveSlot = r; });
+    const prev = this.settingsWriteQueue;
+    this.settingsWriteQueue = slot;
+
+    let next!: settingsMod.AppSettings;
+    try {
+      await prev; // wait for any concurrent write to finish and commit
+      // Merge now — this.settings reflects the latest committed state.
+      // Shallow merge per top-level key — keeps contentCache fully replaced if
+      // the caller passes one, while leaving room for future top-level keys.
+      next = settingsMod.mergeWithDefaults({
+        ...this.settings,
+        ...partial,
+      });
+      await this.persistSettings(next);
+    } finally {
+      resolveSlot(); // unblock the next queued write regardless of outcome
+    }
     // Notify listeners with the persisted value so they don't react to
     // a stale in-flight patch.
     for (const fn of this.settingsListeners) {
@@ -1544,12 +1613,21 @@ export class GraphnosisHost {
    *  App to know when to invalidate its cached node/edge view. */
   private lastMutationAt: Map<GraphId, number> = new Map();
 
+  /**
+   * Expose the relink debounce as a public method so batch callers (e.g.
+   * `ingestGraphnosisDocs`) can pass `skipAutoRelink: true` to suppress the
+   * per-document relink and call `triggerRelink()` once at the end instead.
+   */
+  triggerRelink(graphId: GraphId): void {
+    this.kickoffRelink(graphId);
+  }
+
   async ingest(
     graphId: GraphId,
     kind: SourceRecord['kind'],
     ref: string,
     input: AppendDocumentInput,
-    opts?: { addedBy?: string; triggeredBy?: string },
+    opts?: { addedBy?: string; triggeredBy?: string; skipAutoRelink?: boolean },
   ): Promise<SourceRecord> {
     const g = this.must(graphId);
     const sourceId = makeSourceId(kind, ref);
@@ -1660,7 +1738,14 @@ export class GraphnosisHost {
     // that already appear in older nodes — without this pass the SDK
     // leaves it orphan. Coalesced + throttled inside kickoffRelink so
     // back-to-back ingests don't spawn parallel passes.
-    this.kickoffRelink(graphId);
+    //
+    // Batch callers (e.g. ingestGraphnosisDocs) pass skipAutoRelink: true
+    // to suppress the per-doc relink and call triggerRelink() once at the
+    // end — this prevents O(N) relink passes when embedding is slower than
+    // the RELINK_DEBOUNCE_MS window.
+    if (!opts?.skipAutoRelink) {
+      this.kickoffRelink(graphId);
+    }
     return record;
   }
 
@@ -1889,6 +1974,11 @@ export class GraphnosisHost {
     // chunks replace them. forgetSource also wipes the cache blob — but we
     // already loaded it into memory above, so the order is safe.
     await this.forgetSource(graphId, sourceId, { triggeredBy: 'user:reingest' });
+    // Purge any orphan nodes left over from a previous partial reingest.
+    // Without this, a crash or IPC timeout mid-ingest can leave active nodes
+    // in the SDK graph with no source record — those orphan hashes then block
+    // the full chunk count from being restored.
+    await this.purgeOrphanNodes(graphId);
     // Reconstruct AppendDocumentInput from the cache header + bytes.
     const docInput: AppendDocumentInput = {
       kind: blob.header.docKind,
@@ -1913,7 +2003,7 @@ export class GraphnosisHost {
     graphId: GraphId,
     onProgress?: (event: { graphId: string; sourceId: string; ref: string; index: number; total: number }) => void,
     signal?: AbortSignal,
-  ): Promise<{ reingested: number; cancelled: boolean; skipped: Array<{ sourceId: string; reason: string }>; failed: Array<{ sourceId: string; error: string }> }> {
+  ): Promise<{ reingested: number; cancelled: boolean; skipped: Array<{ sourceId: string; reason: string }>; failed: Array<{ sourceId: string; ref: string; error: string }> }> {
     const g = this.must(graphId);
     // Snapshot the source list NOW — reingest mutates sourceIndex (forget +
     // re-add with the same sourceId), so iterating live would be brittle.
@@ -1921,7 +2011,7 @@ export class GraphnosisHost {
     let reingested = 0;
     let cancelled = false;
     const skipped: Array<{ sourceId: string; reason: string }> = [];
-    const failed: Array<{ sourceId: string; error: string }> = [];
+    const failed: Array<{ sourceId: string; ref: string; error: string }> = [];
     for (let i = 0; i < sourcesToProcess.length; i++) {
       if (signal?.aborted) { cancelled = true; break; }
       const src = sourcesToProcess[i]!;
@@ -1934,7 +2024,7 @@ export class GraphnosisHost {
           reingested += 1;
         }
       } catch (e) {
-        failed.push({ sourceId: src.sourceId, error: (e as Error).message });
+        failed.push({ sourceId: src.sourceId, ref: src.ref, error: (e as Error).message });
         console.error(`[host] reingestAllSources(${redactPair(graphId, src.sourceId)}) failed: ${(e as Error).message}`);
       }
     }
@@ -1947,13 +2037,13 @@ export class GraphnosisHost {
   async reingestAllGraphs(
     onProgress?: (event: { graphId: string; graphIndex: number; graphsTotal: number; sourceId: string; ref: string; index: number; total: number }) => void,
     signal?: AbortSignal,
-  ): Promise<{ reingested: number; cancelled: boolean; skipped: number; failed: number; perGraph: Array<{ graphId: string; reingested: number; skipped: Array<{ sourceId: string; reason: string }>; failed: Array<{ sourceId: string; error: string }> }> }> {
+  ): Promise<{ reingested: number; cancelled: boolean; skipped: number; failed: number; perGraph: Array<{ graphId: string; reingested: number; skipped: Array<{ sourceId: string; reason: string }>; failed: Array<{ sourceId: string; ref: string; error: string }> }> }> {
     const graphIds = this.listGraphs();
     let totalReingested = 0;
     let totalSkipped = 0;
     let totalFailed = 0;
     let cancelled = false;
-    const perGraph: Array<{ graphId: string; reingested: number; skipped: Array<{ sourceId: string; reason: string }>; failed: Array<{ sourceId: string; error: string }> }> = [];
+    const perGraph: Array<{ graphId: string; reingested: number; skipped: Array<{ sourceId: string; reason: string }>; failed: Array<{ sourceId: string; ref: string; error: string }> }> = [];
     for (let gi = 0; gi < graphIds.length; gi++) {
       if (signal?.aborted) { cancelled = true; break; }
       const graphId = graphIds[gi]!;
@@ -2054,6 +2144,45 @@ export class GraphnosisHost {
   }
 
   /**
+   * Soft-delete any "orphan" nodes in an engram — active nodes (confidence > 0.1)
+   * that are not referenced by any source record in the source index.
+   *
+   * Orphans arise when a previous ingest or reingest call created nodes in the
+   * SDK graph and saved them to disk, but a crash or IPC timeout prevented the
+   * matching source record from being persisted. Those active nodes then block
+   * future re-ingest of the same content because `addDocumentsToGraph` sees
+   * their content hashes in `existingHashes` and skips the duplicate chunks.
+   *
+   * Called automatically before every reingest so the full chunk count is
+   * always restored even after a prior partial failure.
+   */
+  async purgeOrphanNodes(graphId: GraphId): Promise<string[]> {
+    const g = this.must(graphId);
+    // Build the set of all node IDs that belong to a known source record.
+    const trackedIds = new Set<string>();
+    for (const src of g.sourceIndex.list()) {
+      for (const nodeId of src.nodeIds ?? []) {
+        trackedIds.add(nodeId);
+      }
+    }
+    // Find active nodes not tracked by any source.
+    const allNodes = this.opts.adapter.inspectNodes(g.handle);
+    const orphans = allNodes.filter((n) => n.confidence > 0.1 && !trackedIds.has(n.id));
+    if (orphans.length === 0) return [];
+    console.log(`[host] purgeOrphanNodes(${graphId}): soft-deleting ${orphans.length} orphan node(s)`);
+    for (const node of orphans) {
+      await this.opts.adapter.applyCorrection(g.handle, {
+        kind: 'delete',
+        nodeId: node.id,
+        reason: 'purge orphan node — no source record (previous ingest crashed mid-save)',
+      });
+    }
+    g.dirty = true;
+    await this.save(graphId);
+    return orphans.map((n) => n.id);
+  }
+
+  /**
    * Move a source (and all its nodes) from one engram to another.
    *
    * For file-backed sources the original file is re-read from disk.
@@ -2111,7 +2240,9 @@ export class GraphnosisHost {
       newRecord = await this.ingest(toGraphId, rec.kind, rec.ref, input, { triggeredBy: 'user:ingest' });
     }
 
-    this.kickoffRelink(toGraphId);
+    // NOTE: kickoffRelink(toGraphId) is already called inside this.ingest() above.
+    // Calling it again here would double-fire the debounce, causing two relink
+    // passes instead of one when a file source is moved (which calls ingest directly).
     return { newRecord, forgottenNodeIds };
   }
 
@@ -2653,6 +2784,17 @@ export class GraphnosisHost {
    */
   zeroResultHint(): string {
     const llmEnabled = this.settings.ai.llmEnabled === true;
+    // Always include the dig_deeper escalation suggestion — it's the single
+    // highest-leverage retry path and most "zero results" cases the user
+    // reports are actually recoverable through it.
+    const digDeeperLine =
+      '\n\n🔁 BEFORE telling the user "nothing found": retry the same query with\n' +
+      '   `dig_deeper`. It adds source-filename expansion, cross-engram entity\n' +
+      '   hop, and GNN graph expansion on top of `recall`, and routinely\n' +
+      '   surfaces memory that bare recall misses (especially document-\n' +
+      '   targeted queries: "what does the X paper say…" / "anything from the\n' +
+      '   Y thesis…"). Only after `dig_deeper` also comes up empty should\n' +
+      '   you say the memory isn\'t there.';
     if (llmEnabled) {
       return (
         'ℹ️ No memories matched this query, even with local LLM reranking.\n' +
@@ -2660,7 +2802,7 @@ export class GraphnosisHost {
         '   have access to. Try `stats` to see what engrams exist, or rephrase\n' +
         '   the query — different synonyms, the proper nouns the user mentioned\n' +
         '   verbatim, or the same query translated into the language the user\n' +
-        '   typically writes notes in.'
+        '   typically writes notes in.' + digDeeperLine
       );
     }
     return (
@@ -2677,7 +2819,8 @@ export class GraphnosisHost {
       '💡 For higher-quality recall across phrasings and languages, the user\n' +
       '   can enable the local LLM in Graphnosis → Settings → AI → Local LLM.\n' +
       '   This adds a semantic reranking layer that bridges synonyms,\n' +
-      '   languages, and paraphrases — without sending any data off-device.'
+      '   languages, and paraphrases — without sending any data off-device.' +
+      digDeeperLine
     );
   }
 

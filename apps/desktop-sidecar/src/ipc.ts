@@ -7,6 +7,7 @@ import { z } from 'zod';
 import type { GraphnosisHost } from './host.js';
 import { ingestFile, ingestWeb, ingestClip } from './ingest.js';
 import { ingestGraphnosisDocs } from './docs-ingest.js';
+import { BUNDLED_DOCS } from './docs-content.generated.js';
 import type { BroadcastRawFn } from './events.js';
 import { mcpRegistry } from './mcp-registry.js';
 import { applyCorrection as runApplyCorrection } from './correction.js';
@@ -762,15 +763,29 @@ async function dispatch(deps: IpcDeps, method: string, params: unknown): Promise
         throw new Error('Local LLM is not enabled or not reachable. Configure in Settings → AI.');
       }
       const system =
-        'You are a precise research assistant working only with the snippets the user provides. ' +
-        'Write a SINGLE paragraph (<= 90 words) that answers the user\'s question grounded ONLY in those snippets. ' +
-        'After each claim, cite the snippet number in square brackets like [1], [2]. ' +
-        'If the snippets do not answer the question, say so plainly — do not invent facts. ' +
-        'No markdown headings, no lists, no preamble — just the paragraph.';
+        'You are a precise research assistant. The snippets below are raw excerpts from the user\'s ' +
+        'personal memory — they may include OCR text, partial sentences, or metadata noise. ' +
+        'Apply these rules strictly and in this order:\n\n' +
+        '1. LANGUAGE (MANDATORY — highest priority): The search query language OVERRIDES everything else. ' +
+        'Look at the search query word(s) only — ignore the language of the snippets entirely. ' +
+        'If the query is English, respond in English even if every snippet is in French, Spanish, Romanian, etc. ' +
+        'Example: query "sensors" → respond in English. Query "capteurs" → respond in French. ' +
+        'If the query is one ambiguous word used in multiple languages, default to English.\n\n' +
+        '2. LENGTH (MANDATORY): Your response MUST NOT exceed 60 words total. Count carefully. ' +
+        'Cut mercilessly — one tight sentence per main point.\n\n' +
+        '3. CITATIONS: Every claim MUST be followed immediately by the snippet number(s) in square brackets, ' +
+        'e.g. [1] or [3, 7]. This is mandatory — never omit citations.\n\n' +
+        '4. RELEVANCE CHECK:\n' +
+        '   • If snippets clearly address the query: write ≤ 60 words grounded ONLY in the snippets.\n' +
+        '   • If snippets are mostly noise or off-topic: say so in one sentence — do not fabricate content.\n' +
+        '   • If snippets partially answer: state what you found and what is missing.\n\n' +
+        '5. NEVER invent facts, never use outside knowledge, never speculate.\n\n' +
+        'FORMAT: One plain paragraph only. No headings, no bullet lists, no bold, no italics, no markdown, ' +
+        'no URLs, no links. Plain prose with citation numbers [N] only.';
       const numbered = args.hits
         .map((h, i) => `[${i + 1}] ${h.text}${h.sourceFile ? ` (source: ${h.sourceFile})` : ''}`)
         .join('\n\n');
-      const user = `Question: ${args.query}\n\nSnippets:\n${numbered}\n\nAnswer:`;
+      const user = `User searched for: "${args.query}"\n\nExcerpts from their personal memory:\n${numbered}\n\nAnswer:`;
       const synthesis = await llm.complete({ system, user });
       return {
         answer: synthesis.trim(),
@@ -995,6 +1010,11 @@ async function dispatch(deps: IpcDeps, method: string, params: unknown): Promise
       // calls, so the push-event channel emits two mutation ticks; the
       // App's pollGraphMutations will pick up the second one and refresh.
       await deps.host.forgetSource(graphId, sourceId, { triggeredBy: 'user:ingest' });
+      // Purge orphan active nodes left by any previous failed reingest.
+      // A crash or IPC timeout mid-ingest can leave SDK-graph nodes with no
+      // source record; their hashes block the full chunk count from being
+      // restored on the next attempt.
+      await deps.host.purgeOrphanNodes(graphId);
       const ref = source.ref;
       const record = await ingestFile(deps.host, graphId, ref, {
         wrapIngest: (fn) => withEmbedding(fn),
@@ -1015,9 +1035,12 @@ async function dispatch(deps: IpcDeps, method: string, params: unknown): Promise
       if (forgottenNodeIds.length > 0) {
         deps.brainEngine?.purgeDeletedNodes(forgottenNodeIds);
       }
-      // Re-link the re-ingested nodes across engrams immediately — don't wait
-      // for the background cross-engram timer (could be hours away).
-      deps.brainEngine?.runCrossEngramNow();
+      // NOTE: we intentionally do NOT call runCrossEngramNow() here.
+      // Each move already triggers kickoffRelink() inside host.ingest(), and
+      // firing a full cross-engram pass per move on large engrams saturates the
+      // event loop when the user moves several sources in quick succession.
+      // The background cross-engram timer (brain-engine) picks it up after the
+      // moves settle — a short delay is acceptable for relinking.
       return newRecord;
     }
     case 'corrections.list': {
@@ -1196,7 +1219,12 @@ async function dispatch(deps: IpcDeps, method: string, params: unknown): Promise
           reconnectMs: z.number().int().positive(),
         }).optional(),
         ui: z.object({
-          inspectorDetail: z.enum(['simple', 'detailed']),
+          // All fields optional so callers can do partial updates (e.g.
+          // the status-bar theme toggle posts just `{ ui: { theme } }`
+          // without re-asserting inspectorDetail). The host-side
+          // normalizeSettings backfills defaults for anything missing.
+          inspectorDetail: z.enum(['simple', 'detailed']).optional(),
+          theme: z.enum(['auto', 'light', 'dark']).optional(),
         }).optional(),
         ai: z.object({
           useAsDefaultMemory: z.boolean(),
@@ -1209,6 +1237,7 @@ async function dispatch(deps: IpcDeps, method: string, params: unknown): Promise
           reingestQuietMs: z.number().int().positive().optional(),
           chunkSize: z.enum(['fine', 'balanced', 'coarse']).optional(),
           embedBatch: z.enum(['small', 'medium', 'large', 'auto']).optional(),
+          embedWorkers: z.number().int().min(1).max(4).optional(),
           sessionTokenCap: z.number().int().min(1000).max(200_000).optional(),
           sessionNodeCap: z.number().int().min(10).max(5000).optional(),
           // Consent interval settings — writable from the UI, blocked from MCP.
@@ -1244,7 +1273,17 @@ async function dispatch(deps: IpcDeps, method: string, params: unknown): Promise
       if (parsed.contentCache) patch.contentCache = parsed.contentCache;
       if (parsed.forget) patch.forget = parsed.forget;
       if (parsed.mcpRelay) patch.mcpRelay = parsed.mcpRelay;
-      if (parsed.ui) patch.ui = parsed.ui;
+      if (parsed.ui) {
+        // UiSettings on the host requires all fields; the wire payload
+        // accepts partials so the theme toggle can post just `{ ui: { theme } }`
+        // without touching inspectorDetail. Backfill missing fields from
+        // current settings so partial updates don't silently revert anything.
+        const currentUi = deps.host.getSettings().ui;
+        patch.ui = {
+          inspectorDetail: parsed.ui.inspectorDetail ?? currentUi.inspectorDetail,
+          theme: parsed.ui.theme ?? currentUi.theme,
+        };
+      }
       if (parsed.ai) {
         // AiSettings requires all fields, but the wire payload allows
         // older clients to omit newer ones. Fill from current settings so
@@ -1257,6 +1296,7 @@ async function dispatch(deps: IpcDeps, method: string, params: unknown): Promise
           reingestQuietMs: parsed.ai.reingestQuietMs ?? currentAi.reingestQuietMs,
           chunkSize: parsed.ai.chunkSize ?? currentAi.chunkSize,
           embedBatch: parsed.ai.embedBatch ?? currentAi.embedBatch,
+          ...(parsed.ai.embedWorkers !== undefined ? { embedWorkers: parsed.ai.embedWorkers } : currentAi.embedWorkers !== undefined ? { embedWorkers: currentAi.embedWorkers } : {}),
           // The local-LLM master switch is owned by the dedicated
           // `llm:setEnabled` IPC — preserve it across a generic settings update.
           llmEnabled: currentAi.llmEnabled,
@@ -2038,9 +2078,15 @@ async function dispatch(deps: IpcDeps, method: string, params: unknown): Promise
       const docsState = settings.docsEngram;
       let decision: 'offer' | 'reingest' | 'none';
       if (exists) {
-        // Engram is present. Re-ingest only if it was last ingested under a
-        // different app version — the docs site may have changed since.
-        decision = docsState?.ingestedAppVersion !== appVersion ? 'reingest' : 'none';
+        // Engram is present. Re-ingest if:
+        //  (a) app version changed — docs content may have changed, OR
+        //  (b) source count is below the number of bundled doc pages — this
+        //      catches partial losses caused by interrupted reingest operations
+        //      (forgetSource succeeds, re-ingest fails → source permanently gone).
+        const sourceCount = deps.host.listSources(DOCS_ENGRAM_ID).length;
+        const versionMismatch = docsState?.ingestedAppVersion !== appVersion;
+        const sourcesIncomplete = sourceCount < BUNDLED_DOCS.length;
+        decision = (versionMismatch || sourcesIncomplete) ? 'reingest' : 'none';
       } else if (docsState?.declined === true) {
         // User explicitly clicked "Not now" — respect that, never re-offer.
         decision = 'none';
@@ -2059,28 +2105,24 @@ async function dispatch(deps: IpcDeps, method: string, params: unknown): Promise
       const { appVersion } = z.object({ appVersion: z.string() }).parse(params ?? {});
       const docsExists = deps.host.listGraphs().includes(DOCS_ENGRAM_ID);
       if (docsExists) {
-        // Engram already exists (re-ingest after app update). Purge all
-        // existing sources first so we replace, not duplicate. Each page
-        // uses a stable `graphnosis-docs:<slug>` sourceRef — removing them
-        // before re-ingesting keeps the engram clean regardless of whether
-        // pages were added, removed, or renamed between releases.
-        const existingSources = deps.host.listSources(DOCS_ENGRAM_ID);
-        for (const src of existingSources) {
-          await deps.host.forgetSource(DOCS_ENGRAM_ID, src.sourceId, {
-            triggeredBy: 'user:ingest',
-          });
-        }
-      } else {
-        // Create the docs engram — mirror the create-then-set-metadata
-        // pattern from graphs.createWithTemplate so it shows up in the
-        // picker with a friendly name.
-        await deps.host.createGraph(DOCS_ENGRAM_ID);
-        await deps.host.setGraphMetadata(DOCS_ENGRAM_ID, {
-          template: 'reading',
-          displayName: 'Graphnosis Docs',
-          createdAt: Date.now(),
-        });
+        // Wipe the entire docs engram and recreate it from scratch. A simple
+        // forgetSource loop is insufficient: previous partial ingests (failed
+        // mid-way due to IPC timeouts or crashes) can leave "orphan" active
+        // nodes in the graph whose source records were never saved. Those
+        // nodes stay confidence=0.9 across restarts, their content hashes
+        // land in the dedup set, and every subsequent ingest of the same
+        // content produces 0 new nodes → host.ingest throws → only the
+        // subset that didn't orphan ever succeeds. Deleting + recreating the
+        // engram guarantees a completely clean slate with no orphan nodes.
+        await deps.host.deleteGraph(DOCS_ENGRAM_ID);
       }
+      // (Re-)create the docs engram with the same stable metadata.
+      await deps.host.createGraph(DOCS_ENGRAM_ID);
+      await deps.host.setGraphMetadata(DOCS_ENGRAM_ID, {
+        template: 'reading',
+        displayName: 'Graphnosis Docs',
+        createdAt: Date.now(),
+      });
       const { ingested, failed } = await withEmbedding(() =>
         ingestGraphnosisDocs(deps.host, DOCS_ENGRAM_ID),
       );
