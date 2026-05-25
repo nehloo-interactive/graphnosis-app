@@ -142,6 +142,7 @@ interface AppSettings {
   };
   ui: {
     inspectorDetail: InspectorDetail;
+    theme?: UiTheme;
   };
   ai: {
     /** When ON, the sidecar's MCP `initialize` response includes a high-
@@ -153,6 +154,7 @@ interface AppSettings {
     reingestQuietMs?: number;
     chunkSize?: 'fine' | 'balanced' | 'coarse';
     embedBatch?: 'small' | 'medium' | 'large' | 'auto';
+    embedWorkers?: number;
     /** Opt-in session caps. All default false; off = no cap. */
     sessionTokenCap?: number;
     sessionTokenCapEnabled?: boolean;
@@ -428,6 +430,115 @@ declare const __APP_VERSION__: string;
 
 const $ = <T extends HTMLElement>(id: string): T => document.getElementById(id) as T;
 
+// ── Theme (light / dark / auto) ──────────────────────────────────────────
+//
+// The CSS exposes three theme states via `data-theme` on <html>:
+//   - absent       → "auto": follows OS prefers-color-scheme
+//   - "light"      → force light
+//   - "dark"       → force dark
+//
+// applyTheme() writes the attribute (and clears it for auto), updates the
+// status-bar toggle's icon state, and syncs the Settings → Appearance radio
+// group. wireThemeToggle() attaches click handlers (cycle on bar button,
+// onchange on radios) and persists every change via update_settings.
+//
+// We intentionally do NOT await the persist call — the visual change is
+// instant; persistence is best-effort. If the sidecar is mid-restart the
+// user's choice is recovered from settings on next boot anyway.
+export type UiTheme = 'auto' | 'light' | 'dark';
+
+const THEME_STORAGE_KEY = 'graphnosis:theme';
+
+/** Read theme from localStorage. Defaults to 'dark' on first install. */
+function loadStoredTheme(): UiTheme {
+  const stored = localStorage.getItem(THEME_STORAGE_KEY);
+  if (stored === 'auto' || stored === 'light' || stored === 'dark') return stored;
+  return 'dark'; // first-install default
+}
+
+let _currentTheme: UiTheme = loadStoredTheme();
+
+// Apply immediately on script load so the lock screen already uses the
+// right theme — no flicker waiting for unlock + get_settings round-trip.
+(function bootTheme() {
+  const root = document.documentElement;
+  if (_currentTheme === 'auto') {
+    root.removeAttribute('data-theme');
+  } else {
+    root.setAttribute('data-theme', _currentTheme);
+  }
+  // Also prime the toggle icon so it never flashes as a blank white square
+  // before applyTheme() is called during full init.
+  const toggle = document.getElementById('btn-theme-toggle');
+  if (toggle) toggle.setAttribute('data-theme-state', _currentTheme);
+})();
+
+function applyTheme(theme: UiTheme): void {
+  _currentTheme = theme;
+  const root = document.documentElement;
+  if (theme === 'auto') {
+    root.removeAttribute('data-theme');
+  } else {
+    root.setAttribute('data-theme', theme);
+  }
+  // Sync the status-bar toggle (icon state)
+  const toggle = document.getElementById('btn-theme-toggle');
+  if (toggle) {
+    toggle.setAttribute('data-theme-state', theme);
+    const label =
+      theme === 'auto'  ? 'Theme: auto (click to switch to Light)' :
+      theme === 'light' ? 'Theme: light (click to switch to Dark)' :
+                          'Theme: dark (click to switch to Auto)';
+    toggle.setAttribute('title', label);
+  }
+  // Sync the Settings → Appearance radio group
+  const radios = document.querySelectorAll<HTMLInputElement>('input[name="ui-theme"]');
+  radios.forEach((r) => { r.checked = r.value === theme; });
+}
+
+async function persistTheme(theme: UiTheme): Promise<void> {
+  // localStorage is the primary store — survives before/after unlock,
+  // applies immediately on next load without waiting for IPC.
+  localStorage.setItem(THEME_STORAGE_KEY, theme);
+  try {
+    // Sidecar settings as secondary store (keeps them in sync for completeness).
+    await invoke('update_settings', { settings: { ui: { theme } } });
+  } catch {
+    // Non-fatal — theme is already applied visually and saved locally.
+  }
+}
+
+function wireThemeToggle(): void {
+  const toggle = document.getElementById('btn-theme-toggle');
+  if (toggle && !toggle.dataset.wired) {
+    toggle.dataset.wired = '1';
+    toggle.addEventListener('click', () => {
+      // Cycle: auto → light → dark → auto
+      const next: UiTheme =
+        _currentTheme === 'auto'  ? 'light' :
+        _currentTheme === 'light' ? 'dark'  : 'auto';
+      applyTheme(next);
+      void persistTheme(next);
+    });
+  }
+  const radios = document.querySelectorAll<HTMLInputElement>('input[name="ui-theme"]');
+  radios.forEach((r) => {
+    // Stamp the current selection on every call (not just first-wire) so the
+    // picker shows the right option when the Settings panel is opened.
+    r.checked = r.value === _currentTheme;
+    if (r.dataset.wired) return;
+    r.dataset.wired = '1';
+    r.addEventListener('change', () => {
+      if (!r.checked) return;
+      const v = r.value as UiTheme;
+      if (v === 'auto' || v === 'light' || v === 'dark') {
+        applyTheme(v);
+        void persistTheme(v);
+      }
+    });
+  });
+}
+
 const els = {
   // Two error banners, one per view. Kept separate (rather than a single
   // shared element) because the unlock view and the app view live in
@@ -464,6 +575,8 @@ const els = {
   btnRecoveryClose: $<HTMLButtonElement>('btn-recovery-close'),
   btnRecoveryApply: $<HTMLButtonElement>('btn-recovery-apply'),
   btnSettings: $<HTMLButtonElement>('btn-settings'),
+  // Theme toggle (status-bar bottom-left, three-state cycle button)
+  btnThemeToggle: document.getElementById('btn-theme-toggle') as HTMLButtonElement | null,
   relayInitial: $<HTMLInputElement>('relay-initial'),
   relayReconnect: $<HTMLInputElement>('relay-reconnect'),
   // (Nodes rail pane removed — its els refs went with it.)
@@ -564,6 +677,8 @@ const els = {
   aiReingestQuietMs: $<HTMLSelectElement>('ai-reingest-quiet-ms'),
   aiChunkSize: $<HTMLSelectElement>('ai-chunk-size'),
   aiEmbedBatch: $<HTMLSelectElement>('ai-embed-batch'),
+  aiEmbedWorkers: $<HTMLInputElement>('ai-embed-workers'),
+  aiEmbedWorkersVal: $<HTMLSpanElement>('ai-embed-workers-val'),
   reingestDelayRow: $<HTMLDivElement>('reingest-delay-row'),
   btnSettingsCancel: $<HTMLButtonElement>('btn-settings-cancel'),
   btnSettingsSave: $<HTMLButtonElement>('btn-settings-save'),
@@ -707,6 +822,10 @@ let mcpPollTimer: ReturnType<typeof setInterval> | null = null;
 let lastInspectorStats: StatsSummary | null = null;
 let sourcesFilterTerm = '';
 let sourcesEngramFilter = ''; // graphId of the selected engram, '' = all
+// Serializes source-move IPC calls — concurrent moves on large engrams
+// trigger concurrent relink passes that saturate the sidecar event loop.
+// Each move is chained onto this promise; null means no move is in flight.
+let moveSourceQueue: Promise<void> | null = null;
 
 function showError(msg: string | null): void {
   // Target whichever banner sits inside the currently-visible view. When
@@ -723,7 +842,20 @@ function showError(msg: string | null): void {
     active.classList.add('hidden');
     return;
   }
-  active.textContent = msg;
+  // Build the banner with a dismiss button so the user can clear the
+  // error without having to lock/unlock or navigate away.
+  active.textContent = '';
+  const msgSpan = document.createElement('span');
+  msgSpan.className = 'error-msg-text';
+  msgSpan.textContent = msg;
+  const dismissBtn = document.createElement('button');
+  dismissBtn.className = 'error-dismiss-btn';
+  dismissBtn.title = 'Dismiss';
+  dismissBtn.setAttribute('aria-label', 'Dismiss error');
+  dismissBtn.textContent = '×';
+  dismissBtn.addEventListener('click', () => showError(null));
+  active.appendChild(msgSpan);
+  active.appendChild(dismissBtn);
   active.classList.remove('hidden');
 }
 
@@ -1099,6 +1231,16 @@ function render(status: StatusSnapshot): void {
         try {
           const s = (await invoke('get_settings')) as AppSettings;
           setClipboardCaptureEnabled(s.brain?.clipboardCapture?.enabled ?? false);
+          // Theme: localStorage is authoritative (applied at boot, before
+          // unlock). On unlock, reconcile with sidecar — if sidecar has a
+          // different value it wins (e.g. user changed theme on another
+          // session and the setting was persisted there).
+          const sidecartheme = s.ui?.theme as UiTheme | undefined;
+          if (sidecartheme && sidecartheme !== _currentTheme) {
+            localStorage.setItem(THEME_STORAGE_KEY, sidecartheme);
+            applyTheme(sidecartheme);
+          }
+          wireThemeToggle();
         } catch { /* non-fatal */ }
       })();
       activateMode(currentMode);
@@ -1529,6 +1671,11 @@ const TOOL_INFO: Record<string, { determinism: string; body: string; examples: s
     body: 'The same search as recall, framed as "remind me about…" — past commitments, decisions, names, plans. Identical, reproducible results.',
     examples: ['Remind me about my meeting with Sarah last month.', 'Remind me what I decided about the API redesign.', 'Amintește-mi de discuția cu Andrei.'],
   },
+  dig_deeper: {
+    determinism: 'Deterministic',
+    body: 'The "look harder" escalation — use when recall returned thin or irrelevant results, or when the question references a document by name. Internally runs multiple retrieval strategies: content recall, source-filename expansion, and cross-engram entity hops. Returns more nodes with a full provenance breakdown. If results include a "💡 source hint" with sourceIds, call recall_source on those IDs before answering.',
+    examples: ['I searched for that PDF but recall only surfaced fragments — dig deeper.', 'dig_deeper for everything about the migration plan across all engrams.', 'The recall results for "sensors" looked off — dig deeper for better matches.'],
+  },
   remember: {
     determinism: 'Deterministic',
     body: 'Saves a note into your memory so it persists across sessions and across every AI client you connect.',
@@ -1789,6 +1936,7 @@ function activateMode(mode: Mode): void {
       sourcesEngramFilter = atlasActiveGraph;
       els.sourcesEngramSelect.value = atlasActiveGraph;
     }
+    updateReingestAllLabel();
     void refreshStats();
   }
   if (mode === 'atlas') {
@@ -1813,6 +1961,8 @@ function activateMode(mode: Mode): void {
     // panels in sync with whatever happened elsewhere (recovery from
     // op-log, new ingest, startup-time quarantine, etc.).
     renderSettingsTab();
+    // Always scroll to top so the user lands at the beginning of the page.
+    document.querySelector<HTMLElement>('.app-canvas')?.scrollTo({ top: 0 });
   }
   if (mode === 'mcp-tools') {
     // Lazy-render the toolset once, then leave it alone — content is
@@ -1824,6 +1974,9 @@ function activateMode(mode: Mode): void {
       host.innerHTML = mcpToolsOnboardingHtml();
       wireMcpToolsOnboarding(host);
     }
+    // Scroll to top on each entry — the tool list is long and a returning
+    // user should always start from the top.
+    document.querySelector<HTMLElement>('.app-canvas')?.scrollTo({ top: 0 });
   }
 }
 
@@ -2207,7 +2360,11 @@ async function refreshStats(): Promise<void> {
         // SDK can re-read the disk path. URLs would need a fresh
         // network fetch (separate concern), clips have no canonical
         // file, ai-conversation has no source-of-truth file at all.
-        const reingestBtn = s.kind === 'file'
+        // Reingest is only meaningful for real filesystem paths. Bundled
+        // sources (e.g. graphnosis-docs:* URIs) were historically stored with
+        // kind='file' but have no disk path to re-read — guard them out here
+        // so the button doesn't appear and fail with ENOENT.
+        const reingestBtn = s.kind === 'file' && s.ref.startsWith('/')
           ? `<button class="btn-reingest" data-graph-id="${escape(s.graphId)}" data-source-id="${escape(s.sourceId)}" data-ref="${escape(s.ref)}" title="Re-read this file from disk and replace the existing nodes">Reingest</button>`
           : '';
         const finderBtn = s.kind === 'file'
@@ -2383,7 +2540,7 @@ async function refreshStats(): Promise<void> {
           widget.innerHTML =
             `<span class="source-row-reingest-label">Re-read file and replace nodes?</span>` +
             `<button class="source-row-reingest-cancel">Cancel</button>` +
-            `<button class="source-row-reingest-go">Reingest</button>`;
+            `<button class="source-row-reingest-go">Confirm</button>`;
 
           const cancelBtn = widget.querySelector<HTMLButtonElement>('.source-row-reingest-cancel')!;
           const goBtn     = widget.querySelector<HTMLButtonElement>('.source-row-reingest-go')!;
@@ -2508,26 +2665,36 @@ async function refreshStats(): Promise<void> {
             picker.remove();
             btn.disabled = true;
             btn.style.display = '';
-            btn.textContent = 'Moving…';
-            try {
-              await invoke('move_source', { fromGraphId, sourceId, toGraphId });
-              // Gray out the row in place — don't re-render the whole list.
-              // The row stays visible so the user can see what moved and where.
-              const nameEl = row.querySelector<HTMLElement>('.source-name');
-              if (nameEl) {
-                nameEl.style.opacity = '0.4';
-                nameEl.title = `Moved to ${toName}`;
+            // Chain onto the global move queue so rapid clicks don't fire
+            // concurrent moves — each move triggers a heavy relink pass and
+            // concurrent passes on large engrams can saturate the sidecar.
+            btn.textContent = moveSourceQueue ? 'Queued…' : 'Moving…';
+            moveSourceQueue = (moveSourceQueue ?? Promise.resolve()).then(async () => {
+              btn.textContent = 'Moving…';
+              try {
+                await invoke('move_source', { fromGraphId, sourceId, toGraphId });
+                // Gray out the row name — makes it visually distinct from
+                // sources that are still in this engram.
+                const nameEl = row.querySelector<HTMLElement>('.source-name');
+                if (nameEl) {
+                  nameEl.style.opacity = '0.4';
+                  nameEl.title = `Moved to ${toName}`;
+                }
+                // Replace all action buttons with a single confirmation label.
+                row.querySelectorAll<HTMLElement>(
+                  '.btn-show-finder, .btn-reingest, .btn-move-source, .btn-forget, .source-meta',
+                ).forEach((b) => b.remove());
+                btn.remove();
+                const confirmLabel = document.createElement('span');
+                confirmLabel.className = 'source-moved-label';
+                confirmLabel.textContent = `Moved to "${toName}"`;
+                row.appendChild(confirmLabel);
+              } catch (e) {
+                showError(`Move to "${toName}" failed: ${e}`);
+                btn.disabled = false;
+                btn.textContent = 'Move to…';
               }
-              // Remove all action buttons — row is now read-only.
-              row.querySelectorAll<HTMLElement>(
-                '.btn-show-finder, .btn-reingest, .btn-move-source, .btn-forget',
-              ).forEach((b) => b.remove());
-              btn.remove();
-            } catch (e) {
-              showError(`Move to "${toName}" failed: ${e}`);
-              btn.disabled = false;
-              btn.textContent = 'Move to…';
-            }
+            });
           });
         });
       });
@@ -2585,8 +2752,103 @@ els.sourcesFilter.addEventListener('input', () => {
 
 els.sourcesEngramSelect.addEventListener('change', () => {
   sourcesEngramFilter = els.sourcesEngramSelect.value;
-  applySourcesFilter();
+  // If the selected engram's group doesn't exist in the DOM yet (e.g. the
+  // engram was never the active one during this session so inspector_stats
+  // hasn't rendered its source rows), applySourcesFilter() would show nothing.
+  // Instead, trigger a full stats refresh which builds the missing DOM groups,
+  // then let the normal filter run once the render is done.
+  const groupExists = !sourcesEngramFilter
+    || Array.from(els.sourcesList.querySelectorAll<HTMLElement>('.sources-engram-group'))
+        .some((g) => g.dataset['graphId'] === sourcesEngramFilter);
+  if (groupExists) {
+    applySourcesFilter();
+  } else {
+    void refreshStats().then(() => applySourcesFilter());
+  }
 });
+
+// ── Reingest (Sources view header) ───────────────────────────────────────────
+// Always offers two scoped options:
+//   1. Re-chunk the engram currently selected in the Sources dropdown
+//   2. Re-chunk every engram in this cortex
+// Each option is its own confirm button — no second click needed.
+
+/** Keep the "Reingest…" button label in sync with the Sources dropdown. */
+function updateReingestAllLabel(): void {
+  const btn = document.getElementById('sources-reingest-all-btn') as HTMLButtonElement | null;
+  if (!btn) return;
+  // Label is always "Reingest…" — the two-option panel handles scoping.
+  btn.textContent = 'Reingest…';
+}
+
+{
+  const btn = document.getElementById('sources-reingest-all-btn') as HTMLButtonElement | null;
+
+  // Keep label correct when dropdown changes (currently always "Reingest…",
+  // but the hook stays so future label changes can be added here).
+  els.sourcesEngramSelect.addEventListener('change', updateReingestAllLabel);
+
+  btn?.addEventListener('click', () => {
+    // If already in confirmation state, ignore re-clicks.
+    if (btn.dataset['confirming'] === '1') return;
+    btn.dataset['confirming'] = '1';
+
+    // Capture the selected engram at click time.
+    const graphId = sourcesEngramFilter || null;
+    const selectedGraph = graphId ? loadedGraphs.find((g) => g.graphId === graphId) : null;
+    const displayName = selectedGraph?.metadata.displayName ?? graphId ?? '';
+
+    // ── Warning note shown under both options ────────────────────────────────
+    // Node IDs change on reingest — GLL/GNN edge predictions become stale
+    // (rebuilt on the next scan) and pending corrections lose their anchors.
+    // A snapshot is taken first, so everything is recoverable.
+    const warning = `<span style="font-size:11px;color:var(--fg-dim);display:block;margin-bottom:6px;">` +
+      `Snapshots your memory first. Node IDs will change — AI-predicted edges and pending corrections may need to be rebuilt.` +
+      `</span>`;
+
+    // ── Option 1: selected engram (or all if "All engrams" is shown) ─────────
+    const engramLabel = displayName
+      ? `Re-chunk <strong>${escape(displayName)}</strong> only`
+      : `Re-chunk all engrams (nothing selected)`;
+    const engramDisabled = !graphId ? ' disabled title="Select an engram in the dropdown first"' : '';
+
+    // ── Option 2: entire cortex ───────────────────────────────────────────────
+    const cortexLabel = 'Re-chunk entire cortex';
+
+    const widget = document.createElement('div');
+    widget.className = 'sources-reingest-all-confirm';
+    widget.style.cssText = 'display:flex;flex-direction:column;gap:6px;padding:8px 10px;background:var(--bg-elev);border:1px solid var(--border);border-radius:6px;min-width:280px;';
+    widget.innerHTML =
+      warning +
+      `<div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;">` +
+        `<button class="btn-sm btn-reingest-engram"${engramDisabled} style="color:var(--accent)">${engramLabel}</button>` +
+        `<button class="btn-sm btn-reingest-cortex" style="color:var(--fg-dim)">${cortexLabel}</button>` +
+        `<button class="btn-sm sources-reingest-all-cancel">Cancel</button>` +
+      `</div>`;
+
+    btn.style.display = 'none';
+    btn.insertAdjacentElement('afterend', widget);
+
+    const collapse = (): void => {
+      widget.remove();
+      btn.style.display = '';
+      delete btn.dataset['confirming'];
+    };
+
+    widget.querySelector('.sources-reingest-all-cancel')?.addEventListener('click', collapse);
+
+    widget.querySelector('.btn-reingest-engram')?.addEventListener('click', () => {
+      if (!graphId || !displayName) return;
+      collapse();
+      openReingestModal({ graphId, displayName });
+    });
+
+    widget.querySelector('.btn-reingest-cortex')?.addEventListener('click', () => {
+      collapse();
+      openReingestModal(); // no opts → engrams:reingestAll
+    });
+  });
+}
 
 // Re-probe biometric availability whenever the cortex-folder input changes
 // (typed, pasted, picked-via-dialog). Debounced because the input fires per
@@ -2595,6 +2857,9 @@ els.sourcesEngramSelect.addEventListener('change', () => {
 {
   let timer: number | null = null;
   els.cortexDir.addEventListener('input', () => {
+    // Hide the "folder missing" notice as soon as the user edits the path —
+    // they're actively correcting it.
+    document.getElementById('cortex-missing-notice')?.classList.add('hidden');
     if (timer !== null) window.clearTimeout(timer);
     timer = window.setTimeout(() => {
       void refreshBiometricButton(els.cortexDir.value.trim());
@@ -2707,6 +2972,7 @@ async function attemptUnlock(): Promise<void> {
     // fresh sidecar. Clear any half-finished two-step enable-confirm so it
     // can't leak from the previous cortex into this one.
     nnConfirmPending = false;
+    nnEnablingInProgress = false;
     llmConfirmPending = false;
     els.passphrase.value = '';
     els.bootStatusText.textContent = '';
@@ -2970,6 +3236,47 @@ async function runPurge(btn: HTMLButtonElement): Promise<void> {
   }
 }
 
+async function runPurgeAll(graphIds: string[]): Promise<void> {
+  if (graphIds.length === 0) return;
+  const names = graphIds
+    .map((id) => loadedGraphs.find((g) => g.graphId === id)?.metadata.displayName ?? id)
+    .join(', ');
+  const ok = confirm(
+    `Purge forgotten memories from all ${graphIds.length} engrams?\n\n` +
+    `Engrams: ${names}\n\n` +
+    `Each engram will be rebuilt from its remaining live sources in sequence. ` +
+    `This can take several minutes on large cortexes.\n\n` +
+    `Each purge aborts individually if a source can't be reconstructed — ` +
+    `partial success is reported at the end.`,
+  );
+  if (!ok) return;
+  const purgeAllBtn = els.gRecapForgotten.querySelector<HTMLButtonElement>('.btn-g-purge-all');
+  if (purgeAllBtn) { purgeAllBtn.disabled = true; purgeAllBtn.textContent = 'Purging…'; }
+  showError(null);
+  const errors: string[] = [];
+  for (const graphId of graphIds) {
+    try {
+      const btn = els.gRecapForgotten.querySelector<HTMLButtonElement>(
+        `.btn-g-purge[data-graph-id="${graphId}"]`
+      );
+      if (btn) { btn.disabled = true; btn.textContent = 'Purging…'; }
+      const report = (await invoke('purge_forgotten', { graphId })) as PurgeReport;
+      if (report.aborted) {
+        const reasons = report.errors.map((e) => `  • ${e.ref}: ${e.error}`).join('\n');
+        errors.push(`${graphId} aborted:\n${reasons}`);
+      }
+    } catch (e) {
+      errors.push(`${graphId}: ${e}`);
+    }
+  }
+  await refreshStats();
+  if (errors.length > 0) {
+    alert(`Purge All finished with issues:\n\n${errors.join('\n\n')}`);
+  } else {
+    alert(`Purge All complete — forgotten memories removed from all ${graphIds.length} engrams.`);
+  }
+}
+
 // ---- configure-AI-client flow ------------------------------------------
 //
 // One modal serves all three MCP-aware clients (Claude Desktop / Claude
@@ -3214,74 +3521,22 @@ function renderSettingsGraphsList(): void {
     return `
       <div class="settings-graph-row${archived ? ' is-archived' : ''}" data-sgr-id="${escape(g.graphId)}">
         <span class="sgr-name" title="Click to rename" data-sgr-id="${escape(g.graphId)}">${escape(g.metadata.displayName)}</span>
-        <span class="sgr-id">${escape(g.graphId)}</span>
         ${archived ? '<span class="sgr-badge">archived</span>' : ''}
         ${isActive ? '<span class="sgr-badge">active</span>' : ''}
-        <select class="sgr-tier-select" data-sgr-id="${escape(g.graphId)}" title="${TIER_CAPS[tier]}">
-          <option value="public"    ${tier === 'public'    ? 'selected' : ''}>public</option>
-          <option value="personal"  ${tier === 'personal'  ? 'selected' : ''}>personal</option>
-          <option value="sensitive" ${tier === 'sensitive' ? 'selected' : ''}>sensitive</option>
+        <select class="sgr-tier-select" data-sgr-id="${escape(g.graphId)}" title="${TIER_CAPS[tier]}"
+          style="color:${tier === 'public' ? 'var(--ok)' : tier === 'sensitive' ? 'var(--error)' : 'var(--color-status-warn-gold)'}">
+          <option value="public"    ${tier === 'public'    ? 'selected' : ''} style="color:var(--ok)">public</option>
+          <option value="personal"  ${tier === 'personal'  ? 'selected' : ''} style="color:var(--color-status-warn-gold)">personal</option>
+          <option value="sensitive" ${tier === 'sensitive' ? 'selected' : ''} style="color:var(--error)">sensitive</option>
         </select>
         <button class="btn-graph-archive" data-sgr-id="${escape(g.graphId)}" data-archived="${archived}">
           ${archived ? 'Unarchive' : 'Archive'}
-        </button>
-        <button class="btn-graph-reingest" data-sgr-id="${escape(g.graphId)}" data-name="${escape(g.metadata.displayName)}" title="Re-chunk + re-embed every source in this engram using current Search model + Chunk size settings.">
-          Reingest
         </button>
         <button class="btn-graph-delete" data-sgr-id="${escape(g.graphId)}" data-name="${escape(g.metadata.displayName)}">
           Delete
         </button>
       </div>`;
   }).join('');
-
-  // ── Per-engram Reingest ──────────────────────────────────────────────────
-  // Re-uses the engram:reingestAll IPC (already wired in Batch 5) and the
-  // shared reingest-progress modal. The modal's listener doesn't care
-  // whether the IPC was whole-cortex or one-engram — the broadcast payload
-  // shape is the same (graphIndex=0, graphsTotal=1 for the per-engram case).
-  container.querySelectorAll<HTMLButtonElement>('.btn-graph-reingest').forEach((btn) => {
-    btn.addEventListener('click', () => {
-      const graphId = btn.dataset['sgrId'] ?? '';
-      const displayName = btn.dataset['name'] ?? graphId;
-      if (!graphId) return;
-      if (!confirm(`Reingest every source in "${displayName}"?\n\nRe-chunks and re-embeds using current settings (Search model, Chunk size). A snapshot of this engram is taken first. Sources whose original content wasn't cached are skipped.`)) return;
-      // Open the same modal the whole-cortex Reingest uses, then call the
-      // per-engram IPC instead of the cortex-wide one.
-      const modal = document.getElementById('reingest-modal');
-      const phaseEl = document.getElementById('reingest-phase');
-      const detailEl = document.getElementById('reingest-detail');
-      const barEl = document.getElementById('reingest-bar');
-      const counterEl = document.getElementById('reingest-counter');
-      const summaryEl = document.getElementById('reingest-summary');
-      const closeBtn = document.getElementById('reingest-close') as HTMLButtonElement | null;
-      const cancelBtn = document.getElementById('reingest-cancel') as HTMLButtonElement | null;
-      if (!modal || !phaseEl || !detailEl || !barEl || !counterEl || !summaryEl || !closeBtn || !cancelBtn) return;
-      modal.classList.remove('hidden');
-      closeBtn.disabled = true;
-      closeBtn.onclick = () => modal.classList.add('hidden');
-      // Same cancel wiring as the whole-cortex path — reingest:cancel is
-      // operation-agnostic; the host's currentReingestAbort signal covers
-      // either reingestAllSources or reingestAllGraphs equally.
-      cancelBtn.disabled = false;
-      cancelBtn.textContent = 'Cancel';
-      cancelBtn.onclick = () => {
-        cancelBtn.disabled = true;
-        cancelBtn.textContent = 'Cancelling…';
-        void ipcCall('reingest:cancel', {}).catch(() => { /* non-fatal */ });
-      };
-      phaseEl.textContent = `Reingesting "${displayName}"…`;
-      detailEl.textContent = 'Snapshotting this engram first.';
-      barEl.style.width = '0%';
-      counterEl.textContent = '';
-      summaryEl.style.display = 'none';
-      summaryEl.innerHTML = '';
-      void ipcCall('engram:reingestAll', { graphId }).catch((err) => {
-        closeBtn.disabled = false;
-        phaseEl.textContent = 'Reingest failed';
-        detailEl.textContent = String((err as Error).message ?? err);
-      });
-    });
-  });
 
   // ── Archive / Unarchive ──────────────────────────────────────────────────
   container.querySelectorAll<HTMLButtonElement>('.btn-graph-archive').forEach((btn) => {
@@ -3351,7 +3606,7 @@ function renderSettingsGraphsList(): void {
   // ── Sensitivity tier ────────────────────────────────────────────────────
   const TIER_INFO: Record<string, { headline: string; bullets: string[]; warning?: string }> = {
     public: {
-      headline: 'AI has full access to this engram.',
+      headline: 'AI sees this engram without any consent step.',
       bullets: [
         'Up to <strong>4 000 tokens</strong> of content per recall query',
         'Proactive injection enabled — AI may surface memories unprompted',
@@ -3359,22 +3614,23 @@ function renderSettingsGraphsList(): void {
       ],
     },
     personal: {
-      headline: 'AI can access this engram only when explicitly asked.',
+      headline: 'AI sees this engram only with your explicit agreement.',
       bullets: [
         'Up to <strong>2 000 tokens</strong> of content per recall query',
-        'Proactive injection <strong>disabled</strong> — AI only sees content when you call <code>recall</code>',
+        'A consent prompt appears in Graphnosis — you approve before anything is shown',
+        'Proactive injection <strong>disabled</strong> — AI only reads when you ask it to recall',
         'Best for personal notes, journal entries, and work summaries',
       ],
     },
     sensitive: {
-      headline: 'AI is completely blocked from this engram.',
+      headline: 'AI is blocked from this engram unless you grant access.',
       bullets: [
         '<strong>0 tokens</strong> — the sidecar returns no results for any query',
-        'The AI is never told why — it simply receives no results',
-        'You can still browse and search these memories in Graphnosis',
+        'Access requires a typed consent phrase in Graphnosis → Settings → AI',
+        'You can still browse and search these memories inside Graphnosis',
         'Best for health records, financial data, or anything strictly private',
       ],
-      warning: 'The AI will never see content from this engram, even if you ask it to recall memories from here.',
+      warning: 'The AI will not see content from this engram until you explicitly grant access via Graphnosis.',
     },
   };
 
@@ -3411,8 +3667,16 @@ function renderSettingsGraphsList(): void {
         cancelBtn.onclick = null;
       };
 
+      const TIER_COLORS: Record<string, string> = {
+        public: 'var(--ok)',
+        personal: 'var(--color-status-warn-gold)',
+        sensitive: 'var(--error)',
+      };
+      const applySelColor = (t: string) => { sel.style.color = TIER_COLORS[t] ?? ''; };
+
       cancelBtn.onclick = () => {
         sel.value = prevTier;
+        applySelColor(prevTier);
         cleanup();
       };
 
@@ -3423,10 +3687,12 @@ function renderSettingsGraphsList(): void {
           await invoke('set_graph_tier', { graphId, tier });
           if (g) g.metadata.sensitivityTier = tier;
           sel.title = TIER_CAPS[tier] ?? '';
+          applySelColor(tier);
           prevTier = tier;
         } catch (e) {
           showError(`Could not update tier: ${e}`);
           sel.value = g?.metadata.sensitivityTier ?? 'personal';
+          applySelColor(sel.value);
         } finally {
           sel.disabled = false;
         }
@@ -3524,6 +3790,9 @@ els.btnSettings.addEventListener('click', async () => {
     // on the next save regardless.
     els.aiChunkSize.value = s.ai?.chunkSize ?? 'balanced';
     els.aiEmbedBatch.value = s.ai?.embedBatch ?? 'auto';
+    const savedWorkers = s.ai?.embedWorkers ?? 2;
+    els.aiEmbedWorkers.value = String(savedWorkers);
+    els.aiEmbedWorkersVal.textContent = `${savedWorkers} worker${savedWorkers === 1 ? '' : 's'}`;
     // Clipboard capture: disabled by default.
     els.settingClipboardCapture.checked = s.brain?.clipboardCapture?.enabled ?? false;
     // Orbit debug HUD: session-only, reflects live engine state.
@@ -3875,6 +4144,12 @@ els.aiAutoReingest.addEventListener('change', () => {
   els.reingestDelayRow.style.display = els.aiAutoReingest.checked ? 'flex' : 'none';
 });
 
+// Live label for the embed-workers slider.
+els.aiEmbedWorkers.addEventListener('input', () => {
+  const n = parseInt(els.aiEmbedWorkers.value, 10);
+  els.aiEmbedWorkersVal.textContent = `${n} worker${n === 1 ? '' : 's'}`;
+});
+
 els.btnSettingsCancel.addEventListener('click', () => {
   stopOllamaStatusPoll();
   els.settingsModal.classList.add('hidden');
@@ -3909,13 +4184,17 @@ els.btnSettingsSave.addEventListener('click', async () => {
         // pane that used it is gone). We still send the field through
         // so the sidecar's settings.update Zod validator doesn't break
         // on older client builds; default to 'simple'.
-        ui: { inspectorDetail: 'simple' as InspectorDetail },
+        // theme: preserve whatever the user picked via the status-bar
+        // toggle or the Appearance picker — otherwise saving Preferences
+        // would silently reset it to 'auto'.
+        ui: { inspectorDetail: 'simple' as InspectorDetail, theme: _currentTheme },
         ai: {
           useAsDefaultMemory: els.aiDefaultMemory.checked,
           autoReingestOnFileChange: els.aiAutoReingest.checked,
           reingestQuietMs: parseInt(els.aiReingestQuietMs.value, 10) || 900_000,
           chunkSize: els.aiChunkSize.value as 'fine' | 'balanced' | 'coarse',
           embedBatch: els.aiEmbedBatch.value as 'small' | 'medium' | 'large' | 'auto',
+          embedWorkers: parseInt(els.aiEmbedWorkers.value, 10) || 2,
         },
         brain: { clipboardCapture: { enabled: clipEnabled } },
       },
@@ -4471,13 +4750,15 @@ function updateStatusBar(connections: McpConnection[]): void {
       friendlyClient(a.clientName).localeCompare(friendlyClient(b.clientName))
     );
     const primary = friendlyClient(sorted[0]?.clientName);
-    // Status bar — always show as "ok" (connected); idle is not surfaced here.
-    els.statusMcpDot.className = 'status-dot ok';
+    const allIdle = nonIdle.length === 0;
+    // Status bar — green when at least one client is active; amber when all are idle.
+    els.statusMcpDot.className = allIdle ? 'status-dot idle' : 'status-dot ok';
     els.statusMcpText.textContent = primary;
-    // Rail indicator — same info, compact form
+    // Rail indicator — same logic: idle → amber, active → green.
     if (railIndicator) {
+      const dotClass = allIdle ? 'rail-mcp-dot idle' : 'rail-mcp-dot connected';
       railIndicator.innerHTML =
-        `<span class="rail-mcp-dot connected"></span><span class="rail-mcp-name" title="${escape(primary)}">${escape(primary)}</span>`;
+        `<span class="${dotClass}"></span><span class="rail-mcp-name" title="${escape(primary)}">${escape(primary)}</span>`;
     }
   }
 }
@@ -4875,10 +5156,27 @@ function rebuildDeckQueue(): void {
   // Pending corrections lead — they're explicit, time-sensitive, and
   // the user already consented to the correction flow by asking Claude.
   // Build the full pool; serve the first page of DECK_PAGE_SIZE now.
+
+  // Preserve the user's position across rebuilds so that background polls
+  // (fetchPendingCorrections) and dashboard re-renders (search cleared)
+  // don't silently jump the user back to card 1 mid-browse.
+  // Strategy: remember the current card's node ID; find it in the new pool;
+  // restore the index. If the card was dispatched/removed, clamp to the
+  // nearest valid position rather than resetting to 0.
+  const prevCardId = graphnosisDeck[graphnosisDeckIndex]?.node.id;
+
   graphnosisDeckPool = [...pendingCards, ...lowConfidence, ...orphans, ...connect];
   graphnosisDeckPageStart = 0;
   graphnosisDeck = graphnosisDeckPool.slice(0, DECK_PAGE_SIZE);
-  graphnosisDeckIndex = 0;
+
+  if (prevCardId !== undefined) {
+    const restoredIdx = graphnosisDeck.findIndex((item) => item.node.id === prevCardId);
+    graphnosisDeckIndex = restoredIdx >= 0
+      ? restoredIdx
+      : Math.min(graphnosisDeckIndex, Math.max(0, graphnosisDeck.length - 1));
+  } else {
+    graphnosisDeckIndex = 0;
+  }
 }
 
 // Tally entity → occurrence count across the reviewable corpus. Used by
@@ -5126,6 +5424,7 @@ function mcpToolsOnboardingHtml(): string {
             <div class="g-deck-cmd-chips">
               <span class="g-deck-cmd-chip" data-tool="recall">recall</span>
               <span class="g-deck-cmd-chip" data-tool="remind">remind</span>
+              <span class="g-deck-cmd-chip" data-tool="dig_deeper">dig_deeper</span>
               <span class="g-deck-cmd-chip" data-tool="remember">remember</span>
               <span class="g-deck-cmd-chip" data-tool="forget">forget</span>
               <span class="g-deck-cmd-chip" data-tool="apply">apply</span>
@@ -5201,7 +5500,7 @@ function mcpToolsOnboardingHtml(): string {
             </div>
           </div>
         </div>
-        <p class="g-deck-cmd-note">34 tools total. Deterministic and approximate tools work without any AI model. Conditional and non-deterministic tools use the optional Local LLM (or Neural Network); enabling them never changes how the deterministic tools behave.</p>
+        <p class="g-deck-cmd-note">35 tools total. Deterministic and approximate tools work without any AI model. Conditional and non-deterministic tools use the optional Local LLM (or Neural Network); enabling them never changes how the deterministic tools behave.</p>
       </div>
     </div>`;
 }
@@ -5659,9 +5958,8 @@ async function handleDeckAction(
 
     const previousHtml = actionsRow.innerHTML;
     actionsRow.innerHTML = `
-      <span class="deck-forget-confirm-msg subtitle">Sure?</span>
+      <button class="deck-forget-go deck-forget g-deck-meta-btn deck-forget-sure">Sure, forget?</button>
       <button class="deck-forget-cancel g-deck-meta-btn">Cancel</button>
-      <button class="deck-forget-go deck-forget g-deck-meta-btn">🗑 Forget</button>
     `;
     actionsRow.classList.add('deck-forget-confirm');
 
@@ -5851,7 +6149,12 @@ function updateGraphnosisForgottenRow(): void {
     'Rebuild the graph from your remaining sources to physically remove ' +
     'forgotten memories. Slow on large engrams; aborts safely if any source ' +
     "can't be re-read.";
-  els.gRecapForgotten.innerHTML = withForgotten.map((g) => {
+  const purgeAllBtn = withForgotten.length > 1
+    ? `<div style="display:flex; justify-content:flex-end; margin-bottom:8px;">
+        <button class="btn-g-purge-all" title="Purge forgotten memories from all engrams in sequence">Purge All</button>
+       </div>`
+    : '';
+  els.gRecapForgotten.innerHTML = purgeAllBtn + withForgotten.map((g) => {
     const name = loadedGraphs.find((lg) => lg.graphId === g.graphId)?.metadata.displayName ?? g.graphId;
     const n = g.softDeletedNodes;
     return `
@@ -5867,6 +6170,11 @@ function updateGraphnosisForgottenRow(): void {
   els.gRecapForgotten.querySelectorAll<HTMLButtonElement>('.btn-g-purge').forEach((btn) => {
     btn.addEventListener('click', () => void runPurge(btn));
   });
+  // Wire the Purge All button when present.
+  const purgeAllEl = els.gRecapForgotten.querySelector<HTMLButtonElement>('.btn-g-purge-all');
+  if (purgeAllEl) {
+    purgeAllEl.addEventListener('click', () => void runPurgeAll(withForgotten.map((g) => g.graphId)));
+  }
 }
 
 // ── Dashboard / search-results visibility ────────────────────────────
@@ -5967,14 +6275,15 @@ function applyGraphnosisFilter(): void {
   const filtered = sortSearchResults(matched, q);
   graphnosisListRows = filtered;
   graphnosisListMode = 'substring';
+  const engramLabel = atlasActiveGraph ? `"${engramName(atlasActiveGraph)}" · ` : '';
   els.gSearchResultsStats.textContent =
-    `${filtered.length} match${filtered.length === 1 ? '' : 'es'} for "${qRaw}"`;
+    `${engramLabel}${filtered.length} match${filtered.length === 1 ? '' : 'es'} for "${qRaw}"`;
 
   if (filtered.length === 0) {
     // Fall back to BGE-semantic if query is long enough.
     if (qRaw.length >= 3 && atlasActiveGraph) {
       els.gList.innerHTML = '<p class="subtitle">No exact matches — looking by meaning…</p>';
-      void runSemanticFallback(qRaw, atlasActiveGraph);
+      void runSemanticFallback(qRaw, atlasActiveGraph, []);
       return;
     }
     els.gList.innerHTML = '<p class="subtitle">No matches. Try different words, or clear the search.</p>';
@@ -5987,6 +6296,13 @@ function applyGraphnosisFilter(): void {
   // LLM enhancements (synthesis + rerank) are triggered by Enter key, not
   // by every keystroke. Clear any stale synthesis from a previous query.
   clearSearchSynthesis();
+  // Augment: substring search only checks the first 120 chars of each node.
+  // When results are sparse (< 15), silently run semantic search and merge any
+  // nodes it finds that the substring scan missed — common when the keyword
+  // appears deeper in a large chunk (e.g. docs sections, long paragraphs).
+  if (filtered.length < 15 && qRaw.length >= 3 && atlasActiveGraph) {
+    void runSemanticFallback(qRaw, atlasActiveGraph, filtered);
+  }
 }
 
 // ── Infinite-scroll list renderer ─────────────────────────────────────
@@ -6103,9 +6419,20 @@ function renderDashboard(): void {
   updateRecap();
 }
 
-// BGE-semantic fallback — same as before, race-guarded. Renders into the
-// shared results list when substring filter yields nothing.
-async function runSemanticFallback(query: string, graphId: string): Promise<void> {
+// BGE-semantic fallback / augment. Race-guarded with graphnosisSemanticToken.
+//
+// When `substringRows` is empty → pure fallback mode (no exact text match was
+// found; replaces the list with semantic hits).
+//
+// When `substringRows` is non-empty → augment mode (substring already found some
+// hits; merges semantic hits that weren't in the substring results, then
+// re-renders only if new hits were found). This catches nodes where the keyword
+// appears past position 120 of the chunk content (the preview truncation point).
+async function runSemanticFallback(
+  query: string,
+  graphId: string,
+  substringRows: NodeRecord[],
+): Promise<void> {
   const myToken = ++graphnosisSemanticToken;
   try {
     const hits = (await invoke('search_nodes', { graphId, query, k: 30 })) as SearchHit[];
@@ -6123,13 +6450,38 @@ async function runSemanticFallback(query: string, graphId: string): Promise<void
         } satisfies NodeRecord;
       })
       .filter((n) => n.confidence > 0.2 && (n.validUntil === undefined || n.validUntil > now));
+
+    if (substringRows.length > 0) {
+      // ── Augment mode ─────────────────────────────────────────────────────
+      // Only add nodes that the substring scan didn't already include.
+      const substringIds = new Set(substringRows.map((r) => r.id));
+      const newHits = rawRows.filter((r) => !substringIds.has(r.id));
+      if (newHits.length === 0) return; // nothing new — keep existing display
+      const merged = sortSearchResults([...substringRows, ...newHits], query.toLowerCase());
+      graphnosisListRows = merged;
+      // Stay in 'substring' mode so the row count label reads as exact matches.
+      els.gSearchResultsStats.textContent =
+        `${merged.length} match${merged.length === 1 ? '' : 'es'} for "${query}"`;
+      renderListWithInfiniteScroll(merged);
+      clearSearchSynthesis();
+      return;
+    }
+
+    // ── Fallback mode (0 substring hits) ─────────────────────────────────
     // For semantic fallback under `relevance` mode, the BGE order IS the
     // relevance order — keep it. Confidence/source modes re-sort.
     const rows = searchSortMode === 'relevance' ? rawRows : sortSearchResults(rawRows, query.toLowerCase());
     graphnosisListRows = rows;
     graphnosisListMode = 'semantic';
-    els.gSearchResultsStats.textContent =
-      `${rows.length} closest match${rows.length === 1 ? '' : 'es'} by meaning — no exact text match for "${query}"`;
+    // Honest stats: check how many returned nodes actually contain the
+    // search term in their preview. If none do, the embedding results are
+    // semantically-related but not literal matches — tell the user.
+    const q = query.toLowerCase();
+    const onTopic = rows.filter((r) => r.contentPreview.toLowerCase().includes(q)).length;
+    const engramHint = atlasActiveGraph ? ` in "${engramName(atlasActiveGraph)}"` : '';
+    els.gSearchResultsStats.textContent = onTopic > 0
+      ? `${rows.length} nearest by meaning for "${query}"${engramHint}`
+      : `No match for "${query}"${engramHint} — showing ${rows.length} nearest (may not be relevant)`;
     if (rows.length === 0) {
       els.gList.innerHTML = '<p class="subtitle">Nothing close enough. Try different words.</p>';
       clearSearchSynthesis();
@@ -6140,7 +6492,10 @@ async function runSemanticFallback(query: string, graphId: string): Promise<void
     clearSearchSynthesis();
   } catch (e) {
     if (myToken !== graphnosisSemanticToken) return;
-    els.gList.innerHTML = `<p class="subtitle">Semantic search failed: ${escape(String(e))}</p>`;
+    // In augment mode a failure is silent — existing substring results stay.
+    if (substringRows.length === 0) {
+      els.gList.innerHTML = `<p class="subtitle">Semantic search failed: ${escape(String(e))}</p>`;
+    }
   }
 }
 
@@ -6678,7 +7033,7 @@ function renderConnectionsBlock(conns: ConnRow[]): string {
   // mid-phrase. The non-deterministic line picks up the predicted-edge lime.
   const summaryHtml = predicteds.length > 0
     ? `<p class="brain-subtitle" style="margin: 14px 0 0;">${detCount} deterministic connection${plural(detCount)}</p>
-       <p class="brain-subtitle" style="margin: 0 0 4px; color: #a3e635;">${predicteds.length} non-deterministic connection${plural(predicteds.length)}</p>`
+       <p class="brain-subtitle" style="margin: 0 0 4px; color: var(--color-brand-purple);">${predicteds.length} non-deterministic connection${plural(predicteds.length)}</p>`
     : `<p class="brain-subtitle" style="margin: 14px 0 4px;">${conns.length} connection${plural(conns.length)}</p>`;
   return `${summaryHtml}
     ${section('Outgoing', '→', outs, false)}
@@ -8270,6 +8625,16 @@ els.atlasGraphPicker.addEventListener('change', () => void (async () => {
   refreshActiveEngramLabel();
   graphnosisSelectedId = null;
   atlasSelectedId = null;
+  // Keep the Sources dropdown in sync with the newly active engram.
+  // Also force a full refreshStats() so the sources DOM is rebuilt from
+  // a fresh IPC snapshot — this fixes the "no sources listed" stale-DOM
+  // bug that occurs when the filter + DOM get out of sync after a switch.
+  if (currentMode === 'sources' && atlasActiveGraph) {
+    sourcesEngramFilter = atlasActiveGraph;
+    els.sourcesEngramSelect.value = atlasActiveGraph;
+    updateReingestAllLabel();
+    void refreshStats();
+  }
   // Clear any active search — the old query + results belong to the engram
   // you just left. Without this, switching engrams while a search is open
   // leaves stale result rows (and stale health stats) on screen until the
@@ -8286,10 +8651,19 @@ els.atlasGraphPicker.addEventListener('change', () => void (async () => {
   // tending. Switching engrams = starting a fresh check-in.
   graphnosisSessionDispatched.clear();
   graphnosisTendedThisSession = 0;
+  // Jump the trivia deck back to card 1 so the user always starts fresh
+  // in the new engram's memory (not mid-way through the previous one).
+  graphnosisDeckIndex = 0;
+  // Reset the 3D graph: clear per-source hide toggles (they belong to the
+  // previous engram's source set) and deselect any node so the new engram
+  // starts from a clean visual slate. This also clears the camera emphasis
+  // so the new engram's nodes are rendered at full opacity.
+  disabledSources.clear();
+  if (mainAtlas) resetAtlasView();
   await refreshAtlasView();
-  // After switching engrams, reset the camera so the new graph fills the
-  // view instead of inheriting the physics/camera state of the previous one.
-  // Short delay lets the physics simulation settle before zoomToFit runs.
+  // After switching engrams, fit the camera to the new graph.
+  // A short delay lets the physics warmup ticks settle before zoomToFit runs,
+  // otherwise the bounding-sphere calculation catches nodes mid-simulation.
   setTimeout(() => mainAtlas?.zoomToFit(700, 20), 800);
 })());
 
@@ -8342,7 +8716,29 @@ els.btnAtlasAlive.addEventListener('click', () => {
   });
 }
 
-// ── Search input + ⌘K + clear ─────────────────────────────────────────
+// ── Search input + ⌘F + clear ─────────────────────────────────────────
+
+// Global ⌘F / Ctrl+F — jump straight to Check-in tab and focus the search bar
+// from anywhere in the app. Works regardless of which pane or tab is active.
+document.addEventListener('keydown', (e: KeyboardEvent) => {
+  if ((e.metaKey || e.ctrlKey) && e.key === 'f' && !e.shiftKey && !e.altKey) {
+    // Don't hijack ⌘K inside text inputs other than gSearch itself.
+    const tag = (e.target as HTMLElement).tagName;
+    if (tag === 'INPUT' || tag === 'TEXTAREA') return;
+    e.preventDefault();
+    // Ensure we're on the main Graphnosis pane (atlas mode).
+    if (currentMode !== 'atlas') activateMode('atlas');
+    // Switch to the Check-in tab.
+    if (graphnosisActiveTab !== 'checkin') switchGraphnosisTab('checkin');
+    els.gSearch.focus();
+    els.gSearch.select();
+  }
+});
+
+// Status-bar MCP area → navigate to Status page on click.
+document.getElementById('status-mcp-area')?.addEventListener('click', () => {
+  activateMode('status');
+});
 
 els.gSearch.addEventListener('focus', () => {
   // Search box is always visible above all tabs. Focusing it from any
@@ -9260,6 +9656,9 @@ async function switchActiveEngram(graphId: string): Promise<void> {
   persistActiveEngram(graphId);
   refreshActiveEngramLabel();
   syncEngramPicker();
+  // Reset the deck to card 1 when the user deliberately switches engrams —
+  // the new engram is a different dataset so the old position is meaningless.
+  graphnosisDeckIndex = 0;
   await loadGraphnosisData(graphId);
   applyGraphnosisFilter();
   if (currentMode === 'atlas') void refreshAtlasView();
@@ -9363,10 +9762,15 @@ let brainMemoryHealth: {
 let brainNeuralNetworkStatus: {
   enabled: boolean;
   gnnEdgeCount: number;
+  isRunning?: boolean;
   lastRun: { at: number; edgesAdded: number; edgesPruned: number } | null;
 } | null = null;
 /** True while the user is mid-confirm on enabling the neural network. */
 let nnConfirmPending = false;
+/** True from the moment the user confirms until the IPC resolves and
+ *  brainNeuralNetworkStatus.enabled flips true. Shows a "Enabling…"
+ *  state with a Cancel button instead of snapping back to "Enable…". */
+let nnEnablingInProgress = false;
 
 // Sidecar scan status — lastRun timestamps + interval lengths, used for the
 // scan-status countdown line. Refreshed on tab open and after each scan.
@@ -9717,15 +10121,23 @@ function renderNeuralNetwork(): void {
     return;
   }
   if (st.enabled) {
-    const last = st.lastRun
-      ? `Last run ${formatRel(Date.now() - st.lastRun.at)} — added ${st.lastRun.edgesAdded}, pruned ${st.lastRun.edgesPruned} stale.`
-      : 'Training…';
+    const last = st.isRunning
+      ? 'Training now… (this may take a few seconds and uses CPU)'
+      : st.lastRun
+        ? `Last run ${formatRel(Date.now() - st.lastRun.at)} — added ${st.lastRun.edgesAdded}, pruned ${st.lastRun.edgesPruned} stale.`
+        : `${st.gnnEdgeCount > 0 ? 'Predictions loaded from last session. ' : ''}Scheduled to run daily; click Run again to run now.`;
     host.innerHTML = `
       <p class="brain-subtitle">Status: <strong>ON</strong> · ${st.gnnEdgeCount} predicted connection${st.gnnEdgeCount === 1 ? '' : 's'} in your cortex. ${last}</p>
       <div class="lb-goal-form-actions">
         <button data-nn="run" class="btn-sm">Run again</button>
         <button data-nn="remove" class="btn-sm">Remove all predicted connections</button>
         <button data-nn="disable" class="btn-sm">Turn off</button>
+      </div>`;
+  } else if (nnEnablingInProgress) {
+    host.innerHTML = `
+      <p class="brain-subtitle">Enabling GNN — snapshotting your engrams and training the network… This may take a moment.</p>
+      <div class="lb-goal-form-actions">
+        <button data-nn="cancel-enabling" class="btn-sm">Cancel</button>
       </div>`;
   } else if (nnConfirmPending) {
     host.innerHTML = `
@@ -9746,8 +10158,16 @@ function renderNeuralNetwork(): void {
   on('cancel', () => { nnConfirmPending = false; renderNeuralNetwork(); });
   on('confirm', () => {
     nnConfirmPending = false;
+    nnEnablingInProgress = true;
     renderNeuralNetwork();
-    void ipcCall('brain:enableNeuralNetwork', {}).then(() => { void refreshBrainState(); });
+    void ipcCall('brain:enableNeuralNetwork', {})
+      .then(() => { nnEnablingInProgress = false; void refreshBrainState(); })
+      .catch(() => { nnEnablingInProgress = false; renderNeuralNetwork(); });
+  });
+  on('cancel-enabling', () => {
+    nnEnablingInProgress = false;
+    void ipcCall('brain:disableNeuralNetwork', {}).then(() => { void refreshBrainState(); });
+    renderNeuralNetwork();
   });
   on('run', () => { void ipcCall('brain:runNeuralNetwork', {}); });
   on('remove', () => {
@@ -9884,7 +10304,12 @@ function renderLbInsights(): void {
   const active = brainInsights.filter((i) => !i.dismissed);
   if (active.length === 0) {
     if (brainLlmReady) {
-      host.innerHTML = '<p class="lb-empty">No insights yet — Graphnosis surfaces these every few hours once it has studied your engrams.</p>';
+      host.innerHTML =
+        '<p class="lb-empty">No insights yet — Graphnosis analyses your engrams every 6 hours and surfaces patterns, gaps, and opportunities here.</p>' +
+        '<div style="margin-top:8px;"><button class="btn-sm" id="lb-insight-scan-now">Scan now</button></div>';
+      host.querySelector('#lb-insight-scan-now')?.addEventListener('click', () => {
+        void ipcCall('brain:runScan', {}).catch(() => { /* non-fatal */ });
+      });
     } else {
       // Honest empty state: insights + synapse formation are the only
       // features that need a local model. Make clear this is expected,
@@ -10019,6 +10444,7 @@ function handleBrainFrame(graphId: string): void {
     if (phase !== 'fullscan') addFeedStart(phase);
     renderScanStatus();
     renderStatusProcess();
+    refreshPillPulse();
   } else if (graphId.startsWith('__brain_done_')) {
     // phase is '' for the bare '__brain_done__' vitality frame.
     const phase = graphId.slice('__brain_done_'.length, -2);
@@ -10034,6 +10460,7 @@ function handleBrainFrame(graphId: string): void {
     // A completed scan may have changed the needs-review queue — update the badge.
     void refreshNeedsReviewBadge();
     renderScanStatus();
+    refreshPillPulse();
   } else if (graphId === '__brain_synapse__') {
     flashSynapse();
   } else if (graphId === '__brain_duplicate__' || graphId === '__brain_goal__') {
@@ -10456,10 +10883,29 @@ function refreshLayerPills(): void {
   const llmOn = brainLlmReady;
   const gnnOn = brainNeuralNetworkStatus?.enabled === true;
   if (els.statusGllPill) {
-    els.statusGllPill.style.display = llmOn ? '' : 'none';
+    els.statusGllPill.classList.toggle('pill-inactive', !llmOn);
   }
   if (els.statusGnnPill) {
-    els.statusGnnPill.style.display = gnnOn ? '' : 'none';
+    els.statusGnnPill.classList.toggle('pill-inactive', !gnnOn);
+  }
+  refreshPillPulse();
+}
+
+/**
+ * Pulsate GLL/GNN pills while their engines are actively doing background
+ * work. GLL pulses when any brain phase is running (all phases invoke the
+ * local LLM). GNN pulses when the neural-network isRunning flag is set.
+ * Both are gated on the pill being active (enabled) first.
+ */
+function refreshPillPulse(): void {
+  const gllBusy = brainLlmReady && brainActivePhases.size > 0;
+  const gnnBusy = brainNeuralNetworkStatus?.enabled === true &&
+    (brainNeuralNetworkStatus?.isRunning === true || brainActivePhases.has('gnn'));
+  if (els.statusGllPill) {
+    els.statusGllPill.classList.toggle('pill-pulsing', gllBusy);
+  }
+  if (els.statusGnnPill) {
+    els.statusGnnPill.classList.toggle('pill-pulsing', gnnBusy);
   }
 }
 
@@ -10914,7 +11360,7 @@ interface ReingestPerGraphResult {
   graphId: string;
   reingested: number;
   skipped: Array<{ sourceId: string; reason: string }>;
-  failed: Array<{ sourceId: string; error: string }>;
+  failed: Array<{ sourceId: string; ref: string; error: string }>;
 }
 interface ReingestProgressPayload {
   phase: 'snapshot' | 'reingesting' | 'done';
@@ -10931,7 +11377,14 @@ interface ReingestProgressPayload {
   failed?: number | Array<{ sourceId: string; error: string }>;
   perGraph?: ReingestPerGraphResult[];
 }
-function openReingestModal(): void {
+/**
+ * Open the shared reingest-progress modal and kick off a reingest.
+ *
+ * Pass `graphId` + `displayName` to scope the operation to a single engram
+ * (calls `engram:reingestAll`). Omit both to reingest every engram
+ * (`engrams:reingestAll`).
+ */
+function openReingestModal(opts?: { graphId: string; displayName: string }): void {
   const modal = document.getElementById('reingest-modal');
   const phaseEl = document.getElementById('reingest-phase');
   const detailEl = document.getElementById('reingest-detail');
@@ -10954,12 +11407,17 @@ function openReingestModal(): void {
     void ipcCall('reingest:cancel', {}).catch(() => { /* non-fatal */ });
   };
   phaseEl.textContent = 'Starting…';
-  detailEl.textContent = 'Taking a snapshot of every engram first.';
+  detailEl.textContent = opts
+    ? `Taking a snapshot of "${opts.displayName}" first.`
+    : 'Taking a snapshot of every engram first.';
   barEl.style.width = '0%';
   counterEl.textContent = '';
   summaryEl.style.display = 'none';
   summaryEl.innerHTML = '';
-  void ipcCall('engrams:reingestAll', {}).catch((err) => {
+  const ipc = opts
+    ? ipcCall('engram:reingestAll', { graphId: opts.graphId })
+    : ipcCall('engrams:reingestAll', {});
+  void ipc.catch((err) => {
     closeBtn.disabled = false;
     phaseEl.textContent = 'Reingest failed';
     detailEl.textContent = String((err as Error).message ?? err);
@@ -11016,10 +11474,22 @@ void listen<ReingestProgressPayload>('graphnosis://reingest-progress', (evt) => 
       // Detailed per-engram summary when we have the structured data.
       if (Array.isArray(p.perGraph) && p.perGraph.length > 0) {
         const rows = p.perGraph.map((g) => {
-          const parts: string[] = [`<strong>${g.graphId}</strong>: ${g.reingested} reingested`];
+          const displayName = loadedGraphs.find((lg) => lg.graphId === g.graphId)?.metadata.displayName ?? g.graphId;
+          const parts: string[] = [`<strong>${escape(displayName)}</strong>: ${g.reingested} reingested`];
           if (g.skipped.length > 0) parts.push(`${g.skipped.length} skipped`);
-          if (g.failed.length > 0) parts.push(`${g.failed.length} failed`);
-          return `<div style="margin-bottom:4px;">${parts.join(' · ')}</div>`;
+          if (g.failed.length > 0) parts.push(`<span style="color:var(--error)">${g.failed.length} failed</span>`);
+          let detail = `<div style="margin-bottom:6px;">${parts.join(' · ')}</div>`;
+          // List individual failures with their error messages so the user
+          // can see exactly what went wrong (lock files, missing cache, etc.)
+          if (g.failed.length > 0) {
+            const failLines = g.failed.map((f) => {
+              const name = escape(f.ref ? (f.ref.split('/').pop() ?? f.ref) : (f.sourceId.split(':').pop() ?? f.sourceId));
+              const err  = escape(f.error ?? 'unknown error');
+              return `<div style="margin-left:10px;font-size:11px;color:var(--error);margin-bottom:2px;">✗ ${name}: ${err}</div>`;
+            });
+            detail += failLines.join('');
+          }
+          return detail;
         });
         summaryEl.innerHTML = rows.join('');
         summaryEl.style.display = '';
@@ -11504,18 +11974,87 @@ document.getElementById('engram-suggest-dismiss')?.addEventListener('click', () 
 void listen<EngramSuggestPayload>('graphnosis://engram-create-suggested', (ev) => {
   if (!ev.payload) return;
   showEngramSuggestion(ev.payload);
+
   // If the user has the App in the background (menu bar collapsed, or
-  // another app focused), poke them with a system notification. The
-  // banner will be waiting when they come back.
+  // another app focused), poke them with a system notification.
+  // When there are no close-match candidates and the user just needs to
+  // approve a new engram, we use the action-button path (macOS only) so
+  // they can click Accept directly in the notification banner without
+  // re-opening the App. For the candidates case (choose-between-existing),
+  // we fall back to a plain notification — the in-app picker is required.
   const who = ev.payload.requestedBy ?? 'An AI client';
   const hasCandidates = (ev.payload.candidates?.length ?? 0) > 0;
-  void notifyIfBackground({
-    title: 'Graphnosis — confirmation needed',
-    body: hasCandidates
-      ? `${who} wants to save into “${ev.payload.suggestedName}” — close matches found. Click Graphnosis to choose.`
-      : `${who} wants to save into a new engram “${ev.payload.suggestedName}”. Click Graphnosis to confirm.`,
+  const p = ev.payload;
+
+  void isAppBackgrounded().then((backgrounded) => {
+    if (!backgrounded) return;
+    if (!hasCandidates) {
+      // macOS: action-button notification — user can Accept without opening
+      // the App. Non-macOS falls back to a plain notification inside the
+      // Rust command, so no special handling needed here.
+      void invoke('show_engram_action_notification', {
+        graphId: slugifyEngramName(p.suggestedName),
+        template: 'personal',
+        displayName: p.suggestedName,
+        text: p.text,
+        label: p.label ?? 'Conversation note',
+        sourceKind: p.sourceKind ?? 'ai-conversation',
+        suggestedName: p.suggestedName,
+        requestedBy: p.requestedBy ?? null,
+      });
+    } else {
+      // Has candidates → must open App to choose. Plain notification.
+      void notifyIfBackground({
+        title: 'Graphnosis — confirmation needed',
+        body: `${who} wants to save into “${p.suggestedName}” — close matches found. Click Graphnosis to choose.`,
+      });
+    }
   });
 });
+
+// ── Engram notification accepted (macOS action-button path) ──────────────
+// Fired by the Rust `show_engram_action_notification` command when the user
+// clicks "Accept" in the macOS notification banner. We call
+// `accept_engram_suggestion` directly — same path as the in-app Accept
+// button, so the engram is created and the note ingested.
+interface EngramNotificationAcceptedPayload {
+  graphId: string;
+  template: string;
+  displayName: string;
+  text: string;
+  label: string;
+  sourceKind?: string | null;
+}
+void listen<EngramNotificationAcceptedPayload>(
+  'graphnosis://engram-notification-accepted',
+  (ev) => {
+    if (!ev.payload) return;
+    const { graphId, template, displayName, text, label, sourceKind } = ev.payload;
+    void (async () => {
+      try {
+        await invoke('accept_engram_suggestion', {
+          graphId,
+          template,
+          displayName,
+          text,
+          label,
+          sourceKind: sourceKind ?? 'ai-conversation',
+        });
+        // The banner may be visible if the user came back to the App after
+        // clicking — dismiss it so it doesn't ask for a second confirmation.
+        hideEngramSuggestion();
+        await fetchGraphsMetadata();
+        void refreshStats();
+        void pollGraphMutations();
+        const tid = addIngestToast(`Created engram "${displayName}"`, 'Saved AI suggestion');
+        finishIngestToast(tid, 'success', 'Saved AI suggestion');
+      } catch (e) {
+        const tid = addIngestToast(`Couldn't save`, String(e));
+        finishIngestToast(tid, 'error', String(e));
+      }
+    })();
+  },
+);
 
 // ── Correction proposals from the `correct` MCP tool ─────────────────────
 // The AI proposed a structured diff for an existing memory. The diff lives
@@ -11965,6 +12504,17 @@ function prefillLastCortexDir(): void {
       // Also probe whether Touch ID is set up for this cortex. If yes,
       // surface the button alongside the passphrase Unlock button.
       void refreshBiometricButton(last);
+      // Proactively warn if the remembered folder no longer exists on disk
+      // (moved, deleted, or on an unmounted volume). The notice appears
+      // immediately below the path input so the user sees it before they
+      // even type their passphrase.
+      void (async () => {
+        try {
+          const exists = await invoke<boolean>('check_path_exists', { path: last });
+          const notice = document.getElementById('cortex-missing-notice');
+          if (notice) notice.classList.toggle('hidden', exists);
+        } catch { /* command unavailable — stay hidden */ }
+      })();
       return;
     }
     // No last-used path — suggest a sensible default (`~/GraphnosisCortex`).
@@ -12313,6 +12863,41 @@ async function openMobileWizard(): Promise<void> {
     e.preventDefault();
     void invoke('open_external_url', { url: 'https://tailscale.com/download' });
   });
+
+  // Revoke & Regenerate — generates a fresh UUID, saves it via update_settings,
+  // and re-renders Step 2 with the new token. The running HTTP server picks it
+  // up immediately (token is a live getter in the sidecar).
+  document.getElementById('btn-mobile-revoke-token')?.addEventListener('click', async () => {
+    const btn = document.getElementById('btn-mobile-revoke-token') as HTMLButtonElement | null;
+    const note = document.getElementById('mobile-revoke-note') as HTMLSpanElement | null;
+    if (btn) btn.disabled = true;
+    if (note) note.textContent = 'Revoking…';
+    try {
+      const newToken = crypto.randomUUID();
+      const patch = {
+        mobile: {
+          httpBridge: {
+            enabled: true,
+            port: mobileConnInfo?.port ?? 3457,
+            host: mobileConnInfo?.host ?? '127.0.0.1',
+            token: newToken,
+          },
+        },
+      };
+      await invoke('update_settings', { settings: patch });
+      mobileConnInfo = (await invoke('get_mobile_connection_info')) as MobileConnectionInfo;
+      mobileTokenRevealed = false;
+      renderMobileStep2();
+      if (note) {
+        note.textContent = 'Token rotated — update all connected devices.';
+        setTimeout(() => { if (note) note.textContent = ''; }, 5000);
+      }
+    } catch (e) {
+      if (note) note.textContent = `Error: ${e}`;
+    } finally {
+      if (btn) btn.disabled = false;
+    }
+  });
 }
 
 // ── Custom engram picker (drops DOWN, not OS-default UP) ────────────────────
@@ -12643,9 +13228,22 @@ function openConnectorSetupModal(kind: ConnectorKind, existing?: ConnectorConfig
     if (!picked.length) return;
     const ta = document.getElementById('connector-aicontext-paths') as HTMLTextAreaElement | null;
     if (!ta) return;
-    const existing = ta.value.split('\n').map((s) => s.trim()).filter(Boolean);
-    const merged = [...new Set([...existing, ...picked])];
-    ta.value = merged.join('\n');
+    const current = ta.value.split('\n').map((s) => s.trim()).filter(Boolean);
+    ta.value = [...new Set([...current, ...picked])].join('\n');
+  });
+  // Wire folder browse button for obsidian connector (single folder)
+  document.getElementById('connector-obsidian-browse')?.addEventListener('click', async () => {
+    const picked = await invoke<string[]>('pick_folders');
+    if (!picked.length) return;
+    const inp = document.getElementById('connector-obsidian-vault') as HTMLInputElement | null;
+    if (inp) inp.value = picked[0] ?? '';
+  });
+  // Wire folder browse button for gbrain connector (single folder)
+  document.getElementById('connector-gbrain-browse')?.addEventListener('click', async () => {
+    const picked = await invoke<string[]>('pick_folders');
+    if (!picked.length) return;
+    const inp = document.getElementById('connector-gbrain-repo') as HTMLInputElement | null;
+    if (inp) inp.value = picked[0] ?? '';
   });
   modal.classList.remove('hidden');
 }
@@ -12680,9 +13278,18 @@ function renderConnectorSetupBody(kind: ConnectorKind, existing?: ConnectorConfi
       <input type="text" id="connector-new-engram-name" placeholder="New engram name…" style="display:none;margin-top:6px;" />
       <span class="field-hint">Ingested events become source nodes in this engram.</span>
     </div>`;
+  // Shown at the bottom of every connector form — applies universally.
+  const privacyNote = `
+    <div class="connector-help" style="border-left-color:var(--ok); margin-top:4px;">
+      <strong>Continuous sync · fully local · encrypted.</strong>
+      Graphnosis keeps pulling updates from this connector on its own schedule — you connect once and it stays current.
+      All ingested data is stored encrypted on your machine and never sent to Graphnosis servers. Fully auditable from Graphnosis → Sources.
+    </div>`;
+
+  let html = '';
   switch (kind) {
     case 'rss':
-      return `
+      html = `
         <div class="connector-help">
           Paste one feed URL per line. Graphnosis dedupes by entry guid/link so re-pulls are no-ops on already-seen entries.
         </div>
@@ -12692,8 +13299,9 @@ function renderConnectorSetupBody(kind: ConnectorKind, existing?: ConnectorConfi
           <label for="connector-rss-feeds">Feed URL(s)</label>
           <textarea id="connector-rss-feeds" placeholder="https://example.com/feed.xml&#10;https://another.com/rss">${escapeHtml(((opts['feeds'] as string[]) ?? []).join('\n'))}</textarea>
         </div>`;
+      break;
     case 'github':
-      return `
+      html = `
         <div class="connector-help">
           <strong>Bring your own Personal Access Token.</strong>
           <ol>
@@ -12720,8 +13328,9 @@ function renderConnectorSetupBody(kind: ConnectorKind, existing?: ConnectorConfi
             <label><input type="checkbox" id="connector-github-releases" ${((opts['releases'] as boolean) ?? false) ? 'checked' : ''} /> Releases</label>
           </div>
         </div>`;
+      break;
     case 'slack':
-      return `
+      html = `
         <div class="connector-help">
           <strong>Bring your own Slack app.</strong>
           <ol>
@@ -12744,8 +13353,9 @@ function renderConnectorSetupBody(kind: ConnectorKind, existing?: ConnectorConfi
             <label><input type="checkbox" id="connector-slack-channels" ${((opts['channelHistory'] as boolean) ?? false) ? 'checked' : ''} /> Channel history</label>
           </div>
         </div>`;
+      break;
     case 'trello':
-      return `
+      html = `
         <div class="connector-help">
           <strong>Bring your own Trello API key + token.</strong>
           <ol>
@@ -12771,8 +13381,9 @@ function renderConnectorSetupBody(kind: ConnectorKind, existing?: ConnectorConfi
           <input type="text" id="connector-trello-boards" placeholder="boardId1, boardId2" value="${escapeHtml(((opts['boardIds'] as string[]) ?? []).join(', '))}" />
           <span class="field-hint">Get board IDs from the URL: trello.com/b/<strong>BOARD_ID</strong>/board-name</span>
         </div>`;
+      break;
     case 'linear':
-      return `
+      html = `
         <div class="connector-help">
           <strong>Bring your own Linear API key.</strong>
           <ol>
@@ -12792,8 +13403,9 @@ function renderConnectorSetupBody(kind: ConnectorKind, existing?: ConnectorConfi
           <input type="text" id="connector-linear-team" placeholder="ENG, OPS, …" value="${escapeHtml(creds['teamKey'] ?? '')}" />
           <span class="field-hint">Leave blank to pull from every team you have access to.</span>
         </div>`;
+      break;
     case 'obsidian':
-      return `
+      html = `
         <div class="connector-help">
           No API key needed — Graphnosis reads your vault's <code>.md</code> files directly from disk.
           Point it at your vault folder and it will auto-ingest new and modified notes on each pull.
@@ -12803,11 +13415,15 @@ function renderConnectorSetupBody(kind: ConnectorKind, existing?: ConnectorConfi
         ${graphField}
         <div class="connector-field">
           <label for="connector-obsidian-vault">Vault folder path</label>
-          <input type="text" id="connector-obsidian-vault" placeholder="/Users/you/Documents/MyVault" value="${escapeHtml((opts['vaultPath'] as string) ?? '')}" />
+          <div style="display:flex; gap:8px; align-items:flex-start;">
+            <input type="text" id="connector-obsidian-vault" placeholder="/Users/you/Documents/MyVault" value="${escapeHtml((opts['vaultPath'] as string) ?? '')}" style="flex:1;" />
+            <button type="button" id="connector-obsidian-browse" class="btn-secondary" style="white-space:nowrap;">Browse…</button>
+          </div>
           <span class="field-hint">Absolute path to the folder Obsidian uses as your vault.</span>
         </div>`;
+      break;
     case 'gbrain':
-      return `
+      html = `
         <div class="connector-help">
           No API key needed — Graphnosis reads GBrain's <code>.md</code> files directly from your local git repo.
           Point it at the repo folder and it will auto-ingest new and modified notes on each pull.
@@ -12817,11 +13433,15 @@ function renderConnectorSetupBody(kind: ConnectorKind, existing?: ConnectorConfi
         ${graphField}
         <div class="connector-field">
           <label for="connector-gbrain-repo">GBrain repo path</label>
-          <input type="text" id="connector-gbrain-repo" placeholder="/Users/you/Documents/my-gbrain" value="${escapeHtml((opts['repoPath'] as string) ?? '')}" />
+          <div style="display:flex; gap:8px; align-items:flex-start;">
+            <input type="text" id="connector-gbrain-repo" placeholder="/Users/you/Documents/my-gbrain" value="${escapeHtml((opts['repoPath'] as string) ?? '')}" style="flex:1;" />
+            <button type="button" id="connector-gbrain-browse" class="btn-secondary" style="white-space:nowrap;">Browse…</button>
+          </div>
           <span class="field-hint">Absolute path to the root of your GBrain git repository.</span>
         </div>`;
+      break;
     case 'ai-context':
-      return `
+      html = `
         <div class="connector-help">
           Indexes standard AI assistant context files across your projects — no credentials required.
           <br /><br />
@@ -12842,10 +13462,11 @@ function renderConnectorSetupBody(kind: ConnectorKind, existing?: ConnectorConfi
           <button type="button" id="connector-aicontext-browse" class="btn-secondary" style="margin-top:6px;">Browse…</button>
           <span class="field-hint">Point at the root of each project folder. Only the known AI context filenames above will be read — nothing else.</span>
         </div>`;
+      break;
     case 'webhook': {
       const token = (opts['webhookToken'] as string) || '<generated on save>';
       const url = `http://localhost:3458/webhook/${existing?.id ?? '<id>'}/${token}`;
-      return `
+      html = `
         <div class="connector-help">
           Push-only connector. Anything that can POST JSON can send events here:
           Zapier, IFTTT, custom scripts, GitHub Actions, ngrok-exposed webhooks, etc.
@@ -12865,8 +13486,10 @@ function renderConnectorSetupBody(kind: ConnectorKind, existing?: ConnectorConfi
         <div class="connector-help" style="border-left-color: var(--fg-dim);">
           The unique webhook URL is generated when you click Save.
         </div>`}`;
+      break;
     }
   }
+  return html + privacyNote;
 }
 
 function populateEngramDropdown(selectId: string, selectedId?: string): void {
@@ -13201,6 +13824,43 @@ document.getElementById('g-search-llm-btn')?.addEventListener('click', () => {
   switchGraphnosisTab('nondeterministic');
 });
 
+// Permanent delegation listener for citation clicks — attached once to the
+// static g-search-results container so it survives any innerHTML re-renders
+// inside synthBox. Buttons (.synth-cite) bubble up to this listener.
+document.getElementById('g-search-results')?.addEventListener('click', (e) => {
+  const btn = (e.target as Element).closest<HTMLElement>('.synth-cite');
+  if (!btn) return;
+  const nums = (btn.dataset['rowNums'] ?? '')
+    .split(',').map(Number).filter((n) => n > 0);
+  if (nums.length > 0) scrollToCitedRows(nums);
+});
+
+/** Replace [N] or [N, M, …] citations in the LLM answer with clickable buttons. */
+function renderCitedAnswer(rawAnswer: string): string {
+  // Matches [4], [7, 13], [1, 2, 3] — any bracket containing comma-separated ints.
+  const parts = rawAnswer.split(/(\[\d+(?:,\s*\d+)*\])/g);
+  return parts.map((part) => {
+    const m = part.match(/^\[(\d+(?:,\s*\d+)*)\]$/);
+    if (!m || !m[1]) return escape(part);
+    const rowNums = m[1].split(/,\s*/).map(Number).join(',');
+    return `<button class="synth-cite" data-row-nums="${rowNums}" type="button">[${escape(m[1])}]</button>`;
+  }).join('');
+}
+
+function scrollToCitedRows(rowNums: number[]): void {
+  const rows = els.gList.querySelectorAll<HTMLElement>('.g-list-row');
+  const first = rowNums[0] !== undefined ? rows[rowNums[0] - 1] : undefined;
+  if (first) first.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  rowNums.forEach((n) => {
+    const target = rows[n - 1];
+    if (!target) return;
+    target.classList.remove('g-row-cite-flash');
+    void target.offsetWidth; // restart animation
+    target.classList.add('g-row-cite-flash');
+    setTimeout(() => target.classList.remove('g-row-cite-flash'), 1200);
+  });
+}
+
 function renderSearchSynthesis(_query: string, answer: string, citedNodeIds: string[]): void {
   const container = document.getElementById('g-search-results');
   if (!container) return;
@@ -13215,10 +13875,13 @@ function renderSearchSynthesis(_query: string, answer: string, citedNodeIds: str
       'font-size: 14px; line-height: 1.5;';
     container.insertBefore(synthBox, container.firstChild);
   }
+  const isThinking = citedNodeIds.length === 0;
   synthBox.innerHTML =
-    '<div style="font-size: 11px; font-weight: 700; color: var(--accent); letter-spacing: 0.06em; margin-bottom: 4px;">🤖 LOCAL AI SUMMARY</div>' +
-    `<div style="color: var(--fg);">${escape(answer)}</div>` +
+    '<div style="font-size: 11px; font-weight: 700; color: var(--accent); letter-spacing: 0.06em; margin-bottom: 2px;">🤖 LOCAL AI SUMMARY</div>' +
+    '<div style="font-size: 11px; color: var(--fg-dim); margin-bottom: 6px; font-style: italic;">AI may misread brief or fragmentary results — verify against the sources below.</div>' +
+    `<div style="color: var(--fg);">${isThinking ? escape(answer) : renderCitedAnswer(answer)}</div>` +
     `<div style="font-size: 11px; color: var(--fg-dim); margin-top: 6px;">Grounded in ${citedNodeIds.length} memory node(s). Generated locally by your Ollama model — never leaves your device.</div>`;
+  // Click delegation is handled by the permanent listener on #g-search-results (wired once at module load).
 }
 
 function clearSearchSynthesis(): void {

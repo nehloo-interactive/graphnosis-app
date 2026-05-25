@@ -1037,26 +1037,22 @@ export class Atlas {
           mb.MIDDLE = 2;
           mb.RIGHT = 2;
         }
-        // Cmd/Ctrl held: temporarily enable node-drag so the user can grab
-        // a node and reposition it (drop pins the node where released —
-        // see onNodeDragEnd). Released: back to plain-drag-rotates.
-        // window-level listeners so the user can press the key BEFORE
-        // clicking the canvas; cleanup happens in dispose().
-        //
-        // Pan is no longer bound to Cmd — right-drag still pans (mb.RIGHT
-        // was set to 2 above), and middle-drag too. Pan via Cmd is no
-        // longer needed; the user can always two-finger pan or right-drag.
+        // Ctrl/Cmd held: left-drag switches from rotate → pan (camera move),
+        // AND node-drag is enabled so clicking a node still pins it.
+        // Released: left-drag reverts to rotate, node-drag off.
         this.onModKeyDown = (e: KeyboardEvent) => {
           if (e.key === 'Control' || e.key === 'Meta') {
             g.enableNodeDrag(true);
-            // Visual feedback — cursor becomes 'grab' so the user knows
-            // they're in node-move mode. Resets on keyup / blur.
+            // Switch left button from rotate (0) to pan (2) so dragging
+            // on empty space translates the camera instead of spinning.
+            if (mb) mb.LEFT = 2;
             this.opts.container.style.cursor = 'grab';
           }
         };
         this.onModKeyUp = (e: KeyboardEvent) => {
           if (e.key === 'Control' || e.key === 'Meta') {
             g.enableNodeDrag(false);
+            if (mb) mb.LEFT = 0; // restore left → rotate
             this.opts.container.style.cursor = '';
           }
         };
@@ -1067,6 +1063,7 @@ export class Atlas {
         // don't come back to find dragging unexpectedly pinning nodes.
         window.addEventListener('blur', () => {
           g.enableNodeDrag(false);
+          if (mb) mb.LEFT = 0;
           this.opts.container.style.cursor = '';
         });
       }
@@ -2362,12 +2359,29 @@ export class Atlas {
         this.categoryVisible[l.category],
     );
 
-    const anyCategoryHidden = (Object.values(this.categoryVisible) as boolean[]).some((v) => !v);
+    // 'predicted' is always off by default (it's an overlay, not a real edge
+    // category) — exclude it from the "any category hidden?" check so it doesn't
+    // permanently activate the "only show connected nodes" path. Without this,
+    // engrams with zero real edges (e.g. a fresh 2-node engram like FORA) show
+    // no nodes at all because connectedIds is empty when there are no edges.
+    const REAL_EDGE_CATEGORIES: EdgeCategory[] = ['reasoning', 'structure', 'social', 'temporal', 'semantic', 'identity'];
+    const anyCategoryHidden = REAL_EDGE_CATEGORIES.some((cat) => !this.categoryVisible[cat]);
     if (anyCategoryHidden) {
       const connectedIds = new Set<string>();
       for (const l of candidateLinks) {
         connectedIds.add(nodeId(l, 'source'));
         connectedIds.add(nodeId(l, 'target'));
+      }
+      // Always include orphan nodes (nodes with no edges at all in the real graph).
+      // Without this, a node that has ZERO real connections disappears when any
+      // edge category is hidden — even if it belongs to a fully visible source.
+      const hasAnyRealEdge = new Set<string>();
+      for (const l of this.realLinks) {
+        hasAnyRealEdge.add(typeof l.source === 'string' ? l.source : (l.source as AtlasNode).id);
+        hasAnyRealEdge.add(typeof l.target === 'string' ? l.target : (l.target as AtlasNode).id);
+      }
+      for (const n of srcVisibleNodes) {
+        if (!hasAnyRealEdge.has(n.id)) connectedIds.add(n.id); // true orphan — always show
       }
       this.visibleNodeIds = connectedIds;
     } else {
