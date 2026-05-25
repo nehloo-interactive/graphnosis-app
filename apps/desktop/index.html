@@ -5129,7 +5129,7 @@
                style="margin-bottom: 20px; border-radius: 22px; opacity: 0.92; flex-shrink: 0; display: block;" />
           <h1>Graphnosis</h1>
           <p class="subtitle" id="subtitle">Your local encrypted memory, indexed for deterministic recall — auditable</p>
-          <div id="error" class="error hidden"></div>
+          <div id="error-unlock" class="error hidden"></div>
           <div class="panel unlock-card">
             <p class="panel-title">Unlock your local encrypted cortex</p>
             <div class="row">
@@ -5357,8 +5357,13 @@
             </div>
           </nav>
           <div class="app-canvas">
-            <!-- Persistent error banner (any mode) -->
-            <div id="error" class="error hidden"></div>
+            <!-- Persistent error banner (any mode). Paired with #error-unlock
+                 in the lock view — showError() targets the currently-visible
+                 one. Without unique IDs, getElementById would return the
+                 first match (the lock-screen banner) and every error from
+                 the unlocked app silently wrote into a hidden element,
+                 only becoming visible again when the user re-locked. -->
+            <div id="error-app" class="error hidden"></div>
 
             <!-- GRAPHNOSIS — memory check-in dashboard + 3D atlas -->
             <section class="mode-pane hidden" data-pane="atlas">

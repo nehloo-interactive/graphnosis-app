@@ -32,6 +32,10 @@ use tauri::{AppHandle, Emitter};
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::{Child, Command};
 use tokio::time::sleep;
+// Windows: needed for cmd.creation_flags(CREATE_NO_WINDOW) to suppress the
+// console window that would otherwise pop up alongside the sidecar.
+#[cfg(windows)]
+use std::os::windows::process::CommandExt;
 
 /// Payload emitted on `graphnosis://sidecar-boot-status` during startup.
 /// The UI listens for this and shows the step in the lock screen.
@@ -180,6 +184,16 @@ async fn start_inner(app: &AppHandle, cortex_dir: &Path, passphrase: &str, recov
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true);
+
+    // Windows: suppress the console window that would otherwise pop up
+    // alongside the sidecar. CREATE_NO_WINDOW (0x08000000) tells CreateProcess
+    // to not allocate a console for the child. Piping above still captures
+    // stdout/stderr — only the visible terminal window is suppressed.
+    // build.rs ALSO compiles the Bun binary with --windows-hide-console so it
+    // declares the Windows GUI subsystem at PE level; this flag is the
+    // defence-in-depth case for older binaries already shipped to users.
+    #[cfg(windows)]
+    cmd.creation_flags(0x08000000);
 
     // Recovery mode sets GRAPHNOSIS_RECOVERY_PHRASE; normal mode sets
     // GRAPHNOSIS_PASSPHRASE. The sidecar reads whichever is present.
@@ -467,12 +481,14 @@ pub fn resolve_relay_path() -> Result<PathBuf> {
     let exe_dir = exe.parent().context("exe parent dir")?;
     let triple = host_target_triple();
     // Production .app first (Tauri strips the triple suffix on externalBin
-    // bundling), then dev's suffixed name as fallback.
-    let bundled = exe_dir.join("graphnosis-mcp-relay");
+    // bundling), then dev's suffixed name as fallback. EXE_SUFFIX is ".exe"
+    // on Windows and "" elsewhere — without it, Windows installs fail to find
+    // the bundled `graphnosis-mcp-relay.exe`.
+    let bundled = exe_dir.join(format!("graphnosis-mcp-relay{}", env::consts::EXE_SUFFIX));
     if bundled.exists() {
         return Ok(bundled);
     }
-    let dev = exe_dir.join(format!("graphnosis-mcp-relay-{}", triple));
+    let dev = exe_dir.join(format!("graphnosis-mcp-relay-{}{}", triple, env::consts::EXE_SUFFIX));
     if dev.exists() {
         return Ok(dev);
     }
@@ -508,12 +524,15 @@ fn resolve_sidecar_path() -> Result<PathBuf> {
     let exe_dir = exe.parent().context("exe parent dir")?;
     let triple = host_target_triple();
     // Production .app first (Tauri strips the triple suffix on bundling),
-    // then dev's suffixed name as fallback.
-    let bundled = exe_dir.join("graphnosis-sidecar");
+    // then dev's suffixed name as fallback. EXE_SUFFIX is ".exe" on Windows
+    // and "" elsewhere — without it, Windows installs fail to find the
+    // bundled `graphnosis-sidecar.exe` and the lock screen reports
+    // "could not locate the sidecar binary".
+    let bundled = exe_dir.join(format!("graphnosis-sidecar{}", env::consts::EXE_SUFFIX));
     if bundled.exists() {
         return Ok(bundled);
     }
-    let dev = exe_dir.join(format!("graphnosis-sidecar-{}", triple));
+    let dev = exe_dir.join(format!("graphnosis-sidecar-{}{}", triple, env::consts::EXE_SUFFIX));
     if dev.exists() {
         return Ok(dev);
     }
