@@ -1492,6 +1492,7 @@ dependencies = [
  "dirs 5.0.1",
  "image",
  "keyring",
+ "mac-notification-sys",
  "notify",
  "serde",
  "serde_json",

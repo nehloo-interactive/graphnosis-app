@@ -67,10 +67,28 @@ pub struct SidecarHandle {
 
 impl SidecarHandle {
     pub async fn shutdown(mut self) -> Result<()> {
+        // Ask the sidecar to flush dirty graphs and exit cleanly. On Unix we
+        // send SIGTERM and wait up to 3 s; if it doesn't respond we fall back
+        // to SIGKILL. On Windows there is no SIGTERM — go straight to kill().
+        #[cfg(unix)]
+        {
+            if let Some(pid) = self.child.id() {
+                // SAFETY: kill(2) is always safe to call with a valid pid and
+                // a known signal number. SIGTERM = 15.
+                extern "C" { fn kill(pid: i32, sig: i32) -> i32; }
+                unsafe { kill(pid as i32, 15); }
+            }
+            // Wait up to 3 s for the sidecar's graceful-shutdown path to
+            // complete (flush graphs, release lock, exit). After the timeout
+            // we fall through and send SIGKILL as a hard stop.
+            let _ = tokio::time::timeout(Duration::from_secs(3), self.child.wait()).await;
+        }
+        // SIGKILL fallback: always on Windows, after timeout on Unix. kill()
+        // on an already-exited child is a no-op (returns an ignorable error).
         let _ = self.child.kill().await;
         let _ = self.child.wait().await;
-        // child.kill() sends SIGKILL — the sidecar's SIGTERM handler never
-        // runs, so proper-lockfile never releases `.lockfile.lock`. Delete it
+        // When the sidecar exits via SIGKILL (or didn't handle SIGTERM in
+        // time), proper-lockfile never releases `.lockfile.lock`. Delete it
         // here so the next unlock can acquire the lock immediately instead of
         // waiting for the 10s stale timeout (or failing outright).
         // proper-lockfile creates a .lockfile.lock DIRECTORY (atomic mkdir),
