@@ -22,7 +22,7 @@ This is the practical reason Graphnosis exists alongside the privacy story: AI c
 
 ## Before you start: the app must be running
 
-For any MCP-compatible AI client to read from your cortex, **Graphnosis must be running on your Mac and your cortex must be unlocked**.
+For any MCP-compatible AI client to read from your cortex, **Graphnosis must be running and your cortex must be unlocked**. The instructions below apply to macOS; Windows users can follow the same Claude Desktop / Claude Code / Cursor config steps — the sidecar binary and relay work on Windows.
 
 | Graphnosis state | What your AI client sees |
 |------------------|--------------------------|
@@ -72,6 +72,8 @@ Replace `/Users/you/Documents/MyCortex` with the path to your cortex folder.
 
 Restart Claude Desktop. On next launch you'll see a small plug icon in the bottom-left of the input field — that confirms the MCP connection is live.
 
+**Windows:** the config file is at `%APPDATA%\Claude\claude_desktop_config.json`. Use the Windows sidecar path instead: `C:\Program Files\Graphnosis\graphnosis-sidecar.exe`. The in-app **Connect an AI client → Claude Desktop** wizard generates the correct snippet for your platform automatically.
+
 ## Claude Code (CLI)
 
 Claude Code reads MCP server config from `~/.claude.json` (user-level) or `.mcp.json` in your project root. Add a `graphnosis` entry to the `mcpServers` object:
@@ -90,7 +92,7 @@ Claude Code reads MCP server config from `~/.claude.json` (user-level) or `.mcp.
 }
 ```
 
-Reload your Claude Code session (or open a new one). Run `/mcp` inside Claude Code to confirm `graphnosis` shows as connected, then the seven Graphnosis tools become available in any chat.
+Reload your Claude Code session (or open a new one). Run `/mcp` inside Claude Code to confirm `graphnosis` shows as connected, then the Graphnosis tools become available in any chat.
 
 The fastest way to wire this is the menu-bar tray's **Connect an AI client → Claude Code** option — it writes the right config file for you and tells you whether to reload an active session.
 
@@ -197,19 +199,22 @@ The wizard is fully detailed in **[Connect from your phone](/getting-started/mob
 
 **The bearer token is unique per cortex and auto-rotates** on every wizard re-open. Treat it like a password: revoke by toggling Mobile Access off and back on in Settings.
 
-## The 7 MCP tools
+## The 35 MCP tools
 
-Once connected, these tools are available to your AI:
+Once connected, **35 tools** are available to your AI, organised into nine categories (Core memory, Engram discovery, Structured recall, Source operations, Engram operations, Brain maintenance, Approximate, Conditional, and Non-deterministic). The most commonly used ones:
 
 | Tool | What it does |
 |------|-------------|
 | `recall` | Semantic search over your cortex. The AI calls this automatically when it needs context. Returns the top-k most relevant chunks. |
+| `dig_deeper` | Escalation tool — call this when `recall` returns thin results (0–3 nodes) before telling the user nothing was found. Runs content recall + filename expansion + cross-engram entity hop. |
 | `remind` | Same as `recall` but tuned for "remind me about X" intent — biases toward recently-touched memories. |
 | `remember` | Store a new memory from within a conversation. Useful for saving decisions, notes, or facts mid-chat. Supports `target_engram` so the AI can route the note into a specific engram (with a user-confirmation banner if the name doesn't exist or is ambiguous — see below). |
-| `correct` | Propose a natural-language correction to an existing memory. Sends a diff to a local LLM and stores the proposed change for user review. Fires a notification when the app is in the background. |
-| `apply` | Apply a confirmed correction. Must be called after `correct` returns a correction ID. |
+| `edit` | Propose a change to an existing memory — correction, update, or append. Returns a diff for user review; nothing is written until approved. Fires a notification when the app is in the background. (`correct` still works as an alias.) |
+| `apply` | Commit a reviewed diff. Must be called after `edit` returns a diff ID. |
 | `forget` | Remove a specific memory by ID. |
 | `stats` | Return cortex statistics: total sources, chunks, graphs, embedding model info. |
+
+See the full [MCP Tools reference](/reference/mcp-tools/) for all 35 tools with parameter details.
 
 ### Asking the AI to save into a specific engram
 
@@ -221,8 +226,6 @@ When the AI calls `remember` with `target_engram: "Book Notes"`, Graphnosis trie
 
 **The AI never auto-creates engrams or silently disambiguates.** Every new engram is your decision. If the app is in the background when this happens, you get a macOS notification too.
 
-See the full [MCP Tools reference](/reference/mcp-tools/) for parameter details.
-
 ## How recall works automatically
 
 When sensitivity allows it, Graphnosis can inject context proactively — before the AI even calls `recall`. The sidecar listens for the conversation's first user message, runs a fast semantic search, and prepends the top results as a system context block. This requires no AI cooperation; it works at the MCP transport layer.
@@ -231,7 +234,7 @@ If your client does not support proactive injection, the AI will use `recall` as
 
 ## Add the Graphnosis docs to your cortex
 
-A connected AI client knows whatever is in your cortex — but by default it knows nothing about Graphnosis itself. To fix that, the first time you unlock a cortex the app offers to ingest the Graphnosis documentation into a dedicated `graphnosis-docs` engram. Accept, and your AI can answer "how do snapshots work?" or "what does the `correct` tool do?" straight from recall, using the same docs you are reading now.
+A connected AI client knows whatever is in your cortex — but by default it knows nothing about Graphnosis itself. To fix that, the first time you unlock a cortex the app offers to ingest the Graphnosis documentation into a dedicated `graphnosis-docs` engram. Accept, and your AI can answer "how do snapshots work?" or "what does the `edit` tool do?" straight from recall, using the same docs you are reading now.
 
 The documentation ships **bundled inside the app** — adding it is a fully offline operation with no network call. The `graphnosis-docs` engram lives in your cortex like any other; it just is not built from your own content.
 

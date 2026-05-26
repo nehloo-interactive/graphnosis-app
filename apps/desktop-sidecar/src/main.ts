@@ -132,9 +132,7 @@ async function loadAllGraphsFromDisk(
     const tLoad = Date.now();
     try {
       await host.loadGraph(graphId);
-      const loadMs = Date.now() - tLoad;
       loaded++;
-      console.error(`[graphnosis-sidecar] loaded engram '${graphId}' in ${loadMs}ms (${loaded}/${total})`);
     } catch (e) {
       const err = e as Error;
       // host.loadGraph throws a synthesized ENOENT with the marker phrase

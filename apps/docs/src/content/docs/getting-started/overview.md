@@ -147,7 +147,7 @@ ChatGPT desktop has limited third-party MCP support as of early 2025. Check the 
 
 | Component | Requirement |
 |-----------|------------|
-| Operating system | macOS 13 Ventura or later (Windows/Linux: planned) |
+| Operating system | macOS 13 Ventura or later; Windows (sidecar + relay functional, desktop shell in beta; Linux: planned) |
 | Architecture | Apple Silicon or Intel |
 | Node.js | 20 or later (bundled with the app) |
 | Disk space | ~200 MB for the app; cortex size depends on your content |

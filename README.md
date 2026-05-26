@@ -112,7 +112,7 @@ apps/
       embed-worker.ts   Forked child: owns one fastembed / ONNX session
       embedding-queue.ts  Mutex: serializes ONNX calls between concurrent ingests
       ipc.ts            Unix-socket JSON-RPC server for Tauri shell
-      mcp-server.ts     34 MCP tool definitions in 9 categories (recall, …)
+      mcp-server.ts     35 MCP tool definitions in 9 categories (recall, …)
 packages/
   graphnosis-app-core/  Crypto, op-log, source index, federation,
                         sensitivity tiers, embeddings cache, policy
