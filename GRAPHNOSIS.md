@@ -1,6 +1,6 @@
 # Graphnosis memory — instructions for AI assistants
 
-v0.10.3
+v0.11.0
 
 This project uses **Graphnosis** as its long-term memory: a local, encrypted
 memory store the user owns and controls, reached through MCP tools. Treat
@@ -110,7 +110,7 @@ for speculation.
   half-formed ideas as if they were fact; if something is uncertain, leave it
   out or note the uncertainty plainly.
 - Don't save ephemeral chatter, jokes, or hypotheticals — memory is not a chat log.
-- To FIX something already in memory, use `correct`, never a second `remember` —
+- To FIX, UPDATE, or ADD DETAIL to something already in memory, use `edit`, never a second `remember` —
   a second `remember` only creates a conflicting duplicate.
 - Don't save anything the user clearly would not want kept. If unsure, ask.
 
@@ -218,7 +218,7 @@ and shapes the audit footer.
 
 **Conditional** (deterministic by default, LLM-aware when enabled):
 
-- `correct` — propose a reviewed fix to existing memory as a structured diff. **Never use `remember` to "fix" something — that creates duplicate conflicting nodes.** Always `correct`.
+- `edit` — propose a change to existing memory as a structured diff. Covers three cases: **CORRECTION** ("actually it was September, not August"), **UPDATE** ("my plans changed — update my Q3 milestones to…"), and **APPEND/ADD DETAIL** ("add these items to my project plan"). **Never use `remember` to modify something — that creates duplicate conflicting nodes.** Always `edit`.
 
 **Non-deterministic** (require the optional Local LLM running on the user's machine):
 
@@ -275,7 +275,7 @@ different determinism contract. Treat them differently in your responses.
 | Local LLM overlay | `.gll` | Predicted edges + synthesized assertions from the local LLM | The LLM's inference loops; user discards via UI |
 
 The LLM cannot mutate `.gai`. The neural network cannot mutate `.gai`. The
-only path to a change in attested memory is a `correct` diff the user reviews
+only path to a change in attested memory is an `edit` diff the user reviews
 and approves. This is structural, not procedural — different files, different
 write privileges.
 
@@ -305,7 +305,7 @@ What you should do with the inferred layer:
   with ~78% confidence" — never "you said X" when X is from a `[gll]` row.
 - **Prefer attested content when there's a conflict.** If `.gai` says the
   user lives in Bucharest and a `[gll·assertion]` infers Cluj, the canonical
-  memory wins. Mention the discrepancy and offer `correct` if appropriate.
+  memory wins. Mention the discrepancy and offer `edit` if appropriate.
 - **Don't `remember` an inferred row.** That would promote a probabilistic
   prediction into attested memory — exactly the failure mode the overlay
   architecture exists to prevent. If the user explicitly confirms the
