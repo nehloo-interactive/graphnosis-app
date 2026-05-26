@@ -7220,13 +7220,13 @@ ollama list</code></pre>
             row below. The tier controls how much your connected AI clients can pull from that engram:
           </p>
           <ul style="font-size: 14px; color: var(--fg-dim); line-height: 1.6; margin: 0 0 10px; padding-left: 20px;">
-            <li><strong>Public</strong> — full access. The AI can pull up to <strong>4&nbsp;000 tokens</strong>
+            <li><strong style="color:var(--ok)">Public</strong> — full access. The AI can pull up to <strong>4&nbsp;000 tokens</strong>
               per recall and may surface these memories <em>proactively</em>, without being asked. Best for
               reference material, documentation, and notes you don't mind the AI volunteering.</li>
-            <li><strong>Personal</strong> — access only when you explicitly ask. Up to <strong>2&nbsp;000
+            <li><strong style="color:var(--color-status-warn-gold)">Personal</strong> — access only when you explicitly ask. Up to <strong>2&nbsp;000
               tokens</strong> per <code>recall</code>; no proactive injection. Best for journal entries,
               personal notes, and work summaries. This is the default for new engrams.</li>
-            <li><strong>Sensitive</strong> — the AI is fully blocked. It receives <strong>0 results</strong>
+            <li><strong style="color:var(--error)">Sensitive</strong> — the AI is fully blocked. It receives <strong>0 results</strong>
               from this engram for any query and is never even told it exists. You can still browse and
               search it yourself in Graphnosis. Best for health records, financial data, or anything
               strictly private.</li>
@@ -7797,6 +7797,25 @@ ollama list</code></pre>
           <div style="display:flex; gap:8px; justify-content:flex-end;">
             <button id="tier-confirm-cancel" class="btn-secondary">Cancel</button>
             <button id="tier-confirm-ok" class="btn-primary">Confirm</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Generic in-app confirm / alert modal.
+         Replaces window.confirm() and window.alert() for destructive actions
+         because Tauri's webview silently swallows native JS dialogs.
+         Driven by gConfirm() and gAlert() helpers in main.ts. -->
+    <div id="g-confirm-modal" class="modal-backdrop hidden">
+      <div class="modal" style="max-width:460px;">
+        <div class="modal-header">
+          <h2 id="g-confirm-title">Confirm</h2>
+        </div>
+        <div class="modal-body" style="padding:20px 28px 24px;">
+          <p id="g-confirm-body" style="margin:0 0 24px; font-size:14px; line-height:1.6; white-space:pre-wrap; color:var(--fg-dim);"></p>
+          <div style="display:flex; gap:10px; justify-content:flex-end;">
+            <button id="g-confirm-cancel" style="min-width:80px;">Cancel</button>
+            <button id="g-confirm-ok" class="primary" style="min-width:80px;">Confirm</button>
           </div>
         </div>
       </div>

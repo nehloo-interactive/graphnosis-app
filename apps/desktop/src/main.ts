@@ -827,6 +827,64 @@ let sourcesEngramFilter = ''; // graphId of the selected engram, '' = all
 // Each move is chained onto this promise; null means no move is in flight.
 let moveSourceQueue: Promise<void> | null = null;
 
+// ── In-app confirm / alert ────────────────────────────────────────────────
+//
+// window.confirm() and window.alert() are silently swallowed by Tauri's
+// WKWebView — the webview's UI delegate methods aren't wired, so dialogs
+// auto-dismiss without user interaction. These helpers render the app's own
+// modal instead so destructive actions always get explicit user confirmation.
+//
+// gConfirm(title, body) → Promise<boolean>  (true = user clicked Confirm)
+// gAlert(title, body)   → Promise<void>     (resolves when user clicks OK)
+
+let _gConfirmResolve: ((v: boolean) => void) | null = null;
+
+function _initGConfirmModal(): void {
+  const modal   = document.getElementById('g-confirm-modal')!;
+  const okBtn   = document.getElementById('g-confirm-ok')   as HTMLButtonElement;
+  const cancelBtn = document.getElementById('g-confirm-cancel') as HTMLButtonElement;
+  const resolve = (v: boolean) => {
+    modal.classList.add('hidden');
+    if (_gConfirmResolve) { _gConfirmResolve(v); _gConfirmResolve = null; }
+  };
+  okBtn.addEventListener('click',     () => resolve(true));
+  cancelBtn.addEventListener('click', () => resolve(false));
+  // Esc key
+  modal.addEventListener('keydown', (e) => { if (e.key === 'Escape') resolve(false); });
+}
+
+function gConfirm(title: string, body: string): Promise<boolean> {
+  const modal    = document.getElementById('g-confirm-modal')!;
+  const titleEl  = document.getElementById('g-confirm-title')!;
+  const bodyEl   = document.getElementById('g-confirm-body')!;
+  const okBtn    = document.getElementById('g-confirm-ok') as HTMLButtonElement;
+  const cancelEl = document.getElementById('g-confirm-cancel') as HTMLButtonElement;
+  titleEl.textContent  = title;
+  bodyEl.textContent   = body;
+  okBtn.textContent    = 'Confirm';
+  cancelEl.classList.remove('hidden');
+  modal.classList.remove('hidden');
+  (document.getElementById('g-confirm-ok') as HTMLButtonElement).focus();
+  return new Promise<boolean>((resolve) => { _gConfirmResolve = resolve; });
+}
+
+function gAlert(title: string, body: string): Promise<void> {
+  const modal    = document.getElementById('g-confirm-modal')!;
+  const titleEl  = document.getElementById('g-confirm-title')!;
+  const bodyEl   = document.getElementById('g-confirm-body')!;
+  const okBtn    = document.getElementById('g-confirm-ok') as HTMLButtonElement;
+  const cancelEl = document.getElementById('g-confirm-cancel') as HTMLButtonElement;
+  titleEl.textContent = title;
+  bodyEl.textContent  = body;
+  okBtn.textContent   = 'OK';
+  cancelEl.classList.add('hidden');
+  modal.classList.remove('hidden');
+  okBtn.focus();
+  return new Promise<void>((resolve) => {
+    _gConfirmResolve = (v) => { void v; resolve(); };
+  });
+}
+
 function showError(msg: string | null): void {
   // Target whichever banner sits inside the currently-visible view. When
   // the unlock view is showing, that's #error-unlock; otherwise #error-app.
@@ -3188,51 +3246,76 @@ function closeRecoveryModal(): void {
 
 // ---- purge-forgotten flow ----------------------------------------------
 
+/** True while a Purge All sweep is running — persists across modal close/reopen. */
+let purgeAllInProgress = false;
+
+/**
+ * GraphIds currently being purged individually (via the single-engram Purge
+ * button). Keeps those rows visible in the Cortex Management modal even after
+ * `inspector_stats` returns 0 soft-deleted for them (which happens because
+ * purge's internal re-ingest fires `ingest.done` → `refreshStats()` mid-purge).
+ */
+const purgeInProgressGraphIds = new Set<string>();
+
 async function runPurge(btn: HTMLButtonElement): Promise<void> {
   const graphId = btn.dataset.graphId ?? '';
   if (!graphId) return;
-  const ok = confirm(
-    `Purge forgotten memories from "${graphId}"?\n\n` +
-    `This rebuilds the graph from your remaining sources to physically remove ` +
-    `soft-deleted nodes. It can take a few minutes on large cortexes.\n\n` +
-    `Requirement: every live source must be re-readable — either from the ` +
-    `content cache, or from its original file path. If anything is missing, ` +
-    `the purge will abort without changing the graph.`,
+  const displayName = loadedGraphs.find((g) => g.graphId === graphId)?.metadata.displayName ?? graphId;
+  const ok = await gConfirm(
+    `Purge "${displayName}"?`,
+    `This rebuilds the engram from its remaining live sources to physically remove soft-deleted memories.\n\n` +
+    `Every live source must be re-readable — from the content cache or its original file path. ` +
+    `If anything is missing the purge aborts without changing the engram.\n\n` +
+    `This may take a few minutes on large engrams.`,
   );
   if (!ok) return;
   btn.disabled = true;
   const originalText = btn.textContent;
   btn.textContent = 'Purging…';
   showError(null);
+  // Track this graphId so updateGraphnosisForgottenRow keeps the row visible
+  // even when refreshStats() fires mid-purge (triggered by ingest.done events).
+  purgeInProgressGraphIds.add(graphId);
+  brainActivePhases.add('purge');
+  renderStatusProcess();
+  // Show inline status label next to the button.
+  const purgeStatusEl = btn.closest('.g-recap-forgotten-row')?.querySelector<HTMLElement>('.purge-status');
+  if (purgeStatusEl) purgeStatusEl.textContent = 'Purging…';
   try {
     const report = (await invoke('purge_forgotten', { graphId })) as PurgeReport;
     if (report.noop) {
-      showError(null);
-      alert('Nothing to purge — the graph already had no soft-deleted memories.');
+      await gAlert('Nothing to purge', 'This engram already has no soft-deleted memories.');
     } else if (report.aborted) {
       const reasons = report.errors.map(e => `• ${e.ref}: ${e.error}`).join('\n');
-      alert(
-        `Purge aborted to protect your data.\n\n` +
-        `These sources couldn't be reconstructed:\n${reasons}\n\n` +
-        `Either turn on Content cache (Settings) and re-ingest these sources first, ` +
-        `or restore their original files to the recorded paths.`,
+      await gAlert(
+        'Purge aborted',
+        `These sources couldn't be reconstructed:\n\n${reasons}\n\n` +
+        `Turn on Content cache (Settings) and re-ingest them first, or restore their original files.`,
       );
     } else {
-      const detail = `Rebuilt ${report.sourcesRebuilt} sources. ` +
-        `Removed ${report.beforeSoftDeletedNodes} forgotten memories. ` +
-        `Graph went from ${report.beforeTotalNodes} → ${report.afterTotalNodes} total nodes.`;
+      const detail =
+        `Rebuilt ${report.sourcesRebuilt} source${report.sourcesRebuilt === 1 ? '' : 's'}. ` +
+        `Removed ${report.beforeSoftDeletedNodes} forgotten memor${report.beforeSoftDeletedNodes === 1 ? 'y' : 'ies'}. ` +
+        `Nodes: ${report.beforeTotalNodes} → ${report.afterTotalNodes}.`;
       if (report.errors.length > 0) {
         const issues = report.errors.map(e => `• ${e.ref}: ${e.error}`).join('\n');
-        alert(`Purge finished with issues.\n\n${detail}\n\nProblems:\n${issues}`);
+        await gAlert('Purge finished with issues', `${detail}\n\nProblems:\n${issues}`);
       } else {
-        alert(`Purge complete.\n\n${detail}`);
+        await gAlert('Purge complete', detail);
       }
     }
     await refreshStats();
   } catch (e) {
     showError(`Purge failed: ${e}`);
     btn.disabled = false;
-    btn.textContent = originalText;
+    btn.textContent = originalText ?? 'Purge now';
+  } finally {
+    purgeInProgressGraphIds.delete(graphId);
+    // Only clear the phase if no other purges are in progress.
+    if (purgeInProgressGraphIds.size === 0 && !purgeAllInProgress) {
+      brainActivePhases.delete('purge');
+      renderStatusProcess();
+    }
   }
 }
 
@@ -3241,39 +3324,57 @@ async function runPurgeAll(graphIds: string[]): Promise<void> {
   const names = graphIds
     .map((id) => loadedGraphs.find((g) => g.graphId === id)?.metadata.displayName ?? id)
     .join(', ');
-  const ok = confirm(
-    `Purge forgotten memories from all ${graphIds.length} engrams?\n\n` +
+  const ok = await gConfirm(
+    `Purge all ${graphIds.length} engrams?`,
+    `Each engram will be rebuilt from its remaining live sources in sequence to physically remove soft-deleted memories.\n\n` +
     `Engrams: ${names}\n\n` +
-    `Each engram will be rebuilt from its remaining live sources in sequence. ` +
-    `This can take several minutes on large cortexes.\n\n` +
-    `Each purge aborts individually if a source can't be reconstructed — ` +
-    `partial success is reported at the end.`,
+    `Each purge aborts individually if a source can't be reconstructed — partial success is reported at the end. ` +
+    `This may take several minutes.`,
   );
   if (!ok) return;
-  const purgeAllBtn = els.gRecapForgotten.querySelector<HTMLButtonElement>('.btn-g-purge-all');
-  if (purgeAllBtn) { purgeAllBtn.disabled = true; purgeAllBtn.textContent = 'Purging…'; }
+
+  // Lock out all purge buttons for the duration — persists across modal close/reopen.
+  purgeAllInProgress = true;
+  els.gRecapForgotten.querySelectorAll<HTMLButtonElement>('.btn-g-purge, .btn-g-purge-all').forEach((b) => {
+    b.disabled = true;
+    if (b.classList.contains('btn-g-purge-all')) b.textContent = 'Purging…';
+  });
+  brainActivePhases.add('purge');
+  renderStatusProcess();
   showError(null);
+
   const errors: string[] = [];
-  for (const graphId of graphIds) {
+  for (let i = 0; i < graphIds.length; i++) {
+    // Brief pause between engrams — reduces sustained CPU/thermal load.
+    if (i > 0) await new Promise<void>((r) => setTimeout(r, 600));
+    const graphId = graphIds[i];
+    const displayName = loadedGraphs.find((g) => g.graphId === graphId)?.metadata.displayName ?? graphId;
     try {
       const btn = els.gRecapForgotten.querySelector<HTMLButtonElement>(
         `.btn-g-purge[data-graph-id="${graphId}"]`
       );
-      if (btn) { btn.disabled = true; btn.textContent = 'Purging…'; }
+      if (btn) { btn.textContent = `Purging ${displayName}…`; }
       const report = (await invoke('purge_forgotten', { graphId })) as PurgeReport;
       if (report.aborted) {
         const reasons = report.errors.map((e) => `  • ${e.ref}: ${e.error}`).join('\n');
-        errors.push(`${graphId} aborted:\n${reasons}`);
+        errors.push(`${displayName} aborted:\n${reasons}`);
       }
     } catch (e) {
-      errors.push(`${graphId}: ${e}`);
+      errors.push(`${displayName}: ${e}`);
     }
   }
+
+  // Clear the in-progress flag BEFORE refreshStats so the re-rendered buttons
+  // are enabled. The phase is removed here too so the status bar clears.
+  purgeAllInProgress = false;
+  brainActivePhases.delete('purge');
+  renderStatusProcess();
   await refreshStats();
+
   if (errors.length > 0) {
-    alert(`Purge All finished with issues:\n\n${errors.join('\n\n')}`);
+    await gAlert('Purge All finished with issues', errors.join('\n\n'));
   } else {
-    alert(`Purge All complete — forgotten memories removed from all ${graphIds.length} engrams.`);
+    await gAlert('Purge All complete', `Forgotten memories removed from all ${graphIds.length} engrams.`);
   }
 }
 
@@ -6137,7 +6238,11 @@ function updateGraphnosisForgottenRow(): void {
     emptyMsg?.classList.remove('hidden');
     return;
   }
-  const withForgotten = lastInspectorStats.graphs.filter((g) => g.softDeletedNodes > 0);
+  // Include engrams currently being purged even if their stats now show 0
+  // soft-deleted (purge fires ingest.done mid-rebuild → refreshStats clears the count).
+  const withForgotten = lastInspectorStats.graphs.filter(
+    (g) => g.softDeletedNodes > 0 || purgeInProgressGraphIds.has(g.graphId),
+  );
   if (withForgotten.length === 0) {
     els.gRecapForgotten.classList.add('hidden');
     els.gRecapForgotten.innerHTML = '';
@@ -6157,12 +6262,17 @@ function updateGraphnosisForgottenRow(): void {
   els.gRecapForgotten.innerHTML = purgeAllBtn + withForgotten.map((g) => {
     const name = loadedGraphs.find((lg) => lg.graphId === g.graphId)?.metadata.displayName ?? g.graphId;
     const n = g.softDeletedNodes;
+    const isPurgingNow = purgeInProgressGraphIds.has(g.graphId);
+    const countLabel = isPurgingNow && n === 0
+      ? '— purging…'
+      : `— ${n} forgotten memor${n === 1 ? 'y' : 'ies'}`;
     return `
       <div class="g-recap-forgotten-row">
         <span class="g-recap-forgotten-label" title="${escape(name)}">
-          ${escape(name)} — ${n} forgotten memor${n === 1 ? 'y' : 'ies'}
+          ${escape(name)} ${countLabel}
         </span>
-        <button class="btn-g-purge" data-graph-id="${escape(g.graphId)}" title="${purgeTitle}">Purge now</button>
+        <span class="purge-status" style="font-size:12px; color:var(--fg-dim); margin-right:6px;">${isPurgingNow ? 'Purging…' : ''}</span>
+        <button class="btn-g-purge" data-graph-id="${escape(g.graphId)}" title="${purgeTitle}"${isPurgingNow ? ' disabled' : ''}>Purge now</button>
       </div>`;
   }).join('');
   els.gRecapForgotten.classList.remove('hidden');
@@ -6174,6 +6284,14 @@ function updateGraphnosisForgottenRow(): void {
   const purgeAllEl = els.gRecapForgotten.querySelector<HTMLButtonElement>('.btn-g-purge-all');
   if (purgeAllEl) {
     purgeAllEl.addEventListener('click', () => void runPurgeAll(withForgotten.map((g) => g.graphId)));
+  }
+  // If a Purge All sweep is already running (user closed + reopened the modal),
+  // keep all buttons in the disabled/locked state so they can't start a second one.
+  if (purgeAllInProgress) {
+    els.gRecapForgotten.querySelectorAll<HTMLButtonElement>('.btn-g-purge, .btn-g-purge-all').forEach((b) => {
+      b.disabled = true;
+      if (b.classList.contains('btn-g-purge-all')) b.textContent = 'Purging…';
+    });
   }
 }
 
@@ -9698,6 +9816,9 @@ void listen<{ loaded: number; total: number }>('graphnosis://engrams-loading', (
   const remaining = total - loaded;
   const allDone = remaining <= 0;
 
+  // Unblock any docs reingest that was waiting for loading to complete.
+  if (allDone) markEngramsLoaded();
+
   // Status bar: always show a count so the user sees progress.
   if (els.statusSaved) {
     els.statusSaved.textContent = allDone
@@ -9861,6 +9982,7 @@ const PHASE_LINE: Record<string, PhaseLine> = {
   'edge-prediction':{ prefix: 'GLL',           verb: 'predicting edges',         tone: 'gll' },
   'neural-network': { prefix: 'GNN',           verb: 'training',                 tone: 'gnn' },
   fullscan:         { prefix: 'Background',    verb: 'running a self-scan',      tone: 'det' },
+  purge:            { prefix: 'Cortex',        verb: 'purging forgotten memories', tone: 'det' },
 };
 
 /** Dot color per category — matches the visual identity of GLL / GNN pills
@@ -11726,6 +11848,23 @@ interface EngramSuggestPayload {
 // the offer should be evaluated once per unlocked session.
 let docsOfferChecked = false;
 
+// Promise that resolves when the initial engram loading sweep is done
+// (engrams-loading event with loaded === total). Docs reingest awaits this
+// so it doesn't saturate the embed workers while the loading loop is still
+// running — that made the loading progress appear stuck.
+let _engramsLoadedResolve: (() => void) | null = null;
+const engramsLoaded: Promise<void> = new Promise<void>((resolve) => {
+  _engramsLoadedResolve = resolve;
+});
+
+/** Resolve the engramsLoaded promise. Called from the engrams-loading listener. */
+function markEngramsLoaded(): void {
+  if (_engramsLoadedResolve) {
+    _engramsLoadedResolve();
+    _engramsLoadedResolve = null;
+  }
+}
+
 /** Ask the sidecar what to do about the docs engram, then act on it. Runs
  *  once per unlock. `offer` shows a banner; `reingest` runs silently with a
  *  toast; `none` does nothing. */
@@ -11740,8 +11879,19 @@ async function checkDocsIngestOffer(): Promise<void> {
     if (decision === 'offer') {
       showDocsOfferBanner();
     } else if (decision === 'reingest') {
-      // App updated — refresh the docs silently. A toast keeps it honest
-      // without demanding a click.
+      // App updated — refresh the docs silently. Wait for the initial
+      // engram loading sweep to finish first so the heavy docs ingest
+      // (24 pages, each awaiting embed workers) doesn't saturate the
+      // embed workers while the loading loop is still running, which
+      // makes the loading progress appear frozen.
+      //
+      // Timeout: if loading never fires an allDone event within 30s
+      // (e.g. the cortex is tiny with 0 secondary engrams), proceed
+      // anyway — loading is done implicitly.
+      await Promise.race([
+        engramsLoaded,
+        new Promise<void>((r) => setTimeout(r, 30_000)),
+      ]);
       const tid = addIngestToast('Updating Graphnosis docs', 'The app updated — refreshing docs…');
       try {
         const { ingested, failed } = await ipcCall<{ ingested: number; failed: number }>(
@@ -12402,6 +12552,20 @@ void listen('graphnosis://unlocked-via-recovery', () => {
   // Small delay so the recovery-unlock UI has time to dismiss before the
   // new modal pops up — otherwise we get a flicker through two modals.
   window.setTimeout(showSetNewPassphraseModal, 250);
+});
+
+// Alert the user when the sidecar detects that the cortex folder has been
+// renamed or moved on disk while the cortex was open and active. The sidecar
+// fires this via fs.watch on the parent directory; it passes through the
+// event_stream allow-list as "graphnosis://cortex-integrity-alert".
+void listen<{ reason: string }>('graphnosis://cortex-integrity-alert', () => {
+  void gAlert(
+    '⚠️ Cortex folder renamed or moved',
+    'The folder that holds your cortex was renamed or moved while Graphnosis was open.\n\n' +
+    'Any background writes attempted after the rename may have been silently dropped. ' +
+    'Your existing memories are safe — they were fully written before the rename.\n\n' +
+    'Please lock the cortex now (click Lock in the top bar) and reopen it from its new location to continue safely.',
+  );
 });
 
 // ── "Forgot passphrase?" recovery unlock flow ─────────────────────────────
@@ -13707,6 +13871,7 @@ void (async () => {
   try {
     // Restore the last cortex path before any UI renders so the unlock
     // screen — if that's where we land — already has the path filled in.
+    _initGConfirmModal();
     prefillLastCortexDir();
     const status = (await invoke('status')) as StatusSnapshot;
     // If the backend reports an unlocked session, persist its cortex
