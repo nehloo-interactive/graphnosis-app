@@ -358,7 +358,7 @@ protocol and POSTing summaries to the Webhook connector. Common stacks:
 
 - Don't flood the cortex with every reading. Bridge **events of note**:
   threshold crossings, machine state changes, maintenance flags.
-- Combine with `correct` to fix mis-named lines after the fact: *"correct
+- Combine with `edit` to fix mis-named lines after the fact: *"edit
   the engram — the sensor labeled Reactor-B is actually Reactor-C."*
 
 ---
