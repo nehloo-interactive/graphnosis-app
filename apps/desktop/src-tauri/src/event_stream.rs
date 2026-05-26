@@ -198,7 +198,8 @@ async fn open_and_read(app: &AppHandle, socket_path: &Path) -> Result<()> {
             | "mcp.consent-granted"
             | "mcp.consent-lockout"
             | "mcp.recall-rate-limited"
-            | "mcp.session-replay-blocked" => {
+            | "mcp.session-replay-blocked"
+            | "cortex.integrity-alert" => {
                 // Forward the raw payload to the frontend as-is.
                 // The frontend matches on the event name to update the
                 // appropriate UI (toast for ingest, progress bar in the
