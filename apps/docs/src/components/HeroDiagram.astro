@@ -1,0 +1,419 @@
+---
+interface Props {
+  variant?: 'consumer' | 'b2b';
+}
+const { variant = 'consumer' } = Astro.props;
+---
+
+<div id="hero-diagram" data-variant={variant} class="select-none"></div>
+
+<script is:inline src="https://unpkg.com/roughjs@4.6.6/bundled/rough.js"></script>
+<script is:inline>
+(function () {
+  var C = { human: '#c4c6d6', brain: '#67e8f9', ai: '#a78bfa', white: '#f0f0f5', tools: '#f59e0b' };
+
+  var CONSUMER_PAIRS = [
+    { p: '"which car did we settle on?"',  a1: '"Used Volvo XC60 —',    a2: 'fits budget, April 2"' },
+    { p: '"which college did Maya pick?"', a1: '"UC Davis, pre-med,',   a2: 'scholarship, May 1"' },
+    { p: '"what did the study conclude?"', a1: '"Sleep beats diet',     a2: 'for memory — noted"', w: 'Sleep diet memory noted' },
+    { p: '"why did we pick Portland?"',    a1: '"Schools + lower cost,', a2: 'confirmed March 18"' },
+    { p: '"when are we moving?"',          a1: '"Keys June 20,',         a2: 'departure June 15"' },
+  ];
+
+  var B2B_PAIRS = [
+    { p: '"renewal risk for Acme Corp?"',    a1: '"High — 3 issues,',     a2: 'last call Feb 14"' },
+    { p: '"which ADR governs auth layer?"',  a1: '"ADR-042 JWT refresh,', a2: 'confirmed Sept 12"' },
+    { p: '"who owns EU compliance?"',        a1: '"Ana led it,',          a2: 'filed March 3"' },
+    { p: '"what did Q3 retro flag?"',        a1: '"Deploy freeze cost',   a2: 'two sprint days"' },
+    { p: '"client budget ceiling?"',         a1: '"$240k cap,',           a2: 'confirmed April 9"' },
+  ];
+
+  var CORTEX_LINES = [
+    'never leaves device in full',
+    'relevant small subgraph is sent',
+    'sends AI small relevant context',
+    'only the needed slice exits',
+    'full graph stays, excerpt travels',
+    'subgraph recalled, cortex intact',
+  ];
+
+  var CONSUMER_TOOLS = [
+    { text: 'Slack · GitHub',            color: C.white },
+    { text: 'Linear · RSS',              color: C.white },
+    { text: 'Trello · Webhook',          color: C.white },
+    { text: 'Sensors · MQTT',            color: C.tools },
+    { text: 'NAS · PDF scans',           color: C.tools },
+    { text: 'Obsidian · GBrain',         color: C.white },
+    { text: 'CLAUDE.md · AGENTS.md',     color: C.white },
+    { text: 'CURSOR_RULES · GEMINI.md',  color: C.white },
+  ];
+
+  var B2B_TOOLS = [
+    { text: 'Slack · GitHub',            color: C.white },
+    { text: 'Jira · Confluence',         color: C.white },
+    { text: 'Salesforce · Linear',       color: C.white },
+    { text: 'ERP · CRM data',            color: C.tools },
+    { text: 'PDF reports · runbooks',    color: C.tools },
+    { text: 'Obsidian · Notion',         color: C.white },
+    { text: 'CLAUDE.md · AGENTS.md',     color: C.white },
+    { text: 'CURSOR_RULES · GEMINI.md',  color: C.white },
+  ];
+
+  function addEllipseGraph(svg, isDesktop) {
+    var uid = (isDesktop ? 'd' : 'm') + Math.random().toString(36).slice(2, 6);
+    var cx = isDesktop ? 500 : 200,  cy = isDesktop ? 92  : 200;
+    var rx = isDesktop ? 148 : 174,  ry = isDesktop ? 66  : 38;
+
+    var defs = document.createElementNS('http://www.w3.org/2000/svg', 'defs');
+
+    var clip = document.createElementNS('http://www.w3.org/2000/svg', 'clipPath');
+    clip.setAttribute('id', 'gclip-' + uid);
+    var ce = document.createElementNS('http://www.w3.org/2000/svg', 'ellipse');
+    ce.setAttribute('cx', cx); ce.setAttribute('cy', cy);
+    ce.setAttribute('rx', rx); ce.setAttribute('ry', ry);
+    clip.appendChild(ce); defs.appendChild(clip);
+
+    var mk = document.createElementNS('http://www.w3.org/2000/svg', 'marker');
+    mk.setAttribute('id', 'arr-' + uid);
+    mk.setAttribute('markerWidth', 16); mk.setAttribute('markerHeight', 12);
+    mk.setAttribute('refX', 14);        mk.setAttribute('refY', 6);
+    mk.setAttribute('orient', 'auto');
+    var mp = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+    mp.setAttribute('d', 'M0,0 L16,6 L0,12 Z');
+    mp.setAttribute('fill', 'rgba(245,158,11,0.6)');
+    mk.appendChild(mp); defs.appendChild(mk);
+    svg.appendChild(defs);
+
+    var g = document.createElementNS('http://www.w3.org/2000/svg', 'g');
+    g.setAttribute('clip-path', 'url(#gclip-' + uid + ')');
+
+    function randPt() {
+      var x, y, t = 0;
+      do {
+        x = cx + (Math.random() * 2 - 1) * rx;
+        y = cy + (Math.random() * 2 - 1) * ry;
+        t++;
+      } while ((x-cx)*(x-cx)/(rx*rx) + (y-cy)*(y-cy)/(ry*ry) > 0.82 && t < 30);
+      return [x, y];
+    }
+
+    function randPtTop() {
+      var x, y, t = 0;
+      do {
+        x = cx + (Math.random() * 2 - 1) * rx;
+        y = cy + (Math.random() * 2 - 1) * ry;
+        t++;
+        var nd = (x-cx)*(x-cx)/(rx*rx) + (y-cy)*(y-cy)/(ry*ry);
+        var bottomCenter = (y > cy + 0.15 * ry) && ((x-cx)*(x-cx)/(rx*rx) < 0.38);
+        if (nd <= 0.85 && !bottomCenter) break;
+      } while (t < 40);
+      return [x, y];
+    }
+
+    function makeLine(x1, y1, x2, y2, stroke, sw, op, markerEnd) {
+      var ln = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+      ln.setAttribute('x1', x1); ln.setAttribute('y1', y1);
+      ln.setAttribute('x2', x2); ln.setAttribute('y2', y2);
+      ln.setAttribute('stroke', stroke); ln.setAttribute('stroke-width', sw);
+      ln.setAttribute('opacity', op);
+      if (markerEnd) ln.setAttribute('marker-end', markerEnd);
+      g.appendChild(ln);
+    }
+
+    var nT = isDesktop ? 38 : 18;
+    for (var i = 0; i < nT; i++) {
+      var pt  = randPt();
+      var ang = Math.random() * Math.PI * 2;
+      var h   = 10 + Math.random() * 18;
+      makeLine(
+        pt[0] - Math.cos(ang)*h, pt[1] - Math.sin(ang)*h,
+        pt[0] + Math.cos(ang)*h, pt[1] + Math.sin(ang)*h,
+        '#67e8f9', 0.55, 0.18, null
+      );
+    }
+
+    var nO = isDesktop ? 10 : 5;
+    for (var j = 0; j < nO; j++) {
+      var pt2  = randPtTop();
+      var ang2 = Math.random() * Math.PI * 2;
+      var len  = 22 + Math.random() * 20;
+      makeLine(
+        pt2[0], pt2[1],
+        pt2[0] + Math.cos(ang2)*len, pt2[1] + Math.sin(ang2)*len,
+        '#f59e0b', 0.9, 0.35, 'url(#arr-' + uid + ')'
+      );
+    }
+
+    svg.appendChild(g);
+  }
+
+  function makeSvg(vw, vh) {
+    var s = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    s.setAttribute('viewBox', '0 0 ' + vw + ' ' + vh);
+    s.setAttribute('width', '100%'); s.setAttribute('height', 'auto');
+    s.style.display = 'block';
+    return s;
+  }
+
+  function pickWords(pair) {
+    var src = pair.w ? pair.w : (pair.a1 + ' ' + pair.a2);
+    var tokens = src
+      .replace(/["""''—+,\.]/g, ' ')
+      .split(/\s+/)
+      .map(function(w) { return w.replace(/[^a-zA-Z0-9]/g, ''); })
+      .filter(function(w) {
+        if (!w) return false;
+        return /^\d+$/.test(w) ? w.length >= 2 : w.length >= 3;
+      });
+
+    var starts = [];
+    for (var k = 0; k + 1 < tokens.length; k++) starts.push(k);
+
+    for (var s = starts.length - 1; s > 0; s--) {
+      var r = Math.floor(Math.random() * (s + 1));
+      var tmp = starts[s]; starts[s] = starts[r]; starts[r] = tmp;
+    }
+
+    var i = starts[0], jj = -1;
+    for (var b = 1; b < starts.length; b++) {
+      if (Math.abs(starts[b] - i) > 1) { jj = starts[b]; break; }
+    }
+    if (jj < 0 && starts.length >= 2) jj = starts[1];
+
+    if (jj >= 0) return [tokens[i], tokens[i+1], tokens[jj], tokens[jj+1]];
+
+    while (tokens.length < 4) tokens.push(tokens[tokens.length - 1] || '…');
+    return tokens.slice(0, 4);
+  }
+
+  function makeTx(svg) {
+    return function (x, y, str, fill, size, weight, mono) {
+      var el = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+      el.setAttribute('x', x); el.setAttribute('y', y);
+      el.setAttribute('text-anchor', 'middle');
+      el.setAttribute('fill', fill != null ? fill : C.human);
+      el.setAttribute('font-size', size != null ? size : 13);
+      el.setAttribute('font-family', mono ? 'monospace' : "'Inter',sans-serif");
+      el.setAttribute('font-weight', weight != null ? weight : 'normal');
+      el.textContent = str;
+      svg.appendChild(el);
+    };
+  }
+
+  function makeAmber(svg) {
+    return function (x, y, str, size) {
+      var fs = size || 12;
+      var approxW = str.length * fs * 0.52 + 16;
+      var bg = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+      bg.setAttribute('x', x - approxW / 2); bg.setAttribute('y', y - fs + 1);
+      bg.setAttribute('width', approxW); bg.setAttribute('height', fs + 5);
+      bg.setAttribute('rx', 3); bg.setAttribute('fill', 'rgba(251,191,36,0.18)');
+      svg.appendChild(bg);
+      var el = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+      el.setAttribute('x', x); el.setAttribute('y', y);
+      el.setAttribute('text-anchor', 'middle');
+      el.setAttribute('fill', '#fde68a');
+      el.setAttribute('font-size', fs);
+      el.setAttribute('font-family', 'monospace');
+      el.textContent = str;
+      svg.appendChild(el);
+    };
+  }
+
+  function addLogo(svg, x, y, size) {
+    var img = document.createElementNS('http://www.w3.org/2000/svg', 'image');
+    img.setAttribute('href', '/graphnosis-logo.png');
+    img.setAttribute('x', x); img.setAttribute('y', y);
+    img.setAttribute('width', size); img.setAttribute('height', size);
+    svg.appendChild(img);
+  }
+
+  function drawDesktop(container, PAIRS, TOOLS) {
+    var pair = PAIRS[Math.floor(Math.random() * PAIRS.length)];
+    var words = pickWords(pair);
+    var cortexLine = CORTEX_LINES[Math.floor(Math.random() * CORTEX_LINES.length)];
+    var svg = makeSvg(1000, 410);
+    var rc = rough.svg(svg);
+    var tx = makeTx(svg);
+    var amber = makeAmber(svg);
+
+    svg.appendChild(rc.rectangle(4, 12, 272, 160,  { roughness:2.2, stroke:C.human, strokeWidth:1.6, fill:'#16161f', fillStyle:'solid' }));
+    svg.appendChild(rc.ellipse(500, 92, 324, 160,   { roughness:2.8, stroke:C.brain, strokeWidth:2.4, fill:'#0b1a1e', fillStyle:'solid' }));
+    addEllipseGraph(svg, true);
+    svg.appendChild(rc.rectangle(724, 12, 272, 160, { roughness:2.2, stroke:C.ai,    strokeWidth:1.6, fill:'#13101f', fillStyle:'solid' }));
+
+    svg.appendChild(rc.path('M 276 92 C 304 66, 324 118, 338 92', { roughness:1.6, stroke:C.brain, strokeWidth:2 }));
+    svg.appendChild(rc.polygon([[338,92],[325,84],[327,100]], { roughness:0.6, stroke:C.brain, fill:C.brain, fillStyle:'solid', strokeWidth:1 }));
+    svg.appendChild(rc.path('M 662 96 C 679 122, 706 68, 724 96', { roughness:1.6, stroke:C.ai, strokeWidth:2 }));
+    svg.appendChild(rc.polygon([[724,96],[711,88],[713,104]], { roughness:0.6, stroke:C.ai, fill:C.ai, fillStyle:'solid', strokeWidth:1 }));
+    svg.appendChild(rc.path('M 724 86 C 706 58, 679 110, 662 86', { roughness:1.6, stroke:C.ai, strokeWidth:1.4 }));
+    svg.appendChild(rc.polygon([[662,86],[675,79],[673,95]], { roughness:0.6, stroke:C.ai, fill:C.ai, fillStyle:'solid', strokeWidth:1 }));
+
+    svg.appendChild(rc.rectangle(60,  243, 200, 148, { roughness:2.0, stroke:C.tools, strokeWidth:1.4, fill:'#1a1608', fillStyle:'solid' }));
+    svg.appendChild(rc.rectangle(390, 243, 220, 148, { roughness:2.0, stroke:C.ai,    strokeWidth:1.4, fill:'#0f0f1e', fillStyle:'solid' }));
+    svg.appendChild(rc.rectangle(740, 243, 200, 148, { roughness:2.0, stroke:C.ai,    strokeWidth:1.4, fill:'#13101f', fillStyle:'solid' }));
+
+    svg.appendChild(rc.path('M 160 243 C 180 205, 318 170, 385 149', { roughness:1.8, stroke:C.tools, strokeWidth:1.8 }));
+    svg.appendChild(rc.polygon([[385,149],[369,158],[377,169]], { roughness:0.6, stroke:C.tools, fill:C.tools, fillStyle:'solid', strokeWidth:1 }));
+
+    svg.appendChild(rc.path('M 500 172 L 500 243', { roughness:1.4, stroke:C.brain, strokeWidth:1.8 }));
+    svg.appendChild(rc.polygon([[500,243],[492,228],[508,228]], { roughness:0.6, stroke:C.brain, fill:C.brain, fillStyle:'solid', strokeWidth:1 }));
+
+    svg.appendChild(rc.path('M 618 151 C 668 178, 840 215, 843 243', { roughness:1.8, stroke:C.ai, strokeWidth:2 }));
+    svg.appendChild(rc.polygon([[843,243],[834,228],[852,228]], { roughness:0.6, stroke:C.ai, fill:C.ai, fillStyle:'solid', strokeWidth:1 }));
+    svg.appendChild(rc.path('M 837 243 C 837 208, 663 172, 612 147', { roughness:1.8, stroke:C.ai, strokeWidth:1.4 }));
+    svg.appendChild(rc.polygon([[612,147],[626,148],[620,162]], { roughness:0.6, stroke:C.ai, fill:C.ai, fillStyle:'solid', strokeWidth:1 }));
+
+    tx(140, 38,  '📂',                       C.human, 24);
+    tx(140, 62,  'files + prompts',           C.human, 14, '600');
+    tx(140, 80,  'auth-notes.md · arch.pdf',  C.human, 10, 'normal', true);
+    amber(140, 98, pair.p, 13);
+    tx(140, 120, 'ingest · recall',           C.brain, 12, 'normal', true);
+    tx(140, 136, 'remember · edit',           C.brain, 12, 'normal', true);
+    tx(140, 164, 'what you feed in',          C.human, 14);
+
+    addLogo(svg, 478, 24, 44);
+    tx(500,  86, 'Graphnosis',                      C.brain, 17, '700');
+    tx(500, 102, 'encrypted · local · indexed · retrieved', C.human, 11);
+    tx(500, 116, 'dual-graph over the same nodes',          C.human, 11);
+    tx(500, 130, cortexLine,                                C.human, 11);
+    tx(500, 152, 'your cortex',                             C.human, 14);
+
+    tx(860,  38, '🤖',             C.ai,   24);
+    tx(860,  62, 'any AI client',  C.human, 14, '600');
+    amber(860, 82,  pair.a1, 12);
+    amber(860, 98,  pair.a2, 12);
+    tx(860, 120, 'claude · cursor',   C.ai, 12, 'normal', true);
+    tx(860, 136, 'copilot · zed',     C.ai, 12, 'normal', true);
+    tx(860, 164, 'consistent answer', C.human, 14);
+
+    tx(307,  57, 'feeds context',              C.human, 12, 'normal', true);
+    tx(693, 133, 'retrieves memory /', C.human, 11, 'normal', true);
+    tx(693, 146, 'edit',              C.human, 11, 'normal', true);
+    tx(220, 215, 'remember / auto-ingest',      C.human, 11, 'normal', true);
+    tx(548, 222, 'same cortex',                 C.human, 11, 'normal', true);
+    tx(748, 215, 'recall / remind',             C.human, 11, 'normal', true);
+
+    tx(160, 262, 'your ⚙️ sources', C.tools, 15, '700');
+    for (var ti = 0; ti < TOOLS.length; ti++) {
+      tx(160, 282 + ti * 14, TOOLS[ti].text, TOOLS[ti].color, 12);
+    }
+    amber( 85, 283, words[0], 11);
+    amber( 85, 297, words[1], 11);
+    amber(232, 283, words[2], 11);
+    amber(232, 297, words[3], 11);
+
+    tx(500, 260, '⚡',               C.ai,    22);
+    tx(500, 277, 'AI agents',        C.ai,    15, '700');
+    amber(500, 293, pair.a1,         11);
+    amber(500, 307, pair.a2,         11);
+    tx(500, 322, 'Claude agents',    C.white,  12);
+    tx(500, 337, 'n8n · LangChain',  C.white,  12);
+    tx(500, 352, 'custom workflows', C.white,  12);
+    tx(500, 372, 'same cortex',      C.human,  13);
+
+    tx(840, 263, '🔀',              C.ai,    22);
+    tx(840, 280, 'all clients',     C.human, 15, '700');
+    amber(840, 296, pair.a1,        11);
+    amber(840, 310, pair.a2,        11);
+    tx(840, 325, 'Claude · Cursor', C.ai,    12);
+    tx(840, 340, 'Copilot · Zed',   C.ai,    12);
+    tx(840, 355, 'Claude Cowork',   C.ai,    12);
+    tx(840, 375, 'same memory',     C.human, 13);
+
+    container.appendChild(svg);
+  }
+
+  function drawMobile(container, PAIRS, TOOLS) {
+    var pair = PAIRS[Math.floor(Math.random() * PAIRS.length)];
+    var words = pickWords(pair);
+    var cortexLine = CORTEX_LINES[Math.floor(Math.random() * CORTEX_LINES.length)];
+    var svg = makeSvg(400, 610);
+    var rc = rough.svg(svg);
+    var tx = makeTx(svg);
+    var amber = makeAmber(svg);
+
+    svg.appendChild(rc.rectangle(15, 8, 370, 105,  { roughness:2.2, stroke:C.human, strokeWidth:1.6, fill:'#16161f', fillStyle:'solid' }));
+    svg.appendChild(rc.path('M 200 113 L 200 152',  { roughness:1.4, stroke:C.brain, strokeWidth:2 }));
+    svg.appendChild(rc.polygon([[200,152],[192,138],[208,138]], { roughness:0.6, stroke:C.brain, fill:C.brain, fillStyle:'solid', strokeWidth:1 }));
+    svg.appendChild(rc.ellipse(200, 200, 370, 96,   { roughness:2.8, stroke:C.brain, strokeWidth:2.4, fill:'#0b1a1e', fillStyle:'solid' }));
+    addEllipseGraph(svg, false);
+
+    svg.appendChild(rc.path('M 185 248 C 158 290, 97 308, 97 335',  { roughness:1.8, stroke:C.tools, strokeWidth:1.8 }));
+    svg.appendChild(rc.polygon([[97,335],[89,320],[105,320]], { roughness:0.6, stroke:C.tools, fill:C.tools, fillStyle:'solid', strokeWidth:1 }));
+    svg.appendChild(rc.path('M 218 248 C 245 292, 305 310, 305 335', { roughness:1.8, stroke:C.ai, strokeWidth:1.8 }));
+    svg.appendChild(rc.polygon([[305,335],[297,320],[313,320]], { roughness:0.6, stroke:C.ai, fill:C.ai, fillStyle:'solid', strokeWidth:1 }));
+    svg.appendChild(rc.path('M 299 335 C 299 308, 238 288, 212 248', { roughness:1.8, stroke:C.ai, strokeWidth:1.2 }));
+    svg.appendChild(rc.polygon([[212,248],[218,262],[226,251]], { roughness:0.6, stroke:C.ai, fill:C.ai, fillStyle:'solid', strokeWidth:1 }));
+
+    svg.appendChild(rc.path('M 200 248 L 200 524', { roughness:1.4, stroke:C.brain, strokeWidth:1.8 }));
+    svg.appendChild(rc.polygon([[200,524],[192,509],[208,509]], { roughness:0.6, stroke:C.brain, fill:C.brain, fillStyle:'solid', strokeWidth:1 }));
+
+    svg.appendChild(rc.rectangle(10,  337, 175, 175, { roughness:2.0, stroke:C.tools, strokeWidth:1.4, fill:'#1a1608', fillStyle:'solid' }));
+    svg.appendChild(rc.rectangle(215, 337, 175, 175, { roughness:2.0, stroke:C.ai,    strokeWidth:1.4, fill:'#13101f', fillStyle:'solid' }));
+    svg.appendChild(rc.rectangle(10,  526, 380,  70, { roughness:2.0, stroke:C.ai,    strokeWidth:1.4, fill:'#0f0f1e', fillStyle:'solid' }));
+
+    tx(200, 30,  '📂',                       C.human, 20);
+    tx(200, 50,  'files + prompts',           C.human, 13, '600');
+    tx(200, 67,  'auth-notes.md · arch.pdf',  C.human,  9, 'normal', true);
+    amber(200, 83, pair.p, 12);
+    tx(200, 100, 'ingest · recall · remember', C.brain, 11, 'normal', true);
+
+    addLogo(svg, 182, 158, 36);
+    tx(200, 210, 'Graphnosis',                     C.brain, 15, '700');
+    tx(200, 222, 'encrypted · local · indexed · retrieved', C.human, 9);
+    tx(200, 234, 'dual-graph · ' + cortexLine.split(' ').slice(0,3).join(' '), C.human, 9);
+
+    tx(248, 136, 'feeds context',   C.human, 10, 'normal', true);
+    tx(128, 318, 'auto-ingest',     C.human, 10, 'normal', true);
+    tx(272, 318, 'recall / remind', C.human, 10, 'normal', true);
+
+    tx(97, 355, 'your ⚙️ sources', C.tools, 13, '700');
+    for (var ti = 0; ti < TOOLS.length; ti++) {
+      tx(97, 372 + ti * 13, TOOLS[ti].text, TOOLS[ti].color, 11);
+    }
+    amber( 35, 392, words[0], 10);
+    amber( 35, 405, words[1], 10);
+    amber(157, 392, words[2], 10);
+    amber(157, 405, words[3], 10);
+
+    tx(302, 354, '🔀',              C.ai,    18);
+    tx(302, 370, 'all clients',     C.human, 13, '700');
+    amber(302, 384, pair.a1,        10);
+    amber(302, 397, pair.a2,        10);
+    tx(302, 411, 'Claude · Cursor', C.ai,    11);
+    tx(302, 426, 'Copilot · Zed',   C.ai,    11);
+    tx(302, 441, 'Claude Cowork',   C.ai,    11);
+    tx(302, 460, 'same memory',     C.human, 12);
+
+    tx(200, 545, '⚡ AI agents — Claude agents · n8n · LangChain · custom workflows', C.ai,    12, '700');
+    amber(200, 558, pair.a1 + ' ' + pair.a2,                                          10);
+    tx(200, 572, 'same cortex as all clients',                                         C.human, 11);
+
+    container.appendChild(svg);
+  }
+
+  function draw(el) {
+    var variant = el.getAttribute('data-variant') || 'consumer';
+    var PAIRS = variant === 'b2b' ? B2B_PAIRS : CONSUMER_PAIRS;
+    var TOOLS = variant === 'b2b' ? B2B_TOOLS : CONSUMER_TOOLS;
+    el.innerHTML = '';
+    if (el.offsetWidth < 640) drawMobile(el, PAIRS, TOOLS);
+    else drawDesktop(el, PAIRS, TOOLS);
+  }
+
+  function init() {
+    var el = document.getElementById('hero-diagram');
+    if (!el) return;
+    if (typeof rough === 'undefined') { setTimeout(init, 30); return; }
+    draw(el);
+    window.addEventListener('resize', function () {
+      clearTimeout(window.__dgtimer);
+      window.__dgtimer = setTimeout(function () { draw(el); }, 200);
+    });
+  }
+
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init);
+  else init();
+})();
+</script>
