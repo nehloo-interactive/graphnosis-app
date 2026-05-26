@@ -3,167 +3,786 @@ import Layout from '../layouts/Layout.astro';
 import Nav from '../components/Nav.astro';
 import Footer from '../components/Footer.astro';
 
-const packs = [
-  {
-    id: 'developer',
-    name: 'Developer Pack',
-    tagline: 'For engineers who build with AI daily',
-    price: 79,
-    color: '#67e8f9',
-    badge: null,
-    skills: [
-      'ADR Recall — surface architecture decisions before any code change',
-      'Debugging Memory — recall prior attempts for similar errors',
-      'PR Context — attach codebase decisions to every review',
-      'Incident Historian — recall fault signatures before triage',
-    ],
-    includes: [
-      '5 named Recall Recipes',
-      'CLAUDE.md + AGENTS.md templates',
-      'VS Code & Cursor setup guide',
-      'GitHub Actions integration example',
-    ],
-    stripeUrl: 'https://buy.stripe.com/REPLACE_developer',
-  },
-  {
-    id: 'legal',
-    name: 'Legal & Consulting Pack',
-    tagline: 'For lawyers and consultants who handle complex client histories',
-    price: 79,
-    color: '#a78bfa',
-    badge: null,
-    skills: [
-      'Matter Memory — full client + matter context before every interaction',
-      'Commitment Tracker — recall verbal and written commitments by client',
-      'Precedent Lookup — surface relevant prior work before drafting',
-      'Document Provenance — trace where a clause came from and why',
-    ],
-    includes: [
-      '4 named Recall Recipes',
-      'Sensitive-tier engram config (PHI/privilege-safe)',
-      'Matter intake workflow template',
-      'Conflict-check recall pattern',
-    ],
-    stripeUrl: 'https://buy.stripe.com/REPLACE_legal',
-  },
-  {
-    id: 'therapist',
-    name: 'Clinician Pack',
-    tagline: 'For therapists and clinicians with sensitive session histories',
-    price: 79,
-    color: '#a78bfa',
-    badge: 'HIPAA-aligned',
-    skills: [
-      'Session Memory — structured recall of prior sessions before appointments',
-      'Treatment History — surface medication history, interventions, outcomes',
-      'PHI-safe recall — Sensitive tier enforced; zero tokens reach cloud AI',
-      'Progress Notes — template for structured note-taking after sessions',
-    ],
-    includes: [
-      '4 named Recall Recipes',
-      'Sensitive-tier engram config',
-      'HIPAA-aligned local-only workflow guide',
-      'Session note template',
-    ],
-    stripeUrl: 'https://buy.stripe.com/REPLACE_clinician',
-  },
-  {
-    id: 'sales',
-    name: 'Sales & Customer Success Pack',
-    tagline: 'For account executives and CS teams who live in relationships',
-    price: 99,
-    color: '#f59e0b',
-    badge: 'Most popular',
-    skills: [
-      'Relationship Memory — full contact + account history before every call',
-      'Churn Risk Detector — recall health signals, flag pattern changes',
-      'Renewal Prep — synthesize account history before renewal conversations',
-      'Objection Recall — surface how similar objections were handled + outcomes',
-    ],
-    includes: [
-      '4 named Recall Recipes',
-      'CRM connector config (Salesforce / HubSpot)',
-      'Call prep workflow template',
-      'n8n automation template',
-    ],
-    stripeUrl: 'https://buy.stripe.com/REPLACE_sales',
-  },
-  {
-    id: 'agents',
-    name: 'AI Agent Skills Pack',
-    tagline: 'For developers building persistent-memory AI agents',
-    price: 99,
-    color: '#67e8f9',
-    badge: null,
-    skills: [
-      'Research Accumulator — recall prior findings before searching, save results',
-      'Customer Agent Memory — full contact history per run, no cold starts',
-      'Code Agent Context — ADRs + debugging history for every agent run',
-      'Autonomous Loop — scheduled agents that accumulate knowledge over time',
-    ],
-    includes: [
-      '6 named AI Skills (engram schema + recall + remember recipe each)',
-      'Python starter with Claude API + Graphnosis SDK',
-      'n8n workflow templates (Research, Customer, Code agents)',
-      'AGENTS.md template',
-    ],
-    stripeUrl: 'https://buy.stripe.com/REPLACE_agents',
-  },
-  {
-    id: 'industrial',
-    name: 'Industrial & Operations Pack',
-    tagline: 'For OT/ICS teams with critical equipment and process history',
-    price: 199,
-    color: '#f59e0b',
-    badge: 'Enterprise anchor',
-    skills: [
-      'Equipment Historian — recall maintenance history + fault signatures before decisions',
-      'Runbook Guardian — recall prior deviations and outcomes before non-standard ops',
-      'Incident Pattern Matcher — surface recurring signatures across incidents',
-      'Runbook Evolve — update runbooks after incidents; recall on next trigger',
-    ],
-    includes: [
-      '4 named Recall Recipes',
-      'OPC-UA + Modbus connector config',
-      'SCADA historian ingest workflow',
-      'Air-gap (local LLM / Ollama) setup guide',
-      'Compliance-aligned local-only workflow',
-    ],
-    stripeUrl: 'https://buy.stripe.com/REPLACE_industrial',
-  },
+const categories = [
+  { id: 'all',          label: 'All packs' },
+  { id: 'engineering',  label: 'Engineering' },
+  { id: 'industrial',   label: 'Industrial / OT' },
+  { id: 'agentic',      label: 'Agentic AI' },
+  { id: 'longcycle',    label: 'Long-Cycle Knowledge' },
+  { id: 'healthcare',   label: 'Healthcare' },
+  { id: 'legal',        label: 'Law (Non-Patent)' },
+  { id: 'ip',           label: 'Specialized IP & Legal' },
+  { id: 'finance',      label: 'Finance & Insurance' },
+  { id: 'government',   label: 'Government & Public Sector' },
+  { id: 'defense',      label: 'Defense & Aerospace' },
+  { id: 'creative',     label: 'Creative IP Protection' },
+  { id: 'journalism',   label: 'Journalism & Investigation' },
+  { id: 'science',      label: 'Scientific Research' },
+  { id: 'education',    label: 'Education & Knowledge Work' },
+  { id: 'field',        label: 'Field Operations & Trades' },
+  { id: 'architecture', label: 'Architecture & Construction' },
+  { id: 'business',     label: 'Business Operations & B2B' },
 ];
 
-const bundleUrl = 'https://buy.stripe.com/REPLACE_bundle';
-const bundlePrice = 399;
+// Color per category
+const catColor: Record<string, string> = {
+  engineering:  '#67e8f9',
+  industrial:   '#f59e0b',
+  agentic:      '#a78bfa',
+  longcycle:    '#67e8f9',
+  healthcare:   '#34d399',
+  legal:        '#8b5cf6',
+  ip:           '#a78bfa',
+  finance:      '#60a5fa',
+  government:   '#94a3b8',
+  defense:      '#6b7280',
+  creative:     '#f472b6',
+  journalism:   '#fb923c',
+  science:      '#34d399',
+  education:    '#818cf8',
+  field:        '#f59e0b',
+  architecture: '#d97706',
+  business:     '#fbbf24',
+};
+
+interface Pack {
+  id: string;
+  name: string;
+  category: string;
+  tagline: string;
+  price: number;
+  badge?: string;
+  skills: string[];
+  stripeUrl: string;
+}
+
+const packs: Pack[] = [
+
+  // ── Engineering ──────────────────────────────────────────────────────────
+  {
+    id: 'software-developer',
+    name: 'Software Developer',
+    category: 'engineering',
+    tagline: 'For engineers who build with AI daily',
+    price: 79,
+    skills: [
+      'Architecture recall — decision rationale and alternatives surfaced before any code change',
+      'Debug history — prior attempts for similar errors recalled automatically',
+      'Review context — codebase decisions attached to every code review session',
+      'Post-fix capture — lessons from resolved issues saved after each fix',
+    ],
+    stripeUrl: 'https://buy.stripe.com/REPLACE_software-developer',
+  },
+  {
+    id: 'devops-sre',
+    name: 'DevOps & SRE',
+    category: 'engineering',
+    tagline: 'For reliability engineers managing complex systems',
+    price: 79,
+    skills: [
+      'Incident history — fault signatures and prior resolution paths recalled before triage',
+      'Service dependency recall — known integration quirks surfaced before changes',
+      'Post-incident capture — root cause and timeline saved for future pattern matching',
+      'Configuration drift memory — prior deviations and their consequences recalled',
+    ],
+    stripeUrl: 'https://buy.stripe.com/REPLACE_devops-sre',
+  },
+  {
+    id: 'data-engineer',
+    name: 'Data Engineer',
+    category: 'engineering',
+    tagline: 'For engineers building and maintaining data pipelines',
+    price: 79,
+    skills: [
+      'Schema decision recall — why a column was typed, renamed, or deprecated',
+      'Pipeline rule memory — transformation logic and its exceptions recalled on edit',
+      'Data quality history — prior anomalies, their sources, and resolutions surfaced',
+      'Upstream dependency recall — known issues with source systems, before you rely on them',
+    ],
+    stripeUrl: 'https://buy.stripe.com/REPLACE_data-engineer',
+  },
+
+  // ── Industrial / OT ──────────────────────────────────────────────────────
+  {
+    id: 'process-equipment',
+    name: 'Process & Equipment',
+    category: 'industrial',
+    tagline: 'For operators and engineers managing critical plant assets',
+    price: 149,
+    badge: 'Air-gap ready',
+    skills: [
+      'Equipment fault history — prior failure signatures recalled before maintenance decisions',
+      'Maintenance lineage — what was done, when, by whom, and what happened after',
+      'Deviation tracking — procedure non-compliances and their outcomes, recalled on next trigger',
+      'Failure pattern recognition — recurring precursor conditions surfaced across time',
+    ],
+    stripeUrl: 'https://buy.stripe.com/REPLACE_process-equipment',
+  },
+  {
+    id: 'industrial-quality',
+    name: 'Industrial Quality & Compliance',
+    category: 'industrial',
+    tagline: 'For quality engineers in regulated manufacturing environments',
+    price: 149,
+    skills: [
+      'Inspection history — prior non-conformances recalled before each audit or review',
+      'Procedure deviation memory — past deviations and corrective actions surfaced on demand',
+      'Supplier quality recall — known issues with materials and vendors, before ordering',
+      'Corrective action lineage — what was approved, what was closed, what recurred',
+    ],
+    stripeUrl: 'https://buy.stripe.com/REPLACE_industrial-quality',
+  },
+  {
+    id: 'ot-field-technician',
+    name: 'OT Field Technician',
+    category: 'industrial',
+    tagline: 'For technicians on plant floors and remote sites',
+    price: 99,
+    skills: [
+      'Site history recall — what was found, what was done, what was deferred at this location',
+      'Equipment quirk memory — known workarounds and vendor advisories recalled before work',
+      'Safety incident recall — near-misses and prior incidents surfaced before similar tasks',
+      'Handoff capture — end-of-shift notes saved for the next technician automatically',
+    ],
+    stripeUrl: 'https://buy.stripe.com/REPLACE_ot-field-technician',
+  },
+
+  // ── Agentic AI ────────────────────────────────────────────────────────────
+  {
+    id: 'research-agent',
+    name: 'Research Agent',
+    category: 'agentic',
+    tagline: 'For developers building agents that accumulate knowledge over time',
+    price: 99,
+    skills: [
+      'Cross-run recall — prior findings surfaced before each new search run, no duplicate effort',
+      'Source provenance memory — where each finding came from, recalled on synthesis',
+      'Hypothesis lineage — what was tested, what was abandoned, why',
+      'Post-run capture — new findings saved after each run for future recall',
+    ],
+    stripeUrl: 'https://buy.stripe.com/REPLACE_research-agent',
+  },
+  {
+    id: 'customer-agent',
+    name: 'Customer & Relationship Agent',
+    category: 'agentic',
+    tagline: 'For agents that handle ongoing customer or partner relationships',
+    price: 99,
+    skills: [
+      'Contact history recall — prior interactions, commitments, and open issues before each run',
+      'Account context — relationship health signals and account history recalled automatically',
+      'Commitment tracking — what was promised, to whom, when — surfaced on next contact',
+      'Post-interaction capture — outcome and next actions saved after each session',
+    ],
+    stripeUrl: 'https://buy.stripe.com/REPLACE_customer-agent',
+  },
+  {
+    id: 'code-agent',
+    name: 'Code Agent',
+    category: 'agentic',
+    tagline: 'For AI agents that act on codebases across multiple runs',
+    price: 99,
+    skills: [
+      'Architecture context recall — prior design decisions recalled before each coding run',
+      'Debug history — prior attempts and their outcomes recalled when a similar error recurs',
+      'Change rationale memory — why a function was written this way, recalled on modification',
+      'Post-run capture — new decisions and lessons saved after each agent session',
+    ],
+    stripeUrl: 'https://buy.stripe.com/REPLACE_code-agent',
+  },
+
+  // ── Long-Cycle Knowledge ──────────────────────────────────────────────────
+  {
+    id: 'project-history',
+    name: 'Project History',
+    category: 'longcycle',
+    tagline: 'For teams managing multi-year projects with complex decision trails',
+    price: 79,
+    skills: [
+      'Decision archaeology — why was this chosen? Rationale, alternatives, and approvals recalled',
+      'Lessons learned recall — prior project outcomes surfaced before the same choice arises',
+      'Stakeholder history — prior positions, commitments, and relationships recalled',
+      'Risk history — what was flagged, what materialised, and what was dismissed last time',
+    ],
+    stripeUrl: 'https://buy.stripe.com/REPLACE_project-history',
+  },
+  {
+    id: 'institutional-memory',
+    name: 'Institutional Memory',
+    category: 'longcycle',
+    tagline: 'For organisations preserving knowledge through staff transitions',
+    price: 99,
+    badge: 'High ROI',
+    skills: [
+      'Succession context — what the departing person knew, recalled for the replacement',
+      'Tribal knowledge capture — undocumented practices saved before they walk out the door',
+      'Org decision history — how policies were formed and why, recalled when challenged',
+      'Relationship handoff memory — client and partner history passed to the next account holder',
+    ],
+    stripeUrl: 'https://buy.stripe.com/REPLACE_institutional-memory',
+  },
+  {
+    id: 'rd-longcycle',
+    name: 'R&D Long-Cycle',
+    category: 'longcycle',
+    tagline: 'For researchers and innovation teams spanning years of work',
+    price: 99,
+    skills: [
+      'Hypothesis lineage — what was tested, what was rejected, what was shelved and why',
+      'Experiment thread memory — prior results recalled before designing the next experiment',
+      'Collaboration history — who contributed what, when, and what they found',
+      'Dead-end recall — what has already been tried and failed, before the team tries it again',
+    ],
+    stripeUrl: 'https://buy.stripe.com/REPLACE_rd-longcycle',
+  },
+
+  // ── Healthcare ────────────────────────────────────────────────────────────
+  {
+    id: 'clinical-session',
+    name: 'Clinical Session',
+    category: 'healthcare',
+    tagline: 'For clinicians with sensitive session histories',
+    price: 79,
+    badge: 'HIPAA-aligned',
+    skills: [
+      'Prior session recall — structured context from past sessions before each appointment',
+      'Treatment history — medication history, interventions, and outcomes surfaced on demand',
+      'PHI boundary enforcement — Sensitive tier engaged; zero PHI tokens reach any cloud API',
+      'Progress note capture — structured session outcomes saved for future recall',
+    ],
+    stripeUrl: 'https://buy.stripe.com/REPLACE_clinical-session',
+  },
+  {
+    id: 'care-coordination',
+    name: 'Care Coordination',
+    category: 'healthcare',
+    tagline: 'For care coordinators managing multi-provider patient journeys',
+    price: 99,
+    badge: 'HIPAA-aligned',
+    skills: [
+      'Multi-provider context recall — all prior touchpoints surfaced before each handoff',
+      'Referral history — what was referred, what was received back, what was lost',
+      'Care plan memory — current plan and prior versions recalled when reviewing',
+      'Patient preference recall — documented preferences and prior communications surfaced',
+    ],
+    stripeUrl: 'https://buy.stripe.com/REPLACE_care-coordination',
+  },
+  {
+    id: 'clinical-research',
+    name: 'Clinical Research',
+    category: 'healthcare',
+    tagline: 'For clinical researchers managing protocols and trial data',
+    price: 99,
+    skills: [
+      'Protocol version recall — what changed, when, why, and what was the IRB response',
+      'Adverse event memory — prior events, their resolution, and reporting history',
+      'Subject history recall — prior visit data and protocol deviations surfaced per subject',
+      'Regulatory correspondence memory — FDA/EMA interactions recalled before submissions',
+    ],
+    stripeUrl: 'https://buy.stripe.com/REPLACE_clinical-research',
+  },
+
+  // ── Law (Non-Patent) ──────────────────────────────────────────────────────
+  {
+    id: 'matter-client',
+    name: 'Matter & Client',
+    category: 'legal',
+    tagline: 'For lawyers who handle ongoing client relationships and matters',
+    price: 79,
+    skills: [
+      'Client history recall — prior commitments, open issues, and relationship context before each call',
+      'Matter memory — prior advice, positions taken, and key dates recalled on demand',
+      'Commitment tracking — verbal and written commitments recalled by client and matter',
+      'Prior work recall — what was drafted, negotiated, or decided in prior engagements',
+    ],
+    stripeUrl: 'https://buy.stripe.com/REPLACE_matter-client',
+  },
+  {
+    id: 'litigation-support',
+    name: 'Litigation Support',
+    category: 'legal',
+    tagline: 'For litigators building and managing active cases',
+    price: 99,
+    skills: [
+      'Deposition history — prior witness statements and inconsistencies recalled',
+      'Exhibit and document recall — where a document came from and why it matters, surfaced on demand',
+      'Opposing counsel pattern memory — prior positions and tactics recalled before proceedings',
+      'Timeline construction — key events and their sources recalled when building arguments',
+    ],
+    stripeUrl: 'https://buy.stripe.com/REPLACE_litigation-support',
+  },
+  {
+    id: 'regulatory-compliance-legal',
+    name: 'Regulatory & Compliance',
+    category: 'legal',
+    tagline: 'For compliance counsel managing regulatory relationships',
+    price: 99,
+    skills: [
+      'Regulatory correspondence recall — prior interactions with agencies surfaced before submissions',
+      'Audit history memory — what was found, what was remediated, what recurred',
+      'Enforcement pattern recall — prior actions and their outcomes, recalled when a new matter opens',
+      'Compliance programme memory — what controls exist, why, and what changed them',
+    ],
+    stripeUrl: 'https://buy.stripe.com/REPLACE_regulatory-compliance-legal',
+  },
+
+  // ── Specialized IP & Legal ────────────────────────────────────────────────
+  {
+    id: 'patent-portfolio',
+    name: 'Patent Portfolio',
+    category: 'ip',
+    tagline: 'For IP counsel managing prosecution and portfolio strategy',
+    price: 99,
+    skills: [
+      'Prior art recall — what has already been found and where, before a new search',
+      'Claim evolution memory — how claims changed during prosecution and why',
+      'Prosecution history recall — examiner positions, responses, and outcomes surfaced',
+      'Portfolio gap analysis — what technology areas are covered vs. exposed, recalled on demand',
+    ],
+    stripeUrl: 'https://buy.stripe.com/REPLACE_patent-portfolio',
+  },
+  {
+    id: 'trade-secret',
+    name: 'Trade Secret Protection',
+    category: 'ip',
+    tagline: 'For counsel protecting confidential business information',
+    price: 149,
+    skills: [
+      'Asset inventory recall — what is designated as trade secret, who has access, and when',
+      'Disclosure history — every authorised disclosure recalled before a new one is considered',
+      'Access log recall — prior access events and their context surfaced in disputes',
+      'NDA and agreement memory — prior confidentiality terms recalled before new negotiations',
+    ],
+    stripeUrl: 'https://buy.stripe.com/REPLACE_trade-secret',
+  },
+  {
+    id: 'ip-due-diligence',
+    name: 'IP Due Diligence',
+    category: 'ip',
+    tagline: 'For counsel and advisors running M&A and licensing IP reviews',
+    price: 99,
+    skills: [
+      'Portfolio assessment memory — prior validity opinions and red flags recalled per asset',
+      'Licensing history recall — prior term negotiations and outcomes surfaced in new deals',
+      'Freedom-to-operate recall — prior FTO analyses recalled before new product launches',
+      'Chain of title memory — ownership history and transfer records surfaced on demand',
+    ],
+    stripeUrl: 'https://buy.stripe.com/REPLACE_ip-due-diligence',
+  },
+
+  // ── Finance & Insurance ───────────────────────────────────────────────────
+  {
+    id: 'investment-research',
+    name: 'Investment Research',
+    category: 'finance',
+    tagline: 'For analysts and portfolio managers building long-term theses',
+    price: 79,
+    skills: [
+      'Thesis history — prior investment theses, conviction changes, and outcomes recalled',
+      'Management context recall — prior conversations, commitments, and patterns surfaced',
+      'Sector knowledge memory — prior analysis and its conclusions recalled on new coverage',
+      'Contrarian signal capture — notes saved when conviction diverges from consensus',
+    ],
+    stripeUrl: 'https://buy.stripe.com/REPLACE_investment-research',
+  },
+  {
+    id: 'risk-underwriting',
+    name: 'Risk & Underwriting',
+    category: 'finance',
+    tagline: 'For underwriters and risk professionals building exposure history',
+    price: 99,
+    skills: [
+      'Risk factor recall — prior underwriting positions and their loss outcomes surfaced',
+      'Exposure history — prior policy terms, exclusions, and claims recalled per account',
+      'Market conditions memory — prior cycle observations recalled when conditions repeat',
+      'Loss event recall — what happened, root cause, and reserve history for each event',
+    ],
+    stripeUrl: 'https://buy.stripe.com/REPLACE_risk-underwriting',
+  },
+  {
+    id: 'client-portfolio',
+    name: 'Client Portfolio',
+    category: 'finance',
+    tagline: 'For advisors managing long-term client financial relationships',
+    price: 99,
+    skills: [
+      'Account history recall — prior positions, decisions, and rationale before each review',
+      'Meeting memory — prior conversations, commitments, and concerns surfaced before calls',
+      'Life event recall — milestones and their financial implications remembered across years',
+      'Goal evolution memory — how client objectives changed and why, recalled on planning',
+    ],
+    stripeUrl: 'https://buy.stripe.com/REPLACE_client-portfolio',
+  },
+
+  // ── Government & Public Sector ────────────────────────────────────────────
+  {
+    id: 'policy-regulation',
+    name: 'Policy & Regulation',
+    category: 'government',
+    tagline: 'For policy professionals managing complex regulatory dockets',
+    price: 99,
+    skills: [
+      'Regulatory history recall — prior agency positions and their evolution surfaced',
+      'Stakeholder position memory — who said what, when, and how their view shifted',
+      'Consultation record recall — prior public comment rounds and their outcomes',
+      'Policy decision lineage — what was decided, who approved it, and what changed it',
+    ],
+    stripeUrl: 'https://buy.stripe.com/REPLACE_policy-regulation',
+  },
+  {
+    id: 'records-foia',
+    name: 'Records & FOIA',
+    category: 'government',
+    tagline: 'For records officers and FOIA coordinators managing disclosure workflows',
+    price: 79,
+    skills: [
+      'Request history recall — prior requests, their scope, and processing decisions surfaced',
+      'Redaction rationale memory — why a specific exemption was applied, recalled in appeals',
+      'Requester history recall — prior contacts and their patterns surfaced per requester',
+      'Disclosure precedent recall — what was released in prior similar requests',
+    ],
+    stripeUrl: 'https://buy.stripe.com/REPLACE_records-foia',
+  },
+  {
+    id: 'grant-program',
+    name: 'Grant & Program Management',
+    category: 'government',
+    tagline: 'For program managers overseeing grants and funded initiatives',
+    price: 79,
+    skills: [
+      'Award history recall — prior grant terms, conditions, and monitoring outcomes',
+      'Grantee context memory — compliance history and prior findings recalled per recipient',
+      'Reporting and milestone recall — what was due, what was submitted, what was flagged',
+      'Programme design memory — prior implementation decisions and their outcomes recalled',
+    ],
+    stripeUrl: 'https://buy.stripe.com/REPLACE_grant-program',
+  },
+
+  // ── Defense & Aerospace ───────────────────────────────────────────────────
+  {
+    id: 'itar-compliance',
+    name: 'ITAR Compliance',
+    category: 'defense',
+    tagline: 'For export control officers and ITAR-regulated contractors',
+    price: 199,
+    badge: 'Air-gap ready',
+    skills: [
+      'Authorisation history recall — prior licences, their scope, and expiry recalled before transactions',
+      'Jurisdiction memory — prior commodity jurisdiction determinations and their rationale',
+      'Disclosure and access tracking — what was shared with whom, recalled in audits',
+      'Empowered Official memory — prior compliance decisions and their basis surfaced on demand',
+    ],
+    stripeUrl: 'https://buy.stripe.com/REPLACE_itar-compliance',
+  },
+  {
+    id: 'defense-contractor',
+    name: 'Defense Contractor',
+    category: 'defense',
+    tagline: 'For program managers on DoD contracts (DFARS / CMMC)',
+    price: 149,
+    skills: [
+      'Contract requirement recall — CDRL, SOW, and clause obligations surfaced before deliverables',
+      'Deliverable history — what was submitted, what was rejected, and the resolution recalled',
+      'DCSA and CMMC context memory — prior assessment findings and remediation history',
+      'Subcontractor flow-down recall — which clauses were passed down, to whom, and when',
+    ],
+    stripeUrl: 'https://buy.stripe.com/REPLACE_defense-contractor',
+  },
+  {
+    id: 'mission-systems',
+    name: 'Mission Systems Engineering',
+    category: 'defense',
+    tagline: 'For systems engineers on long-lifecycle aerospace and defence programmes',
+    price: 149,
+    skills: [
+      'Specification history recall — what changed between baselines, why, and what drove it',
+      'Test history memory — what was tested, what failed, and the resolution for each anomaly',
+      'Configuration item recall — current configuration and its change history surfaced on demand',
+      'Interface decision memory — why a specific interface was defined this way, recalled on modification',
+    ],
+    stripeUrl: 'https://buy.stripe.com/REPLACE_mission-systems',
+  },
+
+  // ── Creative IP Protection ────────────────────────────────────────────────
+  {
+    id: 'manuscript-narrative',
+    name: 'Manuscript & Narrative',
+    category: 'creative',
+    tagline: 'For authors protecting and developing long-form creative work',
+    price: 79,
+    skills: [
+      'Story bible recall — characters, rules, timelines, and world-building recalled on demand',
+      'Draft lineage — prior versions, what changed, and why — never lost between sessions',
+      'Continuity memory — prior established facts recalled before writing new scenes',
+      'Unpublished work boundary — Sensitive tier engaged; zero creative content reaches cloud AI',
+    ],
+    stripeUrl: 'https://buy.stripe.com/REPLACE_manuscript-narrative',
+  },
+  {
+    id: 'design-visual-ip',
+    name: 'Design & Visual IP',
+    category: 'creative',
+    tagline: 'For designers protecting unreleased visual and product work',
+    price: 79,
+    skills: [
+      'Asset provenance recall — when each element was created, its source, and its status',
+      'Iteration history — what changed between versions and the brief behind each change',
+      'Style guide memory — brand rules and their rationale recalled across all sessions',
+      'IP boundary enforcement — unreleased assets stay local; no cloud ingestion',
+    ],
+    stripeUrl: 'https://buy.stripe.com/REPLACE_design-visual-ip',
+  },
+  {
+    id: 'music-audio-ip',
+    name: 'Music & Audio IP',
+    category: 'creative',
+    tagline: 'For composers, producers, and studios protecting unreleased work',
+    price: 79,
+    skills: [
+      'Composition history — what was written, when, and in what context, recalled on demand',
+      'Sample provenance recall — what was used, from where, and its clearance status',
+      'Rights and ownership memory — who owns what, what was licensed, and on what terms',
+      'Unreleased work boundary — zero audio content or metadata reaches external services',
+    ],
+    stripeUrl: 'https://buy.stripe.com/REPLACE_music-audio-ip',
+  },
+
+  // ── Journalism & Investigation ────────────────────────────────────────────
+  {
+    id: 'source-memory',
+    name: 'Source Memory',
+    category: 'journalism',
+    tagline: 'For journalists managing ongoing source relationships',
+    price: 79,
+    skills: [
+      'Source history recall — prior interactions, reliability signals, and relationship context',
+      'Contact commitment memory — what a source said they would provide, recalled on follow-up',
+      'Source pattern recall — prior inconsistencies or reliability issues surfaced before use',
+      'Sensitive source protection — Sensitive tier; source identities never reach cloud AI',
+    ],
+    stripeUrl: 'https://buy.stripe.com/REPLACE_source-memory',
+  },
+  {
+    id: 'investigation-thread',
+    name: 'Investigation Thread',
+    category: 'journalism',
+    tagline: 'For investigative journalists tracking complex multi-thread stories',
+    price: 99,
+    skills: [
+      'Evidence chain recall — what was found, where, and what it connects to, surfaced on demand',
+      'Timeline memory — the sequence of events and their sources recalled when writing',
+      'Entity relationship recall — how people, organisations, and documents connect, across time',
+      'Dead end memory — what was investigated and cleared, to avoid repeating the work',
+    ],
+    stripeUrl: 'https://buy.stripe.com/REPLACE_investigation-thread',
+  },
+
+  // ── Scientific Research ───────────────────────────────────────────────────
+  {
+    id: 'laboratory-notebook',
+    name: 'Laboratory Notebook',
+    category: 'science',
+    tagline: 'For researchers maintaining an auditable experimental record',
+    price: 79,
+    skills: [
+      'Experiment lineage — prior protocols, results, and deviations recalled before each run',
+      'Reagent and material recall — lot numbers, supplier issues, and substitutions surfaced',
+      'Hypothesis history — what was tested, what was abandoned, and the evidence trail',
+      'Protocol version memory — what changed between versions and the rationale',
+    ],
+    stripeUrl: 'https://buy.stripe.com/REPLACE_laboratory-notebook',
+  },
+  {
+    id: 'literature-synthesis',
+    name: 'Literature & Synthesis',
+    category: 'science',
+    tagline: 'For researchers managing large bodies of literature over time',
+    price: 79,
+    skills: [
+      'Prior synthesis recall — what you concluded from a paper, recalled years later',
+      'Research thread memory — the line of inquiry and its evolution across time',
+      'Citation relationship recall — how sources connect to each other and to your argument',
+      'Gap memory — open questions and their prior investigation history surfaced on demand',
+    ],
+    stripeUrl: 'https://buy.stripe.com/REPLACE_literature-synthesis',
+  },
+  {
+    id: 'multi-institution-research',
+    name: 'Multi-Institution Research',
+    category: 'science',
+    tagline: 'For researchers managing collaborations, grants, and IRB obligations',
+    price: 99,
+    skills: [
+      'Collaboration history — who contributed what, on what timeline, and with what constraints',
+      'Data provenance recall — where each dataset came from and its usage restrictions',
+      'IRB and ethics memory — prior approvals, amendments, and their conditions recalled',
+      'Grant obligation recall — reporting deadlines, deliverables, and milestones surfaced',
+    ],
+    stripeUrl: 'https://buy.stripe.com/REPLACE_multi-institution-research',
+  },
+
+  // ── Education & Knowledge Work ────────────────────────────────────────────
+  {
+    id: 'academic-research',
+    name: 'Academic Research',
+    category: 'education',
+    tagline: 'For doctoral researchers and academics managing long research arcs',
+    price: 79,
+    skills: [
+      'Literature synthesis memory — what you concluded from prior reading, recalled on demand',
+      'Dissertation thread recall — the argument, its evolution, and committee feedback over time',
+      'Advisor and supervisor memory — prior feedback, commitments, and agreed directions',
+      'Conference and submission history — what was presented, rejected, or accepted, and why',
+    ],
+    stripeUrl: 'https://buy.stripe.com/REPLACE_academic-research',
+  },
+  {
+    id: 'corporate-ld',
+    name: 'Corporate L&D',
+    category: 'education',
+    tagline: 'For L&D professionals managing learning programmes across an organisation',
+    price: 79,
+    skills: [
+      'Programme history recall — what was run, how it performed, and what changed it',
+      'Competency gap memory — prior needs analyses and their recommended interventions',
+      'Learner cohort history — prior engagement patterns recalled when designing new programmes',
+      'Vendor and content history — prior assessments of learning vendors and content quality',
+    ],
+    stripeUrl: 'https://buy.stripe.com/REPLACE_corporate-ld',
+  },
+
+  // ── Field Operations & Trades ─────────────────────────────────────────────
+  {
+    id: 'field-service',
+    name: 'Field Service',
+    category: 'field',
+    tagline: 'For field technicians serving equipment at customer sites',
+    price: 79,
+    skills: [
+      'Site history recall — what was found, what was done, and what was deferred at this location',
+      'Equipment quirk memory — known workarounds and vendor advisories recalled before work',
+      'Customer commitment recall — what was promised at prior visits, surfaced on return',
+      'Handoff capture — end-of-visit notes saved for the next technician automatically',
+    ],
+    stripeUrl: 'https://buy.stripe.com/REPLACE_field-service',
+  },
+  {
+    id: 'safety-compliance-field',
+    name: 'Safety & Compliance',
+    category: 'field',
+    tagline: 'For safety officers and HSE professionals in operational environments',
+    price: 99,
+    skills: [
+      'Incident history recall — prior incidents with similar characteristics surfaced before work',
+      'Near-miss memory — what was reported, investigated, and remediated recalled on demand',
+      'Procedure deviation recall — past deviations and their consequences surfaced before sign-off',
+      'Inspection history memory — prior findings recalled before each new audit cycle',
+    ],
+    stripeUrl: 'https://buy.stripe.com/REPLACE_safety-compliance-field',
+  },
+
+  // ── Architecture & Construction ───────────────────────────────────────────
+  {
+    id: 'design-planning',
+    name: 'Design & Planning',
+    category: 'architecture',
+    tagline: 'For architects managing complex projects through design and approvals',
+    price: 79,
+    skills: [
+      'Design decision recall — why a specific approach was taken and who approved it',
+      'Code compliance memory — prior interpretations and rulings recalled before submissions',
+      'Client brief history — how requirements evolved and what was agreed at each stage',
+      'Value engineering recall — prior cost decisions and their consequences surfaced on new projects',
+    ],
+    stripeUrl: 'https://buy.stripe.com/REPLACE_design-planning',
+  },
+  {
+    id: 'construction-project',
+    name: 'Construction Project Management',
+    category: 'architecture',
+    tagline: 'For project managers on large construction sites',
+    price: 79,
+    skills: [
+      'RFI history recall — prior questions, answers, and the decisions they produced',
+      'Change order memory — what was requested, what was approved, and at what cost',
+      'Subcontractor relationship recall — prior performance, issues, and commitments surfaced',
+      'Punch list and defect memory — open items and their resolution history across the project',
+    ],
+    stripeUrl: 'https://buy.stripe.com/REPLACE_construction-project',
+  },
+
+  // ── Business Operations & B2B ─────────────────────────────────────────────
+  {
+    id: 'sales-account',
+    name: 'Sales & Account',
+    category: 'business',
+    tagline: 'For account executives managing complex B2B relationships',
+    price: 99,
+    badge: 'Most popular',
+    skills: [
+      'Account history recall — full relationship context before every call or meeting',
+      'Risk signal memory — health indicators and churn signals recalled across the relationship',
+      'Renewal context recall — account history synthesised before renewal conversations',
+      'Objection history — how prior objections were handled and what the outcome was',
+    ],
+    stripeUrl: 'https://buy.stripe.com/REPLACE_sales-account',
+  },
+  {
+    id: 'customer-success',
+    name: 'Customer Success',
+    category: 'business',
+    tagline: 'For CSMs managing ongoing customer health and expansion',
+    price: 79,
+    skills: [
+      'Health signal recall — prior engagement patterns and risk indicators surfaced on review',
+      'Expansion opportunity memory — prior conversations about adjacent needs recalled',
+      'Escalation history — prior issues, their resolution, and the relationship impact recalled',
+      'QBR and review memory — prior commitments made in business reviews surfaced at renewal',
+    ],
+    stripeUrl: 'https://buy.stripe.com/REPLACE_customer-success',
+  },
+  {
+    id: 'vendor-operations',
+    name: 'Vendor & Operations',
+    category: 'business',
+    tagline: 'For operations leads managing supplier relationships and contracts',
+    price: 79,
+    skills: [
+      'Supplier history recall — prior performance, issues, and negotiation outcomes surfaced',
+      'Contract term memory — SLA obligations, renewal dates, and key clauses recalled',
+      'Incident and SLA history — prior failures, credits, and remediation recalled per vendor',
+      'Procurement decision recall — why a vendor was chosen over alternatives, surfaced on review',
+    ],
+    stripeUrl: 'https://buy.stripe.com/REPLACE_vendor-operations',
+  },
+];
 ---
 
 <Layout
-  title="Template Packs — Graphnosis"
-  description="Pre-built memory architecture for your profession. Recall Recipes, engram schemas, workflow templates, and connector configs — ready to import."
+  title="Graphnosis Starter Kits — Pre-built memory for your profession"
+  description="Starter kits for Graphnosis: named recall patterns, engram schemas, and workflow guides pre-configured for your profession. Zero data. No servers."
 >
   <Nav />
   <main>
 
     <!-- Header -->
-    <section class="py-24 px-4 sm:px-6 text-center">
+    <section class="py-20 px-4 sm:px-6 text-center">
       <div class="max-w-3xl mx-auto">
-        <div class="inline-flex items-center gap-2 px-3 py-1.5 rounded-full border border-[#2a2a3d] bg-[#1c1c27] text-[#a78bfa] text-xs font-semibold tracking-widest uppercase mb-8">
+        <div class="inline-flex items-center gap-2 px-3 py-1.5 rounded-full border border-[#2a2a3d] bg-[#1c1c27] text-[#a78bfa] text-xs font-semibold tracking-widest uppercase mb-6">
           <span class="w-1.5 h-1.5 rounded-full bg-[#a78bfa]"></span>
-          Template packs
+          Starter Kits
         </div>
-        <h1 class="text-4xl sm:text-5xl font-black text-white mb-6 leading-tight">
-          Start with your profession's<br />
-          <span
-            class="bg-clip-text text-transparent"
-            style="background-image: linear-gradient(135deg, #67e8f9 0%, #a78bfa 100%);"
-          >memory architecture — pre-built.</span>
+        <h1 class="text-4xl sm:text-5xl font-black mb-4 leading-tight">
+          <span class="bg-clip-text text-transparent" style="background-image: linear-gradient(135deg, #67e8f9 0%, #a78bfa 100%);">
+            Profession Starter Kits
+          </span>
         </h1>
-        <p class="text-[#c4c6d6] text-lg leading-relaxed mb-4">
-          Each pack gives you a pre-configured engram schema, named Recall Recipes for your specific job,
-          workflow templates, and connector configs. No setup from scratch.
+        <p class="text-[#c4c6d6] text-lg leading-relaxed mb-4 max-w-2xl mx-auto">
+          Start with your profession's starter kit — a named set of recall patterns, an engram schema,
+          and a setup guide configured for how your specific job actually uses memory.
         </p>
-        <p class="text-[#c4c6d6] text-base mb-8">
-          One-time purchase. Yours forever. Works with the free Graphnosis download.
+        <p class="text-[#c4c6d6] text-sm mb-8">
+          One-time purchase · Yours forever · Works with the free Graphnosis download
         </p>
 
         <!-- Zero data · zero servers callout -->
@@ -174,133 +793,154 @@ const bundlePrice = 399;
           <div>
             <p class="text-[#f0f0f5] font-semibold text-sm mb-1">These packs contain zero actual data. Graphnosis has zero servers.</p>
             <p class="text-[#c4c6d6] text-sm leading-relaxed">
-              A pack is a structure — engram schemas, Recall Recipes, workflow templates, and connector configs.
-              Your memory is built from your own files on your own device. Nothing is pre-loaded, nothing is shared,
-              and no Graphnosis server ever touches it. The app is open-source and the network activity guide proves it.
+              A pack is a structure: engram schemas, recall patterns, and connector guides. Your memory is
+              built from your own files, on your own device. Nothing is pre-loaded, nothing is shared,
+              and no Graphnosis server ever touches it.
             </p>
           </div>
         </div>
       </div>
     </section>
 
-    <!-- Pack grid -->
-    <section class="pb-24 px-4 sm:px-6">
-      <div class="max-w-7xl mx-auto">
-        <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-          {packs.map((pack) => (
-            <article
-              class="bg-[#1c1c27] border border-[#2a2a3d] rounded-2xl p-7 flex flex-col gap-5 relative"
-              style={`border-color: ${pack.color}22;`}
+    <!-- Filter bar -->
+    <section class="px-4 sm:px-6 pb-8 sticky top-16 z-40 bg-[#13131a]/95 backdrop-blur-md border-b border-[#2a2a3d]">
+      <div class="max-w-7xl mx-auto pt-4 flex flex-col sm:flex-row gap-3">
+        <!-- Search -->
+        <div class="relative shrink-0 sm:w-56">
+          <svg class="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-[#52525b]" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" aria-hidden="true">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M21 21l-5.197-5.197m0 0A7.5 7.5 0 105.196 5.196a7.5 7.5 0 0010.607 10.607z" />
+          </svg>
+          <input
+            id="pack-search"
+            type="search"
+            placeholder="Search packs…"
+            class="w-full pl-9 pr-3 py-2 rounded-full bg-[#1c1c27] border border-[#2a2a3d] focus:border-[#67e8f9] focus:outline-none text-[#f0f0f5] placeholder-[#52525b] text-sm transition-colors"
+          />
+        </div>
+        <!-- Category chips -->
+        <div class="flex gap-2 overflow-x-auto pb-1 scrollbar-none">
+          {categories.map((cat) => (
+            <button
+              class="category-chip shrink-0 px-3 py-1.5 rounded-full text-xs font-semibold border transition-colors whitespace-nowrap"
+              data-category={cat.id}
+              style={cat.id === 'all'
+                ? 'background:#67e8f9; color:#13131a; border-color:#67e8f9;'
+                : 'background:transparent; color:#c4c6d6; border-color:#2a2a3d;'}
             >
-              {pack.badge && (
-                <div
-                  class="absolute -top-3 left-6 text-xs font-black tracking-widest uppercase px-3 py-1 rounded-full text-[#13131a]"
-                  style={`background: ${pack.color};`}
-                >
-                  {pack.badge}
-                </div>
-              )}
-
-              <!-- Header -->
-              <div>
-                <p
-                  class="text-xs font-black tracking-widest uppercase mb-1"
-                  style={`color: ${pack.color};`}
-                >
-                  {pack.tagline}
-                </p>
-                <h2 class="text-xl font-black text-white">{pack.name}</h2>
-              </div>
-
-              <!-- Skills -->
-              <ul class="flex flex-col gap-2.5">
-                {pack.skills.map((skill) => (
-                  <li class="flex items-start gap-2.5 text-sm text-[#c4c6d6]">
-                    <span
-                      class="mt-0.5 w-4 h-4 shrink-0 rounded-full flex items-center justify-center"
-                      style={`background: ${pack.color}22; border: 1px solid ${pack.color}44;`}
-                    >
-                      <svg class="w-2.5 h-2.5" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24" aria-hidden="true" style={`color: ${pack.color};`}>
-                        <path stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4L19 7" />
-                      </svg>
-                    </span>
-                    <span>{skill}</span>
-                  </li>
-                ))}
-              </ul>
-
-              <!-- Includes -->
-              <div class="border-t border-[#2a2a3d] pt-4">
-                <p class="text-xs font-semibold tracking-widest uppercase text-[#52525b] mb-2">Includes</p>
-                <ul class="flex flex-col gap-1">
-                  {pack.includes.map((item) => (
-                    <li class="text-xs text-[#c4c6d6] flex items-center gap-2">
-                      <span class="text-[#2a2a3d]">—</span>
-                      {item}
-                    </li>
-                  ))}
-                </ul>
-              </div>
-
-              <!-- Trust strip -->
-              <div class="flex items-center gap-4 py-3 border-t border-b border-[#2a2a3d]">
-                <span class="flex items-center gap-1.5 text-xs text-[#52525b]">
-                  <svg class="w-3.5 h-3.5 shrink-0" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" aria-hidden="true">
-                    <path stroke-linecap="round" stroke-linejoin="round" d="M20.25 7.5l-.625 10.632a2.25 2.25 0 01-2.247 2.118H6.622a2.25 2.25 0 01-2.247-2.118L3.75 7.5M10 11.25h4M3.375 7.5h17.25c.621 0 1.125-.504 1.125-1.125v-1.5c0-.621-.504-1.125-1.125-1.125H3.375c-.621 0-1.125.504-1.125 1.125v1.5c0 .621.504 1.125 1.125 1.125z" />
-                  </svg>
-                  Zero data included
-                </span>
-                <span class="text-[#2a2a3d]" aria-hidden="true">·</span>
-                <span class="flex items-center gap-1.5 text-xs text-[#52525b]">
-                  <svg class="w-3.5 h-3.5 shrink-0" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" aria-hidden="true">
-                    <path stroke-linecap="round" stroke-linejoin="round" d="M5.636 5.636a9 9 0 1012.728 0M12 3v9" />
-                  </svg>
-                  Graphnosis has no servers
-                </span>
-              </div>
-
-              <!-- Price + CTA -->
-              <div class="mt-auto pt-2 flex items-center justify-between gap-4">
-                <span class="text-3xl font-black text-white">${pack.price}</span>
-                <a
-                  href={pack.stripeUrl}
-                  class="flex-1 inline-flex items-center justify-center gap-2 px-5 py-3 rounded-full font-bold text-sm transition-colors text-[#13131a]"
-                  style={`background: ${pack.color};`}
-                >
-                  Get pack
-                  <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24" aria-hidden="true">
-                    <path stroke-linecap="round" stroke-linejoin="round" d="M17 8l4 4m0 0l-4 4m4-4H3" />
-                  </svg>
-                </a>
-              </div>
-            </article>
+              {cat.label}
+            </button>
           ))}
         </div>
+      </div>
+    </section>
 
-        <!-- Bundle CTA -->
-        <div class="mt-12 bg-[#1c1c27] border border-[#2a2a3d] rounded-2xl p-8 text-center"
-             style="border-color: #67e8f922; background: linear-gradient(135deg, #0b1a1e 0%, #13101f 100%);">
-          <p class="text-xs font-black tracking-widest uppercase text-[#67e8f9] mb-2">All 6 packs</p>
-          <h2 class="text-3xl font-black text-white mb-3">The Full Bundle</h2>
-          <p class="text-[#c4c6d6] mb-6 max-w-lg mx-auto">
-            All six packs at a discount. Useful if you work across domains — or if you're building tools for a team with mixed roles.
-          </p>
-          <div class="flex items-center justify-center gap-6">
-            <div class="text-center">
-              <p class="text-sm text-[#52525b] line-through">${packs.reduce((s, p) => s + p.price, 0)}</p>
-              <p class="text-4xl font-black text-white">${bundlePrice}</p>
-            </div>
-            <a
-              href={bundleUrl}
-              class="inline-flex items-center gap-2 px-8 py-4 rounded-full bg-[#67e8f9] hover:bg-[#4dd6e8] text-[#13131a] font-bold text-lg transition-colors shadow-lg shadow-[#67e8f9]/20"
-            >
-              Get all 6 packs
-              <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24" aria-hidden="true">
-                <path stroke-linecap="round" stroke-linejoin="round" d="M17 8l4 4m0 0l-4 4m4-4H3" />
-              </svg>
-            </a>
-          </div>
+    <!-- Pack grid -->
+    <section class="py-12 px-4 sm:px-6">
+      <div class="max-w-7xl mx-auto">
+
+        <!-- Count -->
+        <p id="pack-count" class="text-xs text-[#52525b] font-mono mb-6">{packs.length} packs</p>
+
+        <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5" id="pack-grid">
+          {packs.map((pack) => {
+            const color = catColor[pack.category] ?? '#67e8f9';
+            const searchText = [pack.name, pack.tagline, ...pack.skills].join(' ').toLowerCase();
+            return (
+              <article
+                class="pack-card bg-[#1c1c27] border border-[#2a2a3d] rounded-2xl p-6 flex flex-col gap-4 relative"
+                data-category={pack.category}
+                data-search-text={searchText}
+                style={`border-color: ${color}18;`}
+              >
+                {pack.badge && (
+                  <div
+                    class="absolute -top-3 left-5 text-xs font-black tracking-widest uppercase px-3 py-1 rounded-full text-[#13131a]"
+                    style={`background: ${color};`}
+                  >
+                    {pack.badge}
+                  </div>
+                )}
+
+                <!-- Category label + name -->
+                <div>
+                  <p class="text-xs font-black tracking-widest uppercase mb-1" style={`color: ${color};`}>
+                    {categories.find(c => c.id === pack.category)?.label}
+                  </p>
+                  <h2 class="text-lg font-black text-white leading-snug">{pack.name}</h2>
+                  <p class="text-xs text-[#52525b] mt-0.5">{pack.tagline}</p>
+                </div>
+
+                <!-- Skills -->
+                <ul class="flex flex-col gap-2 flex-1">
+                  {pack.skills.map((skill) => {
+                    const [title, ...rest] = skill.split(' — ');
+                    return (
+                      <li class="flex items-start gap-2 text-sm text-[#c4c6d6]">
+                        <span
+                          class="mt-0.5 w-3.5 h-3.5 shrink-0 rounded-full flex items-center justify-center"
+                          style={`background: ${color}18; border: 1px solid ${color}33;`}
+                        >
+                          <svg class="w-2 h-2" fill="none" stroke="currentColor" stroke-width="3" viewBox="0 0 24 24" aria-hidden="true" style={`color: ${color};`}>
+                            <path stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4L19 7" />
+                          </svg>
+                        </span>
+                        <span>
+                          <span class="font-semibold text-[#f0f0f5]">{title}</span>
+                          {rest.length > 0 && <span class="text-[#c4c6d6]"> — {rest.join(' — ')}</span>}
+                        </span>
+                      </li>
+                    );
+                  })}
+                </ul>
+
+                <!-- Trust strip -->
+                <div class="flex items-center gap-3 pt-3 border-t border-[#2a2a3d]">
+                  <span class="text-xs text-[#52525b]">Zero data included</span>
+                  <span class="text-[#2a2a3d]" aria-hidden="true">·</span>
+                  <span class="text-xs text-[#52525b]">No Graphnosis servers</span>
+                </div>
+
+                <!-- Price + CTA -->
+                <div class="flex items-center justify-between gap-4">
+                  <span class="text-3xl font-black text-white">${pack.price}</span>
+                  <a
+                    href={pack.stripeUrl}
+                    class="flex-1 inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-full font-bold text-sm transition-opacity hover:opacity-90 text-[#13131a]"
+                    style={`background: ${color};`}
+                  >
+                    Get pack
+                    <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24" aria-hidden="true">
+                      <path stroke-linecap="round" stroke-linejoin="round" d="M17 8l4 4m0 0l-4 4m4-4H3" />
+                    </svg>
+                  </a>
+                </div>
+              </article>
+            );
+          })}
         </div>
+
+        <!-- No results -->
+        <p id="no-results" class="hidden text-center text-[#52525b] py-16 text-sm">
+          No packs match that search. <a href="mailto:templates@graphnosis.com" class="text-[#67e8f9] underline">Request one →</a>
+        </p>
+
+      </div>
+    </section>
+
+    <!-- Team licence CTA -->
+    <section class="pb-16 px-4 sm:px-6">
+      <div class="max-w-3xl mx-auto bg-[#1c1c27] border border-[#2a2a3d] rounded-2xl p-8 text-center">
+        <h2 class="text-2xl font-black text-white mb-3">Need this for a whole team?</h2>
+        <p class="text-[#c4c6d6] mb-6 max-w-lg mx-auto">
+          Individual licences cover a single user. For firm-wide or team deployments — where multiple
+          people import the same schema — contact us for an organisational licence.
+        </p>
+        <a
+          href="mailto:templates@graphnosis.com"
+          class="inline-flex items-center gap-2 px-7 py-3.5 rounded-full bg-[#67e8f9] hover:bg-[#4dd6e8] text-[#13131a] font-bold text-base transition-colors"
+        >
+          Contact for team licensing
+        </a>
       </div>
     </section>
 
@@ -311,24 +951,24 @@ const bundlePrice = 399;
         <div class="flex flex-col gap-6">
           {[
             {
-              q: 'What exactly is a template pack?',
-              a: 'A pre-configured starting point for Graphnosis memory in your specific domain. Each pack includes: (1) an engram schema — which engrams to create and at what sensitivity tier; (2) named Recall Recipes — the exact query patterns and tool sequences to use before and after key professional actions; (3) workflow templates for n8n, Python, or Claude; and (4) connector configs for the tools most common in your profession.',
+              q: 'What is a starter kit?',
+              a: 'A pre-configured starting point for Graphnosis memory in your specific domain. Each kit includes: an engram schema (which engrams to create and at which sensitivity tier); named recall patterns (the query approach for your professional context); a connector guide (how to ingest your specific sources); and an AI session template (the context file for any AI client — Claude, Cursor, Copilot, or your own agent). These kits will eventually be published as a standalone product called Job Gnosis.',
             },
             {
-              q: 'Do I need to buy a pack to use Graphnosis?',
-              a: 'No. Graphnosis is free to download and use. Packs are optional accelerators — they save you the setup time of figuring out the right engram structure and recall patterns for your job. You can build everything in a pack yourself; the pack just means you don\'t have to.',
+              q: 'Do I need a pack to use Graphnosis?',
+              a: "No. Graphnosis is free and fully functional without any pack. Packs save you the setup time of figuring out the right memory structure and recall patterns for your specific job. Everything in a pack can be built manually — the pack means you don't have to.",
             },
             {
-              q: 'What do I get after purchase?',
-              a: 'A ZIP containing: the engram schema JSON (importable directly into Graphnosis), a Recall Recipes markdown file (formatted for CLAUDE.md / AGENTS.md), workflow templates, and a setup guide. Delivered immediately via Stripe after payment.',
+              q: 'Why does it say zero data and no servers?',
+              a: "Because it's true and it matters. The pack contains no pre-loaded memory — it's a schema and a guide. Your memory is built from your own files on your own machine. Graphnosis has no cloud infrastructure: no sync server, no ingestion API, no telemetry. The source code is available to verify this.",
             },
             {
-              q: 'Can I use a pack on multiple machines / for a team?',
-              a: 'Each purchase is a single-user license. For team deployments — where multiple people import the same schema — contact us for a team license.',
+              q: 'What do I receive after purchase?',
+              a: 'A ZIP with: the engram schema (importable directly into Graphnosis); a recall pattern guide formatted for any AI client context file; a source integration guide for the tools most common in your profession; and a setup walkthrough. Delivered immediately via Stripe.',
             },
             {
-              q: 'My profession isn\'t listed. Can I request one?',
-              a: 'Yes. Email templates@graphnosis.com with your profession and the 3–4 most common AI tasks you use for your work. We\'ll either build it or point you to the closest existing pack.',
+              q: "My profession isn't listed.",
+              a: "Email templates@graphnosis.com with your profession and the 3–4 situations where you most need AI to remember what you know. We'll either build the pack or point you to the closest existing one.",
             },
           ].map((item) => (
             <div class="border-b border-[#2a2a3d] pb-6">
@@ -343,3 +983,42 @@ const bundlePrice = 399;
   </main>
   <Footer />
 </Layout>
+
+<script>
+  const chips = document.querySelectorAll<HTMLButtonElement>('.category-chip');
+  const cards = document.querySelectorAll<HTMLElement>('.pack-card');
+  const search = document.getElementById('pack-search') as HTMLInputElement;
+  const noResults = document.getElementById('no-results') as HTMLElement;
+  const countEl = document.getElementById('pack-count') as HTMLElement;
+
+  let activeCategory = 'all';
+
+  function filter() {
+    const q = search.value.toLowerCase().trim();
+    let visible = 0;
+    cards.forEach(card => {
+      const matchesCat = activeCategory === 'all' || card.dataset.category === activeCategory;
+      const matchesSearch = !q || (card.dataset.searchText ?? '').includes(q);
+      const show = matchesCat && matchesSearch;
+      card.classList.toggle('hidden', !show);
+      if (show) visible++;
+    });
+    noResults.classList.toggle('hidden', visible > 0);
+    countEl.textContent = visible === cards.length
+      ? `${cards.length} packs`
+      : `${visible} of ${cards.length} packs`;
+  }
+
+  chips.forEach(chip => {
+    chip.addEventListener('click', () => {
+      chips.forEach(c => {
+        c.style.cssText = 'background:transparent; color:#c4c6d6; border-color:#2a2a3d;';
+      });
+      chip.style.cssText = 'background:#67e8f9; color:#13131a; border-color:#67e8f9;';
+      activeCategory = chip.dataset.category ?? 'all';
+      filter();
+    });
+  });
+
+  search.addEventListener('input', filter);
+</script>
