@@ -471,6 +471,11 @@ async function main(): Promise<void> {
       console.error(`[graphnosis-sidecar] local embeddings ready (${live.id})`);
     } catch (e) {
       console.error(`[graphnosis-sidecar] WARNING: local embeddings unavailable (${(e as Error).message}) — falling back to TF-IDF-only retrieval. Set GRAPHNOSIS_EMBED_DISABLE=1 to silence.`);
+      // Kill the embed worker pool immediately. On the happy path workers are
+      // kept alive for the session; here we've already decided on TF-IDF, so
+      // running workers only compete with GraphnosisHost.open() for CPU and
+      // Windows Defender scanning bandwidth, slowing cortex load for no gain.
+      void terminateEmbedWorker().catch(() => {});
     }
   }
   // Reference the boot-time constants to avoid unused-import errors; they
