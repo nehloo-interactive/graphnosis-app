@@ -26,6 +26,7 @@ The underlying engine, [`@nehloo/graphnosis`](https://github.com/nehloo/Graphnos
    - **AI conversation notes** via "remember this" inside Claude / Cursor / Claude Code
 3. Anytime you talk to an MCP-aware AI, a relevant federated subgraph from your memory gets attached, within a tight token budget. The AI answers as if it knew you.
 4. You correct it in natural language (*"the trip was September, not August"*). A bundled local LLM produces a structured diff, you confirm, the graph updates — privately, on-device.
+5. Optionally, you enable **Non-Deterministic Aid**: five independently-toggleable LLM capabilities (recall enrichment, correction parsing, distillation, insights, edge prediction) each opt-in, each running entirely on your machine via Ollama.
 
 The full `.gai` files never reach the AI. The AI only ever sees the scoped subgraph relevant to the current prompt — and that subgraph is hard-capped by per-graph **sensitivity tiers** (`public` / `personal` / `sensitive`) that the AI cannot override.
 
@@ -33,7 +34,7 @@ The full `.gai` files never reach the AI. The AI only ever sees the scoped subgr
 
 ## Screenshots
 
-Unlock your cortex with a passphrase or Touch ID, then work across four tabs — daily check-ins, the 3D engram, deterministic consolidation, and the optional non-deterministic layer.
+Unlock your cortex with a passphrase or Touch ID, then work across four tabs — daily check-ins, the 3D engram (grab to rotate, ⌘-drag to pan), deterministic consolidation, and the optional non-deterministic layer. The status bar shows live GLL/GNN overlay activity pills that pulse when an inference engine is running.
 
 ![Graphnosis — unlock screen](apps/docs/public/screenshots/01-unlock.png)
 
@@ -73,9 +74,10 @@ And the recall / remember loop, working live with an AI client:
 │    → PDF parsing offloaded to a worker_threads Worker (pure JS, safe)      │
 │    → ONNX inference runs in a pool of forked child processes (N-API safe)  │
 │  - federated query across all user graphs with tier-capped budgets         │
-│  - MCP server over stdio: 34 tools in 9 categories (recall, remember,      │
-│    correct, apply, forget, stats, list_engrams, recall_with_citations,     │
-│    compare_engrams, audit_memory, llm_query, … see /reference/mcp-tools)   │
+│  - MCP server over stdio: 35 tools in 9 categories (recall, remind,         │
+│    dig_deeper, remember, correct, apply, forget, stats, list_engrams,      │
+│    recall_with_citations, compare_engrams, audit_memory, llm_query, …      │
+│    see /reference/mcp-tools)                                                │
 └────────────────────────────────┬───────────────────────────────────────────┘
                                  │
                                  ▼
@@ -120,14 +122,14 @@ packages/
 
 ## MCP tools exposed to AI clients
 
-The sidecar exposes **34 tools** in 9 functional categories. The desktop app
+The sidecar exposes **35 tools** in 9 functional categories. The desktop app
 ships an in-app browser for them (left sidebar → **MCP Tools**), and the
 full reference with parameters, return shapes, and example prompts lives
 at [graphnosis.com/reference/mcp-tools](https://graphnosis.com/reference/mcp-tools/).
 
 | Category | Tools |
 |---|---|
-| **Core memory** | `recall` · `remind` · `remember` · `forget` · `apply` · `stats` · `vitality` |
+| **Core memory** | `recall` · `remind` · `dig_deeper` · `remember` · `forget` · `apply` · `stats` · `vitality` |
 | **Engram discovery** | `list_engrams` · `suggest_engram` · `browse_engram` · `recent` · `get_engram_schema` |
 | **Structured recall** | `recall_structured` · `recall_with_citations` · `compare_engrams` · `cross_search` |
 | **Source operations** | `find_source` · `recall_source` · `transfer_source` |
@@ -151,16 +153,16 @@ flows for the four most common:
 
 | Client | Status | Setup |
 |---|---|---|
-| **Claude Desktop** | Supported | Settings → AI clients → Configure Claude Desktop |
-| **Claude Code** | Supported | Settings → AI clients → Configure Claude Code |
-| **Cursor** | Supported | Settings → AI clients → Configure Cursor |
+| **Claude Desktop** | Supported (macOS + Windows) | Settings → AI clients → Configure Claude Desktop |
+| **Claude Code** | Supported (macOS + Windows) | Settings → AI clients → Configure Claude Code |
+| **Cursor** | Supported (macOS + Windows) | Settings → AI clients → Configure Cursor |
 | **Zed** | Supported | Standard MCP config — see docs |
 | **Any MCP-aware tool** | Supported | Standard MCP config — point at the relay |
 | **VS Code / Copilot Chat** | Supported (HTTP bridge) | Bundled Graphnosis VS Code extension |
 | **ChatGPT** | Coming soon | Browser extension |
 | **Gemini** | Coming soon | Browser extension |
 
-Every connection sees the same 34 tools above; what each client can
+Every connection sees the same 35 tools above; what each client can
 actually read is governed by the [consent gate](https://graphnosis.com/guides/ai-access-controls/)
 (silent for personal-tier engrams, one-click in-app modal for sensitive).
 
@@ -290,7 +292,7 @@ Optional `policy.json` for per-graph sensitivity tiers:
 }
 ```
 
-After saving, restart Claude Desktop. The MCP server appears as **Graphnosis** in the tool picker with 34 tools.
+After saving, restart Claude Desktop. The MCP server appears as **Graphnosis** in the tool picker with 35 tools.
 
 ---
 

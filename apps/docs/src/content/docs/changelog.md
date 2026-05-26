@@ -11,6 +11,41 @@ Conventions: **Added** = new features, **Changed** = behavior or UX shifts, **Fi
 
 ---
 
+## v0.11.0 — Overlay recall, LLM capability split, and UI redesign
+
+> **Note for maintainers:** version number TBD — update before tagging.
+
+### Added
+
+- **`dig_deeper` MCP tool.** New Core memory tool that escalates when `recall` returns thin results. Internally orchestrates content recall + source-filename expansion + cross-engram entity hop, returning more nodes with full provenance. AI clients should call `dig_deeper` with the same query before reporting "nothing found" to the user. See the [MCP Tools reference](/reference/mcp-tools/#dig_deeper).
+- **GLL/GNN inferred layer in recall.** `recall`, `remind`, `cross_search`, and `compare_engrams` now append a clearly-labelled `--- INFERRED LAYER ---` block when overlay data intersects the result — `[gll·assertion N%]` rows from the local LLM and `[gnn·edge N%]` rows from the neural network. The canonical `.gai` subgraph is unchanged; inferred rows are predictions, not attested memory.
+- **LLM capability split.** The Non-Deterministic Aid panel now exposes five independently-toggleable capabilities instead of a single master switch: **Recall enrichment** (query rewriting at recall time), **Correction parsing** (multi-memory diffs in `correct`), **Distillation** (`llm_distill`), **Insights & predictions** (`insights`, `develop`, `predict`, `llm_query`), and **Edge prediction** (autonomous background loop that proposes connections between co-recalled nodes, reviewed in the overlay panel). All remain off by default and all run on-device via Ollama.
+- **Autonomous edge prediction loop.** When Edge prediction is enabled, a background loop runs once an hour: finds semantically-similar node pairs that don't yet have an edge, asks the local LLM whether they're related, and writes confirmed pairs as `[gll·edge]` predictions to the overlay. Review and accept/reject in Non-Deterministic Aid → Local LLM predicted edges. Accepted edges are staged for promotion to canonical memory in a future pass.
+- **Theme token system.** 226 hardcoded colours migrated to named CSS custom properties. Full light-mode palette added; dark-mode aliases locked to original Graphnosis appearance. Brand semantics: `--color-brand-turquoise` for canonical memory / primary actions, `--color-brand-purple` for AI-augmented / non-deterministic actions.
+- **GLL/GNN status pills in the status bar.** Two small indicator pills (one turquoise for the neural network, one purple for the local LLM) sit just left of the MCP client indicator. They appear dimmed when the engine is off and pulse with a CSS keyframe animation when it is actively running.
+- **⌘F global search shortcut.** Pressing ⌘F from anywhere in the app jumps to the Check-in tab and focuses the search input.
+- **3D atlas: grab-to-rotate and ⌘-drag-to-pan.** Click-and-drag rotates the 3D engram; ⌘+drag pans it. GNN cap is now adaptive — the cap adjusts based on the number of nodes currently in view.
+- **Lock screen cortex-missing notice.** When the pre-filled last-used cortex folder no longer exists on disk (renamed, moved, or on an unmounted drive), the lock screen shows a clear notice and hides it the moment the user edits the path. Uses a new `check_path_exists` Tauri command.
+- **Browse… buttons for Obsidian and GBrain connectors.** Single-folder picker in each connector's setup modal — no more manual path typing.
+- **Privacy notice on all connector forms.** A "Local-first — credentials stay on your device, encrypted alongside your cortex" notice appears on all 9 connector form types.
+- **Network activity guide.** New guide covering what Graphnosis connects to and why, with a full table of all outbound calls and how to verify them. See [Network activity](/guides/network-activity/).
+- **Windows: full sidecar + relay support.** The bundled sidecar and relay binaries now work on Windows. In-app "Configure Claude Desktop / Claude Code / Cursor" flows support Windows paths and config locations.
+
+### Changed
+
+- **MCP tool count: 34 → 35.** `dig_deeper` joins the Core memory group.
+- **Vitality persists across boots.** Vitality score is now written to disk on every update and loaded at boot, so the displayed score no longer drops from 97 to 75 on first unlock of an established cortex.
+- **Status bar layout.** Everything right of the cortex path is pushed to the far right via `margin-left: auto`. Left side holds only the theme toggle + cortex path; right side holds overlay pills + MCP client indicator. The ⌘K search chip has been removed (⌘F now handles it).
+- **MCP status click target.** Clicking the MCP client indicator area in the status bar now navigates to the Status page.
+
+### Fixed
+
+- **Vitality 97 → 75 drop on boot.** See "Vitality persists" above.
+- **Auto-recovery from interrupted-shutdown quarantines.** If a previous session was interrupted before the sidecar could cleanly unlock its write lock, the next boot automatically detects and heals the quarantine state instead of requiring the user to manually clear it.
+- **Error banner appeared on lock screen instead of inside the app.** Error banners are now scoped to the authenticated app surface; they no longer show behind the lock screen.
+
+---
+
 ## v0.10.1 — Boot stability and UI polish
 
 Patch release fixing issues found in installed v0.10.0 DMGs.

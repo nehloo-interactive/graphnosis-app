@@ -59,10 +59,50 @@ pub struct SidecarHandle {
     /// SIGKILL (not SIGTERM), so the sidecar's SIGTERM handler never runs and
     /// proper-lockfile never gets a chance to release the lock on its own.
     cortex_dir: PathBuf,
+    /// Raw OS PID captured at spawn time. Stored separately from `child` so
+    /// the synchronous `Drop` impl can send SIGKILL without needing the tokio
+    /// runtime to be alive. `child.id()` returns None once the child has been
+    /// waited on, but we need the PID even if `shutdown()` already ran
+    /// (a double-kill on an exited process is a harmless ESRCH).
+    raw_pid: Option<u32>,
     /// Ring buffer of the sidecar's most-recent stderr lines. Used for
     /// classifying startup failures into friendlier user-facing messages
     /// even when the process dies via signal (no clean exit code).
     _stderr_buffer: Arc<Mutex<VecDeque<String>>>,
+}
+
+impl Drop for SidecarHandle {
+    /// Synchronous last-resort kill — fires whenever the handle is dropped,
+    /// including on abnormal Tauri exit where the tokio runtime shuts down
+    /// before `shutdown()` is called. `kill_on_drop(true)` on the tokio
+    /// `Child` is NOT reliable in that scenario: tokio's drop glue requires
+    /// a running runtime to schedule the async kill, and if the runtime is
+    /// already torn down the sidecar simply becomes an orphan.
+    ///
+    /// A direct libc `kill(pid, SIGKILL)` syscall has no such dependency —
+    /// it works from any thread, runtime or not. On an already-exited process
+    /// it returns ESRCH (no-op), so calling it after a graceful `shutdown()`
+    /// is harmless. Socket and lockfile removal are best-effort for the same
+    /// reason — `shutdown()` may have already cleaned them up.
+    fn drop(&mut self) {
+        #[cfg(unix)]
+        if let Some(pid) = self.raw_pid {
+            // SAFETY: kill(2) is always safe to call with a valid pid and a
+            // known signal constant. SIGKILL = 9 on all POSIX targets.
+            extern "C" { fn kill(pid: i32, sig: i32) -> i32; }
+            unsafe { kill(pid as i32, 9); }
+        }
+        // Remove the lockfile synchronously — no runtime needed.
+        let lock_file = self.cortex_dir.join(".lockfile.lock");
+        let _ = std::fs::remove_dir(&lock_file);
+        // Socket cleanup (Unix only). On Windows "socket paths" are TCP
+        // addresses — nothing to remove from disk.
+        #[cfg(unix)]
+        {
+            let _ = std::fs::remove_file(&self.socket_path);
+            let _ = std::fs::remove_file(&self.events_socket_path);
+        }
+    }
 }
 
 impl SidecarHandle {
@@ -78,10 +118,13 @@ impl SidecarHandle {
                 extern "C" { fn kill(pid: i32, sig: i32) -> i32; }
                 unsafe { kill(pid as i32, 15); }
             }
-            // Wait up to 3 s for the sidecar's graceful-shutdown path to
-            // complete (flush graphs, release lock, exit). After the timeout
-            // we fall through and send SIGKILL as a hard stop.
-            let _ = tokio::time::timeout(Duration::from_secs(3), self.child.wait()).await;
+            // Wait up to 45 s for the sidecar's graceful-shutdown path to
+            // complete (flush graphs, release lock, exit). The default was 3 s,
+            // but a Purge operation re-ingests every live source sequentially —
+            // on a large cortex that can take 30+ seconds. Killing too soon
+            // leaves a zombie holding port 3457 and the events socket, causing
+            // EADDRINUSE when the next unlock spawns a fresh sidecar.
+            let _ = tokio::time::timeout(Duration::from_secs(45), self.child.wait()).await;
         }
         // SIGKILL fallback: always on Windows, after timeout on Unix. kill()
         // on an already-exited child is a no-op (returns an ignorable error).
@@ -128,6 +171,36 @@ pub async fn start_with_recovery(app: &AppHandle, cortex_dir: &Path, recovery_ph
 }
 
 async fn start_inner(app: &AppHandle, cortex_dir: &Path, passphrase: &str, recovery_phrase: Option<&str>, preferred_default_graph: Option<&str>) -> Result<SidecarHandle> {
+    // ── Evict orphaned sidecars ───────────────────────────────────────────────
+    // Orphans accumulate when the Tauri shell exits without running Drop
+    // (tokio runtime-shutdown race). An orphaned sidecar keeps refreshing the
+    // proper-lockfile mtime every 5 s, so the lock never appears stale and the
+    // new sidecar fails to start with "cortex lock held". We fix this by:
+    //   1. Sending SIGKILL to every running graphnosis-sidecar process.
+    //   2. Force-removing the .lockfile.lock directory so the new sidecar
+    //      can acquire a fresh lock immediately.
+    //
+    // This is safe: only one sidecar should ever run per user session — any
+    // matching process we find here is by definition an orphan we own. The
+    // new sidecar hasn't been spawned yet, so there's no race with it.
+    #[cfg(unix)]
+    {
+        let _ = std::process::Command::new("pkill")
+            .args(["-9", "-f", "graphnosis-sidecar"])
+            .output();
+        // Brief pause: let the kernel reclaim FDs (sockets, lock dir) before
+        // we re-bind. SIGKILL is synchronous at the OS level but inode
+        // cleanup on macOS/Linux can lag a few ms.
+        tokio::time::sleep(Duration::from_millis(300)).await;
+    }
+    // Force-release the cortex lock (Unix dir-based, Windows file-based).
+    // Idempotent — remove_dir/remove_file on a non-existent path returns an
+    // error we intentionally ignore.
+    let lock_path = cortex_dir.join(".lockfile.lock");
+    let _ = std::fs::remove_dir(&lock_path);
+    #[cfg(windows)]
+    let _ = std::fs::remove_file(&lock_path);
+
     // On Unix: Unix domain sockets in the cortex directory.
     // On Windows: TCP loopback ports (UnixStream is not available).
     #[cfg(unix)]
@@ -326,11 +399,13 @@ async fn start_inner(app: &AppHandle, cortex_dir: &Path, passphrase: &str, recov
         sleep(Duration::from_millis(150)).await;
     }
 
+    let raw_pid = child.id();
     Ok(SidecarHandle {
         child,
         socket_path,
         events_socket_path,
         cortex_dir: cortex_dir.to_path_buf(),
+        raw_pid,
         _stderr_buffer: stderr_buffer,
     })
 }
