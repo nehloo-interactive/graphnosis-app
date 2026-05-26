@@ -134,13 +134,24 @@ jobs:
           echo "tar_path=${TAR_DEST}" >> $GITHUB_OUTPUT
 
       - name: Create GitHub release
+        id: release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           SEMVER="${{ steps.meta.outputs.semver }}"
           VERSION="${{ steps.meta.outputs.version }}"
-          DMG_PATH="apps/desktop/src-tauri/target/release/bundle/dmg/Graphnosis_${SEMVER}_aarch64.dmg"
           TAR_PATH="${{ steps.updater.outputs.tar_path }}"
+
+          # Locate the DMG produced by Tauri — the arch suffix in the filename
+          # varies by runner (aarch64 on Apple Silicon, x86_64 on Intel).
+          # Search both the native-target dir and the cross-compile target dir.
+          DMG_PATH=$(find apps/desktop/src-tauri/target -name "*.dmg" | head -1)
+          if [ -z "$DMG_PATH" ]; then
+            echo "ERROR: no .dmg found under apps/desktop/src-tauri/target" && exit 1
+          fi
+          echo "Found DMG: $DMG_PATH"
+          echo "dmg_filename=$(basename "$DMG_PATH")" >> $GITHUB_OUTPUT
+
           gh release create "$VERSION" \
             "$DMG_PATH#Graphnosis ${VERSION} (macOS Apple Silicon)" \
             "$TAR_PATH#Graphnosis ${VERSION} — Auto-Update bundle" \
@@ -163,7 +174,7 @@ jobs:
                 \"production\": {
                   \"env_vars\": {
                     \"CURRENT_VERSION\": { \"value\": \"${{ steps.meta.outputs.version }}\" },
-                    \"DMG_FILENAME\": { \"value\": \"${{ steps.meta.outputs.dmg }}\" }
+                    \"DMG_FILENAME\": { \"value\": \"${{ steps.release.outputs.dmg_filename }}\" }
                   }
                 }
               }
