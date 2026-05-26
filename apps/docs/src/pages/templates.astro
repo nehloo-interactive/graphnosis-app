@@ -22,6 +22,7 @@ const categories = [
   { id: 'field',        label: 'Field Operations & Trades' },
   { id: 'architecture', label: 'Architecture & Construction' },
   { id: 'business',     label: 'Business Operations & B2B' },
+  { id: 'nonprofit',    label: 'Non-Profits & Communities' },
 ];
 
 // Color per category
@@ -43,6 +44,7 @@ const catColor: Record<string, string> = {
   field:        '#f59e0b',
   architecture: '#d97706',
   business:     '#fbbf24',
+  nonprofit:    '#4ade80',
 };
 
 interface Pack {
@@ -755,6 +757,37 @@ const packs: Pack[] = [
     ],
     stripeUrl: 'https://buy.stripe.com/REPLACE_vendor-operations',
   },
+
+  // ── Non-Profits & Communities ─────────────────────────────────────────────
+  {
+    id: 'nonprofit-foundation',
+    name: 'Non-Profit & Foundation',
+    category: 'nonprofit',
+    tagline: 'For executive directors, program officers, and development staff',
+    price: 79,
+    skills: [
+      'Funder memory — grant history, program officer preferences, prior rejections and approvals recalled per funder',
+      'Program outcome recall — impact data, beneficiary stories, and metrics surfaced for reports and renewals',
+      'Board and stakeholder context — member priorities, prior decisions, and relationship history recalled before meetings',
+      'Donor relationship memory — giving history, communications, stewardship commitments, and recognition recalled per donor',
+    ],
+    stripeUrl: 'https://buy.stripe.com/REPLACE_nonprofit-foundation',
+  },
+  {
+    id: 'nonprofit-large-community',
+    name: 'Large Community & Membership Org',
+    category: 'nonprofit',
+    tagline: 'For associations, faith communities, unions, and large member-based organizations',
+    price: 99,
+    badge: 'Community scale',
+    skills: [
+      'Member history recall — engagement patterns, needs, volunteer roles, and prior interactions recalled per member or household',
+      'Program and event memory — attendance history, feedback, recurring issues, and lessons-learned surfaced per program cycle',
+      'Committee and leadership context — working group decisions, term history, conflict resolutions, and institutional knowledge recalled',
+      'Partnership and coalition memory — MOU terms, partner contacts, collaboration history, and shared-goal alignment recalled before outreach',
+    ],
+    stripeUrl: 'https://buy.stripe.com/REPLACE_nonprofit-large-community',
+  },
 ];
 ---
 
@@ -774,7 +807,7 @@ const packs: Pack[] = [
         </div>
         <h1 class="text-4xl sm:text-5xl font-black mb-4 leading-tight">
           <span class="bg-clip-text text-transparent" style="background-image: linear-gradient(135deg, #67e8f9 0%, #a78bfa 100%);">
-            Profession Starter Kits
+            Job Memory Starter Kits
           </span>
         </h1>
         <p class="text-[#c4c6d6] text-lg leading-relaxed mb-4 max-w-2xl mx-auto">
