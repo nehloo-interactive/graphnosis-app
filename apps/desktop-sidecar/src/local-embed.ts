@@ -94,6 +94,25 @@ let WORKER_COUNT = Math.max(1, Number(process.env.GRAPHNOSIS_EMBED_WORKERS ?? 2)
 const cacheDir = process.env.GRAPHNOSIS_EMBED_CACHE ?? defaultCacheDir();
 const workerScriptPath = fileURLToPath(new URL('./embed-worker.js', import.meta.url));
 
+// ── Worker slot assignment ────────────────────────────────────────────────────
+//
+// With ≥ 2 workers we split them into two lanes to prevent background
+// buildEmbeddings calls from head-of-line-blocking user-facing requests
+// (search, recall):
+//
+//   Foreground lane : slots [0 … WORKER_COUNT-2]   — search, recall, ingest
+//   Background lane : slot  [WORKER_COUNT-1]        — buildEmbeddings at boot
+//
+// With 1 worker there is no split — both lanes use slot 0. When the pool
+// is resized at runtime (setWorkerCount) these functions recompute from
+// the updated WORKER_COUNT, so the split stays correct after a resize.
+//
+// Result: during the 30-60 s cold-cache buildEmbeddings burst at boot the
+// foreground worker is always free → search/recall respond instantly.
+
+function bgSlot(): number { return WORKER_COUNT > 1 ? WORKER_COUNT - 1 : 0; }
+function fgCount(): number { return WORKER_COUNT > 1 ? WORKER_COUNT - 1 : 1; }
+
 // ── Pending request tracking ─────────────────────────────────────────────────
 
 interface PendingEmbed {
@@ -104,7 +123,8 @@ interface PendingEmbed {
 
 const pending = new Map<number, PendingEmbed>();
 let counter = 0;
-let nextWorker = 0;
+let nextWorker = 0;    // legacy — used by setWorkerCount's nextWorker reset
+let nextFgWorker = 0;  // round-robin index within the foreground lane
 
 // ── Pool state ───────────────────────────────────────────────────────────────
 //
@@ -238,31 +258,24 @@ console.error(
   `(${IS_COMPILED_BIN ? 'compiled — re-exec of parent binary' : 'dev — fork of embed-worker.js'})`,
 );
 
-// ── Public API ───────────────────────────────────────────────────────────────
+// ── Private dispatch helper ──────────────────────────────────────────────────
 
 /**
- * Embed a single text string. Dispatches round-robin to the next LIVE child
- * process, skipping any slot that is dead or not yet spawned; returns a
- * Promise that resolves with the 384-dim vector once the child responds.
- *
- * Resilience: a dead worker is never sent a task, and a `send()` that fails
- * anyway (worker died in the race window) rejects the request promise at
- * once. Previously a failed send left the `pending` entry unsettled forever,
- * which hung every caller — and, at boot, the entire sidecar startup.
+ * Send one embed request to a specific worker slot. If that slot is dead,
+ * falls back to any other live worker so callers are never left hanging.
  */
-export const workerEmbed: EmbedFn = (text: string): Promise<number[]> => {
+function dispatchEmbed(preferredSlot: number, text: string): Promise<number[]> {
   const id = ++counter;
-  // Round-robin to the next live slot — try every slot once before failing.
-  let child: ChildProcess | undefined;
-  let idx = -1;
-  for (let tries = 0; tries < WORKER_COUNT; tries++) {
-    const i = nextWorker % WORKER_COUNT;
-    nextWorker = (nextWorker + 1) % WORKER_COUNT;
-    const candidate = workers[i];
-    if (candidate && candidate.connected) {
-      child = candidate;
-      idx = i;
-      break;
+  // Try the preferred slot first.
+  let child = workers[preferredSlot];
+  let idx = preferredSlot;
+  if (!child?.connected) {
+    // Preferred slot is dead — fall back to any live worker.
+    child = undefined;
+    idx = -1;
+    for (let i = 0; i < WORKER_COUNT; i++) {
+      const c = workers[i];
+      if (c?.connected) { child = c; idx = i; break; }
     }
   }
   if (!child) {
@@ -271,19 +284,54 @@ export const workerEmbed: EmbedFn = (text: string): Promise<number[]> => {
   const liveChild = child;
   return new Promise<number[]>((resolve, reject) => {
     pending.set(id, { resolve, reject, workerIdx: idx });
-    // The callback fires with an error if the IPC channel is already gone
-    // (worker died between the liveness check above and this send) — reject
-    // the pending entry at once instead of leaving it to hang forever.
     liveChild.send({ id, text }, (err) => {
       if (err) {
         const p = pending.get(id);
-        if (p) {
-          pending.delete(id);
-          p.reject(err);
-        }
+        if (p) { pending.delete(id); p.reject(err); }
       }
     });
   });
+}
+
+// ── Public API ───────────────────────────────────────────────────────────────
+
+/**
+ * Embed a single text string — **foreground lane** (search, recall, ingest).
+ *
+ * Dispatches round-robin to slots [0 … fgCount()-1], never touching the
+ * background slot. This keeps user-facing embeds responsive even while
+ * buildEmbeddings is saturating the background worker at boot.
+ *
+ * Resilience: dead slots are skipped; if all foreground slots are down the
+ * call falls back to any live worker via dispatchEmbed's fallback path.
+ */
+export const workerEmbed: EmbedFn = (text: string): Promise<number[]> => {
+  const fg = fgCount();
+  // Round-robin within [0, fg). Try every foreground slot once.
+  let preferredSlot = -1;
+  for (let tries = 0; tries < fg; tries++) {
+    const i = nextFgWorker % fg;
+    nextFgWorker = (nextFgWorker + 1) % fg;
+    if (workers[i]?.connected) { preferredSlot = i; break; }
+  }
+  // Fall back to background slot if all foreground slots are dead.
+  const slot = preferredSlot >= 0 ? preferredSlot : bgSlot();
+  return dispatchEmbed(slot, text);
+};
+
+/**
+ * Embed a single text string — **background lane** (`buildEmbeddings` at
+ * boot, reingest, re-embed migrations).
+ *
+ * Always targets the last worker slot. With ≥ 2 workers this leaves the
+ * foreground slots permanently free for user-facing embed requests, so
+ * search/recall never stall behind a long cold-cache rebuild.
+ *
+ * With 1 worker, `bgSlot()` returns 0 — same as workerEmbed; both calls
+ * share the single worker (no isolation, same as before).
+ */
+export const workerEmbedBackground: EmbedFn = (text: string): Promise<number[]> => {
+  return dispatchEmbed(bgSlot(), text);
 };
 
 /**
@@ -418,5 +466,9 @@ export function setWorkerCount(n: number): void {
     }
   }
 
-  console.error(`[local-embed] worker pool resized to ${WORKER_COUNT}`);
+  // Reset the foreground round-robin so it doesn't wrap around a now-smaller
+  // slot range and accidentally target a dead or background slot.
+  nextFgWorker = 0;
+  nextWorker = 0;
+  console.error(`[local-embed] worker pool resized to ${WORKER_COUNT} (fg: 0–${fgCount()-1}, bg: ${bgSlot()})`);
 }

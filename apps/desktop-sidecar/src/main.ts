@@ -2,7 +2,7 @@
 
 import path from 'node:path';
 import os from 'node:os';
-import { promises as fs } from 'node:fs';
+import { promises as fs, watch as fsWatch } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import lockfile from 'proper-lockfile';
 import { embeddings, settings as settingsMod } from '@graphnosis-app/core';
@@ -17,7 +17,7 @@ import { mcpRegistry } from './mcp-registry.js';
 import { startHttpMcpServer } from './mcp-http-server.js';
 import { ConnectorManager } from './connectors/manager.js';
 import { LLM_CATALOG, makeLlm } from './local-llm.js';
-import { workerEmbed, terminateEmbedWorker, LOCAL_EMBED_ID, LOCAL_EMBED_DIM, switchEmbedModel, currentEmbedModel, setWorkerCount } from './local-embed.js';
+import { workerEmbed, workerEmbedBackground, terminateEmbedWorker, LOCAL_EMBED_ID, LOCAL_EMBED_DIM, switchEmbedModel, currentEmbedModel, setWorkerCount } from './local-embed.js';
 import type { LocalLlm } from './correction.js';
 import type { CorrectionDiff } from './correction.js';
 import type { BroadcastRawFn } from './events.js';
@@ -123,13 +123,18 @@ async function loadAllGraphsFromDisk(
   const batchStart = Date.now();
 
   if (broadcastRaw && total > 0) {
-    broadcastRaw({ kind: 'engrams-loading', name: 'engrams-loading', payload: { loaded: 0, total } });
+    try {
+      broadcastRaw({ kind: 'engrams-loading', name: 'engrams-loading', payload: { loaded: 0, total } });
+    } catch { /* non-fatal — events socket may not be ready yet */ }
   }
 
   for (const graphId of toLoad) {
+    const tLoad = Date.now();
     try {
       await host.loadGraph(graphId);
+      const loadMs = Date.now() - tLoad;
       loaded++;
+      console.error(`[graphnosis-sidecar] loaded engram '${graphId}' in ${loadMs}ms (${loaded}/${total})`);
     } catch (e) {
       const err = e as Error;
       // host.loadGraph throws a synthesized ENOENT with the marker phrase
@@ -147,18 +152,35 @@ async function loadAllGraphsFromDisk(
       // Stack trace included so the terminal shows exactly which step
       // failed (decrypt / loadFromBuffer / bundle / cache).
       console.error(
-        `[graphnosis-sidecar] FAILED to load engram '${graphId}': ${err.message}`,
+        `[graphnosis-sidecar] FAILED to load engram '${graphId}' after ${Date.now() - tLoad}ms: ${err.message}`,
       );
       if (err.stack) console.error(err.stack);
       failed++;
     }
     if (broadcastRaw) {
-      broadcastRaw({ kind: 'engrams-loading', name: 'engrams-loading', payload: { loaded, total } });
+      // Wrap in try/catch: an events-socket error here must NOT abort the
+      // loop. Previously an unhandled throw would propagate out of
+      // loadAllGraphsFromDisk into the `void` IIFE, silently killing all
+      // remaining engram loads (user sees loading stuck halfway).
+      try {
+        broadcastRaw({ kind: 'engrams-loading', name: 'engrams-loading', payload: { loaded, total } });
+      } catch (broadcastErr) {
+        console.error(`[graphnosis-sidecar] broadcastRaw failed during engrams-loading: ${(broadcastErr as Error).message}`);
+      }
     }
     // Yield to the event loop so any pending IPC requests (notably the
     // boot's list_nodes / list_edges for the default engram) can run
     // before the next load locks the loop again.
     await new Promise<void>((resolve) => setImmediate(resolve));
+  }
+
+  // Always broadcast a terminal "all done" event so the frontend's
+  // `engramsLoaded` promise resolves even when total === 0 (cortex with
+  // only the default engram — the per-iteration broadcast never fires).
+  if (broadcastRaw) {
+    try {
+      broadcastRaw({ kind: 'engrams-loading', name: 'engrams-loading', payload: { loaded, total } });
+    } catch { /* non-fatal */ }
   }
 
   if (total > 0) {
@@ -272,9 +294,22 @@ async function acquireCortexLock(cortexDir: string): Promise<() => Promise<void>
   await fs.writeFile(lockTarget, `pid=${process.pid}\nhost=${os.hostname()}\nstarted=${new Date().toISOString()}\n`);
   try {
     const release = await lockfile.lock(lockTarget, {
-      // If a previous process held the lock but died, ~10s of inactivity
+      // If a previous process held the lock but died, 120s of inactivity
       // (no mtime update) is treated as stale and recovered.
-      stale: 10_000,
+      //
+      // The original 10s was too aggressive: a Purge or Reingest operation
+      // re-ingests every live source sequentially, and embedding a single large
+      // document can take 5-20s. If the event loop is busy that long, proper-
+      // lockfile can't update the mtime → lock appears stale → a second sidecar
+      // acquires it → two sidecars run on the same cortex at full CPU.
+      //
+      // 120s gives purge a comfortable window. Tauri's sidecar.rs deletes the
+      // .lockfile.lock directory explicitly on shutdown, so a truly dead process
+      // is cleaned up immediately — the stale threshold only matters when the
+      // cleanup never ran (e.g. SIGKILL with no cleanup handler).
+      stale: 120_000,
+      // Update the mtime every 5s (well within the 120s stale window).
+      update: 5_000,
       // Up to ~5 retries spaced 200ms..2s apart — handles brief overlap
       // during a Claude Desktop ⌘Q + reopen.
       retries: { retries: 5, minTimeout: 200, maxTimeout: 2_000, factor: 2 },
@@ -326,16 +361,20 @@ async function main(): Promise<void> {
     try { await releaseLock(); } catch { /* lock already released */ }
   };
   // Remove orphan .tmp-* files left by a previous interrupted writeFileAtomic.
-  // We hold the cortex lock here so no competing writer exists.
+  // We hold the cortex lock here so no competing writer exists. Covers both
+  // the graphs sub-directory (per-engram .gai/.bundle) and the cortex root
+  // (cross-engram-connections.enc, association-index.enc, etc.).
   const graphsDir = path.join(env.cortexDir, 'graphs');
-  try {
-    const dirEntries = await fs.readdir(graphsDir);
-    await Promise.all(
-      dirEntries
-        .filter(f => f.includes('.tmp-'))
-        .map(f => fs.unlink(path.join(graphsDir, f)).catch(() => {})),
-    );
-  } catch { /* graphs dir may not exist yet on first run — non-fatal */ }
+  for (const dir of [graphsDir, env.cortexDir]) {
+    try {
+      const dirEntries = await fs.readdir(dir);
+      await Promise.all(
+        dirEntries
+          .filter(f => f.includes('.tmp-'))
+          .map(f => fs.unlink(path.join(dir, f)).catch(() => {})),
+      );
+    } catch { /* dir may not exist yet on first run — non-fatal */ }
+  }
 
   // Shallow pre-brain handlers: cover the window between lock acquisition and
   // brain/connector startup. Replaced by gracefulShutdown below once the full
@@ -408,6 +447,7 @@ async function main(): Promise<void> {
   // If init fails (e.g., onnxruntime native binary missing on this platform), we degrade
   // to the SHA-derived stub so the server still boots — TF-IDF still works.
   let embedFn = embeddings.stubEmbed;
+  let embedBgFn = embeddings.stubEmbed;
   let embedAdapterId = 'graphnosis-app:stub@384';
   let embedDimensions = 384;
   if (process.env.GRAPHNOSIS_EMBED_DISABLE !== '1') {
@@ -419,6 +459,7 @@ async function main(): Promise<void> {
       const probe = await workerEmbed('graphnosis boot probe');
       if (probe.length !== live.dim) throw new Error(`unexpected embedding dim ${probe.length} (expected ${live.dim} for ${live.model})`);
       embedFn = workerEmbed;
+      embedBgFn = workerEmbedBackground; // dedicated background lane for buildEmbeddings
       embedAdapterId = live.id;
       embedDimensions = live.dim;
       console.error(`[graphnosis-sidecar] local embeddings ready (${live.id})`);
@@ -436,6 +477,7 @@ async function main(): Promise<void> {
     deviceId: env.deviceId,
     adapter,
     embed: embedFn,
+    embedBackground: embedBgFn,
     embedAdapterId,
     embedDimensions,
     ...(policyCfg ? { policy: policyCfg } : {}),
@@ -581,6 +623,37 @@ async function main(): Promise<void> {
     ?? path.join(env.cortexDir, 'events.sock');
   const { broadcastRaw } = await startEvents({ host, socketPath: eventsSocketPath });
 
+  // Watch the parent directory of the cortex folder for rename events.
+  // If the cortex folder itself is renamed or moved while the cortex is open,
+  // alert the frontend so the user knows background writes may be silently dropping.
+  // Uses persistent:false so the watcher doesn't prevent clean process exit.
+  {
+    const cortexParentDir = path.dirname(env.cortexDir);
+    const cortexBasename = path.basename(env.cortexDir);
+    let integrityAlertSent = false; // send at most once per session
+    let cortexIntegrityWatcher: ReturnType<typeof fsWatch> | null = null;
+    try {
+      cortexIntegrityWatcher = fsWatch(cortexParentDir, { persistent: false }, (event, filename) => {
+        if (!integrityAlertSent && event === 'rename' && filename === cortexBasename) {
+          integrityAlertSent = true;
+          broadcastRaw({
+            kind: 'cortex.integrity-alert',
+            name: 'cortex.integrity-alert',
+            payload: { reason: 'folder-renamed' },
+          });
+        }
+      });
+    } catch {
+      // If the parent directory can't be watched (e.g., iCloud Drive or network FS),
+      // silently skip — this is a best-effort guard, not a blocking requirement.
+    }
+    const stopIntegrityWatcher = () => {
+      try { cortexIntegrityWatcher?.close(); } catch { /* ignore */ }
+    };
+    process.on('SIGINT', stopIntegrityWatcher);
+    process.on('SIGTERM', stopIntegrityWatcher);
+  }
+
   const brainEngine = new BrainEngine(host, llm, broadcastRaw);
   // Wire recall → reinforcement: every federated recall feeds the
   // co-activation accumulator so co-recalled memories strengthen.
@@ -632,15 +705,22 @@ async function main(): Promise<void> {
   // immediately on the running server without a restart.
   const httpBridgeCfg = host.getSettings().mobile?.httpBridge;
   if (httpBridgeCfg?.enabled && httpBridgeCfg.token) {
-    const httpServer = await startHttpMcpServer({
-      deps: mcpDeps,
-      port: httpBridgeCfg.port,
-      host: httpBridgeCfg.host,
-      token: () => host.getSettings().mobile?.httpBridge?.token ?? '',
-      allowedOrigins: httpBridgeCfg.allowedOrigins,
-    });
-    process.on('SIGINT', () => httpServer.close());
-    process.on('SIGTERM', () => httpServer.close());
+    try {
+      const httpServer = await startHttpMcpServer({
+        deps: mcpDeps,
+        port: httpBridgeCfg.port,
+        host: httpBridgeCfg.host,
+        token: () => host.getSettings().mobile?.httpBridge?.token ?? '',
+        allowedOrigins: httpBridgeCfg.allowedOrigins,
+      });
+      process.on('SIGINT', () => httpServer.close());
+      process.on('SIGTERM', () => httpServer.close());
+    } catch (e) {
+      // A port conflict here means another sidecar is still running and holding
+      // the same port. Log clearly but don't crash — the rest of the sidecar
+      // (IPC, MCP socket, local VS Code bridge) still works without it.
+      console.error(`[graphnosis-sidecar] mobile HTTP bridge on :${httpBridgeCfg.port} failed — port in use or another sidecar is running: ${(e as Error).message}`);
+    }
   }
 
   // Always-on local HTTP bridge for the VS Code / Copilot extension.
@@ -707,13 +787,17 @@ async function main(): Promise<void> {
   // Fire background engram load — intentionally not awaited so the sidecar
   // is immediately usable on the default engram. broadcastRaw is live here,
   // so the UI receives incremental progress events as each graph finishes.
+  // Brain engine starts AFTER all engrams are loaded so its self-scan and
+  // LLM passes don't compete with the embed workers during the startup burst.
   void (async () => {
     await loadAllGraphsFromDisk(host, env.cortexDir, env.defaultGraph, broadcastRaw);
     await backfillGraphMetadata(host);
+    // Single oplog read for all engrams — far cheaper than one read per engram.
+    void host.refreshAllCorrectionsFromOplog();
+    brainEngine.start();
   })();
 
   await connectorManager.start();
-  brainEngine.start();
 
   // Full graceful shutdown: flush dirty graphs, stop brain + connectors, then
   // release the lock and exit. Replaces the shallow pre-brain handlers above.

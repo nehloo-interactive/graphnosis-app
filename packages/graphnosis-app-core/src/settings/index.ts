@@ -507,6 +507,22 @@ export interface GraphMetadata {
    * Absent = use global default for this graph's tier.
    */
   consentIntervalMs?: number;
+
+  /**
+   * Corrections accumulated before the last op-log compaction. Added to the
+   * live event count in `refreshAllCorrectionsFromOplog` so the total never
+   * regresses when old `editNode`/`supersede` events are pruned.
+   * Absent (or 0) means no compaction has run yet — count the full log.
+   */
+  correctionsCountBaseline?: number;
+
+  /**
+   * Unix-ms timestamp of the compaction cut-off. Events with ts ≥ this value
+   * are still in the log and counted directly; events before it were pruned
+   * and their count is captured in `correctionsCountBaseline`.
+   * 0 / absent = no compaction yet → count all events.
+   */
+  correctionsBaselineAsOf?: number;
 }
 
 export interface HttpBridgeSettings {
