@@ -162,9 +162,24 @@ const bundlePrice = 399;
           Each pack gives you a pre-configured engram schema, named Recall Recipes for your specific job,
           workflow templates, and connector configs. No setup from scratch.
         </p>
-        <p class="text-[#c4c6d6] text-base">
+        <p class="text-[#c4c6d6] text-base mb-8">
           One-time purchase. Yours forever. Works with the free Graphnosis download.
         </p>
+
+        <!-- Zero data · zero servers callout -->
+        <div class="bg-[#1c1c27] border border-[#2a2a3d] rounded-xl p-5 text-left flex gap-4 items-start max-w-2xl mx-auto">
+          <svg class="w-5 h-5 shrink-0 mt-0.5 text-[#67e8f9]" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" aria-hidden="true">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M16.5 10.5V6.75a4.5 4.5 0 10-9 0v3.75m-.75 11.25h10.5a2.25 2.25 0 002.25-2.25v-6.75a2.25 2.25 0 00-2.25-2.25H6.75a2.25 2.25 0 00-2.25 2.25v6.75a2.25 2.25 0 002.25 2.25z" />
+          </svg>
+          <div>
+            <p class="text-[#f0f0f5] font-semibold text-sm mb-1">These packs contain zero actual data. Graphnosis has zero servers.</p>
+            <p class="text-[#c4c6d6] text-sm leading-relaxed">
+              A pack is a structure — engram schemas, Recall Recipes, workflow templates, and connector configs.
+              Your memory is built from your own files on your own device. Nothing is pre-loaded, nothing is shared,
+              and no Graphnosis server ever touches it. The app is open-source and the network activity guide proves it.
+            </p>
+          </div>
+        </div>
       </div>
     </section>
 
@@ -225,6 +240,23 @@ const bundlePrice = 399;
                     </li>
                   ))}
                 </ul>
+              </div>
+
+              <!-- Trust strip -->
+              <div class="flex items-center gap-4 py-3 border-t border-b border-[#2a2a3d]">
+                <span class="flex items-center gap-1.5 text-xs text-[#52525b]">
+                  <svg class="w-3.5 h-3.5 shrink-0" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" aria-hidden="true">
+                    <path stroke-linecap="round" stroke-linejoin="round" d="M20.25 7.5l-.625 10.632a2.25 2.25 0 01-2.247 2.118H6.622a2.25 2.25 0 01-2.247-2.118L3.75 7.5M10 11.25h4M3.375 7.5h17.25c.621 0 1.125-.504 1.125-1.125v-1.5c0-.621-.504-1.125-1.125-1.125H3.375c-.621 0-1.125.504-1.125 1.125v1.5c0 .621.504 1.125 1.125 1.125z" />
+                  </svg>
+                  Zero data included
+                </span>
+                <span class="text-[#2a2a3d]" aria-hidden="true">·</span>
+                <span class="flex items-center gap-1.5 text-xs text-[#52525b]">
+                  <svg class="w-3.5 h-3.5 shrink-0" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" aria-hidden="true">
+                    <path stroke-linecap="round" stroke-linejoin="round" d="M5.636 5.636a9 9 0 1012.728 0M12 3v9" />
+                  </svg>
+                  Graphnosis has no servers
+                </span>
               </div>
 
               <!-- Price + CTA -->
