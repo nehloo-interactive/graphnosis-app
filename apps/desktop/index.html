@@ -2512,9 +2512,12 @@
         font-size: 15px;
         color: var(--fg-dim);
       }
-      .app-statusbar .status-search {
-        flex: 1;
-        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      .status-bar-right {
+        margin-left: auto;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        flex-shrink: 0;
       }
       .app-statusbar .status-mcp {
         display: flex;
@@ -6470,33 +6473,37 @@ ollama list</code></pre>
             <span class="theme-icon-dark"  aria-hidden="true">☾</span>
           </button>
           <span id="cortex-label" class="status-cortex" title="Current cortex folder">cortex</span>
-          <!-- Everything from here right is right-aligned. margin-left:auto on
-               status-saved pushes it (and all subsequent flex items) to the far
-               right, so only the theme toggle + cortex label stay on the left. -->
-          <span id="status-saved" class="status-saved" style="margin-left:auto;"></span>
-          <!-- Live background-process line. Hidden when nothing is running;
-               otherwise shows e.g. "Self-healing: scanning for duplicates…"
-               or "GLL: predicting edges…". Driven from handleBrainFrame
-               via brainActivePhases — categories: Self-healing, Consolidation,
-               Insights, GLL, GNN. Click jumps to Deterministic Consolidation
-               tab so the user can see the schedule and recent activity. -->
-          <span id="status-process" class="status-process" style="display:none; font-size:12px; opacity:0.75; cursor:pointer; align-items:center; gap:6px;" title="Background process — click for the live activity feed.">
-            <span class="status-process-dot" style="width:6px; height:6px; border-radius:50%; background:var(--accent, var(--color-status-info)); display:inline-block; animation: graphnosis-pulse 1.4s ease-in-out infinite;"></span>
-            <span id="status-process-text"></span>
-          </span>
-          <!-- App version pill, sits left of Vitality. Populated in main.ts
-               from __APP_VERSION__ (vite-injected at build from package.json). -->
-          <span id="status-version" class="status-version" title="About Graphnosis" style="margin-left:8px; font-size:12px; opacity:0.6; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; transition: opacity 100ms;" onmouseenter="this.style.opacity='1';this.style.textDecoration='underline'" onmouseleave="this.style.opacity='0.6';this.style.textDecoration='none'"></span>
-          <span id="brain-vitality" style="display:none; font-size:12px; opacity:0.7; margin-left:8px; cursor:pointer;" title="Open Deterministic Consolidation tab">🧠 Vitality –</span>
-          <!-- Layered intelligence pills — GLL (turquoise) and GNN (purple).
-               Pill backgrounds match the Graphnosis wordmark gradient endpoints.
-               Always rendered; toggled between pill-inactive and pill-pulsing. -->
-          <span id="status-gll-pill" class="status-layer-pill pill-inactive" style="margin-left:10px; margin-right:4px; background:var(--color-brand-turquoise-pale); color:#000;" title="Graphnosis Local Layer — local LLM overlay on top of your engrams. Click to open Non-Deterministic Aid.">GLL</span>
-          <span id="status-gnn-pill" class="status-layer-pill pill-inactive" style="margin-right:10px; background:var(--color-brand-purple-warm); color:#000;" title="Graphnosis Neural Network — predicted-edge overlay on top of your engrams. Click to open Non-Deterministic Aid.">GNN</span>
-          <span class="status-mcp" id="status-mcp-area" style="cursor:pointer;" title="Go to Status page">
-            <span id="status-mcp-dot" class="status-dot"></span>
-            <span id="status-mcp-text">checking clients…</span>
-          </span>
+          <!-- Everything from here right is right-aligned via .status-bar-right
+               (margin-left:auto wrapper). Only the theme toggle + cortex label
+               stay on the left. -->
+          <div class="status-bar-right">
+            <!-- Engram-loading progress / "Saved" indicator. Empty at rest;
+                 main.ts sets "Loading N more engrams…" during boot. -->
+            <span id="status-saved" class="status-saved"></span>
+            <!-- Live background-process line. Hidden when nothing is running;
+                 otherwise shows e.g. "Self-healing: scanning for duplicates…"
+                 or "GLL: predicting edges…". Driven from handleBrainFrame
+                 via brainActivePhases — categories: Self-healing, Consolidation,
+                 Insights, GLL, GNN. Click jumps to Deterministic Consolidation
+                 tab so the user can see the schedule and recent activity. -->
+            <span id="status-process" class="status-process" style="display:none; font-size:12px; opacity:0.75; cursor:pointer; align-items:center; gap:6px;" title="Background process — click for the live activity feed.">
+              <span class="status-process-dot" style="width:6px; height:6px; border-radius:50%; background:var(--accent, var(--color-status-info)); display:inline-block; animation: graphnosis-pulse 1.4s ease-in-out infinite;"></span>
+              <span id="status-process-text"></span>
+            </span>
+            <!-- App version pill, sits left of Vitality. Populated in main.ts
+                 from __APP_VERSION__ (vite-injected at build from package.json). -->
+            <span id="status-version" class="status-version" title="About Graphnosis" style="font-size:12px; opacity:0.6; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; transition: opacity 100ms;" onmouseenter="this.style.opacity='1';this.style.textDecoration='underline'" onmouseleave="this.style.opacity='0.6';this.style.textDecoration='none'"></span>
+            <span id="brain-vitality" style="display:none; font-size:12px; opacity:0.7; cursor:pointer;" title="Open Deterministic Consolidation tab">🧠 Vitality –</span>
+            <!-- Layered intelligence pills — GLL (turquoise) and GNN (purple).
+                 Pill backgrounds match the Graphnosis wordmark gradient endpoints.
+                 Always rendered; toggled between pill-inactive and pill-pulsing. -->
+            <span id="status-gll-pill" class="status-layer-pill pill-inactive" style="background:var(--color-brand-turquoise-pale); color:#000;" title="Graphnosis Local Layer — local LLM overlay on top of your engrams. Click to open Non-Deterministic Aid.">GLL</span>
+            <span id="status-gnn-pill" class="status-layer-pill pill-inactive" style="background:var(--color-brand-purple-warm); color:#000;" title="Graphnosis Neural Network — predicted-edge overlay on top of your engrams. Click to open Non-Deterministic Aid.">GNN</span>
+            <span class="status-mcp" id="status-mcp-area" style="cursor:pointer;" title="Go to Status page">
+              <span id="status-mcp-dot" class="status-dot"></span>
+              <span id="status-mcp-text">checking clients…</span>
+            </span>
+          </div>
         </footer>
       </section>
     </main>
