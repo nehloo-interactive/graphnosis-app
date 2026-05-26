@@ -193,6 +193,19 @@ async fn start_inner(app: &AppHandle, cortex_dir: &Path, passphrase: &str, recov
         // cleanup on macOS/Linux can lag a few ms.
         tokio::time::sleep(Duration::from_millis(300)).await;
     }
+    // Windows equivalent: taskkill /F terminates processes by image name.
+    // Without this, an orphaned sidecar holds .lockfile.lock open; Windows
+    // refuses to delete a file held by another process, so remove_file below
+    // silently fails, the new sidecar can't acquire the cortex lock, and it
+    // exits with code 2 ("cortex lock held"). /T also kills child embed workers
+    // spawned by the orphan so they don't linger after the main process dies.
+    #[cfg(windows)]
+    {
+        let _ = std::process::Command::new("taskkill")
+            .args(["/F", "/T", "/IM", "graphnosis-sidecar.exe"])
+            .output();
+        tokio::time::sleep(Duration::from_millis(300)).await;
+    }
     // Force-release the cortex lock (Unix dir-based, Windows file-based).
     // Idempotent — remove_dir/remove_file on a non-existent path returns an
     // error we intentionally ignore.
