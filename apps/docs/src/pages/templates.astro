@@ -900,7 +900,7 @@ const packs: Pack[] = [
                     {categories.find(c => c.id === pack.category)?.label}
                   </p>
                   <h2 class="text-lg font-black text-white leading-snug">{pack.name}</h2>
-                  <p class="text-xs text-[#52525b] mt-0.5">{pack.tagline}</p>
+                  <p class="text-xs text-[#71717a] mt-0.5">{pack.tagline}</p>
                 </div>
 
                 <!-- Skills -->
@@ -908,7 +908,7 @@ const packs: Pack[] = [
                   {pack.skills.map((skill) => {
                     const [title, ...rest] = skill.split(' — ');
                     return (
-                      <li class="flex items-start gap-2 text-sm text-[#c4c6d6]">
+                      <li class="flex items-start gap-2 text-sm text-[#e2e4f0]">
                         <span
                           class="mt-0.5 w-3.5 h-3.5 shrink-0 rounded-full flex items-center justify-center"
                           style={`background: ${color}18; border: 1px solid ${color}33;`}
@@ -919,7 +919,7 @@ const packs: Pack[] = [
                         </span>
                         <span>
                           <span class="font-semibold text-[#f0f0f5]">{title}</span>
-                          {rest.length > 0 && <span class="text-[#c4c6d6]"> — {rest.join(' — ')}</span>}
+                          {rest.length > 0 && <span class="text-[#e2e4f0]"> — {rest.join(' — ')}</span>}
                         </span>
                       </li>
                     );
@@ -928,9 +928,9 @@ const packs: Pack[] = [
 
                 <!-- Trust strip -->
                 <div class="flex items-center gap-3 pt-3 border-t border-[#2a2a3d]">
-                  <span class="text-xs text-[#52525b]">Zero data included</span>
-                  <span class="text-[#2a2a3d]" aria-hidden="true">·</span>
-                  <span class="text-xs text-[#52525b]">No Graphnosis servers</span>
+                  <span class="text-xs text-[#71717a]">Zero data included</span>
+                  <span class="text-[#3f3f5a]" aria-hidden="true">·</span>
+                  <span class="text-xs text-[#71717a]">No Graphnosis servers</span>
                 </div>
 
                 <!-- Price + CTA -->
