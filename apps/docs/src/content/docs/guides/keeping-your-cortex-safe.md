@@ -86,7 +86,9 @@ Every `.gai` engram and `.bundle` source-index write is now atomic: Graphnosis w
 
 This closes the most common cause of cortex corruption: a save being interrupted mid-write during a long ingest (force-quit, OS kill on memory pressure, sudden power loss).
 
-You don't have to do anything to enable this. As of v0.3 every save uses this path.
+You don't have to do anything to enable this — every save goes through this atomic write sequence automatically.
+
+**Auto-recovery from interrupted shutdown.** If Graphnosis was quit mid-operation (e.g. OS force-killed it during sleep), on the next unlock the sidecar detects any in-progress writes left behind and completes or rolls them back automatically. You no longer need to manually trigger op-log recovery after an unclean shutdown — it happens transparently before the lock screen lifts.
 
 ---
 
@@ -168,6 +170,16 @@ Graphnosis offers to create a snapshot before any of these operations:
 You can also create a snapshot any time from the app (Snapshots view) or list/restore them. Restore UX is intentionally minimal right now to avoid accidental rollbacks; if you need to restore, copy the snapshot directory's contents back over the live files manually while the app is quit.
 
 **Snapshots are NOT auto-purged.** They cost disk space; review and delete old ones if you don't need them.
+
+---
+
+## Purging forgotten nodes
+
+When you `forget` memory nodes, they are soft-deleted — demoted from recall but kept on disk for audit lineage and recovery. Over time these accumulate. To permanently purge them:
+
+Open **Settings → Cortex Management**. When two or more engrams have forgotten (soft-deleted) nodes, a **Purge All** button appears. Clicking it permanently removes all soft-deleted nodes across every engram in one operation. This is irreversible — purged nodes cannot be recovered from the op-log. A snapshot is offered before the purge proceeds.
+
+For single-engram cleanup, use the per-engram **Purge forgotten nodes** option in the same panel.
 
 ---
 
