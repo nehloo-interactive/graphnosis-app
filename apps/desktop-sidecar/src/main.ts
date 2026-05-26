@@ -454,7 +454,15 @@ async function main(): Promise<void> {
       // snapshots and may not reflect the in-effect model after a switch.
       const live = currentEmbedModel();
       // Probe with a tiny embed so any model-download / native-binary issue surfaces at boot.
-      const probe = await workerEmbed('graphnosis boot probe');
+      // On Windows the first run extracts native addons and downloads the BGE model (~130 MB),
+      // which can block for 60–90 s while Windows Defender scans the extracted .node binaries.
+      // Without a timeout the await hangs forever and the IPC socket never appears, so Tauri
+      // kills the sidecar after 90 s with "socket did not appear". Cap the probe at 75 s so we
+      // degrade to TF-IDF gracefully and finish booting instead of timing out entirely.
+      const embedProbeTimeout = new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error('embed worker boot probe timed out after 75 s — falling back to TF-IDF')), 75_000),
+      );
+      const probe = await Promise.race([workerEmbed('graphnosis boot probe'), embedProbeTimeout]);
       if (probe.length !== live.dim) throw new Error(`unexpected embedding dim ${probe.length} (expected ${live.dim} for ${live.model})`);
       embedFn = workerEmbed;
       embedBgFn = workerEmbedBackground; // dedicated background lane for buildEmbeddings
