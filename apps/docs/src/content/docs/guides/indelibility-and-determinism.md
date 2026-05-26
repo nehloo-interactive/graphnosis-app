@@ -78,7 +78,7 @@ This section exposes **five independent capability toggles** you can enable or d
 
 **Edge prediction** runs roughly once an hour, finds semantically similar node pairs without existing connections, and asks the local LLM whether they are related. Confirmed pairs are written to the `local-layer.gll` overlay (never to `.gai`) and appear in recall responses as `[gll·edge N%]` rows in the inferred layer. You review them in the app; accept promotes the edge to your review-approved list, reject permanently discards it from the overlay.
 
-Both layers are reversible and clearly marked. Neither ever touches **core recall** — an identical query returns identical memories whether or not they are on. What they *do* affect is opt-in and labelled: the GNN adds a separate predictions block to recall enrichment and widens the `edit` candidate set; the Local LLM capabilities operate independently on whichever toggles you have on. Even then nothing escapes review — `edit` always returns a diff you approve — and turning either layer off restores the fully deterministic behaviour.
+Both layers are reversible and clearly marked. Neither ever touches **core recall** — an identical query returns identical memories whether or not they are on. What they *do* affect is opt-in and labelled: the GNN adds a separate predictions block to recall enrichment and widens the `edit` candidate set; the Local LLM capabilities operate independently on whichever toggles you have on. Even then nothing escapes review — `edit` always returns a diff you approve — and turning either layer off restores the fully deterministic behavior.
 
 ## See also
 

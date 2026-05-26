@@ -13,7 +13,7 @@ Here is the problem with how AI "memory" has worked until now.
 
 When people want an AI to know something, they paste files into the chat window, attach documents, or use retrieval tools that dump raw text into the AI's context. The AI reads the document fresh — every single time, for every conversation. It is the cognitive equivalent of handing someone a textbook and asking them to read it before every question, then closing it and forgetting everything afterward.
 
-The human brain doesn't work this way. The brain has a division of labour:
+The human brain doesn't work this way. The brain has a division of labor:
 
 - The **hippocampus** converts raw experience into compact, indexed memory traces — **engrams**. It handles encoding (turning new information into memory), storage (maintaining those memory traces over time), and retrieval (surfacing the right memory when the brain needs it).
 - The **prefrontal cortex** handles reasoning, planning, and language. When it needs to draw on something you've learned, it doesn't re-read the original source — the hippocampus retrieves the relevant engram and delivers it as context.

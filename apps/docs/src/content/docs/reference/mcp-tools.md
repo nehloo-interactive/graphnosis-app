@@ -146,7 +146,7 @@ Treat `[gll·*]` and `[gnn·*]` rows as predictions, not facts. Never cite them 
 
 ### Examples in practice
 
-- **Everyday —** Last month you told your AI which paint colour you picked for the spare room. Today you ask "what was that paint colour again?" — it calls `recall`, finds the note, and gives you the exact name without you digging through old chats.
+- **Everyday —** Last month you told your AI which paint color you picked for the spare room. Today you ask "what was that paint color again?" — it calls `recall`, finds the note, and gives you the exact name without you digging through old chats.
 - **Technical —** Mid-refactor you ask "why did we drop the Redis cache layer?" — `recall` surfaces the decision note from a past session, so the AI reasons from the actual rationale instead of guessing.
 
 ---
