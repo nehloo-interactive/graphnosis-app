@@ -1466,7 +1466,6 @@ export class GraphnosisHost {
 
   async loadGraph(graphId: GraphId): Promise<void> {
     if (this.graphs.has(graphId)) return;
-    const _tLoad = Date.now();
     // Recover from an interrupted purge before we try to read .gai. There
     // are two possible leftover states:
     //   .gai exists AND .gai.bak exists  → purge committed but didn't clean
@@ -1479,7 +1478,6 @@ export class GraphnosisHost {
     // cortexes created before 0.2.6 keep loading. The next `save()` will write
     // the .gai file (and we can clean up the .aikg later if both exist).
     let bytes: Buffer;
-    const _tRead = Date.now();
     try {
       bytes = await fs.readFile(this.graphPath(graphId));
     } catch (e) {
@@ -1488,12 +1486,10 @@ export class GraphnosisHost {
       bytes = await fs.readFile(this.legacyGraphPath(graphId));
       console.error(`[graphnosis-host] loaded legacy engram[${redactId(graphId)}].aikg — will migrate to .gai on next save`);
     }
-    const _tDecrypt = Date.now();
     const aikgPlain = await decrypt(new Uint8Array(bytes!), this.key);
     // Inner SDK HMAC key (independent of outer encryption) — derived from data key + a fixed label.
     const hmacKey = this.key;
     let handle: GraphHandle;
-    const _tParse = Date.now();
     try {
       handle = await this.opts.adapter.loadFromBuffer(graphId, aikgPlain, hmacKey);
     } catch (e) {
@@ -1540,7 +1536,6 @@ export class GraphnosisHost {
       }
       throw e;
     }
-    const _tBundle = Date.now();
     const sourceIndex = await this.loadBundle(graphId);
 
     // ── Early commit: make the engram available in the picker immediately ──
@@ -1559,7 +1554,6 @@ export class GraphnosisHost {
     // below, so once cache.load() completes, lookups in cached() start
     // returning hits without any further coordination.
     const cache = new EmbeddingCache({ path: this.cachePath(graphId), key: this.key, salt: this.salt });
-    const _tCommit = Date.now();
     this.graphs.set(graphId, { handle, sourceIndex, cache, dirty: false });
     this.correctionsCount.set(graphId, 0);
 
@@ -1579,13 +1573,6 @@ export class GraphnosisHost {
         );
       })
       .then(() => {
-        const _tCacheDone = Date.now();
-        console.error(
-          `[graphnosis-host] loadGraph '${redactId(graphId)}' breakdown: ` +
-          `readFile=${_tDecrypt - _tRead}ms decrypt=${_tParse - _tDecrypt}ms ` +
-          `parse=${_tBundle - _tParse}ms bundle=${_tCommit - _tBundle}ms ` +
-          `commit=${_tCacheDone - _tCommit}ms(+cache) total-to-picker=${_tCommit - _tLoad}ms`,
-        );
         // IMPORTANT: use embedBackground (the dedicated background-lane
         // worker) not the foreground embed. With ≥ 2 workers this reserves
         // the foreground worker(s) for user-facing search/recall so they

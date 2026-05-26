@@ -5,7 +5,7 @@ sidebar:
   order: 4
 ---
 
-Your cortex lives on your Mac. Your phone can still read from it — when Graphnosis is running and unlocked on the Mac, your mobile AI client connects over the network and gets the same `recall` / `remember` / `correct` / `forget` tools your desktop AI does. Same memory, same answers, different device.
+Your cortex lives on your Mac. Your phone can still read from it — when Graphnosis is running and unlocked on the Mac, your mobile AI client connects over the network and gets the same `recall` / `remember` / `edit` / `forget` tools your desktop AI does. Same memory, same answers, different device.
 
 This page walks through the 3-step in-app wizard. If you've already enabled mobile access once, the wizard skips straight to the "copy URL + token" step on subsequent opens — no toggle-fiddling for re-pairing a new device.
 
@@ -78,7 +78,7 @@ Below the values, numbered instructions for **Claude for iOS** and **Claude for 
 6. Authorization header: `Bearer <paste the token>`
 7. Save
 
-The new MCP server should show as connected within ~5 seconds. Start a new chat and your AI now has the 7 Graphnosis tools (`recall`, `remember`, etc.) available.
+The new MCP server should show as connected within ~5 seconds. Start a new chat and your AI now has the Graphnosis tools (`recall`, `remember`, `dig_deeper`, etc.) available.
 
 #### Claude for Android
 
