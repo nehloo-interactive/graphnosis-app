@@ -28,6 +28,15 @@ export interface HostOptions {
   adapter: GraphnosisAdapter;
   policy?: policy.PolicyConfig;
   embed?: embeddings.EmbedFn;
+  /**
+   * Low-priority embed function used for background operations (boot-time
+   * buildEmbeddings, re-embed migrations). When provided, this is routed to a
+   * dedicated background worker slot so the foreground `embed` slots remain
+   * free for user-facing search/recall requests.
+   *
+   * Defaults to `embed` when not supplied (single-worker fallback).
+   */
+  embedBackground?: embeddings.EmbedFn;
   /** Embedding model provenance — affects the on-disk vector index. Change the id if the model changes. */
   embedAdapterId?: string;
   embedDimensions?: number;
@@ -190,6 +199,26 @@ export class GraphnosisHost {
    * Populated from the op-log on loadGraph; bumped on applyCorrection.
    */
   private readonly correctionsCount = new Map<GraphId, number>();
+  /** One-time read cache for the op-log events used by countCorrectionsFromOplog.
+   *  The op-log is shared across all engrams, so reading it 17× during startup
+   *  costs 7-12s per engram (143s total). We read it once on first call and
+   *  reuse the result for all subsequent calls within the same second. The cache
+   *  is intentionally short-lived (1s TTL) so a correction applied right after
+   *  startup isn't counted twice. */
+  private _oplogReadCache: { events: Awaited<ReturnType<typeof oplog.readAllEvents>>; at: number } | null = null;
+  /**
+   * In-flight op-log read promise. Set while `readAllEvents` is running;
+   * cleared when it resolves or rejects. Shared across concurrent callers of
+   * `listOplogEvents()` so a single 16-second read services all waiters
+   * rather than spawning N concurrent disk reads.
+   */
+  private _oplogReadPromise: Promise<Awaited<ReturnType<typeof oplog.readAllEvents>>> | null = null;
+  /**
+   * Incremented by `invalidateOplogCache()`. Captured by each in-flight read;
+   * the read only writes to `_oplogReadCache` when the generation still matches,
+   * preventing a stale in-flight read from overwriting fresh post-write data.
+   */
+  private _oplogReadGeneration = 0;
   private readonly oplogWriter: oplog.OpLogWriter;
   /** Append-only LLM event log — one .gll file per engram. */
   readonly gllWriter: GllWriter;
@@ -199,6 +228,9 @@ export class GraphnosisHost {
   // is driven by reembedAllGraphs() below; these fields keep the in-memory
   // values in sync so subsequent load/build calls use the new id + dim + fn.
   private embed: embeddings.EmbedFn;
+  /** Background-lane embed — targets a dedicated worker slot to avoid
+   *  blocking the foreground lane during boot-time buildEmbeddings. */
+  private embedBackground: embeddings.EmbedFn;
   private embedAdapterId: string;
   private embedDimensions: number;
   private settings: settingsMod.AppSettings;
@@ -239,6 +271,9 @@ export class GraphnosisHost {
     });
     this.gllWriter = new GllWriter(opts.cortexDir, this.key, this.salt);
     this.embed = opts.embed ?? stubEmbed;
+    // Background lane: use the dedicated background embed when provided;
+    // fall back to the foreground embed (single-worker setups).
+    this.embedBackground = opts.embedBackground ?? this.embed;
     this.embedAdapterId = opts.embedAdapterId ?? 'graphnosis-app:stub@384';
     this.embedDimensions = opts.embedDimensions ?? 384;
     this.settings = settings;
@@ -1431,6 +1466,7 @@ export class GraphnosisHost {
 
   async loadGraph(graphId: GraphId): Promise<void> {
     if (this.graphs.has(graphId)) return;
+    const _tLoad = Date.now();
     // Recover from an interrupted purge before we try to read .gai. There
     // are two possible leftover states:
     //   .gai exists AND .gai.bak exists  → purge committed but didn't clean
@@ -1443,6 +1479,7 @@ export class GraphnosisHost {
     // cortexes created before 0.2.6 keep loading. The next `save()` will write
     // the .gai file (and we can clean up the .aikg later if both exist).
     let bytes: Buffer;
+    const _tRead = Date.now();
     try {
       bytes = await fs.readFile(this.graphPath(graphId));
     } catch (e) {
@@ -1451,10 +1488,12 @@ export class GraphnosisHost {
       bytes = await fs.readFile(this.legacyGraphPath(graphId));
       console.error(`[graphnosis-host] loaded legacy engram[${redactId(graphId)}].aikg — will migrate to .gai on next save`);
     }
-    const aikgPlain = await decrypt(new Uint8Array(bytes), this.key);
+    const _tDecrypt = Date.now();
+    const aikgPlain = await decrypt(new Uint8Array(bytes!), this.key);
     // Inner SDK HMAC key (independent of outer encryption) — derived from data key + a fixed label.
     const hmacKey = this.key;
     let handle: GraphHandle;
+    const _tParse = Date.now();
     try {
       handle = await this.opts.adapter.loadFromBuffer(graphId, aikgPlain, hmacKey);
     } catch (e) {
@@ -1479,10 +1518,18 @@ export class GraphnosisHost {
         const quarantinedBundle = `${this.bundlePath(graphId)}.corrupt-${ts}`;
         try { await fs.rename(this.graphPath(graphId), quarantinedGai); } catch { /* may not exist */ }
         try { await fs.rename(this.bundlePath(graphId), quarantinedBundle); } catch { /* may not exist */ }
+        // Also delete the embedding cache. The .embcache stores pre-computed
+        // vectors keyed by node content-hash — all of those hashes belong to
+        // nodes that are now gone (or will be replaced by op-log recovery).
+        // Leaving it behind means the next boot loads a large stale cache
+        // (can be 10–15 MB for a 2000-node engram), parses it for 500–700 ms,
+        // then builds embeddings for the rebuilt/empty graph into an unrelated
+        // cache. Deleting it is safe: it's derived data, always rebuildable.
+        try { await fs.unlink(this.cachePath(graphId)); } catch { /* already gone */ }
         console.error(
           `[graphnosis-host] quarantined corrupt engram '${graphId}': ` +
-          `${msg}. Files moved to ${path.basename(quarantinedGai)} and ${path.basename(quarantinedBundle)}. ` +
-          `Run "Recover from op-log" to rebuild from sources.`,
+          `${msg}. Files moved to ${path.basename(quarantinedGai)} and ${path.basename(quarantinedBundle)}; ` +
+          `embedding cache deleted. Run "Recover from op-log" to rebuild from sources.`,
         );
         const enoentErr = new Error(
           `engram '${graphId}' was corrupted (${msg}) and has been quarantined — ` +
@@ -1493,56 +1540,65 @@ export class GraphnosisHost {
       }
       throw e;
     }
+    const _tBundle = Date.now();
     const sourceIndex = await this.loadBundle(graphId);
 
-    // ── Cache load is best-effort ─────────────────────────────────────────
-    // A corrupted/oversized embcache must NOT prevent the graph from being
-    // listed. We've seen large graphs (20k+ nodes, 160MB+ embcache) silently
-    // disappear from the picker when cache.load() threw — even though the
-    // .gai itself was perfectly readable. Fall back to a fresh empty cache;
-    // buildEmbeddings (below) will repopulate it.
+    // ── Early commit: make the engram available in the picker immediately ──
+    //
+    // The cache is constructed here but NOT yet loaded from disk — load()
+    // happens in the background below. Committing to graphs.set BEFORE
+    // cache.load() means:
+    //   - Each engram appears in listGraphs() (and the UI picker) as soon as
+    //     its graph structure + source bundle are parsed, rather than after a
+    //     potentially large embedding-cache JSON is deserialized (for a 2000-
+    //     node engram that JSON can be 10–15 MB and take 300–800 ms to parse).
+    //   - Total perceived picker latency drops by ~0.3–0.8 s per engram.
+    //
+    // Safety: dirty is false, so save() is a no-op until the user triggers
+    // a write. The cache object reference is shared with the background task
+    // below, so once cache.load() completes, lookups in cached() start
+    // returning hits without any further coordination.
     const cache = new EmbeddingCache({ path: this.cachePath(graphId), key: this.key, salt: this.salt });
-    try {
-      await cache.load();
-    } catch (e) {
-      console.error(
-        `[graphnosis-host] embcache load failed for ${graphId}: ${(e as Error).message} ` +
-        `— starting with a fresh empty cache (embeddings will rebuild from scratch).`,
-      );
-    }
-
-    // Commit the graph to the in-memory map AS EARLY AS POSSIBLE so that
-    // even if downstream work (corrections-count scan, embedding rebuild)
-    // fails or hangs, the graph still appears in listGraphs() and the UI
-    // picker. Anything after this point is enrichment, not gating.
+    const _tCommit = Date.now();
     this.graphs.set(graphId, { handle, sourceIndex, cache, dirty: false });
+    this.correctionsCount.set(graphId, 0);
 
-    // Seed the corrections counter from the op-log so historical activity is
-    // visible after a fresh unlock. One-time scan per graph load; subsequent
-    // applyCorrection calls bump the counter in memory. Best-effort: a
-    // corrupt op-log shouldn't hide the graph.
-    try {
-      this.correctionsCount.set(graphId, await this.countCorrectionsFromOplog(graphId));
-    } catch (e) {
-      console.error(
-        `[graphnosis-host] corrections-count scan failed for ${graphId}: ${(e as Error).message}`,
-      );
-      this.correctionsCount.set(graphId, 0);
-    }
-
-    // SDK doesn't persist embeddings with .aikg — rebuild from cache (fast if warm,
-    // re-embeds from scratch if cache is empty / model changed). Without this, queryHybrid
-    // would have no index to consult and we'd silently fall back to TF-IDF.
-    try {
-      await this.opts.adapter.buildEmbeddings(handle, {
-        embed: cached(this.embed, cache),
-        dimensions: this.embedDimensions,
-        id: this.embedAdapterId,
-        batchSize: this.settings.ai.embedBatch,
+    // ── Background: load the embedding cache, then kick off rebuild ────────
+    //
+    // Cache load is best-effort — a corrupted or oversized cache must NOT
+    // prevent the graph from being used. Fall back to a fresh empty cache;
+    // buildEmbeddings below will repopulate it from the embed workers.
+    //
+    // buildEmbeddings fires AFTER cache.load() so it sees any warm entries
+    // (cache hits avoid re-embedding already-computed nodes).
+    void cache.load()
+      .catch((e: unknown) => {
+        console.error(
+          `[graphnosis-host] embcache load failed for ${graphId}: ${(e as Error).message} ` +
+          `— starting with a fresh empty cache (embeddings will rebuild from scratch).`,
+        );
+      })
+      .then(() => {
+        const _tCacheDone = Date.now();
+        console.error(
+          `[graphnosis-host] loadGraph '${redactId(graphId)}' breakdown: ` +
+          `readFile=${_tDecrypt - _tRead}ms decrypt=${_tParse - _tDecrypt}ms ` +
+          `parse=${_tBundle - _tParse}ms bundle=${_tCommit - _tBundle}ms ` +
+          `commit=${_tCacheDone - _tCommit}ms(+cache) total-to-picker=${_tCommit - _tLoad}ms`,
+        );
+        // IMPORTANT: use embedBackground (the dedicated background-lane
+        // worker) not the foreground embed. With ≥ 2 workers this reserves
+        // the foreground worker(s) for user-facing search/recall so they
+        // never stall behind a cold-cache rebuild on a large engram.
+        void this.opts.adapter.buildEmbeddings(handle, {
+          embed: cached(this.embedBackground, cache),
+          dimensions: this.embedDimensions,
+          id: this.embedAdapterId,
+          batchSize: this.settings.ai.embedBatch,
+        }).catch((e: unknown) => {
+          console.error(`[graphnosis-host] could not build embeddings on load for engram[${redactId(graphId)}]: ${(e as Error).message} — query will use TF-IDF only.`);
+        });
       });
-    } catch (e) {
-      console.error(`[graphnosis-host] could not build embeddings on load for engram[${redactId(graphId)}]: ${(e as Error).message} — query will use TF-IDF only.`);
-    }
   }
 
   private async loadBundle(graphId: GraphId): Promise<sources.SourceIndex> {
@@ -3271,18 +3327,236 @@ export class GraphnosisHost {
    * cascades. Returns 0 on any decryption / read error — we don't want a
    * missing op-log to break stats.
    */
+  /**
+   * Read the op-log ONCE and populate corrections counts for every loaded
+   * engram. Call this after loadAllGraphsFromDisk() to avoid O(N) oplog
+   * reads. Per-engram calls (even fire-and-forget) caused 17 concurrent
+   * oplog decryptions that starved the loading loop's readFile calls.
+   */
+  async refreshAllCorrectionsFromOplog(): Promise<void> {
+    try {
+      const t0 = Date.now();
+      // Route through listOplogEvents() so this call shares the in-flight
+      // Promise with any concurrent callers (e.g. vitality.compute() firing
+      // 2 s after boot). Without sharing, two independent readAllEvents()
+      // calls would each run for ~16 s on a large op-log — doubling the
+      // startup delay. listOplogEvents() also writes to _oplogReadCache, so
+      // subsequent callers within the 60-s TTL window get instant results.
+      const events = await this.listOplogEvents();
+
+      for (const graphId of this.graphs.keys()) {
+        this.correctionsCount.set(graphId, this._correctionsCountForGraph(graphId, events));
+      }
+      console.error(`[graphnosis-host] corrections sweep: ${events.length} events → ${this.graphs.size} engrams in ${Date.now() - t0}ms`);
+
+      // Fire-and-forget compaction. Runs asynchronously so the corrections
+      // sweep result is already applied before the I/O starts. Any events
+      // emitted during the write are captured via delta-append (see
+      // compactOplogIfNeeded implementation).
+      void this.compactOplogIfNeeded(events).catch((e: unknown) => {
+        console.error(`[graphnosis-host] oplog compaction error: ${(e as Error).message}`);
+      });
+    } catch (e) {
+      console.error(`[graphnosis-host] corrections sweep failed: ${(e as Error).message}`);
+    }
+  }
+
   private async countCorrectionsFromOplog(graphId: GraphId): Promise<number> {
     try {
-      const events = await oplog.readAllEvents(
-        path.join(this.opts.cortexDir, 'oplog'),
-        this.key,
-      );
-      return events.filter(
-        (e) => e.graphId === graphId && (e.op === 'editNode' || e.op === 'supersede'),
-      ).length;
+      const events = await this.listOplogEvents(); // uses shared 60s cache
+      return this._correctionsCountForGraph(graphId, events);
     } catch (e) {
       console.error(`[graphnosis-host] count corrections from op-log failed: ${(e as Error).message}`);
       return 0;
+    }
+  }
+
+  /**
+   * Compute the corrections count for one engram from a cached event list.
+   *
+   * After an op-log compaction, old `editNode`/`supersede` events are pruned
+   * from the log and their count is saved as `correctionsCountBaseline` in
+   * settings. The live events only contain the recent delta (ts ≥
+   * correctionsBaselineAsOf). We add both to get the true total.
+   *
+   * Before any compaction has run: baseline = 0, baselineAsOf = 0, so every
+   * event passes the `e.ts >= 0` filter and the result is identical to the
+   * previous full-scan behaviour.
+   */
+  private _correctionsCountForGraph(
+    graphId: GraphId,
+    events: Awaited<ReturnType<typeof oplog.readAllEvents>>,
+  ): number {
+    const meta = this.settings.graphMetadata[graphId];
+    const baseline = meta?.correctionsCountBaseline ?? 0;
+    const baselineAsOf = meta?.correctionsBaselineAsOf ?? 0;
+    const delta = events.filter(
+      (e) => e.graphId === graphId &&
+             e.ts >= baselineAsOf &&
+             (e.op === 'editNode' || e.op === 'supersede'),
+    ).length;
+    return baseline + delta;
+  }
+
+  /**
+   * Op-log compaction — prune mutation events older than COMPACTION_MAX_AGE_MS
+   * while preserving all recovery anchors (`ingestSource`, `forgetSource`)
+   * and all recent events unconditionally.
+   *
+   * Pruned `editNode`/`supersede` counts are saved as a per-engram baseline
+   * in settings.json so `refreshAllCorrectionsFromOplog` can reconstruct the
+   * correct total without the full history.
+   *
+   * Only this device's `.oplog` file is compacted; other devices' files are
+   * read-only from our perspective and are left untouched.
+   *
+   * Write safety (delta-append):
+   *   1. Note the current byte-size of the original file.
+   *   2. Write the compacted content to `<deviceId>.oplog.compacting`.
+   *   3. Append any bytes appended to the original since step 1 (the "delta"
+   *      — any events emitted concurrently during our write).
+   *   4. Atomically rename the compacting file over the original.
+   * This means in-flight emit() calls during the write are never lost: they
+   * end up in the delta that gets appended before the rename.
+   */
+  private async compactOplogIfNeeded(
+    events: Awaited<ReturnType<typeof oplog.readAllEvents>>,
+  ): Promise<void> {
+    /** Minimum event count before we bother compacting. */
+    const COMPACTION_THRESHOLD = 500_000;
+    /** Keep all events newer than this many days regardless of type. */
+    const COMPACTION_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000;
+    /** Skip compaction if < this fraction of events would be pruned (not worth the I/O). */
+    const COMPACTION_MIN_REDUCTION = 0.2;
+    /** Max events per encrypted chunk (keeps individual encrypt() calls small). */
+    const CHUNK_SIZE = 100;
+
+    if (events.length < COMPACTION_THRESHOLD) return;
+
+    const oplogDir = path.join(this.opts.cortexDir, 'oplog');
+    const oplogFile = path.join(oplogDir, `${this.opts.deviceId}.oplog`);
+    const compactingFile = oplogFile + '.compacting';
+    const cutoff = Date.now() - COMPACTION_MAX_AGE_MS;
+
+    // ── Partition events ────────────────────────────────────────────────────
+    const keepEvents: Awaited<ReturnType<typeof oplog.readAllEvents>> = [];
+    // Per-engram count of pruned editNode/supersede (for the baseline update).
+    const prunedCorrectionsByEngram = new Map<string, number>();
+    let prunedCount = 0;
+
+    for (const ev of events) {
+      // Recovery anchors are NEVER pruned — they are the source-of-truth for
+      // op-log replay and "what did this user ever ingest?" queries.
+      if (ev.op === 'ingestSource' || ev.op === 'forgetSource') {
+        keepEvents.push(ev);
+        continue;
+      }
+      // Recent events are kept regardless of type.
+      if (ev.ts >= cutoff) {
+        keepEvents.push(ev);
+        continue;
+      }
+      // This event will be pruned. Track pruned corrections for the baseline.
+      if (ev.op === 'editNode' || ev.op === 'supersede') {
+        prunedCorrectionsByEngram.set(
+          ev.graphId,
+          (prunedCorrectionsByEngram.get(ev.graphId) ?? 0) + 1,
+        );
+      }
+      prunedCount++;
+    }
+
+    if (prunedCount < events.length * COMPACTION_MIN_REDUCTION) {
+      console.error(
+        `[graphnosis-host] oplog compaction skipped: only ${prunedCount}/${events.length} events` +
+        ` prunable (<${Math.round(COMPACTION_MIN_REDUCTION * 100)}% reduction threshold).`,
+      );
+      return;
+    }
+
+    console.error(
+      `[graphnosis-host] oplog compaction starting: ${events.length} → ${keepEvents.length} events` +
+      ` (pruning ${prunedCount}), corrections baseline update for ${prunedCorrectionsByEngram.size} engram(s)…`,
+    );
+    const t0 = Date.now();
+
+    // ── Note current file size for delta-append ─────────────────────────────
+    let originalSize = 0;
+    try {
+      originalSize = (await fs.stat(oplogFile)).size;
+    } catch { /* file may not exist on a fresh cortex */ }
+
+    // ── Write compacted events to staging file ──────────────────────────────
+    try {
+      await fs.unlink(compactingFile).catch(() => { /* may not exist */ });
+
+      for (let i = 0; i < keepEvents.length; i += CHUNK_SIZE) {
+        const batch = keepEvents.slice(i, i + CHUNK_SIZE);
+        const line = batch.map((e) => JSON.stringify(e)).join('\n') + '\n';
+        const ct = await encrypt(new TextEncoder().encode(line), this.key, this.salt);
+        // Replicate the oplog binary format: 4-byte LE uint32 length + ciphertext.
+        const lenBuf = Buffer.alloc(4);
+        lenBuf.writeUInt32LE(ct.length, 0);
+        await fs.appendFile(compactingFile, Buffer.concat([lenBuf, Buffer.from(ct)]));
+      }
+
+      // ── Delta-append: capture events emitted during our write ───────────
+      // Any emit() calls that fired while we were writing went to the original
+      // file via appendFile(oplogFile). Read those bytes and tack them onto
+      // the compacting file before we rename, so no events are lost.
+      try {
+        const currentSize = (await fs.stat(oplogFile)).size;
+        if (currentSize > originalSize) {
+          const deltaLen = currentSize - originalSize;
+          const delta = Buffer.alloc(deltaLen);
+          const fh = await fs.open(oplogFile, 'r');
+          try {
+            await fh.read(delta, 0, deltaLen, originalSize);
+          } finally {
+            await fh.close();
+          }
+          await fs.appendFile(compactingFile, delta);
+        }
+      } catch (deltaErr) {
+        // Delta read failure is non-fatal: the compacted file is still valid;
+        // we just might lose a handful of in-flight events from the last
+        // seconds of the write. Log and continue to the rename.
+        console.error(
+          `[graphnosis-host] oplog compaction: delta-append failed (non-fatal):` +
+          ` ${(deltaErr as Error).message}`,
+        );
+      }
+
+      // ── Atomic rename ───────────────────────────────────────────────────
+      await fs.rename(compactingFile, oplogFile);
+
+      // ── Persist corrections baseline to settings.json ───────────────────
+      // Do this AFTER the rename so settings always lag the file (safer than
+      // having the baseline updated but the file not yet compacted).
+      for (const [graphId, prunedCount2] of prunedCorrectionsByEngram) {
+        const existing = this.settings.graphMetadata[graphId];
+        if (!existing) continue;
+        const prevBaseline = existing.correctionsCountBaseline ?? 0;
+        await this.setGraphMetadata(graphId, {
+          ...existing,
+          correctionsCountBaseline: prevBaseline + prunedCount2,
+          correctionsBaselineAsOf: cutoff,
+        });
+      }
+
+      // Invalidate the cache so the next listOplogEvents() re-reads the
+      // compacted file rather than serving the stale pre-compaction snapshot.
+      this.invalidateOplogCache();
+
+      console.error(
+        `[graphnosis-host] oplog compaction done in ${Date.now() - t0}ms —` +
+        ` ${events.length} → ${keepEvents.length} events.`,
+      );
+    } catch (e) {
+      // Compaction failure is fully non-fatal: the original oplog is intact
+      // (we only renamed a staging file). Clean up and continue.
+      await fs.unlink(compactingFile).catch(() => { /* already gone */ });
+      console.error(`[graphnosis-host] oplog compaction failed (non-fatal): ${(e as Error).message}`);
     }
   }
 
@@ -3502,6 +3776,12 @@ export class GraphnosisHost {
             error: `rebuild ingest failed: ${(e as Error).message}`,
           });
         }
+        // Yield to the event loop between each source so IPC/MCP requests
+        // (health checks, mcp.status calls, SIGTERM handlers) can be serviced
+        // during purge. Without this, embedding on each source blocks the
+        // single-threaded event loop for seconds, causing mcp.status timeouts
+        // and SIGTERM to be ignored until the entire purge finishes.
+        await new Promise<void>((r) => setTimeout(r, 0));
       }
     } catch (e) {
       // Catastrophic failure — restore from backup and surface.
@@ -3644,7 +3924,56 @@ export class GraphnosisHost {
    * each call. For massive op-logs (>100k events) we'd add windowing.
    */
   async listOplogEvents(): Promise<Awaited<ReturnType<typeof oplog.readAllEvents>>> {
-    return oplog.readAllEvents(path.join(this.opts.cortexDir, 'oplog'), this.key);
+    // ── Cache hit ──────────────────────────────────────────────────────────
+    // Warm reads (within 60 s of the last full read) short-circuit immediately.
+    if (this._oplogReadCache && Date.now() - this._oplogReadCache.at <= 60_000) {
+      return this._oplogReadCache.events;
+    }
+    // ── Share an in-flight read ────────────────────────────────────────────
+    // The op-log can be very large (2+ million events on an active cortex).
+    // Reading + decrypting it takes 10–20 s. Without sharing, two callers
+    // that arrive within that window (e.g. refreshAllCorrectionsFromOplog()
+    // at boot + vitality.compute() 2 s later) each spawn their own 16 s
+    // read of the same file — effectively doubling the startup delay.
+    //
+    // The shared promise ensures only one `readAllEvents` is in flight at a
+    // time. All concurrent waiters attach to the same Promise and get the
+    // same result when it resolves.
+    if (this._oplogReadPromise) return this._oplogReadPromise;
+
+    const gen = this._oplogReadGeneration;
+    this._oplogReadPromise = oplog.readAllEvents(
+      path.join(this.opts.cortexDir, 'oplog'),
+      this.key,
+    ).then((events) => {
+      // Only write to the cache if invalidateOplogCache() hasn't been called
+      // since this read started. If the generation advanced, a write event
+      // happened mid-read and the data is already stale — let the next caller
+      // trigger a fresh read.
+      if (this._oplogReadGeneration === gen) {
+        this._oplogReadCache = { events, at: Date.now() };
+      }
+      this._oplogReadPromise = null;
+      return events;
+    }).catch((e: unknown) => {
+      this._oplogReadPromise = null;
+      throw e;
+    });
+    return this._oplogReadPromise;
+  }
+
+  /** Expire the op-log read cache so the next listOplogEvents() re-reads from disk.
+   *  Call after writing a new op-log entry (correction, remember, forget) to ensure
+   *  vitality and corrections counts reflect the change within 60 s. */
+  invalidateOplogCache(): void {
+    this._oplogReadCache = null;
+    // Clear the in-flight promise so the next caller starts a fresh read
+    // rather than getting the result of a read that started before this
+    // write (and therefore won't include the new event).
+    this._oplogReadPromise = null;
+    // Increment generation so any still-running in-flight read doesn't
+    // overwrite the cache with pre-write data when it eventually completes.
+    this._oplogReadGeneration++;
   }
 
   // ── Snapshots ───────────────────────────────────────────────────────────

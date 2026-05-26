@@ -16,7 +16,13 @@
  *   child → parent : { type: 'ready' }               (model loaded)
  */
 import { promises as fs } from 'node:fs';
+import { setPriority } from 'node:os';
 import { FlagEmbedding, EmbeddingModel } from 'fastembed';
+
+// Run at below-normal OS priority so embedding doesn't crowd out foreground
+// apps (Claude, the UI, etc.). Nice value 1 = PRIORITY_BELOW_NORMAL on
+// macOS/Linux. Silently skip if setPriority throws (non-fatal).
+try { setPriority(process.pid, 1); } catch { /* best-effort */ }
 
 // Passed from parent via env — always set when spawned by local-embed.ts.
 const cacheDir: string = process.env.GRAPHNOSIS_EMBED_CACHE_DIR ?? process.env.HOME ?? '/tmp';
