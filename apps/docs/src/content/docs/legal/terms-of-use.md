@@ -165,7 +165,7 @@ If you choose to store your cortex on a cloud service (iCloud, Dropbox, Google D
 
 ### 8.4 Ollama and local LLMs
 
-Several optional features — AI-generated insights, the synthesised `develop` / `predict` output, and the LLM-assisted correction path — can use a local large language model run via Ollama, a separate third-party application. These features are off by default, and Ollama is never required: the core app, including the deterministic `correct` flow, works fully without it. Your use of Ollama and any models you download is governed by Ollama's terms and the respective model licenses. Nehloo Interactive does not distribute Ollama or any LLM weights.
+Several optional features — AI-generated insights, the synthesised `develop` / `predict` output, and the LLM-assisted correction path — can use a local large language model run via Ollama, a separate third-party application. These features are off by default, and Ollama is never required: the core app, including the deterministic `edit` flow, works fully without it. Your use of Ollama and any models you download is governed by Ollama's terms and the respective model licenses. Nehloo Interactive does not distribute Ollama or any LLM weights.
 
 ---
 

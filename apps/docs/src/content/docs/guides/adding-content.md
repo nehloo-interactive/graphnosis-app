@@ -89,7 +89,7 @@ The badge derives from the MCP `initialize` handshake's `clientInfo.name`. It's 
 
 **Two flavors of AI-saved memory**: the `remember` tool now accepts `kind: 'clip' | 'ai-conversation'`. AI clients use `clip` (the default) when extracting a fact from external content (a doc you shared, a search result, an article). They use `ai-conversation` when saving a turn or summary of the CURRENT conversation — so you can tell *"Claude paraphrased me"* from *"Claude saw this in a doc I shared"*. Both appear in the Sources list; the source ref makes the kind explicit.
 
-**Correction attribution**: when an AI client applies a correction via the `apply` MCP tool (after you approved a `correct` proposal), the op-log records `correctedBy: <client name>` on every node edit/supersede/delete. The Activity view surfaces this for full audit.
+**Edit attribution**: when an AI client applies a change via the `apply` MCP tool (after you approved an `edit` proposal), the op-log records `correctedBy: <client name>` on every node edit/supersede/delete. The Activity view surfaces this for full audit.
 
 ## Auto-relink: how new memories connect to old ones
 
@@ -123,6 +123,12 @@ If a file you've ingested has changed, you can reingest it from the Source detai
 ## Filtering sources
 
 The Sources pane has a **Filter sources…** search bar at the top. Typing any text immediately hides sources that don't match — by filename, URL, or clip snippet. Engram headings collapse automatically when none of their sources match, so the list stays clean.
+
+Press **⌘F** anywhere in the app to jump focus directly to the search bar — you don't have to click into it first.
+
+A **stats bar** below the search field shows the active engram name and match count (e.g. "Coding · 4 matches") so you know at a glance which engram you're searching and how many sources matched.
+
+When the lexical search finds no exact matches, Graphnosis falls back to semantic similarity. Results from the semantic fallback are clearly labelled as off-topic matches so you can tell them apart from direct hits.
 
 The filter is session-only: it resets when you close the app, and it never hides anything permanently. Clear the field to restore the full list.
 

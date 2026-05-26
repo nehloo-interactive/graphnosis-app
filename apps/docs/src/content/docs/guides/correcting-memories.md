@@ -1,17 +1,23 @@
 ---
 title: Correcting Memories
-description: How to fix inaccurate or outdated memories with the correction flow — deterministic by default, reviewed before anything is written.
+description: How to fix, update, or extend memories with the edit flow — deterministic by default, reviewed before anything is written.
 sidebar:
   order: 3
 ---
 
-Information changes. Something you ingested six months ago may now be outdated. Graphnosis has a structured **correction flow** that updates a memory precisely, without re-ingesting an entire source — and without ever quietly destroying what was there before.
+Information changes. Something you ingested six months ago may now be outdated, or you want to add detail to an existing memory. Graphnosis has a structured **edit flow** that changes a memory precisely, without re-ingesting an entire source — and without ever quietly destroying what was there before.
 
-## What a correction is
+## What an edit is
 
-A correction is a natural-language statement of what is wrong and what it should be. Graphnosis turns that statement into a **diff** — a precise, structured set of changes — and shows it to you. **Nothing is written until you approve the diff.** No AI model, local or cloud, can modify your cortex without your explicit confirmation.
+An edit is a natural-language statement of what should change. It covers three situations:
 
-A correction is one of the few **correctness events** that can change a memory's standing (see [Indelibility & Determinism](/guides/indelibility-and-determinism/)). It does this safely: the original memory is **superseded**, not erased.
+- **Correction** — "actually it was September, not August." Fixes a factual error.
+- **Update** — "my plans changed — update my Q3 milestones to…" Replaces outdated content.
+- **Append / add detail** — "add these items to my project plan." Extends an existing memory.
+
+Graphnosis turns that statement into a **diff** — a precise, structured set of changes — and shows it to you. **Nothing is written until you approve the diff.** No AI model, local or cloud, can modify your cortex without your explicit confirmation.
+
+An edit is one of the few **correctness events** that can change a memory's standing (see [Indelibility & Determinism](/guides/indelibility-and-determinism/)). It does this safely: the original memory is **superseded**, not erased.
 
 ## Deterministic by default
 
@@ -29,15 +35,15 @@ Either way, the diff is only ever a **preview**. You review it before anything i
 
 Applying a correction does **not** overwrite or delete the old memory. The default `supersede` operation keeps the original for audit lineage — it is demoted, not destroyed — and the op-log records the full before/after. You can trace the history at any time, and corrections are reversible. This is the indelibility guarantee in action: **a correction never loses information.**
 
-## Initiating a correction from your AI
+## Initiating an edit from your AI
 
-Your AI can start a correction mid-conversation using the `correct` and `apply` MCP tools.
+Your AI can start an edit mid-conversation using the `edit` and `apply` MCP tools. (`correct` also works as a backward-compatible alias.)
 
-**Step 1 — the AI calls `correct`:**
+**Step 1 — the AI calls `edit`:**
 
 ```json
 {
-  "tool": "correct",
+  "tool": "edit",
   "arguments": {
     "correction": "The API endpoint changed from /v1/search to /v2/query in March 2025.",
     "graphId": "work"
@@ -47,7 +53,7 @@ Your AI can start a correction mid-conversation using the `correct` and `apply` 
 
 `correction` is required; `graphId` is optional (when omitted, Graphnosis infers the engram from the closest-matching memory). The tool **writes nothing** — it returns a `diffId`, a `mode` (`"deterministic"` or `"llm-assisted"`), the proposed `preview` diff, and the candidate memories it considered.
 
-**Step 2 — you approve the diff.** Normally you do this in the app (see below). An AI client should only call `apply` if you have explicitly reviewed a specific diff and told it to commit:
+**Step 2 — you approve the diff.** Normally you do this in the app (see below). An AI client should only call `apply` if you have explicitly reviewed the diff and told it to commit:
 
 ```json
 {
