@@ -5,23 +5,23 @@ sidebar:
   order: 1
 ---
 
-The Graphnosis sidecar exposes **34 tools** via the Model Context Protocol, organised into nine functional categories. Every connected MCP client — Claude Desktop, Claude Code, Cursor, and anything else that speaks MCP — sees the same 34. What a tool can actually reach is still governed by each engram's sensitivity tier and the [consent gate](/guides/ai-access-controls/#2-the-consent-gate) — by default a one-click in-app prompt for `sensitive`-tier recalls, silent for `personal` and `public`.
+The Graphnosis sidecar exposes **35 tools** via the Model Context Protocol, organised into nine functional categories. Every connected MCP client — Claude Desktop, Claude Code, Cursor, and anything else that speaks MCP — sees the same 35. What a tool can actually reach is still governed by each engram's sensitivity tier and the [consent gate](/guides/ai-access-controls/#2-the-consent-gate) — by default a one-click in-app prompt for `sensitive`-tier recalls, silent for `personal` and `public`.
 
 You can browse the full toolset inside the app too: open the **MCP Tools** button in the left sidebar (next to Settings). Each tool name opens a short explainer with example prompts you can paste straight into your AI client.
 
-## At a glance — the 34 tools
+## At a glance — the 35 tools
 
 | Category | Tools |
 |---|---|
-| **Core memory** (7) | [`recall`](#recall) · [`remind`](#remind) · [`remember`](#remember) · [`forget`](#forget) · [`apply`](#apply) · [`stats`](#stats) · [`vitality`](#vitality) |
+| **Core memory** (8) | [`recall`](#recall) · [`remind`](#remind) · [`dig_deeper`](#dig_deeper) · [`remember`](#remember) · [`forget`](#forget) · [`apply`](#apply) · [`stats`](#stats) · [`vitality`](#vitality) |
 | **Engram discovery** (5) | [`list_engrams`](#list_engrams) · [`suggest_engram`](#suggest_engram) · [`browse_engram`](#browse_engram) · [`recent`](#recent) · [`get_engram_schema`](#get_engram_schema) |
 | **Structured recall** (4) | [`recall_structured`](#recall_structured) · [`recall_with_citations`](#recall_with_citations) · [`compare_engrams`](#compare_engrams) · [`cross_search`](#cross_search) |
 | **Source operations** (3) | [`find_source`](#find_source) · [`recall_source`](#recall_source) · [`transfer_source`](#transfer_source) |
 | **Engram operations** (2) | [`ingest_batch`](#ingest_batch) · [`engram_summary`](#engram_summary) |
-| **Brain maintenance** (3) | [`duplicate_pairs`](#duplicate_pairs) · [`healing_journal`](#healing_journal) · [`gnn_status`](#gnn_status) |
+| **Brain maintenance** (4) | [`duplicate_pairs`](#duplicate_pairs) · [`healing_journal`](#healing_journal) · [`gnn_status`](#gnn_status) · [`confirm_data_access`](#confirm_data_access) |
 | **Approximate** (2) | [`audit_memory`](#audit_memory) · [`check_duplicate`](#check_duplicate) |
 | **Conditional** (1) | [`correct`](#correct) |
-| **Non-deterministic** (7) | [`develop`](#develop) · [`predict`](#predict) · [`insights`](#insights) · [`gnn_neighbors`](#gnn_neighbors) · [`llm_query`](#llm_query) · [`llm_distill`](#llm_distill) · [`confirm_data_access`](#confirm_data_access) |
+| **Non-deterministic** (6) | [`develop`](#develop) · [`predict`](#predict) · [`insights`](#insights) · [`gnn_neighbors`](#gnn_neighbors) · [`llm_query`](#llm_query) · [`llm_distill`](#llm_distill) |
 
 ## How results are returned
 
@@ -38,12 +38,12 @@ Graphnosis sorts its tools into four determinism tiers. Each tool states its own
 
 | Tier | What it means | Tools |
 |---|---|---|
-| **Deterministic** | Identical input always produces an identical result — no LLM, no randomness, fully auditable. | All Core memory, Engram discovery, Structured recall, Source operations, Engram operations, Brain maintenance tools; plus `confirm_data_access`. |
+| **Deterministic** | Identical input always produces an identical result — no LLM, no randomness, fully auditable. | All Core memory, Engram discovery, Structured recall, Source operations, Engram operations, and Brain maintenance tools (including `confirm_data_access`). |
 | **Approximate** | Vector-similarity scan — given the same embedding state, results are reproducible. No LLM involved. | `audit_memory`, `check_duplicate` |
 | **Conditional** | Deterministic by default — `correct` supersedes the single closest-matching memory. Enabling the optional Neural Network (which widens the candidate set) or the optional Local LLM (which authors a multi-edit diff) makes it non-deterministic. The result's `mode` field reports which path ran. | `correct` |
 | **Non-deterministic** | Needs the optional Local LLM (or Neural Network). Retrieval is exact and auditable; the synthesised output varies between runs. Degrades to raw context when the LLM is off. | `develop`, `predict`, `insights`, `gnn_neighbors`, `llm_query`, `llm_distill` |
 
-One nuance for the deterministic tier: if the user has enabled the optional [Graphnosis Neural Network](/guides/indelibility-and-determinism/), `recall` and `remind` may append a separate, clearly-labelled "Neural-network predictions" block. That appendix is the only non-deterministic part, and it is never mixed into the deterministic results.
+One nuance for the deterministic tier: when the user has overlay engines enabled, `recall` and `remind` may append a clearly-labelled `--- INFERRED LAYER ---` block containing `[gll·assertion N%]` rows from the local LLM and `[gnn·edge N%]` rows from the neural network. The inferred layer is never mixed into the deterministic subgraph — treat it as predictions, not attested memory. The canonical `.gai` subgraph is always the authoritative answer.
 
 ---
 
@@ -81,7 +81,8 @@ Attached 1 memory node(s) / 24 tokens across 1 graph(s). Per-graph (tier · node
 - The server enforces hard caps (50 nodes / 8000 tokens) regardless of what is requested.
 - Sensitive engrams are governed by their per-engram "share with AI" setting. When an engram is sensitive **and** shared, recall still includes it but applies a tighter cap (5 nodes / 500 tokens). When it is not shared, it is excluded entirely.
 - Every recall is auditable: the footer above, plus a structured audit line on the sidecar's stderr that the desktop inspector tails.
-- If the user has enabled the Graphnosis Neural Network, a separate "Neural-network predictions" block may be appended — clearly labelled and never mixed into the deterministic results.
+- If overlay engines are enabled, an `--- INFERRED LAYER ---` block may be appended with `[gll·assertion N%]` and `[gnn·edge N%]` rows — clearly labelled, never mixed into attested results.
+- **Escalation policy:** if `recall` returns 0–3 nodes, or nodes that don't answer the question, call [`dig_deeper`](#dig_deeper) with the same query before telling the user nothing was found.
 
 ### Example
 
@@ -117,6 +118,42 @@ Identical to `recall`: `query` (required), `maxTokens` (optional, default `2000`
 
 - **Everyday —** You say "remind me what gift ideas I had for Mum's birthday" — the phrasing signals intent, so the AI calls `remind`, which runs the same search as `recall` and pulls back the list you jotted down weeks ago.
 - **Technical —** Before a release you ask "remind me of the open caveats on the auth migration" — `remind` returns the caveats you logged during the migration work, so nothing slips through the checklist.
+
+---
+
+## `dig_deeper`
+
+**Determinism: deterministic.** The expansion pass runs the same searches every time given the same cortex state — no LLM, no randomness.
+
+Escalation tool for when `recall` returns thin results (0–3 nodes, or nodes that don't actually answer the question). Internally orchestrates three passes: content recall, source-filename expansion, and a cross-engram entity hop. Returns more nodes than a plain `recall` with full provenance for each — which engram it came from, which source it lives in, and how it was reached.
+
+**AI clients should always escalate to `dig_deeper` before telling the user "nothing was found."** Most empty-recall cases are phrasing or language mismatches that the expansion pass resolves.
+
+### Parameters
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `query` | string | Yes | The same query you passed to `recall`. Pass it in the user's language — the expansion is multilingual. |
+| `maxNodes` | integer | No | Maximum nodes to return across all passes. Default `30`, hard cap `80`. |
+| `maxTokens` | integer | No | Token budget across all passes. Default `3000`, hard cap `10000`. |
+
+### Return
+
+Plain text — a ready-to-read context block with a provenance footer per result group showing which pass retrieved it (content search / filename expansion / entity hop) and which engram it came from.
+
+### Escalation policy
+
+```
+recall → thin result (0–3 nodes) → dig_deeper with same query → compose answer
+                                 → still empty → tell user nothing was found
+```
+
+A `💡 The query entities also match source-file names…` hint in any recall or dig_deeper response means a whole document is relevant. Stop and call `recall_source` with the listed source IDs before composing your answer.
+
+### Examples in practice
+
+- **Everyday —** `recall` finds only one note about a project. `dig_deeper` with the same query hops to related nodes across three engrams and returns the full context the user was looking for.
+- **Technical —** A query for a filename returns nothing from `recall`. `dig_deeper`'s filename-expansion pass finds the source directly and returns its contents.
 
 ---
 
