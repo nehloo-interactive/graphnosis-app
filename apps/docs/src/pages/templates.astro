@@ -1,0 +1,313 @@
+---
+import Layout from '../layouts/Layout.astro';
+import Nav from '../components/Nav.astro';
+import Footer from '../components/Footer.astro';
+
+const packs = [
+  {
+    id: 'developer',
+    name: 'Developer Pack',
+    tagline: 'For engineers who build with AI daily',
+    price: 79,
+    color: '#67e8f9',
+    badge: null,
+    skills: [
+      'ADR Recall — surface architecture decisions before any code change',
+      'Debugging Memory — recall prior attempts for similar errors',
+      'PR Context — attach codebase decisions to every review',
+      'Incident Historian — recall fault signatures before triage',
+    ],
+    includes: [
+      '5 named Recall Recipes',
+      'CLAUDE.md + AGENTS.md templates',
+      'VS Code & Cursor setup guide',
+      'GitHub Actions integration example',
+    ],
+    stripeUrl: 'https://buy.stripe.com/REPLACE_developer',
+  },
+  {
+    id: 'legal',
+    name: 'Legal & Consulting Pack',
+    tagline: 'For lawyers and consultants who handle complex client histories',
+    price: 79,
+    color: '#a78bfa',
+    badge: null,
+    skills: [
+      'Matter Memory — full client + matter context before every interaction',
+      'Commitment Tracker — recall verbal and written commitments by client',
+      'Precedent Lookup — surface relevant prior work before drafting',
+      'Document Provenance — trace where a clause came from and why',
+    ],
+    includes: [
+      '4 named Recall Recipes',
+      'Sensitive-tier engram config (PHI/privilege-safe)',
+      'Matter intake workflow template',
+      'Conflict-check recall pattern',
+    ],
+    stripeUrl: 'https://buy.stripe.com/REPLACE_legal',
+  },
+  {
+    id: 'therapist',
+    name: 'Clinician Pack',
+    tagline: 'For therapists and clinicians with sensitive session histories',
+    price: 79,
+    color: '#a78bfa',
+    badge: 'HIPAA-aligned',
+    skills: [
+      'Session Memory — structured recall of prior sessions before appointments',
+      'Treatment History — surface medication history, interventions, outcomes',
+      'PHI-safe recall — Sensitive tier enforced; zero tokens reach cloud AI',
+      'Progress Notes — template for structured note-taking after sessions',
+    ],
+    includes: [
+      '4 named Recall Recipes',
+      'Sensitive-tier engram config',
+      'HIPAA-aligned local-only workflow guide',
+      'Session note template',
+    ],
+    stripeUrl: 'https://buy.stripe.com/REPLACE_clinician',
+  },
+  {
+    id: 'sales',
+    name: 'Sales & Customer Success Pack',
+    tagline: 'For account executives and CS teams who live in relationships',
+    price: 99,
+    color: '#f59e0b',
+    badge: 'Most popular',
+    skills: [
+      'Relationship Memory — full contact + account history before every call',
+      'Churn Risk Detector — recall health signals, flag pattern changes',
+      'Renewal Prep — synthesize account history before renewal conversations',
+      'Objection Recall — surface how similar objections were handled + outcomes',
+    ],
+    includes: [
+      '4 named Recall Recipes',
+      'CRM connector config (Salesforce / HubSpot)',
+      'Call prep workflow template',
+      'n8n automation template',
+    ],
+    stripeUrl: 'https://buy.stripe.com/REPLACE_sales',
+  },
+  {
+    id: 'agents',
+    name: 'AI Agent Skills Pack',
+    tagline: 'For developers building persistent-memory AI agents',
+    price: 99,
+    color: '#67e8f9',
+    badge: null,
+    skills: [
+      'Research Accumulator — recall prior findings before searching, save results',
+      'Customer Agent Memory — full contact history per run, no cold starts',
+      'Code Agent Context — ADRs + debugging history for every agent run',
+      'Autonomous Loop — scheduled agents that accumulate knowledge over time',
+    ],
+    includes: [
+      '6 named AI Skills (engram schema + recall + remember recipe each)',
+      'Python starter with Claude API + Graphnosis SDK',
+      'n8n workflow templates (Research, Customer, Code agents)',
+      'AGENTS.md template',
+    ],
+    stripeUrl: 'https://buy.stripe.com/REPLACE_agents',
+  },
+  {
+    id: 'industrial',
+    name: 'Industrial & Operations Pack',
+    tagline: 'For OT/ICS teams with critical equipment and process history',
+    price: 199,
+    color: '#f59e0b',
+    badge: 'Enterprise anchor',
+    skills: [
+      'Equipment Historian — recall maintenance history + fault signatures before decisions',
+      'Runbook Guardian — recall prior deviations and outcomes before non-standard ops',
+      'Incident Pattern Matcher — surface recurring signatures across incidents',
+      'Runbook Evolve — update runbooks after incidents; recall on next trigger',
+    ],
+    includes: [
+      '4 named Recall Recipes',
+      'OPC-UA + Modbus connector config',
+      'SCADA historian ingest workflow',
+      'Air-gap (local LLM / Ollama) setup guide',
+      'Compliance-aligned local-only workflow',
+    ],
+    stripeUrl: 'https://buy.stripe.com/REPLACE_industrial',
+  },
+];
+
+const bundleUrl = 'https://buy.stripe.com/REPLACE_bundle';
+const bundlePrice = 399;
+---
+
+<Layout
+  title="Template Packs — Graphnosis"
+  description="Pre-built memory architecture for your profession. Recall Recipes, engram schemas, workflow templates, and connector configs — ready to import."
+>
+  <Nav />
+  <main>
+
+    <!-- Header -->
+    <section class="py-24 px-4 sm:px-6 text-center">
+      <div class="max-w-3xl mx-auto">
+        <div class="inline-flex items-center gap-2 px-3 py-1.5 rounded-full border border-[#2a2a3d] bg-[#1c1c27] text-[#a78bfa] text-xs font-semibold tracking-widest uppercase mb-8">
+          <span class="w-1.5 h-1.5 rounded-full bg-[#a78bfa]"></span>
+          Template packs
+        </div>
+        <h1 class="text-4xl sm:text-5xl font-black text-white mb-6 leading-tight">
+          Start with your profession's<br />
+          <span
+            class="bg-clip-text text-transparent"
+            style="background-image: linear-gradient(135deg, #67e8f9 0%, #a78bfa 100%);"
+          >memory architecture — pre-built.</span>
+        </h1>
+        <p class="text-[#c4c6d6] text-lg leading-relaxed mb-4">
+          Each pack gives you a pre-configured engram schema, named Recall Recipes for your specific job,
+          workflow templates, and connector configs. No setup from scratch.
+        </p>
+        <p class="text-[#c4c6d6] text-base">
+          One-time purchase. Yours forever. Works with the free Graphnosis download.
+        </p>
+      </div>
+    </section>
+
+    <!-- Pack grid -->
+    <section class="pb-24 px-4 sm:px-6">
+      <div class="max-w-7xl mx-auto">
+        <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+          {packs.map((pack) => (
+            <article
+              class="bg-[#1c1c27] border border-[#2a2a3d] rounded-2xl p-7 flex flex-col gap-5 relative"
+              style={`border-color: ${pack.color}22;`}
+            >
+              {pack.badge && (
+                <div
+                  class="absolute -top-3 left-6 text-xs font-black tracking-widest uppercase px-3 py-1 rounded-full text-[#13131a]"
+                  style={`background: ${pack.color};`}
+                >
+                  {pack.badge}
+                </div>
+              )}
+
+              <!-- Header -->
+              <div>
+                <p
+                  class="text-xs font-black tracking-widest uppercase mb-1"
+                  style={`color: ${pack.color};`}
+                >
+                  {pack.tagline}
+                </p>
+                <h2 class="text-xl font-black text-white">{pack.name}</h2>
+              </div>
+
+              <!-- Skills -->
+              <ul class="flex flex-col gap-2.5">
+                {pack.skills.map((skill) => (
+                  <li class="flex items-start gap-2.5 text-sm text-[#c4c6d6]">
+                    <span
+                      class="mt-0.5 w-4 h-4 shrink-0 rounded-full flex items-center justify-center"
+                      style={`background: ${pack.color}22; border: 1px solid ${pack.color}44;`}
+                    >
+                      <svg class="w-2.5 h-2.5" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24" aria-hidden="true" style={`color: ${pack.color};`}>
+                        <path stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4L19 7" />
+                      </svg>
+                    </span>
+                    <span>{skill}</span>
+                  </li>
+                ))}
+              </ul>
+
+              <!-- Includes -->
+              <div class="border-t border-[#2a2a3d] pt-4">
+                <p class="text-xs font-semibold tracking-widest uppercase text-[#52525b] mb-2">Includes</p>
+                <ul class="flex flex-col gap-1">
+                  {pack.includes.map((item) => (
+                    <li class="text-xs text-[#c4c6d6] flex items-center gap-2">
+                      <span class="text-[#2a2a3d]">—</span>
+                      {item}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+
+              <!-- Price + CTA -->
+              <div class="mt-auto pt-2 flex items-center justify-between gap-4">
+                <span class="text-3xl font-black text-white">${pack.price}</span>
+                <a
+                  href={pack.stripeUrl}
+                  class="flex-1 inline-flex items-center justify-center gap-2 px-5 py-3 rounded-full font-bold text-sm transition-colors text-[#13131a]"
+                  style={`background: ${pack.color};`}
+                >
+                  Get pack
+                  <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24" aria-hidden="true">
+                    <path stroke-linecap="round" stroke-linejoin="round" d="M17 8l4 4m0 0l-4 4m4-4H3" />
+                  </svg>
+                </a>
+              </div>
+            </article>
+          ))}
+        </div>
+
+        <!-- Bundle CTA -->
+        <div class="mt-12 bg-[#1c1c27] border border-[#2a2a3d] rounded-2xl p-8 text-center"
+             style="border-color: #67e8f922; background: linear-gradient(135deg, #0b1a1e 0%, #13101f 100%);">
+          <p class="text-xs font-black tracking-widest uppercase text-[#67e8f9] mb-2">All 6 packs</p>
+          <h2 class="text-3xl font-black text-white mb-3">The Full Bundle</h2>
+          <p class="text-[#c4c6d6] mb-6 max-w-lg mx-auto">
+            All six packs at a discount. Useful if you work across domains — or if you're building tools for a team with mixed roles.
+          </p>
+          <div class="flex items-center justify-center gap-6">
+            <div class="text-center">
+              <p class="text-sm text-[#52525b] line-through">${packs.reduce((s, p) => s + p.price, 0)}</p>
+              <p class="text-4xl font-black text-white">${bundlePrice}</p>
+            </div>
+            <a
+              href={bundleUrl}
+              class="inline-flex items-center gap-2 px-8 py-4 rounded-full bg-[#67e8f9] hover:bg-[#4dd6e8] text-[#13131a] font-bold text-lg transition-colors shadow-lg shadow-[#67e8f9]/20"
+            >
+              Get all 6 packs
+              <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24" aria-hidden="true">
+                <path stroke-linecap="round" stroke-linejoin="round" d="M17 8l4 4m0 0l-4 4m4-4H3" />
+              </svg>
+            </a>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- FAQ -->
+    <section class="pb-24 px-4 sm:px-6">
+      <div class="max-w-3xl mx-auto">
+        <h2 class="text-2xl font-black text-white mb-8">Frequently asked</h2>
+        <div class="flex flex-col gap-6">
+          {[
+            {
+              q: 'What exactly is a template pack?',
+              a: 'A pre-configured starting point for Graphnosis memory in your specific domain. Each pack includes: (1) an engram schema — which engrams to create and at what sensitivity tier; (2) named Recall Recipes — the exact query patterns and tool sequences to use before and after key professional actions; (3) workflow templates for n8n, Python, or Claude; and (4) connector configs for the tools most common in your profession.',
+            },
+            {
+              q: 'Do I need to buy a pack to use Graphnosis?',
+              a: 'No. Graphnosis is free to download and use. Packs are optional accelerators — they save you the setup time of figuring out the right engram structure and recall patterns for your job. You can build everything in a pack yourself; the pack just means you don\'t have to.',
+            },
+            {
+              q: 'What do I get after purchase?',
+              a: 'A ZIP containing: the engram schema JSON (importable directly into Graphnosis), a Recall Recipes markdown file (formatted for CLAUDE.md / AGENTS.md), workflow templates, and a setup guide. Delivered immediately via Stripe after payment.',
+            },
+            {
+              q: 'Can I use a pack on multiple machines / for a team?',
+              a: 'Each purchase is a single-user license. For team deployments — where multiple people import the same schema — contact us for a team license.',
+            },
+            {
+              q: 'My profession isn\'t listed. Can I request one?',
+              a: 'Yes. Email templates@graphnosis.com with your profession and the 3–4 most common AI tasks you use for your work. We\'ll either build it or point you to the closest existing pack.',
+            },
+          ].map((item) => (
+            <div class="border-b border-[#2a2a3d] pb-6">
+              <h3 class="text-base font-bold text-white mb-2">{item.q}</h3>
+              <p class="text-[#c4c6d6] text-base leading-relaxed">{item.a}</p>
+            </div>
+          ))}
+        </div>
+      </div>
+    </section>
+
+  </main>
+  <Footer />
+</Layout>
