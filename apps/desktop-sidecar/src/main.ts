@@ -782,18 +782,18 @@ async function main(): Promise<void> {
   });
   console.error(`[graphnosis-sidecar] IPC listening on ${ipcSocketPath}`);
 
-  // Fire background engram load — intentionally not awaited so the sidecar
-  // is immediately usable on the default engram. broadcastRaw is live here,
-  // so the UI receives incremental progress events as each graph finishes.
-  // Brain engine starts AFTER all engrams are loaded so its self-scan and
-  // LLM passes don't compete with the embed workers during the startup burst.
-  void (async () => {
-    await loadAllGraphsFromDisk(host, env.cortexDir, env.defaultGraph, broadcastRaw);
-    await backfillGraphMetadata(host);
-    // Single oplog read for all engrams — far cheaper than one read per engram.
-    void host.refreshAllCorrectionsFromOplog();
-    brainEngine.start();
-  })();
+  // Load remaining engrams sequentially and await completion before starting
+  // any background machinery. The default engram is already in memory (loaded
+  // above), so IPC remains responsive throughout. broadcastRaw fires incremental
+  // progress events so the UI can show/grey each engram as it becomes ready.
+  // Connectors and the brain engine start only after the full cortex is in
+  // memory — avoids ingest races on not-yet-loaded engrams and keeps startup
+  // sequencing predictable.
+  await loadAllGraphsFromDisk(host, env.cortexDir, env.defaultGraph, broadcastRaw);
+  await backfillGraphMetadata(host);
+  // Single oplog read for all engrams — far cheaper than one read per engram.
+  void host.refreshAllCorrectionsFromOplog();
+  brainEngine.start();
 
   await connectorManager.start();
 
