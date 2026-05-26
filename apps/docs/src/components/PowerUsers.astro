@@ -136,7 +136,7 @@
     <div class="mb-12">
       <h3 class="text-lg font-bold text-white mb-2">What AI clients can do with Graphnosis</h3>
       <p class="text-[#c4c6d6] text-sm mb-8">
-        All <span class="text-[#f0f0f5] font-semibold">34 MCP tools</span> across 9 functional categories. The deterministic + approximate sets work out of the box;
+        All <span class="text-[#f0f0f5] font-semibold">35 MCP tools</span> across 9 functional categories. The deterministic + approximate sets work out of the box;
         the conditional and non-deterministic sets use the optional local LLM (or Neural Network). Every call is visible in the audit log.
         Click any tool for parameters, return shape, and example prompts.
       </p>
@@ -231,7 +231,7 @@
           determinism: 'Deterministic by default · LLM-aware',
           desc: 'Deterministic when no LLM/GNN is enabled; richer multi-edit diff when they are.',
           tools: [
-            { name: 'correct', desc: 'Propose a structured diff — user-approved before any write' },
+            { name: 'edit', desc: 'Propose a structured diff — correction, update, or append — user-approved before any write' },
           ],
         },
         {
@@ -272,7 +272,7 @@
       ))}
 
       <p class="text-sm text-[#a0a0b8] mt-8">
-        <code class="text-[#67e8f9] font-mono">correct</code> is deterministic by default — it returns a diff for review, and nothing is written until you approve it in the app; the optional Neural Network or local LLM can widen it. <code class="text-[#67e8f9] font-mono">forget</code> is a soft delete — nodes stay recoverable from the op-log. Full reference: <a href="/reference/mcp-tools" class="text-[#67e8f9] hover:underline">/reference/mcp-tools</a>.
+        <code class="text-[#67e8f9] font-mono">edit</code> is deterministic by default — it returns a diff for review, and nothing is written until you approve it in the app; the optional Neural Network or local LLM can widen it. <code class="text-[#67e8f9] font-mono">forget</code> is a soft delete — nodes stay recoverable from the op-log. Full reference: <a href="/reference/mcp-tools" class="text-[#67e8f9] hover:underline">/reference/mcp-tools</a>.
       </p>
     </div>
 
