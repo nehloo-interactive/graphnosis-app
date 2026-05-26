@@ -2543,7 +2543,7 @@ async fn run_update_check(app: AppHandle) -> anyhow::Result<Option<String>> {
             let result = mac_notification_sys::Notification::new()
                 .title("Graphnosis Update Available")
                 .message(&format!(
-                    "Version {} is ready. Click to install.",
+                    "Graphnosis {} is ready to install. Click to open and install.",
                     version_str
                 ))
                 .wait_for_click(true)
@@ -2553,6 +2553,10 @@ async fn run_update_check(app: AppHandle) -> anyhow::Result<Option<String>> {
                     let _ = win.show();
                     let _ = win.set_focus();
                 }
+                // Re-emit so the in-app modal appears even if the window was
+                // hidden when the first emit fired (the event would have been
+                // delivered to a hidden webview and the listener missed it).
+                let _ = app_clone.emit("graphnosis://update-available", version_str.clone());
             }
         });
     }
