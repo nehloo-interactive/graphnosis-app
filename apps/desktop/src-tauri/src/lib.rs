@@ -2779,6 +2779,7 @@ pub fn run() {
             // hidden: bring the main window back to the front. macOS fires
             // `Reopen` when the app is already running and the user activates
             // it via the Dock or the application switcher.
+            #[cfg(target_os = "macos")]
             if let tauri::RunEvent::Reopen { has_visible_windows, .. } = &event {
                 if !has_visible_windows {
                     if let Some(win) = app_handle.get_webview_window("main") {
