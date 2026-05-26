@@ -57,6 +57,9 @@ const { variant = 'consumer' } = Astro.props;
     { text: 'Obsidian · Notion',         color: C.white },
     { text: 'CLAUDE.md · AGENTS.md',     color: C.white },
     { text: 'CURSOR_RULES · GEMINI.md',  color: C.white },
+    { text: 'OPC-UA · Modbus TCP',       color: C.tools },
+    { text: 'SCADA · historians',        color: C.tools },
+    { text: 'MQTT · LoRaWAN',            color: C.tools },
   ];
 
   function addEllipseGraph(svg, isDesktop) {
@@ -232,7 +235,10 @@ const { variant = 'consumer' } = Astro.props;
     var pair = PAIRS[Math.floor(Math.random() * PAIRS.length)];
     var words = pickWords(pair);
     var cortexLine = CORTEX_LINES[Math.floor(Math.random() * CORTEX_LINES.length)];
-    var svg = makeSvg(1000, 410);
+    // tools box grows with number of lines: title at y=262, first line y=282, spacing 14px
+    var toolsBoxH = Math.max(148, 54 + (TOOLS.length - 1) * 14);
+    var svgH = Math.max(410, 243 + toolsBoxH + 20);
+    var svg = makeSvg(1000, svgH);
     var rc = rough.svg(svg);
     var tx = makeTx(svg);
     var amber = makeAmber(svg);
@@ -249,9 +255,9 @@ const { variant = 'consumer' } = Astro.props;
     svg.appendChild(rc.path('M 724 86 C 706 58, 679 110, 662 86', { roughness:1.6, stroke:C.ai, strokeWidth:1.4 }));
     svg.appendChild(rc.polygon([[662,86],[675,79],[673,95]], { roughness:0.6, stroke:C.ai, fill:C.ai, fillStyle:'solid', strokeWidth:1 }));
 
-    svg.appendChild(rc.rectangle(60,  243, 200, 148, { roughness:2.0, stroke:C.tools, strokeWidth:1.4, fill:'#1a1608', fillStyle:'solid' }));
-    svg.appendChild(rc.rectangle(390, 243, 220, 148, { roughness:2.0, stroke:C.ai,    strokeWidth:1.4, fill:'#0f0f1e', fillStyle:'solid' }));
-    svg.appendChild(rc.rectangle(740, 243, 200, 148, { roughness:2.0, stroke:C.ai,    strokeWidth:1.4, fill:'#13101f', fillStyle:'solid' }));
+    svg.appendChild(rc.rectangle(60,  243, 200, toolsBoxH, { roughness:2.0, stroke:C.tools, strokeWidth:1.4, fill:'#1a1608', fillStyle:'solid' }));
+    svg.appendChild(rc.rectangle(390, 243, 220, 148,       { roughness:2.0, stroke:C.ai,    strokeWidth:1.4, fill:'#0f0f1e', fillStyle:'solid' }));
+    svg.appendChild(rc.rectangle(740, 243, 200, 148,       { roughness:2.0, stroke:C.ai,    strokeWidth:1.4, fill:'#13101f', fillStyle:'solid' }));
 
     svg.appendChild(rc.path('M 160 243 C 180 205, 318 170, 385 149', { roughness:1.8, stroke:C.tools, strokeWidth:1.8 }));
     svg.appendChild(rc.polygon([[385,149],[369,158],[377,169]], { roughness:0.6, stroke:C.tools, fill:C.tools, fillStyle:'solid', strokeWidth:1 }));
