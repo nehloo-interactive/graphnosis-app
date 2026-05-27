@@ -854,11 +854,9 @@ const packs: Pack[] = [
         <div class="flex flex-wrap gap-2">
           {categories.map((cat) => (
             <button
-              class="category-chip px-4 py-2 rounded-full text-sm font-semibold border transition-colors whitespace-nowrap"
+              class="category-chip px-4 py-2 rounded-full text-sm font-semibold border whitespace-nowrap"
               data-category={cat.id}
-              style={cat.id === 'all'
-                ? 'background:#67e8f9; color:#13131a; border-color:#67e8f9;'
-                : 'background:transparent; color:#c4c6d6; border-color:#2a2a3d;'}
+              data-active={cat.id === 'all' ? 'true' : undefined}
             >
               {cat.label}
             </button>
@@ -874,7 +872,7 @@ const packs: Pack[] = [
         <!-- Count -->
         <p id="pack-count" class="text-xs text-[#52525b] font-mono mb-6">{packs.length} packs</p>
 
-        <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8" id="pack-grid">
+        <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-12" id="pack-grid">
           {packs.map((pack) => {
             const color = catColor[pack.category] ?? '#67e8f9';
             const searchText = [pack.name, pack.tagline, ...pack.skills].join(' ').toLowerCase();
@@ -929,7 +927,7 @@ const packs: Pack[] = [
                 <!-- What's included -->
                 <div class="border-t border-[#2a2a3d] pt-5 flex flex-col gap-3">
                   <p class="text-xs font-black tracking-widest uppercase text-[#71717a]">This pack will include</p>
-                  <ul class="flex flex-col gap-1.5">
+                  <ul class="flex flex-col gap-2">
                     {[
                       `${pack.skills.length} pre-configured engrams — sensitivity tiers set for your profession, ready to import`,
                       'Named recall patterns guide — the exact query approach for each skill above',
@@ -937,13 +935,13 @@ const packs: Pack[] = [
                       'AI session template — works with Claude, Cursor, Copilot, or any MCP client',
                       'Setup walkthrough — from install to your first recall in one session',
                     ].map(item => (
-                      <li class="flex items-start gap-2 text-xs text-[#71717a]">
-                        <span class="mt-0.5 shrink-0 text-[#3f3f5a]">–</span>
+                      <li class="flex items-start gap-2 text-sm text-[#b0b3c6]">
+                        <span class="mt-0.5 shrink-0 text-[#5a5a7a]">–</span>
                         <span>{item}</span>
                       </li>
                     ))}
                   </ul>
-                  <p class="text-xs text-[#52525b] leading-relaxed pt-1">
+                  <p class="text-sm text-[#9a9db8] leading-relaxed pt-1">
                     Requires the free Graphnosis download — runs entirely on your machine, no cloud, no servers.
                     Your memory stays yours, expandable with any sources you choose.
                   </p>
@@ -1029,9 +1027,87 @@ const packs: Pack[] = [
       </div>
     </section>
 
+    <!-- Verify it yourself -->
+    <section class="pb-24 px-4 sm:px-6">
+      <div class="max-w-3xl mx-auto">
+        <div class="text-center mb-10">
+          <h2 class="text-2xl font-black text-white mb-3">Verify it yourself</h2>
+          <p class="text-[#b0b3c6] text-base leading-relaxed max-w-xl mx-auto">
+            Every claim on this page is checkable. You don't have to take our word for any of it —
+            the source code, the network monitor, and your own passphrase are all the proof you need.
+          </p>
+        </div>
+        <div class="grid grid-cols-1 sm:grid-cols-2 gap-5">
+          {[
+            {
+              title: 'Watch the network',
+              desc: 'Point Little Snitch or Activity Monitor at the app. Your cortex never leaves. Turn Wi-Fi off — recall still works.',
+              href: '/guides/network-activity',
+              label: 'What leaves your device →',
+              color: '#67e8f9',
+            },
+            {
+              title: 'Audit the encryption',
+              desc: 'XChaCha20-Poly1305 + Argon2id. The crypto code is source-available. Your key, not ours.',
+              href: '/guides/indelibility-and-determinism',
+              label: 'Encryption & determinism →',
+              color: '#a78bfa',
+            },
+            {
+              title: 'Understand access controls',
+              desc: 'Sensitivity tiers, consent gates, and the op-log audit trail — how each layer protects your data before any AI sees it.',
+              href: '/guides/ai-access-controls',
+              label: 'How access controls work →',
+              color: '#34d399',
+            },
+            {
+              title: 'Read the source',
+              desc: 'The FSL-licensed source is public. Every architectural claim on this page is checkable line by line.',
+              href: 'https://github.com/nehloo-interactive/graphnosis-app',
+              label: 'Open source on GitHub →',
+              color: '#f59e0b',
+            },
+          ].map(item => (
+            <a
+              href={item.href}
+              class="group bg-[#1c1c27] border border-[#2a2a3d] rounded-2xl p-6 flex flex-col gap-3 hover:border-opacity-60 transition-colors no-underline"
+              style={`border-color: ${item.color}22;`}
+            >
+              <p class="font-black text-white text-base group-hover:underline">{item.title}</p>
+              <p class="text-[#9a9db8] text-sm leading-relaxed flex-1">{item.desc}</p>
+              <span class="text-sm font-mono" style={`color: ${item.color};`}>{item.label}</span>
+            </a>
+          ))}
+        </div>
+      </div>
+    </section>
+
   </main>
   <Footer />
 </Layout>
+
+<style>
+  .category-chip {
+    background: transparent;
+    color: #c4c6d6;
+    border-color: #2a2a3d;
+    transition: color 0.15s ease, border-color 0.15s ease, background 0.15s ease;
+  }
+  .category-chip:hover {
+    color: #f0f0f5;
+    border-color: #67e8f9;
+    background: rgba(103, 232, 249, 0.08);
+  }
+  .category-chip[data-active="true"] {
+    background: #67e8f9;
+    color: #13131a;
+    border-color: #67e8f9;
+  }
+  .category-chip[data-active="true"]:hover {
+    background: #4dd6e8;
+    border-color: #4dd6e8;
+  }
+</style>
 
 <script>
   const chips = document.querySelectorAll<HTMLButtonElement>('.category-chip');
@@ -1060,10 +1136,8 @@ const packs: Pack[] = [
 
   chips.forEach(chip => {
     chip.addEventListener('click', () => {
-      chips.forEach(c => {
-        c.style.cssText = 'background:transparent; color:#c4c6d6; border-color:#2a2a3d;';
-      });
-      chip.style.cssText = 'background:#67e8f9; color:#13131a; border-color:#67e8f9;';
+      chips.forEach(c => c.removeAttribute('data-active'));
+      chip.setAttribute('data-active', 'true');
       activeCategory = chip.dataset.category ?? 'all';
       filter();
     });
