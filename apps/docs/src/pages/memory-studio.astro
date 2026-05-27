@@ -22,12 +22,12 @@ import Footer from '../components/Footer.astro';
 
       <div class="max-w-4xl mx-auto text-center relative z-10">
         <!-- Badge -->
-        <div class="inline-flex items-center gap-2 px-4 py-1.5 rounded-full border border-[#2a2a3d] bg-[#1c1c27] text-sm text-[#c4c6d6] mb-8">
-          <span class="relative flex h-2 w-2">
+        <div class="inline-flex items-center gap-2 px-5 py-2 rounded-full border border-[#2a2a3d] bg-[#1c1c27] text-base font-semibold text-[#c4c6d6] mb-8">
+          <span class="relative flex h-2.5 w-2.5">
             <span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-[#a78bfa] opacity-75"></span>
-            <span class="relative inline-flex rounded-full h-2 w-2 bg-[#a78bfa]"></span>
+            <span class="relative inline-flex rounded-full h-2.5 w-2.5 bg-[#a78bfa]"></span>
           </span>
-          Memory Studio &mdash; Studio tier
+          Memory Studio
         </div>
 
         <!-- Headline -->
@@ -454,6 +454,15 @@ import Footer from '../components/Footer.astro';
                 </div>
               ))}
             </div>
+
+            <!-- Layered memory architecture — canonical layer -->
+            <div class="border-t border-[#2a2a3d] pt-6 mt-6">
+              <p class="text-xs font-mono uppercase tracking-widest text-[#555570] mb-3">Layered memory architecture</p>
+              <div class="flex gap-3">
+                <code class="text-xs font-mono font-bold text-[#67e8f9] bg-[#1c1c27] px-2 py-1 rounded flex-shrink-0 mt-0.5">.gai</code>
+                <p class="text-[#c4c6d6] text-xs leading-relaxed">Your attested canonical memory. Only you change this.</p>
+              </div>
+            </div>
           </div>
 
           <!-- Right: Non-Deterministic Aid -->
@@ -513,7 +522,6 @@ import Footer from '../components/Footer.astro';
               <p class="text-xs font-mono uppercase tracking-widest text-[#555570] mb-3">Layered memory architecture</p>
               <div class="space-y-2">
                 {[
-                  { file: '.gai', color: 'text-[#67e8f9]', desc: 'Your attested canonical memory. Only you change this.' },
                   { file: '.gnn', color: 'text-[#a78bfa]', desc: 'Neural network edge predictions. Reviewed, not automatic.' },
                   { file: '.gll', color: 'text-[#f59e0b]', desc: 'LLM assertions and inferred edges. Always labelled, never merged without approval.' },
                 ].map(({ file, color, desc }) => (
