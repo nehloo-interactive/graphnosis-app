@@ -1292,7 +1292,7 @@ function render(status: StatusSnapshot): void {
       startMcpPolling();
       void refreshBrainState();
       void refreshLlmStatus().then(() => void loadSearchLlmPreferences().then(syncSearchLlmCheckboxes));
-      void loadStudioSubscriptionState();
+      void loadStudioSubscriptionState().then(() => showStudioIntroModal());
       void (async () => {
         try {
           const s = (await invoke('get_settings')) as AppSettings;
@@ -14983,6 +14983,42 @@ function populateStudioEngramSelects(): void {
     if (el) el.innerHTML = singleOptions;
   }
 }
+
+// ── Startup intro modal ─────────────────────────────────────────────────────
+
+const STUDIO_INTRO_DISMISSED_KEY = 'graphnosis.studioIntroDismissed';
+
+function showStudioIntroModal(): void {
+  if (localStorage.getItem(STUDIO_INTRO_DISMISSED_KEY) === '1') return;
+  document.getElementById('studio-intro-modal')?.classList.remove('hidden');
+}
+
+function hideStudioIntroModal(): void {
+  document.getElementById('studio-intro-modal')?.classList.add('hidden');
+}
+
+document.getElementById('btn-studio-intro-upgrade')?.addEventListener('click', () => {
+  hideStudioIntroModal();
+  void invoke('open_url', { url: 'https://graphnosis.app/pricing' });
+});
+
+document.getElementById('btn-studio-intro-close')?.addEventListener('click', () => {
+  hideStudioIntroModal();
+});
+
+document.getElementById('chk-studio-intro-dismiss')?.addEventListener('change', (e) => {
+  if ((e.target as HTMLInputElement).checked) {
+    localStorage.setItem(STUDIO_INTRO_DISMISSED_KEY, '1');
+    hideStudioIntroModal();
+  } else {
+    localStorage.removeItem(STUDIO_INTRO_DISMISSED_KEY);
+  }
+});
+
+// Click outside the card to close (without dismissing permanently)
+document.getElementById('studio-intro-modal')?.addEventListener('click', (e) => {
+  if (e.target === e.currentTarget) hideStudioIntroModal();
+});
 
 // ── Paywall buttons ─────────────────────────────────────────────────────────
 
