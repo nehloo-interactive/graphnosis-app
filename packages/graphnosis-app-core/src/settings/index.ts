@@ -481,6 +481,8 @@ export type GraphTemplate =
   | 'research'
   | 'codebase'
   | 'health'
+  // Power tier — skill training (monthly upgrades subscribers)
+  | 'skill'
   // Enterprise tier
   | 'team'
   | 'compliance'
@@ -1290,7 +1292,7 @@ function generateUuid(): string {
  */
 export function shouldCache(
   settings: AppSettings,
-  kind: 'file' | 'url' | 'ai-conversation' | 'clip',
+  kind: 'file' | 'url' | 'ai-conversation' | 'clip' | 'skill',
   byteLength: number,
 ): boolean {
   const cc = settings.contentCache;
