@@ -1583,13 +1583,13 @@ const complianceGroups: ComplianceGroup[] = [
         </div>
 
         <!-- Table -->
-        <div class="overflow-x-auto rounded-2xl border border-[#2a2a3d]">
-          <table class="w-full text-sm border-collapse">
-            <thead>
+        <div class="overflow-x-auto rounded-2xl border border-[#2a2a3d]" id="compliance-table-wrap">
+          <table class="w-full text-sm border-collapse" id="compliance-table">
+            <thead id="compliance-thead">
               <tr class="bg-[#1c1c27] border-b border-[#2a2a3d]">
                 <th class="text-left px-5 py-4 text-[#71717a] font-semibold w-2/5">Regulation</th>
                 <th class="text-center px-4 py-4 font-semibold" style="color:#67e8f9;">
-                  Memory Studio<br /><span class="text-xs text-[#52525b] font-normal">local only · no AI</span>
+                  Graphnosis Memory Studio<br /><span class="text-xs text-[#52525b] font-normal">local only · no AI</span>
                 </th>
                 <th class="text-center px-4 py-4 font-semibold" style="color:#a78bfa;">
                   Local AI + Graphnosis<br /><span class="text-xs text-[#52525b] font-normal">Ollama · air-gapped</span>
@@ -1636,12 +1636,12 @@ const complianceGroups: ComplianceGroup[] = [
         </div>
 
         <!-- Footnotes -->
-        <div class="mt-6 max-w-4xl mx-auto flex flex-col gap-1.5 text-xs text-[#52525b]">
+        <div class="mt-6 max-w-4xl mx-auto flex flex-col gap-2 text-sm text-[#9a9db8]">
           <p>¹ Requires a Business Associate Agreement (BAA) with your cloud AI provider. Anthropic Enterprise and OpenAI Enterprise offer BAAs.</p>
           <p>² Requires a Data Processing Agreement (DPA) with your cloud AI provider.</p>
           <p>³ A small recall excerpt reaches the cloud provider's infrastructure. Legal review recommended for your specific context.</p>
           <p>⁴ Compatibility depends on your cloud AI provider's own certifications for the relevant standard.</p>
-          <p class="mt-2 text-[#3a3a52] italic">This matrix is informational only and does not constitute legal advice. Consult your compliance officer for your specific context.</p>
+          <p class="mt-2 text-[#71717a] italic">This matrix is informational only and does not constitute legal advice. Consult your compliance officer for your specific context.</p>
         </div>
 
       </div>
@@ -1851,4 +1851,73 @@ const complianceGroups: ComplianceGroup[] = [
   });
 
   search.addEventListener('input', filter);
+
+  // ── Compliance table sticky header ───────────────────────────────────────
+  // overflow-x:auto breaks CSS sticky relative to viewport, so we use a
+  // JS-driven fixed clone that appears when the original thead scrolls out of
+  // view and disappears once the table bottom leaves the sticky threshold.
+  (function () {
+    const table    = document.getElementById('compliance-table') as HTMLTableElement | null;
+    const thead    = document.getElementById('compliance-thead') as HTMLElement | null;
+    const wrap     = document.getElementById('compliance-table-wrap') as HTMLElement | null;
+    if (!table || !thead || !wrap) return;
+
+    // Build a fixed-position clone of the thead row
+    const cloneWrap = document.createElement('div');
+    cloneWrap.style.cssText = [
+      'position:fixed',
+      'left:0',
+      'right:0',
+      'z-index:45',
+      'display:none',
+      'background:#1c1c27',
+      'border-bottom:1px solid #2a2a3d',
+      'box-shadow:0 4px 12px rgba(0,0,0,0.4)',
+    ].join(';');
+
+    const cloneInner = document.createElement('div');
+    cloneInner.style.cssText = 'max-width:80rem;margin:0 auto;overflow:hidden;';
+
+    const cloneTable = document.createElement('table');
+    cloneTable.style.cssText = 'width:100%;border-collapse:collapse;table-layout:fixed;';
+
+    const cloneThead = thead.cloneNode(true) as HTMLElement;
+    cloneTable.appendChild(cloneThead);
+    cloneInner.appendChild(cloneTable);
+    cloneWrap.appendChild(cloneInner);
+    document.body.appendChild(cloneWrap);
+
+    function stickyOffset(): number {
+      const fb = document.getElementById('filter-bar');
+      return 64 + (fb ? fb.getBoundingClientRect().height : 74);
+    }
+
+    function syncColumnWidths() {
+      const origCells  = thead.querySelectorAll<HTMLElement>('th');
+      const cloneCells = cloneThead.querySelectorAll<HTMLElement>('th');
+      origCells.forEach((cell, i) => {
+        if (cloneCells[i]) cloneCells[i].style.width = cell.getBoundingClientRect().width + 'px';
+      });
+      cloneTable.style.width = table.getBoundingClientRect().width + 'px';
+    }
+
+    function update() {
+      const offset     = stickyOffset();
+      const theadRect  = thead.getBoundingClientRect();
+      const tableRect  = table.getBoundingClientRect();
+      // Show clone when original thead top has scrolled above the offset line
+      // AND the table bottom is still below it (table still on screen)
+      const show = theadRect.bottom < offset && tableRect.bottom > offset + 40;
+      if (show) {
+        cloneWrap.style.top     = offset + 'px';
+        cloneWrap.style.display = 'block';
+        syncColumnWidths();
+      } else {
+        cloneWrap.style.display = 'none';
+      }
+    }
+
+    window.addEventListener('scroll', update, { passive: true });
+    window.addEventListener('resize', () => { syncColumnWidths(); update(); }, { passive: true });
+  })();
 </script>
