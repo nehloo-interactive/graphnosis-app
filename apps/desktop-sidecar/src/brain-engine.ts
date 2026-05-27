@@ -267,6 +267,9 @@ export class BrainEngine {
   // in the Check-in deck, not the Autonomous Brain tab.
   private duplicatePairs: DuplicatePair[] = [];
   private insights: Insight[] = [];
+  /** Flips true once loadInsights() resolves so runInsight() knows the
+   *  in-memory list is ready to merge into (not overwrite). */
+  private insightsLoaded = false;
 
   // The autonomous-healing audit log. Every safe auto-merge appends a
   // record here; persisted to <cortex>/healing-journal.enc. Loaded once
@@ -346,6 +349,18 @@ export class BrainEngine {
       .catch((e) => {
         console.error(`[brain] healing journal load failed: ${(e as Error).message}`);
         this.healingJournalLoaded = true; // proceed with an empty journal
+      });
+
+    // Load persisted insights off-disk (fire-and-forget). The first
+    // runInsight() is deferred 6 h from boot, so this has ample time to
+    // complete. `insightsLoaded` gates any runInsight() that somehow runs
+    // sooner (e.g. a manual "Scan now") against a race that would wipe the
+    // persisted list before merging new ones in.
+    void this.host.loadInsights<Insight>()
+      .then((saved) => { this.insights = saved; this.insightsLoaded = true; })
+      .catch((e) => {
+        console.error(`[brain] insights load failed: ${(e as Error).message}`);
+        this.insightsLoaded = true; // proceed with empty list
       });
 
     // Load the predictive association index off disk (fire-and-forget).
@@ -550,7 +565,14 @@ export class BrainEngine {
 
   dismissInsight(id: string): void {
     const ins = this.insights.find(i => i.id === id);
-    if (ins) ins.dismissed = true;
+    if (!ins) return;
+    ins.dismissed = true;
+    // Persist immediately — dismissed state must survive the next restart so
+    // the user never sees a card they already dismissed come back.
+    const toSave = this.insights.filter(i => !i.dismissed);
+    void this.host.saveInsights(toSave).catch((e) => {
+      console.error(`[brain] failed to save insights after dismiss: ${(e as Error).message}`);
+    });
   }
 
   dismissDuplicatePair(id: string): void {
@@ -746,11 +768,13 @@ export class BrainEngine {
   getNeuralNetworkStatus(): {
     enabled: boolean;
     gnnEdgeCount: number;
+    isRunning: boolean;
     lastRun: { at: number; edgesAdded: number; edgesPruned: number } | null;
   } {
     return {
       enabled: this.host.getSettings().brain?.neuralNetwork?.enabled === true,
       gnnEdgeCount: this.reinforcement.countGnnEdges(),
+      isRunning: this.reinforcement.gnnRunning,
       lastRun: this.reinforcement.lastNeuralNetwork,
     };
   }
@@ -1495,6 +1519,17 @@ export class BrainEngine {
     if (!this.llm) return;
     if (!(await this.pingLlm())) return;
 
+    // Wait until the boot load has settled so we don't overwrite persisted
+    // insights with an empty in-memory list. In practice the 6-hour first-run
+    // delay makes this a no-op, but defensive against manual "Scan now" fires.
+    if (!this.insightsLoaded) {
+      await new Promise<void>((resolve) => {
+        const poll = setInterval(() => {
+          if (this.insightsLoaded) { clearInterval(poll); resolve(); }
+        }, 50);
+      });
+    }
+
     this.emitActivity('insight', 'start');
     // Same bail-on-consecutive-timeouts pattern as runSynapse. Insight
     // sends long prompts (30 nodes × ~200 chars) so it's the most likely
@@ -1570,6 +1605,10 @@ export class BrainEngine {
 
     await this.persistLastRun('insight');
     await this.persistInsightCount(pendingCount);
+    // Persist the full insight list so they survive app restarts.
+    await this.host.saveInsights(this.insights).catch((e) => {
+      console.error(`[brain] failed to save insights: ${(e as Error).message}`);
+    });
     this.emitActivity('insight', 'done');
 
     if (pendingCount > 0) {

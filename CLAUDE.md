@@ -114,3 +114,10 @@ dev terminal — real stack traces show up there.
 - Don't add new runtime dependencies without flagging the cost
 - Don't auto-fix linter warnings that aren't blocking the build — they
   often reveal real things
+- **Don't change the dark-mode palette** in
+  `apps/desktop/src/theme-tokens.css`. The `:root[data-theme="dark"]`
+  block AND the `@media (prefers-color-scheme: dark)` auto-fallback block
+  are the canonical Graphnosis appearance and are locked. A backup lives
+  at `apps/desktop/src/theme-tokens.backup.css`. Light mode is fair game
+  for design iteration; dark mode is not. If a real bug forces a dark-mode
+  change, get explicit confirmation first.

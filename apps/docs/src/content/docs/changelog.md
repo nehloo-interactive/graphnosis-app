@@ -11,6 +11,68 @@ Conventions: **Added** = new features, **Changed** = behavior or UX shifts, **Fi
 
 ---
 
+## v1.11.1 — Startup reliability and status bar polish
+
+Patch release fixing issues found in installed v1.11.0 builds.
+
+### Fixed
+
+- **All engrams are fully loaded before any background process starts.** Connectors (RSS, GitHub, Slack, etc.) and the brain engine now wait for the complete cortex to be in memory before they begin. Previously, connectors could fire ingest jobs on engrams that hadn't finished decrypting yet, causing partial writes and the greyed-out engrams visible in the picker until the load caught up.
+- **Update notification "OK" now opens the in-app install modal.** Clicking OK on the macOS system notification did nothing if Graphnosis was minimised or hidden — the event was delivered to a hidden webview and the listener never fired. The click handler now brings the window forward and re-emits the event so the Install modal appears reliably.
+- **CI release: DMG located dynamically instead of by hardcoded filename.** The release workflow now finds whatever DMG Tauri produces (arch suffix varies by runner) rather than assuming `_aarch64.dmg`. Fixes the v1.11.1 CI failure where the build produced the DMG at the correct path but the step couldn't find it because the package version was mismatched.
+- **Status bar items right-aligned reliably.** Version, Vitality, GLL, GNN, and the MCP client indicator are now wrapped in a single flex container with `margin-left:auto`, replacing a fragile empty-span spacer approach that left the items drifting at intermediate positions on some window widths.
+- **Offline source categories added to landing page.** The "Auto-ingest from the tools you already use" section on graphnosis.com now lists the full range of off-the-grid sources — smart home, IoT sensors, local networks, research instruments, personal agents, robotics, agriculture — with a link to the step-by-step recipes guide.
+
+---
+
+## v1.11.0 — Overlay recall, LLM capability split, and UI redesign
+
+### Added
+
+- **`dig_deeper` MCP tool.** New escalation tool for queries that `recall` can't fully answer — it searches harder, crosses engram boundaries, and tells your AI which strategy found each result. AI clients should call it before reporting "nothing found." See [MCP Tools](/reference/mcp-tools/#dig_deeper).
+- **Inferred layer in recall responses.** When overlay engines are running, recall results now include a clearly-labelled inferred section — predictions from the neural network and the local LLM, kept visually separate from your attested memory so you always know what's real versus what's suggested.
+- **AI now flags thin or lopsided recalls.** Eight core tools surface a heads-up when a recall looks suspiciously narrow — too few results for what was asked, or one engram drowning out all the others — so you know to prompt your AI to look harder.
+- **Source-filename hint in recall.** When a query matches a source filename but not the nodes inside it, `recall` names the source so your AI can follow up instead of stopping at "nothing found."
+- **LLM capability split.** The Non-Deterministic Aid panel now has five independently-toggleable switches instead of a single on/off: **Recall enrichment**, **Correction parsing**, **Distillation**, **Insights & predictions**, and **Edge prediction**. All off by default, all on-device.
+- **Edge prediction loop.** With Edge prediction enabled, a background process periodically finds memory pairs that look related but aren't yet connected, proposes a link, and queues it for your review in the Graphnosis Local Layer (.GLL) section of the Non-Deterministic Aid tab.
+- **Full light-mode palette.** The app now has a complete, designed light theme. Dark mode is unchanged.
+- **Overlay engine indicators in the status bar.** Two small pills — turquoise for the Local LLM, purple for the Neural Network — sit beside the MCP client indicator, dimmed when the engine is idle and pulsing when it's active.
+- **⌘F global search shortcut.** Pressing ⌘F from anywhere in the app jumps to the search input.
+- **3D atlas: grab-to-rotate, ⌘-drag-to-move.** Plain drag now rotates the graph like a globe. ⌘-held switches back to per-node repositioning.
+- **Lock screen cortex-missing notice.** If the last-used cortex folder has been moved, renamed, or is on an unmounted drive, the lock screen tells you before you try to unlock.
+- **Browse… buttons for Obsidian and GBrain connectors.** Folder picker in each connector's setup modal — no more manual path typing.
+- **Privacy notice on all connector forms.** Every connector now shows a one-line local-first reminder: credentials stay on your device, encrypted alongside your cortex.
+- **Network activity guide.** New guide covering what Graphnosis connects to, why, and how to verify it yourself. See [Network activity](/guides/network-activity/).
+- **Purge All in Cortex Management.** When two or more engrams have forgotten nodes, a single **Purge All** button clears them all in one step.
+- **Windows: full sidecar + relay support.** The bundled binaries now work on Windows, and the in-app **Configure Claude Desktop / Claude Code / Cursor** flows support Windows paths and config locations.
+- **Search bar shows which engram you're searching.** The stats line below the search input now reads "Coding · 4 matches for 'sensors'" so you always know which engram produced the results.
+- **Semantic search tells you when results are off-topic.** If the embedding search returns results that don't actually contain your search terms, the stats line now says so explicitly: "No match for 'sensors' — showing 30 nearest (may not be relevant)." Previously those results silently appeared and looked like real matches.
+- **Engram picker updates in real time as each engram loads.** Previously all pending engrams turned active at the same moment (when the last one finished). Now each one becomes clickable the moment it's ready.
+- **Startup is significantly faster for large cortexes.** Engrams are available for search and recall the moment each one finishes loading, instead of all at once at the end. Cortexes with many engrams that previously took 30–40 seconds to become responsive are now usable in a few seconds.
+
+### Changed
+
+- **35 MCP tools.** `dig_deeper` joins the Core memory group — up from 34.
+- **`correct` renamed to `edit`.** The tool now covers three situations: correcting a factual error, updating outdated content, and appending new detail to an existing memory. The old name `correct` still works as a backward-compatible alias — existing AI clients don't need a session restart.
+- **Vitality no longer resets on every boot.** The score you left with is what you see on the next unlock, not an inflated placeholder while the first background scan runs.
+- **Status bar layout.** Overlay engine pills and the MCP client indicator are now pushed to the far right, leaving the left side clear for the theme toggle and cortex path. The ⌘K search chip is gone — ⌘F handles it.
+- **Clicking the MCP indicator opens the Status page.**
+- **Predicted edges hidden by default in the 3D atlas.** The overlay edges no longer appear unless you turn them on — the canonical view stays clean.
+- **Recall audit footer no longer lists every engram.** Only engrams that contributed results appear in the footer; the rest are summarised as a count. Previously all engram names — including sensitive ones — were listed on every recall.
+- **Engram scoping in recall now works regardless of how your AI formats the parameter.** `only_engrams` and `except_engrams` accept a list, a JSON-encoded string, or a bare name — all three were previously handled inconsistently.
+
+### Fixed
+
+- **Vitality 97 → 75 drop on boot.** Vitality now persists across sessions.
+- **Interrupted shutdown left cortex in a broken state.** A force-quit or crash during a graph save used to require manually triggering "Recover from op-log" in Settings. Graphnosis now self-heals on the next launch and shows a toast with the recovery count.
+- **Error banners appeared on the lock screen.** They now only show inside the authenticated app.
+- **Recall missed memories with accented characters.** "Stefan" and "Ștefan", "resume" and "résumé" — diacritic variants now match each other in entity search. Your stored text is unchanged.
+- **Graphnosis no longer pegs CPU when Ollama is unresponsive.** The connection now times out and backs off cleanly.
+- **Connectors no longer write to archived engrams.** Previously an archived engram could still receive connector updates (RSS feeds, GitHub, etc.), which caused a quarantine loop on the next boot. Connectors now skip archived targets entirely.
+- **Closing Graphnosis unexpectedly no longer leaves the sidecar running in the background.** A crash or force-quit now also terminates the background process, preventing a stale sidecar from blocking the next launch.
+
+---
+
 ## v0.10.1 — Boot stability and UI polish
 
 Patch release fixing issues found in installed v0.10.0 DMGs.

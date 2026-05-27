@@ -1,0 +1,330 @@
+/* ============================================================================
+ * Graphnosis — Theme Tokens
+ * ----------------------------------------------------------------------------
+ * Generated 2026-05-25 from a sweep of every hardcoded color value in
+ * apps/desktop/index.html (138 unique values across ~226 occurrences).
+ *
+ * GOAL: Take every color out of the inline component styles and put it
+ * behind a named token. That way:
+ *   - light mode can override what currently looks "off"
+ *   - dark mode stays exactly as it is today (no visual regressions)
+ *   - future palette tweaks happen in ONE place, not 200
+ *
+ * STATUS:
+ *   - The :root[data-theme="dark"] block below preserves the CURRENT
+ *     dark-mode appearance verbatim — every value here is exactly what
+ *     index.html ships today, just hoisted into a named token.
+ *   - The :root[data-theme="light"] block proposes light-mode overrides
+ *     marked /* TUNE */ /* — those are first-pass guesses Nelu should
+ *     /* review and adjust. Where a token is the same in both themes
+ *     /* (brand hues, etc.) the override is omitted.
+ *   - The auto block (no data-theme attr) mirrors dark when the OS is
+ *     in dark mode — same fallback as the rest of the app.
+ *
+ * NAMING:
+ *   --color-{role}-{variant}   e.g. --color-brand-turquoise,
+ *                                    --color-brand-turquoise-soft,
+ *                                    --color-status-ok-soft
+ *   --color-overlay-{strength} for scrims/shadows
+ *   --color-edge-{semantic}    for graph-edge categories (atlas)
+ *
+ * Tokens already defined elsewhere (the original short --bg / --fg /
+ * --accent etc. from index.html's :root) are KEPT as aliases that
+ * point at the new long-form tokens — so existing rules keep working.
+ * ==========================================================================*/
+
+:root,
+:root[data-theme="light"] {
+  color-scheme: light;
+
+  /* ── Brand ────────────────────────────────────────────────────────────── */
+  /* Brand reference colors (per Nelu, 2026-05):
+     - Cyan-300 #67e8f9 is THE Graphnosis turquoise (wordmark "ind…").
+     - Violet-400 #a78bfa is THE Graphnosis purple (wordmark "…all").
+     Light mode uses the SAME hue families but DEEPER shades (cyan-600 /
+     violet-600) so 14px text meets WCAG AA on white. The bright brand
+     hues themselves appear as soft accent tints / pale highlights. */
+  /* Turquoise (cyan family) — canonical memory / primary actions */
+  --color-brand-turquoise:        #0891b2;  /* cyan-600 — AA on white */
+  --color-brand-turquoise-soft:   #cffafe;  /* cyan-100, bg tint */
+  --color-brand-turquoise-mid:    #0e7490;  /* cyan-700, deeper for borders */
+  --color-brand-turquoise-bright: #06b6d4;  /* cyan-500, mid-saturation accent */
+  --color-brand-turquoise-pale:   #67e8f9;  /* cyan-300 — the brand cyan as pale accent */
+  /* Purple (violet family) — AI-augmented surfaces (GNN/GLL, Synthesize, Local LLM) */
+  --color-brand-purple:           #7c3aed;  /* violet-600 — AA on white */
+  --color-brand-purple-soft:      #ede9fe;  /* violet-100, bg tint */
+  --color-brand-purple-bright:    #8b5cf6;  /* violet-500 */
+  --color-brand-purple-warm:      #a78bfa;  /* violet-400 — the brand purple as soft accent */
+
+  /* ── Surfaces ─────────────────────────────────────────────────────────── */
+  --color-bg:              #fafaf9;  /* TUNE — warm off-white */
+  --color-bg-elev:         #ffffff;  /* TUNE — cards lift UP from bg */
+  --color-surface-2:       #f4f4f3;  /* TUNE — subtle inner panels */
+  --color-surface-deep:    #f4f4f3;  /* TUNE — was #0f2028 in dark (tour bg) */
+  --color-surface-card:    #ffffff;  /* TUNE — was #1c1c1e in dark (dark cards) */
+  --color-surface-inverse: #18181b;  /* TUNE — for elements that stay dark */
+
+  /* ── Foreground ───────────────────────────────────────────────────────── */
+  --color-fg:           #18181b;
+  --color-fg-dim:       #52525b;
+  --color-fg-muted:     #6b7280;  /* TUNE — mid-gray for secondary labels */
+  --color-fg-faint:     #a1a1aa;
+  --color-fg-on-dark:   #ededed;  /* TUNE — text on dark inverse surfaces */
+  --color-fg-on-accent: #ffffff;  /* text on accent fills */
+
+  /* ── Borders ──────────────────────────────────────────────────────────── */
+  --color-border:        rgba(0, 0, 0, 0.10);
+  --color-border-strong: rgba(0, 0, 0, 0.18);
+  --color-border-faint:  rgba(0, 0, 0, 0.04);
+
+  /* ── Overlays / scrims / shadows ──────────────────────────────────────── */
+  --color-overlay-light:    rgba(0, 0, 0, 0.04);
+  --color-overlay-medium:   rgba(0, 0, 0, 0.10);
+  --color-overlay-strong:   rgba(0, 0, 0, 0.18);
+  --color-overlay-heavy:    rgba(0, 0, 0, 0.30);
+  --color-modal-scrim:      rgba(0, 0, 0, 0.35);    /* TUNE */
+  --color-modal-scrim-deep: rgba(0, 0, 0, 0.55);    /* TUNE — was rgba(10,12,18,0.55) */
+  --color-tooltip-bg:       rgba(17, 20, 29, 0.95); /* TUNE — was rgba(17,20,29,0.78) */
+
+  /* ── Status: OK / success / done ──────────────────────────────────────── */
+  --color-status-ok:        #15803d;  /* green-700 — AA on white */
+  --color-status-ok-soft:   #dcfce7;  /* green-100 */
+  --color-status-ok-border: rgba(21, 128, 61, 0.35);  /* TUNE */
+  --color-status-ok-bright: #22c55e;  /* TUNE — used in sensitivity badge */
+  --color-status-ok-mint:   #15803d;  /* TUNE — was #7de0a0 in dark (mint accent) */
+  --color-status-ok-lime:   #65a30d;  /* TUNE — was #a3e635 in dark */
+
+  /* ── Status: error / destructive / forget ─────────────────────────────── */
+  --color-status-error:        #b91c1c;
+  --color-status-error-soft:   #fee2e2;
+  --color-status-error-border: rgba(185, 28, 28, 0.35);
+  --color-status-error-strong: #991b1b;  /* TUNE — was #ff5b5b */
+  --color-status-error-bright: #dc2626;  /* TUNE — was #ff8080 */
+  --color-status-error-pale:   #fca5a5;
+  --color-status-destructive:  #b91c1c;  /* TUNE — was #e05555 (most-used red) */
+  --color-status-destructive-soft: rgba(185, 28, 28, 0.10);  /* TUNE */
+
+  /* ── Status: warn / amber / caution ───────────────────────────────────── */
+  --color-status-warn:        #b45309;  /* AA on white */
+  --color-status-warn-soft:   #fef3c7;
+  --color-status-warn-border: rgba(180, 83, 9, 0.35);
+  --color-status-warn-amber:  #d97706;  /* TUNE — was #f59e0b */
+  --color-status-warn-gold:   #b45309;  /* TUNE — was #d4a82c / #d9a445 family */
+  --color-status-warn-yellow: rgba(180, 83, 9, 0.10);  /* TUNE — was rgba(255,200,0,0.07) */
+
+  /* ── Status: info / blue / idle ───────────────────────────────────────── */
+  --color-status-info:        #2563eb;  /* TUNE — was #5b8def */
+  --color-status-info-soft:   rgba(37, 99, 235, 0.10);  /* TUNE */
+  --color-status-info-border: rgba(37, 99, 235, 0.35);  /* TUNE */
+
+  /* ── Semantic aliases (existing app variables — keep working) ─────────── */
+  --bg:        var(--color-bg);
+  --bg-elev:   var(--color-bg-elev);
+  --surface-2: var(--color-surface-2);
+  --fg:        var(--color-fg);
+  --fg-dim:    var(--color-fg-dim);
+  --fg-faint:  var(--color-fg-faint);
+  --border:    var(--color-border);
+  --border-strong: var(--color-border-strong);
+  --accent:           var(--color-brand-turquoise);
+  --accent-soft:      var(--color-brand-turquoise-soft);
+  --accent-contrast:  var(--color-fg-on-accent);
+  --ai-accent:        var(--color-brand-purple);
+  --ai-accent-soft:   var(--color-brand-purple-soft);
+  --ai-accent-contrast: var(--color-fg-on-accent);
+  --error:     var(--color-status-error);
+  --error-soft: var(--color-status-error-soft);
+  --ok:        var(--color-status-ok);
+  --ok-soft:   var(--color-status-ok-soft);
+  --warn:      var(--color-status-warn);
+  --warn-soft: var(--color-status-warn-soft);
+
+  /* ── Shadows ──────────────────────────────────────────────────────────── */
+  --shadow-soft: 0 1px 2px rgba(0,0,0,0.04), 0 1px 3px rgba(0,0,0,0.06);
+  --shadow-pop:  0 4px 12px rgba(0,0,0,0.08), 0 2px 4px rgba(0,0,0,0.04);
+}
+
+/* ============================================================================
+ * DARK MODE — exact current values, preserve appearance
+ *
+ * Every value here matches what index.html ships today. Do not change a
+ * value in this block to "improve" dark mode unless you have a specific
+ * visual regression to fix — the goal of this block is fidelity.
+ * ==========================================================================*/
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+
+  /* ── Brand ────────────────────────────────────────────────────────────── */
+  /* These values match the ORIGINAL dark-mode appearance exactly.
+     - --color-brand-turquoise: #6ab3c8 is the original `--accent` value
+       that drove every "Add file to engram…" / focus ring / link color
+       in the app before tokenization. Do not change without checking
+       a real screenshot against pre-token dark mode. */
+  --color-brand-turquoise:        #6ab3c8;  /* original dark --accent */
+  --color-brand-turquoise-soft:   rgba(106, 179, 200, 0.14);
+  --color-brand-turquoise-mid:    #7ec4d6;
+  --color-brand-turquoise-bright: #67e8f9;  /* cyan-300 — wordmark gradient end */
+  --color-brand-turquoise-pale:   #9fd8e8;
+  --color-brand-purple:           #a78bfa;  /* violet-400 — original GNN pill color */
+  --color-brand-purple-soft:      rgba(167, 139, 250, 0.14);
+  --color-brand-purple-bright:    #a855f7;
+  --color-brand-purple-warm:      #c4b5fd;
+
+  /* ── Surfaces ─────────────────────────────────────────────────────────── */
+  --color-bg:              #1a1a1c;
+  --color-bg-elev:         #232327;
+  --color-surface-2:       #2a2a2e;
+  --color-surface-deep:    #0f2028;  /* tour panel background */
+  --color-surface-card:    #1c1c1e;  /* dark cards / tour-card */
+  --color-surface-inverse: #ededed;  /* in dark mode, inverse = light */
+
+  /* ── Foreground ───────────────────────────────────────────────────────── */
+  --color-fg:           #ededed;
+  --color-fg-dim:       #9a9a9c;
+  --color-fg-muted:     #888;        /* legacy mid-gray */
+  --color-fg-faint:     #6b6b6e;
+  --color-fg-on-dark:   #ededed;
+  --color-fg-on-accent: #0a1f1c;     /* dark text on bright accent fill */
+
+  /* ── Borders ──────────────────────────────────────────────────────────── */
+  --color-border:        rgba(255, 255, 255, 0.10);
+  --color-border-strong: rgba(255, 255, 255, 0.20);
+  --color-border-faint:  rgba(255, 255, 255, 0.05);
+
+  /* ── Overlays / scrims / shadows ──────────────────────────────────────── */
+  --color-overlay-light:    rgba(255, 255, 255, 0.06);
+  --color-overlay-medium:   rgba(255, 255, 255, 0.11);
+  --color-overlay-strong:   rgba(255, 255, 255, 0.22);
+  --color-overlay-heavy:    rgba(0, 0, 0, 0.45);
+  --color-modal-scrim:      rgba(0, 0, 0, 0.55);
+  --color-modal-scrim-deep: rgba(10, 12, 18, 0.55);
+  --color-tooltip-bg:       rgba(17, 20, 29, 0.78);
+
+  /* ── Status: OK / success / done ──────────────────────────────────────── */
+  --color-status-ok:        #4ade80;     /* green-400 */
+  --color-status-ok-soft:   rgba(74, 222, 128, 0.12);
+  --color-status-ok-border: rgba(34, 197, 94, 0.35);
+  --color-status-ok-bright: #22c55e;
+  --color-status-ok-mint:   #7de0a0;     /* the "1-2 hours" mint highlight */
+  --color-status-ok-lime:   #a3e635;     /* lime-400 accent */
+
+  /* ── Status: error / destructive / forget ─────────────────────────────── */
+  --color-status-error:        #f87171;
+  --color-status-error-soft:   rgba(248, 113, 113, 0.12);
+  --color-status-error-border: rgba(239, 68, 68, 0.35);
+  --color-status-error-strong: #ff5b5b;
+  --color-status-error-bright: #ff8080;
+  --color-status-error-pale:   #fca5a5;
+  --color-status-destructive:  #e05555;       /* the most-used red, 15× */
+  --color-status-destructive-soft: rgba(255, 91, 91, 0.12);
+
+  /* ── Status: warn / amber / caution ───────────────────────────────────── */
+  --color-status-warn:        #fbbf24;
+  --color-status-warn-soft:   rgba(251, 191, 36, 0.10);
+  --color-status-warn-border: rgba(245, 158, 11, 0.35);
+  --color-status-warn-amber:  #f59e0b;     /* the standard amber */
+  --color-status-warn-gold:   #d4a82c;     /* the "1-2 hours" gold variant */
+  --color-status-warn-yellow: rgba(255, 200, 0, 0.07);  /* passphrase warning bg */
+
+  /* ── Status: info / blue / idle ───────────────────────────────────────── */
+  --color-status-info:        #5b8def;
+  --color-status-info-soft:   rgba(91, 141, 239, 0.10);
+  --color-status-info-border: rgba(91, 141, 239, 0.35);
+
+  /* ── Shadows ──────────────────────────────────────────────────────────── */
+  --shadow-soft: 0 1px 2px rgba(0,0,0,0.3), 0 1px 3px rgba(0,0,0,0.4);
+  --shadow-pop:  0 4px 12px rgba(0,0,0,0.4), 0 2px 4px rgba(0,0,0,0.3);
+
+  /* ── Explicit alias overrides (preserve ORIGINAL dark-mode appearance) ──
+     These are the exact values the original :root @media (prefers-color-
+     scheme: dark) block defined. Set explicitly here (rather than relying
+     on cascade-through-the-light-block) so dark mode renders byte-identical
+     to pre-tokenization, even if a light-block alias drifts later. */
+  --bg:        #1a1a1c;
+  --bg-elev:   #232327;
+  --fg:        #ededed;
+  --fg-dim:    #9a9a9c;
+  --accent:    #6ab3c8;
+  --border:    rgba(255, 255, 255, 0.1);
+  --error:     #f87171;
+  --ok:        #4ade80;
+}
+
+/* ============================================================================
+ * AUTO-MODE FALLBACK
+ * No data-theme attribute set → follow OS preference. Mirrors the dark
+ * block above for OS-dark users so they don't lose their current
+ * appearance after the migration.
+ * ==========================================================================*/
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]):not([data-theme="dark"]) {
+    color-scheme: dark;
+    --color-brand-turquoise:        #6ab3c8;  /* original dark --accent */
+    --color-brand-turquoise-soft:   rgba(106, 179, 200, 0.14);
+    --color-brand-turquoise-mid:    #7ec4d6;
+    --color-brand-turquoise-bright: #67e8f9;
+    --color-brand-turquoise-pale:   #9fd8e8;
+    --color-brand-purple:           #a78bfa;  /* original GNN pill color */
+    --color-brand-purple-soft:      rgba(167, 139, 250, 0.14);
+    --color-brand-purple-bright:    #a855f7;
+    --color-brand-purple-warm:      #c4b5fd;
+    --color-bg:              #1a1a1c;
+    --color-bg-elev:         #232327;
+    --color-surface-2:       #2a2a2e;
+    --color-surface-deep:    #0f2028;
+    --color-surface-card:    #1c1c1e;
+    --color-surface-inverse: #ededed;
+    --color-fg:           #ededed;
+    --color-fg-dim:       #9a9a9c;
+    --color-fg-muted:     #888;
+    --color-fg-faint:     #6b6b6e;
+    --color-fg-on-dark:   #ededed;
+    --color-fg-on-accent: #0a1f1c;
+    --color-border:        rgba(255, 255, 255, 0.10);
+    --color-border-strong: rgba(255, 255, 255, 0.20);
+    --color-border-faint:  rgba(255, 255, 255, 0.05);
+    --color-overlay-light:    rgba(255, 255, 255, 0.06);
+    --color-overlay-medium:   rgba(255, 255, 255, 0.11);
+    --color-overlay-strong:   rgba(255, 255, 255, 0.22);
+    --color-overlay-heavy:    rgba(0, 0, 0, 0.45);
+    --color-modal-scrim:      rgba(0, 0, 0, 0.55);
+    --color-modal-scrim-deep: rgba(10, 12, 18, 0.55);
+    --color-tooltip-bg:       rgba(17, 20, 29, 0.78);
+    --color-status-ok:        #4ade80;
+    --color-status-ok-soft:   rgba(74, 222, 128, 0.12);
+    --color-status-ok-border: rgba(34, 197, 94, 0.35);
+    --color-status-ok-bright: #22c55e;
+    --color-status-ok-mint:   #7de0a0;
+    --color-status-ok-lime:   #a3e635;
+    --color-status-error:        #f87171;
+    --color-status-error-soft:   rgba(248, 113, 113, 0.12);
+    --color-status-error-border: rgba(239, 68, 68, 0.35);
+    --color-status-error-strong: #ff5b5b;
+    --color-status-error-bright: #ff8080;
+    --color-status-error-pale:   #fca5a5;
+    --color-status-destructive:  #e05555;
+    --color-status-destructive-soft: rgba(255, 91, 91, 0.12);
+    --color-status-warn:        #fbbf24;
+    --color-status-warn-soft:   rgba(251, 191, 36, 0.10);
+    --color-status-warn-border: rgba(245, 158, 11, 0.35);
+    --color-status-warn-amber:  #f59e0b;
+    --color-status-warn-gold:   #d4a82c;
+    --color-status-warn-yellow: rgba(255, 200, 0, 0.07);
+    --color-status-info:        #5b8def;
+    --color-status-info-soft:   rgba(91, 141, 239, 0.10);
+    --color-status-info-border: rgba(91, 141, 239, 0.35);
+    --shadow-soft: 0 1px 2px rgba(0,0,0,0.3), 0 1px 3px rgba(0,0,0,0.4);
+    --shadow-pop:  0 4px 12px rgba(0,0,0,0.4), 0 2px 4px rgba(0,0,0,0.3);
+    /* Explicit short-form aliases — preserve original OS-dark appearance. */
+    --bg:        #1a1a1c;
+    --bg-elev:   #232327;
+    --fg:        #ededed;
+    --fg-dim:    #9a9a9c;
+    --accent:    #6ab3c8;
+    --border:    rgba(255, 255, 255, 0.1);
+    --error:     #f87171;
+    --ok:        #4ade80;
+  }
+}

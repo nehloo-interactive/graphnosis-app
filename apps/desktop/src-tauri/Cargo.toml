@@ -1,6 +1,6 @@
 [package]
 name = "graphnosis-app"
-version = "0.10.0"
+version = "1.11.1"
 description = "Graphnosis — personal second memory"
 authors = ["Nehloo Interactive LLC"]
 # Custom string — FSL-1.1-Apache-2.0 isn't a registered SPDX id (yet),
@@ -17,6 +17,13 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 [[bin]]
 name = "graphnosis-app"
 path = "src/main.rs"
+
+[features]
+# Enable for signed release builds to use the macOS Keychain instead of the
+# 0600 file cache. Add `--features keychain` to the `cargo tauri build` invocation
+# in CI / the release pipeline. Dev builds leave this off — the file cache is
+# simpler and avoids macOS Keychain audit-token rejections on unsigned binaries.
+keychain = []
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
@@ -39,3 +46,6 @@ tokio = { version = "1", features = ["full"] }
 anyhow = "1"
 dirs = "5"
 image = { version = "0.25", default-features = false, features = ["png"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+mac-notification-sys = "0.6"

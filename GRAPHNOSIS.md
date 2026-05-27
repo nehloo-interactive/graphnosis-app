@@ -1,6 +1,6 @@
 # Graphnosis memory — instructions for AI assistants
 
-v0.10.3
+v1.11.0
 
 This project uses **Graphnosis** as its long-term memory: a local, encrypted
 memory store the user owns and controls, reached through MCP tools. Treat
@@ -110,7 +110,7 @@ for speculation.
   half-formed ideas as if they were fact; if something is uncertain, leave it
   out or note the uncertainty plainly.
 - Don't save ephemeral chatter, jokes, or hypotheticals — memory is not a chat log.
-- To FIX something already in memory, use `correct`, never a second `remember` —
+- To FIX, UPDATE, or ADD DETAIL to something already in memory, use `edit`, never a second `remember` —
   a second `remember` only creates a conflicting duplicate.
 - Don't save anything the user clearly would not want kept. If unsure, ask.
 
@@ -168,11 +168,11 @@ and shapes the audit footer.
 
 **Core memory** (use these for most everyday turns):
 
-- `recall` — semantic search across the user's engrams. Returns a ready-to-read context block.
-- `remind` — alias for `recall`, framed as "remind me about…". Same input + same results.
-- `dig_deeper` — the "look harder" escalation. Use when `recall` returned thin results, when the user's query references a document by name (filename, paper, project), or when the question spans multiple engrams. Internally orchestrates content recall + source-filename expansion + cross-engram entity hop. Returns more nodes with a full provenance breakdown. If results look off, the meta-instruction tells you to flag it to the user — that's the developer-feedback channel.
+- `recall` — semantic search across the user's engrams. Returns a ready-to-read context block. **Escalation policy**: if `recall` returns 0–3 nodes (or returns nodes that don't actually answer the question), DO NOT say "no results". Call `dig_deeper` with the same query first. Most "nothing found" cases are language / phrasing mismatches that `dig_deeper`'s expansion catches. **Tool loading note**: `dig_deeper` is in the same tool group — if your client uses deferred schema loading, load `dig_deeper` via `tool_search` before the first `recall` call so the escalation path is ready.
+- `remind` — alias for `recall`, framed as "remind me about…". Same input + same results. Same escalation policy: thin result → escalate to `dig_deeper` before telling the user the memory isn't there.
+- `dig_deeper` — the "look harder" escalation. Use when `recall` returned thin results, when the user's query references a document by name (filename, paper, project), or when the question spans multiple engrams. Internally orchestrates content recall + source-filename expansion + cross-engram entity hop. Returns more nodes with a full provenance breakdown. If results look off, the meta-instruction tells you to flag it to the user — that's the developer-feedback channel. **💡 source hint**: if any recall or dig_deeper response contains a "💡 The query entities also match source-file names…" line with sourceIds, **STOP — you MUST call `recall_source` with those IDs before composing your answer**. That hint means a whole document is relevant; the fragment you received is not sufficient.
 - `remember` — save a new memory. Pass `target_engram` whenever the note has a topical home (e.g. "Book Notes", "Work decisions").
-- `forget` — surgically soft-delete one or more specific memory **nodes** (not a whole source). Takes `nodeIds` from `recall_structured` results. **Always call `recall_structured` first** to find and confirm the exact nodes before calling `forget`. Never pass a `sourceId` — that field does not exist. To remove an entire ingested file, URL, or clip, direct the user to the Sources page in the app — AI clients cannot delete whole sources.
+- `forget` — surgically soft-delete one or more specific memory **nodes** (not a whole source). **Always call `recall_structured` first**, then pass the result as `items: [{nodeId, preview}]` — `preview` is the first ~120 chars of `node.text`. Most MCP clients show the request payload to the user in a consent prompt; without the preview, the user sees only opaque IDs and is essentially clicking blind. The legacy `nodeIds: [...]` shape still works but the response will nag you to switch. Never pass a `sourceId` — that field does not exist. To remove an entire ingested file, URL, or clip, direct the user to the Sources page in the app — AI clients cannot delete whole sources.
 - `apply` — commits a correction the user has already approved. The Graphnosis app normally drives this; AI clients rarely call it directly.
 - `stats` — engram inventory + node counts. Useful before picking a `target_engram` and for debugging "where did my notes go?"
 - `vitality` — 0–100 score of how alive and well-connected the cortex is.
@@ -195,7 +195,7 @@ and shapes the audit footer.
 **Source operations** (act on a whole saved source — file, URL, clip):
 
 - `find_source` — keyword substring search across source IDs / refs / kinds.
-- `recall_source` — full content of one source, in ingestion order (use when `recall` fragments a structured document).
+- `recall_source` — full content of one source, in ingestion order (use when `recall` fragments a structured document, or when a 💡 hint in any recall response named specific sourceIds — in that case, **do not respond until you have called this tool**).
 - `transfer_source` — move a source from one engram to another.
 
 **Engram operations**:
@@ -218,7 +218,7 @@ and shapes the audit footer.
 
 **Conditional** (deterministic by default, LLM-aware when enabled):
 
-- `correct` — propose a reviewed fix to existing memory as a structured diff. **Never use `remember` to "fix" something — that creates duplicate conflicting nodes.** Always `correct`.
+- `edit` — propose a change to existing memory as a structured diff. Covers three cases: **CORRECTION** ("actually it was September, not August"), **UPDATE** ("my plans changed — update my Q3 milestones to…"), and **APPEND/ADD DETAIL** ("add these items to my project plan"). **Never use `remember` to modify something — that creates duplicate conflicting nodes.** Always `edit`.
 
 **Non-deterministic** (require the optional Local LLM running on the user's machine):
 
@@ -226,7 +226,7 @@ and shapes the audit footer.
 - `predict` — risks + opportunities for an action the user is about to take.
 - `insights` — patterns / gaps / opportunities a background LLM loop surfaced.
 - `gnn_neighbors` — nodes the Neural Network predicts are related to a query.
-- `llm_query` — synthesised answer from recall, computed locally.
+- `llm_query` — synthesised answer from recall, computed locally. **Prefer this over raw `recall` when the question requires assembling facts from multiple nodes or engrams into a single coherent answer** — e.g. "summarise everything I know about X", "compare my notes on A vs B", or "what's the pattern across my decisions?". For point-lookup questions ("what did I say about X?"), plain `recall` is faster and sufficient.
 - `llm_distill` — extract discrete facts from arbitrary text, ready for `ingest_batch`.
 
 ## The local LLM — what it does, what it does not
@@ -275,29 +275,96 @@ different determinism contract. Treat them differently in your responses.
 | Local LLM overlay | `.gll` | Predicted edges + synthesized assertions from the local LLM | The LLM's inference loops; user discards via UI |
 
 The LLM cannot mutate `.gai`. The neural network cannot mutate `.gai`. The
-only path to a change in attested memory is a `correct` diff the user reviews
+only path to a change in attested memory is an `edit` diff the user reviews
 and approves. This is structural, not procedural — different files, different
 write privileges.
 
 ### How recall surfaces the layers
 
 When you call `recall`, `remind`, `cross_search`, or `compare_engrams`, the
-response is built in two parts:
+response is structured as follows:
 
-1. **The attested subgraph** — `=== KNOWLEDGE SUBGRAPH ===` per engram,
-   drawn purely from `.gai`. This is the authoritative answer to the user's
-   query and is byte-deterministic given the same query + cortex state.
+#### 1. The attested subgraph
 
-2. **The inferred layer** — when overlay data intersects the recall result, a
-   single appended block:
+One `=== KNOWLEDGE SUBGRAPH ===` block per engram, drawn purely from `.gai`.
+This is the authoritative answer — byte-deterministic for the same query +
+cortex state.
 
-   ```
-   --- INFERRED LAYER (overlays — NOT attested memory) ---
-   ### Engram name
-     [gll·assertion 78%] Synthesized fact text from [node-id, …]
-     [gll·edge 65%] node-a —[elaborates]→ node-b
-     [gnn·edge 81%] node-c —→ node-d
-   ```
+The subgraph uses this format:
+
+```
+## Engram Display Name
+=== KNOWLEDGE SUBGRAPH (N nodes, M edges) ===
+
+--- SESSION SUMMARIES ---
+[n0|summary|0.91|session:abc123|date:2026-05-20] Session title
+  claims: atomic fact one | atomic fact two | atomic fact three
+
+--- NODES ---
+[n1|fact|0.95|src:source-label|date:2026-05-20] Node text here
+[n2|concept|0.82|date:2026-05-18] Another node
+
+--- DIRECTED ---
+n1 -[depends-on:0.9]-> n2
+
+--- UNDIRECTED ---
+n1 ~[related-to:0.7]~ n2
+```
+
+**Node format:** `[shortId|nodeType|score|tags] content`
+- `nodeType`: `fact`, `concept`, `entity`, `event`, `definition`, `claim`,
+  `data-point`, `person`, `document`, `section`, `summary`
+- `score`: relevance from 0.00 to 1.00
+- `tags`: optional `src:{label}` and/or `date:{YYYY-MM-DD}`
+
+**Session summaries** (`--- SESSION SUMMARIES ---`): compressed context from
+earlier sessions. The `claims:` line lists atomic facts pipe-separated.
+Treat them as high-confidence attested context — they are distilled from
+sessions you've already had.
+
+**Edges:**
+- Directed: `n1 -[edgeType:weight]-> n2` (causes, depends-on, supersedes…)
+- Undirected: `n1 ~[edgeType:weight]~ n2` (related-to, co-occurs, same-source…)
+
+#### 2. Cross-graph connections
+
+When recall spans multiple engrams, a `--- CROSS-GRAPH CONNECTIONS ---`
+block appears after the per-engram subgraphs, showing entity overlaps:
+
+```
+--- CROSS-GRAPH CONNECTIONS ---
+"EntityName" → Engram A: "preview from engram A" | Engram B: "preview from engram B"
+```
+
+This is supplementary context for cross-domain questions — same entity,
+different engrams. Treat it as attested; it is derived from `.gai` content.
+
+#### 3. Audit footer and footnotes
+
+```
+---
+Attached N memory node(s) / T tokens across G graph(s). Per-graph (tier · nodes · tokens): personal · 5n · 350t.
+_anchored N node(s) on entities: PersonName, ProjectName_
+_GNN expanded recall by N node(s) at ≥65% confidence_
+_enriched: "original query" → "rewritten query"_
+```
+
+- `_anchored …_` — entity anchoring pinned those nodes as high-confidence seeds.
+- `_GNN expanded …_` — the neural network widened the candidate set; those extra nodes have a GNN basis.
+- `_enriched …_` — the local LLM rewrote the query (only when Recall enrichment is on). Informational — the search that ran used the rewritten form.
+
+#### 4. The inferred layer
+
+When overlay engines are on and their data intersects the result, a single
+block is appended after the audit footer:
+
+```
+--- INFERRED LAYER (overlays — NOT attested memory) ---
+### Engram name
+  [gll·assertion 78%] Synthesized fact text from [node-id, …]
+  [gll·edge 65%] node-a —[elaborates]→ node-b
+  [gnn·edge 81%] node-c —→ node-d
+```
 
 What you should do with the inferred layer:
 
@@ -305,19 +372,51 @@ What you should do with the inferred layer:
   with ~78% confidence" — never "you said X" when X is from a `[gll]` row.
 - **Prefer attested content when there's a conflict.** If `.gai` says the
   user lives in Bucharest and a `[gll·assertion]` infers Cluj, the canonical
-  memory wins. Mention the discrepancy and offer `correct` if appropriate.
-- **Don't `remember` an inferred row.** That would promote a probabilistic
+  memory wins. Mention the discrepancy and offer `edit` if appropriate.
+- **Don't `remember` an inferred row.** That promotes a probabilistic
   prediction into attested memory — exactly the failure mode the overlay
-  architecture exists to prevent. If the user explicitly confirms the
-  inference is correct, then save the user's confirmation as a new
-  attested memory via `remember`.
+  architecture exists to prevent. If the user confirms the inference is
+  correct, save the user's confirmation as a new attested memory via `remember`.
 - **Don't try to `forget` an inferred row.** `forget` operates on `.gai`
   node ids only. To wipe overlay content, the user uses the overlay
   controls in Non-Deterministic Aid.
 
-If the overlay block is absent from a recall response, either no overlay
-data intersected the result, or the user has the relevant capability off.
-Either way, answer from the attested subgraph alone.
+If the overlay block is absent, either no overlay data intersected the
+result, or the user has the relevant capability off. Answer from the
+attested subgraph alone.
+
+#### 5. dig_deeper response shape
+
+`dig_deeper` extends the standard subgraph with two extra labelled sections
+and italic provenance bullets:
+
+```
+[Stage 1: standard recall subgraph, same shape as recall]
+
+## DIG_DEEPER — Source-filename expansion
+### Engram Name (additional chunks from matched source filenames)
+- Chunk text from matched source
+
+## DIG_DEEPER — Cross-engram entity hop
+_Pulled via shared entities: EntityA, EntityB_
+### Engram Name
+- Node text reached via entity overlap
+```
+
+Then provenance bullets (italic Markdown, not a code block):
+
+_• Content match (recall): N nodes, avg score S_
+_• Source-filename expansion: N nodes from M source(s): name-a.md, …_
+_• Cross-engram entity hop: N nodes via M shared entities across K engram(s)_
+
+If indirect stages dominated (>60% of nodes), a heads-up follows:
+
+⚠️ _Heads-up for the user: the direct content match returned few nodes; most
+of this result came from indirect expansion. Flag this to the user so they
+can confirm relevance or rephrase._
+
+When you see the ⚠️, surface it — don't silently present an expansion-heavy
+result as if it were a confident direct match.
 
 ### Autonomous edge prediction
 
@@ -328,10 +427,10 @@ between them, and asks the local LLM whether those pairs are actually
 related. Pairs the LLM confirms — with a relationship label and a confidence
 score — get written to the `.gll` overlay as predicted edges.
 
-The user reviews these in **Non-Deterministic Aid → Local LLM predicted
-edges**. Accept removes from the review queue (and is the path that will
-promote to canonical `.gai` in a future iteration). Reject deletes from the
-overlay permanently.
+The user reviews these in the **Graphnosis Local Layer (.GLL)** section of
+the **Non-Deterministic Aid** tab. Accept removes from the review queue (and
+is the path that will promote to canonical `.gai` in a future iteration).
+Reject deletes from the overlay permanently.
 
 You won't usually need to interact with this loop directly — it surfaces
 through the normal recall path's `[gll·edge N%]` rows in the inferred-layer

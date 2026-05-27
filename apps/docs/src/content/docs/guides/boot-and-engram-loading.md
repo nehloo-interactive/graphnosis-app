@@ -31,7 +31,10 @@ how to read the status bar and engram picker.
 
 On a fresh cortex with one engram, steps 4–5 don't happen. On a cortex
 with 12 engrams, the reveal at step 3 happens in about 3 seconds and
-the rest stream in over the next 5–6 seconds.
+the rest stream in over the next 5–6 seconds. Startup is significantly
+faster for large cortexes compared to earlier versions — op-log
+compaction on unlock reduces the amount of data replayed before the
+first engram is ready.
 
 ## Which engram loads first?
 
@@ -76,6 +79,13 @@ Loading 7 more engrams…
 The number ticks down with each completed load. When all engrams have
 loaded, the message disappears.
 
+The status bar also shows **overlay engine pills** when non-deterministic layers are active:
+
+- **Turquoise pill** — the Local LLM (Graphnosis Local Layer) is enabled and at least one capability toggle is on.
+- **Purple pill** — the Graphnosis Neural Network (.GNN) is enabled and has computed edges.
+
+These pills are always visible when the respective engine is on, not just during loading — they act as a persistent reminder that overlay engines are running.
+
 ## Reading the engram picker
 
 Click the engram name in the topbar to open the dropdown. The list shows
@@ -88,9 +98,10 @@ order:
   nothing; the picker won't switch.
 - **✓ checkmark** — the engram currently active.
 
-As each engram finishes loading, its row drops the greyed styling and
-becomes selectable. Positions stay alphabetical the whole time — engrams
-don't jump around as they load.
+As each engram finishes loading, its row **updates immediately** — the
+greyed styling drops and the engram becomes selectable as soon as its
+own load completes, without waiting for the rest. Positions stay
+alphabetical the whole time — engrams don't jump around as they load.
 
 If you click an engram that's still pending, the picker silently rejects
 the click and stays open so you can pick another. There's no error
