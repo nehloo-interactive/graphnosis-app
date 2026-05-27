@@ -5,23 +5,23 @@ sidebar:
   order: 1
 ---
 
-The Graphnosis sidecar exposes **34 tools** via the Model Context Protocol, organised into nine functional categories. Every connected MCP client — Claude Desktop, Claude Code, Cursor, and anything else that speaks MCP — sees the same 34. What a tool can actually reach is still governed by each engram's sensitivity tier and the [consent gate](/guides/ai-access-controls/#2-the-consent-gate) — by default a one-click in-app prompt for `sensitive`-tier recalls, silent for `personal` and `public`.
+The Graphnosis sidecar exposes **35 tools** via the Model Context Protocol, organised into nine functional categories. Every connected MCP client — Claude Desktop, Claude Code, Cursor, and anything else that speaks MCP — sees the same 35. What a tool can actually reach is still governed by each engram's sensitivity tier and the [consent gate](/guides/ai-access-controls/#2-the-consent-gate) — by default a one-click in-app prompt for `sensitive`-tier recalls, silent for `personal` and `public`.
 
 You can browse the full toolset inside the app too: open the **MCP Tools** button in the left sidebar (next to Settings). Each tool name opens a short explainer with example prompts you can paste straight into your AI client.
 
-## At a glance — the 34 tools
+## At a glance — the 35 tools
 
 | Category | Tools |
 |---|---|
-| **Core memory** (7) | [`recall`](#recall) · [`remind`](#remind) · [`remember`](#remember) · [`forget`](#forget) · [`apply`](#apply) · [`stats`](#stats) · [`vitality`](#vitality) |
+| **Core memory** (8) | [`recall`](#recall) · [`remind`](#remind) · [`dig_deeper`](#dig_deeper) · [`remember`](#remember) · [`forget`](#forget) · [`apply`](#apply) · [`stats`](#stats) · [`vitality`](#vitality) |
 | **Engram discovery** (5) | [`list_engrams`](#list_engrams) · [`suggest_engram`](#suggest_engram) · [`browse_engram`](#browse_engram) · [`recent`](#recent) · [`get_engram_schema`](#get_engram_schema) |
 | **Structured recall** (4) | [`recall_structured`](#recall_structured) · [`recall_with_citations`](#recall_with_citations) · [`compare_engrams`](#compare_engrams) · [`cross_search`](#cross_search) |
 | **Source operations** (3) | [`find_source`](#find_source) · [`recall_source`](#recall_source) · [`transfer_source`](#transfer_source) |
 | **Engram operations** (2) | [`ingest_batch`](#ingest_batch) · [`engram_summary`](#engram_summary) |
-| **Brain maintenance** (3) | [`duplicate_pairs`](#duplicate_pairs) · [`healing_journal`](#healing_journal) · [`gnn_status`](#gnn_status) |
+| **Brain maintenance** (4) | [`duplicate_pairs`](#duplicate_pairs) · [`healing_journal`](#healing_journal) · [`gnn_status`](#gnn_status) · [`confirm_data_access`](#confirm_data_access) |
 | **Approximate** (2) | [`audit_memory`](#audit_memory) · [`check_duplicate`](#check_duplicate) |
-| **Conditional** (1) | [`correct`](#correct) |
-| **Non-deterministic** (7) | [`develop`](#develop) · [`predict`](#predict) · [`insights`](#insights) · [`gnn_neighbors`](#gnn_neighbors) · [`llm_query`](#llm_query) · [`llm_distill`](#llm_distill) · [`confirm_data_access`](#confirm_data_access) |
+| **Conditional** (1) | [`edit`](#edit) |
+| **Non-deterministic** (6) | [`develop`](#develop) · [`predict`](#predict) · [`insights`](#insights) · [`gnn_neighbors`](#gnn_neighbors) · [`llm_query`](#llm_query) · [`llm_distill`](#llm_distill) |
 
 ## How results are returned
 
@@ -38,12 +38,12 @@ Graphnosis sorts its tools into four determinism tiers. Each tool states its own
 
 | Tier | What it means | Tools |
 |---|---|---|
-| **Deterministic** | Identical input always produces an identical result — no LLM, no randomness, fully auditable. | All Core memory, Engram discovery, Structured recall, Source operations, Engram operations, Brain maintenance tools; plus `confirm_data_access`. |
+| **Deterministic** | Identical input always produces an identical result — no LLM, no randomness, fully auditable. | All Core memory, Engram discovery, Structured recall, Source operations, Engram operations, and Brain maintenance tools (including `confirm_data_access`). |
 | **Approximate** | Vector-similarity scan — given the same embedding state, results are reproducible. No LLM involved. | `audit_memory`, `check_duplicate` |
-| **Conditional** | Deterministic by default — `correct` supersedes the single closest-matching memory. Enabling the optional Neural Network (which widens the candidate set) or the optional Local LLM (which authors a multi-edit diff) makes it non-deterministic. The result's `mode` field reports which path ran. | `correct` |
+| **Conditional** | Deterministic by default — `edit` supersedes the single closest-matching memory. Enabling the optional Neural Network (which widens the candidate set) or the optional Local LLM (which authors a multi-edit diff) makes it non-deterministic. The result's `mode` field reports which path ran. | `edit` |
 | **Non-deterministic** | Needs the optional Local LLM (or Neural Network). Retrieval is exact and auditable; the synthesised output varies between runs. Degrades to raw context when the LLM is off. | `develop`, `predict`, `insights`, `gnn_neighbors`, `llm_query`, `llm_distill` |
 
-One nuance for the deterministic tier: if the user has enabled the optional [Graphnosis Neural Network](/guides/indelibility-and-determinism/), `recall` and `remind` may append a separate, clearly-labelled "Neural-network predictions" block. That appendix is the only non-deterministic part, and it is never mixed into the deterministic results.
+One nuance for the deterministic tier: when the user has overlay engines enabled, `recall` and `remind` may append a clearly-labelled `--- INFERRED LAYER ---` block containing `[gll·assertion N%]` rows from the local LLM and `[gnn·edge N%]` rows from the neural network. The inferred layer is never mixed into the deterministic subgraph — treat it as predictions, not attested memory. The canonical `.gai` subgraph is always the authoritative answer.
 
 ---
 
@@ -63,25 +63,73 @@ Primary memory retrieval. Searches the user's encrypted knowledge graph and retu
 
 ### Return
 
-Plain text — a Markdown context block of the recalled memories grouped by engram, followed by an audit footer summarising what was served per engram:
+Plain text — a structured context block grouped by engram, followed by an audit footer. The body uses the SDK's subgraph format:
 
 ```text
 # Graphnosis context
-The following memories from the user's personal graphs may be relevant.
+The following memories from the user's personal knowledge graphs may be relevant.
 
-## Graph: work
-- The deployment pipeline runs on GitHub Actions, triggered on push to main.
+## Work Notes
+=== KNOWLEDGE SUBGRAPH (3 nodes, 2 edges) ===
+
+--- SESSION SUMMARIES ---
+[n0|summary|0.91|session:abc123|date:2026-05-20] Pipeline discussion with the team
+  claims: deploys on push to main | GitHub Actions in use | rollback is manual
+
+--- NODES ---
+[n1|fact|0.95|src:work-notes|date:2026-05-20] The deployment pipeline runs on GitHub Actions, triggered on push to main.
+[n2|fact|0.82|src:work-notes|date:2026-05-18] Rollback is a manual re-deploy of the previous tag — no automated rollback yet.
+[n3|concept|0.74|date:2026-05-15] GitHub Actions runner is self-hosted on the team's EC2 instance.
+
+--- DIRECTED ---
+n1 -[depends-on:0.9]-> n3
+
+--- UNDIRECTED ---
+n1 ~[related-to:0.8]~ n2
+
+--- CROSS-GRAPH CONNECTIONS ---
+"GitHub Actions" → Work Notes: "deployment pipeline runs on GitHub Actions" | Coding: "CI config lives in .github/workflows/deploy.yml"
 
 ---
-Attached 1 memory node(s) / 24 tokens across 1 graph(s). Per-graph (tier · nodes · tokens): work · personal · 1n · 24t.
+Attached 3 memory node(s) / 210 tokens across 1 graph(s). Per-graph (tier · nodes · tokens): work-notes · personal · 3n · 210t.
+_anchored 1 node(s) on entities: GitHub Actions_
 ```
+
+**Node format:** `[shortId|nodeType|score|tags] content`
+- `nodeType`: `fact`, `concept`, `entity`, `event`, `definition`, `claim`, `data-point`, `person`, `document`, `section`, `summary`
+- `score`: relevance, 0.00–1.00
+- `tags` (optional): `src:{sourceLabel}` and/or `date:{YYYY-MM-DD}`
+
+**Session summaries** (`--- SESSION SUMMARIES ---`): compressed prior-session context. Each entry has a `claims:` line listing atomic facts pipe-separated. Treat them as high-confidence context — they are attested memory distilled from earlier sessions.
+
+**Edge formats:**
+- Directed: `n1 -[edgeType:weight]-> n2` (causes, depends-on, precedes, supersedes, cites…)
+- Undirected: `n1 ~[edgeType:weight]~ n2` (related-to, co-occurs, shares-topic…)
+
+**Cross-graph connections** (`--- CROSS-GRAPH CONNECTIONS ---`): entity overlap when recall spans multiple engrams. Shows the same entity appearing in two or more engrams with a short preview from each — useful context for cross-domain questions.
+
+**Audit footer footnotes** (may appear after the main `---` line):
+- `_anchored N node(s) on entities: EntityName_` — entity anchoring ran; those nodes were pinned as high-confidence seeds.
+- `_GNN expanded recall by N node(s) at ≥65% confidence_` — the neural network widened the candidate set; the extra nodes have a GNN basis, not pure vector similarity.
+- `_enriched: "original query" → "rewritten query"_` — the local LLM rewrote the query at recall time (only when Recall enrichment is on).
+
+**Inferred layer** (appended when overlay engines are on):
+```text
+--- INFERRED LAYER (overlays — NOT attested memory) ---
+### Work Notes
+  [gll·assertion 78%] The self-hosted runner may be a bottleneck for parallel jobs from [n3, n1]
+  [gll·edge 65%] n1 —[elaborates]→ n2
+  [gnn·edge 81%] n2 —→ n3
+```
+Treat `[gll·*]` and `[gnn·*]` rows as predictions, not facts. Never cite them as "you said X."
 
 ### Notes
 
 - The server enforces hard caps (50 nodes / 8000 tokens) regardless of what is requested.
-- Sensitive engrams are governed by their per-engram "share with AI" setting. When an engram is sensitive **and** shared, recall still includes it but applies a tighter cap (5 nodes / 500 tokens). When it is not shared, it is excluded entirely.
-- Every recall is auditable: the footer above, plus a structured audit line on the sidecar's stderr that the desktop inspector tails.
-- If the user has enabled the Graphnosis Neural Network, a separate "Neural-network predictions" block may be appended — clearly labelled and never mixed into the deterministic results.
+- Sensitive engrams: when shared, recall applies a tighter cap (5 nodes / 500 tokens); when not shared, excluded entirely.
+- Every recall is auditable via the footer + a structured audit line on the sidecar's stderr.
+- **Diacritic matching:** entity extraction normalises diacritic variants, so "Stefan" matches "Ștefan", "Ştefan", etc.
+- **Escalation policy:** if `recall` returns 0–3 nodes, or nodes that don't answer the question, call [`dig_deeper`](#dig_deeper) with the same query before telling the user nothing was found.
 
 ### Example
 
@@ -120,6 +168,67 @@ Identical to `recall`: `query` (required), `maxTokens` (optional, default `2000`
 
 ---
 
+## `dig_deeper`
+
+**Determinism: deterministic.** The expansion pass runs the same searches every time given the same cortex state — no LLM, no randomness.
+
+Escalation tool for when `recall` returns thin results (0–3 nodes, or nodes that don't actually answer the question). Internally orchestrates three passes: content recall, source-filename expansion, and a cross-engram entity hop. Returns more nodes than a plain `recall` with full provenance for each — which engram it came from, which source it lives in, and how it was reached.
+
+**AI clients should always escalate to `dig_deeper` before telling the user "nothing was found."** Most empty-recall cases are phrasing or language mismatches that the expansion pass resolves.
+
+### Parameters
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `query` | string | Yes | The same query you passed to `recall`. Pass it in the user's language — the expansion is multilingual. |
+| `maxNodes` | integer | No | Maximum nodes to return across all passes. Default `30`, hard cap `80`. |
+| `maxTokens` | integer | No | Token budget across all passes. Default `3000`, hard cap `10000`. |
+
+### Return
+
+Plain text — standard subgraph format for stage 1 (same shape as `recall`), then clearly labelled Markdown sections for stages 2 and 3, then italic provenance bullets:
+
+```text
+[Stage 1 — standard recall subgraph, same format as `recall`]
+
+## DIG_DEEPER — Source-filename expansion
+### Work Notes (additional chunks from matched source filenames)
+- Chunk text from the matched source file
+
+## DIG_DEEPER — Cross-engram entity hop
+_Pulled via shared entities: GitHub Actions, EC2_
+### Coding
+- Node text reached via entity overlap from another engram
+```
+
+Followed by the provenance summary (rendered as italic Markdown, not a code block):
+
+_• Content match (recall): 2 nodes, avg score 0.87_
+_• Source-filename expansion: 3 nodes from 2 source(s): deploy.yml, pipeline-notes.md_
+_• Cross-engram entity hop: 1 nodes via 1 shared entity across 2 engram(s)_
+
+If indirect stages (2 + 3) contributed more than 60% of the returned nodes, a heads-up line is appended:
+
+⚠️ _Heads-up for the user: the direct content match returned few nodes; most of this result came from indirect expansion (source-filename or cross-engram entity hop). The AI client should flag this to the user so they can confirm whether these expanded results are actually relevant._
+
+This is actionable: if you see the ⚠️, tell the user the answer is based mostly on expanded/adjacent content, not a direct match — and invite them to rephrase if it looks off.
+
+### Escalation policy
+
+```
+recall → thin result (0–3 nodes) → dig_deeper with same query → compose answer
+                                 → still empty → tell user nothing was found
+```
+
+A `💡 The query entities also match source-file names…` hint in any recall or dig_deeper response means a whole document is relevant. Stop and call `recall_source` with the listed source IDs before composing your answer.
+
+### Examples in practice
+
+- **Everyday —** `recall` finds only one note about a project. `dig_deeper` with the same query hops to related nodes across three engrams and returns the full context the user was looking for.
+- **Technical —** A query for a filename returns nothing from `recall`. `dig_deeper`'s filename-expansion pass finds the source directly and returns its contents.
+
+---
+
 ## `remember`
 
 **Determinism: deterministic.** Saving the same note produces the same memory — no LLM, no randomness, and every write is auditable.
@@ -144,7 +253,7 @@ Plain text confirming the write:
 Saved to book-notes as clip:3c6e206d6aa7744913361348.
 ```
 
-If the new note contradicts existing memory, a warning is appended naming the contradictions, so the AI can offer `correct` or `forget` as a follow-up.
+If the new note contradicts existing memory, a warning is appended naming the contradictions, so the AI can offer `edit` or `forget` as a follow-up.
 
 ### Notes
 
@@ -185,17 +294,25 @@ When `target_engram` (or an unknown `graphId`) is set, the sidecar runs a three-
 
 ---
 
-## `correct`
+## `edit`
 
 **Determinism: conditional.** Deterministic by default; non-deterministic when the optional Neural Network or Local LLM is enabled.
 
-Propose a natural-language correction to the user's memory. Does **not** write anything — it returns a diff for review. Nothing is committed until the user approves the diff in the Graphnosis App (or, rarely, an AI client calls `apply` on the user's explicit instruction).
+Propose a change to the user's memory. Covers three flavors — use whichever fits what the user said:
+
+- **CORRECTION** — "actually it was September, not August." Fixes a factual error in an existing memory.
+- **UPDATE** — "my plans changed — update my Q3 milestones to…" Replaces outdated content with the current state.
+- **APPEND / ADD DETAIL** — "add these items to my project plan." Extends existing memory with new content.
+
+Does **not** write anything — it returns a diff for review. Nothing is committed until the user approves the diff in the Graphnosis App (or, rarely, an AI client calls `apply` on the user's explicit instruction).
+
+> **Backward-compatible alias:** the old name `correct` still works — existing AI clients don't need a session restart.
 
 ### The three paths
 
-- **Deterministic** (`mode: deterministic` — no Neural Network, no Local LLM). Graphnosis recalls the single closest-matching memory and proposes one `supersede` edit — replacing it with the correction text while preserving the original for audit lineage. When nothing matches, the correction is proposed as a new memory instead. Identical input always yields an identical diff.
-- **GNN-expanded** (`mode: gnn-expanded` — Neural Network enabled, no Local LLM). The candidate set is widened with GNN-predicted related memories; a strongly-predicted one can outrank the top recall hit and become the memory that is superseded. Still a single `supersede`, but the choice is GNN-influenced — and therefore non-deterministic.
-- **LLM-assisted** (`mode: llm-assisted` — Local LLM enabled). The local LLM parses the correction against every candidate memory (including any GNN-surfaced ones) and may propose a multi-part diff (any mix of `supersede` / `edit` / `delete` / `add`). Most capable, but the proposed diff can vary between runs.
+- **Deterministic** (`mode: deterministic` — no Neural Network, no Local LLM). Graphnosis recalls the single closest-matching memory and proposes one `supersede` edit — replacing it with the new content while preserving the original for audit lineage. When nothing matches, the change is proposed as a new memory instead. Identical input always yields an identical diff.
+- **GNN-expanded** (`mode: gnn-expanded` — Neural Network enabled, no Local LLM). The candidate set is widened with GNN-predicted related memories; a strongly-predicted one can outrank the top recall hit. Still a single `supersede`, but the choice is GNN-influenced — and therefore non-deterministic.
+- **LLM-assisted** (`mode: llm-assisted` — Local LLM enabled). The local LLM parses the change against every candidate memory and may propose a multi-part diff (any mix of `supersede` / `edit` / `delete` / `add`). Most capable, but the proposed diff can vary between runs.
 
 The path is chosen by what the user has enabled for the active cortex — the AI client does not pick. The result's `mode` field reports which one ran.
 
@@ -242,7 +359,7 @@ A JSON string. `mode` is `"deterministic"`, `"gnn-expanded"`, or `"llm-assisted"
 
 ```json
 {
-  "tool": "correct",
+  "tool": "edit",
   "arguments": {
     "correction": "The API endpoint changed from /v1/search to /v2/query in March 2025.",
     "graphId": "work"
@@ -252,8 +369,9 @@ A JSON string. `mode` is `"deterministic"`, `"gnn-expanded"`, or `"llm-assisted"
 
 ### Examples in practice
 
-- **Everyday —** Your AI mentions your anniversary is in June, but it's actually July. You say "that's wrong, our anniversary is in July" — `correct` proposes a diff superseding the old memory, and you review it in the app before anything changes.
-- **Technical —** You realise a stored note says the service runs on Node 18 when you've since moved to Node 22. You tell the AI to fix it — `correct` returns a reviewed `supersede` diff; the original is kept for audit lineage and nothing is written until you approve.
+- **Correction —** Your AI mentions your anniversary is in June, but it's actually July. You say "that's wrong, our anniversary is in July" — `edit` proposes a diff superseding the old memory, and you review it in the app before anything changes.
+- **Update —** You've moved from Node 18 to Node 22. You tell the AI to update it — `edit` proposes a `supersede` diff; the original is kept for audit lineage and nothing is written until you approve.
+- **Append —** You say "add 'bring laptop charger' to my packing list" — `edit` finds the packing list memory and proposes appending the item, leaving the rest intact.
 
 ---
 
@@ -261,14 +379,14 @@ A JSON string. `mode` is `"deterministic"`, `"gnn-expanded"`, or `"llm-assisted"
 
 **Determinism: deterministic.** Writes an already-reviewed diff to the graph via the op-log; applying the same diff twice is idempotent.
 
-Commit a correction diff that was proposed by `correct`.
+Commit a diff that was proposed by `edit`.
 
 ### Parameters
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `graphId` | string | Yes | The engram the diff targets. |
-| `diffId` | string | Yes | The `diffId` returned by `correct`. |
+| `diffId` | string | Yes | The `diffId` returned by `edit`. |
 
 ### Return
 
@@ -346,7 +464,7 @@ Forgot 3 nodes: node_abc123, node_def456, node_ghi789.
 - This is a **soft delete** — the user can recover deleted nodes via the app's Recover flow. Nothing is permanently destroyed.
 - `forget` removes only the nodes you name. The source record and every other node from that source remain intact.
 - Always confirm with the user which node(s) to remove before calling.
-- To fix content rather than delete it, use `correct` instead.
+- To fix content rather than delete it, use `edit` instead.
 
 ### Example
 
@@ -517,6 +635,10 @@ A JSON string:
 }
 ```
 
+### Notes
+
+- The vitality score **persists across sessions** — it is stored alongside your cortex and does not drop to zero just because you unlocked the app. The score reflects the last computed state and updates after each consolidation pass.
+
 ### Examples in practice
 
 - **Everyday —** You ask "how healthy is my memory overall?" — `vitality` returns a 0–100 score, and a 74 on your personal engram nudges you to tidy up loosely connected notes.
@@ -579,7 +701,9 @@ Like `recall`, but results come back as a JSON array of node objects (`nodeId`, 
 
 ### `recall_with_citations`
 
-Like `recall`, but each memory carries an inline citation to the source it was derived from (e.g. `[clip:abc123]`) — for traceable provenance per fact.
+Like `recall`, but each fact in the prose carries an inline citation linking it to its source — useful when you need to present provenance per statement.
+
+Citation format: `[{kind}:{numericId}·{label}]` — e.g. `[clip:1779225683078·work-notes]` or `[ai-conversation:1779093613903·session-summary]`. Kind is one of `clip`, `ai-conversation`, `file`, or `url`.
 
 - **Parameters:** same as `recall_structured`.
 - **Try saying:** *"Tell me about the API redesign and cite the source for each fact."*
@@ -662,7 +786,7 @@ Read-only windows into the autonomous brain engine that runs in the background w
 
 ### `duplicate_pairs`
 
-Near-duplicate node pairs the brain engine has already flagged for review — high-confidence matches from the background scan, not ad-hoc searches. Resolve with `correct` (merge) or `forget(nodeIds=[nodeId])` (remove one side). Requires the brain engine to be running.
+Near-duplicate node pairs the brain engine has already flagged for review — high-confidence matches from the background scan, not ad-hoc searches. Resolve with `edit` (merge) or `forget(nodeIds=[nodeId])` (remove one side). Requires the brain engine to be running.
 
 - **Try saying:** *"What does my brain think is duplicated?"*
 
@@ -700,7 +824,7 @@ Detects near-duplicate content across engrams by sampling top nodes from each en
 
 ### `check_duplicate`
 
-Before `remember`, checks whether very similar content already exists in one engram or all of them. Returns matches above the threshold so the user can choose `remember` (new fact) or `correct` (update existing). Helps prevent duplicate-node pollution.
+Before `remember`, checks whether very similar content already exists in one engram or all of them. Returns matches above the threshold so the user can choose `remember` (new fact) or `edit` (update existing). Helps prevent duplicate-node pollution.
 
 - **Parameters:** `text` · `engram` (optional).
 - **Try saying:** *"Before I save this note about Postgres tuning, is there anything similar already?"*

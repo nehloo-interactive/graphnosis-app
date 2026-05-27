@@ -9,7 +9,9 @@ export interface HttpBridgeOptions {
   deps: McpDeps;
   port: number;
   host: string;
-  token: string;
+  /** Pass a getter function so token rotation takes effect immediately without
+   *  restarting the server — the auth check calls it on every request. */
+  token: string | (() => string);
   allowedOrigins: string[];
 }
 
@@ -114,7 +116,8 @@ export async function startHttpMcpServer(opts: HttpBridgeOptions): Promise<http.
   const server = http.createServer(async (req, res) => {
     // ── Auth ─────────────────────────────────────────────────────────────────
     const authHeader = (req.headers['authorization'] as string | undefined) ?? '';
-    if (authHeader !== `Bearer ${opts.token}`) {
+    const expectedToken = typeof opts.token === 'function' ? opts.token() : opts.token;
+    if (!expectedToken || authHeader !== `Bearer ${expectedToken}`) {
       rejectUnauthorized(res);
       return;
     }
@@ -237,8 +240,16 @@ export async function startHttpMcpServer(opts: HttpBridgeOptions): Promise<http.
     await transport.handleRequest(req, res, body);
   });
 
+  // Runtime error handler (fires AFTER the server has started, e.g., on
+  // keep-alive socket errors). Startup errors (EADDRINUSE etc.) are handled
+  // by the one-time `reject` listener in the Promise below — to avoid the
+  // same event being logged twice, suppress errors that arrive before the
+  // server has bound successfully.
+  let serverStarted = false;
   server.on('error', (err) => {
-    console.error(`[graphnosis-http-bridge] server error: ${err.message}`);
+    if (serverStarted) {
+      console.error(`[graphnosis-http-bridge] server error: ${err.message}`);
+    }
   });
 
   server.once('close', () => {
@@ -253,6 +264,7 @@ export async function startHttpMcpServer(opts: HttpBridgeOptions): Promise<http.
   return new Promise<http.Server>((resolve, reject) => {
     server.once('error', reject);
     server.listen(opts.port, opts.host, () => {
+      serverStarted = true;
       console.error(
         `[graphnosis-sidecar] MCP HTTP bridge on http://${opts.host}:${opts.port}/mcp`,
       );

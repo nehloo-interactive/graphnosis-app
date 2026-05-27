@@ -11,12 +11,13 @@ Graphnosis makes strong claims: your data stays on your machine, the encryption 
 
 The strongest privacy claim Graphnosis makes is that your cortex never leaves your device. You can confirm it directly.
 
-Point a network monitor at the app — Little Snitch, the macOS Activity Monitor's Network tab, or `lsof -i` from a terminal. Outside of two cases, you will see no outbound traffic at all:
+Point a network monitor at the app — Little Snitch, the macOS Activity Monitor's Network tab, or `lsof -i` from a terminal. Outside of three cases, you will see no outbound traffic at all:
 
-- **The one-time embedding-model download.** On first run, Graphnosis fetches the BGE-small-en-v1.5 model from Hugging Face. After that it never downloads it again, and you can pre-stage the model to skip even this.
+- **A silent update check on startup.** 15 seconds after the app launches, it fetches `latest.json` from the GitHub releases page to check whether a newer version is available. No user data is sent — just a plain HTTP GET. The response is verified against a hardcoded public key before any binary is applied.
+- **The one-time embedding-model download.** On first run, Graphnosis fetches the BGE-small-en-v1.5 model from Hugging Face. After that it never downloads it again.
 - **Any connectors you set up.** A connector pulls content *from* a service you chose, on a schedule you set. If you configure none, there is nothing here to see.
 
-That is the complete list — see [Privacy Policy §4](/legal/privacy-policy/) for the precise wording. There is no telemetry, no analytics, no update ping, no Nehloo Interactive endpoint.
+That is the complete list — see [Privacy Policy §4](/legal/privacy-policy/) for the precise wording, and [What Leaves Your Device](/guides/network-activity/) for a full per-request breakdown. There is no telemetry, no analytics, no Nehloo Interactive endpoint, and no calls to any cloud AI service.
 
 The simplest test of all: **turn Wi-Fi off.** Recall still works. Ingest still works. Adding the bundled Graphnosis docs to your cortex still works. None of the core app needs a network, because none of it talks to a server.
 

@@ -155,6 +155,20 @@ export class ConnectorManager {
   // ── Internal ──────────────────────────────────────────────────────────────
 
   private mountConnector(cfg: ConnectorConfig): void {
+    // Skip connectors whose target engram has been archived. An archived
+    // engram is hidden from the picker and should receive no new data —
+    // running the connector against it can cause write-race quarantine loops
+    // (the connector writes concurrently with op-log recovery, producing a
+    // new corrupt .gai that gets quarantined again on the next boot).
+    const targetMeta = this.host.getSettings().graphMetadata[cfg.graphId];
+    if (targetMeta?.archived) {
+      console.error(
+        `[connector:${cfg.id}] skipping mount — target engram '${cfg.graphId}' is archived.` +
+        ` Unarchive the engram in Settings to re-enable this connector.`,
+      );
+      return;
+    }
+
     const connector = buildConnector(cfg);
     const hasPull = typeof connector.pull === 'function';
     const pullTimer = hasPull

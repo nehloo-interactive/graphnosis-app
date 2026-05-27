@@ -55,6 +55,7 @@ export default defineConfig({
             { label: 'Boot & Engram Loading', slug: 'guides/boot-and-engram-loading' },
             { label: 'Keeping Your Cortex Safe', slug: 'guides/keeping-your-cortex-safe' },
             { label: 'Recovery', slug: 'guides/recovery' },
+            { label: 'What Leaves Your Device', slug: 'guides/network-activity' },
             { label: 'Verify It Yourself', slug: 'guides/verify-it-yourself' },
           ],
         },

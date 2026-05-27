@@ -1486,12 +1486,13 @@ dependencies = [
 
 [[package]]
 name = "graphnosis-app"
-version = "0.10.0"
+version = "1.11.1"
 dependencies = [
  "anyhow",
  "dirs 5.0.1",
  "image",
  "keyring",
+ "mac-notification-sys",
  "notify",
  "serde",
  "serde_json",

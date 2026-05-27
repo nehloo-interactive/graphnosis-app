@@ -7,9 +7,10 @@ import { z } from 'zod';
 import type { GraphnosisHost } from './host.js';
 import { ingestFile, ingestWeb, ingestClip } from './ingest.js';
 import { ingestGraphnosisDocs } from './docs-ingest.js';
+import { BUNDLED_DOCS } from './docs-content.generated.js';
 import type { BroadcastRawFn } from './events.js';
 import { mcpRegistry } from './mcp-registry.js';
-import { applyCorrection as runApplyCorrection } from './correction.js';
+import { applyCorrection as runApplyCorrection, proposeCorrection } from './correction.js';
 import type { CorrectionDiff } from './correction.js';
 import { oplog } from '@nehloo-interactive/graphnosis-secure-sync';
 import { withEmbedding } from './embedding-queue.js';
@@ -181,6 +182,17 @@ export async function startIpc(deps: IpcDeps): Promise<net.Server> {
       server.listen(deps.socketPath, () => resolve(server));
     }
   });
+}
+
+/** Throws a user-facing error when the Studio subscription is not active. */
+function assertStudioEnabled(deps: IpcDeps): void {
+  const settings = deps.host.getSettings();
+  if (!(settings.ai as { studioEnabled?: boolean }).studioEnabled) {
+    throw new Error(
+      'STUDIO_GATED: Memory Studio requires the Studio subscription. ' +
+      'Upgrade at https://graphnosis.app/pricing',
+    );
+  }
 }
 
 async function dispatch(deps: IpcDeps, method: string, params: unknown): Promise<unknown> {
@@ -762,15 +774,29 @@ async function dispatch(deps: IpcDeps, method: string, params: unknown): Promise
         throw new Error('Local LLM is not enabled or not reachable. Configure in Settings → AI.');
       }
       const system =
-        'You are a precise research assistant working only with the snippets the user provides. ' +
-        'Write a SINGLE paragraph (<= 90 words) that answers the user\'s question grounded ONLY in those snippets. ' +
-        'After each claim, cite the snippet number in square brackets like [1], [2]. ' +
-        'If the snippets do not answer the question, say so plainly — do not invent facts. ' +
-        'No markdown headings, no lists, no preamble — just the paragraph.';
+        'You are a precise research assistant. The snippets below are raw excerpts from the user\'s ' +
+        'personal memory — they may include OCR text, partial sentences, or metadata noise. ' +
+        'Apply these rules strictly and in this order:\n\n' +
+        '1. LANGUAGE (MANDATORY — highest priority): The search query language OVERRIDES everything else. ' +
+        'Look at the search query word(s) only — ignore the language of the snippets entirely. ' +
+        'If the query is English, respond in English even if every snippet is in French, Spanish, Romanian, etc. ' +
+        'Example: query "sensors" → respond in English. Query "capteurs" → respond in French. ' +
+        'If the query is one ambiguous word used in multiple languages, default to English.\n\n' +
+        '2. LENGTH (MANDATORY): Your response MUST NOT exceed 60 words total. Count carefully. ' +
+        'Cut mercilessly — one tight sentence per main point.\n\n' +
+        '3. CITATIONS: Every claim MUST be followed immediately by the snippet number(s) in square brackets, ' +
+        'e.g. [1] or [3, 7]. This is mandatory — never omit citations.\n\n' +
+        '4. RELEVANCE CHECK:\n' +
+        '   • If snippets clearly address the query: write ≤ 60 words grounded ONLY in the snippets.\n' +
+        '   • If snippets are mostly noise or off-topic: say so in one sentence — do not fabricate content.\n' +
+        '   • If snippets partially answer: state what you found and what is missing.\n\n' +
+        '5. NEVER invent facts, never use outside knowledge, never speculate.\n\n' +
+        'FORMAT: One plain paragraph only. No headings, no bullet lists, no bold, no italics, no markdown, ' +
+        'no URLs, no links. Plain prose with citation numbers [N] only.';
       const numbered = args.hits
         .map((h, i) => `[${i + 1}] ${h.text}${h.sourceFile ? ` (source: ${h.sourceFile})` : ''}`)
         .join('\n\n');
-      const user = `Question: ${args.query}\n\nSnippets:\n${numbered}\n\nAnswer:`;
+      const user = `User searched for: "${args.query}"\n\nExcerpts from their personal memory:\n${numbered}\n\nAnswer:`;
       const synthesis = await llm.complete({ system, user });
       return {
         answer: synthesis.trim(),
@@ -995,6 +1021,11 @@ async function dispatch(deps: IpcDeps, method: string, params: unknown): Promise
       // calls, so the push-event channel emits two mutation ticks; the
       // App's pollGraphMutations will pick up the second one and refresh.
       await deps.host.forgetSource(graphId, sourceId, { triggeredBy: 'user:ingest' });
+      // Purge orphan active nodes left by any previous failed reingest.
+      // A crash or IPC timeout mid-ingest can leave SDK-graph nodes with no
+      // source record; their hashes block the full chunk count from being
+      // restored on the next attempt.
+      await deps.host.purgeOrphanNodes(graphId);
       const ref = source.ref;
       const record = await ingestFile(deps.host, graphId, ref, {
         wrapIngest: (fn) => withEmbedding(fn),
@@ -1015,9 +1046,12 @@ async function dispatch(deps: IpcDeps, method: string, params: unknown): Promise
       if (forgottenNodeIds.length > 0) {
         deps.brainEngine?.purgeDeletedNodes(forgottenNodeIds);
       }
-      // Re-link the re-ingested nodes across engrams immediately — don't wait
-      // for the background cross-engram timer (could be hours away).
-      deps.brainEngine?.runCrossEngramNow();
+      // NOTE: we intentionally do NOT call runCrossEngramNow() here.
+      // Each move already triggers kickoffRelink() inside host.ingest(), and
+      // firing a full cross-engram pass per move on large engrams saturates the
+      // event loop when the user moves several sources in quick succession.
+      // The background cross-engram timer (brain-engine) picks it up after the
+      // moves settle — a short delay is acceptable for relinking.
       return newRecord;
     }
     case 'corrections.list': {
@@ -1196,7 +1230,12 @@ async function dispatch(deps: IpcDeps, method: string, params: unknown): Promise
           reconnectMs: z.number().int().positive(),
         }).optional(),
         ui: z.object({
-          inspectorDetail: z.enum(['simple', 'detailed']),
+          // All fields optional so callers can do partial updates (e.g.
+          // the status-bar theme toggle posts just `{ ui: { theme } }`
+          // without re-asserting inspectorDetail). The host-side
+          // normalizeSettings backfills defaults for anything missing.
+          inspectorDetail: z.enum(['simple', 'detailed']).optional(),
+          theme: z.enum(['auto', 'light', 'dark']).optional(),
         }).optional(),
         ai: z.object({
           useAsDefaultMemory: z.boolean(),
@@ -1209,6 +1248,7 @@ async function dispatch(deps: IpcDeps, method: string, params: unknown): Promise
           reingestQuietMs: z.number().int().positive().optional(),
           chunkSize: z.enum(['fine', 'balanced', 'coarse']).optional(),
           embedBatch: z.enum(['small', 'medium', 'large', 'auto']).optional(),
+          embedWorkers: z.number().int().min(1).max(4).optional(),
           sessionTokenCap: z.number().int().min(1000).max(200_000).optional(),
           sessionNodeCap: z.number().int().min(10).max(5000).optional(),
           // Consent interval settings — writable from the UI, blocked from MCP.
@@ -1244,7 +1284,17 @@ async function dispatch(deps: IpcDeps, method: string, params: unknown): Promise
       if (parsed.contentCache) patch.contentCache = parsed.contentCache;
       if (parsed.forget) patch.forget = parsed.forget;
       if (parsed.mcpRelay) patch.mcpRelay = parsed.mcpRelay;
-      if (parsed.ui) patch.ui = parsed.ui;
+      if (parsed.ui) {
+        // UiSettings on the host requires all fields; the wire payload
+        // accepts partials so the theme toggle can post just `{ ui: { theme } }`
+        // without touching inspectorDetail. Backfill missing fields from
+        // current settings so partial updates don't silently revert anything.
+        const currentUi = deps.host.getSettings().ui;
+        patch.ui = {
+          inspectorDetail: parsed.ui.inspectorDetail ?? currentUi.inspectorDetail,
+          theme: parsed.ui.theme ?? currentUi.theme,
+        };
+      }
       if (parsed.ai) {
         // AiSettings requires all fields, but the wire payload allows
         // older clients to omit newer ones. Fill from current settings so
@@ -1257,6 +1307,7 @@ async function dispatch(deps: IpcDeps, method: string, params: unknown): Promise
           reingestQuietMs: parsed.ai.reingestQuietMs ?? currentAi.reingestQuietMs,
           chunkSize: parsed.ai.chunkSize ?? currentAi.chunkSize,
           embedBatch: parsed.ai.embedBatch ?? currentAi.embedBatch,
+          ...(parsed.ai.embedWorkers !== undefined ? { embedWorkers: parsed.ai.embedWorkers } : currentAi.embedWorkers !== undefined ? { embedWorkers: currentAi.embedWorkers } : {}),
           // The local-LLM master switch is owned by the dedicated
           // `llm:setEnabled` IPC — preserve it across a generic settings update.
           llmEnabled: currentAi.llmEnabled,
@@ -2038,9 +2089,15 @@ async function dispatch(deps: IpcDeps, method: string, params: unknown): Promise
       const docsState = settings.docsEngram;
       let decision: 'offer' | 'reingest' | 'none';
       if (exists) {
-        // Engram is present. Re-ingest only if it was last ingested under a
-        // different app version — the docs site may have changed since.
-        decision = docsState?.ingestedAppVersion !== appVersion ? 'reingest' : 'none';
+        // Engram is present. Re-ingest if:
+        //  (a) app version changed — docs content may have changed, OR
+        //  (b) source count is below the number of bundled doc pages — this
+        //      catches partial losses caused by interrupted reingest operations
+        //      (forgetSource succeeds, re-ingest fails → source permanently gone).
+        const sourceCount = deps.host.listSources(DOCS_ENGRAM_ID).length;
+        const versionMismatch = docsState?.ingestedAppVersion !== appVersion;
+        const sourcesIncomplete = sourceCount < BUNDLED_DOCS.length;
+        decision = (versionMismatch || sourcesIncomplete) ? 'reingest' : 'none';
       } else if (docsState?.declined === true) {
         // User explicitly clicked "Not now" — respect that, never re-offer.
         decision = 'none';
@@ -2059,28 +2116,24 @@ async function dispatch(deps: IpcDeps, method: string, params: unknown): Promise
       const { appVersion } = z.object({ appVersion: z.string() }).parse(params ?? {});
       const docsExists = deps.host.listGraphs().includes(DOCS_ENGRAM_ID);
       if (docsExists) {
-        // Engram already exists (re-ingest after app update). Purge all
-        // existing sources first so we replace, not duplicate. Each page
-        // uses a stable `graphnosis-docs:<slug>` sourceRef — removing them
-        // before re-ingesting keeps the engram clean regardless of whether
-        // pages were added, removed, or renamed between releases.
-        const existingSources = deps.host.listSources(DOCS_ENGRAM_ID);
-        for (const src of existingSources) {
-          await deps.host.forgetSource(DOCS_ENGRAM_ID, src.sourceId, {
-            triggeredBy: 'user:ingest',
-          });
-        }
-      } else {
-        // Create the docs engram — mirror the create-then-set-metadata
-        // pattern from graphs.createWithTemplate so it shows up in the
-        // picker with a friendly name.
-        await deps.host.createGraph(DOCS_ENGRAM_ID);
-        await deps.host.setGraphMetadata(DOCS_ENGRAM_ID, {
-          template: 'reading',
-          displayName: 'Graphnosis Docs',
-          createdAt: Date.now(),
-        });
+        // Wipe the entire docs engram and recreate it from scratch. A simple
+        // forgetSource loop is insufficient: previous partial ingests (failed
+        // mid-way due to IPC timeouts or crashes) can leave "orphan" active
+        // nodes in the graph whose source records were never saved. Those
+        // nodes stay confidence=0.9 across restarts, their content hashes
+        // land in the dedup set, and every subsequent ingest of the same
+        // content produces 0 new nodes → host.ingest throws → only the
+        // subset that didn't orphan ever succeeds. Deleting + recreating the
+        // engram guarantees a completely clean slate with no orphan nodes.
+        await deps.host.deleteGraph(DOCS_ENGRAM_ID);
       }
+      // (Re-)create the docs engram with the same stable metadata.
+      await deps.host.createGraph(DOCS_ENGRAM_ID);
+      await deps.host.setGraphMetadata(DOCS_ENGRAM_ID, {
+        template: 'reading',
+        displayName: 'Graphnosis Docs',
+        createdAt: Date.now(),
+      });
       const { ingested, failed } = await withEmbedding(() =>
         ingestGraphnosisDocs(deps.host, DOCS_ENGRAM_ID),
       );
@@ -2106,6 +2159,223 @@ async function dispatch(deps: IpcDeps, method: string, params: unknown): Promise
             : {}),
         },
       });
+      return { ok: true };
+    }
+
+    // ── Memory Studio IPC ────────────────────────────────────────────────────
+    // All studio.* methods are gated behind the Studio subscription.
+    // They route through the same host/brain/LLM functions the MCP server uses,
+    // so there is no logic duplication — only a thin IPC shim on top.
+
+    case 'studio.recall': {
+      assertStudioEnabled(deps);
+      const args = z.object({
+        query: z.string().min(1),
+        maxTokens: z.coerce.number().int().positive().max(8000).optional(),
+        maxNodes: z.coerce.number().int().positive().max(50).optional(),
+        onlyEngrams: z.array(z.string()).optional(),
+      }).parse(params ?? {});
+      const sub = await withEmbedding(() => deps.host.recall(args.query, {
+        budget: { maxTokens: args.maxTokens ?? 3000, maxNodes: args.maxNodes ?? 25 },
+        ...(args.onlyEngrams?.length ? { onlyGraphIds: args.onlyEngrams } : {}),
+      }));
+      return {
+        prompt: sub.prompt,
+        tokensUsed: sub.tokensUsed,
+        nodesIncluded: sub.nodesIncluded,
+        byGraph: Object.fromEntries(sub.byGraph),
+        audit: sub.audit,
+      };
+    }
+
+    case 'studio.digDeeper': {
+      assertStudioEnabled(deps);
+      const args = z.object({
+        query: z.string().min(1),
+        maxTokens: z.coerce.number().int().positive().max(8000).optional(),
+        maxNodes: z.coerce.number().int().positive().max(50).optional(),
+        onlyEngrams: z.array(z.string()).optional(),
+      }).parse(params ?? {});
+      const sub = await withEmbedding(() => deps.host.digDeeper(args.query, {
+        budget: { maxTokens: args.maxTokens ?? 4000, maxNodes: args.maxNodes ?? 30 },
+        ...(args.onlyEngrams?.length ? { onlyGraphIds: args.onlyEngrams } : {}),
+      }));
+      return {
+        prompt: sub.prompt,
+        tokensUsed: sub.tokensUsed,
+        nodesIncluded: sub.nodesIncluded,
+        byGraph: Object.fromEntries(sub.byGraph),
+        audit: sub.audit,
+        provenance: sub.digDeeperProvenance,
+      };
+    }
+
+    case 'studio.suggestEngram': {
+      assertStudioEnabled(deps);
+      const args = z.object({
+        text: z.string().min(1),
+        topK: z.coerce.number().int().min(1).max(5).optional(),
+      }).parse(params ?? {});
+      const topK = args.topK ?? 3;
+      const candidates = deps.host.listGraphs()
+        .map((graphId) => {
+          const meta = deps.host.getGraphMetadata(graphId);
+          return { graphId, displayName: meta?.displayName ?? graphId };
+        })
+        .slice(0, topK);
+      return { candidates };
+    }
+
+    case 'studio.remember': {
+      assertStudioEnabled(deps);
+      const args = z.object({
+        text: z.string().min(1),
+        graphId: z.string().min(1),
+        label: z.string().optional(),
+        kind: z.enum(['clip', 'ai-conversation']).optional(),
+      }).parse(params ?? {});
+      const result = await withEmbedding(() => ingestClip(
+        deps.host,
+        args.graphId,
+        args.text,
+        args.label ?? 'Memory Studio note',
+        { addedBy: 'memory-studio', sourceKind: args.kind ?? 'clip' },
+      ));
+      return { ok: true, sourceId: result.sourceId, nodeCount: result.nodeIds.length };
+    }
+
+    case 'studio.edit': {
+      assertStudioEnabled(deps);
+      const args = z.object({
+        correction: z.string().min(1),
+        graphId: z.string().optional(),
+      }).parse(params ?? {});
+      const llm = deps.llm?.() ?? null;
+      const { diff, candidates, mode, targetGraphId } = await proposeCorrection({
+        host: deps.host,
+        llm,
+        correction: args.correction,
+        ...(args.graphId ? { graphIdHint: args.graphId } : {}),
+      });
+      const resolvedGraphId = targetGraphId ?? args.graphId ?? candidates[0]?.graphId ?? deps.host.listGraphs()[0] ?? '';
+      const diffId = `studio_diff_${Date.now().toString(36)}`;
+      deps.pendingDiffs.set(diffId, { graphId: resolvedGraphId, diff, createdAt: Date.now() });
+      deps.broadcastRaw({
+        kind: 'correction.proposed',
+        name: diffId,
+        payload: {
+          diffId,
+          graphId: resolvedGraphId,
+          correction: args.correction,
+          requestedBy: 'memory-studio',
+          changeCount: (diff.edits?.length ?? 0) + (diff.adds?.length ?? 0),
+        },
+      });
+      return { diffId, mode, preview: diff, candidates };
+    }
+
+    case 'studio.gnnNeighbors': {
+      assertStudioEnabled(deps);
+      const args = z.object({
+        query: z.string().min(1),
+        engram: z.string().optional(),
+        limit: z.coerce.number().int().positive().max(20).optional(),
+      }).parse(params ?? {});
+      if (!deps.brainEngine) {
+        return { neighbors: [], error: 'GNN not enabled. Enable it in Non-Deterministic Aid → Neural Network.' };
+      }
+      const limit = args.limit ?? 10;
+      let graphIds = deps.host.listGraphs();
+      if (args.engram) {
+        const found = graphIds.find(
+          (id) => id === args.engram || deps.host.getGraphMetadata(id)?.displayName === args.engram,
+        );
+        if (found) graphIds = [found];
+      }
+      const neighbors: Array<{ nodeId: string; graphId: string; text: string; score: number; engramName: string }> = [];
+      for (const graphId of graphIds) {
+        // Get semantically close seeds for this query in this engram
+        const seeds = await withEmbedding(
+          () => deps.host.searchNodes(graphId, args.query, 5) as Promise<Array<{ nodeId: string; score: number }>>,
+        );
+        const seedIds = new Set(seeds.map((s) => s.nodeId));
+        // Look up GNN-predicted edges where one end is a seed
+        const edges = (deps.brainEngine!.getPredictedEdges(graphId) as unknown) as Array<{ from: string; to: string; score: number }>;
+        const nodeList = deps.host.listNodes(graphId) as Array<{ id: string; contentPreview?: string }>;
+        const textById = new Map(nodeList.map((n) => [n.id, n.contentPreview ?? '']));
+        const engramName = deps.host.getGraphMetadata(graphId)?.displayName ?? graphId;
+        for (const edge of edges) {
+          const neighborId = seedIds.has(edge.from) ? edge.to : seedIds.has(edge.to) ? edge.from : null;
+          if (!neighborId) continue;
+          const text = textById.get(neighborId);
+          if (!text) continue;
+          neighbors.push({ nodeId: neighborId, graphId, text, score: edge.score, engramName });
+          if (neighbors.length >= limit) break;
+        }
+        if (neighbors.length >= limit) break;
+      }
+      // Deduplicate by nodeId and sort by score descending
+      const seen = new Set<string>();
+      const deduped = neighbors
+        .filter((n) => { if (seen.has(n.nodeId)) return false; seen.add(n.nodeId); return true; })
+        .sort((a, b) => b.score - a.score);
+      return { neighbors: deduped };
+    }
+
+    case 'studio.checkDuplicate': {
+      assertStudioEnabled(deps);
+      const args = z.object({
+        text: z.string().min(1),
+        engram: z.string().optional(),
+        threshold: z.coerce.number().min(0.5).max(1.0).optional(),
+      }).parse(params ?? {});
+      const threshold = args.threshold ?? 0.85;
+      let graphIds = deps.host.listGraphs();
+      if (args.engram) {
+        const found = graphIds.find(
+          (id) => id === args.engram || deps.host.getGraphMetadata(id)?.displayName === args.engram,
+        );
+        if (found) graphIds = [found];
+      }
+      const hits: Array<{ score: number; graphId: string; engramName: string; text: string; nodeId: string }> = [];
+      for (const graphId of graphIds) {
+        const results = await withEmbedding(
+          () => deps.host.searchNodes(graphId, args.text, 3) as Promise<Array<{ nodeId: string; score: number; contentPreview?: string }>>,
+        );
+        for (const r of results) {
+          if (r.score >= threshold) {
+            hits.push({
+              score: r.score,
+              graphId,
+              engramName: deps.host.getGraphMetadata(graphId)?.displayName ?? graphId,
+              text: (r.contentPreview ?? '').slice(0, 200),
+              nodeId: r.nodeId,
+            });
+          }
+        }
+      }
+      return { duplicates: hits, hasDuplicates: hits.length > 0 };
+    }
+
+    case 'studio.setEnabled': {
+      // Called by the subscription check (Stripe webhook via graphnosis.app backend)
+      // or manually during development. Sets the flag that gates all studio.* methods.
+      // TODO: in production, this should be called from the subscription-check
+      // flow in main.ts after verifying with https://api.graphnosis.app/subscription/status
+      const { enabled } = z.object({ enabled: z.boolean() }).parse(params ?? {});
+      const current = deps.host.getSettings();
+      await deps.host.setSettings({ ai: { ...current.ai, studioEnabled: enabled } });
+      return { ok: true };
+    }
+
+    case 'correction.apply': {
+      // Apply a pending correction diff by its diffId (used by Memory Studio's
+      // Edit panel after the user reviews and approves the proposed changes).
+      const { diffId } = z.object({ diffId: z.string().min(1) }).parse(params ?? {});
+      const pending = deps.pendingDiffs.get(diffId);
+      if (!pending) throw new Error(`No pending diff with id "${diffId}". It may have expired or already been applied.`);
+      await runApplyCorrection({ host: deps.host, graphId: pending.graphId, diff: pending.diff });
+      deps.pendingDiffs.delete(diffId);
       return { ok: true };
     }
 
