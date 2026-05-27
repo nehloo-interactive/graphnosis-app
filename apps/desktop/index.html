@@ -2344,6 +2344,35 @@
       }
       .studio-paywall-card h2 { margin: 0 0 6px; font-size: 18px; }
       .studio-paywall-tier-note { color: var(--fg-dim); font-size: 13px; margin: 6px 0 14px; }
+      /* ── Memory Studio intro modal ─────────────────────────────────────── */
+      .studio-intro-overlay {
+        position: fixed; inset: 0; z-index: 600;
+        background: rgba(0,0,0,0.55);
+        backdrop-filter: blur(6px);
+        display: flex; align-items: center; justify-content: center;
+      }
+      .studio-intro-overlay.hidden { display: none; }
+      .studio-intro-card {
+        background: var(--bg-elev);
+        border: 1px solid rgba(255,255,255,0.18);
+        border-radius: 16px;
+        padding: 36px 40px 28px;
+        max-width: 460px;
+        width: calc(100% - 48px);
+        text-align: center;
+        box-shadow:
+          0 0 0 1px rgba(255,255,255,0.07),
+          0 0 40px rgba(255,255,255,0.06),
+          0 24px 72px rgba(0,0,0,0.55);
+      }
+      .studio-intro-card h2 { margin: 0 0 10px; font-size: 22px; }
+      .studio-intro-card p { color: var(--fg-dim); font-size: 14px; line-height: 1.55; margin: 0 0 20px; }
+      .studio-intro-dismiss-row {
+        display: flex; align-items: center; justify-content: center;
+        gap: 8px; margin-top: 16px;
+        font-size: 13px; color: var(--fg-dim); cursor: pointer;
+      }
+      .studio-intro-dismiss-row input[type="checkbox"] { cursor: pointer; }
       .studio-workspace { padding: 2px 0 4px; }
       /* Input rows */
       .studio-input-row { display: flex; gap: 6px; align-items: center; margin-bottom: 6px; flex-wrap: wrap; }
@@ -2981,39 +3010,38 @@
       }
       .g-tabs {
         display: flex;
-        gap: 2px;
+        gap: 0;
         border-bottom: 1px solid var(--border);
         margin-bottom: 10px;
         flex-shrink: 0;
-        /* Inset the strip so the first tab isn't flush against the window
-           edge — otherwise the "Check-in" label looks clipped at the left. */
         padding-left: 12px;
       }
       .g-tab {
-        /* appearance:none strips the macOS native push-button rendering —
-           without it WebKit keeps an intrinsic text inset that no amount of
-           padding:0 removes, so the first tab never lines up with the title. */
         -webkit-appearance: none;
         appearance: none;
         background: transparent;
         border: 0;
         border-bottom: 2px solid transparent;
-        padding: 7px 14px;
+        /* thin turquoise separator on left + SW corner for all tabs */
+        border-left: 1px solid color-mix(in oklab, var(--accent) 28%, transparent);
+        padding: 6px 9px;
         font-family: inherit;
-        font-size: 14px;
+        font-size: 12px;
         color: var(--fg-dim);
         cursor: pointer;
         font-weight: 500;
         margin-bottom: -1px;
+        line-height: 1.3;
+        text-align: center;
       }
       .g-tab:hover { color: var(--fg); }
       .g-tab.active {
         color: var(--fg);
         border-bottom-color: var(--accent);
+        border-left-color: color-mix(in oklab, var(--accent) 55%, transparent);
       }
-      /* Drop the first tab's left padding so its label lines up flush with
-         the "Graphnosis" pane title directly above it. */
-      .g-tab:first-child { padding-left: 0; }
+      /* First tab has no left separator — it's the leftmost edge */
+      .g-tab:first-child { padding-left: 0; border-left: 0; }
       .g-tab-pane {
         flex: 1;
         display: flex;
@@ -8053,6 +8081,24 @@ ollama list</code></pre>
             <button id="g-confirm-ok" class="primary" style="min-width:80px;">Confirm</button>
           </div>
         </div>
+      </div>
+    </div>
+
+    <!-- Memory Studio startup announcement modal -->
+    <div id="studio-intro-modal" class="studio-intro-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="studio-intro-title">
+      <div class="studio-intro-card">
+        <h2 id="studio-intro-title">Memory Studio</h2>
+        <p>
+          Recall, remember, edit, and explore your memory the way your AI client does —
+          using the exact same operations, running entirely on your device.
+          No internet. No cloud hop.
+        </p>
+        <button id="btn-studio-intro-upgrade" class="primary" style="width:100%;">Upgrade to Studio</button>
+        <button id="btn-studio-intro-close" class="btn-ghost" style="margin-top:8px;width:100%;">Maybe later</button>
+        <label class="studio-intro-dismiss-row">
+          <input type="checkbox" id="chk-studio-intro-dismiss" />
+          Don't show this on startup
+        </label>
       </div>
     </div>
 
