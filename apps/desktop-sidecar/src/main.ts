@@ -23,6 +23,7 @@ import type { CorrectionDiff } from './correction.js';
 import type { BroadcastRawFn } from './events.js';
 import { FileWatcher } from './file-watcher.js';
 import { BrainEngine } from './brain-engine.js';
+import { SkillTrainer } from './skill-trainer.js';
 
 interface CliEnv {
   cortexDir: string;
@@ -675,6 +676,15 @@ async function main(): Promise<void> {
   // very next recall without a sidecar restart.
   host.setLocalLlmGetter(() => llm);
 
+  // Skill trainer — personalize AI skills using the user's cortex memories.
+  // The LLM path uses the 'distillation' capability (same gate as llm_distill),
+  // evaluated at call time inside SkillTrainer.pingLlm() — no sidecar restart
+  // needed when the user toggles the LLM capability in settings.
+  // Monthly upgrades subscribers get the full LLM rewrite; others get the
+  // memory-augmented fallback (memories appended as context, no rewrite).
+  // TODO: add an explicit subscription check when subscription service is wired.
+  const skillTrainer = new SkillTrainer(host, llm);
+
   const mcpDeps = {
     host,
     // The local LLM is opt-in — `correct` and any other LLM-backed MCP tool
@@ -690,6 +700,7 @@ async function main(): Promise<void> {
     pendingDiffs,
     broadcastRaw,
     brainEngine,
+    skillTrainer,
   };
 
   // MCP server over Unix socket. Lets multiple clients (Claude Desktop via
