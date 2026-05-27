@@ -361,6 +361,13 @@ export interface AiSettings {
    */
   searchLlmOnly?: boolean;
   /**
+   * Memory Studio — the in-app recall/remember/edit/GNN interface.
+   * Set to true when the user's Studio subscription is active (driven by
+   * Stripe via the graphnosis.app backend). Default false — the Studio tab
+   * is visible but shows a paywall until the subscription is confirmed.
+   */
+  studioEnabled?: boolean;
+  /**
    * Engram breadth cap — how many distinct engrams a single session can touch
    * before a warning fires. Default value 6 (kept for back-compat), but
    * enforcement is opt-in via sessionBreadthCapEnabled.

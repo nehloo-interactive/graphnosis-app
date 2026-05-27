@@ -167,6 +167,9 @@ interface AppSettings {
     searchLlmRerank?: boolean;
     /** Restrict Local LLM to in-app search only (disables develop/predict/insights/llm_query MCP tools). */
     searchLlmOnly?: boolean;
+    /** Memory Studio — full in-app recall/remember/edit/GNN interface.
+     *  true when the Studio subscription is active (set by Stripe webhook via graphnosis.app). */
+    studioEnabled?: boolean;
     /** How long a typed personal-tier consent is remembered. -1 = permanent. Default -1. */
     consentIntervalPersonalMs?: number;
     /** How long a typed sensitive-tier consent is remembered. 0 = every call. Default 3 600 000. */
@@ -300,6 +303,10 @@ let loadedGraphs: GraphWithMetadata[] = [];
 // shared selection state below.
 type GraphnosisTab = 'checkin' | 'atlas' | 'brain' | 'nondeterministic';
 let graphnosisActiveTab: GraphnosisTab = 'checkin';
+
+// ── Memory Studio state ──────────────────────────────────────────────────────
+let studioEnabled = false;           // mirrors settings.ai.studioEnabled
+let studioPendingDiffId: string | null = null;  // diffId from the last studio.edit call
 let graphnosisListRows: NodeRecord[] = []; // current visible search results
 let graphnosisAllNodes: NodeRecord[] = []; // unfiltered cache for the active engram
 let graphnosisSelectedId: string | null = null;
@@ -1285,6 +1292,7 @@ function render(status: StatusSnapshot): void {
       startMcpPolling();
       void refreshBrainState();
       void refreshLlmStatus().then(() => void loadSearchLlmPreferences().then(syncSearchLlmCheckboxes));
+      void loadStudioSubscriptionState();
       void (async () => {
         try {
           const s = (await invoke('get_settings')) as AppSettings;
@@ -8471,9 +8479,12 @@ function switchGraphnosisTab(tab: GraphnosisTab): void {
       if (firstMount) setTimeout(() => mainAtlas?.zoomToFit(700, 20), 1200);
     })();
   } else if (tab === 'checkin') {
-    // Returning to the dashboard from the Atlas tab — re-render in case
+    // Returning to the Memory Studio / dashboard tab — re-render in case
     // selection/data changed while away.
     if (els.gSearch.value.trim().length === 0) renderDashboard();
+    updateStudioVisibility();
+    populateStudioEngramSelects();
+    void refreshStudioLlmBadge();
   } else if (tab === 'brain') {
     neuronField.start();
     startScanTicker();
@@ -14889,5 +14900,368 @@ document.getElementById('btn-new-graph')?.addEventListener('click', () => {
       }
     }, 300);
   });
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// MEMORY STUDIO
+// ═══════════════════════════════════════════════════════════════════════════
+
+// ── Subscription state ──────────────────────────────────────────────────────
+
+async function loadStudioSubscriptionState(): Promise<void> {
+  try {
+    const s = (await invoke('get_settings')) as AppSettings;
+    studioEnabled = s.ai?.studioEnabled === true;
+    updateStudioVisibility();
+    populateStudioEngramSelects();
+    void refreshStudioLlmBadge();
+    // TODO: check subscription status with Stripe backend on each unlock:
+    //   const res = await fetch(`https://api.graphnosis.app/subscription/status?email=<cortex-email>`);
+    //   const data = await res.json();
+    //   if (data.studio && !studioEnabled) await enableStudio();
+  } catch { /* non-fatal — Studio remains gated */ }
+}
+
+/** Called by the Stripe-side billing integration once payment is confirmed. */
+async function enableStudio(): Promise<void> {
+  try {
+    await ipcCall('studio.setEnabled', { enabled: true });
+    studioEnabled = true;
+    updateStudioVisibility();
+    populateStudioEngramSelects();
+    void refreshStudioLlmBadge();
+  } catch { /* non-fatal */ }
+}
+
+// ── Visibility helpers ──────────────────────────────────────────────────────
+
+function updateStudioVisibility(): void {
+  const section = document.getElementById('studio-section');
+  const paywall = document.getElementById('studio-paywall');
+  const workspace = document.getElementById('studio-workspace');
+  if (!section) return;
+  section.classList.remove('hidden');
+  if (studioEnabled) {
+    paywall?.classList.add('hidden');
+    workspace?.classList.remove('hidden');
+  } else {
+    paywall?.classList.remove('hidden');
+    workspace?.classList.add('hidden');
+  }
+}
+
+async function refreshStudioLlmBadge(): Promise<void> {
+  try {
+    const status = await ipcCall<{ enabled: boolean }>('llm:status', {});
+    document.getElementById('studio-edit-llm-badge')?.classList.toggle('hidden', !status.enabled);
+  } catch { /* badge stays hidden */ }
+}
+
+// ── Engram selects ──────────────────────────────────────────────────────────
+
+function populateStudioEngramSelects(): void {
+  const engrams = loadedGraphs.filter((g) => !g.metadata.archived);
+
+  const allOption = '<option value="">All engrams</option>';
+  const autoOption = '<option value="">← auto-suggest</option>';
+
+  const multiOptions = [
+    allOption,
+    ...engrams.map((g) => `<option value="${escapeHtml(g.graphId)}">${escapeHtml(g.metadata.displayName ?? g.graphId)}</option>`),
+  ].join('');
+  const singleOptions = [
+    autoOption,
+    ...engrams.map((g) => `<option value="${escapeHtml(g.graphId)}">${escapeHtml(g.metadata.displayName ?? g.graphId)}</option>`),
+  ].join('');
+
+  for (const id of ['studio-recall-engram', 'studio-gnn-engram']) {
+    const el = document.getElementById(id) as HTMLSelectElement | null;
+    if (el) el.innerHTML = multiOptions;
+  }
+  for (const id of ['studio-remember-engram', 'studio-edit-engram']) {
+    const el = document.getElementById(id) as HTMLSelectElement | null;
+    if (el) el.innerHTML = singleOptions;
+  }
+}
+
+// ── Paywall buttons ─────────────────────────────────────────────────────────
+
+document.getElementById('btn-studio-upgrade')?.addEventListener('click', () => {
+  void invoke('open_url', { url: 'https://graphnosis.app/pricing' });
+});
+document.getElementById('btn-studio-paywall-close')?.addEventListener('click', () => {
+  // Collapse the Studio section back — user will open it again when ready.
+  document.getElementById('studio-section')?.classList.add('hidden');
+});
+
+// ── Recall ──────────────────────────────────────────────────────────────────
+
+document.getElementById('btn-studio-recall')?.addEventListener('click', () => void runStudioRecall(false));
+document.getElementById('btn-studio-dig-deeper')?.addEventListener('click', () => void runStudioRecall(true));
+
+async function runStudioRecall(digDeeper: boolean): Promise<void> {
+  const query = (document.getElementById('studio-recall-query') as HTMLInputElement | null)?.value.trim() ?? '';
+  if (!query) return;
+  const engramEl = document.getElementById('studio-recall-engram') as HTMLSelectElement | null;
+  const engram = engramEl?.value || undefined;
+
+  const spinner = document.getElementById('studio-recall-spinner');
+  const resultBlock = document.getElementById('studio-recall-result');
+  spinner?.classList.remove('hidden');
+  resultBlock?.classList.add('hidden');
+
+  try {
+    const method = digDeeper ? 'studio.digDeeper' : 'studio.recall';
+    const result = await ipcCall<{
+      prompt: string;
+      tokensUsed: number;
+      nodesIncluded: number;
+      audit: Array<{ graphId: string; nodesIncluded: number; tokensIncluded: number }>;
+      byGraph: Record<string, unknown>;
+    }>(method, { query, ...(engram ? { onlyEngrams: [engram] } : {}) });
+
+    const output = document.getElementById('studio-recall-output');
+    if (output) output.textContent = result.prompt;
+
+    const meta = document.getElementById('studio-recall-meta');
+    const contributing = result.audit.filter((a) => a.nodesIncluded > 0).length;
+    if (meta) {
+      meta.textContent =
+        `${result.nodesIncluded} node${result.nodesIncluded === 1 ? '' : 's'} · ` +
+        `${result.tokensUsed} tokens · ` +
+        `${contributing} engram${contributing === 1 ? '' : 's'} contributed` +
+        (digDeeper ? ' · dig_deeper' : '');
+    }
+
+    renderStudioNodeChips(result.byGraph);
+    resultBlock?.classList.remove('hidden');
+  } catch (e) {
+    showError(e instanceof Error ? e.message : String(e));
+  } finally {
+    spinner?.classList.add('hidden');
+  }
+}
+
+function renderStudioNodeChips(byGraph: Record<string, unknown>): void {
+  const container = document.getElementById('studio-recall-nodes');
+  if (!container) return;
+  const chips: string[] = [];
+  for (const [, nodes] of Object.entries(byGraph)) {
+    const arr = Array.isArray(nodes) ? nodes : [];
+    for (const n of arr.slice(0, 4)) {
+      const nodeId = (n as { nodeId?: string }).nodeId ?? '';
+      const preview = ((n as { contentPreview?: string }).contentPreview ?? '').slice(0, 100);
+      if (!nodeId) continue;
+      chips.push(
+        `<button class="studio-node-chip" data-preview="${escapeHtml(preview)}" title="${escapeHtml(preview)}">${escapeHtml(nodeId.slice(0, 8))}…</button>`,
+      );
+    }
+  }
+  container.innerHTML = chips.join('');
+  container.querySelectorAll<HTMLButtonElement>('.studio-node-chip').forEach((chip) => {
+    chip.addEventListener('click', () => {
+      const gnnInput = document.getElementById('studio-gnn-query') as HTMLInputElement | null;
+      if (gnnInput) gnnInput.value = chip.dataset['preview'] ?? '';
+    });
+  });
+}
+
+// ── GNN Neighbors ───────────────────────────────────────────────────────────
+
+document.getElementById('btn-studio-gnn')?.addEventListener('click', () => void runStudioGnn());
+
+async function runStudioGnn(): Promise<void> {
+  const query = (document.getElementById('studio-gnn-query') as HTMLInputElement | null)?.value.trim() ?? '';
+  if (!query) return;
+  const engram = (document.getElementById('studio-gnn-engram') as HTMLSelectElement | null)?.value || undefined;
+
+  const spinner = document.getElementById('studio-gnn-spinner');
+  const unavailable = document.getElementById('studio-gnn-unavailable');
+  const resultBlock = document.getElementById('studio-gnn-result');
+  const list = document.getElementById('studio-gnn-list');
+  spinner?.classList.remove('hidden');
+  resultBlock?.classList.add('hidden');
+  unavailable?.classList.add('hidden');
+
+  try {
+    const result = await ipcCall<{
+      neighbors: Array<{ nodeId: string; graphId: string; text: string; score: number; engramName: string }>;
+      error?: string;
+    }>('studio.gnnNeighbors', { query, ...(engram ? { engram } : {}) });
+
+    if (result.error) {
+      if (unavailable) { unavailable.textContent = result.error; unavailable.classList.remove('hidden'); }
+      return;
+    }
+
+    if (list) {
+      if (result.neighbors.length === 0) {
+        list.innerHTML = '<p class="brain-subtitle">No GNN neighbors found for this query. Try enabling the neural network in Non-Deterministic Aid.</p>';
+      } else {
+        list.innerHTML = result.neighbors.map((n) =>
+          `<div class="studio-gnn-item">
+            <div class="studio-gnn-score">Score ${n.score.toFixed(2)} · ${escapeHtml(n.engramName)}</div>
+            <div class="studio-gnn-text">${escapeHtml(n.text.slice(0, 180))}</div>
+          </div>`,
+        ).join('');
+      }
+    }
+    resultBlock?.classList.remove('hidden');
+  } catch (e) {
+    showError(e instanceof Error ? e.message : String(e));
+  } finally {
+    spinner?.classList.add('hidden');
+  }
+}
+
+// ── Remember ────────────────────────────────────────────────────────────────
+
+document.getElementById('btn-studio-check-dup')?.addEventListener('click', () => void runStudioCheckDuplicate());
+document.getElementById('btn-studio-remember')?.addEventListener('click', () => void runStudioRemember());
+
+async function runStudioCheckDuplicate(): Promise<void> {
+  const text = (document.getElementById('studio-remember-text') as HTMLTextAreaElement | null)?.value.trim() ?? '';
+  if (!text) return;
+  const engram = (document.getElementById('studio-remember-engram') as HTMLSelectElement | null)?.value || undefined;
+  const warning = document.getElementById('studio-duplicate-warning');
+  if (!warning) return;
+
+  try {
+    const result = await ipcCall<{
+      duplicates: Array<{ score: number; engramName: string; text: string }>;
+      hasDuplicates: boolean;
+    }>('studio.checkDuplicate', { text, ...(engram ? { engram } : {}) });
+
+    warning.classList.remove('hidden');
+    if (result.hasDuplicates) {
+      const top = result.duplicates[0];
+      warning.style.cssText = '';
+      warning.textContent =
+        `⚠ Similar content found (${result.duplicates.length} match${result.duplicates.length === 1 ? '' : 'es'}) — ` +
+        `consider editing instead. Best match in "${top?.engramName ?? '?'}": "${(top?.text ?? '').slice(0, 80)}…"`;
+    } else {
+      warning.style.background = 'color-mix(in oklab, var(--ok, #4caf50) 15%, transparent)';
+      warning.style.borderColor = 'color-mix(in oklab, var(--ok, #4caf50) 40%, var(--border))';
+      warning.textContent = '✓ No near-duplicates found. Safe to save.';
+    }
+  } catch (e) { showError(e instanceof Error ? e.message : String(e)); }
+}
+
+async function runStudioRemember(): Promise<void> {
+  const text = (document.getElementById('studio-remember-text') as HTMLTextAreaElement | null)?.value.trim() ?? '';
+  const label = (document.getElementById('studio-remember-label') as HTMLInputElement | null)?.value.trim() || undefined;
+  let graphId = (document.getElementById('studio-remember-engram') as HTMLSelectElement | null)?.value || undefined;
+  if (!text) return;
+
+  const spinner = document.getElementById('studio-remember-spinner');
+  const success = document.getElementById('studio-remember-success');
+  spinner?.classList.remove('hidden');
+  success?.classList.add('hidden');
+
+  try {
+    // Auto-suggest engram when none selected
+    if (!graphId) {
+      const suggestion = await ipcCall<{
+        candidates: Array<{ graphId: string; displayName: string }>;
+      }>('studio.suggestEngram', { text });
+      const suggested = suggestion.candidates[0];
+      if (suggested) {
+        graphId = suggested.graphId;
+        const suggestEl = document.getElementById('studio-suggest-result');
+        if (suggestEl) {
+          suggestEl.textContent = `Suggested engram: ${suggested.displayName}`;
+          suggestEl.classList.remove('hidden');
+        }
+      }
+    }
+
+    // Fall back to first loaded engram if still unresolved
+    if (!graphId) graphId = loadedGraphs.find((g) => !g.metadata.archived)?.graphId ?? '';
+    if (!graphId) throw new Error('No engrams available. Create an engram first.');
+
+    const result = await ipcCall<{ ok: boolean; nodeCount: number; sourceId: string }>(
+      'studio.remember', { text, graphId, label },
+    );
+
+    if (success) {
+      success.textContent = `✓ Saved ${result.nodeCount} memory node${result.nodeCount === 1 ? '' : 's'} (source: ${result.sourceId}).`;
+      success.classList.remove('hidden');
+    }
+    (document.getElementById('studio-remember-text') as HTMLTextAreaElement | null)!.value = '';
+    document.getElementById('studio-duplicate-warning')?.classList.add('hidden');
+    document.getElementById('studio-suggest-result')?.classList.add('hidden');
+    void refreshStats();
+  } catch (e) {
+    showError(e instanceof Error ? e.message : String(e));
+  } finally {
+    spinner?.classList.add('hidden');
+  }
+}
+
+// ── Edit / Correct ──────────────────────────────────────────────────────────
+
+document.getElementById('btn-studio-propose-edit')?.addEventListener('click', () => void runStudioEdit());
+document.getElementById('btn-studio-edit-approve')?.addEventListener('click', () => void applyStudioEdit());
+document.getElementById('btn-studio-edit-reject')?.addEventListener('click', () => rejectStudioEdit());
+
+async function runStudioEdit(): Promise<void> {
+  const correction = (document.getElementById('studio-edit-correction') as HTMLTextAreaElement | null)?.value.trim() ?? '';
+  const graphId = (document.getElementById('studio-edit-engram') as HTMLSelectElement | null)?.value || undefined;
+  if (!correction) return;
+
+  const spinner = document.getElementById('studio-edit-spinner');
+  const diffBlock = document.getElementById('studio-edit-diff');
+  const diffBody = document.getElementById('studio-edit-diff-body');
+  spinner?.classList.remove('hidden');
+  diffBlock?.classList.add('hidden');
+
+  try {
+    const result = await ipcCall<{
+      diffId: string;
+      mode: string;
+      preview: { edits?: Array<{ nodeId: string; field: string; before: string; after: string }>; adds?: unknown[] };
+      candidates: Array<{ graphId: string; nodeId?: string; score?: number }>;
+    }>('studio.edit', { correction, ...(graphId ? { graphId } : {}) });
+
+    studioPendingDiffId = result.diffId;
+
+    if (diffBody) {
+      const edits = result.preview.edits ?? [];
+      if (edits.length === 0) {
+        diffBody.innerHTML = `<p style="font-size:13px; color:var(--fg-dim);">Mode: <strong>${escapeHtml(result.mode)}</strong>. No in-place edits proposed — new content will be added to the graph.</p>`;
+      } else {
+        diffBody.innerHTML = edits.map((e) =>
+          `<div class="studio-diff-edit">
+            <div class="studio-diff-field">Field: ${escapeHtml(e.field)} · node ${escapeHtml(e.nodeId.slice(0, 8))}</div>
+            <div class="studio-diff-before">− ${escapeHtml((e.before ?? '').slice(0, 140))}</div>
+            <div class="studio-diff-after">+ ${escapeHtml((e.after ?? '').slice(0, 140))}</div>
+          </div>`,
+        ).join('');
+      }
+    }
+    diffBlock?.classList.remove('hidden');
+  } catch (e) {
+    showError(e instanceof Error ? e.message : String(e));
+  } finally {
+    spinner?.classList.add('hidden');
+  }
+}
+
+async function applyStudioEdit(): Promise<void> {
+  if (!studioPendingDiffId) return;
+  try {
+    await ipcCall('correction.apply', { diffId: studioPendingDiffId });
+    studioPendingDiffId = null;
+    document.getElementById('studio-edit-diff')?.classList.add('hidden');
+    (document.getElementById('studio-edit-correction') as HTMLTextAreaElement | null)!.value = '';
+    void refreshStats();
+  } catch (e) {
+    showError(e instanceof Error ? e.message : String(e));
+  }
+}
+
+function rejectStudioEdit(): void {
+  studioPendingDiffId = null;
+  document.getElementById('studio-edit-diff')?.classList.add('hidden');
 }
 
