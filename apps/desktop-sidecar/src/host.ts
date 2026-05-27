@@ -75,7 +75,7 @@ export type RecoveryStatus =
  * ref). Layout: [u32 header-len, LE] [header JSON bytes] [raw content bytes].
  */
 interface ContentCacheHeader {
-  kind: 'file' | 'url' | 'ai-conversation' | 'clip';
+  kind: 'file' | 'url' | 'ai-conversation' | 'clip' | 'skill';
   ref: string;
   // The Graphnosis parser kind we'd hand to appendDocument on recovery.
   // Mirrors AppendDocumentInput['kind'] in graphnosis-adapter.ts.
@@ -88,7 +88,7 @@ interface ContentCacheHeader {
 export interface RecoveryPlanItem {
   sourceId: string;
   graphId: GraphId;
-  kind: 'file' | 'url' | 'ai-conversation' | 'clip';
+  kind: 'file' | 'url' | 'ai-conversation' | 'clip' | 'skill';
   ref: string;
   contentHash?: string;
   ingestedAt: number;
