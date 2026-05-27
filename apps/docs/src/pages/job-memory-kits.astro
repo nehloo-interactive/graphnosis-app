@@ -1647,6 +1647,101 @@ const complianceGroups: ComplianceGroup[] = [
       </div>
     </section>
 
+    <!-- Business Case for IT -->
+    <section class="pb-24 px-4 sm:px-6">
+      <div class="max-w-4xl mx-auto">
+
+        <div class="text-center mb-10">
+          <p class="text-xs font-black tracking-widest uppercase text-[#67e8f9] mb-3">For the IT approval conversation</p>
+          <h2 class="text-2xl font-black text-white mb-3">Business Case for Your IT Department</h2>
+          <p class="text-[#b0b3c6] text-base leading-relaxed max-w-xl mx-auto">
+            The questions IT will ask — and why Graphnosis passes every one of them.
+          </p>
+        </div>
+
+        <div class="grid grid-cols-1 sm:grid-cols-2 gap-5 mb-8">
+          {[
+            {
+              icon: '🔒',
+              title: 'Zero cloud infrastructure',
+              body: 'Graphnosis has no servers, no sync endpoints, no ingestion API, and no telemetry. The application runs entirely on the user\'s device. No data leaves unless the user explicitly configures a cloud AI client — and even then, only a small recall excerpt (≤8,000 tokens) is transmitted, never the full database.',
+              color: '#67e8f9',
+            },
+            {
+              icon: '🔑',
+              title: 'Encryption with user-controlled keys',
+              body: 'Memory is encrypted at rest with XChaCha20-Poly1305 and an Argon2id-derived key. The key is derived from the user\'s passphrase on-device. It is never transmitted, never stored remotely, and never accessible to Graphnosis. IT cannot be compelled to produce keys it never had.',
+              color: '#a78bfa',
+            },
+            {
+              icon: '📋',
+              title: 'Audit trail by design',
+              body: 'Every write to memory is recorded in an append-only op-log with device attribution and timestamp. The log is cryptographically chained and cannot be silently modified. Exportable as a compliance artifact for HIPAA, SOX, 21 CFR Part 11, and similar frameworks.',
+              color: '#34d399',
+            },
+            {
+              icon: '🛡️',
+              title: 'Sensitivity tiers and consent gates',
+              body: 'Three tiers — public, personal, sensitive — govern how much data any AI can ever see. Sensitive-tier engrams (PHI, PII, privileged content) send zero tokens to cloud AI by default. A user-visible consent modal in the app fires before any sensitive data is attached to a prompt. IT can enforce tier policies via policy.json.',
+              color: '#f59e0b',
+            },
+            {
+              icon: '📂',
+              title: 'Source-available — IT can audit the code',
+              body: 'Graphnosis is licensed under FSL (Functional Source License). The complete source is public. IT security teams can inspect every line of the encryption implementation, the MCP server, the op-log, and the network layer. No black boxes, no trust-me-it\'s-secure.',
+              color: '#fb923c',
+            },
+            {
+              icon: '📡',
+              title: 'Standard open protocol — no proprietary cloud',
+              body: 'Graphnosis exposes its 35 memory tools over MCP (Model Context Protocol), an open standard backed by Anthropic. There are no proprietary cloud endpoints, no vendor lock-in, and no hidden API calls. The MCP server runs on localhost only.',
+              color: '#60a5fa',
+            },
+            {
+              icon: '🏢',
+              title: 'Standard desktop install',
+              body: 'Ships as a macOS application (.dmg). No browser extensions required for core functionality. No background services that persist beyond the app lifecycle. Installs and uninstalls cleanly with no residual cloud accounts or credentials.',
+              color: '#94a3b8',
+            },
+            {
+              icon: '✈️',
+              title: 'Fully air-gapped capable',
+              body: 'Enable the local LLM mode (Ollama) and Graphnosis operates with no internet connection whatsoever. Every AI inference runs on-device. This is the deployment model for ITAR, CEII, classified programs, and any environment where network egress is prohibited.',
+              color: '#e879f9',
+            },
+          ].map(item => (
+            <div
+              class="bg-[#1c1c27] border border-[#2a2a3d] rounded-2xl p-6 flex flex-col gap-3"
+              style={`border-color: ${item.color}20;`}
+            >
+              <div class="flex items-center gap-3">
+                <span class="text-2xl" aria-hidden="true">{item.icon}</span>
+                <h3 class="text-base font-black text-white">{item.title}</h3>
+              </div>
+              <p class="text-[#9a9db8] text-sm leading-relaxed">{item.body}</p>
+            </div>
+          ))}
+        </div>
+
+        <!-- Docs CTA -->
+        <div class="text-center">
+          <p class="text-[#71717a] text-sm mb-4">Full technical documentation, architecture diagrams, and security audit guides</p>
+          <a
+            href="https://docs.graphnosis.com"
+            target="_blank"
+            rel="noopener noreferrer"
+            class="inline-flex items-center gap-2 px-7 py-3.5 rounded-full border border-[#67e8f9]/40 hover:border-[#67e8f9]/80 text-[#67e8f9] font-bold text-base transition-colors hover:bg-[#67e8f9]/05"
+          >
+            Read the technical docs
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" aria-hidden="true">
+              <path stroke-linecap="round" stroke-linejoin="round" d="M13.5 6H5.25A2.25 2.25 0 003 8.25v10.5A2.25 2.25 0 005.25 21h10.5A2.25 2.25 0 0018 18.75V10.5m-10.5 6L21 3m0 0h-5.25M21 3v5.25" />
+            </svg>
+          </a>
+        </div>
+
+      </div>
+    </section>
+
     <!-- Team license CTA -->
     <section class="pb-16 px-4 sm:px-6">
       <div class="max-w-3xl mx-auto bg-[#1c1c27] border border-[#2a2a3d] rounded-2xl p-8 text-center">
