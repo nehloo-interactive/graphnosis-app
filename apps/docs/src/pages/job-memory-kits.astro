@@ -1530,18 +1530,26 @@ const complianceGroups: ComplianceGroup[] = [
                 </div>
 
                 <!-- Price + CTA -->
-                <div class="flex items-center justify-between gap-4">
-                  <span class="text-3xl font-black text-white">${pack.price}</span>
-                  <a
-                    href={pack.stripeUrl}
-                    class="flex-1 inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-full font-bold text-sm transition-opacity hover:opacity-90 text-[#13131a]"
-                    style={`background: ${color};`}
-                  >
-                    Get pack
-                    <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24" aria-hidden="true">
-                      <path stroke-linecap="round" stroke-linejoin="round" d="M17 8l4 4m0 0l-4 4m4-4H3" />
-                    </svg>
-                  </a>
+                <div class="flex flex-col gap-2">
+                  <div class="flex items-center justify-between gap-4">
+                    <span class="text-3xl font-black text-white">${pack.price}</span>
+                    <a
+                      href={pack.stripeUrl}
+                      class="flex-1 inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-full font-bold text-sm transition-opacity hover:opacity-90 text-[#13131a]"
+                      style={`background: ${color};`}
+                    >
+                      Get pack
+                      <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24" aria-hidden="true">
+                        <path stroke-linecap="round" stroke-linejoin="round" d="M17 8l4 4m0 0l-4 4m4-4H3" />
+                      </svg>
+                    </a>
+                  </div>
+                  <p class="text-center text-[#3a3a52] leading-none" style="font-size:10px;">
+                    Sold as-is &nbsp;·&nbsp;
+                    <a href="/legal/terms-of-use"   class="hover:text-[#71717a] transition-colors underline decoration-[#3a3a52]/40">Terms</a>
+                    &nbsp;·&nbsp;
+                    <a href="/legal/privacy-policy" class="hover:text-[#71717a] transition-colors underline decoration-[#3a3a52]/40">Privacy</a>
+                  </p>
                 </div>
               </article>
             );
