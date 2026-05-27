@@ -1945,6 +1945,8 @@ const complianceGroups: ComplianceGroup[] = [
       chips.forEach(c => c.removeAttribute('data-active'));
       chip.setAttribute('data-active', 'true');
       activeCategory = chip.dataset.category ?? 'all';
+      // Clear search when switching category
+      search.value = '';
       filter();
       scrollToGrid();
     });
@@ -1962,7 +1964,16 @@ const complianceGroups: ComplianceGroup[] = [
   document.getElementById('compliance-nav-chip')?.addEventListener('click', () => scrollToSection('compliance-matrix'));
   document.getElementById('it-nav-chip')?.addEventListener('click', () => scrollToSection('it-business-case'));
 
-  search.addEventListener('input', filter);
+  search.addEventListener('input', () => {
+    // Reset category to "All packs" when user types
+    activeCategory = 'all';
+    chips.forEach(c => c.removeAttribute('data-active'));
+    const allChip = document.querySelector<HTMLButtonElement>('.category-chip[data-category="all"]');
+    if (allChip) allChip.setAttribute('data-active', 'true');
+    filter();
+    // Scroll to top of cards gallery so results are visible
+    if (search.value.trim()) scrollToGrid();
+  });
 
   // ── Compliance table sticky header ───────────────────────────────────────
   // overflow-x:auto breaks CSS sticky relative to viewport, so we use a
