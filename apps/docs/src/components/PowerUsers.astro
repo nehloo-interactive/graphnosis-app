@@ -65,14 +65,18 @@
               <p class="text-sm font-semibold text-[#f0f0f5] mb-2">Directed (A → B)</p>
               <ul class="space-y-1.5">
                 {[
-                  ['contains', 'a section contains a paragraph'],
-                  ['precedes', 'one fact follows another in sequence'],
-                  ['cites', 'one source references another'],
+                  ['contains', 'a section contains a paragraph; also: located-in for geographic membership'],
+                  ['precedes', 'one fact or event follows another in time or sequence'],
+                  ['cites', 'one source references another; also: wrote / authored, cited-in'],
                   ['defines', 'a definition explains a concept'],
+                  ['summarizes', 'a note distills a longer source'],
                   ['causes / supports / contradicts', 'causal and logical relationships'],
+                  ['depends-on', 'one fact requires another; also: lives-in, based-in (person → place)'],
                   ['supersedes', 'new information replaces old'],
-                  ['discussed-in', 'knowledge traced to conversation origin'],
-                  ['knows / works-with / reports-to', 'person relationships'],
+                  ['discussed-in', 'knowledge traced to conversation origin; also: mentioned-in'],
+                  ['knows / works-with / reports-to', 'person-to-person relationships'],
+                  ['collaborated-on', 'works-at / founded / member-of / leads — person → org or project'],
+                  ['prefers', 'a person favors an approach, tool, or option'],
                 ].map(([name, desc]) => (
                   <li class="flex items-start gap-2 text-sm">
                     <code class="text-[#67e8f9] font-mono shrink-0 mt-0.5 leading-relaxed">{name}</code>
@@ -87,9 +91,11 @@
                 {[
                   ['similar-to', 'two facts share vocabulary (TF-IDF cosine similarity)'],
                   ['shares-entity', 'two facts mention the same person, place, or concept'],
-                  ['co-occurs', 'two facts appear in the same section'],
+                  ['shares-topic', 'two facts belong to the same topic cluster; also: same-topic in the picker'],
+                  ['co-occurs', 'two facts appear in the same section or source passage'],
+                  ['same-source', 'two facts ingested from the same source file'],
                   ['same-person', 'two mentions of the same person across sources'],
-                  ['related-to', 'general association between people or concepts'],
+                  ['related-to', 'general association — partners-with, related (fallback for all other cases)'],
                 ].map(([name, desc]) => (
                   <li class="flex items-start gap-2 text-sm">
                     <code class="text-[#67e8f9] font-mono shrink-0 mt-0.5">{name}</code>
@@ -123,8 +129,26 @@
           <div>
             <p class="text-sm font-mono tracking-widest text-[#555570] uppercase mb-4">Data Connectors</p>
             <div class="flex flex-wrap gap-3">
-              {['Slack', 'GitHub', 'Linear', 'Trello', 'RSS', 'Obsidian', 'GBrain', 'Webhook', 'AI Context Files'].map(connector => (
-                <span class="px-3 py-1.5 rounded-full border border-[#2a2a3d] text-[#f0f0f5] text-sm font-semibold">{connector}</span>
+              {[
+                { label: 'Slack',             color: '#4A154B' },
+                { label: 'GitHub',            color: '#238636' },
+                { label: 'Linear',            color: '#5E6AD2' },
+                { label: 'Trello',            color: '#0052CC' },
+                { label: 'RSS',               color: '#F97316' },
+                { label: 'Obsidian',          color: '#7C3AED' },
+                { label: 'GBrain',            color: '#0EA5E9' },
+                { label: 'Webhook',           color: '#67e8f9' },
+                { label: 'AI Context Files',  color: '#D97757' },
+                { label: 'OPC-UA',            color: '#f59e0b' },
+                { label: 'Modbus',            color: '#f59e0b' },
+                { label: 'ROS Topics',        color: '#ef4444' },
+                { label: 'LoRaWAN',           color: '#84cc16' },
+                { label: 'Serial / USB',      color: '#94a3b8' },
+              ].map(({ label, color }) => (
+                <span
+                  class="px-3 py-1.5 rounded-full border text-sm font-semibold"
+                  style={`border-color: ${color}44; color: ${color};`}
+                >{label}</span>
               ))}
             </div>
           </div>
