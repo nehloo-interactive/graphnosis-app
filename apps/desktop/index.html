@@ -2327,6 +2327,116 @@
         border: 1px solid color-mix(in oklab, var(--accent) 22%, transparent);
       }
       .lb-scope-note strong { color: var(--fg); font-weight: 600; }
+
+      /* ── Memory Studio ────────────────────────────────────────────────── */
+      .studio-section { position: relative; }
+      /* Paywall overlay — sits over the Studio workspace; Lite section above it is unaffected */
+      .studio-paywall {
+        position: absolute; inset: 0; z-index: 10;
+        background: color-mix(in oklab, var(--bg) 88%, transparent);
+        display: flex; align-items: center; justify-content: center;
+        backdrop-filter: blur(5px); border-radius: 10px;
+      }
+      .studio-paywall-card {
+        background: var(--bg-elev); border: 1px solid var(--border);
+        border-radius: 12px; padding: 28px 32px; max-width: 420px;
+        text-align: center; box-shadow: 0 8px 32px rgba(0,0,0,.18);
+      }
+      .studio-paywall-card h2 { margin: 0 0 6px; font-size: 18px; }
+      .studio-paywall-tier-note { color: var(--fg-dim); font-size: 13px; margin: 6px 0 14px; }
+      .studio-workspace { padding: 2px 0 4px; }
+      /* Input rows */
+      .studio-input-row { display: flex; gap: 6px; align-items: center; margin-bottom: 6px; flex-wrap: wrap; }
+      .studio-text-input {
+        flex: 1; min-width: 120px;
+        padding: 6px 10px; border: 1px solid var(--border); border-radius: 6px;
+        background: var(--bg); color: var(--fg); font: inherit; font-size: 13px;
+        -webkit-user-select: text; user-select: text;
+      }
+      .studio-text-input:focus { outline: none; border-color: var(--accent); }
+      .studio-scope-row { display: flex; gap: 8px; align-items: center; margin-bottom: 6px; font-size: 13px; }
+      .studio-scope-label { color: var(--fg-dim); white-space: nowrap; }
+      .studio-select {
+        padding: 5px 8px; border: 1px solid var(--border); border-radius: 6px;
+        background: var(--bg-elev); color: var(--fg); font: inherit; font-size: 13px;
+        -webkit-user-select: auto; user-select: auto;
+      }
+      /* Textarea */
+      .studio-textarea {
+        width: 100%; min-height: 76px; padding: 8px 10px; box-sizing: border-box;
+        border: 1px solid var(--border); border-radius: 6px;
+        background: var(--bg-elev); color: var(--fg);
+        font: inherit; font-size: 13px; line-height: 1.5; resize: vertical;
+        -webkit-user-select: text; user-select: text; margin-bottom: 6px;
+      }
+      .studio-textarea:focus { outline: none; border-color: var(--accent); }
+      /* Result blocks */
+      .studio-result-block { margin-top: 10px; }
+      .studio-result-meta { font-size: 12px; color: var(--fg-dim); margin-bottom: 5px; }
+      .studio-subgraph-output {
+        font-family: ui-monospace, 'Cascadia Code', 'SF Mono', monospace;
+        font-size: 11.5px; line-height: 1.55;
+        background: var(--bg); border: 1px solid var(--border); border-radius: 6px;
+        padding: 10px 12px; white-space: pre-wrap; word-break: break-word;
+        max-height: 420px; overflow-y: auto;
+        -webkit-user-select: text; user-select: text; margin: 0;
+      }
+      /* Node chips — click to populate GNN query */
+      .studio-node-list { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 8px; }
+      .studio-node-chip {
+        background: var(--bg-elev); border: 1px solid var(--border);
+        border-radius: 20px; padding: 2px 9px; font-size: 11px; cursor: pointer;
+        color: var(--fg-dim); transition: border-color .15s, color .15s;
+      }
+      .studio-node-chip:hover { border-color: var(--accent); color: var(--fg); }
+      /* GNN neighbor list */
+      .studio-gnn-list { display: flex; flex-direction: column; gap: 7px; }
+      .studio-gnn-item {
+        background: var(--bg); border: 1px solid var(--border);
+        border-radius: 8px; padding: 9px 12px;
+      }
+      .studio-gnn-score { font-size: 11px; color: var(--ai-accent); font-weight: 700; margin-bottom: 2px; }
+      .studio-gnn-text { font-size: 13px; line-height: 1.5; color: var(--fg); }
+      .studio-gnn-engram { font-size: 11px; color: var(--fg-dim); margin-top: 3px; }
+      /* Spinners & feedback */
+      .studio-spinner { font-size: 13px; color: var(--fg-dim); padding: 6px 0; }
+      .studio-success { color: var(--ok, #4caf50); font-size: 13px; padding: 5px 0; }
+      /* Duplicate warning */
+      .studio-dup-warning {
+        background: color-mix(in oklab, var(--warn, #f59e0b) 14%, transparent);
+        border: 1px solid color-mix(in oklab, var(--warn, #f59e0b) 40%, var(--border));
+        border-radius: 6px; padding: 7px 10px; font-size: 13px; margin-bottom: 6px;
+      }
+      /* Engram suggestion result */
+      .studio-suggest-result {
+        background: var(--bg-elev); border: 1px solid var(--border);
+        border-radius: 6px; padding: 7px 10px; font-size: 13px; margin-bottom: 6px;
+        color: var(--fg-dim);
+      }
+      /* Diff preview */
+      .studio-diff-block { margin-top: 10px; }
+      .studio-diff-header { font-weight: 600; font-size: 13px; margin: 0 0 6px; color: var(--fg); }
+      .studio-diff-body {
+        font-family: ui-monospace, 'Cascadia Code', 'SF Mono', monospace;
+        font-size: 11.5px; line-height: 1.55;
+        background: var(--bg); border: 1px solid var(--border); border-radius: 6px;
+        padding: 10px 12px; max-height: 280px; overflow-y: auto;
+        -webkit-user-select: text; user-select: text;
+      }
+      .studio-diff-edit { margin-bottom: 10px; }
+      .studio-diff-field { font-size: 11px; color: var(--fg-dim); margin-bottom: 2px; font-weight: 600; }
+      .studio-diff-before { color: var(--danger, #ef4444); }
+      .studio-diff-after  { color: var(--ok, #4caf50); }
+      /* Action row */
+      .studio-action-row { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+      /* LLM-assisted badge */
+      .studio-llm-badge {
+        display: inline-block; margin-left: 7px; padding: 1px 6px;
+        border-radius: 4px; font-size: 10px; font-weight: 700;
+        background: var(--ai-accent-soft); color: var(--ai-accent);
+        vertical-align: middle; text-transform: none; letter-spacing: 0;
+      }
+
       /* Engram-name chip on duplicate-pair / insight / goal cards, so a
          holistic list still tells you which engram each item belongs to. */
       .lb-engram-chip {
@@ -5697,7 +5807,7 @@
               <div class="g-main">
                 <div class="g-browse">
                   <div class="g-tabs">
-                    <button class="g-tab active" data-gtab="checkin">Check-in</button>
+                    <button class="g-tab active" data-gtab="checkin">Memory Studio</button>
                     <button class="g-tab" data-gtab="atlas">3D Engram</button>
                     <button class="g-tab" data-gtab="brain">Deterministic Consolidation</button>
                     <button class="g-tab" data-gtab="nondeterministic">Non-Deterministic Aid</button>
@@ -5751,6 +5861,124 @@
                         </div>
                       </div>
                     </div>
+
+                    <!-- ── MEMORY STUDIO (Studio tier) ─────────────────────────────── -->
+                    <div id="studio-section" class="studio-section hidden">
+
+                      <!-- PAYWALL OVERLAY — covers the Studio section when studioEnabled is false -->
+                      <div id="studio-paywall" class="studio-paywall hidden">
+                        <div class="studio-paywall-card">
+                          <h2>Memory Studio</h2>
+                          <p class="brain-subtitle" style="margin:8px 0 4px;">
+                            Recall, remember, and correct your memory directly — the same
+                            operations your AI client runs via MCP, now available without
+                            any AI client. Powered by your local LLM and graph neural network.
+                          </p>
+                          <p class="studio-paywall-tier-note">Requires the <strong>Studio subscription</strong>.</p>
+                          <button id="btn-studio-upgrade" class="primary">Upgrade to Studio</button>
+                          <button id="btn-studio-paywall-close" class="btn-ghost" style="margin-top:6px;">Maybe later</button>
+                        </div>
+                      </div>
+
+                      <div id="studio-workspace" class="studio-workspace">
+
+                        <p class="lb-scope-note" style="margin-bottom:12px;">
+                          ⚗️ <strong>Memory Studio.</strong>
+                          Interact with your memory the way your AI client does — full subgraph
+                          recall, remember, edit, and GNN exploration, running locally.
+                        </p>
+
+                        <!-- ── Recall ──────────────────────────────────────────────── -->
+                        <div class="lb-section">
+                          <p class="lb-section-title">Recall</p>
+                          <p class="brain-subtitle">Run a full recall — see the exact subgraph your AI client sees, with all nodes, edges, and scoring.</p>
+                          <div class="studio-input-row">
+                            <input id="studio-recall-query" type="text" class="studio-text-input" placeholder="What do you want to recall?" />
+                            <button id="btn-studio-recall" class="primary btn-sm">Recall</button>
+                            <button id="btn-studio-dig-deeper" class="ai-outline btn-sm">Dig Deeper</button>
+                          </div>
+                          <div class="studio-scope-row">
+                            <label for="studio-recall-engram" class="studio-scope-label">Scope:</label>
+                            <select id="studio-recall-engram" class="studio-select">
+                              <option value="">All engrams</option>
+                            </select>
+                          </div>
+                          <div id="studio-recall-spinner" class="studio-spinner hidden">Recalling…</div>
+                          <div id="studio-recall-result" class="studio-result-block hidden">
+                            <div id="studio-recall-meta" class="studio-result-meta"></div>
+                            <pre id="studio-recall-output" class="studio-subgraph-output"></pre>
+                            <div id="studio-recall-nodes" class="studio-node-list"></div>
+                          </div>
+                        </div>
+
+                        <!-- ── GNN Neighbors ──────────────────────────────────────── -->
+                        <div class="lb-section">
+                          <p class="lb-section-title">GNN Neighbors</p>
+                          <p class="brain-subtitle">Explore memories the neural network predicts are related — connections semantic recall alone would miss.</p>
+                          <div class="studio-input-row">
+                            <input id="studio-gnn-query" type="text" class="studio-text-input" placeholder="Explore GNN neighbors for…" />
+                            <select id="studio-gnn-engram" class="studio-select" style="max-width:180px;">
+                              <option value="">All engrams</option>
+                            </select>
+                            <button id="btn-studio-gnn" class="ai-outline btn-sm">Explore</button>
+                          </div>
+                          <div id="studio-gnn-spinner" class="studio-spinner hidden">Predicting…</div>
+                          <p id="studio-gnn-unavailable" class="brain-subtitle hidden"></p>
+                          <div id="studio-gnn-result" class="studio-result-block hidden">
+                            <div id="studio-gnn-list" class="studio-gnn-list"></div>
+                          </div>
+                        </div>
+
+                        <!-- ── Remember ───────────────────────────────────────────── -->
+                        <div class="lb-section">
+                          <p class="lb-section-title">Remember</p>
+                          <p class="brain-subtitle">Save a new memory. Choose an engram or leave blank to auto-suggest the best fit.</p>
+                          <div class="studio-input-row" style="margin-bottom:6px;">
+                            <input id="studio-remember-label" type="text" class="studio-text-input" style="max-width:200px;" placeholder="Label (optional)" />
+                            <select id="studio-remember-engram" class="studio-select">
+                              <option value="">← auto-suggest engram</option>
+                            </select>
+                          </div>
+                          <textarea id="studio-remember-text" class="studio-textarea" placeholder="What do you want to remember?"></textarea>
+                          <div id="studio-duplicate-warning" class="studio-dup-warning hidden"></div>
+                          <div id="studio-suggest-result" class="studio-suggest-result hidden"></div>
+                          <div class="studio-action-row">
+                            <button id="btn-studio-check-dup" class="btn-sm">Check for duplicates</button>
+                            <button id="btn-studio-remember" class="primary btn-sm">Save memory</button>
+                          </div>
+                          <div id="studio-remember-spinner" class="studio-spinner hidden">Saving…</div>
+                          <div id="studio-remember-success" class="studio-success hidden"></div>
+                        </div>
+
+                        <!-- ── Edit / Correct ─────────────────────────────────────── -->
+                        <div class="lb-section">
+                          <p class="lb-section-title">
+                            Edit / Correct
+                            <span id="studio-edit-llm-badge" class="studio-llm-badge hidden">LLM-assisted</span>
+                          </p>
+                          <p class="brain-subtitle">Describe a correction in plain language. The app finds the right memory, proposes a diff, and asks you to approve before writing.</p>
+                          <div class="studio-scope-row" style="margin-bottom:6px;">
+                            <label for="studio-edit-engram" class="studio-scope-label">Engram:</label>
+                            <select id="studio-edit-engram" class="studio-select">
+                              <option value="">Auto-detect</option>
+                            </select>
+                          </div>
+                          <textarea id="studio-edit-correction" class="studio-textarea" placeholder="Describe the correction — e.g. &quot;The deadline for Project X moved to March 2026&quot;"></textarea>
+                          <button id="btn-studio-propose-edit" class="primary btn-sm">Propose correction</button>
+                          <div id="studio-edit-spinner" class="studio-spinner hidden">Proposing…</div>
+                          <div id="studio-edit-diff" class="studio-diff-block hidden">
+                            <p class="studio-diff-header">Proposed changes — review carefully before approving:</p>
+                            <div id="studio-edit-diff-body" class="studio-diff-body"></div>
+                            <div class="studio-action-row" style="margin-top:8px;">
+                              <button id="btn-studio-edit-approve" class="primary btn-sm">Approve &amp; apply</button>
+                              <button id="btn-studio-edit-reject" class="danger btn-sm">Reject</button>
+                            </div>
+                          </div>
+                        </div>
+
+                      </div><!-- /studio-workspace -->
+                    </div><!-- /studio-section -->
+
                   </section>
 
                   <!-- 3D Atlas tab — unchanged from before. -->
