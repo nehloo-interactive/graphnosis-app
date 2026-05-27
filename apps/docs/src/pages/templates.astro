@@ -1155,7 +1155,7 @@ const packs: Pack[] = [
       <div class="max-w-7xl mx-auto">
 
         <!-- Count -->
-        <p id="pack-count" class="text-xs text-[#52525b] font-mono mb-6">{packs.length} packs</p>
+        <p id="pack-count" class="text-xs text-[#52525b] font-mono mb-6 scroll-mt-24" style="scroll-margin-top:5rem">{packs.length} packs</p>
 
         <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-12" id="pack-grid">
           {packs.map((pack) => {
@@ -1427,12 +1427,15 @@ const packs: Pack[] = [
       : `${visible} of ${cards.length} packs`;
   }
 
+  const gridTop = document.getElementById('pack-count') as HTMLElement;
+
   chips.forEach(chip => {
     chip.addEventListener('click', () => {
       chips.forEach(c => c.removeAttribute('data-active'));
       chip.setAttribute('data-active', 'true');
       activeCategory = chip.dataset.category ?? 'all';
       filter();
+      gridTop.scrollIntoView({ behavior: 'smooth', block: 'start' });
     });
   });
 
