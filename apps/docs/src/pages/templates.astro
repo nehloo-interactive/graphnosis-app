@@ -811,8 +811,7 @@ const packs: Pack[] = [
           </span>
         </h1>
         <p class="text-[#c4c6d6] text-lg leading-relaxed mb-3 max-w-2xl mx-auto">
-          Start with your profession's starter kit — a named set of recall patterns, an engram schema,
-          and a setup guide configured for how your specific job actually uses memory.
+          Start managing your job memory for your profession with a starter kit.
         </p>
         <p class="text-base font-semibold mb-4 bg-clip-text text-transparent" style="background-image: linear-gradient(90deg, #a78bfa 0%, #67e8f9 100%);">
           Local, private, encrypted, deterministic — auditable.
@@ -886,9 +885,10 @@ const packs: Pack[] = [
                 data-search-text={searchText}
                 style={`border-color: ${color}18;`}
               >
-                {/* Top-right: Starter Kit label */}
-                <div class="absolute top-5 right-5 text-[10px] font-black tracking-widest uppercase text-[#3f3f5a] border border-[#2a2a3d] rounded px-2 py-0.5 select-none">
-                  Starter Kit
+                {/* Top-right: two-line TEMPLATE / STARTER KIT label */}
+                <div class="absolute top-5 right-5 flex flex-col items-end gap-0.5 select-none">
+                  <span class="text-[9px] font-black tracking-widest uppercase leading-none" style={`color: ${color};`}>Template</span>
+                  <span class="text-[9px] font-black tracking-widest uppercase leading-none text-[#f0f0f5]">Starter Kit</span>
                 </div>
 
                 {pack.badge && (
