@@ -883,6 +883,11 @@ const packs: Pack[] = [
                 data-search-text={searchText}
                 style={`border-color: ${color}18;`}
               >
+                {/* Top-right: Starter Kit label */}
+                <div class="absolute top-5 right-5 text-[10px] font-black tracking-widest uppercase text-[#3f3f5a] border border-[#2a2a3d] rounded px-2 py-0.5 select-none">
+                  Starter Kit
+                </div>
+
                 {pack.badge && (
                   <div
                     class="absolute -top-3 left-5 text-xs font-black tracking-widest uppercase px-3 py-1 rounded-full text-[#13131a]"
