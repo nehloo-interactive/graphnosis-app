@@ -98,12 +98,15 @@ const PACKS = [
   // Education & Knowledge Work
   { id: 'academic-research',           name: 'Academic Research Starter Kit',               price: 79  },
   { id: 'corporate-ld',                name: 'Corporate L&D Starter Kit',                   price: 79  },
+  { id: 'teacher-professor',           name: 'Teacher & Professor Starter Kit',             price: 79  },
   // Field Operations & Trades
   { id: 'field-service',               name: 'Field Service Starter Kit',                   price: 79  },
   { id: 'safety-compliance-field',     name: 'Safety & Compliance Starter Kit',             price: 99  },
+  { id: 'fleet-operations',            name: 'Fleet Operations Starter Kit',                price: 79  },
   // Architecture & Construction
   { id: 'design-planning',             name: 'Design & Planning Starter Kit',               price: 79  },
   { id: 'construction-project',        name: 'Construction Project Management Starter Kit', price: 79  },
+  { id: 'pre-design-research',         name: 'Pre-Design & Site Research Starter Kit',      price: 79  },
   // Business Operations & B2B
   { id: 'sales-account',               name: 'Sales & Account Starter Kit',                 price: 99  },
   { id: 'customer-success',            name: 'Customer Success Starter Kit',                price: 79  },
@@ -111,6 +114,7 @@ const PACKS = [
   // Non-Profits & Communities
   { id: 'nonprofit-foundation',        name: 'Non-Profit & Foundation Starter Kit',         price: 79  },
   { id: 'nonprofit-large-community',   name: 'Large Community & Membership Org Starter Kit', price: 99 },
+  { id: 'volunteer-management',        name: 'Volunteer Management Starter Kit',            price: 79  },
 ];
 
 // ── Dry-run path ──────────────────────────────────────────────────────────────
