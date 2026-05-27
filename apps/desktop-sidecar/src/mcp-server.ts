@@ -13,6 +13,7 @@ import { createHmac } from 'node:crypto';
 import { recordConsent, revokeConsent, policyGrantMs, type ClientPolicy, type ConsentPolicyChoice } from '@graphnosis-app/core/settings';
 import { registerPrompt as registerConsentPrompt, listPendingPrompts } from './consent-prompts.js';
 import type { ConsentRecord } from '@graphnosis-app/core/settings';
+import { SkillTrainer, type ExportFormat } from './skill-trainer.js';
 
 // ── Session-level data budget ─────────────────────────────────────────────────
 // These caps apply per MCP connection (i.e. per AI client session). They exist
@@ -726,6 +727,12 @@ export interface McpDeps {
   broadcastRaw?: import('./events.js').BroadcastRawFn;
   /** Brain engine — provides develop/predict/insights/vitality tools. Optional. */
   brainEngine?: BrainEngine | null;
+  /**
+   * Skill trainer — provides train_skill, skill_vitality, export_skill tools.
+   * Created at startup alongside the brain engine. Optional: absent in test /
+   * smoke-test contexts where no full host is wired.
+   */
+  skillTrainer?: SkillTrainer | null;
 }
 
 /**
@@ -2101,6 +2108,129 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
           required: ['phrase', 'tier'],
         },
       },
+      // ── Skill training (monthly upgrades) ───────────────────────────────────
+      {
+        name: 'train_skill',
+        description:
+          'DETERMINISM — Conditional. Memory surfacing is deterministic (same recall, same nodes). ' +
+          'The rewrite step is non-deterministic when the local LLM is on; deterministic ' +
+          '(memory-augmented: memories appended as context, no rewrite) when the LLM is off. ' +
+          'The response `mode` field reports which path ran.\n\n' +
+          'Personalize an AI skill using the user\'s Graphnosis memories. ' +
+          'A "skill" is any AI behavior instruction: a Claude Code skill file, a system prompt, ' +
+          'a CLAUDE.md block, a .cursorrules file, a ChatGPT system message — anything that ' +
+          'shapes how an AI assistant behaves.\n\n' +
+          'HOW IT WORKS:\n' +
+          '1. Recall: surface the memories most relevant to this skill (federated, GNN-aware).\n' +
+          '2. Personalize: if the Local LLM is on, rewrite the skill to reflect those memories ' +
+          '   with per-change attribution ("from memory"). If the LLM is off, append the top ' +
+          '   memories as a "Personal Context" block — still valuable; the AI consuming the ' +
+          '   skill sees and applies the context.\n' +
+          '3. Save: store the trained version in the Skills engram as a new node.\n\n' +
+          'WHEN TO CALL:\n' +
+          '• User says "train my code review skill", "personalize this prompt", ' +
+          '  "use my memory to improve this instruction"\n' +
+          '• User pastes a skill and says "make this match my style"\n' +
+          '• Skill vitality is low (skill_vitality returned < 60)\n\n' +
+          'Requires a Skills engram (template: skill). If none exists, tell the user to ' +
+          'create one in Graphnosis → New Engram → Skill. ' +
+          'Monthly upgrades subscription required for LLM-powered rewriting; ' +
+          'memory-augmented mode is always available.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            skill: {
+              type: 'string',
+              description: 'The full text of the skill/instruction to personalize.',
+            },
+            skill_name: {
+              type: 'string',
+              description: 'Human-readable name for this skill (used as the label in the Skills engram). Optional.',
+            },
+            target_engram: {
+              type: 'string',
+              description: 'Name or ID of the Skills engram to save into. Default: the engram named "Skills" or "AI Skills".',
+            },
+            focus_engrams: {
+              type: 'array',
+              items: { type: 'string' },
+              description: 'Restrict memory recall to these engram names/IDs. Omit to search all engrams (recommended).',
+            },
+            model_target: {
+              type: 'string',
+              enum: ['generic', 'claude', 'cursor', 'openai', 'copilot'],
+              description: 'Target AI tool — shapes export hints in the diff notes. Default: generic.',
+            },
+            save: {
+              type: 'boolean',
+              description: 'Whether to save the trained version into the Skills engram. Default true. Pass false to preview without persisting.',
+            },
+          },
+          required: ['skill'],
+        },
+      },
+      {
+        name: 'skill_vitality',
+        description:
+          'DETERMINISM — Deterministic: reads engram metadata; no LLM.\n\n' +
+          'How fresh is a trained skill? Returns a 0–100 score that drops as the skill ages ' +
+          'and as its nodes are superseded by retraining.\n\n' +
+          '  100   = just trained, fully fresh\n' +
+          '  80–99 = fresh, no retraining needed\n' +
+          '  60–79 = aging, consider retrain if cortex has grown\n' +
+          '  40–59 = moderately stale, retrain recommended\n' +
+          '  0–39  = stale, call train_skill\n\n' +
+          'WHEN TO CALL:\n' +
+          '• User asks "how fresh is my X skill?" or "should I retrain my prompt?"\n' +
+          '• Before calling train_skill — if vitality is high, skip the retrain.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            source_id: {
+              type: 'string',
+              description: 'The sourceId of the trained skill (returned by train_skill as `skill_id`).',
+            },
+            target_engram: {
+              type: 'string',
+              description: 'Name or ID of the Skills engram containing this skill.',
+            },
+          },
+          required: ['source_id'],
+        },
+      },
+      {
+        name: 'export_skill',
+        description:
+          'DETERMINISM — Deterministic: format conversion; no LLM, no recall.\n\n' +
+          'Export a trained skill in a target AI tool\'s native format. ' +
+          'Memory references, node IDs, and graph metadata are stripped — only the ' +
+          'behavioral content is exported. The personalization travels; the memories ' +
+          'that caused it stay local.\n\n' +
+          'Formats:\n' +
+          '  claude-md     — CLAUDE.md snippet (copy into your project\'s CLAUDE.md)\n' +
+          '  cursorrules   — .cursorrules entry\n' +
+          '  system-prompt — Generic system prompt (paste into any AI tool)\n' +
+          '  openai        — OpenAI API system message JSON\n' +
+          '  raw           — Clean skill text with no wrapper\n\n' +
+          'WHEN TO CALL:\n' +
+          '• User says "export my X skill for Cursor", "give me this as a CLAUDE.md block"\n' +
+          '• After training, to deploy the skill in a specific AI tool',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            skill_text: {
+              type: 'string',
+              description: 'The trained skill text to export. Pass the `trained` field from train_skill output, or retrieve it from the Skills engram via recall_source.',
+            },
+            format: {
+              type: 'string',
+              enum: ['claude-md', 'cursorrules', 'system-prompt', 'openai', 'raw'],
+              description: 'Target format.',
+            },
+          },
+          required: ['skill_text', 'format'],
+        },
+      },
     ],
   }));
 
@@ -3413,6 +3543,164 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
           `Consent recorded for ${tier} engrams. Valid ${until}. You may now retry the original recall.`
         }] };
       }
+      // ── Skill training ────────────────────────────────────────────────────
+      case 'train_skill': {
+        const TrainSkillInput = z.object({
+          skill: z.string().min(1),
+          skill_name: z.string().optional(),
+          target_engram: z.string().optional(),
+          focus_engrams: z.array(z.string()).optional(),
+          model_target: z.enum(['generic', 'claude', 'cursor', 'openai', 'copilot']).optional(),
+          save: z.boolean().optional(),
+        });
+        const args = TrainSkillInput.parse(req.params.arguments ?? {});
+
+        // Resolve the Skills engram (where trained skills are stored)
+        const engramName = args.target_engram ?? 'Skills';
+        const engramRes = requireEngram(deps.host, engramName);
+        if ('error' in engramRes) {
+          return {
+            isError: true,
+            content: [{
+              type: 'text',
+              text:
+                `Could not find a Skills engram named "${engramName}". ` +
+                `Create one in Graphnosis → New Engram → choose the "Skill" template. ` +
+                `Then retry this call.\n\n` + (engramRes.error.content[0] as { text: string }).text,
+            }],
+          };
+        }
+
+        // Resolve focus engrams (optional — filter where to draw memories from)
+        let focusGraphIds: string[] | null = null;
+        if (args.focus_engrams?.length) {
+          const resolved = resolveEngramList(deps.host, args.focus_engrams);
+          focusGraphIds = resolved.resolved;
+        }
+
+        if (!deps.skillTrainer) {
+          return mcpError(
+            'Skill trainer is not available. Open the Graphnosis app to enable it.',
+          );
+        }
+
+        const clientName = mcpRegistry.getMostRecentClientName() ?? undefined;
+        const trainInput: import('./skill-trainer.js').TrainSkillInput = {
+          skill: args.skill,
+          graphId: engramRes.graphId,
+          ...(args.skill_name !== undefined ? { skillName: args.skill_name } : {}),
+          ...(focusGraphIds !== null ? { focusGraphIds } : {}),
+          ...(args.model_target !== undefined ? { modelTarget: args.model_target } : {}),
+          ...(args.save !== undefined ? { save: args.save } : {}),
+          ...(clientName !== undefined ? { addedBy: clientName } : {}),
+        };
+        const result = await deps.skillTrainer.trainSkill(trainInput);
+
+        const lines: string[] = [];
+        lines.push(`## Skill Training Complete`);
+        lines.push('');
+        lines.push(`**Mode:** ${result.mode === 'llm' ? '✨ LLM rewrite' : '📎 Memory-augmented (no LLM)'}`);
+        if (result.degradedNote) {
+          lines.push(`**Note:** ${result.degradedNote}`);
+        }
+        lines.push(`**Influential memories:** ${result.influentialNodes.length} node(s) surfaced`);
+        if (result.skillId) {
+          lines.push(`**Saved as:** \`${result.skillId}\` in ${engramName} engram`);
+        }
+        lines.push('');
+        lines.push('### Trained Skill');
+        lines.push('');
+        lines.push(result.trained);
+        if (result.diffNotes) {
+          lines.push('');
+          lines.push('### Change Attribution');
+          lines.push('');
+          lines.push(result.diffNotes);
+        }
+        if (result.influentialNodes.length > 0) {
+          lines.push('');
+          lines.push('### Top Influential Memories');
+          result.influentialNodes.slice(0, 5).forEach((n, i) => {
+            lines.push(`${i + 1}. [score ${n.score.toFixed(2)}] ${n.preview}`);
+          });
+        }
+        return { content: [{ type: 'text', text: lines.join('\n') }] };
+      }
+
+      case 'skill_vitality': {
+        const SkillVitalityInput = z.object({
+          source_id: z.string().min(1),
+          target_engram: z.string().optional(),
+        });
+        const args = SkillVitalityInput.parse(req.params.arguments ?? {});
+
+        const engramName = args.target_engram ?? 'Skills';
+        const engramRes = requireEngram(deps.host, engramName);
+        if ('error' in engramRes) {
+          return mcpError(
+            `Could not find a Skills engram named "${engramName}". ` +
+            `Create one in Graphnosis → New Engram → Skill template.`,
+          );
+        }
+
+        if (!deps.skillTrainer) {
+          return mcpError(
+            'Skill trainer is not available. Open the Graphnosis app to enable it.',
+          );
+        }
+
+        const vitality = deps.skillTrainer.computeSkillVitality(
+          engramRes.graphId,
+          args.source_id,
+        );
+
+        const scoreBar = '█'.repeat(Math.floor(vitality.score / 10)) +
+          '░'.repeat(10 - Math.floor(vitality.score / 10));
+
+        const lines: string[] = [];
+        lines.push(`## Skill Vitality`);
+        lines.push('');
+        lines.push(`**Score:** ${vitality.score}/100  [${scoreBar}]`);
+        lines.push(`**Recommendation:** ${vitality.recommendation}`);
+        if (vitality.trainedAt) {
+          lines.push(`**Trained:** ${new Date(vitality.trainedAt).toLocaleDateString()}`);
+        }
+        if (vitality.staleNodesCount > 0) {
+          lines.push(`**Stale nodes:** ${vitality.staleNodesCount} (superseded by a newer version)`);
+        }
+        return { content: [{ type: 'text', text: lines.join('\n') }] };
+      }
+
+      case 'export_skill': {
+        const ExportSkillInput = z.object({
+          skill_text: z.string().min(1),
+          format: z.enum(['claude-md', 'cursorrules', 'system-prompt', 'openai', 'raw']),
+        });
+        const args = ExportSkillInput.parse(req.params.arguments ?? {});
+
+        if (!deps.skillTrainer) {
+          return mcpError(
+            'Skill trainer is not available. Open the Graphnosis app to enable it.',
+          );
+        }
+
+        const exported = deps.skillTrainer.exportSkill(
+          args.skill_text,
+          args.format as ExportFormat,
+        );
+
+        return {
+          content: [{
+            type: 'text',
+            text: `## Exported Skill (${args.format})\n\n` +
+              '```\n' + exported + '\n```\n\n' +
+              '_Memory references and graph metadata have been stripped. ' +
+              'Only the behavioral content is exported — the personalization travels; ' +
+              'the memories that caused it stay local._',
+          }],
+        };
+      }
+
       default:
         throw new Error(`Unknown tool: ${req.params.name}`);
     }
