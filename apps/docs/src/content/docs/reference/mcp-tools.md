@@ -5,7 +5,7 @@ sidebar:
   order: 1
 ---
 
-The Graphnosis sidecar exposes **35 tools** via the Model Context Protocol, organised into nine functional categories. Every connected MCP client — Claude Desktop, Claude Code, Cursor, and anything else that speaks MCP — sees the same 35. What a tool can actually reach is still governed by each engram's sensitivity tier and the [consent gate](/guides/ai-access-controls/#2-the-consent-gate) — by default a one-click in-app prompt for `sensitive`-tier recalls, silent for `personal` and `public`.
+The Graphnosis sidecar exposes **35 tools** via the Model Context Protocol, organized into nine functional categories. Every connected MCP client — Claude Desktop, Claude Code, Cursor, and anything else that speaks MCP — sees the same 35. What a tool can actually reach is still governed by each engram's sensitivity tier and the [consent gate](/guides/ai-access-controls/#2-the-consent-gate) — by default a one-click in-app prompt for `sensitive`-tier recalls, silent for `personal` and `public`.
 
 You can browse the full toolset inside the app too: open the **MCP Tools** button in the left sidebar (next to Settings). Each tool name opens a short explainer with example prompts you can paste straight into your AI client.
 
@@ -128,7 +128,7 @@ Treat `[gll·*]` and `[gnn·*]` rows as predictions, not facts. Never cite them 
 - The server enforces hard caps (50 nodes / 8000 tokens) regardless of what is requested.
 - Sensitive engrams: when shared, recall applies a tighter cap (5 nodes / 500 tokens); when not shared, excluded entirely.
 - Every recall is auditable via the footer + a structured audit line on the sidecar's stderr.
-- **Diacritic matching:** entity extraction normalises diacritic variants, so "Stefan" matches "Ștefan", "Ştefan", etc.
+- **Diacritic matching:** entity extraction normalizes diacritic variants, so "Stefan" matches "Ștefan", "Ştefan", etc.
 - **Escalation policy:** if `recall` returns 0–3 nodes, or nodes that don't answer the question, call [`dig_deeper`](#dig_deeper) with the same query before telling the user nothing was found.
 
 ### Example

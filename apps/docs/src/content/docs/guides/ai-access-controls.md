@@ -7,7 +7,7 @@ sidebar:
 
 Graphnosis is **local encrypted memory, indexed for deterministic recall — auditable**. The "auditable" part is enforced by a layered access-control system that sits between your AI client and your cortex. This page explains each layer, what threat it addresses, and where to configure it.
 
-## The five layers, summarised
+## The five layers, summarized
 
 | # | Layer | What it stops | Default |
 |---|------|---------------|---------|
@@ -167,7 +167,7 @@ A guardrail that rejects a recall when the same query is repeated **3 or more ti
 
 **Default**: Jaccard token-set similarity ≥ 0.85, allowed repeats = 2, window = 60 seconds. The first two identical queries pass (natural retries — the AI rewording slightly, you asking again because the answer was incomplete); the 3rd identical query in 60 seconds blocks.
 
-The blocker normalises both queries to lowercase, strips punctuation, drops short words, and compares the resulting word sets. Jaccard similarity is the size of the intersection over the size of the union.
+The blocker normalizes both queries to lowercase, strips punctuation, drops short words, and compares the resulting word sets. Jaccard similarity is the size of the intersection over the size of the union.
 
 When it fires:
 - The sidecar throws: "Session replay detected — this is the Nth identical query in 60 seconds. Modify your query meaningfully or wait 60s."

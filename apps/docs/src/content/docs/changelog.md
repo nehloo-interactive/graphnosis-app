@@ -18,7 +18,7 @@ Patch release fixing issues found in installed v1.11.0 builds.
 ### Fixed
 
 - **All engrams are fully loaded before any background process starts.** Connectors (RSS, GitHub, Slack, etc.) and the brain engine now wait for the complete cortex to be in memory before they begin. Previously, connectors could fire ingest jobs on engrams that hadn't finished decrypting yet, causing partial writes and the greyed-out engrams visible in the picker until the load caught up.
-- **Update notification "OK" now opens the in-app install modal.** Clicking OK on the macOS system notification did nothing if Graphnosis was minimised or hidden — the event was delivered to a hidden webview and the listener never fired. The click handler now brings the window forward and re-emits the event so the Install modal appears reliably.
+- **Update notification "OK" now opens the in-app install modal.** Clicking OK on the macOS system notification did nothing if Graphnosis was minimized or hidden — the event was delivered to a hidden webview and the listener never fired. The click handler now brings the window forward and re-emits the event so the Install modal appears reliably.
 - **CI release: DMG located dynamically instead of by hardcoded filename.** The release workflow now finds whatever DMG Tauri produces (arch suffix varies by runner) rather than assuming `_aarch64.dmg`. Fixes the v1.11.1 CI failure where the build produced the DMG at the correct path but the step couldn't find it because the package version was mismatched.
 - **Status bar items right-aligned reliably.** Version, Vitality, GLL, GNN, and the MCP client indicator are now wrapped in a single flex container with `margin-left:auto`, replacing a fragile empty-span spacer approach that left the items drifting at intermediate positions on some window widths.
 - **Offline source categories added to landing page.** The "Auto-ingest from the tools you already use" section on graphnosis.com now lists the full range of off-the-grid sources — smart home, IoT sensors, local networks, research instruments, personal agents, robotics, agriculture — with a link to the step-by-step recipes guide.
@@ -58,7 +58,7 @@ Patch release fixing issues found in installed v1.11.0 builds.
 - **Status bar layout.** Overlay engine pills and the MCP client indicator are now pushed to the far right, leaving the left side clear for the theme toggle and cortex path. The ⌘K search chip is gone — ⌘F handles it.
 - **Clicking the MCP indicator opens the Status page.**
 - **Predicted edges hidden by default in the 3D atlas.** The overlay edges no longer appear unless you turn them on — the canonical view stays clean.
-- **Recall audit footer no longer lists every engram.** Only engrams that contributed results appear in the footer; the rest are summarised as a count. Previously all engram names — including sensitive ones — were listed on every recall.
+- **Recall audit footer no longer lists every engram.** Only engrams that contributed results appear in the footer; the rest are summarized as a count. Previously all engram names — including sensitive ones — were listed on every recall.
 - **Engram scoping in recall now works regardless of how your AI formats the parameter.** `only_engrams` and `except_engrams` accept a list, a JSON-encoded string, or a bare name — all three were previously handled inconsistently.
 
 ### Fixed

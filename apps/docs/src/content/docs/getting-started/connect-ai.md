@@ -201,7 +201,7 @@ The wizard is fully detailed in **[Connect from your phone](/getting-started/mob
 
 ## The 35 MCP tools
 
-Once connected, **35 tools** are available to your AI, organised into nine categories (Core memory, Engram discovery, Structured recall, Source operations, Engram operations, Brain maintenance, Approximate, Conditional, and Non-deterministic). The most commonly used ones:
+Once connected, **35 tools** are available to your AI, organized into nine categories (Core memory, Engram discovery, Structured recall, Source operations, Engram operations, Brain maintenance, Approximate, Conditional, and Non-deterministic). The most commonly used ones:
 
 | Tool | What it does |
 |------|-------------|
