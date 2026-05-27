@@ -14,7 +14,7 @@ export default defineConfig({
       },
       favicon: '/graphnosis-logo-rounded.png',
       description: 'The hippocampus your AI has always been missing.',
-      tagline: 'The hippocampus your AI has always been missing.',
+      tagline: 'Local, encrypted, deterministic job memory — auditable',
 
       customCss: ['./src/styles/custom.css'],
       components: {

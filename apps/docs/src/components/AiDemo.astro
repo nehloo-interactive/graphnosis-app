@@ -44,18 +44,15 @@ const shots = [
           <figcaption class="text-base sm:text-lg text-[#c4c6d6] leading-relaxed">{s.caption}</figcaption>
         </div>
 
-        <!-- Image — offset Apple-style on desktop, full-width on mobile -->
-        <div class="w-full overflow-hidden">
+        <!-- Image — natural width, centered so full text is visible -->
+        <div class="w-full flex justify-center px-4 sm:px-6">
           <img
             src={s.src}
             alt={s.alt}
             width={s.w}
             height={s.h}
             loading="lazy"
-            class={[
-              'w-full sm:w-[125%] max-w-none block rounded-lg border border-[#2a2a3d]',
-              s.offset === 'left' ? 'sm:ml-[-25%]' : 'sm:ml-0',
-            ].join(' ')}
+            class="w-full max-w-4xl block rounded-lg border border-[#2a2a3d]"
           />
         </div>
 
