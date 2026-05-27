@@ -154,12 +154,17 @@
           </div>
         </div>
       </article>
+
+      <p class="text-[#3d3d55] mt-3 text-center" style="font-size:10px; line-height:1.5;">
+        All other product names, trademarks, and registered trademarks are the property of their respective owners.
+        Graphnosis is not affiliated with, endorsed by, or sponsored by any third party.
+      </p>
     </div>
 
     <!-- MCP tools -->
     <div class="mb-12">
-      <h3 class="text-lg font-bold text-white mb-2">What AI clients can do with Graphnosis</h3>
-      <p class="text-[#c4c6d6] text-sm mb-8">
+      <h2 class="text-3xl sm:text-4xl lg:text-5xl font-black text-white text-center mb-4">What AI cloud and local clients can do with Graphnosis...</h2>
+      <p class="text-[#c4c6d6] text-base text-center max-w-2xl mx-auto mb-10">
         All <span class="text-[#f0f0f5] font-semibold">35 MCP tools</span> across 9 functional categories. The deterministic + approximate sets work out of the box;
         the conditional and non-deterministic sets use the optional local LLM (or Neural Network). Every call is visible in the audit log.
         Click any tool for parameters, return shape, and example prompts.
@@ -274,29 +279,29 @@
         },
       ].map((cat) => (
         <div class="mb-8">
-          <div class="mb-3">
-            <p class="text-xs font-mono tracking-widest uppercase mb-1" style={`color:${cat.color};`}>{cat.label} · <span class="opacity-70">{cat.determinism}</span></p>
-            <p class="text-sm text-[#c4c6d6]">{cat.desc}</p>
+          <div class="mb-4">
+            <p class="text-sm font-mono tracking-widest uppercase mb-2" style={`color:${cat.color};`}>{cat.label} · <span class="opacity-70">{cat.determinism}</span></p>
+            <p class="text-base text-[#c4c6d6]">{cat.desc}</p>
           </div>
-          <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+          <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
             {cat.tools.map((tool) => (
               <a
                 href="/reference/mcp-tools"
-                class="bg-[#13131a] border border-[#2a2a3d] rounded-lg p-3 flex flex-col gap-1.5 transition-colors group"
+                class="bg-[#13131a] border border-[#2a2a3d] rounded-lg p-5 flex flex-col gap-2.5 transition-colors group"
                 style={`--hover-border:${cat.color};`}
                 onmouseover="this.style.borderColor=this.style.getPropertyValue('--hover-border')+'66'"
                 onmouseout="this.style.borderColor=''"
               >
-                <code class="text-sm font-mono font-bold" style={`color:${cat.color};`}>{tool.name}</code>
-                <p class="text-[#c4c6d6] text-xs leading-relaxed">{tool.desc}</p>
+                <code class="text-base font-mono font-bold" style={`color:${cat.color};`}>{tool.name}</code>
+                <p class="text-[#c4c6d6] text-sm leading-relaxed">{tool.desc}</p>
               </a>
             ))}
           </div>
         </div>
       ))}
 
-      <p class="text-sm text-[#a0a0b8] mt-8">
-        <code class="text-[#67e8f9] font-mono">edit</code> is deterministic by default — it returns a diff for review, and nothing is written until you approve it in the app; the optional Neural Network or local LLM can widen it. <code class="text-[#67e8f9] font-mono">forget</code> is a soft delete — nodes stay recoverable from the op-log. Full reference: <a href="/reference/mcp-tools" class="text-[#67e8f9] hover:underline">/reference/mcp-tools</a>.
+      <p class="text-base text-[#a0a0b8] mt-10">
+        <code class="text-[#67e8f9] font-mono text-base">edit</code> is deterministic by default — it returns a diff for review, and nothing is written until you approve it in the app; the optional Neural Network or local LLM can widen it. <code class="text-[#67e8f9] font-mono text-base">forget</code> is a soft delete — nodes stay recoverable from the op-log. Full reference: <a href="/reference/mcp-tools" class="text-[#67e8f9] hover:underline">/reference/mcp-tools</a>.
       </p>
     </div>
 

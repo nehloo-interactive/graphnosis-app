@@ -1,66 +1,87 @@
 ---
-const tabs = [
+const shots = [
+  {
+    src: '/screenshots/01-unlock.png',
+    alt: 'Graphnosis unlock screen',
+    eyebrow: 'Local-first by design',
+    headline: 'Every session starts from your encrypted cortex — not a blank page.',
+    caption: 'Unlock with your passphrase or Touch ID. No account. No server. No cloud handshake.',
+    offset: 'center',
+  },
   {
     src: '/screenshots/02-check-in.png',
     alt: 'Graphnosis Check-in tab',
-    caption: 'Check-in — wire up lonely memories in seconds.',
+    eyebrow: 'Daily practice',
+    headline: 'Wire up lonely memories in seconds.',
+    caption: 'The Check-in deck surfaces what\'s unconnected, uncorroborated, or fading — and lets you fix it without opening a document.',
+    offset: 'right',
   },
   {
     src: '/screenshots/03-3d-engram.png',
     alt: 'Graphnosis 3D Engram tab',
-    caption: '3D Engram — every memory and connection, explorable.',
+    eyebrow: 'The dual graph',
+    headline: 'Your knowledge, visible as a living structure.',
+    caption: 'Every node, every edge, every relationship — explorable in 3D. Zoom into decisions. Trace provenance. See what the AI sees.',
+    offset: 'left',
   },
   {
     src: '/screenshots/04-deterministic-consolidation.png',
     alt: 'Graphnosis Deterministic Consolidation tab',
-    caption: 'Deterministic Consolidation — vitality and memory health.',
+    eyebrow: 'Brain health',
+    headline: 'Vitality at a glance. Memory that strengthens with use.',
+    caption: 'Deterministic consolidation runs without an LLM. Your cortex stays consistent, auditable, and provably correct — no model hallucinations in the graph.',
+    offset: 'right',
   },
   {
     src: '/screenshots/05-go-non-deterministic.png',
     alt: 'Graphnosis Go Non-Deterministic tab',
-    caption: 'Go Non-Deterministic — the optional neural-network and local-AI layer.',
+    eyebrow: 'Optional layer',
+    headline: 'Layer local AI inference over your deterministic base.',
+    caption: 'The Neural Network and Local LLM are opt-in, on-device, and kept separate from canonical memory. Turn them on when you want prediction. Turn them off when you need proof.',
+    offset: 'left',
   },
 ];
 ---
 
-<section id="screenshots" class="py-24 px-4 sm:px-6">
-  <div class="max-w-6xl mx-auto">
-    <div class="text-center mb-12">
-      <span class="block text-xs font-bold tracking-widest uppercase text-[#67e8f9] mb-4">The macOS app</span>
-      <h2 class="text-3xl sm:text-4xl lg:text-5xl font-black text-white mb-4">A look inside Graphnosis</h2>
-      <p class="text-[#c4c6d6] max-w-2xl mx-auto leading-relaxed">
-        Unlock your Cortex, then move across four tabs — daily check-ins, the 3D engram, deterministic consolidation, and the optional non-deterministic layer.
-      </p>
-    </div>
+<section id="screenshots" class="py-24 overflow-hidden">
+  <div class="text-center mb-20 px-4 sm:px-6">
+    <span class="block text-xs font-bold tracking-widest uppercase text-[#67e8f9] mb-4">The macOS app</span>
+    <h2 class="text-3xl sm:text-4xl lg:text-5xl font-black text-white mb-4">A look inside Graphnosis</h2>
+    <p class="text-[#c4c6d6] max-w-2xl mx-auto leading-relaxed">
+      Unlock your cortex, then move across four tabs — daily check-ins, the 3D engram,
+      deterministic consolidation, and the optional non-deterministic layer.
+    </p>
+  </div>
 
-    <figure class="max-w-3xl mx-auto mb-10">
-      <img
-        src="/screenshots/01-unlock.png"
-        alt="Graphnosis unlock screen"
-        width="1600"
-        height="1002"
-        loading="lazy"
-        class="w-full"
-      />
-      <figcaption class="text-sm text-[#c4c6d6] text-center mt-3">
-        Unlock with your passphrase or Touch ID — no account, no server.
-      </figcaption>
-    </figure>
+  <div class="flex flex-col gap-28">
+    {shots.map((shot) => (
+      <figure class="flex flex-col items-center gap-8">
 
-    <div class="grid grid-cols-1 md:grid-cols-2 gap-8">
-      {tabs.map((s) => (
-        <figure>
+        <!-- Caption block — centered, large -->
+        <div class="text-center px-4 sm:px-6 max-w-2xl mx-auto">
+          <p class="text-xs font-bold tracking-widest uppercase text-[#67e8f9] mb-3">{shot.eyebrow}</p>
+          <h3 class="text-2xl sm:text-3xl lg:text-4xl font-black text-white leading-tight mb-3">{shot.headline}</h3>
+          <figcaption class="text-base sm:text-lg text-[#c4c6d6] leading-relaxed">{shot.caption}</figcaption>
+        </div>
+
+        <!-- Image — offset Apple-style on desktop, full-width on mobile -->
+        <div class="w-full overflow-hidden">
           <img
-            src={s.src}
-            alt={s.alt}
+            src={shot.src}
+            alt={shot.alt}
             width="1600"
             height="1002"
             loading="lazy"
-            class="w-full"
+            class={[
+              'w-full sm:w-[125%] max-w-none block',
+              // Desktop offset: pull left so right bleeds off, or push right so left bleeds
+              shot.offset === 'left'   ? 'sm:ml-[-25%]' :
+              shot.offset === 'right'  ? 'sm:ml-0'      : 'sm:ml-[-12.5%]',
+            ].join(' ')}
           />
-          <figcaption class="text-sm text-[#c4c6d6] text-center mt-3">{s.caption}</figcaption>
-        </figure>
-      ))}
-    </div>
+        </div>
+
+      </figure>
+    ))}
   </div>
 </section>
