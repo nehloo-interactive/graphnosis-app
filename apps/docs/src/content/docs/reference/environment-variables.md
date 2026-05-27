@@ -24,7 +24,7 @@ The Graphnosis sidecar (`graphnosis-sidecar`) reads its configuration from envir
 
 | Variable | Required | Default | Description |
 |----------|----------|---------|-------------|
-| `GRAPHNOSIS_LLM` | No | — | The local LLM model id the sidecar should load (e.g. `llama-3.2-3b`). The optional Local LLM powers `develop` / `predict` / `insights` and the LLM-assisted `correct` path. When unset, no model id is pre-selected. |
+| `GRAPHNOSIS_LLM` | No | — | The local LLM model id the sidecar should load (e.g. `llama-3.2-3b`). The optional Local LLM powers `develop` / `predict` / `insights` and the LLM-assisted `edit` path. When unset, no model id is pre-selected. |
 
 ## Embedding
 

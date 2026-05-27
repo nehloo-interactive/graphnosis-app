@@ -19,7 +19,11 @@ Every connector follows the same pattern:
 
 **Why BYO credentials.** Most cloud memory products use a "first-party OAuth app" model — you log into Slack via their app, they hold a token on your behalf, they're a 4th-party data processor in every workflow. Graphnosis goes the other way: **you create your own app/key** in each service's developer console and paste credentials into Graphnosis. The trade is 1–5 minutes of upfront setup-in-service per connector, and the win is **end-to-end privacy** — Graphnosis is never in the OAuth callback chain, the service-side relationship is between you and that service.
 
-**Credentials are encrypted at rest.** As of v0.6.1, every connector credential (PATs, tokens, API keys) is XChaCha20-Poly1305 encrypted with your cortex data key before it touches disk. Same crypto primitive as your `.gai` memory files. You can safely sync your cortex folder via iCloud Drive / Dropbox / S3 — cloud providers see ciphertext only.
+**Credentials are encrypted at rest.** Every connector credential (PATs, tokens, API keys) is encrypted with your cortex data key before it touches disk. Same crypto primitive as your `.gai` memory files. You can safely sync your cortex folder via iCloud Drive / Dropbox / S3 — cloud providers see ciphertext only.
+
+**Privacy notice.** Every connector form displays a one-line privacy notice confirming that credentials are encrypted locally and that Graphnosis never relays them to Nehloo servers. This notice is informational — it doesn't gate setup.
+
+**Folder pickers.** The Obsidian and GBrain connector modals include a **Browse…** button next to their folder path fields. Click it to open a native folder picker instead of typing a path by hand.
 
 ## RSS / Atom feeds — the simplest connector
 
@@ -254,7 +258,7 @@ The webhook URL is `localhost:3458` by default — only reachable from the same 
   - Linear: `Authentication failed` means the API key is wrong or rotated.
 
 **Pulls happen but events don't show up in the engram**
-- Check the **target engram** dropdown in the connector's row — events go to the engram set at install time. If you've since renamed or archived that engram, the connector still references it but the engram isn't in the active set.
+- Check the **target engram** dropdown in the connector's row — events go to the engram set at install time. Connectors automatically skip archived engrams; if the target engram is archived, re-activate it or edit the connector to point to a different engram.
 - Verify in **Sources** that the connector's `source.<id>` entries are appearing. If yes but no nodes are showing in your atlas / recall, your engram might need a refresh (Settings → Cortex Tools → Refresh stats).
 
 **Too many events on first pull**

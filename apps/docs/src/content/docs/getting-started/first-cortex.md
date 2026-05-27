@@ -53,6 +53,8 @@ If you quit and reopen the app, or lock the cortex manually, you'll be prompted 
 
 **Forgot your passphrase?** Click "Forgot passphrase? Use recovery phrase" under the Unlock button and enter your 24 words. See [Recovery](/guides/recovery/) for the full flow.
 
+**Cortex folder moved or missing?** If the folder you last used is no longer at the expected path (e.g. you moved it or renamed the parent directory), the lock screen shows a notice explaining that the cortex folder cannot be found, with a **Browse…** button to locate the folder at its new location.
+
 You can lock the cortex any time from the menu bar icon.
 
 ## 5. Keep Graphnosis running for AI clients
