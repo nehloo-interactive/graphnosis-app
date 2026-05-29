@@ -167,7 +167,7 @@ interface AppSettings {
     searchLlmRerank?: boolean;
     /** Restrict Local LLM to in-app search only (disables develop/predict/insights/llm_query MCP tools). */
     searchLlmOnly?: boolean;
-    /** Memory Studio — full in-app recall/remember/edit/GNN interface.
+    /** MemoryStudio — full in-app recall/remember/edit/GNN interface.
      *  true when the Studio subscription is active (set by Stripe webhook via graphnosis.app). */
     studioEnabled?: boolean;
     /** How long a typed personal-tier consent is remembered. -1 = permanent. Default -1. */
@@ -304,9 +304,14 @@ let loadedGraphs: GraphWithMetadata[] = [];
 type GraphnosisTab = 'checkin' | 'atlas' | 'brain' | 'nondeterministic';
 let graphnosisActiveTab: GraphnosisTab = 'checkin';
 
-// ── Memory Studio state ──────────────────────────────────────────────────────
+// ── MemoryStudio state ──────────────────────────────────────────────────────
 let studioEnabled = false;           // mirrors settings.ai.studioEnabled
 let studioPendingDiffId: string | null = null;  // diffId from the last studio.edit call
+// Two-click confirm guard for Approve&Apply — the user clicks once to enter
+// "Confirm? Yes, apply" state, then a second click within the same proposal
+// session actually fires correction.apply. Resets every time a fresh proposal
+// lands (see runStudioEdit) and on Reject.
+let studioEditApprovePending = false;
 let graphnosisListRows: NodeRecord[] = []; // current visible search results
 let graphnosisAllNodes: NodeRecord[] = []; // unfiltered cache for the active engram
 let graphnosisSelectedId: string | null = null;
@@ -348,6 +353,8 @@ let graphnosisDeckIndex = 0;
 const graphnosisSessionDispatched = new Set<string>(); // nodeIds confirmed/skipped/fixed this session
 let graphnosisTendedThisSession = 0; // counter shown in the recap row
 let graphnosisOrphanIds: Set<string> = new Set(); // nodes with no edges, recomputed per data load
+let triviaOpen = false;
+let triviaCardsSeen = false; // true once the drawer has been opened at least once
 
 // AI-proposed correction diffs awaiting the user's approval. Polled by
 // fetchPendingCorrections; surfaced as top-priority `pending-correction`
@@ -373,8 +380,18 @@ const graphnosisRelatedCache: Map<string, RelatedItem[]> = new Map();
 // cortex locks (we don't persist this across sessions).
 const graphnosisRecentsByGraph: Map<string, string[]> = new Map();
 
+// Cross-engram memory trace. Newest first. Holds (nodeId, graphId) so we can
+// switch engrams when the user re-clicks an older entry. Populated by every
+// `pushRecent` call alongside the per-engram map. The left-rail Memory Trace
+// reads from this list so navigation accumulates across engram switches —
+// MemoryStudio raw-context clicks often jump between engrams, and per-engram
+// scoping was wiping the trace on every jump.
+const graphnosisRecentsGlobal: Array<{ nodeId: string; graphId: string }> = [];
+
 function currentRecents(): string[] {
-  return atlasActiveGraph ? graphnosisRecentsByGraph.get(atlasActiveGraph) ?? [] : [];
+  // Global list drives the rail; per-engram map is still maintained for any
+  // legacy callers and for the post-forget cleanup pass.
+  return graphnosisRecentsGlobal.map((r) => r.nodeId);
 }
 let graphnosisEditingId: string | null = null; // node currently in inline-edit mode
 // Current forget mode — synced from settings whenever they are loaded/saved.
@@ -612,7 +629,7 @@ const els = {
   gSearchSortSelect: $<HTMLSelectElement>('g-search-sort-select'),
   gMemoryTrace: $<HTMLDivElement>('g-memory-trace'),
   gMemoryTraceList: $<HTMLDivElement>('g-memory-trace-list'),
-  gDashboard: $<HTMLDivElement>('g-dashboard'),
+  gDashboard: $<HTMLDivElement>('trivia-drawer'),
   gSearchResults: $<HTMLDivElement>('g-search-results'),
   gSearchResultsStats: $<HTMLDivElement>('g-search-results-stats'),
   gList: $<HTMLDivElement>('g-list'),
@@ -1327,6 +1344,7 @@ function render(status: StatusSnapshot): void {
         try {
           const graphs = await invoke<GraphWithMetadata[]>('list_graphs_with_metadata', { includeUnloaded: true });
           loadedGraphs = graphs;
+          populateStudioEngramSelects();
           if (graphs.some((g) => !g.metadata.archived && g.graphId === saved)) {
             await switchActiveEngram(saved);
           } else {
@@ -1377,6 +1395,7 @@ function render(status: StatusSnapshot): void {
     // detail pane — so a re-unlock starts with a clean slate, not the
     // previous session's navigation trail.
     graphnosisRecentsByGraph.clear();
+    graphnosisRecentsGlobal.length = 0;
     renderRecents();
     graphnosisSelectedId = null;
     graphnosisEditingId = null;
@@ -2052,6 +2071,31 @@ document.querySelectorAll<HTMLButtonElement>('.rail-btn').forEach((btn) => {
     const m = btn.dataset.mode as Mode | undefined;
     if (m) activateMode(m);
   });
+});
+
+// ── Left rail collapse toggle ────────────────────────────────────────────────
+// Persists across sessions in localStorage. Collapsed = icons-only; the
+// memory-trace block, get-connected picker, and labels are hidden via CSS
+// (body.rail-collapsed). Tooltips on each .rail-btn keep the buttons
+// self-explanatory in collapsed mode.
+const RAIL_COLLAPSED_KEY = 'graphnosis_rail_collapsed_v1';
+function applyRailCollapsedState(collapsed: boolean): void {
+  document.body.classList.toggle('rail-collapsed', collapsed);
+  const toggle = document.getElementById('rail-collapse-toggle');
+  if (toggle) {
+    toggle.setAttribute('aria-pressed', collapsed ? 'true' : 'false');
+    toggle.setAttribute('title', collapsed ? 'Expand sidebar' : 'Collapse sidebar');
+    toggle.setAttribute('aria-label', collapsed ? 'Expand sidebar' : 'Collapse sidebar');
+  }
+}
+// Boot — restore last state before paint so there's no flicker.
+try {
+  applyRailCollapsedState(localStorage.getItem(RAIL_COLLAPSED_KEY) === '1');
+} catch { /* localStorage disabled — start expanded, harmless */ }
+document.getElementById('rail-collapse-toggle')?.addEventListener('click', () => {
+  const next = !document.body.classList.contains('rail-collapsed');
+  applyRailCollapsedState(next);
+  try { localStorage.setItem(RAIL_COLLAPSED_KEY, next ? '1' : '0'); } catch { /* ignore */ }
 });
 
 function friendlyClient(name?: string): string {
@@ -5286,6 +5330,61 @@ function rebuildDeckQueue(): void {
   } else {
     graphnosisDeckIndex = 0;
   }
+
+  updateTriviaBar();
+}
+
+// ── Trivia drawer ─────────────────────────────────────────────────────────────
+
+function updateTriviaBar(): void {
+  const statsEl = document.getElementById('trivia-bar-stats');
+  const pillEl = document.getElementById('trivia-bar-pill');
+  if (!statsEl || !pillEl) return;
+
+  const total = graphnosisDeckPool.length;
+  const orphans = graphnosisDeckPool.filter((d) => d.reason === 'orphan').length;
+  const pending = graphnosisDeckPool.filter((d) => d.reason === 'pending-correction').length;
+  const lowConf = graphnosisDeckPool.filter((d) => d.reason === 'low-confidence').length;
+
+  if (total === 0) {
+    statsEl.textContent = 'All memories connected · nothing to review';
+    pillEl.textContent = '';
+    pillEl.classList.add('hidden');
+    return;
+  }
+
+  // Build a compact stat string from what's available
+  const parts: string[] = [];
+  if (orphans > 0) parts.push(`${orphans} solo`);
+  if (lowConf > 0) parts.push(`${lowConf} low-trust`);
+  if (pending > 0) parts.push(`${pending} pending`);
+  statsEl.textContent = parts.join(' · ') + (total > 0 ? ' · tap to connect' : '');
+
+  pillEl.textContent = String(total);
+  pillEl.classList.remove('hidden');
+
+  // Light up green if new cards arrived since last open (only when closed)
+  if (!triviaOpen && triviaCardsSeen) {
+    pillEl.classList.add('new-cards');
+  } else {
+    pillEl.classList.remove('new-cards');
+  }
+}
+
+function openTrivia(): void {
+  if (triviaOpen) return;
+  triviaOpen = true;
+  triviaCardsSeen = true;
+  const drawer = document.getElementById('trivia-drawer');
+  drawer?.classList.add('trivia-open');
+  // Reset green badge — user is now reviewing
+  document.getElementById('trivia-bar-pill')?.classList.remove('new-cards');
+}
+
+function closeTrivia(): void {
+  if (!triviaOpen) return;
+  triviaOpen = false;
+  document.getElementById('trivia-drawer')?.classList.remove('trivia-open');
 }
 
 // Tally entity → occurrence count across the reviewable corpus. Used by
@@ -5666,6 +5765,11 @@ function renderDeck(): void {
         ${hasMore ? `<button class="deck-continue-btn">Continue with next ${Math.min(DECK_PAGE_SIZE, remaining)} →</button>` : ''}
       </div>
     `;
+    // Auto-close drawer when the user finishes the last card in the current
+    // session batch (no more cards to show and they just acted on one).
+    if (!hasMore && done > 0 && triviaOpen) {
+      setTimeout(() => closeTrivia(), 1400);
+    }
     if (hasMore) {
       els.gDeckCard.querySelector<HTMLButtonElement>('.deck-continue-btn')?.addEventListener('click', () => {
         graphnosisDeckPageStart = nextPageStart;
@@ -5683,11 +5787,11 @@ function renderDeck(): void {
   const cleanContent = cleanDisplayContent(n.contentPreview);
   els.gDeckProgress.textContent = `${graphnosisDeckIndex + 1} / ${graphnosisDeck.length}`;
 
-  // Auto-load the source node in the right sidebar so the user can see
-  // its full details (all connections, metadata) while reviewing.
-  // `trace: true` also pushes the node into the left-rail Memory Trace so
-  // the user can quickly hop back to memories they've reviewed.
-  selectGraphnosisNode(n.id, { trace: true });
+  // Auto-load the source node in the right sidebar only when the trivia
+  // drawer is already open — prevents pollGraphMutations() / renderDashboard()
+  // calls from hijacking the sidebar selection while the user is working
+  // elsewhere (e.g. clicking node chips in MemoryStudio raw context).
+  if (triviaOpen) selectGraphnosisNode(n.id, { trace: true });
 
   // Pending-correction cards keep their own layout.
   if (item.reason === 'pending-correction' && item.pendingDiff) {
@@ -5799,7 +5903,7 @@ async function renderDeckTriviaCandidate(sourceNode: NodeRecord, override?: Node
   if (!candidate) {
     slot.innerHTML = `
       <div class="g-deck-trivia-no-candidate">
-        <p>No connected memories found. Search above to pick one, or click <strong>Looks right</strong> to move on.</p>
+        <p>No connected memories found for this node. Use the deck arrows to move on, or click <strong>Skip</strong>.</p>
       </div>
     `;
     return;
@@ -5866,6 +5970,7 @@ async function renderDeckTriviaCandidate(sourceNode: NodeRecord, override?: Node
         <span class="g-deck-trivia-type">${escape(candType)}</span>
         <span class="g-deck-trivia-conf">trust ${candidate.confidence.toFixed(2)}</span>
         ${candBreadcrumb ? `<span class="g-deck-trivia-file" title="${escape(renderBreadcrumbPlain(candidate))}">${candBreadcrumb}</span>` : ''}
+        <button class="g-deck-trivia-view-btn" title="View in sidebar">View →</button>
       </div>
     </div>
   `;
@@ -5928,11 +6033,10 @@ async function renderDeckTriviaCandidate(sourceNode: NodeRecord, override?: Node
     });
   });
 
-  // Wire click on candidate text → open it in the right sidebar AND
-  // push to the left-rail Memory Trace so the user can revisit it later.
-  slot.querySelector<HTMLElement>('.g-deck-trivia-text')?.addEventListener('click', () => {
-    if (candidate) selectGraphnosisNode(candidate.id, { trace: true });
-  });
+  // Wire click on candidate text OR View button → open in right sidebar + Memory Trace.
+  const viewCandidate = () => { if (candidate) selectGraphnosisNode(candidate.id, { trace: true }); };
+  slot.querySelector<HTMLElement>('.g-deck-trivia-text')?.addEventListener('click', viewCandidate);
+  slot.querySelector<HTMLButtonElement>('.g-deck-trivia-view-btn')?.addEventListener('click', viewCandidate);
 }
 
 // Called when the suggestion panel inside a deck card finishes (Connect
@@ -6187,6 +6291,23 @@ function syncDeckNavButtons(): void {
 els.btnDeckPrev?.addEventListener('click', () => previousDeck());
 els.btnDeckNext?.addEventListener('click', () => skipForwardDeck());
 
+// ── Trivia drawer open / close ────────────────────────────────────────────────
+document.getElementById('trivia-bar')?.addEventListener('click', (e) => {
+  // Don't toggle when clicking the dedicated close button
+  if ((e.target as HTMLElement).closest('#btn-trivia-close')) return;
+  if (triviaOpen) closeTrivia(); else openTrivia();
+});
+document.getElementById('trivia-bar')?.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter' || e.key === ' ') {
+    e.preventDefault();
+    if (triviaOpen) closeTrivia(); else openTrivia();
+  }
+});
+document.getElementById('btn-trivia-close')?.addEventListener('click', (e) => {
+  e.stopPropagation();
+  closeTrivia();
+});
+
 function flashDeck(): void {
   // CSS handles the visual pulse via the `flash` class.
   els.gDeck.classList.remove('flash');
@@ -6377,17 +6498,16 @@ function applyGraphnosisFilter(): void {
   const qRaw = els.gSearch.value.trim();
   const q = qRaw.toLowerCase();
 
-  // No query → show dashboard, hide results, drop any stale synthesis box.
+  // No query → show normal dashboard, hide results.
   if (q.length === 0) {
     els.gSearchResults.classList.add('hidden');
-    els.gDashboard.classList.remove('hidden');
     clearSearchSynthesis();
     renderDashboard();
     return;
   }
 
-  // Query present → switch to results view.
-  els.gDashboard.classList.add('hidden');
+  // Query present → switch to results view; close trivia if it was open.
+  closeTrivia();
   els.gSearchResults.classList.remove('hidden');
 
   const now = Date.now();
@@ -6539,10 +6659,12 @@ function wireListRowHandlersFrom(startIndex: number): void {
 }
 
 function renderDashboard(): void {
+  els.gDashboard.classList.remove('hidden');
   renderHealth();
   rebuildDeckQueue();
   renderDeck();
   updateRecap();
+  void refreshFederatedStats();
 }
 
 // BGE-semantic fallback / augment. Race-guarded with graphnosisSemanticToken.
@@ -6726,31 +6848,54 @@ function selectGraphnosisNode(nodeId: string | null, { trace = false }: { trace?
 
 function pushRecent(nodeId: string): void {
   if (!atlasActiveGraph) return;
-  const current = graphnosisRecentsByGraph.get(atlasActiveGraph) ?? [];
+  const graphId = atlasActiveGraph;
+  const current = graphnosisRecentsByGraph.get(graphId) ?? [];
   const next = [nodeId, ...current.filter((id) => id !== nodeId)]; // no cap — sidebar scrolls
-  graphnosisRecentsByGraph.set(atlasActiveGraph, next);
+  graphnosisRecentsByGraph.set(graphId, next);
+  // Mirror into the cross-engram global list. Dedupe by nodeId regardless of
+  // graphId so re-clicking a node always promotes it to the top.
+  const dupeIdx = graphnosisRecentsGlobal.findIndex((r) => r.nodeId === nodeId);
+  if (dupeIdx >= 0) graphnosisRecentsGlobal.splice(dupeIdx, 1);
+  graphnosisRecentsGlobal.unshift({ nodeId, graphId });
   renderRecents();
 }
 
 function renderRecents(): void {
-  const recents = currentRecents();
+  const recents = graphnosisRecentsGlobal;
   if (recents.length === 0) {
     els.gMemoryTrace.classList.add('hidden');
     els.gMemoryTraceList.innerHTML = '';
     return;
   }
   els.gMemoryTrace.classList.remove('hidden');
-  els.gMemoryTraceList.innerHTML = recents.map((id) => {
-    const n = graphnosisAllNodes.find((nn) => nn.id === id);
-    const cleanText = n ? cleanDisplayContent(n.contentPreview) : '';
+  els.gMemoryTraceList.innerHTML = recents.map(({ nodeId, graphId }) => {
+    // Look up preview from whichever cache has it:
+    //  - graphnosisAllNodes is the active engram's full node list
+    //  - studioNodeCache holds every node MemoryStudio has shown chips for
+    //    (any engram, any recent recall)
+    // This keeps the cross-engram trace readable even after the active
+    // engram has moved on from the engram the entry was clicked in.
+    const localNode = graphnosisAllNodes.find((nn) => nn.id === nodeId);
+    const studioNode = studioNodeCache.get(nodeId);
+    const sourceText = localNode?.contentPreview ?? studioNode?.text ?? '';
+    const cleanText = sourceText ? cleanDisplayContent(sourceText) : '';
     const label = cleanText
       ? (cleanText.length > 36 ? cleanText.slice(0, 33) + '…' : cleanText)
-      : id.slice(0, 8) + '…';
-    return `<button class="rail-memory-chip" data-node-id="${escape(id)}" title="${escape(n?.contentPreview ?? id)}">${escape(label)}</button>`;
+      : nodeId.slice(0, 8) + '…';
+    return `<button class="rail-memory-chip" data-node-id="${escape(nodeId)}" data-graph-id="${escape(graphId)}" title="${escape(sourceText || nodeId)}">${escape(label)}</button>`;
   }).join('');
   els.gMemoryTraceList.querySelectorAll<HTMLButtonElement>('.rail-memory-chip').forEach((btn) => {
     const id = btn.dataset['nodeId'];
-    if (id) btn.addEventListener('click', () => {
+    const graphId = btn.dataset['graphId'];
+    if (!id) return;
+    btn.addEventListener('click', async () => {
+      // If the trace entry was clicked from a different engram, switch first
+      // so the detail pane has the right node list to draw from. Without this
+      // jump, selectGraphnosisNode would render the empty state for any
+      // entry not in the current engram.
+      if (graphId && atlasActiveGraph !== graphId) {
+        await switchActiveEngram(graphId);
+      }
       // trace:true — memory-trace clicks are explicit navigation; the
       // selection should persist when the user switches to the 3D Engram
       // tab to see where this node sits in the graph.
@@ -8348,6 +8493,9 @@ async function softDeleteNode(nodeId: string): Promise<boolean> {
     for (const [gId, ids] of graphnosisRecentsByGraph) {
       graphnosisRecentsByGraph.set(gId, ids.filter((id) => id !== nodeId));
     }
+    // Same cleanup for the cross-engram global trace.
+    const globalIdx = graphnosisRecentsGlobal.findIndex((r) => r.nodeId === nodeId);
+    if (globalIdx >= 0) graphnosisRecentsGlobal.splice(globalIdx, 1);
     // Don't keep showing the forgotten node in the sidebar.
     if (graphnosisSelectedId === nodeId) {
       graphnosisSelectedId = null;
@@ -8455,6 +8603,23 @@ function switchGraphnosisTab(tab: GraphnosisTab): void {
   if (prevTab === 'brain' && tab !== 'brain') {
     els.needsReviewOverlay?.classList.add('hidden');
   }
+  // MemoryStudio is a focused workspace: EVERY click on this tab — including
+  // when it's already active — closes the Search Results panel and rolls UP
+  // the Solo Memories drawer (both live inside the checkin pane). The
+  // "click again to reset" affordance matters because users sometimes can't
+  // find the close button on those panels; the tab itself becomes the
+  // escape hatch. The global left-rail Memory Trace stays untouched.
+  // STATE-PRESERVED:
+  //   - Search Results gets `.hidden` — inner DOM stays intact, so
+  //     re-opening it later restores the last query/results.
+  //   - Solo Memories (trivia drawer) does NOT get `.hidden`. It's always
+  //     visible as a bar at the bottom; only the deck panel rolls up/down
+  //     via the `.trivia-open` class. We call closeTrivia() which is a
+  //     no-op when the deck is already closed — the bar stays in place.
+  if (tab === 'checkin') {
+    document.getElementById('g-search-results')?.classList.add('hidden');
+    closeTrivia();
+  }
   document.querySelectorAll<HTMLButtonElement>('.g-tab').forEach((b) => {
     b.classList.toggle('active', b.dataset['gtab'] === tab);
   });
@@ -8479,7 +8644,7 @@ function switchGraphnosisTab(tab: GraphnosisTab): void {
       if (firstMount) setTimeout(() => mainAtlas?.zoomToFit(700, 20), 1200);
     })();
   } else if (tab === 'checkin') {
-    // Returning to the Memory Studio / dashboard tab — re-render in case
+    // Returning to the MemoryStudio / dashboard tab — re-render in case
     // selection/data changed while away.
     if (els.gSearch.value.trim().length === 0) renderDashboard();
     updateStudioVisibility();
@@ -8752,6 +8917,9 @@ els.atlasGraphPicker.addEventListener('change', () => void (async () => {
   atlasActiveGraph = els.atlasGraphPicker.value;
   persistActiveEngram(atlasActiveGraph);
   refreshActiveEngramLabel();
+  // Auto-switch to the 3D Engram tab so the user immediately sees the visual
+  // effect of their engram selection.
+  switchGraphnosisTab('atlas');
   graphnosisSelectedId = null;
   atlasSelectedId = null;
   // Keep the Sources dropdown in sync with the newly active engram.
@@ -9850,6 +10018,8 @@ void listen<{ loaded: number; total: number }>('graphnosis://engrams-loading', (
   const saved = localStorage.getItem(LAST_ENGRAM_KEY);
   void invoke<GraphWithMetadata[]>('list_graphs_with_metadata', { includeUnloaded: true }).then((graphs) => {
     loadedGraphs = graphs;
+    // Keep Studio engram dropdowns in sync as engrams load asynchronously.
+    populateStudioEngramSelects();
     // Saved engram just became available and isn't active yet — promote it.
     if (saved && saved !== atlasActiveGraph
         && graphs.some((g) => !g.metadata.archived && g.graphId === saved && g.loaded !== false)) {
@@ -9929,6 +10099,11 @@ let scanTickerTimer: ReturnType<typeof setInterval> | null = null;
 // honest "this is expected, not broken" copy on LLM-only brain features
 // (insights, synapse formation). Refreshed by refreshLlmStatus().
 let brainLlmReady = false;
+// Whether the local LLM daemon (Ollama / future backends) is reachable on its
+// loopback port — independent of model installation or the master toggle.
+// Drives the loopback chip's lit-vs-dim state: the chip is about "is the
+// endpoint up on 127.0.0.1?", not "is the LLM fully ready for inference?".
+let localLlmReachable = false;
 // Ollama is up and has at least one model — gates on-demand search features
 // (Synthesize answer, Enhanced ranking) independently of the LLM master
 // switch. Background autonomous features still require brainLlmReady.
@@ -10971,12 +11146,16 @@ function renderLlmEnableBlock(reachable: boolean, hasModels: boolean, enabled: b
       + `<input type="checkbox" data-llm="toggle" ${enabled ? 'checked' : ''} ${setupDone ? '' : 'disabled'} />`
       + `<strong>Local LLM</strong>`
       + `</label>`
-      + `<span style="display:flex; align-items:center;">`
+      + `<span style="display:flex; align-items:center; gap:8px;">`
       + statusChip
+      + `<span class="studio-llm-loopback" title=""></span>`
       + recheckBtn
       + `</span>`
       + `</div>`
       + subtitle;
+    // Sync the newly-rendered loopback chip with the current backend state
+    // (the global click handler already routes its click to the explainer).
+    if (studioActiveBackend) updateLoopbackBadge(studioActiveBackend.baseUrl);
   }
 
   const on = (action: string, fn: (ev: Event) => void): void => {
@@ -11105,7 +11284,37 @@ function renderLlmCapabilityBlock(masterEnabled: boolean, caps: LlmCapabilityFla
 
 async function refreshLlmStatus(): Promise<void> {
   try {
-    const status = await ipcCall<{ ollamaReachable: boolean; installedModels: string[]; activeModel: string | null; enabled: boolean; capabilities?: LlmCapabilityFlags; catalog?: Array<{ id: string; name: string }> }>('llm:status', {});
+    const status = await ipcCall<{
+      ollamaReachable: boolean;
+      installedModels: string[];
+      activeModel: string | null;
+      enabled: boolean;
+      capabilities?: LlmCapabilityFlags;
+      catalog?: Array<{ id: string; name: string }>;
+      backend?: { id: string; displayName: string; baseUrl: string; api: string; processNames: string[]; knownExternalHosts: string[]; defaultPort: number };
+    }>('llm:status', {});
+
+    // MemoryStudio loopback badge — drives the green/amber pill in the LLM
+    // panel header. Updated on every llm:status refresh so changes to the
+    // backend URL (e.g. user points to a remote Ollama) reflect immediately.
+    if (status.backend) {
+      // If the backend URL/process changed, reset the session probe flag AND
+      // drop any stored verification record — a new backend needs fresh
+      // verification before we can claim "Last verified" again.
+      const changed = studioActiveBackend?.baseUrl !== status.backend.baseUrl
+        || studioActiveBackend?.id !== status.backend.id;
+      if (changed) {
+        studioSessionProbeOK = false;
+        const stored = loadVerification();
+        if (stored && (stored.baseUrl !== status.backend.baseUrl || stored.backendId !== status.backend.id)) {
+          clearVerification();
+        }
+      }
+      studioActiveBackend = status.backend;
+      updateLoopbackBadge(status.backend.baseUrl);
+    }
+
+    localLlmReachable = status.ollamaReachable;
 
     if (status.ollamaReachable) {
       els.ollamaStatusBadge.textContent = '● Connected';
@@ -11160,6 +11369,10 @@ async function refreshLlmStatus(): Promise<void> {
     renderRailGetConnected();
     refreshLayerPills();
   } catch { /* non-fatal */ }
+  // Outside the try so a failure earlier in refreshLlmStatus doesn't skip the
+  // badge refresh — the helper makes its own llm:status call and is the
+  // single source of truth for the Edit/Correct "LLM-assisted" pill.
+  void refreshStudioLlmBadge();
 }
 
 // "Recheck" — re-probe Ollama after the user installs/starts it, without
@@ -14880,6 +15093,30 @@ document.getElementById('btn-new-graph')?.addEventListener('click', () => {
     const pendingGraphId = document.getElementById('gw-id') instanceof HTMLInputElement
       ? (document.getElementById('gw-id') as HTMLInputElement).value.trim()
       : null;
+    // Refresh MemoryStudio dropdowns + pre-select the new engram in the
+    // Remember tab as soon as the graph appears in loadedGraphs — no matter
+    // where the user opened the wizard from (top bar, MemoryStudio inline
+    // button, anywhere else). Pre-select only when the Remember tab is active
+    // so we don't surprise users sitting on Recall / Edit / GNN.
+    if (pendingGraphId) {
+      const beforeIds = new Set(loadedGraphs.map((g) => g.graphId));
+      const watcher = setInterval(() => {
+        const exists = loadedGraphs.some((g) => g.graphId === pendingGraphId && !beforeIds.has(g.graphId));
+        if (exists) {
+          clearInterval(watcher);
+          populateStudioEngramSelects();
+          if (activeStudioTool === 'remember') {
+            const sel = document.getElementById('studio-remember-engram') as HTMLSelectElement | null;
+            if (sel) {
+              sel.value = pendingGraphId;
+              syncStudioSelectSelectionStyle('studio-remember-engram');
+            }
+          }
+        }
+      }, 200);
+      // Hard stop after 10s so a cancelled wizard doesn't leak a permanent timer.
+      setTimeout(() => clearInterval(watcher), 10_000);
+    }
     const pendingTier = gwTier;
     if (!pendingGraphId || pendingTier === 'personal') return; // personal is the default, no patch needed
     // Poll until the graph appears in loadedGraphs, then set tier.
@@ -14910,15 +15147,14 @@ document.getElementById('btn-new-graph')?.addEventListener('click', () => {
 
 async function loadStudioSubscriptionState(): Promise<void> {
   try {
-    const s = (await invoke('get_settings')) as AppSettings;
-    studioEnabled = s.ai?.studioEnabled === true;
-    updateStudioVisibility();
-    populateStudioEngramSelects();
-    void refreshStudioLlmBadge();
     // TODO: check subscription status with Stripe backend on each unlock:
     //   const res = await fetch(`https://api.graphnosis.app/subscription/status?email=<cortex-email>`);
     //   const data = await res.json();
     //   if (data.studio && !studioEnabled) await enableStudio();
+    studioEnabled = true; // bypassed — gate off during development
+    updateStudioVisibility();
+    populateStudioEngramSelects();
+    void refreshStudioLlmBadge();
   } catch { /* non-fatal — Studio remains gated */ }
 }
 
@@ -14952,15 +15188,33 @@ function updateStudioVisibility(): void {
 
 async function refreshStudioLlmBadge(): Promise<void> {
   try {
-    const status = await ipcCall<{ enabled: boolean }>('llm:status', {});
-    document.getElementById('studio-edit-llm-badge')?.classList.toggle('hidden', !status.enabled);
+    // The badge should only appear when the edit/correct flow can ACTUALLY use
+    // the local LLM — that means all three: daemon reachable, at least one
+    // model installed, and the user's master toggle on. Earlier we keyed on
+    // `enabled` alone, which advertised "LLM-assisted" even when Ollama was
+    // down (in which case the flow silently falls back to deterministic
+    // parsing — confusing the user about what just happened).
+    const status = await ipcCall<{ ollamaReachable: boolean; installedModels: string[]; enabled: boolean }>('llm:status', {});
+    const llmAvailable = status.ollamaReachable && status.installedModels.length > 0 && status.enabled;
+    document.getElementById('studio-edit-llm-badge')?.classList.toggle('hidden', !llmAvailable);
   } catch { /* badge stays hidden */ }
 }
 
 // ── Engram selects ──────────────────────────────────────────────────────────
 
 function populateStudioEngramSelects(): void {
-  const engrams = loadedGraphs.filter((g) => !g.metadata.archived);
+  // Sort alphabetically by display name (case-insensitive, locale-aware) so
+  // every dropdown in MemoryStudio surfaces engrams in a predictable order
+  // regardless of when each was created. Tie-break on graphId for fully
+  // deterministic ordering when display names collide.
+  const engrams = loadedGraphs
+    .filter((g) => !g.metadata.archived)
+    .slice()
+    .sort((a, b) => {
+      const an = (a.metadata.displayName ?? a.graphId).toLocaleLowerCase();
+      const bn = (b.metadata.displayName ?? b.graphId).toLocaleLowerCase();
+      return an.localeCompare(bn) || a.graphId.localeCompare(b.graphId);
+    });
 
   const allOption = '<option value="">All engrams</option>';
   const autoOption = '<option value="">← auto-suggest</option>';
@@ -14982,9 +15236,59 @@ function populateStudioEngramSelects(): void {
     const el = document.getElementById(id) as HTMLSelectElement | null;
     if (el) el.innerHTML = singleOptions;
   }
+  // After re-populating, re-evaluate which selects are showing a real
+  // engram pick vs. the placeholder. Without this, a fresh repopulate
+  // would drop the .has-selection class even when the value is unchanged.
+  for (const id of STUDIO_HIGHLIGHTED_SELECTS) syncStudioSelectSelectionStyle(id);
+}
+
+// Three selects in MemoryStudio that highlight their current pick in turquoise
+// when a real engram is chosen (not the auto-suggest / auto-detect / all-engrams
+// placeholder). Recall's scope select is deliberately NOT in this list — the
+// Δ slider readout is the visual anchor on that row.
+const STUDIO_HIGHLIGHTED_SELECTS = [
+  'studio-remember-engram',
+  'studio-edit-engram',
+  'studio-gnn-engram',
+] as const;
+
+function syncStudioSelectSelectionStyle(id: string): void {
+  const el = document.getElementById(id) as HTMLSelectElement | null;
+  if (!el) return;
+  // The three engram-pick selects ALWAYS render their closed-control text in
+  // the turquoise+bold "engram-pick" style — including the placeholder — so
+  // the dropdown reads as a deliberate engram-routing affordance on each row.
+  // The class is permanent for these IDs; the function just guarantees it
+  // sticks across innerHTML repopulations of the <select>'s options.
+  el.classList.add('studio-select-engram-pick');
+}
+
+// Stamp the engram-pick style on once at module load — the three selects exist
+// in static HTML, so this runs before any user interaction. Repopulation paths
+// also call sync defensively in case a <select>'s innerHTML rewrite ever
+// stripped the class from its element node (it shouldn't, but cheap insurance).
+for (const id of STUDIO_HIGHLIGHTED_SELECTS) {
+  syncStudioSelectSelectionStyle(id);
 }
 
 // ── Startup intro modal ─────────────────────────────────────────────────────
+
+// ── Studio top banner (persistent dismiss) ───────────────────────────────────
+
+const STUDIO_BANNER_KEY = 'graphnosis.studioBannerV1Dismissed';
+
+(function initStudioBanner() {
+  const banner = document.getElementById('studio-banner');
+  if (!banner) return;
+  if (localStorage.getItem(STUDIO_BANNER_KEY) === '1') {
+    banner.classList.add('hidden');
+    return;
+  }
+  document.getElementById('btn-studio-banner-close')?.addEventListener('click', () => {
+    banner.classList.add('hidden');
+    localStorage.setItem(STUDIO_BANNER_KEY, '1');
+  });
+}());
 
 const STUDIO_INTRO_DISMISSED_KEY = 'graphnosis.studioIntroDismissed';
 
@@ -14999,11 +15303,7 @@ function hideStudioIntroModal(): void {
 
 document.getElementById('btn-studio-intro-upgrade')?.addEventListener('click', () => {
   hideStudioIntroModal();
-  void invoke('open_url', { url: 'https://graphnosis.app/pricing' });
-});
-
-document.getElementById('btn-studio-intro-close')?.addEventListener('click', () => {
-  hideStudioIntroModal();
+  switchGraphnosisTab('checkin');
 });
 
 document.getElementById('chk-studio-intro-dismiss')?.addEventListener('change', (e) => {
@@ -15032,75 +15332,2077 @@ document.getElementById('btn-studio-paywall-close')?.addEventListener('click', (
 
 // ── Recall ──────────────────────────────────────────────────────────────────
 
-document.getElementById('btn-studio-recall')?.addEventListener('click', () => void runStudioRecall(false));
-document.getElementById('btn-studio-dig-deeper')?.addEventListener('click', () => void runStudioRecall(true));
+// ── Recall panel state ──────────────────────────────────────────────────────
 
-async function runStudioRecall(digDeeper: boolean): Promise<void> {
+const STUDIO_PANEL_RAW_KEY = 'studio_panel_raw';
+const STUDIO_PANEL_LLM_KEY = 'studio_panel_llm';
+
+function initRecallPanelToggles(): void {
+  const chkRaw = document.getElementById('chk-panel-raw') as HTMLInputElement | null;
+  const chkLlm = document.getElementById('chk-panel-llm') as HTMLInputElement | null;
+  if (chkRaw) chkRaw.checked = localStorage.getItem(STUDIO_PANEL_RAW_KEY) !== '0';
+  if (chkLlm) chkLlm.checked = localStorage.getItem(STUDIO_PANEL_LLM_KEY) !== '0';
+  chkRaw?.addEventListener('change', () => {
+    localStorage.setItem(STUDIO_PANEL_RAW_KEY, chkRaw.checked ? '1' : '0');
+  });
+  chkLlm?.addEventListener('change', () => {
+    localStorage.setItem(STUDIO_PANEL_LLM_KEY, chkLlm.checked ? '1' : '0');
+  });
+}
+initRecallPanelToggles();
+
+// ── Studio tool chips ────────────────────────────────────────────────────────
+
+// Installed by the threshold-slider section further down (after the studio
+// state `let`s and delta-key `const`s have been initialized). Defined here
+// as a holder so switchStudioTool — which runs at module init via
+// initStudioChips() — can call it safely even before the assignment.
+let studioSliderSyncOnTabSwitch: ((dd: boolean) => void) | null = null;
+
+// Per-tool snapshot of MemoryStudio's result panels. Recall and Dig Deeper
+// each remember their last rendered DOM + the underlying wide-call state, so
+// switching tabs no longer wipes one tool's results just to draw the other's.
+// Captured on tab leave; restored on tab enter. The studioSnapshotHooks
+// indirection lets switchStudioTool stay above the actual capture/restore
+// implementation (which references state declared later in the file).
+type StudioToolKey = 'recall' | 'digDeeper';
+let studioSnapshotHooks: {
+  capture: (key: StudioToolKey) => void;
+  restore: (key: StudioToolKey) => void;
+} | null = null;
+// Tracks which Recall/Dig-Deeper tab was active before the most recent
+// switchStudioTool call, so the snapshot writes to the right slot. Null
+// during the initial module-init call (no previous state to capture).
+let studioPreviousResultTool: StudioToolKey | null = null;
+
+const STUDIO_CHIP_KEY = 'studio_active_chip';
+type StudioTool = 'recall' | 'dig-deeper' | 'remember' | 'edit' | 'gnn';
+let activeStudioTool: StudioTool = (localStorage.getItem(STUDIO_CHIP_KEY) as StudioTool | null) ?? 'recall';
+
+function switchStudioTool(tool: StudioTool, save = true): void {
+  activeStudioTool = tool;
+  if (save) localStorage.setItem(STUDIO_CHIP_KEY, tool);
+
+  document.querySelectorAll<HTMLButtonElement>('.studio-chip').forEach((chip) => {
+    chip.classList.toggle('active', chip.dataset['tool'] === tool);
+  });
+
+  // Recall and Dig Deeper both show the recall section
+  const panelTool = tool === 'dig-deeper' ? 'recall' : tool;
+  document.querySelectorAll<HTMLElement>('.lb-section[data-studio-tool]').forEach((section) => {
+    section.classList.toggle('hidden', section.dataset['studioTool'] !== panelTool);
+  });
+
+  // Button label tracks the active chip mode. Both Recall and Dig Deeper are
+  // deterministic recall variants — the action stays turquoise (primary) for
+  // both, and the distinction lives in the chip tab + button label. The
+  // purple "ai-outline" treatment is reserved for non-deterministic
+  // exploration (GNN Neighbors, LLM-backed actions).
+  const recallBtn = document.getElementById('btn-studio-recall');
+  if (recallBtn) {
+    const dd = tool === 'dig-deeper';
+    recallBtn.textContent = dd ? 'Dig Deeper' : 'Recall';
+    recallBtn.classList.add('primary');
+    recallBtn.classList.remove('ai-outline');
+  }
+
+  // The Edit/Correct tab carries the "LLM-assisted" pill — refresh it on
+  // every entry so a user who toggled the LLM off in Settings and then jumped
+  // straight here sees the pill disappear immediately, without waiting for
+  // the next refreshLlmStatus polling tick.
+  if (tool === 'edit') {
+    void refreshStudioLlmBadge();
+  }
+
+  // Per-tool result-panel snapshot. Capture the OUTGOING tool's panel state
+  // before we touch the DOM, then restore the INCOMING tool's. Only kicks in
+  // when transitioning between Recall and Dig Deeper — the other tools
+  // (Remember / Edit / GNN) don't share these panels.
+  const incomingKey: StudioToolKey | null =
+    tool === 'recall' ? 'recall' : tool === 'dig-deeper' ? 'digDeeper' : null;
+  if (studioPreviousResultTool && studioPreviousResultTool !== incomingKey) {
+    studioSnapshotHooks?.capture(studioPreviousResultTool);
+  }
+  if (incomingKey && incomingKey !== studioPreviousResultTool) {
+    studioSnapshotHooks?.restore(incomingKey);
+  }
+  studioPreviousResultTool = incomingKey;
+
+  // Slider sync on tab switch — Recall and Dig Deeper each persist their own
+  // delta. Without this, the slider keeps showing the previous tool's
+  // position until the user runs the new tool. Delegated to a syncer that's
+  // installed later in the file (after the studio state `let`s + delta-key
+  // `const`s exist) so this function — called at module init — doesn't hit
+  // a Temporal Dead Zone on first run.
+  if (tool === 'recall' || tool === 'dig-deeper') {
+    studioSliderSyncOnTabSwitch?.(tool === 'dig-deeper');
+  }
+
+  // Focus the primary input of the active section
+  const inputIds: Record<StudioTool, string> = {
+    recall: 'studio-recall-query',
+    'dig-deeper': 'studio-recall-query',
+    remember: 'studio-remember-text',
+    edit: 'studio-edit-correction',
+    gnn: 'studio-gnn-query',
+  };
+  setTimeout(() => (document.getElementById(inputIds[tool]) as HTMLElement | null)?.focus(), 50);
+}
+
+function initStudioChips(): void {
+  document.querySelectorAll<HTMLButtonElement>('.studio-chip').forEach((chip) => {
+    chip.addEventListener('click', () => switchStudioTool(chip.dataset['tool'] as StudioTool));
+  });
+  switchStudioTool(activeStudioTool, false);
+}
+initStudioChips();
+
+// ── Auto-height textareas & inputs ───────────────────────────────────────────
+
+function autoResizeTextarea(ta: HTMLTextAreaElement): void {
+  ta.style.height = 'auto';
+  ta.style.height = `${ta.scrollHeight}px`;
+}
+// Both multi-line textareas and single-line-start inputs (now also textareas)
+document.querySelectorAll<HTMLTextAreaElement>('.studio-textarea, .studio-text-input').forEach((ta) => {
+  ta.addEventListener('input', () => autoResizeTextarea(ta));
+  // Submit on Enter (no newline) for single-line query inputs; Shift+Enter still inserts
+  if (ta.classList.contains('studio-text-input')) {
+    ta.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' && !e.shiftKey) e.preventDefault();
+    });
+  }
+});
+
+// ── Federated stats strip ────────────────────────────────────────────────────
+
+async function refreshFederatedStats(): Promise<void> {
+  try {
+    const data = (await invoke('inspector_stats')) as { graphs: Array<{ totalNodes: number; sources: number; graphId: string }>; sources: unknown[] };
+    const active = data.graphs; // includes all engrams
+    const totalMemories = active.reduce((s, g) => s + g.totalNodes, 0);
+    const totalSources = active.reduce((s, g) => s + g.sources, 0);
+    const engrams = active.length;
+    const nodes = graphnosisAllNodes.filter((n) => n.confidence > 0.2);
+    const avgTrust = nodes.length > 0
+      ? (nodes.reduce((s, n) => s + n.confidence, 0) / nodes.length).toFixed(2)
+      : '—';
+    const f = (n: number) => n.toLocaleString();
+    const el = (id: string) => document.getElementById(id);
+    const mem = el('stat-total-memories');
+    const src = el('stat-total-sources');
+    const eng = el('stat-total-engrams');
+    const trust = el('stat-avg-trust');
+    if (mem) mem.textContent = `${f(totalMemories)} memories`;
+    if (src) src.textContent = `${f(totalSources)} sources`;
+    if (eng) eng.textContent = `${engrams} engram${engrams === 1 ? '' : 's'}`;
+    if (trust) trust.textContent = `avg trust ${avgTrust}`;
+  } catch { /* non-fatal */ }
+}
+
+// ── LLM inline buttons ───────────────────────────────────────────────────────
+
+document.getElementById('btn-studio-enable-llm')?.addEventListener('click', () => {
+  void ipcCall('llm:setEnabled', { enabled: true }).then(() => {
+    void refreshLlmStatus();
+    void refreshFederatedStats();
+  });
+});
+document.getElementById('btn-studio-install-ollama')?.addEventListener('click', () => {
+  void invoke('open_url', { url: 'https://ollama.com' });
+});
+
+// ── Recall ───────────────────────────────────────────────────────────────────
+
+document.getElementById('btn-studio-recall')?.addEventListener('click', () => {
+  const dd = activeStudioTool === 'dig-deeper';
+  // Fresh query — drop stored delta so slider re-anchors to the new result
+  void runStudioRecall(dd);
+});
+(document.getElementById('studio-recall-query') as HTMLTextAreaElement | null)
+  ?.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      void runStudioRecall(activeStudioTool === 'dig-deeper');
+    }
+  });
+
+function applyRecallPanelLayout(): void {
+  const showRaw = (document.getElementById('chk-panel-raw') as HTMLInputElement | null)?.checked ?? true;
+  const showLlm = (document.getElementById('chk-panel-llm') as HTMLInputElement | null)?.checked ?? true;
+  const panels = document.getElementById('studio-recall-panels');
+  const llmPanel = document.getElementById('studio-llm-panel');
+  const rawPanel = document.getElementById('studio-raw-panel');
+  llmPanel?.classList.toggle('hidden', !showLlm);
+  rawPanel?.classList.toggle('hidden', !showRaw);
+  panels?.classList.toggle('one-panel', !(showLlm && showRaw));
+}
+
+type RawRecallResult = {
+  prompt: string; tokensUsed: number; nodesIncluded: number;
+  audit: Array<{ graphId: string; nodesIncluded: number; tokensIncluded: number }>;
+  byGraph: Record<string, unknown>;
+  allCandidates?: Array<{ nodeId: string; graphId: string; score: number; text: string; type?: string }>;
+  topScore?: number;
+};
+
+function renderRawRecallResult(
+  result: RawRecallResult,
+  digDeeper: boolean,
+  spinner: HTMLElement | null,
+  panels: HTMLElement | null,
+): void {
+  spinner?.classList.add('hidden');
+
+  const output = document.getElementById('studio-recall-output');
+  if (output) {
+    output.textContent = result.prompt;
+    // Highlight the query's main words so the user can spot literal matches at
+    // a glance — both for raw context and (later, in runLlmInterpretation) the
+    // LLM output. Uses the cached studioCurrentQuery set at recall-time.
+    highlightQueryTerms(output, studioCurrentQuery);
+  }
+
+  const meta = document.getElementById('studio-recall-meta');
+  const contributing = result.audit.filter((a) => a.nodesIncluded > 0).length;
+  if (meta) {
+    meta.textContent =
+      `${result.nodesIncluded} node${result.nodesIncluded === 1 ? '' : 's'} · ` +
+      `${result.tokensUsed} tokens · ` +
+      `${contributing} engram${contributing === 1 ? '' : 's'}` +
+      (digDeeper ? ' · dig_deeper' : '');
+  }
+  const rawStatus = document.getElementById('studio-raw-status');
+  if (rawStatus) rawStatus.textContent = `${result.nodesIncluded}n · ${result.tokensUsed}t`;
+  renderStudioNodeChips(result.byGraph);
+  applyRecallPanelLayout();
+  panels?.classList.remove('hidden');
+  document.getElementById('studio-llm-output')?.scrollTo({ top: 0 });
+  document.getElementById('studio-raw-panel')?.querySelector<HTMLElement>('.studio-panel-content')?.scrollTo({ top: 0 });
+}
+
+/** Cached query string so renderers (raw context, LLM output) can reuse it
+ *  without threading the param through every call. Set at the start of
+ *  runStudioRecall and consumed by highlightQueryTerms. */
+let studioCurrentQuery = '';
+
+/** Words to ignore when highlighting. Same shape as the entity-extraction
+ *  stopwords but a touch broader — we don't want generic filler highlighted
+ *  even if it appears in the query. */
+const HIGHLIGHT_STOPWORDS = new Set([
+  'the','a','an','of','to','in','on','at','for','and','or','but','is','are','was','were','be','been','being',
+  'have','has','had','do','does','did','will','would','could','should','may','might','must','can',
+  'this','that','these','those','it','its','as','by','from','with','about','into','over','under','through',
+  'who','what','when','where','why','how','which','whose',
+]);
+
+/** Extract the "main words" from a query — the substantive content tokens
+ *  worth highlighting. Strips punctuation, lowercases for matching, drops
+ *  stopwords, dedupes. Returns the ORIGINAL surface form of each kept word
+ *  (good enough for case-insensitive substring matching downstream). */
+function extractHighlightTerms(query: string): string[] {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const raw of query.split(/[\s,;.!?()[\]{}'"`]+/)) {
+    const w = raw.trim();
+    if (w.length < 3) continue; // skip noise: "a", "of", "I"
+    const key = w.toLowerCase();
+    if (HIGHLIGHT_STOPWORDS.has(key)) continue;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(w);
+  }
+  return out;
+}
+
+function escapeRegexLiteral(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/** Walk a container's text nodes and wrap every case-insensitive occurrence
+ *  of any term in `<mark class="studio-highlight">`. Works on already-
+ *  rendered HTML safely (operates on text nodes only — never touches tag
+ *  names, attribute values, or inside existing <mark>/<button>). */
+function highlightQueryTerms(container: HTMLElement, query: string): void {
+  const terms = extractHighlightTerms(query);
+  if (terms.length === 0) return;
+  // Sort by length desc so longer matches win when terms overlap
+  // (e.g. "publishing" beats "publish").
+  terms.sort((a, b) => b.length - a.length);
+  const escaped = terms.map(escapeRegexLiteral);
+  const re = new RegExp(`(${escaped.join('|')})`, 'gi');
+
+  const walker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT, {
+    acceptNode(node): number {
+      const p = (node as Text).parentElement;
+      if (!p) return NodeFilter.FILTER_REJECT;
+      // Skip text already wrapped in a highlight or inside a clickable
+      // citation button (those have their own visual treatment).
+      if (p.tagName === 'MARK') return NodeFilter.FILTER_REJECT;
+      if (p.classList.contains('studio-llm-citation')) return NodeFilter.FILTER_REJECT;
+      return NodeFilter.FILTER_ACCEPT;
+    },
+  });
+
+  const textNodes: Text[] = [];
+  let n: Node | null;
+  while ((n = walker.nextNode())) textNodes.push(n as Text);
+
+  for (const text of textNodes) {
+    const content = text.textContent ?? '';
+    re.lastIndex = 0;
+    if (!re.test(content)) { re.lastIndex = 0; continue; }
+    re.lastIndex = 0;
+
+    const fragment = document.createDocumentFragment();
+    let lastEnd = 0;
+    for (const m of content.matchAll(re)) {
+      if (m.index === undefined) continue;
+      if (m.index > lastEnd) fragment.appendChild(document.createTextNode(content.slice(lastEnd, m.index)));
+      const mark = document.createElement('mark');
+      mark.className = 'studio-highlight';
+      mark.textContent = m[0];
+      fragment.appendChild(mark);
+      lastEnd = m.index + m[0].length;
+    }
+    if (lastEnd < content.length) fragment.appendChild(document.createTextNode(content.slice(lastEnd)));
+    text.parentNode?.replaceChild(fragment, text);
+  }
+
+  // After (re-)highlighting, refresh the panel's nav counter and reset its
+  // cursor so the user sees an accurate count of new matches.
+  resetHighlightNav(container);
+}
+
+/** Per-panel navigation state. Keyed by the container element so the LLM and
+ *  raw-context panels each have their own cursor. */
+const studioHighlightCursor = new WeakMap<HTMLElement, number>();
+
+/** Update the nav cluster (‹ N/M ›) for the panel containing `container`.
+ *  Marks the current highlight with `is-current`. Disables arrows when the
+ *  panel has fewer than 2 highlights (nothing to step through). */
+function refreshHighlightNav(container: HTMLElement): void {
+  const nav = document.querySelector<HTMLElement>(`.studio-highlight-nav[data-target="${container.id}"]`);
+  if (!nav) return;
+  const marks = container.querySelectorAll<HTMLElement>('mark.studio-highlight');
+  const total = marks.length;
+  const cursor = studioHighlightCursor.get(container) ?? -1;
+  // Clear previous "current" state
+  marks.forEach((m) => m.classList.remove('is-current'));
+  let current = cursor;
+  if (cursor >= 0 && cursor < total) marks[cursor]?.classList.add('is-current');
+  else current = -1;
+
+  const counter = nav.querySelector<HTMLElement>('.studio-highlight-counter');
+  if (counter) counter.textContent = total === 0 ? '0/0' : `${current + 1}/${total}`;
+
+  nav.querySelectorAll<HTMLButtonElement>('.studio-highlight-arrow').forEach((btn) => {
+    btn.disabled = total === 0;
+  });
+}
+
+function resetHighlightNav(container: HTMLElement): void {
+  studioHighlightCursor.set(container, -1);
+  refreshHighlightNav(container);
+}
+
+/** Step the cursor forward (`+1`) or backward (`-1`) through the panel's
+ *  highlights, wrapping at the ends. Scrolls the new current highlight into
+ *  view ONLY within the panel's own scrolling container — not the page or
+ *  any outer layout wrapper. */
+function stepHighlightNav(container: HTMLElement, dir: 1 | -1): void {
+  const marks = container.querySelectorAll<HTMLElement>('mark.studio-highlight');
+  if (marks.length === 0) return;
+  const cursor = studioHighlightCursor.get(container) ?? -1;
+  let next = cursor + dir;
+  if (next < 0) next = marks.length - 1;
+  if (next >= marks.length) next = 0;
+  studioHighlightCursor.set(container, next);
+  refreshHighlightNav(container);
+  const target = marks[next];
+  if (target) scrollMarkInsideContainer(target);
+}
+
+/** Scroll the nearest scrollable ancestor of `mark` so that `mark` ends up
+ *  vertically centered. Walks up the DOM until it finds an element whose
+ *  computed `overflow-y` is `auto` or `scroll` AND whose content is taller
+ *  than its viewport — that's the panel's own scrolling area. Crucially,
+ *  this DOES NOT call `Element.scrollIntoView()`, which would also scroll
+ *  the outer Studio workspace, the modal layer, and the page itself —
+ *  visible jolt the user sees as "the whole UI jumped." */
+function scrollMarkInsideContainer(mark: HTMLElement): void {
+  let scroller: HTMLElement | null = mark.parentElement;
+  while (scroller && scroller !== document.body) {
+    const cs = window.getComputedStyle(scroller);
+    const oy = cs.overflowY;
+    const isScrollable = (oy === 'auto' || oy === 'scroll' || oy === 'overlay')
+      && scroller.scrollHeight > scroller.clientHeight + 1;
+    if (isScrollable) break;
+    scroller = scroller.parentElement;
+  }
+  if (!scroller) return;
+  const markRect = mark.getBoundingClientRect();
+  const scrollerRect = scroller.getBoundingClientRect();
+  // mark's top within scroller's coordinate space
+  const offsetTopInScroller = markRect.top - scrollerRect.top + scroller.scrollTop;
+  // Center it vertically in the scroller's visible viewport
+  const desiredScrollTop = offsetTopInScroller - (scroller.clientHeight / 2) + (markRect.height / 2);
+  scroller.scrollTo({
+    top: Math.max(0, desiredScrollTop),
+    behavior: 'smooth',
+  });
+}
+
+// Delegated click handler for the per-panel arrow controls. One listener at
+// document level covers both panels — buttons resolve their target via the
+// parent .studio-highlight-nav's data-target attribute.
+document.addEventListener('click', (e) => {
+  const btn = (e.target as HTMLElement | null)?.closest<HTMLButtonElement>('.studio-highlight-arrow');
+  if (!btn) return;
+  const nav = btn.closest<HTMLElement>('.studio-highlight-nav');
+  if (!nav) return;
+  const targetId = nav.dataset['target'];
+  if (!targetId) return;
+  const container = document.getElementById(targetId);
+  if (!container) return;
+  const dir = btn.dataset['dir'] === 'prev' ? -1 : 1;
+  stepHighlightNav(container, dir);
+});
+
+function renderLlmMarkdown(
+  text: string,
+  opts?: { sourceLabelMap?: Map<string, string>; byGraph?: Record<string, unknown> },
+): string {
+  let html = text
+    // Strip raw subgraph node tags the LLM sometimes echoes verbatim:
+    //   [n1|fact|0.67|src:label|date:…]            → (gone, sidecar-style short id)
+    //   [Ecw6oZ39|fact|99.00]                       → (gone, frontend-slice 8-char id)
+    //   [Ecw6oZ39|fact|99.00|src:label]             → (gone, with extra pipe segments)
+    //   [n1] / [n12]                                → (gone, when used as inline refs)
+    // The pattern matches any bracketed token containing at least one `|`
+    // separator — that's the unambiguous marker of an internal retrieval tag,
+    // not regular user prose (which would never embed `|` inside `[…]`).
+    .replace(/\s*\[[A-Za-z0-9_-]+(?:\|[^\]]*)+\]\s*/g, ' ')
+    // Also strip bare inline refs like [n1], [n12] that the prompt template
+    // teaches the LLM to use — these never appear in normal English text.
+    .replace(/\s*\[n\d+\]\s*/g, ' ')
+    // Preserve newlines (we'll convert to <br> after) — only collapse runs
+    // of spaces/tabs within a line, NOT runs of newlines.
+    .replace(/[ \t]{2,}/g, ' ')
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+    // Headers on their own line → render as bold + line break afterward.
+    // Force the heading onto its own visual line even if the LLM inlined it.
+    .replace(/^###? (.+)$/gm, '<strong>$1</strong>')
+    .replace(/^## (.+)$/gm, '<strong>$1</strong>')
+    .replace(/^# (.+)$/gm, '<strong>$1</strong>')
+    // Convert "- item" bullet lines to <li> wrapped in <ul>. Run after
+    // the strong/header pass so any bold inside a bullet still works.
+    .replace(/((?:^- .+$\n?)+)/gm, (block) => {
+      const items = block.split('\n').filter(Boolean)
+        .map(line => `<li>${line.replace(/^- /, '')}</li>`)
+        .join('');
+      return `<ul class="studio-llm-ul">${items}</ul>`;
+    });
+
+  // Suggestion A: source citations — programmatic-first, LLM-cooperative-if-it-helps.
+  //
+  // Strategy (lessons learned from three LLM-prompt iterations):
+  //   1. The local LLM is unreliable at consistently emitting (src: ...) on
+  //      every fact. Asking it strictly causes mode collapse to "no answer."
+  //   2. So the App does the attribution PROGRAMMATICALLY: for each sentence
+  //      in the LLM's prose, find the node whose content has the highest
+  //      word overlap with the sentence. If the overlap is strong, append
+  //      `(src: <label>)` before the terminator.
+  //   3. If the LLM did emit citations on its own, those still win (we run
+  //      the LLM-citation wrap FIRST and only attribute sentences that
+  //      didn't already have a citation).
+  //
+  // The LLM writes clean prose; the App owns attribution. Bulletproof
+  // against LLM brittleness.
+
+  // STEP 1: wrap any LLM-emitted (src: ...) citations into clickable buttons.
+  const map = opts?.sourceLabelMap;
+  if (map && map.size > 0) {
+    html = html.replace(/\(src:\s*([^()]{1,200})\)/gi, (_whole, inner: string) => {
+      const labels = inner.split(/\s*;\s*/).map((s) => s.trim()).filter(Boolean);
+      const buttons: string[] = [];
+      for (const label of labels) {
+        const lc = label.toLowerCase();
+        const exact = map.get(lc);
+        if (exact) { buttons.push(citationHtml(exact, label)); continue; }
+        // Substring fallback: any cached label that contains this text, or vice versa.
+        let matched: string | undefined;
+        for (const [cachedLabel, nodeId] of map) {
+          if (cachedLabel.length < 3) continue;
+          if (cachedLabel.includes(lc) || lc.includes(cachedLabel)) {
+            matched = nodeId;
+            break;
+          }
+        }
+        if (matched) buttons.push(citationHtml(matched, label));
+        else buttons.push(escapeHtml(label));
+      }
+      return `(src: ${buttons.join('; ')})`;
+    });
+  }
+
+  // STEP 2: programmatic attribution for sentences the LLM didn't cite.
+  // Word-overlap matching against each node's text; threshold ≥3 distinctive
+  // shared tokens → strong enough to attribute. Sentences already containing
+  // (src: ...) are skipped — the LLM's own citation (if any) wins.
+  if (map && map.size > 0 && opts?.byGraph) {
+    html = attributeProseFromNodes(html, opts.byGraph, map);
+  }
+
+  return html;
+}
+
+/** Stopwords for the attribution matcher — drop these from the distinctive-
+ *  word set so common English doesn't dominate the overlap score. */
+const ATTRIB_STOPWORDS = new Set([
+  'the','a','an','of','to','in','on','at','for','and','or','but','is','are','was','were','be','been','being',
+  'have','has','had','do','does','did','will','would','could','should','may','might','must','can',
+  'this','that','these','those','it','its','as','by','from','with','about','into','over','under','through',
+  'during','before','after','between','among','also','then','than','when','where','who','whom','whose','what','which',
+  'such','some','any','all','one','two','three','four','five','six','seven','eight','nine','ten',
+  'his','her','their','our','your','my','me','us','them','they','we','you','he','she','it','i',
+  'not','no','yes','only','just','very','more','most','less','least','same','other','another','each','every','both','few','many',
+  'mention','mentioned','mentions','include','includes','including','contain','contains','containing','show','shows','said','says',
+  'memory','graph','subgraph','note','notes','node','nodes','user','users','context','source','sources','attested',
+]);
+
+function tokenizeForAttribution(s: string): Set<string> {
+  const out = new Set<string>();
+  // Match Latin + Romanian/Polish/etc. letters, digits, len ≥ 3.
+  for (const m of s.toLowerCase().match(/[\p{L}\p{N}]{3,}/gu) ?? []) {
+    if (!ATTRIB_STOPWORDS.has(m)) out.add(m);
+  }
+  return out;
+}
+
+/** Strip HTML tags before tokenizing — we don't want `<strong>` to count
+ *  as a content word. Also strip already-rendered citation buttons. */
+function stripHtmlForMatching(s: string): string {
+  return s.replace(/<[^>]+>/g, '').replace(/&[a-z]+;/g, ' ');
+}
+
+function attributeProseFromNodes(
+  html: string,
+  byGraph: Record<string, unknown>,
+  sourceLabelMap: Map<string, string>,
+): string {
+  // Invert label → nodeId into nodeId → label so we can look up by node match.
+  const nodeIdToLabel = new Map<string, string>();
+  for (const [label, nodeId] of sourceLabelMap) nodeIdToLabel.set(nodeId, label);
+  if (nodeIdToLabel.size === 0) return html;
+
+  // Build (nodeId, label, tokenSet) tuples for the matcher.
+  const nodes: Array<{ nodeId: string; label: string; tokens: Set<string> }> = [];
+  for (const arr of Object.values(byGraph)) {
+    if (!Array.isArray(arr)) continue;
+    for (const n of arr) {
+      const nodeId = (n as { nodeId?: string }).nodeId ?? '';
+      const text = (n as { text?: string }).text ?? '';
+      const label = nodeIdToLabel.get(nodeId);
+      if (!nodeId || !text || !label) continue;
+      // Cap node text at 400 chars for tokenization — beyond that, the
+      // matching is noisy and slow.
+      nodes.push({ nodeId, label, tokens: tokenizeForAttribution(text.slice(0, 400)) });
+    }
+  }
+  if (nodes.length === 0) return html;
+
+  // Sentence boundary heuristic: . ! ? followed by space, newline, or EOL.
+  // We capture the sentence text + the terminator so we can insert before it.
+  // Note: this runs on already-rendered HTML, so we strip tags before
+  // tokenizing each sentence (the buttons + bold tags shouldn't influence
+  // the match).
+  return html.replace(/([^.!?\n]{15,400}?)([.!?])(?=\s|<|$)/g, (whole, sentence: string, terminator: string) => {
+    // Skip if the sentence already contains an LLM-emitted citation button.
+    if (/class="studio-llm-citation"/.test(sentence) || /\(src:/.test(sentence)) return whole;
+
+    const plain = stripHtmlForMatching(sentence);
+    const sentenceTokens = tokenizeForAttribution(plain);
+    if (sentenceTokens.size < 3) return whole;
+
+    // Find the best-matching node by overlap count.
+    let best: { node: typeof nodes[0]; overlap: number } | null = null;
+    for (const node of nodes) {
+      let overlap = 0;
+      for (const t of sentenceTokens) if (node.tokens.has(t)) overlap++;
+      if (!best || overlap > best.overlap) best = { node, overlap };
+    }
+    // Require ≥3 shared distinctive tokens — strong enough match to attribute
+    // confidently. Below that, leave the sentence un-attributed (better than
+    // a wrong citation).
+    if (!best || best.overlap < 3) return whole;
+
+    // Insert the citation before the terminator.
+    return `${sentence} ${citationHtml(best.node.nodeId, best.node.label)}${terminator}`;
+  });
+}
+
+function citationHtml(nodeId: string, label: string): string {
+  // Lock prefix when the resolved nodeId is from a sensitive engram. Subtle
+  // styling — small icon inside the button, before the label — so it
+  // doesn't dominate the prose, but the user can see at a glance which
+  // citations point into sensitive memory.
+  const lock = isSensitiveNode(nodeId)
+    ? `<span class="studio-llm-citation-lock" aria-label="sensitive engram">🔒</span> `
+    : '';
+  const title = isSensitiveNode(nodeId)
+    ? 'Open source node (sensitive engram)'
+    : 'Open source node';
+  return `(<button type="button" class="studio-llm-citation" data-node-id="${escapeHtml(nodeId)}" title="${title}">${lock}${escapeHtml(label)}</button>)`;
+}
+
+/** Suggestion B: detect query shape from the user's text. Used to pass a
+ *  `task` hint to the sidecar's interpretContext, which appends a
+ *  shape-specific sub-prompt addendum. Returns undefined for ambiguous queries
+ *  — the base prompt handles them fine. */
+type StudioQueryTask = 'bio' | 'qa' | 'synthesis' | 'compare';
+function detectQueryShape(q: string): StudioQueryTask | undefined {
+  const trimmed = q.trim();
+  if (!trimmed) return undefined;
+  // compare: explicit comparison markers
+  if (/\b(vs|versus|compared to|difference between|differences between)\b/i.test(trimmed)) return 'compare';
+  // qa: question marks or interrogative openers
+  if (trimmed.endsWith('?')) return 'qa';
+  if (/^(what|when|where|why|how|who|which|is|are|does|do|can|should)\b/i.test(trimmed)) return 'qa';
+  // bio: 1-2 words, looks like a proper name (starts with capital incl. Romanian diacritic caps)
+  const words = trimmed.split(/\s+/);
+  if (words.length <= 2 && /^[\p{Lu}]/u.test(trimmed)) return 'bio';
+  // synthesis: longer descriptive query
+  if (words.length >= 5) return 'synthesis';
+  return undefined;
+}
+
+/** Parse `[shortId|type|score|src:label]` headers out of the raw recall
+ *  context and build a map: lowercased source-label → full nodeId from
+ *  studioNodeCache. Used by renderLlmMarkdown (suggestion A) to wrap
+ *  matching parentheticals in clickable buttons. */
+function buildSourceLabelMap(rawContext: string): Map<string, string> {
+  const map = new Map<string, string>();
+  // The frontend's sliceWideResult emits `[8charid|type|score]` (no src);
+  // the sidecar's wide call emits `[shortId|type|score|src:label]` and
+  // `[shortId|type|score|src:label|date:...]`. Cover both: match any
+  // bracketed token with src: as a pipe segment.
+  const re = /\[([A-Za-z0-9_-]+)\|[^|]+\|[^|\]]+\|src:([^\]|]+)/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(rawContext)) !== null) {
+    const shortId = m[1] ?? '';
+    const srcLabel = (m[2] ?? '').trim();
+    if (!shortId || !srcLabel) continue;
+    // Resolve shortId → full nodeId via the cache (prefix match — shortId is
+    // typically the first 8 chars of the full id).
+    for (const fullId of studioNodeCache.keys()) {
+      if (fullId.startsWith(shortId)) {
+        map.set(srcLabel.toLowerCase(), fullId);
+        break;
+      }
+    }
+  }
+  return map;
+}
+
+/** Suggestion C: count how many nodes were anchored vs semantic vs GNN-expanded
+ *  in a result. Powers the confidence affordance under the LLM panel. */
+function countByScoreTier(byGraph: Record<string, unknown>): { anchored: number; gnn: number; semantic: number; total: number } {
+  let anchored = 0, gnn = 0, semantic = 0;
+  for (const nodes of Object.values(byGraph)) {
+    if (!Array.isArray(nodes)) continue;
+    for (const n of nodes) {
+      const score = (n as { score?: number }).score ?? 0;
+      if (score >= 10) anchored++;        // ANCHOR_SCORE = 99
+      else if (score >= 1) gnn++;         // GNN_EXPANSION_SCORE = 1.5
+      else semantic++;
+    }
+  }
+  return { anchored, gnn, semantic, total: anchored + gnn + semantic };
+}
+
+/** Suggestion F: programmatic non-LLM fallback. When Ollama is off / not
+ *  reachable, write a deterministic top-3 node summary into the LLM output
+ *  area instead of the "Local LLM is not enabled" disclaimer. Always useful,
+ *  always available, free. */
+function renderNonLlmFallback(query: string, byGraph: Record<string, unknown>): string {
+  const flat: Array<{ nodeId: string; score: number; text: string; type?: string }> = [];
+  for (const nodes of Object.values(byGraph)) {
+    if (!Array.isArray(nodes)) continue;
+    for (const n of nodes) {
+      flat.push({
+        nodeId: (n as { nodeId?: string }).nodeId ?? '',
+        score: (n as { score?: number }).score ?? 0,
+        text: ((n as { text?: string }).text ?? '').trim(),
+        ...((n as { type?: string }).type !== undefined ? { type: (n as { type: string }).type } : {}),
+      });
+    }
+  }
+  flat.sort((a, b) => (b.score - a.score) || a.nodeId.localeCompare(b.nodeId));
+  const top = flat.slice(0, 3);
+  if (top.length === 0) return `<em>No memories found for "${escapeHtml(query)}".</em>`;
+  const lines: string[] = [
+    `<em>Local LLM not enabled — here's a quick mechanical summary of the top ${top.length} nodes.</em>`,
+    '',
+  ];
+  for (let i = 0; i < top.length; i++) {
+    const n = top[i];
+    if (!n) continue;
+    const firstSentence = (n.text.split(/[.!?]\s/)[0] ?? n.text).slice(0, 200);
+    lines.push(`<strong>${i + 1}.</strong> ${escapeHtml(firstSentence)}${firstSentence.length < n.text.length ? '…' : ''}`);
+  }
+  lines.push('');
+  lines.push(`<em>Enable Local LLM in Settings → Go Non-Deterministic for a richer interpretation.</em>`);
+  return lines.join('\n');
+}
+
+/** Single helper that wraps the studio.llmInterpret IPC call + UI updates.
+ *  Called by both the fresh-recall path and the slider re-run path so they
+ *  stay in sync. Includes:
+ *   - sequence-guard for stale responses
+ *   - blank-and-spinner before the call
+ *   - confidence affordance update after the call (suggestion C)
+ *   - clickable citations via sourceLabelMap (suggestion A)
+ *   - non-LLM fallback when Ollama is off (suggestion F) */
+function runLlmInterpretation(
+  query: string,
+  rawContextText: string,
+  byGraph: Record<string, unknown>,
+  llmOutput: HTMLElement | null,
+  llmProgress: HTMLElement | null,
+  llmUnavailable: HTMLElement | null,
+  llmStatus: HTMLElement | null,
+): void {
+  // Always update the confidence affordance — it doesn't depend on the LLM.
+  updateLlmConfidence(byGraph);
+
+  if (!ollamaReadyForSearch) {
+    // Suggestion F: non-LLM fallback. Programmatically summarize the top 3
+    // nodes so the panel is never empty, even without Ollama.
+    if (llmOutput) {
+      llmOutput.innerHTML = renderNonLlmFallback(query, byGraph);
+      highlightQueryTerms(llmOutput, query);
+    }
+    llmProgress?.classList.add('hidden');
+    llmUnavailable?.classList.add('hidden');
+    if (llmStatus) llmStatus.textContent = '';
+    return;
+  }
+
+  const mySeq = ++studioLlmSeq;
+  if (llmOutput) llmOutput.innerHTML = '';
+  llmProgress?.classList.remove('hidden');
+  llmUnavailable?.classList.add('hidden');
+  if (llmStatus) llmStatus.textContent = 'Interpreting…';
+
+  const task = detectQueryShape(query);
+  const sourceLabelMap = buildSourceLabelMap(rawContextText);
+  const payload: { query: string; rawContext: string; task?: StudioQueryTask } = { query, rawContext: rawContextText };
+  if (task) payload.task = task;
+
+  ipcCall<{ synthesisMarkdown: string }>('studio.llmInterpret', payload)
+    .then((llmResult) => {
+      if (mySeq < studioLlmSeq) return;
+      llmProgress?.classList.add('hidden');
+      // No "Done" status — the appearance of the interpretation IS the done signal.
+      if (llmStatus) llmStatus.textContent = '';
+      if (llmOutput) {
+        llmOutput.innerHTML = renderLlmMarkdown(llmResult.synthesisMarkdown, { sourceLabelMap, byGraph });
+        highlightQueryTerms(llmOutput, query);
+      }
+    })
+    .catch(() => {
+      if (mySeq < studioLlmSeq) return;
+      llmProgress?.classList.add('hidden');
+      if (llmStatus) llmStatus.textContent = 'LLM error';
+    });
+}
+
+/** Suggestion C: write the "based on N nodes (X anchored, Y semantic)"
+ *  affordance into the dedicated status pill. Confidence reporting lives
+ *  in the UI instead of the prose, freeing the LLM to write cleanly. */
+function updateLlmConfidence(byGraph: Record<string, unknown>): void {
+  const el = document.getElementById('studio-llm-confidence');
+  if (!el) return;
+  const c = countByScoreTier(byGraph);
+  if (c.total === 0) { el.textContent = ''; el.title = ''; return; }
+  const parts: string[] = [`${c.total} node${c.total === 1 ? '' : 's'}`];
+  const sub: string[] = [];
+  if (c.anchored > 0) sub.push(`${c.anchored} direct`);
+  if (c.semantic > 0) sub.push(`${c.semantic} semantic`);
+  if (c.gnn > 0) sub.push(`${c.gnn} GNN-expanded`);
+  if (sub.length > 0) parts.push(`(${sub.join(', ')})`);
+  el.textContent = `Grounded in ${parts.join(' ')}`;
+  el.title = `direct = literal entity match; semantic = similarity-based; GNN-expanded = reached via neural-network neighbor prediction`;
+}
+
+// Delegated click handler for clickable source citations injected by
+// renderLlmMarkdown's suggestion-A pass. We use delegation rather than wiring
+// per-element listeners because renderLlmMarkdown overwrites llmOutput.innerHTML
+// on every recall — listeners attached directly would be replaced and leak.
+document.getElementById('studio-llm-output')?.addEventListener('click', (e) => {
+  const target = e.target as HTMLElement | null;
+  const btn = target?.closest<HTMLButtonElement>('.studio-llm-citation');
+  if (!btn) return;
+  const nodeId = btn.dataset['nodeId'];
+  if (!nodeId) return;
+  // Reuse openNodeInspector — it switches to the node's engram + selects the
+  // node in the Memory Trace panel. Pass the citation button as the "chip"
+  // (the active-state class adds a faint outline, fine on a citation pill).
+  void openNodeInspector(nodeId, btn);
+});
+
+// Sequence counter — incremented on every fresh recall (Recall button).
+// Slider re-runs that arrive after a newer recall has started are dropped.
+let studioRecallSeq = 0;
+// Tracks the LLM interpretation that's currently in flight (per fresh recall +
+// per slider tick). When the user drags the slider quickly, only the latest
+// LLM response should land — older ones are dropped silently.
+let studioLlmSeq = 0;
+
+async function runStudioRecall(digDeeper: boolean, thresholdDelta?: number): Promise<void> {
   const query = (document.getElementById('studio-recall-query') as HTMLInputElement | null)?.value.trim() ?? '';
   if (!query) return;
+  // Cache the active query so subsequent rendering passes (raw context, LLM
+  // output) can highlight its main words without re-reading the input box.
+  studioCurrentQuery = query;
   const engramEl = document.getElementById('studio-recall-engram') as HTMLSelectElement | null;
   const engram = engramEl?.value || undefined;
+  const engramArg = engram ? [engram] : undefined;
+
+  const showLlm = (document.getElementById('chk-panel-llm') as HTMLInputElement | null)?.checked ?? true;
 
   const spinner = document.getElementById('studio-recall-spinner');
-  const resultBlock = document.getElementById('studio-recall-result');
+  const panels = document.getElementById('studio-recall-panels');
+  const llmProgress = document.getElementById('studio-llm-progress');
+  const llmOutput = document.getElementById('studio-llm-output');
+  const llmUnavailable = document.getElementById('studio-llm-unavailable');
+  const llmStatus = document.getElementById('studio-llm-status');
+
+  const isSliderRun = thresholdDelta !== undefined;
+  const seq = isSliderRun ? studioRecallSeq : ++studioRecallSeq;
+
+  // First-time-per-session sensitivity probe: if the scope includes a
+  // sensitive engram, kick off the lsof verification BEFORE we call the
+  // sidecar. Fire-and-forget — we don't want to block the recall on a
+  // process spawn. The probe just sets a session flag + may show a banner.
+  // Only fires once per session (or after backend change).
+  if (!isSliderRun && !studioSessionProbeOK && scopeIncludesSensitive(engramArg)) {
+    void ensureLlmProbeForSensitive();
+  }
+
+  // Spinner lives inside the threshold row so it appears inline with the slider.
+  // On the very first recall the threshold row is still hidden — reveal it so
+  // the spinner is visible during the wait. The slider parts populate after.
+  document.getElementById('studio-threshold-row')?.classList.remove('hidden');
   spinner?.classList.remove('hidden');
-  resultBlock?.classList.add('hidden');
+
+  if (!isSliderRun) {
+    // Fresh recall: blank out panels until result arrives.
+    panels?.classList.add('hidden');
+    if (llmOutput) llmOutput.textContent = '';
+    llmProgress?.classList.add('hidden');
+    llmUnavailable?.classList.add('hidden');
+    if (llmStatus) llmStatus.textContent = '';
+  }
+  // Slider re-run: keep panels visible — user can keep reading while it refreshes.
+
+  document.querySelectorAll<HTMLButtonElement>('.studio-node-chip').forEach((c) => c.classList.remove('active'));
+
+  // Slider re-runs: slice the cached wide result LOCALLY instead of calling
+  // the sidecar. This preserves the wide call's ordering — anchored nodes
+  // (e.g. "Robert Gomboș" for query "robert") stay at the top at every
+  // slider position. Re-calling the sidecar with a tight budget caused the
+  // SDK's federation to rank a different set of nodes, so the anchored node
+  // could disappear from the result at narrower positions. Local slicing
+  // also makes the slider instant — no IPC roundtrip.
+  if (isSliderRun && studioWideResult && studioAllCandidates.length > 0) {
+    const floor = Math.max(0, studioTopScore - thresholdDelta!);
+    const count = floorToCount(floor);
+    const keepIds = new Set(studioAllCandidates.slice(0, count).map((c) => c.nodeId));
+    const sliced = sliceWideResult(keepIds);
+    if (sliced) {
+      if (seq < studioRecallSeq) return;
+      renderRawRecallResult(sliced, digDeeper, spinner, panels);
+      // Re-run LLM interpretation on the new sliced context — or render the
+      // non-LLM fallback if Ollama is off. runLlmInterpretation handles both
+      // cases + updates the confidence affordance + wires clickable citations.
+      if (showLlm) {
+        const rawContextText = (document.getElementById('studio-recall-output') as HTMLPreElement | null)?.textContent ?? sliced.prompt;
+        runLlmInterpretation(query, rawContextText, sliced.byGraph, llmOutput, llmProgress, llmUnavailable, llmStatus);
+      }
+      return;
+    }
+  }
+
+  // Fresh recall (or slider with no cached wide result yet): hit the sidecar.
+  const method = digDeeper ? 'studio.digDeeper' : 'studio.recall';
+  const ipcParams: Record<string, unknown> = { query };
+  if (engramArg) ipcParams.onlyEngrams = engramArg;
 
   try {
-    const method = digDeeper ? 'studio.digDeeper' : 'studio.recall';
-    const result = await ipcCall<{
-      prompt: string;
-      tokensUsed: number;
-      nodesIncluded: number;
-      audit: Array<{ graphId: string; nodesIncluded: number; tokensIncluded: number }>;
-      byGraph: Record<string, unknown>;
-    }>(method, { query, ...(engram ? { onlyEngrams: [engram] } : {}) });
+    let result = await ipcCall<RawRecallResult>(method, ipcParams);
 
-    const output = document.getElementById('studio-recall-output');
-    if (output) output.textContent = result.prompt;
+    // Drop stale slider re-runs: if a newer fresh recall started while we were
+    // waiting, this result is outdated — discard it silently.
+    if (seq < studioRecallSeq) return;
 
-    const meta = document.getElementById('studio-recall-meta');
-    const contributing = result.audit.filter((a) => a.nodesIncluded > 0).length;
-    if (meta) {
-      meta.textContent =
-        `${result.nodesIncluded} node${result.nodesIncluded === 1 ? '' : 's'} · ` +
-        `${result.tokensUsed} tokens · ` +
-        `${contributing} engram${contributing === 1 ? '' : 's'} contributed` +
-        (digDeeper ? ' · dig_deeper' : '');
+    // Initial call: set slider state and auto-apply saved threshold if non-trivial.
+    // This ensures the displayed context always matches the user's saved threshold
+    // even on the first recall after switching queries.
+    if (result.allCandidates?.length) {
+      // Normalize all candidate scores to [0, 1] so the slider works regardless
+      // of the actual score distribution. Entity anchoring can boost scores well
+      // above 1.0, making them cluster in a narrow range that the slider can't
+      // distinguish. Normalization maps max→1.0, min→0.0 linearly.
+      {
+        const raw = result.allCandidates;
+        const maxS = raw[0]?.score ?? 1;
+        const minS = raw[raw.length - 1]?.score ?? 0;
+        const rng = maxS - minS;
+        studioAllCandidates = rng > 0.001
+          ? raw.map((c) => ({ ...c, score: (c.score - minS) / rng }))
+          : raw.map((c, i) => ({ ...c, score: 1 - i / Math.max(1, raw.length - 1) }));
+      }
+      studioTopScore = 1.0;
+      // Cache the full wide-call result so slider re-runs can slice locally
+      // without re-calling the sidecar (see sliceWideResult above).
+      studioWideResult = result;
+      const autoThresholdDelta = revealThresholdSlider(digDeeper);
+
+      // Auto-apply saved threshold by slicing locally — no second IPC call.
+      if (autoThresholdDelta > 0) {
+        const floor = Math.max(0, studioTopScore - autoThresholdDelta);
+        const count = floorToCount(floor);
+        if (count < result.allCandidates.length) {
+          const keepIds = new Set(studioAllCandidates.slice(0, count).map((c) => c.nodeId));
+          const sliced = sliceWideResult(keepIds);
+          if (sliced) result = sliced;
+        }
+      }
     }
 
-    renderStudioNodeChips(result.byGraph);
-    resultBlock?.classList.remove('hidden');
+    renderRawRecallResult(result, digDeeper, spinner, panels);
+
+    // LLM interpretation — fires after every raw recall (fresh OR slider).
+    // runLlmInterpretation handles: confidence affordance (suggestion C),
+    // query-shape task hint (B), clickable citations (A), non-LLM fallback
+    // when Ollama is off (F), sequence guard for stale responses, and the
+    // stripped node-tag markdown render.
+    if (showLlm) {
+      const rawContextText = (document.getElementById('studio-recall-output') as HTMLPreElement | null)?.textContent ?? result.prompt;
+      runLlmInterpretation(query, rawContextText, result.byGraph as Record<string, unknown>, llmOutput, llmProgress, llmUnavailable, llmStatus);
+    }
   } catch (e) {
-    showError(e instanceof Error ? e.message : String(e));
-  } finally {
     spinner?.classList.add('hidden');
+    showError(e instanceof Error ? e.message : String(e));
   }
+}
+
+// ── Node cache & inspector ───────────────────────────────────────────────────
+
+interface StudioNode { nodeId: string; graphId: string; text: string; score: number; type?: string; }
+const studioNodeCache = new Map<string, StudioNode>();
+
+/** Module-level cache of the currently-active LocalLlmBackend descriptor.
+ *  Set on every refreshLlmStatus call. Used by verification features
+ *  (loopback badge today; lsof probe + self-test + wizard in later phases)
+ *  to know what URL/process/hostnames to probe. v1 is always Ollama. */
+let studioActiveBackend: {
+  id: string; displayName: string; baseUrl: string;
+  api: string; processNames: string[]; knownExternalHosts: string[]; defaultPort: number;
+} | null = null;
+
+/** Hostnames the App treats as "loopback" — packets to these never leave the
+ *  machine even if Ollama is reachable. Conservative list; IPv6 + the
+ *  fully-qualified "localhost." variant both count. */
+const LOOPBACK_HOSTS = new Set(['127.0.0.1', 'localhost', '::1', '[::1]', 'localhost.']);
+
+/** Result shape returned by the Rust `verify_local_llm` command. */
+interface LlmProbeResult {
+  pid: number | null;
+  matched_by: 'process_name' | 'port' | null;
+  connections: Array<{ proto: string; local: string; remote: string; state: string }>;
+  all_loopback: boolean;
+  external_remotes: string[];
+  error: string | null;
+}
+
+/** Persisted verification record, written to localStorage after the user
+ *  runs the self-test or completes the verification wizard. Survives across
+ *  app restarts so the user doesn't have to re-verify every session. The
+ *  record is per-backend (keyed by id + baseUrl) — switching backends
+ *  invalidates it. */
+interface MemoryStudioVerification {
+  backendId: string;
+  backendDisplayName: string;
+  baseUrl: string;
+  verifiedAt: number; // epoch ms
+  method: 'self-test' | 'wizard' | 'lsof-probe';
+  /** True for self-test/wizard (an EXPLICIT user action); false for the
+   *  passive lsof-probe done before sensitive recalls. The badge shows a
+   *  stronger "Verified ✓" affordance for the explicit cases. */
+  explicit: boolean;
+  /** Optional details — preserved for the "Last verified" tooltip and any
+   *  future audit/ledger surface. */
+  details?: {
+    connectionCount?: number;
+    externalRemotes?: string[];
+    canaryText?: string;
+  };
+}
+
+const MEMORYSTUDIO_VERIFICATION_KEY = 'memorystudio_verification_v1';
+
+function loadVerification(): MemoryStudioVerification | null {
+  try {
+    const raw = localStorage.getItem(MEMORYSTUDIO_VERIFICATION_KEY);
+    if (!raw) return null;
+    return JSON.parse(raw) as MemoryStudioVerification;
+  } catch { return null; }
+}
+
+function saveVerification(v: MemoryStudioVerification): void {
+  try { localStorage.setItem(MEMORYSTUDIO_VERIFICATION_KEY, JSON.stringify(v)); } catch {}
+}
+
+function clearVerification(): void {
+  try { localStorage.removeItem(MEMORYSTUDIO_VERIFICATION_KEY); } catch {}
+}
+
+/** Is the cached verification still applicable to the active backend? Yes if
+ *  the backend id + baseUrl match. */
+function verificationMatchesActiveBackend(v: MemoryStudioVerification): boolean {
+  if (!studioActiveBackend) return false;
+  return v.backendId === studioActiveBackend.id && v.baseUrl === studioActiveBackend.baseUrl;
+}
+
+function formatVerifiedAgo(ts: number): string {
+  const ms = Date.now() - ts;
+  const day = 24 * 60 * 60 * 1000;
+  const days = Math.floor(ms / day);
+  if (days === 0) return 'today';
+  if (days === 1) return 'yesterday';
+  if (days < 7) return `${days} days ago`;
+  if (days < 30) return `${Math.floor(days / 7)} week${days < 14 ? '' : 's'} ago`;
+  return `${Math.floor(days / 30)} month${days < 60 ? '' : 's'} ago`;
+}
+
+/** Sessions-scoped flag: have we already run the pre-recall lsof probe?
+ *  We only verify once per app session (or until the user's backend changes
+ *  / a re-verify button is hit) to avoid spawning lsof on every recall.
+ *  Cleared on llm:status when the backend descriptor changes. */
+let studioSessionProbeOK: boolean = false;
+
+/** Invoked from runStudioRecall when the about-to-be-included scope contains
+ *  a sensitive engram. First call per session runs the lsof probe and shows
+ *  a banner if anything external was found. Subsequent calls early-return.
+ *  Returns true when it's safe to proceed; false when the user should abort
+ *  (only happens when we detect external connections AND the user dismisses
+ *  the warning — for now we never block, just warn). */
+async function ensureLlmProbeForSensitive(): Promise<void> {
+  if (studioSessionProbeOK) return;
+  if (!studioActiveBackend) return; // backend descriptor not loaded yet
+  try {
+    const result = await invoke<LlmProbeResult>('verify_local_llm', {
+      req: {
+        process_names: studioActiveBackend.processNames,
+        default_port: studioActiveBackend.defaultPort,
+      },
+    });
+    if (result.error) {
+      console.warn('[MemoryStudio] verify_local_llm error:', result.error);
+      // Not fatal — banner just won't display. The loopback badge stays
+      // ambient on baseUrl alone.
+      studioSessionProbeOK = true;
+      return;
+    }
+    if (result.all_loopback) {
+      studioSessionProbeOK = true;
+      // Persist the passive probe as a verification record. `explicit: false`
+      // distinguishes this from a user-initiated self-test or wizard — the
+      // badge surfaces "✓✓" for explicit verifications and "✓" otherwise.
+      // We only overwrite a stored record when there isn't already a stronger
+      // (explicit) one for this backend.
+      const existing = loadVerification();
+      const shouldWrite = !existing
+        || !verificationMatchesActiveBackend(existing)
+        || !existing.explicit;
+      if (shouldWrite) {
+        saveVerification({
+          backendId: studioActiveBackend.id,
+          backendDisplayName: studioActiveBackend.displayName,
+          baseUrl: studioActiveBackend.baseUrl,
+          verifiedAt: Date.now(),
+          method: 'lsof-probe',
+          explicit: false,
+          details: { connectionCount: result.connections.length },
+        });
+        updateLoopbackBadge(studioActiveBackend.baseUrl);
+      }
+    } else {
+      // External connections found — show a banner
+      showStudioExternalLlmWarning(result.external_remotes);
+      studioSessionProbeOK = true; // don't repeat the banner spam
+    }
+  } catch (e) {
+    console.warn('[MemoryStudio] verify_local_llm threw:', e);
+    studioSessionProbeOK = true;
+  }
+}
+
+function showStudioExternalLlmWarning(externalRemotes: string[]): void {
+  const list = externalRemotes.slice(0, 6).join(', ') + (externalRemotes.length > 6 ? ' …' : '');
+  // Compact in-place warning above the LLM output. Idempotent: re-renders if
+  // already there. Dismissable; doesn't block recall — the user decides.
+  const panel = document.getElementById('studio-llm-panel');
+  if (!panel) return;
+  let banner = document.getElementById('studio-llm-external-warning');
+  if (!banner) {
+    banner = document.createElement('div');
+    banner.id = 'studio-llm-external-warning';
+    banner.className = 'studio-llm-external-warning';
+    const header = panel.querySelector('.studio-panel-header');
+    header?.parentNode?.insertBefore(banner, header.nextSibling);
+  }
+  // Soft framing: the inference call itself runs on 127.0.0.1 (the
+  // sidecar talks to the daemon over the loopback API socket). What lsof is
+  // catching here is the *daemon's own* outbound traffic — almost always
+  // update / model-registry checks (Ollama → registry.ollama.ai, fronted
+  // by Google Cloud). Different socket, same PID. Worth telling the user
+  // about, NOT worth scaring them about memory exfiltration.
+  const backendName = studioActiveBackend?.displayName ?? 'Local LLM';
+  banner.innerHTML =
+    `⚠️ <strong>${escapeHtml(backendName)} is talking to ${externalRemotes.length} external host${externalRemotes.length === 1 ? '' : 's'}.</strong> ` +
+    `Your memory inference still ran on 127.0.0.1 — this is the daemon's own update / registry channel (likely ${escapeHtml(list)}). ` +
+    `To block it entirely, use the verification wizard's <em>/etc/hosts sinkhole</em> step. ` +
+    `<button type="button" id="studio-llm-external-dismiss" class="btn-sm" style="margin-left:8px;">Dismiss</button>`;
+  document.getElementById('studio-llm-external-dismiss')?.addEventListener('click', () => banner?.remove());
+}
+
+/** Update the MemoryStudio loopback badge from a backend baseUrl.
+ *  - Loopback host  → green "Local ✓ {host}"
+ *  - Anything else → amber "Remote ⚠ {host}" with a tooltip nudging the user
+ *    to read the verification wizard or switch back to a local backend. */
+function updateLoopbackBadge(baseUrl: string): void {
+  // Multiple badges share the same .studio-llm-loopback class — one in
+  // MemoryStudio's LLM panel header, one in Non-Deterministic Aid's Local
+  // LLM card. Update all of them on every refresh so they stay in sync.
+  const badges = document.querySelectorAll<HTMLElement>('.studio-llm-loopback');
+  if (badges.length === 0) return;
+  let host = '';
+  try {
+    const u = new URL(baseUrl);
+    host = u.hostname.toLowerCase();
+  } catch {
+    // Malformed URL — show as remote with the raw string so the user sees
+    // what's misconfigured.
+    host = baseUrl;
+  }
+  const isLoop = LOOPBACK_HOSTS.has(host);
+  // Compact label: "✓ 127.0.0.1" or "⚠ remote.example.com". Click opens a
+  // modal explaining what the host means + how to verify. Append a small
+  // "✓✓" when a persisted verification record matches the active backend —
+  // gives the user a continuous "I already checked this" signal without
+  // needing to open the modal.
+  const stored = loadVerification();
+  const verifiedNow = !!stored && verificationMatchesActiveBackend(stored);
+  const ago = verifiedNow ? formatVerifiedAgo(stored!.verifiedAt) : '';
+  const text = isLoop
+    ? `${verifiedNow ? '✓✓' : '✓'} ${host}`
+    : `⚠ ${host}`;
+  const title = isLoop
+    ? `Click for explanation. Inference goes to ${baseUrl} — packets stay on this device.` +
+      (verifiedNow ? ` Verified ${ago} via ${stored!.method}.` : '')
+    : `Click for explanation. Inference goes to ${baseUrl} — packets leave this device.`;
+  // Dim only when the daemon itself is unreachable — the chip is about "is
+  // the loopback endpoint up", not "is the LLM fully provisioned for inference".
+  // A reachable daemon with no model installed (or master toggle off) still
+  // owns 127.0.0.1, so the chip lights up. Chip stays clickable in both states.
+  const disabled = !localLlmReachable;
+  const titleSuffix = disabled ? ' (Local LLM daemon not detected.)' : '';
+  badges.forEach((el) => {
+    el.classList.toggle('is-loopback', isLoop);
+    el.classList.toggle('is-remote', !isLoop);
+    el.classList.toggle('is-disabled', disabled);
+    el.textContent = text;
+    el.title = title + titleSuffix;
+    el.dataset['host'] = host;
+    el.dataset['baseUrl'] = baseUrl;
+    el.dataset['isLoopback'] = isLoop ? '1' : '0';
+  });
+}
+
+// Delegated click handler for ANY .studio-llm-loopback chip — opens the
+// explainer modal. Works for both the MemoryStudio badge and the
+// Non-Deterministic Aid one without needing per-element wiring.
+document.addEventListener('click', (e) => {
+  const el = (e.target as HTMLElement | null)?.closest<HTMLElement>('.studio-llm-loopback');
+  if (!el) return;
+  const host = el.dataset['host'] ?? '';
+  const baseUrl = el.dataset['baseUrl'] ?? '';
+  const isLoop = el.dataset['isLoopback'] === '1';
+  openLoopbackExplainer({ host, baseUrl, isLoop });
+});
+
+/** Self-test (Tier 1 active verification — suggestion #2 from the v1 plan).
+ *  Two lsof probes bracketing a canary inference: baseline, then a tiny
+ *  inference call carrying a unique synthetic token, then a post-inference
+ *  probe. Pass = both probes return all-loopback AND no new external
+ *  remotes appeared during the call. Persists the result so the loopback
+ *  badge reflects "Last verified: <date>" until the backend changes.
+ *
+ *  Note: this is a coarse-grained check — we sample lsof state, we don't
+ *  sniff every packet. A short-lived external connection between samples
+ *  could go undetected. For deeper guarantees the wizard's
+ *  pfctl / Little Snitch route is more thorough. The self-test is the
+ *  cheap-and-fast option that catches the obvious failure modes. */
+async function runMemoryStudioSelfTest(opts: { onProgress?: (msg: string) => void } = {}): Promise<{
+  pass: boolean;
+  before: LlmProbeResult | null;
+  after: LlmProbeResult | null;
+  canaryText: string;
+  inferenceOk: boolean;
+  durationMs: number;
+}> {
+  const progress = (m: string): void => opts.onProgress?.(m);
+  const start = Date.now();
+  if (!studioActiveBackend) {
+    return { pass: false, before: null, after: null, canaryText: '', inferenceOk: false, durationMs: 0 };
+  }
+  const backend = studioActiveBackend;
+  const probeReq = { process_names: backend.processNames, default_port: backend.defaultPort };
+
+  // 1. Baseline
+  progress('Snapshotting current network connections…');
+  let before: LlmProbeResult | null = null;
+  try { before = await invoke<LlmProbeResult>('verify_local_llm', { req: probeReq }); } catch {}
+
+  // 2. Canary inference. A unique synthetic token + a tiny "subgraph" the
+  // user has never asked about. We don't care about the LLM's answer — we
+  // care that an actual inference call exercised the daemon's network path.
+  const canary = `gnSelfTest_${Math.random().toString(36).slice(2, 10)}_${Date.now()}`;
+  progress('Running a canary inference through the LLM…');
+  let inferenceOk = false;
+  try {
+    await ipcCall<{ synthesisMarkdown: string }>('studio.llmInterpret', {
+      query: `What is ${canary}?`,
+      rawContext: `# MemoryStudio self-test\n[t1|fact|99.00|src:SelfTest] The token ${canary} is a synthetic check.`,
+    });
+    inferenceOk = true;
+  } catch { /* may fail if LLM disabled — still useful to know the snapshots */ }
+
+  // 3. Post-inference snapshot
+  progress('Re-checking connections after inference…');
+  let after: LlmProbeResult | null = null;
+  try { after = await invoke<LlmProbeResult>('verify_local_llm', { req: probeReq }); } catch {}
+
+  const allLoopback = !!before?.all_loopback && !!after?.all_loopback;
+  // Treat "no new external remotes appeared during the call" as the more
+  // meaningful signal than the snapshot pair alone.
+  const beforeExternals = new Set(before?.external_remotes ?? []);
+  const newExternals = (after?.external_remotes ?? []).filter((r) => !beforeExternals.has(r));
+  const pass = inferenceOk && allLoopback && newExternals.length === 0;
+
+  if (pass) {
+    saveVerification({
+      backendId: backend.id,
+      backendDisplayName: backend.displayName,
+      baseUrl: backend.baseUrl,
+      verifiedAt: Date.now(),
+      method: 'self-test',
+      explicit: true,
+      details: {
+        connectionCount: after?.connections.length ?? 0,
+        externalRemotes: [],
+        canaryText: canary,
+      },
+    });
+    // Reflect the freshly-passed verification in the loopback badge tooltip.
+    const baseUrlForRefresh = studioActiveBackend?.baseUrl;
+    if (baseUrlForRefresh) updateLoopbackBadge(baseUrlForRefresh);
+  }
+
+  return { pass, before, after, canaryText: canary, inferenceOk, durationMs: Date.now() - start };
+}
+
+/** Educational verification wizard (Tier 2 — passive guidance, suggestion
+ *  #5 in the v1 plan). Three-step modal: copy-paste lsof, optional
+ *  tcpdump, optional /etc/hosts sinkhole. Each step includes a
+ *  copy-to-clipboard button. User clicks "I verified" at the end to
+ *  persist the verification. */
+function openVerificationWizard(): void {
+  let overlay = document.getElementById('studio-verify-wizard');
+  if (!overlay) {
+    overlay = document.createElement('div');
+    overlay.id = 'studio-verify-wizard';
+    overlay.className = 'modal-backdrop hidden';
+    document.body.appendChild(overlay);
+  }
+  const backend = studioActiveBackend;
+  const procFilter = backend?.processNames[0] ?? 'ollama';
+  const port = backend?.defaultPort ?? 11434;
+  // Try to detect the user's primary non-loopback IP for the tcpdump
+  // example. We can't read it from JS, so the snippet uses a placeholder.
+  const cmdLsof = `sudo lsof -i -P -n | grep -i ${procFilter}`;
+  const cmdTcpdump = `sudo tcpdump -i any -n 'host not 127.0.0.1 and host not ::1' and port ${port}`;
+  const cmdSinkhole = `echo "0.0.0.0 ${backend?.knownExternalHosts.join(' ') || 'registry.ollama.ai'}" | sudo tee -a /etc/hosts`;
+  overlay.innerHTML = `
+    <div class="modal studio-loopback-modal" role="dialog" aria-labelledby="studio-verify-title" style="max-width:640px;">
+      <div class="studio-loopback-modal-header">
+        <h3 id="studio-verify-title">Verify your local LLM yourself</h3>
+        <button type="button" class="modal-close" aria-label="Close" id="studio-verify-close">✕</button>
+      </div>
+      <div class="studio-loopback-modal-body">
+        <p>Three short commands that prove the LLM you're using really stays on this device. Run them in your terminal while MemoryStudio is open.</p>
+
+        <h4 style="margin:14px 0 6px 0;">Step 1 — Check open connections</h4>
+        <p style="font-size:12px;color:var(--fg-dim);margin:0 0 6px 0;">Lists every network socket the LLM daemon has open. Expect only loopback addresses.</p>
+        <div class="studio-verify-cmd">
+          <pre>${escapeHtml(cmdLsof)}</pre>
+          <button type="button" class="btn-sm studio-verify-copy" data-cmd="${escapeHtml(cmdLsof)}">Copy</button>
+        </div>
+        <p style="font-size:11px;color:var(--fg-dim);margin:4px 0 0 0;">Pass: every line shows <code>127.0.0.1</code>, <code>::1</code>, or <code>localhost</code>. Anything else = something is reaching the network.</p>
+
+        <h4 style="margin:14px 0 6px 0;">Step 2 — Watch live traffic (optional)</h4>
+        <p style="font-size:12px;color:var(--fg-dim);margin:0 0 6px 0;">Streams any non-loopback packets touching the LLM port. Run this, then trigger a recall in MemoryStudio.</p>
+        <div class="studio-verify-cmd">
+          <pre>${escapeHtml(cmdTcpdump)}</pre>
+          <button type="button" class="btn-sm studio-verify-copy" data-cmd="${escapeHtml(cmdTcpdump)}">Copy</button>
+        </div>
+        <p style="font-size:11px;color:var(--fg-dim);margin:4px 0 0 0;">Pass: <strong>nothing prints</strong> when you do a recall. Inference is silent on the wire.</p>
+
+        <h4 style="margin:14px 0 6px 0;">Step 3 — Sinkhole external hostnames (optional, advanced)</h4>
+        <p style="font-size:12px;color:var(--fg-dim);margin:0 0 6px 0;">Block the daemon's known external hostnames at the OS level. Then verify recall still works.</p>
+        <div class="studio-verify-cmd">
+          <pre>${escapeHtml(cmdSinkhole)}</pre>
+          <button type="button" class="btn-sm studio-verify-copy" data-cmd="${escapeHtml(cmdSinkhole)}">Copy</button>
+        </div>
+        <p style="font-size:11px;color:var(--fg-dim);margin:4px 0 0 0;">Pass: a recall in MemoryStudio still produces an interpretation. Inference does not depend on external resolution.</p>
+
+        <p style="margin-top:18px;font-size:12px;color:var(--fg-dim);">When you're done, click <strong>I verified</strong> below. We'll record the date and your active backend so the badge shows "Last verified: …".</p>
+      </div>
+      <div class="studio-loopback-modal-footer">
+        <button type="button" id="studio-verify-cancel" class="btn-sm">Cancel</button>
+        <button type="button" id="studio-verify-confirm" class="primary">I verified</button>
+      </div>
+    </div>
+  `;
+  overlay.classList.remove('hidden');
+  const close = (): void => overlay?.classList.add('hidden');
+  overlay.addEventListener('click', (e) => { if (e.target === overlay) close(); }, { once: true });
+  document.getElementById('studio-verify-close')?.addEventListener('click', close);
+  document.getElementById('studio-verify-cancel')?.addEventListener('click', close);
+  document.getElementById('studio-verify-confirm')?.addEventListener('click', () => {
+    if (studioActiveBackend) {
+      saveVerification({
+        backendId: studioActiveBackend.id,
+        backendDisplayName: studioActiveBackend.displayName,
+        baseUrl: studioActiveBackend.baseUrl,
+        verifiedAt: Date.now(),
+        method: 'wizard',
+        explicit: true,
+      });
+      updateLoopbackBadge(studioActiveBackend.baseUrl);
+    }
+    close();
+  });
+  // Copy buttons
+  overlay.querySelectorAll<HTMLButtonElement>('.studio-verify-copy').forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      const cmd = btn.dataset['cmd'] ?? '';
+      try {
+        await navigator.clipboard.writeText(cmd);
+        const orig = btn.textContent;
+        btn.textContent = 'Copied ✓';
+        setTimeout(() => { btn.textContent = orig; }, 1200);
+      } catch {
+        btn.textContent = 'Copy failed';
+      }
+    });
+  });
+}
+
+/** Modal explainer for the loopback badge. Tells the user what 127.0.0.1
+ *  means, why it implies "stays on this device," and gives the practical
+ *  verification commands they can run themselves. */
+function openLoopbackExplainer(args: { host: string; baseUrl: string; isLoop: boolean }): void {
+  // Reuse existing modal infrastructure if there is a generic one — else
+  // build a lightweight inline modal. Keeping this self-contained so it
+  // doesn't depend on the wizard modal we'll add in Phase 4.
+  let overlay = document.getElementById('studio-loopback-modal');
+  if (!overlay) {
+    overlay = document.createElement('div');
+    overlay.id = 'studio-loopback-modal';
+    overlay.className = 'modal-backdrop hidden';
+    document.body.appendChild(overlay);
+  }
+  const sessionLine = studioSessionProbeOK
+    ? `<p style="margin:8px 0;color:var(--fg-dim);font-size:12px;"><strong>This session:</strong> verified by lsof — the daemon held only loopback connections at probe time.</p>`
+    : '';
+  const stored = loadVerification();
+  const storedLine = stored && verificationMatchesActiveBackend(stored)
+    ? `<p style="margin:8px 0;color:var(--fg-dim);font-size:12px;"><strong>Last full verification:</strong> ${formatVerifiedAgo(stored.verifiedAt)} via ${stored.method === 'self-test' ? 'self-test' : stored.method === 'wizard' ? 'manual wizard' : 'lsof probe'}.</p>`
+    : '';
+  const verifiedNote = sessionLine + storedLine;
+  const titleText = args.isLoop
+    ? `What ${args.host} means`
+    : `Heads up: remote LLM`;
+  overlay.innerHTML = `
+    <div class="modal studio-loopback-modal" role="dialog" aria-labelledby="studio-loopback-title" style="max-width:540px;">
+      <div class="studio-loopback-modal-header">
+        <h3 id="studio-loopback-title">${escapeHtml(titleText)}</h3>
+        <button type="button" class="modal-close" aria-label="Close" id="studio-loopback-close">✕</button>
+      </div>
+      <div class="studio-loopback-modal-body">
+        ${args.isLoop ? `
+          <p>The MemoryStudio interpretation is generated by your <strong>local LLM</strong> reachable at <code>${escapeHtml(args.baseUrl)}</code>.</p>
+          <p><code>${escapeHtml(args.host)}</code> is the loopback address — packets sent there never reach a network interface. They can't be observed by your router, ISP, or anyone else on your network. The OS kernel routes them back to a process on this machine.</p>
+          <p><strong>Practical implication:</strong> when your scope includes a sensitive engram, its content flows from the sidecar to your local LLM and back, all on the loopback path. It does not leave the device during inference.</p>
+          ${verifiedNote}
+          <p style="margin-top:12px;"><strong>Want to verify yourself?</strong> Run this in Terminal while MemoryStudio is doing a recall:</p>
+          <pre style="background:var(--bg);padding:8px;border-radius:4px;font-size:11px;overflow-x:auto;">sudo lsof -i -P | grep -i &lt;daemon&gt;</pre>
+          <p style="font-size:12px;color:var(--fg-dim);">Expect to see only <code>127.0.0.1</code> / <code>::1</code> / <code>localhost</code> endpoints. Anything else = something is reaching the network.</p>
+        ` : `
+          <p>MemoryStudio is configured to use an LLM at <code>${escapeHtml(args.baseUrl)}</code>, which is <strong>not on this device</strong>.</p>
+          <p>Inference for every interpretation goes over the network to <code>${escapeHtml(args.host)}</code>. This may be intentional (e.g. a self-hosted LLM in your home network) — or it may be a misconfiguration.</p>
+          <p>If you expected purely local inference, change the backend URL in Settings to one starting with <code>http://127.0.0.1</code>.</p>
+        `}
+      </div>
+      <div class="studio-loopback-modal-footer">
+        ${args.isLoop ? `
+          <button type="button" id="studio-loopback-wizard" class="btn-sm">Guide me</button>
+          <button type="button" id="studio-loopback-selftest" class="btn-sm">Run self-test</button>
+        ` : ''}
+        <button type="button" id="studio-loopback-ok" class="primary">OK</button>
+      </div>
+    </div>
+  `;
+  overlay.classList.remove('hidden');
+  const close = (): void => overlay?.classList.add('hidden');
+  overlay.addEventListener('click', (e) => {
+    if (e.target === overlay) close();
+  }, { once: true });
+  document.getElementById('studio-loopback-close')?.addEventListener('click', close);
+  document.getElementById('studio-loopback-ok')?.addEventListener('click', close);
+  document.getElementById('studio-loopback-wizard')?.addEventListener('click', () => {
+    close();
+    openVerificationWizard();
+  });
+  document.getElementById('studio-loopback-selftest')?.addEventListener('click', async () => {
+    const btn = document.getElementById('studio-loopback-selftest') as HTMLButtonElement | null;
+    if (!btn) return;
+    btn.disabled = true;
+    const origText = btn.textContent;
+    btn.textContent = 'Running…';
+    // Append a transient status line into the modal body so the user sees
+    // what's happening (lsof + canary + recheck can take a couple seconds).
+    // Three visual states drive on outcome — set via class on the element:
+    //   .is-pending → muted progress (default)
+    //   .is-pass    → bold + green (verification succeeded)
+    //   .is-warn    → bold + amber (something off, but not fatal)
+    //   .is-fail    → bold + red (couldn't verify)
+    const body = document.querySelector<HTMLElement>('#studio-loopback-modal .studio-loopback-modal-body');
+    let statusEl = document.getElementById('studio-loopback-selftest-status');
+    if (!statusEl && body) {
+      statusEl = document.createElement('p');
+      statusEl.id = 'studio-loopback-selftest-status';
+      statusEl.className = 'studio-selftest-status';
+      body.appendChild(statusEl);
+    }
+    const setStatus = (m: string, tone: 'pending' | 'pass' | 'warn' | 'fail' = 'pending'): void => {
+      if (!statusEl) return;
+      statusEl.textContent = m;
+      statusEl.classList.remove('is-pending', 'is-pass', 'is-warn', 'is-fail');
+      statusEl.classList.add(`is-${tone}`);
+    };
+    try {
+      const result = await runMemoryStudioSelfTest({ onProgress: (m) => setStatus(m, 'pending') });
+      // Order matters: check "daemon not running" BEFORE "external connections".
+      // When pgrep + port-fallback both come up empty, the probe returns
+      // pid=None / connections=[] / all_loopback=false / error=Some(...).
+      // That isn't an external-connection finding — it just means the LLM
+      // daemon isn't up, so there's nothing to verify.
+      const noProcess =
+        (result.before?.pid == null && result.after?.pid == null) ||
+        !!result.before?.error || !!result.after?.error;
+      const ext = result.after?.external_remotes ?? [];
+      if (result.pass) {
+        setStatus(`✓ Verified — ${result.after?.connections.length ?? 0} connections, all loopback. Saved.`, 'pass');
+      } else if (noProcess) {
+        const backendName = studioActiveBackend?.displayName ?? 'Local LLM';
+        setStatus(`${backendName} isn't running — start it, then run the self-test again.`, 'warn');
+      } else if (!result.inferenceOk) {
+        setStatus(`Inference did not run (LLM may be disabled). Probe shows ${ext.length} external remote(s).`, 'warn');
+      } else if (ext.length > 0) {
+        setStatus(`⚠ Self-test detected external connection(s): ${ext.slice(0, 3).join(', ')}${ext.length > 3 ? '…' : ''}`, 'fail');
+      } else {
+        setStatus(`Self-test inconclusive — inference ran but probe didn't confirm all-loopback. Retry, or use the wizard.`, 'warn');
+      }
+    } catch (e) {
+      setStatus(`Self-test failed: ${e instanceof Error ? e.message : String(e)}`, 'fail');
+    } finally {
+      btn.disabled = false;
+      btn.textContent = origText;
+    }
+  });
+}
+
+/** Sensitivity-tier helpers used by MemoryStudio's lock-badge UI.
+ *  Decision: instead of gating sensitive-engram recall with a per-call consent
+ *  modal (which is the right design for cloud AI clients via MCP), we apply a
+ *  CONTINUOUS ambient visual signal — a lock icon — on every chip and citation
+ *  that's sourced from a sensitive engram. Lower friction, same awareness. */
+function tierForGraph(graphId: string): 'public' | 'personal' | 'sensitive' {
+  return loadedGraphs.find((g) => g.graphId === graphId)?.metadata.sensitivityTier ?? 'personal';
+}
+
+function isSensitiveGraph(graphId: string): boolean {
+  return tierForGraph(graphId) === 'sensitive';
+}
+
+/** True when the recall's scope includes at least one sensitive engram.
+ *  Drives the first-time-per-session pre-recall lsof probe.
+ *  - undefined scope = "All engrams" — check every loaded graph
+ *  - non-empty scope = specific picks — check only those */
+function scopeIncludesSensitive(engramArg: string[] | undefined): boolean {
+  if (!engramArg || engramArg.length === 0) {
+    return loadedGraphs.some((g) => g.metadata.sensitivityTier === 'sensitive');
+  }
+  return engramArg.some((id) => isSensitiveGraph(id));
+}
+
+/** Look up the engram tier for a given nodeId via the in-memory studioNodeCache.
+ *  Used by the LLM-citation lock badge: a (src: label) button is built from a
+ *  nodeId, and we need to know if that node is in a sensitive engram. */
+function isSensitiveNode(nodeId: string): boolean {
+  const node = studioNodeCache.get(nodeId);
+  if (!node) return false;
+  return isSensitiveGraph(node.graphId);
 }
 
 function renderStudioNodeChips(byGraph: Record<string, unknown>): void {
   const container = document.getElementById('studio-recall-nodes');
   if (!container) return;
-  const chips: string[] = [];
-  for (const [, nodes] of Object.entries(byGraph)) {
+
+  // Collect all nodes with graphId, sort by score descending, cap at 8
+  studioNodeCache.clear();
+  const all: StudioNode[] = [];
+  for (const [graphId, nodes] of Object.entries(byGraph)) {
     const arr = Array.isArray(nodes) ? nodes : [];
-    for (const n of arr.slice(0, 4)) {
+    for (const n of arr) {
       const nodeId = (n as { nodeId?: string }).nodeId ?? '';
-      const preview = ((n as { contentPreview?: string }).contentPreview ?? '').slice(0, 100);
+      const text = ((n as { text?: string }).text ?? '').trim();
+      const score = (n as { score?: number }).score ?? 0;
+      const type = (n as { type?: string }).type;
       if (!nodeId) continue;
-      chips.push(
-        `<button class="studio-node-chip" data-preview="${escapeHtml(preview)}" title="${escapeHtml(preview)}">${escapeHtml(nodeId.slice(0, 8))}…</button>`,
-      );
+      const node: StudioNode = { nodeId, graphId, text, score, type };
+      studioNodeCache.set(nodeId, node);
+      all.push(node);
     }
   }
-  container.innerHTML = chips.join('');
-  container.querySelectorAll<HTMLButtonElement>('.studio-node-chip').forEach((chip) => {
-    chip.addEventListener('click', () => {
-      const gnnInput = document.getElementById('studio-gnn-query') as HTMLInputElement | null;
-      if (gnnInput) gnnInput.value = chip.dataset['preview'] ?? '';
-    });
-  });
+  all.sort((a, b) => b.score - a.score);
+  const top = all.slice(0, 8);
+
+  // Score scale recap (set by the SDK + App's host):
+  //   0.00 – 1.00  raw semantic (TF-IDF + embedding fusion)
+  //   ~1.50        GNN_EXPANSION_SCORE — reached via graph-neighbor traversal
+  //   99           ANCHOR_SCORE — literal-entity match, boosted by anchoring
+  //
+  // Three badge variants, each with a tooltip explaining what it means
+  // (suggestion (a)). The layer-aware coloring (suggestion (b)) lets the user
+  // see at a glance HOW each node ended up in the result:
+  //   - anchored (>= 10)  → "MATCH" pill in strong accent color
+  //   - gnn      (1 – 10) → "LINKED" pill, dashed border, muted (reached via
+  //                          neural-network neighbor expansion)
+  //   - semantic (< 1)    → "%" relative to top semantic score
+  const ANCHOR_THRESHOLD = 10;
+  const GNN_THRESHOLD = 1;
+  const semanticScores = all.filter((n) => n.score < GNN_THRESHOLD);
+  const topSemanticScore = Math.max(0.01, semanticScores[0]?.score ?? 1);
+
+  // Header is already in the HTML; render only the chip rows after it
+  const header = container.querySelector('.studio-node-list-header');
+  // Remove previous chips (keep header)
+  container.querySelectorAll('.studio-node-chip').forEach((c) => c.remove());
+
+  for (const node of top) {
+    const snippet = node.text.slice(0, 35) || node.nodeId.slice(0, 12);
+    let badge: string;
+    if (node.score >= ANCHOR_THRESHOLD) {
+      badge = `<span class="studio-chip-anchor" title="Literal entity match — anchored at retrieval (boosted to top of federation)">match</span>`;
+    } else if (node.score >= GNN_THRESHOLD) {
+      badge = `<span class="studio-chip-linked" title="Reached via neural-network neighbor expansion (not a direct match)">linked</span>`;
+    } else {
+      const pct = Math.round((node.score / topSemanticScore) * 100);
+      badge = `<span class="studio-chip-score" title="Semantic similarity ${pct}% (relative to top result in this set)">${pct}%</span>`;
+    }
+    // Lock badge: ambient signal that this chip is sourced from a sensitive
+    // engram. Continuous reminder (no modal) per the decision NOT to gate
+    // MemoryStudio with consent prompts — instead, the user sees a lock
+    // every time they look at sensitive-tier content.
+    const lock = isSensitiveGraph(node.graphId)
+      ? `<span class="studio-chip-lock" title="This memory is from a sensitive engram. MemoryStudio routes inference through your local LLM (verifiable as loopback-only).">🔒</span>`
+      : '';
+    const typeLabel = node.type ?? 'node';
+    const btn = document.createElement('button');
+    btn.className = 'studio-node-chip';
+    btn.dataset['nodeId'] = node.nodeId;
+    btn.innerHTML =
+      `<span class="studio-chip-type">${escapeHtml(typeLabel)}</span>` +
+      `<span class="studio-chip-snippet">${escapeHtml(snippet)}</span>` +
+      lock +
+      badge;
+    btn.addEventListener('click', () => void openNodeInspector(node.nodeId, btn));
+    if (header) {
+      container.insertBefore(btn, null); // append after header
+    } else {
+      container.appendChild(btn);
+    }
+  }
 }
+
+async function openNodeInspector(nodeId: string, chipEl: HTMLButtonElement): Promise<void> {
+  if (!studioEnabled) {
+    showError('Node Inspector is a Studio feature. Upgrade to explore nodes in depth.');
+    return;
+  }
+  const node = studioNodeCache.get(nodeId);
+  if (!node) return;
+
+  document.querySelectorAll<HTMLButtonElement>('.studio-node-chip').forEach((c) => c.classList.remove('active'));
+  chipEl.classList.add('active');
+
+  // Switch to the node's engram if needed, then select the node in the
+  // existing Memory Trace right panel — no separate inspector panel needed.
+  if (atlasActiveGraph !== node.graphId) {
+    await switchActiveEngram(node.graphId);
+  }
+  selectGraphnosisNode(nodeId, { trace: true });
+}
+
+// ── Threshold slider ─────────────────────────────────────────────────────────
+
+// Like temperature for LLMs — controls how far below the top score a node
+// can be and still make it into the subgraph sent to the AI.
+// Δ = topScore − sliderValue. Stored relative so it adapts across queries.
+
+// Per-tool deltas. The two tools have meaningfully different score
+// distributions — dig_deeper layers stage-2/3 nodes at lower scores than
+// stage-1, so the right "how strict" position isn't necessarily the same
+// for both. Keeping them separate lets the user dial each independently.
+// The earlier "dig_deeper returns fewer nodes than recall" bug was not
+// that the keys are separate — it was that the slider didn't visually
+// sync to the new tool's saved position when switching tabs (it kept
+// showing the previous tool's value until a re-run happened).
+const STUDIO_RECALL_DELTA_KEY = 'studio_recall_threshold_delta';
+const STUDIO_DIG_DELTA_KEY = 'studio_dig_threshold_delta';
+let studioAllCandidates: Array<{ nodeId: string; graphId: string; score: number; text: string; type?: string }> = [];
+let studioTopScore = 0;
+// Cached full wide-call result, used by slider re-runs to slice locally
+// without re-calling the sidecar. This guarantees the same ordering at every
+// slider position — anchored nodes that surface in the wide call stay at the
+// top regardless of how many candidates the user wants to see. Without this
+// cache, every slider tick triggered a fresh sidecar recall with a tighter
+// budget, and the SDK's federation could rank a different set of nodes at
+// the top — so "robert" might surface "Robert Gomboș" at Broad but not Exact.
+let studioWideResult: RawRecallResult | null = null;
+
+/** Re-render a subset of the cached wide-call result for the current slider
+ *  position. Filters `byGraph` to keep only the top-N candidate node IDs (in
+ *  the wide call's original score order), rebuilds a simple prompt block per
+ *  engram, and returns a synthetic RawRecallResult shaped like the sidecar's.
+ *  Edges are not preserved — slider preview is about node-set narrowing, not
+ *  graph topology.  */
+function sliceWideResult(keepIds: Set<string>): RawRecallResult | null {
+  if (!studioWideResult) return null;
+  const wideByGraph = studioWideResult.byGraph as Record<string, Array<{ nodeId: string; score: number; text: string; type?: string }>>;
+
+  // Build filtered byGraph (drives the node chips + click-to-trace).
+  const filteredByGraph: Record<string, Array<{ nodeId: string; score: number; text: string; type?: string }>> = {};
+  let totalNodes = 0;
+  let totalTokens = 0;
+  for (const [graphId, nodes] of Object.entries(wideByGraph)) {
+    if (!Array.isArray(nodes)) continue;
+    const kept = nodes.filter((n) => keepIds.has(n.nodeId));
+    if (kept.length === 0) continue;
+    filteredByGraph[graphId] = kept;
+    totalNodes += kept.length;
+    for (const n of kept) totalTokens += Math.ceil((n.text?.length ?? 0) / 4);
+  }
+
+  // Filter the wide-call's RICH prompt rather than rebuilding from scratch.
+  // The wide prompt contains:
+  //   - `## EngramName` headers
+  //   - `=== KNOWLEDGE SUBGRAPH (X nodes, Y edges) ===` per engram
+  //   - `--- SESSION SUMMARIES ---` (compressed past-session context)
+  //   - `--- NODES ---` (the [shortId|type|score|src:label] entries)
+  //   - `--- DIRECTED ---` and `--- UNDIRECTED ---` (the actual graph edges)
+  //   - `--- CROSS-GRAPH CONNECTIONS ---` (entity bridges between engrams)
+  //   - the optional `--- INFERRED LAYER (overlays …) ---` block at the end
+  //
+  // Previously we dropped everything except `--- NODES ---` — which is exactly
+  // the information that lets the LLM tell "two nodes share an edge" apart
+  // from "two unrelated nodes happen to be in the same retrieval result."
+  // Without edges, the LLM hallucinates relationships from co-occurrence
+  // (e.g. mashing a Show HN announcement node with a roster mention into "X
+  // received an AI newsletter about the announcement"). Preserving the rich
+  // structure through slicing fixes this class of hallucinations.
+  const prompt = filterWidePromptByKept(studioWideResult.prompt, keepIds, wideByGraph);
+
+  return {
+    prompt,
+    tokensUsed: totalTokens,
+    nodesIncluded: totalNodes,
+    byGraph: filteredByGraph,
+    audit: studioWideResult.audit.map((a) => ({
+      graphId: a.graphId,
+      nodesIncluded: filteredByGraph[a.graphId]?.length ?? 0,
+      tokensIncluded: 0,
+    })),
+  };
+}
+
+/** Filter the wide-call's prompt to keep only the entries referencing kept
+ *  nodes, while preserving the full structural envelope (engram headers,
+ *  KNOWLEDGE SUBGRAPH stats, SESSION SUMMARIES, DIRECTED / UNDIRECTED edge
+ *  blocks, CROSS-GRAPH CONNECTIONS, INFERRED LAYER overlay).
+ *
+ *  Two-pass approach:
+ *   1. Walk node lines, match content prefixes against wide-byGraph text to
+ *      resolve each `[shortId|...]` to a real nodeId. Drop node lines whose
+ *      nodeId isn't in keepIds. Record kept shortIds.
+ *   2. Walk edge lines (`nX -[...]-> nY` and `nX ~[...]~ nY`). Drop edges
+ *      where either endpoint shortId was dropped — those would be dangling
+ *      references to nodes the LLM can no longer see. */
+function filterWidePromptByKept(
+  widePrompt: string,
+  keepIds: Set<string>,
+  wideByGraph: Record<string, Array<{ nodeId: string; text: string }>>,
+): string {
+  // Build a text-prefix → nodeId map for matching prompt node lines to
+  // wide-byGraph entries. 80 chars is plenty for disambiguation.
+  const prefixToNodeId = new Map<string, string>();
+  for (const arr of Object.values(wideByGraph)) {
+    if (!Array.isArray(arr)) continue;
+    for (const n of arr) {
+      const id = n.nodeId;
+      const text = n.text ?? '';
+      if (id && text) prefixToNodeId.set(text.slice(0, 80).trim(), id);
+    }
+  }
+
+  const lines = widePrompt.split('\n');
+
+  // PASS 1: identify node lines, determine which to keep, build kept-shortId set.
+  // SDK node line format: `[shortId|type|score(|src:label)?(|date:...)?] content`
+  // Hash short IDs from previous slicing: `[VkZbo3fE|fact|99.00|src:Coding] content`
+  // Sequential SDK IDs: `[n1|fact|0.67|src:Coding|date:2026-01-01] content`
+  const nodeLineRe = /^\[([A-Za-z0-9_-]+)\|[^|\]]+\|[^|\]]+(?:\|[^\]]*)?\]\s*(.*)$/;
+  const keptShortIds = new Set<string>();
+  const keepLine = new Array<boolean>(lines.length).fill(true);
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i] ?? '';
+    const m = line.match(nodeLineRe);
+    if (!m) continue; // non-node line: keep for now (filtered as edge in pass 2)
+    const shortId = m[1] ?? '';
+    const content = m[2] ?? '';
+    const contentPrefix = content.slice(0, 80).trim();
+    const nodeId = prefixToNodeId.get(contentPrefix);
+    if (nodeId && keepIds.has(nodeId)) {
+      keptShortIds.add(shortId);
+      keepLine[i] = true;
+    } else {
+      keepLine[i] = false; // drop the node line — nodeId isn't in keepIds
+    }
+  }
+
+  // PASS 2: drop edge lines that reference any dropped shortId.
+  // Edge formats:
+  //   directed:   `n1 -[type:weight]-> n2`
+  //   undirected: `n1 ~[type:weight]~ n2`
+  const directedRe = /^(\S+)\s+-\[[^\]]+\]->\s+(\S+)\s*$/;
+  const undirectedRe = /^(\S+)\s+~\[[^\]]+\]~\s+(\S+)\s*$/;
+  for (let i = 0; i < lines.length; i++) {
+    if (!keepLine[i]) continue;
+    const line = lines[i] ?? '';
+    const d = line.match(directedRe);
+    const u = !d ? line.match(undirectedRe) : null;
+    const edge = d ?? u;
+    if (!edge) continue;
+    const a = edge[1] ?? '';
+    const b = edge[2] ?? '';
+    if (!keptShortIds.has(a) || !keptShortIds.has(b)) keepLine[i] = false;
+  }
+
+  return lines.filter((_, i) => keepLine[i]).join('\n');
+}
+
+/** Parse `[shortId|type|score|src:label]` markers out of a wide-call prompt
+ *  and return a nodeId → src-label map. shortId in the prompt is the first
+ *  8 chars of the full nodeId; we resolve to full nodeIds via the wide
+ *  call's byGraph entries. */
+function parseSrcLabelsFromWidePrompt(prompt: string): Map<string, string> {
+  const out = new Map<string, string>();
+  if (!studioWideResult) return out;
+  // Collect all full nodeIds from the wide byGraph, keyed by 8-char prefix.
+  const shortToFull = new Map<string, string>();
+  for (const arr of Object.values(studioWideResult.byGraph)) {
+    if (!Array.isArray(arr)) continue;
+    for (const n of arr as Array<{ nodeId?: string }>) {
+      const full = n.nodeId ?? '';
+      if (full) shortToFull.set(full.slice(0, 8), full);
+    }
+  }
+  // Match the standard SDK-emitted header form, with or without a trailing
+  // |date: segment after the src label.
+  const re = /\[([A-Za-z0-9_-]+)\|[^|]+\|[^|\]]+\|src:([^\]|]+)/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(prompt)) !== null) {
+    const shortId = m[1] ?? '';
+    const srcLabel = (m[2] ?? '').trim();
+    const fullId = shortToFull.get(shortId);
+    if (fullId && srcLabel) out.set(fullId, srcLabel);
+  }
+  return out;
+}
+let studioThresholdDigDeeper = false; // which mode the slider is currently scoped to
+
+function getDeltaKey(digDeeper: boolean): string {
+  return digDeeper ? STUDIO_DIG_DELTA_KEY : STUDIO_RECALL_DELTA_KEY;
+}
+
+function storedDelta(digDeeper: boolean): number {
+  return parseFloat(localStorage.getItem(getDeltaKey(digDeeper)) ?? '0.15');
+}
+
+// Install the tab-switch slider syncer — every reference inside this closure
+// (studioThresholdDigDeeper / studioAllCandidates / studioTopScore /
+// STUDIO_*_DELTA_KEY via storedDelta) lives above this point in the file, so
+// the closure is safe to invoke. switchStudioTool (defined earlier, runs at
+// module init) calls this via the studioSliderSyncOnTabSwitch hook.
+studioSliderSyncOnTabSwitch = (dd: boolean): void => {
+  studioThresholdDigDeeper = dd;
+  const slider = document.getElementById('studio-threshold-slider') as HTMLInputElement | null;
+  if (!slider) return;
+  if (studioTopScore > 0) {
+    const delta = storedDelta(dd);
+    const minScore = studioAllCandidates[studioAllCandidates.length - 1]?.score ?? 0;
+    const newFloor = Math.max(minScore, studioTopScore - delta);
+    slider.value = newFloor.toFixed(2);
+    updateThresholdDisplay(newFloor);
+  } else {
+    // No wide result yet — at least show the stored Δ in the readout so the
+    // user can see what's about to be applied.
+    const delta = storedDelta(dd);
+    const live = document.getElementById('studio-threshold-live');
+    if (live) live.textContent = `Δ${delta.toFixed(2)}`;
+  }
+};
+
+// ── Per-tool result-panel snapshot/restore ──────────────────────────────────
+// switchStudioTool (defined earlier) calls these via the studioSnapshotHooks
+// indirection. We snapshot the rendered DOM (raw context, LLM markdown, node
+// chips, status chips) plus the JS state the slider depends on (wide result,
+// candidate list, top score, current query). Restoring reinstates both so
+// the slider keeps working without re-fetching from the sidecar.
+interface StudioToolSnapshot {
+  rawOutputInnerHTML: string;
+  rawMetaText: string;
+  rawStatusText: string;
+  nodeChipsInnerHTML: string;
+  llmOutputInnerHTML: string;
+  llmStatusText: string;
+  llmProgressHidden: boolean;
+  llmUnavailableInnerHTML: string;
+  llmUnavailableHidden: boolean;
+  panelsHidden: boolean;
+  thresholdRowHidden: boolean;
+  wideResult: RawRecallResult | null;
+  allCandidates: typeof studioAllCandidates;
+  topScore: number;
+  query: string;
+}
+const studioSnapshots: Record<StudioToolKey, StudioToolSnapshot | null> = {
+  recall: null,
+  digDeeper: null,
+};
+function getStudioSnapshot(): StudioToolSnapshot {
+  const $ = (id: string): HTMLElement | null => document.getElementById(id);
+  const isHidden = (el: HTMLElement | null): boolean => !el || el.classList.contains('hidden');
+  return {
+    rawOutputInnerHTML: $('studio-recall-output')?.innerHTML ?? '',
+    rawMetaText: $('studio-recall-meta')?.textContent ?? '',
+    rawStatusText: $('studio-raw-status')?.textContent ?? '',
+    nodeChipsInnerHTML: $('studio-recall-nodes')?.innerHTML ?? '',
+    llmOutputInnerHTML: $('studio-llm-output')?.innerHTML ?? '',
+    llmStatusText: $('studio-llm-status')?.textContent ?? '',
+    llmProgressHidden: isHidden($('studio-llm-progress')),
+    llmUnavailableInnerHTML: $('studio-llm-unavailable')?.innerHTML ?? '',
+    llmUnavailableHidden: isHidden($('studio-llm-unavailable')),
+    panelsHidden: isHidden($('studio-recall-panels')),
+    thresholdRowHidden: isHidden($('studio-threshold-row')),
+    wideResult: studioWideResult,
+    allCandidates: studioAllCandidates.slice(),
+    topScore: studioTopScore,
+    query: studioCurrentQuery,
+  };
+}
+function applyStudioSnapshot(snap: StudioToolSnapshot | null): void {
+  const $ = (id: string): HTMLElement | null => document.getElementById(id);
+  const setHidden = (el: HTMLElement | null, hidden: boolean): void => {
+    if (el) el.classList.toggle('hidden', hidden);
+  };
+  if (!snap) {
+    // No prior result for this tool — clear everything so the user sees a
+    // fresh, empty state instead of the previous tool's leftovers.
+    if ($('studio-recall-output')) $('studio-recall-output')!.innerHTML = '';
+    if ($('studio-recall-meta')) $('studio-recall-meta')!.textContent = '';
+    if ($('studio-raw-status')) $('studio-raw-status')!.textContent = '';
+    if ($('studio-recall-nodes')) $('studio-recall-nodes')!.innerHTML = '';
+    if ($('studio-llm-output')) $('studio-llm-output')!.innerHTML = '';
+    if ($('studio-llm-status')) $('studio-llm-status')!.textContent = '';
+    setHidden($('studio-llm-progress'), true);
+    setHidden($('studio-llm-unavailable'), true);
+    setHidden($('studio-recall-panels'), true);
+    // NOTE: do NOT hide the threshold-slider row on a null restore. The slider
+    // is visible by default in the HTML so the user can see it at startup
+    // before they've run anything. Hiding it here was the regression that
+    // made the slider disappear on first paint after the per-tool snapshot
+    // landed. Capturing the previous-tool's hidden state is still fine — we
+    // just don't FORCE-hide when restoring an empty slot.
+    studioWideResult = null;
+    studioAllCandidates = [];
+    studioTopScore = 0;
+    return;
+  }
+  if ($('studio-recall-output')) $('studio-recall-output')!.innerHTML = snap.rawOutputInnerHTML;
+  if ($('studio-recall-meta')) $('studio-recall-meta')!.textContent = snap.rawMetaText;
+  if ($('studio-raw-status')) $('studio-raw-status')!.textContent = snap.rawStatusText;
+  if ($('studio-recall-nodes')) $('studio-recall-nodes')!.innerHTML = snap.nodeChipsInnerHTML;
+  if ($('studio-llm-output')) $('studio-llm-output')!.innerHTML = snap.llmOutputInnerHTML;
+  if ($('studio-llm-status')) $('studio-llm-status')!.textContent = snap.llmStatusText;
+  if ($('studio-llm-unavailable')) $('studio-llm-unavailable')!.innerHTML = snap.llmUnavailableInnerHTML;
+  setHidden($('studio-llm-progress'), snap.llmProgressHidden);
+  setHidden($('studio-llm-unavailable'), snap.llmUnavailableHidden);
+  setHidden($('studio-recall-panels'), snap.panelsHidden);
+  setHidden($('studio-threshold-row'), snap.thresholdRowHidden);
+  studioWideResult = snap.wideResult;
+  studioAllCandidates = snap.allCandidates.slice();
+  studioTopScore = snap.topScore;
+  studioCurrentQuery = snap.query;
+}
+studioSnapshotHooks = {
+  capture: (key) => { studioSnapshots[key] = getStudioSnapshot(); },
+  restore: (key) => { applyStudioSnapshot(studioSnapshots[key]); },
+};
+
+function revealThresholdSlider(digDeeper: boolean): number {
+  studioThresholdDigDeeper = digDeeper;
+  const row = document.getElementById('studio-threshold-row');
+  const slider = document.getElementById('studio-threshold-slider') as HTMLInputElement | null;
+  if (!row || !slider || studioAllCandidates.length === 0) return 0;
+
+  const minScore = studioAllCandidates[studioAllCandidates.length - 1]?.score ?? 0;
+  const delta = storedDelta(digDeeper);
+  const currentFloor = Math.max(minScore, studioTopScore - delta);
+
+  // Floor (not round) so the slider max never exceeds the actual top score —
+  // rounding up would give parseFloat(max) > studioTopScore → negative delta.
+  slider.min = (Math.floor(minScore * 100) / 100).toFixed(2);
+  slider.max = (Math.floor(studioTopScore * 100) / 100).toFixed(2);
+  slider.step = '0.01';
+  slider.value = currentFloor.toFixed(2);
+
+  row.classList.remove('hidden');
+  updateThresholdDisplay(parseFloat(slider.value));
+  return delta;
+}
+
+const THRESHOLD_WORDS = ['Broad', 'Wide', 'Generous', 'Balanced', 'Similar', 'Focused', 'Exact'] as const;
+
+function thresholdWord(floor: number): string {
+  const slider = document.getElementById('studio-threshold-slider') as HTMLInputElement | null;
+  const min = parseFloat(slider?.min ?? '0');
+  const max = parseFloat(slider?.max ?? '1');
+  const range = max - min;
+  if (range <= 0) return 'Balanced';
+  const pos = Math.max(0, Math.min(1, (floor - min) / range));
+  return THRESHOLD_WORDS[Math.min(THRESHOLD_WORDS.length - 1, Math.floor(pos * THRESHOLD_WORDS.length))] ?? 'Balanced';
+}
+
+function fmtTokens(n: number): string {
+  return n >= 1000 ? `${(n / 1000).toFixed(1)}k tok` : `${n} tok`;
+}
+
+/** Count of top candidates for a given slider floor, index-based.
+ *  Using position (rank) rather than score avoids floating-point scale issues:
+ *  a floor of 0.0 = all candidates, 1.0 = top 1.  */
+function floorToCount(floor: number): number {
+  const n = studioAllCandidates.length;
+  if (n === 0) return 1;
+  const clampedFloor = Math.max(0, Math.min(floor, studioTopScore));
+  // fraction of candidates to DROP (floor close to studioTopScore → drop most)
+  const keepFrac = studioTopScore > 0 ? 1 - clampedFloor / studioTopScore : 1;
+  return Math.max(1, Math.round(keepFrac * n));
+}
+
+function updateThresholdDisplay(floor: number): void {
+  const clampedFloor = Math.min(floor, studioTopScore);
+  const delta = Math.max(0, studioTopScore - clampedFloor);
+  const count = floorToCount(floor);
+  const filtered = studioAllCandidates.slice(0, count);
+  const estTokens = Math.round(filtered.reduce((s, c) => s + c.text.length, 0) / 4);
+
+  const word = document.getElementById('studio-threshold-word');
+  const live = document.getElementById('studio-threshold-live');
+  const hint = document.getElementById('studio-threshold-hint');
+  if (word) word.textContent = thresholdWord(clampedFloor);
+  if (live) live.textContent = `Δ${delta.toFixed(2)}`;
+  if (hint) hint.textContent = `· ${filtered.length}n · ${fmtTokens(estTokens)}`;
+}
+
+// Slider input: live preview (no re-run)
+const thresholdSliderEl = document.getElementById('studio-threshold-slider') as HTMLInputElement | null;
+thresholdSliderEl?.addEventListener('input', () => {
+  updateThresholdDisplay(parseFloat(thresholdSliderEl.value));
+});
+
+// Initialize the slider position from the last saved delta in localStorage so
+// the user sees their preferred position at startup, not the HTML defaults.
+// Assumes the normalized [0, 1] scale that the slider always uses after a
+// real recall — actual min/max are recomputed on first recall anyway.
+(function initThresholdSliderFromStorage(): void {
+  if (!thresholdSliderEl) return;
+  const delta = parseFloat(localStorage.getItem(STUDIO_RECALL_DELTA_KEY) ?? '0.15');
+  const floor = Math.max(0, Math.min(1, 1 - delta));
+  thresholdSliderEl.min = '0.00';
+  thresholdSliderEl.max = '1.00';
+  thresholdSliderEl.step = '0.01';
+  thresholdSliderEl.value = floor.toFixed(2);
+  const word = document.getElementById('studio-threshold-word');
+  const live = document.getElementById('studio-threshold-live');
+  if (word) word.textContent = thresholdWord(floor);
+  if (live) live.textContent = `Δ${delta.toFixed(2)}`;
+})();
+
+// Slider change (mouse-up / touch-end): auto-save Δ and re-run recall.
+// Debounced so rapid consecutive changes don't pile up IPC calls — only the
+// position when the user lifts their finger/mouse matters.
+let sliderDebounceTimer: ReturnType<typeof setTimeout> | null = null;
+thresholdSliderEl?.addEventListener('change', () => {
+  if (sliderDebounceTimer !== null) clearTimeout(sliderDebounceTimer);
+  sliderDebounceTimer = setTimeout(() => {
+    sliderDebounceTimer = null;
+    if (!studioTopScore) return; // no recall run yet — nothing to filter
+    const floor = Math.min(parseFloat(thresholdSliderEl.value), studioTopScore);
+    const delta = Math.max(0, parseFloat((studioTopScore - floor).toFixed(3)));
+    localStorage.setItem(getDeltaKey(studioThresholdDigDeeper), delta.toFixed(3));
+    void ipcCall('studio.setThresholdDelta', { type: studioThresholdDigDeeper ? 'digDeeper' : 'recall', delta });
+    void runStudioRecall(studioThresholdDigDeeper, delta);
+  }, 120);
+});
 
 // ── GNN Neighbors ───────────────────────────────────────────────────────────
 
@@ -15143,6 +17445,24 @@ async function runStudioGnn(): Promise<void> {
       }
     }
     resultBlock?.classList.remove('hidden');
+    // Auto-scroll the TOP of the GNN result block into view — neighbor lists
+    // are ranked best-first, so the user wants to read from the top. Earlier
+    // versions used the same "scroll bottom into view" trick as the
+    // Edit/Correct diff and Remember's duplicate panel, but for a tall list
+    // that pushed the highest-scoring neighbors off-screen at the top. Now
+    // we scroll the result block's TOP just below the controls strip with a
+    // small 12px breathing-room offset.
+    if (resultBlock) {
+      const scroller = resultBlock.closest<HTMLElement>('.studio-section');
+      if (scroller) {
+        const resultTopInScroller =
+          resultBlock.getBoundingClientRect().top - scroller.getBoundingClientRect().top + scroller.scrollTop;
+        scroller.scrollTo({
+          top: Math.max(0, resultTopInScroller - 12),
+          behavior: 'smooth',
+        });
+      }
+    }
   } catch (e) {
     showError(e instanceof Error ? e.message : String(e));
   } finally {
@@ -15155,12 +17475,69 @@ async function runStudioGnn(): Promise<void> {
 document.getElementById('btn-studio-check-dup')?.addEventListener('click', () => void runStudioCheckDuplicate());
 document.getElementById('btn-studio-remember')?.addEventListener('click', () => void runStudioRemember());
 
+// "+ New Engram" buttons next to the Remember / Edit target-engram dropdowns.
+// Both open the standard graph-creation wizard so the user doesn't have to
+// switch tabs to create an engram on the fly. After creation, the existing
+// graph-load refresh path (loadedGraphs → populateStudioEngramSelects) brings
+// the new engram into the dropdown automatically. We additionally pre-select
+// the newest engram once it appears, so the user can immediately save into it
+// without an extra click.
+function watchForNewEngramAndSelect(selectId: string, beforeIds: Set<string>): void {
+  // Poll loadedGraphs for a new id that wasn't there before the wizard opened.
+  // Cap at ~10s so a cancelled wizard doesn't leak a permanent timer.
+  let elapsed = 0;
+  const tick = (): void => {
+    elapsed += 200;
+    const fresh = loadedGraphs
+      .filter((g) => !g.metadata.archived && !beforeIds.has(g.graphId));
+    if (fresh.length > 0) {
+      const sel = document.getElementById(selectId) as HTMLSelectElement | null;
+      if (sel) {
+        sel.value = fresh[0]!.graphId;
+        syncStudioSelectSelectionStyle(selectId);
+      }
+      return;
+    }
+    if (elapsed >= 10_000) return;
+    setTimeout(tick, 200);
+  };
+  setTimeout(tick, 200);
+}
+document.getElementById('btn-studio-remember-new-engram')?.addEventListener('click', () => {
+  const before = new Set(loadedGraphs.map((g) => g.graphId));
+  openGraphWizard();
+  watchForNewEngramAndSelect('studio-remember-engram', before);
+});
+// The Edit/Correct tab intentionally does NOT get a "+ New Engram" button —
+// edits target memory that already exists somewhere, so the engram should
+// already be in the dropdown. If it's a fresh thought there's nothing to
+// correct, and the user should be on the Remember tab instead.
+
 async function runStudioCheckDuplicate(): Promise<void> {
   const text = (document.getElementById('studio-remember-text') as HTMLTextAreaElement | null)?.value.trim() ?? '';
   if (!text) return;
   const engram = (document.getElementById('studio-remember-engram') as HTMLSelectElement | null)?.value || undefined;
   const warning = document.getElementById('studio-duplicate-warning');
   if (!warning) return;
+
+  // Show a skeleton placeholder while the check is in flight — three pulsing
+  // rows that mirror the eventual layout (heading + per-row bars) so the
+  // panel doesn't jump when real data lands. Reset the inline color overrides
+  // from any prior "no duplicates" success render too.
+  warning.style.cssText = 'margin-top: 40px;';
+  warning.classList.remove('hidden');
+  warning.innerHTML =
+    `<div class="studio-dup-skeleton">` +
+      `<div class="studio-dup-skeleton-heading"></div>` +
+      `<div class="studio-dup-skeleton-row">` +
+        `<div class="studio-dup-skeleton-bar is-short"></div>` +
+        `<div class="studio-dup-skeleton-bar is-long"></div>` +
+      `</div>` +
+      `<div class="studio-dup-skeleton-row">` +
+        `<div class="studio-dup-skeleton-bar is-medium"></div>` +
+        `<div class="studio-dup-skeleton-bar is-long"></div>` +
+      `</div>` +
+    `</div>`;
 
   try {
     const result = await ipcCall<{
@@ -15170,15 +17547,51 @@ async function runStudioCheckDuplicate(): Promise<void> {
 
     warning.classList.remove('hidden');
     if (result.hasDuplicates) {
-      const top = result.duplicates[0];
-      warning.style.cssText = '';
-      warning.textContent =
-        `⚠ Similar content found (${result.duplicates.length} match${result.duplicates.length === 1 ? '' : 'es'}) — ` +
-        `consider editing instead. Best match in "${top?.engramName ?? '?'}": "${(top?.text ?? '').slice(0, 80)}…"`;
+      // Preserve the gap to the action buttons above when we tear down the
+      // skeleton's cssText — the inline margin-top was set during the
+      // placeholder render and must stick around for the real result too.
+      warning.style.cssText = 'margin-top: 40px;';
+      const count = result.duplicates.length;
+      const heading = `⚠ Similar content found (${count} match${count === 1 ? '' : 'es'}) — consider editing instead of saving a duplicate.`;
+      // List every candidate the SDK returned. Highest-score first (the sidecar
+      // already orders them that way). Each row shows score · engram · snippet
+      // so the user can decide visually whether any of these is actually the
+      // same thought as what they're about to save.
+      const rows = result.duplicates.map((d) => {
+        const pct = Math.round(Math.max(0, Math.min(1, d.score)) * 100);
+        const snippet = (d.text ?? '').replace(/\s+/g, ' ').trim();
+        const truncated = snippet.length > 220 ? snippet.slice(0, 217) + '…' : snippet;
+        return (
+          `<li class="studio-dup-item">` +
+            `<div class="studio-dup-item-meta">` +
+              `<span class="studio-dup-item-score">${pct}%</span>` +
+              `<span class="studio-dup-item-engram">${escapeHtml(d.engramName ?? '?')}</span>` +
+            `</div>` +
+            `<div class="studio-dup-item-text">${escapeHtml(truncated)}</div>` +
+          `</li>`
+        );
+      }).join('');
+      warning.innerHTML =
+        `<div class="studio-dup-heading">${escapeHtml(heading)}</div>` +
+        `<ul class="studio-dup-list">${rows}</ul>`;
     } else {
       warning.style.background = 'color-mix(in oklab, var(--ok, #4caf50) 15%, transparent)';
       warning.style.borderColor = 'color-mix(in oklab, var(--ok, #4caf50) 40%, var(--border))';
+      warning.innerHTML = '';
       warning.textContent = '✓ No near-duplicates found. Safe to save.';
+    }
+    // Auto-scroll the duplicate panel into clear view above the Solo
+    // Memories trivia bar — same approach as Edit/Correct's Approve row and
+    // GNN's neighbor list. Without this the panel lands tucked behind the
+    // drawer and the user can't see what was found until they scroll.
+    const scroller = warning.closest<HTMLElement>('.studio-section');
+    if (scroller) {
+      const warningBottom =
+        warning.getBoundingClientRect().bottom - scroller.getBoundingClientRect().top + scroller.scrollTop;
+      scroller.scrollTo({
+        top: warningBottom - scroller.clientHeight + 70,
+        behavior: 'smooth',
+      });
     }
   } catch (e) { showError(e instanceof Error ? e.message : String(e)); }
 }
@@ -15237,7 +17650,27 @@ async function runStudioRemember(): Promise<void> {
 // ── Edit / Correct ──────────────────────────────────────────────────────────
 
 document.getElementById('btn-studio-propose-edit')?.addEventListener('click', () => void runStudioEdit());
-document.getElementById('btn-studio-edit-approve')?.addEventListener('click', () => void applyStudioEdit());
+// Two-click confirm on Approve. First click flips the button to a "Confirm —
+// apply now" state and tells the user this will modify their memory. Second
+// click within the same proposal actually fires correction.apply. The
+// pending flag is also reset every time a fresh proposal lands (see
+// runStudioEdit) so an old "confirm" state can never leak into a new diff.
+document.getElementById('btn-studio-edit-approve')?.addEventListener('click', () => {
+  const btn = document.getElementById('btn-studio-edit-approve') as HTMLButtonElement | null;
+  if (!btn || !studioPendingDiffId) return;
+  if (!studioEditApprovePending) {
+    studioEditApprovePending = true;
+    btn.textContent = 'Confirm — apply now';
+    btn.classList.add('danger');
+    btn.classList.remove('primary');
+    return;
+  }
+  studioEditApprovePending = false;
+  btn.classList.remove('danger');
+  btn.classList.add('primary');
+  btn.textContent = 'Approve & apply';
+  void applyStudioEdit();
+});
 document.getElementById('btn-studio-edit-reject')?.addEventListener('click', () => rejectStudioEdit());
 
 async function runStudioEdit(): Promise<void> {
@@ -15252,30 +17685,271 @@ async function runStudioEdit(): Promise<void> {
   diffBlock?.classList.add('hidden');
 
   try {
+    // Match the actual sidecar/SDK schema (correction.ts EditOp):
+    //   { kind: 'edit'|'supersede'|'delete', nodeId, content?, reason }
+    // Earlier this TS shape claimed `{ field, before, after }` which never
+    // existed on the wire — and the render below blindly trusted it,
+    // producing the "undefined is not an object (s.replace)" crash inside
+    // escapeHtml whenever the LLM returned a real diff.
+    type StudioEditOp =
+      | { kind: 'edit';      nodeId: string; content: string; reason?: string }
+      | { kind: 'supersede'; nodeId: string; content: string; reason?: string }
+      | { kind: 'delete';    nodeId: string; reason?: string };
+    type StudioAddOp = { text: string; label?: string };
+    type StudioCandidate = { graphId: string; nodeId: string; text: string; viaGnn?: boolean };
     const result = await ipcCall<{
       diffId: string;
       mode: string;
-      preview: { edits?: Array<{ nodeId: string; field: string; before: string; after: string }>; adds?: unknown[] };
-      candidates: Array<{ graphId: string; nodeId?: string; score?: number }>;
+      preview: { reasoning?: string; edits?: StudioEditOp[]; adds?: StudioAddOp[] };
+      candidates: StudioCandidate[];
     }>('studio.edit', { correction, ...(graphId ? { graphId } : {}) });
 
     studioPendingDiffId = result.diffId;
 
     if (diffBody) {
       const edits = result.preview.edits ?? [];
-      if (edits.length === 0) {
-        diffBody.innerHTML = `<p style="font-size:13px; color:var(--fg-dim);">Mode: <strong>${escapeHtml(result.mode)}</strong>. No in-place edits proposed — new content will be added to the graph.</p>`;
+      const adds = result.preview.adds ?? [];
+      // Resolve the "before" text for each edit. We layer three fallbacks:
+      //  1. The candidate set the sidecar shipped (preferred — same payload
+      //     the LLM was looking at).
+      //  2. graphnosisAllNodes (active engram's full content list) — covers
+      //     the case where the candidate.text came through empty/truncated
+      //     but the node lives in the engram currently loaded in the atlas.
+      //  3. studioNodeCache — MemoryStudio's prior-recall cache; useful when
+      //     the user's been clicking through nodes from other engrams.
+      // The earlier render assumed "candidate or nothing", which produced an
+      // empty `−` line for real nodes whenever step 1 missed.
+      const resolveBefore = (nodeId: string): string => {
+        const fromCand = result.candidates.find((c) => c.nodeId === nodeId)?.text;
+        if (fromCand && fromCand.trim()) return fromCand;
+        const fromGraph = graphnosisAllNodes.find((n) => n.id === nodeId)?.contentPreview;
+        if (fromGraph && fromGraph.trim()) return fromGraph;
+        const fromStudio = studioNodeCache.get(nodeId)?.text;
+        if (fromStudio && fromStudio.trim()) return fromStudio;
+        return '';
+      };
+      // Pre-resolve every edit's before-text so render below is straight reads.
+      const beforeById = new Map<string, string>();
+      for (const e of edits) beforeById.set(e.nodeId, resolveBefore(e.nodeId));
+      // nodeId → graphId lookup so each edit row can be tagged with the
+      // engram that node lives in. Critical when a correction proposal spans
+      // multiple engrams — the user otherwise has no idea WHERE a change is
+      // about to land. The IPC also ships a top-level resolvedGraphId for
+      // single-target diffs, but per-edit graphId is the source of truth
+      // for multi-engram proposals (recall can surface candidates from
+      // different engrams when the correction text matches semantically
+      // across them).
+      const graphIdByNodeId = new Map(result.candidates.map((c) => [c.nodeId, c.graphId]));
+      // Engram displayName resolver. Falls back to the raw graphId if the
+      // engram isn't in loadedGraphs (shouldn't happen, but keeps the UI
+      // honest if the sidecar ever ships a graphId the frontend hasn't seen).
+      const engramName = (graphId: string | undefined): string => {
+        if (!graphId) return '—';
+        return loadedGraphs.find((g) => g.graphId === graphId)?.metadata.displayName ?? graphId;
+      };
+      // Detect hallucinated edits — the LLM is told "Never invent nodeIds;
+      // use only IDs from the candidate list", but small local models still
+      // do. We treat an edit as hallucinated only when EVERY fallback fails
+      // to produce a before-text (so the node truly doesn't exist anywhere
+      // the frontend can see). Previously this was a strict equality check
+      // against the candidate set, which was too aggressive — a real node
+      // that just wasn't in the recall slice still triggered the red banner.
+      // The fallback chain in resolveBefore is the more honest signal.
+      const hallucinated = edits.filter((e) => !beforeById.get(e.nodeId));
+      // Detect no-op edits — when the LLM proposes replacing a node's text
+      // with the same text it already holds. Not destructive, but useless,
+      // and applying it would still create an audit-log entry. Worth telling
+      // the user so they can Reject and rephrase the correction.
+      const noopEdits = edits.filter((e) => {
+        if (e.kind === 'delete') return false;
+        const before = (beforeById.get(e.nodeId) ?? '').trim();
+        const after = String((e as { content?: string }).content ?? '').trim();
+        return before.length > 0 && before === after;
+      });
+      // Engrams actually touched by this proposal — derived from the edits
+      // (via per-candidate graphId) plus the resolved target (for adds, which
+      // don't carry their own graphId). Used in the summary so the user can
+      // see "this correction is being proposed against engrams A, B, C" at a
+      // glance before reading the per-edit rows.
+      const engramsTouched = new Set<string>();
+      for (const e of edits) {
+        const gid = graphIdByNodeId.get(e.nodeId);
+        if (gid) engramsTouched.add(gid);
+      }
+      if (adds.length > 0) {
+        // adds land in the resolved targetGraphId from the IPC response
+        const targetGid = (result as { resolvedGraphId?: string }).resolvedGraphId
+          ?? (result.candidates[0]?.graphId);
+        if (targetGid) engramsTouched.add(targetGid);
+      }
+      // Build a clear "what will happen if you confirm" summary first, then the
+      // actual diff bodies below. The summary is the analyze step's headline
+      // outcome — what the user needs to understand BEFORE deciding to apply.
+      const editCount = edits.filter((e) => e.kind === 'edit' || e.kind === 'supersede').length;
+      const deleteCount = edits.filter((e) => e.kind === 'delete').length;
+      const summaryParts: string[] = [];
+      if (editCount > 0)   summaryParts.push(`<strong>${editCount}</strong> memor${editCount === 1 ? 'y' : 'ies'} will be edited / superseded`);
+      if (deleteCount > 0) summaryParts.push(`<strong>${deleteCount}</strong> memor${deleteCount === 1 ? 'y' : 'ies'} will be soft-deleted`);
+      if (adds.length > 0) summaryParts.push(`<strong>${adds.length}</strong> new memor${adds.length === 1 ? 'y' : 'ies'} will be added`);
+      const summary = summaryParts.length > 0
+        ? summaryParts.join(' · ')
+        : 'No changes proposed';
+      const engramList = Array.from(engramsTouched).map(engramName);
+      const engramLine = engramList.length > 0
+        ? `<div class="studio-diff-summary-engrams">Target engram${engramList.length === 1 ? '' : 's'}: ` +
+            engramList.map((n) => `<span class="studio-diff-summary-engram">${escapeHtml(n)}</span>`).join(' ') +
+          (engramList.length > 1
+            ? ` <em style="color:var(--fg-dim);">— this correction spans multiple engrams</em>`
+            : '') +
+          `</div>`
+        : '';
+      const summaryBlock =
+        `<div class="studio-diff-summary">` +
+          `<div class="studio-diff-summary-line">If you confirm: ${summary}.</div>` +
+          engramLine +
+          `<div class="studio-diff-summary-mode">Mode: <code>${escapeHtml(result.mode ?? 'unknown')}</code></div>` +
+          (result.preview.reasoning
+            ? `<div class="studio-diff-summary-mode">Reasoning: ${escapeHtml(result.preview.reasoning)}</div>`
+            : '') +
+        `</div>`;
+      // Warn loudly when the LLM proposed edits against nodeIds the App
+      // couldn't resolve anywhere — candidate list, current engram, or the
+      // studio cache. Empty `−` line is the visible symptom; this banner
+      // explains it.
+      const hallucinationBanner = hallucinated.length > 0
+        ? (
+          `<div class="studio-diff-hallucination">` +
+            `⚠ The LLM proposed ${hallucinated.length} edit${hallucinated.length === 1 ? '' : 's'} ` +
+            `against memor${hallucinated.length === 1 ? 'y' : 'ies'} that the App couldn't find anywhere ` +
+            `(invented nodeId${hallucinated.length === 1 ? '' : 's'}: ` +
+            hallucinated.slice(0, 3).map((e) => `<code>${escapeHtml(e.nodeId.slice(0, 8))}</code>`).join(', ') +
+            (hallucinated.length > 3 ? '…' : '') +
+            `). Reject and rephrase the correction with the exact proper-noun or date from the memory you want to fix.` +
+          `</div>`
+        )
+        : '';
+      // Softer warning for no-op edits — the proposal is well-formed but
+      // doesn't actually change anything. Yellow, not red, because applying
+      // it isn't dangerous, just pointless.
+      const noopBanner = noopEdits.length > 0
+        ? (
+          `<div class="studio-diff-noop">` +
+            `ℹ The LLM proposed ${noopEdits.length} edit${noopEdits.length === 1 ? '' : 's'} where the ` +
+            `new content is identical to the memory's current content. Applying ` +
+            `${noopEdits.length === 1 ? 'it' : 'them'} would write the same text back — useful only ` +
+            `for re-stamping the audit log. Likely the LLM didn't understand what to change; ` +
+            `consider rephrasing the correction.` +
+          `</div>`
+        )
+        : '';
+      // Show the candidates the recall actually surfaced — useful when the
+      // LLM picks the "wrong" one or hallucinates a different ID entirely.
+      // Compact list with the engram + a short preview. Marked visually when
+      // the candidate is the target of an edit in the proposal.
+      const editedIds = new Set(edits.map((e) => e.nodeId));
+      const candidatesBlock = result.candidates.length > 0
+        ? (
+          `<details class="studio-diff-candidates">` +
+            `<summary>Candidates the recall considered (${result.candidates.length})</summary>` +
+            `<ul>` +
+              result.candidates.map((c) => {
+                const isTarget = editedIds.has(c.nodeId);
+                const preview = String(c.text ?? '').replace(/\s+/g, ' ').trim();
+                const trimmed = preview.length > 180 ? preview.slice(0, 177) + '…' : preview;
+                return (
+                  `<li class="studio-diff-cand${isTarget ? ' is-target' : ''}">` +
+                    `<div class="studio-diff-cand-meta">` +
+                      `<code>${escapeHtml(c.nodeId.slice(0, 8))}</code>` +
+                      ` <span class="studio-diff-cand-engram">${escapeHtml(engramName(c.graphId))}</span>` +
+                      (c.viaGnn ? ` <span class="studio-diff-cand-gnn">via GNN</span>` : '') +
+                      (isTarget ? ` <span class="studio-diff-cand-target">edit target</span>` : '') +
+                    `</div>` +
+                    `<div class="studio-diff-cand-text">${escapeHtml(trimmed)}</div>` +
+                  `</li>`
+                );
+              }).join('') +
+            `</ul>` +
+          `</details>`
+        )
+        : '';
+      if (edits.length === 0 && adds.length === 0) {
+        diffBody.innerHTML = summaryBlock + candidatesBlock +
+          `<p style="font-size:13px; color:var(--fg-dim);margin-top:6px;">` +
+          `The correction parser could not match your description to existing memory and did not produce any additions. ` +
+          `Try rephrasing — include the proper noun or date from the memory you're trying to fix.</p>`;
       } else {
-        diffBody.innerHTML = edits.map((e) =>
-          `<div class="studio-diff-edit">
-            <div class="studio-diff-field">Field: ${escapeHtml(e.field)} · node ${escapeHtml(e.nodeId.slice(0, 8))}</div>
-            <div class="studio-diff-before">− ${escapeHtml((e.before ?? '').slice(0, 140))}</div>
-            <div class="studio-diff-after">+ ${escapeHtml((e.after ?? '').slice(0, 140))}</div>
-          </div>`,
-        ).join('');
+        // Per-op diff rendering. For edit/supersede we show the candidate's
+        // current text (before) and the proposed new content (after). For
+        // delete we show only the before (the node going away). All fields
+        // are defensively coerced to strings before escapeHtml so a missing
+        // `content` / `reason` / `text` can never crash the render.
+        const opLabel = (k: StudioEditOp['kind']): string =>
+          k === 'edit' ? 'Edit' : k === 'supersede' ? 'Supersede' : 'Soft-delete';
+        const editRows = edits.map((e) => {
+          const gid = graphIdByNodeId.get(e.nodeId);
+          const engramTag = gid
+            ? ` · <span class="studio-diff-engram-tag">${escapeHtml(engramName(gid))}</span>`
+            : ' · <span class="studio-diff-engram-tag is-unknown">unknown engram</span>';
+          const headerLine =
+            `<div class="studio-diff-field">${escapeHtml(opLabel(e.kind))} · node ${escapeHtml((e.nodeId ?? '').slice(0, 8))}` +
+              engramTag +
+              (e.reason ? ` · <em>${escapeHtml(e.reason)}</em>` : '') +
+            `</div>`;
+          const before = String(beforeById.get(e.nodeId) ?? '');
+          if (e.kind === 'delete') {
+            return (
+              `<div class="studio-diff-edit">` + headerLine +
+                `<div class="studio-diff-before">− ${escapeHtml(before)}</div>` +
+              `</div>`
+            );
+          }
+          const after = String((e as { content?: string }).content ?? '');
+          return (
+            `<div class="studio-diff-edit">` + headerLine +
+              `<div class="studio-diff-before">− ${escapeHtml(before)}</div>` +
+              `<div class="studio-diff-after">+ ${escapeHtml(after)}</div>` +
+            `</div>`
+          );
+        }).join('');
+        // Adds land in the resolved target engram (no per-add graphId in
+        // the schema). We tag them with that engram name so multi-engram
+        // proposals stay readable.
+        const addTargetGid = (result as { resolvedGraphId?: string }).resolvedGraphId
+          ?? result.candidates[0]?.graphId;
+        const addEngramTag = addTargetGid
+          ? ` · <span class="studio-diff-engram-tag">${escapeHtml(engramName(addTargetGid))}</span>`
+          : '';
+        const addRows = adds.map((a) => (
+          `<div class="studio-diff-edit">` +
+            `<div class="studio-diff-field">Add${addEngramTag}${a.label ? ` · <em>${escapeHtml(a.label)}</em>` : ''}</div>` +
+            `<div class="studio-diff-after">+ ${escapeHtml(String(a.text ?? ''))}</div>` +
+          `</div>`
+        )).join('');
+        diffBody.innerHTML = summaryBlock + hallucinationBanner + noopBanner + editRows + addRows + candidatesBlock;
       }
     }
     diffBlock?.classList.remove('hidden');
+    // Reset the approve button's confirm state every time a fresh proposal
+    // lands — see the two-click guard in the click handler below.
+    studioEditApprovePending = false;
+    const approveBtn = document.getElementById('btn-studio-edit-approve') as HTMLButtonElement | null;
+    if (approveBtn) approveBtn.textContent = 'Approve & apply';
+    // Auto-scroll the Approve / Reject row into view so the user doesn't
+    // have to hunt for it behind the Solo Memories trivia bar. We scroll the
+    // nearest .studio-section ancestor (the scrollable surface), not the
+    // window — same approach as the LLM highlight nav uses. The trailing
+    // scroll-padding-bottom on .studio-section makes sure the row lands
+    // above the drawer's 44px sliver, not flush with its top edge.
+    if (approveBtn) {
+      const scroller = approveBtn.closest<HTMLElement>('.studio-section');
+      if (scroller) {
+        const approveBottomInScroller =
+          approveBtn.getBoundingClientRect().bottom - scroller.getBoundingClientRect().top + scroller.scrollTop;
+        // Leave 160px of clearance below the row (matches scroll-padding-bottom)
+        // so the row sits well above the drawer instead of just inside it.
+        scroller.scrollTo({ top: approveBottomInScroller - scroller.clientHeight + 70, behavior: 'smooth' });
+      }
+    }
   } catch (e) {
     showError(e instanceof Error ? e.message : String(e));
   } finally {
@@ -15298,6 +17972,13 @@ async function applyStudioEdit(): Promise<void> {
 
 function rejectStudioEdit(): void {
   studioPendingDiffId = null;
+  studioEditApprovePending = false;
+  const approveBtn = document.getElementById('btn-studio-edit-approve') as HTMLButtonElement | null;
+  if (approveBtn) {
+    approveBtn.textContent = 'Approve & apply';
+    approveBtn.classList.remove('danger');
+    approveBtn.classList.add('primary');
+  }
   document.getElementById('studio-edit-diff')?.classList.add('hidden');
 }
 
