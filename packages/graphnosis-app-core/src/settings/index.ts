@@ -481,6 +481,8 @@ export type GraphTemplate =
   | 'research'
   | 'codebase'
   | 'health'
+  // Power tier — skill training (monthly upgrades subscribers)
+  | 'skill'
   // Enterprise tier
   | 'team'
   | 'compliance'
@@ -598,6 +600,20 @@ export interface AppSettings {
    * NEVER exposed via any MCP tool, IPC response, or log line.
    */
   consentHmacKey?: string;
+
+  /**
+   * Encrypted license token from the Nehloo signing service.
+   *
+   * On-disk: XChaCha20-Poly1305 ciphertext of the raw token string,
+   * base64-encoded, encrypted with the cortex data key (same key used
+   * for connector credentials). On-disk value is always the ciphertext;
+   * the host decrypts on demand via `getLicenseToken()`.
+   *
+   * A missing or undecryptable field means the user has no active license
+   * and gated features (e.g. skill training) degrade to their free tier.
+   * NEVER expose this field via any MCP tool, IPC response, or log line.
+   */
+  licenseEnc?: string;
 
   /** Docs-engram ingest state. Absent on cortexes that never saw the offer. */
   docsEngram?: {
@@ -1290,7 +1306,7 @@ function generateUuid(): string {
  */
 export function shouldCache(
   settings: AppSettings,
-  kind: 'file' | 'url' | 'ai-conversation' | 'clip',
+  kind: 'file' | 'url' | 'ai-conversation' | 'clip' | 'skill',
   byteLength: number,
 ): boolean {
   const cc = settings.contentCache;

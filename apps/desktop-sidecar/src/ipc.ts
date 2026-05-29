@@ -108,6 +108,10 @@ export interface IpcDeps {
    * `ai.synthesizeSearchResults` and `ai.rerankSearchResults` IPCs.
    */
   llm?: () => import('./correction.js').LocalLlm | null;
+  /** Skill trainer — personalize AI skills using cortex memories. */
+  skillTrainer?: import('./skill-trainer.js').SkillTrainer | null;
+  /** License validator — Ed25519 subscription gate for skill training and GTS packs. */
+  licenseValidator?: import('./license-validator.js').LicenseValidator | null;
 }
 
 /** Returns true when socketPath is a TCP address like "127.0.0.1:PORT". */
@@ -288,7 +292,7 @@ async function dispatch(deps: IpcDeps, method: string, params: unknown): Promise
         template: z.enum([
           'personal', 'journal', 'reading', 'learning',
           'project', 'research', 'codebase', 'health',
-          'team', 'compliance', 'onboarding',
+          'team', 'compliance', 'onboarding', 'skill',
         ]),
         displayName: z.string().min(1),
         createdAt: z.number().int().nonnegative().optional(),
@@ -306,7 +310,7 @@ async function dispatch(deps: IpcDeps, method: string, params: unknown): Promise
         template: z.enum([
           'personal', 'journal', 'reading', 'learning',
           'project', 'research', 'codebase', 'health',
-          'team', 'compliance', 'onboarding',
+          'team', 'compliance', 'onboarding', 'skill',
         ]),
         displayName: z.string().min(1),
       }).parse(params);
@@ -333,7 +337,7 @@ async function dispatch(deps: IpcDeps, method: string, params: unknown): Promise
         template: z.enum([
           'personal', 'journal', 'reading', 'learning',
           'project', 'research', 'codebase', 'health',
-          'team', 'compliance', 'onboarding',
+          'team', 'compliance', 'onboarding', 'skill',
         ]),
         displayName: z.string().min(1),
         text: z.string().min(1),
@@ -2516,6 +2520,98 @@ async function dispatch(deps: IpcDeps, method: string, params: unknown): Promise
       await runApplyCorrection({ host: deps.host, graphId: pending.graphId, diff: pending.diff });
       deps.pendingDiffs.delete(diffId);
       return { ok: true };
+    }
+
+    // ── Graphnosis Skills IPC ────────────────────────────────────────────────
+
+    case 'skill:buildContext': {
+      // Deterministic Phase 1 — surface relevant memories for a skill without
+      // running the LLM. Returns the full subgraph + ranked influential nodes
+      // so the Skills panel can show what will be used before training starts.
+      const args = z.object({
+        skill: z.string().min(1),
+        graphId: z.string().min(1),
+        focusGraphIds: z.array(z.string()).nullable().optional(),
+        recallBreadth: z.number().int().min(0).max(100).nullable().optional(),
+      }).parse(params ?? {});
+      if (!deps.skillTrainer) return null;
+      return deps.skillTrainer.buildSkillContext(
+        args.skill,
+        args.graphId,
+        args.focusGraphIds ?? null,
+        args.recallBreadth ?? null,
+      );
+    }
+
+    case 'skill:train': {
+      // License-gated. Full training pipeline (LLM rewrite or memory-augmented).
+      const args = z.object({
+        skill: z.string().min(1),
+        graphId: z.string().min(1),
+        skillName: z.string().optional(),
+        focusGraphIds: z.array(z.string()).nullable().optional(),
+        modelTarget: z.string().optional(),
+        save: z.boolean().optional(),
+        recallBreadth: z.number().int().min(0).max(100).nullable().optional(),
+      }).parse(params ?? {});
+      if (!deps.skillTrainer) return null;
+      const licenseToken = await deps.host.getLicenseToken();
+      const licensed = deps.licenseValidator?.hasFeature(licenseToken, 'skill-training') ?? false;
+      if (!licensed) {
+        return {
+          upgrade_required: true,
+          upgrade_url: 'https://graphnosis.app/upgrade',
+          message: 'Skill training requires a Graphnosis Pro subscription.',
+        };
+      }
+      return deps.skillTrainer.trainSkill({
+        skill: args.skill,
+        graphId: args.graphId,
+        ...(args.skillName !== undefined ? { skillName: args.skillName } : {}),
+        ...(args.focusGraphIds != null ? { focusGraphIds: args.focusGraphIds } : {}),
+        ...(args.modelTarget !== undefined ? { modelTarget: args.modelTarget } : {}),
+        ...(args.save !== undefined ? { save: args.save } : {}),
+        ...(args.recallBreadth != null ? { recallBreadth: args.recallBreadth } : {}),
+      });
+    }
+
+    case 'skill:export': {
+      const args = z.object({
+        skillText: z.string().min(1),
+        format: z.enum(['claude-md', 'cursorrules', 'system-prompt', 'openai', 'raw', 'gts']),
+      }).parse(params ?? {});
+      if (!deps.skillTrainer) return '';
+      const result = deps.skillTrainer.exportSkill(
+        args.skillText,
+        args.format as import('./skill-trainer.js').ExportFormat,
+      );
+      // GTS format returns a Buffer — encode as base64 for IPC transport.
+      if (Buffer.isBuffer(result)) return result.toString('base64');
+      return result;
+    }
+
+    case 'skill:vitality': {
+      const args = z.object({
+        graphId: z.string().min(1),
+        sourceId: z.string().min(1),
+      }).parse(params ?? {});
+      if (!deps.skillTrainer) return null;
+      return deps.skillTrainer.computeSkillVitality(args.graphId, args.sourceId);
+    }
+
+    case 'skill:checkLicenseExpiry': {
+      // Returns expiry info for the renewal reminder banner.
+      // Non-null only when a valid token is present and expiring soon.
+      const licenseToken = await deps.host.getLicenseToken();
+      if (!licenseToken || !deps.licenseValidator) return null;
+      const expiringSoon = deps.licenseValidator.isExpiringSoon(licenseToken);
+      const payload = deps.licenseValidator.verifyToken(licenseToken);
+      if (!payload) return null;
+      return {
+        expiringSoon,
+        validUntil: payload.exp * 1000,
+        plan: payload.plan,
+      };
     }
 
     default:

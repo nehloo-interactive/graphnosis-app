@@ -23,6 +23,8 @@ import type { CorrectionDiff } from './correction.js';
 import type { BroadcastRawFn } from './events.js';
 import { FileWatcher } from './file-watcher.js';
 import { BrainEngine } from './brain-engine.js';
+import { SkillTrainer } from './skill-trainer.js';
+import { LicenseValidator } from './license-validator.js';
 
 interface CliEnv {
   cortexDir: string;
@@ -675,6 +677,21 @@ async function main(): Promise<void> {
   // very next recall without a sidecar restart.
   host.setLocalLlmGetter(() => llm);
 
+  // Skill trainer — personalize AI skills using the user's cortex memories.
+  // The LLM path uses the 'distillation' capability (same gate as llm_distill),
+  // evaluated at call time inside SkillTrainer.pingLlm() — no sidecar restart
+  // needed when the user toggles the LLM capability in settings.
+  // Monthly upgrades subscribers get the full LLM rewrite (license gate enforced
+  // in the train_skill MCP handler via LicenseValidator). Non-subscribers see an
+  // upgrade prompt; they can still store raw skills in the Skills engram for free.
+  const skillTrainer = new SkillTrainer(host, llm);
+
+  // License validator — Ed25519 signature verification for subscription tokens
+  // issued by the Nehloo signing service. Initialised once at startup (awaits
+  // libsodium WASM boot); all per-request checks are synchronous after that.
+  // The signing key is a hardcoded public key — safe to embed in open FSL source.
+  const licenseValidator = await LicenseValidator.create();
+
   const mcpDeps = {
     host,
     // The local LLM is opt-in — `correct` and any other LLM-backed MCP tool
@@ -690,6 +707,8 @@ async function main(): Promise<void> {
     pendingDiffs,
     broadcastRaw,
     brainEngine,
+    skillTrainer,
+    licenseValidator,
   };
 
   // MCP server over Unix socket. Lets multiple clients (Claude Desktop via
@@ -792,6 +811,8 @@ async function main(): Promise<void> {
     // model — no master toggle required. The full llmEnabled gate lives on the
     // MCP getter above and on the BrainEngine; IPC search calls bypass it.
     llm: () => llm,
+    skillTrainer,
+    licenseValidator,
   });
   console.error(`[graphnosis-sidecar] IPC listening on ${ipcSocketPath}`);
 

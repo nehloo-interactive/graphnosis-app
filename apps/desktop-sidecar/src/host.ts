@@ -75,7 +75,7 @@ export type RecoveryStatus =
  * ref). Layout: [u32 header-len, LE] [header JSON bytes] [raw content bytes].
  */
 interface ContentCacheHeader {
-  kind: 'file' | 'url' | 'ai-conversation' | 'clip';
+  kind: 'file' | 'url' | 'ai-conversation' | 'clip' | 'skill';
   ref: string;
   // The Graphnosis parser kind we'd hand to appendDocument on recovery.
   // Mirrors AppendDocumentInput['kind'] in graphnosis-adapter.ts.
@@ -88,7 +88,7 @@ interface ContentCacheHeader {
 export interface RecoveryPlanItem {
   sourceId: string;
   graphId: GraphId;
-  kind: 'file' | 'url' | 'ai-conversation' | 'clip';
+  kind: 'file' | 'url' | 'ai-conversation' | 'clip' | 'skill';
   ref: string;
   contentHash?: string;
   ingestedAt: number;
@@ -1344,6 +1344,51 @@ export class GraphnosisHost {
   onSettingsChanged(handler: (s: settingsMod.AppSettings) => void): () => void {
     this.settingsListeners.add(handler);
     return () => this.settingsListeners.delete(handler);
+  }
+
+  // ── License token (encrypted at rest) ────────────────────────────────────
+  //
+  // The license token is an Ed25519-signed JWT-like string issued by the Nehloo
+  // signing service. It is stored in settings.json as `licenseEnc` —
+  // XChaCha20-Poly1305 ciphertext of the raw token string, encrypted with the
+  // cortex data key, base64-encoded. Decryption happens on demand; the plaintext
+  // token never sits in the in-memory AppSettings struct.
+  //
+  // NEVER log, return via MCP, or broadcast the raw token. It is PII-adjacent
+  // (contains the user's email / UUID) and is the proof of subscription.
+
+  /**
+   * Decrypt and return the raw license token string, or `null` when the cortex
+   * has no stored token or decryption fails (tampered / re-encrypted with a
+   * different key). The returned string should be passed directly to
+   * `LicenseValidator.hasFeature()` — do not log or transmit it.
+   */
+  async getLicenseToken(): Promise<string | null> {
+    const enc = this.settings.licenseEnc;
+    if (!enc) return null;
+    try {
+      const blob = new Uint8Array(Buffer.from(enc, 'base64'));
+      const plaintext = await decrypt(blob, this.key);
+      return new TextDecoder().decode(plaintext);
+    } catch {
+      // Decryption failure = token is unusable. Treat as no license.
+      return null;
+    }
+  }
+
+  /**
+   * Encrypt `token` with the cortex data key and persist it as `licenseEnc`
+   * in settings. Called by the billing flow when the Nehloo signing service
+   * issues a new or renewed token (e.g. after Stripe subscription events).
+   *
+   * TODO: wire this method into the IPC handler once the billing UI ships.
+   */
+  async setLicenseToken(token: string): Promise<void> {
+    const plaintext = new TextEncoder().encode(token);
+    const salt = randomBytes(16);
+    const blob = await encrypt(plaintext, this.key, salt);
+    const licenseEnc = Buffer.from(blob).toString('base64');
+    await this.setSettings({ licenseEnc });
   }
 
   /** Install (or remove) the filesystem watcher hook. Pass null to clear.
