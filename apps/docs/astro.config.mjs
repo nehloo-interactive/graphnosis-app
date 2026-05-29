@@ -1,9 +1,21 @@
 import { defineConfig } from 'astro/config';
 import starlight from '@astrojs/starlight';
 import tailwind from '@astrojs/tailwind';
+import cloudflare from '@astrojs/cloudflare';
 
 export default defineConfig({
+  // Astro 5: `output: 'static'` now implies hybrid — pages prerender by
+  // default, individual routes opt out with `export const prerender = false`.
+  // Only the billing endpoints under /upgrade, /claim, /api/* run server-side
+  // on the Cloudflare Worker; every Starlight docs page stays statically
+  // generated and is served directly by Pages.
   output: 'static',
+  // Cloudflare Pages / Workers adapter. `imageService: 'compile'` keeps
+  // Sharp out of the worker bundle (the docs pages that use it are
+  // prerendered at build time, so the runtime never needs it).
+  adapter: cloudflare({
+    imageService: 'compile',
+  }),
   site: 'https://docs.graphnosis.com',
   integrations: [
     starlight({

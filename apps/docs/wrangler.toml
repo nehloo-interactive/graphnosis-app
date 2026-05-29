@@ -1,0 +1,40 @@
+# Cloudflare Pages / Workers config for the Graphnosis docs + billing site.
+#
+# This file is committed to the repo. Real secrets live in the Cloudflare
+# Pages dashboard (Settings → Variables and Secrets) — never in here.
+#
+# Local dev:
+#   pnpm --filter @graphnosis-app/docs dev   # Astro dev server
+#   wrangler pages dev dist/                  # Worker-runtime preview after a build
+#
+# To create the KV namespace once, before the first deploy:
+#   wrangler kv namespace create BILLING_KV
+#   wrangler kv namespace create BILLING_KV --preview
+# Then paste the returned ids into the kv_namespaces block below.
+
+name = "graphnosis-docs"
+compatibility_date = "2025-01-15"
+# Astro's Cloudflare adapter emits to dist/_worker.js — Pages auto-detects it.
+pages_build_output_dir = "./dist"
+
+# ── KV: billing state (claim codes, token-per-customer) ────────────────────────
+#
+# Run `wrangler kv namespace create BILLING_KV` to generate real ids, then
+# paste them in. The placeholders below let `wrangler types` succeed before
+# the namespace exists; deploys will fail until they're replaced.
+[[kv_namespaces]]
+binding = "BILLING_KV"
+id = "6d29560f086b4d0b8c0c450ce6197443"
+preview_id = "8413c7145d31490686bcc3c2ba4942bf"
+
+# ── Plain-text vars ────────────────────────────────────────────────────────────
+#
+# Non-secret vars can live here. Secrets (STRIPE_SECRET_KEY, etc.) must be
+# set via the dashboard (Workers & Pages → Settings → Variables and Secrets,
+# type: Secret) or `wrangler secret put NAME`.
+
+[vars]
+PUBLIC_BILLING_BASE_URL = "https://graphnosis.com"
+# RESEND_FROM_ADDRESS and STRIPE_PRICE_MONTHLY_SUBSCRIPTION are easier to
+# manage in the dashboard (one place per environment) — leave them out here
+# unless you want them committed.

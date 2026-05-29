@@ -1,0 +1,134 @@
+---
+/**
+ * GET /upgrade/success?session_id=...
+ *
+ * Landing page after a successful Stripe Checkout.
+ *
+ * Flow:
+ *   1. Look up the Checkout Session from Stripe → get the customer email.
+ *   2. Issue a one-time claim code and email a magic-link to that address.
+ *      The email contains a graphnosis://claim?code=... deep link that the
+ *      desktop intercepts.
+ *   3. Render a friendly "check your inbox" page with the same deep link
+ *      and a copy-paste fallback for non-deep-link browsers.
+ *
+ * We deliberately do NOT issue the license token from this page. Tokens are
+ * minted only by the Stripe webhook (signed event), to prevent anyone with a
+ * guessed session_id from harvesting tokens.
+ */
+
+import { getStripe, getBillingBaseUrl } from '../../server/stripe.js';
+import { putClaim } from '../../server/kv.js';
+import { sendMagicLink } from '../../server/email.js';
+import { getEnv, requireKv } from '../../server/env.js';
+
+export const prerender = false;
+
+const env = getEnv(Astro.locals);
+const url = new URL(Astro.request.url);
+const sessionId = url.searchParams.get('session_id');
+
+let email: string | null = null;
+let claimDeepLink: string | null = null;
+let claimWebLink: string | null = null;
+let error: string | null = null;
+
+if (!sessionId) {
+  error = 'Missing session_id.';
+} else {
+  try {
+    const stripe = getStripe(env);
+    const session = await stripe.checkout.sessions.retrieve(sessionId);
+    email = session.customer_details?.email ?? session.customer_email ?? null;
+    if (!email) {
+      error = 'Could not read your email from the Checkout session.';
+    } else {
+      const kv = requireKv(env, 'BILLING_KV');
+      const code = generateClaimCode();
+      await putClaim(kv, code, {
+        email,
+        ...(typeof session.subscription === 'string' ? { subscriptionId: session.subscription } : {}),
+        createdAt: Date.now(),
+      });
+      const baseUrl = getBillingBaseUrl(env);
+      claimDeepLink = `graphnosis://claim?code=${encodeURIComponent(code)}`;
+      claimWebLink = `${baseUrl}/claim?code=${encodeURIComponent(code)}`;
+      // Fire-and-forget — UX shouldn't be blocked by Resend latency.
+      // On Workers we'd ordinarily use ctx.waitUntil(), but the email
+      // is unimportant if it fails (the user can request another via
+      // /api/auth/magic-link) so a fire-and-forget is acceptable.
+      void sendMagicLink(env, { to: email, deepLink: claimDeepLink, webFallback: claimWebLink })
+        .catch((e) => console.error('[billing /upgrade/success] sendMagicLink', e));
+    }
+  } catch (e) {
+    console.error('[billing /upgrade/success]', e);
+    error = e instanceof Error ? e.message : 'Unknown error';
+  }
+}
+
+function generateClaimCode(): string {
+  const bytes = new Uint8Array(16);
+  crypto.getRandomValues(bytes);
+  let binary = '';
+  for (const b of bytes) binary += String.fromCharCode(b);
+  return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+---
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Graphnosis Pro — activated</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <style>
+      body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+             max-width: 560px; margin: 6vh auto; padding: 0 24px; color: #1a1a1a; line-height: 1.55; }
+      h1 { font-size: 28px; margin-bottom: 8px; }
+      .lead { color: #555; margin-bottom: 28px; }
+      .card { padding: 18px 20px; border-radius: 10px; background: #f4f6f5; border: 1px solid #d8e0db; margin-bottom: 16px; }
+      .btn { display: inline-block; padding: 11px 22px; background: #1bb673; color: #fff; border-radius: 6px;
+             text-decoration: none; font-weight: 600; }
+      .btn.secondary { background: transparent; color: #1bb673; border: 1px solid #1bb673; margin-left: 8px; }
+      .mono { font-family: ui-monospace, monospace; font-size: 13px; background: #fff; padding: 8px;
+              border-radius: 4px; word-break: break-all; border: 1px solid #e0e0e0; }
+      .err { padding: 12px; background: #fdecea; border: 1px solid #f5c2bb; border-radius: 6px; color: #8b2422; }
+      .muted { color: #777; font-size: 13px; }
+    </style>
+  </head>
+  <body>
+    {error ? (
+      <div>
+        <h1>Something went wrong</h1>
+        <div class="err">{error}</div>
+        <p class="muted">If you were charged, don't worry — the webhook still
+          mints your license. Open Graphnosis, unlock your cortex, and it will
+          poll for your token automatically.</p>
+      </div>
+    ) : (
+      <div>
+        <h1>You're in.</h1>
+        <p class="lead">Welcome to Graphnosis Pro. We've sent an activation
+          link to <strong>{email}</strong>. Open it on the device where you
+          want Pro unlocked — Graphnosis will catch the link and turn on
+          everything automatically.</p>
+
+        {claimDeepLink && (
+          <div class="card">
+            <p style="margin-top:0;"><strong>Activate on this device now:</strong></p>
+            <a class="btn" href={claimDeepLink}>Open in Graphnosis</a>
+            <a class="btn secondary" href={claimWebLink ?? '#'}>Use web fallback</a>
+            <p class="muted" style="margin-top:14px; margin-bottom:0;">
+              If the button does nothing, the graphnosis:// scheme isn't
+              registered yet on this device. Use the web fallback or copy
+              the link below into Graphnosis → Settings → License.
+            </p>
+            <p class="mono" style="margin-top:10px;">{claimDeepLink}</p>
+          </div>
+        )}
+
+        <p class="muted">Your subscription is active. We'll bill your card on
+          file every month. Cancel any time at the customer portal we'll send
+          in a follow-up email.</p>
+      </div>
+    )}
+  </body>
+</html>
