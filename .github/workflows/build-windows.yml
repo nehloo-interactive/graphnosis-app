@@ -1,7 +1,8 @@
 name: Build (Windows)
 
 # Manual trigger for Windows test builds.
-# Produces an unsigned NSIS (.exe) and/or MSI installer as a downloadable artifact.
+# Produces a signed NSIS (.exe) and/or MSI installer as a downloadable artifact.
+# Signing uses Azure Artifact Signing (nehloo-trusted-signing / graphnosis-public profile).
 # Windows-specific config is in src-tauri/tauri.windows.conf.json (auto-loaded by Tauri).
 on:
   workflow_dispatch:
@@ -16,6 +17,7 @@ jobs:
     runs-on: windows-latest
     permissions:
       contents: read
+      id-token: write
 
     steps:
       - name: Checkout
@@ -75,6 +77,21 @@ jobs:
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
         run: pnpm --filter @graphnosis-app/desktop tauri:build
+
+      - name: Sign installer (Azure Artifact Signing)
+        uses: azure/trusted-signing-action@v0.5.0
+        with:
+          azure-tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          azure-client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          azure-client-secret: ${{ secrets.AZURE_CLIENT_SECRET }}
+          endpoint: https://eus.codesigning.azure.net/
+          trusted-signing-account-name: nehloo-trusted-signing
+          certificate-profile-name: graphnosis-public
+          files-folder: apps/desktop/src-tauri/target/release/bundle
+          files-folder-filter: exe,msi
+          files-folder-recurse: true
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest-algorithm: SHA256
 
       - name: Find installer
         id: find
