@@ -145,6 +145,73 @@ export class OllamaLlm implements LocalLlm {
     return json.message?.content ?? '';
   }
 
+  /** Streaming chat completion. Ollama's /api/chat with stream:true returns
+   *  newline-delimited JSON; each line is `{ message: { content: "...token..." }, done: false }`.
+   *  We pipe each delta to `onChunk`, accumulate, and resolve with the full text.
+   *  Format=json is incompatible with streaming, so callers that want a
+   *  structured response should use complete() instead. */
+  async completeStream(
+    input: { system: string; user: string; jsonSchema?: unknown },
+    onChunk: (chunk: string) => void,
+  ): Promise<string> {
+    // Streaming + json format together are not supported by Ollama —
+    // requests that need structured output silently lose the format
+    // constraint when streaming. Caller's responsibility to use
+    // complete() for those. (Skill training is free-form text, so this
+    // restriction doesn't bite the trainer.)
+    const res = await fetch(`${this.baseUrl}/api/chat`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        model: this.model,
+        stream: true,
+        messages: [
+          { role: 'system', content: input.system },
+          { role: 'user', content: input.user },
+        ],
+      }),
+    });
+    if (!res.ok || !res.body) throw new Error(`Local LLM (${this.model}) stream failed: ${res.status}`);
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    let full = '';
+    // Ollama emits one JSON object per line. Boundaries don't always align
+    // with fetch chunks, so we buffer until we see a newline before parsing.
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split('\n');
+      buffer = lines.pop() ?? ''; // last fragment may be incomplete
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (!trimmed) continue;
+        try {
+          const parsed = JSON.parse(trimmed) as { message?: { content?: string }; done?: boolean };
+          const piece = parsed.message?.content ?? '';
+          if (piece) {
+            full += piece;
+            onChunk(piece);
+          }
+        } catch {
+          // Malformed line — ignore and keep reading; Ollama occasionally
+          // emits an error envelope or partial JSON during shutdown.
+        }
+      }
+    }
+    // Drain any final buffered line that didn't end with a newline.
+    const tail = buffer.trim();
+    if (tail) {
+      try {
+        const parsed = JSON.parse(tail) as { message?: { content?: string } };
+        const piece = parsed.message?.content ?? '';
+        if (piece) { full += piece; onChunk(piece); }
+      } catch { /* ignore */ }
+    }
+    return full;
+  }
+
   /** Returns true if Ollama is reachable. Used by BrainEngine before LLM-dependent loops. */
   async ping(): Promise<boolean> {
     try {

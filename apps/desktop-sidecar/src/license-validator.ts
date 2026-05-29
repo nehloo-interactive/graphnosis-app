@@ -12,7 +12,7 @@
  * Payload shape (JSON):
  *   { sub: string, plan: string, features: string[], iat: number, exp: number }
  *   - sub:      user identifier (email or UUID)
- *   - plan:     subscription plan slug, e.g. "monthly-upgrades"
+ *   - plan:     subscription plan slug, e.g. "monthly-subscription"
  *   - features: feature keys this token unlocks, e.g. ["skill-training"]
  *   - iat:      issued-at (Unix seconds)
  *   - exp:      expiry (Unix seconds)
@@ -53,10 +53,10 @@ import sodium from 'libsodium-wrappers-sumo';
 // Paste the public key bytes here (32 bytes, big-endian hex octets).
 // Store the secret key securely in your signing service; never commit it.
 const SIGNING_PUBLIC_KEY = new Uint8Array([
-  0x3d, 0x4a, 0x7f, 0x1e, 0x92, 0xb8, 0x45, 0xc3,
-  0xf6, 0x2d, 0x8e, 0x51, 0x9a, 0x73, 0x0c, 0xb9,
-  0x67, 0xad, 0x14, 0xf8, 0x3b, 0x2c, 0x59, 0xe7,
-  0x81, 0xd0, 0x46, 0xaa, 0x5f, 0xce, 0x93, 0x28,
+  0x79, 0x77, 0x5d, 0x08, 0xaa, 0x0f, 0xb2, 0x36,
+  0xb4, 0x16, 0x6f, 0xff, 0x18, 0x68, 0xbe, 0xe7,
+  0xfb, 0xdb, 0x00, 0xb8, 0x70, 0xe8, 0x93, 0x8f,
+  0x4f, 0xde, 0xbe, 0x46, 0xa9, 0xba, 0xbd, 0x68,
 ]); // 32 bytes — PLACEHOLDER, replace with real production key before launch
 
 // ── Public types ──────────────────────────────────────────────────────────────
@@ -64,7 +64,7 @@ const SIGNING_PUBLIC_KEY = new Uint8Array([
 export interface LicensePayload {
   /** User identifier (email or UUID). */
   sub: string;
-  /** Subscription plan slug, e.g. "monthly-upgrades". */
+  /** Subscription plan slug, e.g. "monthly-subscription". */
   plan: string;
   /** Feature keys this token unlocks. */
   features: string[];
@@ -78,7 +78,18 @@ export interface LicensePayload {
  * Gated feature keys. A token must list the feature by this exact string to
  * grant access. Add entries here as new gated features ship.
  */
-export type LicenseFeature = 'skill-training';
+/**
+ * Gated feature keys. A token must list the feature by this exact string to
+ * grant access. Today the Nehloo signing service mints both keys together
+ * for any Pro subscriber, so users don't see different tiers — but keeping
+ * the keys distinct in the validator lets us deploy a "GNN-only" or
+ * "Skill-only" plan without changing client code.
+ *
+ *   skill-training       — full Autonomous Praxis pipeline + .gts export
+ *   gnn-exploration      — Graphnosis Neural Network: MCP `gnn_neighbors`,
+ *                          MemoryStudio chip, autonomous edge-prediction loop
+ */
+export type LicenseFeature = 'skill-training' | 'gnn-exploration';
 
 // ── LicenseValidator ──────────────────────────────────────────────────────────
 
