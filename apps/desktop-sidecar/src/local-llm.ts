@@ -46,6 +46,77 @@ export const LLM_CATALOG: LlmChoice[] = [
   },
 ];
 
+// ── Backend verification descriptor ─────────────────────────────────────────
+// Generic shape that lets MemoryStudio's "is this LLM really local?" checks
+// work across runtimes. v1 ships with Ollama populated only; v2 adds entries
+// for LM Studio, llama.cpp's llama-server, MLX-LM server, Jan, GPT4All, etc.
+//
+// Each backend tells the verification layer:
+//   - what URL pattern it uses (so the "loopback ✓" badge can parse the host)
+//   - what process names to look for when running lsof / ps
+//   - what external hostnames it's KNOWN to legitimately reach (so the DNS
+//     sinkhole self-test can target only those — e.g. `registry.ollama.ai`
+//     for Ollama; the empty list for llama-server, which has no phone-home)
+//   - which API flavor (Ollama-native vs. OpenAI-compatible) so the
+//     honeypot canary can shape its request correctly
+
+export type LocalLlmRuntimeId = 'ollama' | 'llama.cpp' | 'mlx' | 'lmstudio' | 'gpt4all' | 'jan' | 'custom';
+
+export type LocalLlmApiFlavor = 'ollama' | 'openai-compatible';
+
+export interface LocalLlmBackend {
+  id: LocalLlmRuntimeId;
+  /** Human-readable name shown in Settings / verification badges. */
+  displayName: string;
+  /** Base URL where the daemon serves requests. */
+  baseUrl: string;
+  /** API request shape — drives honeypot canary's request body. */
+  api: LocalLlmApiFlavor;
+  /** Process names to find when running `lsof -p` / `ps aux`. The first
+   *  match wins; multiple names cover variants (e.g. ['ollama', 'ollama-runner']). */
+  processNames: string[];
+  /** External hostnames this backend is KNOWN to reach as part of normal
+   *  operation, NOT including inference. Used by the DNS-sinkhole self-test
+   *  to verify that inference still works when these are blocked. Empty
+   *  array = backend has no documented phone-home behavior. */
+  knownExternalHosts: string[];
+  /** Default TCP port the daemon listens on (used as a fallback when PID
+   *  lookup by name fails — `lsof -i :<port>` finds whoever's listening). */
+  defaultPort: number;
+}
+
+/** v1 registry: only Ollama populated. v2 adds the others.
+ *  Order matters for auto-detection: first reachable wins. */
+export const LOCAL_LLM_BACKENDS: Record<LocalLlmRuntimeId, LocalLlmBackend | null> = {
+  ollama: {
+    id: 'ollama',
+    displayName: 'Ollama',
+    baseUrl: 'http://127.0.0.1:11434',
+    api: 'ollama',
+    processNames: ['ollama', 'ollama-runner'],
+    // Ollama reaches `registry.ollama.ai` for `ollama pull` and version
+    // checks. Inference does NOT use this — only model installation.
+    knownExternalHosts: ['registry.ollama.ai', 'ollama.ai'],
+    defaultPort: 11434,
+  },
+  // v2 placeholders. The verification UI shows "Backend: <id> — descriptor
+  // missing, contact maintainer" if a user manages to select a null backend.
+  'llama.cpp': null,
+  mlx: null,
+  lmstudio: null,
+  gpt4all: null,
+  jan: null,
+  custom: null,
+};
+
+/** Convenience: return the descriptor for the currently-active backend, or
+ *  fall back to Ollama (which is the only thing wired up in v1). */
+export function activeBackend(runtime?: LocalLlmRuntimeId | null): LocalLlmBackend {
+  const id = runtime ?? 'ollama';
+  const entry = LOCAL_LLM_BACKENDS[id];
+  return entry ?? LOCAL_LLM_BACKENDS.ollama!;
+}
+
 // Minimal Ollama client. The bundled runtime is invisible to the user — installer drops it
 // in the app's private prefix and starts it as a child process.
 export class OllamaLlm implements LocalLlm {

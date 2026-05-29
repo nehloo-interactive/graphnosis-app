@@ -2580,6 +2580,202 @@ async fn run_update_check(app: AppHandle) -> anyhow::Result<Option<String>> {
     Ok(Some(version))
 }
 
+// ── MemoryStudio: local-LLM verification ──────────────────────────────────
+// Backs the "loopback ✓" badge + the per-session pre-recall probe + the
+// "Verify local LLM" button in Settings. Runs `lsof -i -P` filtered to the
+// backend's process names (or port as a fallback) and reports every network
+// connection the daemon currently has open. The frontend decides whether to
+// pass/fail; this command just surfaces the raw facts.
+//
+// Why lsof and not /proc/net/tcp + ps? On macOS those don't exist; on
+// Linux they do but parsing is annoying. lsof is universally available
+// (BSD ports) and one tool covers both platforms with the same output
+// shape. Cost: spawning lsof takes ~50ms — fine for an explicit-action
+// verification flow, not a per-recall hook.
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct LlmProbeRequest {
+    /// Process names to look up (e.g. ["ollama", "ollama-runner"]). Tried
+    /// in order; first match wins.
+    pub process_names: Vec<String>,
+    /// Fallback: TCP port the daemon listens on. Used when no process name
+    /// match is found — e.g. user runs a custom build under a different name.
+    pub default_port: u16,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct LlmConnection {
+    /// "TCP" or "UDP" — almost always TCP for our daemons.
+    pub proto: String,
+    /// Local end of the connection ("127.0.0.1:11434" / "[::1]:11434" / etc.).
+    pub local: String,
+    /// Remote end ("127.0.0.1:54321" / "192.168.1.10:443" / "*:*" for LISTEN).
+    pub remote: String,
+    /// "LISTEN" / "ESTABLISHED" / "CLOSE_WAIT" / etc. Empty when unknown.
+    pub state: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct LlmProbeResult {
+    /// PID we ran lsof against. None when nothing matched the request and
+    /// the port-fallback also found nothing — the daemon isn't running.
+    pub pid: Option<u32>,
+    /// Which strategy resolved the PID — purely informational.
+    pub matched_by: Option<String>, // "process_name" | "port" | None
+    /// All network connections held by the process at probe time.
+    pub connections: Vec<LlmConnection>,
+    /// Convenience: are ALL connections loopback-only?
+    /// Loopback definition: local + remote hostnames both in
+    /// {127.0.0.1, ::1, localhost} OR state == "LISTEN" with local in loopback.
+    pub all_loopback: bool,
+    /// Subset of connections.remote that are NOT loopback (for surfacing
+    /// to the user in the "External connections found" warning).
+    pub external_remotes: Vec<String>,
+    /// Raw lsof stderr — only set when the command failed entirely.
+    /// Helps the user diagnose missing-permissions / lsof-not-installed.
+    pub error: Option<String>,
+}
+
+#[tauri::command]
+async fn verify_local_llm(req: LlmProbeRequest) -> Result<LlmProbeResult, String> {
+    use tokio::process::Command;
+    // Step 1: find a PID. First by process name (one lookup per candidate),
+    // then by port if no name matched. We use `pgrep -x` for exact match;
+    // partial matches would surface false positives (e.g. "ollama-installer"
+    // when probing for "ollama").
+    let mut pid: Option<u32> = None;
+    let mut matched_by: Option<String> = None;
+    for name in &req.process_names {
+        let out = Command::new("pgrep")
+            .args(["-x", name])
+            .output()
+            .await
+            .map_err(|e| format!("pgrep failed: {e}"))?;
+        if out.status.success() {
+            if let Some(line) = String::from_utf8_lossy(&out.stdout).lines().next() {
+                if let Ok(p) = line.trim().parse::<u32>() {
+                    pid = Some(p);
+                    matched_by = Some("process_name".into());
+                    break;
+                }
+            }
+        }
+    }
+    if pid.is_none() {
+        // Port fallback: `lsof -i :<port> -P -n -F p` prints "p<pid>" for the
+        // process holding the port. Quoted by lsof's docs: -F field output.
+        let out = Command::new("lsof")
+            .args(["-i", &format!(":{}", req.default_port), "-P", "-n", "-F", "p"])
+            .output()
+            .await
+            .map_err(|e| format!("lsof (port fallback) failed: {e}"))?;
+        for line in String::from_utf8_lossy(&out.stdout).lines() {
+            if let Some(rest) = line.strip_prefix('p') {
+                if let Ok(p) = rest.trim().parse::<u32>() {
+                    pid = Some(p);
+                    matched_by = Some("port".into());
+                    break;
+                }
+            }
+        }
+    }
+
+    let Some(pid) = pid else {
+        return Ok(LlmProbeResult {
+            pid: None, matched_by: None,
+            connections: vec![], all_loopback: false, external_remotes: vec![],
+            error: Some(format!(
+                "Could not find a process for backend (tried names {:?}, port {}). \
+                 The LLM daemon is probably not running.",
+                req.process_names, req.default_port,
+            )),
+        });
+    };
+
+    // Step 2: list all network connections held by this PID.
+    // `-P` = numeric ports, `-n` = no DNS lookup (fast + reveals true IPs),
+    // `-a` = AND the filters, `-i` = network sockets only.
+    let out = Command::new("lsof")
+        .args(["-a", "-p", &pid.to_string(), "-i", "-P", "-n"])
+        .output()
+        .await
+        .map_err(|e| format!("lsof failed: {e}"))?;
+    if !out.status.success() && out.stdout.is_empty() {
+        // Process has no open sockets — lsof exits with status 1 but that's
+        // actually a clean "nothing to report". Only surface as error when
+        // BOTH the status was non-zero AND we got no output.
+        return Ok(LlmProbeResult {
+            pid: Some(pid), matched_by,
+            connections: vec![], all_loopback: true, external_remotes: vec![],
+            error: None,
+        });
+    }
+    let stdout = String::from_utf8_lossy(&out.stdout);
+
+    // Parse the human-readable lsof output. Format (BSD lsof):
+    //   COMMAND  PID  USER FD  TYPE DEVICE SIZE/OFF NODE NAME
+    //   ollama  12191 nelu  4u IPv4 ...     0t0  TCP localhost:11434 (LISTEN)
+    // We care about: NODE column (TCP/UDP) and NAME column (addr + optional state).
+    let mut connections: Vec<LlmConnection> = vec![];
+    for (i, line) in stdout.lines().enumerate() {
+        if i == 0 { continue; } // header
+        let cols: Vec<&str> = line.split_whitespace().collect();
+        if cols.len() < 9 { continue; }
+        let proto = cols[7].to_string(); // TCP/UDP
+        let name_and_state = cols[8..].join(" "); // "localhost:11434->localhost:64122 (ESTABLISHED)" etc.
+        // Split off the trailing "(STATE)" if present.
+        let (addr_part, state) = if let Some(idx) = name_and_state.rfind(" (") {
+            let end = name_and_state.len();
+            let state = &name_and_state[idx + 2 .. end - 1]; // strip "(" and ")"
+            (&name_and_state[..idx], state.to_string())
+        } else {
+            (name_and_state.as_str(), String::new())
+        };
+        let (local, remote) = if let Some((l, r)) = addr_part.split_once("->") {
+            (l.to_string(), r.to_string())
+        } else {
+            (addr_part.to_string(), "*:*".to_string())
+        };
+        connections.push(LlmConnection { proto, local, remote, state });
+    }
+
+    // Step 3: classify. Loopback hosts: 127.0.0.1, ::1, localhost, [::1].
+    // A connection is "loopback-only" when both endpoints are loopback OR
+    // the state is LISTEN with a loopback local address.
+    let is_loopback_host = |h: &str| -> bool {
+        let s = h.to_ascii_lowercase();
+        // Strip port: "127.0.0.1:11434" → "127.0.0.1", "[::1]:11434" → "[::1]"
+        let host = if let Some(idx) = s.rfind(':') {
+            // careful with IPv6: "[::1]:1234" → host has ":" in it
+            if s.starts_with('[') {
+                // last ':' that's after a ']' is the port separator
+                if let Some(bidx) = s.rfind(']') { &s[..bidx + 1] } else { &s[..idx] }
+            } else {
+                &s[..idx]
+            }
+        } else { &s[..] };
+        host == "127.0.0.1" || host == "::1" || host == "[::1]" || host == "localhost"
+    };
+    let mut external_remotes: Vec<String> = vec![];
+    let mut all_loopback = true;
+    for c in &connections {
+        let local_loop = is_loopback_host(&c.local);
+        let remote_loop = is_loopback_host(&c.remote) || c.remote == "*:*";
+        if !(local_loop && remote_loop) {
+            all_loopback = false;
+            if !is_loopback_host(&c.remote) && c.remote != "*:*" {
+                external_remotes.push(c.remote.clone());
+            }
+        }
+    }
+    if connections.is_empty() { all_loopback = true; }
+    Ok(LlmProbeResult {
+        pid: Some(pid), matched_by,
+        connections, all_loopback, external_remotes,
+        error: None,
+    })
+}
+
 async fn current_status(state: &State<'_, AppState>) -> StatusSnapshot {
     let inner = state.inner.lock().await;
     StatusSnapshot {
@@ -2683,6 +2879,7 @@ pub fn run() {
             sidecar_ipc_call,
             check_for_updates,
             install_update,
+            verify_local_llm,
         ])
         .setup(|app| {
             // Full-blown Mac app: regular activation so we get a Dock icon,

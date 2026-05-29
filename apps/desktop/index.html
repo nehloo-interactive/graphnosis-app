@@ -71,10 +71,10 @@
       button.primary { background: color-mix(in oklab, var(--accent) 72%, white); color: white; border-color: transparent; }
       button.primary:hover { background: color-mix(in oklab, var(--accent) 88%, white); }
       :root[data-theme="dark"] button.primary,
-      :root[data-theme="dark"] button.primary:hover { background: var(--accent); color: color-mix(in oklab, var(--accent) 12%, black); }
+      :root[data-theme="dark"] button.primary:hover { background: var(--accent); color: #000; }
       @media (prefers-color-scheme: dark) {
         :root:not([data-theme="light"]) button.primary,
-        :root:not([data-theme="light"]) button.primary:hover { background: var(--accent); color: color-mix(in oklab, var(--accent) 12%, black); }
+        :root:not([data-theme="light"]) button.primary:hover { background: var(--accent); color: #000; }
       }
       /* Secondary brand: purple for AI/inferred/non-deterministic actions
          (e.g. "Synthesize answer", Local-LLM-driven things). Used sparingly
@@ -1133,6 +1133,12 @@
         z-index: 100;
         padding: 24px;
       }
+      /* Blur the main content whenever a full-screen modal or the studio intro
+         overlay is visible. Excludes .over-sidebar modals (position:absolute,
+         scoped to a sidebar section — no need to blur the whole view). */
+      main { transition: filter 0.2s ease; }
+      body:has(.modal-backdrop:not(.hidden):not(.over-sidebar)) main,
+      body:has(.studio-intro-overlay:not(.hidden)) main { filter: blur(4px); }
       /* Confirmation dialogs that can fire while the settings modal is open
          must paint above it. settings-modal is also z-index:100 but appears
          later in the DOM, so same-level stacking order would bury these. */
@@ -1876,8 +1882,88 @@
         color: var(--fg);
         font-weight: 500;
       }
-      .rail-btn .rail-icon { font-size: 14px; line-height: 1; text-align: center; }
+      .rail-btn .rail-icon {
+        font-size: 14px; line-height: 1; text-align: center;
+        display: inline-flex; align-items: center; justify-content: center;
+        width: 22px; height: 22px;
+      }
+      .rail-btn .rail-icon svg { display: block; }
       .rail-btn .rail-label { line-height: 1.2; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+      /* Logo row holds the seahorse mark plus the collapse toggle. The toggle
+         sits in the top-right corner of the rail; flexbox alignment keeps the
+         logo centered when the rail is wide enough that the toggle takes up
+         less than a third of the row. */
+      .rail-logo-row {
+        position: relative;
+        width: 100%; box-sizing: border-box;
+        padding: 6px;
+        flex-shrink: 0;
+        display: flex; align-items: center; justify-content: center;
+      }
+      .rail-logo { border-radius: 14px; opacity: 0.85; display: block; }
+      .rail-collapse-toggle {
+        position: absolute; top: 8px; right: 8px;
+        width: 22px; height: 22px;
+        display: inline-flex; align-items: center; justify-content: center;
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        background: transparent;
+        /* Use full --fg (not --fg-dim) so the chevron has enough contrast in
+           dark mode — the dimmed variant rendered as effectively invisible. */
+        color: var(--fg);
+        cursor: pointer;
+        padding: 0;
+        transition: background 80ms, color 80ms, transform 120ms;
+      }
+      .rail-collapse-toggle:hover {
+        background: color-mix(in oklab, var(--accent) 12%, transparent);
+        color: var(--fg);
+      }
+      .rail-collapse-toggle svg {
+        transition: transform 160ms ease;
+        display: block;
+        width: 12px; height: 12px;
+        stroke: currentColor;
+        fill: none;
+        stroke-width: 2.5;
+      }
+      .rail-collapse-toggle svg polyline { stroke: currentColor; fill: none; }
+
+      /* Collapsed state — driven by a class on <body>. The rail shrinks to
+         icon-only width; labels, badges, the memory-trace block, the
+         "AI clients / Data sources" picker, and the half-width row are
+         hidden so only the navigation icons remain. The collapse toggle's
+         chevron rotates 180° to suggest "expand back". State persists in
+         localStorage (see main.ts). */
+      body.rail-collapsed { --rail-width: 56px; }
+      body.rail-collapsed .rail-logo { width: 36px; height: 36px; }
+      body.rail-collapsed .rail-collapse-toggle { position: static; }
+      body.rail-collapsed .rail-logo-row { flex-direction: column; gap: 6px; padding: 6px 4px; }
+      body.rail-collapsed .rail-collapse-toggle svg { transform: rotate(180deg); }
+      body.rail-collapsed .rail-btn {
+        grid-template-columns: 1fr;
+        padding: 9px 4px;
+        justify-items: center;
+      }
+      body.rail-collapsed .rail-btn .rail-label,
+      body.rail-collapsed .rail-badge,
+      body.rail-collapsed .rail-mcp-indicator,
+      body.rail-collapsed .rail-memory-trace,
+      body.rail-collapsed #rail-get-connected,
+      body.rail-collapsed .rail-bottom-row .rail-label {
+        display: none !important;
+      }
+      /* When collapsed, the bottom row stacks the two half buttons vertically
+         so each gets its own icon row at full width. */
+      body.rail-collapsed .rail-bottom-row {
+        flex-direction: column;
+        gap: 2px;
+      }
+      body.rail-collapsed .rail-btn-half {
+        width: 100%;
+        padding: 9px 4px;
+      }
       .rail-badge {
         background: var(--accent);
         color: white;
@@ -2328,8 +2414,35 @@
       }
       .lb-scope-note strong { color: var(--fg); font-weight: 600; }
 
-      /* ── Memory Studio ────────────────────────────────────────────────── */
-      .studio-section { position: relative; }
+      /* ── MemoryStudio ────────────────────────────────────────────────── */
+      .studio-section {
+        position: relative;
+        overflow-y: auto;
+        flex: 1; min-height: 0;
+        display: flex; flex-direction: column;
+        scroll-padding-bottom: 70px; /* keeps scrollIntoView landings clear of the trivia bar */
+      }
+      /* Real flow-level spacer at the tail of .studio-workspace — guarantees
+         scrollable content can reach above the Solo Memories drawer's 44px
+         overlay regardless of WebView quirks with padding-bottom on flex
+         scroll containers. 70px = drawer (44px) + ~26px visual buffer. */
+      .studio-bottom-spacer {
+        flex-shrink: 0;
+        height: 70px;
+        width: 100%;
+        pointer-events: none;
+      }
+      .studio-workspace { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+      /* Recall lb-section expands to fill; other tool sections remain content-height */
+      .lb-section[data-studio-tool="recall"] { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+      .studio-recall-header {
+        position: sticky;
+        top: 0;
+        z-index: 5;
+        background: var(--bg-elev); /* matches .lb-section background */
+        padding-bottom: 6px;
+        margin-bottom: 4px;
+      }
       /* Paywall overlay — sits over the Studio workspace; Lite section above it is unaffected */
       .studio-paywall {
         position: absolute; inset: 0; z-index: 10;
@@ -2344,12 +2457,28 @@
       }
       .studio-paywall-card h2 { margin: 0 0 6px; font-size: 18px; }
       .studio-paywall-tier-note { color: var(--fg-dim); font-size: 13px; margin: 6px 0 14px; }
-      /* ── Memory Studio intro modal ─────────────────────────────────────── */
+      /* ── MemoryStudio top banner (dismissable) ────────────────────────── */
+      .studio-banner {
+        display: flex; align-items: flex-start; justify-content: space-between; gap: 8px;
+        font-size: 13px; line-height: 1.5; color: var(--fg-dim);
+        border-bottom: 1px solid var(--border); padding-bottom: 10px; margin-bottom: 10px;
+      }
+      .studio-banner.hidden { display: none; }
+      .studio-banner-text { flex: 1; }
+      .studio-banner-close {
+        flex-shrink: 0; cursor: pointer; color: var(--fg-dim); background: none; border: none;
+        font-size: 13px; padding: 1px 4px; border-radius: 3px; line-height: 1;
+        transition: color 0.12s, background 0.12s; margin-top: 1px;
+      }
+      .studio-banner-close:hover { color: var(--fg); background: var(--bg-elev); }
+      /* ── MemoryStudio intro modal ─────────────────────────────────────── */
       .studio-intro-overlay {
         position: fixed; inset: 0; z-index: 600;
         background: rgba(0,0,0,0.55);
         backdrop-filter: blur(6px);
         display: flex; align-items: center; justify-content: center;
+        padding: 24px;
+        box-sizing: border-box;
       }
       .studio-intro-overlay.hidden { display: none; }
       .studio-intro-card {
@@ -2358,8 +2487,11 @@
         border-radius: 16px;
         padding: 36px 40px 28px;
         max-width: 460px;
-        width: calc(100% - 48px);
+        width: 100%;
+        max-height: calc(100vh - 48px);
+        overflow-y: auto;
         text-align: center;
+        box-sizing: border-box;
         box-shadow:
           0 0 0 1px rgba(255,255,255,0.07),
           0 0 40px rgba(255,255,255,0.06),
@@ -2373,14 +2505,127 @@
         font-size: 13px; color: var(--fg-dim); cursor: pointer;
       }
       .studio-intro-dismiss-row input[type="checkbox"] { cursor: pointer; }
+
+      /* ── Federated stats strip ─────────────────────────────────────────── */
+      .g-federated-stats {
+        display: flex; flex-wrap: wrap; align-items: center;
+        gap: 4px 6px; padding: 0 2px;
+        font-size: 12px; color: var(--fg-dim);
+      }
+      .stat-sep { opacity: 0.35; }
+
+      /* ── Recall dual-panel layout ──────────────────────────────────────── */
+      .studio-recall-controls {
+        display: flex; align-items: center; justify-content: space-between;
+        flex-wrap: wrap; gap: 6px; margin: 6px 0 4px;
+      }
+      .studio-panel-toggles { display: flex; gap: 14px; }
+      .studio-panel-toggle {
+        display: flex; align-items: center; gap: 5px;
+        font-size: 12px; color: var(--fg-dim); cursor: pointer; user-select: none;
+      }
+      .studio-panel-toggle input { cursor: pointer; }
+      .studio-recall-panels {
+        display: grid; grid-template-columns: 1fr 1fr;
+        gap: 10px; margin-top: 8px;
+        flex: 1; min-height: 0; /* fills the recall lb-section */
+      }
+      .studio-recall-panels.one-panel { grid-template-columns: 1fr; }
+      .studio-recall-panel {
+        background: var(--bg); border: 1px solid var(--border);
+        border-radius: 10px; padding: 12px;
+        display: flex; flex-direction: column; gap: 8px;
+        min-height: 0; /* allow shrinking in flex context */
+        min-width: 0; /* prevents pre/long-text from blowing out the 1fr column */
+        overflow: hidden;
+      }
+      .studio-panel-header {
+        display: flex; align-items: center; gap: 8px;
+        /* No justify-content here — the label gets margin-right:auto below,
+           which pushes every other child (loopback chip, highlight nav,
+           status) into a single right-hugged cluster. Earlier flavor used
+           space-between, which spread chips evenly across the row. */
+      }
+      .studio-panel-label {
+        font-size: 11px; font-weight: 700; text-transform: uppercase;
+        letter-spacing: 0.06em; color: var(--fg-dim);
+        margin-right: auto;
+      }
+      .studio-panel-status { font-size: 11px; color: var(--fg-dim); opacity: 0.8; }
+      .studio-llm-disclaimer {
+        font-size: 11px; color: var(--fg-dim); opacity: 0.6;
+        margin: 2px 0 6px; font-style: italic; line-height: 1.4;
+      }
+      .studio-panel-content {
+        flex: 1; font-size: 13px; line-height: 1.6;
+        overflow-y: auto; min-height: 0;
+      }
+      /* LLM progress bar */
+      .studio-llm-progress {
+        height: 3px; background: var(--border); border-radius: 2px; overflow: hidden;
+      }
+      .studio-llm-progress-bar {
+        height: 100%; width: 35%; background: var(--accent); border-radius: 2px;
+        animation: studio-llm-scan 1.6s ease-in-out infinite;
+      }
+      @keyframes studio-llm-scan {
+        0%   { transform: translateX(-150%); }
+        100% { transform: translateX(450%); }
+      }
+      /* LLM unavailable CTA */
+      .studio-llm-unavailable {
+        flex: 1; display: flex; flex-direction: column;
+        align-items: center; justify-content: center;
+        padding: 16px 12px; text-align: center;
+        font-size: 13px; color: var(--fg-dim);
+      }
+      /* LLM output — render markdown-ish */
+      #studio-llm-output {
+        white-space: pre-wrap; word-break: break-word;
+        user-select: text; -webkit-user-select: text; cursor: text;
+      }
+      /* Proper bullet rendering inside the LLM output. white-space: pre-wrap on
+         the parent preserves line breaks for paragraphs/headings; <ul> inside
+         needs its own block-level layout + indent so bullets aren't squashed. */
+      .studio-llm-ul {
+        margin: 4px 0 8px 0; padding-left: 20px; list-style: disc outside;
+      }
+      .studio-llm-ul li {
+        margin: 2px 0; line-height: 1.5;
+      }
+      #studio-llm-output strong { font-weight: 600; color: var(--fg); }
+      #studio-llm-output h1, #studio-llm-output h2, #studio-llm-output h3 {
+        font-weight: 600; color: var(--fg); margin: 8px 0 4px;
+      }
+
       .studio-workspace { padding: 2px 0 4px; }
       /* Input rows */
       .studio-input-row { display: flex; gap: 6px; align-items: center; margin-bottom: 6px; flex-wrap: wrap; }
+      /* "+ New Engram" inline button next to a target-engram select. Sized to
+         match the .btn-sm next to it but flagged as a secondary affordance
+         (dashed border / muted color) so the dropdown stays the primary path. */
+      .studio-new-engram-btn {
+        border: 1px dashed var(--border);
+        background: transparent;
+        color: var(--fg-dim);
+        padding: 5px 9px;
+        font-size: 12px;
+        white-space: nowrap;
+      }
+      .studio-new-engram-btn:hover {
+        color: var(--fg);
+        border-color: var(--accent);
+        background: color-mix(in oklab, var(--accent) 10%, transparent);
+      }
       .studio-text-input {
         flex: 1; min-width: 120px;
         padding: 6px 10px; border: 1px solid var(--border); border-radius: 6px;
         background: var(--bg); color: var(--fg); font: inherit; font-size: 13px;
         -webkit-user-select: text; user-select: text;
+        /* auto-height textarea behaviour */
+        resize: none; overflow-y: hidden; line-height: 1.5;
+        min-height: calc(1.5em + 14px); /* single line + vertical padding */
+        display: block;
       }
       .studio-text-input:focus { outline: none; border-color: var(--accent); }
       .studio-scope-row { display: flex; gap: 8px; align-items: center; margin-bottom: 6px; font-size: 13px; }
@@ -2390,11 +2635,22 @@
         background: var(--bg-elev); color: var(--fg); font: inherit; font-size: 13px;
         -webkit-user-select: auto; user-select: auto;
       }
+      /* Remember / Edit/Correct / GNN engram dropdowns are styled turquoise +
+         bold UNCONDITIONALLY — including the placeholder text — so the
+         dropdown visually pops as the engram-routing control on that row.
+         Applied via .studio-select-engram-pick (added in JS to those three
+         selects only). Recall's scope select is excluded so the Δ slider
+         readout stays the visual anchor on its row. */
+      .studio-select.studio-select-engram-pick { color: var(--accent); font-weight: 600; }
       /* Textarea */
       .studio-textarea {
         width: 100%; min-height: 76px; padding: 8px 10px; box-sizing: border-box;
         border: 1px solid var(--border); border-radius: 6px;
-        background: var(--bg-elev); color: var(--fg);
+        /* Match the darker background of .studio-text-input (the Recall /
+           Dig Deeper / GNN single-line query boxes). The lighter --bg-elev
+           tone here used to blend the textarea into the surrounding card,
+           making it hard to see where the input area began. */
+        background: var(--bg); color: var(--fg);
         font: inherit; font-size: 13px; line-height: 1.5; resize: vertical;
         -webkit-user-select: text; user-select: text; margin-bottom: 6px;
       }
@@ -2407,17 +2663,355 @@
         font-size: 11.5px; line-height: 1.55;
         background: var(--bg); border: 1px solid var(--border); border-radius: 6px;
         padding: 10px 12px; white-space: pre-wrap; word-break: break-word;
-        max-height: 420px; overflow-y: auto;
+        /* No own scroll — .studio-panel-content handles the unified scroll layer */
         -webkit-user-select: text; user-select: text; margin: 0;
       }
-      /* Node chips — click to populate GNN query */
-      .studio-node-list { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 8px; }
-      .studio-node-chip {
-        background: var(--bg-elev); border: 1px solid var(--border);
-        border-radius: 20px; padding: 2px 9px; font-size: 11px; cursor: pointer;
-        color: var(--fg-dim); transition: border-color .15s, color .15s;
+      /* Node list — compact vertical, click to open inspector */
+      .studio-node-list {
+        display: flex; flex-direction: column; gap: 2px;
+        margin-top: 10px; border-top: 1px solid var(--border); padding-top: 8px;
       }
-      .studio-node-chip:hover { border-color: var(--accent); color: var(--fg); }
+      .studio-node-list-header {
+        display: flex; align-items: center; justify-content: space-between; margin-bottom: 3px;
+      }
+      .studio-node-list-label {
+        font-size: 10px; font-weight: 700; letter-spacing: 0.06em;
+        text-transform: uppercase; color: var(--fg-dim);
+      }
+      .studio-node-pro-badge {
+        font-size: 9px; font-weight: 700; padding: 1px 5px; border-radius: 3px;
+        background: color-mix(in oklab, var(--accent) 14%, transparent); color: var(--accent);
+      }
+      .studio-node-chip {
+        min-width: 0;
+        background: transparent; border: 1px solid transparent; border-radius: 6px;
+        padding: 5px 8px; cursor: pointer; display: flex; align-items: center;
+        gap: 7px; width: 100%; text-align: left; line-height: 1.3;
+        transition: border-color .12s, color .12s, background .12s;
+      }
+      .studio-node-chip:hover { border-color: var(--border); background: var(--bg-elev); }
+      .studio-node-chip.active {
+        border-color: var(--accent);
+        background: color-mix(in oklab, var(--accent) 8%, var(--bg));
+      }
+      .studio-chip-type {
+        font-size: 9px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.03em;
+        color: var(--fg-dim); background: var(--bg-elev); border: 1px solid var(--border);
+        border-radius: 3px; padding: 1px 4px; white-space: nowrap; flex-shrink: 0;
+      }
+      .studio-chip-snippet { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; color: var(--fg-dim); }
+      .studio-node-chip:hover .studio-chip-snippet,
+      .studio-node-chip.active .studio-chip-snippet { color: var(--fg); }
+      .studio-chip-score { font-size: 10px; font-weight: 700; color: var(--ai-accent); white-space: nowrap; flex-shrink: 0; cursor: help; }
+      /* Layer-aware badges on each node chip. Three visual variants tell the
+         user, at a glance, HOW the node got into the result:
+           - ANCHOR (literal entity match, boosted): strong accent pill
+           - LINKED (reached via GNN graph expansion, score ~1.5): muted pill
+           - %      (semantic similarity score, 0–1): plain accent text */
+      .studio-chip-anchor {
+        font-size: 9px; font-weight: 700; letter-spacing: 0.5px;
+        padding: 1px 6px; border-radius: 8px; white-space: nowrap; flex-shrink: 0;
+        background: var(--ai-accent-soft); color: var(--ai-accent);
+        text-transform: uppercase; cursor: help;
+      }
+      .studio-chip-linked {
+        font-size: 9px; font-weight: 600; letter-spacing: 0.5px;
+        padding: 1px 6px; border-radius: 8px; white-space: nowrap; flex-shrink: 0;
+        background: transparent; color: var(--fg-dim);
+        border: 1px dashed var(--border);
+        text-transform: uppercase; cursor: help;
+      }
+      /* Lock badge — ambient sensitivity signal on any chip whose node is
+         from a sensitive engram. Goes BEFORE the match/linked/% badge so
+         the user reads it first (left to right: type · text · 🔒 · badge). */
+      .studio-chip-lock {
+        font-size: 10px; line-height: 1; padding: 0 2px;
+        flex-shrink: 0; cursor: help;
+        opacity: 0.85;
+      }
+      /* Lock inside a clickable LLM citation. Tighter than the chip lock —
+         it sits inline inside the (src: label) button and should not push
+         the label around. */
+      .studio-llm-citation-lock {
+        font-size: 9px;
+        margin-right: 1px;
+        opacity: 0.75;
+      }
+
+      /* Loopback verification badge in the LLM panel header. Sits between
+         the panel label and the highlight-nav cluster. Three visual states:
+           - .is-loopback   → green check + "Local ✓ 127.0.0.1"
+           - .is-remote     → amber warning + "Remote ⚠ <host>"
+           - (no class)     → empty (Ollama not reachable yet, status pending)
+         Tooltip explains what the badge means + invites the user to verify. */
+      .studio-llm-loopback {
+        font-size: 10px; font-weight: 600; letter-spacing: 0.2px;
+        padding: 1px 7px; border-radius: 10px; white-space: nowrap;
+        flex-shrink: 0; cursor: pointer; user-select: none;
+        background: transparent;
+        transition: filter 0.12s, transform 0.05s;
+      }
+      .studio-llm-loopback:hover { filter: brightness(1.15); }
+      .studio-llm-loopback:active { transform: translateY(1px); }
+      .studio-llm-loopback.is-loopback {
+        background: rgba(46, 204, 113, 0.16);
+        color: rgb(46, 204, 113);
+        border: 1px solid rgba(46, 204, 113, 0.35);
+      }
+      .studio-llm-loopback.is-remote {
+        background: rgba(241, 196, 15, 0.18);
+        color: rgb(241, 196, 15);
+        border: 1px solid rgba(241, 196, 15, 0.4);
+      }
+      .studio-llm-loopback:empty { display: none; }
+      /* Dimmed state — master LLM toggle is off. The chip stays clickable so
+         the explainer modal is reachable, but the color desaturates and the
+         border softens to match "not currently routing" reality. */
+      .studio-llm-loopback.is-disabled {
+        opacity: 0.45;
+        filter: grayscale(0.6);
+      }
+      .studio-llm-loopback.is-disabled:hover { opacity: 0.7; filter: grayscale(0.3); }
+
+      /* Loopback explainer modal — opened by clicking the green/amber pill
+         in the LLM panel header. Three-zone layout: header (title + close),
+         body (the explanation, scrolls if long), footer (OK button). */
+      .studio-loopback-modal {
+        display: flex; flex-direction: column;
+        max-height: 80vh; overflow: hidden;
+        padding: 0; /* zones own their padding */
+      }
+      .studio-loopback-modal-header {
+        display: flex; align-items: center; justify-content: space-between;
+        padding: 16px 20px;
+        border-bottom: 1px solid var(--border);
+        gap: 12px;
+      }
+      .studio-loopback-modal-header h3 {
+        margin: 0; font-size: 16px; font-weight: 600;
+        flex: 1; min-width: 0;
+      }
+      .studio-loopback-modal-header .modal-close {
+        position: static; /* override the default position:absolute on .modal-close */
+        background: transparent; border: 1px solid var(--border);
+        color: var(--fg-dim); cursor: pointer;
+        width: 28px; height: 28px; padding: 0; line-height: 1;
+        border-radius: 4px; font-size: 14px;
+        display: inline-flex; align-items: center; justify-content: center;
+        flex-shrink: 0;
+      }
+      .studio-loopback-modal-header .modal-close:hover {
+        background: var(--bg); color: var(--fg);
+      }
+      .studio-loopback-modal-body {
+        padding: 18px 20px;
+        overflow-y: auto;
+        font-size: 13px; line-height: 1.55;
+      }
+      .studio-loopback-modal-body p { margin: 0 0 10px 0; }
+      .studio-loopback-modal-body p:last-child { margin-bottom: 0; }
+      .studio-loopback-modal-body code {
+        background: var(--bg); padding: 1px 4px; border-radius: 3px;
+        font-size: 12px;
+      }
+      .studio-loopback-modal-footer {
+        padding: 12px 20px;
+        border-top: 1px solid var(--border);
+        display: flex; justify-content: flex-end; gap: 8px;
+      }
+      .studio-loopback-modal-footer .primary {
+        min-width: 80px;
+      }
+      .studio-loopback-modal-footer .btn-sm {
+        background: transparent; border: 1px solid var(--border);
+        color: var(--fg); padding: 4px 10px; border-radius: 4px;
+        font-size: 12px; cursor: pointer;
+      }
+      .studio-loopback-modal-footer .btn-sm:hover {
+        background: var(--bg);
+      }
+      /* Verification wizard — copy command rows. Side-by-side <pre> + Copy. */
+      .studio-loopback-modal-body h4 {
+        margin: 14px 0 6px 0; font-size: 13px; font-weight: 600;
+        color: var(--fg);
+      }
+      .studio-verify-cmd {
+        display: flex; gap: 8px; align-items: stretch;
+        margin: 4px 0;
+      }
+      .studio-verify-cmd pre {
+        flex: 1; margin: 0;
+        background: var(--bg); border: 1px solid var(--border);
+        padding: 6px 8px; border-radius: 4px;
+        font-size: 11px; line-height: 1.4;
+        overflow-x: auto; white-space: pre;
+      }
+      .studio-verify-copy {
+        background: transparent; border: 1px solid var(--border);
+        color: var(--fg); padding: 0 12px; border-radius: 4px;
+        font-size: 11px; cursor: pointer; white-space: nowrap;
+        flex-shrink: 0;
+      }
+      .studio-verify-copy:hover { background: var(--bg); }
+
+      /* Self-test result line inside the loopback modal. Four tones drive
+         on outcome — set as a class on the element by runMemoryStudioSelfTest's
+         status handler. All tones share the same base shape (rounded panel
+         with a left border accent); only color + weight differ. */
+      .studio-selftest-status {
+        margin-top: 12px; padding: 8px 10px;
+        background: var(--bg); border-radius: 4px;
+        font-size: 12px;
+        border-left: 3px solid transparent;
+      }
+      .studio-selftest-status.is-pending {
+        color: var(--fg-dim);
+        font-weight: 400;
+        border-left-color: var(--border);
+      }
+      .studio-selftest-status.is-pass {
+        color: rgb(46, 204, 113);
+        font-weight: 700;
+        background: rgba(46, 204, 113, 0.10);
+        border-left-color: rgb(46, 204, 113);
+      }
+      .studio-selftest-status.is-warn {
+        color: rgb(241, 196, 15);
+        font-weight: 700;
+        background: rgba(241, 196, 15, 0.10);
+        border-left-color: rgb(241, 196, 15);
+      }
+      .studio-selftest-status.is-fail {
+        color: rgb(231, 76, 60);
+        font-weight: 700;
+        background: rgba(231, 76, 60, 0.10);
+        border-left-color: rgb(231, 76, 60);
+      }
+
+      /* Pre-recall external-LLM warning banner — shown when lsof finds
+         non-loopback connections from the local LLM daemon at the start of
+         a session with sensitive scope. Dismissable; doesn't block recall. */
+      .studio-llm-external-warning {
+        margin: 6px 0 8px 0; padding: 8px 10px;
+        background: rgba(241, 196, 15, 0.12);
+        border: 1px solid rgba(241, 196, 15, 0.4);
+        border-radius: 6px;
+        font-size: 12px; line-height: 1.5;
+        color: var(--fg);
+      }
+
+      /* Suggestion C: confidence pill under the LLM panel. Lives between the
+         disclaimer and the LLM output. Lightweight, no padding, hover-tooltip
+         explains what "direct / semantic / GNN-expanded" mean. */
+      .studio-llm-confidence {
+        font-size: 11px; color: var(--fg-dim); opacity: 0.75;
+        margin: 0 0 8px; cursor: help; min-height: 14px;
+      }
+
+      /* Suggestion A: clickable source citation buttons inside the LLM output.
+         Inline-only — they replace plain "(Source Label)" parentheticals with
+         pill-shaped buttons that open the node when clicked. */
+      .studio-llm-citation {
+        display: inline; padding: 0; margin: 0; border: none; background: none;
+        color: var(--ai-accent); cursor: pointer; font: inherit;
+        text-decoration: underline; text-decoration-style: dotted;
+        text-decoration-thickness: 1px; text-underline-offset: 2px;
+      }
+      .studio-llm-citation:hover { text-decoration-style: solid; }
+
+      /* Query-term highlight: yellow with opacity so the user can scan for
+         literal matches of their query in both the raw context block and the
+         LLM interpretation. Inherits color so the underlying text stays
+         readable; the background is what does the work. Padding is tiny so
+         multi-word phrases don't wrap awkwardly. */
+      mark.studio-highlight {
+        background: rgba(255, 215, 0, 0.32);
+        color: inherit;
+        padding: 0 1px;
+        border-radius: 2px;
+      }
+      /* Slightly more opaque in dark mode for legibility against the darker
+         panel — yellow at 0.32 reads as washed-out olive on a #1a1a1a-ish bg. */
+      :root[data-theme="dark"] mark.studio-highlight {
+        background: rgba(255, 215, 0, 0.42);
+      }
+      @media (prefers-color-scheme: dark) {
+        :root:not([data-theme="light"]) mark.studio-highlight {
+          background: rgba(255, 215, 0, 0.42);
+        }
+      }
+      /* "Current" highlight — the one the user navigated to via the panel's
+         arrow controls. A different color so it's instantly distinguishable
+         from the other matches. Soft purple in light mode (complements the
+         existing accent), turquoise in dark mode (matches the citation link
+         color from the earlier feature). */
+      mark.studio-highlight.is-current {
+        background: rgba(138, 43, 226, 0.42); /* blueviolet at 42% */
+        outline: 2px solid rgba(138, 43, 226, 0.6);
+        outline-offset: 1px;
+        border-radius: 2px;
+      }
+      :root[data-theme="dark"] mark.studio-highlight.is-current {
+        background: rgba(64, 224, 208, 0.42); /* turquoise at 42% */
+        outline-color: rgba(64, 224, 208, 0.7);
+      }
+      @media (prefers-color-scheme: dark) {
+        :root:not([data-theme="light"]) mark.studio-highlight.is-current {
+          background: rgba(64, 224, 208, 0.42);
+          outline-color: rgba(64, 224, 208, 0.7);
+        }
+      }
+
+      /* Per-panel keyword-navigation cluster: ‹ counter ›
+         Sits in the panel header next to the status pill. Buttons disabled
+         when there are zero highlights so the user knows to broaden the
+         query before trying. */
+      .studio-highlight-nav {
+        display: inline-flex; align-items: center; gap: 4px;
+        margin-left: 8px; user-select: none;
+      }
+      .studio-highlight-arrow {
+        background: transparent; border: 1px solid var(--border);
+        color: var(--fg-dim); cursor: pointer;
+        width: 18px; height: 18px; padding: 0; line-height: 1;
+        font-size: 14px; font-weight: 700;
+        border-radius: 3px;
+        display: inline-flex; align-items: center; justify-content: center;
+        transition: background 0.12s, color 0.12s, border-color 0.12s;
+      }
+      .studio-highlight-arrow:hover:not(:disabled) {
+        background: var(--bg);
+        color: var(--fg);
+        border-color: var(--fg-dim);
+      }
+      .studio-highlight-arrow:disabled {
+        opacity: 0.35; cursor: not-allowed;
+      }
+      .studio-highlight-counter {
+        font-size: 10px; font-weight: 600;
+        color: var(--fg-dim);
+        min-width: 26px; text-align: center;
+        font-variant-numeric: tabular-nums;
+      }
+      /* Dark-mode citation override: turquoise pops against the dark panel
+         background and clearly signals "this is a clickable link" without
+         competing with the bold/heading accents elsewhere in the prose.
+         Two selectors: explicit data-theme="dark" (user-chosen) AND the
+         OS-level prefers-color-scheme:dark fallback (no manual choice). */
+      :root[data-theme="dark"] .studio-llm-citation {
+        color: #40e0d0;
+      }
+      :root[data-theme="dark"] .studio-llm-citation:hover {
+        color: #5eead4;
+      }
+      @media (prefers-color-scheme: dark) {
+        :root:not([data-theme="light"]) .studio-llm-citation {
+          color: #40e0d0;
+        }
+        :root:not([data-theme="light"]) .studio-llm-citation:hover {
+          color: #5eead4;
+        }
+      }
       /* GNN neighbor list */
       .studio-gnn-list { display: flex; flex-direction: column; gap: 7px; }
       .studio-gnn-item {
@@ -2435,6 +3029,67 @@
         background: color-mix(in oklab, var(--warn, #f59e0b) 14%, transparent);
         border: 1px solid color-mix(in oklab, var(--warn, #f59e0b) 40%, var(--border));
         border-radius: 6px; padding: 7px 10px; font-size: 13px; margin-bottom: 6px;
+      }
+      .studio-dup-heading { font-weight: 600; margin-bottom: 6px; }
+      .studio-dup-list {
+        list-style: none; margin: 0; padding: 0;
+        display: flex; flex-direction: column; gap: 6px;
+      }
+      .studio-dup-item {
+        background: var(--bg-elev);
+        border: 1px solid var(--border);
+        border-radius: 5px;
+        padding: 6px 8px;
+        font-size: 12px;
+      }
+      .studio-dup-item-meta {
+        display: flex; align-items: center; gap: 8px;
+        margin-bottom: 3px;
+      }
+      .studio-dup-item-score {
+        font-weight: 700;
+        color: var(--warn, #f59e0b);
+        background: color-mix(in oklab, var(--warn, #f59e0b) 18%, transparent);
+        border-radius: 4px;
+        padding: 1px 6px;
+        font-size: 11px;
+      }
+      .studio-dup-item-engram { color: var(--fg-dim); font-size: 11px; }
+      .studio-dup-item-text { color: var(--fg); line-height: 1.45; }
+      /* Skeleton loader shown inside the duplicate-warning panel while the
+         check_duplicate IPC is in flight. Three placeholder rows pulse to
+         tell the user "we're working on it" without showing a generic
+         spinner — the rows mirror the eventual layout (score chip + engram
+         name + body line) so the panel doesn't jump when real data lands. */
+      .studio-dup-skeleton { display: flex; flex-direction: column; gap: 6px; }
+      .studio-dup-skeleton-heading {
+        height: 14px; width: 60%; border-radius: 4px; margin-bottom: 6px;
+        background: linear-gradient(90deg,
+          color-mix(in oklab, var(--fg-dim) 12%, transparent),
+          color-mix(in oklab, var(--fg-dim) 24%, transparent),
+          color-mix(in oklab, var(--fg-dim) 12%, transparent));
+        background-size: 200% 100%;
+        animation: studio-dup-shimmer 1.2s linear infinite;
+      }
+      .studio-dup-skeleton-row {
+        background: var(--bg-elev); border: 1px solid var(--border); border-radius: 5px;
+        padding: 8px 10px;
+      }
+      .studio-dup-skeleton-bar {
+        height: 10px; border-radius: 4px; margin-bottom: 6px;
+        background: linear-gradient(90deg,
+          color-mix(in oklab, var(--fg-dim) 10%, transparent),
+          color-mix(in oklab, var(--fg-dim) 22%, transparent),
+          color-mix(in oklab, var(--fg-dim) 10%, transparent));
+        background-size: 200% 100%;
+        animation: studio-dup-shimmer 1.2s linear infinite;
+      }
+      .studio-dup-skeleton-bar.is-short { width: 30%; }
+      .studio-dup-skeleton-bar.is-medium { width: 55%; }
+      .studio-dup-skeleton-bar.is-long { width: 85%; margin-bottom: 0; }
+      @keyframes studio-dup-shimmer {
+        0%   { background-position: 200% 0; }
+        100% { background-position: -200% 0; }
       }
       /* Engram suggestion result */
       .studio-suggest-result {
@@ -2454,10 +3109,170 @@
       }
       .studio-diff-edit { margin-bottom: 10px; }
       .studio-diff-field { font-size: 11px; color: var(--fg-dim); margin-bottom: 2px; font-weight: 600; }
-      .studio-diff-before { color: var(--danger, #ef4444); }
-      .studio-diff-after  { color: var(--ok, #4caf50); }
+      .studio-diff-before { color: var(--danger, #ef4444); white-space: pre-wrap; }
+      .studio-diff-after  { color: var(--ok, #4caf50); white-space: pre-wrap; }
+      /* "If you confirm…" summary at the top of the diff body. Sits above
+         the per-edit before/after rows and gives the user the headline
+         "what will happen" before they read the field-level changes. */
+      .studio-diff-summary {
+        background: color-mix(in oklab, var(--accent) 12%, transparent);
+        border: 1px solid color-mix(in oklab, var(--accent) 35%, var(--border));
+        border-radius: 5px;
+        padding: 7px 10px;
+        margin-bottom: 10px;
+        font-family: var(--font-sans, system-ui, sans-serif);
+      }
+      .studio-diff-summary-line { font-size: 13px; color: var(--fg); }
+      .studio-diff-summary-mode { font-size: 11px; color: var(--fg-dim); margin-top: 3px; }
+      .studio-diff-summary-mode code {
+        background: var(--bg-elev); padding: 1px 6px; border-radius: 4px; font-size: 10.5px;
+      }
+      /* Hallucination warning — fired when the LLM proposes an edit against
+         a nodeId that wasn't in the candidate set (i.e. the LLM made it up).
+         Red because the only correct response is to Reject. */
+      .studio-diff-hallucination {
+        background: color-mix(in oklab, var(--danger, #ef4444) 14%, transparent);
+        border: 1px solid color-mix(in oklab, var(--danger, #ef4444) 40%, var(--border));
+        color: var(--fg);
+        border-radius: 5px;
+        padding: 8px 10px;
+        margin: 10px 0;
+        font-family: var(--font-sans, system-ui, sans-serif);
+        font-size: 12.5px;
+        line-height: 1.45;
+      }
+      .studio-diff-hallucination code {
+        background: var(--bg-elev); padding: 1px 5px; border-radius: 3px; font-size: 11px;
+      }
+      /* No-op informational banner — yellow/amber, softer than the
+         hallucination warning. The proposal isn't dangerous, just useless. */
+      .studio-diff-noop {
+        background: color-mix(in oklab, var(--warn, #f59e0b) 12%, transparent);
+        border: 1px solid color-mix(in oklab, var(--warn, #f59e0b) 35%, var(--border));
+        color: var(--fg);
+        border-radius: 5px;
+        padding: 8px 10px;
+        margin: 10px 0;
+        font-family: var(--font-sans, system-ui, sans-serif);
+        font-size: 12.5px;
+        line-height: 1.45;
+      }
+      /* Candidate transparency — collapsible "what the recall actually saw"
+         section. The user can pop it open to verify whether the LLM's chosen
+         edit target is one of these or a fabricated one. */
+      .studio-diff-candidates {
+        margin-top: 10px; padding: 6px 10px;
+        background: var(--bg-elev); border: 1px solid var(--border); border-radius: 5px;
+        font-family: var(--font-sans, system-ui, sans-serif);
+      }
+      .studio-diff-candidates summary {
+        cursor: pointer; font-size: 12px; color: var(--fg-dim); user-select: none;
+      }
+      .studio-diff-candidates summary:hover { color: var(--fg); }
+      .studio-diff-candidates ul {
+        list-style: none; margin: 8px 0 0; padding: 0;
+        display: flex; flex-direction: column; gap: 4px;
+      }
+      .studio-diff-cand { padding: 5px 7px; border-radius: 4px; }
+      .studio-diff-cand.is-target {
+        background: color-mix(in oklab, var(--accent) 12%, transparent);
+        border: 1px solid color-mix(in oklab, var(--accent) 35%, var(--border));
+      }
+      .studio-diff-cand-meta { display: flex; align-items: center; gap: 6px; margin-bottom: 2px; font-size: 11px; color: var(--fg-dim); }
+      .studio-diff-cand-meta code { background: var(--bg); padding: 1px 5px; border-radius: 3px; }
+      .studio-diff-cand-gnn { color: var(--ai-accent); font-weight: 600; }
+      .studio-diff-cand-target { color: var(--accent); font-weight: 600; }
+      .studio-diff-cand-text { color: var(--fg); font-size: 12px; line-height: 1.4; }
+      .studio-diff-cand-engram {
+        color: var(--accent); font-weight: 600;
+        background: color-mix(in oklab, var(--accent) 10%, transparent);
+        padding: 1px 6px; border-radius: 3px; font-size: 10.5px;
+      }
+      /* Per-row engram tag on the diff edit/add headers. Same turquoise pill
+         treatment as the candidate engram tag, so the user can scan the diff
+         vertically and immediately see when a single proposal spans multiple
+         engrams (different pill text per row). */
+      .studio-diff-engram-tag {
+        color: var(--accent); font-weight: 600;
+        background: color-mix(in oklab, var(--accent) 10%, transparent);
+        padding: 1px 6px; border-radius: 3px; font-size: 10.5px;
+      }
+      .studio-diff-engram-tag.is-unknown {
+        color: var(--danger, #ef4444);
+        background: color-mix(in oklab, var(--danger, #ef4444) 12%, transparent);
+      }
+      /* "Target engrams" summary line — shown above Mode/Reasoning when the
+         proposal touches one or more engrams. Multi-engram callout reads as
+         "this correction spans …" so the user notices unusual cross-engram
+         landings. */
+      .studio-diff-summary-engrams {
+        font-size: 12px; color: var(--fg); margin-top: 4px;
+        display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
+      }
+      .studio-diff-summary-engram {
+        color: var(--accent); font-weight: 600;
+        background: color-mix(in oklab, var(--accent) 14%, transparent);
+        padding: 1px 7px; border-radius: 3px; font-size: 11px;
+      }
       /* Action row */
       .studio-action-row { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+      /* Tool chip navigation */
+      .studio-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 14px; }
+      .studio-chip {
+        font-size: 12px; font-weight: 600; padding: 5px 13px;
+        border: 1px solid var(--border); border-radius: 20px;
+        background: transparent; color: var(--fg-dim); cursor: pointer;
+        transition: border-color 0.12s, color 0.12s, background 0.12s;
+        white-space: nowrap; line-height: 1.4;
+      }
+      .studio-chip:hover { border-color: var(--accent); color: var(--fg); }
+      /* GNN chip hovers in purple to match its active state — same semantic
+         pairing as the action button's "ai-outline" treatment. Other chips
+         keep the turquoise hover. */
+      .studio-chip[data-tool="gnn"]:hover { border-color: var(--ai-accent); }
+      .studio-chip.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+      /* GNN Neighbors is the only non-deterministic action in the tab strip
+         (it surfaces neural-network predictions, not exact recall) — so its
+         active chip gets the purple "ai-accent" treatment. Recall, Dig Deeper,
+         Remember, Edit/Correct are all deterministic, so they keep turquoise. */
+      .studio-chip[data-tool="gnn"].active { background: var(--ai-accent); border-color: var(--ai-accent); }
+      /* Dark mode override — black text on the turquoise active chip for the
+         same reason button.primary uses #000 in dark mode (the desaturated
+         dark turquoise vs. white reads as low contrast). The GNN chip keeps
+         white text on its purple background because white-on-purple stays
+         high-contrast in both themes. */
+      :root[data-theme="dark"] .studio-chip.active { color: #000; }
+      @media (prefers-color-scheme: dark) {
+        :root:not([data-theme="light"]) .studio-chip.active { color: #000; }
+      }
+      :root[data-theme="dark"] .studio-chip[data-tool="gnn"].active,
+      :root:not([data-theme="light"]) .studio-chip[data-tool="gnn"].active { color: #fff; }
+      /* Auto-height textareas */
+      .studio-textarea { resize: none; overflow-y: hidden; min-height: 72px; }
+      /* Threshold slider */
+      /* Memory Context Threshold — compact single-row control */
+      .studio-threshold-row {
+        display: flex; align-items: center; gap: 10px;
+        margin: 8px 0; flex-wrap: wrap;
+      }
+      /* Fixed-width word so the slider never jumps when the label changes */
+      .studio-threshold-word {
+        font-size: 11px; font-weight: 700; color: var(--fg);
+        width: 68px; flex-shrink: 0; text-align: left;
+      }
+      .studio-threshold-slider {
+        width: 110px; accent-color: var(--accent); cursor: pointer; flex-shrink: 0;
+      }
+      .studio-threshold-live {
+        font-size: 11px; font-weight: 700; color: var(--accent);
+        font-family: ui-monospace, 'SF Mono', monospace; white-space: nowrap; flex-shrink: 0;
+      }
+      .studio-threshold-hint { font-size: 11px; color: var(--fg-dim); white-space: nowrap; }
+      .studio-threshold-spinner {
+        font-size: 11px; color: var(--accent); white-space: nowrap;
+        font-style: italic; opacity: 0.8; margin-left: 6px;
+      }
+      .studio-threshold-spinner.hidden { display: none; }
       /* LLM-assisted badge */
       .studio-llm-badge {
         display: inline-block; margin-left: 7px; padding: 1px 6px;
@@ -3026,7 +3841,7 @@
         border-left: 1px solid color-mix(in oklab, var(--accent) 28%, transparent);
         padding: 6px 9px;
         font-family: inherit;
-        font-size: 12px;
+        font-size: 13px;
         color: var(--fg-dim);
         cursor: pointer;
         font-weight: 500;
@@ -3047,6 +3862,7 @@
         display: flex;
         flex-direction: column;
         min-height: 0;
+        overflow-y: auto;
       }
       .g-tab-pane.hidden { display: none; }
 
@@ -3155,16 +3971,103 @@
 
       /* ── Check-in dashboard ───────────────────────────────────────── */
 
-      /* The dashboard fills the left column of g-main. Vertical scroll
-         lives on the dashboard itself, not the page, so search-results
-         can take over the same space without layout jumps. */
-      .g-dashboard {
-        flex: 1;
-        overflow-y: auto;
-        min-height: 0;
+      /* Checkin pane: position context for the absolute trivia drawer */
+      section.g-tab-pane[data-gpane="checkin"] {
+        position: relative;
+        overflow: hidden;
+      }
+
+      /* Studio + search results need bottom breathing room so the trivia bar
+         doesn't cover the last line of content when the drawer is closed. */
+      #studio-section,
+      #g-search-results { padding-bottom: 52px; }
+
+      /* ── Trivia drawer ─────────────────────────────────────────────────── */
+      /* Anchored to the bottom of the checkin pane; slides up on open.      */
+      #trivia-drawer {
+        --trivia-bar-h: 44px;
+        position: absolute;
+        inset: 0;
+        transform: translateY(calc(100% - var(--trivia-bar-h)));
+        transition: transform 0.32s cubic-bezier(0.35, 0, 0.2, 1);
+        background: var(--bg);
+        border-top: 1px solid var(--border);
+        border-radius: 10px 10px 0 0;
+        z-index: 5;
         display: flex;
         flex-direction: column;
-        gap: 16px;
+        box-shadow: 0 -4px 18px color-mix(in oklab, var(--fg) 8%, transparent);
+      }
+      #trivia-drawer.trivia-open {
+        transform: translateY(0);
+        border-radius: 0;
+        box-shadow: none;
+      }
+      #trivia-drawer.hidden { display: none; }
+
+      .trivia-bar {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        padding: 0 14px;
+        height: var(--trivia-bar-h, 44px);
+        flex-shrink: 0;
+        cursor: pointer;
+        border-radius: 10px 10px 0 0;
+        user-select: none;
+        transition: background 0.14s;
+      }
+      .trivia-bar:hover { background: var(--bg-elev); }
+      #trivia-drawer.trivia-open .trivia-bar {
+        background: var(--bg-elev);
+        border-bottom: 1px solid var(--border);
+        border-radius: 0;
+        /* Keep the pointer cursor when the drawer is open — clicking the bar
+           collapses the drawer, so the bar is still an interactive target.
+           Earlier 'cursor: default' implied "not clickable", which misled
+           users into not realising the header could close the panel. */
+        cursor: pointer;
+      }
+      #trivia-drawer.trivia-open .trivia-bar:hover { background: var(--bg-elev); }
+
+      .trivia-bar-icon { font-size: 14px; opacity: 0.55; flex-shrink: 0; }
+      .trivia-bar-label {
+        font-size: 13px; font-weight: 600; color: var(--fg);
+        white-space: nowrap; flex-shrink: 0;
+      }
+      .trivia-bar-sep { color: var(--fg-dim); opacity: 0.4; flex-shrink: 0; font-size: 12px; }
+      .trivia-bar-stats {
+        font-size: 12px; color: var(--fg-dim);
+        white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex: 1;
+      }
+      .trivia-bar-pill {
+        font-size: 11px; font-weight: 700; padding: 2px 8px; border-radius: 999px;
+        background: color-mix(in oklab, var(--accent) 15%, transparent);
+        color: var(--accent); flex-shrink: 0;
+        /* Push the counter pill to the far right of the bar so the header
+           reads "icon · label · stats … pill · close". Without this the pill
+           sat snug after the stats text, which collapsed visually toward
+           the centre when stats was short ("Loading…"). */
+        margin-left: auto;
+        transition: background 0.25s, color 0.25s;
+      }
+      .trivia-bar-pill.new-cards {
+        background: color-mix(in oklab, var(--ok) 18%, transparent);
+        color: var(--ok);
+      }
+      .trivia-bar-pill.hidden { display: none; }
+      .trivia-bar-close {
+        font-size: 13px; color: var(--fg-dim); background: none; border: none;
+        cursor: pointer; padding: 1px 5px; border-radius: 4px; line-height: 1;
+        transition: color 0.14s, background 0.14s; flex-shrink: 0;
+        opacity: 0; pointer-events: none; transition: opacity 0.2s;
+      }
+      #trivia-drawer.trivia-open .trivia-bar-close { opacity: 1; pointer-events: auto; }
+      .trivia-bar-close:hover { color: var(--fg); background: var(--bg); }
+
+      .trivia-body {
+        flex: 1; min-height: 0; overflow-y: auto;
+        display: flex; flex-direction: column;
       }
       .g-search-results {
         flex: 1;
@@ -3294,6 +4197,24 @@
         overflow: hidden;
         display: flex;
         flex-direction: column;
+      }
+      /* Inside the trivia drawer the body handles scroll + bg; strip the
+         deck's own card chrome so it doesn't double-up borders/radius. */
+      .trivia-body .g-deck {
+        background: transparent;
+        border: none;
+        border-radius: 0;
+        overflow: visible;
+        flex: 1;
+        min-height: 0;
+        padding-top: 14px;
+        padding-bottom: 24px;
+      }
+      .trivia-body .g-deck-pinned {
+        position: sticky;
+        top: 0;
+        background: var(--bg-elev);
+        z-index: 2;
       }
       /* The whole pinned region — header + card head — is ONE sticky
          block with one fully-opaque background. Its own padding-top
@@ -3873,7 +4794,7 @@
       .g-deck-trivia-candidate {
         flex: 1 1 0;
         min-height: 0;
-        overflow: hidden;
+        overflow-y: auto;
         margin-bottom: 8px;
       }
       .g-deck-trivia-body {
@@ -3929,6 +4850,19 @@
         border-radius: 4px;
       }
       /* .deck-forget-confirm-msg removed — "Sure?" label merged into the button text */
+      .g-deck-trivia-view-btn {
+        margin-left: auto;
+        font-size: 13px;
+        color: var(--accent);
+        background: none;
+        border: none;
+        cursor: pointer;
+        padding: 1px 4px;
+        border-radius: 4px;
+        opacity: 0.8;
+        transition: opacity 0.14s;
+      }
+      .g-deck-trivia-view-btn:hover { opacity: 1; text-decoration: underline; }
       /* Metadata chips on the candidate panel — purposely muted/grayed so
          they read as INFORMATION, not as clickable buttons. The relationship
          buttons next to them carry the turquoise accent; if the chips also
@@ -5705,19 +6639,34 @@
             <!-- Graphnosis identity mark at the top of the sidebar.
                  margin:0 auto on a display:block img is the most cross-browser-
                  reliable centering technique — avoids flexbox quirks on Windows. -->
-            <div style="width: 100%; box-sizing: border-box; padding: 6px; flex-shrink:0;">
+            <div class="rail-logo-row">
               <img src="/graphnosis-logo.png" alt="Graphnosis"
                    width="72" height="72"
-                   style="border-radius: 14px; opacity: 0.85; display: block; margin: 0 auto;"
+                   class="rail-logo"
                    title="Graphnosis" />
+              <button id="rail-collapse-toggle" class="rail-collapse-toggle"
+                      title="Collapse sidebar"
+                      aria-label="Collapse sidebar"
+                      aria-pressed="false">
+                <!-- Chevron rotates 180° when collapsed via CSS. Path form
+                     (instead of polyline) renders more reliably across the
+                     range of WebView versions Tauri targets. -->
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="M15 18 L9 12 L15 6"
+                        fill="none" stroke="currentColor"
+                        stroke-width="2.5"
+                        stroke-linecap="round"
+                        stroke-linejoin="round" />
+                </svg>
+              </button>
             </div>
-            <button class="rail-btn active" data-mode="atlas" title="Memory check-in dashboard + 3D map">
-              <span class="rail-icon">▣</span>
-              <span class="rail-label">My Local Memory</span>
+            <button class="rail-btn active" data-mode="atlas" title="MemoryStudio — check-in, 3D map, and AI-grounded recall">
+              <span class="rail-icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2a4.5 4.5 0 0 0-4.5 4.5v0A3.5 3.5 0 0 0 4 10v1.5A3.5 3.5 0 0 0 7.5 15v3A4 4 0 0 0 12 22"/><path d="M12 2a4.5 4.5 0 0 1 4.5 4.5v0A3.5 3.5 0 0 1 20 10v1.5A3.5 3.5 0 0 1 16.5 15v3A4 4 0 0 1 12 22"/><path d="M12 6v16"/></svg></span>
+              <span class="rail-label">MemoryStudio</span>
               <span id="rail-corrections-badge" class="rail-badge hidden" title="Pending corrections waiting in the deck">0</span>
             </button>
             <button class="rail-btn" data-mode="sources" title="Files that fed your memory">
-              <span class="rail-icon">◫</span>
+              <span class="rail-icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="8" y1="13" x2="16" y2="13"/><line x1="8" y1="17" x2="13" y2="17"/></svg></span>
               <span class="rail-label">Sources</span>
               <span></span>
             </button>
@@ -5732,7 +6681,7 @@
                  moved to the Graphnosis rail item so it's still
                  visible at a glance. -->
             <button class="rail-btn" data-mode="status" title="Engram counts, lifetime corrections, AI clients tapped in">
-              <span class="rail-icon">⌬</span>
+              <span class="rail-icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 12 7 12 10 4 14 20 17 12 21 12"/></svg></span>
               <span class="rail-label">Status</span>
               <span id="rail-mcp-indicator" class="rail-mcp-indicator"></span>
             </button>
@@ -5806,15 +6755,14 @@
                     <input type="search" id="g-search" placeholder="Look for a memory — ⌘F, ↑↓ to move, Enter to open" />
                     <button id="g-search-clear" class="g-search-clear hidden" title="Clear search">×</button>
                   </div>
-                  <div style="display: flex; flex-wrap: nowrap; align-items: center; gap: 10px; padding: 0 2px;">
-                    <div class="g-search-llm-options" style="display: flex; gap: 10px; align-items: center; font-size: 12px; color: var(--fg-dim);">
-                      <button id="g-search-synth-btn" class="g-search-synth-btn" disabled title="Local LLM is not ready. Enable in Settings → AI.">🤖 Summarize results</button>
-                      <label id="g-search-rerank-wrap" class="g-search-rerank-chip" title="Local LLM is not ready. Enable in Settings → AI.">
-                        <input type="checkbox" id="g-search-rerank" disabled />
-                        <span>Enhanced ranking</span>
-                      </label>
-                    </div>
-                    <button id="g-search-llm-btn" class="btn-sm" type="button" style="font-size: 11px; white-space: nowrap;" title="Enable a local AI model in Non-Deterministic Aid">Local LLM…</button>
+                  <div id="g-federated-stats" class="g-federated-stats">
+                    <span id="stat-total-memories">—</span>
+                    <span class="stat-sep">·</span>
+                    <span id="stat-total-sources">—</span>
+                    <span class="stat-sep">·</span>
+                    <span id="stat-total-engrams">—</span>
+                    <span class="stat-sep">·</span>
+                    <span id="stat-avg-trust">avg trust —</span>
                   </div>
                 </div>
                 <div id="g-health" class="g-health g-health-inline">
@@ -5835,7 +6783,7 @@
               <div class="g-main">
                 <div class="g-browse">
                   <div class="g-tabs">
-                    <button class="g-tab active" data-gtab="checkin">Memory Studio</button>
+                    <button class="g-tab active" data-gtab="checkin">MemoryStudio</button>
                     <button class="g-tab" data-gtab="atlas">3D Engram</button>
                     <button class="g-tab" data-gtab="brain">Deterministic Consolidation</button>
                     <button class="g-tab" data-gtab="nondeterministic">Non-Deterministic Aid</button>
@@ -5861,42 +6809,13 @@
                       <div id="g-list" class="g-list" tabindex="0"></div>
                     </div>
 
-                    <div id="g-dashboard" class="g-dashboard">
-                      <!-- Review deck: one card at a time, quick verdict.
-                           Health gauge moved to the pane header; recap +
-                           AI tools moved to the Status mode pane. The
-                           dashboard now hosts only the deck — keeps the
-                           review surface focused. -->
-                      <div id="g-deck" class="g-deck">
-                        <!-- Pinned region: deck header + the current card's
-                             head (prompt + breadcrumb + content + meta) live
-                             in ONE sticky wrapper so there's no gap between
-                             them. Without this wrapper the two sticky
-                             siblings have a small visible gap on scroll. -->
-                        <div class="g-deck-pinned">
-                          <div class="g-deck-header">
-                            <span class="g-deck-title">If you have 30 seconds, connect these lonely memories…</span>
-                            <span class="g-deck-nav">
-                              <button id="btn-deck-prev" class="g-deck-nav-btn" title="Previous card" aria-label="Previous card">‹</button>
-                              <span id="g-deck-progress" class="g-deck-progress"></span>
-                              <button id="btn-deck-next" class="g-deck-nav-btn" title="Next card" aria-label="Next card">›</button>
-                            </span>
-                          </div>
-                          <div id="g-deck-card-head" class="g-deck-card-head"></div>
-                        </div>
-                        <div id="g-deck-card" class="g-deck-card">
-                          <p class="subtitle">Loading…</p>
-                        </div>
-                      </div>
-                    </div>
-
                     <!-- ── MEMORY STUDIO (Studio tier) ─────────────────────────────── -->
                     <div id="studio-section" class="studio-section hidden">
 
                       <!-- PAYWALL OVERLAY — covers the Studio section when studioEnabled is false -->
                       <div id="studio-paywall" class="studio-paywall hidden">
                         <div class="studio-paywall-card">
-                          <h2>Memory Studio</h2>
+                          <h2>MemoryStudio</h2>
                           <p class="brain-subtitle" style="margin:8px 0 4px;">
                             Recall, remember, and correct your memory directly — the same
                             operations your AI client runs via MCP, now available without
@@ -5910,45 +6829,148 @@
 
                       <div id="studio-workspace" class="studio-workspace">
 
-                        <p class="lb-scope-note" style="margin-bottom:12px;">
-                          ⚗️ <strong>Memory Studio.</strong>
-                          Interact with your memory the way your AI client does — full subgraph
-                          recall, remember, edit, and GNN exploration, running locally.
-                        </p>
+                        <div id="studio-banner" class="studio-banner">
+                          <span class="studio-banner-text">⚗️ <strong>MemoryStudio.</strong> Interact with your memory the way your AI client does — full subgraph recall, remember, edit, and GNN exploration, running locally.</span>
+                          <button id="btn-studio-banner-close" class="studio-banner-close" title="Dismiss forever">✕</button>
+                        </div>
+
+                        <!-- Tool chip navigation -->
+                        <div class="studio-chips">
+                          <button class="studio-chip active" data-tool="recall">Recall</button>
+                          <button class="studio-chip" data-tool="dig-deeper">Dig Deeper</button>
+                          <button class="studio-chip" data-tool="remember">Remember</button>
+                          <button class="studio-chip" data-tool="edit">Edit / Correct</button>
+                          <button class="studio-chip" data-tool="gnn">GNN Neighbors</button>
+                        </div>
 
                         <!-- ── Recall ──────────────────────────────────────────────── -->
-                        <div class="lb-section">
-                          <p class="lb-section-title">Recall</p>
-                          <p class="brain-subtitle">Run a full recall — see the exact subgraph your AI client sees, with all nodes, edges, and scoring.</p>
-                          <div class="studio-input-row">
-                            <input id="studio-recall-query" type="text" class="studio-text-input" placeholder="What do you want to recall?" />
-                            <button id="btn-studio-recall" class="primary btn-sm">Recall</button>
-                            <button id="btn-studio-dig-deeper" class="ai-outline btn-sm">Dig Deeper</button>
-                          </div>
-                          <div class="studio-scope-row">
-                            <label for="studio-recall-engram" class="studio-scope-label">Scope:</label>
-                            <select id="studio-recall-engram" class="studio-select">
-                              <option value="">All engrams</option>
-                            </select>
-                          </div>
-                          <div id="studio-recall-spinner" class="studio-spinner hidden">Recalling…</div>
-                          <div id="studio-recall-result" class="studio-result-block hidden">
-                            <div id="studio-recall-meta" class="studio-result-meta"></div>
-                            <pre id="studio-recall-output" class="studio-subgraph-output"></pre>
-                            <div id="studio-recall-nodes" class="studio-node-list"></div>
+                        <div class="lb-section" data-studio-tool="recall">
+                          <div id="studio-recall-header" class="studio-recall-header">
+                            <div class="studio-input-row">
+                              <textarea id="studio-recall-query" class="studio-text-input" placeholder="What do you want to recall?" rows="1"></textarea>
+                              <button id="btn-studio-recall" class="primary btn-sm">Recall</button>
+                            </div>
+                            <div class="studio-recall-controls">
+                              <div class="studio-scope-row" style="margin:0;">
+                                <label for="studio-recall-engram" class="studio-scope-label">Scope:</label>
+                                <select id="studio-recall-engram" class="studio-select">
+                                  <option value="">All engrams</option>
+                                </select>
+                              </div>
+                              <div class="studio-panel-toggles">
+                                <label class="studio-panel-toggle">
+                                  <input type="checkbox" id="chk-panel-llm" checked />
+                                  Local LLM
+                                </label>
+                                <label class="studio-panel-toggle">
+                                  <input type="checkbox" id="chk-panel-raw" checked />
+                                  Raw Context
+                                </label>
+                              </div>
+                            </div>
+                            <!-- Memory Context Threshold — compact single row, always visible -->
+                            <div id="studio-threshold-row" class="studio-threshold-row">
+                              <span id="studio-threshold-word" class="studio-threshold-word">Balanced</span>
+                              <input type="range" id="studio-threshold-slider" class="studio-threshold-slider"
+                                     min="0.40" max="1.00" step="0.01" value="0.75" />
+                              <span id="studio-threshold-live" class="studio-threshold-live"></span>
+                              <span id="studio-threshold-hint" class="studio-threshold-hint"></span>
+                              <span id="studio-recall-spinner" class="studio-threshold-spinner hidden">Recalling…</span>
+                            </div>
+                          </div><!-- /studio-recall-header -->
+                          <!-- Dual-panel results: LLM left, Raw right -->
+                          <div id="studio-recall-panels" class="studio-recall-panels hidden">
+                            <!-- Left: LLM Interpretation -->
+                            <div id="studio-llm-panel" class="studio-recall-panel">
+                              <div class="studio-panel-header">
+                                <span class="studio-panel-label">Local LLM Interpretation</span>
+                                <span id="studio-llm-loopback" class="studio-llm-loopback" title=""></span>
+                                <span class="studio-highlight-nav" data-target="studio-llm-output">
+                                  <button type="button" class="studio-highlight-arrow" data-dir="prev" title="Previous highlighted keyword">‹</button>
+                                  <span class="studio-highlight-counter">0/0</span>
+                                  <button type="button" class="studio-highlight-arrow" data-dir="next" title="Next highlighted keyword">›</button>
+                                </span>
+                                <span id="studio-llm-status" class="studio-panel-status"></span>
+                              </div>
+                              <p class="studio-llm-disclaimer">Grounded in the raw context shown. May still miss nuance — treat as a first read, not a verdict.</p>
+                              <div id="studio-llm-confidence" class="studio-llm-confidence" title=""></div>
+                              <div id="studio-llm-progress" class="studio-llm-progress hidden">
+                                <div class="studio-llm-progress-bar"></div>
+                              </div>
+                              <div id="studio-llm-output" class="studio-panel-content"></div>
+                              <div id="studio-llm-unavailable" class="studio-llm-unavailable hidden">
+                                <p>Local LLM not running.</p>
+                                <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px;justify-content:center;">
+                                  <button id="btn-studio-enable-llm" class="primary btn-sm">Enable LLM</button>
+                                  <button id="btn-studio-install-ollama" class="btn-sm">Install Ollama…</button>
+                                </div>
+                              </div>
+                            </div>
+                            <!-- Right: Raw Context -->
+                            <div id="studio-raw-panel" class="studio-recall-panel">
+                              <div class="studio-panel-header">
+                                <span class="studio-panel-label">Raw Context</span>
+                                <span class="studio-highlight-nav" data-target="studio-recall-output">
+                                  <button type="button" class="studio-highlight-arrow" data-dir="prev" title="Previous highlighted keyword">‹</button>
+                                  <span class="studio-highlight-counter">0/0</span>
+                                  <button type="button" class="studio-highlight-arrow" data-dir="next" title="Next highlighted keyword">›</button>
+                                </span>
+                                <span id="studio-raw-status" class="studio-panel-status"></span>
+                              </div>
+                              <div class="studio-panel-content">
+                                <div id="studio-recall-meta" class="studio-result-meta"></div>
+                                <pre id="studio-recall-output" class="studio-subgraph-output"></pre>
+                                <!-- Node list — scrolls with the subgraph text above -->
+                                <div id="studio-recall-nodes" class="studio-node-list">
+                                  <div class="studio-node-list-header">
+                                    <span class="studio-node-list-label">Nodes</span>
+                                    <span class="studio-node-pro-badge">Studio</span>
+                                  </div>
+                                </div>
+                              </div>
+                            </div>
                           </div>
                         </div>
 
+                        <!-- ── Remember ───────────────────────────────────────────── -->
+                        <div class="lb-section hidden" data-studio-tool="remember">
+                          <p class="brain-subtitle">Save a new memory. Choose an engram or leave blank to auto-suggest the best fit.</p>
+                          <div class="studio-input-row" style="margin-bottom:6px;">
+                            <textarea id="studio-remember-label" class="studio-text-input" style="max-width:200px;" placeholder="Label (optional)" rows="1"></textarea>
+                            <select id="studio-remember-engram" class="studio-select">
+                              <option value="">← auto-suggest engram</option>
+                            </select>
+                            <button id="btn-studio-remember-new-engram" class="btn-sm studio-new-engram-btn"
+                                    type="button"
+                                    title="Create a new engram and use it as the target">+ New Engram</button>
+                          </div>
+                          <textarea id="studio-remember-text" class="studio-textarea" placeholder="What do you want to remember?"></textarea>
+                          <div id="studio-suggest-result" class="studio-suggest-result hidden"></div>
+                          <div class="studio-action-row">
+                            <button id="btn-studio-check-dup" class="btn-sm">Check for duplicates</button>
+                            <button id="btn-studio-remember" class="primary btn-sm">Save memory</button>
+                          </div>
+                          <div id="studio-remember-spinner" class="studio-spinner hidden">Saving…</div>
+                          <div id="studio-remember-success" class="studio-success hidden"></div>
+                          <!-- Duplicate results section. Moved BELOW the action buttons
+                               so the buttons stay close to the textarea (the natural
+                               reading flow after typing). The warning + list render
+                               in-place when "Check for duplicates" is clicked.
+                               The 40px top margin (≈ a full button-row of empty space)
+                               gives this a clear "separate section" feel rather than
+                               looking welded to the Save / Check buttons. -->
+                          <div id="studio-duplicate-warning" class="studio-dup-warning hidden" style="margin-top: 40px;"></div>
+                        </div>
+
                         <!-- ── GNN Neighbors ──────────────────────────────────────── -->
-                        <div class="lb-section">
-                          <p class="lb-section-title">GNN Neighbors</p>
+                        <div class="lb-section hidden" data-studio-tool="gnn">
                           <p class="brain-subtitle">Explore memories the neural network predicts are related — connections semantic recall alone would miss.</p>
                           <div class="studio-input-row">
-                            <input id="studio-gnn-query" type="text" class="studio-text-input" placeholder="Explore GNN neighbors for…" />
+                            <textarea id="studio-gnn-query" class="studio-text-input" placeholder="Explore GNN neighbors for…" rows="1"></textarea>
                             <select id="studio-gnn-engram" class="studio-select" style="max-width:180px;">
                               <option value="">All engrams</option>
                             </select>
-                            <button id="btn-studio-gnn" class="ai-outline btn-sm">Explore</button>
+                            <button id="btn-studio-gnn" class="ai btn-sm">Explore</button>
                           </div>
                           <div id="studio-gnn-spinner" class="studio-spinner hidden">Predicting…</div>
                           <p id="studio-gnn-unavailable" class="brain-subtitle hidden"></p>
@@ -5957,34 +6979,12 @@
                           </div>
                         </div>
 
-                        <!-- ── Remember ───────────────────────────────────────────── -->
-                        <div class="lb-section">
-                          <p class="lb-section-title">Remember</p>
-                          <p class="brain-subtitle">Save a new memory. Choose an engram or leave blank to auto-suggest the best fit.</p>
-                          <div class="studio-input-row" style="margin-bottom:6px;">
-                            <input id="studio-remember-label" type="text" class="studio-text-input" style="max-width:200px;" placeholder="Label (optional)" />
-                            <select id="studio-remember-engram" class="studio-select">
-                              <option value="">← auto-suggest engram</option>
-                            </select>
-                          </div>
-                          <textarea id="studio-remember-text" class="studio-textarea" placeholder="What do you want to remember?"></textarea>
-                          <div id="studio-duplicate-warning" class="studio-dup-warning hidden"></div>
-                          <div id="studio-suggest-result" class="studio-suggest-result hidden"></div>
-                          <div class="studio-action-row">
-                            <button id="btn-studio-check-dup" class="btn-sm">Check for duplicates</button>
-                            <button id="btn-studio-remember" class="primary btn-sm">Save memory</button>
-                          </div>
-                          <div id="studio-remember-spinner" class="studio-spinner hidden">Saving…</div>
-                          <div id="studio-remember-success" class="studio-success hidden"></div>
-                        </div>
-
                         <!-- ── Edit / Correct ─────────────────────────────────────── -->
-                        <div class="lb-section">
-                          <p class="lb-section-title">
-                            Edit / Correct
+                        <div class="lb-section hidden" data-studio-tool="edit">
+                          <p class="brain-subtitle">
+                            Describe a correction in plain language. The app finds the right memory, proposes a diff, and asks you to approve before writing.
                             <span id="studio-edit-llm-badge" class="studio-llm-badge hidden">LLM-assisted</span>
                           </p>
-                          <p class="brain-subtitle">Describe a correction in plain language. The app finds the right memory, proposes a diff, and asks you to approve before writing.</p>
                           <div class="studio-scope-row" style="margin-bottom:6px;">
                             <label for="studio-edit-engram" class="studio-scope-label">Engram:</label>
                             <select id="studio-edit-engram" class="studio-select">
@@ -5995,17 +6995,62 @@
                           <button id="btn-studio-propose-edit" class="primary btn-sm">Propose correction</button>
                           <div id="studio-edit-spinner" class="studio-spinner hidden">Proposing…</div>
                           <div id="studio-edit-diff" class="studio-diff-block hidden">
-                            <p class="studio-diff-header">Proposed changes — review carefully before approving:</p>
+                            <p class="studio-diff-header">Analysis — review the eventual outcome before confirming. Nothing has been written to your memory yet.</p>
                             <div id="studio-edit-diff-body" class="studio-diff-body"></div>
                             <div class="studio-action-row" style="margin-top:8px;">
-                              <button id="btn-studio-edit-approve" class="primary btn-sm">Approve &amp; apply</button>
+                              <button id="btn-studio-edit-approve" class="primary btn-sm" title="Click once to enter confirm state; click again to actually apply">Approve &amp; apply</button>
                               <button id="btn-studio-edit-reject" class="danger btn-sm">Reject</button>
                             </div>
                           </div>
                         </div>
 
+                        <!-- Bottom spacer: a real flow-level element with
+                             explicit height that guarantees scroll content
+                             can clear the Solo Memories trivia bar (which
+                             overlays the canvas with a 44px sliver at the
+                             bottom). We use a real element instead of
+                             relying on padding-bottom on the scroll container
+                             because display:flex + overflow:auto can clip
+                             padding-bottom in some WebView versions, which
+                             was repeatedly causing the Approve / Reject
+                             buttons (and Remember's duplicate list, etc.)
+                             to land behind the drawer. Height matches the
+                             drawer overlay + a comfortable visual buffer. -->
+                        <div class="studio-bottom-spacer" aria-hidden="true"></div>
                       </div><!-- /studio-workspace -->
                     </div><!-- /studio-section -->
+
+                    <!-- Trivia drawer — collapses to a bar at the bottom; slides up to full overlay on open -->
+                    <div id="trivia-drawer" class="hidden">
+                      <!-- Bar: always visible handle, shows stats, click to open/close -->
+                      <div id="trivia-bar" class="trivia-bar" role="button" tabindex="0" aria-label="Open memory review">
+                        <span class="trivia-bar-icon">◈</span>
+                        <span class="trivia-bar-label">Solo Memories</span>
+                        <span class="trivia-bar-sep">·</span>
+                        <span id="trivia-bar-stats" class="trivia-bar-stats">Loading…</span>
+                        <span id="trivia-bar-pill" class="trivia-bar-pill hidden"></span>
+                        <button id="btn-trivia-close" class="trivia-bar-close" title="Close" aria-label="Close memory review">✕</button>
+                      </div>
+                      <!-- Body: full deck, revealed when drawer opens -->
+                      <div class="trivia-body">
+                        <div id="g-deck" class="g-deck">
+                          <div class="g-deck-pinned">
+                            <div class="g-deck-header">
+                              <span class="g-deck-title">If you have 30 seconds, connect these lonely memories…</span>
+                              <span class="g-deck-nav">
+                                <button id="btn-deck-prev" class="g-deck-nav-btn" title="Previous card" aria-label="Previous card">‹</button>
+                                <span id="g-deck-progress" class="g-deck-progress"></span>
+                                <button id="btn-deck-next" class="g-deck-nav-btn" title="Next card" aria-label="Next card">›</button>
+                              </span>
+                            </div>
+                            <div id="g-deck-card-head" class="g-deck-card-head"></div>
+                          </div>
+                          <div id="g-deck-card" class="g-deck-card">
+                            <p class="subtitle">Loading…</p>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
 
                   </section>
 
@@ -8084,17 +9129,34 @@ ollama list</code></pre>
       </div>
     </div>
 
-    <!-- Memory Studio startup announcement modal -->
+    <!-- MemoryStudio startup announcement modal -->
     <div id="studio-intro-modal" class="studio-intro-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="studio-intro-title">
       <div class="studio-intro-card">
-        <h2 id="studio-intro-title">Memory Studio</h2>
-        <p>
-          Recall, remember, edit, and explore your memory the way your AI client does —
-          using the exact same operations, running entirely on your device.
+        <h2 id="studio-intro-title">MemoryStudio</h2>
+        <p style="margin-bottom:16px;">
+          Interact with your memory the way your AI client does —
+          the same MCP operations, running entirely on your device.
           No internet. No cloud hop.
         </p>
-        <button id="btn-studio-intro-upgrade" class="primary" style="width:100%;">Upgrade to Studio</button>
-        <button id="btn-studio-intro-close" class="btn-ghost" style="margin-top:8px;width:100%;">Maybe later</button>
+        <ul style="text-align:left; list-style:none; padding:0; margin:0 0 20px; display:flex; flex-direction:column; gap:10px;">
+          <li style="display:flex; gap:10px; align-items:flex-start;">
+            <span style="font-size:16px; flex-shrink:0;">🔍</span>
+            <span><strong>Recall</strong> — run a full subgraph recall and see exactly what your AI client sees, with nodes, edges, and scores.</span>
+          </li>
+          <li style="display:flex; gap:10px; align-items:flex-start;">
+            <span style="font-size:16px; flex-shrink:0;">💾</span>
+            <span><strong>Remember</strong> — save new memories directly, routed to any engram, without going through an AI client.</span>
+          </li>
+          <li style="display:flex; gap:10px; align-items:flex-start;">
+            <span style="font-size:16px; flex-shrink:0;">✏️</span>
+            <span><strong>Edit &amp; correct</strong> — propose diffs on existing memory nodes and approve them with a single click.</span>
+          </li>
+          <li style="display:flex; gap:10px; align-items:flex-start;">
+            <span style="font-size:16px; flex-shrink:0;">🧠</span>
+            <span><strong>GNN neighbors</strong> — explore connections your neural network predicts that semantic recall alone would miss.</span>
+          </li>
+        </ul>
+        <button id="btn-studio-intro-upgrade" class="primary" style="width:100%;">Open MemoryStudio</button>
         <label class="studio-intro-dismiss-row">
           <input type="checkbox" id="chk-studio-intro-dismiss" />
           Don't show this on startup

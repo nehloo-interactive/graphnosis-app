@@ -21,20 +21,43 @@ import type { CorrectionEdit, AppendDocumentInput } from './graphnosis-adapter.j
 // edits are content+reason only, deletes are soft, and `supersede` keeps audit
 // lineage (preferred when the user is correcting rather than just tweaking).
 
+// All string fields here are intentionally LENIENT on input — small local
+// LLMs (Llama 3.2 3B, Phi-3, etc.) treat "no value" inconsistently: they
+// omit the key sometimes (which Zod's .optional() handles), they emit JSON
+// null sometimes (which .optional() rejects), and occasionally they emit
+// empty string. Rejecting the entire diff over any of these throws away an
+// otherwise-valid proposal and surfaces as a confusing Zod error banner.
+//
+// Pattern: a preprocess step coerces `null` → `undefined` before the
+// schema sees it, so a downstream .optional() / .default() reads cleanly
+// and the OUTPUT type stays as the consumer wants it (truly optional, or
+// always present, but never the awkward "required-but-can-be-undefined"
+// that wrecks the inferred type for callers like
+// `{ edits: [], adds: [] }`).
+const FALLBACK_REASON = 'No reason provided by LLM — added automatically.';
+/** Field that may be null/undefined/missing → always-present string in output (with default). */
+const lenientStringWithDefault = (defaultVal: string) =>
+  z.preprocess((v) => (v === null ? undefined : v), z.string().default(defaultVal));
+/** Field that may be null/undefined/missing → optional string in output. */
+const lenientOptionalString = () =>
+  z.preprocess((v) => (v === null ? undefined : v), z.string().optional());
+
 const EditOp = z.discriminatedUnion('kind', [
-  z.object({ kind: z.literal('edit'),      nodeId: z.string(), content: z.string(), reason: z.string() }),
-  z.object({ kind: z.literal('supersede'), nodeId: z.string(), content: z.string(), reason: z.string() }),
-  z.object({ kind: z.literal('delete'),    nodeId: z.string(), reason: z.string() }),
+  z.object({ kind: z.literal('edit'),      nodeId: z.string(), content: z.string(), reason: lenientStringWithDefault(FALLBACK_REASON) }),
+  z.object({ kind: z.literal('supersede'), nodeId: z.string(), content: z.string(), reason: lenientStringWithDefault(FALLBACK_REASON) }),
+  z.object({ kind: z.literal('delete'),    nodeId: z.string(),                       reason: lenientStringWithDefault(FALLBACK_REASON) }),
 ]);
 
 const AddOp = z.object({
   text: z.string(),
   /** Optional label shown in the inspector; becomes the source ref. */
-  label: z.string().optional(),
+  label: lenientOptionalString(),
 });
 
 const DiffSchema = z.object({
-  reasoning: z.string().optional(),
+  // Top-level LLM reasoning — same null/undefined/missing tolerance, but
+  // stays truly optional in the output type so consumers can omit it.
+  reasoning: lenientOptionalString(),
   edits: z.array(EditOp).default([]),
   adds: z.array(AddOp).default([]),
 });
@@ -315,9 +338,58 @@ export async function applyCorrection(opts: {
   }
 }
 
+/** Pull a JSON object out of a raw LLM completion. Small local models emit a
+ *  variety of malformed shapes: bare prose + JSON, code-fenced JSON, JSON
+ *  with trailing commas, JSON that just stops mid-object because the model
+ *  ran out of budget. We try plain parse first, then progressively repair
+ *  the common failure modes, then give up cleanly so the caller can show
+ *  the user a usable empty-diff state instead of a stack trace. */
 function extractJson(raw: string): unknown {
-  const start = raw.indexOf('{');
-  const end = raw.lastIndexOf('}');
-  if (start === -1 || end === -1) throw new Error('Local LLM did not return JSON');
-  return JSON.parse(raw.slice(start, end + 1));
+  // Strip ```json ... ``` and ``` ... ``` fences if present. The model
+  // sometimes wraps the object even when the prompt says "JSON only".
+  const fenced = raw.match(/```(?:json)?\s*([\s\S]+?)\s*```/i);
+  let candidate = fenced ? fenced[1]! : raw;
+  // Slice from first `{` to last `}` so leading/trailing prose is dropped.
+  const start = candidate.indexOf('{');
+  const end = candidate.lastIndexOf('}');
+  if (start === -1) throw new Error('Local LLM did not return JSON');
+  candidate = end === -1 ? candidate.slice(start) : candidate.slice(start, end + 1);
+
+  // 1. Try as-is. Most well-formed responses land here.
+  try { return JSON.parse(candidate); } catch { /* fall through to repair */ }
+
+  // 2. Repair pass — handles the three most common small-LLM failure modes:
+  //    (a) Trailing commas before `]` or `}` (e.g. `[1, 2, 3,]`).
+  //    (b) Unbalanced braces — usually missing close-braces because the
+  //        model was truncated by max-tokens mid-object.
+  //    (c) Unbalanced brackets — same reason.
+  let repaired = candidate
+    // (a) drop trailing commas
+    .replace(/,(\s*[}\]])/g, '$1');
+  // (b) + (c) — naive bracket balancer: count unclosed { and [ and append.
+  const opens = (repaired.match(/[{[]/g) ?? []);
+  const closes = (repaired.match(/[}\]]/g) ?? []);
+  const openCurly = (repaired.match(/\{/g) ?? []).length;
+  const closeCurly = (repaired.match(/\}/g) ?? []).length;
+  const openSquare = (repaired.match(/\[/g) ?? []).length;
+  const closeSquare = (repaired.match(/\]/g) ?? []).length;
+  const missingCurly = Math.max(0, openCurly - closeCurly);
+  const missingSquare = Math.max(0, openSquare - closeSquare);
+  // Order matters: arrays close first because they're usually nested inside
+  // objects. Adding `]` before `}` matches the most common ordering.
+  void opens; void closes;
+  repaired = repaired + ']'.repeat(missingSquare) + '}'.repeat(missingCurly);
+  try { return JSON.parse(repaired); } catch { /* fall through to empty */ }
+
+  // 3. Give up cleanly. Returning an empty-but-valid diff means the caller
+  // (proposeCorrection) ships a "no changes proposed" preview to the App,
+  // and the user sees the friendly "could not match" message instead of a
+  // red Zod / SyntaxError banner. The reasoning string carries the raw
+  // model output (truncated) so the user can see what actually came back.
+  const preview = raw.slice(0, 240).replace(/\s+/g, ' ').trim();
+  return {
+    reasoning: `Local LLM returned malformed JSON; correction skipped. Raw start: ${preview}…`,
+    edits: [],
+    adds: [],
+  };
 }
