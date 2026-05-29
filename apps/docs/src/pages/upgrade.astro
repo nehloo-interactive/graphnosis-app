@@ -1,0 +1,316 @@
+---
+/**
+ * GET /upgrade
+ *
+ * Landing page for Graphnosis Pro. Explains what Pro unlocks, surfaces
+ * pricing, and routes the user to /upgrade/checkout (the Stripe Checkout
+ * Session endpoint) when they're ready to subscribe.
+ *
+ * Reached from:
+ *   - In-app "Upgrade to Pro" buttons across MemoryStudio Pro gates
+ *     (Skills, GNN Exploration, Settings → License modal).
+ *   - The /pricing redirect on graphnosis.com (if added later).
+ *   - Direct link / shared URL.
+ *
+ * Query params (all optional, all forwarded to /upgrade/checkout):
+ *   ?email=...    Pre-fill Stripe checkout with the cortex email so the
+ *                 customer doesn't have to retype it.
+ *
+ * Why a landing page instead of jumping straight to Stripe? Three
+ * reasons:
+ *   1. Honest disclosure — users see WHAT they're paying for before
+ *      they're charged. Reduces refund/chargeback risk.
+ *   2. Search-engine reachable — Stripe-hosted checkout isn't indexed.
+ *      A landing page can rank for "Graphnosis Pro" / "Graphnosis price".
+ *   3. Conversion-tunable — pricing copy, feature emphasis, and CTAs
+ *      can iterate without touching the Stripe Checkout config.
+ */
+
+export const prerender = false;
+
+const url = new URL(Astro.request.url);
+const prefilledEmail = url.searchParams.get('email') ?? '';
+
+// Build the checkout link — preserve any ?email so the next hop forwards
+// it to Stripe. encodeURIComponent guards against malformed query input.
+const checkoutHref = prefilledEmail
+  ? `/upgrade/checkout?email=${encodeURIComponent(prefilledEmail)}`
+  : '/upgrade/checkout';
+---
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Graphnosis Pro — your memory, supercharged</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="description" content="Graphnosis Pro unlocks Skill training, GNN Exploration, autonomous retraining, and more. $9/month, cancel anytime. Your memory stays local and encrypted." />
+    <style>
+      :root {
+        --bg: #0f1411;
+        --fg: #e7eee8;
+        --fg-dim: #8b9590;
+        --accent: #1bb673;
+        --accent-dark: #169b62;
+        --card: #18211c;
+        --border: #233028;
+      }
+      * { box-sizing: border-box; }
+      body {
+        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+        background: var(--bg);
+        color: var(--fg);
+        max-width: 760px;
+        margin: 6vh auto;
+        padding: 0 24px 8vh;
+        line-height: 1.6;
+      }
+      .eyebrow {
+        text-transform: uppercase;
+        letter-spacing: 0.15em;
+        font-size: 11px;
+        font-weight: 700;
+        color: var(--accent);
+        margin: 0 0 12px;
+      }
+      h1 { font-size: 38px; line-height: 1.15; margin: 0 0 14px; }
+      .lead { font-size: 17px; color: var(--fg-dim); margin: 0 0 32px; max-width: 60ch; }
+      .price-card {
+        display: flex;
+        flex-direction: column;
+        gap: 14px;
+        padding: 24px 26px;
+        background: var(--card);
+        border: 1px solid var(--border);
+        border-radius: 14px;
+        margin-bottom: 36px;
+      }
+      .price-row {
+        display: flex; align-items: baseline; gap: 8px;
+      }
+      .price-amount { font-size: 44px; font-weight: 700; letter-spacing: -0.02em; }
+      .price-unit { font-size: 16px; color: var(--fg-dim); }
+      .price-fineprint { font-size: 13px; color: var(--fg-dim); margin: 0; }
+      .cta {
+        display: inline-block;
+        padding: 14px 26px;
+        background: var(--accent);
+        color: #fff;
+        border-radius: 8px;
+        text-decoration: none;
+        font-weight: 600;
+        font-size: 16px;
+        transition: background 0.15s;
+        align-self: flex-start;
+      }
+      .cta:hover { background: var(--accent-dark); }
+      h2 { font-size: 22px; margin: 40px 0 14px; }
+      .features {
+        list-style: none;
+        padding: 0;
+        margin: 0 0 36px;
+        display: grid;
+        gap: 14px;
+      }
+      .features li {
+        padding: 16px 18px;
+        background: var(--card);
+        border: 1px solid var(--border);
+        border-radius: 10px;
+      }
+      .feature-title {
+        font-weight: 700;
+        margin-bottom: 4px;
+      }
+      .feature-desc {
+        color: var(--fg-dim);
+        font-size: 14px;
+      }
+      .faq {
+        margin: 36px 0;
+      }
+      .faq details {
+        padding: 12px 16px;
+        background: var(--card);
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        margin-bottom: 8px;
+      }
+      .faq summary {
+        cursor: pointer;
+        font-weight: 600;
+      }
+      .faq details[open] summary { margin-bottom: 8px; }
+      .faq details p { margin: 4px 0; color: var(--fg-dim); font-size: 14px; }
+      /* Inline links inside FAQ + body copy. Without this, anchor tags
+         inherit the browser-default deep blue, which is invisible on
+         the dark green background. Match the .footer-note treatment. */
+      .faq a, .lead a { color: var(--accent); text-decoration: underline; text-underline-offset: 2px; }
+      .faq a:hover, .lead a:hover { color: #fff; }
+      .footer-note {
+        margin-top: 48px;
+        padding-top: 20px;
+        border-top: 1px solid var(--border);
+        color: var(--fg-dim);
+        font-size: 13px;
+      }
+      .footer-note a { color: var(--accent); }
+      code { background: rgba(255,255,255,0.06); padding: 1px 5px; border-radius: 3px; font-size: 13px; }
+    </style>
+  </head>
+  <body>
+    <p class="eyebrow">Graphnosis Pro</p>
+    <h1>Your memory, supercharged.</h1>
+    <p class="lead">
+      Graphnosis Pro turns your local cortex into an autonomous, self-improving
+      memory layer. Skill training, neural-graph exploration, autonomous
+      retraining — all running on your own machine, all on top of the same
+      encrypted memory you already own.
+    </p>
+
+    <div class="price-card">
+      <div class="price-row">
+        <span class="price-amount">$10</span>
+        <span class="price-unit">/ month</span>
+      </div>
+      <p class="price-fineprint">
+        Cancel anytime. Tokens delivered by email after checkout — your
+        existing memory keeps working the same way it did before.
+      </p>
+      <a class="cta" href={checkoutHref}>Start subscription →</a>
+    </div>
+
+    <h2>What unlocks</h2>
+    <ul class="features">
+      <li>
+        <div class="feature-title">🛠️ Graphnosis Autonomous Praxis (Skills)</div>
+        <div class="feature-desc">
+          Compile your domain knowledge into compact, AI-loadable skill files.
+          The full LLM-rewrite path with per-line attribution, exportable to
+          Claude / Cursor / OpenAI / GTS. Live progressive diff while Ghampus
+          trains.
+        </div>
+      </li>
+      <li>
+        <div class="feature-title">🧠 GNN Exploration</div>
+        <div class="feature-desc">
+          Discover connections semantic recall would miss. The Graphnosis
+          Neural Network trains on your engrams locally and predicts
+          edges your queries can hop through.
+        </div>
+      </li>
+      <li>
+        <div class="feature-title">🔁 Autonomous skill retraining</div>
+        <div class="feature-desc">
+          Pick a schedule — interval, cortex-growth, vitality-decay, or
+          hybrid — and Ghampus keeps your skills current as your memory
+          evolves. Three autonomy levels: auto-accept, notify, or
+          preview-first.
+        </div>
+      </li>
+      <li>
+        <div class="feature-title">📦 Skill export to GTS</div>
+        <div class="feature-desc">
+          Package any skill as a portable <code>.gts</code> bundle —
+          shareable across machines, importable into any Graphnosis
+          cortex.
+        </div>
+      </li>
+      <li>
+        <div class="feature-title">More coming</div>
+        <div class="feature-desc">
+          Power-user engram templates (Project, Research, Codebase,
+          Health), encrypted multi-device sync, team graphs. Pro
+          unlocks every paid feature as it ships — no separate
+          purchases, no surprise upsells.
+        </div>
+      </li>
+    </ul>
+
+    <h2>What stays exactly the same</h2>
+    <ul class="features">
+      <li>
+        <div class="feature-title">Your memory is still local.</div>
+        <div class="feature-desc">
+          Pro doesn't ship your data anywhere. Engrams stay on your
+          device, encrypted with your passphrase. The license token is
+          the only thing that touches the network — and it's signed
+          locally-verifiable, no live phone-home.
+        </div>
+      </li>
+      <li>
+        <div class="feature-title">Free features stay free.</div>
+        <div class="feature-desc">
+          Recall, Remember, Edit/Correct, engram management, the
+          memory-augmented training path — all stay free. Pro adds
+          on top; nothing currently free moves behind the paywall.
+        </div>
+      </li>
+    </ul>
+
+    <div class="faq">
+      <h2>Questions</h2>
+
+      <details>
+        <summary>How does the license actually work?</summary>
+        <p>
+          After checkout we email you a one-time magic link. Click it and
+          Graphnosis turns Pro on automatically via a <code>graphnosis://</code>
+          deep link. If that doesn't work (no Graphnosis on this device, or
+          the scheme isn't registered yet), you can paste the token into
+          Graphnosis → Settings → License.
+        </p>
+        <p>
+          The token is signed by our license server using an Ed25519
+          keypair. Graphnosis verifies it locally — no network call needed
+          at runtime.
+        </p>
+      </details>
+
+      <details>
+        <summary>Can I install Graphnosis on multiple devices?</summary>
+        <p>
+          Yes. The same token works on every device tied to your email.
+          Hit "Refresh from server" in the license panel on a new device
+          and we'll re-email you the token.
+        </p>
+      </details>
+
+      <details>
+        <summary>What happens if I cancel?</summary>
+        <p>
+          Your token expires at the end of the current billing period.
+          Pro features stop working, but every Pro-trained skill, every
+          GNN edge, every retrain config you produced stays in your
+          cortex — they just become read-only. Re-subscribe and they
+          light back up.
+        </p>
+      </details>
+
+      <details>
+        <summary>Is there a free trial?</summary>
+        <p>
+          Not currently. The memory-augmented training path (free)
+          lets you experience the Skills workflow end-to-end — just
+          without the LLM rewrite. If that flow isn't enough, Pro is
+          one click away.
+        </p>
+      </details>
+
+      <details>
+        <summary>Do you offer team / enterprise plans?</summary>
+        <p>
+          Coming. Shared engrams, role-permissioned recall, audit-logged
+          access, compliance retention. If you're at a company that wants
+          early access, reach out at <a href="mailto:support@graphnosis.com">support@graphnosis.com</a>.
+        </p>
+      </details>
+    </div>
+
+    <p class="footer-note">
+      Already subscribed but missing your token?
+      <a href="/api/auth/magic-link">Re-send the magic link</a> or open
+      Graphnosis → Settings → Pro license → "Refresh from server".
+      <br />
+      Questions? Email <a href="mailto:support@graphnosis.com">support@graphnosis.com</a>.
+    </p>
+  </body>
+</html>

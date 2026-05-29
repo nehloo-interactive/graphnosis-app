@@ -1,0 +1,57 @@
+/**
+ * Typed access to Cloudflare Workers env (secrets, plain vars, KV bindings).
+ *
+ * Astro's Cloudflare adapter surfaces Worker env as
+ * `Astro.locals.runtime.env` in .astro components and `context.locals.runtime.env`
+ * in API routes. We don't reach for `process.env` on Workers — Workers have
+ * no process; env values arrive bound to the request context.
+ *
+ * Every server-side helper (Stripe, Resend, Ed25519 signing, KV) takes a
+ * `BillingEnv` so route handlers stay testable and the type system catches
+ * missing vars at build time.
+ */
+
+import type { KVNamespace } from '@cloudflare/workers-types';
+
+export interface BillingEnv {
+  // Secrets
+  STRIPE_SECRET_KEY?: string;
+  STRIPE_WEBHOOK_SECRET?: string;
+  LICENSE_SIGNING_SECRET_KEY_HEX?: string;
+  RESEND_API_KEY?: string;
+  // Plain text
+  STRIPE_PRICE_MONTHLY_SUBSCRIPTION?: string;
+  RESEND_FROM_ADDRESS?: string;
+  PUBLIC_BILLING_BASE_URL?: string;
+  // KV namespace binding
+  BILLING_KV?: KVNamespace;
+}
+
+/**
+ * Astro's runtime.env is loosely typed (`Runtime['env']` is `unknown`-ish on
+ * the typings, depending on adapter version). We do a single narrowing cast
+ * here so every caller gets a typed `BillingEnv` without sprinkling
+ * assertions across the codebase.
+ */
+export function getEnv(locals: App.Locals): BillingEnv {
+  const runtime = (locals as { runtime?: { env?: BillingEnv } }).runtime;
+  return (runtime?.env ?? {}) as BillingEnv;
+}
+
+/** Require a string value; throw a clear error when missing. */
+export function requireEnv(env: BillingEnv, key: keyof BillingEnv, placeholder?: string): string {
+  const v = env[key] as string | undefined;
+  if (!v || (placeholder && v === placeholder)) {
+    throw new Error(`${String(key)} is not configured. See apps/docs/.env.example.`);
+  }
+  return v;
+}
+
+/** Require a KVNamespace binding; throw when missing. */
+export function requireKv(env: BillingEnv, key: 'BILLING_KV'): KVNamespace {
+  const v = env[key];
+  if (!v) {
+    throw new Error(`${key} KV binding is not configured. Add a KV namespace binding in Cloudflare Pages → Settings.`);
+  }
+  return v;
+}
