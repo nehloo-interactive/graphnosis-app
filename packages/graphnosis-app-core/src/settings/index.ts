@@ -363,7 +363,7 @@ export interface AiSettings {
   /**
    * Memory Studio — the in-app recall/remember/edit/GNN interface.
    * Set to true when the user's Studio subscription is active (driven by
-   * Stripe via the graphnosis.app backend). Default false — the Studio tab
+   * Stripe via the graphnosis.com backend). Default false — the Studio tab
    * is visible but shows a paywall until the subscription is confirmed.
    */
   studioEnabled?: boolean;
@@ -481,7 +481,7 @@ export type GraphTemplate =
   | 'research'
   | 'codebase'
   | 'health'
-  // Power tier — skill training (monthly upgrades subscribers)
+  // Power tier — skill training (monthly subscription subscribers)
   | 'skill'
   // Enterprise tier
   | 'team'
@@ -555,6 +555,67 @@ export interface HttpBridgeSettings {
   allowedOrigins: string[];
 }
 
+/**
+ * Per-skill autonomous-retrain configuration. Stored under
+ * AppSettings.skillAutoRetrain[sourceId] when the user opts a skill in.
+ *
+ * The sidecar scheduler reads this every poll cycle; when the trigger
+ * condition fires AND a valid Pro license is present, the trainer runs
+ * a fresh training pass on the skill and writes the result as the
+ * new current version (the previous version is preserved via the engram's
+ * normal supersession path — no data is destroyed).
+ */
+export interface SkillAutoRetrainConfig {
+  /** Master switch. false = scheduler ignores this skill. */
+  enabled: boolean;
+  /**
+   * Engram the skill lives in. Stored on the config so the scheduler can
+   * find the source without walking every engram on every poll.
+   */
+  graphId: string;
+  /** When the user last manually picked a trigger type. */
+  trigger: 'scheduled' | 'cortex-growth' | 'vitality-decay' | 'hybrid';
+  /** For 'scheduled' / 'hybrid' — interval between auto-retrains, in ms. */
+  intervalMs?: number;
+  /** For 'cortex-growth' — retrain once this many new nodes have been added across the cortex. */
+  cortexGrowthThreshold?: number;
+  /** For 'vitality-decay' — retrain once the skill's vitality score drops below this. */
+  vitalityThreshold?: number;
+  /**
+   * What happens after each auto-retrain run.
+   *   - 'notify':       run the retrain, mark the skill as updated, show a notification.
+   *   - 'auto-accept':  run the retrain, write the new version, no review queue.
+   *   - 'preview-first': run the retrain, write to a review queue, user approves before promotion.
+   * v1 ships 'auto-accept' only; 'notify' and 'preview-first' will follow.
+   */
+  autonomyLevel: 'notify' | 'auto-accept' | 'preview-first';
+  /** Unix-ms of the last completed auto-retrain (null = never). */
+  lastAutoRetrain?: number;
+  /** Snapshot of the cortex node count at last auto-retrain, used by the 'cortex-growth' trigger. */
+  lastNodeCountSnapshot?: number;
+  /** Unix-ms when the config was first enabled (helps the UI surface "configured X days ago"). */
+  enabledAt?: number;
+}
+
+/**
+ * Pending retrain proposal awaiting user review. Created by the scheduler
+ * when a skill's AutoRetrainConfig is in `preview-first` autonomy. The
+ * new text + diff notes are stored here; the existing skill source is
+ * untouched until the user accepts the proposal.
+ */
+export interface SkillRetrainProposal {
+  /** Engram the skill lives in. */
+  graphId: string;
+  /** Unix-ms when this proposal was generated. */
+  proposedAt: number;
+  /** The retrained skill text the scheduler produced. */
+  trained: string;
+  /** Optional diff notes (only present when the LLM rewrite path ran). */
+  diffNotes?: string;
+  /** Which trigger fired — useful for the review-queue UI to render context. */
+  triggerReason: string;
+}
+
 export interface VsCodeBridgeSettings {
   /**
    * Auto-generated UUID token for the always-on local HTTP MCP bridge
@@ -615,6 +676,36 @@ export interface AppSettings {
    */
   licenseEnc?: string;
 
+  /**
+   * Per-skill autonomous-retrain configuration, keyed by sourceId.
+   *
+   * The sidecar's scheduler (apps/desktop-sidecar) reads this map every few
+   * minutes and re-trains skills whose triggers have fired. Pro-gated:
+   * writes require a valid `skill-training` license token; reads are open.
+   * The map is owned by the user — never broadcast to MCP, the AI client,
+   * or any cloud service.
+   *
+   * Missing or null = no autonomous retraining for that skill (manual only).
+   */
+  skillAutoRetrain?: Record<string, SkillAutoRetrainConfig>;
+
+  /**
+   * Notification queue — sourceIds the scheduler retrained while running
+   * under `autonomyLevel: 'notify'` that the user hasn't acknowledged yet.
+   * Library rows show a 🆕 dot for every entry in this set; clicking the
+   * row clears it. Persisted so notifications survive an app restart.
+   */
+  skillRetrainNotifications?: string[];
+
+  /**
+   * Review queue — proposed retrain outputs the scheduler produced while
+   * running under `autonomyLevel: 'preview-first'`. The new text isn't
+   * promoted to a real skill source until the user Accepts; Reject
+   * discards. Keyed by sourceId so a single skill only has one pending
+   * proposal at a time (newer proposals overwrite older ones).
+   */
+  skillRetrainPending?: Record<string, SkillRetrainProposal>;
+
   /** Docs-engram ingest state. Absent on cortexes that never saw the offer. */
   docsEngram?: {
     /** true once the user clicked "Not now" on the docs-ingest offer. */
@@ -641,6 +732,30 @@ export interface AppSettings {
     };
     /** Count of pending (non-dismissed) insight cards in BrainEngine memory. */
     pendingInsightsCount?: number;
+    /**
+     * Diagnostic record for the most recent insight pass — surfaces in the
+     * Insights tab's empty-state so the user understands WHY nothing
+     * appeared (LLM unreachable, scan timed out, no insightful patterns,
+     * etc.) instead of staring at an indistinguishable "No insights yet".
+     */
+    lastInsightResult?: {
+      /** Unix-ms when the run finished (success or failure). */
+      at: number;
+      /**
+       * Outcome:
+       *   - 'ok'           — completed normally; `count` new insights added.
+       *   - 'no-llm'       — local LLM disabled or unreachable.
+       *   - 'no-data'      — every engram had fewer than 5 top nodes; nothing to summarise.
+       *   - 'timeout'      — bailed after consecutive LLM timeouts on a slow model.
+       *   - 'parse-error'  — the LLM responded but the output couldn't be parsed as JSON.
+       *   - 'error'        — any other unexpected failure (see `message`).
+       */
+      status: 'ok' | 'no-llm' | 'no-data' | 'timeout' | 'parse-error' | 'error';
+      /** New insights added on this run (always 0 for non-ok statuses). */
+      count: number;
+      /** Optional human-readable detail attached to `error` / `timeout` / `parse-error`. */
+      message?: string;
+    };
     /** Count of detected duplicate pairs since last dismissal. */
     pendingDuplicatePairsCount?: number;
     /** Temporal decay configuration. */
@@ -1042,6 +1157,11 @@ export function mergeWithDefaults(partial: Partial<AppSettings> | null | undefin
     brain = {
       ...(b.lastRun !== undefined ? { lastRun: b.lastRun } : {}),
       ...(typeof b.pendingInsightsCount === 'number' ? { pendingInsightsCount: b.pendingInsightsCount } : {}),
+      // Last-insight diagnostic — opaque pass-through; the brain engine
+      // owns this shape and writes it after every runInsight() pass.
+      ...(b.lastInsightResult && typeof b.lastInsightResult === 'object'
+        ? { lastInsightResult: b.lastInsightResult }
+        : {}),
       ...(typeof b.pendingDuplicatePairsCount === 'number' ? { pendingDuplicatePairsCount: b.pendingDuplicatePairsCount } : {}),
       ...(td !== undefined ? {
         temporalDecay: {
@@ -1117,6 +1237,18 @@ export function mergeWithDefaults(partial: Partial<AppSettings> | null | undefin
     },
     graphMetadata,
     ...(consentHmacKey !== undefined ? { consentHmacKey } : {}),
+    ...(typeof partial?.licenseEnc === 'string' ? { licenseEnc: partial.licenseEnc } : {}),
+    // Skill auto-retrain config map — opaque pass-through; the sidecar
+    // owns its shape and validates per-entry before scheduling anything.
+    ...(partial?.skillAutoRetrain && typeof partial.skillAutoRetrain === 'object'
+      ? { skillAutoRetrain: partial.skillAutoRetrain }
+      : {}),
+    ...(Array.isArray(partial?.skillRetrainNotifications)
+      ? { skillRetrainNotifications: partial.skillRetrainNotifications.filter((v): v is string => typeof v === 'string') }
+      : {}),
+    ...(partial?.skillRetrainPending && typeof partial.skillRetrainPending === 'object'
+      ? { skillRetrainPending: partial.skillRetrainPending }
+      : {}),
     ...(mobile !== undefined ? { mobile } : {}),
     ...(connectors !== undefined ? { connectors } : {}),
     ...(vscode !== undefined ? { vscode } : {}),

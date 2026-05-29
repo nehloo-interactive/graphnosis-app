@@ -2116,7 +2116,7 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
           required: ['phrase', 'tier'],
         },
       },
-      // ── Skill training (monthly upgrades) ───────────────────────────────────
+      // ── Skill training (monthly subscription) ───────────────────────────────
       {
         name: 'train_skill',
         description:
@@ -2142,7 +2142,7 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
           '• Skill vitality is low (skill_vitality returned < 60)\n\n' +
           'Requires a Skills engram (template: skill). If none exists, tell the user to ' +
           'create one in Graphnosis → New Engram → Skill. ' +
-          'Monthly upgrades subscription required for LLM-powered rewriting; ' +
+          'Monthly subscription required for LLM-powered rewriting; ' +
           'memory-augmented mode is always available.',
         inputSchema: {
           type: 'object',
@@ -3396,6 +3396,23 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
         if (!deps.brainEngine) {
           return mcpError('Brain engine is not available. Open the Graphnosis app to enable it.');
         }
+        // ── Pro gate: GNN Exploration is a Pro feature ─────────────────
+        // The Graphnosis Neural Network is compute-heavy (it predicts
+        // graph edges that semantic recall alone can't find) and is the
+        // headline non-deterministic-aid feature for power users. The
+        // local-deterministic path stays free; GNN-derived predictions
+        // require an active skill-training/gnn-exploration license.
+        {
+          const licenseToken = await deps.host.getLicenseToken();
+          const licensed = deps.licenseValidator?.hasFeature(licenseToken, 'gnn-exploration') ?? false;
+          if (!licensed) {
+            return mcpError(
+              'GNN Exploration requires a Graphnosis Pro subscription. ' +
+              'Subscribe at https://graphnosis.com/upgrade to unlock the ' +
+              'Graphnosis Neural Network and its edge-prediction overlay.',
+            );
+          }
+        }
         const args = GnnNeighborsInput.parse(req.params.arguments ?? {});
         let graphIds = deps.host.listGraphs();
         if (args.engram) {
@@ -3681,7 +3698,7 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
 
         // ── Subscription gate ────────────────────────────────────────────────
         // Skill training (both LLM-rewrite and memory-augmented paths) is a
-        // monthly-upgrades feature. The license token is stored encrypted in the
+        // monthly-subscription feature. The license token is stored encrypted in the
         // cortex; we decrypt on demand and check the Ed25519 signature.
         //
         // Free users can still store and export raw skills (Skills engram is
@@ -3697,9 +3714,9 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
                   upgrade_required: true,
                   feature: 'skill-training',
                   message:
-                    'Skill training is a Graphnosis monthly-upgrades feature. ' +
+                    'Skill training is a Graphnosis monthly-subscription feature. ' +
                     'Subscribe or renew to personalize skills using your cortex memory.',
-                  upgrade_url: 'https://graphnosis.app/upgrade',
+                  upgrade_url: 'https://graphnosis.com/upgrade',
                 }),
               }],
             };
@@ -3805,6 +3822,23 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
           return mcpError(
             'Skill trainer is not available. Open the Graphnosis app to enable it.',
           );
+        }
+
+        // ── Pro gate for GTS exports ───────────────────────────────────
+        // Same gate the desktop UI enforces in ipc.ts skill:export. We
+        // re-check here because AI clients can hit this MCP tool
+        // directly, bypassing the desktop UI; without a server-side
+        // check the gate would be advisory only.
+        if (args.format === 'gts') {
+          const licenseToken = await deps.host.getLicenseToken();
+          const licensed = deps.licenseValidator?.hasFeature(licenseToken, 'skill-training') ?? false;
+          if (!licensed) {
+            return mcpError(
+              'GTS skill-pack export requires a Graphnosis Pro subscription. ' +
+              'Subscribe at https://graphnosis.com/upgrade or export in any other format ' +
+              '(claude-md, cursorrules, system-prompt, openai, raw) for free.',
+            );
+          }
         }
 
         const exported = deps.skillTrainer.exportSkill(

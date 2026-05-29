@@ -2405,6 +2405,22 @@ async function dispatch(deps: IpcDeps, method: string, params: unknown): Promise
 
     case 'studio.gnnNeighbors': {
       assertStudioEnabled(deps);
+      // ── Pro gate: GNN Exploration is Pro-only ────────────────────────
+      // Same gate the MCP `gnn_neighbors` tool enforces. We surface a
+      // structured upgrade-required response so the chip handler can
+      // pop the existing license card instead of guessing at the error.
+      {
+        const licenseToken = await deps.host.getLicenseToken();
+        const licensed = deps.licenseValidator?.hasFeature(licenseToken, 'gnn-exploration') ?? false;
+        if (!licensed) {
+          return {
+            neighbors: [],
+            upgrade_required: true,
+            upgrade_url: 'https://graphnosis.com/upgrade',
+            error: 'GNN Exploration requires a Graphnosis Pro subscription.',
+          };
+        }
+      }
       const args = z.object({
         query: z.string().min(1),
         engram: z.string().optional(),
@@ -2499,10 +2515,10 @@ async function dispatch(deps: IpcDeps, method: string, params: unknown): Promise
     }
 
     case 'studio.setEnabled': {
-      // Called by the subscription check (Stripe webhook via graphnosis.app backend)
+      // Called by the subscription check (Stripe webhook via graphnosis.com backend)
       // or manually during development. Sets the flag that gates all studio.* methods.
       // TODO: in production, this should be called from the subscription-check
-      // flow in main.ts after verifying with https://api.graphnosis.app/subscription/status
+      // flow in main.ts after verifying with https://graphnosis.com/api/subscription/token
       const { enabled } = z.object({ enabled: z.boolean() }).parse(params ?? {});
       const current = deps.host.getSettings();
       // studioEnabled not yet in AiSettings type — cast until core adds it
@@ -2560,11 +2576,35 @@ async function dispatch(deps: IpcDeps, method: string, params: unknown): Promise
       if (!licensed) {
         return {
           upgrade_required: true,
-          upgrade_url: 'https://graphnosis.app/upgrade',
+          upgrade_url: 'https://graphnosis.com/upgrade',
           message: 'Skill training requires a Graphnosis Pro subscription.',
         };
       }
-      return deps.skillTrainer.trainSkill({
+      // Stream the LLM rewrite token-by-token to the desktop so it can
+      // render a live progressive diff. Each Ollama chunk gets broadcast
+      // as a graph.mutation-shaped event (the existing event channel
+      // already routes through to the desktop's event listener with no
+      // protocol changes). The streamId lets the desktop scope chunks
+      // to this particular train call — necessary if the user ever fires
+      // multiple trains in quick succession.
+      const streamId = `train-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
+      deps.broadcastRaw({
+        kind: 'event',
+        name: 'graph.mutation',
+        payload: { graphId: `__skill_train_start__${streamId}`, ts: Date.now() },
+      });
+      const onChunk = (chunk: string): void => {
+        deps.broadcastRaw({
+          kind: 'event',
+          name: 'graph.mutation',
+          payload: {
+            graphId: `__skill_train_chunk__${streamId}`,
+            ts: Date.now(),
+            chunk,
+          },
+        });
+      };
+      const result = await deps.skillTrainer.trainSkill({
         skill: args.skill,
         graphId: args.graphId,
         ...(args.skillName !== undefined ? { skillName: args.skillName } : {}),
@@ -2572,7 +2612,16 @@ async function dispatch(deps: IpcDeps, method: string, params: unknown): Promise
         ...(args.modelTarget !== undefined ? { modelTarget: args.modelTarget } : {}),
         ...(args.save !== undefined ? { save: args.save } : {}),
         ...(args.recallBreadth != null ? { recallBreadth: args.recallBreadth } : {}),
+        onChunk,
       });
+      // Final "done" frame — the desktop uses this to finalize the diff
+      // view and clean up any in-flight state.
+      deps.broadcastRaw({
+        kind: 'event',
+        name: 'graph.mutation',
+        payload: { graphId: `__skill_train_done__${streamId}`, ts: Date.now() },
+      });
+      return { ...result, streamId };
     }
 
     case 'skill:export': {
@@ -2581,6 +2630,24 @@ async function dispatch(deps: IpcDeps, method: string, params: unknown): Promise
         format: z.enum(['claude-md', 'cursorrules', 'system-prompt', 'openai', 'raw', 'gts']),
       }).parse(params ?? {});
       if (!deps.skillTrainer) return '';
+      // ── Pro gate: .gts (encrypted skill pack) exports require a valid
+      // skill-training license. All other text formats stay free.
+      // The .gts format is the distribution vehicle for community/official
+      // skill packs and signed-and-verifiable artifacts — that's the
+      // value-extraction moment we charge for. Plain text exports
+      // (claude-md, cursorrules, raw, etc.) remain unrestricted so free
+      // users can still ship skills into their own AI tools.
+      if (args.format === 'gts') {
+        const licenseToken = await deps.host.getLicenseToken();
+        const licensed = deps.licenseValidator?.hasFeature(licenseToken, 'skill-training') ?? false;
+        if (!licensed) {
+          return {
+            upgrade_required: true,
+            upgrade_url: 'https://graphnosis.com/upgrade',
+            message: 'GTS skill-pack export requires a Graphnosis Pro subscription. Use any other format (claude-md, cursorrules, system-prompt, openai, raw) to share this skill for free.',
+          };
+        }
+      }
       const result = deps.skillTrainer.exportSkill(
         args.skillText,
         args.format as import('./skill-trainer.js').ExportFormat,
@@ -2597,6 +2664,369 @@ async function dispatch(deps: IpcDeps, method: string, params: unknown): Promise
       }).parse(params ?? {});
       if (!deps.skillTrainer) return null;
       return deps.skillTrainer.computeSkillVitality(args.graphId, args.sourceId);
+    }
+
+    case 'skill:list': {
+      // Read-only listing of all skill sources across engrams (or filtered to one).
+      // Returns SkillListEntry[] — already enriched with parsed metadata
+      // (trainedAt, mode, recallBreadth) so the Skills UI library can render
+      // without a follow-up `getSkill` per row.
+      const args = z.object({
+        graphId: z.string().min(1).optional(),
+      }).parse(params ?? {});
+      if (!deps.skillTrainer) return [];
+      return deps.skillTrainer.listSkills(args.graphId);
+    }
+
+    case 'skill:get': {
+      // Full skill detail — includes the trained text. Called when the user
+      // opens a row from the library into the Trainer column.
+      const args = z.object({
+        graphId: z.string().min(1),
+        sourceId: z.string().min(1),
+      }).parse(params ?? {});
+      if (!deps.skillTrainer) return null;
+      return deps.skillTrainer.getSkill(args.graphId, args.sourceId);
+    }
+
+    case 'skill:listNotifications': {
+      // Returns sourceIds that have an unacknowledged auto-retrain notification.
+      // Used by the library renderer to surface a 🆕 dot on rows.
+      const settings = deps.host.getSettings();
+      return { sourceIds: settings.skillRetrainNotifications ?? [] };
+    }
+
+    case 'skill:clearNotification': {
+      // Acknowledge a single sourceId. Called when the user opens that
+      // skill in the trainer. The dot disappears on the next library render.
+      const args = z.object({ sourceId: z.string().min(1) }).parse(params ?? {});
+      const settings = deps.host.getSettings();
+      const filtered = (settings.skillRetrainNotifications ?? []).filter((id) => id !== args.sourceId);
+      await deps.host.setSettings({ skillRetrainNotifications: filtered });
+      return { ok: true };
+    }
+
+    case 'skill:listPendingProposals': {
+      // Returns the entire skillRetrainPending map. Used by the library
+      // header to render a "N pending reviews" indicator + dedicated UI.
+      const settings = deps.host.getSettings();
+      return { proposals: settings.skillRetrainPending ?? {} };
+    }
+
+    case 'skill:acceptProposal': {
+      // Promote a pending retrain proposal: ingest its trained text as the
+      // new current version of the skill, then clear the pending entry.
+      // Same Pro gate as set-config — only Pro users can have a queue,
+      // so accepting one without a license shouldn't be possible, but
+      // we re-check defensively.
+      const args = z.object({ sourceId: z.string().min(1) }).parse(params ?? {});
+      const licenseToken = await deps.host.getLicenseToken();
+      const licensed = deps.licenseValidator?.hasFeature(licenseToken, 'skill-training') ?? false;
+      if (!licensed) {
+        return { ok: false, reason: 'upgrade_required' };
+      }
+      const settings = deps.host.getSettings();
+      const pending = settings.skillRetrainPending ?? {};
+      const proposal = pending[args.sourceId];
+      if (!proposal) return { ok: false, reason: 'not_found' };
+      if (!deps.skillTrainer) return { ok: false, reason: 'trainer_unavailable' };
+      // Re-run trainSkill with save=true; this writes the proposal's text
+      // as a fresh version via the normal ingest path so vitality, history,
+      // and supersession all behave normally.
+      try {
+        const dateStr = new Date().toISOString().slice(0, 10);
+        const label = `auto-praxis review (${dateStr})`;
+        await deps.skillTrainer.trainSkill({
+          skill: proposal.trained,
+          graphId: proposal.graphId,
+          skillName: label,
+          save: true,
+          addedBy: 'graphnosis-autopraxis-accept',
+        });
+        // Remove from pending.
+        const next = { ...pending };
+        delete next[args.sourceId];
+        await deps.host.setSettings({ skillRetrainPending: next });
+        return { ok: true };
+      } catch (e) {
+        return { ok: false, reason: 'accept_failed', message: e instanceof Error ? e.message : String(e) };
+      }
+    }
+
+    case 'skill:rejectProposal': {
+      // Discard a pending proposal without promoting it. Same Pro check
+      // as accept; rejection is also a Pro action since only Pro users
+      // can have a queue.
+      const args = z.object({ sourceId: z.string().min(1) }).parse(params ?? {});
+      const settings = deps.host.getSettings();
+      const pending = { ...(settings.skillRetrainPending ?? {}) };
+      delete pending[args.sourceId];
+      await deps.host.setSettings({ skillRetrainPending: pending });
+      return { ok: true };
+    }
+
+    case 'skill:getRetrainConfig': {
+      // Read-only. Returns the AutoRetrainConfig for a given skill source,
+      // or null if none is set. Open to all users — the sidecar can't
+      // schedule anything without the user being Pro, but knowing whether
+      // a config exists is useful for the UI's "currently scheduled" hint.
+      const args = z.object({
+        sourceId: z.string().min(1),
+      }).parse(params ?? {});
+      const settings = deps.host.getSettings();
+      const map = settings.skillAutoRetrain ?? {};
+      return map[args.sourceId] ?? null;
+    }
+
+    case 'skill:setRetrainConfig': {
+      // Pro-gated. Writes (or clears) the AutoRetrainConfig for a skill.
+      // Pass `config: null` to unschedule.
+      //
+      // We do NOT short-circuit the write when no license is present —
+      // we explicitly REJECT with upgrade_required so the desktop UI can
+      // show the same upgrade card the LLM-rewrite path uses.
+      const ConfigSchema = z.object({
+        enabled: z.boolean(),
+        graphId: z.string().min(1),
+        trigger: z.enum(['scheduled', 'cortex-growth', 'vitality-decay', 'hybrid']),
+        intervalMs: z.number().int().positive().optional(),
+        cortexGrowthThreshold: z.number().int().positive().optional(),
+        vitalityThreshold: z.number().int().min(0).max(100).optional(),
+        autonomyLevel: z.enum(['notify', 'auto-accept', 'preview-first']),
+        lastAutoRetrain: z.number().int().positive().optional(),
+        lastNodeCountSnapshot: z.number().int().nonnegative().optional(),
+        enabledAt: z.number().int().positive().optional(),
+      }).nullable();
+      const args = z.object({
+        sourceId: z.string().min(1),
+        config: ConfigSchema,
+      }).parse(params ?? {});
+
+      const licenseToken = await deps.host.getLicenseToken();
+      const licensed = deps.licenseValidator?.hasFeature(licenseToken, 'skill-training') ?? false;
+      if (!licensed) {
+        return {
+          upgrade_required: true,
+          upgrade_url: 'https://graphnosis.com/upgrade',
+          message: 'Autonomous skill retraining requires a Graphnosis Pro subscription. Subscribe to unlock scheduled and trigger-based retraining.',
+        };
+      }
+
+      const current = deps.host.getSettings().skillAutoRetrain ?? {};
+      const next = { ...current };
+      if (args.config === null) {
+        delete next[args.sourceId];
+      } else {
+        // Stamp enabledAt on first enable, preserve on subsequent updates.
+        const prior = current[args.sourceId];
+        const enabledAt = prior?.enabledAt ?? Date.now();
+        // Strip explicit `undefined` values so the result matches
+        // SkillAutoRetrainConfig under exactOptionalPropertyTypes.
+        const clean = Object.fromEntries(
+          Object.entries(args.config).filter(([, v]) => v !== undefined),
+        ) as typeof args.config;
+        next[args.sourceId] = { ...clean, enabledAt } as typeof next[string];
+      }
+      await deps.host.setSettings({ skillAutoRetrain: next });
+      return { ok: true };
+    }
+
+    case 'skill:getHistory': {
+      // Version history for a skill. Used by the desktop's diff view so the
+      // user can see what changed between the current saved version and the
+      // previous one when browsing the library. Returns an array of
+      // SkillVersionEntry rows ordered oldest → newest.
+      const args = z.object({
+        graphId: z.string().min(1),
+        sourceId: z.string().min(1),
+      }).parse(params ?? {});
+      if (!deps.skillTrainer) return [];
+      return deps.skillTrainer.getSkillHistory(args.graphId, args.sourceId);
+    }
+
+    case 'skill:importGts': {
+      // Import a .gts skill pack into the user's cortex.
+      //
+      // The file arrives as base64-encoded bytes from the desktop's
+      // <input type=file> reader. We:
+      //   1. Decrypt + parse the AES-GCM-wrapped JSON payload.
+      //   2. Verify the Ed25519 signature when present (official pack);
+      //      community packs with empty signature import as "unverified".
+      //   3. Ingest EACH skill in the pack as its own kind:'skill' source
+      //      in the target engram (the auto-resolved Skills engram on the
+      //      UI side, or whichever engram the user picked via "Change").
+      //      Each source is independent — the user can re-train, export,
+      //      or forget it just like a self-trained skill.
+      //
+      // The pack's `graphnosisMd` is NOT written to disk here — that
+      // belongs in a separate user-confirmed flow ("Drop GRAPHNOSIS.md
+      // into project root?") which is outside this IPC's responsibility.
+      const args = z.object({
+        graphId: z.string().min(1),
+        gtsBase64: z.string().min(1),
+        // Optional override for the addedBy audit field — defaults to
+        // 'graphnosis-skill-importer' so imports are visible in the
+        // Sources panel's "added by" column.
+        addedBy: z.string().optional(),
+      }).parse(params ?? {});
+
+      const { parseGtsPackage } = await import('./gts-format.js');
+      let payload: import('./gts-format.js').GtsPayload;
+      try {
+        const bytes = Buffer.from(args.gtsBase64, 'base64');
+        payload = parseGtsPackage(bytes);
+      } catch (e) {
+        return {
+          ok: false,
+          reason: 'parse_failed',
+          message: e instanceof Error ? e.message : 'Could not read GTS file.',
+        };
+      }
+
+      // Verify signature when present. Community packs return false (not an
+      // error — just no badge). Tampered signatures throw and we surface
+      // that to the UI as a hard error so the user knows the file isn't
+      // trustworthy.
+      let verified: boolean;
+      try {
+        verified = deps.licenseValidator
+          ? await deps.licenseValidator.verifyGtsSignature(payload)
+          : false;
+      } catch (e) {
+        return {
+          ok: false,
+          reason: 'signature_failed',
+          message: e instanceof Error ? e.message : 'GTS signature is invalid.',
+        };
+      }
+
+      // Confirm the target engram exists.
+      const meta = deps.host.getGraphMetadata(args.graphId);
+      if (!meta) {
+        return { ok: false, reason: 'unknown_graph', message: `Engram ${args.graphId} is not loaded.` };
+      }
+
+      const imported: Array<{ name: string; sourceId: string }> = [];
+      const skippedEmpty: string[] = [];
+      for (const skill of payload.skills) {
+        // Prefer trainedTextFallback (already-applied delta) over baseText
+        // when a delta pack carries one — matches how the export side picks
+        // what to render for users without the base pack.
+        const body = (skill.trainedTextFallback?.trim() || skill.baseText?.trim() || '').trim();
+        if (!body) {
+          skippedEmpty.push(skill.name);
+          continue;
+        }
+        const dateStr = new Date().toISOString().slice(0, 10);
+        const label = `${skill.name} (imported ${dateStr})`;
+        const header = [
+          `# ${label}`,
+          `<!-- Graphnosis skill import metadata`,
+          `     importedAt: ${new Date().toISOString()}`,
+          `     pack: ${payload.displayName} v${payload.version}`,
+          `     packId: ${payload.id}`,
+          `     packKind: ${payload.kind}`,
+          `     verified: ${verified}`,
+          `     author: ${payload.author}`,
+          `-->`,
+          '',
+        ].join('\n');
+
+        // Recall recipes are appended as a readable trailer so the user can
+        // see them when opening the source — they don't become a separate
+        // entity, just contextual metadata in the body.
+        const recipesBlock = (skill.recallRecipes?.length ?? 0) > 0
+          ? '\n\n---\n## Recall Recipes\n\n' + skill.recallRecipes.map((r) =>
+              `### ${r.name}\n**Trigger:** ${r.trigger}\n\n` +
+              r.steps.map((s) => `- \`${s.tool}\` "${s.query}"`).join('\n'),
+            ).join('\n\n')
+          : '';
+
+        const rec = await ingestClip(
+          deps.host,
+          args.graphId,
+          header + body + recipesBlock,
+          label,
+          {
+            addedBy: args.addedBy ?? 'graphnosis-skill-importer',
+            sourceKind: 'skill',
+            triggeredBy: 'ipc:skill:importGts',
+          },
+        );
+        imported.push({ name: skill.name, sourceId: rec.sourceId });
+      }
+
+      return {
+        ok: true,
+        verified,
+        pack: {
+          id: payload.id,
+          displayName: payload.displayName,
+          version: payload.version,
+          author: payload.author,
+          kind: payload.kind,
+          description: payload.description,
+        },
+        engramName: meta.displayName ?? args.graphId,
+        graphId: args.graphId,
+        imported,
+        skippedEmpty,
+      };
+    }
+
+    case 'license:setToken': {
+      // Persist a license token received via the graphnosis:// deep link,
+      // the status-poll endpoint, or the manual Settings → License paste
+      // field. The token is encrypted at rest with the cortex data key
+      // (host.setLicenseToken). Validation is a best-effort verify against
+      // the validator's public key — invalid tokens are rejected here so
+      // we never persist garbage, even though setLicenseToken itself only
+      // encrypts opaque bytes.
+      const args = z.object({
+        token: z.string().min(1),
+      }).parse(params ?? {});
+      const trimmed = args.token.trim();
+      // Reject obvious malformed tokens up-front.
+      if (!/^[A-Za-z0-9_\-]+\.[A-Za-z0-9_\-]+$/.test(trimmed)) {
+        return { ok: false, reason: 'malformed' };
+      }
+      const payload = deps.licenseValidator?.verifyToken(trimmed) ?? null;
+      if (!payload) {
+        return { ok: false, reason: 'invalid_or_expired' };
+      }
+      await deps.host.setLicenseToken(trimmed);
+      return {
+        ok: true,
+        plan: payload.plan,
+        features: payload.features,
+        sub: payload.sub,
+        expiresAt: payload.exp * 1000,
+      };
+    }
+
+    case 'license:status': {
+      // Read-only summary of the currently-stored license. Used by the
+      // Skills tab's "your subscription" chip and Settings → License panel
+      // to render plan / expiry / features without re-decoding the token
+      // on the frontend.
+      const token = await deps.host.getLicenseToken();
+      if (!token) {
+        return { present: false };
+      }
+      const payload = deps.licenseValidator?.verifyToken(token) ?? null;
+      if (!payload) {
+        return { present: true, valid: false };
+      }
+      const expiresAt = payload.exp * 1000;
+      return {
+        present: true,
+        valid: true,
+        plan: payload.plan,
+        features: payload.features,
+        sub: payload.sub,
+        expiresAt,
+        expiringSoon: deps.licenseValidator?.isExpiringSoon(token) ?? false,
+      };
     }
 
     case 'skill:checkLicenseExpiry': {

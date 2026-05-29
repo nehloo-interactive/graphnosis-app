@@ -345,7 +345,8 @@ Rules:
 
 const DUPLICATE_SCAN_INTERVAL_MS = 20 * 60 * 1000;   // 20 min
 const SYNAPSE_INTERVAL_MS       = 45 * 60 * 1000;   // 45 min
-const INSIGHT_INTERVAL_MS       =  6 * 60 * 60 * 1000; // 6 h
+const INSIGHT_INTERVAL_MS       =  6 * 60 * 60 * 1000; // 6 h (healthy cadence)
+const INSIGHT_RETRY_AFTER_FAILURE_MS = 60 * 60 * 1000; // 1 h (transient-failure retry)
 const TEMPORAL_INTERVAL_MS      = 24 * 60 * 60 * 1000; // 24 h
 const GOAL_CHECK_INTERVAL_MS    =  4 * 60 * 60 * 1000; // 4 h
 // Grace period before the first background sweep. The duplicate scan
@@ -486,11 +487,24 @@ export class BrainEngine {
   // Debounce timer for the post-ingest duplicate scan — see
   // notifyIngestComplete(). A one-shot setTimeout, reset on each ingest.
   private ingestScanTimer: NodeJS.Timeout | null = null;
+  /**
+   * One-shot retry timer for insights — only armed when a runInsight() pass
+   * fails transiently (LLM timeout, parse error, or LLM unreachable at call
+   * time despite being configured at boot). Cleared on each new run.
+   */
+  private insightRetryTimer: NodeJS.Timeout | null = null;
 
   constructor(
     private readonly host: GraphnosisHost,
     private readonly llm: LocalLlm | null,
     private readonly broadcast: BroadcastRawFn,
+    /**
+     * Optional license validator — when provided, the autonomous GNN
+     * edge-prediction loop self-gates on the `gnn-exploration` feature.
+     * When null/undefined, the loop runs as before (back-compat for any
+     * caller path that doesn't yet wire the validator through).
+     */
+    private readonly licenseValidator?: import('./license-validator.js').LicenseValidator | null,
   ) {
     this.vitality = new VitalityScorer(host);
     this.temporalEngine = new TemporalEngine(host, () => host.getSettings());
@@ -1046,10 +1060,18 @@ export class BrainEngine {
     sessionEdgesCleaned: number;
     sessionCrossEngram: number;
     lastConsolidation: { at: number; inferredEdges: number; communities: number; edgesCleaned: number } | null;
+    lastInsightResult: {
+      at: number;
+      status: 'ok' | 'no-llm' | 'no-data' | 'timeout' | 'parse-error' | 'error';
+      count: number;
+      message?: string;
+    } | null;
   } {
+    const brain = this.host.getSettings().brain;
     return {
       scanning: this.scanInFlight,
-      lastRun: { ...(this.host.getSettings().brain?.lastRun ?? {}) },
+      lastRun: { ...(brain?.lastRun ?? {}) },
+      lastInsightResult: brain?.lastInsightResult ?? null,
       intervals: {
         duplicateScan: DUPLICATE_SCAN_INTERVAL_MS,
         synapse: SYNAPSE_INTERVAL_MS,
@@ -1680,6 +1702,15 @@ export class BrainEngine {
   async runEdgePrediction(): Promise<void> {
     if (!this.llm) return;
     if (!edgePredictionEnabled(this.host)) return;
+    // ── Pro gate: the autonomous edge-prediction loop is GNN-Exploration ──
+    // territory. Unlicensed users get the deterministic recall pipeline
+    // for free; the autonomous loop that writes inferred edges to the
+    // `.gll` overlay requires Pro. Silent skip preserves the schedule
+    // across subscription gaps — re-licensing resumes prediction.
+    if (this.licenseValidator) {
+      const token = await this.host.getLicenseToken();
+      if (!this.licenseValidator.hasFeature(token, 'gnn-exploration')) return;
+    }
     if (!(await this.pingLlm())) return;
     const graphIds = this.host.listGraphs();
     if (graphIds.length === 0) return;
@@ -1702,8 +1733,42 @@ export class BrainEngine {
   }
 
   private async runInsight(): Promise<void> {
-    if (!this.llm) return;
-    if (!(await this.pingLlm())) return;
+    // Track the outcome of THIS run for the diagnostic stored in
+    // settings.brain.lastInsightResult — the Insights tab reads this to
+    // render an honest empty-state ("Last scan: timed out — try a smaller
+    // model") instead of generic "No insights yet" forever.
+    let status: 'ok' | 'no-llm' | 'no-data' | 'timeout' | 'parse-error' | 'error' = 'ok';
+    let message: string | undefined;
+    let newInsightsThisRun = 0;
+    const writeDiagnostic = async (count: number): Promise<void> => {
+      try {
+        const current = this.host.getSettings();
+        await this.host.setSettings({
+          brain: {
+            ...current.brain,
+            lastInsightResult: {
+              at: Date.now(),
+              status,
+              count,
+              ...(message ? { message } : {}),
+            },
+          },
+        });
+      } catch { /* non-fatal */ }
+    };
+
+    if (!this.llm) {
+      status = 'no-llm';
+      message = 'No local LLM configured at sidecar startup.';
+      await writeDiagnostic(0);
+      return;
+    }
+    if (!(await this.pingLlm())) {
+      status = 'no-llm';
+      message = 'Local LLM is disabled or Ollama is unreachable.';
+      await writeDiagnostic(0);
+      return;
+    }
 
     // Wait until the boot load has settled so we don't overwrite persisted
     // insights with an empty in-memory list. In practice the 6-hour first-run
@@ -1717,25 +1782,29 @@ export class BrainEngine {
     }
 
     this.emitActivity('insight', 'start');
-    // Same bail-on-consecutive-timeouts pattern as runSynapse. Insight
-    // sends long prompts (30 nodes × ~200 chars) so it's the most likely
-    // to time out on a slow Ollama model. With 16 engrams in the cortex,
-    // bailing after 2 consecutive saves ~14×8s = 112s of wasted CPU.
     let consecutiveTimeouts = 0;
+    let engramsScanned = 0;
+    let engramsSkippedNoData = 0;
+    let parseFailures = 0;
 
     for (const graphId of this.host.listGraphs()) {
       if (consecutiveTimeouts >= MAX_CONSECUTIVE_LLM_TIMEOUTS) {
         console.error(`[brain] insight: bailing after ${consecutiveTimeouts} consecutive LLM timeouts — Ollama wedged. Will retry next cycle.`);
+        status = 'timeout';
+        message = `Bailed after ${consecutiveTimeouts} consecutive LLM timeouts. Try a smaller / faster Ollama model.`;
         break;
       }
       try {
-        // Search within this graph using searchNodes (per-graph, not federated)
         const topNodes = await this.host.searchNodes(
           graphId,
           'important facts decisions goals plans key information',
           30,
         );
-        if (topNodes.length < 5) continue;
+        if (topNodes.length < 5) {
+          engramsSkippedNoData++;
+          continue;
+        }
+        engramsScanned++;
 
         const nodesList = topNodes
           .map(n => `- [${n.nodeId}] ${n.text.slice(0, 200)}`)
@@ -1762,7 +1831,12 @@ export class BrainEngine {
           body: string;
           relevantNodeIds: string[];
         }> = [];
-        try { parsedInsights = JSON.parse(extractJsonArr(raw)) as typeof parsedInsights; } catch { continue; }
+        try {
+          parsedInsights = JSON.parse(extractJsonArr(raw)) as typeof parsedInsights;
+        } catch {
+          parseFailures++;
+          continue;
+        }
 
         const activeIds = new Set(topNodes.map(n => n.nodeId));
         for (const item of parsedInsights.slice(0, 3)) {
@@ -1779,9 +1853,28 @@ export class BrainEngine {
             ),
             createdAt: Date.now(),
           });
+          newInsightsThisRun++;
         }
       } catch (err) {
         console.error(`[brain] insight error on engram[${redactId(graphId)}]:`, err);
+      }
+    }
+
+    // Triage the run outcome for the diagnostic. Order matters: a timeout
+    // bail overrides downstream success/no-data heuristics; otherwise we
+    // pick the most informative non-ok status.
+    if (status !== 'timeout') {
+      if (engramsScanned === 0 && engramsSkippedNoData > 0) {
+        status = 'no-data';
+        message = `All ${engramsSkippedNoData} engram(s) had fewer than 5 high-signal nodes — nothing to summarise yet. Save more memories first.`;
+      } else if (newInsightsThisRun === 0 && parseFailures > 0) {
+        status = 'parse-error';
+        message = `LLM responded but ${parseFailures} engram(s) returned unparseable output. Try a more capable Ollama model (e.g. llama3.1:8b or larger).`;
+      } else if (newInsightsThisRun === 0 && engramsScanned > 0) {
+        // The LLM ran and parsed fine but didn't surface anything notable.
+        // That's not a failure — it just means your memory is balanced.
+        status = 'ok';
+        message = `Scanned ${engramsScanned} engram(s); the LLM didn't surface anything noteworthy this round.`;
       }
     }
 
@@ -1791,7 +1884,7 @@ export class BrainEngine {
 
     await this.persistLastRun('insight');
     await this.persistInsightCount(pendingCount);
-    // Persist the full insight list so they survive app restarts.
+    await writeDiagnostic(newInsightsThisRun);
     await this.host.saveInsights(this.insights).catch((e) => {
       console.error(`[brain] failed to save insights: ${(e as Error).message}`);
     });
@@ -1799,6 +1892,19 @@ export class BrainEngine {
 
     if (pendingCount > 0) {
       this.emitBrain('__brain_done_insight__');
+    }
+
+    // If THIS run failed transiently (timeout / parse-error / no-llm), schedule
+    // a faster retry at 1h instead of waiting the full 6h. Only one retry is
+    // pending at a time — we clear any prior retry timer before arming a new one.
+    // Note: 'no-llm' returns early above, so it can't reach here — narrowed out by control flow.
+    if (status === 'timeout' || status === 'parse-error') {
+      if (this.insightRetryTimer) clearTimeout(this.insightRetryTimer);
+      this.insightRetryTimer = setTimeout(() => {
+        this.insightRetryTimer = null;
+        void this.runInsight();
+      }, INSIGHT_RETRY_AFTER_FAILURE_MS).unref();
+      console.log(`[brain] insight: ${status} — will retry in ${Math.round(INSIGHT_RETRY_AFTER_FAILURE_MS / 60000)}m`);
     }
   }
 

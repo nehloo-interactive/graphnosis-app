@@ -15,7 +15,7 @@
  *      that supersedes the previous version (version history lives in the graph).
  *
  * Subscription gate: the full training pipeline (both LLM-rewrite and memory-augmented
- * paths) requires a monthly-upgrades subscription. The gate is enforced at the MCP
+ * paths) requires a monthly-subscription subscription. The gate is enforced at the MCP
  * transport layer in `mcp-server.ts` via `LicenseValidator.hasFeature(token, 'skill-training')`,
  * which verifies an Ed25519-signed token issued by the Nehloo signing service. Free users
  * can store raw skills in the Skills engram but cannot run the training pipeline.
@@ -385,7 +385,15 @@ export class SkillTrainer {
 
   // ── trainSkill ──────────────────────────────────────────────────────────────
 
-  async trainSkill(input: TrainSkillInput): Promise<TrainSkillResult> {
+  async trainSkill(input: TrainSkillInput & {
+    /** Streaming callback for live progressive diff. When provided AND the
+     *  underlying LLM supports `completeStream`, the trainer streams the
+     *  LLM rewrite token-by-token. The caller (IPC handler) typically
+     *  forwards each chunk to the desktop over broadcastRaw so the user
+     *  can watch the rewrite arrive in real time. Memory-augmented mode
+     *  doesn't stream — it's a deterministic local synthesis. */
+    onChunk?: (chunk: string) => void;
+  }): Promise<TrainSkillResult> {
     const {
       skill,
       skillName,
@@ -395,6 +403,7 @@ export class SkillTrainer {
       graphId,
       addedBy,
       recallBreadth: inputBreadth,
+      onChunk,
     } = input;
 
     // ── Phase 1: Build skill context (deterministic recall) ───────────────────
@@ -412,14 +421,21 @@ export class SkillTrainer {
     const llmReady = this.llm !== null && await this.pingLlm();
 
     if (llmReady && hasMemories) {
-      // LLM path — full rewrite with memory attribution
+      // LLM path — full rewrite with memory attribution. When the caller
+      // wired an onChunk callback AND the underlying LLM supports streaming,
+      // we pipe each token through onChunk so the UI can render a live
+      // progressive diff. Otherwise fall back to the single-shot complete().
       try {
         const raw = await this.llmCompleteWithTimeout(
           {
             system: SKILL_TRAINING_SYSTEM_PROMPT,
             user: buildTrainingUserPrompt(skill, context.subgraph, skillName, modelTarget),
           },
-          20_000,
+          // Stream timeout is generous (5min) since the user can watch
+          // it work and cancel manually. Non-streaming keeps the
+          // original 20s cap to avoid hanging Brain background loops.
+          onChunk && this.llm?.completeStream ? 5 * 60 * 1000 : 20_000,
+          onChunk,
         );
         const parsed = parseTrainingResult(skill, raw);
         trained = parsed.trained;
@@ -788,10 +804,17 @@ export class SkillTrainer {
   private async llmCompleteWithTimeout(
     input: { system: string; user: string },
     timeoutMs = 20_000,
+    onChunk?: (chunk: string) => void,
   ): Promise<string> {
     if (!this.llm) throw new Error('LLM not available');
+    // Pick streaming when both the caller wants it AND the LLM supports it.
+    // Otherwise fall back to non-streaming complete() — same Promise race
+    // against the timeout in either path.
+    const llmCall: Promise<string> = (onChunk && this.llm.completeStream)
+      ? this.llm.completeStream(input, onChunk)
+      : this.llm.complete(input);
     return Promise.race([
-      this.llm.complete(input),
+      llmCall,
       new Promise<string>((_, reject) =>
         setTimeout(() => reject(new Error(`LLM call exceeded ${timeoutMs}ms`)), timeoutMs),
       ),

@@ -66,6 +66,17 @@ export type CorrectionDiff = z.infer<typeof DiffSchema>;
 export interface LocalLlm {
   /** Single-shot completion. Implementations: llama.cpp server, Ollama, MLX, etc. */
   complete(input: { system: string; user: string; jsonSchema?: unknown }): Promise<string>;
+  /**
+   * Streaming completion. Same prompt as `complete()`; `onChunk` is
+   * invoked with each new piece of text as the LLM emits it. Resolves
+   * with the full final string after the stream ends. Optional —
+   * implementations without streaming support should set this to
+   * undefined; callers fall back to `complete()`.
+   */
+  completeStream?: (
+    input: { system: string; user: string; jsonSchema?: unknown },
+    onChunk: (chunk: string) => void,
+  ) => Promise<string>;
   /** Human-readable identifier shown in the LLM picker UI. */
   name: string;
 }
