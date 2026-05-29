@@ -1309,7 +1309,7 @@ function render(status: StatusSnapshot): void {
       startMcpPolling();
       void refreshBrainState();
       void refreshLlmStatus().then(() => void loadSearchLlmPreferences().then(syncSearchLlmCheckboxes));
-      void loadStudioSubscriptionState().then(() => showStudioIntroModal());
+      void loadStudioSubscriptionState().then(() => showWhatsNewModal());
       void (async () => {
         try {
           const s = (await invoke('get_settings')) as AppSettings;
@@ -15290,34 +15290,63 @@ const STUDIO_BANNER_KEY = 'graphnosis.studioBannerV1Dismissed';
   });
 }());
 
-const STUDIO_INTRO_DISMISSED_KEY = 'graphnosis.studioIntroDismissed';
+// ── What's New modal (multi-slide carousel) ──────────────────────────────────
 
-function showStudioIntroModal(): void {
-  if (localStorage.getItem(STUDIO_INTRO_DISMISSED_KEY) === '1') return;
-  document.getElementById('studio-intro-modal')?.classList.remove('hidden');
+const WHATS_NEW_DISMISSED_KEY = 'graphnosis.whatsNewV1Dismissed';
+const WHATS_NEW_TOTAL_SLIDES = 2;
+let whatsNewCurrentSlide = 0;
+
+function showWhatsNewModal(): void {
+  if (localStorage.getItem(WHATS_NEW_DISMISSED_KEY) === '1') return;
+  whatsNewCurrentSlide = 0;
+  updateWhatsNewSlide();
+  document.getElementById('whats-new-modal')?.classList.remove('hidden');
 }
 
-function hideStudioIntroModal(): void {
-  document.getElementById('studio-intro-modal')?.classList.add('hidden');
+function hideWhatsNewModal(): void {
+  document.getElementById('whats-new-modal')?.classList.add('hidden');
 }
 
-document.getElementById('btn-studio-intro-upgrade')?.addEventListener('click', () => {
-  hideStudioIntroModal();
-  switchGraphnosisTab('checkin');
-});
+function updateWhatsNewSlide(): void {
+  const isLast = whatsNewCurrentSlide === WHATS_NEW_TOTAL_SLIDES - 1;
+  document.querySelectorAll<HTMLElement>('.whats-new-slide').forEach((el) => {
+    el.classList.toggle('active', Number(el.dataset['slide']) === whatsNewCurrentSlide);
+  });
+  document.querySelectorAll<HTMLElement>('.whats-new-dot').forEach((el) => {
+    el.classList.toggle('active', Number(el.dataset['slide']) === whatsNewCurrentSlide);
+  });
+  const btn = document.getElementById('btn-whats-new-next') as HTMLButtonElement | null;
+  if (btn) btn.textContent = isLast ? 'Get started' : 'Next';
+}
 
-document.getElementById('chk-studio-intro-dismiss')?.addEventListener('change', (e) => {
-  if ((e.target as HTMLInputElement).checked) {
-    localStorage.setItem(STUDIO_INTRO_DISMISSED_KEY, '1');
-    hideStudioIntroModal();
+document.getElementById('btn-whats-new-next')?.addEventListener('click', () => {
+  if (whatsNewCurrentSlide < WHATS_NEW_TOTAL_SLIDES - 1) {
+    whatsNewCurrentSlide++;
+    updateWhatsNewSlide();
   } else {
-    localStorage.removeItem(STUDIO_INTRO_DISMISSED_KEY);
+    hideWhatsNewModal();
+    switchGraphnosisTab('checkin');
   }
 });
 
-// Click outside the card to close (without dismissing permanently)
-document.getElementById('studio-intro-modal')?.addEventListener('click', (e) => {
-  if (e.target === e.currentTarget) hideStudioIntroModal();
+document.querySelectorAll<HTMLElement>('.whats-new-dot').forEach((dot) => {
+  dot.addEventListener('click', () => {
+    whatsNewCurrentSlide = Number(dot.dataset['slide']);
+    updateWhatsNewSlide();
+  });
+});
+
+document.getElementById('chk-whats-new-dismiss')?.addEventListener('change', (e) => {
+  if ((e.target as HTMLInputElement).checked) {
+    localStorage.setItem(WHATS_NEW_DISMISSED_KEY, '1');
+    hideWhatsNewModal();
+  } else {
+    localStorage.removeItem(WHATS_NEW_DISMISSED_KEY);
+  }
+});
+
+document.getElementById('whats-new-modal')?.addEventListener('click', (e) => {
+  if (e.target === e.currentTarget) hideWhatsNewModal();
 });
 
 // ── Paywall buttons ─────────────────────────────────────────────────────────
