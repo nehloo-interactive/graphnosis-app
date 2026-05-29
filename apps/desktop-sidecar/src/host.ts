@@ -143,6 +143,11 @@ interface LoadedGraph {
   sourceIndex: sources.SourceIndex;
   cache: embeddings.EmbeddingCache;
   dirty: boolean;
+  /** In-flight buildEmbeddings promise (during cold-load only). Resolves to
+   *  void when the background embed pass finishes; null once resolved.
+   *  Callers that need deterministic recall after loadGraph (tests, scripted
+   *  flows) `await host.waitForEmbeddings(graphId)` to gate on this. */
+  embeddingsBuilding: Promise<void> | null;
 }
 
 /** Payload emitted on every successful graph mutation. Consumers (the IPC
@@ -1459,6 +1464,7 @@ export class GraphnosisHost {
       sourceIndex: new SourceIndex(),
       cache,
       dirty: true,
+      embeddingsBuilding: null,
     });
     this.correctionsCount.set(graphId, 0);
     await this.save(graphId);
@@ -1554,7 +1560,8 @@ export class GraphnosisHost {
     // below, so once cache.load() completes, lookups in cached() start
     // returning hits without any further coordination.
     const cache = new EmbeddingCache({ path: this.cachePath(graphId), key: this.key, salt: this.salt });
-    this.graphs.set(graphId, { handle, sourceIndex, cache, dirty: false });
+    const entry: LoadedGraph = { handle, sourceIndex, cache, dirty: false, embeddingsBuilding: null };
+    this.graphs.set(graphId, entry);
     this.correctionsCount.set(graphId, 0);
 
     // ── Background: load the embedding cache, then kick off rebuild ────────
@@ -1565,27 +1572,50 @@ export class GraphnosisHost {
     //
     // buildEmbeddings fires AFTER cache.load() so it sees any warm entries
     // (cache hits avoid re-embedding already-computed nodes).
-    void cache.load()
+    //
+    // The combined promise is stored on `entry.embeddingsBuilding` so callers
+    // that need deterministic recall after loadGraph can `await
+    // host.waitForEmbeddings(graphId)`. Production callers (UI) generally do
+    // NOT wait — they're happy with TF-IDF-only results in the build window
+    // and accept the upgrade once embeddings arrive. Tests and headless
+    // scripts DO wait for stable comparisons.
+    const buildPromise = cache.load()
       .catch((e: unknown) => {
         console.error(
           `[graphnosis-host] embcache load failed for ${graphId}: ${(e as Error).message} ` +
           `— starting with a fresh empty cache (embeddings will rebuild from scratch).`,
         );
       })
-      .then(() => {
+      .then(async () => {
         // IMPORTANT: use embedBackground (the dedicated background-lane
         // worker) not the foreground embed. With ≥ 2 workers this reserves
         // the foreground worker(s) for user-facing search/recall so they
         // never stall behind a cold-cache rebuild on a large engram.
-        void this.opts.adapter.buildEmbeddings(handle, {
-          embed: cached(this.embedBackground, cache),
-          dimensions: this.embedDimensions,
-          id: this.embedAdapterId,
-          batchSize: this.settings.ai.embedBatch,
-        }).catch((e: unknown) => {
+        try {
+          await this.opts.adapter.buildEmbeddings(handle, {
+            embed: cached(this.embedBackground, cache),
+            dimensions: this.embedDimensions,
+            id: this.embedAdapterId,
+            batchSize: this.settings.ai.embedBatch,
+          });
+        } catch (e) {
           console.error(`[graphnosis-host] could not build embeddings on load for engram[${redactId(graphId)}]: ${(e as Error).message} — query will use TF-IDF only.`);
-        });
+        } finally {
+          // Clear so callers can know the build is no longer in flight.
+          if (this.graphs.get(graphId) === entry) entry.embeddingsBuilding = null;
+        }
       });
+    entry.embeddingsBuilding = buildPromise;
+  }
+
+  /** Resolve when the background embedding build for `graphId` finishes
+   *  (no-op if no build is in flight, or if the graph isn't loaded).
+   *  Used by tests + scripted flows to guarantee that recall sees a fully-
+   *  built embedding index, eliminating the cold-load non-determinism. */
+  async waitForEmbeddings(graphId: GraphId): Promise<void> {
+    const g = this.graphs.get(graphId);
+    if (!g || !g.embeddingsBuilding) return;
+    await g.embeddingsBuilding;
   }
 
   private async loadBundle(graphId: GraphId): Promise<sources.SourceIndex> {
@@ -1674,6 +1704,21 @@ export class GraphnosisHost {
   ): Promise<SourceRecord> {
     const g = this.must(graphId);
     const sourceId = makeSourceId(kind, ref);
+    // Short-circuit on duplicate sourceId. Without this, re-ingesting the
+    // same file/clip created orphan SDK chunks (the header metadata gets a
+    // fresh contentHash per call, so SDK dedup catches the body but not the
+    // header) — bloating the graph by ~1 node per re-ingest call. The App's
+    // contract is: same sourceId → same source. If you want a NEW version,
+    // forgetSource() the old one first, then ingest under a new sourceRef.
+    // Callers that want to FORCE re-ingest (e.g. reingestSource) bypass this
+    // check by using the dedicated `reingestSource` method.
+    const existing = g.sourceIndex.list().find((s) => s.sourceId === sourceId);
+    if (existing) {
+      // Return the existing source record unchanged. Identical behavior to
+      // a successful no-op ingest (zero new nodes), but explicit instead of
+      // creating ghost metadata chunks.
+      return existing;
+    }
     // Settings carry the user's chunk size + embed batch presets. Pass
     // through so the SDK uses them on this ingest. Reading on every call
     // (cheap object access) so changes via Settings UI take effect on the
@@ -2315,7 +2360,7 @@ export class GraphnosisHost {
     this.llmGetter = fn;
   }
 
-  async recall(query: string, opts?: { budget?: SubgraphBudget; onlyGraphIds?: string[]; exceptGraphIds?: string[]; perGraphAnchorMax?: number }): Promise<federation.FederatedSubgraph> {
+  async recall(query: string, opts?: { budget?: SubgraphBudget; onlyGraphIds?: string[]; exceptGraphIds?: string[]; perGraphAnchorMax?: number; skipEnrichment?: boolean }): Promise<federation.FederatedSubgraph> {
     // ── Recall enrichment (non-mutating) ─────────────────────────────────
     // When the user has llmEnabled + llmCapabilities.recallEnrichment on AND
     // Ollama is reachable, ask the LLM to rewrite the raw user query into a
@@ -2325,10 +2370,12 @@ export class GraphnosisHost {
     // augmentation. Falls back silently to the original query on any error,
     // any timeout, or any setting that disables the path. The audit footer
     // records when enrichment ran so the AI client / user can see it.
+    // skipEnrichment: Studio passes true — users type deliberate search terms,
+    // not conversational prompts, so LLM query rewriting does more harm than good.
     let effectiveQuery = query;
     let enrichmentNote: string | null = null;
     const caps = settingsMod.resolveLlmCapabilities(this.settings);
-    if (caps.recallEnrichment && this.llmGetter) {
+    if (!opts?.skipEnrichment && caps.recallEnrichment && this.llmGetter) {
       const llm = this.llmGetter();
       if (llm) {
         try {
@@ -2411,19 +2458,40 @@ export class GraphnosisHost {
           const inspected = this.opts.adapter.inspectNodes(g.handle);
           const perGraphAdj = gnnAdj?.get(graphId);
 
-          // Step 1: entity-anchored seeds (deterministic). Prepend any
-          // literal-entity matches that weren't already in the top-k.
-          // Carries ANCHOR_SCORE so federation budget treats them as
-          // priority.
+          // Step 1: entity-anchored seeds (deterministic). Anchor matching
+          // does two things:
+          //   1a. PREPEND anchored nodes that the SDK's top-k missed (low
+          //       semantic score but literal-entity match).
+          //   1b. BOOST the score of anchored nodes that ARE in top-k to
+          //       ANCHOR_SCORE so they dominate federation.
+          //
+          // The 1b step was the silent bug: when a node like "Robert Gomboș"
+          // appeared in the per-engram top-k via weak semantic match (score
+          // ~0.18) AND was also a literal-entity hit for query "robert",
+          // the old code just skipped it ("already there") and let it keep
+          // its raw 0.18. Federation then ranked it below higher-scoring
+          // noise from other engrams. The fix: when a ranked node matches
+          // an anchor, upgrade its score so anchoring's federation-priority
+          // promise actually holds.
           let fresh: Array<{ graphId: string; nodeId: string; score: number; text: string; type?: string }> = [];
           const existingIds = new Set(ranked.map((r) => r.nodeId));
           if (queryEntities.length > 0 && perGraphAnchorMax > 0) {
             const anchors = selectAnchorNodes(inspected, active, queryEntities, perGraphAnchorMax);
+            const anchorIdSet = new Set(anchors.map((a) => a.nodeId));
+            // 1b. Boost matching ranked nodes to ANCHOR_SCORE in-place.
+            let boostedInPlace = 0;
+            for (const r of ranked) {
+              if (anchorIdSet.has(r.nodeId)) {
+                r.score = ANCHOR_SCORE;
+                boostedInPlace++;
+              }
+            }
+            // 1a. Prepend anchored nodes the top-k missed.
             fresh = anchors
               .filter((a) => !existingIds.has(a.nodeId))
               .map((a) => ({ graphId, nodeId: a.nodeId, score: ANCHOR_SCORE, text: a.text }));
             for (const a of fresh) existingIds.add(a.nodeId);
-            anchorCountTotal += fresh.length;
+            anchorCountTotal += fresh.length + boostedInPlace;
           }
 
           // Step 2: GNN anchor extension (Batch 11). For each anchor node,
@@ -2623,7 +2691,7 @@ export class GraphnosisHost {
    * thin or when the user's question is document-targeted rather than
    * fact-targeted.
    */
-  async digDeeper(query: string, opts?: { budget?: SubgraphBudget; onlyGraphIds?: string[]; exceptGraphIds?: string[] }): Promise<federation.FederatedSubgraph & {
+  async digDeeper(query: string, opts?: { budget?: SubgraphBudget; onlyGraphIds?: string[]; exceptGraphIds?: string[]; skipEnrichment?: boolean }): Promise<federation.FederatedSubgraph & {
     digDeeperProvenance: {
       contentMatch: { nodes: number; avgScore: number };
       sourceFilenameExpansion: { nodes: number; sources: string[] };
@@ -4675,10 +4743,12 @@ const ENTITY_STOPWORDS = new Set([
  * so a user typing the ASCII form of a proper noun still anchors on the
  * Unicode-with-diacritics form stored in nodes (and vice-versa).
  *
- * Critical for any non-English content. Until the SDK's TF-IDF tokenizer
- * also folds, this lives only in our entity-anchoring layer — but anchoring
- * is the deterministic floor that catches the worst failure mode ("query
- * mentions Bistrița, node content uses Bistrița, recall returns 0").
+ * Critical for any non-English content. The SDK's TF-IDF default analyzer
+ * (asciiFoldAnalyzer) ALSO folds — verified May 2026 with a direct probe:
+ * `Romania` and `România` produce identical query seeds at identical scores.
+ * The host-side fold here is belt + suspenders: it covers the entity-
+ * anchoring path even if the SDK's analyzer is later swapped (e.g. for
+ * `unicodeAnalyzer` to preserve Turkish phonemic diacritics).
  */
 function foldDiacritics(s: string): string {
   return s.normalize('NFD').replace(/[̀-ͯ]/g, '');
@@ -4723,6 +4793,22 @@ export function extractQueryEntities(query: string): string[] {
   // 6. Date-ish patterns (2024-03-15, 15/03/2024).
   for (const m of query.matchAll(/\b\d{2,4}[-/]\d{1,2}[-/]\d{1,4}\b/g)) {
     add(m[0]);
+  }
+  // 7. Short-query fallback: when the user types a 1–3 word query, treat each
+  //    standalone lowercase token ≥3 chars as a potential entity. Without
+  //    this, `recall("robert")` extracts NO entities (patterns 2/3/4 all
+  //    require capitalization) and falls back to pure semantic search, which
+  //    for a short common name gets distracted by adjacent context and misses
+  //    the literal "Robert Gomboș" node sitting right in the cortex.
+  //    Anchor matching downstream is already case-insensitive + diacritic-
+  //    folded, so the entity string "robert" still hits a node containing
+  //    "Robert Gomboș". Skipped for longer queries (sentences, conversational
+  //    prompts) where every word becoming an anchor would over-fire.
+  const wordTokens = query.trim().split(/\s+/);
+  if (wordTokens.length > 0 && wordTokens.length <= 3) {
+    for (const m of query.matchAll(/\b[\p{Ll}][\p{L}'-]{2,}\b/gu)) {
+      add(m[0]);
+    }
   }
   return out;
 }
@@ -4897,7 +4983,19 @@ async function enrichRecallQuery(
   if (!cleaned || cleaned.length > 200 || cleaned.toLowerCase() === query.toLowerCase()) {
     return null;
   }
-  return cleaned;
+
+  // Additive guard: ensure every significant word from the original query
+  // appears verbatim in the enriched result. Small local LLMs often drop
+  // proper nouns (names, project identifiers) despite the system prompt.
+  // If any original word is absent, prepend it so the lexical index still
+  // anchors on the user's exact terms alongside the enriched expansions.
+  const enrichedLower = cleaned.toLowerCase();
+  const missing = query
+    .trim()
+    .split(/\s+/)
+    .filter((w) => w.length > 1 && !enrichedLower.includes(w.toLowerCase()));
+  const result = missing.length > 0 ? `${missing.join(' ')} ${cleaned}` : cleaned;
+  return result.length > 300 ? result.slice(0, 300) : result;
 }
 
 // ── Atomic file write helper ────────────────────────────────────────────────
