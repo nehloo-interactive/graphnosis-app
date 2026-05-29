@@ -15377,7 +15377,7 @@ let studioPreviousResultTool: StudioToolKey | null = null;
 
 const STUDIO_CHIP_KEY = 'studio_active_chip';
 type StudioTool = 'recall' | 'dig-deeper' | 'remember' | 'edit' | 'gnn';
-let activeStudioTool: StudioTool = (localStorage.getItem(STUDIO_CHIP_KEY) as StudioTool | null) ?? 'recall';
+let activeStudioTool: StudioTool = (localStorage.getItem(STUDIO_CHIP_KEY) as StudioTool | null) ?? 'remember';
 
 function switchStudioTool(tool: StudioTool, save = true): void {
   activeStudioTool = tool;
@@ -17473,7 +17473,30 @@ async function runStudioGnn(): Promise<void> {
 // ── Remember ────────────────────────────────────────────────────────────────
 
 document.getElementById('btn-studio-check-dup')?.addEventListener('click', () => void runStudioCheckDuplicate());
-document.getElementById('btn-studio-remember')?.addEventListener('click', () => void runStudioRemember());
+
+// Two-click confirm on Save memory. First click flips the button to
+// "Confirm save" so the user can't accidentally commit text they haven't
+// reviewed. Second click fires the actual save. The pending flag resets
+// whenever the textarea changes or the tool switches.
+let studioRememberConfirmPending = false;
+function resetRememberConfirmState(): void {
+  studioRememberConfirmPending = false;
+  const btn = document.getElementById('btn-studio-remember') as HTMLButtonElement | null;
+  if (btn) { btn.textContent = 'Save memory'; btn.classList.remove('danger'); btn.classList.add('primary'); }
+}
+document.getElementById('studio-remember-text')?.addEventListener('input', resetRememberConfirmState);
+document.getElementById('btn-studio-remember')?.addEventListener('click', () => {
+  const text = (document.getElementById('studio-remember-text') as HTMLTextAreaElement | null)?.value.trim() ?? '';
+  if (!text) return;
+  const btn = document.getElementById('btn-studio-remember') as HTMLButtonElement | null;
+  if (!studioRememberConfirmPending) {
+    studioRememberConfirmPending = true;
+    if (btn) { btn.textContent = 'Confirm save'; btn.classList.remove('primary'); btn.classList.add('danger'); }
+    return;
+  }
+  resetRememberConfirmState();
+  void runStudioRemember();
+});
 
 // "+ New Engram" buttons next to the Remember / Edit target-engram dropdowns.
 // Both open the standard graph-creation wizard so the user doesn't have to
