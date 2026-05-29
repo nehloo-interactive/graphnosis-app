@@ -2247,6 +2247,66 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
           required: ['skill_text', 'format'],
         },
       },
+        {
+          name: 'list_skills',
+          description: 'List all trained skills stored in the user\'s Skills engram(s). Returns sourceId, label, engram name, training date, mode, recallBreadth, and active node count for each skill. Use this before get_skill, skill_history, rollback_skill, or delete_skill to discover available skills and their sourceIds. Optionally scope to a specific engram slug.',
+          inputSchema: {
+            type: 'object' as const,
+            properties: {
+              engram: { type: 'string', description: 'Engram slug to scope the listing (e.g. "skills"). Omit to list skills across all engrams.' },
+            },
+          },
+        },
+        {
+          name: 'get_skill',
+          description: 'Retrieve the full text and metadata of a specific trained skill by its sourceId. Returns the skill text (metadata header + trained content), training mode, recallBreadth, and node count. Use list_skills first to find the sourceId.',
+          inputSchema: {
+            type: 'object' as const,
+            properties: {
+              graphId: { type: 'string', description: 'Engram slug containing the skill (e.g. "skills").' },
+              sourceId: { type: 'string', description: 'sourceId of the skill from list_skills output.' },
+            },
+            required: ['graphId', 'sourceId'],
+          },
+        },
+        {
+          name: 'skill_history',
+          description: 'Show the full version history of a skill — all trained versions grouped by skill name, newest first. Each entry includes sourceId, label, ingestedAt, nodeCount, and whether it is the current (most recent) version. Use to understand how a skill has evolved and to find the sourceId for rollback_skill.',
+          inputSchema: {
+            type: 'object' as const,
+            properties: {
+              graphId: { type: 'string', description: 'Engram slug containing the skill.' },
+              sourceId: { type: 'string', description: 'sourceId of any version of the skill — the full history for that skill name is returned.' },
+            },
+            required: ['graphId', 'sourceId'],
+          },
+        },
+        {
+          name: 'rollback_skill',
+          description: 'Roll back a skill to a specific previous version by forgetting all versions trained after the target. The target version becomes the current one. Use skill_history first to find the targetSourceId to restore. This is non-reversible — the newer versions are soft-deleted.',
+          inputSchema: {
+            type: 'object' as const,
+            properties: {
+              graphId: { type: 'string', description: 'Engram slug containing the skill.' },
+              targetSourceId: { type: 'string', description: 'sourceId of the version to restore as current. All versions with a newer ingestedAt are forgotten.' },
+            },
+            required: ['graphId', 'targetSourceId'],
+          },
+        },
+        {
+          name: 'delete_skill',
+          description: 'Delete a trained skill from the Skills engram. By default deletes only the specified version. Set all_versions=true to delete the skill and its entire version history (all trained versions with the same base name). This is a soft delete — recoverable from the op-log via the Graphnosis app.',
+          inputSchema: {
+            type: 'object' as const,
+            properties: {
+              graphId: { type: 'string', description: 'Engram slug containing the skill.' },
+              sourceId: { type: 'string', description: 'sourceId of the skill version to delete.' },
+              all_versions: { type: 'boolean', description: 'If true, delete all versions of this skill (same base name). Default false.' },
+            },
+            required: ['graphId', 'sourceId'],
+          },
+        },
+
     ],
   }));
 
@@ -3576,14 +3636,32 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
         const engramName = args.target_engram ?? 'Skills';
         const engramRes = requireEngram(deps.host, engramName);
         if ('error' in engramRes) {
+          // Trigger the App's engram-create banner so the user can confirm
+          // creating a Skills engram with one click, then retry.
+          const clientName = mcpRegistry.getMostRecentClientName() ?? 'an AI client';
+          if (deps.broadcastRaw) {
+            deps.broadcastRaw({
+              kind: 'engram.create-suggested',
+              name: engramName,
+              payload: {
+                suggestedName: engramName,
+                label: args.skill_name ?? 'Skill',
+                text: args.skill,
+                preview: args.skill.slice(0, 280),
+                sourceKind: 'skill',
+                template: 'skill',
+                requestedBy: clientName,
+                candidates: [],
+              },
+            });
+          }
           return {
-            isError: true,
             content: [{
               type: 'text',
               text:
-                `Could not find a Skills engram named "${engramName}". ` +
-                `Create one in Graphnosis → New Engram → choose the "Skill" template. ` +
-                `Then retry this call.\n\n` + (engramRes.error.content[0] as { text: string }).text,
+                `No Skills engram named "${engramName}" was found. ` +
+                `A prompt has appeared in the Graphnosis app asking you to create one. ` +
+                `Confirm the engram creation there, then retry this call.`,
             }],
           };
         }
@@ -3761,6 +3839,95 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
               'the memories that caused it stay local._',
           }],
         };
+      }
+
+      case 'list_skills': {
+        const args = z.object({
+          engram: z.string().optional(),
+        }).parse(req.params.arguments ?? {});
+        if (!deps.skillTrainer) return mcpError('Skill trainer not available.');
+        let graphId: string | undefined;
+        if (args.engram) {
+          const res = requireEngram(deps.host, args.engram);
+          if ('error' in res) return res.error;
+          graphId = res.graphId;
+        }
+        const skills = deps.skillTrainer.listSkills(graphId);
+        if (!skills.length) {
+          return { content: [{ type: 'text', text: 'No trained skills found. Use train_skill to train your first skill.' }] };
+        }
+        const lines = skills.map((s) => [
+          `**${s.label}**`,
+          `  sourceId: ${s.sourceId}`,
+          `  Engram: ${s.engramName} | Nodes: ${s.nodeCount} | Mode: ${s.mode ?? 'unknown'}`,
+          `  Trained: ${s.trainedAt ?? new Date(s.ingestedAt).toISOString()} | recallBreadth: ${s.recallBreadth ?? 'unknown'}`,
+        ].join('\n'));
+        return { content: [{ type: 'text', text: `## Skills (${skills.length})\n\n${lines.join('\n\n')}` }] };
+      }
+
+      case 'get_skill': {
+        const args = z.object({
+          graphId: z.string().min(1),
+          sourceId: z.string().min(1),
+        }).parse(req.params.arguments ?? {});
+        if (!deps.skillTrainer) return mcpError('Skill trainer not available.');
+        const resEngram = requireEngram(deps.host, args.graphId);
+        if ('error' in resEngram) return resEngram.error;
+        const detail = deps.skillTrainer.getSkill(resEngram.graphId, args.sourceId);
+        if (!detail) return mcpError(`Skill "${args.sourceId}" not found in engram "${args.graphId}".`);
+        const header =
+          `# ${detail.label}\n` +
+          `Engram: ${detail.engramName} | Mode: ${detail.mode ?? 'unknown'} | ` +
+          `recallBreadth: ${detail.recallBreadth ?? 'unknown'} | Nodes: ${detail.nodeCount}\n` +
+          `Trained: ${detail.trainedAt ?? new Date(detail.ingestedAt).toISOString()}`;
+        return { content: [{ type: 'text', text: `${header}\n\n---\n\n${detail.text}` }] };
+      }
+
+      case 'skill_history': {
+        const args = z.object({
+          graphId: z.string().min(1),
+          sourceId: z.string().min(1),
+        }).parse(req.params.arguments ?? {});
+        if (!deps.skillTrainer) return mcpError('Skill trainer not available.');
+        const resEngram = requireEngram(deps.host, args.graphId);
+        if ('error' in resEngram) return resEngram.error;
+        const history = deps.skillTrainer.getSkillHistory(resEngram.graphId, args.sourceId);
+        if (!history.length) return mcpError(`No skill history found for "${args.sourceId}".`);
+        const lines = history.map((v, i) => [
+          `${i === 0 ? '**[current]**' : `[v${history.length - i}]`} ${v.label}`,
+          `  sourceId: ${v.sourceId}`,
+          `  Trained: ${v.trainedAt ?? new Date(v.ingestedAt).toISOString()} | Mode: ${v.mode ?? 'unknown'} | Nodes: ${v.nodeCount}`,
+        ].join('\n'));
+        return { content: [{ type: 'text', text: `## Skill History (${history.length} versions)\n\n${lines.join('\n\n')}` }] };
+      }
+
+      case 'rollback_skill': {
+        const args = z.object({
+          graphId: z.string().min(1),
+          targetSourceId: z.string().min(1),
+        }).parse(req.params.arguments ?? {});
+        if (!deps.skillTrainer) return mcpError('Skill trainer not available.');
+        const resEngram = requireEngram(deps.host, args.graphId);
+        if ('error' in resEngram) return resEngram.error;
+        const result = await deps.skillTrainer.rollbackSkill(resEngram.graphId, args.targetSourceId);
+        if (!result.forgottenSourceIds.length) {
+          return { content: [{ type: 'text', text: `"${args.targetSourceId}" is already the current version — no newer versions to remove.` }] };
+        }
+        return { content: [{ type: 'text', text: `Rolled back. Removed ${result.forgottenSourceIds.length} newer version(s). "${args.targetSourceId}" is now current.` }] };
+      }
+
+      case 'delete_skill': {
+        const args = z.object({
+          graphId: z.string().min(1),
+          sourceId: z.string().min(1),
+          all_versions: z.boolean().optional(),
+        }).parse(req.params.arguments ?? {});
+        if (!deps.skillTrainer) return mcpError('Skill trainer not available.');
+        const resEngram = requireEngram(deps.host, args.graphId);
+        if ('error' in resEngram) return resEngram.error;
+        const result = await deps.skillTrainer.deleteSkill(resEngram.graphId, args.sourceId, args.all_versions ?? false);
+        const scope = args.all_versions ? 'all versions of the skill' : 'this skill version';
+        return { content: [{ type: 'text', text: `Deleted ${scope} (${result.forgottenSourceIds.length} source(s) soft-deleted). Recoverable from the Graphnosis app op-log.` }] };
       }
 
       default:

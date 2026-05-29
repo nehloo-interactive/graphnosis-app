@@ -151,18 +151,23 @@ export class GraphnosisImpl implements GraphnosisAdapter {
           return h.instance.query(safeQuery, { maxNodes: k });
         })
       : h.instance.query(safeQuery, { maxNodes: k });
-    return res.subgraph.nodes.map((n: GraphNode) => ({
-      nodeId: n.id,
-      // Seeds carry scores; non-seed expansion nodes don't. Look up if present, else 0.
-      score: res.seeds.find((s: { nodeId: string; score: number }) => s.nodeId === n.id)?.score ?? 0,
-      text: n.content,
-      type: n.type,
-      source: {
-        file: n.source.file,
-        ...(n.source.line !== undefined ? { line: n.source.line } : {}),
-        ...(n.source.section !== undefined ? { section: n.source.section } : {}),
-      },
-    }));
+    const seedScores = new Map<string, number>(
+      (res.seeds as Array<{ nodeId: string; score: number }>).map(s => [s.nodeId, s.score]),
+    );
+    // Only include seeds — structural expansion nodes carry score=0 and add noise.
+    return res.subgraph.nodes
+      .filter((n: GraphNode) => seedScores.has(n.id))
+      .map((n: GraphNode) => ({
+        nodeId: n.id,
+        score: seedScores.get(n.id)!,
+        text: n.content,
+        type: n.type,
+        source: {
+          file: n.source.file,
+          ...(n.source.line !== undefined ? { line: n.source.line } : {}),
+          ...(n.source.section !== undefined ? { section: n.source.section } : {}),
+        },
+      }));
   }
 
   async queryRich(handle: GraphHandle, query: string, k: number): Promise<RichQueryResult> {
@@ -180,17 +185,20 @@ export class GraphnosisImpl implements GraphnosisAdapter {
       res.seeds.map((s: { nodeId: string; score: number }) => [s.nodeId, s.score]),
     );
 
-    const candidates: QueryResult[] = res.subgraph.nodes.map((n: GraphNode) => ({
-      nodeId: n.id,
-      score: scores.get(n.id) ?? 0,
-      text: n.content,
-      type: n.type,
-      source: {
-        file: n.source.file,
-        ...(n.source.line !== undefined ? { line: n.source.line } : {}),
-        ...(n.source.section !== undefined ? { section: n.source.section } : {}),
-      },
-    }));
+    // Only include seed-scored nodes — structural expansion nodes have score=0 and add noise.
+    const candidates: QueryResult[] = res.subgraph.nodes
+      .filter((n: GraphNode) => scores.has(n.id))
+      .map((n: GraphNode) => ({
+        nodeId: n.id,
+        score: scores.get(n.id)!,
+        text: n.content,
+        type: n.type,
+        source: {
+          file: n.source.file,
+          ...(n.source.line !== undefined ? { line: n.source.line } : {}),
+          ...(n.source.section !== undefined ? { section: n.source.section } : {}),
+        },
+      }));
 
     // Capture the SDK subgraph data in a closure so the adapter surface stays
     // free of SDK types. The host calls rich.serialize(selectedIds) after

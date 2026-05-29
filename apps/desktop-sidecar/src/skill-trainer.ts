@@ -126,6 +126,32 @@ export interface SkillVitalityResult {
   recommendation: string;
 }
 
+export interface SkillListEntry {
+  sourceId: string;
+  graphId: string;
+  engramName: string;
+  label: string;
+  ingestedAt: number;
+  nodeCount: number;
+  trainedAt?: string;
+  mode?: string;
+  recallBreadth?: number;
+}
+
+export interface SkillDetail extends SkillListEntry {
+  text: string;
+}
+
+export interface SkillVersionEntry {
+  sourceId: string;
+  label: string;
+  ingestedAt: number;
+  nodeCount: number;
+  isCurrent: boolean;
+  trainedAt?: string;
+  mode?: string;
+}
+
 // ── LLM prompts ──────────────────────────────────────────────────────────────
 
 const SKILL_TRAINING_SYSTEM_PROMPT = `\
@@ -605,7 +631,142 @@ export class SkillTrainer {
     return wrapper ? wrapper(cleaned) : withHeader;
   }
 
-  // ── Private helpers ────────────────────────────────────────────────────────
+
+  // ── Skill management ──────────────────────────────────────────────────────
+
+  listSkills(graphId?: string): SkillListEntry[] {
+    const graphIds = graphId ? [graphId] : this.host.listGraphs();
+    const entries: SkillListEntry[] = [];
+    const now = Date.now();
+    for (const gid of graphIds) {
+      const meta = this.host.getGraphMetadata(gid);
+      const sources = this.host.listSources(gid).filter((s) => s.kind === 'skill');
+      const nodes = this.host.listNodes(gid);
+      const activeBySource = new Map<string, number>();
+      for (const n of nodes) {
+        if (n.confidence > 0.2 && (!n.validUntil || n.validUntil > now)) {
+          for (const src of sources) {
+            if (src.nodeIds.includes(n.id)) {
+              activeBySource.set(src.sourceId, (activeBySource.get(src.sourceId) ?? 0) + 1);
+            }
+          }
+        }
+      }
+      for (const src of sources) {
+        const nodeText = src.nodeIds
+          .map((id) => nodes.find((n) => n.id === id)?.contentPreview ?? '')
+          .join('\n');
+        const parsed = parseSkillMetadata(nodeText);
+        entries.push({
+          sourceId: src.sourceId,
+          graphId: gid,
+          engramName: meta?.displayName ?? gid,
+          label: src.ref,
+          ingestedAt: src.ingestedAt,
+          nodeCount: activeBySource.get(src.sourceId) ?? 0,
+          ...(parsed.trainedAt !== undefined ? { trainedAt: parsed.trainedAt } : {}),
+          ...(parsed.mode !== undefined ? { mode: parsed.mode } : {}),
+          ...(parsed.recallBreadth !== undefined ? { recallBreadth: parsed.recallBreadth } : {}),
+        });
+      }
+    }
+    return entries.sort((a, b) => b.ingestedAt - a.ingestedAt);
+  }
+
+  getSkill(graphId: string, sourceId: string): SkillDetail | null {
+    const sources = this.host.listSources(graphId);
+    const src = sources.find((s) => s.sourceId === sourceId && s.kind === 'skill');
+    if (!src) return null;
+    const meta = this.host.getGraphMetadata(graphId);
+    const now = Date.now();
+    const nodeMap = new Map(
+      this.host.listNodes(graphId)
+        .filter((n) => n.confidence > 0.2 && (!n.validUntil || n.validUntil > now))
+        .map((n) => [n.id, n]),
+    );
+    const chunks = src.nodeIds
+      .map((id) => nodeMap.get(id)?.contentPreview ?? '')
+      .filter(Boolean);
+    const text = chunks.join('\n\n');
+    const parsed = parseSkillMetadata(text);
+    return {
+      sourceId: src.sourceId,
+      graphId,
+      engramName: meta?.displayName ?? graphId,
+      label: src.ref,
+      ingestedAt: src.ingestedAt,
+      nodeCount: chunks.length,
+      text,
+      ...(parsed.trainedAt !== undefined ? { trainedAt: parsed.trainedAt } : {}),
+      ...(parsed.mode !== undefined ? { mode: parsed.mode } : {}),
+      ...(parsed.recallBreadth !== undefined ? { recallBreadth: parsed.recallBreadth } : {}),
+    };
+  }
+
+  getSkillHistory(graphId: string, sourceId: string): SkillVersionEntry[] {
+    const sources = this.host.listSources(graphId).filter((s) => s.kind === 'skill');
+    const target = sources.find((s) => s.sourceId === sourceId);
+    if (!target) return [];
+    const baseName = baseSkillName(target.ref);
+    const versions = sources
+      .filter((s) => baseSkillName(s.ref) === baseName)
+      .sort((a, b) => a.ingestedAt - b.ingestedAt);
+    const now = Date.now();
+    const nodeMap = new Map(this.host.listNodes(graphId).map((n) => [n.id, n]));
+    const newest = versions[versions.length - 1];
+    return versions.map((src): SkillVersionEntry => {
+      const activeNodeIds = src.nodeIds.filter((id) => {
+        const n = nodeMap.get(id);
+        return n && n.confidence > 0.2 && (!n.validUntil || n.validUntil > now);
+      });
+      const text = activeNodeIds.map((id) => nodeMap.get(id)?.contentPreview ?? '').join('\n');
+      const parsed = parseSkillMetadata(text);
+      return {
+        sourceId: src.sourceId,
+        label: src.ref,
+        ingestedAt: src.ingestedAt,
+        nodeCount: activeNodeIds.length,
+        isCurrent: src.sourceId === newest?.sourceId,
+        ...(parsed.trainedAt !== undefined ? { trainedAt: parsed.trainedAt } : {}),
+        ...(parsed.mode !== undefined ? { mode: parsed.mode } : {}),
+      };
+    }).reverse();
+  }
+
+  async rollbackSkill(graphId: string, targetSourceId: string): Promise<{ forgottenSourceIds: string[] }> {
+    const sources = this.host.listSources(graphId).filter((s) => s.kind === 'skill');
+    const target = sources.find((s) => s.sourceId === targetSourceId);
+    if (!target) throw new Error(`Skill "${targetSourceId}" not found in graph "${graphId}".`);
+    const baseName = baseSkillName(target.ref);
+    const newerVersions = sources.filter(
+      (s) => baseSkillName(s.ref) === baseName && s.ingestedAt > target.ingestedAt,
+    );
+    const forgottenSourceIds: string[] = [];
+    for (const src of newerVersions) {
+      await this.host.forgetSource(graphId, src.sourceId, { triggeredBy: 'skill:rollback' });
+      forgottenSourceIds.push(src.sourceId);
+    }
+    return { forgottenSourceIds };
+  }
+
+  async deleteSkill(
+    graphId: string,
+    sourceId: string,
+    allVersions = false,
+  ): Promise<{ forgottenSourceIds: string[] }> {
+    const sources = this.host.listSources(graphId).filter((s) => s.kind === 'skill');
+    const target = sources.find((s) => s.sourceId === sourceId);
+    if (!target) throw new Error(`Skill "${sourceId}" not found in graph "${graphId}".`);
+    const toDelete = allVersions
+      ? sources.filter((s) => baseSkillName(s.ref) === baseSkillName(target.ref))
+      : [target];
+    const forgottenSourceIds: string[] = [];
+    for (const src of toDelete) {
+      await this.host.forgetSource(graphId, src.sourceId, { triggeredBy: 'skill:delete' });
+      forgottenSourceIds.push(src.sourceId);
+    }
+    return { forgottenSourceIds };
+  }
 
   private async pingLlm(): Promise<boolean> {
     if (!this.llm) return false;
@@ -636,6 +797,31 @@ export class SkillTrainer {
       ),
     ]);
   }
+}
+
+
+// ── Skill-management helpers ──────────────────────────────────────────────────
+
+function baseSkillName(label: string): string {
+  return label.replace(/\s*\(trained \d{4}-\d{2}-\d{2}\)\s*$/u, '').trim();
+}
+
+interface ParsedSkillMeta { trainedAt?: string; mode?: string; recallBreadth?: number; }
+
+function parseSkillMetadata(text: string): ParsedSkillMeta {
+  const result: ParsedSkillMeta = {};
+  const match = text.match(/<!--\s*Graphnosis skill training metadata([\s\S]*?)-->/u);
+  if (!match) return result;
+  const block = match[1]!;
+  const get = (key: string): string | undefined => {
+    const m = block.match(new RegExp(`${key}:\\s*(.+)`, 'u'));
+    return m?.[1]?.trim();
+  };
+  const ta = get('trainedAt'); if (ta !== undefined) result.trainedAt = ta;
+  const mo = get('mode'); if (mo !== undefined) result.mode = mo;
+  const rb = get('recallBreadth');
+  if (rb !== undefined && rb !== 'undefined') result.recallBreadth = Number(rb);
+  return result;
 }
 
 // ── Text-cleaning helpers ─────────────────────────────────────────────────────
