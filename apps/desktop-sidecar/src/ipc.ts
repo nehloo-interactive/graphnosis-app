@@ -342,7 +342,7 @@ async function dispatch(deps: IpcDeps, method: string, params: unknown): Promise
         displayName: z.string().min(1),
         text: z.string().min(1),
         label: z.string().default('Conversation note'),
-        sourceKind: z.enum(['clip', 'ai-conversation']).optional(),
+        sourceKind: z.enum(['clip', 'ai-conversation', 'skill']).optional(),
       }).parse(params);
       // listGraphs returns the in-memory loaded set — accurate for "does
       // this engram already exist" because all engrams are loaded at

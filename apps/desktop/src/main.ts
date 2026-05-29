@@ -206,7 +206,7 @@ const RELAY_RECONNECT_MAX_MS = 24 * 60 * 60 * 1000; // 24h — see app-core sett
 
 type InspectorDetail = 'simple' | 'detailed';
 type GraphTemplate =
-  | 'personal' | 'journal' | 'reading' | 'learning'
+  | 'personal' | 'journal' | 'reading' | 'learning' | 'skill'
   | 'project' | 'research' | 'codebase' | 'health'
   | 'team' | 'compliance' | 'onboarding';
 
@@ -256,6 +256,8 @@ const GRAPH_TEMPLATES: GraphTemplateDef[] = [
     desc: 'Books, articles, papers. Nodes carry citation provenance.' },
   { id: 'learning', tier: 'free', title: 'Learning',
     desc: 'Study notes with spaced-repetition hints baked in.' },
+  { id: 'skill', tier: 'free', title: 'Skills',
+    desc: 'Train and manage AI skills using Graphnosis Autonomous Praxis.' },
 
   { id: 'project', tier: 'power', title: 'Project',
     desc: 'Milestones, decisions, artifacts. Tagged by phase.' },
@@ -12052,7 +12054,9 @@ interface EngramSuggestPayload {
   label?: string;
   text: string;
   preview: string;
-  sourceKind?: 'clip' | 'ai-conversation';
+  sourceKind?: 'clip' | 'ai-conversation' | 'skill';
+  /** Engram template to create. Default 'personal'. */
+  template?: string;
   requestedBy?: string;
   /** Close-match candidates ranked by score. Empty → no close match,
    *  banner offers only "Create new". When non-empty, user picks one
@@ -12190,18 +12194,22 @@ function showEngramSuggestion(p: EngramSuggestPayload): void {
 
   const client = p.requestedBy || 'An AI client';
   const candidates = p.candidates ?? [];
-  // Default selection: top candidate if any, else "create new"
+  // Default selection: top candidate if any, else “create new”
   engramSuggestSelection = candidates.length ? candidates[0]!.graphId : null;
 
   if (candidates.length) {
     headlineEl.innerHTML =
       `<strong>${escapeHtml(client)}</strong> wants to save into ` +
-      `“<strong>${escapeHtml(p.suggestedName)}</strong>”. ` +
+      `”<strong>${escapeHtml(p.suggestedName)}</strong>”. ` +
       `Did you mean one of these?`;
+  } else if (p.template === 'skill') {
+    headlineEl.innerHTML =
+      `<strong>${escapeHtml(client)}</strong> wants to create a Skills engram ` +
+      `”<strong>${escapeHtml(p.suggestedName)}</strong>” to store and train AI skills.`;
   } else {
     headlineEl.innerHTML =
       `<strong>${escapeHtml(client)}</strong> wants to save into a new engram ` +
-      `“<strong>${escapeHtml(p.suggestedName)}</strong>”`;
+      `”<strong>${escapeHtml(p.suggestedName)}</strong>”`;
   }
   // Render the full text (scrollable in CSS) so the user can actually
   // read what's about to be saved before clicking Create. The `preview`
@@ -12312,7 +12320,7 @@ document.getElementById('engram-suggest-primary')?.addEventListener('click', () 
     try {
       await invoke('accept_engram_suggestion', {
         graphId,
-        template: 'personal',
+        template: p.template ?? 'personal',
         displayName,
         text: p.text,
         label: p.label ?? 'Conversation note',
