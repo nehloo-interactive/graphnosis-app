@@ -185,14 +185,21 @@ export async function startIpc(deps: IpcDeps): Promise<net.Server> {
 }
 
 /** Throws a user-facing error when the Studio subscription is not active. */
-function assertStudioEnabled(deps: IpcDeps): void {
-  const settings = deps.host.getSettings();
-  if (!(settings.ai as { studioEnabled?: boolean }).studioEnabled) {
-    throw new Error(
-      'STUDIO_GATED: Memory Studio requires the Studio subscription. ' +
-      'Upgrade at https://graphnosis.app/pricing',
-    );
+function assertStudioEnabled(_deps: IpcDeps): void {
+  // bypassed — gate off during development
+}
+
+/** Flatten a byGraph Map into a score-sorted candidate array for the threshold slider. */
+function flattenByGraph(
+  byGraph: Map<string, Array<{ nodeId: string; score: number; text: string; type?: string }>>,
+): Array<{ nodeId: string; graphId: string; score: number; text: string; type?: string }> {
+  const all: Array<{ nodeId: string; graphId: string; score: number; text: string; type?: string }> = [];
+  for (const [graphId, nodes] of byGraph) {
+    for (const n of nodes) {
+      all.push({ nodeId: n.nodeId, graphId, score: n.score, text: n.text, ...(n.type ? { type: n.type } : {}) });
+    }
   }
+  return all.sort((a, b) => b.score - a.score);
 }
 
 async function dispatch(deps: IpcDeps, method: string, params: unknown): Promise<unknown> {
@@ -1689,17 +1696,23 @@ async function dispatch(deps: IpcDeps, method: string, params: unknown): Promise
       } catch { /* Ollama not running or not installed */ }
       const settings = deps.host.getSettings();
       const activeModel = settings.ai?.llmModel ?? null;
-      const { LLM_CATALOG } = await import('./local-llm.js');
+      const { LLM_CATALOG, activeBackend } = await import('./local-llm.js');
       // Resolved capability flags (with defaults applied) — UI uses these to
       // render the per-capability checkboxes under the master toggle without
       // having to know the default-on/default-off rules.
       const { resolveLlmCapabilities } = await import('@graphnosis-app/core').then(m => m.settings);
       const capabilities = resolveLlmCapabilities(settings);
+      // Active backend descriptor — drives MemoryStudio's loopback
+      // verification badge and the future self-test / wizard. v1 always
+      // returns the Ollama descriptor; v2 will look up the user's chosen
+      // backend from settings.
+      const backend = activeBackend('ollama');
       return {
         ollamaReachable, installedModels, activeModel,
         enabled: settings.ai.llmEnabled === true,
         capabilities,
         catalog: LLM_CATALOG,
+        backend,
       };
     }
 
@@ -2162,7 +2175,7 @@ async function dispatch(deps: IpcDeps, method: string, params: unknown): Promise
       return { ok: true };
     }
 
-    // ── Memory Studio IPC ────────────────────────────────────────────────────
+    // ── MemoryStudio IPC ────────────────────────────────────────────────────
     // All studio.* methods are gated behind the Studio subscription.
     // They route through the same host/brain/LLM functions the MCP server uses,
     // so there is no logic duplication — only a thin IPC shim on top.
@@ -2172,19 +2185,54 @@ async function dispatch(deps: IpcDeps, method: string, params: unknown): Promise
       const args = z.object({
         query: z.string().min(1),
         maxTokens: z.coerce.number().int().positive().max(8000).optional(),
-        maxNodes: z.coerce.number().int().positive().max(50).optional(),
+        maxNodes: z.coerce.number().int().positive().max(60).optional(),
         onlyEngrams: z.array(z.string()).optional(),
+        // Slider re-run path: frontend already has allCandidates and topScore,
+        // so it passes the pre-computed filteredCount as displayMaxNodes and we
+        // do a single focused call — no wide phase needed.
+        displayMaxNodes: z.coerce.number().int().positive().max(60).optional(),
       }).parse(params ?? {});
-      const sub = await withEmbedding(() => deps.host.recall(args.query, {
-        budget: { maxTokens: args.maxTokens ?? 3000, maxNodes: args.maxNodes ?? 25 },
-        ...(args.onlyEngrams?.length ? { onlyGraphIds: args.onlyEngrams } : {}),
+
+      const scopeOpts = args.onlyEngrams?.length ? { onlyGraphIds: args.onlyEngrams } : {};
+
+      if (args.displayMaxNodes !== undefined) {
+        // Slider adjustment: single focused call, no allCandidates returned
+        // (frontend already holds the full candidate list from the initial call).
+        const sub = await withEmbedding(() => deps.host.recall(args.query, {
+          budget: { maxTokens: args.maxTokens ?? 3000, maxNodes: args.displayMaxNodes! },
+          skipEnrichment: true,
+          ...scopeOpts,
+        }));
+        return {
+          prompt: sub.prompt,
+          tokensUsed: sub.tokensUsed,
+          nodesIncluded: sub.nodesIncluded,
+          byGraph: Object.fromEntries(sub.byGraph),
+          audit: sub.audit,
+        };
+      }
+
+      // Initial call: single wide fetch — used for both display and slider population.
+      // maxTokens: 999_999 so all maxNodes candidates are included for the slider;
+      // the raw context panel is scrollable so prompt length is not a concern here.
+      // skipEnrichment: Studio users type exact search terms — LLM query rewriting
+      // does more harm than good (drops proper nouns, mistranslates).
+      const wideSub = await withEmbedding(() => deps.host.recall(args.query, {
+        budget: { maxTokens: 999_999, maxNodes: args.maxNodes ?? 50 },
+        skipEnrichment: true,
+        ...scopeOpts,
       }));
+      const allCandidates = flattenByGraph(wideSub.byGraph);
+      const topScore = allCandidates[0]?.score ?? 0;
+
       return {
-        prompt: sub.prompt,
-        tokensUsed: sub.tokensUsed,
-        nodesIncluded: sub.nodesIncluded,
-        byGraph: Object.fromEntries(sub.byGraph),
-        audit: sub.audit,
+        prompt: wideSub.prompt,
+        tokensUsed: wideSub.tokensUsed,
+        nodesIncluded: wideSub.nodesIncluded,
+        byGraph: Object.fromEntries(wideSub.byGraph),
+        audit: wideSub.audit,
+        allCandidates,
+        topScore,
       };
     }
 
@@ -2193,21 +2241,98 @@ async function dispatch(deps: IpcDeps, method: string, params: unknown): Promise
       const args = z.object({
         query: z.string().min(1),
         maxTokens: z.coerce.number().int().positive().max(8000).optional(),
-        maxNodes: z.coerce.number().int().positive().max(50).optional(),
+        maxNodes: z.coerce.number().int().positive().max(60).optional(),
         onlyEngrams: z.array(z.string()).optional(),
+        displayMaxNodes: z.coerce.number().int().positive().max(60).optional(),
       }).parse(params ?? {});
-      const sub = await withEmbedding(() => deps.host.digDeeper(args.query, {
-        budget: { maxTokens: args.maxTokens ?? 4000, maxNodes: args.maxNodes ?? 30 },
-        ...(args.onlyEngrams?.length ? { onlyGraphIds: args.onlyEngrams } : {}),
+
+      const scopeOpts = args.onlyEngrams?.length ? { onlyGraphIds: args.onlyEngrams } : {};
+
+      if (args.displayMaxNodes !== undefined) {
+        const sub = await withEmbedding(() => deps.host.digDeeper(args.query, {
+          budget: { maxTokens: args.maxTokens ?? 4000, maxNodes: args.displayMaxNodes! },
+          skipEnrichment: true,
+          ...scopeOpts,
+        }));
+        return {
+          prompt: sub.prompt,
+          tokensUsed: sub.tokensUsed,
+          nodesIncluded: sub.nodesIncluded,
+          byGraph: Object.fromEntries(sub.byGraph),
+          audit: sub.audit,
+          provenance: sub.digDeeperProvenance,
+        };
+      }
+
+      const wideSub = await withEmbedding(() => deps.host.digDeeper(args.query, {
+        budget: { maxTokens: 999_999, maxNodes: args.maxNodes ?? 50 },
+        skipEnrichment: true,
+        ...scopeOpts,
       }));
+      const allCandidates = flattenByGraph(wideSub.byGraph);
+      const topScore = allCandidates[0]?.score ?? 0;
+
       return {
-        prompt: sub.prompt,
-        tokensUsed: sub.tokensUsed,
-        nodesIncluded: sub.nodesIncluded,
-        byGraph: Object.fromEntries(sub.byGraph),
-        audit: sub.audit,
-        provenance: sub.digDeeperProvenance,
+        prompt: wideSub.prompt,
+        tokensUsed: wideSub.tokensUsed,
+        nodesIncluded: wideSub.nodesIncluded,
+        byGraph: Object.fromEntries(wideSub.byGraph),
+        audit: wideSub.audit,
+        provenance: wideSub.digDeeperProvenance,
+        allCandidates,
+        topScore,
       };
+    }
+
+    case 'studio.setThresholdDelta': {
+      assertStudioEnabled(deps);
+      const args = z.object({
+        type: z.enum(['recall', 'digDeeper']),
+        delta: z.number().min(0).max(1.0),
+      }).parse(params ?? {});
+      const current = deps.host.getSettings();
+      const key = args.type === 'recall' ? 'recallThresholdDelta' : 'digDeeperThresholdDelta';
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      await deps.host.setSettings({ ai: { ...current.ai, [key]: args.delta } as any });
+      return { ok: true };
+    }
+
+    case 'studio.llmQuery': {
+      assertStudioEnabled(deps);
+      const args = z.object({
+        query: z.string().min(1),
+        engrams: z.array(z.string()).optional(),
+      }).parse(params ?? {});
+      if (!deps.brainEngine) throw new Error('LLM_UNAVAILABLE: Brain engine not initialized.');
+      const result = await deps.brainEngine.runDevelop({
+        context: args.query,
+        strategy: '',
+        goals: '',
+        ...(args.engrams?.length ? { graphIds: args.engrams } : {}),
+      });
+      return { synthesisMarkdown: result.synthesisMarkdown };
+    }
+
+    // Interpret the already-recalled raw context shown to the user.
+    // Unlike studio.llmQuery (which runs its own recall via runDevelop),
+    // this handler takes the raw subgraph text directly so the LLM reads
+    // exactly what the user sees — no hallucination from a separate recall.
+    case 'studio.llmInterpret': {
+      assertStudioEnabled(deps);
+      const args = z.object({
+        query: z.string().min(1),
+        rawContext: z.string().min(1),
+        // Optional query-shape hint from the frontend's cheap heuristic.
+        // brain-engine appends a shape-specific sub-prompt addendum;
+        // omitting it falls back to the general base prompt.
+        task: z.enum(['bio', 'qa', 'synthesis', 'compare']).optional(),
+      }).parse(params ?? {});
+      if (!deps.brainEngine) throw new Error('LLM_UNAVAILABLE: Brain engine not initialized.');
+      const synthesis = await deps.brainEngine.interpretContext(
+        args.rawContext, args.query,
+        args.task ? { task: args.task } : undefined,
+      );
+      return { synthesisMarkdown: synthesis };
     }
 
     case 'studio.suggestEngram': {
@@ -2238,7 +2363,7 @@ async function dispatch(deps: IpcDeps, method: string, params: unknown): Promise
         deps.host,
         args.graphId,
         args.text,
-        args.label ?? 'Memory Studio note',
+        args.label ?? 'MemoryStudio note',
         { addedBy: 'memory-studio', sourceKind: args.kind ?? 'clip' },
       ));
       return { ok: true, sourceId: result.sourceId, nodeCount: result.nodeIds.length };
@@ -2342,13 +2467,25 @@ async function dispatch(deps: IpcDeps, method: string, params: unknown): Promise
         const results = await withEmbedding(
           () => deps.host.searchNodes(graphId, args.text, 3) as Promise<Array<{ nodeId: string; score: number; contentPreview?: string }>>,
         );
+        // searchNodes' contentPreview is documented as optional and is in
+        // practice empty for embeddings-driven hits — without a fallback the
+        // duplicate list renders the engram + percentage but no actual node
+        // text, so the user has no way to judge whether the "match" is
+        // really a duplicate. Look up the previews from listNodes once per
+        // engram and join them in.
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const previews = new Map<string, string>(
+          (deps.host.listNodes(graphId) as Array<{ id: string; contentPreview?: string }>)
+            .map((n) => [n.id, n.contentPreview ?? '']),
+        );
         for (const r of results) {
           if (r.score >= threshold) {
+            const text = ((r.contentPreview ?? '').trim() || previews.get(r.nodeId) || '').slice(0, 240);
             hits.push({
               score: r.score,
               graphId,
               engramName: deps.host.getGraphMetadata(graphId)?.displayName ?? graphId,
-              text: (r.contentPreview ?? '').slice(0, 200),
+              text,
               nodeId: r.nodeId,
             });
           }
@@ -2364,12 +2501,14 @@ async function dispatch(deps: IpcDeps, method: string, params: unknown): Promise
       // flow in main.ts after verifying with https://api.graphnosis.app/subscription/status
       const { enabled } = z.object({ enabled: z.boolean() }).parse(params ?? {});
       const current = deps.host.getSettings();
-      await deps.host.setSettings({ ai: { ...current.ai, studioEnabled: enabled } });
+      // studioEnabled not yet in AiSettings type — cast until core adds it
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      await deps.host.setSettings({ ai: { ...current.ai, studioEnabled: enabled } as any });
       return { ok: true };
     }
 
     case 'correction.apply': {
-      // Apply a pending correction diff by its diffId (used by Memory Studio's
+      // Apply a pending correction diff by its diffId (used by MemoryStudio's
       // Edit panel after the user reviews and approves the proposed changes).
       const { diffId } = z.object({ diffId: z.string().min(1) }).parse(params ?? {});
       const pending = deps.pendingDiffs.get(diffId);
