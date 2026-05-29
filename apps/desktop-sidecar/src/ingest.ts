@@ -298,14 +298,16 @@ export async function ingestClip(
   graphId: string,
   text: string,
   label: string,
-  opts?: { addedBy?: string; sourceKind?: 'clip' | 'ai-conversation'; triggeredBy?: string },
+  opts?: { addedBy?: string; sourceKind?: 'clip' | 'ai-conversation' | 'skill'; triggeredBy?: string },
 ) {
   const sourceKind = opts?.sourceKind ?? 'clip';
   // Prefix the source ref so Sources-list filtering + the recovery panel
   // can distinguish AI-conversation captures from plain clips without
   // having to read the SourceRecord. Stable for the lifetime of the
   // source — never rewritten.
-  const refPrefix = sourceKind === 'ai-conversation' ? 'ai-conversation' : 'clip';
+  const refPrefix = sourceKind === 'ai-conversation' ? 'ai-conversation'
+    : sourceKind === 'skill' ? 'skill'
+    : 'clip';
   const sourceRef = `${refPrefix}:${Date.now()}:${label}`;
 
   const hasHeader = HAS_MARKDOWN_HEADER.test(text);

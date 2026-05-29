@@ -12,7 +12,7 @@ export type SourceId = string;
 
 export interface SourceRecord {
   sourceId: SourceId;
-  kind: 'file' | 'url' | 'ai-conversation' | 'clip';
+  kind: 'file' | 'url' | 'ai-conversation' | 'clip' | 'skill';
   ref: string;
   ingestedAt: number;
   graphId: GraphId;

@@ -116,6 +116,9 @@ importers:
       '@types/jsdom':
         specifier: ^21.1.0
         version: 21.1.7
+      '@types/libsodium-wrappers-sumo':
+        specifier: ^0.7.8
+        version: 0.7.8
       '@types/node':
         specifier: ^20.11.0
         version: 20.19.41
