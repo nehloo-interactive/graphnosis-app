@@ -14,11 +14,11 @@
  *   3. Optionally save the trained version into the Skills engram as a new node
  *      that supersedes the previous version (version history lives in the graph).
  *
- * Subscription gate: train_skill with LLM rewrite requires the monthly upgrades
- * subscription. Memory-augmented mode (no LLM) is always available. The gate is
- * enforced via the `distillation` LLM capability flag — when the user's subscription
- * is active the app sets this flag; when not, the tool degrades gracefully.
- * TODO: wire explicit subscription check when subscription service is wired.
+ * Subscription gate: the full training pipeline (both LLM-rewrite and memory-augmented
+ * paths) requires a monthly-upgrades subscription. The gate is enforced at the MCP
+ * transport layer in `mcp-server.ts` via `LicenseValidator.hasFeature(token, 'skill-training')`,
+ * which verifies an Ed25519-signed token issued by the Nehloo signing service. Free users
+ * can store raw skills in the Skills engram but cannot run the training pipeline.
  */
 
 import type { GraphnosisHost } from './host.js';
@@ -28,7 +28,7 @@ import { settings as settingsMod } from '@graphnosis-app/core';
 
 // ── Public types ─────────────────────────────────────────────────────────────
 
-export type ExportFormat = 'claude-md' | 'cursorrules' | 'system-prompt' | 'openai' | 'raw';
+export type ExportFormat = 'claude-md' | 'cursorrules' | 'system-prompt' | 'openai' | 'raw' | 'gts';
 export type TrainingMode = 'llm' | 'memory-augmented';
 
 export interface TrainSkillInput {
@@ -49,6 +49,12 @@ export interface TrainSkillInput {
   graphId: string;
   /** MCP client name — threaded into the audit trail. */
   addedBy?: string;
+  /**
+   * Recall breadth (0–100). 0 = broad (maxNodes=50), 100 = exact (maxNodes=12).
+   * Null = auto (reads stored breadth from skill metadata, starts at 50).
+   * After each training the pipeline self-tunes this value based on cited/fetched ratio.
+   */
+  recallBreadth?: number | null;
 }
 
 export interface InfluentialNode {
@@ -57,6 +63,43 @@ export interface InfluentialNode {
   score: number;
   /** First 120 characters of the node text. */
   preview: string;
+  /** Human-readable source name (file name, URL hostname, or clip label). */
+  sourceLabel?: string;
+  /** Where this node came from in the recall pipeline. */
+  layer?: 'anchored' | 'gnn-expanded' | 'semantic';
+}
+
+/**
+ * Pre-computed recall context for a skill — the deterministic Phase 1 output.
+ * Separating this from the LLM rewrite step lets the UI show which memories
+ * will be used before committing to a potentially slow training run.
+ */
+export interface SkillContext {
+  /** Full rich knowledge subgraph (DIRECTED/UNDIRECTED/SESSION SUMMARIES preserved). */
+  subgraph: string;
+  /** Ranked influential nodes with source labels. */
+  influentialNodes: InfluentialNode[];
+  tokenCount: number;
+  nodeCount: number;
+}
+
+/**
+ * Autonomous re-training schedule stored in the skill node's metadata.
+ * Written on save; read by the scheduler to decide when to retrain.
+ */
+export interface AutoRetrainConfig {
+  enabled: boolean;
+  trigger: 'scheduled' | 'cortex-growth' | 'vitality-decay' | 'hybrid';
+  /** For 'scheduled' and 'hybrid': retrain interval in milliseconds. */
+  intervalMs?: number;
+  /** For 'cortex-growth': retrain when this many new nodes have been added. */
+  cortexGrowthThreshold?: number;
+  /** For 'vitality-decay': retrain when vitality drops below this score. */
+  vitalityThreshold?: number;
+  /** 'notify' = draft + notification; 'auto-accept' = promote automatically; 'preview-first' = show cortex diff first. */
+  autonomyLevel: 'notify' | 'auto-accept' | 'preview-first';
+  lastAutoRetrain?: string;
+  nextScheduled?: string;
 }
 
 export interface TrainSkillResult {
@@ -95,7 +138,7 @@ memory notes below.
 Rules:
 1. Preserve the skill's core purpose and overall structure.
 2. Only change what the memories support — do NOT invent preferences not in the notes.
-3. After each personalized line or paragraph, add a brief parenthetical: (from memory)
+3. After each personalized line or paragraph, add a brief parenthetical: (from memory: "source label · date")
 4. If a memory contradicts the skill, emit a conflict flag on its own line:
    ⚠️ CONFLICT: [skill says X | memory says Y]
 5. Any line in the skill prefixed with [ANCHOR] must be preserved exactly as-is.
@@ -123,6 +166,7 @@ const FORMAT_HEADERS: Record<ExportFormat, string> = {
   'system-prompt': `<!-- Graphnosis-trained system prompt -->`,
   'openai': `<!-- Graphnosis-trained OpenAI system message -->`,
   'raw': '',
+  'gts': '',
 };
 
 const FORMAT_WRAPPERS: Partial<Record<ExportFormat, (text: string) => string>> = {
@@ -191,6 +235,46 @@ function buildMemoryAugmented(skill: string, memoriesPrompt: string): string {
   ].join('\n');
 }
 
+// ── Breadth helpers ───────────────────────────────────────────────────────────
+
+/**
+ * Map a 0–100 recallBreadth value to concrete recall budget parameters.
+ * 0 = broad (many nodes, wide context), 100 = exact (few, high-precision).
+ */
+function breadthToBudget(breadth: number): { maxTokens: number; maxNodes: number } {
+  const t = Math.max(0, Math.min(100, breadth)) / 100;
+  return {
+    maxTokens: Math.round(6000 - (6000 - 1200) * t),
+    maxNodes:  Math.round(50   - (50   - 12)   * t),
+  };
+}
+
+/**
+ * After a training run, nudge the stored recallBreadth based on how many of the
+ * fetched nodes were actually cited (appeared in the trained output).
+ * Low utilization → breadth was too wide → increase (fewer nodes next time).
+ * High utilization → breadth was too narrow → decrease (more nodes next time).
+ */
+function nudgeBreadth(current: number, fetchedNodes: number, citedNodes: number): number {
+  if (fetchedNodes === 0) return current;
+  const citedRatio = citedNodes / fetchedNodes;
+  let next = current;
+  if (citedRatio < 0.15) next = current + 10;
+  else if (citedRatio > 0.80) next = current - 10;
+  return Math.max(10, Math.min(90, next));
+}
+
+/**
+ * Infer which layer a node came from based on its score.
+ * ANCHOR_SCORE = 99, GNN_EXPANSION_SCORE = 1.5 (from host.ts constants).
+ * Regular semantic nodes score in [0, 1].
+ */
+function inferNodeLayer(score: number): 'anchored' | 'gnn-expanded' | 'semantic' {
+  if (score >= 90) return 'anchored';
+  if (score > 1.0) return 'gnn-expanded';
+  return 'semantic';
+}
+
 // ── SkillTrainer ──────────────────────────────────────────────────────────────
 
 export class SkillTrainer {
@@ -204,6 +288,75 @@ export class SkillTrainer {
     private readonly llm: LocalLlm | null,
   ) {}
 
+  // ── buildSkillContext ────────────────────────────────────────────────────────
+
+  /**
+   * Phase 1 (deterministic): surface relevant memories for a skill without
+   * running the LLM rewrite. Returns the full subgraph + ranked influential
+   * nodes so the Skills panel can preview what will be used before training.
+   *
+   * `recallBreadth` = null reads the stored value from skill metadata (or starts
+   * at 50 on first use). Pass 0–100 to override.
+   */
+  async buildSkillContext(
+    skill: string,
+    graphId: string,
+    focusGraphIds?: string[] | null,
+    recallBreadth?: number | null,
+  ): Promise<SkillContext> {
+    const effectiveBreadth = recallBreadth ?? 50;
+    const { maxTokens, maxNodes } = breadthToBudget(effectiveBreadth);
+
+    const recalled = await this.host.recall(skill, {
+      budget: { maxTokens, maxNodes },
+      ...(focusGraphIds?.length ? { onlyGraphIds: focusGraphIds } : {}),
+    });
+
+    // Build nodeId → source label reverse map across all relevant graphs.
+    const nodeToSource = new Map<string, string>();
+    const graphsToScan = focusGraphIds ?? this.host.listGraphs();
+    for (const gid of graphsToScan) {
+      try {
+        const sources = this.host.listSources(gid);
+        for (const src of sources) {
+          // Derive a human-readable label: filename from a file path, hostname
+          // from a URL, or clip ID fragment as a last resort.
+          const label = src.ref
+            ? (src.ref.includes('/') ? src.ref.split('/').pop() ?? src.ref
+              : src.ref.startsWith('http') ? new URL(src.ref).hostname
+              : src.ref)
+            : src.sourceId.slice(0, 12);
+          for (const nid of src.nodeIds) {
+            nodeToSource.set(nid, label);
+          }
+        }
+      } catch { /* graph not yet loaded — skip */ }
+    }
+
+    const influentialNodes: InfluentialNode[] = [];
+    for (const [gid, nodes] of recalled.byGraph) {
+      for (const node of nodes) {
+        const sourceLabel = nodeToSource.get(node.nodeId);
+        influentialNodes.push({
+          nodeId: node.nodeId,
+          graphId: gid,
+          score: node.score,
+          preview: node.text.slice(0, 120),
+          ...(sourceLabel !== undefined ? { sourceLabel } : {}),
+          layer: inferNodeLayer(node.score),
+        });
+      }
+    }
+    influentialNodes.sort((a, b) => b.score - a.score);
+
+    return {
+      subgraph: recalled.prompt,
+      influentialNodes,
+      tokenCount: recalled.tokensUsed,
+      nodeCount: recalled.nodesIncluded,
+    };
+  }
+
   // ── trainSkill ──────────────────────────────────────────────────────────────
 
   async trainSkill(input: TrainSkillInput): Promise<TrainSkillResult> {
@@ -215,31 +368,16 @@ export class SkillTrainer {
       save = true,
       graphId,
       addedBy,
+      recallBreadth: inputBreadth,
     } = input;
 
-    // ── Phase 1: Recall relevant memories (deterministic) ─────────────────────
-    const recalled = await this.host.recall(skill, {
-      budget: { maxTokens: 3000, maxNodes: 30 },
-      ...(focusGraphIds?.length ? { onlyGraphIds: focusGraphIds } : {}),
-    });
-
-    const influentialNodes: InfluentialNode[] = [];
-    for (const [gid, nodes] of recalled.byGraph) {
-      for (const node of nodes) {
-        influentialNodes.push({
-          nodeId: node.nodeId,
-          graphId: gid,
-          score: node.score,
-          preview: node.text.slice(0, 120),
-        });
-      }
-    }
-    // Sort descending by relevance score
-    influentialNodes.sort((a, b) => b.score - a.score);
-    const topNodes = influentialNodes.slice(0, 10);
+    // ── Phase 1: Build skill context (deterministic recall) ───────────────────
+    const effectiveBreadth = inputBreadth ?? 50;
+    const context = await this.buildSkillContext(skill, graphId, focusGraphIds, effectiveBreadth);
+    const topNodes = context.influentialNodes.slice(0, 10);
 
     // ── Phase 2: Personalize ──────────────────────────────────────────────────
-    const hasMemories = recalled.nodesIncluded > 0;
+    const hasMemories = context.nodeCount > 0;
     let trained: string;
     let diffNotes: string | undefined;
     let mode: TrainingMode;
@@ -253,7 +391,7 @@ export class SkillTrainer {
         const raw = await this.llmCompleteWithTimeout(
           {
             system: SKILL_TRAINING_SYSTEM_PROMPT,
-            user: buildTrainingUserPrompt(skill, recalled.prompt, skillName, modelTarget),
+            user: buildTrainingUserPrompt(skill, context.subgraph, skillName, modelTarget),
           },
           20_000,
         );
@@ -263,7 +401,7 @@ export class SkillTrainer {
         mode = 'llm';
       } catch (err) {
         // LLM timeout or error — degrade gracefully
-        trained = buildMemoryAugmented(skill, recalled.prompt);
+        trained = buildMemoryAugmented(skill, context.subgraph);
         mode = 'memory-augmented';
         degradedNote =
           `Local LLM was available but timed out (${(err as Error).message}). ` +
@@ -271,7 +409,7 @@ export class SkillTrainer {
       }
     } else if (!llmReady && hasMemories) {
       // No LLM — append memories as context block
-      trained = buildMemoryAugmented(skill, recalled.prompt);
+      trained = buildMemoryAugmented(skill, context.subgraph);
       mode = 'memory-augmented';
       degradedNote =
         hasMemories
@@ -288,6 +426,13 @@ export class SkillTrainer {
         'The skill is returned unchanged. Try adding more notes to your ' +
         'Graphnosis cortex about your working style, preferences, and context.';
     }
+
+    // ── Self-tune recallBreadth ────────────────────────────────────────────────
+    // Count cited nodes: (from memory: occurrences in LLM output, or all fetched in augmented mode.
+    const citedNodes = mode === 'llm'
+      ? (trained.match(/\(from memory:/g) ?? []).length
+      : context.nodeCount;
+    const tunedBreadth = nudgeBreadth(effectiveBreadth, context.nodeCount, citedNodes);
 
     // ── Phase 3: Save trained version ─────────────────────────────────────────
     let skillId: string | undefined;
@@ -306,6 +451,7 @@ export class SkillTrainer {
         `     mode: ${mode}`,
         `     influentialNodes: ${topNodes.length}`,
         `     modelTarget: ${modelTarget ?? 'generic'}`,
+        `     recallBreadth: ${tunedBreadth}`,
         `-->`,
         '',
       ].join('\n');
@@ -414,8 +560,38 @@ export class SkillTrainer {
    * Memory references and node IDs are stripped — only the behavioral content
    * is exported. The "direction of personalization" travels; the memories that
    * caused it stay local.
+   *
+   * For the 'gts' format, returns a Buffer (encrypted JSON). All other formats
+   * return a string.
    */
-  exportSkill(skillText: string, format: ExportFormat): string {
+  exportSkill(skillText: string, format: ExportFormat): string | Buffer {
+    if (format === 'gts') {
+      // Delegate to gts-format for pack building. The caller (MCP handler or IPC
+      // handler) is responsible for providing the full GtsPayload; this path
+      // returns a minimal single-skill pack from just the skill text.
+      const { buildGtsPackage } = require('./gts-format.js') as typeof import('./gts-format.js');
+      const payload = {
+        formatVersion: '1' as const,
+        kind: 'community' as const,
+        id: `exported-${Date.now()}`,
+        displayName: 'Exported Skill',
+        description: 'Single skill exported from Graphnosis.',
+        version: '1.0.0',
+        author: 'community',
+        tierRequired: 'pro' as const,
+        skills: [{
+          name: 'Exported Skill',
+          engramTemplate: 'skill' as const,
+          sensitivityTier: 'personal' as const,
+          baseText: skillText,
+          recallRecipes: [],
+        }],
+        graphnosisMd: '',
+        signature: '',
+      };
+      return buildGtsPackage(payload);
+    }
+
     // Strip the "Personal Context (from your Graphnosis memories)" block and
     // the metadata header comment that the trainer prepends on save.
     let cleaned = stripMetadataHeader(skillText);

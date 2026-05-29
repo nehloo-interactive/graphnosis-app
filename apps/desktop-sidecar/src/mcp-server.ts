@@ -14,6 +14,7 @@ import { recordConsent, revokeConsent, policyGrantMs, type ClientPolicy, type Co
 import { registerPrompt as registerConsentPrompt, listPendingPrompts } from './consent-prompts.js';
 import type { ConsentRecord } from '@graphnosis-app/core/settings';
 import { SkillTrainer, type ExportFormat } from './skill-trainer.js';
+import { LicenseValidator } from './license-validator.js';
 
 // ── Session-level data budget ─────────────────────────────────────────────────
 // These caps apply per MCP connection (i.e. per AI client session). They exist
@@ -733,6 +734,13 @@ export interface McpDeps {
    * smoke-test contexts where no full host is wired.
    */
   skillTrainer?: SkillTrainer | null;
+  /**
+   * License validator — verifies Ed25519-signed tokens from the Nehloo signing
+   * service. Used to gate subscription-only features (currently: skill training).
+   * Optional: absent in smoke-test / standalone contexts; callers treat absence
+   * as "unlicensed" (same as `hasFeature` returning false).
+   */
+  licenseValidator?: LicenseValidator | null;
 }
 
 /**
@@ -2165,6 +2173,12 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
               type: 'boolean',
               description: 'Whether to save the trained version into the Skills engram. Default true. Pass false to preview without persisting.',
             },
+            recall_breadth: {
+              type: 'integer',
+              minimum: 0,
+              maximum: 100,
+              description: '0 = Broad (max context, up to 50 nodes from all engrams). 100 = Exact (strict semantic match, ~12 nodes). Omit to use auto-tuned value (starts at 50, self-adjusts after each training run based on cited/fetched ratio).',
+            },
           },
           required: ['skill'],
         },
@@ -2211,10 +2225,12 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
           '  cursorrules   — .cursorrules entry\n' +
           '  system-prompt — Generic system prompt (paste into any AI tool)\n' +
           '  openai        — OpenAI API system message JSON\n' +
-          '  raw           — Clean skill text with no wrapper\n\n' +
+          '  raw           — Clean skill text with no wrapper\n' +
+          '  gts           — Graphnosis Trained Skill pack (.gts encrypted JSON, base64-encoded in response)\n\n' +
           'WHEN TO CALL:\n' +
           '• User says "export my X skill for Cursor", "give me this as a CLAUDE.md block"\n' +
-          '• After training, to deploy the skill in a specific AI tool',
+          '• After training, to deploy the skill in a specific AI tool\n' +
+          '• User says "pack this as a .gts file" or "export as Skills Pack"',
         inputSchema: {
           type: 'object',
           properties: {
@@ -2224,7 +2240,7 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
             },
             format: {
               type: 'string',
-              enum: ['claude-md', 'cursorrules', 'system-prompt', 'openai', 'raw'],
+              enum: ['claude-md', 'cursorrules', 'system-prompt', 'openai', 'raw', 'gts'],
               description: 'Target format.',
             },
           },
@@ -3552,6 +3568,7 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
           focus_engrams: z.array(z.string()).optional(),
           model_target: z.enum(['generic', 'claude', 'cursor', 'openai', 'copilot']).optional(),
           save: z.boolean().optional(),
+          recall_breadth: z.number().int().min(0).max(100).optional(),
         });
         const args = TrainSkillInput.parse(req.params.arguments ?? {});
 
@@ -3584,6 +3601,33 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
           );
         }
 
+        // ── Subscription gate ────────────────────────────────────────────────
+        // Skill training (both LLM-rewrite and memory-augmented paths) is a
+        // monthly-upgrades feature. The license token is stored encrypted in the
+        // cortex; we decrypt on demand and check the Ed25519 signature.
+        //
+        // Free users can still store and export raw skills (Skills engram is
+        // always available); they just cannot run the training pipeline.
+        {
+          const licenseToken = await deps.host.getLicenseToken();
+          const licensed = deps.licenseValidator?.hasFeature(licenseToken, 'skill-training') ?? false;
+          if (!licensed) {
+            return {
+              content: [{
+                type: 'text',
+                text: JSON.stringify({
+                  upgrade_required: true,
+                  feature: 'skill-training',
+                  message:
+                    'Skill training is a Graphnosis monthly-upgrades feature. ' +
+                    'Subscribe or renew to personalize skills using your cortex memory.',
+                  upgrade_url: 'https://graphnosis.app/upgrade',
+                }),
+              }],
+            };
+          }
+        }
+
         const clientName = mcpRegistry.getMostRecentClientName() ?? undefined;
         const trainInput: import('./skill-trainer.js').TrainSkillInput = {
           skill: args.skill,
@@ -3593,6 +3637,7 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
           ...(args.model_target !== undefined ? { modelTarget: args.model_target } : {}),
           ...(args.save !== undefined ? { save: args.save } : {}),
           ...(clientName !== undefined ? { addedBy: clientName } : {}),
+          ...(args.recall_breadth !== undefined ? { recallBreadth: args.recall_breadth } : {}),
         };
         const result = await deps.skillTrainer.trainSkill(trainInput);
 
@@ -3674,7 +3719,7 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
       case 'export_skill': {
         const ExportSkillInput = z.object({
           skill_text: z.string().min(1),
-          format: z.enum(['claude-md', 'cursorrules', 'system-prompt', 'openai', 'raw']),
+          format: z.enum(['claude-md', 'cursorrules', 'system-prompt', 'openai', 'raw', 'gts']),
         });
         const args = ExportSkillInput.parse(req.params.arguments ?? {});
 
@@ -3688,6 +3733,23 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
           args.skill_text,
           args.format as ExportFormat,
         );
+
+        if (Buffer.isBuffer(exported)) {
+          // GTS format: return as base64 so the MCP transport can carry it.
+          return {
+            content: [{
+              type: 'text',
+              text: `## Exported Skill Pack (.gts)\n\n` +
+                `**Format:** Graphnosis Trained Skill (encrypted JSON)\n` +
+                `**Encoding:** base64 (save as \`.gts\` after decoding)\n\n` +
+                '```\n' + exported.toString('base64') + '\n```\n\n' +
+                '_This pack contains only your trained skill text and recall recipes. ' +
+                'Your personal memories are not included — however, personal or proprietary ' +
+                'content may have influenced training and could appear in the trained text. ' +
+                'Review carefully before sharing._',
+            }],
+          };
+        }
 
         return {
           content: [{
