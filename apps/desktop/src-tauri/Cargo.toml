@@ -1,6 +1,6 @@
 [package]
 name = "graphnosis-app"
-version = "1.11.1"
+version = "1.12.0"
 description = "Graphnosis — personal second memory"
 authors = ["Nehloo Interactive LLC"]
 # Custom string — FSL-1.1-Apache-2.0 isn't a registered SPDX id (yet),
@@ -38,6 +38,11 @@ tauri-plugin-global-shortcut = "2"
 tauri-plugin-autostart = "2"
 tauri-plugin-notification = "2"
 tauri-plugin-updater = "2"
+tauri-plugin-deep-link = "2"
+# Persists window size, position, maximize, and fullscreen state across
+# launches. State lives in <app-data>/.window-state.json — written on
+# move/resize/close, restored automatically on window creation.
+tauri-plugin-window-state = "2"
 keyring = "3"
 notify = "6"
 serde = { version = "1", features = ["derive"] }
@@ -46,6 +51,7 @@ tokio = { version = "1", features = ["full"] }
 anyhow = "1"
 dirs = "5"
 image = { version = "0.25", default-features = false, features = ["png"] }
+base64 = "0.22"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 mac-notification-sys = "0.6"

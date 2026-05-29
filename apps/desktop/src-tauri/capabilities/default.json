@@ -10,6 +10,10 @@
     "core:window:allow-close",
     "core:window:allow-set-focus",
     "core:window:allow-start-dragging",
+    "core:window:allow-set-size",
+    "core:window:allow-unmaximize",
+    "core:window:allow-center",
+    "core:window:allow-is-maximized",
     "core:webview:default",
     "core:app:default",
     "core:event:default",
@@ -23,6 +27,9 @@
     "notification:default",
     "notification:allow-is-permission-granted",
     "notification:allow-request-permission",
-    "notification:allow-notify"
+    "notification:allow-notify",
+    "deep-link:default",
+    "deep-link:allow-get-current",
+    "window-state:default"
   ]
 }
