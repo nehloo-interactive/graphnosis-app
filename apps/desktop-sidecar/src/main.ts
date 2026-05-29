@@ -667,7 +667,13 @@ async function main(): Promise<void> {
     process.on('SIGTERM', stopIntegrityWatcher);
   }
 
-  const brainEngine = new BrainEngine(host, llm, broadcastRaw);
+  // License validator — created early so it can gate background loops
+  // (the BrainEngine's autonomous edge-prediction) at construction time.
+  // Initialised once (awaits libsodium WASM boot, < 5 ms cold); all
+  // per-request checks afterwards are synchronous.
+  const licenseValidator = await LicenseValidator.create();
+
+  const brainEngine = new BrainEngine(host, llm, broadcastRaw, licenseValidator);
   // Wire recall → reinforcement: every federated recall feeds the
   // co-activation accumulator so co-recalled memories strengthen.
   host.setPlasticityObserver((sub) => brainEngine.onRecall(sub));
@@ -681,16 +687,162 @@ async function main(): Promise<void> {
   // The LLM path uses the 'distillation' capability (same gate as llm_distill),
   // evaluated at call time inside SkillTrainer.pingLlm() — no sidecar restart
   // needed when the user toggles the LLM capability in settings.
-  // Monthly upgrades subscribers get the full LLM rewrite (license gate enforced
+  // Monthly subscription subscribers get the full LLM rewrite (license gate enforced
   // in the train_skill MCP handler via LicenseValidator). Non-subscribers see an
   // upgrade prompt; they can still store raw skills in the Skills engram for free.
   const skillTrainer = new SkillTrainer(host, llm);
 
-  // License validator — Ed25519 signature verification for subscription tokens
-  // issued by the Nehloo signing service. Initialised once at startup (awaits
-  // libsodium WASM boot); all per-request checks are synchronous after that.
-  // The signing key is a hardcoded public key — safe to embed in open FSL source.
-  const licenseValidator = await LicenseValidator.create();
+  // (license validator was created above so the BrainEngine could gate
+  // its autonomous edge-prediction loop on it.)
+
+  // ── Autonomous Praxis scheduler ──────────────────────────────────────────
+  //
+  // Polls every 5 minutes. For each entry in AppSettings.skillAutoRetrain
+  // whose trigger has fired, re-runs SkillTrainer.trainSkill on the
+  // current skill text and writes the new version into the same engram.
+  //
+  // Pro-gated: the entire loop short-circuits to a no-op when the user
+  // has no valid skill-training license. This means turning Pro off
+  // pauses all autonomous retraining without losing the schedule —
+  // re-enable Pro and the next poll resumes from where it left off.
+  //
+  // Errors are caught + logged but never crash the loop; one bad skill
+  // does not break retraining for other skills.
+  const SKILL_AUTORETRAIN_POLL_MS = 5 * 60 * 1000;
+  setInterval(() => {
+    void (async () => {
+      try {
+        const licenseToken = await host.getLicenseToken();
+        const licensed = licenseValidator.hasFeature(licenseToken, 'skill-training');
+        if (!licensed) return; // unlicensed — silent skip, schedule preserved
+        const settings = host.getSettings();
+        const map = settings.skillAutoRetrain ?? {};
+        const now = Date.now();
+        // Sum active node count once per poll instead of per-skill — every
+        // 'cortex-growth' trigger reads this snapshot. Doesn't include
+        // archived engrams (growth there shouldn't fire retraining).
+        const totalActiveNodes = host.listGraphs().reduce((sum, gid) => {
+          const meta = host.getGraphMetadata(gid);
+          if (meta?.archived) return sum;
+          return sum + host.listNodes(gid).length;
+        }, 0);
+        for (const [sourceId, cfg] of Object.entries(map)) {
+          if (!cfg.enabled) continue;
+          // Evaluate the trigger. Each one returns true when retraining
+          // should fire on this poll. The 'hybrid' trigger fires if ANY
+          // of its component triggers fires — gives the user the most
+          // responsive option without configuring every dimension.
+          let shouldFire = false;
+          let triggerReason = '';
+          const fireScheduled = (): boolean => {
+            const intervalMs = cfg.intervalMs ?? 0;
+            if (intervalMs <= 0) return false;
+            const last = cfg.lastAutoRetrain ?? cfg.enabledAt ?? 0;
+            return now - last >= intervalMs;
+          };
+          const fireCortexGrowth = (): boolean => {
+            const threshold = cfg.cortexGrowthThreshold ?? 0;
+            if (threshold <= 0) return false;
+            const snapshot = cfg.lastNodeCountSnapshot ?? totalActiveNodes;
+            return totalActiveNodes - snapshot >= threshold;
+          };
+          const fireVitalityDecay = (): boolean => {
+            const threshold = cfg.vitalityThreshold ?? 0;
+            if (threshold <= 0) return false;
+            try {
+              const v = skillTrainer.computeSkillVitality(cfg.graphId, sourceId);
+              return typeof v?.score === 'number' && v.score < threshold;
+            } catch {
+              return false;
+            }
+          };
+          if (cfg.trigger === 'scheduled') {
+            shouldFire = fireScheduled();
+            triggerReason = 'scheduled';
+          } else if (cfg.trigger === 'cortex-growth') {
+            shouldFire = fireCortexGrowth();
+            triggerReason = 'cortex-growth';
+          } else if (cfg.trigger === 'vitality-decay') {
+            shouldFire = fireVitalityDecay();
+            triggerReason = 'vitality-decay';
+          } else if (cfg.trigger === 'hybrid') {
+            if (fireScheduled()) { shouldFire = true; triggerReason = 'hybrid:scheduled'; }
+            else if (fireCortexGrowth()) { shouldFire = true; triggerReason = 'hybrid:cortex-growth'; }
+            else if (fireVitalityDecay()) { shouldFire = true; triggerReason = 'hybrid:vitality-decay'; }
+          }
+          if (!shouldFire) continue;
+          // Look up the current skill text from its source — auto-retrain
+          // takes the most recent version as the input so the rewrite
+          // builds on prior auto-rewrites, not the original raw skill.
+          const detail = skillTrainer.getSkill(cfg.graphId, sourceId);
+          if (!detail) {
+            console.warn(`[autoretrain] skipping ${sourceId} — source not found in ${cfg.graphId}`);
+            continue;
+          }
+          try {
+            // Three autonomy levels:
+            //   - 'auto-accept':  run trainSkill with save=true, the new
+            //                     version replaces the old via supersession.
+            //   - 'notify':       run with save=true (same as auto-accept),
+            //                     BUT also mark sourceId in
+            //                     skillRetrainNotifications so the UI
+            //                     surfaces a 🆕 dot until the user views it.
+            //   - 'preview-first': run with save=false, stash the result in
+            //                     skillRetrainPending so the user reviews
+            //                     before promotion. lastAutoRetrain still
+            //                     bumps so we don't propose every poll.
+            const willSave = cfg.autonomyLevel !== 'preview-first';
+            const result = await skillTrainer.trainSkill({
+              skill: detail.text,
+              graphId: cfg.graphId,
+              skillName: detail.label,
+              save: willSave,
+              ...(detail.recallBreadth !== undefined ? { recallBreadth: detail.recallBreadth } : {}),
+              addedBy: 'graphnosis-autopraxis',
+            });
+            // Persist updated lastAutoRetrain + lastNodeCountSnapshot on the
+            // same map so subsequent cortex-growth checks measure delta
+            // from the just-retrained baseline, not from the original
+            // enabledAt snapshot.
+            const settingsNow = host.getSettings();
+            const next = { ...(settingsNow.skillAutoRetrain ?? {}) };
+            const prior = next[sourceId];
+            if (prior) {
+              next[sourceId] = {
+                ...prior,
+                lastAutoRetrain: Date.now(),
+                lastNodeCountSnapshot: totalActiveNodes,
+              };
+            }
+            // Branch on autonomy level for the per-level extras.
+            const patch: Parameters<typeof host.setSettings>[0] = { skillAutoRetrain: next };
+            if (cfg.autonomyLevel === 'notify') {
+              const notifs = new Set(settingsNow.skillRetrainNotifications ?? []);
+              notifs.add(sourceId);
+              patch.skillRetrainNotifications = [...notifs];
+            }
+            if (cfg.autonomyLevel === 'preview-first') {
+              const pending = { ...(settingsNow.skillRetrainPending ?? {}) };
+              pending[sourceId] = {
+                graphId: cfg.graphId,
+                proposedAt: Date.now(),
+                trained: result.trained,
+                ...(result.diffNotes !== undefined ? { diffNotes: result.diffNotes } : {}),
+                triggerReason,
+              };
+              patch.skillRetrainPending = pending;
+            }
+            await host.setSettings(patch);
+            console.log(`[autoretrain] retrained ${detail.label} (${sourceId}) via ${triggerReason} → ${cfg.autonomyLevel}`);
+          } catch (e) {
+            console.warn(`[autoretrain] retrain failed for ${sourceId}:`, e);
+          }
+        }
+      } catch (e) {
+        console.warn('[autoretrain] poll cycle failed:', e);
+      }
+    })();
+  }, SKILL_AUTORETRAIN_POLL_MS);
 
   const mcpDeps = {
     host,
