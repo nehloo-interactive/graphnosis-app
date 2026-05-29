@@ -1138,7 +1138,7 @@
          scoped to a sidebar section — no need to blur the whole view). */
       main { transition: filter 0.2s ease; }
       body:has(.modal-backdrop:not(.hidden):not(.over-sidebar)) main,
-      body:has(.studio-intro-overlay:not(.hidden)) main { filter: blur(4px); }
+      body:has(#whats-new-modal:not(.hidden)) main { filter: blur(4px); }
       /* Confirmation dialogs that can fire while the settings modal is open
          must paint above it. settings-modal is also z-index:100 but appears
          later in the DOM, so same-level stacking order would bury these. */
@@ -2505,6 +2505,18 @@
         font-size: 13px; color: var(--fg-dim); cursor: pointer;
       }
       .studio-intro-dismiss-row input[type="checkbox"] { cursor: pointer; }
+      .whats-new-dots {
+        display: flex; justify-content: center; gap: 7px; margin-bottom: 22px;
+      }
+      .whats-new-dot {
+        width: 7px; height: 7px; border-radius: 50%;
+        background: var(--fg-dim); opacity: 0.25;
+        transition: opacity 0.2s, background 0.2s;
+        cursor: pointer;
+      }
+      .whats-new-dot.active { background: var(--accent); opacity: 1; }
+      .whats-new-slide { display: none; }
+      .whats-new-slide.active { display: block; }
 
       /* ── Federated stats strip ─────────────────────────────────────────── */
       .g-federated-stats {
@@ -4068,6 +4080,7 @@
       .trivia-body {
         flex: 1; min-height: 0; overflow-y: auto;
         display: flex; flex-direction: column;
+        padding: 12px 12px 0;
       }
       .g-search-results {
         flex: 1;
@@ -9129,36 +9142,74 @@ ollama list</code></pre>
       </div>
     </div>
 
-    <!-- MemoryStudio startup announcement modal -->
-    <div id="studio-intro-modal" class="studio-intro-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="studio-intro-title">
+    <!-- What's New startup modal — multi-slide carousel -->
+    <div id="whats-new-modal" class="studio-intro-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="whats-new-title">
       <div class="studio-intro-card">
-        <h2 id="studio-intro-title">MemoryStudio</h2>
-        <p style="margin-bottom:16px;">
-          Interact with your memory the way your AI client does —
-          the same MCP operations, running entirely on your device.
-          No internet. No cloud hop.
-        </p>
-        <ul style="text-align:left; list-style:none; padding:0; margin:0 0 20px; display:flex; flex-direction:column; gap:10px;">
-          <li style="display:flex; gap:10px; align-items:flex-start;">
-            <span style="font-size:16px; flex-shrink:0;">🔍</span>
-            <span><strong>Recall</strong> — run a full subgraph recall and see exactly what your AI client sees, with nodes, edges, and scores.</span>
-          </li>
-          <li style="display:flex; gap:10px; align-items:flex-start;">
-            <span style="font-size:16px; flex-shrink:0;">💾</span>
-            <span><strong>Remember</strong> — save new memories directly, routed to any engram, without going through an AI client.</span>
-          </li>
-          <li style="display:flex; gap:10px; align-items:flex-start;">
-            <span style="font-size:16px; flex-shrink:0;">✏️</span>
-            <span><strong>Edit &amp; correct</strong> — propose diffs on existing memory nodes and approve them with a single click.</span>
-          </li>
-          <li style="display:flex; gap:10px; align-items:flex-start;">
-            <span style="font-size:16px; flex-shrink:0;">🧠</span>
-            <span><strong>GNN neighbors</strong> — explore connections your neural network predicts that semantic recall alone would miss.</span>
-          </li>
-        </ul>
-        <button id="btn-studio-intro-upgrade" class="primary" style="width:100%;">Open MemoryStudio</button>
+        <div class="whats-new-dots">
+          <span class="whats-new-dot active" data-slide="0"></span>
+          <span class="whats-new-dot" data-slide="1"></span>
+        </div>
+
+        <!-- Slide 0: MemoryStudio -->
+        <div class="whats-new-slide active" data-slide="0">
+          <h2 id="whats-new-title">MemoryStudio</h2>
+          <p style="margin-bottom:16px;">
+            Interact with your memory the way your AI client does —
+            the same MCP operations, running entirely on your device.
+            No internet. No cloud hop.
+          </p>
+          <ul style="text-align:left; list-style:none; padding:0; margin:0 0 20px; display:flex; flex-direction:column; gap:10px;">
+            <li style="display:flex; gap:10px; align-items:flex-start;">
+              <span style="font-size:16px; flex-shrink:0;">🔍</span>
+              <span><strong>Recall</strong> — run a full subgraph recall and see exactly what your AI client sees, with nodes, edges, and scores.</span>
+            </li>
+            <li style="display:flex; gap:10px; align-items:flex-start;">
+              <span style="font-size:16px; flex-shrink:0;">💾</span>
+              <span><strong>Remember</strong> — save new memories directly, routed to any engram, without going through an AI client.</span>
+            </li>
+            <li style="display:flex; gap:10px; align-items:flex-start;">
+              <span style="font-size:16px; flex-shrink:0;">✏️</span>
+              <span><strong>Edit &amp; correct</strong> — propose diffs on existing memory nodes and approve them with a single click.</span>
+            </li>
+            <li style="display:flex; gap:10px; align-items:flex-start;">
+              <span style="font-size:16px; flex-shrink:0;">🧠</span>
+              <span><strong>GNN neighbors</strong> — explore connections your neural network predicts that semantic recall alone would miss.</span>
+            </li>
+          </ul>
+        </div>
+
+        <!-- Slide 1: Graphnosis Skills -->
+        <div class="whats-new-slide" data-slide="1">
+          <h2 style="margin-bottom:6px;">Graphnosis Skills</h2>
+          <p style="margin-bottom:4px; font-size:13px; color:var(--fg-dim); font-style:italic;">Powered by Graphnosis Autonomous Praxis</p>
+          <p style="margin-bottom:16px;">
+            Train AI skills using your own cortex. Drop in a skill, let Graphnosis
+            surface the memories that shaped how you work, and produce a personalized
+            version — fully local, fully yours.
+          </p>
+          <ul style="text-align:left; list-style:none; padding:0; margin:0 0 20px; display:flex; flex-direction:column; gap:10px;">
+            <li style="display:flex; gap:10px; align-items:flex-start;">
+              <span style="font-size:16px; flex-shrink:0;">🎯</span>
+              <span><strong>Skill engrams</strong> — skills live as first-class nodes in your cortex, versioned with full graph provenance and cross-engram edges to the memories that influenced them.</span>
+            </li>
+            <li style="display:flex; gap:10px; align-items:flex-start;">
+              <span style="font-size:16px; flex-shrink:0;">🔁</span>
+              <span><strong>Autonomous Praxis</strong> — retrains each skill as your cortex grows. Self-tuning recall breadth learns the right scope over successive runs.</span>
+            </li>
+            <li style="display:flex; gap:10px; align-items:flex-start;">
+              <span style="font-size:16px; flex-shrink:0;">🔍</span>
+              <span><strong>Memory attribution</strong> — every change in a trained skill traces back to the specific memory node that drove it, with engram source and date.</span>
+            </li>
+            <li style="display:flex; gap:10px; align-items:flex-start;">
+              <span style="font-size:16px; flex-shrink:0;">📦</span>
+              <span><strong>Skill Packs (.gts)</strong> — export trained skills as encrypted, portable packs with a <code>GRAPHNOSIS.md</code> and embedded recall recipes.</span>
+            </li>
+          </ul>
+        </div>
+
+        <button id="btn-whats-new-next" class="primary" style="width:100%;">Next</button>
         <label class="studio-intro-dismiss-row">
-          <input type="checkbox" id="chk-studio-intro-dismiss" />
+          <input type="checkbox" id="chk-whats-new-dismiss" />
           Don't show this on startup
         </label>
       </div>
