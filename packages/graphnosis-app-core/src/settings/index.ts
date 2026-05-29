@@ -601,6 +601,20 @@ export interface AppSettings {
    */
   consentHmacKey?: string;
 
+  /**
+   * Encrypted license token from the Nehloo signing service.
+   *
+   * On-disk: XChaCha20-Poly1305 ciphertext of the raw token string,
+   * base64-encoded, encrypted with the cortex data key (same key used
+   * for connector credentials). On-disk value is always the ciphertext;
+   * the host decrypts on demand via `getLicenseToken()`.
+   *
+   * A missing or undecryptable field means the user has no active license
+   * and gated features (e.g. skill training) degrade to their free tier.
+   * NEVER expose this field via any MCP tool, IPC response, or log line.
+   */
+  licenseEnc?: string;
+
   /** Docs-engram ingest state. Absent on cortexes that never saw the offer. */
   docsEngram?: {
     /** true once the user clicked "Not now" on the docs-ingest offer. */
