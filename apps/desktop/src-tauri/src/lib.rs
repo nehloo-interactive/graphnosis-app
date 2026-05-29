@@ -2133,6 +2133,53 @@ async fn save_json_file(
     }
 }
 
+/// Show a native Save dialog with a caller-provided filter, then write either
+/// text or base64-decoded bytes to the chosen path. Used by the Skills tab's
+/// Export action — Skills exports come in six formats (claude-md, cursorrules,
+/// system-prompt, openai, raw text, and the encrypted GTS binary).
+///
+/// If `binary_b64` is `Some`, the value is base64-decoded and written as bytes.
+/// Otherwise `content` is written as UTF-8 text.
+#[tauri::command]
+async fn save_skill_file(
+    app: AppHandle,
+    default_name: String,
+    filter_name: String,
+    filter_ext: String,
+    content: String,
+    binary_b64: Option<String>,
+) -> Result<bool, String> {
+    use tauri_plugin_dialog::DialogExt;
+    use std::fs;
+    use base64::Engine as _;
+
+    let path = app
+        .dialog()
+        .file()
+        .set_file_name(&default_name)
+        .add_filter(&filter_name, &[filter_ext.as_str()])
+        .blocking_save_file();
+
+    match path {
+        Some(p) => {
+            let dest = p.as_path()
+                .ok_or_else(|| "invalid path".to_string())?;
+            if let Some(b64) = binary_b64 {
+                let bytes = base64::engine::general_purpose::STANDARD
+                    .decode(b64.as_bytes())
+                    .map_err(|e| format!("invalid base64 payload: {e}"))?;
+                fs::write(dest, bytes)
+                    .map_err(|e| format!("could not write file: {e}"))?;
+            } else {
+                fs::write(dest, content.as_bytes())
+                    .map_err(|e| format!("could not write file: {e}"))?;
+            }
+            Ok(true)
+        }
+        None => Ok(false), // user cancelled
+    }
+}
+
 /// Install the macOS application menu with "Graphnosis" as the app name.
 ///
 /// Without this, the first menu item reads "graphnosis-app" (the Rust
@@ -2806,6 +2853,34 @@ pub fn run() {
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
             None,
         ))
+        // Deep-link plugin — registers the graphnosis:// URL scheme.
+        // The actual inbound-URL listener is installed in the setup() hook
+        // below (handle_deep_link) so we can emit events to the frontend
+        // and call back into the sidecar's license:setToken IPC.
+        .plugin(tauri_plugin_deep_link::init())
+        // Window-state plugin — saves size, position, maximize, and
+        // fullscreen state across launches. State persists in
+        // <app-data>/.window-state.json.
+        //
+        // IMPORTANT: explicitly EXCLUDE StateFlags::VISIBLE. The default
+        // flag set restores visibility too, which means the plugin
+        // forces the window visible on launch — overriding our
+        // `"visible": false` in tauri.conf.json. With visibility
+        // restored before the webview JS runs, the user briefly sees
+        // the window at the stored (possibly under-min) size and then
+        // a jump when ensureMinWindowSize() snaps it up. By dropping
+        // VISIBLE from the flag set, the window stays hidden per the
+        // config until JS calls w.show() after the size check.
+        .plugin(
+            tauri_plugin_window_state::Builder::default()
+                .with_state_flags(
+                    tauri_plugin_window_state::StateFlags::SIZE
+                    | tauri_plugin_window_state::StateFlags::POSITION
+                    | tauri_plugin_window_state::StateFlags::MAXIMIZED
+                    | tauri_plugin_window_state::StateFlags::FULLSCREEN
+                )
+                .build()
+        )
         .invoke_handler(tauri::generate_handler![
             pick_cortex_folder,
             check_path_exists,
@@ -2868,6 +2943,7 @@ pub fn run() {
             open_about_window,
             open_external_url,
             save_json_file,
+            save_skill_file,
             set_graph_archived,
             set_graph_tier,
             get_consent_phrase,
@@ -2910,6 +2986,44 @@ pub fn run() {
             }
             // Tray icon + menu.
             tray::create(app.handle())?;
+            // ── graphnosis:// deep-link handler ─────────────────────────────────
+            //
+            // Listens for inbound URLs registered against the graphnosis://
+            // scheme (configured in tauri.conf.json under
+            // plugins.deep-link.desktop.schemes). On macOS / Linux the OS
+            // routes the URL to whichever app registered the scheme; on
+            // first launch we may also receive a cold-start URL via
+            // get_current().
+            //
+            // Today we handle one form:
+            //
+            //   graphnosis://claim?token=<base64url-token>
+            //
+            // ...which is what graphnosis.com/claim issues after Stripe
+            // checkout succeeds. We forward the token to the frontend via
+            // the "deep-link://claim" event; the frontend calls the
+            // license:setToken IPC to persist it encrypted in the cortex.
+            //
+            // We pass through the URL as a string — parsing happens on the
+            // frontend (typed TS, easier to evolve) rather than here.
+            {
+                use tauri_plugin_deep_link::DeepLinkExt;
+                let handle = app.handle().clone();
+                app.deep_link().on_open_url(move |event| {
+                    for url in event.urls() {
+                        let url_str = url.to_string();
+                        // Best-effort emit to the main window; if no window
+                        // is open yet (cold start), the frontend will read
+                        // the cold-start URL via get_current() in its
+                        // init code.
+                        if let Some(win) = handle.get_webview_window("main") {
+                            let _ = win.emit("deep-link://claim", url_str.clone());
+                            let _ = win.show();
+                            let _ = win.set_focus();
+                        }
+                    }
+                });
+            }
             // Silent background update check — delayed so it doesn't race
             // startup I/O. Fires 15 s after the app is ready.
             // Skipped in debug builds: no `latest.json` exists until a release is published.

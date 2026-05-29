@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "Graphnosis",
-  "version": "1.11.1",
+  "version": "1.12.0",
   "identifier": "app.graphnosis",
   "build": {
     "frontendDist": "../dist",
@@ -19,7 +19,7 @@
         "minWidth": 1280,
         "minHeight": 760,
         "resizable": true,
-        "visible": true,
+        "visible": false,
         "hiddenTitle": true,
         "titleBarStyle": "Overlay"
       }
@@ -68,6 +68,12 @@
         "https://github.com/nehloo-interactive/graphnosis-app/releases/latest/download/latest.json"
       ],
       "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEJFN0M4ODc3MEEzRkVFNwpSV1RuL3FOd2g4am5DenErQWMyOUdYcStzTk82V2VGK1pOSmlHOTJKSndZR3VLQXRiNEJqWFVGTQo="
+    },
+    "deep-link": {
+      "mobile": [],
+      "desktop": {
+        "schemes": ["graphnosis"]
+      }
     }
   }
 }
