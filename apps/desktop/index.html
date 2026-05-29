@@ -914,13 +914,22 @@
         position: relative;
         z-index: 1;
         width: 100%;
-        max-width: 480px;
-        height: 680px;
+        /* Wider than the old 480px so the bullet copy on the welcome
+           card breathes — fewer awkward 3-line wraps. */
+        max-width: 580px;
+        /* Fixed height so every step renders with the same footprint
+           and the action row stays at the same Y across cards. Sized
+           to fit the longest card (the welcome one) at the chosen
+           font-size + line-height without internal scroll; shorter
+           cards just leave breathing room above the buttons. The
+           startTour() resize sets the window to 1100×780, so 640
+           comfortably fits inside the available viewport. */
+        height: 640px;
         margin: 24px;
         background: var(--color-surface-card);
         border: 1px solid var(--color-border);
         border-radius: 14px;
-        padding: 32px;
+        padding: 24px 28px;
         box-shadow: 0 24px 64px var(--color-modal-scrim), 0 4px 16px var(--color-overlay-strong);
         display: flex;
         flex-direction: column;
@@ -957,16 +966,59 @@
         white-space: pre-line;
       }
       .tour-body {
-        font-size: 16px;
-        line-height: 1.65;
+        font-size: 15px;
+        line-height: 1.55;
         color: var(--color-fg-dim);
         margin: 0 0 16px;
         white-space: pre-line;
         flex: 1;
-        overflow-y: auto;
+        /* No scroll inside the card — the welcome bullets must all
+           be visible without internal scrolling. If the card ever
+           outgrows the viewport on a tiny window, the user can
+           resize; we don't paper over it with a hidden scrollbar. */
+        overflow: visible;
       }
-      .tour-logo { margin-bottom: 16px; }
+      /* Mascot in the card's top-right corner. The "Graphnosis"
+         wordmark sits to its LEFT via the ::before pseudo-element so
+         the brand name is anchored alongside the seahorse on every
+         tour card. pointer-events:none on the wrapper so the corner
+         doesn't intercept clicks on neighbouring controls. */
+      .tour-logo {
+        position: absolute;
+        top: 18px;
+        right: 18px;
+        margin: 0;
+        pointer-events: none;
+        display: flex;
+        align-items: center;
+        gap: 10px;
+      }
+      .tour-logo::before {
+        content: 'Graphnosis';
+        font-size: 18px;
+        font-weight: 800;
+        letter-spacing: -0.3px;
+        background: linear-gradient(135deg, var(--color-brand-turquoise-mid) 0%, var(--color-brand-purple) 100%);
+        -webkit-background-clip: text;
+        -webkit-text-fill-color: transparent;
+        background-clip: text;
+        white-space: nowrap;
+      }
+      .tour-logo img {
+        width: 80px !important;
+        height: 80px !important;
+        border-radius: 16px;
+        opacity: 0.92;
+      }
       .tour-logo.hidden { display: none; }
+      /* When the corner logo is visible, push the title down enough to
+         clear the logo's bottom edge. Logo sits at top:18px, h:80px →
+         bottom at 98px. With step-indicator (~28px) plus card padding
+         (24px), title's natural top is ~52px; +46px margin lands it
+         at ~98px which sits just at the logo bottom. Tightened from
+         72px so the welcome card's content (the longest one) doesn't
+         drift the action row below where it sits on other cards. */
+      .tour-logo:not(.hidden) ~ .tour-title { margin-top: 46px; }
       .tour-actions {
         display: flex;
         align-items: center;
@@ -1017,10 +1069,56 @@
         white-space: nowrap;
       }
       .tour-btn-primary:hover { background: var(--color-brand-turquoise-mid); }
-      .tour-connect-area { display: none; flex-direction: column; gap: 8px; margin-bottom: 12px; overflow-y: auto; }
-      .tour-connect-area.visible { display: flex; }
-      .tour-connect-group { display: flex; flex-wrap: wrap; gap: 6px; }
+      /* Connect area on the final tour step. When `.visible`, claims
+         flex:1 inside the card and scrolls vertically so the long
+         spotlight list browses comfortably without changing the card
+         height. */
+      .tour-connect-area { display: none; flex-direction: column; gap: 8px; min-height: 0; }
+      .tour-connect-area.visible {
+        display: flex;
+        flex: 1;
+        overflow-y: auto;
+        padding-right: 4px; /* leave room for the scrollbar gutter */
+        margin-bottom: 12px;
+      }
+      /* When the connect area is visible, body becomes a short intro
+         (not the main flex consumer) so the spotlight gets the room. */
+      .tour-card:has(.tour-connect-area.visible) .tour-body { flex: 0 0 auto; }
+      .tour-connect-group { display: flex; flex-wrap: wrap; gap: 5px; margin-bottom: 4px; }
       .tour-connect-label { font-size: 11px; color: var(--color-fg-dim); text-transform: uppercase; letter-spacing: .06em; margin-bottom: 2px; }
+      /* Inert spotlight chip — no click handler. Hover swaps to the
+         turquoise brand soft so the user feels the ecosystem responds
+         to them even though the chips don't navigate anywhere. */
+      .tour-connect-chip {
+        display: inline-block;
+        font-size: 12px;
+        padding: 3px 9px;
+        border-radius: 12px;
+        background: var(--color-bg-elev, rgba(255,255,255,0.04));
+        border: 1px solid var(--color-border);
+        color: var(--color-fg-dim);
+        white-space: nowrap;
+        cursor: default;
+        transition: background 120ms, border-color 120ms, color 120ms;
+      }
+      .tour-connect-chip:hover {
+        background: var(--color-brand-turquoise-soft);
+        border-color: var(--color-brand-turquoise-mid);
+        color: var(--color-brand-turquoise-pale);
+      }
+      /* Trademark disclaimer pinned to the end of the spotlight. Small,
+         dim, italic so it reads as a footnote rather than competing
+         with the chip list above it. */
+      .tour-connect-disclaimer {
+        font-size: 10px;
+        line-height: 1.45;
+        color: var(--color-fg-dim);
+        opacity: 0.7;
+        font-style: italic;
+        margin: 12px 0 0;
+      }
+      /* Legacy active button — kept in case other surfaces wire it.
+         Tour itself no longer instantiates these. */
       .tour-connect-btn {
         font: inherit; font-size: 15px; font-weight: 500;
         padding: 8px 14px; border-radius: 7px;
@@ -1095,6 +1193,44 @@
       .g-deck-cmd-chip.copied {
         background: var(--color-status-ok-soft); border-color: var(--color-status-ok-border);
         color: var(--color-status-ok-mint);
+      }
+      /* Pro-only MCP tool — same chip shape, but a tiny inline "PRO"
+         pill appears AFTER the tool name so the user can see at a glance
+         which tools require a Graphnosis Pro subscription. The pill uses
+         the warn-gold palette (not the AI-accent purple) so it doesn't
+         get confused with the non-deterministic / local-LLM section
+         label that already lives in this view. */
+      .g-deck-cmd-chip[data-pro="1"]::after {
+        content: 'PRO';
+        display: inline-block;
+        margin-left: 6px;
+        padding: 0 5px;
+        font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+        font-size: 9px;
+        font-weight: 800;
+        letter-spacing: 0.05em;
+        border-radius: 3px;
+        background: var(--color-status-warn-gold, #b8860b);
+        color: #000;
+        vertical-align: 1px;
+      }
+      /* Skills export-row Pro hint — shown inline next to the format
+         dropdown when the user picks GTS without a Pro license. */
+      .skills-export-pro-hint {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+      }
+      .skills-export-pro-hint.hidden { display: none; }
+      .skills-export-pro-badge {
+        display: inline-block;
+        padding: 2px 6px;
+        font-size: 10px;
+        font-weight: 800;
+        letter-spacing: 0.05em;
+        border-radius: 3px;
+        background: var(--color-status-warn-gold, #b8860b);
+        color: #000;
       }
       .g-deck-onboarding-connect { display: flex; flex-wrap: wrap; gap: 6px; }
       /* ──────────────────────────────────────────────────────────────── */
@@ -1456,6 +1592,53 @@
         margin-bottom: 14px;
       }
       .settings-section.no-top-border { /* keep class for compat, no extra rules needed */ }
+      /* Pro license launcher — full-width button at the top of Settings
+         that opens the dedicated license modal. Styled as a primary CTA
+         to surface the subscription affordance without burying it in the
+         per-cortex preferences. */
+      .settings-license-launcher {
+        margin: 0 0 14px;
+        padding: 0;
+        border-bottom: none;
+      }
+      .settings-license-launcher-btn {
+        width: 100%;
+        display: flex; align-items: center; gap: 14px;
+        padding: 4px 4px;
+        /* Transparent so the button picks up whichever container's
+           background it sits in (regular panel on the Settings pane,
+           bg-elev row inside the modal). A faint border on hover gives
+           feedback without the heavy blue tint of the old AI-accent
+           styling. */
+        background: transparent;
+        border: 1px solid transparent;
+        border-radius: 8px;
+        color: var(--fg);
+        cursor: pointer;
+        text-align: left;
+        transition: background 0.12s, border-color 0.12s;
+      }
+      .settings-license-launcher-btn:hover {
+        background: color-mix(in oklab, var(--fg) 6%, transparent);
+        border-color: var(--border);
+      }
+      .settings-license-launcher-icon { font-size: 22px; flex-shrink: 0; }
+      .settings-license-launcher-text {
+        flex: 1; min-width: 0;
+        display: flex; flex-direction: column; gap: 2px;
+      }
+      .settings-license-launcher-text strong { font-size: 14px; font-weight: 700; }
+      .settings-license-launcher-text .subtitle { font-size: 12px; margin: 0; }
+      .settings-license-launcher-arrow {
+        font-size: 20px;
+        color: var(--fg-dim);
+        flex-shrink: 0;
+        transition: transform 0.12s;
+      }
+      .settings-license-launcher-btn:hover .settings-license-launcher-arrow {
+        transform: translateX(2px);
+        color: var(--fg);
+      }
       .settings-section-label {
         font-size: 10px; font-weight: 700; letter-spacing: 0.10em; text-transform: uppercase;
         color: var(--fg-dim); opacity: 0.85; margin: 0 0 14px; padding: 0;
@@ -1632,6 +1815,11 @@
       .app-title-row {
         display: flex; align-items: center; gap: 8px;
       }
+      /* Clickable title + tagline — both jump to MemoryStudio from any
+         mode in the app. Visually identical to the non-clickable state
+         except for a hand cursor on hover; no background, no transition,
+         no focus ring, no tooltip. The hand-cursor alone is enough hint. */
+      .app-home-link { cursor: pointer; }
       .app-title {
         font-size: 18px;
         font-weight: 800;
@@ -1911,6 +2099,13 @@
         display: flex; align-items: center; justify-content: center;
       }
       .rail-logo { border-radius: 14px; opacity: 0.85; display: block; }
+      /* Clickable rail logo — acts as a "home" button that jumps the user
+         to MemoryStudio from anywhere in the app. The hover lift /
+         opacity bump telegraphs that the image is interactive. */
+      .rail-logo-clickable { cursor: pointer; transition: opacity 0.15s, transform 0.15s; }
+      .rail-logo-clickable:hover { opacity: 1; transform: scale(1.04); }
+      .rail-logo-clickable:active { transform: scale(0.98); }
+      .rail-logo-clickable:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
       .rail-collapse-toggle {
         position: absolute; top: 8px; right: 8px;
         width: 22px; height: 22px;
@@ -2431,19 +2626,34 @@
         display: flex; flex-direction: column;
         scroll-padding-bottom: 70px; /* keeps scrollIntoView landings clear of the trivia bar */
       }
-      /* Real flow-level spacer at the tail of .studio-workspace — guarantees
-         scrollable content can reach above the Solo Memories drawer's 44px
-         overlay regardless of WebView quirks with padding-bottom on flex
-         scroll containers. 70px = drawer (44px) + ~26px visual buffer. */
+      /* Tail spacer at the bottom of .studio-workspace. v3: collapsed
+         to 0 in non-scrolling mode (which is the common case on full-size
+         windows). The studio-section's own padding-bottom + the trivia
+         drawer's transparent overlay handle visual breathing room when
+         content fits. When content overflows the studio-section,
+         scroll-padding-bottom keeps the last line clear of the drawer.
+         A previous WebKit padding-bottom-on-flex-scroll bug that this
+         spacer used to work around appears to be fixed in current WebKit
+         (2025); if it resurfaces, bump flex-basis back to 56px and
+         accept the small visual cost. */
       .studio-bottom-spacer {
         flex-shrink: 0;
-        height: 70px;
+        flex-basis: 16px;
         width: 100%;
         pointer-events: none;
       }
       .studio-workspace { flex: 1; min-height: 0; display: flex; flex-direction: column; }
-      /* Recall lb-section expands to fill; other tool sections remain content-height */
-      .lb-section[data-studio-tool="recall"] { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+      /* Recall lb-section grows to fill the available vertical space.
+         No min-height: 480px cap anymore — the explicit floor was
+         leaving the result panels short on tall windows because the
+         flex chain couldn't grow them past that minimum. Now the
+         section is a pure flex:1 child and its grid of result panels
+         (.studio-recall-panels, also flex:1) stretches naturally to
+         fill whatever the studio-section gives it. */
+      .lb-section[data-studio-tool="recall"] {
+        flex: 1; min-height: 0;
+        display: flex; flex-direction: column;
+      }
       .studio-recall-header {
         position: sticky;
         top: 0;
@@ -2468,18 +2678,38 @@
       .studio-paywall-tier-note { color: var(--fg-dim); font-size: 13px; margin: 6px 0 14px; }
       /* ── MemoryStudio top banner (dismissable) ────────────────────────── */
       .studio-banner {
-        display: flex; align-items: flex-start; justify-content: space-between; gap: 8px;
-        font-size: 13px; line-height: 1.5; color: var(--fg-dim);
-        border-bottom: 1px solid var(--border); padding-bottom: 10px; margin-bottom: 10px;
+        position: relative;
+        display: flex; align-items: flex-start; gap: 12px;
+        font-size: 13px; line-height: 1.55; color: var(--fg-dim);
+        padding: 14px 48px 14px 16px; /* extra right pad so the X can't hide behind a scrollbar */
+        margin-bottom: 14px;
+        background: color-mix(in oklab, var(--accent) 6%, transparent);
+        border: 1px solid color-mix(in oklab, var(--accent) 20%, var(--border));
+        border-radius: 8px;
+        flex-shrink: 0; /* don't squeeze the banner when Recall results are tall */
       }
       .studio-banner.hidden { display: none; }
-      .studio-banner-text { flex: 1; }
+      .studio-banner-text { flex: 1; min-width: 0; }
+      /* The lead noun in the banner ("MemoryStudio.") — bright white so the
+         banner is unmistakably about the surface the user is in. */
+      .studio-banner-text > strong:first-of-type { color: var(--fg); font-weight: 700; }
       .studio-banner-close {
-        flex-shrink: 0; cursor: pointer; color: var(--fg-dim); background: none; border: none;
-        font-size: 13px; padding: 1px 4px; border-radius: 3px; line-height: 1;
-        transition: color 0.12s, background 0.12s; margin-top: 1px;
+        position: absolute;
+        top: 10px; right: 10px;
+        flex-shrink: 0;
+        width: 28px; height: 28px;
+        display: inline-flex; align-items: center; justify-content: center;
+        cursor: pointer; color: var(--fg-dim);
+        background: var(--bg-elev);
+        border: 1px solid var(--border); border-radius: 6px;
+        font-size: 15px; line-height: 1;
+        transition: color 0.12s, background 0.12s, border-color 0.12s;
       }
-      .studio-banner-close:hover { color: var(--fg); background: var(--bg-elev); }
+      .studio-banner-close:hover {
+        color: var(--fg);
+        background: color-mix(in oklab, var(--accent) 18%, var(--bg-elev));
+        border-color: var(--accent);
+      }
       /* ── MemoryStudio intro modal ─────────────────────────────────────── */
       .studio-intro-overlay {
         position: fixed; inset: 0; z-index: 600;
@@ -3257,6 +3487,712 @@
          active chip gets the purple "ai-accent" treatment. Recall, Dig Deeper,
          Remember, Edit/Correct are all deterministic, so they keep turquoise. */
       .studio-chip[data-tool="gnn"].active { background: var(--ai-accent); border-color: var(--ai-accent); }
+
+      /* Skills chip — green, matching the A-grade health-box color (var(--ok)).
+         Visually marks Skills as the "compiler of well-tended memory" — same
+         semantic family as a healthy cortex grade. */
+      .studio-chip[data-tool="skills"]:hover { border-color: var(--ok); color: var(--ok); }
+      .studio-chip[data-tool="skills"].active { background: var(--ok); border-color: var(--ok); color: #fff; }
+      /* On narrower windows the chip row wraps to two lines. Collapse
+         the Edit/Correct chip's "/ Correct" suffix so it reads as
+         "Edit" and the row stays single-line. The trailing space is
+         intentional — without it "Edit /" would visually collapse to
+         "Edit /" with no breathing room. */
+      @media (max-width: 900px) {
+        .studio-chip-narrow-hide { display: none; }
+      }
+      :root[data-theme="dark"] .studio-chip[data-tool="skills"].active { color: #000; }
+
+      /* Praxis attribution strip — pinned above the Skills pane regardless
+         of skill count. Subtle green tint (same --ok family as the Skills
+         chip) so it reads as branding, not as a CTA. */
+      /* Plain monochrome attribution line above the Skills two-column
+         layout. Used to be a green-bordered card; reduced to inline
+         dimmed text so it reads as a footnote, not a banner. */
+      .skills-praxis-strip {
+        display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
+        font-size: 12px; color: var(--fg-dim);
+        padding: 0;
+        margin: 0 0 10px;
+        background: transparent;
+        border: 0;
+      }
+      .skills-praxis-strip strong { color: var(--fg-dim); font-weight: 600; }
+      .skills-praxis-dot { color: var(--fg-dim); opacity: 0.5; }
+      .skills-praxis-sub { color: var(--fg-dim); }
+      /* Second-line praxis text inside the MemoryStudio banner.
+         Smaller + dimmer than the main banner copy, with the inline
+         shortcuts and doc links styled as accent-coloured anchors. */
+      .studio-banner-praxis {
+        display: block;
+        margin-top: 8px;
+        padding-top: 8px;
+        border-top: 1px dashed color-mix(in oklab, var(--accent) 22%, transparent);
+        font-size: 12px;
+        color: var(--fg-dim);
+        line-height: 1.55;
+      }
+      .studio-banner-praxis strong { color: var(--fg); font-weight: 700; }
+      .studio-banner-praxis a,
+      .studio-banner-text > a,
+      .studio-banner-docs a {
+        color: var(--ok); font-weight: 600; text-decoration: none;
+        border-bottom: 1px dashed color-mix(in oklab, var(--ok) 40%, transparent);
+        cursor: pointer;
+      }
+      .studio-banner-praxis a:hover,
+      .studio-banner-text > a:hover,
+      .studio-banner-docs a:hover { color: var(--fg); border-bottom-color: var(--ok); }
+      /* Docs line — sits below the praxis paragraph on its own row with a
+         subtle separator. Keeps the docs CTA visible without crowding the
+         main banner copy. */
+      .studio-banner-docs {
+        display: block;
+        margin-top: 8px;
+        padding-top: 8px;
+        border-top: 1px dashed color-mix(in oklab, var(--accent) 22%, transparent);
+        font-size: 12px;
+        color: var(--fg-dim);
+      }
+      /* Vertical breathing room above the Focus Engrams section so the
+         preview-mode warning and the field heading don't crowd each other. */
+      .skills-compose > .skills-field + .skills-field { margin-top: 4px; }
+      .skills-preview-warning + .skills-field { margin-top: 10px; }
+      /* "(Pro)" badge on the GTS export option in the format dropdown
+         and on any other Pro-gated affordance we surface later. */
+      .skills-pro-badge {
+        font-size: 9px; font-weight: 700; letter-spacing: 0.04em;
+        text-transform: uppercase;
+        padding: 1px 6px; border-radius: 8px;
+        color: var(--ai-accent);
+        background: color-mix(in oklab, var(--ai-accent) 14%, transparent);
+        border: 1px solid color-mix(in oklab, var(--ai-accent) 24%, transparent);
+      }
+
+      /* ── Skills pane layout ─────────────────────────────────────────────── */
+      .skills-pane {
+        display: grid;
+        grid-template-columns: minmax(280px, 360px) 1fr;
+        gap: 18px;
+        align-items: start;
+      }
+      @media (max-width: 960px) {
+        .skills-pane { grid-template-columns: 1fr; }
+      }
+
+      /* Library column */
+      .skills-library {
+        display: flex; flex-direction: column;
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        background: var(--bg-elev);
+        min-height: 260px;
+      }
+      .skills-library-header {
+        display: flex; align-items: center; gap: 8px;
+        padding: 10px 12px; border-bottom: 1px solid var(--border);
+      }
+      .skills-library-title { font-weight: 600; font-size: 13px; }
+      .skills-library-count {
+        font-size: 11px; color: var(--fg-dim);
+        background: color-mix(in oklab, var(--ok) 14%, transparent);
+        padding: 1px 7px; border-radius: 10px;
+      }
+      .skills-library-sort { margin-left: auto; font-size: 11px; padding: 2px 6px; }
+      .skills-library-list {
+        flex: 1; overflow-y: auto;
+        padding: 6px;
+        max-height: 520px;
+      }
+      .skills-library-empty { padding: 16px; text-align: center; }
+      .skills-library-foot {
+        padding: 6px 10px; border-top: 1px solid var(--border);
+        text-align: right;
+      }
+
+      /* Skill row */
+      .skill-row {
+        display: flex; flex-direction: column; gap: 4px;
+        padding: 10px 10px;
+        border-radius: 6px;
+        cursor: pointer;
+        border: 1px solid transparent;
+        transition: border-color 0.12s, background 0.12s;
+      }
+      .skill-row:hover { background: color-mix(in oklab, var(--ok) 8%, transparent); border-color: var(--border); }
+      .skill-row.active { background: color-mix(in oklab, var(--ok) 16%, transparent); border-color: var(--ok); }
+      .skill-row-top { display: flex; align-items: center; gap: 6px; }
+      .skill-row-name { font-weight: 600; font-size: 13px; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .skill-row-engram {
+        font-size: 10px; padding: 1px 6px; border-radius: 8px;
+        background: color-mix(in oklab, var(--accent) 14%, transparent);
+        color: var(--accent); font-weight: 600;
+      }
+      .skill-row-meta { display: flex; align-items: center; gap: 8px; font-size: 11px; color: var(--fg-dim); }
+      .skill-row-actions { display: flex; gap: 4px; margin-left: auto; opacity: 0; transition: opacity 0.12s; }
+      .skill-row:hover .skill-row-actions { opacity: 1; }
+      .skill-row-actions button { font-size: 10px; padding: 1px 6px; }
+
+      /* Vitality bar */
+      .skill-vitality {
+        display: flex; align-items: center; gap: 5px; flex: 1; min-width: 0;
+      }
+      .skill-vitality-bar {
+        flex: 1; height: 4px; border-radius: 2px;
+        background: color-mix(in oklab, var(--border) 50%, transparent);
+        overflow: hidden;
+      }
+      .skill-vitality-bar > span {
+        display: block; height: 100%; border-radius: 2px;
+        transition: width 0.2s, background 0.2s;
+      }
+      .skill-vitality-score { font-size: 10px; font-weight: 700; min-width: 28px; text-align: right; }
+      .skill-vitality.grade-a > .skill-vitality-bar > span { background: var(--ok); }
+      .skill-vitality.grade-a > .skill-vitality-score { color: var(--ok); }
+      .skill-vitality.grade-b > .skill-vitality-bar > span { background: var(--accent); }
+      .skill-vitality.grade-b > .skill-vitality-score { color: var(--accent); }
+      .skill-vitality.grade-c > .skill-vitality-bar > span { background: var(--color-status-warn-gold); }
+      .skill-vitality.grade-c > .skill-vitality-score { color: var(--color-status-warn-gold); }
+      .skill-vitality.grade-d > .skill-vitality-bar > span { background: var(--error); }
+      .skill-vitality.grade-d > .skill-vitality-score { color: var(--error); }
+      .skill-vitality.uncomputed > .skill-vitality-score { color: var(--fg-dim); font-weight: 500; }
+      .skill-vitality.uncomputed > .skill-vitality-bar > span { width: 0 !important; }
+
+      /* Trainer column */
+      .skills-trainer {
+        display: flex; flex-direction: column; gap: 12px;
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        background: var(--bg-elev);
+        padding: 14px;
+      }
+      .skills-trainer-header {
+        display: flex; align-items: center; gap: 8px;
+        margin-bottom: 4px;
+      }
+      .skills-trainer-title { font-weight: 700; font-size: 14px; }
+      .skills-field { display: flex; flex-direction: column; gap: 4px; }
+      .skills-field-label { font-size: 11px; color: var(--fg-dim); font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; }
+      .skills-grid-row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+      @media (max-width: 540px) { .skills-grid-row { grid-template-columns: 1fr; } }
+      /* Compact-first skill text editor — fixed height by default so long
+         pastes don't push the rest of the form below the fold. The
+         expand handle (rendered as the immediately-following sibling
+         button) only appears when content actually overflows the compact
+         box; otherwise it's hidden so short prompts don't get a
+         decorative chrome row they don't need. When expanded, the
+         textarea grows to the full content height, capped to the viewport
+         so it scales with the app window.
+         IMPORTANT: a generic `.studio-textarea { overflow-y: hidden }`
+         rule lives later in the stylesheet and would override us if we
+         used the same single-class selector. We use a compound selector
+         (textarea.skills-input-text) plus !important on overflow-y to win
+         the cascade fight without restructuring the studio-textarea rule. */
+      textarea.skills-input-text {
+        height: 140px !important;
+        max-height: 140px !important;
+        font-family: inherit;
+        resize: none;
+        overflow-y: auto !important;
+        border-bottom-left-radius: 0; border-bottom-right-radius: 0;
+        margin-bottom: 0 !important;
+        transition: max-height 0.18s ease-out, height 0.18s ease-out;
+      }
+      textarea.skills-input-text.has-overflow {
+        /* Bottom corners square so the attached handle button reads as
+           one visual unit with the textarea. */
+        border-bottom-left-radius: 0; border-bottom-right-radius: 0;
+      }
+      textarea.skills-input-text.expanded {
+        /* Flex to whatever the app window allows, minus enough room for
+           the form below + the handle button + page chrome. */
+        height: calc(100vh - 280px) !important;
+        max-height: calc(100vh - 280px) !important;
+      }
+      /* readonly state — applied during training so the user can still
+         scroll + select but not edit. Subtle dim so the lock is obvious
+         without being alarming. */
+      textarea.skills-input-text[readonly] {
+        opacity: 0.7;
+        cursor: not-allowed;
+      }
+      /* Crash-survival draft restore banner. Shown when localStorage
+         has a saved draft from a previous session AND the textarea is
+         empty. Soft amber treatment to distinguish from the trainer's
+         green progress banner — both are time-sensitive prompts but
+         this one is "you might want to act" not "we're working". */
+      .skills-draft-restore {
+        display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+        padding: 10px 14px;
+        margin-bottom: 12px;
+        background: color-mix(in oklab, var(--color-status-warn-gold) 10%, transparent);
+        border: 1px solid color-mix(in oklab, var(--color-status-warn-gold) 32%, var(--border));
+        border-radius: 8px;
+        font-size: 12px;
+        color: var(--fg);
+      }
+      .skills-draft-restore-actions {
+        display: flex; gap: 6px; margin-left: auto;
+      }
+      /* The expand handle button — hidden by default, only shown when the
+         textarea has overflow. Attached visually to the textarea (no gap,
+         square top corners) so it reads as part of the same control. */
+      .skills-input-expand {
+        display: none;
+        width: 100%;
+        padding: 4px 10px;
+        background: color-mix(in oklab, var(--fg) 6%, var(--bg-elev));
+        border: 1px solid var(--border);
+        border-top: none;
+        border-bottom-left-radius: 6px; border-bottom-right-radius: 6px;
+        color: var(--fg-dim);
+        font-size: 11px;
+        cursor: pointer;
+        align-items: center; justify-content: center;
+        transition: background 0.12s, color 0.12s;
+      }
+      .skills-input-text.has-overflow + .skills-input-expand {
+        display: flex;
+      }
+      .skills-input-expand:hover {
+        background: color-mix(in oklab, var(--fg) 10%, var(--bg-elev));
+        color: var(--fg);
+      }
+      .skills-input-expand-icon {
+        display: inline-block;
+        font-size: 14px;
+        line-height: 1;
+        transition: transform 0.18s ease-out;
+      }
+      .skills-input-expand[aria-expanded="true"] .skills-input-expand-icon {
+        transform: rotate(180deg);
+      }
+      .skills-breadth-live { color: var(--ok); font-weight: 700; font-size: 10px; }
+      .skills-checkbox-row { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--fg-dim); }
+      .skills-field-hint { font-size: 11px; color: var(--fg-dim); margin-top: 2px; }
+      /* Target engram row — dropdown of Skills-template engrams + inline
+         create button. The "+ Create" button opens a small prompt that
+         creates a Skills-template engram via create_graph_with_template,
+         then the new engram appears in the dropdown (alphabetical) and
+         is auto-selected. */
+      .skills-target-row {
+        display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+      }
+      .skills-target-select { min-width: 180px; flex: 1; max-width: 320px; }
+      /* Preview warning — appears when the SAVING TO target is the
+         "Preview only" sentinel. Tells the user that hitting Train won't
+         actually persist the trained skill anywhere. */
+      .skills-preview-warning {
+        margin-top: 6px;
+        padding: 6px 10px;
+        font-size: 12px; line-height: 1.4;
+        color: var(--color-status-warn-gold);
+        background: color-mix(in oklab, var(--color-status-warn-gold) 12%, transparent);
+        border: 1px solid color-mix(in oklab, var(--color-status-warn-gold) 32%, transparent);
+        border-radius: 6px;
+      }
+      /* "Upload .gts skill file" button pinned to the right side of the
+         trainer header — Train and Import are the two ways to land a new
+         skill in your cortex, so they live in the same surface. */
+      .skills-trainer-import { margin-left: auto; }
+      /* Training-in-progress banner — rotating playful neuroscience copy
+         while the trainer pipeline runs. The progress bar is indeterminate
+         (we can't compute a real ETA — LLM latency depends on Ollama's
+         tokens/sec and prompt length, neither of which we know in advance);
+         a sliding gradient gives the user motion to track instead of a
+         frozen UI. Layout: mascot left, body center, cancel right. */
+      .skills-train-progress {
+        padding: 14px 16px;
+        border-radius: 8px;
+        background: color-mix(in oklab, var(--ok) 8%, transparent);
+        border: 1px solid color-mix(in oklab, var(--ok) 28%, var(--border));
+        display: flex; align-items: center; gap: 14px;
+      }
+      .skills-train-progress-mascot {
+        display: block;
+        height: 64px; width: auto;
+        flex-shrink: 0;
+        opacity: 0.95;
+        /* Subtle bob so the mascot reads as alive while the pipeline
+           churns away. Slow + small so it doesn't compete with the
+           progress bar for attention. */
+        animation: skills-train-mascot-bob 3.4s ease-in-out infinite;
+      }
+      @keyframes skills-train-mascot-bob {
+        0%, 100% { transform: translateY(0) rotate(-2deg); }
+        50%      { transform: translateY(-4px) rotate(2deg); }
+      }
+      /* Dashboard-header Ghampus mark. Absolutely positioned so it sits
+         BEHIND the "Ghampus" / tagline text without disturbing their
+         normal layout. Low opacity keeps the text fully legible on top.
+         Same bob animation as the trainer banner so the character feels
+         alive across surfaces. pointer-events:none keeps it from
+         intercepting clicks on whatever sits above. */
+      .ghampus-header-mascot {
+        position: absolute;
+        /* Pushed past the title block's right edge so the mascot drifts
+           into the gap between the title and the search bar — sits about
+           halfway between them. Negative `right` is fine because the
+           parent `.g-pane-header-title` doesn't clip overflow.
+           Pushed slightly DOWN from center so it clears the top margin
+           and reads as sitting on the baseline of the tagline. */
+        top: 62%;
+        right: -30px;
+        transform: translateY(-50%);
+        height: 92px;
+        width: auto;
+        opacity: 0.18;
+        z-index: 0;
+        pointer-events: none;
+        transform-origin: 50% 50%;
+      }
+      /* The bob keyframes use translateY/rotate from a 0,0 base. The
+         absolute-positioning above also uses translateY(-50%) to center
+         vertically. To keep both working, override the keyframe targets
+         so they layer in: the centering offset is baked into the keyframe
+         endpoints. */
+      @keyframes ghampus-header-bob {
+        0%, 100% { transform: translateY(calc(-50% - 0px)) rotate(-2deg); }
+        50%      { transform: translateY(calc(-50% - 4px)) rotate(2deg); }
+      }
+      .ghampus-header-mascot { animation: ghampus-header-bob 3.4s ease-in-out infinite; }
+      .skills-train-progress-body {
+        flex: 1; min-width: 0;
+        display: flex; flex-direction: column; gap: 6px;
+      }
+      .skills-train-progress-bar {
+        width: 100%; height: 6px;
+        border-radius: 3px;
+        background: color-mix(in oklab, var(--ok) 16%, transparent);
+        overflow: hidden;
+        position: relative;
+      }
+      .skills-train-progress-fill {
+        display: block;
+        height: 100%;
+        width: 40%;
+        background: linear-gradient(90deg,
+          transparent 0%,
+          var(--ok) 50%,
+          transparent 100%);
+        border-radius: 3px;
+        position: absolute;
+        left: -40%;
+        animation: skills-train-progress-slide 1.6s linear infinite;
+      }
+      @keyframes skills-train-progress-slide {
+        0%   { left: -40%; }
+        100% { left: 100%; }
+      }
+      .skills-train-progress-msg {
+        margin: 0;
+        font-size: 13px;
+        color: var(--fg);
+        font-weight: 500;
+      }
+      .skills-train-progress-elapsed {
+        margin: 0;
+        font-size: 11px;
+        color: var(--fg-dim);
+      }
+      .skills-train-progress-cancel { flex-shrink: 0; }
+      /* "All Tools" chip — distinct treatment from the active-tool chips
+         since clicking it leaves MemoryStudio entirely (jumps to MCP
+         Tools mode). Pinned to the far right of the chip row via auto
+         margin so it never sits in the middle of the tool selectors. */
+      .studio-chip-all-tools {
+        margin-left: auto;
+        border-style: dashed;
+        color: var(--fg-dim);
+      }
+      .studio-chip-all-tools:hover {
+        border-style: solid;
+        border-color: var(--fg);
+        color: var(--fg);
+      }
+      .studio-chip-all-tools.active {
+        /* Never gets the active treatment — it's not a tool. */
+        background: transparent;
+        color: var(--fg);
+        border-color: var(--fg);
+      }
+      /* Focus engrams checkbox list — replaces the multi-select listbox.
+         Vertically scrolls past ~5 items; tick-state mirrors the active
+         chip color for a coherent green-family feel inside the Skills tab. */
+      .skills-focus-list {
+        display: flex; flex-direction: column; gap: 2px;
+        max-height: 132px; overflow-y: auto;
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        padding: 6px 8px;
+        background: var(--bg);
+      }
+      .skills-focus-list:empty::before {
+        content: 'No engrams loaded yet.';
+        color: var(--fg-dim); font-size: 11px; font-style: italic;
+      }
+      .skills-focus-item {
+        display: flex; align-items: center; gap: 8px;
+        padding: 3px 4px; border-radius: 4px;
+        font-size: 12px; color: var(--fg);
+        cursor: pointer;
+        transition: background 0.12s;
+      }
+      .skills-focus-item:hover { background: color-mix(in oklab, var(--ok) 10%, transparent); }
+      .skills-focus-item input[type="checkbox"] {
+        accent-color: var(--ok);
+        margin: 0;
+      }
+      .skills-focus-item.disabled {
+        color: var(--fg-dim);
+        cursor: not-allowed;
+        opacity: 0.6;
+      }
+      .skills-actions { display: flex; align-items: center; gap: 10px; margin-top: 6px; }
+      .skills-train-status { flex: 1; }
+
+      /* License upgrade card */
+      .skills-license-card {
+        padding: 14px; border-radius: 8px;
+        border: 1px solid color-mix(in oklab, var(--ai-accent) 40%, var(--border));
+        background: color-mix(in oklab, var(--ai-accent) 8%, transparent);
+      }
+      .skills-license-card h3 { margin: 0 0 6px 0; font-size: 14px; }
+      .skills-license-actions { display: flex; gap: 8px; margin-top: 10px; }
+
+      /* Reusable Pro-upgrade card — same look as the Skills license card
+         but used by any feature that gates on Pro (GNN Exploration, future
+         additions). Buttons with [data-pro-upgrade-btn] and
+         [data-pro-paste-token] are wired via a global delegated handler. */
+      .pro-upgrade-card {
+        padding: 14px; border-radius: 8px;
+        border: 1px solid color-mix(in oklab, var(--ai-accent) 40%, var(--border));
+        background: color-mix(in oklab, var(--ai-accent) 8%, transparent);
+        margin-top: 8px;
+      }
+      .pro-upgrade-card h3 { margin: 0 0 6px 0; font-size: 14px; color: var(--fg); }
+      .pro-upgrade-card .subtitle { margin: 0; font-size: 12px; }
+      .pro-upgrade-actions { display: flex; gap: 8px; margin-top: 12px; flex-wrap: wrap; }
+
+      /* Review mode */
+      .skills-review-meta { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+      .skills-mode-chip,
+      .skills-engram-chip,
+      .skills-vitality-chip {
+        font-size: 10px; padding: 2px 8px; border-radius: 10px;
+        background: color-mix(in oklab, var(--accent) 14%, transparent);
+        color: var(--accent); font-weight: 600;
+      }
+      .skills-mode-chip { background: color-mix(in oklab, var(--ok) 14%, transparent); color: var(--ok); }
+      .skills-vitality-chip { background: color-mix(in oklab, var(--ok) 18%, transparent); color: var(--ok); }
+      .skills-degraded-note {
+        padding: 8px 10px; border-radius: 6px; font-size: 12px;
+        background: color-mix(in oklab, var(--color-status-warn-gold) 14%, transparent);
+        color: var(--color-status-warn-gold);
+        border: 1px solid color-mix(in oklab, var(--color-status-warn-gold) 40%, transparent);
+      }
+      .skills-review-section { display: flex; flex-direction: column; gap: 6px; }
+      .skills-section-header { display: flex; align-items: center; gap: 8px; }
+      .skills-section-title { font-size: 11px; color: var(--fg-dim); font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; }
+      /* Output / Changes toggle in the review section header. Two-button
+         segmented control — clicking either flips which pre/div is shown
+         below. Pinned in the section header before the Copy button. */
+      .skills-output-toggle {
+        display: inline-flex;
+        background: var(--bg);
+        border: 1px solid var(--border);
+        border-radius: 5px;
+        padding: 2px;
+        gap: 2px;
+        margin-left: auto;
+        margin-right: 6px;
+      }
+      .skills-output-toggle-btn {
+        font-size: 11px;
+        font-weight: 600;
+        padding: 3px 10px;
+        border-radius: 3px;
+        background: transparent;
+        border: none;
+        color: var(--fg-dim);
+        cursor: pointer;
+        transition: background 0.12s, color 0.12s;
+      }
+      .skills-output-toggle-btn:hover { color: var(--fg); }
+      .skills-output-toggle-btn.active {
+        background: var(--accent);
+        color: var(--color-fg-on-accent, #fff);
+      }
+      /* Diff view container — same monospace shell as .skills-output but
+         renders line-prefixed +/- spans with green/red highlights. */
+      .skills-diff-output {
+        white-space: pre-wrap;
+        word-break: break-word;
+      }
+      .skills-diff-line-add {
+        display: block;
+        background: color-mix(in oklab, var(--ok) 18%, transparent);
+        color: var(--fg);
+        border-left: 3px solid var(--ok);
+        padding: 1px 8px 1px 10px;
+        margin: 0 -10px;
+      }
+      .skills-diff-line-del {
+        display: block;
+        background: color-mix(in oklab, var(--error) 14%, transparent);
+        color: var(--fg-dim);
+        text-decoration: line-through;
+        text-decoration-color: color-mix(in oklab, var(--error) 60%, transparent);
+        border-left: 3px solid var(--error);
+        padding: 1px 8px 1px 10px;
+        margin: 0 -10px;
+      }
+      .skills-diff-line-ctx {
+        display: block;
+        color: var(--fg-dim);
+        opacity: 0.7;
+        padding: 1px 8px 1px 10px;
+        margin: 0 -10px;
+      }
+      .skills-diff-line-meta {
+        display: block;
+        color: var(--fg-dim);
+        font-style: italic;
+        font-size: 11px;
+        padding: 4px 8px;
+        margin: 4px -10px;
+        border-top: 1px dashed var(--border);
+        border-bottom: 1px dashed var(--border);
+      }
+      /* Hunk = consecutive non-context lines (one or more adds/dels in a
+         row). The < > arrows in the diff-nav scroll to the next hunk.
+         A subtle outline on the currently-active hunk shows the user
+         which one they jumped to. */
+      .skills-diff-hunk {
+        display: block;
+        scroll-margin-top: 24px;
+      }
+      .skills-diff-hunk-active {
+        outline: 2px solid color-mix(in oklab, var(--ok) 60%, transparent);
+        outline-offset: 2px;
+        border-radius: 4px;
+      }
+      /* Reveal animation — when freshly-computed diff hunks render, each
+         one fades + slides in from the right in sequence so the user
+         "sees" Ghampus apply changes one at a time. After the staggered
+         entry completes the hunks become static for review. */
+      .skills-diff-line-add, .skills-diff-line-del {
+        animation: skills-diff-reveal 280ms ease-out backwards;
+      }
+      @keyframes skills-diff-reveal {
+        0%   { opacity: 0; transform: translateX(-8px); }
+        100% { opacity: 1; transform: translateX(0); }
+      }
+      /* When the user toggles the Changes view manually (vs. auto-reveal
+         on training completion), we skip the animation to avoid jank. */
+      .skills-diff-output.no-animate .skills-diff-line-add,
+      .skills-diff-output.no-animate .skills-diff-line-del { animation: none; }
+      /* Diff navigation bar — < cursor > arrows + the meta sentence. */
+      .skills-diff-nav {
+        display: flex; align-items: center; gap: 8px;
+        margin-top: 6px;
+      }
+      .skills-diff-cursor {
+        font-size: 11px;
+        color: var(--fg-dim);
+        font-variant-numeric: tabular-nums;
+        min-width: 48px;
+        text-align: center;
+      }
+      .skills-diff-nav .btn-sm { padding: 1px 8px; font-size: 14px; line-height: 1; }
+      .skills-diff-nav .btn-sm:disabled { opacity: 0.3; cursor: not-allowed; }
+
+      .skills-output, .skills-diff {
+        max-height: 280px; overflow: auto;
+        padding: 10px 12px; border-radius: 6px;
+        background: var(--bg);
+        border: 1px solid var(--border);
+        font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, "Cascadia Mono", "Roboto Mono", monospace;
+        font-size: 12px; line-height: 1.5;
+        white-space: pre-wrap; word-break: break-word;
+        margin: 0;
+      }
+      .skills-nodes { display: flex; flex-direction: column; gap: 4px; max-height: 240px; overflow-y: auto; }
+      .skills-node-card {
+        padding: 6px 10px; border-radius: 6px;
+        border: 1px solid var(--border);
+        background: var(--bg);
+        font-size: 12px;
+      }
+      .skills-node-card-header { display: flex; align-items: center; gap: 6px; margin-bottom: 4px; }
+      .skills-node-id { font-family: ui-monospace, monospace; font-size: 10px; color: var(--fg-dim); }
+      .skills-node-score { font-size: 10px; font-weight: 700; color: var(--ai-accent); }
+      .skills-node-layer { font-size: 10px; padding: 0 6px; border-radius: 6px; background: color-mix(in oklab, var(--accent) 14%, transparent); color: var(--accent); }
+      .skills-node-source { font-size: 10px; color: var(--fg-dim); margin-left: auto; }
+      .skills-node-preview { color: var(--fg-dim); font-size: 11px; line-height: 1.4; }
+      .skills-export-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+      /* Autonomous retrain schedule row — inline controls for the enable
+         toggle and the interval input. Greyed out when Pro is inactive. */
+      .skills-retrain-row {
+        display: flex; align-items: center; gap: 16px; flex-wrap: wrap;
+        padding: 8px 10px; border-radius: 6px;
+        background: color-mix(in oklab, var(--ai-accent) 4%, transparent);
+        border: 1px solid color-mix(in oklab, var(--ai-accent) 14%, transparent);
+      }
+      .skills-retrain-interval {
+        display: flex; align-items: center; gap: 6px;
+        font-size: 12px; color: var(--fg-dim);
+      }
+      .skills-retrain-interval input[type="number"] {
+        background: var(--bg);
+        border: 1px solid var(--border); border-radius: 4px;
+        color: var(--fg); padding: 3px 6px;
+        font-size: 12px;
+      }
+      .skills-retrain-row input[type="checkbox"]:disabled,
+      .skills-retrain-row input[type="number"]:disabled { opacity: 0.4; cursor: not-allowed; }
+      /* "Auto" library badge — surfaced on rows whose source has an
+         enabled retrain config. Mirrors the GLL/GNN inferred-layer chip
+         family so users see "this is the autonomous overlay" at a glance. */
+      .skill-row-auto {
+        font-size: 10px; padding: 1px 6px; border-radius: 8px;
+        background: color-mix(in oklab, var(--ai-accent) 14%, transparent);
+        color: var(--ai-accent); font-weight: 600;
+      }
+      /* Notification dot — appears when the autonomous scheduler retrained a
+         skill under `notify` autonomy and the user hasn't opened it yet. */
+      .skill-row-notify {
+        font-size: 12px; line-height: 1; padding: 0 4px;
+        animation: skills-pulse 1.6s ease-out infinite;
+      }
+      @keyframes skills-pulse {
+        0%, 100% { opacity: 1; }
+        50% { opacity: 0.55; }
+      }
+      /* Pending-review badge — `preview-first` autonomy queued a proposal. */
+      .skill-row-pending {
+        font-size: 10px; padding: 1px 6px; border-radius: 8px;
+        background: color-mix(in oklab, var(--color-status-warn-gold) 18%, transparent);
+        color: var(--color-status-warn-gold); font-weight: 600;
+      }
+      /* Review proposal card — only visible in review mode for skills with
+         a pending auto-retrain. Lets the user accept or reject the proposal
+         without leaving the trainer. */
+      .skills-pending-card {
+        padding: 12px 14px;
+        background: color-mix(in oklab, var(--color-status-warn-gold) 8%, transparent);
+        border: 1px solid color-mix(in oklab, var(--color-status-warn-gold) 28%, transparent);
+        border-radius: 8px;
+        margin-bottom: 12px;
+      }
+      .skills-pending-card h4 {
+        margin: 0 0 4px;
+        font-size: 13px;
+        color: var(--color-status-warn-gold);
+      }
+      .skills-pending-actions {
+        display: flex; gap: 8px; margin-top: 10px;
+      }
       /* Dark mode override — black text on the turquoise active chip for the
          same reason button.primary uses #000 in dark mode (the desaturated
          dark turquoise vs. white reads as low contrast). The GNN chip keeps
@@ -3944,6 +4880,36 @@
         padding-left: 10px;
       }
       .g-list-row.soft-deleted .g-row-text { color: var(--fg-dim); text-decoration: line-through; }
+      .g-row-engram-chip {
+        display: inline-block;
+        font-size: 10px;
+        padding: 1px 6px;
+        border-radius: 8px;
+        background: color-mix(in oklab, var(--accent) 14%, transparent);
+        color: var(--accent);
+        font-weight: 600;
+        margin-right: 6px;
+        vertical-align: middle;
+        max-width: 160px;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      /* GNN-augmented row chip — same shape as engram chip but the
+         ai-accent (purple/cyan) family so it reads as "prediction, not
+         exact match". Matches the existing inferred-layer treatment in
+         recall responses ([gll·…] / [gnn·…] rows). */
+      .g-row-gnn-chip {
+        display: inline-block;
+        font-size: 10px;
+        padding: 1px 6px;
+        border-radius: 8px;
+        background: color-mix(in oklab, var(--ai-accent) 14%, transparent);
+        color: var(--ai-accent);
+        font-weight: 600;
+        margin-right: 6px;
+        vertical-align: middle;
+      }
       .g-row-conf {
         font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
         color: var(--fg-dim);
@@ -3964,7 +4930,11 @@
         letter-spacing: 0;
       }
       .g-row-text { color: var(--fg); font-size: 14px; line-height: 1.4; }
-      .g-row-meta { color: var(--fg-dim); font-size: 15px; margin-top: 3px; }
+      /* Meta line under each search-result row. Sized down to match the
+         engram-chip font so the whole row tail (chip + "remembered via
+         Claude · 6 days ago › source label") reads as one tightly-set
+         secondary line, not a competing primary one. */
+      .g-row-meta { color: var(--fg-dim); font-size: 11px; margin-top: 3px; }
       /* Citation links inside the AI summary → scroll to result row */
       .synth-cite {
         /* Reset all default <button> chrome */
@@ -3987,7 +4957,9 @@
       .g-row-cite-flash { animation: cite-flash 1.2s ease-out forwards; }
       .g-row-source {
         font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-        font-size: 14px;
+        /* Inherits .g-row-meta's reduced font-size so monospace meta
+           and chip share the same compact secondary register. */
+        font-size: inherit;
       }
 
       /* ── Check-in dashboard ───────────────────────────────────────── */
@@ -3998,10 +4970,15 @@
         overflow: hidden;
       }
 
-      /* Studio + search results need bottom breathing room so the trivia bar
-         doesn't cover the last line of content when the drawer is closed. */
+      /* Studio + search results: minimal padding. The trivia drawer
+         overlays the bottom 44px on its own — that overlap is acceptable
+         when content fits (because there's nothing in the overlapped
+         area to read). When content overflows, scroll-padding-bottom on
+         the studio-section pushes the last line above the overlay so the
+         user can scroll-to-end without losing context. Setting padding
+         to 0 here removes the persistent dead space the user reported. */
       #studio-section,
-      #g-search-results { padding-bottom: 52px; }
+      #g-search-results { padding-bottom: 0; }
 
       /* ── Trivia drawer ─────────────────────────────────────────────────── */
       /* Anchored to the bottom of the checkin pane; slides up on open.      */
@@ -4087,9 +5064,14 @@
       .trivia-bar-close:hover { color: var(--fg); background: var(--bg); }
 
       .trivia-body {
-        flex: 1; min-height: 0; overflow-y: auto;
-        display: flex; flex-direction: column;
-        padding: 12px 12px 0;
+        /* Plain block scroll container — used to be display: flex column,
+           which let the inner flex chain clamp the deck to this body's
+           height instead of overflowing. With overflow-y: auto on a
+           regular block, ANY overflowing child triggers a scrollbar. */
+        flex: 1;
+        min-height: 0;
+        overflow-y: auto;
+        padding: 12px 12px 12px;
       }
       .g-search-results {
         flex: 1;
@@ -4227,11 +5209,23 @@
         border: none;
         border-radius: 0;
         overflow: visible;
-        flex: 1;
-        min-height: 0;
+        /* Inside the trivia drawer we let the deck grow with its content
+           (flex: 0 0 auto) instead of clamping to the parent's height
+           (flex: 1 + min-height: 0). Otherwise the bottom rows —
+           "Connect as:" buttons, "Wire two memories" hint, edge-type
+           strip — got cropped at the parent's bottom edge with no
+           scrollbar. The trivia-body container already has
+           overflow-y: auto, so anything beyond viewport scrolls. */
+        flex: 0 0 auto;
         padding-top: 14px;
         padding-bottom: 24px;
       }
+      /* The candidate panel uses flex:1 to fill remaining height inside
+         the deck — useful when the deck stretches, but pointless once
+         the deck is content-sized in this drawer. Disable its stretch
+         here so it just renders at its max-height (6em capped on the
+         inner text). */
+      .trivia-body .g-deck-trivia-candidate { flex: 0 0 auto; }
       .trivia-body .g-deck-pinned {
         position: sticky;
         top: 0;
@@ -6633,10 +7627,20 @@
         <!-- Top header: cortex identity + global actions -->
         <header class="app-header" data-tauri-drag-region>
           <div class="app-header-left">
-            <div class="app-title-row">
+            <!-- Both the title and the tagline are "go home" affordances —
+                 clicking either jumps to MemoryStudio from anywhere in the
+                 app. Visually unchanged from non-clickable state — no
+                 hover, no cursor, no tooltip. data-tauri-drag-region="false"
+                 still needed so the click fires instead of being captured
+                 by the window-drag region above. -->
+            <div class="app-title-row app-home-link"
+                 id="app-title-home"
+                 data-tauri-drag-region="false">
               <span class="app-title">Graphnosis</span>
             </div>
-            <span class="header-tagline">Your local encrypted memory, indexed for deterministic recall — auditable</span>
+            <span class="header-tagline app-home-link"
+                  id="app-tagline-home"
+                  data-tauri-drag-region="false">Your local encrypted memory, indexed for deterministic recall — auditable</span>
           </div>
           <div class="app-header-right">
             <!-- Active engram picker cluster: vertical stack of "Active engram:"
@@ -6664,8 +7668,11 @@
             <div class="rail-logo-row">
               <img src="/graphnosis-logo.png" alt="Graphnosis"
                    width="72" height="72"
-                   class="rail-logo"
-                   title="Graphnosis" />
+                   class="rail-logo rail-logo-clickable"
+                   id="rail-logo-home"
+                   role="button"
+                   tabindex="0"
+                   title="Go to MemoryStudio" />
               <button id="rail-collapse-toggle" class="rail-collapse-toggle"
                       title="Collapse sidebar"
                       aria-label="Collapse sidebar"
@@ -6765,9 +7772,22 @@
                    All four are flex items in a single row so the health box
                    can be pinned to the same 360px width as the inspector. -->
               <header class="pane-header g-pane-header">
-                <div class="g-pane-header-title">
-                  <h2>Graphnosis</h2>
-                  <p class="brain-subtitle">your second cortex</p>
+                <!-- Dashboard identity: the mascot, not the wordmark. "Graphnosis ·
+                     your second cortex" lives in the top bar; here we introduce
+                     Ghampus by name so the user has a *face* on this page rather
+                     than a duplicated logo. "Memory seahorse" earns the cute by
+                     leaning on the hippocampus etymology (Greek: seahorse). -->
+                <div class="g-pane-header-title" style="position:relative;">
+                  <!-- Seahorse mark is absolutely-positioned so it sits BEHIND
+                       the "Ghampus" / tagline text without pushing either out
+                       of place. Faded with low opacity so the text stays
+                       legible on top. Same bob animation as the trainer
+                       banner so the character feels alive across surfaces. -->
+                  <img src="/graphnosis-logo-transparent-bg.png" alt=""
+                       class="ghampus-header-mascot"
+                       aria-hidden="true" />
+                  <h2 style="position:relative; z-index:1;">Ghampus</h2>
+                  <p class="brain-subtitle" style="position:relative; z-index:1;">your memory seahorse.</p>
                 </div>
                 <!-- The engram picker that used to live here has moved to
                      the top app header — visible from every view, smaller
@@ -6819,6 +7839,12 @@
                       <div class="g-search-results-header">
                         <div id="g-search-results-stats" class="g-list-stats subtitle"></div>
                         <label class="g-search-sort">
+                          Engram:
+                          <select id="g-search-engram-select">
+                            <option value="">All engrams</option>
+                          </select>
+                        </label>
+                        <label class="g-search-sort">
                           Sort:
                           <select id="g-search-sort-select">
                             <option value="relevance">Relevance</option>
@@ -6852,17 +7878,356 @@
                       <div id="studio-workspace" class="studio-workspace">
 
                         <div id="studio-banner" class="studio-banner">
-                          <span class="studio-banner-text">⚗️ <strong>MemoryStudio.</strong> Interact with your memory the way your AI client does — full subgraph recall, remember, edit, and GNN exploration, running locally.</span>
+                          <span class="studio-banner-text">🧠 <strong>MemoryStudio.</strong>
+                            Interact with your memory the way your AI client does — full subgraph
+                            <a href="#" data-studio-banner-jump="recall">recall</a>,
+                            <a href="#" data-studio-banner-jump="remember">remember</a>,
+                            <a href="#" data-studio-banner-jump="edit">edit</a>, and
+                            <a href="#" data-studio-banner-jump="gnn">GNN exploration</a>, running locally.
+                            <span class="studio-banner-praxis">
+                              🛠️ <strong>Skills</strong> is powered by <strong>Graphnosis Autonomous Praxis</strong> — it compiles your saved memories into portable AI instructions.
+                              Start by feeding the cortex (<a href="#" data-studio-banner-jump="remember">Remember</a>,
+                              <a href="#" data-studio-banner-jump="edit">Edit / Correct</a>, or
+                              <a href="#" data-studio-banner-mode="sources">Add files to engram</a>),
+                              then come back here to train.
+                            </span>
+                            <span class="studio-banner-docs">
+                              📖 Read the latest docs online: <a href="https://docs.graphnosis.com" data-studio-banner-doclink="docs">docs.graphnosis.com</a>
+                            </span>
+                          </span>
                           <button id="btn-studio-banner-close" class="studio-banner-close" title="Dismiss forever">✕</button>
                         </div>
 
                         <!-- Tool chip navigation -->
                         <div class="studio-chips">
+                          <button class="studio-chip" data-tool="skills">Skills</button>
                           <button class="studio-chip" data-tool="recall">Recall</button>
                           <button class="studio-chip" data-tool="dig-deeper">Dig Deeper</button>
                           <button class="studio-chip active" data-tool="remember">Remember</button>
-                          <button class="studio-chip" data-tool="edit">Edit / Correct</button>
-                          <button class="studio-chip" data-tool="gnn">GNN Neighbors</button>
+                          <button class="studio-chip" data-tool="edit">Edit<span class="studio-chip-narrow-hide"> / Correct</span></button>
+                          <button class="studio-chip" data-tool="gnn">GNN Exploration</button>
+                          <!-- "All Tools" — awareness shortcut. Doesn't switch the studio chip;
+                               jumps the whole app over to the MCP Tools mode so the user can
+                               see every Graphnosis MCP tool the AI client can call. -->
+                          <button class="studio-chip studio-chip-all-tools" data-tool="all-tools" title="Browse every Graphnosis MCP tool — same view as the bottom-rail hammer button">⚒︎ All Tools</button>
+                        </div>
+
+                        <!-- ── Skills ──────────────────────────────────────────────── -->
+                        <!-- Skills pane: two-column library (left) + trainer (right).
+                             Stacks below ~960px. Both columns are always rendered. -->
+                        <div class="lb-section hidden" data-studio-tool="skills">
+                          <!-- Persistent attribution strip. Shown above the library + trainer
+                               regardless of whether the user has any skills yet. -->
+                          <div class="skills-praxis-strip">
+                            Powered by <strong>Graphnosis Autonomous Praxis</strong>
+                            <span class="skills-praxis-dot">·</span>
+                            <span class="skills-praxis-sub">the Skills training engine</span>
+                          </div>
+                          <div class="skills-pane">
+
+                            <!-- LEFT: Library of trained skills -->
+                            <aside class="skills-library">
+                              <div class="skills-library-header">
+                                <span class="skills-library-title">Your Skills</span>
+                                <span id="skills-library-count" class="skills-library-count">—</span>
+                                <select id="skills-library-sort" class="studio-select skills-library-sort">
+                                  <option value="recent">Most recent</option>
+                                  <option value="vitality">Vitality ↓</option>
+                                  <option value="name">Name A→Z</option>
+                                </select>
+                                <button id="btn-skills-library-refresh" class="btn-ghost btn-sm" title="Recompute vitality for visible skills">↻</button>
+                              </div>
+                              <div id="skills-library-list" class="skills-library-list">
+                                <p class="subtitle skills-library-empty">Loading…</p>
+                              </div>
+                              <div class="skills-library-foot">
+                                <button id="btn-skills-show-hidden" class="btn-ghost btn-sm">Show hidden</button>
+                              </div>
+                            </aside>
+
+                            <!-- RIGHT: Trainer (compose / review) -->
+                            <section class="skills-trainer">
+                              <div class="skills-trainer-header">
+                                <span id="skills-trainer-title" class="skills-trainer-title">Train a skill</span>
+                                <button id="btn-skills-trainer-back" class="btn-ghost btn-sm hidden">← New skill</button>
+                                <button id="btn-skills-import-gts" class="btn-ghost btn-sm skills-trainer-import" type="button" title="Import a .gts skill pack into this cortex">📥 Upload .gts skill file</button>
+                                <!-- Hidden file picker — opened programmatically by the Upload button.
+                                     accept=".gts" filters in the OS dialog; the FileReader reads bytes
+                                     and base64-encodes them for transport over the sidecar IPC. -->
+                                <input id="skills-import-gts-input" type="file" accept=".gts" class="hidden" />
+                              </div>
+                              <!-- Training-in-progress banner. Shown when the user clicks Train
+                                   and hidden once the result lands. Two visual layers:
+                                     - Ghampus the seahorse mascot (Graphnosis logo) on the left
+                                     - Indeterminate progress bar + rotating playful copy on the right
+                                   A Cancel button lets the user bail out when the LLM is slow. -->
+                              <div id="skills-train-progress" class="skills-train-progress hidden" role="status" aria-live="polite">
+                                <img src="/graphnosis-logo-transparent-bg.png" alt="Ghampus the seahorse"
+                                     class="skills-train-progress-mascot"
+                                     title="Ghampus, your second cortex mascot" />
+                                <div class="skills-train-progress-body">
+                                  <div class="skills-train-progress-bar">
+                                    <span class="skills-train-progress-fill"></span>
+                                  </div>
+                                  <p class="skills-train-progress-msg">
+                                    <span id="skills-train-progress-text">Warming the cortex…</span>
+                                  </p>
+                                  <p class="skills-train-progress-elapsed" id="skills-train-progress-elapsed"></p>
+                                </div>
+                                <button id="btn-skills-train-cancel" class="btn-ghost btn-sm skills-train-progress-cancel" type="button" title="Cancel the in-flight training run">Cancel</button>
+                              </div>
+
+                              <!-- License upgrade card (shown only when skill:train returns upgrade_required) -->
+                              <div id="skills-license-card" class="skills-license-card hidden">
+                                <h3>Skill training is a Graphnosis Pro feature</h3>
+                                <p id="skills-license-message" class="subtitle"></p>
+                                <div class="skills-license-actions">
+                                  <button id="btn-skills-upgrade" class="primary">Upgrade</button>
+                                  <button id="btn-skills-fallback" class="btn-ghost">Train without LLM (memory-augmented)</button>
+                                </div>
+                              </div>
+
+                              <!-- COMPOSE MODE -->
+                              <div id="skills-compose" class="skills-compose">
+                                <!-- Crash-survival draft restore. Shown when localStorage
+                                     has a saved draft from a previous session AND the
+                                     current textarea is empty. Click Restore to load the
+                                     draft, Discard to wipe it. -->
+                                <div id="skills-draft-restore" class="skills-draft-restore hidden">
+                                  <span>💾 You have an unsaved skill from <strong id="skills-draft-restore-when"></strong>. Restore it?</span>
+                                  <div class="skills-draft-restore-actions">
+                                    <button id="btn-skills-draft-restore" class="primary btn-sm" type="button">Restore draft</button>
+                                    <button id="btn-skills-draft-discard" class="btn-ghost btn-sm" type="button">Discard</button>
+                                  </div>
+                                </div>
+                                <label class="skills-field">
+                                  <span class="skills-field-label">Skill text</span>
+                                  <!-- The textarea has a fixed compact height by default so a
+                                       long paste doesn't blow out the form vertical rhythm.
+                                       The expand/collapse button below lets the user open it
+                                       for editing comfort, then collapse back. State is
+                                       transient (per session) — every fresh visit starts collapsed. -->
+                                  <textarea id="skills-input-text" class="studio-textarea skills-input-text"
+                                            rows="6"
+                                            placeholder="Paste the skill, system prompt, or CLAUDE.md instruction you want to personalize against your memory…"></textarea>
+                                  <button id="btn-skills-input-expand" class="skills-input-expand" type="button"
+                                          aria-expanded="false" aria-label="Expand the editor"
+                                          title="Expand the editor to see the full text">
+                                    <span class="skills-input-expand-icon">▾</span>
+                                  </button>
+                                </label>
+                                <label class="skills-field">
+                                  <span class="skills-field-label">Skill name</span>
+                                  <input id="skills-input-name" class="studio-text-input" type="text" placeholder="e.g. graphnosis-helper" />
+                                </label>
+                                <!-- Target engram — Skills-template engrams only. If the cortex
+                                     has no Skills engram yet, the dropdown shows just an empty
+                                     placeholder and the user creates one inline with the button. -->
+                                <div class="skills-field">
+                                  <span class="skills-field-label">Saving to</span>
+                                  <div class="skills-target-row">
+                                    <select id="skills-input-engram" class="studio-select skills-target-select">
+                                      <option value="__preview__">Preview only — don't save</option>
+                                    </select>
+                                    <button id="btn-skills-create-engram" class="btn-ghost btn-sm" type="button">+ Create Skill engram</button>
+                                  </div>
+                                  <div id="skills-preview-warning" class="skills-preview-warning hidden">
+                                    ⚠️ Preview mode — the trained skill won't be saved to any engram. Pick a Skills engram above (or create one) to persist it.
+                                  </div>
+                                </div>
+                                <div class="skills-field">
+                                  <span class="skills-field-label">Focus engrams (optional)</span>
+                                  <div id="skills-input-focus" class="skills-focus-list" role="group" aria-label="Focus engrams"></div>
+                                  <span class="skills-field-hint">Tick engrams to scope recall. Leave empty to recall across all engrams.</span>
+                                </div>
+                                <div class="skills-grid-row">
+                                  <label class="skills-field">
+                                    <span class="skills-field-label">Model target</span>
+                                    <select id="skills-input-model" class="studio-select">
+                                      <option value="claude">claude</option>
+                                      <option value="cursor">cursor</option>
+                                      <option value="openai">openai</option>
+                                      <option value="copilot">copilot</option>
+                                      <option value="generic">generic</option>
+                                    </select>
+                                    <span class="skills-field-hint">Which AI tool you'll paste this into. Shapes the output style — Claude sections, .cursorrules, OpenAI system prompt, etc.</span>
+                                  </label>
+                                  <label class="skills-field">
+                                    <span class="skills-field-label">
+                                      Recall breadth <span id="skills-input-breadth-live" class="skills-breadth-live">auto</span>
+                                    </span>
+                                    <input id="skills-input-breadth" type="range" min="0" max="100" step="1" value="50" />
+                                    <span class="skills-field-hint">How much memory the trainer pulls in. Left = broad (more context, more noise); right = exact (fewer, higher-signal memories). The trainer self-tunes after each run.</span>
+                                  </label>
+                                </div>
+                                <div class="skills-actions">
+                                  <button id="btn-skills-train" class="primary">Train Skill</button>
+                                  <span id="skills-train-status" class="subtitle skills-train-status"></span>
+                                </div>
+                              </div>
+
+                              <!-- REVIEW MODE (hidden by default; rendered after a training run or on row open) -->
+                              <div id="skills-review" class="skills-review hidden">
+                                <div class="skills-review-meta">
+                                  <span id="skills-review-mode" class="skills-mode-chip"></span>
+                                  <span id="skills-review-vitality" class="skills-vitality-chip"></span>
+                                  <span id="skills-review-engram" class="skills-engram-chip"></span>
+                                  <button id="btn-skills-vitality-refresh" class="btn-ghost btn-sm" title="Recompute vitality">↻ Vitality</button>
+                                </div>
+                                <div id="skills-degraded-note" class="skills-degraded-note hidden"></div>
+                                <!-- Pending auto-retrain proposal card. Shown only when the
+                                     scheduler is running this skill under `preview-first`
+                                     autonomy and has produced a proposal awaiting review. -->
+                                <div id="skills-pending-card" class="skills-pending-card hidden">
+                                  <h4>📝 New auto-retrain version waiting for review</h4>
+                                  <p class="subtitle" id="skills-pending-meta" style="margin: 0;"></p>
+                                  <pre id="skills-pending-preview" class="skills-output" style="max-height: 200px; margin-top: 8px;"></pre>
+                                  <div class="skills-pending-actions">
+                                    <button id="btn-skills-pending-accept" class="primary">Accept &amp; promote</button>
+                                    <button id="btn-skills-pending-reject" class="btn-ghost">Reject</button>
+                                  </div>
+                                </div>
+                                <div class="skills-review-section">
+                                  <div class="skills-section-header">
+                                    <span class="skills-section-title">Trained output</span>
+                                    <!-- Toggle group: "Output" shows the trained text as-is.
+                                         "Changes" shows a diff highlighting what Ghampus
+                                         (Autonomous Praxis) changed vs. the baseline. The
+                                         baseline is the user's original input in preview
+                                         mode, or the previous saved version when browsing
+                                         a skill from the library. -->
+                                    <div class="skills-output-toggle" role="group" aria-label="Output view">
+                                      <button id="btn-skills-view-output" class="skills-output-toggle-btn active" data-view="output" type="button">Output</button>
+                                      <button id="btn-skills-view-diff" class="skills-output-toggle-btn" data-view="diff" type="button" title="Highlight what changed vs. the baseline">Changes</button>
+                                    </div>
+                                    <button id="btn-skills-copy-output" class="btn-ghost btn-sm">Copy</button>
+                                  </div>
+                                  <pre id="skills-review-output" class="skills-output"></pre>
+                                  <div id="skills-review-diff-output" class="skills-output skills-diff-output hidden"></div>
+                                  <div id="skills-review-diff-nav" class="skills-diff-nav hidden">
+                                    <button id="btn-skills-diff-prev" class="btn-ghost btn-sm" type="button" title="Jump to previous change">‹</button>
+                                    <span id="skills-review-diff-cursor" class="skills-diff-cursor">0 / 0</span>
+                                    <button id="btn-skills-diff-next" class="btn-ghost btn-sm" type="button" title="Jump to next change">›</button>
+                                    <p id="skills-review-diff-meta" class="skills-field-hint" style="margin: 0;"></p>
+                                  </div>
+                                </div>
+                                <div id="skills-review-diff-wrap" class="skills-review-section hidden">
+                                  <div class="skills-section-header">
+                                    <span class="skills-section-title">Diff notes</span>
+                                  </div>
+                                  <pre id="skills-review-diff" class="skills-diff"></pre>
+                                </div>
+                                <div class="skills-review-section">
+                                  <div class="skills-section-header">
+                                    <span class="skills-section-title">Influential nodes</span>
+                                    <span id="skills-review-nodes-count" class="subtitle"></span>
+                                  </div>
+                                  <div id="skills-review-nodes" class="skills-nodes"></div>
+                                </div>
+                                <div class="skills-review-section">
+                                  <div class="skills-section-header">
+                                    <span class="skills-section-title">Autonomous retrain schedule</span>
+                                    <span class="skills-pro-badge">Pro</span>
+                                  </div>
+                                  <p class="skills-field-hint" style="margin: 0 0 6px;">
+                                    Have Graphnosis automatically re-train this skill on a schedule. Your cortex evolves —
+                                    your skill should too.
+                                  </p>
+                                  <!-- Pro-gate card: shown when the user isn't Pro. Replaces the
+                                       disabled-inputs UX (which left users guessing why nothing
+                                       responded) with an actionable Upgrade button. The controls
+                                       still exist in the DOM below; paintRetrainSchedule()
+                                       toggles `.hidden` on this card vs the controls wrapper. -->
+                                  <div id="skills-retrain-upgrade" class="pro-upgrade-card hidden" style="margin: 0 0 10px;">
+                                    <h3>Autonomous retrain is a Pro feature</h3>
+                                    <p class="subtitle">Pick a trigger (interval, cortex-growth, vitality-decay, or hybrid) and an autonomy level. Ghampus keeps your skill current as your memory evolves.</p>
+                                    <div class="pro-upgrade-actions">
+                                      <button class="primary" data-pro-upgrade-btn>Upgrade to Pro</button>
+                                      <button class="btn-ghost" data-pro-paste-token>Paste a license token</button>
+                                    </div>
+                                  </div>
+                                  <div id="skills-retrain-controls">
+                                  <div class="skills-retrain-row">
+                                    <label class="skills-checkbox-row" style="margin: 0;">
+                                      <input id="skills-retrain-enabled" type="checkbox" disabled />
+                                      Enable auto-retrain
+                                    </label>
+                                    <label class="skills-retrain-interval">
+                                      <span class="skills-field-label" style="margin: 0;">Trigger</span>
+                                      <select id="skills-retrain-trigger" class="studio-select" disabled style="font-size: 12px; padding: 2px 6px;">
+                                        <option value="scheduled">Every N days</option>
+                                        <option value="cortex-growth">When cortex grows</option>
+                                        <option value="vitality-decay">When vitality drops</option>
+                                        <option value="hybrid">Hybrid (any of the above)</option>
+                                      </select>
+                                    </label>
+                                    <label class="skills-retrain-interval" data-retrain-field="interval">
+                                      <span class="skills-field-label" style="margin: 0;">Every</span>
+                                      <input id="skills-retrain-interval" type="number" min="1" max="365" value="7" style="width: 60px;" disabled />
+                                      <span class="skills-field-label" style="margin: 0;">days</span>
+                                    </label>
+                                    <label class="skills-retrain-interval hidden" data-retrain-field="growth">
+                                      <span class="skills-field-label" style="margin: 0;">After</span>
+                                      <input id="skills-retrain-growth" type="number" min="1" max="100000" value="50" style="width: 70px;" disabled />
+                                      <span class="skills-field-label" style="margin: 0;">new nodes</span>
+                                    </label>
+                                    <label class="skills-retrain-interval hidden" data-retrain-field="vitality">
+                                      <span class="skills-field-label" style="margin: 0;">Below vitality</span>
+                                      <input id="skills-retrain-vitality" type="number" min="1" max="100" value="60" style="width: 60px;" disabled />
+                                      <span class="skills-field-label" style="margin: 0;">/ 100</span>
+                                    </label>
+                                  </div>
+                                  <div class="skills-retrain-row" style="margin-top: 6px;">
+                                    <span class="skills-field-label" style="margin: 0;">When it fires</span>
+                                    <label class="skills-checkbox-row" style="margin: 0;">
+                                      <input type="radio" name="skills-retrain-autonomy" value="auto-accept" checked disabled />
+                                      Auto-accept (replace silently)
+                                    </label>
+                                    <label class="skills-checkbox-row" style="margin: 0;">
+                                      <input type="radio" name="skills-retrain-autonomy" value="notify" disabled />
+                                      Notify me
+                                    </label>
+                                    <label class="skills-checkbox-row" style="margin: 0;">
+                                      <input type="radio" name="skills-retrain-autonomy" value="preview-first" disabled />
+                                      Preview first
+                                    </label>
+                                  </div>
+                                  <div id="skills-retrain-meta" class="skills-field-hint" style="margin-top: 6px;"></div>
+                                  </div><!-- /#skills-retrain-controls -->
+                                </div>
+                                <div class="skills-review-section">
+                                  <div class="skills-section-header">
+                                    <span class="skills-section-title">Export</span>
+                                  </div>
+                                  <div class="skills-export-row">
+                                    <select id="skills-export-format" class="studio-select">
+                                      <option value="claude-md">claude-md</option>
+                                      <option value="cursorrules">cursorrules</option>
+                                      <option value="system-prompt">system-prompt</option>
+                                      <option value="openai">openai</option>
+                                      <option value="raw">raw</option>
+                                      <!-- GTS is gated — see sidecar skill:export handler.
+                                           Non-Pro users will hit the upgrade card on attempt. -->
+                                      <option value="gts">gts (encrypted) — Pro</option>
+                                    </select>
+                                    <!-- Visible Pro pill that surfaces only when (a) gts is the
+                                         selected format AND (b) the user isn't Pro. Wired by
+                                         syncSkillsExportProHint() in main.ts. The "— Pro" suffix
+                                         on the option label hints at the gate inside the dropdown;
+                                         this pill makes it impossible to miss BEFORE clicking
+                                         Save and discovering the upgrade card. -->
+                                    <span id="skills-export-pro-hint" class="skills-export-pro-hint hidden" title="GTS export requires a Graphnosis Pro subscription.">
+                                      <span class="skills-export-pro-badge">PRO</span>
+                                      <button id="btn-skills-export-upgrade" class="btn-ghost btn-sm" type="button" data-pro-upgrade-btn>Upgrade to use GTS</button>
+                                    </span>
+                                    <button id="btn-skills-export-copy" class="btn-ghost btn-sm">Copy</button>
+                                    <button id="btn-skills-export-save" class="primary btn-sm">Save file…</button>
+                                  </div>
+                                  <span id="skills-export-status" class="subtitle"></span>
+                                </div>
+                              </div>
+                            </section>
+                          </div>
                         </div>
 
                         <!-- ── Recall ──────────────────────────────────────────────── -->
@@ -6984,11 +8349,11 @@
                           <div id="studio-duplicate-warning" class="studio-dup-warning hidden" style="margin-top: 40px;"></div>
                         </div>
 
-                        <!-- ── GNN Neighbors ──────────────────────────────────────── -->
+                        <!-- ── GNN Exploration ────────────────────────────────────── -->
                         <div class="lb-section hidden" data-studio-tool="gnn">
                           <p class="brain-subtitle">Explore memories the neural network predicts are related — connections semantic recall alone would miss.</p>
                           <div class="studio-input-row">
-                            <textarea id="studio-gnn-query" class="studio-text-input" placeholder="Explore GNN neighbors for…" rows="1"></textarea>
+                            <textarea id="studio-gnn-query" class="studio-text-input" placeholder="Explore the neural graph for…" rows="1"></textarea>
                             <select id="studio-gnn-engram" class="studio-select" style="max-width:180px;">
                               <option value="">All engrams</option>
                             </select>
@@ -6996,6 +8361,18 @@
                           </div>
                           <div id="studio-gnn-spinner" class="studio-spinner hidden">Predicting…</div>
                           <p id="studio-gnn-unavailable" class="brain-subtitle hidden"></p>
+                          <!-- Pro-upgrade card shown when studio.gnnNeighbors returns
+                               upgrade_required. Identical visual treatment to the Skills
+                               upgrade card so the user sees a consistent gate UX. -->
+                          <div id="studio-gnn-upgrade" class="pro-upgrade-card hidden">
+                            <h3>GNN Exploration is a Graphnosis Pro feature</h3>
+                            <p class="subtitle">The Graphnosis Neural Network predicts connections your semantic recall would miss.
+                              It's compute-heavy and ships only on the Pro tier.</p>
+                            <div class="pro-upgrade-actions">
+                              <button class="primary" data-pro-upgrade-btn>Upgrade to Pro</button>
+                              <button class="btn-ghost" data-pro-paste-token>Paste a license token</button>
+                            </div>
+                          </div>
                           <div id="studio-gnn-result" class="studio-result-block hidden">
                             <div id="studio-gnn-list" class="studio-gnn-list"></div>
                           </div>
@@ -7294,12 +8671,31 @@
                           Deleting the file returns your cortex to the pre-LLM-overlay
                           state.
                         </p>
-                        <div style="display:flex; align-items:center; gap:10px; margin-bottom:10px;">
-                          <button id="btn-gll-run-now" class="btn-sm">Run prediction now</button>
-                          <button id="btn-gll-refresh" class="btn-sm">Refresh list</button>
-                          <span id="gll-predicted-count" class="brain-subtitle" style="margin:0; font-size:12px;"></span>
+                        <!-- Pro-upgrade card: shown for free users. Mirrors the GNN card
+                             above. The .gll edge-prediction loop in the brain engine is
+                             gated by the gnn-exploration feature, so the card surfaces
+                             the same paywall here instead of letting users click "Run
+                             prediction now" and silently get nothing. Toggled by
+                             refreshGnnLicenseStatus()/applyGllProGate() in main.ts. -->
+                        <div id="lb-gll-upgrade" class="pro-upgrade-card hidden">
+                          <h3>.GLL autonomous edge prediction is a Pro feature</h3>
+                          <p class="subtitle">The background loop that asks your local LLM to propose
+                          new connections between memories runs only with a Graphnosis Pro
+                          subscription. The <code>.gll</code> overlay stays encrypted on your
+                          device either way; Pro is what unlocks the engine that fills it.</p>
+                          <div class="pro-upgrade-actions">
+                            <button class="primary" data-pro-upgrade-btn>Upgrade to Pro</button>
+                            <button class="btn-ghost" data-pro-paste-token>Paste a license token</button>
+                          </div>
                         </div>
-                        <div id="gll-predicted-list" class="lb-block"></div>
+                        <div id="lb-gll-controls">
+                          <div style="display:flex; align-items:center; gap:10px; margin-bottom:10px;">
+                            <button id="btn-gll-run-now" class="btn-sm">Run prediction now</button>
+                            <button id="btn-gll-refresh" class="btn-sm">Refresh list</button>
+                            <span id="gll-predicted-count" class="brain-subtitle" style="margin:0; font-size:12px;"></span>
+                          </div>
+                          <div id="gll-predicted-list" class="lb-block"></div>
+                        </div>
                       </div>
 
                       <div class="lb-section">
@@ -7659,6 +9055,22 @@ ollama list</code></pre>
                 <h2>Settings & actions</h2>
                 <p class="brain-subtitle">Tune your autonomous cortex.</p>
               </header>
+              <!-- Pro license launcher — relocated from inside the Settings
+                   modal up to the top of the Settings pane itself, so the
+                   subscription affordance is the first thing the user sees
+                   when they open this section. Uses the regular panel
+                   background (not the AI-accent blue) so it sits in the
+                   same visual language as everything below it. -->
+              <div class="panel" id="settings-pane-license-launcher">
+                <button id="btn-pane-open-license" class="settings-license-launcher-btn" type="button">
+                  <span class="settings-license-launcher-icon">🔑</span>
+                  <span class="settings-license-launcher-text">
+                    <strong>Graphnosis Pro license</strong>
+                    <span class="subtitle" id="settings-pane-license-status">Manage your subscription token</span>
+                  </span>
+                  <span class="settings-license-launcher-arrow">›</span>
+                </button>
+              </div>
               <div class="panel">
                 <p class="panel-title">Preferences</p>
                 <p class="subtitle" style="font-size: 15px; margin: -4px 0 10px;">
@@ -7817,6 +9229,10 @@ ollama list</code></pre>
                  from __APP_VERSION__ (vite-injected at build from package.json). -->
             <span id="status-version" class="status-version" title="About Graphnosis" style="font-size:12px; opacity:0.6; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; transition: opacity 100ms;" onmouseenter="this.style.opacity='1';this.style.textDecoration='underline'" onmouseleave="this.style.opacity='0.6';this.style.textDecoration='none'"></span>
             <span id="brain-vitality" style="display:none; font-size:12px; opacity:0.7; cursor:pointer;" title="Open Deterministic Consolidation tab">🧠 Vitality –</span>
+            <!-- GAP — Graphnosis Autonomous Praxis. Hidden when idle; pulses
+                 green while the Skills trainer is running. Click jumps to the
+                 Skills chip in MemoryStudio so the user can watch progress. -->
+            <span id="status-gap-pill" class="status-layer-pill pill-inactive" style="background:var(--ok); color:#000;" title="Graphnosis Autonomous Praxis — skill trainer. Pulses green while a skill is being trained. Click to open the trainer.">GAP</span>
             <!-- Layered intelligence pills — GLL (turquoise) and GNN (purple).
                  Pill backgrounds match the Graphnosis wordmark gradient endpoints.
                  Always rendered; toggled between pill-inactive and pill-pulsing. -->
@@ -8076,6 +9492,10 @@ ollama list</code></pre>
           <p class="subtitle">Per-cortex preferences. Stored at <code>&lt;cortex&gt;/settings.json</code>.</p>
         </div>
         <div class="modal-body" id="settings-body">
+          <!-- The Pro-license launcher used to live here; it's been moved
+               up to the Settings pane itself (first panel under the
+               header) so the subscription affordance isn't buried behind
+               a "Preferences" modal. -->
           <div class="settings-section no-top-border">
           <p class="settings-section-label">Memory storage</p>
           <p class="subtitle" style="margin-bottom: 12px;">
@@ -8437,6 +9857,10 @@ ollama list</code></pre>
 
           </div><!-- /section: active consents -->
 
+          <!-- Graphnosis Pro license — moved out of the per-cortex Settings
+               into its own modal. See #license-modal below. The button to
+               open it lives at the top of the Settings body. -->
+
           <div class="settings-section">
           <p class="settings-section-label">Support</p>
           <p class="subtitle" style="margin-bottom: 12px;">
@@ -8454,6 +9878,78 @@ ollama list</code></pre>
           <span class="filler" id="settings-footer-note"></span>
           <button id="btn-settings-cancel">Cancel</button>
           <button id="btn-settings-save" class="primary">Save</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── Graphnosis Pro License modal ────────────────────────────────────
+         Dedicated modal for license management. Lifted out of the Settings
+         modal because the license is account-level (one subscription across
+         every cortex on this device), whereas Settings is per-cortex. Same
+         element IDs as before so the existing wiring (paint / apply /
+         refresh / openPasteLicensePanel) still finds them. -->
+    <div id="license-modal" class="modal-backdrop hidden">
+      <div class="modal">
+        <div class="modal-header">
+          <h2>Graphnosis Pro license</h2>
+          <p class="subtitle">
+            Your Pro subscription unlocks Skill training, GNN Exploration, and other paid features.
+            Tokens normally arrive automatically via the magic link we email after checkout, or via
+            the status poll on cortex unlock. Use this panel as a fallback when neither path works.
+          </p>
+        </div>
+        <div class="modal-body">
+          <!-- Subscribe affordance pinned to the top of the modal. Without
+               this, the only way out for a free user was to close the
+               modal and find an in-app Pro gate (Skills / GNN). Mirrors
+               the CTA in the GNN upgrade card so the path to subscription
+               is identical wherever it surfaces. -->
+          <div class="settings-section no-top-border">
+            <p class="settings-section-label">Subscribe to Pro</p>
+            <p class="subtitle" style="margin-bottom: 10px;">
+              No token yet? Start a Graphnosis Pro subscription — we'll
+              email you a magic link that activates this app automatically.
+            </p>
+            <div class="row" style="gap:8px;">
+              <button class="primary" data-pro-upgrade-btn>Upgrade to Pro</button>
+              <span class="subtitle">opens graphnosis.com/upgrade</span>
+            </div>
+          </div>
+          <div class="settings-section">
+            <p class="settings-section-label">Current status</p>
+            <div id="settings-license-status" class="row" style="margin-bottom: 8px;"></div>
+          </div>
+          <div class="settings-section">
+            <p class="settings-section-label">Paste a license token</p>
+            <p class="subtitle" style="margin-bottom: 10px;">
+              If you received a token via email but the deep link didn't activate it automatically,
+              paste it here. The token is signed by our license server and verified locally — no
+              network call needed.
+            </p>
+            <div class="row" style="margin-bottom: 8px;">
+              <label style="display:flex; flex-direction:column; gap:4px; flex:1;">
+                <textarea id="settings-license-input"
+                          rows="4"
+                          spellcheck="false"
+                          autocapitalize="off"
+                          style="font-family: ui-monospace, monospace; font-size: 11px; word-break: break-all;"
+                          placeholder="Paste the token from the Stripe success email"></textarea>
+              </label>
+            </div>
+            <div class="row" style="gap:8px;">
+              <button id="btn-settings-license-apply" class="primary">Apply token</button>
+              <button id="btn-settings-license-refresh">Refresh from server</button>
+              <span id="settings-license-feedback" class="subtitle"></span>
+            </div>
+            <p class="subtitle" style="margin-top: 10px;">
+              Refresh asks our billing server (<code>graphnosis.com</code>) for your current token.
+              You'll be prompted for the email on your Stripe receipt.
+            </p>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <span class="filler"></span>
+          <button id="btn-license-modal-close">Close</button>
         </div>
       </div>
     </div>
@@ -9091,7 +10587,10 @@ ollama list</code></pre>
       <div class="tour-card">
         <div id="tour-step-indicator" class="tour-step-indicator"></div>
         <div id="tour-logo" class="tour-logo hidden">
-          <img src="/graphnosis-logo.png" alt="Graphnosis" width="288" height="288" style="border-radius: 52px; opacity: 0.9;" />
+          <!-- Used to be 288×288, which dominated the tour card. Halved
+               to 140×140 so Ghampus pairs with the title rather than
+               eating the top half. border-radius scaled proportionally. -->
+          <img src="/graphnosis-logo.png" alt="Graphnosis" width="140" height="140" style="border-radius: 26px; opacity: 0.9;" />
         </div>
         <h2 id="tour-title" class="tour-title"></h2>
         <p id="tour-body" class="tour-body"></p>
@@ -9177,7 +10676,7 @@ ollama list</code></pre>
             </li>
             <li style="display:flex; gap:10px; align-items:flex-start;">
               <span style="font-size:16px; flex-shrink:0;">🧠</span>
-              <span><strong>GNN neighbors</strong> — explore connections your neural network predicts that semantic recall alone would miss.</span>
+              <span><strong>GNN Exploration</strong> — explore connections your neural network predicts that semantic recall alone would miss.</span>
             </li>
           </ul>
         </div>
