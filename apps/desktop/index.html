@@ -1271,10 +1271,19 @@
       #gw-note { font-size: 13px; line-height: 1.4; }
       /* Pinned name/id block between the scrolling template list and the footer */
       .modal-sticky-fields {
-        padding: 14px 20px 10px;
+        padding: 10px 16px 8px;
         border-top: 1px solid var(--border);
         background: var(--bg);
         flex-shrink: 0;
+      }
+      .modal-sticky-fields .row label {
+        display: block;
+        font-size: 11px;
+        font-weight: 600;
+        color: var(--fg-dim);
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+        margin-bottom: 3px;
       }
 
       .recovery-item {
@@ -3647,12 +3656,12 @@
       .graph-templates {
         display: grid;
         grid-template-columns: 1fr 1fr;
-        gap: 10px;
-        margin: 12px 0;
+        gap: 7px;
+        margin: 8px 0;
       }
       .graph-template-card {
         text-align: left;
-        padding: 10px 12px;
+        padding: 7px 10px;
         border: 1px solid var(--border);
         border-radius: 8px;
         background: var(--bg-elev);
@@ -3665,8 +3674,8 @@
         border-color: var(--accent);
         background: color-mix(in oklab, var(--accent) 12%, transparent);
       }
-      .graph-template-card .gt-title { font-weight: 600; font-size: 14px; margin-bottom: 2px; }
-      .graph-template-card .gt-desc { font-size: 15px; color: var(--fg-dim); line-height: 1.4; }
+      .graph-template-card .gt-title { font-weight: 600; font-size: 13px; margin-bottom: 1px; }
+      .graph-template-card .gt-desc { font-size: 12px; color: var(--fg-dim); line-height: 1.35; }
       .graph-template-card .gt-tier {
         position: absolute;
         top: 8px; right: 8px;
@@ -7897,50 +7906,45 @@ ollama list</code></pre>
       <div class="modal">
         <div class="modal-header">
           <h2>New engram</h2>
-          <p class="subtitle">
-            An engram is an independent neighborhood of memory inside your Graphnosis cortex — its
-            own graph, with its own consolidation rules. Pick a template to seed it
-            with sensible defaults; you can change anything later.
-          </p>
+          <p class="subtitle">Pick a template to seed it with sensible defaults — you can change settings later.</p>
         </div>
         <div class="modal-body">
-          <p class="brain-subtitle" style="margin-bottom: 4px;">Free templates</p>
+          <p class="brain-subtitle" style="margin-bottom: 3px;">Free templates</p>
           <div class="graph-templates" id="gw-free"></div>
-          <p class="brain-subtitle" style="margin: 14px 0 4px;">Power-user templates</p>
+          <p class="brain-subtitle" style="margin: 10px 0 3px;">Power-user templates</p>
           <div class="graph-templates" id="gw-power"></div>
-          <p class="brain-subtitle" style="margin: 14px 0 4px;">Enterprise templates</p>
+          <p class="brain-subtitle" style="margin: 10px 0 3px;">Enterprise templates</p>
           <div class="graph-templates" id="gw-enterprise"></div>
 
         </div>
         <div class="modal-sticky-fields">
-          <div class="row">
-            <label for="gw-name">Display name</label>
-            <input type="text" id="gw-name" placeholder="e.g. Work project · Music notes · Reading 2026" />
+          <div style="display:flex; gap:10px;">
+            <div class="row" style="flex:1;">
+              <label for="gw-name">Display name</label>
+              <input type="text" id="gw-name" placeholder="e.g. Work project · Music notes · Reading 2026" />
+            </div>
+            <div class="row" style="flex:0 0 210px;">
+              <label for="gw-id">Internal ID</label>
+              <input type="text" id="gw-id" placeholder="slug-id" title="Filename inside your cortex — can't be changed later." />
+            </div>
           </div>
-          <div class="row" style="margin-top: 10px;">
-            <label for="gw-id">Internal ID</label>
-            <input type="text" id="gw-id" placeholder="slug (lowercase letters, numbers, hyphens)" />
-            <p class="subtitle" style="font-size: 14px; margin-top: 4px;">
-              Used as the filename inside your Graphnosis cortex. Can't be changed later.
-            </p>
-          </div>
-          <div class="row" style="margin-top: 10px;">
-            <label>Sensitivity tier <span class="subtitle" style="font-weight:normal;">(governs AI access and consent requirements)</span></label>
-            <div style="display: flex; gap: 8px; margin-top: 6px;">
-              <label style="flex:1; display:flex; align-items:center; gap:6px; cursor:pointer;">
+          <div class="row" style="margin-top:8px;">
+            <label>Sensitivity tier</label>
+            <div style="display:flex; gap:6px; margin-top:3px;">
+              <label style="flex:1; display:flex; align-items:center; gap:5px; cursor:pointer; font-size:12px;">
                 <input type="radio" name="gw-tier" value="public" />
-                <span style="color:var(--color-status-ok-bright); font-weight:600; font-size:13px;">Public</span>
-                <span class="subtitle" style="font-size:12px;">AI always has access</span>
+                <span style="color:var(--color-status-ok-bright); font-weight:600;">Public</span>
+                <span class="subtitle" style="font-size:11px;">AI always on</span>
               </label>
-              <label style="flex:1; display:flex; align-items:center; gap:6px; cursor:pointer;">
+              <label style="flex:1; display:flex; align-items:center; gap:5px; cursor:pointer; font-size:12px;">
                 <input type="radio" name="gw-tier" value="personal" checked />
-                <span style="color:var(--color-status-warn-gold); font-weight:600; font-size:13px;">Personal</span>
-                <span class="subtitle" style="font-size:12px;">AI asks once, then remembers</span>
+                <span style="color:var(--color-status-warn-gold); font-weight:600;">Personal</span>
+                <span class="subtitle" style="font-size:11px;">Ask once</span>
               </label>
-              <label style="flex:1; display:flex; align-items:center; gap:6px; cursor:pointer;">
+              <label style="flex:1; display:flex; align-items:center; gap:5px; cursor:pointer; font-size:12px;">
                 <input type="radio" name="gw-tier" value="sensitive" />
-                <span style="color:var(--color-status-error); font-weight:600; font-size:13px;">Sensitive</span>
-                <span class="subtitle" style="font-size:12px;">AI asks every hour</span>
+                <span style="color:var(--color-status-error); font-weight:600;">Sensitive</span>
+                <span class="subtitle" style="font-size:11px;">Ask hourly</span>
               </label>
             </div>
           </div>
