@@ -53,12 +53,21 @@ if (!sessionId) {
       const baseUrl = getBillingBaseUrl(env);
       claimDeepLink = `graphnosis://claim?code=${encodeURIComponent(code)}`;
       claimWebLink = `${baseUrl}/claim?code=${encodeURIComponent(code)}`;
-      // Fire-and-forget — UX shouldn't be blocked by Resend latency.
-      // On Workers we'd ordinarily use ctx.waitUntil(), but the email
-      // is unimportant if it fails (the user can request another via
-      // /api/auth/magic-link) so a fire-and-forget is acceptable.
-      void sendMagicLink(env, { to: email, deepLink: claimDeepLink, webFallback: claimWebLink })
-        .catch((e) => console.error('[billing /upgrade/success] sendMagicLink', e));
+      // Must be awaited — Cloudflare Workers kill all pending async
+      // work the moment the response is sent. A fire-and-forget
+      // `void sendMagicLink(...)` gets reaped before the fetch to
+      // Resend ever completes, so no email is ever dispatched.
+      // Awaiting here adds ~200ms of Resend latency to page render
+      // but guarantees the email lands before the user sees the
+      // success screen. On failure we log + continue so the user
+      // still gets the deep-link card to activate manually.
+      try {
+        await sendMagicLink(env, { to: email, deepLink: claimDeepLink, webFallback: claimWebLink });
+      } catch (e) {
+        console.error('[billing /upgrade/success] sendMagicLink', e);
+        // Non-fatal — the deep-link card on the success page gives
+        // the user an alternative activation path without email.
+      }
     }
   } catch (e) {
     console.error('[billing /upgrade/success]', e);
