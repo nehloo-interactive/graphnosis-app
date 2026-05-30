@@ -7269,6 +7269,46 @@
       .atlas-container:active { cursor: grabbing; }
       /* 3d-force-graph injects its own canvas + scene-controls; make them blend. */
       .atlas-container canvas { display: block; }
+
+      /* Engram-switch loading overlay. Covers the empty 3D canvas between
+         the moment we clear the old engram's nodes and the moment the new
+         engram's data lands + paints. Centered spinner + two short text
+         lines (label + subtext for node-count progress). */
+      .atlas-loading-overlay {
+        position: absolute;
+        inset: 0;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 10px;
+        background: color-mix(in oklab, var(--bg) 78%, transparent);
+        backdrop-filter: blur(2px);
+        z-index: 4;
+        pointer-events: none; /* don't block the canvas hit-test under it */
+      }
+      .atlas-loading-overlay.hidden { display: none; }
+      .atlas-loading-spinner {
+        width: 28px; height: 28px; border-radius: 50%;
+        border: 2px solid var(--border);
+        border-top-color: var(--accent);
+        animation: atlas-spinner-spin 0.85s linear infinite;
+      }
+      @keyframes atlas-spinner-spin {
+        0%   { transform: rotate(0deg); }
+        100% { transform: rotate(360deg); }
+      }
+      .atlas-loading-label {
+        font-size: 13px;
+        font-weight: 600;
+        color: var(--fg);
+        letter-spacing: 0.01em;
+      }
+      .atlas-loading-sub {
+        font-size: 11px;
+        color: var(--fg-dim);
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      }
       /* Custom node hover tooltip — replaces the library's built-in nodeLabel
          which used d3.pointer() and broke positioning in the Tauri webview. */
       .atlas-node-tip {
@@ -7777,12 +7817,15 @@
                      Ghampus by name so the user has a *face* on this page rather
                      than a duplicated logo. "Memory seahorse" earns the cute by
                      leaning on the hippocampus etymology (Greek: seahorse). -->
-                <div class="g-pane-header-title" style="position:relative;">
+                <div class="g-pane-header-title" id="ghampus-header" style="position:relative; cursor: pointer;" role="button" tabindex="0" title="Who is Ghampus?">
                   <!-- Seahorse mark is absolutely-positioned so it sits BEHIND
                        the "Ghampus" / tagline text without pushing either out
                        of place. Faded with low opacity so the text stays
                        legible on top. Same bob animation as the trainer
-                       banner so the character feels alive across surfaces. -->
+                       banner so the character feels alive across surfaces.
+                       Whole block is clickable — opens the "Meet Ghampus"
+                       modal so the user can read the friendly + trust-
+                       building intro from anywhere they see the mark. -->
                   <img src="/graphnosis-logo-transparent-bg.png" alt=""
                        class="ghampus-header-mascot"
                        aria-hidden="true" />
@@ -8462,6 +8505,16 @@
                     </div>
                     <div class="atlas-stage">
                       <div id="atlas-container" class="atlas-container"></div>
+                      <!-- Loading overlay shown when switching engrams: the
+                           3D graph is cleared, this overlay covers the empty
+                           canvas, and we hide it the moment the new engram's
+                           data arrives + paints. Wired in main.ts via
+                           showAtlasLoading() / hideAtlasLoading(). -->
+                      <div id="atlas-loading-overlay" class="atlas-loading-overlay hidden" aria-live="polite">
+                        <div class="atlas-loading-spinner" aria-hidden="true"></div>
+                        <div class="atlas-loading-label">Loading…</div>
+                        <div id="atlas-loading-sub" class="atlas-loading-sub"></div>
+                      </div>
                       <!-- Navigation cheatsheet: a quiet, grayed overlay in the
                            bottom-left of the 3D stage so the user can pick up
                            rotate/pan/zoom + selection shortcuts without leaving
@@ -9313,6 +9366,74 @@ ollama list</code></pre>
           <span class="filler" id="snapshots-note"></span>
           <button id="btn-snapshots-close">Close</button>
           <button id="btn-snapshots-create" class="primary">Create snapshot now</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- "Meet Ghampus" modal — opens from clicks on the Ghampus title block
+         in the dashboard header. Funny, useful, trust-building intro to the
+         mascot. Pairs with the first-run tour but stays available forever
+         from anywhere the seahorse appears. -->
+    <div id="ghampus-modal" class="modal-backdrop hidden">
+      <div class="modal" style="max-width: 620px;">
+        <div class="modal-header" style="display:flex; align-items:center; gap:14px;">
+          <img src="/graphnosis-logo-transparent-bg.png" alt=""
+               style="width:64px; height:64px; flex-shrink:0; border-radius:14px;"
+               aria-hidden="true" />
+          <div>
+            <h2 style="margin:0 0 4px;">Hi again. I'm Ghampus.</h2>
+            <p class="subtitle" style="margin:0;">A seahorse. By accident of anatomy.</p>
+          </div>
+        </div>
+        <div class="modal-body" style="line-height: 1.55;">
+          <p>
+            The Greek word for "seahorse" is <em>hippocampus</em> — which is
+            also the name of the brain region that decides what you'll
+            remember tomorrow. Anatomists in 1564 thought the curl of the
+            brain structure looked like a seahorse. They were right.
+            I am their fault.
+          </p>
+
+          <p style="margin-top: 18px;"><strong>What I actually do</strong></p>
+          <ul style="margin: 6px 0 0; padding-left: 20px;">
+            <li>I keep your memory — encrypted, on your device. Never the cloud.</li>
+            <li>I surface the right notes when your AI asks for context — no re-parsing the same PDFs every prompt.</li>
+            <li>I compile what you know into <strong>Skills</strong> — compact files your AI can load as instructions. (Pro)</li>
+            <li>I retrain those Skills quietly as your cortex evolves — on schedule, on growth, or when their vitality drops. (Pro)</li>
+            <li>I draw connections semantic search misses, using a tiny neural network that lives in your <code>.gnn</code> file. (Pro)</li>
+          </ul>
+
+          <p style="margin-top: 18px;"><strong>Where you'll bump into me</strong></p>
+          <ul style="margin: 6px 0 0; padding-left: 20px;">
+            <li>Right here, in <strong>MemoryStudio</strong> — the dashboard with the chips above.</li>
+            <li>Inside any MCP-aware AI: Claude, Cursor, Zed, Ollama, LM Studio, whatever speaks the protocol.</li>
+            <li>The little <strong>GAP</strong> pill in the status bar — I light up green when I'm training a skill.</li>
+            <li>The trainer banner — that's me, mid-thought, with a progress bar and the occasional bad joke.</li>
+          </ul>
+
+          <p style="margin-top: 18px;"><strong>Things I will never do</strong></p>
+          <ul style="margin: 6px 0 0; padding-left: 20px;">
+            <li>Send your memory anywhere. Not even to us. There is no "us" server. Audit the network tab — I'll wait.</li>
+            <li>Train a model that gets smarter when you remember more. I run on YOUR machine; no central brain learns from you.</li>
+            <li>Delete anything without showing you exactly what's about to go.</li>
+            <li>Pretend I'm an AI. I'm not. I'm a deterministic knowledge graph wrapped in a seahorse. The non-deterministic features are opt-in and clearly labeled.</li>
+          </ul>
+
+          <p style="margin-top: 22px;">
+            You don't have to talk to me. I work whether you're paying
+            attention or not. But if you do — through MemoryStudio, through
+            your AI, through a webhook from your espresso machine — I'll
+            be here. Encrypted, local, and slightly embarrassed about the
+            seahorse thing.
+          </p>
+
+          <p style="margin-top: 18px; font-style: italic; color: var(--fg-dim);">
+            Pleased to be your hippocampus.
+          </p>
+        </div>
+        <div class="modal-footer">
+          <span class="filler"></span>
+          <button id="btn-ghampus-modal-close" class="primary">Got it</button>
         </div>
       </div>
     </div>

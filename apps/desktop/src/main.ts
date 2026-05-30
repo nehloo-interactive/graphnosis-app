@@ -10283,9 +10283,58 @@ async function switchActiveEngram(graphId: string): Promise<void> {
   // Reset the deck to card 1 when the user deliberately switches engrams —
   // the new engram is a different dataset so the old position is meaningless.
   graphnosisDeckIndex = 0;
-  await loadGraphnosisData(graphId);
-  applyGraphnosisFilter();
-  if (currentMode === 'atlas') void refreshAtlasView();
+  // Wipe the 3D atlas IMMEDIATELY before we start loading — otherwise the
+  // user sees the OLD engram's nodes while waiting for the new one, which
+  // reads as "the switch didn't work" on larger graphs that take 1–3s to
+  // fetch. Clearing first + showing the loading overlay makes the
+  // transition feel deliberate. Cheap: setNodes([]) just drops sim state.
+  if (mainAtlas) {
+    mainAtlas.setNodes([]);
+    mainAtlas.setEdges([], []);
+  }
+  // Surface the overlay only when the 3D tab is the active view. On other
+  // tabs the canvas isn't visible anyway, so the overlay would be invisible
+  // chrome that the user never sees.
+  const friendlyName = loadedGraphs.find((g) => g.graphId === graphId)?.metadata.displayName ?? graphId;
+  showAtlasLoading(friendlyName);
+  try {
+    await loadGraphnosisData(graphId);
+    // Now we know the size — surface a count to the user so the overlay
+    // feels informative on big engrams ("Loading X… 4,231 memories").
+    // Tiny engrams hide before the human eye notices this text anyway.
+    const n = graphnosisAllNodes.length;
+    setAtlasLoadingSub(`${n.toLocaleString()} memor${n === 1 ? 'y' : 'ies'}`);
+    applyGraphnosisFilter();
+    if (currentMode === 'atlas') void refreshAtlasView();
+  } finally {
+    hideAtlasLoading();
+  }
+}
+
+/** Show the 3D-atlas loading overlay with a friendly label and an
+ *  optional sub-line for node-count progress. Pops only if we're on the
+ *  atlas-bearing tab; on other tabs the canvas isn't visible so the
+ *  overlay would be invisible chrome. Idempotent. */
+function showAtlasLoading(label: string, sub?: string): void {
+  const overlay = document.getElementById('atlas-loading-overlay');
+  if (!overlay) return;
+  const labelEl = overlay.querySelector<HTMLElement>('.atlas-loading-label');
+  const subEl = document.getElementById('atlas-loading-sub');
+  if (labelEl) labelEl.textContent = `Loading ${label}…`;
+  if (subEl) subEl.textContent = sub ?? '';
+  overlay.classList.remove('hidden');
+}
+
+function hideAtlasLoading(): void {
+  document.getElementById('atlas-loading-overlay')?.classList.add('hidden');
+}
+
+/** Update just the sub-line of the loading overlay — used to surface
+ *  "N memories · M edges" once the IPC returns, just before the atlas
+ *  paints. Caller is responsible for hideAtlasLoading() when done. */
+function setAtlasLoadingSub(sub: string): void {
+  const subEl = document.getElementById('atlas-loading-sub');
+  if (subEl) subEl.textContent = sub;
 }
 
 // Auto-recovery from interrupted shutdown — fired by the sidecar after it
@@ -16239,6 +16288,10 @@ let studioPreviousResultTool: StudioToolKey | null = null;
 
 const STUDIO_CHIP_KEY = 'studio_active_chip';
 type StudioTool = 'skills' | 'recall' | 'dig-deeper' | 'remember' | 'edit' | 'gnn';
+// First-ever load (no saved chip) → Remember. On every subsequent load the
+// user's last selection wins. switchStudioTool() persists with save=true
+// on every real chip click; module-init re-activates with save=false so
+// it never overwrites the stored choice with itself.
 let activeStudioTool: StudioTool = (localStorage.getItem(STUDIO_CHIP_KEY) as StudioTool | null) ?? 'remember';
 
 function switchStudioTool(tool: StudioTool, save = true): void {
@@ -18079,6 +18132,33 @@ function closeLicenseModal(): void {
   wireHome('rail-logo-home');
   wireHome('app-title-home');
   wireHome('app-tagline-home');
+  // Ghampus header on the dashboard ("Ghampus / your memory seahorse." +
+  // mascot mark) opens the "Meet Ghampus" modal — funny + trust-building
+  // intro to the mascot. Click OR keyboard activation; backdrop click +
+  // Got it button + Esc all close.
+  const openGhampusModal = (): void => {
+    document.getElementById('ghampus-modal')?.classList.remove('hidden');
+  };
+  const closeGhampusModal = (): void => {
+    document.getElementById('ghampus-modal')?.classList.add('hidden');
+  };
+  const ghampusHeader = document.getElementById('ghampus-header');
+  if (ghampusHeader) {
+    ghampusHeader.addEventListener('click', openGhampusModal);
+    ghampusHeader.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openGhampusModal(); }
+    });
+  }
+  document.getElementById('btn-ghampus-modal-close')?.addEventListener('click', closeGhampusModal);
+  document.getElementById('ghampus-modal')?.addEventListener('click', (e) => {
+    if (e.target === e.currentTarget) closeGhampusModal();
+  });
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') {
+      const m = document.getElementById('ghampus-modal');
+      if (m && !m.classList.contains('hidden')) closeGhampusModal();
+    }
+  });
   // GAP pill — same target as goHome, plus snap to the Skills chip so the
   // user lands directly on the trainer that's actually running.
   const gapPill = document.getElementById('status-gap-pill');
@@ -19562,38 +19642,43 @@ async function runStudioRecall(digDeeper: boolean, thresholdDelta?: number): Pro
 
   document.querySelectorAll<HTMLButtonElement>('.studio-node-chip').forEach((c) => c.classList.remove('active'));
 
-  // Slider re-runs: slice the cached wide result LOCALLY instead of calling
-  // the sidecar. This preserves the wide call's ordering — anchored nodes
-  // (e.g. "Robert Gomboș" for query "robert") stay at the top at every
-  // slider position. Re-calling the sidecar with a tight budget caused the
-  // SDK's federation to rank a different set of nodes, so the anchored node
-  // could disappear from the result at narrower positions. Local slicing
-  // also makes the slider instant — no IPC roundtrip.
-  if (isSliderRun && studioWideResult && studioAllCandidates.length > 0) {
-    const floor = Math.max(0, studioTopScore - thresholdDelta!);
-    const count = floorToCount(floor);
-    const keepIds = new Set(studioAllCandidates.slice(0, count).map((c) => c.nodeId));
-    const sliced = sliceWideResult(keepIds);
-    if (sliced) {
-      if (seq < studioRecallSeq) return;
-      renderRawRecallResult(sliced, digDeeper, spinner, panels);
-      // Re-run LLM interpretation on the new sliced context — or render the
-      // non-LLM fallback if Ollama is off. runLlmInterpretation handles both
-      // cases + updates the confidence affordance + wires clickable citations.
-      if (showLlm) {
-        const rawContextText = (document.getElementById('studio-recall-output') as HTMLPreElement | null)?.textContent ?? sliced.prompt;
-        runLlmInterpretation(query, rawContextText, sliced.byGraph, llmOutput, llmProgress, llmUnavailable, llmStatus);
-      }
-      return;
-    }
-  }
-
-  // Fresh recall (or slider with no cached wide result yet): hit the sidecar.
-  const method = digDeeper ? 'studio.digDeeper' : 'studio.recall';
-  const ipcParams: Record<string, unknown> = { query };
-  if (engramArg) ipcParams.onlyEngrams = engramArg;
-
+  // Wrap the whole flow in try/finally so the Recall button is re-enabled
+  // regardless of which path exits (slider local-slice early return,
+  // sidecar success, sidecar error, stale-seq drop). Prior to this, only
+  // the sidecar path ran inside try/finally — slider re-runs returned
+  // before reaching it and left the button disabled. Most fresh recalls
+  // trigger an auto-apply slider re-run via revealThresholdSlider, so the
+  // "stuck disabled" state surfaced after almost every search.
   try {
+    // Slider re-runs: slice the cached wide result LOCALLY instead of
+    // calling the sidecar. Preserves the wide call's ordering — anchored
+    // nodes stay at the top at every slider position. Local slicing also
+    // makes the slider instant (no IPC roundtrip).
+    if (isSliderRun && studioWideResult && studioAllCandidates.length > 0) {
+      const floor = Math.max(0, studioTopScore - thresholdDelta!);
+      const count = floorToCount(floor);
+      const keepIds = new Set(studioAllCandidates.slice(0, count).map((c) => c.nodeId));
+      const sliced = sliceWideResult(keepIds);
+      if (sliced) {
+        if (seq < studioRecallSeq) return;
+        renderRawRecallResult(sliced, digDeeper, spinner, panels);
+        // Re-run LLM interpretation on the new sliced context — or render
+        // the non-LLM fallback if Ollama is off. runLlmInterpretation
+        // handles both cases + updates the confidence affordance + wires
+        // clickable citations.
+        if (showLlm) {
+          const rawContextText = (document.getElementById('studio-recall-output') as HTMLPreElement | null)?.textContent ?? sliced.prompt;
+          runLlmInterpretation(query, rawContextText, sliced.byGraph, llmOutput, llmProgress, llmUnavailable, llmStatus);
+        }
+        return;
+      }
+    }
+
+    // Fresh recall (or slider with no cached wide result yet): hit the sidecar.
+    const method = digDeeper ? 'studio.digDeeper' : 'studio.recall';
+    const ipcParams: Record<string, unknown> = { query };
+    if (engramArg) ipcParams.onlyEngrams = engramArg;
+
     let result = await ipcCall<RawRecallResult>(method, ipcParams);
 
     // Drop stale slider re-runs: if a newer fresh recall started while we were
