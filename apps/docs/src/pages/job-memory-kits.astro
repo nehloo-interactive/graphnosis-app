@@ -2190,19 +2190,20 @@ const complianceGroups: ComplianceGroup[] = [
     scrollToGrid();
   });
 
-  // Show floating bar when filter bar is fully scrolled out of view
+  // Show floating bar only when the filter bar has fully scrolled above the nav (64px)
   const filterBarEl = document.getElementById('filter-bar');
-  if (filterBarEl && floatingFilter) {
-    const observer = new IntersectionObserver(
-      ([entry]) => {
-        floatingFilter.classList.toggle('is-visible', !entry.isIntersecting);
-        floatingFilter.setAttribute('aria-hidden', String(entry.isIntersecting));
-        syncFloatState();
-      },
-      { rootMargin: '-64px 0px 0px 0px', threshold: 0 }
-    );
-    observer.observe(filterBarEl);
+  let floatVisible = false;
+  function updateFloatingFilter() {
+    if (!filterBarEl || !floatingFilter) return;
+    const shouldShow = filterBarEl.getBoundingClientRect().bottom < 64;
+    if (shouldShow === floatVisible) return;
+    floatVisible = shouldShow;
+    floatingFilter.classList.toggle('is-visible', shouldShow);
+    floatingFilter.setAttribute('aria-hidden', String(!shouldShow));
+    if (shouldShow) syncFloatState();
   }
+  window.addEventListener('scroll', updateFloatingFilter, { passive: true });
+  updateFloatingFilter();
 
   // ── Compliance table sticky header ───────────────────────────────────────
   // overflow-x:auto breaks CSS sticky relative to viewport, so we use a
