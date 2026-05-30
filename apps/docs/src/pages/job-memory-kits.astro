@@ -2241,8 +2241,10 @@ const complianceGroups: ComplianceGroup[] = [
     document.body.appendChild(cloneWrap);
 
     function stickyOffset(): number {
-      const fb = document.getElementById('filter-bar');
-      return 64 + (fb ? fb.getBoundingClientRect().height : 74);
+      // Nav is always 64px. Add the floating filter height only when it's visible.
+      const ff = document.getElementById('floating-filter');
+      const ffH = ff?.classList.contains('is-visible') ? ff.getBoundingClientRect().height : 0;
+      return 64 + ffH;
     }
 
     function syncColumnWidths() {
