@@ -57,3 +57,21 @@ apps/marketing-web/
 *.app.tar.gz
 *.app.tar.gz.sig
 
+# GTS skill pack content and build artifacts.
+#
+# *.gts                            — compiled binary packs (AES-256-GCM encrypted)
+# default-skill-packs.ts           — skill content instances (text, recipes) authored
+#                                    locally, verified, compiled — never committed.
+#                                    Only default-skill-pack-types.ts (pure schema)
+#                                    is committed.
+# default-skill-packs-content.*    — any staging variant of the content file
+# default-skill-packs/             — directory form of the same
+# scripts/gts-content/             — staging area used by build-gts.mjs
+# dist/packs/                      — compiled .gts output directory
+*.gts
+apps/desktop-sidecar/src/default-skill-packs.ts
+apps/desktop-sidecar/src/default-skill-packs-content.*
+apps/desktop-sidecar/src/default-skill-packs/
+scripts/gts-content/
+dist/packs/
+
