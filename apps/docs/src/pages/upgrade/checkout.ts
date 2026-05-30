@@ -63,8 +63,10 @@ export const GET: APIRoute = async ({ url, locals }) => {
       automatic_tax: { enabled: false },
       // Returns the customer to the success page in the SAME browser tab,
       // which is the only path that can hand off to graphnosis:// via the
-      // claim-link button we render there.
-      ui_mode: 'hosted',
+      // claim-link button we render there. Stripe renamed this value from
+      // 'hosted' to 'hosted_page' in a recent API version; the old name
+      // now throws "no longer supported" at session creation time.
+      ui_mode: 'hosted_page',
     });
 
     if (!session.url) {
