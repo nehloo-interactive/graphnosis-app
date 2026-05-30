@@ -1532,8 +1532,8 @@ const complianceGroups: ComplianceGroup[] = [
       </div>
     </section>
 
-    <!-- Filter bar -->
-    <section id="filter-bar" class="px-4 sm:px-6 pb-8 sticky top-16 z-40 bg-[#13131a]/95 backdrop-blur-md border-b border-[#2a2a3d]">
+    <!-- Filter bar (static — floating dropdown takes over on scroll) -->
+    <section id="filter-bar" class="px-4 sm:px-6 pb-8 bg-[#13131a]/95 border-b border-[#2a2a3d]">
       <div class="max-w-7xl mx-auto pt-4 flex flex-col sm:flex-row gap-3">
         <!-- Search -->
         <div class="relative shrink-0 sm:w-56">
@@ -1573,6 +1573,44 @@ const complianceGroups: ComplianceGroup[] = [
         </div>
       </div>
     </section>
+
+    <!-- Floating filter dropdown (appears when filter bar scrolls out of view) -->
+    <div
+      id="floating-filter"
+      aria-hidden="true"
+      class="fixed top-16 left-0 right-0 z-40 bg-[#13131a]/95 backdrop-blur-md border-b border-[#2a2a3d]"
+    >
+      <div class="max-w-7xl mx-auto px-4 sm:px-6 py-2.5 flex items-center gap-3">
+        <!-- Mini search -->
+        <div class="relative shrink-0 w-44">
+          <svg class="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-[#52525b] pointer-events-none" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" aria-hidden="true">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M21 21l-5.197-5.197m0 0A7.5 7.5 0 105.196 5.196a7.5 7.5 0 0010.607 10.607z" />
+          </svg>
+          <input
+            id="float-search"
+            type="search"
+            placeholder="Search…"
+            class="w-full pl-8 pr-3 py-1.5 rounded-full bg-[#1c1c27] border border-[#2a2a3d] focus:border-[#67e8f9] focus:outline-none text-[#f0f0f5] placeholder-[#52525b] text-sm transition-colors"
+          />
+        </div>
+        <!-- Category select -->
+        <div class="relative">
+          <select
+            id="float-category"
+            class="appearance-none pl-3 pr-8 py-1.5 rounded-full bg-[#1c1c27] border border-[#2a2a3d] focus:border-[#67e8f9] focus:outline-none text-[#f0f0f5] text-sm font-semibold transition-colors cursor-pointer"
+          >
+            {categories.map(cat => (
+              <option value={cat.id}>{cat.label}</option>
+            ))}
+          </select>
+          <svg class="absolute right-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-[#67e8f9] pointer-events-none" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24" aria-hidden="true">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M19 9l-7 7-7-7" />
+          </svg>
+        </div>
+        <!-- Pack count -->
+        <span id="float-count" class="text-xs text-[#52525b] font-mono ml-auto"></span>
+      </div>
+    </div>
 
     <!-- Pack grid -->
     <section class="py-12 px-4 sm:px-6">
@@ -2026,6 +2064,15 @@ const complianceGroups: ComplianceGroup[] = [
     background: #4dd6e8;
     border-color: #4dd6e8;
   }
+  /* Floating filter — hidden until filter bar scrolls out of view */
+  #floating-filter {
+    transform: translateY(-100%);
+    transition: transform 0.2s ease;
+  }
+  #floating-filter.is-visible {
+    transform: translateY(0);
+  }
+
   /* Compliance nav chip — distinct from category chips */
   .compliance-nav-chip {
     background: transparent;
@@ -2048,7 +2095,18 @@ const complianceGroups: ComplianceGroup[] = [
   const noResults = document.getElementById('no-results') as HTMLElement;
   const countEl = document.getElementById('pack-count') as HTMLElement;
 
+  const floatingFilter  = document.getElementById('floating-filter') as HTMLElement;
+  const floatSearch     = document.getElementById('float-search')    as HTMLInputElement;
+  const floatCategory   = document.getElementById('float-category')  as HTMLSelectElement;
+  const floatCount      = document.getElementById('float-count')     as HTMLElement;
+
   let activeCategory = 'all';
+
+  function syncFloatState() {
+    if (floatCategory) floatCategory.value = activeCategory;
+    if (floatSearch)   floatSearch.value   = search.value;
+    if (floatCount && countEl) floatCount.textContent = countEl.textContent;
+  }
 
   function filter() {
     const q = search.value.toLowerCase().trim();
@@ -2064,14 +2122,17 @@ const complianceGroups: ComplianceGroup[] = [
     countEl.textContent = visible === cards.length
       ? `${cards.length} packs`
       : `${visible} of ${cards.length} packs`;
+    syncFloatState();
   }
 
-  // Scroll to pack grid accounting for sticky nav (64px) + sticky filter bar
+  // Scroll to pack grid — offset by floating bar height when it's visible
   function scrollToGrid() {
-    const filterBar = document.getElementById('filter-bar');
     const packCount = document.getElementById('pack-count');
-    if (!filterBar || !packCount) return;
-    const offset = 64 + filterBar.getBoundingClientRect().height + 8;
+    if (!packCount) return;
+    const floatH = floatingFilter?.classList.contains('is-visible')
+      ? (floatingFilter.getBoundingClientRect().height ?? 0)
+      : 0;
+    const offset = 64 + floatH + 8;
     const targetY = packCount.getBoundingClientRect().top + window.scrollY - offset;
     window.scrollTo({ top: targetY, behavior: 'smooth' });
   }
@@ -2081,19 +2142,20 @@ const complianceGroups: ComplianceGroup[] = [
       chips.forEach(c => c.removeAttribute('data-active'));
       chip.setAttribute('data-active', 'true');
       activeCategory = chip.dataset.category ?? 'all';
-      // Clear search when switching category
       search.value = '';
       filter();
       scrollToGrid();
     });
   });
 
-  // Compliance Matrix nav chip — scroll to section, no filter change
+  // Compliance Matrix / IT Business Case nav chips — scroll only, no filter
   function scrollToSection(id: string) {
     const el = document.getElementById(id);
     if (!el) return;
-    const filterBar = document.getElementById('filter-bar');
-    const offset = 64 + (filterBar ? filterBar.getBoundingClientRect().height : 0) + 8;
+    const floatH = floatingFilter?.classList.contains('is-visible')
+      ? (floatingFilter.getBoundingClientRect().height ?? 0)
+      : 0;
+    const offset = 64 + floatH + 8;
     window.scrollTo({ top: el.getBoundingClientRect().top + window.scrollY - offset, behavior: 'smooth' });
   }
 
@@ -2101,15 +2163,46 @@ const complianceGroups: ComplianceGroup[] = [
   document.getElementById('it-nav-chip')?.addEventListener('click', () => scrollToSection('it-business-case'));
 
   search.addEventListener('input', () => {
-    // Reset category to "All packs" when user types
     activeCategory = 'all';
     chips.forEach(c => c.removeAttribute('data-active'));
     const allChip = document.querySelector<HTMLButtonElement>('.category-chip[data-category="all"]');
     if (allChip) allChip.setAttribute('data-active', 'true');
     filter();
-    // Scroll to top of cards gallery so results are visible
     if (search.value.trim()) scrollToGrid();
   });
+
+  // Floating search mirrors main search
+  floatSearch?.addEventListener('input', () => {
+    search.value = floatSearch.value;
+    search.dispatchEvent(new Event('input'));
+  });
+
+  // Floating category select mirrors chips
+  floatCategory?.addEventListener('change', () => {
+    const val = floatCategory.value;
+    chips.forEach(c => c.removeAttribute('data-active'));
+    const target = document.querySelector<HTMLButtonElement>(`.category-chip[data-category="${val}"]`);
+    if (target) target.setAttribute('data-active', 'true');
+    activeCategory = val;
+    search.value = '';
+    floatSearch.value = '';
+    filter();
+    scrollToGrid();
+  });
+
+  // Show floating bar when filter bar is fully scrolled out of view
+  const filterBarEl = document.getElementById('filter-bar');
+  if (filterBarEl && floatingFilter) {
+    const observer = new IntersectionObserver(
+      ([entry]) => {
+        floatingFilter.classList.toggle('is-visible', !entry.isIntersecting);
+        floatingFilter.setAttribute('aria-hidden', String(entry.isIntersecting));
+        syncFloatState();
+      },
+      { rootMargin: '-64px 0px 0px 0px', threshold: 0 }
+    );
+    observer.observe(filterBarEl);
+  }
 
   // ── Compliance table sticky header ───────────────────────────────────────
   // overflow-x:auto breaks CSS sticky relative to viewport, so we use a
