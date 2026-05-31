@@ -401,5 +401,15 @@ to read a recall — and that's gated by the [consent system](/guides/ai-access-
 
 ---
 
-*See also: [Auto-ingest from your tools](/guides/connectors) · [Graphs &
-Sensitivity Tiers](/guides/graphs-and-tiers) · [MCP Tools reference](/reference/mcp-tools)*
+## Related
+
+[Auto-ingest from Your Tools](/guides/connectors/) — the cloud-side counterpart for SaaS connectors.
+
+[Adding Content](/guides/adding-content/) — manual file / URL / clip ingest.
+
+[Graphs & Sensitivity Tiers](/guides/graphs-and-tiers/) — route each source to the right engram.
+
+[What Leaves Your Device](/guides/network-activity/) — proof that offline sources stay offline.
+
+[MCP Tools](/reference/mcp-tools/) — what AI clients actually call once the cortex is populated.
+

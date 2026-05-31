@@ -72,3 +72,16 @@ You can close the main window (⌘W) — the app continues running in the menu b
 With your cortex running, follow the [Connect Your AI](/getting-started/connect-ai/) guide to wire Graphnosis into your AI client.
 
 And once you're set up, take five minutes to read **[Keeping your cortex safe](/guides/keeping-your-cortex-safe/)** — it walks through the five safety layers (passphrase, recovery phrase, atomic writes, auto-quarantine, snapshots) and how to use them. The most important thing is to **write down your 24-word recovery phrase** the moment the modal shows it — Graphnosis can't show it to you again.
+
+---
+
+## Related
+
+[Overview](/getting-started/overview/) — what Graphnosis is and how it maps to the brain.
+
+[Connect Your AI](/getting-started/connect-ai/) — wire Graphnosis into Claude Desktop, Cursor, or any MCP client.
+
+[Keeping Your Cortex Safe](/guides/keeping-your-cortex-safe/) — the five safety layers.
+
+[Adding Content](/guides/adding-content/) — what your fresh cortex can ingest.
+

@@ -41,6 +41,49 @@ The encrypted payload is a MessagePack-serialized array of source and chunk reco
 When importing a `.gai` file into a different cortex, you must also provide the passphrase (or recovery phrase) of the exporting cortex. The import UI prompts for this.
 :::
 
+## `.gsk` — Graphnosis Skill Kit
+
+A `.gsk` file is a portable, signed package containing one or more **Skills** (Standard Operating Procedures) plus their goal blocks, recall recipes, and metadata. Produced by `export_skill` / the **Export skill** menu in the Skills page; consumed by **Import skill** and by the bundled-demo loader on first cortex unlock.
+
+Until v1.11.0 the wire format was named `.gts` ("Graphnosis Training Skill"). The format was renamed to `.gsk` ("Graphnosis Skill Kit") to read more naturally to users and to match the macOS / Windows file-type association registered by the desktop app. Older `.gts` files still import — the loader checks the magic bytes, not the extension.
+
+### Structure
+
+A `.gsk` file is a binary container with the following layout:
+
+```
+[4 bytes]  Magic: 0x47 0x53 0x4B 0x01  ("GSK\x01")
+[4 bytes]  Manifest length (little-endian uint32)
+[N bytes]  JSON manifest (UTF-8, see below)
+[64 bytes] Ed25519 signature over (manifest || encrypted payload)
+[M bytes]  Encrypted payload (AES-256-GCM)
+```
+
+The JSON manifest contains:
+
+```json
+{
+  "version": 1,
+  "kind": "skill-pack",
+  "packId": "safe-deploy",
+  "displayName": "Safe Deploy",
+  "skillCount": 6,
+  "exportedAt": "2026-05-31T10:00:00Z",
+  "publisher": "nehloo-interactive",
+  "signingKeyId": "ed25519:graphnosis-official:2026"
+}
+```
+
+The encrypted payload is a MessagePack-serialized object containing each skill's body, the 8 goal categories (Success, Out of scope, On completion, Trigger, Prerequisites, On failure, Requires, Produces), recall recipes, and any anchor metadata. The AES key is derived at export time from the importing cortex's policy.
+
+### Signing
+
+Every `.gsk` is signed with an Ed25519 keypair before it is written. The signature covers both the manifest and the encrypted payload. On import, the app verifies the signature against the publisher's known key — unsigned or tampered packs are rejected. The Graphnosis signing secret never enters the codebase; it lives only on the maintainer's machine. Third parties publishing their own packs use their own keypair and ship the public key alongside.
+
+:::note
+You can decrypt your own `.gsk` files programmatically with `@nehloo/graphnosis` and your cortex passphrase. The format is open and auditable. The signature does not lock you in — it lets you verify provenance.
+:::
+
 ## `.gnn` — Neural Network Prediction Overlay
 
 The **Graphnosis Neural Network (GNN)** is an opt-in, off-by-default link predictor. When you enable it from the **Go Non-Deterministic** tab, it trains a small model on your engrams and proposes connections it judges *likely real but not yet recorded*.
@@ -164,3 +207,18 @@ Quarantined files. When Graphnosis loads a `.gai` and the SDK's HMAC check fails
 ## Atomic writes
 
 Every `.gai`, `.bundle`, and `master.enc` write goes through an atomic write helper: write to a sibling `.tmp` file, `fsync` to stable storage, then `rename(2)` onto the canonical name. POSIX rename is atomic, so a process kill at any point leaves either the old file intact or the new one fully written — never a half-blob. This closed the primary cause of `.gai` checksum-mismatch corruption seen in pre-v0.3 cortexes.
+
+---
+
+## Related
+
+[Federated Multi-Graphs](/reference/federated-multi-graphs/) — what lives inside a `.gai`, conceptually.
+
+[Skills as SOPs](/reference/skills/) — the procedural model exported via `.gsk` packs.
+
+[Indelibility & Determinism](/guides/indelibility-and-determinism/) — why the op-log and atomic writes matter.
+
+[Recovery](/guides/recovery/) — what to do when one of these files goes wrong.
+
+[Verify It Yourself](/guides/verify-it-yourself/) — decrypt your own `.gai` outside the app.
+

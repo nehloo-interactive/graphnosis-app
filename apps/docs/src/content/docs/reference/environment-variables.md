@@ -67,3 +67,16 @@ graphnosis-sidecar
 ## Security note on `GRAPHNOSIS_PASSPHRASE`
 
 Passing your passphrase as an environment variable means it may be visible in process listings (`ps aux`) and in any config file that holds it on disk. Only use it on a machine you control, with software you trust. For interactive use, leave it unset and unlock through the app's prompt instead.
+
+---
+
+## Related
+
+[Boot & Engram Loading](/guides/boot-and-engram-loading/) — how these variables shape startup.
+
+[Graphs & Sensitivity Tiers](/guides/graphs-and-tiers/) — what `GRAPHNOSIS_GRAPHS` actually scopes.
+
+[What Leaves Your Device](/guides/network-activity/) — relevant when you enable the HTTP MCP bridge.
+
+[File Formats](/reference/file-formats/) — the files these paths point at.
+

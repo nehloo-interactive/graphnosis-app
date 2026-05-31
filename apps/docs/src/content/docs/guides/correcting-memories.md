@@ -91,3 +91,16 @@ Graphnosis proposes; you decide. A correction is never applied on your behalf.
 The deterministic path corrects **one memory** — the closest match — per call. The LLM-assisted path can touch several memories in a single diff.
 
 If an error spans many memories (for example, a wrong date repeated across a whole document), it is usually faster to update the source file and use **Reingest** from the Source detail view.
+
+---
+
+## Related
+
+[Indelibility & Determinism](/guides/indelibility-and-determinism/) — why `edit` supersedes rather than overwrites.
+
+[MCP Tools — `edit`](/reference/mcp-tools/#edit) — what an AI client actually calls.
+
+[Deterministic Consolidation](/guides/deterministic-consolidation/) — the background passes that merge near-duplicates.
+
+[Recovery](/guides/recovery/) — how to roll back if a correction went wrong.
+

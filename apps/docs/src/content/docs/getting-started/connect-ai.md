@@ -201,7 +201,7 @@ The wizard is fully detailed in **[Connect from your phone](/getting-started/mob
 
 ## The 45 MCP tools
 
-Once connected, **45 tools** are available to your AI, organised into ten categories (Core memory, Engram discovery, Structured recall, Source operations, Engram operations, Brain maintenance, Approximate, Conditional, Non-deterministic, and Skills/SOPs). The most commonly used ones:
+Once connected, **45 tools** are available to your AI, organized into ten categories (Core memory, Engram discovery, Structured recall, Source operations, Engram operations, Brain maintenance, Skills (SOPs), Approximate, Conditional, and Non-deterministic). The most commonly used ones:
 
 | Tool | What it does |
 |------|-------------|
@@ -213,8 +213,9 @@ Once connected, **45 tools** are available to your AI, organised into ten catego
 | `apply` | Commit a reviewed diff. Must be called after `edit` returns a diff ID. |
 | `forget` | Remove a specific memory by ID. |
 | `stats` | Return cortex statistics: total sources, chunks, graphs, embedding model info. |
+| `walk_skill` / `walk_skill_structured` | Walk a Skill (a Standard Operating Procedure) step-by-step — narrative text for human-facing guidance, JSON `SkillExecutionPlan` for AI execution. The structured form gives the AI everything it needs to run a multi-step skill: required inputs, sub-skill calls with args + capture variables, and failure handlers. |
 
-See the full [MCP Tools reference](/reference/mcp-tools/) for all 45 tools with parameter details, including the 10 Skills/SOPs tools (`list_skills`, `walk_skill`, `walk_skill_structured`, `train_skill`, and more).
+See the full [MCP Tools reference](/reference/mcp-tools/) for all 45 tools with parameter details, including the 10 Skills (SOPs) tools (`list_skills`, `walk_skill`, `walk_skill_structured`, `train_skill`, and more).
 
 ### Asking the AI to save into a specific engram
 
@@ -272,3 +273,18 @@ Full setup walkthroughs for each connector: **[Auto-ingest from your tools](/gui
 **`recall` returns no results**
 - Your cortex may be empty. [Add some content](/guides/adding-content/) first.
 - The cortex may be locked. Click the menu bar icon and unlock it.
+
+---
+
+## Related
+
+[A GRAPHNOSIS.md for Your AI](/getting-started/graphnosis-md/) — the drop-in instructions file that tells your AI client to actually use Graphnosis.
+
+[MCP Tools](/reference/mcp-tools/) — full reference for all 45 tools.
+
+[Memory Across AI Clients](/guides/memory-across-ai-clients/) — how the same cortex serves multiple AIs at once.
+
+[AI Access Controls](/guides/ai-access-controls/) — sensitivity tiers, consent gates, and the audit trail.
+
+[Connect from Your Phone](/getting-started/mobile/) — the same cortex from iOS or Android.
+

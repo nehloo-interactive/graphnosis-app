@@ -196,3 +196,16 @@ The realistic answer is to make it impossible for all five to fail simultaneousl
 3. **Take a snapshot before any destructive operation** when Graphnosis offers (just hit Confirm).
 
 Do those three things and the doomsday scenario stops being plausible.
+
+---
+
+## Related
+
+[Recovery](/guides/recovery/) — what to do when one of the safety layers actually fires.
+
+[Indelibility & Determinism](/guides/indelibility-and-determinism/) — why no operation is ever truly destructive.
+
+[File Formats](/reference/file-formats/) — the on-disk shape of `.gai`, `master.enc`, `recovery.enc`, and the bundle.
+
+[Verify It Yourself](/guides/verify-it-yourself/) — confirm the safety claims by hand.
+

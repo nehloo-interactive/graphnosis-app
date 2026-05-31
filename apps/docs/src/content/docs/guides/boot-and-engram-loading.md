@@ -126,9 +126,12 @@ variables](/reference/environment-variables/) for the full list.
 
 ## Related
 
-- [AI Access Controls](/guides/ai-access-controls/) — what an AI client
+[AI Access Controls](/guides/ai-access-controls/) — what an AI client
+
   can actually read once your engrams are loaded.
-- [Graphs and tiers](/guides/graphs-and-tiers/) — sensitivity tiers per
+[Graphs and tiers](/guides/graphs-and-tiers/) — sensitivity tiers per
+
   engram.
-- [MCP Tools](/reference/mcp-tools/) — the toolset AI clients see once
+[MCP Tools](/reference/mcp-tools/) — the toolset AI clients see once
+
   the cortex is up.

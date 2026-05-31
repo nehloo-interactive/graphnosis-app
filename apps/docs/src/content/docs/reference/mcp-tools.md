@@ -5,7 +5,7 @@ sidebar:
   order: 1
 ---
 
-The Graphnosis sidecar exposes **45 tools** via the Model Context Protocol, organised into ten functional categories. Every connected MCP client — Claude Desktop, Claude Code, Cursor, and anything else that speaks MCP — sees the same 45. What a tool can actually reach is still governed by each engram's sensitivity tier and the [consent gate](/guides/ai-access-controls/#2-the-consent-gate) — by default a one-click in-app prompt for `sensitive`-tier recalls, silent for `personal` and `public`.
+The Graphnosis sidecar exposes **45 tools** via the Model Context Protocol, organized into ten functional categories. Every connected MCP client — Claude Desktop, Claude Code, Cursor, and anything else that speaks MCP — sees the same 45. What a tool can actually reach is still governed by each engram's sensitivity tier and the [consent gate](/guides/ai-access-controls/#2-the-consent-gate) — by default a one-click in-app prompt for `sensitive`-tier recalls, silent for `personal` and `public`.
 
 You can browse the full toolset inside the app too: open the **MCP Tools** button in the left sidebar (next to Settings). Each tool name opens a short explainer with example prompts you can paste straight into your AI client.
 
@@ -19,6 +19,7 @@ You can browse the full toolset inside the app too: open the **MCP Tools** butto
 | **Source operations** (3) | [`find_source`](#find_source) · [`recall_source`](#recall_source) · [`transfer_source`](#transfer_source) |
 | **Engram operations** (2) | [`ingest_batch`](#ingest_batch) · [`engram_summary`](#engram_summary) |
 | **Brain maintenance** (4) | [`duplicate_pairs`](#duplicate_pairs) · [`healing_journal`](#healing_journal) · [`gnn_status`](#gnn_status) · [`confirm_data_access`](#confirm_data_access) |
+| **Skills (SOPs)** (10) | [`walk_skill`](#walk_skill) · [`walk_skill_structured`](#walk_skill_structured) · [`get_skill`](#get_skill) · [`list_skills`](#list_skills) · [`train_skill`](#train_skill) · [`export_skill`](#export_skill) · [`delete_skill`](#delete_skill) · [`skill_history`](#skill_history) · [`rollback_skill`](#rollback_skill) · [`skill_vitality`](#skill_vitality) |
 | **Approximate** (2) | [`audit_memory`](#audit_memory) · [`check_duplicate`](#check_duplicate) |
 | **Conditional** (1) | [`edit`](#edit) |
 | **Non-deterministic** (6) | [`develop`](#develop) · [`predict`](#predict) · [`insights`](#insights) · [`gnn_neighbors`](#gnn_neighbors) · [`llm_query`](#llm_query) · [`llm_distill`](#llm_distill) |
@@ -41,7 +42,7 @@ Graphnosis sorts its tools into four determinism tiers. Each tool states its own
 |---|---|---|
 | **Deterministic** | Identical input always produces an identical result — no LLM, no randomness, fully auditable. | All Core memory, Engram discovery, Structured recall, Source operations, Engram operations, and Brain maintenance tools (including `confirm_data_access`). |
 | **Approximate** | Vector-similarity scan — given the same embedding state, results are reproducible. No LLM involved. | `audit_memory`, `check_duplicate` |
-| **Conditional** | Deterministic by default — `edit` supersedes the single closest-matching memory. Enabling the optional Neural Network (which widens the candidate set) or the optional Local LLM (which authors a multi-edit diff) makes it non-deterministic. The result's `mode` field reports which path ran. | `edit` |
+| **Conditional** | Deterministic by default — `edit` supersedes the single closest-matching memory, and `train_skill` builds the skill from recall alone. Enabling the optional Neural Network (which widens the candidate set) or the optional Local LLM (which authors a multi-edit diff for `edit`, or an LLM-rewritten body with attribution for `train_skill`) makes them non-deterministic. The result's `mode` field reports which path ran. | `edit`, `train_skill` |
 | **Non-deterministic** | Needs the optional Local LLM (or Neural Network). Retrieval is exact and auditable; the synthesised output varies between runs. Degrades to raw context when the LLM is off. | `develop`, `predict`, `insights`, `gnn_neighbors`, `llm_query`, `llm_distill` |
 
 One nuance for the deterministic tier: when the user has overlay engines enabled, `recall` and `remind` may append a clearly-labelled `--- INFERRED LAYER ---` block containing `[gll·assertion N%]` rows from the local LLM and `[gnn·edge N%]` rows from the neural network. The inferred layer is never mixed into the deterministic subgraph — treat it as predictions, not attested memory. The canonical `.gai` subgraph is always the authoritative answer.
@@ -813,6 +814,102 @@ This tool exists for environments without a GUI (sidecar running over SSH, in a 
 
 ---
 
+## Skills (SOPs)
+
+Skills are the procedural memory layer of Graphnosis — Standard Operating Procedures wired into the cortex as graphs of steps, with goals, loops, branches, supporting context, and cross-skill orchestration. All ten tools below operate on the **Skills engram** that ships with every cortex.
+
+The procedural model in one paragraph: each skill is a sequence of body steps stored in source order; five evidence-tagged edge types connect them — `skill:seq` for the linear chain, `skill:loop` for "go back to step N", `skill:branch` for conditional forks, `skill:ctx` for recalled memories anchored to a specific step, and `skill:calls` for `@skill: target(args) -> $capture` cross-skill invocations. Eight goal categories live inside each skill (Success, Out of scope, On completion, Trigger, Prerequisites, On failure, Requires, Produces). See [Skills as SOPs](/reference/skills/) for the full model.
+
+All ten Skills tools are deterministic reads/writes against the same engram. The `train_skill` tool is the only one with a Pro path: by default it uses memory-augmented training (deterministic — recall is appended to the body with `_(from source)_` attribution); with the Pro license + Local LLM, the body is LLM-rewritten while keeping the same attribution markers.
+
+### `walk_skill`
+
+**Determinism: deterministic.** Returns the same narrative every time given the same skill state.
+
+Walks a skill step-by-step as a Standard Operating Procedure. Returns human-readable narrative text with `CONSTRAINTS:` (the 8 goal categories) and `PROCEDURE:` (the ordered steps) sections. Loop-back, conditional-branch, and sub-skill invocation annotations are inlined. Use when explaining the skill to a user or guiding them through it conversationally.
+
+- **Parameters:** `sourceId` (required) · `recursive` (optional boolean — inline called sub-skills under each calling step).
+- **Returns:** Plain text. The narrative includes ⟲ for loops, ⤳ for branches, and ⊕ for sub-skill calls.
+- **Try saying:** *"Walk me through the Production deployment skill."*
+
+### `walk_skill_structured`
+
+**Determinism: deterministic.** Same walk, machine-readable shape.
+
+Returns a `SkillExecutionPlan` JSON object: `requires` and `produces` variable lists, `constraints` (the goal categories), ordered `steps` with `calls` metadata (target sub-skill, args, captureAs), and `failureHandlers`. Use when the AI will actually execute the skill — walk steps in order, invoke sub-skills with the named args, capture their return values, and route to failure handlers on exception. Prefer this over `walk_skill` for any procedural-execution task.
+
+- **Parameters:** same as `walk_skill`.
+- **Returns:** JSON string matching `SkillExecutionPlan`.
+- **Try saying:** *"Get the execution plan for the Safe Deploy skill so you can run it."*
+
+### `get_skill`
+
+Fetches the trained output of a single skill by id — the final markdown the user sees in the editor, including all body steps and goal blocks.
+
+- **Parameters:** `sourceId` (required).
+- **Returns:** Plain text (the rendered skill).
+- **Try saying:** *"Show me the Code review skill."*
+
+### `list_skills`
+
+Lists every skill in the Skills engram with metadata: source id, name, last-trained timestamp, vitality, snapshot count.
+
+- **Parameters:** none.
+- **Returns:** JSON array.
+- **Try saying:** *"What skills do I have?"*
+
+### `train_skill`
+
+**Determinism: conditional.** Deterministic memory-augmented body by default; LLM-rewritten body with the Pro license + Local LLM.
+
+Trains or retrains a skill — anchors fresh recall to body steps, wires the five SOP edge types, and writes a snapshot to history. In-place: one source per skill (no duplicate sources per retraining run). The Pro path additionally rewrites the body through the local LLM with `_(from source)_` attribution preserved.
+
+- **Parameters:** `sourceId` (required for retrain) · `name` / `goals` / `base` (required for new) · `mode` (optional — `"deterministic"` or `"llm"`; auto-selected from your license).
+- **Returns:** JSON `{ sourceId, mode, snapshotId, edges: { seq, loop, branch, ctx, calls } }`.
+- **Try saying:** *"Retrain the Code review skill against my latest notes."*
+
+### `export_skill`
+
+Exports a signed `.gsk` pack for sharing or backup. `.gsk` is the Graphnosis Skill Kit wire format: AES-256-GCM encrypted JSON body with an Ed25519 signature over the manifest. See [File formats](/reference/file-formats/#gsk--graphnosis-skill-kit).
+
+- **Parameters:** `sourceId` (required) · `outputPath` (optional, defaults to the app's exports dir).
+- **Returns:** Plain text — the absolute path of the written `.gsk` file.
+- **Try saying:** *"Export the Production deployment skill as a .gsk pack."*
+
+### `delete_skill`
+
+Removes a skill and its trained output from the Skills engram via the op-log. Soft delete — recoverable from Recovery.
+
+- **Parameters:** `sourceId` (required).
+- **Returns:** Plain text confirming the delete.
+- **Try saying:** *"Delete the draft skill I was experimenting with."*
+
+### `skill_history`
+
+Snapshot history of a skill — every training run, with timestamp, mode (deterministic vs LLM), and a diff summary against the previous snapshot.
+
+- **Parameters:** `sourceId` (required) · `limit` (optional, default 20).
+- **Returns:** JSON array of snapshot objects.
+- **Try saying:** *"Show me the training history of the Code review skill."*
+
+### `rollback_skill`
+
+Reverts a skill to a prior snapshot. Writes a new snapshot of the rollback itself so the lineage is preserved — nothing is destroyed.
+
+- **Parameters:** `sourceId` (required) · `snapshotId` (required — from `skill_history`).
+- **Returns:** Plain text confirming the rollback + the new snapshot id.
+- **Try saying:** *"Roll the Production deployment skill back to yesterday's version."*
+
+### `skill_vitality`
+
+0–100 health score for one skill — blends staleness (time since last retrain), anchor coverage (how many body steps have supporting context), goal completeness (how many of the 8 categories are filled), and loop/branch resolution rate.
+
+- **Parameters:** `sourceId` (required).
+- **Returns:** JSON `{ overall, components: { staleness, anchorCoverage, goalCompleteness, structureResolution }, lastTrainedAt }`.
+- **Try saying:** *"How healthy is my Code review skill?"*
+
+---
+
 ## Approximate
 
 Vector-similarity scans across the cortex — deterministic given the embedding state, no LLM involved.
@@ -984,3 +1081,18 @@ Exports a trained skill into a target AI tool's format. Six formats supported:
 
 - **Parameters:** `skill_text` (the trained skill text from `train_skill` output or `recall_source`) · `format`.
 - **Try saying:** *"Export my Code Review skill as a CLAUDE.md block."*
+
+---
+
+## Related
+
+[Skills as SOPs](/reference/skills/) — the procedural model behind the ten Skills tools.
+
+[Federated Multi-Graphs](/reference/federated-multi-graphs/) — what `recall` and `dig_deeper` actually walk.
+
+[A GRAPHNOSIS.md for Your AI](/getting-started/graphnosis-md/) — drop-in instructions so the AI uses these tools without prompting.
+
+[AI Access Controls](/guides/ai-access-controls/) — the consent gate every recall passes through.
+
+[File Formats](/reference/file-formats/) — `.gai`, `.gnn`, `.gll`, and `.gsk`.
+

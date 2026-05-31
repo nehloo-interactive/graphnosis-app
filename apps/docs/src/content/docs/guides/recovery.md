@@ -137,3 +137,16 @@ A native macOS notification fires when the recovery finishes, regardless of whic
 ### Why corruption happens in the first place
 
 The usual cause is a `save()` being interrupted mid-write — force-quit, OS kill (low memory), or a crash during the multi-second window it takes to encrypt and persist a large engram. As of Graphnosis v0.3, every `.gai` / `.bundle` write is **atomic**: the sidecar writes to a sibling `.tmp` file, `fsync`s it to stable storage, then `rename`s it onto the final path. POSIX `rename(2)` is atomic, so a process kill at any point leaves either the old file intact or the new file fully written — never a half-blob. This class of corruption shouldn't recur on cortexes created with v0.3 or later.
+
+---
+
+## Related
+
+[Keeping Your Cortex Safe](/guides/keeping-your-cortex-safe/) — the five safety layers that prevent recovery being needed.
+
+[Indelibility & Determinism](/guides/indelibility-and-determinism/) — why nothing is ever truly destroyed.
+
+[File Formats](/reference/file-formats/) — what `.gai`, `.bundle`, and `master.enc` actually contain.
+
+[Boot & Engram Loading](/guides/boot-and-engram-loading/) — what the app does at startup to self-heal.
+

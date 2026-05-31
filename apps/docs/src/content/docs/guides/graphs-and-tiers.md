@@ -115,3 +115,16 @@ Only **Delete** permanently removes an engram and purges its cross-engram connec
 ## Which graphs does a client see?
 
 By default, all graphs in the cortex are visible to any connected MCP client, subject to their tier. If you want to expose only specific graphs to a specific AI client, you can scope the sidecar using the `GRAPHNOSIS_GRAPHS` environment variable (see [Environment Variables](/reference/environment-variables/)).
+
+---
+
+## Related
+
+[AI Access Controls](/guides/ai-access-controls/) — the consent gate that protects sensitive tiers.
+
+[Federated Multi-Graphs](/reference/federated-multi-graphs/) — how recall ranges across many engrams at once.
+
+[Adding Content](/guides/adding-content/) — route incoming sources to the right engram.
+
+[Environment Variables](/reference/environment-variables/) — per-client graph scoping with `GRAPHNOSIS_GRAPHS`.
+
