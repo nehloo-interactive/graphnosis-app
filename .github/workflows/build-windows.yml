@@ -95,19 +95,19 @@ jobs:
         run: pnpm --filter @graphnosis-app/desktop tauri:build
 
       - name: Sign installer (Azure Artifact Signing)
-        uses: azure/trusted-signing-action@v0.5.11
+        uses: azure/trusted-signing-action@v2.0.0
         with:
           azure-tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           azure-client-id: ${{ secrets.AZURE_CLIENT_ID }}
           azure-client-secret: ${{ secrets.AZURE_CLIENT_SECRET }}
           endpoint: https://eus.codesigning.azure.net/
-          trusted-signing-account-name: nehloo-trusted-signing
+          signing-account-name: nehloo-trusted-signing
           certificate-profile-name: graphnosis-public
           files-folder: apps/desktop/src-tauri/target/release/bundle
           files-folder-filter: exe,msi
           files-folder-recurse: true
           timestamp-rfc3161: http://timestamp.acs.microsoft.com
-          timestamp-digest-algorithm: SHA256
+          timestamp-digest: SHA256
 
       - name: Find installer
         id: find
