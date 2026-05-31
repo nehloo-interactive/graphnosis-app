@@ -134,6 +134,60 @@ export class GraphnosisImpl implements GraphnosisAdapter {
       }
     }
 
+    // ── SDK sourceRef-header artifact filter ─────────────────────────────────
+    // Root cause: the SDK's `appendText` is implemented as
+    //   parseMarkdown(`# ${source}\n\n${text}`, source)
+    // — it prepends a synthetic H1 whose CONTENT is the raw sourceRef. After
+    // parseMarkdown chunks the wrapped string, the H1 ends up as its own
+    // node alongside the real body chunk(s). For every text-mode insert
+    // (every host.insertNodeAt call, plus every ingestClip "short text"
+    // path), we therefore get one phantom node whose content is literally
+    // "skill:<ts>:<label>" or "clip:<ts>:<label>" — never useful, always
+    // surfaces in the Trained Output editor as a duplicate junk row.
+    //
+    // The markdown fallback path above ALSO triggers this (it composes
+    // `# ${label}\n\n${content}` itself), but there `label` is the
+    // human-readable suffix, not the full sourceRef — so the resulting
+    // H1 node carries the friendly label, which is benign / sometimes
+    // even desirable. We only strip nodes whose content equals the FULL
+    // sourceRef (the artifact form).
+    //
+    // We strip by: (a) deleting the artifact node from the SDK graph via
+    // applyCorrection so it doesn't pollute future queries, recalls, or
+    // exports; (b) excluding its id from the returned newNodeIds so the
+    // caller's source.nodeIds list never references it.
+    if (newNodeIds.length > 0) {
+      const keep: string[] = [];
+      const drop: string[] = [];
+      for (const id of newNodeIds) {
+        const n = h.instance.graph.nodes.get(id);
+        if (n && typeof n.content === 'string' && n.content.trim() === input.sourceRef.trim()) {
+          drop.push(id);
+        } else {
+          keep.push(id);
+        }
+      }
+      if (drop.length > 0) {
+        for (const id of drop) {
+          try {
+            // SDK's own soft-delete — sets confidence to 0, the same
+            // op `applyCorrection({kind:'delete'})` ends up routing to.
+            // We bypass our adapter wrapper because this whole filter
+            // runs inside an in-flight appendDocument and the wrapper
+            // would re-trigger build() / settle paths we've already done.
+            h.instance.deleteNode(id, 'SDK appendText sourceRef-header artifact');
+          } catch {
+            // If the SDK refuses the delete, leave the node in the graph
+            // but still exclude its id from the returned newNodeIds so
+            // the caller's source.nodeIds stays clean. Worst case: a
+            // stale orphan node with no source pointer — recall-side
+            // confidence filters will ignore it.
+          }
+        }
+        newNodeIds = keep;
+      }
+    }
+
     return { newNodeIds, newNodes: result.newNodes, contradictions: result.contradictions };
   }
 
@@ -335,6 +389,21 @@ export class GraphnosisImpl implements GraphnosisAdapter {
       out.push(rec);
     }
     return out;
+  }
+
+  /**
+   * Return the FULL untruncated content of a single node by id, or null when
+   * the node doesn't exist. Used by skill retrieval (getSkill) to assemble
+   * complete trained-skill text — the standard inspectNodes path truncates
+   * each node's content to 500 chars for the general UI, which silently ate
+   * the trailing Goals block when a skill body + recipes + goals exceeded
+   * that cap.
+   */
+  getFullNodeContent(handle: GraphHandle, nodeId: string): string | null {
+    const h = handle as Internal;
+    if (!h.built) return null;
+    const n = h.instance.graph.nodes.get(nodeId);
+    return n ? n.content : null;
   }
 
   /**
@@ -842,10 +911,13 @@ function nodeIdsBySource(g: Graphnosis, sourceRef: string): NodeId[] {
   return out;
 }
 
-// Recover a human-readable label from a sourceRef of shape "clip:<ts>:<label>"
-// or fall back to the raw ref.
+// Recover a human-readable label from a sourceRef of shape "<kind>:<ts>:<label>"
+// where kind ∈ {'clip', 'skill', 'ai-conversation'} (all formats ingestClip produces).
+// Falls back to the raw ref for unknown shapes.
 function labelFromSourceRef(sourceRef: string): string {
   const parts = sourceRef.split(':');
-  if (parts.length >= 3 && parts[0] === 'clip') return parts.slice(2).join(':');
+  if (parts.length >= 3 && ['clip', 'skill', 'ai-conversation'].includes(parts[0]!)) {
+    return parts.slice(2).join(':');
+  }
   return sourceRef;
 }
