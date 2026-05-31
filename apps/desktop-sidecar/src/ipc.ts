@@ -19,7 +19,9 @@ import {
   linkSkillCalls,
   walkSkillSequence,
   formatSkillForRecall,
+  baseSkillName,
 } from './skill-trainer.js';
+import { SkillSnapshotStore } from './skill-snapshots.js';
 import type { CorrectionDiff } from './correction.js';
 import { oplog } from '@nehloo-interactive/graphnosis-secure-sync';
 import { withEmbedding } from './embedding-queue.js';
@@ -2798,7 +2800,12 @@ async function dispatch(deps: IpcDeps, method: string, params: unknown): Promise
         ...(args.modelTarget !== undefined ? { modelTarget: args.modelTarget } : {}),
         ...(args.save !== undefined ? { save: args.save } : {}),
         ...(args.recallBreadth != null ? { recallBreadth: args.recallBreadth } : {}),
-        ...(args.goals !== undefined ? { goals: args.goals } : {}),
+        // Zod parses optional `goals` fields as `string | undefined`. The
+        // TrainSkillInput shape (with `exactOptionalPropertyTypes`) wants
+        // those fields either absent or `string` — not the union with
+        // `undefined`. The runtime accepts both; this cast just lines up
+        // the compile-time types.
+        ...(args.goals !== undefined ? { goals: args.goals as import('./gsk-format.js').SkillGoals } : {}),
         ...(args.useLlmRewrite !== undefined ? { useLlmRewrite: args.useLlmRewrite } : {}),
         onChunk,
       });
@@ -3036,13 +3043,65 @@ async function dispatch(deps: IpcDeps, method: string, params: unknown): Promise
       // Version history for a skill. Used by the desktop's diff view so the
       // user can see what changed between the current saved version and the
       // previous one when browsing the library. Returns an array of
-      // SkillVersionEntry rows ordered oldest → newest.
+      // SkillVersionEntry rows newest first; entry [0] is the live source,
+      // entries [1..] are encrypted snapshot files keyed by snapshotId.
       const args = z.object({
         graphId: z.string().min(1),
         sourceId: z.string().min(1),
       }).parse(params ?? {});
       if (!deps.skillTrainer) return [];
-      return deps.skillTrainer.getSkillHistory(args.graphId, args.sourceId);
+      return await deps.skillTrainer.getSkillHistory(args.graphId, args.sourceId);
+    }
+
+    case 'skill:getSnapshot': {
+      // Full content of one snapshot — feeds the desktop's diff baseline
+      // view. The returned text is the concatenation of every node in
+      // source order, mirroring how `skill:get` renders the live source.
+      const args = z.object({
+        graphId: z.string().min(1),
+        sourceId: z.string().min(1),
+        snapshotId: z.string().min(1),
+      }).parse(params ?? {});
+      const snap = await deps.host.skillSnapshots.read(args.graphId, args.sourceId, args.snapshotId);
+      if (!snap) return null;
+      // Editor convention: hidden metadata comment is filtered out so the
+      // user-facing diff doesn't lead with the audit header.
+      const text = snap.nodes
+        .filter((n) => !n.content.trimStart().startsWith('<!--'))
+        .map((n) => n.content)
+        .join('\n\n');
+      return {
+        label: snap.label,
+        snapshotId: snap.snapshotId,
+        ts: snap.ts,
+        text,
+      };
+    }
+
+    case 'skill:rollback': {
+      // Restore a skill to a previous snapshot. Same semantics as the
+      // `rollback_skill` MCP tool but reachable from the desktop UI
+      // when we add a "Restore this version" button to the history
+      // panel.
+      const args = z.object({
+        graphId: z.string().min(1),
+        sourceId: z.string().min(1),
+        snapshotId: z.string().min(1),
+      }).parse(params ?? {});
+      if (!deps.skillTrainer) throw new Error('Skill trainer not available.');
+      return await deps.skillTrainer.rollbackSkill(args.graphId, args.sourceId, args.snapshotId);
+    }
+
+    case 'skill:deleteSnapshot': {
+      // User-initiated delete from the history panel. Idempotent — a
+      // missing file is silently a success.
+      const args = z.object({
+        graphId: z.string().min(1),
+        sourceId: z.string().min(1),
+        snapshotId: z.string().min(1),
+      }).parse(params ?? {});
+      await deps.host.skillSnapshots.delete(args.graphId, args.sourceId, args.snapshotId);
+      return { ok: true };
     }
 
     case 'skill:walkSequence': {
@@ -3206,29 +3265,114 @@ async function dispatch(deps: IpcDeps, method: string, params: unknown): Promise
     sections.push({ role: 'goal-done', text: `On completion: ${args.goals.expectedOnCompletion}` });
   }
 
-  const first = sections.shift()!;
-  const rec = await ingestClip(
-    deps.host,
-    args.graphId,
-    first.text,
-    label,
-    {
-      addedBy: args.addedBy ?? 'graphnosis-skill-trainer',
-      sourceKind: 'skill',
-      triggeredBy: 'ipc:skill:saveFallback',
-    },
-  );
-  for (const s of sections) {
-    const len = deps.host.getSourceRecord(args.graphId, rec.sourceId)?.nodeIds.length ?? 1;
-    await deps.host.insertNodeAt(args.graphId, rec.sourceId, len, s.text, {
-      skipRelink: true,
-      role: s.role,
-      triggeredBy: 'ipc:skill:saveFallback',
+  // In-place rewrite path — mirrors trainSkill's Phase 3 logic so the free
+  // memory-augmented save and the Pro train end up with identical on-disk
+  // shape: one source per skill name, snapshot of the previous state in
+  // skill-snapshots/, no atlas pollution from accumulated retrain sources.
+  //
+  // Helpers used below are statically imported at the top of this file:
+  //   - baseSkillName(label): strips "(trained YYYY-MM-DD)" suffix
+  //   - SkillSnapshotStore.idFromTs: builds the snapshot filename stem
+  const baseName = baseSkillName(label);
+
+  // Find the prior source for this skill name. Multiple matches can only
+  // happen with engrams that pre-date the in-place model — the most
+  // recent is the canonical one and the older duplicates get cleaned up
+  // below.
+  const allSkills = deps.host.listSources(args.graphId).filter((s) => s.kind === 'skill');
+  const matching = allSkills
+    .filter((s) => baseSkillName(s.ref) === baseName)
+    .sort((a, b) => b.ingestedAt - a.ingestedAt);
+  const existing = matching[0];
+
+  let skillId: string;
+  if (existing) {
+    // Snapshot the live state before mutating. Same shape trainSkill writes
+    // so the history panel renders both paths uniformly.
+    const now = Date.now();
+    const nodeMap = new Map(deps.host.listNodes(args.graphId).map((n) => [n.id, n]));
+    const liveNodes: Array<{ content: string }> = [];
+    for (const nid of existing.nodeIds) {
+      const meta = nodeMap.get(nid);
+      if (!meta) continue;
+      if (meta.confidence <= 0.2) continue;
+      if (meta.validUntil !== undefined && meta.validUntil <= now) continue;
+      const content = deps.host.getFullNodeContent(args.graphId, nid) ?? '';
+      if (!content) continue;
+      liveNodes.push({ content });
+    }
+    const ts = Date.now();
+    await deps.host.skillSnapshots.append(args.graphId, {
+      snapshotId: SkillSnapshotStore.idFromTs(ts),
+      ts,
+      sourceId: existing.sourceId,
+      ref: existing.ref,
+      label: existing.ref.replace(/^skill:\d+:/, ''),
+      mode: 'memory-augmented',
+      nodes: liveNodes,
     });
+
+    // Forget any older duplicate sources (pre-in-place model migration).
+    for (const dup of matching.slice(1)) {
+      try {
+        await deps.host.forgetSource(args.graphId, dup.sourceId, {
+          triggeredBy: 'ipc:skill:saveFallback:migrate-duplicates',
+        });
+      } catch { /* non-fatal */ }
+    }
+
+    // Wipe the source and rename so the new train date shows in the
+    // Sources panel.
+    await deps.host.clearSourceNodes(args.graphId, existing.sourceId, {
+      triggeredBy: 'ipc:skill:saveFallback:in-place',
+      reason: 'pre-retrain clear (snapshot saved)',
+    });
+    const newRef = `skill:${ts}:${baseName}`;
+    await deps.host.renameSource(args.graphId, existing.sourceId, newRef, {
+      triggeredBy: 'ipc:skill:saveFallback:in-place',
+    });
+    skillId = existing.sourceId;
+
+    // Insert every section into the cleared source. The metadata-comment
+    // node leads so the editor's hidden-audit-row treatment matches the
+    // Pro path.
+    for (const s of sections) {
+      const len = deps.host.getSourceRecord(args.graphId, skillId)?.nodeIds.length ?? 0;
+      await deps.host.insertNodeAt(args.graphId, skillId, len, s.text, {
+        skipRelink: true,
+        role: s.role,
+        triggeredBy: 'ipc:skill:saveFallback',
+      });
+    }
+  } else {
+    // First-time save for this skill name. Same as the legacy path: seed
+    // the source via ingestClip(metadataComment) and append the rest.
+    const first = sections.shift()!;
+    const rec = await ingestClip(
+      deps.host,
+      args.graphId,
+      first.text,
+      label,
+      {
+        addedBy: args.addedBy ?? 'graphnosis-skill-trainer',
+        sourceKind: 'skill',
+        triggeredBy: 'ipc:skill:saveFallback',
+      },
+    );
+    for (const s of sections) {
+      const len = deps.host.getSourceRecord(args.graphId, rec.sourceId)?.nodeIds.length ?? 1;
+      await deps.host.insertNodeAt(args.graphId, rec.sourceId, len, s.text, {
+        skipRelink: true,
+        role: s.role,
+        triggeredBy: 'ipc:skill:saveFallback',
+      });
+    }
+    skillId = rec.sourceId;
   }
+
   deps.host.triggerRelink(args.graphId);
 
-  return { ok: true, skillId: rec.sourceId };
+  return { ok: true, skillId };
 }
 
     case 'skill:importGsk': {

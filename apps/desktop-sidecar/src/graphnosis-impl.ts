@@ -156,6 +156,72 @@ export class GraphnosisImpl implements GraphnosisAdapter {
     // applyCorrection so it doesn't pollute future queries, recalls, or
     // exports; (b) excluding its id from the returned newNodeIds so the
     // caller's source.nodeIds list never references it.
+    // ── Soft-delete dedup resurrection ──────────────────────────────────────
+    // The SDK keeps a content-hash dedup table covering EVERY node in the
+    // graph — including ones soft-deleted via `applyCorrection({kind:'delete'})`.
+    // When the in-place retrain flow calls `host.clearSourceNodes` to wipe a
+    // skill's old nodes, those nodes survive (with confidence=0) and their
+    // hashes are still in the dedup table. The next `appendDocument` with
+    // identical content (typical for memory-augmented retrains where body
+    // text doesn't change) hits the dedup → returns zero new ids → the
+    // caller (host.insertNodeAt) throws "SDK returned no node ids for
+    // content of N chars" and the whole retrain aborts with the dreaded
+    // "Build complete but could not save".
+    //
+    // Detect this case: zero new ids AND a soft-deleted node whose content
+    // matches input.content. Resurrect that node via `edit` (re-applies
+    // content, bumps confidence back above the recall threshold) and
+    // return its id. The caller splices it back into source.nodeIds and
+    // the retrain proceeds.
+    if (newNodeIds.length === 0 && typeof input.content === 'string') {
+      const wanted = input.content.trim();
+      if (wanted) {
+        for (const [id, node] of h.instance.graph.nodes) {
+          if (node.confidence > 0.2) continue;
+          const c = typeof node.content === 'string' ? node.content : '';
+          if (c.trim() !== wanted) continue;
+          try {
+            // Use `supersede` (NOT `edit`) — empirically `edit` on a
+            // soft-deleted node updates content in place but does NOT
+            // restore confidence, so the node stays effectively dead
+            // and the recall side keeps filtering it. `supersede`
+            // creates a fresh active node carrying the new content
+            // and a supersession edge from the dead one, which is
+            // exactly the audit shape we want (the prior version is
+            // still inspectable via the edge, the live version is
+            // visible to recall).
+            const before = new Set(h.instance.graph.nodes.keys());
+            h.instance.supersede(id, input.content, 'supersede from soft-delete (content-hash dedup hit)');
+            // The new live node sits outside `before` and carries the
+            // expected content. (In the unlikely event supersede was a
+            // no-op for some SDK reason, we fall through to the next
+            // candidate.)
+            for (const nid of h.instance.graph.nodes.keys()) {
+              if (before.has(nid)) continue;
+              const n = h.instance.graph.nodes.get(nid);
+              if (n && n.confidence > 0.2 && (n.content ?? '').trim() === wanted) {
+                newNodeIds = [nid];
+                break;
+              }
+            }
+            if (newNodeIds.length > 0) break;
+            // Edge case: some SDK versions of `supersede` mutate the
+            // existing node id instead of creating a new one. Check
+            // whether the prior soft-deleted id is now live + correct.
+            const post = h.instance.graph.nodes.get(id);
+            if (post && post.confidence > 0.2 && (post.content ?? '').trim() === wanted) {
+              newNodeIds = [id];
+              break;
+            }
+          } catch {
+            // Supersede failed — try the next candidate. If none
+            // survive, the caller's throw matches the pre-fix
+            // behaviour.
+          }
+        }
+      }
+    }
+
     if (newNodeIds.length > 0) {
       const keep: string[] = [];
       const drop: string[] = [];
@@ -168,23 +234,101 @@ export class GraphnosisImpl implements GraphnosisAdapter {
         }
       }
       if (drop.length > 0) {
-        for (const id of drop) {
+        // Two regimes:
+        //
+        //   keep.length > 0 (common case for prose content):
+        //     SDK produced an H1 sourceRef-artifact AND one or more
+        //     real-content body chunks. Drop the artifact(s), return
+        //     the body ids. Tombstone the artifact's content before
+        //     soft-delete so the next insert into this same source
+        //     (which would re-create an H1 with the same sourceRef
+        //     content) doesn't dedup-collide against the about-to-be-
+        //     soft-deleted artifact.
+        //
+        //   keep.length === 0 (short/sparse/dedup'd body):
+        //     SDK produced only the H1 artifact — the body either
+        //     collapsed into the H1's section metadata or dedup'd
+        //     against a soft-deleted prior node with matching text.
+        //     Deleting the lone artifact would return zero new ids
+        //     and host.insertNodeAt would throw. Instead rewrite the
+        //     artifact's content IN-PLACE to the caller's real input
+        //     and return its id. One node id, correct content, the
+        //     caller's source.nodeIds gets the right entry.
+        const inputText = typeof input.content === 'string' ? input.content.trim() : '';
+        // `drop.length` is typically 2: the SDK's `chunkDocument` emits
+        // both a `type:'document'` chunk and a `type:'section'` chunk
+        // whose content is the markdown title (= sourceRef in our wrap).
+        // So a "no real body chunks survived" state can show up as
+        // drop.length === 1 (rare — short text where section folds into
+        // document) OR === 2 (the common case for prose). Either way we
+        // recover by edit-rewriting the FIRST drop to the caller's input
+        // and tombstone+deleting the rest.
+        const canRewrite = keep.length === 0 && drop.length >= 1 && inputText.length > 0;
+
+        if (canRewrite) {
+          const survivor = drop[0]!;
           try {
-            // SDK's own soft-delete — sets confidence to 0, the same
-            // op `applyCorrection({kind:'delete'})` ends up routing to.
-            // We bypass our adapter wrapper because this whole filter
-            // runs inside an in-flight appendDocument and the wrapper
-            // would re-trigger build() / settle paths we've already done.
-            h.instance.deleteNode(id, 'SDK appendText sourceRef-header artifact');
+            h.instance.edit(survivor, inputText, 'SDK appendText artifact rewritten to real content (dedup recovery)');
+            // Tombstone + soft-delete the remaining duplicates so the next
+            // insert into this source doesn't dedup-collide against them.
+            for (let i = 1; i < drop.length; i++) {
+              const id = drop[i]!;
+              try {
+                h.instance.edit(
+                  id,
+                  `__gn-artifact-cleared:${Date.now()}:${i}:${id}__`,
+                  'SDK artifact pre-delete content erase (dedup-table release)',
+                );
+              } catch { /* fall through to deleteNode */ }
+              try { h.instance.deleteNode(id, 'SDK appendText sourceRef-header artifact (sibling)'); } catch { /* ignore */ }
+            }
+            newNodeIds = [survivor];
           } catch {
-            // If the SDK refuses the delete, leave the node in the graph
-            // but still exclude its id from the returned newNodeIds so
-            // the caller's source.nodeIds stays clean. Worst case: a
-            // stale orphan node with no source pointer — recall-side
-            // confidence filters will ignore it.
+            // Edit refused — fall back to delete + empty newNodeIds;
+            // the caller throws the pre-fix "no node ids" error.
+            for (const id of drop) {
+              try { h.instance.deleteNode(id, 'SDK appendText sourceRef-header artifact'); } catch { /* ignore */ }
+            }
+            newNodeIds = [];
           }
+        } else {
+          for (let i = 0; i < drop.length; i++) {
+            const id = drop[i]!;
+            try {
+              // Tombstone the artifact's content BEFORE soft-deleting.
+              // Without this, the SDK's content-hash dedup table keeps
+              // the sourceRef-string mapped to this soon-to-be-soft-
+              // deleted node — and the very next insertNodeAt into the
+              // SAME source creates a fresh H1 with the SAME sourceRef
+              // content, hits dedup, returns 0 new ids, and the caller
+              // throws "SDK returned no node ids". Overwriting first
+              // releases the original content hash.
+              try {
+                h.instance.edit(
+                  id,
+                  `__gn-artifact-cleared:${Date.now()}:${i}:${id}__`,
+                  'SDK artifact pre-delete content erase (dedup-table release)',
+                );
+              } catch {
+                // Edit refused — proceed to delete; the resurrection
+                // loop higher up recovers on the next insert.
+              }
+              // SDK's own soft-delete — sets confidence to 0. We bypass
+              // our adapter wrapper because this whole filter runs
+              // inside an in-flight appendDocument and the wrapper
+              // would re-trigger build() / settle paths we've already
+              // done.
+              h.instance.deleteNode(id, 'SDK appendText sourceRef-header artifact');
+            } catch {
+              // If the SDK refuses the delete, leave the node in the
+              // graph but still exclude its id from the returned
+              // newNodeIds so the caller's source.nodeIds stays clean.
+              // Worst case: a stale orphan node with no source pointer —
+              // recall-side confidence filters will ignore it.
+            }
+          }
+          newNodeIds = keep;
         }
-        newNodeIds = keep;
       }
     }
 

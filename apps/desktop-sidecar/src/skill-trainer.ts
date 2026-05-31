@@ -24,6 +24,7 @@
 import type { GraphnosisHost } from './host.js';
 import type { LocalLlm } from './correction.js';
 import { ingestClip } from './ingest.js';
+import { SkillSnapshotStore } from './skill-snapshots.js';
 import { settings as settingsMod } from '@graphnosis-app/core';
 
 // ── Public types ─────────────────────────────────────────────────────────────
@@ -178,7 +179,13 @@ export interface SkillDetail extends SkillListEntry {
 }
 
 export interface SkillVersionEntry {
+  /** sourceId is the same across every version of a given skill —
+   *  history now lives in side-table snapshots, not in sibling sources. */
   sourceId: string;
+  /** Identifier of the on-disk snapshot. Empty string means "this entry
+   *  represents the current live source, not a snapshot" — exactly one
+   *  entry per skill carries the empty value. */
+  snapshotId: string;
   label: string;
   ingestedAt: number;
   nodeCount: number;
@@ -619,17 +626,26 @@ export class SkillTrainer {
       : context.nodeCount;
     const tunedBreadth = nudgeBreadth(effectiveBreadth, context.nodeCount, citedNodes);
 
-    // ── Phase 3: Save trained version (Phase 3b section-walker) ─────────────
-    // V1 simplification: on retrain we re-ingest the trained text as a fresh
-    // skill source (LCS chunk-diff is deferred to a follow-up). The
-    // section-walker emits one node per logical section so the Trained
-    // Output editor can render and mutate them individually.
+    // ── Phase 3: Save trained version (in-place rewrite) ────────────────────
+    // Retrains REUSE the existing skill source: same sourceId, same place in
+    // the engram's source index, cross-source `skill:calls` edges from other
+    // skills still resolve. Before mutating, the source's pre-retrain state
+    // is captured to an encrypted snapshot file under
+    //   <cortexDir>/skill-snapshots/<graphId>/<sourceId>/<ts>.json.enc
+    // — that's what powers `skill_history` and `rollback_skill`.
+    //
+    // Old model (replaced): every retrain created a NEW source with a fresh
+    // sourceId, leaving the prior source(s) alongside it. After a few
+    // retrains the graph carried 4+ separate "Skill X (trained YYYY-MM-DD)"
+    // sources with orphaned metadata/title nodes drawn as red islands in
+    // the atlas. The new model collapses to one source per skill.
     let skillId: string | undefined;
     if (save) {
       const dateStr = new Date().toISOString().slice(0, 10);
       const label = skillName
         ? `${skillName} (trained ${dateStr})`
         : `Trained skill (${dateStr})`;
+      const baseName = baseSkillName(label);
 
       const metadataComment = [
         `<!-- Graphnosis skill training metadata`,
@@ -673,33 +689,122 @@ export class SkillTrainer {
       if (input.goals?.produces)
         goalSections.push({ role: 'goal-produces', text: `Produces: ${input.goals.produces}` });
 
-      const rec = await ingestClip(
-        this.host,
-        graphId,
-        metadataComment,
-        label,
-        {
-          addedBy: addedBy ?? 'graphnosis-skill-trainer',
-          sourceKind: 'skill',
-          triggeredBy: 'mcp:train_skill',
-        },
-      );
+      // ── Find existing source for this skill (in-place retrain detection) ──
+      // Match by base name (label minus the `(trained YYYY-MM-DD)` suffix)
+      // across all skill sources in this engram. There SHOULD be at most one
+      // per name; if there are duplicates from before the in-place model
+      // shipped, pick the most recent and forget the older leftovers below.
+      const allSkillSources = this.host.listSources(graphId).filter((s) => s.kind === 'skill');
+      const matchingSkills = allSkillSources
+        .filter((s) => baseSkillName(s.ref) === baseName)
+        .sort((a, b) => b.ingestedAt - a.ingestedAt);
+      const existingSource = matchingSkills[0];
 
-      // Always ingest the title node first so the editor renders it correctly.
-      {
-        const len = this.host.getSourceRecord(graphId, rec.sourceId)?.nodeIds.length ?? 1;
-        await this.host.insertNodeAt(graphId, rec.sourceId, len, label, {
-          skipRelink: true, role: 'title', triggeredBy: 'mcp:train_skill',
+      // Snapshot + clear before in-place mutation.
+      if (existingSource) {
+        // Capture every live node's content + role into the snapshot file.
+        // Soft-deleted nodes are excluded so a rollback recreates only the
+        // user-visible state.
+        const now = Date.now();
+        const nodeMap = new Map(this.host.listNodes(graphId).map((n) => [n.id, n]));
+        const liveNodes: Array<{ content: string; role?: string }> = [];
+        let snapTrainedAt: string | undefined;
+        let snapMode: 'llm' | 'memory-augmented' | undefined;
+        for (const nid of existingSource.nodeIds) {
+          const meta = nodeMap.get(nid);
+          if (!meta) continue;
+          if (meta.confidence <= 0.2) continue;
+          if (meta.validUntil !== undefined && meta.validUntil <= now) continue;
+          const content = this.host.getFullNodeContent(graphId, nid) ?? '';
+          if (!content) continue;
+          liveNodes.push({ content });
+          // Pre-extract trainedAt + mode from the metadata-comment node so the
+          // history UI can render the snapshot summary without decrypting the
+          // whole `nodes[]` array.
+          if (content.trimStart().startsWith('<!--')) {
+            const parsed = parseSkillMetadata(content);
+            if (parsed.trainedAt !== undefined) snapTrainedAt = parsed.trainedAt;
+            if (parsed.mode === 'llm' || parsed.mode === 'memory-augmented') snapMode = parsed.mode;
+          }
+        }
+        const snapshotTs = Date.now();
+        const snapshotId = SkillSnapshotStore.idFromTs(snapshotTs);
+        await this.host.skillSnapshots.append(graphId, {
+          snapshotId,
+          ts: snapshotTs,
+          sourceId: existingSource.sourceId,
+          ref: existingSource.ref,
+          label: existingSource.ref.replace(/^skill:\d+:/, ''),
+          ...(snapTrainedAt !== undefined ? { trainedAt: snapTrainedAt } : {}),
+          ...(snapMode !== undefined ? { mode: snapMode } : {}),
+          nodes: liveNodes,
         });
+
+        // Migration: clean up older duplicate sources from pre-in-place model.
+        // Their content has already migrated forward (we kept the most recent
+        // as `existingSource`); the older ones are dead weight in the atlas.
+        for (const dup of matchingSkills.slice(1)) {
+          try {
+            await this.host.forgetSource(graphId, dup.sourceId, {
+              triggeredBy: 'mcp:train_skill:migrate-duplicates',
+            });
+          } catch { /* non-fatal */ }
+        }
+
+        // Clear all current nodes from the existing source. The sourceId,
+        // sourceRef, and cross-source skill:calls edges referencing this
+        // source's title survive — but title-NODE-id-bound edges become
+        // stale and are repaired by refreshIncomingCallsToSkill below.
+        await this.host.clearSourceNodes(graphId, existingSource.sourceId, {
+          triggeredBy: 'mcp:train_skill:in-place',
+          reason: 'pre-retrain clear (snapshot saved)',
+        });
+
+        // Update source.ref to carry the new "(trained YYYY-MM-DD)" suffix
+        // so the Sources panel and `listSources` show the freshest train date.
+        const newRef = `skill:${snapshotTs}:${baseName}`;
+        await this.host.renameSource(graphId, existingSource.sourceId, newRef, {
+          triggeredBy: 'mcp:train_skill:in-place',
+        });
+
+        skillId = existingSource.sourceId;
+      } else {
+        // First-time train for this skill name → create a fresh source.
+        // ingestClip seeds the source with the metadata comment as the first
+        // node; the title + body + goals follow via insertNodeAt below. The
+        // metadata insert is therefore SKIPPED in this branch.
+        const rec = await ingestClip(
+          this.host,
+          graphId,
+          metadataComment,
+          label,
+          {
+            addedBy: addedBy ?? 'graphnosis-skill-trainer',
+            sourceKind: 'skill',
+            triggeredBy: 'mcp:train_skill',
+          },
+        );
+        skillId = rec.sourceId;
       }
 
-      // Ingest body paragraphs, tracking their nodeIds for placement.
-      // Positions in the source array: [metadata(0), title(1), body[0](2), ...]
-      for (const s of bodySections) {
-        const len = this.host.getSourceRecord(graphId, rec.sourceId)?.nodeIds.length ?? 1;
-        await this.host.insertNodeAt(graphId, rec.sourceId, len, s.text, {
-          skipRelink: true, role: s.role, triggeredBy: 'mcp:train_skill',
+      // ── Insert content into `skillId` (works for both paths) ─────────────
+      // For the in-place path: source.nodeIds is empty after clearSourceNodes;
+      //   we insert metadata + title + body + goals from scratch.
+      // For the first-time path: source already has the metadata seed from
+      //   ingestClip; we insert title + body + goals only.
+      const insertAtEnd = async (text: string, role: string): Promise<void> => {
+        const len = this.host.getSourceRecord(graphId, skillId!)?.nodeIds.length ?? 0;
+        await this.host.insertNodeAt(graphId, skillId!, len, text, {
+          skipRelink: true, role, triggeredBy: 'mcp:train_skill',
         });
+      };
+
+      if (existingSource) {
+        await insertAtEnd(metadataComment, 'metadata');
+      }
+      await insertAtEnd(label, 'title');
+      for (const s of bodySections) {
+        await insertAtEnd(s.text, s.role);
       }
 
       // ── Phase 2: position-aware placement of recalled-memory paragraphs ───
@@ -719,40 +824,33 @@ export class SkillTrainer {
           .sort((a, b) => (b.position as number) - (a.position as number));
         for (const p of inline) {
           const sourcePos = (p.position as number) + PREFIX;
-          await this.host.insertNodeAt(graphId, rec.sourceId, sourcePos, p.text, {
+          await this.host.insertNodeAt(graphId, skillId, sourcePos, p.text, {
             skipRelink: true, role: 'recalled-memory', triggeredBy: 'mcp:train_skill',
           });
         }
 
         // Context-section nodes go after all body/inline recalled nodes.
         for (const p of placements.filter((q) => q.position === 'context')) {
-          const len = this.host.getSourceRecord(graphId, rec.sourceId)?.nodeIds.length ?? 1;
-          await this.host.insertNodeAt(graphId, rec.sourceId, len, p.text, {
-            skipRelink: true, role: 'recalled-memory', triggeredBy: 'mcp:train_skill',
-          });
+          await insertAtEnd(p.text, 'recalled-memory');
         }
       }
 
       // Goals always land at the very end.
       for (const s of goalSections) {
-        const len = this.host.getSourceRecord(graphId, rec.sourceId)?.nodeIds.length ?? 1;
-        await this.host.insertNodeAt(graphId, rec.sourceId, len, s.text, {
-          skipRelink: true, role: s.role, triggeredBy: 'mcp:train_skill',
-        });
+        await insertAtEnd(s.text, s.role);
       }
 
       this.host.triggerRelink(graphId);
-      await linkSkillSequence(this.host, graphId, rec.sourceId);
-      await linkSkillGoals(this.host, graphId, rec.sourceId);
-      await linkSkillLoopsAndBranches(this.host, graphId, rec.sourceId);
-      await linkSkillContextEdges(this.host, graphId, rec.sourceId);
-      await linkSkillCalls(this.host, graphId, rec.sourceId, graphId);
+      await linkSkillSequence(this.host, graphId, skillId);
+      await linkSkillGoals(this.host, graphId, skillId);
+      await linkSkillLoopsAndBranches(this.host, graphId, skillId);
+      await linkSkillContextEdges(this.host, graphId, skillId);
+      await linkSkillCalls(this.host, graphId, skillId, graphId);
       // Phase 5 — Decision 7: edges FROM other skills TO this skill's title
       // node may have become stale (title nodeId likely changed on retrain).
       // Re-run linkSkillCalls on every OTHER skill so any `@skill: <this>`
       // reference gets re-pointed to the new title node.
-      await refreshIncomingCallsToSkill(this.host, graphId, rec.sourceId);
-      skillId = rec.sourceId;
+      await refreshIncomingCallsToSkill(this.host, graphId, skillId);
     }
 
     return {
@@ -1029,69 +1127,165 @@ export class SkillTrainer {
     };
   }
 
-  getSkillHistory(graphId: string, sourceId: string): SkillVersionEntry[] {
+  /**
+   * History of a skill = the current source state + every pre-retrain
+   * snapshot we have on disk. Each snapshot becomes one entry; the
+   * current source becomes the newest entry, identified by `isCurrent`
+   * and an empty `snapshotId`.
+   *
+   * Newest first (matches the user expectation of "most recent retrain
+   * at the top of the panel").
+   */
+  async getSkillHistory(graphId: string, sourceId: string): Promise<SkillVersionEntry[]> {
     const sources = this.host.listSources(graphId).filter((s) => s.kind === 'skill');
     const target = sources.find((s) => s.sourceId === sourceId);
     if (!target) return [];
-    const baseName = baseSkillName(target.ref);
-    const versions = sources
-      .filter((s) => baseSkillName(s.ref) === baseName)
-      .sort((a, b) => a.ingestedAt - b.ingestedAt);
+
+    // Current state entry — derived from the live source nodes.
     const now = Date.now();
     const nodeMap = new Map(this.host.listNodes(graphId).map((n) => [n.id, n]));
-    const newest = versions[versions.length - 1];
-    return versions.map((src): SkillVersionEntry => {
-      const activeNodeIds = src.nodeIds.filter((id) => {
-        const n = nodeMap.get(id);
-        return n && n.confidence > 0.2 && (!n.validUntil || n.validUntil > now);
-      });
-      const text = activeNodeIds.map((id) => nodeMap.get(id)?.contentPreview ?? '').join('\n');
-      const parsed = parseSkillMetadata(text);
-      return {
-        sourceId: src.sourceId,
-        label: src.ref,
-        ingestedAt: src.ingestedAt,
-        nodeCount: activeNodeIds.length,
-        isCurrent: src.sourceId === newest?.sourceId,
-        ...(parsed.trainedAt !== undefined ? { trainedAt: parsed.trainedAt } : {}),
-        ...(parsed.mode !== undefined ? { mode: parsed.mode } : {}),
-      };
-    }).reverse();
+    const activeNodeIds = target.nodeIds.filter((id) => {
+      const n = nodeMap.get(id);
+      return n && n.confidence > 0.2 && (!n.validUntil || n.validUntil > now);
+    });
+    const currentText = activeNodeIds.map((id) => nodeMap.get(id)?.contentPreview ?? '').join('\n');
+    const currentParsed = parseSkillMetadata(currentText);
+    const current: SkillVersionEntry = {
+      sourceId: target.sourceId,
+      snapshotId: '',
+      label: target.ref,
+      ingestedAt: target.ingestedAt,
+      nodeCount: activeNodeIds.length,
+      isCurrent: true,
+      ...(currentParsed.trainedAt !== undefined ? { trainedAt: currentParsed.trainedAt } : {}),
+      ...(currentParsed.mode !== undefined ? { mode: currentParsed.mode } : {}),
+    };
+
+    // Snapshot entries — already returned newest-first by the store.
+    const snapshots = await this.host.skillSnapshots.list(graphId, sourceId);
+    const past: SkillVersionEntry[] = snapshots.map((s) => ({
+      sourceId: target.sourceId,
+      snapshotId: s.snapshotId,
+      label: s.label,
+      ingestedAt: s.ts,
+      nodeCount: s.nodeCount,
+      isCurrent: false,
+      ...(s.trainedAt !== undefined ? { trainedAt: s.trainedAt } : {}),
+      ...(s.mode !== undefined ? { mode: s.mode } : {}),
+    }));
+
+    return [current, ...past];
   }
 
-  async rollbackSkill(graphId: string, targetSourceId: string): Promise<{ forgottenSourceIds: string[] }> {
+  /**
+   * Restore a skill to a prior snapshot. Behaviour:
+   *   - `snapshotId` empty / missing  → no-op (the "current" entry was
+   *     already current; rolling back to it is meaningless).
+   *   - `snapshotId` matches an on-disk snapshot → clear the current
+   *     source's nodes (snapshotting their state first, so this very
+   *     rollback can itself be rolled back), then re-insert the
+   *     snapshot's nodes verbatim in source order.
+   *
+   * Cross-source `skill:calls` edges are re-stitched at the end by
+   * `refreshIncomingCallsToSkill` — same machinery as a normal retrain.
+   */
+  async rollbackSkill(
+    graphId: string,
+    sourceId: string,
+    snapshotId: string,
+  ): Promise<{ restoredNodeCount: number }> {
     const sources = this.host.listSources(graphId).filter((s) => s.kind === 'skill');
-    const target = sources.find((s) => s.sourceId === targetSourceId);
-    if (!target) throw new Error(`Skill "${targetSourceId}" not found in graph "${graphId}".`);
-    const baseName = baseSkillName(target.ref);
-    const newerVersions = sources.filter(
-      (s) => baseSkillName(s.ref) === baseName && s.ingestedAt > target.ingestedAt,
-    );
-    const forgottenSourceIds: string[] = [];
-    for (const src of newerVersions) {
-      await this.host.forgetSource(graphId, src.sourceId, { triggeredBy: 'skill:rollback' });
-      forgottenSourceIds.push(src.sourceId);
+    const target = sources.find((s) => s.sourceId === sourceId);
+    if (!target) throw new Error(`Skill source ${sourceId} not found in graph ${graphId}.`);
+    if (!snapshotId) {
+      // Rolling back to "current" is a no-op.
+      return { restoredNodeCount: target.nodeIds.length };
     }
-    return { forgottenSourceIds };
+
+    const snapshot = await this.host.skillSnapshots.read(graphId, sourceId, snapshotId);
+    if (!snapshot) {
+      throw new Error(`Snapshot ${snapshotId} not found for skill ${sourceId} in graph ${graphId}.`);
+    }
+
+    // Snapshot the CURRENT state before overwriting it — so the user can
+    // undo the rollback if it turns out to be the wrong choice. Same
+    // path as trainSkill, just a different `triggeredBy` for the audit
+    // trail.
+    {
+      const now = Date.now();
+      const nodeMap = new Map(this.host.listNodes(graphId).map((n) => [n.id, n]));
+      const liveNodes: Array<{ content: string }> = [];
+      for (const nid of target.nodeIds) {
+        const meta = nodeMap.get(nid);
+        if (!meta) continue;
+        if (meta.confidence <= 0.2) continue;
+        if (meta.validUntil !== undefined && meta.validUntil <= now) continue;
+        const content = this.host.getFullNodeContent(graphId, nid) ?? '';
+        if (!content) continue;
+        liveNodes.push({ content });
+      }
+      const ts = Date.now();
+      await this.host.skillSnapshots.append(graphId, {
+        snapshotId: SkillSnapshotStore.idFromTs(ts),
+        ts,
+        sourceId,
+        ref: target.ref,
+        label: target.ref.replace(/^skill:\d+:/, ''),
+        nodes: liveNodes,
+      });
+    }
+
+    // Wipe the current source state and replay the snapshot in order.
+    await this.host.clearSourceNodes(graphId, sourceId, {
+      triggeredBy: 'skill:rollback',
+      reason: `rollback to snapshot ${snapshotId}`,
+    });
+    for (const node of snapshot.nodes) {
+      const len = this.host.getSourceRecord(graphId, sourceId)?.nodeIds.length ?? 0;
+      await this.host.insertNodeAt(graphId, sourceId, len, node.content, {
+        skipRelink: true,
+        ...(node.role !== undefined ? { role: node.role } : {}),
+        triggeredBy: 'skill:rollback',
+      });
+    }
+
+    // Rebuild every SOP edge — node ids changed, so all previous edges
+    // touching this source are now stale and need re-derivation.
+    this.host.triggerRelink(graphId);
+    await linkSkillSequence(this.host, graphId, sourceId);
+    await linkSkillGoals(this.host, graphId, sourceId);
+    await linkSkillLoopsAndBranches(this.host, graphId, sourceId);
+    await linkSkillContextEdges(this.host, graphId, sourceId);
+    await linkSkillCalls(this.host, graphId, sourceId, graphId);
+    await refreshIncomingCallsToSkill(this.host, graphId, sourceId);
+
+    return { restoredNodeCount: snapshot.nodes.length };
   }
 
+  /**
+   * Delete a skill and every snapshot belonging to it.
+   *
+   * `allVersions` is preserved as a parameter for API compatibility but
+   * is now a no-op: under the in-place model every "version" of a skill
+   * lives in one source, so deleting that source IS deleting all
+   * versions. The flag was meaningful under the previous "one source
+   * per retrain" model; we keep it as `_allVersions` so the IPC signature
+   * doesn't break and downstream callers can be migrated lazily.
+   */
   async deleteSkill(
     graphId: string,
     sourceId: string,
-    allVersions = false,
+    _allVersions = false,
   ): Promise<{ forgottenSourceIds: string[] }> {
     const sources = this.host.listSources(graphId).filter((s) => s.kind === 'skill');
     const target = sources.find((s) => s.sourceId === sourceId);
     if (!target) throw new Error(`Skill "${sourceId}" not found in graph "${graphId}".`);
-    const toDelete = allVersions
-      ? sources.filter((s) => baseSkillName(s.ref) === baseSkillName(target.ref))
-      : [target];
-    const forgottenSourceIds: string[] = [];
-    for (const src of toDelete) {
-      await this.host.forgetSource(graphId, src.sourceId, { triggeredBy: 'skill:delete' });
-      forgottenSourceIds.push(src.sourceId);
-    }
-    return { forgottenSourceIds };
+    await this.host.forgetSource(graphId, target.sourceId, { triggeredBy: 'skill:delete' });
+    // Then purge the per-source snapshot directory so a re-trained skill
+    // under the same name doesn't surface old history that no longer
+    // logically belongs to it.
+    await this.host.skillSnapshots.deleteAll(graphId, target.sourceId);
+    return { forgottenSourceIds: [target.sourceId] };
   }
 
   private async pingLlm(): Promise<boolean> {
@@ -2095,7 +2289,7 @@ export function walkSkillSequence(
         const subSteps = subWalked.steps.map((ss) => ({
           ...ss,
           index: i + ss.index, // offset for display
-          text: `  [Sub-skill: ${step.callsSkill!.title}] ${ss.text}`,
+          text: `  [Sub-skill: ${step.callsSkill!.targetTitle}] ${ss.text}`,
         }));
         steps.splice(i + 1, 0, ...subSteps);
       } catch { /* sub-skill expansion failure is non-fatal */ }
@@ -2367,7 +2561,7 @@ export function walkSkillToJson(
 
 // ── Skill-management helpers ──────────────────────────────────────────────────
 
-function baseSkillName(label: string): string {
+export function baseSkillName(label: string): string {
   return label.replace(/\s*\(trained \d{4}-\d{2}-\d{2}\)\s*$/u, '').trim();
 }
 
