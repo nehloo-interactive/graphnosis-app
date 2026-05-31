@@ -1401,6 +1401,7 @@ function render(status: StatusSnapshot): void {
         applyGraphnosisFilter(); // fills the Check-in deck from the loaded data
       }
       void checkDocsIngestOffer();
+      void checkSkillDemosOffer();
       await revealApp();
     }).catch(() => void revealApp()); // show the app even if metadata fetch fails
   } else {
@@ -1426,6 +1427,8 @@ function render(status: StatusSnapshot): void {
     // of a different cortex) re-evaluates the offer cleanly.
     docsOfferChecked = false;
     hideDocsOfferBanner();
+    skillDemosOfferChecked = false;
+    hideSkillDemosOfferBanner();
     // Hide the needs-review overlay so it doesn't bleed into the next unlock.
     els.needsReviewOverlay?.classList.add('hidden');
     els.btnNeedsReview?.classList.add('hidden');
@@ -2028,6 +2031,16 @@ const TOOL_INFO: Record<string, { determinism: string; body: string; examples: s
     determinism: 'Deterministic',
     body: 'Returns the full content of one trained skill — its text, mode, recall breadth, goals, and ingest timestamps. Pair with list_skills first to find the sourceId.',
     examples: ['Show me the trained text of my code-review skill.', 'Get the full content of skill <sourceId> in my Skills engram.'],
+  },
+  walk_skill: {
+    determinism: 'Deterministic',
+    body: 'Walk a skill as a Standard Operating Procedure — returns its steps in source order with loop, branch, and sub-skill-call annotations as narrative text. Use this when you\'re explaining a skill to the user or guiding them through it conversationally. Prefer walk_skill_structured when you\'re executing the skill programmatically.',
+    examples: ['Walk me through my deployment skill step by step.', 'Show me the procedure for the safe-deploy skill — I want to follow it now.'],
+  },
+  walk_skill_structured: {
+    determinism: 'Deterministic',
+    body: 'Returns a SkillExecutionPlan JSON for one skill: prerequisites, declared inputs (Requires:) and outputs (Produces:), ordered steps with sub-skill calls + args + capture variables, and failureHandlers. Use this when you\'re actually going to execute the skill — walk steps in order, invoke sub-skills with the named args, capture return values, and route to failure handlers on exception.',
+    examples: ['Execute my production-deployment skill on branch main.', 'Run my code-review skill against this diff and capture the results.'],
   },
   skill_history: {
     determinism: 'Deterministic',
@@ -12902,6 +12915,118 @@ document.getElementById('docs-offer-dismiss')?.addEventListener('click', () => {
   void ipcCall('docs:decline', {}).catch((e) => console.error('docs:decline failed', e));
 });
 
+// ── Bundled Skill Demos offer ────────────────────────────────────────────
+//
+// Twin of the docs offer above. On cortex unlock we ask the sidecar whether
+// to offer ingesting the 3 bundled "Skill Demos" packs into a dedicated
+// `graphnosis-skill-demos` engram. The sidecar owns the state machine
+// (offered / declined / deleted / app updated); the App just acts on the
+// returned decision.
+
+let skillDemosOfferChecked = false;
+
+interface SkillDemosIngestResult {
+  packsAttempted: number;
+  skillsIngested: number;
+  skillsSkippedEmpty: string[];
+  packErrors: Array<{ filename: string; reason: string }>;
+  verified: Array<{ filename: string; verified: boolean }>;
+}
+
+/** Ask the sidecar what to do about the Skill Demos engram, then act on it.
+ *  Runs once per unlock. `offer` shows a banner; `reingest` runs silently
+ *  with a toast; `none` does nothing. */
+async function checkSkillDemosOffer(): Promise<void> {
+  if (skillDemosOfferChecked) return;
+  skillDemosOfferChecked = true;
+  try {
+    const appVersion = await getVersion();
+    const { decision } = await ipcCall<{ decision: 'offer' | 'reingest' | 'none'; packsAvailable: number }>(
+      'skillDemos:checkOffer', { appVersion },
+    );
+    if (decision === 'offer') {
+      // Show the banner — unlike docs (silent ingest), demos are
+      // SOP-style content users probably want to opt into. They're
+      // labeled in two languages and could be irrelevant to a fresh
+      // user's actual workflow, so a one-click yes is friendlier than
+      // a surprise extra engram appearing.
+      showSkillDemosOfferBanner();
+    } else if (decision === 'reingest') {
+      // App updated and the user already had demos installed → refresh
+      // silently. Wait for the initial engram sweep to finish so we
+      // don't saturate the embed workers.
+      await Promise.race([
+        engramsLoaded,
+        new Promise<void>((r) => setTimeout(r, 30_000)),
+      ]);
+      const tid = addIngestToast('Updating Skill Demos', 'The app updated — refreshing the bundled demos…');
+      try {
+        const result = await ipcCall<SkillDemosIngestResult>('skillDemos:ingest', { appVersion });
+        finishIngestToast(
+          tid, 'success',
+          `Skill Demos updated · ${result.skillsIngested} skill(s) across ${result.packsAttempted} pack(s)` +
+          (result.packErrors.length ? `, ${result.packErrors.length} failed` : ''),
+        );
+        await fetchGraphsMetadata();
+        await fetchSkillsLibrary();
+        renderSkillsLibrary();
+        void refreshStats();
+      } catch (e) {
+        finishIngestToast(tid, 'error', `Couldn't update Skill Demos: ${String(e)}`);
+      }
+    }
+    // 'none' → nothing to do.
+  } catch (e) {
+    console.error('skillDemos:checkOffer failed', e);
+  }
+}
+
+function showSkillDemosOfferBanner(): void {
+  document.getElementById('skill-demos-offer-banner')?.classList.remove('hidden');
+}
+
+function hideSkillDemosOfferBanner(): void {
+  document.getElementById('skill-demos-offer-banner')?.classList.add('hidden');
+}
+
+document.getElementById('skill-demos-offer-add')?.addEventListener('click', () => {
+  const addBtn = document.getElementById('skill-demos-offer-add') as HTMLButtonElement | null;
+  const dismissBtn = document.getElementById('skill-demos-offer-dismiss') as HTMLButtonElement | null;
+  if (addBtn) { addBtn.disabled = true; addBtn.textContent = 'Adding demos…'; }
+  if (dismissBtn) dismissBtn.disabled = true;
+  void (async () => {
+    const tid = addIngestToast('Adding Skill Demos', 'Importing the 3 bundled starter skills…');
+    try {
+      const appVersion = await getVersion();
+      const result = await ipcCall<SkillDemosIngestResult>('skillDemos:ingest', { appVersion });
+      hideSkillDemosOfferBanner();
+      finishIngestToast(
+        tid, 'success',
+        `Skill Demos added · ${result.skillsIngested} skill(s) across ${result.packsAttempted} pack(s)` +
+        (result.packErrors.length ? `, ${result.packErrors.length} failed` : ''),
+      );
+      await fetchGraphsMetadata();
+      // Refresh the in-memory skills library so the 6 freshly-ingested
+      // demo skills surface in the Skills w/ Goals list. fetchGraphsMetadata
+      // updates the engram picker but the skills list reads from a
+      // separate `skillsLibrary` cache that needs its own refetch.
+      await fetchSkillsLibrary();
+      renderSkillsLibrary();
+      void refreshStats();
+      void pollGraphMutations();
+    } catch (e) {
+      finishIngestToast(tid, 'error', `Couldn't add Skill Demos: ${String(e)}`);
+      if (addBtn) { addBtn.disabled = false; addBtn.textContent = 'Add demos'; }
+      if (dismissBtn) dismissBtn.disabled = false;
+    }
+  })();
+});
+
+document.getElementById('skill-demos-offer-dismiss')?.addEventListener('click', () => {
+  hideSkillDemosOfferBanner();
+  void ipcCall('skillDemos:decline', {}).catch((e) => console.error('skillDemos:decline failed', e));
+});
+
 // Selection state for the banner: null = "Create new", string = existing graphId.
 let pendingEngramSuggestion: EngramSuggestPayload | null = null;
 let engramSuggestSelection: string | null = null;
@@ -20365,9 +20490,16 @@ function _bindSkillsHandlersInner(): void {
     renderSkillsLibrary();
   });
   document.getElementById('btn-skills-library-refresh')?.addEventListener('click', () => {
-    skillsVitalityCache.clear();
-    void warmVitalityCache();
-    renderSkillsLibrary();
+    // Re-fetch the skills library from the sidecar so newly-ingested skills
+    // (e.g. bundled demos that just landed, or a .gsk import that finished
+    // in the background) surface in the list. Without this, refresh was a
+    // no-op visually — it only cleared the vitality cache.
+    void (async () => {
+      skillsVitalityCache.clear();
+      await fetchSkillsLibrary();
+      renderSkillsLibrary();
+      void warmVitalityCache();
+    })();
   });
   document.getElementById('btn-skills-show-hidden')?.addEventListener('click', () => {
     skillsShowHidden = !skillsShowHidden;

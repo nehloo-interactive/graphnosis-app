@@ -17,6 +17,7 @@ import { GraphnosisHost } from './host.js';
 import { GraphnosisImpl } from './graphnosis-impl.js';
 import { proposeCorrection, applyCorrection } from './correction.js';
 import { BUNDLED_DOCS } from './docs-content.generated.js';
+import { BUNDLED_SKILL_DEMOS } from './skill-demos.generated.js';
 
 async function main(): Promise<void> {
   const cortexDir = process.env.GRAPHNOSIS_CORTEX ?? path.join(os.tmpdir(), `gn-smoke-${process.pid}`);
@@ -235,6 +236,34 @@ ferry to Naxos. The food in Mykonos was overrated.`;
     }
   }
   log('bundled-docs.ok', { pages: BUNDLED_DOCS.length });
+
+  // ── Bundled skill-demos integrity ──────────────────────────────────────
+  // The three signed Graphnosis demo .gsk packs ship inside the sidecar.
+  // scripts/generate-skill-demos-content.mjs reads dist/packs/bundle/*.gsk
+  // and base64-encodes them into skill-demos.generated.ts. The sidecar
+  // ingests them into the `Skill Demos` engram on first cortex unlock
+  // (or app-version bump). If this array is empty in CI, the build
+  // pipeline broke — fail fast rather than ship a binary that silently
+  // can't onboard new users.
+  log('bundled-skill-demos', {});
+  if (!Array.isArray(BUNDLED_SKILL_DEMOS) || BUNDLED_SKILL_DEMOS.length === 0) {
+    throw new Error(
+      'FAIL: BUNDLED_SKILL_DEMOS is empty — node scripts/build-gsk.mjs --sign && ' +
+      'apps/desktop-sidecar/scripts/generate-skill-demos-content.mjs must run before build.',
+    );
+  }
+  for (const d of BUNDLED_SKILL_DEMOS) {
+    if (!d.id || !d.filename || typeof d.gskBase64 !== 'string' || d.gskBase64.length === 0) {
+      throw new Error(`FAIL: malformed bundled skill demo — ${JSON.stringify({ id: d.id, filename: d.filename, base64Len: d.gskBase64?.length }).slice(0, 200)}`);
+    }
+    // Sanity check the base64 decodes to a non-trivial .gsk header
+    // (the format starts with a 4-byte magic string per gsk-format.ts).
+    const decodedLen = Buffer.from(d.gskBase64, 'base64').byteLength;
+    if (decodedLen < 64) {
+      throw new Error(`FAIL: bundled skill demo ${d.id} decoded to only ${decodedLen} bytes — corrupt`);
+    }
+  }
+  log('bundled-skill-demos.ok', { packs: BUNDLED_SKILL_DEMOS.length });
 }
 
 function log(phase: string, data: Record<string, unknown>): void {

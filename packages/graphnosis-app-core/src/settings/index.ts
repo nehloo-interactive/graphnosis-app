@@ -713,6 +713,17 @@ export interface AppSettings {
     /** App version at the last successful docs ingest. Drives auto-re-ingest. */
     ingestedAppVersion?: string;
   };
+  /** Skill-Demos-engram ingest state. Twin of docsEngram. Absent on cortexes
+   *  that never saw the offer. The state machine treats `declined === true`
+   *  as a permanent opt-out, and a `ingestedAppVersion` mismatch with the
+   *  current app version as "re-import on next unlock" (so updated demos
+   *  reach existing users automatically on app upgrade). */
+  skillDemosEngram?: {
+    /** true once the user clicked "Not now" on the bundled-demos offer. */
+    declined?: boolean;
+    /** App version at the last successful bundled-demos ingest. */
+    ingestedAppVersion?: string;
+  };
   /**
    * Alive Brain — background intelligence settings. Absent on older cortexes;
    * BrainEngine starts all activities immediately when unset (treats them
@@ -1148,6 +1159,18 @@ export function mergeWithDefaults(partial: Partial<AppSettings> | null | undefin
     };
   }
 
+  // Skill-Demos-engram ingest state — same validation shape as docsEngram.
+  let skillDemosEngram: AppSettings['skillDemosEngram'] | undefined;
+  if (partial?.skillDemosEngram) {
+    const sd = partial.skillDemosEngram;
+    skillDemosEngram = {
+      ...(typeof sd.declined === 'boolean' ? { declined: sd.declined } : {}),
+      ...(typeof sd.ingestedAppVersion === 'string' && sd.ingestedAppVersion.length > 0
+        ? { ingestedAppVersion: sd.ingestedAppVersion }
+        : {}),
+    };
+  }
+
   // Brain / Alive Brain — pass through if present, validate individual fields.
   let brain: AppSettings['brain'] | undefined;
   if (partial?.brain) {
@@ -1253,6 +1276,7 @@ export function mergeWithDefaults(partial: Partial<AppSettings> | null | undefin
     ...(connectors !== undefined ? { connectors } : {}),
     ...(vscode !== undefined ? { vscode } : {}),
     ...(docsEngram !== undefined ? { docsEngram } : {}),
+    ...(skillDemosEngram !== undefined ? { skillDemosEngram } : {}),
     ...(brain !== undefined ? { brain } : {}),
   };
 }

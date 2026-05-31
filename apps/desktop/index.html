@@ -8300,6 +8300,27 @@
             </div>
           </div>
         </div>
+        <!-- Skill Demos ingest banner. Mirror of docs-offer-banner. Shown
+             when skillDemosEngram.declined !== true and the bundled-demos
+             engram is absent. Adds the 3 bundled "Skill Demos" packs to a
+             dedicated engram so the user can browse them and copy patterns
+             into their own skills. -->
+        <div id="skill-demos-offer-banner" class="engram-suggest hidden" role="dialog" aria-live="polite">
+          <div class="engram-suggest-body">
+            <div class="engram-suggest-title">
+              <span class="engram-suggest-icon">🧠</span>
+              <span id="skill-demos-offer-headline">
+                Add 3 starter skill demos? They teach your AI how to recall,
+                save, and protect memories well — available in English and
+                Romanian.
+              </span>
+            </div>
+            <div class="engram-suggest-actions">
+              <button type="button" class="btn-primary" id="skill-demos-offer-add">Add demos</button>
+              <button type="button" class="btn-ghost" id="skill-demos-offer-dismiss">Not now</button>
+            </div>
+          </div>
+        </div>
         <!-- Top header: cortex identity + global actions -->
         <header class="app-header" data-tauri-drag-region>
           <div class="app-header-left">
