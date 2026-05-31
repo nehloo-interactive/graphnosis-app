@@ -143,6 +143,16 @@ export interface DefaultSkillPack {
    * If non-empty, build-gsk.mjs will print them and abort.
    */
   contentWarnings: string[];
+
+  /**
+   * Bundled-with-app marker. When true, build-gsk.mjs writes the compiled
+   * .gsk into BOTH the regular output directory AND a `bundle/` sub-directory.
+   * `scripts/generate-skill-demos-content.mjs` then reads bundle/*.gsk to
+   * produce the BUNDLED_SKILL_DEMOS array that ships inside the sidecar
+   * binary. Stripped before buildGskPackage runs — it never enters the
+   * .gsk payload itself.
+   */
+  bundle?: boolean;
 }
 
 // ── Build contract ────────────────────────────────────────────────────────────

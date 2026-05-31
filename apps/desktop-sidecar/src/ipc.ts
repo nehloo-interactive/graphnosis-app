@@ -8,6 +8,8 @@ import type { GraphnosisHost } from './host.js';
 import { ingestFile, ingestWeb, ingestClip } from './ingest.js';
 import { ingestGraphnosisDocs } from './docs-ingest.js';
 import { BUNDLED_DOCS } from './docs-content.generated.js';
+import { ingestBundledSkillDemos } from './skill-demos-ingest.js';
+import { BUNDLED_SKILL_DEMOS } from './skill-demos.generated.js';
 import type { BroadcastRawFn } from './events.js';
 import { mcpRegistry } from './mcp-registry.js';
 import { applyCorrection as runApplyCorrection, proposeCorrection } from './correction.js';
@@ -43,6 +45,11 @@ const Request = z.object({
 /** Fixed slug for the engram holding the ingested Graphnosis documentation.
  *  Slug-like so it satisfies createGraph's filesystem-safety rules. */
 const DOCS_ENGRAM_ID = 'graphnosis-docs';
+// Stable id for the bundled skill demos engram. Stays in sync with the
+// displayName 'Skill Demos' via setGraphMetadata at ingest time. The id is
+// what every IPC + sidecar code path looks up (rename-safe); the display
+// name is purely user-facing.
+const SKILL_DEMOS_ENGRAM_ID = 'graphnosis-skill-demos';
 
 // Cooperative cancellation handles for long-running operations. Each is a
 // module-scope `AbortController | null` because only one of each operation
@@ -2340,6 +2347,83 @@ async function dispatch(deps: IpcDeps, method: string, params: unknown): Promise
       const current = deps.host.getSettings().docsEngram;
       await deps.host.setSettings({
         docsEngram: {
+          declined: true,
+          ...(typeof current?.ingestedAppVersion === 'string' && current.ingestedAppVersion.length > 0
+            ? { ingestedAppVersion: current.ingestedAppVersion }
+            : {}),
+        },
+      });
+      return { ok: true };
+    }
+
+    // ── Bundled Skill Demos ingest ───────────────────────────────────────────
+    //
+    // Twin of docs:checkOffer / docs:ingest / docs:decline. Three signed
+    // Graphnosis demo skill packs ship inside the sidecar binary as
+    // base64-encoded bytes in skill-demos.generated.ts. On first cortex
+    // unlock the App offers to ingest them into a dedicated `Skill Demos`
+    // engram; on app-version bumps it re-ingests so updated demos reach
+    // existing users. Same state-machine shape as docs:
+    //   never-offered → 'offer'
+    //   declined-then-app-update → 'none' (respect the decline)
+    //   ingested-but-deleted → 'none' (user removed it; don't recreate)
+    //   ingested-old-version → 'reingest' (refresh)
+    //   absent-with-no-prior-state → 'offer'
+
+    case 'skillDemos:checkOffer': {
+      const { appVersion } = z.object({ appVersion: z.string() }).parse(params ?? {});
+      const settings = deps.host.getSettings();
+      const exists = deps.host.listGraphs().includes(SKILL_DEMOS_ENGRAM_ID);
+      const sdState = settings.skillDemosEngram;
+      let decision: 'offer' | 'reingest' | 'none';
+      if (exists) {
+        const sourceCount = deps.host.listSources(SKILL_DEMOS_ENGRAM_ID)
+          .filter((s) => s.kind === 'skill').length;
+        const versionMismatch = sdState?.ingestedAppVersion !== appVersion;
+        // Each bundled .gsk pack contributes 2 skills (English + Romanian
+        // variants), so the expected source count is 2 × pack count.
+        const expectedSources = BUNDLED_SKILL_DEMOS.length * 2;
+        const sourcesIncomplete = sourceCount < expectedSources;
+        decision = (versionMismatch || sourcesIncomplete) ? 'reingest' : 'none';
+      } else if (sdState?.declined === true) {
+        decision = 'none';
+      } else if (typeof sdState?.ingestedAppVersion === 'string' && sdState.ingestedAppVersion.length > 0) {
+        // User had it, then deleted the engram. Respect that.
+        decision = 'none';
+      } else {
+        decision = 'offer';
+      }
+      return { decision, packsAvailable: BUNDLED_SKILL_DEMOS.length };
+    }
+
+    case 'skillDemos:ingest': {
+      const { appVersion } = z.object({ appVersion: z.string() }).parse(params ?? {});
+      const exists = deps.host.listGraphs().includes(SKILL_DEMOS_ENGRAM_ID);
+      if (exists) {
+        // Wipe and recreate — same rationale as docs:ingest. Partial prior
+        // ingests can leave orphan nodes whose content hashes block fresh
+        // inserts; the cleanest fix is to start with a blank engram.
+        await deps.host.deleteGraph(SKILL_DEMOS_ENGRAM_ID);
+      }
+      await deps.host.createGraph(SKILL_DEMOS_ENGRAM_ID);
+      await deps.host.setGraphMetadata(SKILL_DEMOS_ENGRAM_ID, {
+        template: 'skill',
+        displayName: 'Skill Demos',
+        createdAt: Date.now(),
+      });
+      const result = await withEmbedding(() =>
+        ingestBundledSkillDemos(deps.host, SKILL_DEMOS_ENGRAM_ID, deps.licenseValidator ?? undefined),
+      );
+      await deps.host.setSettings({
+        skillDemosEngram: { declined: false, ingestedAppVersion: appVersion },
+      });
+      return result;
+    }
+
+    case 'skillDemos:decline': {
+      const current = deps.host.getSettings().skillDemosEngram;
+      await deps.host.setSettings({
+        skillDemosEngram: {
           declined: true,
           ...(typeof current?.ingestedAppVersion === 'string' && current.ingestedAppVersion.length > 0
             ? { ingestedAppVersion: current.ingestedAppVersion }
