@@ -2,11 +2,22 @@
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 
+// PUBLIC_RELEASED_VERSION is a Cloudflare Pages build-time env var (e.g. "1.11.1").
+// Controls the download button label independently of tauri.conf.json.
+// See StarlightSocialIcons.astro for the full rationale.
 let version = '';
-try {
-  const conf = JSON.parse(readFileSync(resolve('../../apps/desktop/src-tauri/tauri.conf.json'), 'utf8'));
-  version = conf.version ? `v${conf.version}` : '';
-} catch {}
+// Vite replaces `import.meta.env.PUBLIC_*` at build time. Dot access is the
+// supported form — bracket access with a TS type-cast slips past Vite's
+// transform and esbuild then chokes on the residual TS in JSX context.
+const envVersion = import.meta.env.PUBLIC_RELEASED_VERSION as string | undefined;
+if (envVersion) {
+  version = envVersion.startsWith('v') ? envVersion : `v${envVersion}`;
+} else {
+  try {
+    const conf = JSON.parse(readFileSync(resolve('../../apps/desktop/src-tauri/tauri.conf.json'), 'utf8'));
+    version = conf.version ? `v${conf.version}` : '';
+  } catch {}
+}
 ---
 
 <header class="sticky top-0 z-50 backdrop-blur-md bg-[#13131a]/90 border-b border-[#2a2a3d]">

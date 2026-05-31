@@ -5,11 +5,11 @@ sidebar:
   order: 1
 ---
 
-The Graphnosis sidecar exposes **35 tools** via the Model Context Protocol, organised into nine functional categories. Every connected MCP client — Claude Desktop, Claude Code, Cursor, and anything else that speaks MCP — sees the same 35. What a tool can actually reach is still governed by each engram's sensitivity tier and the [consent gate](/guides/ai-access-controls/#2-the-consent-gate) — by default a one-click in-app prompt for `sensitive`-tier recalls, silent for `personal` and `public`.
+The Graphnosis sidecar exposes **45 tools** via the Model Context Protocol, organised into ten functional categories. Every connected MCP client — Claude Desktop, Claude Code, Cursor, and anything else that speaks MCP — sees the same 45. What a tool can actually reach is still governed by each engram's sensitivity tier and the [consent gate](/guides/ai-access-controls/#2-the-consent-gate) — by default a one-click in-app prompt for `sensitive`-tier recalls, silent for `personal` and `public`.
 
 You can browse the full toolset inside the app too: open the **MCP Tools** button in the left sidebar (next to Settings). Each tool name opens a short explainer with example prompts you can paste straight into your AI client.
 
-## At a glance — the 35 tools
+## At a glance — the 45 tools
 
 | Category | Tools |
 |---|---|
@@ -22,6 +22,7 @@ You can browse the full toolset inside the app too: open the **MCP Tools** butto
 | **Approximate** (2) | [`audit_memory`](#audit_memory) · [`check_duplicate`](#check_duplicate) |
 | **Conditional** (1) | [`edit`](#edit) |
 | **Non-deterministic** (6) | [`develop`](#develop) · [`predict`](#predict) · [`insights`](#insights) · [`gnn_neighbors`](#gnn_neighbors) · [`llm_query`](#llm_query) · [`llm_distill`](#llm_distill) |
+| **Skills (SOPs)** (10) | [`list_skills`](#list_skills) · [`get_skill`](#get_skill) · [`walk_skill`](#walk_skill) · [`walk_skill_structured`](#walk_skill_structured) · [`train_skill`](#train_skill) · [`skill_vitality`](#skill_vitality) · [`skill_history`](#skill_history) · [`rollback_skill`](#rollback_skill) · [`delete_skill`](#delete_skill) · [`export_skill`](#export_skill) |
 
 ## How results are returned
 
@@ -855,3 +856,131 @@ Pass arbitrary text to the local LLM and ask it to extract discrete, self-contai
 
 - **Parameters:** `text` · `target_engram` (optional).
 - **Try saying:** *"Extract the key facts from this meeting transcript for saving: …"*
+
+---
+
+## Skills (SOPs)
+
+Skills are Standard Operating Procedures the user has authored or imported. Each skill is a sequence of paragraph nodes wired together by directed edges (sequence, loops, branches, sub-skill calls, goals, context). Skill packs distribute as `.gsk` files (signed by Graphnosis for official packs, unsigned for community packs).
+
+Some of these tools are **Pro-gated** (`train_skill`, `export_skill` in the `.gsk` format) — they require an active Graphnosis Pro subscription. Read-only tools (everything else in this category) are free.
+
+### `list_skills`
+
+Enumerates every trained skill stored in the user's Skills engram(s). Returns sourceId, label, engram name, training mode, recallBreadth, and active node count per skill. Use before `get_skill` / `walk_skill` / `skill_history` / `rollback_skill` / `delete_skill` to discover the sourceIds.
+
+- **Parameters:** `engram` (optional engram slug to scope the listing).
+- **Try saying:** *"What skills do I have?"* or *"List the skills in my coding engram."*
+
+### `get_skill`
+
+Retrieves the full text and metadata of one trained skill. Returns the raw skill text (metadata header + body + recipes + goals), training mode, recallBreadth, and node count. Use for "show me what's in this skill" — for execution-oriented walks, prefer `walk_skill` / `walk_skill_structured`.
+
+- **Parameters:** `graphId` · `sourceId`.
+- **Try saying:** *"Show me the contents of my Code Review skill."*
+
+### `walk_skill`
+
+Walks a skill as a Standard Operating Procedure and returns **human-readable narrative text** with `CONSTRAINTS:` and `PROCEDURE:` sections. Annotates each step with loop-back, conditional-branch, sub-skill invocation, and supporting-context callouts. Use for explaining a skill to the user or guiding them through it conversationally.
+
+- **Parameters:** `graphId` · `sourceId` · `recursive` (optional, default false — when true, inline sub-skill steps).
+- **Returns:** plain text formatted like:
+  ```
+  CONSTRAINTS:
+    ✓ Success: …
+    🔑 Prerequisites: …
+    ⚠ On failure: …
+
+  PROCEDURE (5 steps):
+    Step 1: …
+    Step 2: …
+      → Context: recalled memory anchored here
+    Step 3: …
+      → INVOKES SKILL: validate-environment with $branch, capture result as $envOk
+    Step 4: … (BRANCHES to step 6 on condition)
+    Step 5: … (LOOPS BACK to step 2)
+
+  FAILURE HANDLERS:
+    → On failure: invoke rollback skill
+       RECOVERY SKILL: rollback-deployment with $branch
+  ```
+- **Try saying:** *"Walk me through the Production deployment skill step by step."*
+
+### `walk_skill_structured`
+
+Same as `walk_skill` but returns a **machine-readable `SkillExecutionPlan` JSON** for programmatic execution. Each step entry may include `calls` (target sub-skill + args + captureAs), `unresolvedCall`, `branchesTo`, `loopsBackTo`, `supportingContext`. The top-level object includes `requires[]`, `produces[]`, `constraints`, `steps[]`, `failureHandlers[]`, `unanchoredContext[]`. **Prefer this over `walk_skill` for any procedural execution task** — walking steps in order, invoking sub-skills with named args, capturing return values under named variables, routing to failure handlers on exception.
+
+- **Parameters:** `graphId` · `sourceId` · `recursive` (optional).
+- **Returns:** JSON shape:
+  ```json
+  {
+    "skill": { "sourceId": "...", "title": "Production deployment", "engramName": "skills" },
+    "requires": ["branch"],
+    "produces": ["envOk", "migrationReport", "smokeReport"],
+    "constraints": {
+      "success": "...",
+      "prerequisites": "CI on the branch is green, $branch is set",
+      "trigger": "user asks to deploy a branch to production"
+    },
+    "steps": [
+      { "index": 1, "text": "...", "calls": { "targetSourceId": "...", "targetTitle": "validate-environment", "args": ["branch"], "captureAs": "envOk" }, "supportingContext": [] }
+    ],
+    "failureHandlers": [
+      { "description": "invoke @skill: rollback-deployment with the failure context", "targetSourceId": "...", "targetTitle": "rollback-deployment", "args": ["branch"] }
+    ],
+    "unanchoredContext": []
+  }
+  ```
+- **Try saying:** *"Execute the Production deployment skill — get the structured plan first so you can invoke each sub-skill correctly."*
+
+### `train_skill`  *(Pro)*
+
+Personalizes a skill instruction against the user's memory. Phase 1: deterministic recall. Phase 2: surgical placement of recalled memories at the right sequential position in the skill (Jaccard + triplet-coherence scoring; LLM-rewrite path opt-in via `useLlmRewrite`). Phase 3: save as a new versioned node set, wire all SOP edges (sequence / goals / loops / branches / context / sub-skill calls). Re-train any time to refresh against newly-added memories.
+
+- **Parameters:** `skill` (the skill text) · `graphId` (target Skills engram) · `skillName` (optional) · `focusGraphIds` (optional — restrict recall to specific engrams) · `modelTarget` (optional, e.g. `'claude'` / `'cursor'`) · `save` (default true) · `recallBreadth` (0–100, default auto) · `goals` (structured 8-field SkillGoals) · `useLlmRewrite` (optional, default false).
+- **Try saying:** *"Train this CLAUDE.md skill against my Coding engram: …"*
+
+### `skill_vitality`
+
+0–100 freshness score for a saved skill. Drops as the skill's nodes are superseded by retrains and as time passes (~5pts/month, capped at 25). Useful for "which of my skills need retraining?"
+
+- **Parameters:** `graphId` · `sourceId`.
+- **Returns:** `{score, trainedAt, staleNodesCount, recommendation}`.
+- **Try saying:** *"How fresh is my Code Review skill?"*
+
+### `skill_history`
+
+Full version history of one skill — all trained versions grouped by skill name, newest first. Each entry includes sourceId, label, ingestedAt, nodeCount, and whether it's the current (most recent) version. Use to find the sourceId for `rollback_skill`.
+
+- **Parameters:** `graphId` · `sourceId` (any version of the skill — full history for that skill name is returned).
+- **Try saying:** *"Show the version history of my Production deployment skill."*
+
+### `rollback_skill`
+
+Rolls a skill back to a specific previous version by forgetting all versions trained after the target. The target becomes current; newer versions are soft-deleted (recoverable from the Sources page in the app). Non-reversible without manual node recovery. Use `skill_history` first to find the `targetSourceId`.
+
+- **Parameters:** `graphId` · `targetSourceId`.
+- **Try saying:** *"Roll back my Production deployment skill to the version from last Tuesday."*
+
+### `delete_skill`
+
+Permanently forgets one skill source (or all versions of a skill when `allVersions=true`). All trained nodes for the chosen sources are soft-deleted via the standard `forgetSource` path; the soft-delete is recoverable from the Sources page in the app until purged.
+
+- **Parameters:** `graphId` · `sourceId` · `allVersions` (optional, default false — when true, forgets every version sharing the same base name).
+- **Try saying:** *"Delete my old Sales Outreach skill, all versions."*
+
+### `export_skill`
+
+Exports a trained skill into a target AI tool's format. Six formats supported:
+
+| Format | Output |
+|---|---|
+| `claude-md` | Block to paste into `CLAUDE.md` |
+| `cursorrules` | Entry for `.cursorrules` |
+| `system-prompt` | Generic system prompt (paste into any AI tool) |
+| `openai` | OpenAI API system message JSON |
+| `raw` | Clean skill text with no wrapper |
+| `gsk` | **(Pro)** Graphnosis Skills Kit pack — `.gsk` encrypted JSON, base64-encoded in the response |
+
+- **Parameters:** `skill_text` (the trained skill text from `train_skill` output or `recall_source`) · `format`.
+- **Try saying:** *"Export my Code Review skill as a CLAUDE.md block."*
