@@ -11,6 +11,15 @@ import { BUNDLED_DOCS } from './docs-content.generated.js';
 import type { BroadcastRawFn } from './events.js';
 import { mcpRegistry } from './mcp-registry.js';
 import { applyCorrection as runApplyCorrection, proposeCorrection } from './correction.js';
+import {
+  linkSkillSequence,
+  linkSkillGoals,
+  linkSkillLoopsAndBranches,
+  linkSkillContextEdges,
+  linkSkillCalls,
+  walkSkillSequence,
+  formatSkillForRecall,
+} from './skill-trainer.js';
 import type { CorrectionDiff } from './correction.js';
 import { oplog } from '@nehloo-interactive/graphnosis-secure-sync';
 import { withEmbedding } from './embedding-queue.js';
@@ -110,7 +119,7 @@ export interface IpcDeps {
   llm?: () => import('./correction.js').LocalLlm | null;
   /** Skill trainer — personalize AI skills using cortex memories. */
   skillTrainer?: import('./skill-trainer.js').SkillTrainer | null;
-  /** License validator — Ed25519 subscription gate for skill training and GTS packs. */
+  /** License validator — Ed25519 subscription gate for skill training and GSK packs. */
   licenseValidator?: import('./license-validator.js').LicenseValidator | null;
 }
 
@@ -424,6 +433,165 @@ async function dispatch(deps: IpcDeps, method: string, params: unknown): Promise
       }, { triggeredBy: 'user:forget' });
       return { ok: true };
     }
+
+    // ── source.* — Skills w/ Goals editor surface ────────────────────────
+    // Bidirectional binding between the Trained Output box and the
+    // graph. The editor calls these on every edit / reorder / remove /
+    // insert / rename so the graph always matches what the user sees.
+    // See plan: /Users/nelulazar/.claude/plans/let-s-plan-the-skills-piped-beacon.md
+
+    case 'source.insertNode': {
+      const args = z.object({
+        graphId: z.string().min(1),
+        sourceId: z.string().min(1),
+        // afterNodeId takes precedence when present:
+        //   string → insert after this node in the source record
+        //   null   → insert before the first visible (non-<!--) node
+        // Falls back to position (legacy) when afterNodeId is absent.
+        afterNodeId: z.string().nullable().optional(),
+        position: z.number().int().min(0).optional(),
+        content: z.string().min(1),
+        role: z.string().optional(),
+      }).parse(params);
+
+      let insertPosition: number;
+      const src = deps.host.getSourceRecord(args.graphId, args.sourceId);
+      if (args.afterNodeId !== undefined) {
+        if (args.afterNodeId === null) {
+          // Insert before the first visible (non-metadata) node
+          const now = Date.now();
+          const nodeList = deps.host.listNodes(args.graphId);
+          const nodeMap = new Map(nodeList.map((n) => [n.id, n]));
+          const firstVis = src?.nodeIds.findIndex((id) => {
+            const n = nodeMap.get(id);
+            return n && n.confidence > 0.2
+              && (n.validUntil === undefined || n.validUntil > now)
+              && !n.contentPreview.trimStart().startsWith('<!--');
+          }) ?? -1;
+          insertPosition = firstVis >= 0 ? firstVis : 0;
+        } else {
+          // Insert immediately after the named node
+          const afterIdx = src?.nodeIds.indexOf(args.afterNodeId) ?? -1;
+          insertPosition = afterIdx >= 0 ? afterIdx + 1 : (src?.nodeIds.length ?? 0);
+        }
+      } else {
+        insertPosition = args.position ?? 0;
+      }
+
+      const result = await deps.host.insertNodeAt(
+        args.graphId,
+        args.sourceId,
+        insertPosition,
+        args.content,
+        {
+          triggeredBy: 'ipc:source.insertNode',
+          ...(args.role !== undefined ? { role: args.role } : {}),
+        },
+      );
+      // Refresh all SOP edges (sequence, loops, branches, ctx, sub-skill calls).
+      void Promise.all([
+        linkSkillSequence(deps.host, args.graphId, args.sourceId),
+        linkSkillGoals(deps.host, args.graphId, args.sourceId),
+        linkSkillLoopsAndBranches(deps.host, args.graphId, args.sourceId),
+        linkSkillContextEdges(deps.host, args.graphId, args.sourceId),
+        linkSkillCalls(deps.host, args.graphId, args.sourceId, args.graphId),
+      ]).catch(() => {});
+      return { ok: true, nodeId: result.nodeId };
+    }
+
+    case 'source.reorderNodes': {
+      const args = z.object({
+        graphId: z.string().min(1),
+        sourceId: z.string().min(1),
+        newOrder: z.array(z.string().min(1)),
+      }).parse(params);
+      try {
+        await deps.host.reorderSourceNodes(args.graphId, args.sourceId, args.newOrder, {
+          triggeredBy: 'ipc:source.reorderNodes',
+        });
+        void Promise.all([
+          linkSkillSequence(deps.host, args.graphId, args.sourceId),
+          linkSkillLoopsAndBranches(deps.host, args.graphId, args.sourceId),
+          linkSkillContextEdges(deps.host, args.graphId, args.sourceId),
+          linkSkillCalls(deps.host, args.graphId, args.sourceId, args.graphId),
+        ]).catch(() => {});
+        return { ok: true };
+      } catch (e) {
+        return { ok: false, reason: 'reorder_failed', message: (e as Error).message };
+      }
+    }
+
+    case 'source.removeNode': {
+      const args = z.object({
+        graphId: z.string().min(1),
+        sourceId: z.string().min(1),
+        nodeId: z.string().min(1),
+        reason: z.string().optional(),
+      }).parse(params);
+      try {
+        await deps.host.removeNodeFromSource(args.graphId, args.sourceId, args.nodeId, {
+          triggeredBy: 'ipc:source.removeNode',
+          ...(args.reason !== undefined ? { reason: args.reason } : {}),
+        });
+        void Promise.all([
+          linkSkillSequence(deps.host, args.graphId, args.sourceId),
+          linkSkillLoopsAndBranches(deps.host, args.graphId, args.sourceId),
+          linkSkillContextEdges(deps.host, args.graphId, args.sourceId),
+          linkSkillCalls(deps.host, args.graphId, args.sourceId, args.graphId),
+        ]).catch(() => {});
+        return { ok: true };
+      } catch (e) {
+        return { ok: false, reason: 'remove_failed', message: (e as Error).message };
+      }
+    }
+
+    case 'source.rename': {
+      const args = z.object({
+        graphId: z.string().min(1),
+        sourceId: z.string().min(1),
+        newRef: z.string().min(1),
+      }).parse(params);
+      await deps.host.renameSource(args.graphId, args.sourceId, args.newRef, {
+        triggeredBy: 'ipc:source.rename',
+      });
+      return { ok: true };
+    }
+
+    case 'source.listNodes': {
+      // Single render source for the Trained Output editor — returns each
+      // node's FULL content (via host.getFullNodeContent) in source.nodeIds
+      // order. Skips soft-deleted nodes so the editor doesn't render
+      // tombstones.
+      const args = z.object({
+        graphId: z.string().min(1),
+        sourceId: z.string().min(1),
+      }).parse(params);
+      const rec = deps.host.getSourceRecord(args.graphId, args.sourceId);
+      if (!rec) {
+        return { ok: false, reason: 'unknown_source', nodes: [] };
+      }
+      // Build a live-id set so we drop soft-deleted nodes (confidence ≤ 0.2)
+      // from the editor view.
+      const now = Date.now();
+      const wantedIds = new Set(rec.nodeIds);
+      const liveIds = new Set<string>();
+      for (const n of deps.host.listNodes(args.graphId)) {
+        if (!wantedIds.has(n.id)) continue;
+        if (n.confidence <= 0.2) continue;
+        if (n.validUntil !== undefined && n.validUntil <= now) continue;
+        liveIds.add(n.id);
+        if (liveIds.size === wantedIds.size) break;
+      }
+      const nodes = rec.nodeIds
+        .filter((id) => liveIds.has(id))
+        .map((id) => ({
+          id,
+          content: deps.host.getFullNodeContent(args.graphId, id) ?? '',
+        }))
+        .filter((n) => n.content);
+      return { ok: true, nodes };
+    }
+
     case 'node.link': {
       // Create an UNDIRECTED typed edge between two existing nodes.
       // Powers the App's typed-relationship picker for inherently-
@@ -2549,6 +2717,11 @@ async function dispatch(deps: IpcDeps, method: string, params: unknown): Promise
         graphId: z.string().min(1),
         focusGraphIds: z.array(z.string()).nullable().optional(),
         recallBreadth: z.number().int().min(0).max(100).nullable().optional(),
+        goals: z.object({
+          successLooksLike: z.string().default(''),
+          outOfScope: z.string().default(''),
+          expectedOnCompletion: z.string().default(''),
+        }).optional(),
       }).parse(params ?? {});
       if (!deps.skillTrainer) return null;
       return deps.skillTrainer.buildSkillContext(
@@ -2556,6 +2729,7 @@ async function dispatch(deps: IpcDeps, method: string, params: unknown): Promise
         args.graphId,
         args.focusGraphIds ?? null,
         args.recallBreadth ?? null,
+        args.goals,
       );
     }
 
@@ -2569,6 +2743,18 @@ async function dispatch(deps: IpcDeps, method: string, params: unknown): Promise
         modelTarget: z.string().optional(),
         save: z.boolean().optional(),
         recallBreadth: z.number().int().min(0).max(100).nullable().optional(),
+        goals: z.object({
+          successLooksLike: z.string().default(''),
+          outOfScope: z.string().default(''),
+          expectedOnCompletion: z.string().default(''),
+          trigger: z.string().optional(),
+          prerequisites: z.string().optional(),
+          onFailure: z.string().optional(),
+          requires: z.string().optional(),
+          produces: z.string().optional(),
+        }).optional(),
+        // Opt-in for the local-LLM rewrite path. Default false → chunk-and-save.
+        useLlmRewrite: z.boolean().optional(),
       }).parse(params ?? {});
       if (!deps.skillTrainer) return null;
       const licenseToken = await deps.host.getLicenseToken();
@@ -2612,6 +2798,8 @@ async function dispatch(deps: IpcDeps, method: string, params: unknown): Promise
         ...(args.modelTarget !== undefined ? { modelTarget: args.modelTarget } : {}),
         ...(args.save !== undefined ? { save: args.save } : {}),
         ...(args.recallBreadth != null ? { recallBreadth: args.recallBreadth } : {}),
+        ...(args.goals !== undefined ? { goals: args.goals } : {}),
+        ...(args.useLlmRewrite !== undefined ? { useLlmRewrite: args.useLlmRewrite } : {}),
         onChunk,
       });
       // Final "done" frame — the desktop uses this to finalize the diff
@@ -2625,34 +2813,47 @@ async function dispatch(deps: IpcDeps, method: string, params: unknown): Promise
     }
 
     case 'skill:export': {
+      // Two callable shapes:
+      //   - Legacy text-blob export: { skillText, format }
+      //   - Phase 3c chunk-driven export: { graphId, sourceId, format }
+      // The chunk-driven path is preferred — it reads chunks directly from
+      // the graph and runs them through formatTrainedOutputAsMarkdown so
+      // export-time markdown is emitted from plain-text storage.
       const args = z.object({
-        skillText: z.string().min(1),
-        format: z.enum(['claude-md', 'cursorrules', 'system-prompt', 'openai', 'raw', 'gts']),
+        skillText: z.string().min(1).optional(),
+        graphId: z.string().min(1).optional(),
+        sourceId: z.string().min(1).optional(),
+        format: z.enum(['claude-md', 'cursorrules', 'system-prompt', 'openai', 'raw', 'gsk']),
       }).parse(params ?? {});
       if (!deps.skillTrainer) return '';
-      // ── Pro gate: .gts (encrypted skill pack) exports require a valid
+      // ── Pro gate: .gsk (encrypted skill pack) exports require a valid
       // skill-training license. All other text formats stay free.
-      // The .gts format is the distribution vehicle for community/official
+      // The .gsk format is the distribution vehicle for community/official
       // skill packs and signed-and-verifiable artifacts — that's the
       // value-extraction moment we charge for. Plain text exports
       // (claude-md, cursorrules, raw, etc.) remain unrestricted so free
       // users can still ship skills into their own AI tools.
-      if (args.format === 'gts') {
+      if (args.format === 'gsk') {
         const licenseToken = await deps.host.getLicenseToken();
         const licensed = deps.licenseValidator?.hasFeature(licenseToken, 'skill-training') ?? false;
         if (!licensed) {
           return {
             upgrade_required: true,
             upgrade_url: 'https://graphnosis.com/upgrade',
-            message: 'GTS skill-pack export requires a Graphnosis Pro subscription. Use any other format (claude-md, cursorrules, system-prompt, openai, raw) to share this skill for free.',
+            message: 'GSK skill-pack export requires a Graphnosis Pro subscription. Use any other format (claude-md, cursorrules, system-prompt, openai, raw) to share this skill for free.',
           };
         }
       }
-      const result = deps.skillTrainer.exportSkill(
-        args.skillText,
-        args.format as import('./skill-trainer.js').ExportFormat,
-      );
-      // GTS format returns a Buffer — encode as base64 for IPC transport.
+      const format = args.format as import('./skill-trainer.js').ExportFormat;
+      let result: string | Buffer;
+      if (args.graphId && args.sourceId) {
+        result = deps.skillTrainer.exportSkillFromSource(args.graphId, args.sourceId, format);
+      } else if (args.skillText) {
+        result = deps.skillTrainer.exportSkill(args.skillText, format);
+      } else {
+        return { ok: false, reason: 'missing_args', message: 'Provide either skillText or {graphId, sourceId}.' };
+      }
+      // GSK format returns a Buffer — encode as base64 for IPC transport.
       if (Buffer.isBuffer(result)) return result.toString('base64');
       return result;
     }
@@ -2844,8 +3045,194 @@ async function dispatch(deps: IpcDeps, method: string, params: unknown): Promise
       return deps.skillTrainer.getSkillHistory(args.graphId, args.sourceId);
     }
 
-    case 'skill:importGts': {
-      // Import a .gts skill pack into the user's cortex.
+    case 'skill:walkSequence': {
+      // Walk a skill as an SOP: returns steps in source order with loop,
+      // branch, and sub-skill call annotations.
+      const args = z.object({
+        graphId: z.string().min(1),
+        sourceId: z.string().min(1),
+        recursive: z.boolean().optional().default(false),
+      }).parse(params ?? {});
+      const walked = walkSkillSequence(deps.host, args.graphId, args.sourceId, { recursive: args.recursive });
+      // Lazy back-fill: run loop detection for skills that predate this feature.
+      if (walked.loops.length === 0 && walked.branches.length === 0 && walked.steps.length >= 3) {
+        void linkSkillLoopsAndBranches(deps.host, args.graphId, args.sourceId).catch(() => {});
+      }
+      return walked;
+    }
+
+    case 'skill:linkLoops': {
+      // Force re-run all SOP edge detection — exposed as a manual "Relink" action.
+      const args = z.object({
+        graphId: z.string().min(1),
+        sourceId: z.string().min(1),
+      }).parse(params ?? {});
+      const [loops, calls, goals] = await Promise.all([
+        linkSkillLoopsAndBranches(deps.host, args.graphId, args.sourceId),
+        linkSkillCalls(deps.host, args.graphId, args.sourceId, args.graphId),
+        linkSkillGoals(deps.host, args.graphId, args.sourceId),
+      ]);
+      await linkSkillContextEdges(deps.host, args.graphId, args.sourceId);
+      return { ...loops, ...calls, ...goals };
+    }
+
+    case 'skill:formatSop': {
+      // Format a skill as a readable SOP text for display or export.
+      const args = z.object({
+        graphId: z.string().min(1),
+        sourceId: z.string().min(1),
+        recursive: z.boolean().optional().default(false),
+      }).parse(params ?? {});
+      const walked = walkSkillSequence(deps.host, args.graphId, args.sourceId, { recursive: args.recursive });
+      return { text: formatSkillForRecall(walked), walked };
+    }
+
+    case 'skill:peekGsk': {
+      // Peek at the metadata of a .gsk skill pack WITHOUT ingesting it.
+      // Used by the desktop import flow to show a destination picker
+      // (per-pack engram vs. existing) populated with the actual pack
+      // name, kind, and skill list — so the UI can recommend a sensible
+      // default engram (one named after the pack) before committing.
+      //
+      // The pack bytes arrive base64-encoded just like skill:importGsk.
+      // We decrypt, optionally verify the signature when present, and
+      // return only the structural metadata. No engram is required, no
+      // source is written, no host state is touched.
+      const args = z.object({
+        gskBase64: z.string().min(1),
+      }).parse(params ?? {});
+
+      const { parseGskPackage } = await import('./gsk-format.js');
+      let payload: import('./gsk-format.js').GskPayload;
+      try {
+        const bytes = Buffer.from(args.gskBase64, 'base64');
+        payload = parseGskPackage(bytes);
+      } catch (e) {
+        return {
+          ok: false,
+          reason: 'parse_failed',
+          message: e instanceof Error ? e.message : 'Could not read GSK file.',
+        };
+      }
+
+      let verified: boolean;
+      try {
+        verified = deps.licenseValidator
+          ? await deps.licenseValidator.verifyGskSignature(payload)
+          : false;
+      } catch (e) {
+        return {
+          ok: false,
+          reason: 'signature_failed',
+          message: e instanceof Error ? e.message : 'GSK signature is invalid.',
+        };
+      }
+
+      return {
+        ok: true,
+        verified,
+        pack: {
+          id: payload.id,
+          displayName: payload.displayName,
+          version: payload.version,
+          author: payload.author,
+          kind: payload.kind,
+          description: payload.description,
+        },
+        skills: (payload.skills ?? []).map((s) => ({
+          name: s.name,
+          sensitivityTier: s.sensitivityTier,
+        })),
+      };
+    }
+
+    case 'skill:saveFallback': {
+  // Save a memory-augmented skill result without a Pro license gate.
+  // The Pro path uses skill:train (LLM rewrite). The free path uses
+  // skill:buildContext (ungated recall) and assembles the trained text on
+  // the JS side. This handler persists that assembled text so free users
+  // can save their memory-augmented output — previously they could train
+  // but not save, which meant closing the app lost the result.
+  const args = z.object({
+    graphId: z.string().min(1),
+    text: z.string().min(1),
+    skillName: z.string().optional(),
+    influentialNodeCount: z.number().int().min(0).optional(),
+    recallBreadth: z.number().int().min(0).max(100).nullable().optional(),
+    addedBy: z.string().optional(),
+    goals: z.object({
+      successLooksLike: z.string().default(''),
+      outOfScope: z.string().default(''),
+      expectedOnCompletion: z.string().default(''),
+    }).optional(),
+  }).parse(params ?? {});
+
+  if (!deps.skillTrainer) return { ok: false, reason: 'trainer_unavailable' };
+
+  const dateStr = new Date().toISOString().slice(0, 10);
+  const label = args.skillName
+    ? `${args.skillName} (trained ${dateStr})`
+    : `Trained skill (${dateStr})`;
+
+  // Phase 3b — section walker. Plain text in storage; export-time formatter
+  // is the only place that emits markdown decoration.
+  const metadataComment = [
+    `<!-- Graphnosis skill training metadata`,
+    `     trainedAt: ${new Date().toISOString()}`,
+    `     mode: memory-augmented`,
+    `     influentialNodes: ${args.influentialNodeCount ?? 0}`,
+    `     recallBreadth: ${args.recallBreadth ?? 50}`,
+    `-->`,
+  ].join('\n');
+
+  // Split the assembled text on blank-line boundaries so each paragraph
+  // becomes its own chunk. The free-tier UI assembles a single string here
+  // — `args.text` may contain both the original skill and the recalled
+  // memories joined together. We don't try to re-classify them: every
+  // paragraph lands as role 'body' (the editor doesn't care).
+  const bodyParagraphs = args.text.split(/\n{2,}/).map((p) => p.trim()).filter(Boolean);
+
+  const sections: Array<{ role: string; text: string }> = [];
+  sections.push({ role: 'metadata', text: metadataComment });
+  sections.push({ role: 'title', text: label });
+  for (const p of bodyParagraphs) sections.push({ role: 'body', text: p });
+  if (args.goals?.successLooksLike) {
+    sections.push({ role: 'goal-success', text: `Success: ${args.goals.successLooksLike}` });
+  }
+  if (args.goals?.outOfScope) {
+    sections.push({ role: 'goal-scope', text: `Out of scope: ${args.goals.outOfScope}` });
+  }
+  if (args.goals?.expectedOnCompletion) {
+    sections.push({ role: 'goal-done', text: `On completion: ${args.goals.expectedOnCompletion}` });
+  }
+
+  const first = sections.shift()!;
+  const rec = await ingestClip(
+    deps.host,
+    args.graphId,
+    first.text,
+    label,
+    {
+      addedBy: args.addedBy ?? 'graphnosis-skill-trainer',
+      sourceKind: 'skill',
+      triggeredBy: 'ipc:skill:saveFallback',
+    },
+  );
+  for (const s of sections) {
+    const len = deps.host.getSourceRecord(args.graphId, rec.sourceId)?.nodeIds.length ?? 1;
+    await deps.host.insertNodeAt(args.graphId, rec.sourceId, len, s.text, {
+      skipRelink: true,
+      role: s.role,
+      triggeredBy: 'ipc:skill:saveFallback',
+    });
+  }
+  deps.host.triggerRelink(args.graphId);
+
+  return { ok: true, skillId: rec.sourceId };
+}
+
+    case 'skill:importGsk': {
+      // Import a .gsk skill pack into the user's cortex.
       //
       // The file arrives as base64-encoded bytes from the desktop's
       // <input type=file> reader. We:
@@ -2863,23 +3250,23 @@ async function dispatch(deps: IpcDeps, method: string, params: unknown): Promise
       // into project root?") which is outside this IPC's responsibility.
       const args = z.object({
         graphId: z.string().min(1),
-        gtsBase64: z.string().min(1),
+        gskBase64: z.string().min(1),
         // Optional override for the addedBy audit field — defaults to
         // 'graphnosis-skill-importer' so imports are visible in the
         // Sources panel's "added by" column.
         addedBy: z.string().optional(),
       }).parse(params ?? {});
 
-      const { parseGtsPackage } = await import('./gts-format.js');
-      let payload: import('./gts-format.js').GtsPayload;
+      const { parseGskPackage } = await import('./gsk-format.js');
+      let payload: import('./gsk-format.js').GskPayload;
       try {
-        const bytes = Buffer.from(args.gtsBase64, 'base64');
-        payload = parseGtsPackage(bytes);
+        const bytes = Buffer.from(args.gskBase64, 'base64');
+        payload = parseGskPackage(bytes);
       } catch (e) {
         return {
           ok: false,
           reason: 'parse_failed',
-          message: e instanceof Error ? e.message : 'Could not read GTS file.',
+          message: e instanceof Error ? e.message : 'Could not read GSK file.',
         };
       }
 
@@ -2890,13 +3277,13 @@ async function dispatch(deps: IpcDeps, method: string, params: unknown): Promise
       let verified: boolean;
       try {
         verified = deps.licenseValidator
-          ? await deps.licenseValidator.verifyGtsSignature(payload)
+          ? await deps.licenseValidator.verifyGskSignature(payload)
           : false;
       } catch (e) {
         return {
           ok: false,
           reason: 'signature_failed',
-          message: e instanceof Error ? e.message : 'GTS signature is invalid.',
+          message: e instanceof Error ? e.message : 'GSK signature is invalid.',
         };
       }
 
@@ -2917,42 +3304,133 @@ async function dispatch(deps: IpcDeps, method: string, params: unknown): Promise
           skippedEmpty.push(skill.name);
           continue;
         }
-        const dateStr = new Date().toISOString().slice(0, 10);
-        const label = `${skill.name} (imported ${dateStr})`;
-        const header = [
-          `# ${label}`,
-          `<!-- Graphnosis skill import metadata`,
-          `     importedAt: ${new Date().toISOString()}`,
-          `     pack: ${payload.displayName} v${payload.version}`,
-          `     packId: ${payload.id}`,
-          `     packKind: ${payload.kind}`,
-          `     verified: ${verified}`,
-          `     author: ${payload.author}`,
-          `-->`,
-          '',
-        ].join('\n');
+        const label = skill.name;
 
-        // Recall recipes are appended as a readable trailer so the user can
-        // see them when opening the source — they don't become a separate
-        // entity, just contextual metadata in the body.
-        const recipesBlock = (skill.recallRecipes?.length ?? 0) > 0
-          ? '\n\n---\n## Recall Recipes\n\n' + skill.recallRecipes.map((r) =>
-              `### ${r.name}\n**Trigger:** ${r.trigger}\n\n` +
-              r.steps.map((s) => `- \`${s.tool}\` "${s.query}"`).join('\n'),
-            ).join('\n\n')
-          : '';
+        // Phase 3a — per-paragraph section walker.
+        // Build a `sections[]` array of plain-text chunks (NO markdown
+        // decoration — markdown is a presentation concern emitted by
+        // formatTrainedOutputAsMarkdown at export time only). Preserve the
+        // .gsk's paragraph boundaries verbatim — one chunk per body
+        // paragraph, one per recipe, one per goal line.
+        const provenanceComment = `<!-- imported ${new Date().toISOString()} · pack:${payload.id} v${payload.version} · ${payload.kind} · verified:${verified} · author:${payload.author} -->`;
 
+        const formatRecipePlain = (
+          r: { name: string; trigger: string; steps: Array<{ tool: string; query: string }> },
+        ): string => {
+          const lines: string[] = [`${r.name}: ${r.trigger}`];
+          for (const s of r.steps) lines.push(`- ${s.tool}: ${s.query}`);
+          return lines.join('\n');
+        };
+
+        // Build the full section list. Each entry becomes one node in the
+        // skill source. The TITLE is included here as a regular section —
+        // it'll be inserted via insertNodeAt below, not via ingestClip's
+        // markdown path (which was duplicating titles 2x via the SDK chunker
+        // because `# Title` with no body created both an H1 node AND a
+        // section-content node).
+        const sections: Array<{ role: string; text: string }> = [];
+        sections.push({ role: 'title', text: label });
+        for (const para of body.split(/\n{2,}/)) {
+          const t = para.trim();
+          if (t) sections.push({ role: 'body', text: t });
+        }
+        for (const r of skill.recallRecipes ?? []) {
+          sections.push({ role: 'recipe', text: formatRecipePlain(r) });
+        }
+        // All 8 goal categories — must mirror the trainSkill path. Earlier
+        // versions only handled the first 3, which silently dropped Trigger /
+        // Prerequisites / On failure / Requires / Produces from every imported
+        // .gsk pack regardless of what the pack actually contained.
+        if (skill.goals?.successLooksLike) {
+          sections.push({ role: 'goal-success', text: `Success: ${skill.goals.successLooksLike}` });
+        }
+        if (skill.goals?.outOfScope) {
+          sections.push({ role: 'goal-scope', text: `Out of scope: ${skill.goals.outOfScope}` });
+        }
+        if (skill.goals?.expectedOnCompletion) {
+          sections.push({ role: 'goal-done', text: `On completion: ${skill.goals.expectedOnCompletion}` });
+        }
+        if (skill.goals?.trigger) {
+          sections.push({ role: 'goal-trigger', text: `Trigger: ${skill.goals.trigger}` });
+        }
+        if (skill.goals?.prerequisites) {
+          sections.push({ role: 'goal-prereq', text: `Prerequisites: ${skill.goals.prerequisites}` });
+        }
+        if (skill.goals?.onFailure) {
+          sections.push({ role: 'goal-failure', text: `On failure: ${skill.goals.onFailure}` });
+        }
+        if (skill.goals?.requires) {
+          sections.push({ role: 'goal-requires', text: `Requires: ${skill.goals.requires}` });
+        }
+        if (skill.goals?.produces) {
+          sections.push({ role: 'goal-produces', text: `Produces: ${skill.goals.produces}` });
+        }
+
+        // Ingest the provenance comment as the SEED chunk. ingestClip's text
+        // path creates exactly ONE node for an HTML comment (no markdown
+        // duplication), matching the trainSkill pattern. Everything else —
+        // title, body, recipes, goals — gets inserted via insertNodeAt as
+        // plain text, one node per section, no SDK chunker involvement.
         const rec = await ingestClip(
           deps.host,
           args.graphId,
-          header + body + recipesBlock,
+          provenanceComment,
           label,
           {
             addedBy: args.addedBy ?? 'graphnosis-skill-importer',
             sourceKind: 'skill',
-            triggeredBy: 'ipc:skill:importGts',
+            triggeredBy: 'ipc:skill:importGsk',
           },
         );
+        for (const s of sections) {
+          const len = deps.host.getSourceRecord(args.graphId, rec.sourceId)?.nodeIds.length ?? 1;
+          await deps.host.insertNodeAt(args.graphId, rec.sourceId, len, s.text, {
+            skipRelink: true,
+            role: s.role,
+            triggeredBy: 'ipc:skill:importGsk',
+          });
+        }
+        // ── SDK artifact cleanup ─────────────────────────────────────────────
+        // Done AFTER all explicit inserts so we catch every artifact node
+        // regardless of when the SDK created it (some land synchronously in
+        // rec.nodeIds, others appear via the deferred relink/embedding pass
+        // that happens between ingestClip return and the loop above).
+        //
+        // The SDK's text-mode chunker, when handed a short non-prose blob
+        // like an HTML comment, sometimes synthesizes one or two extra
+        // "header" nodes whose CONTENT is literally the raw sourceRef
+        // (e.g. "skill:1780218553067:Vision-based defect inspection").
+        // They're never useful — purge them.
+        //
+        // We compare against FULL node content via getFullNodeContent (not
+        // listNodes.contentPreview, which is truncated to ~120 chars and
+        // can lose trailing punctuation, so an equality test on it would
+        // miss matches). And we scan the entire current source.nodeIds
+        // list — not just rec.nodeIds — so artifacts added by background
+        // processes after ingestClip returned are also caught.
+        {
+          const refText = rec.ref; // "skill:{ts}:{label}"
+          const src = deps.host.getSourceRecord(args.graphId, rec.sourceId);
+          const idsSnapshot = src ? src.nodeIds.slice() : [];
+          const artifactIds: string[] = [];
+          for (const nid of idsSnapshot) {
+            const full = deps.host.getFullNodeContent(args.graphId, nid) ?? '';
+            if (full.trim() === refText) artifactIds.push(nid);
+          }
+          for (const aid of artifactIds) {
+            try {
+              await deps.host.removeNodeFromSource(args.graphId, rec.sourceId, aid, {
+                triggeredBy: 'ipc:skill:importGsk',
+                reason: 'SDK seed artifact (sourceRef-text node)',
+              });
+            } catch { /* node already gone — non-fatal */ }
+          }
+        }
+        // Single coalesced relink pass after all paragraphs are in.
+        deps.host.triggerRelink(args.graphId);
+        // Wire all SOP edges (sequence, goals, loops, ctx, sub-skill calls).
+        await linkSkillSequence(deps.host, args.graphId, rec.sourceId);
+        await linkSkillGoals(deps.host, args.graphId, rec.sourceId);
         imported.push({ name: skill.name, sourceId: rec.sourceId });
       }
 

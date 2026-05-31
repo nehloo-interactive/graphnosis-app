@@ -42,3 +42,32 @@ export function redactId(id: string | null | undefined): string {
 export function redactPair(a: string | null | undefined, b: string | null | undefined): string {
   return `${redactId(a)}/${redactId(b)}`;
 }
+
+// ── Debug-only logger ────────────────────────────────────────────────────────
+//
+// `dbg()` is a no-op in production. It writes to stderr only when one of these
+// is true at process start:
+//   - `GRAPHNOSIS_DEBUG=1` env var is set
+//   - `NODE_ENV !== 'production'` (covers `npm run dev` / `pnpm dev`)
+//
+// Use it for verbose per-operation diagnostics that are useful when actively
+// debugging but pure noise in production logs — per-ingest auto-relink stats,
+// per-insert chunker decisions, per-sweep oplog summaries, cross-engram prune
+// counts, etc. Real errors should keep using `console.error` so they always
+// surface; `dbg()` is strictly for the chatty informational lines.
+
+const DEBUG_ENABLED = process.env['GRAPHNOSIS_DEBUG'] === '1'
+  || process.env['NODE_ENV'] !== 'production';
+
+export function dbg(message: string, ...rest: unknown[]): void {
+  if (!DEBUG_ENABLED) return;
+  if (rest.length > 0) console.error(message, ...rest);
+  else                  console.error(message);
+}
+
+/** True when debug logging is active. Use to gate expensive-to-compute log
+ *  payloads (e.g. JSON.stringify of large objects) so they don't run at all
+ *  in production. */
+export function isDebug(): boolean {
+  return DEBUG_ENABLED;
+}

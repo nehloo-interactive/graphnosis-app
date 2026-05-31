@@ -10,6 +10,7 @@ import { policy } from '@nehloo-interactive/graphnosis-secure-sync';
 import { GraphnosisHost } from './host.js';
 import { GraphnosisImpl } from './graphnosis-impl.js';
 import { startIpc } from './ipc.js';
+import { dbg } from './log-redact.js';
 import { startEvents } from './events.js';
 import { startStdioMcpServer } from './mcp-server.js';
 import { startSocketMcpServer } from './mcp-socket-server.js';
@@ -130,13 +131,77 @@ async function loadAllGraphsFromDisk(
     } catch { /* non-fatal — events socket may not be ready yet */ }
   }
 
+  // Per-engram load timeout. Decryption + bundle parse are fast (< 5 s even
+  // for large cortexes); the bottleneck is embedding-cache rebuild which can
+  // run for minutes on a multi-thousand-node engram if the cache is cold.
+  // Without a timeout, one slow engram blocks every engram behind it in the
+  // sequential queue — the user sees "Loading N more engrams…" frozen for
+  // minutes, and anything waiting on allDone (docs ingest, skill:list) also
+  // waits. 90 s is generous enough for very large engrams on slow hardware
+  // while still letting the queue advance past a truly stuck one.
+  //
+  // NOTE: a timeout here does NOT cancel the in-flight loadGraph — Node.js
+  // has no cooperative cancellation. The load continues in the background
+  // and will likely succeed eventually; we just stop waiting for it so the
+  // queue moves on. The engram shows as "still loading" in the picker until
+  // the background load resolves, at which point it becomes fully queryable.
+  const ENGRAM_LOAD_TIMEOUT_MS = 90_000;
+
+  // Background loads that timed out but are still in progress. We watch each
+  // one so the count + dimmed-engram state in the picker self-heal when the
+  // load actually completes. Without this watcher, `loaded` never moves past
+  // its post-timeout value and the user sees engrams stuck dimmed forever.
+  const inFlight: Array<{ graphId: string; promise: Promise<void>; startedAt: number }> = [];
+  const watchBackgroundLoad = (graphId: string, promise: Promise<void>, startedAt: number): void => {
+    inFlight.push({ graphId, promise, startedAt });
+    void promise.then(
+      () => {
+        loaded++;
+        console.warn(
+          `[graphnosis-sidecar] engram '${graphId}' background load completed after ${Date.now() - startedAt}ms`,
+        );
+        if (broadcastRaw) {
+          try {
+            broadcastRaw({ kind: 'engrams-loading', name: 'engrams-loading', payload: { loaded, total } });
+          } catch { /* events socket may be torn down — non-fatal */ }
+        }
+      },
+      (err: Error) => {
+        failed++;
+        console.error(
+          `[graphnosis-sidecar] engram '${graphId}' background load FAILED after ${Date.now() - startedAt}ms: ${err.message}`,
+        );
+        if (broadcastRaw) {
+          try {
+            broadcastRaw({ kind: 'engrams-loading', name: 'engrams-loading', payload: { loaded, total } });
+          } catch { /* non-fatal */ }
+        }
+      },
+    );
+  };
+
   for (const graphId of toLoad) {
     const tLoad = Date.now();
+    // Kick off the real load WITHOUT awaiting it directly — that way the
+    // same promise instance can be watched by both the race AND the
+    // background watcher (we keep a reference so a timed-out load still
+    // reports back when it completes).
+    const loadPromise = host.loadGraph(graphId);
+    let raced = false;
     try {
-      await host.loadGraph(graphId);
+      await Promise.race([
+        loadPromise.then(() => { raced = true; }),
+        new Promise<void>((_, reject) =>
+          setTimeout(
+            () => reject(new Error(`loadGraph timed out after ${ENGRAM_LOAD_TIMEOUT_MS / 1000}s — still loading in background`)),
+            ENGRAM_LOAD_TIMEOUT_MS,
+          ),
+        ),
+      ]);
       loaded++;
     } catch (e) {
       const err = e as Error;
+      const isTimeout = err.message.includes('timed out after');
       // host.loadGraph throws a synthesized ENOENT with the marker phrase
       // "quarantined" when the .gai integrity check fails (auto-quarantine
       // path in host.ts). Catch that specific case so we can auto-recover
@@ -151,11 +216,20 @@ async function loadAllGraphsFromDisk(
       // show up in the picker, the user needs to know which one failed.
       // Stack trace included so the terminal shows exactly which step
       // failed (decrypt / loadFromBuffer / bundle / cache).
-      console.error(
-        `[graphnosis-sidecar] FAILED to load engram '${graphId}' after ${Date.now() - tLoad}ms: ${err.message}`,
-      );
-      if (err.stack) console.error(err.stack);
-      failed++;
+      if (isTimeout && !raced) {
+        console.warn(
+          `[graphnosis-sidecar] engram '${graphId}' load timeout after ${Date.now() - tLoad}ms — continuing queue, watching for background completion`,
+        );
+        // Hand the still-pending load to the watcher so the post-completion
+        // broadcast updates the picker / status bar.
+        watchBackgroundLoad(graphId, loadPromise, tLoad);
+      } else if (!isTimeout) {
+        console.error(
+          `[graphnosis-sidecar] FAILED to load engram '${graphId}' after ${Date.now() - tLoad}ms: ${err.message}`,
+        );
+        if (err.stack) console.error(err.stack);
+        failed++;
+      }
     }
     if (broadcastRaw) {
       // Wrap in try/catch: an events-socket error here must NOT abort the
@@ -278,7 +352,9 @@ async function backfillGraphMetadata(host: GraphnosisHost): Promise<void> {
         displayName: id,
         createdAt: 1,
       });
-      console.error(`[graphnosis-sidecar] backfilled metadata for '${id}'`);
+      // Routine first-time metadata backfill — debug-only. The FAILED branch
+      // below stays as console.error since that's an actual problem.
+      dbg(`[graphnosis-sidecar] backfilled metadata for '${id}'`);
     } catch (e) {
       const err = e as Error;
       console.error(`[graphnosis-sidecar] backfill FAILED for '${id}': ${err.message}`);
@@ -413,7 +489,9 @@ async function main(): Promise<void> {
       const raw = await fs.readFile(process.env.GRAPHNOSIS_POLICY, 'utf8');
       const parsed = JSON.parse(raw) as { graphs?: policy.GraphPolicy[] };
       policyCfg = { defaultBudget: policy.DEFAULT_BUDGET, graphs: parsed.graphs ?? [] };
-      console.error(`[graphnosis-sidecar] policy loaded from ${process.env.GRAPHNOSIS_POLICY} (${policyCfg.graphs.length} graphs)`);
+      // One-time startup info — debug-only. WARNING branches below stay as
+      // console.error since missing/failed policy files are real signals.
+      dbg(`[graphnosis-sidecar] policy loaded from ${process.env.GRAPHNOSIS_POLICY} (${policyCfg.graphs.length} graphs)`);
     } catch (e) {
       const err = e as NodeJS.ErrnoException;
       if (err.code === 'ENOENT') {
@@ -434,7 +512,7 @@ async function main(): Promise<void> {
     const peeked = await settingsMod.loadSettings(env.cortexDir);
     const choice = peeked.ai.embeddingModel ?? 'english';
     if (choice !== currentEmbedModel().model) {
-      console.error(`[graphnosis-sidecar] switching embed model to '${choice}' per settings`);
+      dbg(`[graphnosis-sidecar] switching embed model to '${choice}' per settings`);
       await switchEmbedModel(choice);
     }
   } catch (e) {
@@ -470,7 +548,9 @@ async function main(): Promise<void> {
       embedBgFn = workerEmbedBackground; // dedicated background lane for buildEmbeddings
       embedAdapterId = live.id;
       embedDimensions = live.dim;
-      console.error(`[graphnosis-sidecar] local embeddings ready (${live.id})`);
+      // One-time startup info — debug-only. The TF-IDF fallback WARNING
+      // branch below stays as console.error.
+      dbg(`[graphnosis-sidecar] local embeddings ready (${live.id})`);
     } catch (e) {
       console.error(`[graphnosis-sidecar] WARNING: local embeddings unavailable (${(e as Error).message}) — falling back to TF-IDF-only retrieval. Set GRAPHNOSIS_EMBED_DISABLE=1 to silence.`);
       // Kill the embed worker pool immediately. On the happy path workers are

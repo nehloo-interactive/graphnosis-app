@@ -12,7 +12,7 @@ import * as connectionStoreMod from './connection-store.js';
 import * as associationIndexMod from './association-index.js';
 import * as gnnStoreMod from './gnn-store.js';
 import * as gllOverlayMod from './gll-overlay.js';
-import { redactId, redactPair } from './log-redact.js';
+import { redactId, redactPair, dbg } from './log-redact.js';
 import { GllWriter } from './gll.js';
 
 const { deriveKey, encrypt, decrypt } = crypto;
@@ -1011,6 +1011,15 @@ export class GraphnosisHost {
   listNodes(graphId: GraphId): ReturnType<GraphnosisAdapter['inspectNodes']> {
     const g = this.must(graphId);
     return this.opts.adapter.inspectNodes(g.handle);
+  }
+
+  /** Get the FULL untruncated content of a single node. The general
+   *  `listNodes` path returns contentPreview (capped at 500 chars) which
+   *  drops the tail of long nodes — getSkill / skill display needs the
+   *  whole thing so trailing Goals / Recipes blocks render correctly. */
+  getFullNodeContent(graphId: GraphId, nodeId: string): string | null {
+    const g = this.must(graphId);
+    return this.opts.adapter.getFullNodeContent(g.handle, nodeId);
   }
 
   /** Return the sourceId that a given node was derived from, or undefined when unknown. */
@@ -2065,7 +2074,9 @@ export class GraphnosisHost {
     }
     g.dirty = true;
     await this.save(graphId);
-    console.error(
+    // Per-ingest auto-relink summary — useful for "is the engram growing?"
+    // diagnostics but pure noise in production logs. Debug-only.
+    dbg(
       `[host] auto-relink wove ${result.newEdges.length} edges across ${result.activeNodes} active nodes in engram[${redactId(graphId)}]`,
     );
   }
@@ -3056,6 +3067,226 @@ export class GraphnosisHost {
    * `adds`, but surfaces the node ids the caller needs to build a review
    * card.
    */
+  // ──────────────────────────────────────────────────────────────────────
+  // Source-mutating methods used by the Skills w/ Goals editor — let the
+  // App treat the chunks visible in the Trained Output box as a true
+  // 2-way binding with the source's nodeIds. See plan:
+  //   /Users/nelulazar/.claude/plans/let-s-plan-the-skills-piped-beacon.md
+  // ──────────────────────────────────────────────────────────────────────
+
+  /**
+   * Insert a fresh node at `position` inside an existing source's nodeIds.
+   * Mints ONE new node via the SDK's appendDocument (kind:'text', tiny
+   * payload so the chunker stays single-node), splices it into
+   * `sourceIndex.bySource[sourceId].nodeIds` at the requested position,
+   * emits `addNode` + `reorderSource` op-log events, saves, and triggers
+   * the standard debounced auto-relink unless `skipRelink` is set.
+   *
+   * `role` is stored in the node's `source.section` field so the editor
+   * can chip-tag titles / recipes / goals later. Empty role is fine.
+   */
+  async insertNodeAt(
+    graphId: GraphId,
+    sourceId: string,
+    position: number,
+    content: string,
+    opts?: { triggeredBy?: string; skipRelink?: boolean; role?: string },
+  ): Promise<{ nodeId: string }> {
+    const g = this.must(graphId);
+    const rec = g.sourceIndex.get(sourceId);
+    if (!rec) throw new Error(`source ${sourceId} not found in engram ${graphId}`);
+
+    // Tiny payload — SDK chunker should keep this as a single node.
+    // `role` is metadata for op-log audit + (future) editor chip-tagging;
+    // it's not part of the SDK's AppendDocumentInput, so we don't pass it
+    // down — only emit it in the op-log entry below.
+    const input: AppendDocumentInput = {
+      kind: 'text',
+      content,
+      sourceRef: rec.ref,
+    };
+    const result = await this.opts.adapter.appendDocument(
+      g.handle,
+      input,
+      { chunkSize: this.settings.ai.chunkSize },
+    );
+    if (result.newNodeIds.length === 0) {
+      throw new Error(`insertNodeAt: SDK returned no node ids for content of ${content.length} chars`);
+    }
+    if (result.newNodeIds.length > 1) {
+      // SDK chose to split — accept all chunks; the user sees N cards instead
+      // of 1, and we splice them in sequence at the requested position.
+      // Debug-only — this fires for every node insert that gets chunked,
+      // which is constant during normal skill train/import.
+      dbg(
+        `[host] insertNodeAt: content split into ${result.newNodeIds.length} nodes ` +
+        `(content ${content.length} chars). Cards will appear as separate entries.`,
+      );
+    }
+
+    // Splice the new nodeIds into the source at `position`.
+    for (let i = 0; i < result.newNodeIds.length; i++) {
+      const nid = result.newNodeIds[i]!;
+      g.sourceIndex.insertNodeAt(sourceId, nid, position + i);
+      this.oplogWriter.emit({
+        graphId,
+        op: 'addNode',
+        target: { kind: 'node', id: nid },
+        after: {
+          ref: rec.ref,
+          ...(opts?.triggeredBy ? { triggeredBy: opts.triggeredBy } : {}),
+          ...(opts?.role ? { role: opts.role } : {}),
+        },
+      });
+    }
+    // Order changed — emit one reorderSource event. 'reorderSource' is not
+    // in the SDK's OpKind union, so cast at the emit site. The op-log is
+    // an audit channel; nothing replays it for state reconstruction
+    // (applyRecovery re-ingests from sources, not from op replay).
+    this.oplogWriter.emit({
+      graphId,
+      op: 'reorderSource' as never,
+      target: { kind: 'source', id: sourceId },
+      after: {
+        nodeIds: rec.nodeIds.slice(),
+        ...(opts?.triggeredBy ? { triggeredBy: opts.triggeredBy } : {}),
+      },
+    });
+
+    g.dirty = true;
+    await this.save(graphId);
+    if (!opts?.skipRelink) this.kickoffRelink(graphId);
+    return { nodeId: result.newNodeIds[0]! };
+  }
+
+  /**
+   * Reorder a source's nodeIds. `newOrder` must be a permutation of the
+   * current nodeIds (same multiset). Throws otherwise. Order changes don't
+   * affect entity overlap, so no relink is triggered.
+   */
+  async reorderSourceNodes(
+    graphId: GraphId,
+    sourceId: string,
+    newOrder: string[],
+    opts?: { triggeredBy?: string },
+  ): Promise<void> {
+    const g = this.must(graphId);
+    const rec = g.sourceIndex.get(sourceId);
+    if (!rec) throw new Error(`source ${sourceId} not found in engram ${graphId}`);
+    g.sourceIndex.reorderNodes(sourceId, newOrder); // throws on mismatch
+    this.oplogWriter.emit({
+      graphId,
+      op: 'reorderSource' as never,
+      target: { kind: 'source', id: sourceId },
+      after: {
+        nodeIds: newOrder.slice(),
+        ...(opts?.triggeredBy ? { triggeredBy: opts.triggeredBy } : {}),
+      },
+    });
+    g.dirty = true;
+    await this.save(graphId);
+  }
+
+  /**
+   * Soft-delete a node AND remove it from its source's nodeIds list in
+   * one consistent saved state. The node is soft-deleted via the same
+   * applyCorrection({kind:'delete'}) path as `node.softDelete`.
+   */
+  async removeNodeFromSource(
+    graphId: GraphId,
+    sourceId: string,
+    nodeId: string,
+    opts?: { triggeredBy?: string; reason?: string },
+  ): Promise<void> {
+    const g = this.must(graphId);
+    const rec = g.sourceIndex.get(sourceId);
+    if (!rec) throw new Error(`source ${sourceId} not found in engram ${graphId}`);
+    if (!rec.nodeIds.includes(nodeId)) {
+      throw new Error(`node ${nodeId} not in source ${sourceId}`);
+    }
+
+    // Soft-delete the graph node first (op-log gets a deleteNode event).
+    await this.opts.adapter.applyCorrection(g.handle, {
+      kind: 'delete',
+      nodeId,
+      reason: opts?.reason ?? 'removed from trained output',
+    });
+    this.oplogWriter.emit({
+      graphId,
+      op: 'deleteNode',
+      target: { kind: 'node', id: nodeId },
+      after: {
+        reason: opts?.reason ?? 'removed from trained output',
+        ...(opts?.triggeredBy ? { triggeredBy: opts.triggeredBy } : {}),
+      },
+    });
+    // Then drop the id from the source's ordered list.
+    g.sourceIndex.removeNode(sourceId, nodeId);
+    this.oplogWriter.emit({
+      graphId,
+      op: 'reorderSource' as never,
+      target: { kind: 'source', id: sourceId },
+      after: {
+        nodeIds: rec.nodeIds.slice(),
+        ...(opts?.triggeredBy ? { triggeredBy: opts.triggeredBy } : {}),
+      },
+    });
+    g.dirty = true;
+    await this.save(graphId);
+    // Entity overlap may have changed (the deleted node's entities are
+    // gone); kickoffRelink will re-evaluate edges across remaining nodes.
+    this.kickoffRelink(graphId);
+  }
+
+  /**
+   * Rename a source's `ref` (the human-readable label shown in the
+   * Sources panel + Skills library). Used by the Skills editor when the
+   * user edits the title chunk: the chunk text update goes through
+   * node.directEdit; this call updates the library row in sync.
+   */
+  async renameSource(
+    graphId: GraphId,
+    sourceId: string,
+    newRef: string,
+    opts?: { triggeredBy?: string },
+  ): Promise<void> {
+    const g = this.must(graphId);
+    const rec = g.sourceIndex.get(sourceId);
+    if (!rec) throw new Error(`source ${sourceId} not found in engram ${graphId}`);
+    g.sourceIndex.rename(sourceId, newRef);
+    this.oplogWriter.emit({
+      graphId,
+      op: 'renameSource' as never,
+      target: { kind: 'source', id: sourceId },
+      after: {
+        newRef,
+        ...(opts?.triggeredBy ? { triggeredBy: opts.triggeredBy } : {}),
+      },
+    });
+    g.dirty = true;
+    await this.save(graphId);
+  }
+
+  /**
+   * Read a source record by id (lightweight wrapper around the in-memory
+   * SourceIndex). Used by the section-walker in `skill:importGsk` to
+   * compute the current `nodeIds.length` so it can append at the end.
+   */
+  getSourceRecord(graphId: GraphId, sourceId: string) {
+    const g = this.must(graphId);
+    return g.sourceIndex.get(sourceId);
+  }
+
+  // ──────────────────────────────────────────────────────────────────────
+  // Overlay-recompute guard. The GNN edge-prediction loop + GLL inference
+  // loop check this flag and skip their work while it's set. `trainSkill`
+  // wraps its run in setSkipOverlayRecompute(true) → ... → false so the
+  // overlays don't write predictions against a half-built skill source.
+  // ──────────────────────────────────────────────────────────────────────
+  private _skipOverlayRecompute = false;
+  setSkipOverlayRecompute(skip: boolean): void { this._skipOverlayRecompute = skip; }
+  getSkipOverlayRecompute(): boolean { return this._skipOverlayRecompute; }
+
   async addLooseContent(graphId: GraphId, content: string, sourceRef: string): Promise<string[]> {
     const g = this.must(graphId);
     const input: AppendDocumentInput = { kind: 'markdown', content, sourceRef };
@@ -3447,7 +3678,13 @@ export class GraphnosisHost {
       for (const graphId of this.graphs.keys()) {
         this.correctionsCount.set(graphId, this._correctionsCountForGraph(graphId, events));
       }
-      console.error(`[graphnosis-host] corrections sweep: ${events.length} events → ${this.graphs.size} engrams in ${Date.now() - t0}ms`);
+      // Background sweep summary — debug-only when fast. If the sweep takes
+      // unusually long (>5s) we surface it as a real warning so latency
+      // regressions are visible without DEBUG flipped on.
+      const sweepMs = Date.now() - t0;
+      const sweepMsg = `[graphnosis-host] corrections sweep: ${events.length} events → ${this.graphs.size} engrams in ${sweepMs}ms`;
+      if (sweepMs > 5000) console.warn(sweepMsg);
+      else                dbg(sweepMsg);
 
       // Fire-and-forget compaction. Runs asynchronously so the corrections
       // sweep result is already applied before the I/O starts. Any events
@@ -3567,7 +3804,8 @@ export class GraphnosisHost {
     }
 
     if (prunedCount < events.length * COMPACTION_MIN_REDUCTION) {
-      console.error(
+      // "Skipped because not enough to prune" — common, debug-only.
+      dbg(
         `[graphnosis-host] oplog compaction skipped: only ${prunedCount}/${events.length} events` +
         ` prunable (<${Math.round(COMPACTION_MIN_REDUCTION * 100)}% reduction threshold).`,
       );

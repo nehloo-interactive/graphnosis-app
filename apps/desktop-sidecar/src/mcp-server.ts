@@ -2226,11 +2226,11 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
           '  system-prompt — Generic system prompt (paste into any AI tool)\n' +
           '  openai        — OpenAI API system message JSON\n' +
           '  raw           — Clean skill text with no wrapper\n' +
-          '  gts           — Graphnosis Trained Skill pack (.gts encrypted JSON, base64-encoded in response)\n\n' +
+          '  gsk           — Graphnosis Skills Kit pack (.gsk encrypted JSON, base64-encoded in response)\n\n' +
           'WHEN TO CALL:\n' +
           '• User says "export my X skill for Cursor", "give me this as a CLAUDE.md block"\n' +
           '• After training, to deploy the skill in a specific AI tool\n' +
-          '• User says "pack this as a .gts file" or "export as Skills Pack"',
+          '• User says "pack this as a .gsk file" or "export as Skills Pack"',
         inputSchema: {
           type: 'object',
           properties: {
@@ -2240,7 +2240,7 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
             },
             format: {
               type: 'string',
-              enum: ['claude-md', 'cursorrules', 'system-prompt', 'openai', 'raw', 'gts'],
+              enum: ['claude-md', 'cursorrules', 'system-prompt', 'openai', 'raw', 'gsk'],
               description: 'Target format.',
             },
           },
@@ -2255,6 +2255,32 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
             properties: {
               engram: { type: 'string', description: 'Engram slug to scope the listing (e.g. "skills"). Omit to list skills across all engrams.' },
             },
+          },
+        },
+        {
+          name: 'walk_skill',
+          description: 'Walk a skill as a Standard Operating Procedure (SOP). Returns human-readable narrative text with CONSTRAINTS / PROCEDURE sections — loop-back, conditional-branch, sub-skill invocations, failure handlers. Use this when you need to explain the skill to a user or guide them through it conversationally. For programmatic execution by an AI (invoking sub-skills, capturing return values, routing through failure handlers), prefer walk_skill_structured.',
+          inputSchema: {
+            type: 'object' as const,
+            properties: {
+              graphId:   { type: 'string',  description: 'Engram slug containing the skill (e.g. "skills").' },
+              sourceId:  { type: 'string',  description: 'sourceId of the skill from list_skills output.' },
+              recursive: { type: 'boolean', description: 'When true, inline sub-skill steps for any step that invokes another skill. Default false.' },
+            },
+            required: ['graphId', 'sourceId'],
+          },
+        },
+        {
+          name: 'walk_skill_structured',
+          description: 'Same as walk_skill but returns a SkillExecutionPlan as JSON: { skill, requires[], produces[], constraints, steps[], failureHandlers[], unanchoredContext[] }. Each step entry may include `calls` (target sub-skill + args + captureAs), `unresolvedCall`, `branchesTo`, `loopsBackTo`, and `supportingContext`. Use this when the AI will actually EXECUTE the skill — walk steps in order, invoke sub-skills with the named args, capture their return values under the named variables, and on exception route to the matching failureHandlers entry. Prefer this over walk_skill for any procedural execution task; pair with walk_skill when the user also needs a human-readable explanation.',
+          inputSchema: {
+            type: 'object' as const,
+            properties: {
+              graphId:   { type: 'string',  description: 'Engram slug containing the skill (e.g. "skills").' },
+              sourceId:  { type: 'string',  description: 'sourceId of the skill from list_skills output.' },
+              recursive: { type: 'boolean', description: 'When true, inline sub-skill steps for any step that invokes another skill. Default false.' },
+            },
+            required: ['graphId', 'sourceId'],
           },
         },
         {
@@ -3814,7 +3840,7 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
       case 'export_skill': {
         const ExportSkillInput = z.object({
           skill_text: z.string().min(1),
-          format: z.enum(['claude-md', 'cursorrules', 'system-prompt', 'openai', 'raw', 'gts']),
+          format: z.enum(['claude-md', 'cursorrules', 'system-prompt', 'openai', 'raw', 'gsk']),
         });
         const args = ExportSkillInput.parse(req.params.arguments ?? {});
 
@@ -3824,17 +3850,17 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
           );
         }
 
-        // ── Pro gate for GTS exports ───────────────────────────────────
+        // ── Pro gate for GSK exports ───────────────────────────────────
         // Same gate the desktop UI enforces in ipc.ts skill:export. We
         // re-check here because AI clients can hit this MCP tool
         // directly, bypassing the desktop UI; without a server-side
         // check the gate would be advisory only.
-        if (args.format === 'gts') {
+        if (args.format === 'gsk') {
           const licenseToken = await deps.host.getLicenseToken();
           const licensed = deps.licenseValidator?.hasFeature(licenseToken, 'skill-training') ?? false;
           if (!licensed) {
             return mcpError(
-              'GTS skill-pack export requires a Graphnosis Pro subscription. ' +
+              'GSK skill-pack export requires a Graphnosis Pro subscription. ' +
               'Subscribe at https://graphnosis.com/upgrade or export in any other format ' +
               '(claude-md, cursorrules, system-prompt, openai, raw) for free.',
             );
@@ -3847,13 +3873,13 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
         );
 
         if (Buffer.isBuffer(exported)) {
-          // GTS format: return as base64 so the MCP transport can carry it.
+          // GSK format: return as base64 so the MCP transport can carry it.
           return {
             content: [{
               type: 'text',
-              text: `## Exported Skill Pack (.gts)\n\n` +
-                `**Format:** Graphnosis Trained Skill (encrypted JSON)\n` +
-                `**Encoding:** base64 (save as \`.gts\` after decoding)\n\n` +
+              text: `## Exported Skill Pack (.gsk)\n\n` +
+                `**Format:** Graphnosis Skills Kit (encrypted JSON)\n` +
+                `**Encoding:** base64 (save as \`.gsk\` after decoding)\n\n` +
                 '```\n' + exported.toString('base64') + '\n```\n\n' +
                 '_This pack contains only your trained skill text and recall recipes. ' +
                 'Your personal memories are not included — however, personal or proprietary ' +
@@ -3897,6 +3923,49 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
           `  Trained: ${s.trainedAt ?? new Date(s.ingestedAt).toISOString()} | recallBreadth: ${s.recallBreadth ?? 'unknown'}`,
         ].join('\n'));
         return { content: [{ type: 'text', text: `## Skills (${skills.length})\n\n${lines.join('\n\n')}` }] };
+      }
+
+      case 'walk_skill': {
+        const args = z.object({
+          graphId:   z.string().min(1),
+          sourceId:  z.string().min(1),
+          recursive: z.boolean().optional().default(false),
+        }).parse(req.params.arguments ?? {});
+        const resEngramW = requireEngram(deps.host, args.graphId);
+        if ('error' in resEngramW) return resEngramW.error;
+        const { walkSkillSequence: walkFn, formatSkillForRecall: formatFn } =
+          await import('./skill-trainer.js');
+        const walked = walkFn(deps.host, resEngramW.graphId, args.sourceId, { recursive: args.recursive });
+        if (walked.steps.length === 0) {
+          return mcpError(`Skill "${args.sourceId}" has no steps. Use get_skill to read it as raw text, or train_skill to rebuild it.`);
+        }
+        return { content: [{ type: 'text', text: formatFn(walked) }] };
+      }
+
+      case 'walk_skill_structured': {
+        const args = z.object({
+          graphId:   z.string().min(1),
+          sourceId:  z.string().min(1),
+          recursive: z.boolean().optional().default(false),
+        }).parse(req.params.arguments ?? {});
+        const resEngramS = requireEngram(deps.host, args.graphId);
+        if ('error' in resEngramS) return resEngramS.error;
+        const { walkSkillSequence: walkFn2, walkSkillToJson } =
+          await import('./skill-trainer.js');
+        const walked = walkFn2(deps.host, resEngramS.graphId, args.sourceId, { recursive: args.recursive });
+        if (walked.steps.length === 0 && walked.goals.length === 0) {
+          return mcpError(`Skill "${args.sourceId}" has no steps or goals to walk. Use get_skill, or train_skill to rebuild it.`);
+        }
+        // Resolve title (first body step's text, falling back to source ref) + engram display name
+        const meta = deps.host.getGraphMetadata(resEngramS.graphId);
+        const src = deps.host.getSourceRecord(resEngramS.graphId, args.sourceId);
+        const title = walked.steps[0]?.text ?? src?.ref ?? args.sourceId;
+        const plan = walkSkillToJson(walked, {
+          sourceId: args.sourceId,
+          title,
+          ...(meta?.displayName ? { engramName: meta.displayName } : {}),
+        });
+        return { content: [{ type: 'text', text: JSON.stringify(plan, null, 2) }] };
       }
 
       case 'get_skill': {

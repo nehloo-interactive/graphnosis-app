@@ -261,6 +261,11 @@ export interface GraphnosisAdapter {
     entities?: string[];
   }>;
 
+  /** Return the FULL (untruncated) content of a single node. Used for
+   *  skill text reassembly where the 500-char inspectNodes preview was
+   *  silently truncating goals + recipes off the tail end. */
+  getFullNodeContent(handle: GraphHandle, nodeId: string): string | null;
+
   /** True if buildEmbeddings has run and the graph has an embedding index attached. */
   hasEmbeddings(handle: GraphHandle): boolean;
 
