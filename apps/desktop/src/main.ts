@@ -5945,6 +5945,8 @@ function mcpToolsOnboardingHtml(): string {
             <div class="g-deck-cmd-chips">
               <span class="g-deck-cmd-chip" data-tool="list_skills">list_skills</span>
               <span class="g-deck-cmd-chip" data-tool="get_skill">get_skill</span>
+              <span class="g-deck-cmd-chip" data-tool="walk_skill">walk_skill</span>
+              <span class="g-deck-cmd-chip" data-tool="walk_skill_structured">walk_skill_structured</span>
               <span class="g-deck-cmd-chip" data-tool="skill_history">skill_history</span>
               <span class="g-deck-cmd-chip" data-tool="skill_vitality">skill_vitality</span>
               <span class="g-deck-cmd-chip" data-tool="train_skill" data-pro="1">train_skill</span>
@@ -5972,7 +5974,7 @@ function mcpToolsOnboardingHtml(): string {
             </div>
           </div>
         </div>
-        <p class="g-deck-cmd-note">35 tools total. Deterministic and approximate tools work without any AI model. Conditional and non-deterministic tools use the optional Local LLM (or Neural Network); enabling them never changes how the deterministic tools behave. Tools marked <strong style="display:inline-block; padding:0 5px; font-size:9px; font-weight:800; letter-spacing:0.05em; border-radius:3px; background:var(--color-status-warn-gold, #b8860b); color:#000; vertical-align: 1px;">PRO</strong> require a <a href="https://graphnosis.com/upgrade" target="_blank">Graphnosis Pro subscription</a>.</p>
+        <p class="g-deck-cmd-note">45 tools total. Deterministic and approximate tools work without any AI model. Conditional and non-deterministic tools use the optional Local LLM (or Neural Network); enabling them never changes how the deterministic tools behave. Tools marked <strong style="display:inline-block; padding:0 5px; font-size:9px; font-weight:800; letter-spacing:0.05em; border-radius:3px; background:var(--color-status-warn-gold, #b8860b); color:#000; vertical-align: 1px;">PRO</strong> require a <a href="https://graphnosis.com/upgrade" target="_blank">Graphnosis Pro subscription</a>.</p>
       </div>
     </div>`;
 }
@@ -17115,7 +17117,7 @@ let isSkillCardDragging = false;
 
 // Identifies goal/constraint nodes by text prefix. Kept in sync with the
 // sidecar's GOAL_NODE_RE in skill-trainer.ts.
-const SKILL_GOAL_CARD_RE = /^(?:Success:|Out of scope:|On completion:|Trigger:|Prerequisites:|On failure:)/i;
+const SKILL_GOAL_CARD_RE = /^(?:Success:|Out of scope:|On completion:|Trigger:|Prerequisites:|On failure:|Requires:|Produces:)/i;
 
 function vitalityGrade(score: number): 'a' | 'b' | 'c' | 'd' {
   if (score >= 85) return 'a';
@@ -17837,7 +17839,7 @@ async function paintTrainedOutputSourceDriven(
   const visible = result.nodes.filter((n) => !n.content.trim().startsWith('<!--'));
 
   // Detect goal nodes to inject a "Goals" section header before the first one.
-  const GOAL_RE = /^(?:Success:|Out of scope:|On completion:|Trigger:|Prerequisites:|On failure:)/i;
+  const GOAL_RE = /^(?:Success:|Out of scope:|On completion:|Trigger:|Prerequisites:|On failure:|Requires:|Produces:)/i;
   let goalHeaderInjected = false;
 
   // First slot: no preceding card → afterNodeId = '' (sidecar inserts before first visible node)
@@ -18801,27 +18803,27 @@ async function openSkillInTrainer(
     // between the previous saved version and the one they're viewing now.
     void (async () => {
       try {
+        // History under the in-place model: every entry shares the same
+        // sourceId; non-current entries carry a non-empty snapshotId.
+        // Newest first — index 0 is the live source, index 1 the most
+        // recent snapshot. That's our diff baseline.
         const history = await ipcCall<Array<{
           sourceId: string;
+          snapshotId: string;
           label: string;
           ingestedAt: number;
           isCurrent: boolean;
         }>>('skill:getHistory', { graphId: detail.graphId, sourceId: detail.sourceId });
         if (!history || history.length < 2) return;
-        // Find the immediate predecessor — the version just before the
-        // current one in the chronological list (oldest → newest).
-        const currentIdx = history.findIndex((v) => v.sourceId === detail.sourceId);
-        const prevIdx = currentIdx > 0 ? currentIdx - 1 : history.length - 2;
-        const prev = history[prevIdx];
-        if (!prev || prev.sourceId === detail.sourceId) return;
-        const prevDetail = await ipcCall<{ text: string } | null>('skill:get', {
+        const prev = history.find((v) => !v.isCurrent && v.snapshotId);
+        if (!prev) return;
+        const prevDetail = await ipcCall<{ text: string; ts: number } | null>('skill:getSnapshot', {
           graphId: detail.graphId,
-          sourceId: prev.sourceId,
+          sourceId: detail.sourceId,
+          snapshotId: prev.snapshotId,
         });
         if (!prevDetail || !skillsActiveResult) return;
-        // Late-bind the baseline into the (already-rendered) active result
-        // so the Changes view picks it up on next toggle / paint.
-        const dateStr = new Date(prev.ingestedAt).toLocaleDateString();
+        const dateStr = new Date(prevDetail.ts).toLocaleDateString();
         skillsActiveResult.baselineText = prevDetail.text;
         skillsActiveResult.baselineLabel = `previous version (${dateStr})`;
         renderDiffView();
