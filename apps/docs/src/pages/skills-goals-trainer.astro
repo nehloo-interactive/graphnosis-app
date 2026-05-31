@@ -1,0 +1,868 @@
+---
+/**
+ * /skills-goals-trainer — landing page for Graphnosis Skills + Goals Trainer.
+ *
+ * Mirrors the structure and tone of memory-studio.astro: sticky mode bar
+ * under nav, hero with headline + stat pills, then 8-10 narrative sections
+ * with grids/comparisons/examples, closing with a download CTA.
+ *
+ * Critical for go-to-market: every industry should land here, recognise
+ * their workflow in one of the 100+ packs, download, and try Graphnosis
+ * Autonomous Praxis on a real SOP.
+ *
+ * The 3D Engram section reserves space for a screenshot the user will
+ * provide separately — `/3d-engram-skills-preview.png` is the expected
+ * path under apps/docs/public/.
+ */
+import Layout from '../layouts/Layout.astro';
+import Nav from '../components/Nav.astro';
+import Footer from '../components/Footer.astro';
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
+
+let version = '';
+try {
+  const conf = JSON.parse(readFileSync(resolve('../../apps/desktop/src-tauri/tauri.conf.json'), 'utf8'));
+  version = conf.version ? `v${conf.version}` : '';
+} catch { /* docs built standalone — no version pill */ }
+---
+
+<Layout
+  title="Skills + Goals Trainer — Graphnosis Autonomous Praxis"
+  description="Turn AI instructions into Standard Operating Procedures your AI can actually execute. 100+ role-matched .gsk skill kits, all free. Cross-skill orchestration, snapshot-based history, live 3D graph view. Local, encrypted, deterministic."
+>
+  <Nav />
+
+  <main>
+
+    <!-- ═══════════════════════════════════════════
+         HERO
+    ═══════════════════════════════════════════ -->
+    <section class="relative py-24 px-4 sm:px-6 overflow-hidden">
+      <div class="absolute top-0 left-1/4 w-96 h-96 bg-[#67e8f9]/5 rounded-full blur-3xl pointer-events-none"></div>
+      <div class="absolute bottom-0 right-1/4 w-96 h-96 bg-[#a78bfa]/5 rounded-full blur-3xl pointer-events-none"></div>
+
+      <div class="max-w-4xl mx-auto text-center relative z-10">
+        <div class="inline-flex items-center gap-2 px-5 py-2 rounded-full border border-[#2a2a3d] bg-[#1c1c27] text-base font-semibold text-[#c4c6d6] mb-8">
+          <span class="relative flex h-2.5 w-2.5">
+            <span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-[#67e8f9] opacity-75"></span>
+            <span class="relative inline-flex rounded-full h-2.5 w-2.5 bg-[#67e8f9]"></span>
+          </span>
+          Skills + Goals Trainer
+        </div>
+
+        <h1 class="text-5xl sm:text-6xl lg:text-7xl font-black text-white leading-[1.05] mb-6">
+          Your skills.<br />
+          <span class="bg-gradient-to-r from-[#67e8f9] to-[#a78bfa] bg-clip-text text-transparent">
+            Your goals.
+          </span><br />
+          Your rules.
+        </h1>
+
+        <p class="text-lg sm:text-xl text-[#c4c6d6] max-w-2xl mx-auto leading-relaxed mb-10">
+          Turn AI instructions into Standard Operating Procedures your AI can actually execute.
+          Author once &mdash; Graphnosis personalises against your memory, links steps as a typed graph,
+          and hands any MCP-connected AI a deterministic plan to run.
+        </p>
+
+        <div class="flex flex-col sm:flex-row gap-4 justify-center items-center mb-12">
+          <a
+            href="/download"
+            class="px-8 py-4 rounded-full bg-[#67e8f9] hover:bg-[#4dd6e8] text-[#13131a] font-bold text-lg transition-colors"
+            data-download-auto
+            data-download-version={version}
+          >
+            Download Graphnosis {version}
+          </a>
+          <a
+            href="/job-memory-kits"
+            class="px-8 py-4 rounded-full border border-[#2a2a3d] hover:border-[#67e8f9] text-[#f0f0f5] font-semibold text-lg transition-colors"
+          >
+            Browse 100+ free .gsk packs &rarr;
+          </a>
+        </div>
+
+        <div class="flex flex-wrap justify-center gap-3 text-sm font-mono">
+          <span class="px-4 py-1.5 rounded-full bg-[#1c1c27] border border-[#2a2a3d] text-[#67e8f9]">📋 SOPs, not blobs</span>
+          <span class="px-4 py-1.5 rounded-full bg-[#1c1c27] border border-[#2a2a3d] text-[#67e8f9]">🎯 8-category goals</span>
+          <span class="px-4 py-1.5 rounded-full bg-[#1c1c27] border border-[#2a2a3d] text-[#67e8f9]">🔗 Cross-skill orchestration</span>
+          <span class="px-4 py-1.5 rounded-full bg-[#1c1c27] border border-[#2a2a3d] text-[#a78bfa]">🧠 Retrains against your memory</span>
+        </div>
+      </div>
+    </section>
+
+    <!-- ═══════════════════════════════════════════
+         A SKILL IS NOT JUST A SYSTEM PROMPT
+    ═══════════════════════════════════════════ -->
+    <section class="bg-[#1c1c27] py-24 px-4 sm:px-6">
+      <div class="max-w-5xl mx-auto">
+        <div class="text-center mb-12">
+          <p class="font-mono text-base sm:text-lg tracking-widest uppercase text-[#9a9db8] mb-5 font-bold">The shift</p>
+          <h2 class="text-3xl sm:text-4xl font-black text-white mb-4">
+            A skill is graph state, not text.
+          </h2>
+          <p class="text-[#c4c6d6] max-w-3xl mx-auto leading-relaxed">
+            Most AI tools store instructions as flat blobs &mdash; a system prompt, a CLAUDE.md,
+            a <code class="font-mono text-[#67e8f9]">.cursorrules</code> file. Graphnosis compiles them into
+            <strong class="text-white">Standard Operating Procedures</strong> &mdash; steps in order, loops and
+            branches detected, sub-skill calls wired, named inputs and outputs declared.
+            The AI doesn&rsquo;t read prose &mdash; it walks a typed graph.
+          </p>
+        </div>
+
+        <!-- Two-column compare: text blob vs SOP graph -->
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+
+          <div class="bg-[#13131a] border border-[#2a2a3d] rounded-2xl p-7">
+            <p class="text-xs font-black tracking-widest uppercase text-[#71717a] mb-2">Everywhere else</p>
+            <h3 class="text-xl font-bold text-white mb-3">A blob of text</h3>
+            <ul class="flex flex-col gap-2.5 text-sm text-[#9a9db8]">
+              <li class="flex items-start gap-2"><span class="text-[#f87171] mt-0.5">✗</span><span>No structure &mdash; just paragraphs</span></li>
+              <li class="flex items-start gap-2"><span class="text-[#f87171] mt-0.5">✗</span><span>Recall results appended at the end as a wall of context</span></li>
+              <li class="flex items-start gap-2"><span class="text-[#f87171] mt-0.5">✗</span><span>No declared inputs, outputs, or failure handlers</span></li>
+              <li class="flex items-start gap-2"><span class="text-[#f87171] mt-0.5">✗</span><span>One skill can&rsquo;t safely invoke another</span></li>
+              <li class="flex items-start gap-2"><span class="text-[#f87171] mt-0.5">✗</span><span>Retrain = lose your manual edits</span></li>
+            </ul>
+          </div>
+
+          <div class="bg-[#13131a] border border-[#67e8f9]/40 rounded-2xl p-7" style="box-shadow: 0 0 0 1px #67e8f922, 0 12px 40px -10px #67e8f922;">
+            <p class="text-xs font-black tracking-widest uppercase mb-2" style="color: #67e8f9;">In Graphnosis</p>
+            <h3 class="text-xl font-bold text-white mb-3">A Standard Operating Procedure</h3>
+            <ul class="flex flex-col gap-2.5 text-sm text-[#b0b3c6]">
+              <li class="flex items-start gap-2"><span class="text-[#67e8f9] mt-0.5">✓</span><span>Each step is a typed graph node with sequence, loop, and branch edges</span></li>
+              <li class="flex items-start gap-2"><span class="text-[#67e8f9] mt-0.5">✓</span><span>Recalled memory is surgically placed at the step where it makes the SOP read coherently</span></li>
+              <li class="flex items-start gap-2"><span class="text-[#67e8f9] mt-0.5">✓</span><span>Declared <code class="font-mono text-[#67e8f9]">Requires</code> / <code class="font-mono text-[#67e8f9]">Produces</code> variables, plus failure handlers</span></li>
+              <li class="flex items-start gap-2"><span class="text-[#67e8f9] mt-0.5">✓</span><span>Skills call other skills via <code class="font-mono text-[#67e8f9]">@skill name(args) -&gt; $capture</code></span></li>
+              <li class="flex items-start gap-2"><span class="text-[#67e8f9] mt-0.5">✓</span><span>Snapshot-based history &mdash; every retrain is reversible</span></li>
+            </ul>
+          </div>
+
+        </div>
+
+        <p class="text-center text-sm text-[#71717a] mt-10 max-w-2xl mx-auto leading-relaxed">
+          The result: an AI doesn&rsquo;t guess what your skill <em>meant</em> &mdash; it reads the structure
+          and walks it. Recall&rsquo;d memories arrive at the right step. Failures route to the
+          recovery skill you declared. The handoff is deterministic.
+        </p>
+      </div>
+    </section>
+
+    <!-- ═══════════════════════════════════════════
+         THE 8 GOAL CATEGORIES
+    ═══════════════════════════════════════════ -->
+    <section class="py-24 px-4 sm:px-6">
+      <div class="max-w-7xl mx-auto">
+        <div class="text-center mb-16">
+          <p class="font-mono text-base sm:text-lg tracking-widest uppercase text-[#9a9db8] mb-5 font-bold">Goals — built in, not bolted on</p>
+          <h2 class="text-3xl sm:text-4xl lg:text-5xl font-black text-white mb-4">
+            Eight goal categories per skill.<br class="hidden sm:block" />
+            All structured. All optional.
+          </h2>
+          <p class="text-[#c4c6d6] max-w-2xl mx-auto leading-relaxed">
+            Every skill carries a goals block. The AI reads it before invoking the skill,
+            during execution, and after &mdash; so it knows when to fire, what it needs,
+            what it should produce, and where to route failure.
+          </p>
+        </div>
+
+        <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+
+          <article class="bg-[#1c1c27] border border-[#2a2a3d] rounded-xl p-6">
+            <div class="text-3xl mb-3" aria-hidden="true">✓</div>
+            <h3 class="text-base font-bold text-white mb-2">Success</h3>
+            <p class="text-sm text-[#9a9db8] leading-relaxed">What a successful outcome looks like for this skill.</p>
+            <p class="text-[10px] font-mono text-[#555570] mt-3 uppercase tracking-widest">Success:</p>
+          </article>
+
+          <article class="bg-[#1c1c27] border border-[#2a2a3d] rounded-xl p-6">
+            <div class="text-3xl mb-3" aria-hidden="true">✗</div>
+            <h3 class="text-base font-bold text-white mb-2">Out of scope</h3>
+            <p class="text-sm text-[#9a9db8] leading-relaxed">What this skill should not attempt &mdash; bounds the AI&rsquo;s authority.</p>
+            <p class="text-[10px] font-mono text-[#555570] mt-3 uppercase tracking-widest">Out of scope:</p>
+          </article>
+
+          <article class="bg-[#1c1c27] border border-[#2a2a3d] rounded-xl p-6">
+            <div class="text-3xl mb-3" aria-hidden="true">⊙</div>
+            <h3 class="text-base font-bold text-white mb-2">On completion</h3>
+            <p class="text-sm text-[#9a9db8] leading-relaxed">What tangible output or behaviour is expected when the skill completes.</p>
+            <p class="text-[10px] font-mono text-[#555570] mt-3 uppercase tracking-widest">On completion:</p>
+          </article>
+
+          <article class="bg-[#1c1c27] border border-[#2a2a3d] rounded-xl p-6">
+            <div class="text-3xl mb-3" aria-hidden="true">⚡</div>
+            <h3 class="text-base font-bold text-white mb-2">Trigger</h3>
+            <p class="text-sm text-[#9a9db8] leading-relaxed">When the AI should autonomously invoke this skill &mdash; the gate for self-routing.</p>
+            <p class="text-[10px] font-mono text-[#555570] mt-3 uppercase tracking-widest">Trigger:</p>
+          </article>
+
+          <article class="bg-[#1c1c27] border border-[#2a2a3d] rounded-xl p-6">
+            <div class="text-3xl mb-3" aria-hidden="true">🔑</div>
+            <h3 class="text-base font-bold text-white mb-2">Prerequisites</h3>
+            <p class="text-sm text-[#9a9db8] leading-relaxed">What must be true before step 1 can run. Checked before any work happens.</p>
+            <p class="text-[10px] font-mono text-[#555570] mt-3 uppercase tracking-widest">Prerequisites:</p>
+          </article>
+
+          <article class="bg-[#1c1c27] border border-[#2a2a3d] rounded-xl p-6">
+            <div class="text-3xl mb-3" aria-hidden="true">⚠</div>
+            <h3 class="text-base font-bold text-white mb-2">On failure</h3>
+            <p class="text-sm text-[#9a9db8] leading-relaxed">Recovery if execution fails mid-procedure. May name a recovery skill to invoke.</p>
+            <p class="text-[10px] font-mono text-[#555570] mt-3 uppercase tracking-widest">On failure:</p>
+          </article>
+
+          <article class="bg-[#1c1c27] border border-[#2a2a3d] rounded-xl p-6">
+            <div class="text-3xl mb-3" aria-hidden="true">🔌</div>
+            <h3 class="text-base font-bold text-white mb-2">Requires</h3>
+            <p class="text-sm text-[#9a9db8] leading-relaxed">Named inputs this skill expects from its caller or context. <code class="font-mono text-[#67e8f9]">$camelCase</code>.</p>
+            <p class="text-[10px] font-mono text-[#555570] mt-3 uppercase tracking-widest">Requires:</p>
+          </article>
+
+          <article class="bg-[#1c1c27] border border-[#2a2a3d] rounded-xl p-6">
+            <div class="text-3xl mb-3" aria-hidden="true">📤</div>
+            <h3 class="text-base font-bold text-white mb-2">Produces</h3>
+            <p class="text-sm text-[#9a9db8] leading-relaxed">Named outputs this skill makes available to callers. Captured by the next step.</p>
+            <p class="text-[10px] font-mono text-[#555570] mt-3 uppercase tracking-widest">Produces:</p>
+          </article>
+
+        </div>
+
+        <p class="text-center text-sm text-[#71717a] mt-10 max-w-2xl mx-auto leading-relaxed">
+          AI clients receive a structured <code class="font-mono text-[#67e8f9]">SkillExecutionPlan</code>
+          JSON containing every goal value. They confirm prerequisites before they start,
+          capture <code class="font-mono text-[#67e8f9]">Produces</code> outputs into named
+          variables, and route exceptions through declared failure handlers.
+        </p>
+      </div>
+    </section>
+
+    <!-- ═══════════════════════════════════════════
+         CROSS-SKILL ORCHESTRATION
+    ═══════════════════════════════════════════ -->
+    <section class="bg-[#1c1c27] py-24 px-4 sm:px-6">
+      <div class="max-w-6xl mx-auto">
+        <div class="text-center mb-12">
+          <p class="font-mono text-xs tracking-widest uppercase text-[#555570] mb-3">Composition</p>
+          <h2 class="text-3xl sm:text-4xl font-black text-white mb-4">
+            Skills call other skills.
+          </h2>
+          <p class="text-[#c4c6d6] max-w-3xl mx-auto leading-relaxed">
+            One orchestrator skill, several sub-skills, named arguments, captured return values,
+            a recovery skill on failure. Every link is a graph edge the AI can walk &mdash; not
+            text it has to parse.
+          </p>
+        </div>
+
+        <div class="grid grid-cols-1 lg:grid-cols-5 gap-6">
+
+          <!-- Code example: Safe Deploy -->
+          <div class="lg:col-span-3">
+            <div class="bg-[#13131a] border border-[#2a2a3d] rounded-2xl overflow-hidden">
+              <div class="flex items-center justify-between px-5 py-3 bg-[#0f0f17] border-b border-[#2a2a3d]">
+                <span class="text-xs font-mono text-[#71717a]">safe-deploy.gsk · orchestrator</span>
+                <span class="text-[10px] font-black tracking-widest uppercase text-[#67e8f9]">SOP</span>
+              </div>
+              <pre class="p-5 text-sm leading-relaxed font-mono text-[#e2e4f0] overflow-x-auto"><code>[ANCHOR] Deploy the named branch to production safely.
+Each step gates the next; on any failure, hand off to
+the rollback skill.
+
+<span class="text-[#67e8f9]">@skill:</span> validate-environment(branch=<span class="text-[#a78bfa]">$branch</span>) -&gt; <span class="text-[#a78bfa]">$envOk</span>
+
+If <span class="text-[#a78bfa]">$envOk</span> is false, abort and surface the
+validation report.
+
+<span class="text-[#67e8f9]">@skill:</span> run-migrations(branch=<span class="text-[#a78bfa]">$branch</span>) -&gt; <span class="text-[#a78bfa]">$migrationReport</span>
+
+<span class="text-[#67e8f9]">@skill:</span> smoke-tests(branch=<span class="text-[#a78bfa]">$branch</span>) -&gt; <span class="text-[#a78bfa]">$smokeReport</span>
+
+If <span class="text-[#a78bfa]">$smokeReport.failed</span> &gt; 0, the deploy is not
+complete &mdash; invoke the rollback path.</code></pre>
+              <div class="px-5 py-3 bg-[#0f0f17] border-t border-[#2a2a3d]">
+                <p class="text-[10px] font-mono text-[#555570] uppercase tracking-widest mb-2">Goals</p>
+                <p class="text-xs text-[#9a9db8] leading-relaxed">
+                  <span class="text-[#67e8f9]">Success:</span> the branch is live, migrations are applied, smoke tests are green<br />
+                  <span class="text-[#67e8f9]">Out of scope:</span> modifying production data, bypassing CI, deploying without a code review<br />
+                  <span class="text-[#67e8f9]">Prerequisites:</span> CI on the branch is green, <code class="font-mono">$branch</code> variable is set<br />
+                  <span class="text-[#67e8f9]">On failure:</span> invoke <code class="font-mono">@skill: rollback-deployment</code> with the failure context<br />
+                  <span class="text-[#67e8f9]">Requires:</span> <code class="font-mono text-[#a78bfa]">$branch</code> &nbsp;·&nbsp;
+                  <span class="text-[#67e8f9]">Produces:</span> <code class="font-mono text-[#a78bfa]">$envOk, $migrationReport, $smokeReport</code>
+                </p>
+              </div>
+            </div>
+          </div>
+
+          <!-- What an AI does with this -->
+          <div class="lg:col-span-2">
+            <div class="bg-[#13131a] border border-[#a78bfa]/30 rounded-2xl p-6 h-full flex flex-col">
+              <p class="text-xs font-black tracking-widest uppercase text-[#a78bfa] mb-3">What an AI does with this</p>
+              <ol class="flex flex-col gap-3 text-sm text-[#b0b3c6] flex-1">
+                <li class="flex gap-3"><span class="font-bold text-[#a78bfa] shrink-0">1.</span><span>Calls <code class="font-mono text-[#a78bfa]">walk_skill_structured</code> on Safe Deploy.</span></li>
+                <li class="flex gap-3"><span class="font-bold text-[#a78bfa] shrink-0">2.</span><span>Sees <code class="font-mono">requires: ['$branch']</code> and confirms <code class="font-mono">$branch=main</code> with the user.</span></li>
+                <li class="flex gap-3"><span class="font-bold text-[#a78bfa] shrink-0">3.</span><span>Sees <code class="font-mono">prerequisites</code> and asks the user to confirm CI is green.</span></li>
+                <li class="flex gap-3"><span class="font-bold text-[#a78bfa] shrink-0">4.</span><span>Walks steps in order. Invokes <code class="font-mono">validate-environment</code>, captures <code class="font-mono text-[#a78bfa]">$envOk</code>.</span></li>
+                <li class="flex gap-3"><span class="font-bold text-[#a78bfa] shrink-0">5.</span><span>If <code class="font-mono text-[#a78bfa]">$envOk</code> is false, surfaces it and stops.</span></li>
+                <li class="flex gap-3"><span class="font-bold text-[#a78bfa] shrink-0">6.</span><span>Otherwise continues to migrations, smoke tests, capturing each return.</span></li>
+                <li class="flex gap-3"><span class="font-bold text-[#a78bfa] shrink-0">7.</span><span>On exception &rarr; reaches for <code class="font-mono">failureHandlers[0].targetTitle</code> = <code class="font-mono">rollback-deployment</code>.</span></li>
+              </ol>
+            </div>
+          </div>
+
+        </div>
+
+        <div class="mt-10 text-center">
+          <p class="text-sm text-[#9a9db8] max-w-3xl mx-auto leading-relaxed">
+            Sub-skill calls work in English, Romanian, Spanish, French, German, Italian, and Portuguese
+            out of the box, plus a language-neutral explicit syntax (<code class="font-mono text-[#67e8f9]">@loop: N</code>,
+            <code class="font-mono text-[#67e8f9]">@branch: N</code>) that detection always tries first.
+          </p>
+        </div>
+      </div>
+    </section>
+
+    <!-- ═══════════════════════════════════════════
+         WALK_SKILL — TWO CONTRACTS
+    ═══════════════════════════════════════════ -->
+    <section class="py-24 px-4 sm:px-6">
+      <div class="max-w-6xl mx-auto">
+        <div class="text-center mb-16">
+          <p class="font-mono text-xs tracking-widest uppercase text-[#555570] mb-3">Tools your AI uses</p>
+          <h2 class="text-3xl sm:text-4xl font-black text-white mb-4">
+            Two contracts &mdash; one for humans, one for execution.
+          </h2>
+          <p class="text-[#c4c6d6] max-w-2xl mx-auto leading-relaxed">
+            Every trained skill is reachable from any MCP-connected AI client through one of two tools.
+            The narrative tool is for explaining; the structured tool is for executing.
+          </p>
+        </div>
+
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+
+          <article class="bg-[#1c1c27] border border-[#2a2a3d] rounded-2xl p-8 flex flex-col gap-4">
+            <div class="flex items-center gap-3">
+              <span class="px-3 py-1 rounded-full bg-[#67e8f9]/15 border border-[#67e8f9]/30 text-[#67e8f9] text-xs font-black tracking-widest uppercase">MCP tool</span>
+              <code class="font-mono text-[#67e8f9] text-sm">walk_skill</code>
+            </div>
+            <h3 class="text-2xl font-bold text-white">Narrative walkthrough</h3>
+            <p class="text-[#c4c6d6] leading-relaxed">
+              Returns the skill as human-readable text with <strong>CONSTRAINTS</strong> and
+              <strong>PROCEDURE</strong> sections. Loop-back steps, conditional branches,
+              and sub-skill invocations are annotated inline.
+            </p>
+            <p class="text-sm text-[#9a9db8] leading-relaxed mt-2">
+              Use when explaining the skill to a user, or guiding them through it
+              conversationally one step at a time.
+            </p>
+            <div class="bg-[#0f0f17] border border-[#2a2a3d] rounded-lg p-4 mt-2">
+              <code class="font-mono text-xs text-[#b0b3c6] leading-relaxed block">
+                Step 1: Configure the environment...<br />
+                <span class="text-[#67e8f9]">  → Context: prior CI fixture for this branch</span><br />
+                Step 2: Run the validation suite...<br />
+                Step 3: <span class="text-[#a78bfa]">INVOKES SKILL: run-migrations</span><br />
+                Step 4: Review logs <span class="text-[#fbbf24]">— BRANCHES to step 6 if failed</span><br />
+                Step 5: <span class="text-[#fbbf24]">LOOPS BACK to step 2</span>
+              </code>
+            </div>
+          </article>
+
+          <article class="bg-[#1c1c27] border border-[#a78bfa]/40 rounded-2xl p-8 flex flex-col gap-4" style="box-shadow: 0 0 0 1px #a78bfa22, 0 12px 40px -10px #a78bfa22;">
+            <div class="flex items-center gap-3">
+              <span class="px-3 py-1 rounded-full bg-[#a78bfa]/15 border border-[#a78bfa]/30 text-[#a78bfa] text-xs font-black tracking-widest uppercase">MCP tool</span>
+              <code class="font-mono text-[#a78bfa] text-sm">walk_skill_structured</code>
+            </div>
+            <h3 class="text-2xl font-bold text-white">Execution plan (JSON)</h3>
+            <p class="text-[#c4c6d6] leading-relaxed">
+              Returns a <code class="font-mono text-[#a78bfa]">SkillExecutionPlan</code> with
+              <code class="font-mono">requires</code>, <code class="font-mono">produces</code>,
+              ordered steps with <code class="font-mono">calls</code> (target sub-skill + args +
+              <code class="font-mono">captureAs</code>), plus <code class="font-mono">failureHandlers</code>.
+            </p>
+            <p class="text-sm text-[#9a9db8] leading-relaxed mt-2">
+              Use when the AI is actually going to execute the skill &mdash; walk steps in order,
+              invoke sub-skills with named args, capture return values, route exceptions through
+              declared failure handlers.
+            </p>
+            <!-- is:raw stops Astro's JSX parser from interpreting the
+                 literal `{` and `}` braces inside the JSON sample as
+                 expression delimiters. Without it, every `{` opens what
+                 the parser thinks is a JSX expression and the `:` in
+                 `"skill":` trips an "Expected '}' but found ':'" error. -->
+            <div class="bg-[#0f0f17] border border-[#2a2a3d] rounded-lg p-4 mt-2 font-mono text-xs text-[#b0b3c6] overflow-x-auto">
+<pre is:raw>{
+  "skill": { "title": "Safe Deploy", ... },
+  "requires": ["$branch"],
+  "produces": ["$envOk", "$migrationReport"],
+  "constraints": {
+    "prerequisites": "CI on the branch is green",
+    "onFailure": "rollback-deployment"
+  },
+  "steps": [
+    { "index": 1, "text": "...",
+      "calls": {
+        "targetTitle": "validate-environment",
+        "args": ["$branch"],
+        "captureAs": "$envOk"
+      }
+    }, ...
+  ]
+}</pre>
+            </div>
+          </article>
+
+        </div>
+      </div>
+    </section>
+
+    <!-- ═══════════════════════════════════════════
+         RETRAIN + SNAPSHOT HISTORY
+    ═══════════════════════════════════════════ -->
+    <section class="bg-[#1c1c27] py-24 px-4 sm:px-6">
+      <div class="max-w-5xl mx-auto">
+        <div class="text-center mb-12">
+          <p class="font-mono text-xs tracking-widest uppercase text-[#555570] mb-3">Retraining</p>
+          <h2 class="text-3xl sm:text-4xl font-black text-white mb-4">
+            One source per skill, ever.
+          </h2>
+          <p class="text-[#c4c6d6] max-w-3xl mx-auto leading-relaxed">
+            Retrain a skill against fresh memory &mdash; goals, recipes, and structure are
+            rewritten in place. The prior version is saved to an encrypted side-table so
+            you can roll back any retrain that drifted.
+          </p>
+        </div>
+
+        <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
+
+          <article class="bg-[#13131a] border border-[#2a2a3d] rounded-xl p-6">
+            <div class="w-10 h-10 rounded-lg bg-[#67e8f9]/10 flex items-center justify-center mb-4">
+              <svg class="w-5 h-5 text-[#67e8f9]" fill="none" stroke="currentColor" stroke-width="1.8" viewBox="0 0 24 24" aria-hidden="true">
+                <path stroke-linecap="round" stroke-linejoin="round" d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0l3.181 3.183a8.25 8.25 0 0013.803-3.7M4.031 9.865a8.25 8.25 0 0113.803-3.7l3.181 3.182m0-4.991v4.99" />
+              </svg>
+            </div>
+            <h3 class="text-lg font-bold text-white mb-2">In-place rewrite</h3>
+            <p class="text-sm text-[#9a9db8] leading-relaxed">
+              The skill&rsquo;s graph nodes are mutated in place. Cross-source edges
+              referencing this skill stay intact. No orphan title nodes accumulate
+              in your engram from old trains.
+            </p>
+          </article>
+
+          <article class="bg-[#13131a] border border-[#2a2a3d] rounded-xl p-6">
+            <div class="w-10 h-10 rounded-lg bg-[#a78bfa]/10 flex items-center justify-center mb-4">
+              <svg class="w-5 h-5 text-[#a78bfa]" fill="none" stroke="currentColor" stroke-width="1.8" viewBox="0 0 24 24" aria-hidden="true">
+                <path stroke-linecap="round" stroke-linejoin="round" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+              </svg>
+            </div>
+            <h3 class="text-lg font-bold text-white mb-2">Encrypted snapshots</h3>
+            <p class="text-sm text-[#9a9db8] leading-relaxed">
+              Before every retrain, the prior state is dumped to
+              <code class="font-mono text-[#a78bfa]">.json.enc</code> under
+              <code class="font-mono">skill-snapshots/</code>, sealed with the same
+              data key that protects your <code class="font-mono">.gai</code> engrams.
+            </p>
+          </article>
+
+          <article class="bg-[#13131a] border border-[#2a2a3d] rounded-xl p-6">
+            <div class="w-10 h-10 rounded-lg bg-[#67e8f9]/10 flex items-center justify-center mb-4">
+              <svg class="w-5 h-5 text-[#67e8f9]" fill="none" stroke="currentColor" stroke-width="1.8" viewBox="0 0 24 24" aria-hidden="true">
+                <path stroke-linecap="round" stroke-linejoin="round" d="M9 14l6-6m-5.5-.5h.01m4.99 5h.01M19.071 4.929a10 10 0 11-14.142 0L12 12l7.071-7.071z" />
+              </svg>
+            </div>
+            <h3 class="text-lg font-bold text-white mb-2">Reversible rollback</h3>
+            <p class="text-sm text-[#9a9db8] leading-relaxed">
+              <code class="font-mono text-[#67e8f9]">rollback_skill</code> restores any
+              prior version. The current state is re-snapshotted first &mdash; so even
+              the rollback itself is reversible.
+            </p>
+          </article>
+
+        </div>
+
+        <p class="text-center text-sm text-[#71717a] mt-10 max-w-2xl mx-auto leading-relaxed">
+          The trainer also <strong class="text-[#9a9db8]">self-tunes recall breadth</strong> &mdash;
+          on each train, the cited-vs-fetched ratio nudges the next retrain&rsquo;s recall
+          window wider or tighter. You don&rsquo;t tune it &mdash; it learns.
+        </p>
+      </div>
+    </section>
+
+    <!-- ═══════════════════════════════════════════
+         3D ENGRAM
+    ═══════════════════════════════════════════ -->
+    <section class="py-24 px-4 sm:px-6">
+      <div class="max-w-7xl mx-auto">
+        <div class="text-center mb-12">
+          <p class="font-mono text-xs tracking-widest uppercase text-[#555570] mb-3">See your SOPs</p>
+          <h2 class="text-3xl sm:text-4xl lg:text-5xl font-black text-white mb-4">
+            The 3D Engram.<br class="hidden sm:block" />
+            Your skills as a living graph.
+          </h2>
+          <p class="text-[#c4c6d6] max-w-2xl mx-auto leading-relaxed">
+            A force-directed 3D view of your cortex &mdash; nodes drift instead of snapping,
+            edges colour by category, GNN predictions float in as a dashed overlay you can
+            toggle. Watch your skills settle into clusters; drag a node and pin it.
+          </p>
+        </div>
+
+        <!-- Screenshot placeholder.
+             Drop the actual PNG at apps/docs/public/3d-engram-skills.png to
+             replace the placeholder visual. The ratio should be roughly
+             16:9 so the surrounding layout doesn't shift. -->
+        <div class="relative max-w-5xl mx-auto mb-12 rounded-2xl overflow-hidden border border-[#2a2a3d] bg-[#0f0f17]">
+          <img
+            src="/3d-engram-skills.png"
+            alt="3D Engram view showing skill SOPs as colored clusters with sequence, branch, and call edges"
+            class="w-full block"
+            loading="lazy"
+            onerror="this.style.display='none';this.nextElementSibling.style.display='flex';"
+          />
+          <div class="hidden absolute inset-0 items-center justify-center bg-[#0f0f17] aspect-video">
+            <div class="text-center px-6">
+              <div class="text-5xl mb-3" aria-hidden="true">🌐</div>
+              <p class="text-[#71717a] text-sm font-mono">3D Engram screenshot — drop at /3d-engram-skills.png</p>
+            </div>
+          </div>
+        </div>
+
+        <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+
+          <article class="bg-[#1c1c27] border border-[#2a2a3d] rounded-xl p-6">
+            <h3 class="text-lg font-bold text-white mb-2">Seven edge categories</h3>
+            <p class="text-sm text-[#9a9db8] leading-relaxed">
+              <span style="color:#fb7185">Reasoning</span> · <span style="color:#60a5fa">Structure</span> ·
+              <span style="color:#c084fc">Social</span> · <span style="color:#fbbf24">Temporal</span> ·
+              <span style="color:#6ab3c8">Semantic</span> · <span style="color:#9a9a9c">Identity</span> ·
+              <span style="color:#a3e635">Predicted</span> &mdash; the legend toggles each independently.
+            </p>
+          </article>
+
+          <article class="bg-[#1c1c27] border border-[#2a2a3d] rounded-xl p-6">
+            <h3 class="text-lg font-bold text-white mb-2">Explore your AI hippocampus</h3>
+            <p class="text-sm text-[#9a9db8] leading-relaxed">
+              Graphnosis is modelled on the hippocampus &mdash; the brain region that
+              binds disparate memories into something coherent. This view is its
+              digital twin. Drag any node to study its neighbourhood; the physics
+              engine pins it where you dropped it. Watch dense clusters loosen,
+              isolated nodes drift to the rim, and the shape of your AI&rsquo;s
+              memory emerge. The first time you flatten a tangled SOP chain by
+              hand and see why two skills were quietly related, you&rsquo;ll know
+              what your AI has actually been seeing.
+            </p>
+          </article>
+
+          <article class="bg-[#1c1c27] border border-[#2a2a3d] rounded-xl p-6">
+            <h3 class="text-lg font-bold text-white mb-2">Optional neural network overlay</h3>
+            <p class="text-sm text-[#9a9db8] leading-relaxed">
+              A local graph neural network proposes edges your explicit notes
+              never made &mdash; rendered as a dashed
+              <span style="color:#a3e635">lime</span> layer that you toggle on
+              or off. The deterministic graph below stays untouched; the
+              network just shows you what it thinks is missing.
+            </p>
+          </article>
+
+          <article class="bg-[#1c1c27] border border-[#2a2a3d] rounded-xl p-6">
+            <h3 class="text-lg font-bold text-white mb-2">Source-coloured nodes</h3>
+            <p class="text-sm text-[#9a9db8] leading-relaxed">
+              Each node carries its source colour &mdash; the .gsk pack it came from,
+              the document it was ingested from, the skill it&rsquo;s part of.
+              Cross-source clusters jump out instantly.
+            </p>
+          </article>
+
+          <article class="bg-[#1c1c27] border border-[#2a2a3d] rounded-xl p-6">
+            <h3 class="text-lg font-bold text-white mb-2">Filter, hover, hide</h3>
+            <p class="text-sm text-[#9a9db8] leading-relaxed">
+              Hover a legend category to fade everything else. Click to lock the
+              filter. Hide an entire source while you work on another. The atlas
+              is your workshop, not a museum.
+            </p>
+          </article>
+
+          <article class="bg-[#1c1c27] border border-[#2a2a3d] rounded-xl p-6">
+            <h3 class="text-lg font-bold text-white mb-2">Click-select inspector</h3>
+            <p class="text-sm text-[#9a9db8] leading-relaxed">
+              Click any node &mdash; the inspector opens with its content, type,
+              confidence, source provenance, and every incoming/outgoing edge with
+              evidence labels. The atlas IS the inspector.
+            </p>
+          </article>
+
+        </div>
+
+        <p class="text-center text-sm text-[#71717a] mt-10 max-w-2xl mx-auto leading-relaxed">
+          Built on a force-directed simulator with cursor-aware zoom and a
+          left-aligned camera that compensates for the legend strip &mdash; so
+          your fit-view always frames the cortex, not the chrome.
+        </p>
+      </div>
+    </section>
+
+    <!-- ═══════════════════════════════════════════
+         IMPORT / EXPORT — .GSK FORMAT
+    ═══════════════════════════════════════════ -->
+    <section class="bg-[#1c1c27] py-24 px-4 sm:px-6">
+      <div class="max-w-6xl mx-auto">
+        <div class="text-center mb-12">
+          <p class="font-mono text-xs tracking-widest uppercase text-[#555570] mb-3">Portable, verifiable, free</p>
+          <h2 class="text-3xl sm:text-4xl font-black text-white mb-4">
+            One file. Every skill. Signed.
+          </h2>
+          <p class="text-[#c4c6d6] max-w-3xl mx-auto leading-relaxed">
+            A <code class="font-mono text-[#67e8f9]">.gsk</code> file is the wire format
+            for Graphnosis skills &mdash; AES-256-GCM encrypted JSON wrapping the skill
+            text, recall recipes, structured goals, and an optional
+            <code class="font-mono">GRAPHNOSIS.md</code> companion. Ed25519 signature
+            is the real integrity gate: tampered files hard-fail import.
+          </p>
+        </div>
+
+        <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-5">
+
+          <article class="bg-[#13131a] border border-[#2a2a3d] rounded-xl p-6">
+            <div class="text-3xl mb-3" aria-hidden="true">📦</div>
+            <h3 class="text-base font-bold text-white mb-2">100+ free packs</h3>
+            <p class="text-sm text-[#9a9db8] leading-relaxed">
+              Role-matched <code class="font-mono text-[#67e8f9]">.gsk</code> kits for engineering, healthcare, legal,
+              finance, defense, robotics, education &mdash; every kit free.
+            </p>
+            <a href="/job-memory-kits" class="text-xs text-[#67e8f9] hover:text-[#a5f3fc] mt-3 inline-block font-mono">Browse the library &rarr;</a>
+          </article>
+
+          <article class="bg-[#13131a] border border-[#2a2a3d] rounded-xl p-6">
+            <div class="text-3xl mb-3" aria-hidden="true">✓</div>
+            <h3 class="text-base font-bold text-white mb-2">Ed25519-verified</h3>
+            <p class="text-sm text-[#9a9db8] leading-relaxed">
+              Every official pack carries a signature. The import UI shows a
+              <span style="color:#67e8f9">✓ Verified</span> badge or
+              <span style="color:#fbbf24">⚠ Community</span> on unsigned packs.
+              Tampered files reject before any byte reaches your cortex.
+            </p>
+          </article>
+
+          <article class="bg-[#13131a] border border-[#2a2a3d] rounded-xl p-6">
+            <div class="text-3xl mb-3" aria-hidden="true">🎁</div>
+            <h3 class="text-base font-bold text-white mb-2">3 bundled demos</h3>
+            <p class="text-sm text-[#9a9db8] leading-relaxed">
+              On first cortex unlock, the App auto-creates a Skill Demos engram and
+              imports three signed teaching skills: <em>Use Graphnosis well</em>,
+              <em>Save memories that last</em>, and <em>Stay safe with sensitive memories</em>.
+            </p>
+          </article>
+
+          <article class="bg-[#13131a] border border-[#2a2a3d] rounded-xl p-6">
+            <div class="text-3xl mb-3" aria-hidden="true">📤</div>
+            <h3 class="text-base font-bold text-white mb-2">Six export formats</h3>
+            <p class="text-sm text-[#9a9db8] leading-relaxed">
+              <code class="font-mono text-[#67e8f9]">claude-md</code> ·
+              <code class="font-mono text-[#67e8f9]">cursorrules</code> ·
+              <code class="font-mono text-[#67e8f9]">system-prompt</code> ·
+              <code class="font-mono text-[#67e8f9]">openai</code> ·
+              <code class="font-mono text-[#67e8f9]">raw</code> ·
+              <code class="font-mono text-[#67e8f9]">gsk</code> &mdash; export to the
+              format your tool expects.
+            </p>
+          </article>
+
+        </div>
+
+        <div class="mt-10 bg-[#13131a] border border-[#2a2a3d] rounded-xl p-6 max-w-3xl mx-auto">
+          <p class="text-base sm:text-lg font-black tracking-widest uppercase text-[#9a9db8] mb-3">Privacy by design</p>
+          <p class="text-sm text-[#b0b3c6] leading-relaxed">
+            Export serialises only the structural payload &mdash; skill text, recipes,
+            <code class="font-mono text-[#67e8f9]">graphnosisMd</code>, goals.
+            <strong class="text-white">It never sees your personal memory engrams.</strong>
+            The direction of personalisation travels; the memories that caused it stay local.
+          </p>
+        </div>
+      </div>
+    </section>
+
+    <!-- ═══════════════════════════════════════════
+         VITALITY
+    ═══════════════════════════════════════════ -->
+    <section class="py-24 px-4 sm:px-6">
+      <div class="max-w-5xl mx-auto">
+        <div class="grid grid-cols-1 lg:grid-cols-2 gap-12 items-center">
+
+          <div>
+            <p class="font-mono text-xs tracking-widest uppercase text-[#555570] mb-3">Skill vitality</p>
+            <h2 class="text-3xl sm:text-4xl font-black text-white mb-5">
+              Know when a skill is going stale.
+            </h2>
+            <p class="text-[#c4c6d6] leading-relaxed mb-5">
+              Every trained skill carries a <strong>vitality score</strong> &mdash; 0 to 100,
+              measured by how many of the memories that originally shaped it have since
+              been forgotten, edited, or superseded.
+            </p>
+            <ul class="flex flex-col gap-2 text-sm text-[#b0b3c6]">
+              <li class="flex items-start gap-3"><span class="font-mono w-14 shrink-0 text-[#34d399]">80–100</span><span>Fresh &mdash; the influential context still holds.</span></li>
+              <li class="flex items-start gap-3"><span class="font-mono w-14 shrink-0 text-[#67e8f9]">60–79</span><span>Healthy &mdash; minor drift, no action needed.</span></li>
+              <li class="flex items-start gap-3"><span class="font-mono w-14 shrink-0 text-[#fbbf24]">40–59</span><span>Aging &mdash; consider retraining.</span></li>
+              <li class="flex items-start gap-3"><span class="font-mono w-14 shrink-0 text-[#f87171]">0–39</span><span>Stale &mdash; call <code class="font-mono">train_skill</code>.</span></li>
+            </ul>
+            <p class="text-sm text-[#71717a] mt-5 leading-relaxed">
+              The score is exposed through the <code class="font-mono text-[#67e8f9]">skill_vitality</code>
+              MCP tool so AI clients can prompt the user to retrain stale skills before
+              acting on them.
+            </p>
+          </div>
+
+          <div class="bg-[#1c1c27] border border-[#2a2a3d] rounded-2xl p-8">
+            <p class="text-xs font-black tracking-widest uppercase text-[#71717a] mb-4">Example library</p>
+            <div class="flex flex-col gap-3">
+
+              <div class="flex items-center justify-between p-3 rounded-lg bg-[#13131a] border border-[#2a2a3d]">
+                <span class="text-sm text-[#f0f0f5]">Code review SOP</span>
+                <span class="px-2.5 py-0.5 rounded-full text-xs font-bold" style="background: #34d39922; color: #34d399; border: 1px solid #34d39933;">↻ 94</span>
+              </div>
+              <div class="flex items-center justify-between p-3 rounded-lg bg-[#13131a] border border-[#2a2a3d]">
+                <span class="text-sm text-[#f0f0f5]">Safe deploy</span>
+                <span class="px-2.5 py-0.5 rounded-full text-xs font-bold" style="background: #67e8f922; color: #67e8f9; border: 1px solid #67e8f933;">↻ 72</span>
+              </div>
+              <div class="flex items-center justify-between p-3 rounded-lg bg-[#13131a] border border-[#2a2a3d]">
+                <span class="text-sm text-[#f0f0f5]">Customer onboarding</span>
+                <span class="px-2.5 py-0.5 rounded-full text-xs font-bold" style="background: #fbbf2422; color: #fbbf24; border: 1px solid #fbbf2433;">↻ 51</span>
+              </div>
+              <div class="flex items-center justify-between p-3 rounded-lg bg-[#13131a] border border-[#2a2a3d]">
+                <span class="text-sm text-[#f0f0f5]">Quarterly close</span>
+                <span class="px-2.5 py-0.5 rounded-full text-xs font-bold" style="background: #f8717122; color: #f87171; border: 1px solid #f8717133;">↻ 28</span>
+              </div>
+
+            </div>
+          </div>
+
+        </div>
+      </div>
+    </section>
+
+    <!-- ═══════════════════════════════════════════
+         HOW IT WORKS
+    ═══════════════════════════════════════════ -->
+    <section class="bg-[#1c1c27] py-24 px-4 sm:px-6">
+      <div class="max-w-7xl mx-auto">
+        <div class="text-center mb-16">
+          <p class="font-mono text-xs tracking-widest uppercase text-[#555570] mb-3">From file to walked SOP</p>
+          <h2 class="text-3xl sm:text-4xl font-black text-white">Four steps. Zero cloud hops.</h2>
+        </div>
+
+        <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+
+          <article class="bg-[#13131a] border border-[#2a2a3d] rounded-xl p-7 flex flex-col gap-3">
+            <div class="text-sm font-mono text-[#67e8f9]">01</div>
+            <h3 class="text-lg font-bold text-white">Paste your skill</h3>
+            <p class="text-sm text-[#9a9db8] leading-relaxed">
+              A CLAUDE.md, a system prompt, a <code class="font-mono">.cursorrules</code>
+              file &mdash; or download one of 100+ free <code class="font-mono">.gsk</code>
+              packs from the Job Memory Kits library.
+            </p>
+          </article>
+
+          <article class="bg-[#13131a] border border-[#2a2a3d] rounded-xl p-7 flex flex-col gap-3">
+            <div class="text-sm font-mono text-[#67e8f9]">02</div>
+            <h3 class="text-lg font-bold text-white">Set goals</h3>
+            <p class="text-sm text-[#9a9db8] leading-relaxed">
+              Declare any of the eight goal categories. The trainer runs
+              <em>goal-aligned recall</em> &mdash; per-category queries that surface
+              the memories most relevant to each dimension of your skill.
+            </p>
+          </article>
+
+          <article class="bg-[#13131a] border border-[#2a2a3d] rounded-xl p-7 flex flex-col gap-3">
+            <div class="text-sm font-mono text-[#a78bfa]">03</div>
+            <h3 class="text-lg font-bold text-white">Train</h3>
+            <p class="text-sm text-[#9a9db8] leading-relaxed">
+              The trainer interleaves your memories at the exact step where they
+              fit. With Ollama on, you watch the rewrite stream in live with
+              <code class="font-mono">(from memory: ...)</code> attribution
+              on every changed line.
+            </p>
+          </article>
+
+          <article class="bg-[#13131a] border border-[#2a2a3d] rounded-xl p-7 flex flex-col gap-3">
+            <div class="text-sm font-mono text-[#a78bfa]">04</div>
+            <h3 class="text-lg font-bold text-white">Walk &amp; ship</h3>
+            <p class="text-sm text-[#9a9db8] leading-relaxed">
+              Export to your tool&rsquo;s format, or leave the skill in Graphnosis
+              and let any MCP-connected AI walk it via
+              <code class="font-mono text-[#a78bfa]">walk_skill_structured</code>.
+            </p>
+          </article>
+
+        </div>
+
+        <div class="mt-12 text-center max-w-2xl mx-auto bg-[#13131a] border border-[#2a2a3d] rounded-xl p-5">
+          <p class="text-base sm:text-lg font-black tracking-widest uppercase text-[#9a9db8] mb-3">Anchored lines</p>
+          <p class="text-sm text-[#b0b3c6] leading-relaxed">
+            Any line you prefix with <code class="font-mono text-[#67e8f9]">[ANCHOR]</code>
+            is preserved exactly across every retrain &mdash; no paraphrase, no rewrite.
+            Use anchors for the parts of your SOP that must never drift.
+          </p>
+        </div>
+      </div>
+    </section>
+
+    <!-- ═══════════════════════════════════════════
+         AUTONOMOUS PRAXIS — THE BRAND PROMISE
+    ═══════════════════════════════════════════ -->
+    <section class="py-24 px-4 sm:px-6">
+      <div class="max-w-4xl mx-auto text-center">
+        <!-- Brand pill — sized up so it reads as a section identifier,
+             not as a kicker label. Wider padding + larger type, gradient
+             text stays. -->
+        <div class="inline-flex items-center gap-2 px-7 py-3 rounded-full border border-[#2a2a3d] bg-[#1c1c27] text-lg sm:text-xl font-semibold text-[#c4c6d6] mb-8">
+          <span class="bg-clip-text text-transparent font-black tracking-wider" style="background-image: linear-gradient(90deg, #67e8f9 0%, #a78bfa 100%);">
+            Graphnosis Autonomous Praxis
+          </span>
+        </div>
+        <h2 class="text-3xl sm:text-4xl lg:text-5xl font-black text-white mb-5 leading-tight">
+          Your AI doesn&rsquo;t guess what your skill meant.<br />
+          It walks the graph you authored.
+        </h2>
+        <p class="text-lg text-[#c4c6d6] leading-relaxed max-w-3xl mx-auto mb-3">
+          Every skill is signed, structured, and executable. Every retrain stays one source.
+          Every exception routes to the recovery skill you declared. Every byte that shaped
+          the personalisation stays on your machine.
+        </p>
+        <p class="text-base text-[#9a9db8] leading-relaxed max-w-2xl mx-auto">
+          That&rsquo;s the praxis: AI that knows what to do, why it&rsquo;s doing it, and what to do
+          when it goes wrong &mdash; because <em>you</em> told it once, in a form it can execute.
+        </p>
+      </div>
+    </section>
+
+    <!-- ═══════════════════════════════════════════
+         FINAL CTA
+    ═══════════════════════════════════════════ -->
+    <section class="bg-[#1c1c27] py-24 px-4 sm:px-6">
+      <div class="max-w-3xl mx-auto text-center">
+        <h2 class="text-3xl sm:text-4xl font-black text-white mb-4">
+          Skills + Goals Trainer ships with Graphnosis.
+        </h2>
+        <p class="text-[#c4c6d6] text-lg leading-relaxed mb-10">
+          Download Graphnosis, unlock your cortex, and open the Skills tab. The free tier
+          gives you author / browse / walk / retrain against your memory with a Personal
+          Context block. Pro adds the streaming LLM rewrite with per-line memory attribution.
+        </p>
+        <div class="flex flex-col sm:flex-row gap-4 justify-center">
+          <a
+            href="/download"
+            class="px-8 py-4 rounded-full bg-[#67e8f9] hover:bg-[#4dd6e8] text-[#13131a] font-bold text-lg transition-colors"
+            data-download-auto
+            data-download-version={version}
+          >
+            Download Graphnosis {version}
+          </a>
+          <a
+            href="/job-memory-kits"
+            class="px-8 py-4 rounded-full border border-[#2a2a3d] hover:border-[#a78bfa] text-[#f0f0f5] font-semibold text-lg transition-colors"
+          >
+            Browse 100+ free packs
+          </a>
+        </div>
+        <p class="text-[#555570] text-sm font-mono mt-8">
+          Free forever &middot; 100+ signed .gsk packs &middot; macOS 13+ &middot; Windows 10+
+        </p>
+      </div>
+    </section>
+
+  </main>
+
+  <Footer />
+</Layout>
