@@ -94,11 +94,31 @@ const UNDIRECTED_CATEGORY: Record<UndirectedEdgeType, EdgeCategory> = {
 export const CATEGORY_COLOR: Record<EdgeCategory, number> = {
   reasoning: 0xfb7185,
   structure: 0x60a5fa,
-  social:    0xc084fc,
+  social:    0xa3e635, // lime — swapped from predicted (was 0xc084fc)
   temporal:  0xfbbf24,
   semantic:  0x6ab3c8,
   identity:  0x9a9a9c,
-  predicted: 0xa3e635,
+  predicted: 0xc084fc, // purple — matches GNN branding (was 0xa3e635)
+};
+
+/**
+ * Per-evidence color overrides. Take precedence over CATEGORY_COLOR for edges
+ * whose evidence string matches a key here. Used to visually separate semantically
+ * distinct uses of the same SDK edge type — e.g. `skill:goal` and `skill:calls`
+ * both use the `contains` directed type (→ blue) but mean very different things,
+ * so `skill:goal` gets emerald and `skill:calls` keeps the structure blue.
+ *
+ * Lookup is `evidence?.split(';')[0]` so structured-call evidences like
+ * `skill:calls;capture=foo` still match the base `skill:calls` key.
+ */
+export const EVIDENCE_COLOR_OVERRIDE: Record<string, number> = {
+  'skill:goal': 0x10b981, // emerald — skill goals (constraints / Requires / Produces)
+};
+
+/** Optional human label shown in the legend when an evidence-override edge
+ *  is present in the visible engram. */
+export const EVIDENCE_OVERRIDE_LABEL: Record<string, string> = {
+  'skill:goal': 'Skill goals',
 };
 export const CATEGORY_LABEL: Record<EdgeCategory, string> = {
   reasoning: 'Reasoning',
@@ -334,6 +354,9 @@ interface AtlasLink {
   type: DirectedEdgeType | UndirectedEdgeType;
   category: EdgeCategory;
   weight: number;
+  /** Carried from AtlasDirectedEdge — drives per-evidence color overrides
+   *  (e.g. `skill:goal` → emerald). Only set for directed edges. */
+  evidence?: string;
 }
 
 export interface AtlasOptions {
@@ -546,6 +569,24 @@ export class Atlas {
   private zoomFrameAccum = 0;
   /** RAF id for the cosmos idle-oscillation loop; null when not running. */
   private cosmosLoopId: number | null = null;
+
+  // ── BEGIN: grab-to-rotate-pivot (cut this whole block to revert) ──────────
+  /** World-space pivot point captured at the moment a drag-rotate begins.
+   *  Computed via computeCursorPivot from the cursor's screen position. */
+  private grabPivot: THREE.Vector3 | null = null;
+  /** Most recent pointer screen coordinates during a grab-rotate (for delta). */
+  private grabLastX = 0;
+  private grabLastY = 0;
+  /** Pointer-down screen coordinates — used for the drag-threshold test
+   *  so a quick click still propagates to TC for normal node selection. */
+  private grabStartX = 0;
+  private grabStartY = 0;
+  /** True once the user has dragged past the threshold; false during the
+   *  pending pre-threshold period (still might end up being a click). */
+  private grabActive = false;
+  /** Pointer ID we're tracking — ensures move/up handlers ignore other pointers. */
+  private grabPendingPointerId: number | null = null;
+  // ── END: grab-to-rotate-pivot ─────────────────────────────────────────────
   /**
    * Per-node jelly velocity (units/ms). Applied directly to node positions in
    * the cosmos RAF, independent of the d3 simulation tick cycle.  This ensures
@@ -715,6 +756,17 @@ export class Atlas {
       // not by toggle, not by hover, not by peek-through. Check this first
       // before any other visibility logic.
       if (this.isCategoryHardLocked(l.category)) return false;
+      // Predicted (GNN) edges are an opt-in OVERLAY, not a normal category.
+      // They stay hidden during peek-through unless the user is specifically
+      // hovering the `predicted` legend row OR has the predicted category
+      // currently toggled on. Without this guard, hovering ANY source or
+      // category would unhide predicted edges the user explicitly disabled,
+      // polluting the view with predictions they don't want to see.
+      if (l.category === 'predicted' &&
+          !this.categoryVisible.predicted &&
+          this.previewLegendCategory !== 'predicted') {
+        return false;
+      }
       // During a legend hover we want hidden edges to "peek through" so the
       // user can see all links for the hovered source/category. BUT with large
       // graphs (>10 K links) forcing ALL links visible in one refresh call
@@ -809,7 +861,7 @@ export class Atlas {
       // Solid CSS hex (no alpha). Brighter than the link itself so the
       // arrowhead is unmistakable against the dimmer edge shaft, even
       // when the edge has been faded by a selection/legend hover.
-      const baseHex = CATEGORY_COLOR[l.category];
+      const baseHex = this.baseColorForLink(l);
       return '#' + baseHex.toString(16).padStart(6, '0');
     });
     // Flowing particles along directional links — neural-pulse effect that
@@ -1071,6 +1123,11 @@ export class Atlas {
       // canvas the library injects, which can change identity) — passive:
       // false so we can preventDefault().
       this.opts.container.addEventListener('wheel', this.onWheel, { passive: false });
+      // ── grab-to-rotate-pivot wiring (DISABLED — feature kept in code for
+      //    future re-enable; methods + fields remain below for reference).
+      //    To re-enable: uncomment the line below AND the matching
+      //    removeEventListener in dispose() near the end of this file.
+      // this.opts.container.addEventListener('pointerdown', this.onGrabPointerDown, true);
       // Mousemove suppressor — refresh the timestamp the reheat loop reads
       // so we don't shift nodes under the user's cursor while they hover.
       this.opts.container.addEventListener('pointermove', (e: PointerEvent) => {
@@ -1574,6 +1631,130 @@ export class Atlas {
     // since _eye = cam−target is unchanged, there is nothing to correct.
   };
 
+  // ── BEGIN: grab-to-rotate-pivot (cut this whole block to revert) ──────────
+  //
+  // Goal: when the user starts a left-click drag, rotation should pivot
+  // around the 3D point under the cursor at grab-start — Blender / Figma /
+  // CAD style — instead of around TrackballControls' drifting `target`.
+  //
+  // We can't just set `controls.target` and let TC handle the rotation
+  // because TC's update() calls `camera.lookAt(target)` every frame, which
+  // would re-aim the camera and SNAP the orientation when target moves far
+  // from the camera's forward axis. So during the grab we:
+  //   1. Disable TC entirely (ctrls.enabled = false) so update() is a no-op
+  //   2. Apply rotation manually: rotate (cam.position - pivot) by a
+  //      quaternion built from the mouse delta, then premultiply the same
+  //      quaternion onto cam.quaternion so orientation rotates in lockstep
+  //   3. On release, realign TC's target to a point in front of the new
+  //      camera orientation BEFORE re-enabling — so TC's first post-grab
+  //      update() finds target already consistent and doesn't snap.
+  //
+  // Drag threshold (~4px) is critical: without it, single clicks would
+  // capture the pointer and break node selection. Under threshold → let
+  // the click bubble normally to TC's selection handlers.
+
+  private onGrabPointerDown = (e: PointerEvent): void => {
+    if (e.button !== 0) return;
+    if (e.ctrlKey || e.metaKey || e.shiftKey) return;
+    // Don't capture yet — wait for movement to know if this is a drag or a click.
+    this.grabStartX = e.clientX;
+    this.grabStartY = e.clientY;
+    this.grabPendingPointerId = e.pointerId;
+    this.grabActive = false;
+    this.grabPivot = null;
+    this.opts.container.addEventListener('pointermove', this.onGrabPointerMove);
+    this.opts.container.addEventListener('pointerup', this.onGrabPointerUp);
+    this.opts.container.addEventListener('pointercancel', this.onGrabPointerUp);
+  };
+
+  private onGrabPointerMove = (e: PointerEvent): void => {
+    if (this.grabPendingPointerId !== e.pointerId) return;
+
+    // ── Threshold gate: cross 4px before taking over from TC ─────────────
+    if (!this.grabActive) {
+      const ddx = e.clientX - this.grabStartX;
+      const ddy = e.clientY - this.grabStartY;
+      if (Math.sqrt(ddx * ddx + ddy * ddy) < 4) return;
+
+      const cam = this.graph.camera() as THREE.PerspectiveCamera;
+      const ctrls = this.graph.controls() as { target?: THREE.Vector3; enabled?: boolean };
+      if (!cam || !ctrls?.target) return;
+
+      // Pivot anchors at the cursor's 3D location at GRAB START — not
+      // the current cursor position — so rotation feels anchored to
+      // where the user clicked.
+      this.grabPivot = this.computeCursorPivot(this.grabStartX, this.grabStartY, cam, ctrls.target);
+      this.grabLastX = e.clientX;
+      this.grabLastY = e.clientY;
+      this.grabActive = true;
+      ctrls.enabled = false;
+      try { this.opts.container.setPointerCapture(e.pointerId); } catch { /* not all browsers */ }
+    }
+
+    if (!this.grabPivot) return;
+    const cam = this.graph.camera() as THREE.PerspectiveCamera;
+    if (!cam) return;
+
+    const dx = e.clientX - this.grabLastX;
+    const dy = e.clientY - this.grabLastY;
+    this.grabLastX = e.clientX;
+    this.grabLastY = e.clientY;
+
+    const rect = this.opts.container.getBoundingClientRect();
+    if (rect.width === 0 || rect.height === 0) return;
+    // Sensitivity: dragging a full screen width = 180° of rotation. Matches
+    // typical 3D-viewer feel (Blender's default, Three.js editor, etc.).
+    const azim  = (-dx / rect.width)  * Math.PI;
+    const polar = (-dy / rect.height) * Math.PI;
+
+    // Horizontal uses WORLD UP (not camera up) to avoid accumulating roll
+    // when the user does mixed h+v gestures. Vertical uses the camera's
+    // current RIGHT axis (in world space) so up/down tilt is screen-relative.
+    const worldUp = new THREE.Vector3(0, 1, 0);
+    const right = new THREE.Vector3().setFromMatrixColumn(cam.matrixWorld, 0).normalize();
+
+    const qH = new THREE.Quaternion().setFromAxisAngle(worldUp, azim);
+    const qV = new THREE.Quaternion().setFromAxisAngle(right, polar);
+    const q = qH.multiply(qV); // combined rotation
+
+    // Rotate camera position around the pivot.
+    const offset = cam.position.clone().sub(this.grabPivot);
+    offset.applyQuaternion(q);
+    cam.position.copy(this.grabPivot).add(offset);
+
+    // Apply the SAME rotation to camera orientation. premultiply so the
+    // rotation acts in world space, not local — this preserves the
+    // relative view-direction-vs-pivot geometry exactly.
+    cam.quaternion.premultiply(q);
+  };
+
+  private onGrabPointerUp = (e: PointerEvent): void => {
+    if (this.grabPendingPointerId !== e.pointerId) return;
+
+    if (this.grabActive) {
+      const cam = this.graph.camera() as THREE.PerspectiveCamera;
+      const ctrls = this.graph.controls() as { target?: THREE.Vector3; enabled?: boolean; update?: () => void };
+      // Realign TC's target so the first post-grab update() doesn't snap.
+      // Place target on the camera's forward axis at the same depth as the
+      // pivot was — lookAt(target) becomes a no-op for the current orientation.
+      if (cam && ctrls?.target && this.grabPivot) {
+        const pivotDist = cam.position.distanceTo(this.grabPivot);
+        const fwd = new THREE.Vector3(0, 0, -1).applyQuaternion(cam.quaternion).normalize();
+        ctrls.target.copy(cam.position).addScaledVector(fwd, pivotDist);
+      }
+      if (ctrls) ctrls.enabled = true;
+      try { this.opts.container.releasePointerCapture(e.pointerId); } catch { /* not captured / browser quirk */ }
+    }
+
+    this.grabActive = false;
+    this.grabPivot = null;
+    this.grabPendingPointerId = null;
+    this.opts.container.removeEventListener('pointermove', this.onGrabPointerMove);
+    this.opts.container.removeEventListener('pointerup', this.onGrabPointerUp);
+    this.opts.container.removeEventListener('pointercancel', this.onGrabPointerUp);
+  };
+  // ── END: grab-to-rotate-pivot ─────────────────────────────────────────────
+
   private nodeTipEl: HTMLDivElement | null = null;
   private nodeTipText: string | null = null;
 
@@ -1938,6 +2119,7 @@ export class Atlas {
         type: d.type,
         category: categoryFor(true, d.type),
         weight: d.weight,
+        ...(d.evidence !== undefined ? { evidence: d.evidence } : {}),
       });
     }
     for (const u of undirected) {
@@ -3329,6 +3511,13 @@ export class Atlas {
     }
     if (!this.opts.compact) {
       this.opts.container.removeEventListener('wheel', this.onWheel);
+      // ── grab-to-rotate-pivot dispose (DISABLED — see matching wiring comment
+      //    above in the controls-init block. If re-enabling the pointerdown
+      //    listener, also uncomment the four removeEventListener lines below).
+      // this.opts.container.removeEventListener('pointerdown', this.onGrabPointerDown, true);
+      // this.opts.container.removeEventListener('pointermove', this.onGrabPointerMove);
+      // this.opts.container.removeEventListener('pointerup', this.onGrabPointerUp);
+      // this.opts.container.removeEventListener('pointercancel', this.onGrabPointerUp);
       if (this.onModKeyDown) window.removeEventListener('keydown', this.onModKeyDown);
       if (this.onModKeyUp) window.removeEventListener('keyup', this.onModKeyUp);
     }
@@ -3493,11 +3682,23 @@ export class Atlas {
     return this.nodeSourceFileMap.get(sId) !== this.nodeSourceFileMap.get(tId);
   }
 
+  /** Resolve the base color for a link, applying per-evidence overrides first.
+   *  See EVIDENCE_COLOR_OVERRIDE for the active override map. */
+  private baseColorForLink(l: AtlasLink): number {
+    if (l.evidence) {
+      // Structured evidences (e.g. `skill:calls;capture=foo`) — match the base tag.
+      const baseTag = l.evidence.split(';')[0]!;
+      const override = EVIDENCE_COLOR_OVERRIDE[baseTag];
+      if (override !== undefined) return override;
+    }
+    return CATEGORY_COLOR[l.category];
+  }
+
   private computeColorForLink(l: AtlasLink): string {
     const crossFile = this.isCrossFileEdge(l);
     const sId = typeof l.source === 'string' ? l.source : (l.source as AtlasNode).id;
     const tId = typeof l.target === 'string' ? l.target : (l.target as AtlasNode).id;
-    const base = CATEGORY_COLOR[l.category];
+    const base = this.baseColorForLink(l);
 
     // LEGEND CATEGORY HOVER — the hovered category's edges glow; all others
     // fade to near-invisible so the pattern for that category pops clearly.
@@ -3577,7 +3778,7 @@ export class Atlas {
   }
 
   private computeColorForLinkDim(l: AtlasLink, crossFile = this.isCrossFileEdge(l)): string {
-    const base = CATEGORY_COLOR[l.category];
+    const base = this.baseColorForLink(l);
     const sId = typeof l.source === 'string' ? l.source : (l.source as AtlasNode).id;
     const tId = typeof l.target === 'string' ? l.target : (l.target as AtlasNode).id;
 
@@ -3693,7 +3894,7 @@ export class Atlas {
   }
 
   private computeBrightParticleColor(l: AtlasLink): string {
-    const base = CATEGORY_COLOR[l.category];
+    const base = this.baseColorForLink(l);
     const sId = typeof l.source === 'string' ? l.source : (l.source as AtlasNode).id;
     const tId = typeof l.target === 'string' ? l.target : (l.target as AtlasNode).id;
 
