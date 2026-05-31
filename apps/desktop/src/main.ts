@@ -1373,6 +1373,23 @@ function render(status: StatusSnapshot): void {
           }
         } catch { /* non-fatal — handler will retry on next engrams-loading event */ }
       }
+      // Flush any engrams-loading event that fired during the unlockPending
+      // bail window. Without this, missed events leave the picker frozen on
+      // boot-time state and engrams that finished loading mid-unlock stay
+      // greyed forever (the bug behind the user's "stays grey randomly"
+      // report). Re-runs the same refresh path the live listener uses.
+      if (_missedDuringUnlockPayload) {
+        const { loaded, total } = _missedDuringUnlockPayload;
+        _missedDuringUnlockPayload = null;
+        const allDone = loaded >= total;
+        if (allDone) markEngramsLoaded();
+        processEngramsLoadingRefresh(allDone);
+      }
+      // Belt-and-suspenders: start the periodic greyed-refresh poll. If any
+      // engrams are still loading at unlock-complete, this self-heals the
+      // picker every 5s without needing further `engrams-loading` events.
+      // Stops on its own once all engrams report loaded.
+      schedulePeriodicGreyedRefresh();
     };
     void fetchGraphsMetadata().then(async () => {
       // atlasActiveGraph is now set. Load nodes directly — don't go through
@@ -1492,9 +1509,19 @@ function formatEngramLabel(g: GraphWithMetadata): string {
 }
 
 function syncEngramPicker(): void {
+  // Two-stage sort: regular (non-skill) engrams alphabetically FIRST,
+  // then all skill-template engrams alphabetically. This keeps the user's
+  // primary memory engrams at the top of the picker; the trained-skill
+  // engrams (visually tagged with the 🔧 / 🛠️ icon by formatEngramLabel)
+  // sit grouped at the bottom where they're easy to find by category.
   const visibleGraphs = loadedGraphs
     .filter((g) => !g.metadata.archived)
-    .sort((a, b) => (a.metadata.displayName ?? a.graphId).localeCompare(b.metadata.displayName ?? b.graphId));
+    .sort((a, b) => {
+      const aIsSkill = a.metadata.template === 'skill' ? 1 : 0;
+      const bIsSkill = b.metadata.template === 'skill' ? 1 : 0;
+      if (aIsSkill !== bIsSkill) return aIsSkill - bIsSkill;
+      return (a.metadata.displayName ?? a.graphId).localeCompare(b.metadata.displayName ?? b.graphId);
+    });
   // Engrams the sidecar reported via list_graphs_with_metadata({includeUnloaded:true})
   // but hasn't yet decrypted into memory show up as disabled options, so the
   // dropdown reflects the full set during boot instead of growing one entry
@@ -1939,13 +1966,6 @@ const TOOL_INFO: Record<string, { determinism: string; body: string; examples: s
     examples: ['Before I save this note about Postgres tuning, is there anything similar already?'],
   },
 
-  // ── Conditional (deterministic by default, LLM-aware) ───────────────
-  correct: {
-    determinism: 'Conditional',
-    body: 'Proposes a fix to an existing memory as a diff you review and approve. Deterministic by default — supersedes the closest-matching memory. Enabling the Local LLM upgrades it to a multi-memory diff that varies between runs.',
-    examples: ['Actually it was September, not August.', 'Update my note about the launch — it shipped on the 15th, not the 12th.', 'De fapt, am hotărât altceva — corectează nota despre buget.'],
-  },
-
   // ── Non-deterministic (Local LLM required) ──────────────────────────
   develop: {
     determinism: 'Non-deterministic',
@@ -1976,6 +1996,53 @@ const TOOL_INFO: Record<string, { determinism: string; body: string; examples: s
     determinism: 'Non-deterministic',
     body: 'Pass arbitrary text to the local LLM and ask it to extract discrete facts worth remembering. Returns a JSON array ready for ingest_batch.',
     examples: ['Extract the key facts from this meeting transcript for saving: …', 'Distill this article into bullet-point facts I can ingest.'],
+  },
+
+  // ── Skills (Graphnosis Autonomous Praxis) ───────────────────────────────
+  edit: {
+    determinism: 'Conditional',
+    body: 'Proposes a fix or refinement to an existing memory as a diff you review and approve. Use this instead of remember when you want to UPDATE, CORRECT, or ADD DETAIL to existing memory — not duplicate it. Deterministic by default: supersedes the closest-matching memory. Enabling the Local LLM upgrades it to a multi-memory diff that varies between runs.',
+    examples: ['Actually it was September, not August — edit that.', 'Update my note about the launch — it shipped on the 15th, not the 12th.', 'Add to my Q3 milestones: new GTM target landed.', 'De fapt, am hotărât altceva — corectează nota despre buget.'],
+  },
+  train_skill: {
+    determinism: 'Conditional',
+    body: 'Personalize an AI skill (instruction text, system prompt, CLAUDE.md, .cursorrules) against your Graphnosis memory. Pro: a local LLM rewrites the skill with per-line attribution and conflict detection. Free: a memory-augmented path appends a Personal Context block from your most relevant memories. Either way, your memories never leave the device.',
+    examples: ['Train my code-review skill against my engineering memory.', 'Personalize this CLAUDE.md against my Work engram.'],
+  },
+  skill_vitality: {
+    determinism: 'Deterministic',
+    body: 'Score how fresh a trained skill is on a 0–100 scale. Drops as the influential source nodes that shaped the skill get forgotten, edited, or superseded — telling you when a retrain would pay off.',
+    examples: ['How fresh is my code-review skill?', 'Which of my trained skills are getting stale?'],
+  },
+  export_skill: {
+    determinism: 'Deterministic',
+    body: 'Export a trained skill in your target tool\'s native format — claude-md, cursorrules, system-prompt, openai, raw — or as a portable encrypted .gsk pack (Pro). The .gsk format carries the skill text, recall recipes, and structured goals so it can be re-imported into any Graphnosis cortex.',
+    examples: ['Export my code-review skill as a CLAUDE.md.', 'Save my customer-success skill as a .gsk pack I can share with my team.'],
+  },
+  list_skills: {
+    determinism: 'Deterministic',
+    body: 'Lists every trained skill across your Skills-template engrams — name, engram, training mode (memory-augmented / LLM), training date, node count. Use this before get_skill / retrain / export to find the right one.',
+    examples: ['What skills have I trained?', 'List every skill in my Coding Skills engram.', 'Show me my trained skills sorted by most recent.'],
+  },
+  get_skill: {
+    determinism: 'Deterministic',
+    body: 'Returns the full content of one trained skill — its text, mode, recall breadth, goals, and ingest timestamps. Pair with list_skills first to find the sourceId.',
+    examples: ['Show me the trained text of my code-review skill.', 'Get the full content of skill <sourceId> in my Skills engram.'],
+  },
+  skill_history: {
+    determinism: 'Deterministic',
+    body: 'Returns every version of a skill — original training plus all retrained versions in chronological order. Each entry carries its sourceId, ingest date, node count, and which one is current. Use it to compare evolution or to find a prior sourceId for rollback_skill.',
+    examples: ['Show me the history of my code-review skill.', 'List every retrain of my customer-success skill.', 'When did I last retrain my onboarding skill?'],
+  },
+  delete_skill: {
+    determinism: 'Deterministic',
+    body: 'Permanently removes one trained skill and all of its retrained versions from the Skills engram. The underlying source is soft-deleted via the standard forget pathway, so it follows your cortex\'s forget-mode setting (soft = recoverable, hard = purged).',
+    examples: ['Delete the old code-review skill — I retrained it as the new one.', 'Forget the abandoned customer-success skill experiment.'],
+  },
+  rollback_skill: {
+    determinism: 'Deterministic',
+    body: 'Reverts a skill to one of its previous versions. The current version is soft-deleted and the target version is promoted to current. Use skill_history first to find the sourceId of the version you want to roll back to.',
+    examples: ['Roll back my code-review skill to last week\'s version — yesterday\'s retrain went sideways.', 'Restore the original onboarding skill — the LLM rewrite drifted.'],
   },
 };
 
@@ -2543,15 +2610,18 @@ async function refreshStats(): Promise<void> {
         const moveBtn = moveTargets.length > 0
           ? `<button class="btn-move-source" data-graph-id="${escape(s.graphId)}" data-source-id="${escape(s.sourceId)}" title="Move this source to another engram">Move to…</button>`
           : '';
+        const skillBadge = s.kind === 'skill'
+          ? `<span class="source-kind-badge source-kind-skill" title="Skill">🛠</span>`
+          : '';
         return `
           <div class="source-row" data-source-id="${escape(s.sourceId)}">
-            <span class="source-name" title="${escape(s.ref)}">${escape(s.kind === 'file' ? (s.ref.split('/').pop() ?? s.ref) : formatLegendLabel(s.ref))}</span>
+            ${skillBadge}<span class="source-name" title="${escape(s.ref)}">${escape(s.kind === 'file' ? (s.ref.split('/').pop() ?? s.ref) : formatLegendLabel(s.ref))}</span>
             <span class="source-meta">${s.nodeIds.length} node${s.nodeIds.length === 1 ? '' : 's'}</span>
             ${addedByBadge}
             ${finderBtn}
             ${reingestBtn}
             ${moveBtn}
-            <button class="btn-forget" data-graph-id="${escape(s.graphId)}" data-source-id="${escape(s.sourceId)}" data-node-count="${s.nodeIds.length}" data-ref="${escape(s.ref)}">Forget</button>
+            <button class="btn-forget" data-graph-id="${escape(s.graphId)}" data-source-id="${escape(s.sourceId)}" data-node-count="${s.nodeIds.length}" data-ref="${escape(s.ref)}" data-kind="${escape(s.kind)}">Forget</button>
           </div>`;
       };
 
@@ -2597,7 +2667,17 @@ async function refreshStats(): Promise<void> {
           const graphId = btn.dataset.graphId ?? '';
           const sourceId = btn.dataset.sourceId ?? '';
           const ref = btn.dataset.ref ?? sourceId;
+          const sourceKind = btn.dataset.kind ?? '';
           if (!graphId || !sourceId) return;
+
+          // Warn before forgetting a trained skill source
+          if (sourceKind === 'skill') {
+            const displayName = ref.split('/').pop() ?? ref;
+            const ok = window.confirm(
+              `"${displayName}" is a trained skill — forgetting it removes it from your Skills library permanently.\n\nContinue?`
+            );
+            if (!ok) return;
+          }
 
           // If this row already has a confirm widget open, do nothing (guard
           // against double-clicks while the widget is animating into view).
@@ -3711,15 +3791,20 @@ function renderSettingsGraphsList(): void {
     personal:  '2 000 tokens — explicit recall only',
     sensitive: '0 tokens — AI blocked',
   };
-  container.innerHTML = loadedGraphs.map((g) => {
+
+  const renderRow = (g: GraphWithMetadata): string => {
     const archived = g.metadata.archived ?? false;
     const isActive = g.graphId === atlasActiveGraph;
     const tier = g.metadata.sensitivityTier ?? 'personal';
+    const isSkillEngram = g.metadata.template === 'skill';
+    const skillCount = isSkillEngram ? skillsLibrary.filter((s) => s.graphId === g.graphId).length : 0;
+    const skillBadge = isSkillEngram ? `<span class="sgr-badge sgr-badge-skill" title="${skillCount} skill${skillCount === 1 ? '' : 's'}">🛠 ${skillCount}</span>` : '';
     return `
-      <div class="settings-graph-row${archived ? ' is-archived' : ''}" data-sgr-id="${escape(g.graphId)}">
-        <span class="sgr-name" title="Click to rename" data-sgr-id="${escape(g.graphId)}">${escape(g.metadata.displayName)}</span>
+      <div class="settings-graph-row${archived ? ' is-archived' : ''}" data-sgr-id="${escape(g.graphId)}" data-skill-count="${skillCount}">
+        <span class="sgr-name" title="Click to rename" data-sgr-id="${escape(g.graphId)}">${escape(formatEngramLabel(g))}</span>
         ${archived ? '<span class="sgr-badge">archived</span>' : ''}
         ${isActive ? '<span class="sgr-badge">active</span>' : ''}
+        ${skillBadge}
         <select class="sgr-tier-select" data-sgr-id="${escape(g.graphId)}" title="${TIER_CAPS[tier]}"
           style="color:${tier === 'public' ? 'var(--ok)' : tier === 'sensitive' ? 'var(--error)' : 'var(--color-status-warn-gold)'}">
           <option value="public"    ${tier === 'public'    ? 'selected' : ''} style="color:var(--ok)">public</option>
@@ -3729,11 +3814,25 @@ function renderSettingsGraphsList(): void {
         <button class="btn-graph-archive" data-sgr-id="${escape(g.graphId)}" data-archived="${archived}">
           ${archived ? 'Unarchive' : 'Archive'}
         </button>
-        <button class="btn-graph-delete" data-sgr-id="${escape(g.graphId)}" data-name="${escape(g.metadata.displayName)}">
+        <button class="btn-graph-delete" data-sgr-id="${escape(g.graphId)}" data-name="${escape(g.metadata.displayName ?? g.graphId)}">
           Delete
         </button>
       </div>`;
-  }).join('');
+  };
+
+  // Separate standard engrams from skill engrams; each group sorted alphabetically.
+  const standard = [...loadedGraphs]
+    .filter((g) => g.metadata.template !== 'skill')
+    .sort((a, b) => formatEngramLabel(a).localeCompare(formatEngramLabel(b)));
+  const skillEngrams = [...loadedGraphs]
+    .filter((g) => g.metadata.template === 'skill')
+    .sort((a, b) => formatEngramLabel(a).localeCompare(formatEngramLabel(b)));
+
+  const standardHtml = standard.map(renderRow).join('');
+  const skillsHtml = skillEngrams.length > 0
+    ? `<div class="sgr-section-header">Skills Engrams</div>${skillEngrams.map(renderRow).join('')}`
+    : '';
+  container.innerHTML = standardHtml + skillsHtml;
 
   // ── Archive / Unarchive ──────────────────────────────────────────────────
   container.querySelectorAll<HTMLButtonElement>('.btn-graph-archive').forEach((btn) => {
@@ -3743,6 +3842,20 @@ function renderSettingsGraphsList(): void {
       const nextArchived = !nowArchived;
       const displayName = loadedGraphs.find((g) => g.graphId === graphId)?.metadata.displayName ?? graphId;
       if (!graphId) return;
+
+      // Before archiving a skill-template engram, warn about orphaning skills
+      if (nextArchived) {
+        const g = loadedGraphs.find((gr) => gr.graphId === graphId);
+        if (g?.metadata.template === 'skill') {
+          const skillCount = skillsLibrary.filter((s) => s.graphId === graphId).length;
+          if (skillCount > 0) {
+            const ok = window.confirm(
+              `"${g.metadata.displayName ?? g.graphId}" contains ${skillCount} trained skill${skillCount === 1 ? '' : 's'}.\n\nArchiving this engram will hide those skills from your library. Continue?`
+            );
+            if (!ok) return;
+          }
+        }
+      }
 
       btn.disabled = true;
       try {
@@ -3913,9 +4026,15 @@ function renderSettingsGraphsList(): void {
       const archiveBtn = row.querySelector<HTMLButtonElement>('.btn-graph-archive');
       if (archiveBtn) archiveBtn.style.display = 'none';
 
+      const skillCount = Number(row.dataset['skillCount'] ?? 0);
+      const skillWarning = skillCount > 0
+        ? `<span class="sgr-confirm-skill-warning">⚠ This engram contains <strong>${skillCount} skill${skillCount === 1 ? '' : 's'}</strong>. Deleting it will permanently remove those skills and all their trained nodes.</span>`
+        : '';
+
       const confirmDiv = document.createElement('div');
       confirmDiv.className = 'sgr-confirm-delete';
       confirmDiv.innerHTML = `
+        ${skillWarning}
         <span class="sgr-confirm-label">Type <strong>${escape(displayName)}</strong> to delete forever:</span>
         <input type="text" class="sgr-confirm-input" placeholder="${escape(displayName)}" autocomplete="off" />
         <button class="sgr-confirm-go" disabled>Delete forever</button>
@@ -3943,12 +4062,23 @@ function renderSettingsGraphsList(): void {
         cancelBtn.disabled = true;
         input.disabled = true;
         try {
+          // Purge any hidden-skill entries belonging to this engram before deletion
+          // so they don't remain as ghost entries in localStorage.
+          const orphanedHidden = skillsLibrary
+            .filter((s) => s.graphId === graphId)
+            .map((s) => s.sourceId);
+          orphanedHidden.forEach((id) => skillsHiddenSet.delete(id));
+          if (orphanedHidden.length > 0) persistSkillsHidden();
+
           await invoke('delete_graph', { graphId });
           loadedGraphs = (await invoke('list_graphs_with_metadata', { includeUnloaded: true })) as GraphWithMetadata[];
           if (atlasActiveGraph === graphId) {
             atlasActiveGraph = pickAtlasGraph(); refreshActiveEngramLabel();
             if (mainAtlas) { mainAtlas.dispose(); mainAtlas = null; }
           }
+          // Refresh the skills library so orphaned skills disappear immediately.
+          await fetchSkillsLibrary();
+          renderSkillsLibrary();
           await refreshAtlasView();
           renderSettingsGraphsList();
         } catch (e) {
@@ -4756,7 +4886,7 @@ void (async () => {
   await webview.onDragDropEvent((event) => {
     const payload = event.payload;
     if (payload.type === 'enter' || payload.type === 'over') {
-      els.dropZone.classList.add('dragging');
+      if (!isSkillCardDragging) els.dropZone.classList.add('dragging');
     } else if (payload.type === 'leave') {
       els.dropZone.classList.remove('dragging');
     } else if (payload.type === 'drop') {
@@ -5754,6 +5884,7 @@ function mcpToolsOnboardingHtml(): string {
               <span class="g-deck-cmd-chip" data-tool="remind">remind</span>
               <span class="g-deck-cmd-chip" data-tool="dig_deeper">dig_deeper</span>
               <span class="g-deck-cmd-chip" data-tool="remember">remember</span>
+              <span class="g-deck-cmd-chip" data-tool="edit">edit</span>
               <span class="g-deck-cmd-chip" data-tool="forget">forget</span>
               <span class="g-deck-cmd-chip" data-tool="apply">apply</span>
               <span class="g-deck-cmd-chip" data-tool="stats">stats</span>
@@ -5827,12 +5958,6 @@ function mcpToolsOnboardingHtml(): string {
             <div class="g-deck-cmd-chips">
               <span class="g-deck-cmd-chip" data-tool="audit_memory">audit_memory</span>
               <span class="g-deck-cmd-chip" data-tool="check_duplicate">check_duplicate</span>
-            </div>
-          </div>
-          <div class="g-deck-cmd-group">
-            <span class="g-deck-cmd-grouplabel">Conditional</span>
-            <div class="g-deck-cmd-chips">
-              <span class="g-deck-cmd-chip" data-tool="correct">correct</span>
             </div>
           </div>
           <div class="g-deck-cmd-group">
@@ -5988,15 +6113,38 @@ function renderDeck(): void {
   // ── Card body: search + single candidate panel ───────────────────────
   // Show the top-ranked connected candidate, with quick-action buttons.
   // The search lets the user swap to any other memory in this engram.
+  //
+  // If the source node's candidate list is already cached (warmed below for
+  // adjacent deck cards), render the candidate's preview text inline at first
+  // paint so the user sees both source AND suggestion immediately. The full
+  // candidate panel (relationship buttons, meta) still gets rendered via the
+  // async renderDeckTriviaCandidate(n) call below — this just removes the
+  // "Finding a connected memory…" placeholder flash for the common case.
+  const cachedCandidates = graphnosisCandidatesCache.get(n.id);
+  const cachedTop = cachedCandidates?.[0]?.node ?? null;
+  const cachedPreview = cachedTop ? cleanDisplayContent(cachedTop.contentPreview) : '';
+
   els.gDeckCard.innerHTML = `
     <div class="g-deck-trivia-intro">
       <p class="g-deck-trivia-intro-headline">Wire two memories together — like neurons forming a new pathway.</p>
       <p class="g-deck-trivia-intro-tagline">${escape(pickCheckinTagline())}</p>
     </div>
     <div id="g-deck-trivia-candidate" class="g-deck-trivia-candidate">
-      <p class="subtitle" style="padding: 12px;">Finding a connected memory…</p>
+      ${cachedPreview
+        ? `<p class="g-deck-trivia-text" style="padding:12px;opacity:0.85;">${escape(cachedPreview)}</p>`
+        : `<p class="subtitle" style="padding: 12px;">Finding a connected memory…</p>`}
     </div>
   `;
+
+  // Pre-warm the candidate cache for the next ~2 deck cards in the
+  // background so when the user advances, their suggestions render
+  // instantly instead of showing the "Finding…" placeholder.
+  for (let i = 1; i <= 2; i++) {
+    const next = graphnosisDeck[graphnosisDeckIndex + i]?.node;
+    if (next && !graphnosisCandidatesCache.has(next.id)) {
+      void getRelatedCandidates(next.id);
+    }
+  }
 
   // Wire the top-level card actions. Skip + Forget moved into the pinned
   // meta row (rendered in gDeckCardHead above), but they retain the same
@@ -6104,12 +6252,11 @@ async function renderDeckTriviaCandidate(sourceNode: NodeRecord, override?: Node
         ${relBtns}
         <button class="g-deck-trivia-other">Other…</button>
       </div>
-      <p class="g-deck-trivia-text">${escape(candPreview)}</p>
+      <p class="g-deck-trivia-text">${candPreview ? escape(candPreview) : '<em style="opacity:0.6">(no preview text — this candidate is title-only)</em>'}</p>
       <div class="g-deck-trivia-meta">
         <span class="g-deck-trivia-type">${escape(candType)}</span>
         <span class="g-deck-trivia-conf">trust ${candidate.confidence.toFixed(2)}</span>
         ${candBreadcrumb ? `<span class="g-deck-trivia-file" title="${escape(renderBreadcrumbPlain(candidate))}">${candBreadcrumb}</span>` : ''}
-        <button class="g-deck-trivia-view-btn" title="View in sidebar">View →</button>
       </div>
     </div>
   `;
@@ -6172,10 +6319,9 @@ async function renderDeckTriviaCandidate(sourceNode: NodeRecord, override?: Node
     });
   });
 
-  // Wire click on candidate text OR View button → open in right sidebar + Memory Trace.
-  const viewCandidate = () => { if (candidate) selectGraphnosisNode(candidate.id, { trace: true }); };
-  slot.querySelector<HTMLElement>('.g-deck-trivia-text')?.addEventListener('click', viewCandidate);
-  slot.querySelector<HTMLButtonElement>('.g-deck-trivia-view-btn')?.addEventListener('click', viewCandidate);
+  // Candidate text is shown inline in full — no click-to-view needed since
+  // the body is right there. The legacy "View →" button has been removed
+  // for the same reason: nothing useful was hiding behind it.
 }
 
 // Called when the suggestion panel inside a deck card finishes (Connect
@@ -7205,6 +7351,7 @@ function renderDetailEmpty(): void {
   els.gDetail.querySelector<HTMLElement>('.g-detail-empty')?.classList.remove('hidden');
   els.gDetailBody.classList.add('hidden');
   els.gDetailBody.innerHTML = '';
+  els.gDetail.classList.add('hidden');
 }
 
 function renderDetailPane(): void {
@@ -7219,6 +7366,7 @@ function renderDetailPane(): void {
   }
   els.gDetail.querySelector<HTMLElement>('.g-detail-empty')?.classList.add('hidden');
   els.gDetailBody.classList.remove('hidden');
+  els.gDetail.classList.remove('hidden');
 
   const isActive = node.confidence > 0.2 && (node.validUntil === undefined || node.validUntil > Date.now());
   const confidenceDot = node.confidence >= 0.8 ? '●●●' : node.confidence >= 0.5 ? '●●○' : '●○○';
@@ -8913,6 +9061,15 @@ function switchGraphnosisTab(tab: GraphnosisTab): void {
   if (tab === 'checkin') {
     document.getElementById('g-search-results')?.classList.add('hidden');
     closeTrivia();
+    // Clicking the MemoryStudio tab — even when already active — scrolls the
+    // pane back to the top. This makes the tab act like a "home" affordance
+    // so the user can always recover from deep-scroll state without hunting
+    // for a scroll-to-top button.
+    document.querySelector<HTMLElement>('.app-canvas')?.scrollTo({ top: 0, behavior: 'smooth' });
+  } else {
+    // Hide the Memory Inspector whenever leaving the checkin (MemoryStudio) tab.
+    // It only makes sense in the context of the checkin node list.
+    els.gDetail.classList.add('hidden');
   }
   document.querySelectorAll<HTMLButtonElement>('.g-tab').forEach((b) => {
     b.classList.toggle('active', b.dataset['gtab'] === tab);
@@ -9086,6 +9243,12 @@ async function refreshAtlasPredictedEdges(): Promise<void> {
  */
 function formatLegendLabel(raw: string | undefined | null): string {
   if (!raw) return '(no source)';
+  // skill:<ts>:<label>  →  <label>   — trained skill sources stored by ingestClip
+  if (raw.startsWith('skill:')) {
+    const rest = raw.slice('skill:'.length);
+    const secondColon = rest.indexOf(':');
+    return secondColon !== -1 ? rest.slice(secondColon + 1) : rest;
+  }
   // ai-conversation:<id>:<topic>  →  AI: <topic>
   // ai-conversation:<id>          →  AI: <id>     (fallback when label missing)
   if (raw.startsWith('ai-conversation:')) {
@@ -9093,11 +9256,11 @@ function formatLegendLabel(raw: string | undefined | null): string {
     const secondColon = rest.indexOf(':');
     return secondColon !== -1 ? `AI: ${rest.slice(secondColon + 1)}` : `AI: ${rest}`;
   }
-  // clip:<id>:<topic>  →  Clip: <topic>  — same pattern for consistency.
+  // clip:<id>:<topic>  →  <topic>  — same pattern for consistency.
   if (raw.startsWith('clip:')) {
     const rest = raw.slice('clip:'.length);
     const secondColon = rest.indexOf(':');
-    return secondColon !== -1 ? `Clip: ${rest.slice(secondColon + 1)}` : `Clip: ${rest}`;
+    return secondColon !== -1 ? rest.slice(secondColon + 1) : rest;
   }
   return raw;
 }
@@ -9402,6 +9565,11 @@ document.getElementById('btn-search-results-close')?.addEventListener('click', (
   els.gSearchClear.classList.add('hidden');
   applyGraphnosisFilter();
   els.gSearch.focus();
+});
+
+// Memory Inspector close button — collapses the detail pane.
+document.getElementById('btn-detail-close')?.addEventListener('click', () => {
+  renderDetailEmpty();
 });
 
 // ── Keyboard shortcuts (only when Graphnosis pane is active) ──────────
@@ -10305,7 +10473,19 @@ async function switchActiveEngram(graphId: string): Promise<void> {
     const n = graphnosisAllNodes.length;
     setAtlasLoadingSub(`${n.toLocaleString()} memor${n === 1 ? 'y' : 'ies'}`);
     applyGraphnosisFilter();
-    if (currentMode === 'atlas') void refreshAtlasView();
+    // Always push the new engram's data into the 3D atlas AND fit the view,
+    // even when the 3D tab isn't visible. That way when the user later
+    // switches to "3D Engram", the camera is already framed on the new
+    // engram instead of showing the previous engram's leftover camera
+    // position. The atlas engine is a headless THREE.js scene — pushing
+    // data + fitting is cheap when invisible (no rendering until visible).
+    if (currentMode === 'atlas') {
+      void refreshAtlasView();
+    } else if (mainAtlas) {
+      pushDataIntoAtlas();
+      // Let the physics warmup settle so the bounding-sphere is honest.
+      setTimeout(() => mainAtlas?.zoomToFit(700, 20), 800);
+    }
   } finally {
     hideAtlasLoading();
   }
@@ -10366,6 +10546,15 @@ void listen<QuarantineRecoveredPayload>('graphnosis://cortex-recovered-from-quar
   finishIngestToast(id, p.sourcesFailed === 0 ? 'success' : 'error');
 });
 
+/** Debounce handle for the engrams-loading → skills-library refresh. */
+let _skillsRefreshTimer: number | null = null;
+
+/** Most-recent engrams-loading payload that arrived while `unlockPending` was
+ *  true. Used by the post-unlock catch-up to re-fire the listener logic with
+ *  the latest state, so events that boot saw get reflected in the picker.
+ *  Null when no events were missed. */
+let _missedDuringUnlockPayload: { loaded: number; total: number } | null = null;
+
 void listen<{ loaded: number; total: number }>('graphnosis://engrams-loading', (evt) => {
   const { loaded, total } = evt.payload;
   const remaining = total - loaded;
@@ -10383,29 +10572,85 @@ void listen<{ loaded: number; total: number }>('graphnosis://engrams-loading', (
 
   // During boot, the boot sequence owns atlasActiveGraph / loadedGraphs /
   // view refreshes. Touching them here races against the boot's awaits and
-  // can either show empty data or freeze the lock screen mid-load. Just
-  // update the status bar; the post-reveal catch-up handles any switch.
-  if (unlockPending) return;
+  // can either show empty data or freeze the lock screen mid-load. Record
+  // the latest payload so the post-unlock catch-up can re-process it; the
+  // bail itself is the same as before, just no longer silent.
+  if (unlockPending) {
+    _missedDuringUnlockPayload = evt.payload;
+    return;
+  }
 
-  // Re-fetch + re-render the picker on EVERY event so each newly loaded
-  // engram moves from the "Loading…" group to the main list as soon as it
-  // becomes available. The previous gating on allDone meant the picker
-  // froze in its mid-load state until the final event — looked stuck.
+  processEngramsLoadingRefresh(allDone);
+});
+
+/** Re-fetch loadedGraphs + sync UI after an engrams-loading event (or after
+ *  the post-unlock catch-up flushes a missed event). Extracted so both the
+ *  live listener AND the catch-up can call it. */
+function processEngramsLoadingRefresh(allDone: boolean): void {
   const saved = localStorage.getItem(LAST_ENGRAM_KEY);
   void invoke<GraphWithMetadata[]>('list_graphs_with_metadata', { includeUnloaded: true }).then((graphs) => {
     loadedGraphs = graphs;
-    // Keep Studio engram dropdowns in sync as engrams load asynchronously.
     populateStudioEngramSelects();
-    // Saved engram just became available and isn't active yet — promote it.
     if (saved && saved !== atlasActiveGraph
         && graphs.some((g) => !g.metadata.archived && g.graphId === saved && g.loaded !== false)) {
       void switchActiveEngram(saved);
+      schedulePeriodicGreyedRefresh();
       return;
     }
     syncEngramPicker();
     if (allDone && currentMode === 'atlas') void refreshAtlasView();
+    if (activeStudioTool === 'skills') {
+      if (_skillsRefreshTimer) clearTimeout(_skillsRefreshTimer);
+      _skillsRefreshTimer = window.setTimeout(() => {
+        _skillsRefreshTimer = null;
+        void (async () => {
+          await fetchSkillsLibrary();
+          renderSkillsLibrary();
+          if (allDone) void warmVitalityCache();
+        })();
+      }, allDone ? 0 : 350);
+    }
+    schedulePeriodicGreyedRefresh();
   });
-});
+}
+
+/** Periodic catch-up: while ANY engram in loadedGraphs is still greyed
+ *  (loaded === false), poll the sidecar every 5s for a fresh snapshot.
+ *  Self-stops once all engrams report loaded — no recurring timer cost
+ *  in steady state. Defensive against missed `engrams-loading` events:
+ *  even if a broadcast is dropped (events-socket flap, etc.), the picker
+ *  self-heals within 5 seconds.
+ *
+ *  Idempotent: calling it while a timer is already scheduled is a no-op.
+ *  The single tick re-schedules itself if still needed. */
+let _periodicGreyedRefreshTimer: ReturnType<typeof setTimeout> | null = null;
+function schedulePeriodicGreyedRefresh(): void {
+  if (_periodicGreyedRefreshTimer !== null) return; // already scheduled
+  const hasGreyed = loadedGraphs.some((g) => g.loaded === false);
+  if (!hasGreyed) return; // nothing to wait for
+  _periodicGreyedRefreshTimer = window.setTimeout(() => {
+    _periodicGreyedRefreshTimer = null;
+    void invoke<GraphWithMetadata[]>('list_graphs_with_metadata', { includeUnloaded: true })
+      .then((graphs) => {
+        const before = loadedGraphs.filter((g) => g.loaded === false).length;
+        loadedGraphs = graphs;
+        const after = graphs.filter((g) => g.loaded === false).length;
+        if (before !== after) {
+          // State changed since last check — sync the picker so the spinner
+          // disappears from engrams that finished loading.
+          syncEngramPicker();
+          populateStudioEngramSelects();
+        }
+        // Re-schedule if anything is still greyed; the recursive call
+        // is bounded by hasGreyed above so it self-terminates.
+        schedulePeriodicGreyedRefresh();
+      })
+      .catch(() => {
+        // Non-fatal — try again next tick.
+        schedulePeriodicGreyedRefresh();
+      });
+  }, 5000);
+}
 
 // ── Sidecar IPC helper ────────────────────────────────────────────────────
 // Generic pass-through to the sidecar's IPC dispatch via the Tauri command
@@ -12557,7 +12802,30 @@ async function checkDocsIngestOffer(): Promise<void> {
       'docs:checkOffer', { appVersion },
     );
     if (decision === 'offer') {
-      showDocsOfferBanner();
+      // Skip the confirmation banner — ingest the docs silently on first
+      // open. The user just installed the app; they want to get going, not
+      // answer a question about documentation they haven't read yet. A
+      // success toast surfaces the result without blocking anything.
+      //
+      // IMPORTANT: wait for ALL engrams to finish loading before ingesting.
+      // Docs ingest builds embeddings for 24 pages; running it while the
+      // main load queue is also building embeddings for large engrams
+      // saturates the embed workers and can stall the entire load sweep.
+      // No 30s fallback here — we must not compete with the initial load.
+      // The 30s shortcut is kept only for the `reingest` path below (app
+      // update refresh), where the cortex is already fully loaded.
+      await engramsLoaded;
+      const tid = addIngestToast('Setting up Graphnosis docs', 'Loading the documentation into your cortex…');
+      try {
+        const { ingested, failed } = await ipcCall<{ ingested: number; failed: number }>(
+          'docs:ingest', { appVersion },
+        );
+        finishIngestToast(tid, 'success', `Graphnosis docs ready · ${ingested} pages${failed ? `, ${failed} failed` : ''}`);
+        void fetchGraphsMetadata();
+        void refreshStats();
+      } catch (e) {
+        finishIngestToast(tid, 'error', `Couldn't load docs: ${String(e)}`);
+      }
     } else if (decision === 'reingest') {
       // App updated — refresh the docs silently. Wait for the initial
       // engram loading sweep to finish first so the heavy docs ingest
@@ -12740,6 +13008,19 @@ function hideEngramSuggestion(): void {
   pendingEngramSuggestion = null;
   engramSuggestSelection = null;
   document.getElementById('engram-suggest-banner')?.classList.add('hidden');
+}
+
+/**
+ * Extract the human-readable display name from a Graphnosis source ref.
+ *
+ * Source refs are stored in the form `{kind}:{timestamp}:{label}` by ingestClip,
+ * e.g. `skill:1780131345514:Executive decision recall (imported 2026-05-30)`.
+ * Strip the prefix so the UI shows only the label part. Falls back to the raw
+ * string for source refs that don't match the pattern (manually-set names,
+ * legacy cortexes, trainer-generated labels that use a different format).
+ */
+function skillDisplayName(label: string): string {
+  return label.replace(/^(?:skill|clip|ai-conversation):\d+:/, '').trim();
 }
 
 function slugifyEngramName(name: string): string {
@@ -12991,7 +13272,7 @@ const TOUR_STEPS: Array<{ title: string; body: string; connectArea?: boolean }> 
     // MemoryStudio as the power-user dashboard so users discover it
     // without needing to stumble upon the chip later.
     title: 'Skills — your knowledge, compiled.',
-    body: 'Ghampus turns what you know into compact, AI-loadable instructions — system prompts, .cursorrules, .claude/CLAUDE.md, or portable .gts packs.\n\nTrain once; Graphnosis Autonomous Praxis (Pro) retrains your skills on schedule, on cortex growth, or as a skill\'s vitality decays. The compile is autonomous; the export is yours.\n\nWatch it all live in MemoryStudio — Ghampus\' power-user workspace for recall, edits, GNN exploration, and skill training.',
+    body: 'Ghampus turns what you know into compact, AI-loadable instructions — system prompts, .cursorrules, .claude/CLAUDE.md, or portable .gsk packs.\n\nTrain once; Graphnosis Autonomous Praxis (Pro) retrains your skills on schedule, on cortex growth, or as a skill\'s vitality decays. The compile is autonomous; the export is yours.\n\nWatch it all live in MemoryStudio — Ghampus\' power-user workspace for recall, edits, GNN exploration, and skill training.',
   },
   {
     title: 'Your local, encrypted, private memory',
@@ -13898,7 +14179,16 @@ function installCustomEngramPicker(): void {
       if (o.value === sel.value) classes.push('selected');
       if (isDisabled) classes.push('disabled');
       const aria = isDisabled ? ' aria-disabled="true"' : '';
-      return `<button type="button" class="${classes.join(' ')}" data-value="${escapeHtml(o.value)}" role="option" aria-selected="${o.value === sel.value}"${aria}>${escapeHtml(o.text)}</button>`;
+      // Pending engrams (still loading from disk) get a rotating spinner
+      // and a tooltip explaining the state. Without this the user just
+      // sees a greyed-out row with no indication of why.
+      const spinner = isDisabled
+        ? `<span class="engram-picker-loading-spinner" aria-hidden="true">⟳</span>`
+        : '';
+      const title = isDisabled
+        ? ' title="Still loading from disk — usually a few seconds, sometimes longer for large engrams. Click outside and reopen the picker to refresh."'
+        : '';
+      return `<button type="button" class="${classes.join(' ')}" data-value="${escapeHtml(o.value)}" role="option" aria-selected="${o.value === sel.value}"${aria}${title}>${spinner}${escapeHtml(o.text)}</button>`;
     }).join('');
     const curOpt = opts.find((o) => o.value === sel.value) ?? opts.find((o) => !o.disabled) ?? opts[0];
     labelEl.textContent = curOpt?.text ?? '—';
@@ -13931,6 +14221,19 @@ function installCustomEngramPicker(): void {
     dropdown.classList.toggle('hidden');
     btn.setAttribute('aria-expanded', String(willOpen));
     if (willOpen) {
+      // Self-healing refresh: re-fetch loadedGraphs whenever the picker opens,
+      // so engrams that finished loading after boot un-spin. Without this,
+      // the picker only updates on `engrams-loading` events — which can be
+      // missed (e.g. when `unlockPending` was true at the moment they fired),
+      // leaving the user staring at a permanently-stuck loading spinner on
+      // engrams that are actually ready. Cheap IPC (in-memory scan), only
+      // fires on user-initiated open, doesn't block the dropdown reveal.
+      void invoke<GraphWithMetadata[]>('list_graphs_with_metadata', { includeUnloaded: true })
+        .then((graphs) => {
+          loadedGraphs = graphs;
+          refreshAtlasView();
+        })
+        .catch(() => { /* non-fatal — picker still shows last-known state */ });
       // Scroll the currently-selected option into view on open.
       dropdown.querySelector('.engram-picker-option.selected')?.scrollIntoView({ block: 'nearest' });
     }
@@ -14650,6 +14953,12 @@ function collectConnectorFormData(kind: ConnectorKind): Partial<ConnectorConfigS
  *  state from earlier builds); without this guard the user would see
  *  the app paint at the bad size, then visibly jump larger when JS
  *  corrected it. Idempotent — safe to call multiple times. */
+/**
+ * Snap the window up to the configured minimum size if the stored state is
+ * too small, WITHOUT revealing the window. The caller is responsible for
+ * showing the window after content has rendered — this keeps the resize
+ * invisible to the user so they never see the window jump.
+ */
 async function ensureMinWindowSize(): Promise<void> {
   const MIN_W = 1280;
   const MIN_H = 760;
@@ -14666,11 +14975,28 @@ async function ensureMinWindowSize(): Promise<void> {
     }
   } catch (e) {
     console.warn('[window] ensureMinWindowSize failed:', e);
-  } finally {
-    // Always reveal — even if the size check threw, the user shouldn't
-    // be staring at an invisible app forever.
-    try { await w.show(); await w.setFocus(); } catch { /* non-fatal */ }
+    // Non-fatal — resize failure must not block the reveal path.
   }
+}
+
+/** Reveal the main window and bring it to focus. Always safe to call. */
+async function revealWindow(): Promise<void> {
+  try {
+    const w = getCurrentWindow();
+    await w.show();
+    await w.setFocus();
+  } catch { /* non-fatal */ }
+}
+
+/**
+ * Scroll the app-canvas to its top so the sticky chip row and Skills pane
+ * header are always visible when any trainer operation begins. The two
+ * panels scroll independently WITHIN the pane, but the pane itself must
+ * start at the canvas top — otherwise the user lands mid-scroll in the
+ * wrong context.
+ */
+function scrollSkillsPaneToTop(): void {
+  document.querySelector<HTMLElement>('.app-canvas')?.scrollTo({ top: 0, behavior: 'smooth' });
 }
 
 // Initial state: ask the backend whether we're already unlocked
@@ -14681,23 +15007,26 @@ void (async () => {
     // screen — if that's where we land — already has the path filled in.
     _initGConfirmModal();
     prefillLastCortexDir();
-    // Snap the window up to the configured minimum BEFORE we render
-    // anything. The window-state plugin can restore a state saved
-    // from a prior debug session where the size was forced below the
-    // configured minWidth/minHeight — without this guard, the user
-    // sees the app paint at the bad size, then "jump" larger when
-    // some other code (e.g. the tour) corrects it. Doing it here,
-    // before render(), means any correction happens before first
-    // paint, no visible jump.
+
+    // 1. Correct the window size in the background while the window is
+    //    still hidden (visible:false in tauri.conf.json, VISIBLE excluded
+    //    from the window-state plugin flags). The user never sees the resize.
     await ensureMinWindowSize();
+
+    // 2. Fetch backend status and render content while still hidden.
+    //    The user will see a fully-painted window on first blink.
     const status = (await invoke('status')) as StatusSnapshot;
-    // If the backend reports an unlocked session, persist its cortex
-    // path too (covers the auto-unlock-from-keychain future case).
     if (status.unlocked) rememberCortexDir(status.cortex_dir);
     render(status);
     renderRailGetConnected();
+
+    // 3. NOW reveal — the window is correctly sized and content is painted.
+    await revealWindow();
+
     startTour();
   } catch (e) {
+    // On error, always reveal so the user isn't staring at nothing.
+    await revealWindow();
     showError(String(e));
   }
 })();
@@ -16292,7 +16621,9 @@ type StudioTool = 'skills' | 'recall' | 'dig-deeper' | 'remember' | 'edit' | 'gn
 // user's last selection wins. switchStudioTool() persists with save=true
 // on every real chip click; module-init re-activates with save=false so
 // it never overwrites the stored choice with itself.
-let activeStudioTool: StudioTool = (localStorage.getItem(STUDIO_CHIP_KEY) as StudioTool | null) ?? 'remember';
+// Default to 'skills' on first launch (no prior selection in localStorage).
+// Returning users land on whatever they last had open.
+let activeStudioTool: StudioTool = (localStorage.getItem(STUDIO_CHIP_KEY) as StudioTool | null) ?? 'skills';
 
 function switchStudioTool(tool: StudioTool, save = true): void {
   activeStudioTool = tool;
@@ -16446,6 +16777,15 @@ initStudioChips();
 //     (whole-source deletion belongs on the Sources page).
 //   • License gate exposes a fallback "Train without LLM" button.
 
+interface SkillProvenance {
+  kind: 'official' | 'community';
+  verified: boolean;
+  author: string;
+  packId?: string;
+  packVersion?: string;
+  importedAt?: string;
+}
+
 interface SkillListEntry {
   sourceId: string;
   graphId: string;
@@ -16456,6 +16796,10 @@ interface SkillListEntry {
   trainedAt?: string;
   mode?: string;
   recallBreadth?: number;
+  /** Present only for skills imported from a .gsk pack (author/sig metadata
+   *  parsed from the imported-provenance node). Locally-trained skills:
+   *  undefined → renderer omits the author badge. */
+  provenance?: SkillProvenance;
 }
 
 interface SkillDetail extends SkillListEntry {
@@ -16469,6 +16813,7 @@ interface SkillInfluentialNode {
   preview: string;
   sourceLabel?: string;
   layer?: 'anchored' | 'gnn-expanded' | 'semantic';
+  goalAlignment?: 'success' | 'scope' | 'completion';
 }
 
 interface SkillTrainResult {
@@ -16547,6 +16892,54 @@ function readSkillsDraft(): SkillsDraft | null {
     if (typeof parsed?.text !== 'string') return null;
     return parsed;
   } catch { return null; }
+}
+
+/** Live chunk preview — debounced; runs after the user pauses typing. */
+let skillsChunkPreviewTimer: ReturnType<typeof setTimeout> | null = null;
+function scheduleSkillsChunkPreview(): void {
+  if (skillsChunkPreviewTimer) clearTimeout(skillsChunkPreviewTimer);
+  skillsChunkPreviewTimer = setTimeout(() => {
+    renderSkillsChunkPreview();
+  }, 200);
+}
+
+/** Render the live chunk-preview panel under the skill-text textarea.
+ *  Same splitting rule the trainer uses on save — `split(/\n{2,}/)` then
+ *  trim+filter — so the preview is a faithful preview of node placement. */
+function renderSkillsChunkPreview(): void {
+  const ta = document.getElementById('skills-input-text') as HTMLTextAreaElement | null;
+  const panel = document.getElementById('skills-chunk-preview');
+  const countEl = document.getElementById('skills-chunk-preview-count');
+  const listEl = document.getElementById('skills-chunk-preview-list');
+  const moreEl = document.getElementById('skills-chunk-preview-more');
+  if (!ta || !panel || !countEl || !listEl || !moreEl) return;
+
+  const text = ta.value.trim();
+  if (!text) {
+    panel.classList.add('hidden');
+    return;
+  }
+  const paragraphs = text.split(/\n{2,}/).map((p) => p.trim()).filter(Boolean);
+  if (paragraphs.length === 0) {
+    panel.classList.add('hidden');
+    return;
+  }
+
+  countEl.textContent = paragraphs.length === 1
+    ? '1 paragraph node will be created on save'
+    : `${paragraphs.length} paragraph nodes will be created on save`;
+
+  // Show the first 3 paragraph previews, each truncated to ~120 chars
+  const SHOW = 3, MAX_LEN = 120;
+  const truncate = (s: string): string =>
+    s.length <= MAX_LEN ? s : s.slice(0, MAX_LEN - 1) + '…';
+  listEl.innerHTML = paragraphs.slice(0, SHOW)
+    .map((p) => `<li>${escape(truncate(p.replace(/\s+/g, ' ')))}</li>`)
+    .join('');
+  moreEl.textContent = paragraphs.length > SHOW
+    ? `…and ${paragraphs.length - SHOW} more`
+    : '';
+  panel.classList.remove('hidden');
 }
 
 function scheduleSkillsDraftSave(): void {
@@ -16716,6 +17109,13 @@ let skillsActiveResult: {
 // Tracks whether the user is currently viewing the trained output or
 // the diff. Persisted in-memory for the session; flips on toggle clicks.
 let skillsOutputView: 'output' | 'diff' = 'output';
+// Set while a skill-card DOM drag is in progress — prevents the Tauri
+// file-drop overlay from showing when the user reorders Trained Output blocks.
+let isSkillCardDragging = false;
+
+// Identifies goal/constraint nodes by text prefix. Kept in sync with the
+// sidecar's GOAL_NODE_RE in skill-trainer.ts.
+const SKILL_GOAL_CARD_RE = /^(?:Success:|Out of scope:|On completion:|Trigger:|Prerequisites:|On failure:)/i;
 
 function vitalityGrade(score: number): 'a' | 'b' | 'c' | 'd' {
   if (score >= 85) return 'a';
@@ -16829,6 +17229,43 @@ function populateSkillsEngramPickers(): void {
   }
 }
 
+/**
+ * Programmatic counterpart to `createSkillEngramInline` — creates a
+ * Skills-template engram with the given display name without showing a
+ * prompt. Used by inline flows (e.g. the .gsk importer) where the user
+ * has already confirmed creation via a higher-level confirm dialog and
+ * we don't want to ask again.
+ *
+ * Returns the new graphId on success, or null on failure (toast already
+ * surfaced to the user). The Skills engram picker is refreshed and the
+ * new engram is auto-selected so the caller can read graphId straight
+ * back from `#skills-input-engram`.
+ */
+async function createSkillsEngramQuiet(displayName: string): Promise<string | null> {
+  const trimmed = displayName.trim();
+  if (!trimmed) {
+    showSkillsToast('Engram name is empty.', 'error');
+    return null;
+  }
+  const baseSlug = slugifyEngramName(trimmed);
+  const collision = loadedGraphs.some((g) => g.graphId === baseSlug);
+  const graphId = collision ? `${baseSlug}-${Date.now().toString(36).slice(-5)}` : baseSlug;
+  try {
+    await invoke('create_graph_with_template', { graphId, template: 'skill', displayName: trimmed });
+    loadedGraphs = (await invoke('list_graphs_with_metadata', { includeUnloaded: true })) as GraphWithMetadata[];
+    syncEngramPicker();
+    const targetSel = document.getElementById('skills-input-engram') as HTMLSelectElement | null;
+    if (targetSel) targetSel.value = graphId;
+    showSkillsToast(`Created Skills engram "${trimmed}"`, 'success');
+    return graphId;
+  } catch (e) {
+    console.warn('[skills] create skill engram failed', e);
+    const msg = e instanceof Error ? e.message : String(e);
+    showSkillsToast(`Create failed: ${msg}`, 'error');
+    return null;
+  }
+}
+
 /** Inline "+ Create Skill engram" flow — prompts for a display name, creates
  *  a Skills-template engram via the existing create_graph_with_template
  *  Tauri command, then refreshes the engram list so the new entry appears
@@ -16872,9 +17309,32 @@ async function fetchSkillsLibrary(): Promise<void> {
   }
 }
 
+/**
+ * Remove sourceIds from the hidden-skills set that no longer exist in any
+ * loaded engram. Called once at startup after fetchSkillsLibrary() resolves.
+ *
+ * A sourceId is an orphan when its skill was permanently deleted (typically
+ * because its engram was deleted). The sidecar only returns skills from
+ * graphs that are actually loaded — so anything missing from skillsLibrary
+ * after a full load is gone for good and should not persist in localStorage.
+ */
+function purgeOrphanedHiddenSkills(): void {
+  if (skillsHiddenSet.size === 0) return;
+  const liveSourceIds = new Set(skillsLibrary.map((s) => s.sourceId));
+  let changed = false;
+  for (const id of [...skillsHiddenSet]) {
+    if (!liveSourceIds.has(id)) {
+      skillsHiddenSet.delete(id);
+      changed = true;
+    }
+  }
+  if (changed) persistSkillsHidden();
+}
+
 async function mountSkillsPane(): Promise<void> {
   populateSkillsEngramPickers();
   await fetchSkillsLibrary();
+  purgeOrphanedHiddenSkills();
   // Cross-session resume detection — find any sourceIds in the library
   // that weren't in last mount's snapshot. These are skills the sidecar
   // finished while the desktop wasn't running (autonomous retrain ran
@@ -16899,6 +17359,17 @@ async function mountSkillsPane(): Promise<void> {
   // on initial paint instead of after a flicker.
   await Promise.all([fetchRetrainNotifications(), fetchPendingProposals()]);
   renderSkillsLibrary();
+  // Orphan detection: if skill engrams exist but the library is empty,
+  // the user may have accidentally forgotten all their skills.
+  const skillEngrams = loadedGraphs.filter(
+    (g) => !g.metadata.archived && g.loaded !== false && g.metadata.template === 'skill',
+  );
+  if (skillEngrams.length > 0 && skillsLibrary.length === 0) {
+    showSkillsToast(
+      `You have ${skillEngrams.length} Skills engram${skillEngrams.length === 1 ? '' : 's'} but no skills — you may have accidentally removed them. Check Sources in each Skills engram.`,
+      'error',
+    );
+  }
   // Auto-compute vitality + retrain-schedule lookup for the top N by recency.
   // Retrain config is a one-shot per skill (settings.json read on the
   // sidecar side, no expensive computation) so we fan out all in parallel.
@@ -16941,8 +17412,113 @@ async function warmVitalityCache(): Promise<void> {
   renderSkillsLibrary();
 }
 
+// ── Skill grouping helpers ────────────────────────────────────────────────────
+
+/**
+ * Strip the "(imported YYYY-MM-DD)" and "(trained YYYY-MM-DD)" date suffixes
+ * from a skill display name to get the canonical base name used for grouping.
+ */
+function skillBaseName(label: string): string {
+  return skillDisplayName(label)
+    .replace(/\s*\((?:imported|trained) \d{4}-\d{2}-\d{2}\)/g, '')
+    .trim() || skillDisplayName(label);
+}
+
+/**
+ * Determine what kind of skill entry this is based on its label.
+ * - 'imported'  → came from a .gsk pack (has "(imported YYYY-MM-DD)")
+ * - 'trained'   → trained/retrained version (has "(trained YYYY-MM-DD)")
+ * - 'manual'    → user-authored skill with a plain name
+ */
+function skillEntryKind(label: string): 'imported' | 'trained' | 'manual' {
+  const name = skillDisplayName(label);
+  if (/\(trained \d{4}-\d{2}-\d{2}\)/.test(name)) return 'trained';
+  if (/\(imported \d{4}-\d{2}-\d{2}\)/.test(name)) return 'imported';
+  return 'manual';
+}
+
+interface SkillTreeNode {
+  entry:    SkillListEntry;
+  children: SkillTreeNode[];  // direct trained descendants, oldest first
+}
+
+/**
+ * Build a recursive skill tree from a flat library list.
+ *
+ * Parent–child is determined by label prefix: stripping the last
+ * "(imported DATE)" or "(trained DATE)" suffix gives the parent's display
+ * name. If the parent exists in the library it becomes the actual parent
+ * node; otherwise the entry becomes a root.
+ *
+ *   "Foo (imported 2026-05-30)"                 → root
+ *   "Foo (imported 2026-05-30) (trained ...)"    → child of above
+ *   "Foo (imported 2026-05-30) (trained ...) (trained ...)" → grandchild
+ *
+ * This naturally produces an unbounded cascade: a retrained version of a
+ * retrained version of an import shows as root → child → grandchild.
+ */
+function buildSkillTree(library: SkillListEntry[], sortMode: 'recent' | 'vitality' | 'name' = 'recent'): SkillTreeNode[] {
+  // Map displayName → node for quick parent lookup.
+  const byDisplay = new Map<string, SkillTreeNode>();
+  for (const s of library) {
+    const display = skillDisplayName(s.label);
+    byDisplay.set(display, { entry: s, children: [] });
+  }
+
+  const roots: SkillTreeNode[] = [];
+  for (const node of byDisplay.values()) {
+    const display = skillDisplayName(node.entry.label);
+    // Strip the last "(imported|trained DATE)" suffix to get the parent display name.
+    const parentDisplayMatch = display.match(/^(.*?)\s+\((?:imported|trained) \d{4}-\d{2}-\d{2}\)$/);
+    const parentDisplay = parentDisplayMatch?.[1]?.trim();
+    const parentNode = parentDisplay ? byDisplay.get(parentDisplay) : undefined;
+    if (parentNode) {
+      parentNode.children.push(node);
+    } else {
+      roots.push(node);
+    }
+  }
+
+  // Children are ALWAYS chronological (oldest → newest) — the trained-version
+  // history reads as a timeline regardless of the user-chosen sort mode.
+  function sortTree(node: SkillTreeNode): void {
+    node.children.sort((a, b) => a.entry.ingestedAt - b.entry.ingestedAt);
+    node.children.forEach(sortTree);
+  }
+  roots.forEach(sortTree);
+
+  // Root parents are sorted by the user-selected sort mode. The flat
+  // pre-sort done in filteredSortedLibrary() is overridden here because
+  // buildSkillTree's grouping pass naturally re-orders parents — without
+  // re-applying the sort at this layer, alphabetical ("Name A→Z") stopped
+  // working after the tree was introduced.
+  if (sortMode === 'name') {
+    roots.sort((a, b) => skillBaseName(a.entry.label).localeCompare(skillBaseName(b.entry.label)));
+  } else if (sortMode === 'vitality') {
+    roots.sort((a, b) => {
+      const va = skillsVitalityCache.get(a.entry.sourceId)?.value.score ?? -1;
+      const vb = skillsVitalityCache.get(b.entry.sourceId)?.value.score ?? -1;
+      return vb - va;
+    });
+  } else {
+    // 'recent' — newest parent first.
+    roots.sort((a, b) => b.entry.ingestedAt - a.entry.ingestedAt);
+  }
+
+  return roots;
+}
+
+/**
+ * Tracks which skill tree nodes are currently EXPANDED, keyed by sourceId.
+ * Default is collapsed — the user opts in by clicking the ▶ arrow.
+ */
+const skillGroupsExpanded = new Set<string>();
+
 function filteredSortedLibrary(): SkillListEntry[] {
-  let list = skillsLibrary.slice();
+  // Drop skills whose backing engram is no longer loaded — prevents stale
+  // IPC calls to a deleted graph ("Graph not loaded: X" errors).
+  const loadedGraphIds = new Set(loadedGraphs.map((g) => g.graphId));
+  let list = skillsLibrary.filter((s) => loadedGraphIds.has(s.graphId));
   if (!skillsShowHidden) {
     list = list.filter((s) => !skillsHiddenSet.has(s.sourceId));
   }
@@ -16983,44 +17559,117 @@ function renderSkillsLibrary(): void {
     listEl.innerHTML = `<p class="subtitle skills-library-empty">${escape(msg)}</p>`;
     return;
   }
-  listEl.innerHTML = list.map((s) => renderSkillRow(s)).join('');
-  // Row click → open in trainer; action buttons stop propagation below.
-  listEl.querySelectorAll<HTMLElement>('.skill-row').forEach((row) => {
-    row.addEventListener('click', () => {
-      const sid = row.dataset['sourceId'];
-      const gid = row.dataset['graphId'];
-      if (sid && gid) void openSkillInTrainer(sid, gid);
-    });
-  });
-  listEl.querySelectorAll<HTMLButtonElement>('.skill-row-action').forEach((btn) => {
-    btn.addEventListener('click', (e) => {
+
+  // Render the recursive skill tree.
+  const roots = buildSkillTree(list, skillsLibrarySort);
+  listEl.innerHTML = roots.map((n) => renderSkillTreeNode(n)).join('');
+
+  // ── Single delegated listener for the entire list ────────────────────────
+  // Handles all depth levels without re-binding on every render.
+  // Guard: only attach once — this function is called on every render but
+  // the listener must not accumulate. We use a data attribute as the flag.
+  // Precedence: toggle > action buttons > row click.
+  if (!listEl.dataset['listenerBound']) {
+    listEl.dataset['listenerBound'] = '1';
+  listEl.addEventListener('click', (e) => {
+    const target = e.target as HTMLElement;
+
+    // Arrow toggle — only element that expands/collapses.
+    const toggle = target.closest<HTMLButtonElement>('.skill-group-toggle');
+    if (toggle) {
+      const groupEl = toggle.closest<HTMLElement>('.skill-group');
+      const sid = groupEl?.dataset['sourceId'] ?? '';
+      if (!groupEl || !sid) return;
+      const nowExpanded = !groupEl.classList.contains('expanded');
+      groupEl.classList.toggle('expanded', nowExpanded);
+      if (nowExpanded) skillGroupsExpanded.add(sid);
+      else             skillGroupsExpanded.delete(sid);
+      toggle.setAttribute('aria-expanded', String(nowExpanded));
       e.stopPropagation();
-      const action = btn.dataset['action'];
-      const sid = btn.dataset['sourceId'];
-      const gid = btn.dataset['graphId'];
+      return;
+    }
+
+    // Action buttons.
+    const actionBtn = target.closest<HTMLButtonElement>('.skill-row-action, .skill-child-action');
+    if (actionBtn) {
+      const action = actionBtn.dataset['action'];
+      const sid = actionBtn.dataset['sourceId'];
+      const gid = actionBtn.dataset['graphId'];
       if (!action || !sid || !gid) return;
       if (action === 'forget') {
+        // Confirm before hiding — hiding is reversible (Show hidden brings
+        // them back) but easy to do by accident on the dense library rows,
+        // so a one-line confirm prevents the "wait, where did my skill go?"
+        // moment.
+        const target = skillsLibrary.find((s) => s.sourceId === sid);
+        const displayName = target ? (skillBaseName(target.label) || skillDisplayName(target.label) || 'this skill') : 'this skill';
+        const ok = window.confirm(
+          `Hide "${displayName}" from the library?\n\nYou can restore it any time with the Show hidden button.`,
+        );
+        if (!ok) return;
         skillsHiddenSet.add(sid);
         persistSkillsHidden();
-        if (skillsActiveSourceId === sid) {
-          skillsActiveSourceId = null;
-          showSkillsComposeMode();
-        }
+        if (skillsActiveSourceId === sid) { skillsActiveSourceId = null; showSkillsComposeMode(); }
         renderSkillsLibrary();
       } else if (action === 'unhide') {
-        skillsHiddenSet.delete(sid);
-        persistSkillsHidden();
-        renderSkillsLibrary();
+        skillsHiddenSet.delete(sid); persistSkillsHidden(); renderSkillsLibrary();
       } else if (action === 'retrain') {
         void openSkillInTrainer(sid, gid, { retrain: true });
       } else if (action === 'export') {
         void openSkillInTrainer(sid, gid, { scrollToExport: true });
       }
-    });
+      e.stopPropagation();
+      return;
+    }
+
+    // Row click → ONLY opens the skill in the Trainer panel. Expand/collapse
+    // is exclusively the arrow's job. Treating the row as a combined
+    // "open + toggle" target caused accidental tree shuffling when the user
+    // just wanted to inspect a parent skill.
+    const row = target.closest<HTMLElement>('.skill-row');
+    if (row && !target.closest('.skill-group-toggle, .skill-row-action')) {
+      const sid = row.dataset['sourceId'];
+      const gid = row.dataset['graphId'];
+      if (sid && gid) void openSkillInTrainer(sid, gid);
+    }
   });
+  } // end once-guard
 }
 
-function renderSkillRow(s: SkillListEntry): string {
+/**
+ * Render a skill tree node recursively.
+ *
+ * Every node uses the same `.skill-row` style regardless of depth — no
+ * indentation. Nodes with children get a ▶ toggle and a collapsible
+ * `.skill-group-children` wrapper. Children are also rendered via this same
+ * function, so the cascade is unbounded: original → trained → retrained →
+ * re-retrained all render with the same expandable-row pattern.
+ *
+ * Expand/collapse is keyed by sourceId (not base name) so each level in the
+ * tree is independently collapsible.
+ */
+function renderSkillTreeNode(node: SkillTreeNode): string {
+  const s = node.entry;
+  const hasChildren = node.children.length > 0;
+  const isExpanded = skillGroupsExpanded.has(s.sourceId);
+  const expandedClass = hasChildren && isExpanded ? ' expanded' : '';
+  const hasChildrenClass = hasChildren ? ' has-children' : '';
+
+  const childrenHtml = hasChildren
+    ? `<div class="skill-group-children">${node.children.map((c) => renderSkillTreeNode(c)).join('')}</div>`
+    : '';
+
+  return `
+    <div class="skill-group${hasChildrenClass}${expandedClass}" data-source-id="${escape(s.sourceId)}">
+      ${renderSkillRow(s, hasChildren, isExpanded)}
+      ${childrenHtml}
+    </div>
+  `;
+}
+
+/** Render the parent row of a skill group. `hasChildren` shows the expand
+ *  toggle; `groupExpanded` sets its initial aria-expanded state. */
+function renderSkillRow(s: SkillListEntry, hasChildren = false, groupExpanded = false): string {
   const vit = skillsVitalityCache.get(s.sourceId)?.value;
   const grade = vit ? vitalityGrade(vit.score) : 'a';
   const vitClass = vit ? `grade-${grade}` : 'uncomputed';
@@ -17029,36 +17678,56 @@ function renderSkillRow(s: SkillListEntry): string {
   const trainedAtTs = parseTrainedAt(s.trainedAt) ?? s.ingestedAt;
   const isHidden = skillsHiddenSet.has(s.sourceId);
   const activeClass = skillsActiveSourceId === s.sourceId ? ' active' : '';
-  const modeChip = s.mode ? `<span class="skill-row-engram" style="background:color-mix(in oklab,var(--ok) 14%,transparent);color:var(--ok)">${escape(s.mode)}</span>` : '';
-  // "⏰ auto" badge for skills with an enabled retrain schedule. We
-  // read straight from the in-memory cache so library renders stay
-  // synchronous — the cache is populated lazily when the user opens a
-  // skill, and refreshed when the schedule toggle changes.
+
+  // Kind chip: replaces the raw "(imported …)" / "(trained …)" date text.
+  const kind = skillEntryKind(s.label);
+  const kindChip = `<span class="skill-kind-chip skill-kind-${kind}">${escape(kind)}</span>`;
+
+  // Author/provenance badge — surfaced for skills imported from a signed .gsk
+  // pack. Pre-staging the UI for the future per-user signing identities feature
+  // (see Graphnosis memory: "Future: per-user GSK signing identities").
+  const prov = s.provenance;
+  const authorBadge = prov && prov.verified && prov.kind === 'official'
+    ? `<span class="skill-author-badge skill-author-verified" title="Signed by ${escape(prov.author)} — Ed25519 signature verified at import">✓ ${escape(prov.author)}</span>`
+    : prov
+      ? `<span class="skill-author-badge skill-author-unverified" title="Community pack — unsigned, author unverified">⚠ ${escape(prov.author || 'community')}</span>`
+      : '';
+
+  const modeChip = s.mode
+    ? `<span class="skill-row-engram" style="background:color-mix(in oklab,var(--ok) 14%,transparent);color:var(--ok)">${escape(s.mode)}</span>`
+    : '';
   const retrainCfg = skillsRetrainCache.get(s.sourceId);
-  const autoChip = retrainCfg && retrainCfg.enabled
+  const autoChip = retrainCfg?.enabled
     ? `<span class="skill-row-auto" title="Auto-retrain on a schedule">⏰ auto</span>`
     : '';
-  // Notification dot: surfaces when the scheduler retrained this skill
-  // under 'notify' autonomy and the user hasn't opened it since.
   const notifyDot = skillsRetrainNotifications.has(s.sourceId)
     ? `<span class="skill-row-notify" title="Auto-retrained — open to review">🆕</span>`
     : '';
-  // Pending-review badge: surfaces when 'preview-first' autonomy has
-  // produced a proposal that hasn't been accepted/rejected. Clicking the
-  // row opens the trainer with the review surface ready to act on.
   const pendingChip = skillsRetrainPending[s.sourceId]
     ? `<span class="skill-row-pending" title="Auto-retrain proposed a new version — review pending">📝 review</span>`
     : '';
+
+  // Expand/collapse toggle shown only when the group has children.
+  const toggle = hasChildren
+    ? `<button class="skill-group-toggle" type="button" aria-expanded="${groupExpanded}" title="Expand to see trained versions">▶</button>`
+    : '';
+
   const actions = isHidden
     ? `<button class="skill-row-action btn-ghost" data-action="unhide" data-source-id="${escape(s.sourceId)}" data-graph-id="${escape(s.graphId)}" title="Restore to library">Restore</button>`
     : `<button class="skill-row-action btn-ghost" data-action="retrain" data-source-id="${escape(s.sourceId)}" data-graph-id="${escape(s.graphId)}" title="Re-train this skill">Retrain</button>
        <button class="skill-row-action btn-ghost" data-action="export" data-source-id="${escape(s.sourceId)}" data-graph-id="${escape(s.graphId)}" title="Export this skill">Export</button>
        <button class="skill-row-action btn-ghost" data-action="forget" data-source-id="${escape(s.sourceId)}" data-graph-id="${escape(s.graphId)}" title="Hide from library">Hide</button>`;
+
+  // Show the BASE name (no date suffixes) as the title — kind/mode chips carry the context.
+  const displayName = skillBaseName(s.label) || skillDisplayName(s.label) || 'Untitled skill';
+
   return `
     <div class="skill-row${activeClass}" data-source-id="${escape(s.sourceId)}" data-graph-id="${escape(s.graphId)}">
+      <div class="skill-row-title" title="${escape(skillDisplayName(s.label))}">${toggle}${escape(displayName)}</div>
       <div class="skill-row-top">
-        <span class="skill-row-name" title="${escape(s.label)}">${escape(s.label || 'Untitled skill')}</span>
         <span class="skill-row-engram" title="${escape(s.engramName)}">${escape(s.engramName)}</span>
+        ${kindChip}
+        ${authorBadge}
         ${modeChip}
         ${autoChip}
         ${notifyDot}
@@ -17084,7 +17753,7 @@ function showSkillsComposeMode(): void {
   const back = document.getElementById('btn-skills-trainer-back');
   back?.classList.add('hidden');
   const title = document.getElementById('skills-trainer-title');
-  if (title) title.textContent = 'Train a skill';
+  if (title) { title.textContent = 'Train a skill'; title.contentEditable = 'false'; }
   skillsActiveSourceId = null;
   skillsActiveResult = null;
   renderSkillsLibrary();
@@ -17096,8 +17765,476 @@ function showSkillsReviewMode(title: string): void {
   document.getElementById('skills-license-card')?.classList.add('hidden');
   document.getElementById('btn-skills-trainer-back')?.classList.remove('hidden');
   const titleEl = document.getElementById('skills-trainer-title');
-  if (titleEl) titleEl.textContent = title;
+  if (titleEl) {
+    titleEl.textContent = title;
+    titleEl.contentEditable = 'true';
+    if (!titleEl.dataset['editBound']) {
+      titleEl.dataset['editBound'] = '1';
+      titleEl.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') { e.preventDefault(); (e.target as HTMLElement).blur(); }
+        if (e.key === 'Escape') { (e.target as HTMLElement).blur(); }
+      });
+      titleEl.addEventListener('blur', async () => {
+        const newTitle = titleEl.textContent?.trim();
+        if (!newTitle) return;
+        const state = skillsActiveResult;
+        if (!state?.skillId || !state?.graphId) return;
+        try {
+          await invoke('source_rename', { graphId: state.graphId, sourceId: state.skillId, newRef: newTitle });
+          // Keep the library row label in sync.
+          renderSkillsLibrary();
+        } catch (e) {
+          console.warn('[skills] title rename failed:', e);
+        }
+      });
+    }
+  }
 }
+
+/**
+ * Render the Trained Output box.
+ *
+ * For memory-augmented mode: the skill text is shown as a read-only block,
+ * followed by each Personal Context node as a contenteditable entry with a
+ * × remove button. This lets the user refine the trained output without
+ * navigating to the separate Influential Nodes section (which has been removed).
+ *
+ * For LLM mode and others: falls back to plain text rendering.
+ */
+/**
+ * Phase 4 — Source-driven Trained Output renderer.
+ *
+ * When called with `{graphId, skillId}` (the common case from
+ * paintSkillsReview after a save or library-open), fetches the source's
+ * chunks via `source.listNodes` and renders one editable card per node.
+ * Edits round-trip to `node:directEdit`, the × button to
+ * `source:removeNode`, drag-drop to `source:reorderNodes`, the hover-only
+ * `+` slot to `source:insertNode`. The title card additionally fires
+ * `source:rename` on blur so the library row label stays in sync.
+ *
+ * When called without `{graphId, skillId}` (streaming preview, fallback
+ * path), just renders the trained text as plain text — no graph round-trip
+ * is possible yet because the source doesn't exist.
+ */
+async function paintTrainedOutputSourceDriven(
+  el: HTMLElement,
+  skillId: string,
+  graphId: string,
+): Promise<void> {
+  type ListNodesResult = { ok: boolean; nodes: Array<{ id: string; content: string }> };
+  let result: ListNodesResult | null = null;
+  try {
+    result = await invoke<ListNodesResult>('source_list_nodes', { graphId, sourceId: skillId });
+  } catch (e) {
+    el.textContent = `Could not load skill chunks: ${(e as Error).message}`;
+    return;
+  }
+  if (!result?.ok) {
+    el.textContent = 'Could not load skill chunks.';
+    return;
+  }
+  // Hide metadata chunks (HTML comments) — they're an internal audit artefact.
+  const visible = result.nodes.filter((n) => !n.content.trim().startsWith('<!--'));
+
+  // Detect goal nodes to inject a "Goals" section header before the first one.
+  const GOAL_RE = /^(?:Success:|Out of scope:|On completion:|Trigger:|Prerequisites:|On failure:)/i;
+  let goalHeaderInjected = false;
+
+  // First slot: no preceding card → afterNodeId = '' (sidecar inserts before first visible node)
+  const parts: string[] = [renderInsertSlotHtml(0, '')];
+  let bodyN = 0;
+  let goalN = 0;
+  for (let i = 0; i < visible.length; i++) {
+    const node = visible[i]!;
+    const isGoal = GOAL_RE.test(node.content.trim());
+    if (!goalHeaderInjected && isGoal) {
+      goalHeaderInjected = true;
+      parts.push(`<div class="skills-output-section-header">Goals</div>`);
+    }
+    // Body steps get numeric labels (1, 2, 3…), goal cards get letter labels (a, b, c…)
+    // so AI clients and users can reference them as "step 3" or "goal (b)".
+    const label = isGoal ? goalLetterLabel(goalN++) : String(++bodyN);
+    parts.push(renderCardHtml(node, i, label, isGoal));
+    parts.push(renderInsertSlotHtml(i + 1, node.id));
+  }
+  el.innerHTML = parts.join('');
+  bindCardInteractions(el, skillId, graphId);
+}
+
+/** Generate a, b, …, z, aa, ab, …  for goal-card labels. */
+function goalLetterLabel(zeroBasedIndex: number): string {
+  let n = zeroBasedIndex;
+  let label = '';
+  do {
+    label = String.fromCharCode(97 + (n % 26)) + label;
+    n = Math.floor(n / 26) - 1;
+  } while (n >= 0);
+  return label;
+}
+
+function renderCardHtml(
+  node: { id: string; content: string },
+  index: number,
+  label: string,
+  isGoal: boolean,
+): string {
+  // Drag is handled via pointer-capture on the handle — no HTML5 draggable needed.
+  // The handle-col stacks the step number/letter above the ⋮⋮ grip icon.
+  const goalClass = isGoal ? ' skills-output-card--goal' : '';
+  return (
+    `<div class="skills-output-card${goalClass}" data-node-id="${escapeHtml(node.id)}" data-index="${index}" data-is-goal="${isGoal ? '1' : '0'}">` +
+      `<div class="skills-output-handle-col">` +
+        `<span class="skills-output-step-num" aria-hidden="true">${escapeHtml(label)}</span>` +
+        `<button type="button" class="skills-output-drag-handle" aria-label="Drag to reorder" tabindex="-1">⋮⋮</button>` +
+      `</div>` +
+      `<div class="skills-output-card-text" contenteditable="true" spellcheck="false">${escapeHtml(node.content)}</div>` +
+      `<button type="button" class="skills-output-card-remove" title="Remove this chunk">×</button>` +
+    `</div>`
+  );
+}
+
+// afterNodeId: the nodeId of the card immediately before this slot.
+// Empty string = slot is before all cards (insert at beginning of visible content).
+function renderInsertSlotHtml(afterIndex: number, afterNodeId: string): string {
+  return `<div class="skills-output-insert-slot" data-after-index="${afterIndex}" data-after-node-id="${escapeHtml(afterNodeId)}"></div>`;
+}
+
+/**
+ * Phase 4b/4c/4d wiring — contenteditable + × + drag + insert.
+ *
+ * Auto-save model: every mutation hits an IPC, optimistically; on failure
+ * we revert from a per-card snapshot stored in WeakMap.
+ */
+function bindCardInteractions(root: HTMLElement, skillId: string, graphId: string): void {
+  const snapshots = new WeakMap<HTMLElement, string>();
+
+  // ── Edits ──────────────────────────────────────────────────────────────
+  root.querySelectorAll<HTMLElement>('.skills-output-card').forEach((card) => {
+    const text = card.querySelector<HTMLElement>('.skills-output-card-text');
+    if (!text) return;
+    snapshots.set(card, text.innerText);
+
+    let debounce: number | undefined;
+    const flush = async (): Promise<void> => {
+      const nodeId = card.dataset['nodeId'];
+      if (!nodeId) return;
+      const newContent = text.innerText.trim();
+      if (!newContent) return;
+      const prev = snapshots.get(card) ?? '';
+      if (newContent === prev) return;
+      try {
+        await invoke('node_direct_edit', {
+          graphId,
+          nodeId,
+          content: newContent,
+          reason: 'Skills editor: inline edit',
+        });
+        snapshots.set(card, newContent);
+        // Title card (index 0) also drives the source label and the
+        // heading at the top of the review panel.
+        if (card.dataset['index'] === '0') {
+          const titleEl = document.getElementById('skills-trainer-title');
+          if (titleEl) titleEl.textContent = newContent;
+          try {
+            await invoke('source_rename', { graphId, sourceId: skillId, newRef: newContent });
+            renderSkillsLibrary();
+          } catch (e) {
+            console.warn('[skills] source_rename failed:', e);
+          }
+        }
+      } catch (e) {
+        console.warn('[skills] node_direct_edit failed:', e);
+        text.innerText = prev; // revert
+      }
+    };
+    text.addEventListener('input', () => {
+      window.clearTimeout(debounce);
+      debounce = window.setTimeout(() => { void flush(); }, 600);
+    });
+    text.addEventListener('blur', () => {
+      window.clearTimeout(debounce);
+      void flush();
+    });
+  });
+
+  // ── × remove ───────────────────────────────────────────────────────────
+  root.querySelectorAll<HTMLButtonElement>('.skills-output-card-remove').forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      const card = btn.closest<HTMLElement>('.skills-output-card');
+      if (!card) return;
+      const nodeId = card.dataset['nodeId'];
+      if (!nodeId) return;
+      btn.blur();
+      // Optimistic remove. The slot that was directly before the removed card
+      // is now adjacent to the slot that was after it — two consecutive slots
+      // create a visible gap. Remove the "before" slot; the "after" slot stays
+      // and becomes the gap between the previous and next cards.
+      const prevSlot = card.previousElementSibling;
+      card.remove();
+      if (prevSlot?.classList.contains('skills-output-insert-slot')) {
+        prevSlot.remove();
+      }
+      fixUpIndices(root);
+      try {
+        await invoke('source_remove_node', { graphId, sourceId: skillId, nodeId });
+      } catch (e) {
+        console.warn('[skills] source_remove_node failed:', e);
+        // Re-render to recover (cheap, single IPC).
+        void paintTrainedOutputSourceDriven(root, skillId, graphId);
+      }
+    });
+  });
+
+  // Helper: is a card a goal/constraint node?
+  const isGoalCard = (c: HTMLElement): boolean =>
+    SKILL_GOAL_CARD_RE.test((c.querySelector('.skills-output-card-text')?.textContent ?? '').trim());
+
+  // ── Pointer-capture reorder (replaces HTML5 DnD — more reliable in Tauri) ─
+  root.querySelectorAll<HTMLElement>('.skills-output-card').forEach((card) => {
+    const handle = card.querySelector<HTMLElement>('.skills-output-drag-handle');
+    if (!handle) return;
+
+    handle.addEventListener('pointerdown', (e) => {
+      e.preventDefault(); // prevent button click and text selection
+      handle.setPointerCapture(e.pointerId);
+
+      let moved = false;
+      let targetCard: HTMLElement | null = null;
+      let insertBefore = false;
+      const startY = e.clientY;
+      const draggingGoal = isGoalCard(card);
+
+      const clearIndicators = (): void => {
+        root.querySelectorAll<HTMLElement>('.skills-output-card').forEach((c) => {
+          c.classList.remove('drop-target-before', 'drop-target-after');
+        });
+      };
+
+      const onMove = (ev: PointerEvent): void => {
+        if (!moved && Math.abs(ev.clientY - startY) > 5) {
+          moved = true;
+          card.classList.add('dragging');
+          isSkillCardDragging = true;
+        }
+        if (!moved) return;
+        clearIndicators();
+        targetCard = null;
+        insertBefore = false;
+        for (const c of Array.from(root.querySelectorAll<HTMLElement>('.skills-output-card'))) {
+          if (c === card) continue;
+          // Goal cards stay in the Goals section; step cards stay in the procedure.
+          if (draggingGoal !== isGoalCard(c)) continue;
+          const rect = c.getBoundingClientRect();
+          if (ev.clientY >= rect.top && ev.clientY <= rect.bottom) {
+            targetCard = c;
+            insertBefore = (ev.clientY - rect.top) < rect.height / 2;
+            c.classList.add(insertBefore ? 'drop-target-before' : 'drop-target-after');
+            break;
+          }
+        }
+      };
+
+      const onUp = async (): Promise<void> => {
+        handle.removeEventListener('pointermove', onMove);
+        handle.removeEventListener('pointerup', onUp);
+        handle.releasePointerCapture(e.pointerId);
+        card.classList.remove('dragging');
+        isSkillCardDragging = false;
+        clearIndicators();
+        if (!moved || !targetCard) return;
+        if (insertBefore) targetCard.parentNode?.insertBefore(card, targetCard);
+        else              targetCard.parentNode?.insertBefore(card, targetCard.nextSibling);
+        fixUpIndices(root);
+        const newOrder = Array.from(root.querySelectorAll<HTMLElement>('.skills-output-card'))
+          .map((c) => c.dataset['nodeId'] ?? '').filter(Boolean);
+        try {
+          await invoke('source_reorder_nodes', { graphId, sourceId: skillId, newOrder });
+        } catch {
+          void paintTrainedOutputSourceDriven(root, skillId, graphId);
+        }
+      };
+
+      handle.addEventListener('pointermove', onMove);
+      handle.addEventListener('pointerup', onUp);
+    });
+  });
+
+  // ── Insert slot click ──────────────────────────────────────────────────
+  root.querySelectorAll<HTMLElement>('.skills-output-insert-slot').forEach((slot) => {
+    slot.addEventListener('click', () => {
+      // afterNodeId: nodeId of the preceding card, or '' for the first slot.
+      const afterNodeId: string | null = slot.dataset['afterNodeId'] === ''
+        ? null : (slot.dataset['afterNodeId'] ?? null);
+
+      // Detect whether this slot is inside the Goals section.
+      const precedingCard = afterNodeId
+        ? root.querySelector<HTMLElement>(`.skills-output-card[data-node-id="${CSS.escape(afterNodeId)}"]`)
+        : null;
+      const prevHeader = slot.previousElementSibling?.classList.contains('skills-output-section-header');
+      const inGoalsSection = prevHeader || (precedingCard ? isGoalCard(precedingCard) : false);
+
+      // Goal prefix chips — shown when inserting inside the Goals section.
+      const GOAL_CHIPS: Array<{ label: string; prefix: string }> = [
+        { label: '✓ Success', prefix: 'Success: ' },
+        { label: '✗ Out of scope', prefix: 'Out of scope: ' },
+        { label: '⊙ On completion', prefix: 'On completion: ' },
+        { label: '⚡ Trigger', prefix: 'Trigger: ' },
+        { label: '🔑 Prerequisites', prefix: 'Prerequisites: ' },
+        { label: '⚠ On failure', prefix: 'On failure: ' },
+      ];
+
+      const draft = document.createElement('div');
+      draft.className = 'skills-output-card skills-output-card--draft';
+      const chipsHtml = inGoalsSection
+        ? `<div class="skills-draft-goal-chips">${GOAL_CHIPS.map((c) =>
+            `<button class="skills-goal-chip" type="button" data-prefix="${escapeHtml(c.prefix)}">${escapeHtml(c.label)}</button>`
+          ).join('')}</div>`
+        : '';
+      const placeholder = inGoalsSection
+        ? 'Type goal text, or pick a type above…'
+        : 'Type paragraph text…';
+      // Green check button — explicit Save action aligned to the right.
+      // Mirrors the Enter-to-commit shortcut for users who prefer clicking.
+      // mousedown.preventDefault() keeps focus on the editable so the blur
+      // handler doesn't race the click — same trick as the chip buttons.
+      // Inner row groups the editable + save button so the green check
+      // sits to the right of the textarea, while the chips (when present)
+      // remain stacked above. The outer draft card uses flex-direction:
+      // column for the chips; the inner row uses default row direction.
+      draft.innerHTML =
+        `${chipsHtml}` +
+        `<div class="skills-draft-input-row">` +
+          `<div class="skills-output-card-text" contenteditable="true" spellcheck="false" placeholder="${placeholder}"></div>` +
+          `<button type="button" class="skills-output-card-save" title="Save this paragraph (or press Enter)" aria-label="Save paragraph">✓</button>` +
+        `</div>`;
+      slot.after(draft);
+
+      const editable = draft.querySelector<HTMLElement>('.skills-output-card-text');
+
+      /** Strip ALL recognised goal prefixes from the start of the editable,
+       *  then prepend the new one. So clicking Trigger after Success
+       *  REPLACES "Success:" with "Trigger:" instead of stacking them.
+       *
+       *  The while-loop (rather than a single match) is defensive: if the
+       *  text already starts with multiple stacked prefixes from a prior
+       *  build/session (e.g. "Out of scope: On completion: hello"), we
+       *  peel ALL of them off, not just the outermost. Without this,
+       *  successive clicks could still leave dead inner prefixes behind. */
+      const swapGoalPrefix = (newPrefix: string): void => {
+        if (!editable) return;
+        let body = editable.textContent ?? '';
+        let stripped = true;
+        while (stripped) {
+          stripped = false;
+          for (const c of GOAL_CHIPS) {
+            if (body.startsWith(c.prefix)) {
+              body = body.slice(c.prefix.length);
+              stripped = true;
+              break;
+            }
+          }
+        }
+        editable.textContent = newPrefix + body;
+        // Move caret to end after replacement
+        const range = document.createRange();
+        const sel = window.getSelection();
+        range.selectNodeContents(editable);
+        range.collapse(false);
+        sel?.removeAllRanges();
+        sel?.addRange(range);
+      };
+
+      // Wire chip clicks — REPLACE the existing prefix (not append a new
+      // one on top). Previously the chip handler only prepended when the
+      // current prefix didn't already match, which silently stacked
+      // prefixes when the user clicked Out of scope → On completion →
+      // Trigger and produced "On completion: Trigger: Prerequisites: hello".
+      draft.querySelectorAll<HTMLButtonElement>('.skills-goal-chip').forEach((chip) => {
+        chip.addEventListener('mousedown', (e) => { e.preventDefault(); });
+        chip.addEventListener('click', () => {
+          editable?.focus();
+          swapGoalPrefix(chip.dataset['prefix'] ?? '');
+        });
+      });
+
+      editable?.focus();
+      let committed = false;
+      const commit = async (): Promise<void> => {
+        if (committed) return;
+        committed = true;
+        const content = (editable?.textContent ?? '').trim();
+        draft.remove();
+        if (!content) return;
+        try {
+          const res = await invoke<{ ok: boolean; nodeId: string }>('source_insert_node', {
+            graphId,
+            sourceId: skillId,
+            afterNodeId,
+            content,
+          });
+          if (!res?.ok) throw new Error('insert failed');
+          void paintTrainedOutputSourceDriven(root, skillId, graphId);
+        } catch (e) {
+          console.warn('[skills] source_insert_node failed:', e);
+          void paintTrainedOutputSourceDriven(root, skillId, graphId);
+        }
+      };
+      // Wire the green-check Save button. Same mousedown.preventDefault
+      // trick keeps the editable focused so blur-commit doesn't race.
+      const saveBtn = draft.querySelector<HTMLButtonElement>('.skills-output-card-save');
+      saveBtn?.addEventListener('mousedown', (e) => { e.preventDefault(); });
+      saveBtn?.addEventListener('click', () => { void commit(); });
+
+      editable?.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); void commit(); }
+        else if (e.key === 'Escape') { committed = true; draft.remove(); }
+      });
+      editable?.addEventListener('blur', () => { void commit(); }, { once: true });
+    });
+  });
+}
+
+function fixUpIndices(root: HTMLElement): void {
+  let bodyN = 0;
+  let goalN = 0;
+  root.querySelectorAll<HTMLElement>('.skills-output-card').forEach((c, i) => {
+    c.dataset['index'] = String(i);
+    const isGoal = c.dataset['isGoal'] === '1';
+    const label = isGoal ? goalLetterLabel(goalN++) : String(++bodyN);
+    const numEl = c.querySelector<HTMLElement>('.skills-output-step-num');
+    if (numEl) numEl.textContent = label;
+  });
+  root.querySelectorAll<HTMLElement>('.skills-output-insert-slot').forEach((s, i) => {
+    s.dataset['afterIndex'] = String(i);
+  });
+}
+
+/**
+ * Legacy entry point — kept so streaming preview callers (which don't
+ * have a graphId/sourceId yet) can still paint the box with a plain-text
+ * preview. After save completes and paintSkillsReview re-runs with
+ * skillId/graphId set, the source-driven renderer takes over.
+ */
+function paintTrainedOutput(
+  el: HTMLElement,
+  trained: string,
+  _mode: string,
+  _nodes: SkillInfluentialNode[],
+): void {
+  // Plain-text preview only. The editable source-driven view is
+  // installed by paintSkillsReview when the result has a skillId+graphId.
+  el.textContent = trained;
+}
+
+// Legacy dead-code block removed in Phase 4a — the rich Personal Context
+// editor with goal badges, per-paragraph "_(from X)_" attribution lines,
+// and the contenteditable + × remove handlers has been replaced by the
+// source-driven editor (paintTrainedOutputSourceDriven + bindCardInteractions).
+// Phase 4a — removed legacy paintTrainedOutput dead body, bindTrainedOutputNodes,
+// and rebuildTrainedFromOutput. The source-driven editor above is the only
+// renderer now. Stubs are kept for the few remaining call sites in the file
+// so they degrade to no-ops instead of throwing.
+function rebuildTrainedFromOutput(_el: HTMLElement): void { /* no-op: state lives in graph */ }
 
 function paintSkillsReview(result: SkillTrainResult, opts: {
   graphId?: string;
@@ -17125,7 +18262,11 @@ function paintSkillsReview(result: SkillTrainResult, opts: {
   // Vitality chip — paint from cache if we have one for this skill.
   const vitEl = document.getElementById('skills-review-vitality');
   const cached = opts.sourceId ? skillsVitalityCache.get(opts.sourceId)?.value : null;
-  if (vitEl) vitEl.textContent = cached ? `vitality: ${Math.round(cached.score)}` : 'vitality: just trained';
+  const hasSavedSkill = result.skillId !== undefined || opts.sourceId !== undefined;
+  if (vitEl) {
+    vitEl.textContent = cached ? `↻ vitality: ${Math.round(cached.score)}` : '↻ vitality: just trained';
+    vitEl.classList.toggle('hidden', !hasSavedSkill);
+  }
   // Engram chip
   const engEl = document.getElementById('skills-review-engram');
   if (engEl) engEl.textContent = opts.engramName ?? '—';
@@ -17139,9 +18280,24 @@ function paintSkillsReview(result: SkillTrainResult, opts: {
       deg.classList.add('hidden');
     }
   }
-  // Trained output
-  const out = document.getElementById('skills-review-output');
-  if (out) out.textContent = result.trained;
+  // Trained output — rich rendering for memory-augmented (editable PC nodes),
+  // plain text for LLM mode.
+  const out = document.getElementById('skills-review-output') as HTMLElement | null;
+  if (out) {
+    // Phase 4a — prefer the source-driven editor when we have a saved
+    // source to bind to. Falls back to plain-text preview during streaming
+    // or for unsaved previews where there is no graph node yet.
+    const sourceForRender = result.skillId ?? opts.sourceId;
+    const graphForRender = opts.graphId;
+    if (sourceForRender && graphForRender) {
+      void paintTrainedOutputSourceDriven(out, sourceForRender, graphForRender);
+    } else {
+      paintTrainedOutput(out, result.trained, result.mode ?? '', result.influentialNodes ?? []);
+    }
+    // Reset the output box scroll position so the user always sees the
+    // beginning of the trained text when switching between skills.
+    requestAnimationFrame(() => { out.scrollTop = 0; });
+  }
   // Diff notes (LLM mode only)
   const diffWrap = document.getElementById('skills-review-diff-wrap');
   const diffEl = document.getElementById('skills-review-diff');
@@ -17153,22 +18309,12 @@ function paintSkillsReview(result: SkillTrainResult, opts: {
       diffWrap.classList.add('hidden');
     }
   }
-  // Influential nodes
-  const nodesEl = document.getElementById('skills-review-nodes');
-  const nodesCountEl = document.getElementById('skills-review-nodes-count');
-  const nodes = result.influentialNodes ?? [];
-  if (nodesCountEl) nodesCountEl.textContent = nodes.length ? `${nodes.length} node(s)` : '';
-  if (nodesEl) {
-    nodesEl.innerHTML = nodes.length === 0
-      ? '<p class="subtitle">No influential nodes — the skill was trained with no recalled memory.</p>'
-      : nodes.map((n) => renderInfluentialNode(n)).join('');
-  }
   // Export format default
   const formatSel = document.getElementById('skills-export-format') as HTMLSelectElement | null;
   if (formatSel) formatSel.value = recallSkillExportFormat(opts.sourceId);
   const exportStatus = document.getElementById('skills-export-status');
   if (exportStatus) exportStatus.textContent = '';
-  // Refresh the inline GTS-Pro hint to match current license state.
+  // Refresh the inline GSK-Pro hint to match current license state.
   void syncSkillsExportProHint();
   // Retrain schedule — fetch the current config for this skill and paint
   // the controls. Pro-gated; will lock the inputs for free users.
@@ -17229,7 +18375,16 @@ function renderDiffView(opts: { animate?: boolean } = {}): void {
   if (!diffEl || !navEl || !metaEl) return;
   const active = skillsActiveResult;
   if (!active || !active.baselineText || active.baselineText === active.trained) {
-    diffEl.innerHTML = '<span class="skills-diff-line-meta">No changes — the trained output is identical to the baseline.</span>';
+    // Distinguish the cases for the user — empty diff has multiple causes
+    // and a generic message hides which one applies.
+    const noBaseline = !active?.baselineText;
+    const identical  = !!active?.baselineText && active.baselineText === active.trained;
+    const message = noBaseline
+      ? 'No previous version to compare against yet. Click <strong>Retrain</strong> above to produce a new version — the diff will then show what changed.'
+      : identical
+        ? 'No changes — the trained output is identical to the baseline (<em>' + escape(active?.baselineLabel ?? 'baseline') + '</em>). Retraining didn\'t alter the text this round.'
+        : 'No changes to display.';
+    diffEl.innerHTML = `<span class="skills-diff-line-meta" style="display:block;padding:8px 4px;line-height:1.5;">${message}</span>`;
     navEl.classList.add('hidden');
     metaEl.textContent = '';
     return;
@@ -17439,36 +18594,117 @@ async function rejectPendingProposal(): Promise<void> {
   }
 }
 
+/**
+ * Remove one influential node from the active result and rebuild the
+ * trained output when the mode supports it (memory-augmented path).
+ *
+ * For the memory-augmented path, trained = baselineText + personalBlock.
+ * The personalBlock is assembled from influentialNodes, so removing a node
+ * and rebuilding gives an accurate result. For the LLM path, the node's
+ * contribution is woven into prose we can't easily unpick — we remove the
+ * node from the display but leave the trained text unchanged.
+ */
+function removeInfluentialNode(nodeId: string): void {
+  if (!skillsActiveResult) return;
+  skillsActiveResult.influentialNodes = (skillsActiveResult.influentialNodes ?? [])
+    .filter((n) => n.nodeId !== nodeId);
+
+  // Sync the rich output box — remove the node's entry directly from the DOM.
+  const out = document.getElementById('skills-review-output') as HTMLElement | null;
+  if (out) {
+    const nodeEl = out.querySelector<HTMLElement>(`[data-node-id="${CSS.escape(nodeId)}"]`);
+    nodeEl?.remove();
+    rebuildTrainedFromOutput(out);
+  }
+}
+
 function renderInfluentialNode(n: SkillInfluentialNode): string {
   const short = n.nodeId.length > 10 ? n.nodeId.slice(0, 8) + '…' : n.nodeId;
   const layer = n.layer ? `<span class="skills-node-layer">${escape(n.layer)}</span>` : '';
   const src = n.sourceLabel ? `<span class="skills-node-source">${escape(n.sourceLabel)}</span>` : '';
+  const goalBadge = n.goalAlignment
+    ? `<span class="skills-node-goal" title="This memory matches your skill goals">${
+        n.goalAlignment === 'success' ? '✓ goal: success'
+        : n.goalAlignment === 'scope' ? '✗ goal: scope'
+        : '⊙ goal: completion'
+      }</span>`
+    : '';
+  // Normalise score: anchored=99, gnn-expanded=1.5+, semantic=0–1.
+  // Render anchored/gnn nodes as 100% / their rounded integer; semantic as percentage.
+  const displayScore = n.score >= 90 ? '100%'
+    : n.score > 1 ? `${Math.round(n.score * 10) / 10}×`
+    : `${(n.score * 100).toFixed(0)}%`;
   return `
     <div class="skills-node-card">
       <div class="skills-node-card-header">
         <span class="skills-node-id">${escape(short)}</span>
-        <span class="skills-node-score">${(n.score * 100).toFixed(0)}%</span>
+        <span class="skills-node-score">${displayScore}</span>
         ${layer}
+        ${goalBadge}
         ${src}
+        <button type="button" class="skills-node-remove btn-ghost" data-remove-node="${escape(n.nodeId)}" title="Remove this node from the trained output">×</button>
       </div>
       <div class="skills-node-preview">${escape(n.preview)}</div>
     </div>
   `;
 }
 
+/** Sentinel: prevents a second openSkillInTrainer for the same sourceId while
+ *  a first one is still mid-IPC. Without this, a user repeatedly clicking a
+ *  slow-loading skill stacks N "Failed to load" toasts. */
+let _openSkillInFlight: string | null = null;
+
 async function openSkillInTrainer(
   sourceId: string,
   graphId: string,
   opts: { retrain?: boolean; scrollToExport?: boolean } = {},
 ): Promise<void> {
+  // Click-dedup: ignore repeat clicks for the same sourceId while we're
+  // still loading. The user can still click a DIFFERENT skill.
+  if (_openSkillInFlight === sourceId) return;
+  _openSkillInFlight = sourceId;
   skillsActiveSourceId = sourceId;
+
+  // Show a thin indeterminate progress bar if the skill hasn't loaded within 350ms.
+  const loadBar = document.getElementById('skills-load-bar');
+  const loadBarTimer = window.setTimeout(() => loadBar?.classList.remove('hidden'), 350);
+  const hideLoadBar = (): void => {
+    window.clearTimeout(loadBarTimer);
+    loadBar?.classList.add('hidden');
+  };
+
+  scrollSkillsPaneToTop();
+  // Make the skill's home engram the active engram (top-right picker, recall
+  // scope, etc.) — but only if it's not already active, to avoid the heavy
+  // atlas-reset / data-reload path on the no-op case. switchActiveEngram
+  // never changes the current tab on its own, so the user stays in the
+  // Skills view.
+  if (graphId && atlasActiveGraph !== graphId) {
+    void switchActiveEngram(graphId).catch((e) => console.warn('[skills] switchActiveEngram failed', e));
+  }
   // Clear the 🆕 notification when the user actually opens the skill —
   // this is the "acknowledge" moment for `notify` autonomy.
   if (skillsRetrainNotifications.has(sourceId)) {
     skillsRetrainNotifications.delete(sourceId);
     void ipcCall('skill:clearNotification', { sourceId }).catch(() => {});
   }
-  renderSkillsLibrary();
+  // Class-only swap instead of a full library re-render — moves the .active
+  // highlight onto the clicked row without rebuilding the recursive tree.
+  // Saves O(total skills) of DOM work on every click; the perceived click
+  // → highlight latency was the most visible part of the open-skill delay.
+  document.querySelectorAll<HTMLElement>('.skill-row.active, .skill-child-row.active')
+    .forEach((el) => el.classList.remove('active'));
+  const escapedSid = (typeof CSS !== 'undefined' && CSS.escape) ? CSS.escape(sourceId) : sourceId.replace(/"/g, '\\"');
+  document.querySelector<HTMLElement>(
+    `.skill-row[data-source-id="${escapedSid}"], .skill-child-row[data-source-id="${escapedSid}"]`,
+  )?.classList.add('active');
+  // Immediately scroll the trainer column to its own top so the skill name,
+  // mode chips, and Vitality button are visible as soon as the panel opens.
+  // The trainer is a sticky independently-scrolling column — its scrollTop
+  // is separate from .app-canvas, so we reset it here on every selection.
+  requestAnimationFrame(() => {
+    document.querySelector<HTMLElement>('.skills-trainer')?.scrollTo({ top: 0 });
+  });
   try {
     const detail = await ipcCall<SkillDetail | null>('skill:get', { graphId, sourceId });
     if (!detail) {
@@ -17478,9 +18714,24 @@ async function openSkillInTrainer(
     if (opts.retrain) {
       // Drop straight back into compose with the trained text as the new input.
       showSkillsComposeMode();
-      (document.getElementById('skills-input-text') as HTMLTextAreaElement | null)!.value = detail.text;
+
+      // Show skill name in the panel title so the user always knows which
+      // skill they're retraining without having to remember from the list.
+      const retrainName = skillDisplayName(detail.label) || 'skill';
+      const titleEl = document.getElementById('skills-trainer-title');
+      if (titleEl) titleEl.textContent = `Train a skill: ${retrainName}`;
+
+      // Strip the metadata header that trainSkill() / saveFallback() prepend
+      // before populating the textarea — the user should see their original
+      // skill instruction text, not the raw stored form with the title +
+      // metadata comment on top. Matches both the legacy "# label" ATX
+      // format and the new "**label**" bold format.
+      const cleanedText = detail.text
+        .replace(/^(?:#[^\n]+|\*\*[^\n]+\*\*)\n+<!--[\s\S]*?-->\n+/, '')
+        .trim();
+      (document.getElementById('skills-input-text') as HTMLTextAreaElement | null)!.value = cleanedText;
       const nameInput = document.getElementById('skills-input-name') as HTMLInputElement | null;
-      if (nameInput) nameInput.value = detail.label;
+      if (nameInput) nameInput.value = retrainName;
       const engSel = document.getElementById('skills-input-engram') as HTMLSelectElement | null;
       if (engSel) engSel.value = detail.graphId;
       if (typeof detail.recallBreadth === 'number') {
@@ -17489,10 +18740,45 @@ async function openSkillInTrainer(
         if (breadth) breadth.value = String(detail.recallBreadth);
         if (live) live.textContent = String(detail.recallBreadth);
       }
+
+      // Populate goal fields from the stored skill text.
+      const parsedGoals = (detail as { goals?: {
+        successLooksLike?: string;
+        outOfScope?: string;
+        expectedOnCompletion?: string;
+        trigger?: string;
+        prerequisites?: string;
+        onFailure?: string;
+        requires?: string;
+        produces?: string;
+      } }).goals;
+      const setGoalField = (id: string, val: string | undefined): void => {
+        const el = document.getElementById(id) as HTMLInputElement | null;
+        if (el) el.value = val ?? '';
+      };
+      setGoalField('skills-goal-success',  parsedGoals?.successLooksLike);
+      setGoalField('skills-goal-scope',    parsedGoals?.outOfScope);
+      setGoalField('skills-goal-done',     parsedGoals?.expectedOnCompletion);
+      setGoalField('skills-goal-trigger',  parsedGoals?.trigger);
+      setGoalField('skills-goal-prereq',   parsedGoals?.prerequisites);
+      setGoalField('skills-goal-failure',  parsedGoals?.onFailure);
+      setGoalField('skills-goal-requires', parsedGoals?.requires);
+      setGoalField('skills-goal-produces', parsedGoals?.produces);
+
+      // Scroll to the top of the skills pane so the title and Skill Text
+      // field are immediately visible — avoids the user landing mid-form
+      // and not seeing the context for what they're retraining.
+      requestAnimationFrame(() => {
+        document.querySelector<HTMLElement>('.skills-trainer')
+          ?.closest<HTMLElement>('.app-canvas, .studio-scroll, .skills-panel')
+          ?.scrollTo({ top: 0, behavior: 'smooth' });
+        document.getElementById('skills-trainer-title')?.scrollIntoView({ block: 'start', behavior: 'smooth' });
+      });
+
       return;
     }
     // Default: open into Review mode with the stored skill text as the trained output.
-    showSkillsReviewMode(detail.label || 'Skill');
+    showSkillsReviewMode(skillDisplayName(detail.label) || 'Skill');
     paintSkillsReview(
       {
         original: detail.text,
@@ -17544,11 +18830,32 @@ async function openSkillInTrainer(
       }
     })();
     if (opts.scrollToExport) {
-      document.getElementById('skills-export-format')?.scrollIntoView({ block: 'center', behavior: 'smooth' });
+      // `block: 'nearest'` scrolls the minimum needed to reveal the export
+      // controls — and nothing at all if they're already visible. The old
+      // `block: 'center'` forced the control to the viewport center, which
+      // over-scrolled the page and dragged the lazily-rendered "Solo
+      // Memories" deck (which sits below the whole studio) into view
+      // half-painted. Defer to the next frame so the review panel has
+      // finished rendering before we measure scroll position.
+      requestAnimationFrame(() => {
+        document.getElementById('skills-export-format')?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+      });
     }
   } catch (e) {
     console.warn('[skills] skill:get failed', e);
-    showSkillsToast('Failed to load skill.', 'error');
+    const msg = e instanceof Error ? e.message : String(e);
+    // Distinguish "engram still loading" from real failures so the user
+    // knows whether to wait or to investigate. Background loads can leave a
+    // skill engram pending for several seconds on big cortexes.
+    const stillLoading = msg.includes('not loaded') || msg.includes('not yet loaded') || msg.includes('cortex is locked');
+    if (stillLoading) {
+      showSkillsToast('Its engram is still loading — try again in a moment.', 'error');
+    } else {
+      showSkillsToast('Failed to load skill.', 'error');
+    }
+  } finally {
+    hideLoadBar();
+    if (_openSkillInFlight === sourceId) _openSkillInFlight = null;
   }
 }
 
@@ -17560,6 +18867,16 @@ function readSkillsComposeForm(): {
   modelTarget?: string;
   save?: boolean;
   recallBreadth?: number | null;
+  goals?: {
+    successLooksLike: string;
+    outOfScope: string;
+    expectedOnCompletion: string;
+    trigger?: string;
+    prerequisites?: string;
+    onFailure?: string;
+    requires?: string;
+    produces?: string;
+  };
 } | null {
   const skill = (document.getElementById('skills-input-text') as HTMLTextAreaElement | null)?.value.trim() ?? '';
   const rawTarget = (document.getElementById('skills-input-engram') as HTMLSelectElement | null)?.value ?? '';
@@ -17599,12 +18916,41 @@ function readSkillsComposeForm(): {
   const modelTarget = (document.getElementById('skills-input-model') as HTMLSelectElement | null)?.value || undefined;
   const breadthStr = (document.getElementById('skills-input-breadth') as HTMLInputElement | null)?.value;
   const breadth = breadthStr === undefined || breadthStr === '' ? null : Number.parseInt(breadthStr, 10);
+  const goalSuccess  = (document.getElementById('skills-goal-success')  as HTMLInputElement | null)?.value.trim() || undefined;
+  const goalScope    = (document.getElementById('skills-goal-scope')    as HTMLInputElement | null)?.value.trim() || undefined;
+  const goalDone     = (document.getElementById('skills-goal-done')     as HTMLInputElement | null)?.value.trim() || undefined;
+  const goalTrigger  = (document.getElementById('skills-goal-trigger')  as HTMLInputElement | null)?.value.trim() || undefined;
+  const goalPrereq   = (document.getElementById('skills-goal-prereq')   as HTMLInputElement | null)?.value.trim() || undefined;
+  const goalFailure  = (document.getElementById('skills-goal-failure')  as HTMLInputElement | null)?.value.trim() || undefined;
+  const goalRequires = (document.getElementById('skills-goal-requires') as HTMLInputElement | null)?.value.trim() || undefined;
+  const goalProduces = (document.getElementById('skills-goal-produces') as HTMLInputElement | null)?.value.trim() || undefined;
+  const anyGoal = goalSuccess || goalScope || goalDone || goalTrigger || goalPrereq || goalFailure || goalRequires || goalProduces;
+  const goals = anyGoal
+    ? {
+        successLooksLike:     goalSuccess  ?? '',
+        outOfScope:           goalScope    ?? '',
+        expectedOnCompletion: goalDone     ?? '',
+        ...(goalTrigger  ? { trigger:       goalTrigger  } : {}),
+        ...(goalPrereq   ? { prerequisites: goalPrereq   } : {}),
+        ...(goalFailure  ? { onFailure:     goalFailure  } : {}),
+        ...(goalRequires ? { requires:      goalRequires } : {}),
+        ...(goalProduces ? { produces:      goalProduces } : {}),
+      }
+    : undefined;
   const result: ReturnType<typeof readSkillsComposeForm> = { skill, graphId };
   if (skillName !== undefined) (result as { skillName?: string }).skillName = skillName;
   if (focusGraphIds.length > 0) (result as { focusGraphIds?: string[] }).focusGraphIds = focusGraphIds;
   if (modelTarget !== undefined) (result as { modelTarget?: string }).modelTarget = modelTarget;
   (result as { save?: boolean }).save = save;
   (result as { recallBreadth?: number | null }).recallBreadth = Number.isFinite(breadth as number) ? breadth : null;
+  // useLlmRewrite is INTENTIONALLY NOT SET from the desktop. The trainer's
+  // default (chunk-and-save) is the only path the desktop UI exposes — fast,
+  // deterministic, and structurally compatible with the SOP architecture
+  // (preserves @skill: / @loop: / Trigger: / Requires: etc. that the LLM
+  // would silently rephrase). MCP callers can still opt in by passing
+  // useLlmRewrite=true directly. See Graphnosis memory:
+  // "TODO: SOP-preserving LLM rewrite" for what's needed to re-introduce.
+  (result as { goals?: typeof goals }).goals = goals;
   return result;
 }
 
@@ -17787,12 +19133,32 @@ function showTrainingBanner(): void {
       gap.classList.add('pill-pulsing');
     }
   }
-  // Lock the skill text editor while training runs. readonly allows
-  // scrolling + selection but blocks edits — so the user can still
-  // read what they pasted while Ghampus chews on it, but can't
-  // accidentally mutate the input mid-train and confuse the result.
+  // Lock all compose-form inputs while training runs so the user can't
+  // accidentally mutate their intent mid-train and confuse the result.
+  // The text area gets readOnly (allows scroll+selection); the rest get
+  // the standard disabled attribute.
   const ta = document.getElementById('skills-input-text') as HTMLTextAreaElement | null;
   if (ta) ta.readOnly = true;
+  ([
+    'skills-input-name',
+    'skills-input-engram',
+    'skills-input-model',
+    'skills-input-breadth',
+    'btn-skills-create-engram',
+    'skills-goal-success',
+    'skills-goal-scope',
+    'skills-goal-done',
+    'skills-goal-trigger',
+    'skills-goal-prereq',
+    'skills-goal-failure',
+    'skills-goal-requires',
+    'skills-goal-produces',
+  ] as const).forEach((id) => {
+    (document.getElementById(id) as HTMLInputElement | null)?.setAttribute('disabled', '');
+  });
+  // Disable all Focus Engram checkboxes.
+  document.getElementById('skills-input-focus')?.querySelectorAll<HTMLInputElement>('input[type="checkbox"]')
+    .forEach((cb) => { cb.disabled = true; });
   trainingBannerStartedAt = Date.now();
   // First message is the deterministic "Warming the cortex…" so the user
   // sees something stable before the rotation kicks in.
@@ -17861,9 +19227,28 @@ function hideTrainingBanner(): void {
     trainingBannerElapsedTimer = null;
   }
   trainingBannerCancelFn = null;
-  // Re-enable editing of the skill text now that training is done.
+  // Re-enable all compose-form inputs now that training is done.
   const ta = document.getElementById('skills-input-text') as HTMLTextAreaElement | null;
   if (ta) ta.readOnly = false;
+  ([
+    'skills-input-name',
+    'skills-input-engram',
+    'skills-input-model',
+    'skills-input-breadth',
+    'btn-skills-create-engram',
+    'skills-goal-success',
+    'skills-goal-scope',
+    'skills-goal-done',
+    'skills-goal-trigger',
+    'skills-goal-prereq',
+    'skills-goal-failure',
+    'skills-goal-requires',
+    'skills-goal-produces',
+  ] as const).forEach((id) => {
+    (document.getElementById(id) as HTMLInputElement | null)?.removeAttribute('disabled');
+  });
+  document.getElementById('skills-input-focus')?.querySelectorAll<HTMLInputElement>('input[type="checkbox"]')
+    .forEach((cb) => { cb.disabled = false; });
 }
 
 // Bind the Cancel button once at module init — clicking it fires the
@@ -17879,6 +19264,7 @@ async function runSkillTraining(): Promise<void> {
   const btn = document.getElementById('btn-skills-train') as HTMLButtonElement | null;
   if (status) status.textContent = 'Recalling memory… then training…';
   if (btn) btn.disabled = true;
+  scrollSkillsPaneToTop();
   showTrainingBanner();
   // Stash the baseline on skillsActiveResult so the streaming chunk
   // handler can read it when the first __skill_train_chunk__ frame lands.
@@ -17938,12 +19324,20 @@ async function runSkillTraining(): Promise<void> {
       ...(result.skillId !== undefined ? { sourceId: result.skillId } : {}),
       engramName,
     });
-    // If we saved, refresh the library to include the new (or updated) entry.
-    if (params.save) {
+    // If we saved, refresh the library and open the newly-saved skill in
+    // review mode so the Trained Output shows the fresh result — without
+    // this, the panel stays on the compose form and the user has to click
+    // the row manually to see what was produced.
+    if (params.save && result.skillId) {
       await fetchSkillsLibrary();
       renderSkillsLibrary();
-      // Bust vitality cache for this skill — it was just trained.
-      if (result.skillId) skillsVitalityCache.delete(result.skillId);
+      skillsVitalityCache.delete(result.skillId);
+      void warmVitalityCache();
+      // Open in review mode (no opts) to show the freshly stored trained text.
+      void openSkillInTrainer(result.skillId, params.graphId);
+    } else if (params.save) {
+      await fetchSkillsLibrary();
+      renderSkillsLibrary();
       void warmVitalityCache();
     }
     showSkillsToast(`Trained (mode: ${result.mode})`, 'success');
@@ -18006,6 +19400,7 @@ async function runSkillsFallbackTraining(opts: { silent?: boolean } = {}): Promi
   // Standalone-invocation case (user clicked "Train without LLM" directly):
   // show the rotating banner. When opts.silent === true we're inside the
   // outer runSkillTraining() flow which already showed the banner.
+  if (!opts.silent) scrollSkillsPaneToTop();
   if (!opts.silent) showTrainingBanner();
   try {
     const ctx = await ipcCall<{
@@ -18018,30 +19413,87 @@ async function runSkillsFallbackTraining(opts: { silent?: boolean } = {}): Promi
       graphId: params.graphId,
       focusGraphIds: params.focusGraphIds ?? null,
       recallBreadth: params.recallBreadth ?? null,
+      ...(params.goals !== undefined ? { goals: params.goals } : {}),
     });
     if (!ctx) {
       showSkillsToast('Build context failed.', 'error');
       return;
     }
-    const personalBlock = ctx.influentialNodes.length === 0
+    // ── Free-tier dedup + stale-node pruning ──────────────────────────────
+    //
+    // 1. DEDUP — skip any recalled node whose key content (first 60 chars) is
+    //    already present in the skill text (e.g. from a previous training run's
+    //    Personal Context block). Prevents the same facts from accumulating in
+    //    the output across repeated retrains. Uses a simple string probe — no
+    //    LLM required, deterministic, cheap.
+    //
+    // 2. STALE pruning — nodes from forgotten sources are already excluded by
+    //    the recall pipeline (soft-deleted nodes have confidence ≤ 0.2 and are
+    //    not returned). No extra step needed here.
+    //
+    // Goal-conflict detection and redundancy collapse (near-duplicate phrasing)
+    // require semantic reasoning → belong in the Pro LLM rewrite path.
+    const skillLower = params.skill.toLowerCase();
+    const freshNodes = ctx.influentialNodes.filter((n) => {
+      const probe = n.preview.slice(0, 60).toLowerCase().trim();
+      // Probes under 20 chars are too short to be reliable — always include.
+      if (probe.length < 20) return true;
+      // Skip if this content is already substantially present in the skill.
+      return !skillLower.includes(probe);
+    });
+
+    // Each node on its own blank-line-separated paragraph so the diff
+    // algorithm treats each as a separate hunk — the user sees individual
+    // change blocks they can act on, not one giant +53 green blob.
+    const personalBlock = freshNodes.length === 0
       ? ''
-      : `\n\n---\n## Personal Context (from your Graphnosis memory)\n\n${ctx.influentialNodes
-          .map((n) => `- ${n.preview}${n.sourceLabel ? ` _(from ${n.sourceLabel})_` : ''}`)
-          .join('\n')}\n`;
+      : `\n\n---\n## Personal Context (from your Graphnosis memory)\n\n${freshNodes
+          .map((n) => `${n.preview}${n.sourceLabel ? `\n_(from ${n.sourceLabel})_` : ''}`)
+          .join('\n\n')}\n`;
     const trained = params.skill + personalBlock;
     const engramName = loadedGraphs.find((g) => g.graphId === params.graphId)?.metadata.displayName ?? params.graphId;
     showSkillsReviewMode(params.skillName || 'Skill (memory-augmented)');
+
+    // Save if the user picked a real engram (params.save) — free users can
+    // persist memory-augmented results via the ungated skill:saveFallback IPC.
+    let savedSkillId: string | undefined;
+    if (params.save) {
+      try {
+        const saved = await ipcCall<{ ok: boolean; skillId?: string }>('skill:saveFallback', {
+          graphId: params.graphId,
+          text: trained,
+          skillName: params.skillName,
+          influentialNodeCount: freshNodes.length,
+          recallBreadth: params.recallBreadth,
+          addedBy: 'desktop-ui',
+          ...(params.goals !== undefined ? { goals: params.goals } : {}),
+        });
+        if (saved?.ok && saved.skillId) {
+          savedSkillId = saved.skillId;
+          await fetchSkillsLibrary();
+          renderSkillsLibrary();
+          if (savedSkillId) skillsVitalityCache.delete(savedSkillId);
+          void warmVitalityCache();
+          void openSkillInTrainer(saved.skillId, params.graphId);
+        }
+      } catch (e) {
+        console.warn('[skills] skill:saveFallback failed', e);
+        showSkillsToast('Build complete but could not save — check the sidecar logs.', 'error');
+      }
+    }
+
     paintSkillsReview(
       {
         original: params.skill,
         trained,
-        influentialNodes: ctx.influentialNodes,
+        influentialNodes: freshNodes,
         mode: 'memory-augmented',
+        ...(savedSkillId !== undefined ? { skillId: savedSkillId } : {}),
         degradedNote: 'Trained on the free memory-augmented path — your Graphnosis memory has been appended as a Personal Context block. Upgrade to Pro for an LLM-powered rewrite with per-line attribution.',
       },
-      { graphId: params.graphId, engramName },
+      { graphId: params.graphId, engramName, ...(savedSkillId !== undefined ? { sourceId: savedSkillId } : {}) },
     );
-    if (!opts.silent) showSkillsToast('Memory-augmented build complete.', 'success');
+    if (!opts.silent) showSkillsToast(params.save && savedSkillId ? 'Memory-augmented skill saved.' : 'Memory-augmented build complete.', 'success');
   } catch (e) {
     console.warn('[skills] skill:buildContext failed', e);
     showSkillsToast('Build context failed.', 'error');
@@ -18405,7 +19857,11 @@ async function saveRetrainScheduleFromUI(): Promise<void> {
 
 async function refreshSkillVitality(): Promise<void> {
   if (!skillsActiveResult?.skillId || !skillsActiveResult.graphId) {
-    showSkillsToast('Re-train this skill to compute vitality.', 'error');
+    // No saved skill behind this view — almost always the free
+    // memory-augmented preview path, which doesn't persist. Re-training
+    // won't help on the free tier (skill saving is Pro), so be honest
+    // rather than sending the user in a loop.
+    showSkillsToast('Vitality is computed for saved skills. The memory-augmented preview isn\'t saved — open a saved skill from the library to see its vitality.', 'error');
     return;
   }
   try {
@@ -18419,22 +19875,22 @@ async function refreshSkillVitality(): Promise<void> {
     }
     skillsVitalityCache.set(skillsActiveResult.skillId, { value: v, fetchedAt: Date.now() });
     const vitEl = document.getElementById('skills-review-vitality');
-    if (vitEl) vitEl.textContent = `vitality: ${Math.round(v.score)} — ${v.recommendation}`;
+    if (vitEl) vitEl.textContent = `↻ vitality: ${Math.round(v.score)} — ${v.recommendation}`;
     renderSkillsLibrary();
   } catch (e) {
     console.warn('[skills] vitality refresh failed', e);
   }
 }
 
-/** Toggle the inline "PRO — Upgrade to use GTS" hint that appears next to
- *  the format dropdown when the user picks GTS without a Pro license.
+/** Toggle the inline "PRO — Upgrade to export as .gsk" hint that appears next to
+ *  the format dropdown when the user picks GSK without a Pro license.
  *  Called on (a) format-select change and (b) every paintSkillsReview()
  *  so the hint state matches the freshly-fetched license. */
 async function syncSkillsExportProHint(): Promise<void> {
   const hint = document.getElementById('skills-export-pro-hint');
   const sel = document.getElementById('skills-export-format') as HTMLSelectElement | null;
   if (!hint || !sel) return;
-  if (sel.value !== 'gts') { hint.classList.add('hidden'); return; }
+  if (sel.value !== 'gsk') { hint.classList.add('hidden'); return; }
   let isPro = false;
   try {
     const status = await ipcLicenseStatus();
@@ -18454,7 +19910,7 @@ async function exportSkillFromUI(action: 'copy' | 'save'): Promise<void> {
   const format = formatSel?.value ?? 'claude-md';
   const status = document.getElementById('skills-export-status');
   try {
-    // GTS is Pro-gated. The sidecar returns an upgrade-required object
+    // GSK is Pro-gated. The sidecar returns an upgrade-required object
     // (instead of a string) when the user isn't licensed; surface it via
     // the existing license card. All other formats stay free and return
     // the exported string directly.
@@ -18467,18 +19923,18 @@ async function exportSkillFromUI(action: 'copy' | 'save'): Promise<void> {
         mode: 'memory-augmented',
         upgrade_required: true,
         upgrade_url: raw.upgrade_url ?? 'https://graphnosis.com/upgrade',
-        message: raw.message ?? 'GTS export requires Graphnosis Pro.',
+        message: raw.message ?? 'GSK export is a Pro feature. Upgrade to export encrypted .gsk skill packs.',
       });
-      if (status) status.textContent = 'GTS export is a Pro feature.';
+      if (status) status.textContent = 'GSK export (Graphnosis Skill Kit) is a Pro feature.';
       return;
     }
     const exported = raw as string;
     rememberSkillExportFormat(active.skillId, format);
     if (action === 'copy') {
-      // GTS is base64-encoded bytes — copying that to the clipboard is rarely
+      // GSK is base64-encoded bytes — copying that to the clipboard is rarely
       // useful, so we copy text formats only.
-      if (format === 'gts') {
-        showSkillsToast('GTS is a binary format — use Save file.', 'error');
+      if (format === 'gsk') {
+        showSkillsToast('GSK is a binary format — use Save file.', 'error');
         return;
       }
       await navigator.clipboard.writeText(exported);
@@ -18494,12 +19950,12 @@ async function exportSkillFromUI(action: 'copy' | 'save'): Promise<void> {
         'system-prompt': 'txt',
         'openai': 'txt',
         'raw': 'txt',
-        'gts': 'gts',
+        'gsk': 'gsk',
       };
       const ext = extByFormat[format] ?? 'txt';
       const defaultName = `${active.skillId ? active.skillId.slice(0, 10) : 'skill'}.${ext}`;
       try {
-        const isBinary = format === 'gts';
+        const isBinary = format === 'gsk';
         const saved = await invoke<boolean>('save_skill_file', {
           defaultName,
           filterName: format,
@@ -18541,35 +19997,89 @@ interface SkillImportResult {
   skippedEmpty?: string[];
 }
 
-/** Read a File picked from the hidden Import .gts input and ship it to the
- *  sidecar's skill:importGts handler. The handler decrypts the pack,
+/** Read a File picked from the hidden Import .gsk input and ship it to the
+ *  sidecar's skill:importGsk handler. The handler decrypts the pack,
  *  optionally verifies its Ed25519 signature, and ingests each skill in the
  *  pack as a kind:'skill' source in the resolved target engram. */
-async function importGtsFile(file: File): Promise<void> {
-  // Always send into the same engram the trainer auto-resolves — that
-  // keeps imported and trained skills in one place. Fall back to the
-  // current select value if the user has overridden via the "Change" UI.
-  const targetSel = document.getElementById('skills-input-engram') as HTMLSelectElement | null;
-  const graphId = targetSel?.value ?? '';
-  if (!graphId) {
-    showSkillsToast('No target engram yet — open Skills, give engrams a moment to load.', 'error');
+interface SkillPeekResult {
+  ok: boolean;
+  reason?: string;
+  message?: string;
+  verified?: boolean;
+  pack?: {
+    id: string;
+    displayName: string;
+    version: string;
+    author: string;
+    kind: 'official' | 'community';
+    description: string;
+  };
+  skills?: Array<{ name: string; sensitivityTier: 'personal' | 'sensitive' }>;
+}
+
+/**
+ * Drives the .gsk import flow end-to-end:
+ *
+ *   1. Open native picker via the Rust `pick_gsk_file` command. (Tauri
+ *      webviews don't reliably show pickers for hidden <input type="file">,
+ *      so the dialog lives in Rust.) Returns base64-encoded bytes.
+ *   2. Peek at the pack metadata via the sidecar's `skill:peekGsk` handler
+ *      — decrypts only, no ingest. We need this to populate the destination
+ *      picker with the pack's actual name + skill list.
+ *   3. Show a destination modal recommending a per-pack engram (named after
+ *      the pack's displayName) and listing any existing Skills engrams as
+ *      override options. Per-pack engrams are the default because packs
+ *      already encode their sensitivity context (HIPAA vs Sales etc.);
+ *      keeping them in dedicated engrams preserves that isolation.
+ *   4. Create the engram if "new" was chosen, then call `skill:importGsk`
+ *      with the same base64 + the resolved graphId.
+ *
+ * Returns silently if the user cancels at any stage.
+ */
+async function runGskImport(): Promise<void> {
+  let gskBase64: string | null;
+  try {
+    gskBase64 = await invoke<string | null>('pick_gsk_file');
+  } catch (e) {
+    console.warn('[skills] pick_gsk_file failed', e);
+    const msg = e instanceof Error ? e.message : String(e);
+    showSkillsToast(`File picker failed: ${msg}`, 'error');
     return;
   }
-  if (!/\.gts$/i.test(file.name)) {
-    // Soft guard — the OS dialog already filters by .gts, but the user can
-    // drag a wrong-extension file via drag-drop or pick "All files" on some
-    // platforms.
-    const confirmed = window.confirm(`"${file.name}" doesn't have a .gts extension. Try anyway?`);
-    if (!confirmed) return;
-  }
-  showSkillsToast(`Importing ${file.name}…`, 'success');
+  if (!gskBase64) return; // user cancelled
+
+  // ── Peek ──────────────────────────────────────────────────────────────
+  let peek: SkillPeekResult;
   try {
-    const buf = await file.arrayBuffer();
-    // Chunked base64 to avoid stack overflow on large packs.
-    const gtsBase64 = arrayBufferToBase64(buf);
-    const result = await ipcCall<SkillImportResult>('skill:importGts', {
+    peek = await ipcCall<SkillPeekResult>('skill:peekGsk', { gskBase64 });
+  } catch (e) {
+    console.warn('[skills] peekGsk failed', e);
+    const msg = e instanceof Error ? e.message : String(e);
+    showSkillsToast(`Could not read pack: ${msg}`, 'error');
+    return;
+  }
+  if (!peek?.ok || !peek.pack) {
+    const why = peek?.message ?? peek?.reason ?? 'Unknown error';
+    showSkillsToast(`Could not read pack: ${why}`, 'error');
+    return;
+  }
+
+  // ── Pick destination engram ──────────────────────────────────────────
+  const choice = await chooseSkillImportDestination(peek);
+  if (!choice) return; // user cancelled the modal
+
+  let graphId = choice.existingGraphId;
+  if (!graphId) {
+    const created = await createSkillsEngramQuiet(choice.newEngramName ?? peek.pack.displayName);
+    if (!created) return; // toast already shown
+    graphId = created;
+  }
+
+  // ── Import ───────────────────────────────────────────────────────────
+  try {
+    const result = await ipcCall<SkillImportResult>('skill:importGsk', {
       graphId,
-      gtsBase64,
+      gskBase64,
       addedBy: 'desktop-ui',
     });
     if (!result?.ok) {
@@ -18581,42 +20091,159 @@ async function importGtsFile(file: File): Promise<void> {
     const skipped = result.skippedEmpty?.length ?? 0;
     const verifiedTag = result.verified ? ' (verified official pack)' : (result.pack?.kind === 'community' ? ' (community pack)' : '');
     const skippedTag = skipped > 0 ? ` · ${skipped} skipped (empty)` : '';
+    scrollSkillsPaneToTop();
     showSkillsToast(
-      `Imported ${n} skill${n === 1 ? '' : 's'} from "${result.pack?.displayName ?? file.name}"${verifiedTag}${skippedTag}`,
+      `Imported ${n} skill${n === 1 ? '' : 's'} from "${result.pack?.displayName ?? 'pack'}" into "${result.engramName ?? graphId}"${verifiedTag}${skippedTag}`,
       'success',
     );
-    // Refresh the library so the new entries appear immediately.
     await fetchSkillsLibrary();
     renderSkillsLibrary();
     void warmVitalityCache();
+    // Open the freshly imported skill immediately so the user lands on it
+    // instead of having to hunt for it in the library. With a multi-skill
+    // pack we surface the first; the rest are one click away in the list.
+    const first = result.imported?.[0];
+    const intoGraph = result.graphId ?? graphId;
+    if (first?.sourceId && intoGraph) {
+      void openSkillInTrainer(first.sourceId, intoGraph);
+    }
   } catch (e) {
-    console.warn('[skills] importGts failed', e);
-    const msg = e instanceof Error ? e.message : 'Unknown error';
+    console.warn('[skills] importGsk failed', e);
+    const msg = e instanceof Error ? e.message : String(e);
     showSkillsToast(`Import failed: ${msg}`, 'error');
   }
 }
 
-function arrayBufferToBase64(buf: ArrayBuffer): string {
-  const bytes = new Uint8Array(buf);
-  // Chunked conversion — atob/btoa choke on very large strings via apply
-  // when the array is over ~100 KB. Chunk size of 16 KB keeps stack
-  // pressure low and is plenty fast for the modest pack sizes we expect.
-  const CHUNK = 16 * 1024;
-  let binary = '';
-  for (let i = 0; i < bytes.byteLength; i += CHUNK) {
-    const slice = bytes.subarray(i, Math.min(i + CHUNK, bytes.byteLength));
-    binary += String.fromCharCode(...slice);
-  }
-  return btoa(binary);
+/**
+ * Render the destination picker modal for a .gsk import. Resolves with the
+ * user's choice — either an existing graphId, or a name for a new engram to
+ * create — or null if the user cancelled.
+ *
+ * Per-pack engram is selected by default. The list of existing options is
+ * limited to Skills-template engrams so users aren't tempted to dump skills
+ * into their general personal engram.
+ */
+function chooseSkillImportDestination(
+  peek: SkillPeekResult,
+): Promise<{ newEngramName?: string; existingGraphId?: string } | null> {
+  return new Promise((resolve) => {
+    const pack = peek.pack!;
+    const existing = loadedGraphs
+      .filter((g) => !g.metadata.archived && g.loaded !== false && g.metadata.template === 'skill')
+      .sort((a, b) => (a.metadata.displayName ?? a.graphId).localeCompare(b.metadata.displayName ?? b.graphId));
+    // The recommended slug for the new engram. If a Skills engram with this
+    // slug already exists, default to that existing engram instead — users
+    // re-importing the same pack should land back in the same engram.
+    const proposedSlug = slugifyEngramName(pack.displayName);
+    const collisionGraph = existing.find((g) => g.graphId === proposedSlug);
+
+    const verifiedBadge = peek.verified
+      ? '<span class="g-pack-badge g-pack-badge--verified">✓ verified official pack</span>'
+      : pack.kind === 'community'
+        ? '<span class="g-pack-badge g-pack-badge--community">community pack</span>'
+        : '';
+    const skillsList = (peek.skills ?? [])
+      .map((s) => `<li>${escapeHtml(s.name)}${s.sensitivityTier === 'sensitive' ? ' <em>(sensitive)</em>' : ''}</li>`)
+      .join('');
+
+    const existingOptions = existing
+      .map((g) => {
+        const id = g.graphId;
+        const label = formatEngramLabel(g);
+        const isCollision = id === proposedSlug;
+        const note = isCollision ? ' <em>(matches pack name)</em>' : '';
+        return `
+          <label class="g-pack-dest-row">
+            <input type="radio" name="gts-dest" value="existing:${escapeHtml(id)}"${isCollision ? ' checked' : ''} />
+            <span>${escapeHtml(label)}${note}</span>
+          </label>`;
+      })
+      .join('');
+
+    const newSelectedByDefault = !collisionGraph;
+
+    let overlay = document.getElementById('gts-import-modal');
+    if (!overlay) {
+      overlay = document.createElement('div');
+      overlay.id = 'gts-import-modal';
+      overlay.className = 'modal-backdrop hidden';
+      document.body.appendChild(overlay);
+    }
+    overlay.innerHTML = `
+      <div class="modal" role="dialog" aria-labelledby="gts-import-title" style="max-width:560px;">
+        <div style="display:flex;align-items:center;justify-content:space-between;padding:14px 18px 8px;">
+          <h3 id="gts-import-title" style="margin:0;font-size:15px;">Import skill pack</h3>
+          <button type="button" class="modal-close" id="gts-import-close" aria-label="Close" style="background:none;border:none;font-size:18px;color:var(--fg-dim);cursor:pointer;">✕</button>
+        </div>
+        <div style="padding:0 18px 6px;">
+          <div style="font-size:15px;font-weight:600;margin-bottom:2px;">${escapeHtml(pack.displayName)}</div>
+          <div style="font-size:12px;color:var(--fg-dim);margin-bottom:8px;">
+            v${escapeHtml(pack.version)} · by ${escapeHtml(pack.author)} ${verifiedBadge}
+          </div>
+          ${pack.description ? `<p style="font-size:12px;color:var(--fg-dim);margin:0 0 10px 0;">${escapeHtml(pack.description)}</p>` : ''}
+          ${skillsList ? `
+            <div style="font-size:12px;color:var(--fg-dim);margin-bottom:4px;">Contains ${peek.skills?.length ?? 0} skill${(peek.skills?.length ?? 0) === 1 ? '' : 's'}:</div>
+            <ul style="font-size:12px;color:var(--fg);margin:0 0 12px 18px;padding:0;">${skillsList}</ul>
+          ` : ''}
+        </div>
+        <div style="padding:6px 18px 14px;border-top:1px solid var(--border-dim);">
+          <div style="font-size:12px;color:var(--fg-dim);margin-bottom:8px;">Save to:</div>
+          <label class="g-pack-dest-row g-pack-dest-row--primary">
+            <input type="radio" name="gts-dest" value="new"${newSelectedByDefault ? ' checked' : ''} />
+            <span>
+              <strong>New engram: "${escapeHtml(pack.displayName)}"</strong>
+              <span style="display:block;font-size:11px;color:var(--fg-dim);">recommended — keeps this pack's domain isolated</span>
+            </span>
+          </label>
+          ${existing.length > 0 ? `<div style="max-height:280px;overflow-y:auto;margin-top:4px;">${existingOptions}</div>` : ''}
+        </div>
+        <div style="display:flex;gap:8px;justify-content:flex-end;padding:0 18px 14px;">
+          <button type="button" id="gts-import-cancel" class="btn-ghost btn-sm">Cancel</button>
+          <button type="button" id="gts-import-confirm" class="primary btn-sm">Import →</button>
+        </div>
+      </div>
+    `;
+    overlay.classList.remove('hidden');
+
+    const close = (result: { newEngramName?: string; existingGraphId?: string } | null): void => {
+      overlay?.classList.add('hidden');
+      resolve(result);
+    };
+    document.getElementById('gts-import-close')?.addEventListener('click', () => close(null), { once: true });
+    document.getElementById('gts-import-cancel')?.addEventListener('click', () => close(null), { once: true });
+    overlay.addEventListener('click', (e) => { if (e.target === overlay) close(null); }, { once: true });
+    document.getElementById('gts-import-confirm')?.addEventListener('click', () => {
+      const checked = overlay?.querySelector<HTMLInputElement>('input[name="gts-dest"]:checked');
+      const value = checked?.value ?? 'new';
+      if (value === 'new') {
+        close({ newEngramName: pack.displayName });
+      } else if (value.startsWith('existing:')) {
+        close({ existingGraphId: value.slice('existing:'.length) });
+      } else {
+        close(null);
+      }
+    }, { once: true });
+  });
 }
 
 function showSkillsToast(msg: string, kind: 'success' | 'error'): void {
-  // Reuse the existing toast helper if it exists; otherwise console-log.
-  const fn = (window as unknown as { showToast?: (m: string, k: string) => void }).showToast;
-  if (typeof fn === 'function') {
-    fn(msg, kind);
-  } else {
-    console.log(`[skills:${kind}] ${msg}`);
+  // Route through the real ingest-toast stack (addIngestToast +
+  // finishIngestToast). The previous implementation looked for a
+  // window.showToast global that was never wired, so every Skills
+  // success/error fell into the console.log fallback and stayed
+  // invisible — turning every silent failure (e.g. unknown_graph,
+  // parse_failed, no target engram) into a real debugging puzzle.
+  //
+  // We still console.log for parity with prior log scraping; the
+  // toast surface is the user-visible channel.
+  console.log(`[skills:${kind}] ${msg}`);
+  try {
+    const id = addIngestToast('Skills', msg);
+    finishIngestToast(id, kind, msg);
+  } catch (e) {
+    // Defensive: if the toast stack isn't mounted (very early init or
+    // test harness), don't throw — the console.log above is enough.
+    console.warn('[skills] toast surface unavailable:', e);
   }
 }
 
@@ -18635,7 +20262,15 @@ function bindSkillsHandlers(): void {
 
 function _bindSkillsHandlersInner(): void {
   document.getElementById('btn-skills-trainer-back')?.addEventListener('click', () => showSkillsComposeMode());
-  document.getElementById('btn-skills-vitality-refresh')?.addEventListener('click', () => void refreshSkillVitality());
+  document.getElementById('skills-review-vitality')?.addEventListener('click', () => void refreshSkillVitality());
+  // In-review Retrain button — same flow as the list row's Retrain action,
+  // but reachable from the inspector view so the user doesn't have to go
+  // hunt for the row again.
+  document.getElementById('btn-skills-review-retrain')?.addEventListener('click', () => {
+    const sid = skillsActiveResult?.skillId ?? skillsActiveSourceId;
+    const gid = skillsActiveResult?.graphId;
+    if (sid && gid) void openSkillInTrainer(sid, gid, { retrain: true });
+  });
   document.getElementById('btn-skills-pending-accept')?.addEventListener('click', () => void acceptPendingProposal());
   document.getElementById('btn-skills-pending-reject')?.addEventListener('click', () => void rejectPendingProposal());
   // Output / Changes view toggle in the review section. Both buttons
@@ -18656,7 +20291,10 @@ function _bindSkillsHandlersInner(): void {
   // user opens the Skills tab (or restarts the app), the restore banner
   // offers them their unsaved work back.
   const onDraftInput = (): void => { scheduleSkillsDraftSave(); };
-  document.getElementById('skills-input-text')?.addEventListener('input', onDraftInput);
+  document.getElementById('skills-input-text')?.addEventListener('input', () => {
+    onDraftInput();
+    scheduleSkillsChunkPreview();
+  });
   document.getElementById('skills-input-name')?.addEventListener('input', onDraftInput);
   document.getElementById('skills-input-model')?.addEventListener('change', onDraftInput);
   document.getElementById('skills-input-engram')?.addEventListener('change', onDraftInput);
@@ -18697,7 +20335,7 @@ function _bindSkillsHandlersInner(): void {
   });
   document.getElementById('btn-skills-export-copy')?.addEventListener('click', () => void exportSkillFromUI('copy'));
   document.getElementById('btn-skills-export-save')?.addEventListener('click', () => void exportSkillFromUI('save'));
-  // Format-select change → toggle the inline Pro hint for the GTS option.
+  // Format-select change → toggle the inline Pro hint for the GSK option.
   document.getElementById('skills-export-format')?.addEventListener('change', () => {
     void syncSkillsExportProHint();
   });
@@ -18733,33 +20371,15 @@ function _bindSkillsHandlersInner(): void {
     skillsShowHidden = !skillsShowHidden;
     renderSkillsLibrary();
   });
-  // ── Import .gts skill pack ───────────────────────────────────────────────
+  // ── Import .gsk skill pack ───────────────────────────────────────────────
   //
-  // Opens a native file dialog (the hidden <input type="file">) filtered to
-  // .gts; reads the file as bytes; ships them base64-encoded to the sidecar
-  // which decrypts, verifies, and ingests each skill in the pack into the
-  // auto-resolved target engram (same engram the trainer would save into).
-  // Refreshes the library afterwards so the new entries show up immediately.
+  // The Upload button drives runGskImport(), which opens a native OS picker
+  // via the Rust `pick_gsk_file` command (Tauri webviews don't reliably show
+  // the picker when JS calls `.click()` on a hidden <input type="file">),
+  // peeks at the pack metadata via `skill:peekGsk`, shows a destination-engram
+  // modal, then ingests via `skill:importGsk` into the chosen engram.
   const gtsBtn = document.getElementById('btn-skills-import-gts') as HTMLButtonElement | null;
-  const gtsInput = document.getElementById('skills-import-gts-input') as HTMLInputElement | null;
-  gtsBtn?.addEventListener('click', () => { gtsInput?.click(); });
-  gtsInput?.addEventListener('change', async () => {
-    const file = gtsInput.files?.[0];
-    if (!file) return;
-    // The HTML `accept=".gts"` attribute is a hint to the file picker —
-    // on macOS the user can still flip the dialog's filter to "All
-    // files" and pick anything. Reject non-.gts extensions explicitly
-    // so the sidecar's `skill:importGts` handler doesn't get fed
-    // garbage that wastes a round-trip + spawns a confusing error.
-    if (!/\.gts$/i.test(file.name)) {
-      showSkillsToast(`That's not a .gts file. Skill packs end in .gts — got "${file.name}".`, 'error');
-      gtsInput.value = '';
-      return;
-    }
-    await importGtsFile(file);
-    // Reset the input so picking the same file again re-fires the change event.
-    gtsInput.value = '';
-  });
+  gtsBtn?.addEventListener('click', () => { void runGskImport(); });
   // Live label on the breadth slider.
   document.getElementById('skills-input-breadth')?.addEventListener('input', (e) => {
     const v = (e.target as HTMLInputElement).value;
@@ -18806,9 +20426,49 @@ function _bindSkillsHandlersInner(): void {
   // "+ Create Skill engram" — inline engram creation. Skills are saved into
   // engrams with template === 'skill'; when no such engram exists yet, this
   // is the only path to a working trainer save.
-  document.getElementById('btn-skills-create-engram')?.addEventListener('click', () => {
-    void createSkillEngramInline();
-  });
+  // Inline create-engram flow. window.prompt() doesn't render in Tauri's
+  // WKWebView, so we use a slide-in input row instead of the legacy prompt.
+  // Cancel hides the row; Create runs the programmatic createSkillsEngramQuiet
+  // helper (no prompt internally) and selects the new engram on success.
+  {
+    const createBtn   = document.getElementById('btn-skills-create-engram') as HTMLButtonElement | null;
+    const row         = document.getElementById('skills-create-engram-row');
+    const nameInput   = document.getElementById('skills-create-engram-name') as HTMLInputElement | null;
+    const confirmBtn  = document.getElementById('btn-skills-create-engram-confirm') as HTMLButtonElement | null;
+    const cancelBtn   = document.getElementById('btn-skills-create-engram-cancel') as HTMLButtonElement | null;
+
+    const closeRow = (): void => {
+      row?.classList.add('hidden');
+      if (nameInput) nameInput.value = 'Skills';
+      if (createBtn) createBtn.disabled = false;
+    };
+
+    const submit = async (): Promise<void> => {
+      const name = nameInput?.value.trim() ?? '';
+      if (!name) {
+        showSkillsToast('Engram name is empty.', 'error');
+        nameInput?.focus();
+        return;
+      }
+      if (confirmBtn) confirmBtn.disabled = true;
+      const created = await createSkillsEngramQuiet(name);
+      if (confirmBtn) confirmBtn.disabled = false;
+      if (created) closeRow();
+    };
+
+    createBtn?.addEventListener('click', () => {
+      row?.classList.remove('hidden');
+      createBtn.disabled = true;
+      // Defer focus/select to next frame so the hidden→visible transition lands.
+      requestAnimationFrame(() => { nameInput?.focus(); nameInput?.select(); });
+    });
+    cancelBtn?.addEventListener('click', closeRow);
+    confirmBtn?.addEventListener('click', () => { void submit(); });
+    nameInput?.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') { e.preventDefault(); void submit(); }
+      else if (e.key === 'Escape') { e.preventDefault(); closeRow(); }
+    });
+  }
 
   // Preview-mode warning — toggle the inline ⚠️ note whenever the target
   // dropdown changes. Also run once at bind time so the initial state

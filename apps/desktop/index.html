@@ -537,6 +537,7 @@
       /* Attribution chip for AI-client-added sources (remember/correct
          via MCP). Soft turquoise tint so it's clearly informational, not
          clickable; matches the seahorse-logo accent. */
+      .source-kind-badge { font-size: 13px; flex-shrink: 0; }
       .source-added-by {
         font-size: 14px;
         padding: 1px 6px;
@@ -763,6 +764,18 @@
         background: color-mix(in oklab, var(--fg-dim) 15%, transparent);
         color: var(--fg-dim);
         white-space: nowrap;
+      }
+      .sgr-badge-skill { background: color-mix(in oklab, var(--accent) 15%, transparent) !important; color: var(--accent) !important; }
+      .sgr-section-header {
+        font-size: 12px; font-weight: 600; letter-spacing: 0.02em;
+        color: var(--fg-dim); margin: 20px 0 6px; padding-bottom: 4px;
+        border-bottom: 1px solid var(--border);
+      }
+      .sgr-confirm-skill-warning {
+        display: block; font-size: 12px; padding: 6px 10px; border-radius: 5px; margin-bottom: 8px;
+        background: color-mix(in oklab, var(--error) 10%, transparent);
+        border: 1px solid color-mix(in oklab, var(--error) 35%, transparent);
+        color: color-mix(in oklab, var(--error) 80%, var(--fg));
       }
       .sgr-tier-select {
         font-size: 15px;
@@ -1181,7 +1194,7 @@
       .g-deck-cmd-group { display: flex; flex-direction: column; gap: 6px; }
       .g-deck-cmd-grouplabel { font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: var(--color-fg-dim); }
       .g-deck-cmd-chips { display: flex; flex-wrap: wrap; gap: 5px; }
-      .g-deck-cmd-note { font-size: 13px; line-height: 1.5; color: var(--color-fg-dim); margin: 10px 0 0; max-width: 560px; }
+      .g-deck-cmd-note { font-size: 13px; line-height: 1.5; color: var(--color-fg-dim); margin: 14px 0 0; padding: 14px 16px; background: color-mix(in oklab, var(--border) 30%, transparent); border-radius: 8px; }
       .g-deck-cmd-chip {
         font-family: monospace; font-size: 14px;
         padding: 4px 10px; border-radius: 5px;
@@ -1215,7 +1228,7 @@
         vertical-align: 1px;
       }
       /* Skills export-row Pro hint — shown inline next to the format
-         dropdown when the user picks GTS without a Pro license. */
+         dropdown when the user picks GSK without a Pro license. */
       .skills-export-pro-hint {
         display: inline-flex;
         align-items: center;
@@ -1300,6 +1313,38 @@
       .modal-header h2 { margin: 0; font-size: 15px; font-weight: 600; }
       .modal-header .subtitle { margin: 4px 0 0; font-size: 14px; }
       .modal-body { padding: 12px 16px; overflow-y: auto; flex: 1; }
+      /* .gsk import destination picker — radio rows + pack badges. Used by
+         #gsk-import-modal in main.ts/runGskImport. */
+      .g-pack-dest-row {
+        display: flex; align-items: flex-start; gap: 10px;
+        padding: 8px 10px; border-radius: 6px;
+        cursor: pointer;
+        border: 1px solid transparent;
+        font-size: 13px;
+      }
+      .g-pack-dest-row:hover { background: color-mix(in oklab, var(--fg) 4%, transparent); }
+      .g-pack-dest-row input[type="radio"] { margin-top: 2px; }
+      .g-pack-dest-row--primary {
+        background: color-mix(in oklab, var(--accent) 8%, transparent);
+        border-color: color-mix(in oklab, var(--accent) 24%, transparent);
+        margin-bottom: 6px;
+      }
+      .g-pack-dest-row em { color: var(--fg-dim); font-style: normal; }
+      .g-pack-badge {
+        display: inline-block; padding: 2px 8px;
+        border-radius: 999px; font-size: 11px; font-weight: 600;
+        margin-left: 6px;
+      }
+      .g-pack-badge--verified {
+        background: color-mix(in oklab, var(--color-status-ok-green) 16%, transparent);
+        color: var(--color-status-ok-green);
+        border: 1px solid color-mix(in oklab, var(--color-status-ok-green) 30%, transparent);
+      }
+      .g-pack-badge--community {
+        background: color-mix(in oklab, var(--fg-dim) 14%, transparent);
+        color: var(--fg-dim);
+        border: 1px solid color-mix(in oklab, var(--fg-dim) 24%, transparent);
+      }
       /* Consent prompt — tier pills shown inside the modal body listing
          which sensitivity tiers the AI is asking to read. */
       .consent-tier-pill {
@@ -1995,6 +2040,22 @@
       }
       .engram-picker-option.disabled:hover {
         background: transparent;
+      }
+      /* Rotating spinner shown inside disabled (still-loading) engram options.
+         Tells the user the engram isn't permanently broken — it's actively
+         loading from disk. Click outside + reopen the picker to refresh. */
+      .engram-picker-loading-spinner {
+        display: inline-block;
+        margin-right: 6px;
+        font-size: 12px;
+        line-height: 1;
+        opacity: 0.7;
+        animation: engramPickerSpin 1.1s linear infinite;
+        transform-origin: 50% 55%;
+      }
+      @keyframes engramPickerSpin {
+        from { transform: rotate(0deg); }
+        to   { transform: rotate(360deg); }
       }
       .engram-picker-option.selected {
         background: color-mix(in oklab, var(--accent) 16%, transparent);
@@ -3468,7 +3529,20 @@
       /* Action row */
       .studio-action-row { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
       /* Tool chip navigation */
-      .studio-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 14px; }
+      .studio-chips {
+        display: flex; flex-wrap: wrap; gap: 6px;
+        /* Freeze the chip row at the top of .app-canvas (the scroll host)
+           so it remains visible while the user scrolls down through the
+           Skills list, recalled results, or any long trained output. */
+        position: sticky;
+        top: -10px;    /* .app-canvas has 10px top padding — offset exactly
+                          so the chips seat flush with the viewport edge. */
+        z-index: 10;
+        background: var(--bg);
+        padding: 10px 0 10px; /* vertical breathing room around the chips */
+        margin-top: -10px;    /* cancel the extra top padding visually */
+        margin-bottom: 4px;
+      }
       .studio-chip {
         font-size: 12px; font-weight: 600; padding: 5px 13px;
         border: 1px solid var(--border); border-radius: 20px;
@@ -3556,9 +3630,22 @@
       }
       /* Vertical breathing room above the Focus Engrams section so the
          preview-mode warning and the field heading don't crowd each other. */
+      /* Compose form sections — each logical group (Skill Text, Saving To,
+         Focus Engrams, Options) is separated by a subtle top border so the
+         eye reads the form as distinct steps rather than one long list. */
       .skills-compose > .skills-field + .skills-field { margin-top: 4px; }
+      /* Skill Name sits directly after the Skill Text block (textarea +
+         expand handle). Give it extra breathing room so it reads as a
+         separate input rather than an afterthought of the text box. */
+      .skills-compose > .skills-field + .skills-field:has(#skills-input-name) { margin-top: 14px; }
+      .skills-compose > .skills-field.skills-section-start,
+      .skills-compose > .skills-grid-row.skills-section-start {
+        margin-top: 14px;
+        padding-top: 14px;
+        border-top: 1px solid var(--border);
+      }
       .skills-preview-warning + .skills-field { margin-top: 10px; }
-      /* "(Pro)" badge on the GTS export option in the format dropdown
+      /* "(Pro)" badge on the GSK export option in the format dropdown
          and on any other Pro-gated affordance we surface later. */
       .skills-pro-badge {
         font-size: 9px; font-weight: 700; letter-spacing: 0.04em;
@@ -3570,11 +3657,61 @@
       }
 
       /* ── Skills pane layout ─────────────────────────────────────────────── */
+      /*
+       * Skills two-column sticky layout
+       * ─────────────────────────────────
+       * Both columns scroll independently inside the shared .app-canvas scroll
+       * host. Each column is `position: sticky` so it pins in the viewport as
+       * the user scrolls the canvas, and `overflow-y: auto` with a capped
+       * `max-height` so its own content scrolls within that sticky frame.
+       *
+       * Offset anatomy (top values):
+       *   --skills-chip-h  = visible height of the frozen chip row
+       *                      (padding-top 10px + chips ~28px + padding-bottom 10px
+       *                       = ~48px, plus the -10px canvas top padding offset
+       *                       already baked into the chips sticky = net ~38px)
+       *   --skills-strip-h = "Powered by Graphnosis Autonomous Praxis" strip (~28px)
+       *   --skills-col-top = total offset from the viewport top where columns pin
+       *
+       * The columns sit flush below the chip row so the inspector header is
+       * always visible when a skill is selected — the user doesn't need to
+       * scroll up to find it.
+       */
+      :root {
+        --skills-chip-h: 48px;   /* chip row visible height (see above) */
+        --skills-strip-h: 28px;  /* praxis attribution strip */
+        --skills-col-top: calc(var(--skills-chip-h) + var(--skills-strip-h) + 8px);
+      }
+
+      /* Skills section container: fixed-height flex column so both inner
+         panels fill the available space and scroll independently. The parent
+         .app-canvas must NOT scroll while on this view.
+         padding-bottom reserves space above the Solo Memories trivia bar
+         (position:fixed, 44px tall) so the library footer is always reachable. */
+      .lb-section[data-studio-tool="skills"] {
+        display: flex;
+        flex-direction: column;
+        height: calc(100vh - 120px);
+        padding-bottom: var(--trivia-bar-h, 44px);
+        overflow: hidden;
+      }
+      .lb-section[data-studio-tool="skills"] .skills-praxis-strip {
+        flex-shrink: 0;
+      }
+      .lb-section[data-studio-tool="skills"] .skills-pane {
+        flex: 1;
+        min-height: 0;
+        overflow: hidden;
+      }
+
       .skills-pane {
         display: grid;
         grid-template-columns: minmax(280px, 360px) 1fr;
         gap: 18px;
-        align-items: start;
+        /* stretch so both columns fill the grid row height, enabling
+           independent overflow-y:auto scroll in each column. */
+        align-items: stretch;
+        height: 100%;
       }
       @media (max-width: 960px) {
         .skills-pane { grid-template-columns: 1fr; }
@@ -3587,6 +3724,13 @@
         border-radius: 8px;
         background: var(--bg-elev);
         min-height: 260px;
+        /* Remove sticky — the section wrapper is now the height container.
+           Each column fills its grid cell and scrolls independently. */
+        position: static;
+        top: auto;
+        max-height: 100%;
+        height: 100%;
+        overflow-y: auto;
       }
       .skills-library-header {
         display: flex; align-items: center; gap: 8px;
@@ -3600,9 +3744,10 @@
       }
       .skills-library-sort { margin-left: auto; font-size: 11px; padding: 2px 6px; }
       .skills-library-list {
-        flex: 1; overflow-y: auto;
+        /* No fixed max-height — list scrolls with the full Skills pane
+           rather than its own isolated viewport. The outer studio column
+           or app-canvas is the scroll host. */
         padding: 6px;
-        max-height: 520px;
       }
       .skills-library-empty { padding: 16px; text-align: center; }
       .skills-library-foot {
@@ -3610,7 +3755,11 @@
         text-align: right;
       }
 
-      /* Skill row */
+      /* ── Skill group (parent + collapsible trained children) ─────────────── */
+      .skill-group { border-radius: 6px; overflow: hidden; }
+      .skill-group + .skill-group { margin-top: 4px; }
+
+      /* Parent row */
       .skill-row {
         display: flex; flex-direction: column; gap: 4px;
         padding: 10px 10px;
@@ -3621,8 +3770,48 @@
       }
       .skill-row:hover { background: color-mix(in oklab, var(--ok) 8%, transparent); border-color: var(--border); }
       .skill-row.active { background: color-mix(in oklab, var(--ok) 16%, transparent); border-color: var(--ok); }
-      .skill-row-top { display: flex; align-items: center; gap: 6px; }
-      .skill-row-name { font-weight: 600; font-size: 13px; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .skill-group.has-children > .skill-row { border-radius: 6px 6px 0 0; border-bottom: none; }
+
+      /* ── Top-level (root) parent skills: turquoise accent ─────────────────────
+         Roots are the .skill-group elements that sit DIRECTLY inside the library
+         list — not nested inside another .skill-group-children container. They
+         get a turquoise (var(--accent)) hover / active / toggle treatment to
+         visually distinguish "this is an original imported or manual skill"
+         from its trained descendants (which keep the green --ok template). */
+      .skills-library-list > .skill-group > .skill-row:hover {
+        background: color-mix(in oklab, var(--accent) 10%, transparent);
+        border-color: color-mix(in oklab, var(--accent) 40%, var(--border));
+      }
+      .skills-library-list > .skill-group > .skill-row.active {
+        background: color-mix(in oklab, var(--accent) 18%, transparent);
+        border-color: var(--accent);
+      }
+      .skills-library-list > .skill-group.expanded > .skill-row {
+        background: color-mix(in oklab, var(--accent) 6%, transparent);
+      }
+      .skills-library-list > .skill-group > .skill-row .skill-group-toggle:hover {
+        background: color-mix(in oklab, var(--accent) 14%, transparent);
+        border-color: color-mix(in oklab, var(--accent) 40%, transparent);
+        color: var(--accent);
+      }
+      .skills-library-list > .skill-group.expanded > .skill-row .skill-group-toggle {
+        background: color-mix(in oklab, var(--accent) 14%, transparent);
+        border-color: color-mix(in oklab, var(--accent) 40%, transparent);
+        color: var(--accent);
+      }
+      /* Children container under a root parent — subtle turquoise tint on the
+         outer border, but the inside stays green so trained descendants look
+         like a coherent group within the turquoise parent shell. */
+      .skills-library-list > .skill-group > .skill-group-children {
+        border-color: color-mix(in oklab, var(--accent) 30%, var(--border));
+        background: color-mix(in oklab, var(--accent) 3%, var(--bg-elev));
+      }
+      /* Full skill name on its own line — no truncation, wraps if needed */
+      .skill-row-title {
+        font-weight: 700; font-size: 13px; line-height: 1.3;
+        word-break: break-word;
+      }
+      .skill-row-top { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
       .skill-row-engram {
         font-size: 10px; padding: 1px 6px; border-radius: 8px;
         background: color-mix(in oklab, var(--accent) 14%, transparent);
@@ -3633,9 +3822,118 @@
       .skill-row:hover .skill-row-actions { opacity: 1; }
       .skill-row-actions button { font-size: 10px; padding: 1px 6px; }
 
+      /* Kind chips (imported / trained / manual) */
+      .skill-kind-chip {
+        font-size: 9px; padding: 1px 5px; border-radius: 8px; font-weight: 700;
+        text-transform: uppercase; letter-spacing: 0.04em;
+      }
+      /* Author badge — verified-signature provenance for imported .gsk packs.
+         Surfaces author name + sig status next to the kind chip in the skill list. */
+      .skill-author-badge {
+        font-size: 9px; padding: 1px 5px; border-radius: 8px; font-weight: 600;
+        letter-spacing: 0.02em; white-space: nowrap;
+      }
+      .skill-author-verified {
+        background: color-mix(in oklab, var(--ok) 18%, transparent);
+        color: var(--ok);
+      }
+      .skill-author-unverified {
+        background: color-mix(in oklab, var(--fg-dim) 12%, transparent);
+        color: var(--fg-dim);
+      }
+      .skill-kind-imported {
+        background: color-mix(in oklab, var(--accent) 12%, transparent);
+        color: var(--accent);
+      }
+      .skill-kind-trained {
+        background: color-mix(in oklab, var(--ok) 14%, transparent);
+        color: var(--ok);
+      }
+      .skill-kind-manual {
+        background: color-mix(in oklab, var(--fg-dim) 12%, transparent);
+        color: var(--fg-dim);
+      }
+
+      /* Expand/collapse toggle on parent when it has trained children */
+      .skill-group-toggle {
+        background: color-mix(in oklab, var(--border) 60%, transparent);
+        border: 1px solid color-mix(in oklab, var(--fg-dim) 30%, var(--border));
+        border-radius: 5px;
+        cursor: pointer;
+        font-size: 11px;
+        color: var(--fg);
+        padding: 4px 8px;
+        line-height: 1;
+        transition: background 0.12s, transform 0.15s, color 0.12s, border-color 0.12s;
+        flex-shrink: 0;
+        min-width: 28px;
+        height: 22px;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        margin-right: 6px;
+        font-weight: 700;
+        vertical-align: middle;
+      }
+      .skill-group-toggle:hover {
+        background: color-mix(in oklab, var(--ok) 14%, transparent);
+        border-color: color-mix(in oklab, var(--ok) 40%, transparent);
+        color: var(--ok);
+      }
+      .skill-group.expanded > .skill-row .skill-group-toggle {
+        transform: rotate(90deg);
+        background: color-mix(in oklab, var(--ok) 14%, transparent);
+        border-color: color-mix(in oklab, var(--ok) 40%, transparent);
+        color: var(--ok);
+      }
+
+      /* Trained children list */
+      .skill-group-children {
+        display: none;
+        border: 1px solid var(--border);
+        border-top: none;
+        border-radius: 0 0 6px 6px;
+        background: color-mix(in oklab, var(--ok) 3%, var(--bg-elev));
+      }
+      .skill-group.expanded > .skill-group-children { display: block; }
+
+      /* Individual child (trained version) row */
+      .skill-child-row {
+        display: flex; flex-direction: column; gap: 3px;
+        padding: 7px 10px 7px 20px; /* indent under parent */
+        cursor: pointer;
+        border-top: 1px solid color-mix(in oklab, var(--border) 50%, transparent);
+        transition: background 0.1s;
+        position: relative;
+      }
+      .skill-child-row::before {
+        content: '';
+        position: absolute; left: 10px; top: 50%;
+        transform: translateY(-50%);
+        width: 5px; height: 5px; border-radius: 50%;
+        background: color-mix(in oklab, var(--ok) 40%, transparent);
+      }
+      .skill-child-row:hover { background: color-mix(in oklab, var(--ok) 6%, transparent); }
+      .skill-child-row.active { background: color-mix(in oklab, var(--ok) 14%, transparent); }
+      .skill-child-row-top { display: flex; align-items: center; gap: 5px; flex-wrap: wrap; }
+      .skill-child-actions { display: flex; gap: 4px; margin-left: auto; opacity: 0; transition: opacity 0.12s; }
+      .skill-child-row:hover .skill-child-actions { opacity: 1; }
+      .skill-child-actions button { font-size: 10px; padding: 1px 6px; }
+
       /* Vitality bar */
       .skill-vitality {
         display: flex; align-items: center; gap: 5px; flex: 1; min-width: 0;
+        /* Vitality bars are visually noisy at full saturation across many
+           skill rows. Dim by default so the chrome stays quiet; brighten on
+           hover or selection so the user can scan vitality intentionally. */
+        opacity: 0.35;
+        transition: opacity 0.15s;
+      }
+      .skill-row:hover .skill-vitality,
+      .skill-row.active .skill-vitality,
+      .skill-child-row:hover .skill-vitality,
+      .skill-child-row.active .skill-vitality {
+        opacity: 1;
       }
       .skill-vitality-bar {
         flex: 1; height: 4px; border-radius: 2px;
@@ -3658,21 +3956,60 @@
       .skill-vitality.uncomputed > .skill-vitality-score { color: var(--fg-dim); font-weight: 500; }
       .skill-vitality.uncomputed > .skill-vitality-bar > span { width: 0 !important; }
 
-      /* Trainer column */
+      /* Trainer column — fills its grid cell height, scrolls independently */
+      .skills-load-bar {
+        position: absolute; top: 0; left: 0; right: 0; height: 2px;
+        overflow: hidden; border-radius: 8px 8px 0 0; z-index: 10;
+        background: color-mix(in oklab, var(--accent) 20%, transparent);
+      }
+      .skills-load-bar::after {
+        content: ''; position: absolute; top: 0; height: 100%; width: 40%;
+        background: var(--accent);
+        animation: skillsLoadSweep 1.1s cubic-bezier(0.4,0,0.6,1) infinite;
+      }
+      @keyframes skillsLoadSweep {
+        0%   { left: -40%; }
+        100% { left: 140%; }
+      }
       .skills-trainer {
+        position: relative; /* anchor for .skills-load-bar */
         display: flex; flex-direction: column; gap: 12px;
         border: 1px solid var(--border);
         border-radius: 8px;
         background: var(--bg-elev);
         padding: 14px;
+        /* Grid items default to min-width:auto — cap so long unbreakable
+           lines use the box's own overflow:auto instead of blowing the grid. */
+        min-width: 0;
+        /* Remove sticky — section wrapper is now the height container.
+           The column fills its grid cell and scrolls independently. */
+        position: static;
+        top: auto;
+        max-height: 100%;
+        height: 100%;
+        overflow-y: auto;
       }
       .skills-trainer-header {
-        display: flex; align-items: center; gap: 8px;
+        display: flex; flex-direction: column; align-items: stretch; gap: 6px;
         margin-bottom: 4px;
       }
-      .skills-trainer-title { font-weight: 700; font-size: 14px; }
+      /* Title sits on its own full-width line above the action buttons */
+      .skills-trainer-title {
+        font-weight: 700; font-size: 14px;
+        word-break: break-word; /* long imported names wrap instead of overflow */
+      }
+      .skills-trainer-header-actions {
+        display: flex; align-items: center; gap: 8px;
+      }
       .skills-field { display: flex; flex-direction: column; gap: 4px; }
       .skills-field-label { font-size: 11px; color: var(--fg-dim); font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; }
+      .skills-field-label-opt { font-weight: 400; opacity: 0.6; text-transform: none; letter-spacing: 0; }
+      .skills-goals-grid { display: flex; flex-direction: column; gap: 6px; }
+      .skills-goal-label {
+        font-size: 11px; font-weight: 600; color: var(--fg-dim);
+        margin-bottom: 2px; display: block;
+      }
+      .skills-goal-input { font-size: 12px; }
       .skills-grid-row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
       @media (max-width: 540px) { .skills-grid-row { grid-template-columns: 1fr; } }
       /* Compact-first skill text editor — fixed height by default so long
@@ -3697,6 +4034,24 @@
         border-bottom-left-radius: 0; border-bottom-right-radius: 0;
         margin-bottom: 0 !important;
         transition: max-height 0.18s ease-out, height 0.18s ease-out;
+        /* Match the Focus Engrams checkbox list background (var(--bg) — the
+           cortex-page dark gray) so every input in the trainer reads as one
+           coherent input family. */
+        background: var(--bg);
+        border-color: var(--border);
+      }
+      /* Trainer-scoped overrides — the engram and model-target dropdowns
+         normally use --bg-elev (lighter) but in the Skills trainer we want
+         them to match Focus Engrams' darker var(--bg) so all inputs share
+         the same dark-gray fill. */
+      .skills-trainer .studio-select,
+      .skills-trainer .studio-text-input,
+      .skills-trainer input[type="range"] {
+        background: var(--bg);
+      }
+      textarea.skills-input-text:focus {
+        outline: none;
+        border-color: var(--accent);
       }
       textarea.skills-input-text.has-overflow {
         /* Bottom corners square so the attached handle button reads as
@@ -3768,6 +4123,30 @@
         transform: rotate(180deg);
       }
       .skills-breadth-live { color: var(--ok); font-weight: 700; font-size: 10px; }
+      /* Live chunk preview — shows the user how their pasted text will be
+         split into paragraph nodes before they hit Train. */
+      .skills-chunk-preview {
+        display: flex; flex-direction: column; gap: 4px;
+        margin-top: 4px; padding: 6px 10px;
+        border-radius: 5px;
+        background: color-mix(in oklab, var(--ok) 6%, transparent);
+        border: 1px solid color-mix(in oklab, var(--ok) 25%, transparent);
+        font-size: 11px;
+      }
+      .skills-chunk-preview-count {
+        font-weight: 700; color: var(--ok); font-size: 10px;
+        text-transform: uppercase; letter-spacing: 0.04em;
+      }
+      .skills-chunk-preview-list {
+        margin: 0; padding: 0 0 0 18px;
+        color: var(--fg-dim); font-size: 11px; line-height: 1.45;
+      }
+      .skills-chunk-preview-list li {
+        margin: 1px 0;
+        white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+        max-width: 100%;
+      }
+      .skills-chunk-preview-more { font-size: 10px; color: var(--fg-dim); font-style: italic; }
       .skills-checkbox-row { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--fg-dim); }
       .skills-field-hint { font-size: 11px; color: var(--fg-dim); margin-top: 2px; }
       /* Target engram row — dropdown of Skills-template engrams + inline
@@ -3791,7 +4170,7 @@
         border: 1px solid color-mix(in oklab, var(--color-status-warn-gold) 32%, transparent);
         border-radius: 6px;
       }
-      /* "Upload .gts skill file" button pinned to the right side of the
+      /* "Upload .gsk skill file" button pinned to the right side of the
          trainer header — Train and Import are the two ways to land a new
          skill in your cortex, so they live in the same surface. */
       .skills-trainer-import { margin-left: auto; }
@@ -3984,7 +4363,12 @@
         color: var(--accent); font-weight: 600;
       }
       .skills-mode-chip { background: color-mix(in oklab, var(--ok) 14%, transparent); color: var(--ok); }
-      .skills-vitality-chip { background: color-mix(in oklab, var(--ok) 18%, transparent); color: var(--ok); }
+      .skills-vitality-chip {
+        background: color-mix(in oklab, var(--ok) 18%, transparent); color: var(--ok);
+        cursor: pointer; border: none; font-size: 10px; font-weight: 600;
+        padding: 2px 8px; border-radius: 10px;
+      }
+      .skills-vitality-chip:hover { background: color-mix(in oklab, var(--ok) 28%, transparent); }
       .skills-degraded-note {
         padding: 8px 10px; border-radius: 6px; font-size: 12px;
         background: color-mix(in oklab, var(--color-status-warn-gold) 14%, transparent);
@@ -3992,6 +4376,14 @@
         border: 1px solid color-mix(in oklab, var(--color-status-warn-gold) 40%, transparent);
       }
       .skills-review-section { display: flex; flex-direction: column; gap: 6px; }
+      /* Visual separator between review sections (Trained Output / Influential
+         Nodes / Retrain Schedule / Export). Uses a top border + extra padding
+         so each section reads as its own distinct panel region. */
+      .skills-review-section + .skills-review-section {
+        border-top: 1px solid var(--border);
+        padding-top: 12px;
+        margin-top: 4px;
+      }
       .skills-section-header { display: flex; align-items: center; gap: 8px; }
       .skills-section-title { font-size: 11px; color: var(--fg-dim); font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; }
       /* Output / Changes toggle in the review section header. Two-button
@@ -4110,14 +4502,219 @@
       .skills-output, .skills-diff {
         max-height: 280px; overflow: auto;
         padding: 10px 12px; border-radius: 6px;
+        /* Match the Focus Engrams panel — flat dark-gray background so the
+           input/output surfaces sit on the page rather than glowing green. */
         background: var(--bg);
         border: 1px solid var(--border);
         font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, "Cascadia Mono", "Roboto Mono", monospace;
         font-size: 12px; line-height: 1.5;
-        white-space: pre-wrap; word-break: break-word;
+        /* overflow-wrap:anywhere force-breaks long unbreakable runs (the
+           legacy word-break:break-word didn't reliably break them under
+           pre-wrap), and max-width:100% keeps the box inside its column so a
+           wide line scrolls within the box rather than widening the panel. */
+        white-space: pre-wrap; word-break: break-word; overflow-wrap: anywhere;
+        max-width: 100%;
         margin: 0;
       }
       .skills-nodes { display: flex; flex-direction: column; gap: 4px; max-height: 240px; overflow-y: auto; }
+      /* Rich output mode — Personal Context nodes are rendered as editable
+         blocks with × remove buttons so the user can refine what goes into
+         the trained skill directly in the output box. */
+      .skills-output-base {
+        white-space: pre-wrap; word-break: break-word; overflow-wrap: anywhere;
+        font-family: inherit; font-size: inherit; line-height: inherit;
+        margin: 0;
+      }
+      .skills-output-pc-header {
+        margin: 12px 0 8px;
+        opacity: 0.7;
+        font-style: italic;
+      }
+      .skills-output-node {
+        display: flex; align-items: flex-start; gap: 6px;
+        padding: 4px 0;
+        border-bottom: 1px dashed color-mix(in oklab, var(--ok) 20%, transparent);
+      }
+      .skills-output-node:last-child { border-bottom: none; }
+      .skills-output-node-body { flex: 1; min-width: 0; }
+      .skills-output-node-text {
+        display: block;
+        white-space: pre-wrap; word-break: break-word; overflow-wrap: anywhere;
+        outline: none; border-radius: 3px; padding: 1px 3px;
+        cursor: text;
+        transition: background 0.1s;
+      }
+      .skills-output-node-text:hover  { background: color-mix(in oklab, var(--ok) 8%, transparent); }
+      .skills-output-node-text:focus  { background: color-mix(in oklab, var(--ok) 14%, transparent); }
+      .skills-output-node-source {
+        font-size: 10px; color: var(--fg-dim); font-style: italic;
+        display: block; margin-top: 1px; padding-left: 3px;
+      }
+      .skills-output-node-remove {
+        flex-shrink: 0; cursor: pointer;
+        width: 30px; height: 30px;
+        display: inline-flex; align-items: center; justify-content: center;
+        font-size: 20px; line-height: 1;
+        opacity: 0.55; color: var(--error);
+        background: color-mix(in oklab, var(--error) 8%, transparent);
+        border: 1px solid color-mix(in oklab, var(--error) 25%, transparent);
+        border-radius: 6px;
+        transition: opacity 0.1s, background 0.1s, border-color 0.1s, transform 0.08s;
+      }
+      .skills-output-node-remove:hover {
+        opacity: 1;
+        background: color-mix(in oklab, var(--error) 18%, transparent);
+        border-color: color-mix(in oklab, var(--error) 50%, transparent);
+      }
+      .skills-output-node-remove:active { transform: scale(0.92); }
+
+      /* ── Phase 4: editable trained-output cards (source-driven) ──────────
+         Each card maps 1:1 to a graph node in the skill source. The drag
+         handle and the insert slot above/below are hover-only — they fade
+         in on parent hover so the rest state matches today's UI. */
+      .skills-output-card {
+        position: relative;
+        display: flex; align-items: flex-start; gap: 6px;
+        padding: 4px 4px 4px 34px; /* left room for handle-col */
+        border-bottom: 1px dashed color-mix(in oklab, var(--ok) 20%, transparent);
+      }
+      /* Number + grip stacked vertically in the left gutter */
+      .skills-output-handle-col {
+        position: absolute; left: 0; top: 0; bottom: 0; width: 32px;
+        display: flex; flex-direction: column; align-items: center;
+        justify-content: flex-start; padding-top: 3px; gap: 0;
+      }
+      .skills-output-step-num {
+        font-size: 9px; font-variant-numeric: tabular-nums; line-height: 1;
+        color: color-mix(in oklab, var(--fg-dim) 45%, transparent);
+        user-select: none; pointer-events: none;
+      }
+      .skills-output-card:last-of-type { border-bottom: none; }
+      .skills-output-card-text {
+        flex: 1; display: block;
+        white-space: pre-wrap; word-break: break-word; overflow-wrap: anywhere;
+        outline: none; border-radius: 3px; padding: 1px 3px;
+        cursor: text;
+        transition: background 0.1s;
+      }
+      .skills-output-card-text:hover { background: color-mix(in oklab, var(--ok) 8%, transparent); }
+      .skills-output-card-text:focus { background: color-mix(in oklab, var(--ok) 14%, transparent); }
+      .skills-output-drag-handle {
+        cursor: grab; opacity: 0; transition: opacity 0.15s;
+        background: none; border: none; color: var(--fg-dim); font-size: 12px;
+        padding: 2px 4px; line-height: 1;
+        user-select: none; -webkit-user-select: none;
+        touch-action: none;
+      }
+      .skills-output-card:hover .skills-output-drag-handle { opacity: 1; }
+      .skills-output-card:hover .skills-output-step-num { opacity: 0.7; }
+      .skills-output-drag-handle:active { cursor: grabbing; }
+      .skills-output-card.dragging { opacity: 0.4; }
+      .skills-output-card.drop-target-before { box-shadow: 0 -2px 0 0 var(--accent); }
+      .skills-output-card.drop-target-after  { box-shadow: 0  2px 0 0 var(--accent); }
+      .skills-output-card-remove {
+        flex-shrink: 0; cursor: pointer;
+        width: 30px; height: 30px;
+        display: inline-flex; align-items: center; justify-content: center;
+        font-size: 20px; line-height: 1;
+        color: var(--error);
+        border-radius: 6px;
+        /* Phase 4e — hover-stuck fix. No transition; the rest state is the
+           subtle pill, hover is a brighter pill. After click the handler
+           calls btn.blur() + removes the card in the same tick so this
+           element is gone before the hover style has a chance to stick. */
+        transition: none;
+      }
+      .skills-output-card-remove:not(:hover):not(:focus-visible) {
+        background: color-mix(in oklab, var(--error) 8%, transparent);
+        border: 1px solid color-mix(in oklab, var(--error) 25%, transparent);
+        opacity: 0.55;
+      }
+      .skills-output-card-remove:hover {
+        background: color-mix(in oklab, var(--error) 18%, transparent);
+        border: 1px solid color-mix(in oklab, var(--error) 50%, transparent);
+        opacity: 1;
+      }
+      .skills-output-card-remove:active { transform: scale(0.92); }
+      /* Green check Save button — only shown on draft cards (insert flow).
+         Mirrors the × Remove button's footprint so the draft card aligns
+         to the same right gutter as the saved cards. */
+      .skills-output-card-save {
+        flex-shrink: 0; cursor: pointer;
+        width: 30px; height: 30px;
+        display: inline-flex; align-items: center; justify-content: center;
+        font-size: 18px; line-height: 1; font-weight: 700;
+        color: var(--ok);
+        border-radius: 6px;
+        background: color-mix(in oklab, var(--ok) 14%, transparent);
+        border: 1px solid color-mix(in oklab, var(--ok) 40%, transparent);
+        transition: background 0.1s, border-color 0.1s, transform 0.06s;
+      }
+      .skills-output-card-save:hover {
+        background: color-mix(in oklab, var(--ok) 26%, transparent);
+        border-color: color-mix(in oklab, var(--ok) 60%, transparent);
+      }
+      .skills-output-card-save:active { transform: scale(0.92); }
+      .skills-output-insert-slot {
+        height: 8px; cursor: pointer; position: relative;
+        display: flex; align-items: center; justify-content: center;
+        opacity: 0; transition: opacity 0.12s, height 0.12s;
+        font-size: 11px; color: var(--fg-dim);
+      }
+      .skills-output-insert-slot:hover { opacity: 1; height: 22px; }
+      .skills-output-insert-slot::before {
+        content: '+ Insert paragraph'; padding: 2px 8px; border-radius: 4px;
+        background: color-mix(in oklab, var(--accent) 12%, transparent);
+        border: 1px dashed color-mix(in oklab, var(--accent) 40%, transparent);
+        color: var(--accent);
+      }
+      .skills-output-section-header {
+        font-size: 10px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase;
+        color: var(--fg-dim); padding: 10px 0 4px 34px;
+        border-bottom: 1px solid color-mix(in oklab, var(--fg-dim) 15%, transparent);
+        margin-bottom: 2px;
+      }
+      /* Draft card with chips: stack chips ABOVE the textarea (column layout)
+         so the textarea gets its own full-width row. Without this the chips
+         and the textarea were flex siblings on the same row, cramping the
+         textarea to whatever horizontal space the chips left over. */
+      .skills-output-card--draft {
+        flex-direction: column; align-items: stretch;
+        border: 1px dashed var(--accent);
+        background: color-mix(in oklab, var(--accent) 5%, transparent);
+      }
+      .skills-output-card--draft .skills-output-card-text {
+        min-height: 28px; width: 100%; padding: 6px 8px;
+      }
+      /* Inner row for the draft card: editable on the left, ✓ Save button
+         on the right. Chips (when shown) stack above this row via the
+         outer card's flex-direction: column. */
+      .skills-draft-input-row {
+        display: flex; align-items: stretch; gap: 6px; width: 100%;
+      }
+      .skills-draft-input-row .skills-output-card-text { flex: 1; }
+      .skills-draft-goal-chips {
+        display: flex; flex-wrap: wrap; gap: 4px;
+        padding: 2px 0 6px; width: 100%;
+      }
+      .skills-goal-chip {
+        font-size: 10px; padding: 2px 7px; border-radius: 10px; cursor: pointer;
+        background: color-mix(in oklab, var(--accent) 14%, transparent);
+        border: 1px solid color-mix(in oklab, var(--accent) 35%, transparent);
+        color: var(--accent); white-space: nowrap;
+        transition: background 0.1s;
+      }
+      .skills-goal-chip:hover { background: color-mix(in oklab, var(--accent) 26%, transparent); }
+      /* Goal cards: subtle distinct shade + letter-label styling. */
+      .skills-output-card--goal .skills-output-step-num {
+        font-style: italic; color: color-mix(in oklab, var(--accent) 65%, transparent);
+      }
+      .skills-output-node-goal {
+        font-size: 9px; padding: 1px 5px; border-radius: 8px; font-weight: 700;
+        background: color-mix(in oklab, var(--ok) 18%, transparent);
+        color: var(--ok); text-transform: uppercase; letter-spacing: 0.04em;
+        display: inline-block; margin-top: 2px;
+      }
       .skills-node-card {
         padding: 6px 10px; border-radius: 6px;
         border: 1px solid var(--border);
@@ -4126,8 +4723,15 @@
       }
       .skills-node-card-header { display: flex; align-items: center; gap: 6px; margin-bottom: 4px; }
       .skills-node-id { font-family: ui-monospace, monospace; font-size: 10px; color: var(--fg-dim); }
+      .skills-node-remove { padding: 0 4px; font-size: 14px; line-height: 1; margin-left: auto; opacity: 0.5; }
+      .skills-node-remove:hover { opacity: 1; color: var(--error); }
       .skills-node-score { font-size: 10px; font-weight: 700; color: var(--ai-accent); }
       .skills-node-layer { font-size: 10px; padding: 0 6px; border-radius: 6px; background: color-mix(in oklab, var(--accent) 14%, transparent); color: var(--accent); }
+      .skills-node-goal {
+        font-size: 9px; padding: 1px 5px; border-radius: 8px; font-weight: 700;
+        background: color-mix(in oklab, var(--ok) 18%, transparent);
+        color: var(--ok); text-transform: uppercase; letter-spacing: 0.04em;
+      }
       .skills-node-source { font-size: 10px; color: var(--fg-dim); margin-left: auto; }
       .skills-node-preview { color: var(--fg-dim); font-size: 11px; line-height: 1.4; }
       .skills-export-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
@@ -4774,6 +5378,13 @@
         min-height: 0; /* allow children to shrink + scroll internally */
         overflow: hidden;
       }
+      /* When the right-side Memory Inspector is hidden (e.g. MemoryStudio
+         tabs where no node is selected), let the main content column expand
+         to fill the freed space. The grid snaps back to two columns as soon
+         as #g-detail loses .hidden — no JS needed. */
+      .g-main:has(> #g-detail.hidden) {
+        grid-template-columns: 1fr;
+      }
       .g-browse {
         display: flex;
         flex-direction: column;
@@ -4964,7 +5575,9 @@
 
       /* ── Check-in dashboard ───────────────────────────────────────── */
 
-      /* Checkin pane: position context for the absolute trivia drawer */
+      /* Checkin pane: overflow:hidden clips the absolute trivia drawer.
+         position:relative is retained for any other absolutely-positioned
+         children but the trivia drawer has moved to position:fixed. */
       section.g-tab-pane[data-gpane="checkin"] {
         position: relative;
         overflow: hidden;
@@ -4981,20 +5594,38 @@
       #g-search-results { padding-bottom: 0; }
 
       /* ── Trivia drawer ─────────────────────────────────────────────────── */
-      /* Anchored to the bottom of the checkin pane; slides up on open.      */
+      /* Fixed to the viewport bottom so the bar remains visible even when
+         the parent canvas scrolls. left:var(--rail-width) keeps it right of
+         the navigation rail; bottom accounts for the ~34px status bar.
+         right defaults to the Memory Inspector column width (360px) so the
+         drawer stays anchored to the Skills + Trainer / browse column —
+         the inspector stays visible on the right even when the drawer rolls
+         up. When the inspector is hidden, the :has() rule below collapses
+         the right offset to 0 and the drawer fills the freed space. */
       #trivia-drawer {
         --trivia-bar-h: 44px;
-        position: absolute;
-        inset: 0;
+        --trivia-inspector-w: 360px;
+        position: fixed;
+        bottom: 34px; /* above the .app-statusbar */
+        left: var(--rail-width, 280px);
+        /* Default: leave room for the Memory Inspector on the right. */
+        right: calc(var(--trivia-inspector-w) + 24px);
+        height: calc(100vh - 60px - 34px);
+        top: auto;
         transform: translateY(calc(100% - var(--trivia-bar-h)));
-        transition: transform 0.32s cubic-bezier(0.35, 0, 0.2, 1);
+        transition: transform 0.32s cubic-bezier(0.35, 0, 0.2, 1), right 0.18s ease;
         background: var(--bg);
         border-top: 1px solid var(--border);
         border-radius: 10px 10px 0 0;
-        z-index: 5;
+        z-index: 50;
         display: flex;
         flex-direction: column;
         box-shadow: 0 -4px 18px color-mix(in oklab, var(--fg) 8%, transparent);
+      }
+      /* When the Memory Inspector is hidden (MemoryStudio tabs default), the
+         drawer can extend all the way to the viewport's right edge. */
+      body:has(.g-main > #g-detail.hidden) #trivia-drawer {
+        right: 0;
       }
       #trivia-drawer.trivia-open {
         transform: translateY(0);
@@ -5622,7 +6253,9 @@
       .g-toast-stack {
         position: fixed;
         right: 18px;
-        bottom: 18px;
+        /* Clear the status bar (.app-statusbar ≈ 34px tall) so toasts stack
+           ABOVE it instead of overlapping the MCP / vitality / version pills. */
+        bottom: 48px;
         z-index: 200;
         display: flex;
         flex-direction: column-reverse;
@@ -6860,6 +7493,9 @@
       .g-cluster.expanded .g-cluster-body { display: block; }
 
       /* Detail pane (right) */
+      /* Memory Inspector — hidden by default; shown when a node is selected */
+      .g-detail.hidden { display: none !important; }
+
       .g-detail {
         background: var(--bg-elev);
         border: 1px solid var(--border);
@@ -7943,7 +8579,7 @@
 
                         <!-- Tool chip navigation -->
                         <div class="studio-chips">
-                          <button class="studio-chip" data-tool="skills">Skills</button>
+                          <button class="studio-chip" data-tool="skills">Skills w/ Goals</button>
                           <button class="studio-chip" data-tool="recall">Recall</button>
                           <button class="studio-chip" data-tool="dig-deeper">Dig Deeper</button>
                           <button class="studio-chip active" data-tool="remember">Remember</button>
@@ -7964,14 +8600,14 @@
                           <div class="skills-praxis-strip">
                             Powered by <strong>Graphnosis Autonomous Praxis</strong>
                             <span class="skills-praxis-dot">·</span>
-                            <span class="skills-praxis-sub">the Skills training engine</span>
+                            <span class="skills-praxis-sub">the skills engine that trains with your memories</span>
                           </div>
                           <div class="skills-pane">
 
                             <!-- LEFT: Library of trained skills -->
                             <aside class="skills-library">
                               <div class="skills-library-header">
-                                <span class="skills-library-title">Your Skills</span>
+                                <span class="skills-library-title">Your Skills w/ Goals</span>
                                 <span id="skills-library-count" class="skills-library-count">—</span>
                                 <select id="skills-library-sort" class="studio-select skills-library-sort">
                                   <option value="recent">Most recent</option>
@@ -7990,14 +8626,18 @@
 
                             <!-- RIGHT: Trainer (compose / review) -->
                             <section class="skills-trainer">
+                              <!-- Thin indeterminate bar shown when skill:get takes > 350ms -->
+                              <div id="skills-load-bar" class="skills-load-bar hidden"></div>
                               <div class="skills-trainer-header">
                                 <span id="skills-trainer-title" class="skills-trainer-title">Train a skill</span>
-                                <button id="btn-skills-trainer-back" class="btn-ghost btn-sm hidden">← New skill</button>
-                                <button id="btn-skills-import-gts" class="btn-ghost btn-sm skills-trainer-import" type="button" title="Import a .gts skill pack into this cortex">📥 Upload .gts skill file</button>
-                                <!-- Hidden file picker — opened programmatically by the Upload button.
-                                     accept=".gts" filters in the OS dialog; the FileReader reads bytes
-                                     and base64-encodes them for transport over the sidecar IPC. -->
-                                <input id="skills-import-gts-input" type="file" accept=".gts" class="hidden" />
+                                <div class="skills-trainer-header-actions">
+                                  <button id="btn-skills-trainer-back" class="btn-ghost btn-sm hidden">← New skill</button>
+                                  <!-- Upload routes through the Rust `pick_gsk_file` command, which
+                                       opens a native OS picker (Tauri webviews don't reliably surface
+                                       the dialog for a hidden <input type="file">). See runGskImport()
+                                       in main.ts for the pick → peek → destination-modal → import flow. -->
+                                  <button id="btn-skills-import-gts" class="btn-ghost btn-sm skills-trainer-import" type="button" title="Import a .gsk skill pack into this cortex">📥 Upload .gsk skill file</button>
+                                </div>
                               </div>
                               <!-- Training-in-progress banner. Shown when the user clicks Train
                                    and hidden once the result lands. Two visual layers:
@@ -8059,14 +8699,83 @@
                                     <span class="skills-input-expand-icon">▾</span>
                                   </button>
                                 </label>
+                                <!-- Live chunk preview — appears as soon as the user pastes text,
+                                     before they hit Train. Shows how the textarea will be split
+                                     into paragraph nodes so the user can verify the chunking
+                                     matches their intent (and reformat if not). -->
+                                <div id="skills-chunk-preview" class="skills-chunk-preview hidden"
+                                     aria-live="polite"
+                                     title="How the trainer will split this skill into paragraph nodes">
+                                  <span id="skills-chunk-preview-count" class="skills-chunk-preview-count"></span>
+                                  <ol id="skills-chunk-preview-list" class="skills-chunk-preview-list"></ol>
+                                  <span id="skills-chunk-preview-more" class="skills-chunk-preview-more"></span>
+                                </div>
+                                <!-- LLM rewrite UI intentionally removed from the compose form.
+                                     The trainer ALWAYS chunks pasted text paragraph-by-paragraph
+                                     into nodes (fast, deterministic, no Ollama dependency, no
+                                     hang risk). The MCP-level useLlmRewrite flag still exists
+                                     for programmatic callers, but the desktop never sets it.
+                                     See Graphnosis memory: "TODO: SOP-preserving LLM rewrite"
+                                     for the work needed to safely re-introduce LLM rewriting
+                                     without silently breaking SOP edge detection. -->
+
                                 <label class="skills-field">
                                   <span class="skills-field-label">Skill name</span>
                                   <input id="skills-input-name" class="studio-text-input" type="text" placeholder="e.g. graphnosis-helper" />
                                 </label>
+                                <!-- Goals section — what success looks like, what's out of scope,
+                                     what's expected when the skill completes. Drives goal-aligned
+                                     recall during training so Ghampus surfaces memories that
+                                     directly speak to the skill's purpose. -->
+                                <div class="skills-field skills-section-start" id="skills-goals-section">
+                                  <span class="skills-field-label">Goals <span class="skills-field-label-opt">(optional)</span></span>
+                                  <div class="skills-goals-grid">
+                                    <label class="skills-field">
+                                      <span class="skills-goal-label">✓ Success looks like</span>
+                                      <input id="skills-goal-success" class="studio-text-input skills-goal-input"
+                                             type="text" placeholder="e.g. architect decisions are recalled before any code change" />
+                                    </label>
+                                    <label class="skills-field">
+                                      <span class="skills-goal-label">✗ Out of scope</span>
+                                      <input id="skills-goal-scope" class="studio-text-input skills-goal-input"
+                                             type="text" placeholder="e.g. generating new code, replacing documentation" />
+                                    </label>
+                                    <label class="skills-field">
+                                      <span class="skills-goal-label">⊙ Expected on completion</span>
+                                      <input id="skills-goal-done" class="studio-text-input skills-goal-input"
+                                             type="text" placeholder="e.g. a personalised recall prompt with prior decisions attached" />
+                                    </label>
+                                    <label class="skills-field">
+                                      <span class="skills-goal-label">⚡ Trigger</span>
+                                      <input id="skills-goal-trigger" class="studio-text-input skills-goal-input"
+                                             type="text" placeholder="e.g. user asks to deploy a branch to production" />
+                                    </label>
+                                    <label class="skills-field">
+                                      <span class="skills-goal-label">🔑 Prerequisites</span>
+                                      <input id="skills-goal-prereq" class="studio-text-input skills-goal-input"
+                                             type="text" placeholder="e.g. CI on the branch is green, $branch variable is set" />
+                                    </label>
+                                    <label class="skills-field">
+                                      <span class="skills-goal-label">⚠ On failure</span>
+                                      <input id="skills-goal-failure" class="studio-text-input skills-goal-input"
+                                             type="text" placeholder="e.g. invoke @skill: rollback-deployment with the failure context" />
+                                    </label>
+                                    <label class="skills-field">
+                                      <span class="skills-goal-label">🔌 Requires</span>
+                                      <input id="skills-goal-requires" class="studio-text-input skills-goal-input"
+                                             type="text" placeholder="e.g. $branch, $repoRoot" />
+                                    </label>
+                                    <label class="skills-field">
+                                      <span class="skills-goal-label">📤 Produces</span>
+                                      <input id="skills-goal-produces" class="studio-text-input skills-goal-input"
+                                             type="text" placeholder="e.g. $envOk, $migrationReport" />
+                                    </label>
+                                  </div>
+                                </div>
                                 <!-- Target engram — Skills-template engrams only. If the cortex
                                      has no Skills engram yet, the dropdown shows just an empty
                                      placeholder and the user creates one inline with the button. -->
-                                <div class="skills-field">
+                                <div class="skills-field skills-section-start">
                                   <span class="skills-field-label">Saving to</span>
                                   <div class="skills-target-row">
                                     <select id="skills-input-engram" class="studio-select skills-target-select">
@@ -8074,16 +8783,26 @@
                                     </select>
                                     <button id="btn-skills-create-engram" class="btn-ghost btn-sm" type="button">+ Create Skill engram</button>
                                   </div>
+                                  <!-- Inline name input — replaces window.prompt() which doesn't
+                                       render in Tauri's WKWebView. Shown by the Create button,
+                                       hidden by Cancel / successful create. -->
+                                  <div id="skills-create-engram-row" class="skills-target-row hidden" style="margin-top:6px;">
+                                    <input id="skills-create-engram-name" class="studio-text-input" type="text"
+                                           placeholder="Engram name (e.g. Skills, Coding Skills)" value="Skills"
+                                           style="flex:1;" />
+                                    <button id="btn-skills-create-engram-confirm" class="primary btn-sm" type="button">Create</button>
+                                    <button id="btn-skills-create-engram-cancel"  class="btn-ghost btn-sm" type="button">Cancel</button>
+                                  </div>
                                   <div id="skills-preview-warning" class="skills-preview-warning hidden">
                                     ⚠️ Preview mode — the trained skill won't be saved to any engram. Pick a Skills engram above (or create one) to persist it.
                                   </div>
                                 </div>
-                                <div class="skills-field">
+                                <div class="skills-field skills-section-start">
                                   <span class="skills-field-label">Focus engrams (optional)</span>
                                   <div id="skills-input-focus" class="skills-focus-list" role="group" aria-label="Focus engrams"></div>
                                   <span class="skills-field-hint">Tick engrams to scope recall. Leave empty to recall across all engrams.</span>
                                 </div>
-                                <div class="skills-grid-row">
+                                <div class="skills-grid-row skills-section-start">
                                   <label class="skills-field">
                                     <span class="skills-field-label">Model target</span>
                                     <select id="skills-input-model" class="studio-select">
@@ -8113,9 +8832,12 @@
                               <div id="skills-review" class="skills-review hidden">
                                 <div class="skills-review-meta">
                                   <span id="skills-review-mode" class="skills-mode-chip"></span>
-                                  <span id="skills-review-vitality" class="skills-vitality-chip"></span>
+                                  <button id="skills-review-vitality" class="skills-vitality-chip" title="Recompute vitality"></button>
                                   <span id="skills-review-engram" class="skills-engram-chip"></span>
-                                  <button id="btn-skills-vitality-refresh" class="btn-ghost btn-sm" title="Recompute vitality">↻ Vitality</button>
+                                  <!-- One-click retrain — same effect as the Retrain action in the
+                                       skills list row, but available right inside the inspector
+                                       so the user doesn't have to scroll back to the list. -->
+                                  <button id="btn-skills-review-retrain" class="primary btn-sm" type="button" title="Re-train this skill against fresh memory">↻ Retrain</button>
                                 </div>
                                 <div id="skills-degraded-note" class="skills-degraded-note hidden"></div>
                                 <!-- Pending auto-retrain proposal card. Shown only when the
@@ -8133,39 +8855,8 @@
                                 <div class="skills-review-section">
                                   <div class="skills-section-header">
                                     <span class="skills-section-title">Trained output</span>
-                                    <!-- Toggle group: "Output" shows the trained text as-is.
-                                         "Changes" shows a diff highlighting what Ghampus
-                                         (Autonomous Praxis) changed vs. the baseline. The
-                                         baseline is the user's original input in preview
-                                         mode, or the previous saved version when browsing
-                                         a skill from the library. -->
-                                    <div class="skills-output-toggle" role="group" aria-label="Output view">
-                                      <button id="btn-skills-view-output" class="skills-output-toggle-btn active" data-view="output" type="button">Output</button>
-                                      <button id="btn-skills-view-diff" class="skills-output-toggle-btn" data-view="diff" type="button" title="Highlight what changed vs. the baseline">Changes</button>
-                                    </div>
-                                    <button id="btn-skills-copy-output" class="btn-ghost btn-sm">Copy</button>
                                   </div>
-                                  <pre id="skills-review-output" class="skills-output"></pre>
-                                  <div id="skills-review-diff-output" class="skills-output skills-diff-output hidden"></div>
-                                  <div id="skills-review-diff-nav" class="skills-diff-nav hidden">
-                                    <button id="btn-skills-diff-prev" class="btn-ghost btn-sm" type="button" title="Jump to previous change">‹</button>
-                                    <span id="skills-review-diff-cursor" class="skills-diff-cursor">0 / 0</span>
-                                    <button id="btn-skills-diff-next" class="btn-ghost btn-sm" type="button" title="Jump to next change">›</button>
-                                    <p id="skills-review-diff-meta" class="skills-field-hint" style="margin: 0;"></p>
-                                  </div>
-                                </div>
-                                <div id="skills-review-diff-wrap" class="skills-review-section hidden">
-                                  <div class="skills-section-header">
-                                    <span class="skills-section-title">Diff notes</span>
-                                  </div>
-                                  <pre id="skills-review-diff" class="skills-diff"></pre>
-                                </div>
-                                <div class="skills-review-section">
-                                  <div class="skills-section-header">
-                                    <span class="skills-section-title">Influential nodes</span>
-                                    <span id="skills-review-nodes-count" class="subtitle"></span>
-                                  </div>
-                                  <div id="skills-review-nodes" class="skills-nodes"></div>
+                                  <div id="skills-review-output" class="skills-output skills-output-rich"></div>
                                 </div>
                                 <div class="skills-review-section">
                                   <div class="skills-section-header">
@@ -8249,9 +8940,9 @@
                                       <option value="system-prompt">system-prompt</option>
                                       <option value="openai">openai</option>
                                       <option value="raw">raw</option>
-                                      <!-- GTS is gated — see sidecar skill:export handler.
+                                      <!-- GSK is gated — see sidecar skill:export handler.
                                            Non-Pro users will hit the upgrade card on attempt. -->
-                                      <option value="gts">gts (encrypted) — Pro</option>
+                                      <option value="gsk">gsk (encrypted) — Pro</option>
                                     </select>
                                     <!-- Visible Pro pill that surfaces only when (a) gts is the
                                          selected format AND (b) the user isn't Pro. Wired by
@@ -8259,9 +8950,9 @@
                                          on the option label hints at the gate inside the dropdown;
                                          this pill makes it impossible to miss BEFORE clicking
                                          Save and discovering the upgrade card. -->
-                                    <span id="skills-export-pro-hint" class="skills-export-pro-hint hidden" title="GTS export requires a Graphnosis Pro subscription.">
+                                    <span id="skills-export-pro-hint" class="skills-export-pro-hint hidden" title="GSK export (Graphnosis Skill Kit) requires a Graphnosis Pro subscription.">
                                       <span class="skills-export-pro-badge">PRO</span>
-                                      <button id="btn-skills-export-upgrade" class="btn-ghost btn-sm" type="button" data-pro-upgrade-btn>Upgrade to use GTS</button>
+                                      <button id="btn-skills-export-upgrade" class="btn-ghost btn-sm" type="button" data-pro-upgrade-btn>Upgrade to export as .gsk</button>
                                     </span>
                                     <button id="btn-skills-export-copy" class="btn-ghost btn-sm">Copy</button>
                                     <button id="btn-skills-export-save" class="primary btn-sm">Save file…</button>
@@ -8939,7 +9630,10 @@ ollama list</code></pre>
                 </div>
 
                 <!-- Detail pane: persistent right-side inspector -->
-                <aside class="g-detail" id="g-detail">
+                <aside class="g-detail hidden" id="g-detail">
+                  <div style="display:flex;align-items:center;justify-content:flex-end;padding:8px 0 0;">
+                    <button id="btn-detail-close" class="btn-ghost btn-sm" type="button" title="Close inspector">✕</button>
+                  </div>
                   <div class="g-detail-empty">
                     <p class="brain-subtitle" style="margin: 0;">Pick a memory or search to inspect it.</p>
                     <p class="g-detail-shortcuts">
@@ -10826,7 +11520,7 @@ ollama list</code></pre>
             </li>
             <li style="display:flex; gap:10px; align-items:flex-start;">
               <span style="font-size:16px; flex-shrink:0;">📦</span>
-              <span><strong>Skill Packs (.gts)</strong> — export trained skills as encrypted, portable packs with a <code>GRAPHNOSIS.md</code> and embedded recall recipes.</span>
+              <span><strong>Skill Packs (.gsk)</strong> — export trained skills as encrypted, portable packs with a <code>GRAPHNOSIS.md</code> and embedded recall recipes.</span>
             </li>
           </ul>
         </div>

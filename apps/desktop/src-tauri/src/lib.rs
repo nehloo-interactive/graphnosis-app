@@ -709,6 +709,42 @@ async fn pick_and_ingest_file(
     Ok(Some(result))
 }
 
+/// Pick a .gsk skill pack file via the native OS dialog and return its
+/// base64-encoded bytes to the UI.
+///
+/// Why this exists as a Rust command rather than a JS file input: Tauri
+/// webviews don't reliably surface the native file picker when JS calls
+/// `.click()` on a hidden `<input type="file">` — the click is consumed but no
+/// dialog appears. Routing through the Rust dialog plugin avoids that
+/// limitation entirely.
+///
+/// The UI takes the returned base64 and calls the sidecar's `skill:peekGsk`
+/// handler to obtain metadata for a destination-engram picker, then calls
+/// `skill:importGsk` once the user confirms a target engram. Splitting the
+/// flow this way lets the UI route per-pack content into per-pack engrams
+/// without committing to a default before the user sees the pack's identity.
+///
+/// Returns `Ok(None)` if the user cancels the dialog.
+#[tauri::command]
+async fn pick_gsk_file(app: AppHandle) -> Result<Option<String>, String> {
+    use std::fs;
+    use base64::Engine as _;
+
+    let picked = app
+        .dialog()
+        .file()
+        .set_title("Choose a .gsk skill pack to import")
+        .add_filter("Graphnosis Skill Kit", &["gsk"])
+        .blocking_pick_file();
+    let path = match picked.and_then(|f| f.into_path().ok()) {
+        Some(p) => p,
+        None => return Ok(None), // user cancelled
+    };
+    let bytes = fs::read(&path)
+        .map_err(|e| format!("could not read {}: {e}", path.display()))?;
+    Ok(Some(base64::engine::general_purpose::STANDARD.encode(&bytes)))
+}
+
 /// Multi-file native picker. Returns the chosen file paths so the
 /// frontend can iterate ingest sequentially with one progress toast per
 /// file. We deliberately don't ingest here — the frontend wants per-file
@@ -1358,6 +1394,178 @@ async fn node_soft_delete(
         "node.softDelete",
         params,
         std::time::Duration::from_secs(30),
+    )
+        .await
+        .map_err(|e| e.to_string())
+}
+
+// ── source.* — Skills w/ Goals editor surface ────────────────────────────
+// Thin pass-throughs to the sidecar's source.* IPCs. Used by the Trained
+// Output editor for bidirectional binding between visible chunks and the
+// graph (insert / reorder / remove / rename / list).
+
+#[tauri::command]
+async fn source_insert_node(
+    state: State<'_, AppState>,
+    graph_id: String,
+    source_id: String,
+    // afterNodeId: insert AFTER this node in the source record.
+    // null  → insert before the first visible (non-metadata) node.
+    // absent → fall back to `position` (legacy, still accepted).
+    after_node_id: Option<String>,
+    position: Option<u32>,
+    content: String,
+    role: Option<String>,
+) -> Result<serde_json::Value, String> {
+    let socket_path = {
+        let inner = state.inner.lock().await;
+        match inner.sidecar.as_ref() {
+            Some(h) => h.socket_path.clone(),
+            None => return Err("cortex is locked".to_string()),
+        }
+    };
+    let mut params = serde_json::json!({
+        "graphId": graph_id,
+        "sourceId": source_id,
+        "content": content,
+    });
+    // afterNodeId takes precedence; fall back to position for legacy callers.
+    match after_node_id {
+        Some(id) => { params["afterNodeId"] = serde_json::Value::String(id); }
+        None => {
+            if let Some(pos) = position {
+                params["position"] = serde_json::Value::Number(pos.into());
+            } else {
+                params["afterNodeId"] = serde_json::Value::Null;
+            }
+        }
+    }
+    if let Some(r) = role {
+        params["role"] = serde_json::Value::String(r);
+    }
+    ipc_client::request_with_timeout(
+        &socket_path,
+        "source.insertNode",
+        params,
+        std::time::Duration::from_secs(30),
+    )
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn source_reorder_nodes(
+    state: State<'_, AppState>,
+    graph_id: String,
+    source_id: String,
+    new_order: Vec<String>,
+) -> Result<serde_json::Value, String> {
+    let socket_path = {
+        let inner = state.inner.lock().await;
+        match inner.sidecar.as_ref() {
+            Some(h) => h.socket_path.clone(),
+            None => return Err("cortex is locked".to_string()),
+        }
+    };
+    let params = serde_json::json!({
+        "graphId": graph_id,
+        "sourceId": source_id,
+        "newOrder": new_order,
+    });
+    ipc_client::request_with_timeout(
+        &socket_path,
+        "source.reorderNodes",
+        params,
+        std::time::Duration::from_secs(30),
+    )
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn source_remove_node(
+    state: State<'_, AppState>,
+    graph_id: String,
+    source_id: String,
+    node_id: String,
+    reason: Option<String>,
+) -> Result<serde_json::Value, String> {
+    let socket_path = {
+        let inner = state.inner.lock().await;
+        match inner.sidecar.as_ref() {
+            Some(h) => h.socket_path.clone(),
+            None => return Err("cortex is locked".to_string()),
+        }
+    };
+    let mut params = serde_json::json!({
+        "graphId": graph_id,
+        "sourceId": source_id,
+        "nodeId": node_id,
+    });
+    if let Some(r) = reason {
+        params["reason"] = serde_json::Value::String(r);
+    }
+    ipc_client::request_with_timeout(
+        &socket_path,
+        "source.removeNode",
+        params,
+        std::time::Duration::from_secs(30),
+    )
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn source_rename(
+    state: State<'_, AppState>,
+    graph_id: String,
+    source_id: String,
+    new_ref: String,
+) -> Result<serde_json::Value, String> {
+    let socket_path = {
+        let inner = state.inner.lock().await;
+        match inner.sidecar.as_ref() {
+            Some(h) => h.socket_path.clone(),
+            None => return Err("cortex is locked".to_string()),
+        }
+    };
+    let params = serde_json::json!({
+        "graphId": graph_id,
+        "sourceId": source_id,
+        "newRef": new_ref,
+    });
+    ipc_client::request_with_timeout(
+        &socket_path,
+        "source.rename",
+        params,
+        std::time::Duration::from_secs(30),
+    )
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn source_list_nodes(
+    state: State<'_, AppState>,
+    graph_id: String,
+    source_id: String,
+) -> Result<serde_json::Value, String> {
+    let socket_path = {
+        let inner = state.inner.lock().await;
+        match inner.sidecar.as_ref() {
+            Some(h) => h.socket_path.clone(),
+            None => return Err("cortex is locked".to_string()),
+        }
+    };
+    let params = serde_json::json!({
+        "graphId": graph_id,
+        "sourceId": source_id,
+    });
+    ipc_client::request_with_timeout(
+        &socket_path,
+        "source.listNodes",
+        params,
+        std::time::Duration::from_secs(15),
     )
         .await
         .map_err(|e| e.to_string())
@@ -2136,7 +2344,7 @@ async fn save_json_file(
 /// Show a native Save dialog with a caller-provided filter, then write either
 /// text or base64-decoded bytes to the chosen path. Used by the Skills tab's
 /// Export action — Skills exports come in six formats (claude-md, cursorrules,
-/// system-prompt, openai, raw text, and the encrypted GTS binary).
+/// system-prompt, openai, raw text, and the encrypted GSK binary).
 ///
 /// If `binary_b64` is `Some`, the value is base64-decoded and written as bytes.
 /// Otherwise `content` is written as UTF-8 text.
@@ -2901,6 +3109,7 @@ pub fn run() {
             node_cursor,
             ingest_file,
             pick_and_ingest_file,
+            pick_gsk_file,
             pick_files,
             pick_folders,
             forget_source,
@@ -2923,6 +3132,11 @@ pub fn run() {
             node_link,
             node_link_directed,
             node_unlink,
+            source_insert_node,
+            source_reorder_nodes,
+            source_remove_node,
+            source_rename,
+            source_list_nodes,
             list_activity,
             list_snapshots,
             create_snapshot,
