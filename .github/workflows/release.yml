@@ -174,7 +174,8 @@ jobs:
                 \"production\": {
                   \"env_vars\": {
                     \"CURRENT_VERSION\": { \"value\": \"${{ steps.meta.outputs.version }}\" },
-                    \"DMG_FILENAME\": { \"value\": \"${{ steps.release.outputs.dmg_filename }}\" }
+                    \"DMG_FILENAME\": { \"value\": \"${{ steps.release.outputs.dmg_filename }}\" },
+                    \"PUBLIC_RELEASED_VERSION\": { \"value\": \"${{ steps.meta.outputs.version }}\" }
                   }
                 }
               }

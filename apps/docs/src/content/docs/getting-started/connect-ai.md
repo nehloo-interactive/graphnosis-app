@@ -199,9 +199,9 @@ The wizard is fully detailed in **[Connect from your phone](/getting-started/mob
 
 **The bearer token is unique per cortex and auto-rotates** on every wizard re-open. Treat it like a password: revoke by toggling Mobile Access off and back on in Settings.
 
-## The 35 MCP tools
+## The 45 MCP tools
 
-Once connected, **35 tools** are available to your AI, organised into nine categories (Core memory, Engram discovery, Structured recall, Source operations, Engram operations, Brain maintenance, Approximate, Conditional, and Non-deterministic). The most commonly used ones:
+Once connected, **45 tools** are available to your AI, organised into ten categories (Core memory, Engram discovery, Structured recall, Source operations, Engram operations, Brain maintenance, Approximate, Conditional, Non-deterministic, and Skills/SOPs). The most commonly used ones:
 
 | Tool | What it does |
 |------|-------------|
@@ -214,7 +214,7 @@ Once connected, **35 tools** are available to your AI, organised into nine categ
 | `forget` | Remove a specific memory by ID. |
 | `stats` | Return cortex statistics: total sources, chunks, graphs, embedding model info. |
 
-See the full [MCP Tools reference](/reference/mcp-tools/) for all 35 tools with parameter details.
+See the full [MCP Tools reference](/reference/mcp-tools/) for all 45 tools with parameter details, including the 10 Skills/SOPs tools (`list_skills`, `walk_skill`, `walk_skill_structured`, `train_skill`, and more).
 
 ### Asking the AI to save into a specific engram
 

@@ -15,13 +15,26 @@ import Default from '@astrojs/starlight/components/SocialIcons.astro';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 
+// PUBLIC_RELEASED_VERSION is a Cloudflare Pages build-time env var (e.g. "1.11.1").
+// Setting it lets you control what version the website shows independently of
+// what tauri.conf.json says during development. Update it in Cloudflare Pages →
+// Settings → Environment variables only when you actually tag and ship a release.
+// When unset, falls back to reading tauri.conf.json (safe for local dev builds).
 let version = '';
-try {
-  const conf = JSON.parse(
-    readFileSync(resolve('../../apps/desktop/src-tauri/tauri.conf.json'), 'utf8'),
-  );
-  version = conf.version ? `v${conf.version}` : '';
-} catch { /* docs site built standalone — skip the pill, keep GitHub icon */ }
+// Dot access (not bracket) — Vite only replaces `import.meta.env.PUBLIC_*`
+// when accessed by property; bracket access slips past the transform and the
+// residual TS cast then trips esbuild during the astro build.
+const envVersion = import.meta.env.PUBLIC_RELEASED_VERSION as string | undefined;
+if (envVersion) {
+  version = envVersion.startsWith('v') ? envVersion : `v${envVersion}`;
+} else {
+  try {
+    const conf = JSON.parse(
+      readFileSync(resolve('../../apps/desktop/src-tauri/tauri.conf.json'), 'utf8'),
+    );
+    version = conf.version ? `v${conf.version}` : '';
+  } catch { /* docs site built standalone — skip the pill, keep GitHub icon */ }
+}
 ---
 
 {version && (

@@ -1,3 +1,6 @@
 /privacy  /legal/privacy-policy  301
 /terms    /legal/terms-of-use    301
-/download/mac  https://github.com/nehloo-interactive/graphnosis-app/releases/download/v1.11.1/Graphnosis_1.11.1_aarch64.dmg  302
+# /download/mac is handled by functions/download/mac.ts (reads CURRENT_VERSION + DMG_FILENAME
+# from Cloudflare env vars). Update those env vars in the Cloudflare dashboard only after
+# tagging and pushing the release — never hardcode the version here.
+/download/mac  https://github.com/nehloo-interactive/graphnosis-app/releases/download/v1.12.0/Graphnosis_1.12.0_aarch64.dmg  302
