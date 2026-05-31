@@ -3881,6 +3881,13 @@ function renderSettingsGraphsList(): void {
         }
         await refreshAtlasView();
         renderSettingsGraphsList();
+        // Re-render the Skills library so trained skills from the freshly
+        // archived engram disappear (and skills from a freshly unarchived
+        // engram come back). The library array `skillsLibrary` is
+        // unchanged here — it's a server-side fetch — but the visibility
+        // filter in filteredSortedLibrary keys off `loadedGraphs.archived`
+        // which we just refreshed above.
+        renderSkillsLibrary();
       } catch (e) {
         showError(`Could not ${nextArchived ? 'archive' : 'unarchive'} "${displayName}": ${e}`);
         btn.disabled = false;
@@ -17644,8 +17651,15 @@ const skillGroupsExpanded = new Set<string>();
 function filteredSortedLibrary(): SkillListEntry[] {
   // Drop skills whose backing engram is no longer loaded — prevents stale
   // IPC calls to a deleted graph ("Graph not loaded: X" errors).
-  const loadedGraphIds = new Set(loadedGraphs.map((g) => g.graphId));
-  let list = skillsLibrary.filter((s) => loadedGraphIds.has(s.graphId));
+  // ALSO drop skills whose engram is archived — the user explicitly hid
+  // that engram via Settings → Cortex Management, and the archive button's
+  // confirmation dialog promises "those skills will be hidden". Without
+  // this filter the promise was broken: the engram disappeared from the
+  // engram picker but its trained skills kept showing in the library.
+  const visibleGraphIds = new Set(
+    loadedGraphs.filter((g) => !g.metadata.archived).map((g) => g.graphId),
+  );
+  let list = skillsLibrary.filter((s) => visibleGraphIds.has(s.graphId));
   if (!skillsShowHidden) {
     list = list.filter((s) => !skillsHiddenSet.has(s.sourceId));
   }
@@ -18348,9 +18362,77 @@ function paintTrainedOutput(
   _mode: string,
   _nodes: SkillInfluentialNode[],
 ): void {
-  // Plain-text preview only. The editable source-driven view is
-  // installed by paintSkillsReview when the result has a skillId+graphId.
-  el.textContent = trained;
+  // Preview-mode rendering: the user picked "Preview only — don't save"
+  // in the Save-into dropdown, so the train flow assembled the text but
+  // didn't persist it. Show that text in a visually distinct, copy-
+  // friendly textarea — not the source-driven editor (which expects a
+  // real saved sourceId) and not just `textContent` on a plain div
+  // (which is selectable but doesn't communicate "this is your scratch
+  // result, do something with it now or lose it on the next train").
+  //
+  // The textarea is editable so the user can tweak before copying. Edits
+  // live only in the DOM — closing the panel or training again discards
+  // them, exactly matching what the user opted into when they chose
+  // Preview mode.
+  el.innerHTML = '';
+  const wrap = document.createElement('div');
+  wrap.className = 'skills-preview-result';
+
+  const banner = document.createElement('div');
+  banner.className = 'skills-preview-banner';
+  banner.innerHTML =
+    `<span aria-hidden="true">📋</span>` +
+    `<span>Preview output — not saved. Copy below, or pick a Skills engram in <em>Saving to</em> above and train again to persist.</span>`;
+  wrap.appendChild(banner);
+
+  const textarea = document.createElement('textarea');
+  textarea.className = 'skills-preview-textarea';
+  textarea.value = trained;
+  textarea.spellcheck = false;
+  textarea.setAttribute('aria-label', 'Trained skill preview');
+  wrap.appendChild(textarea);
+
+  const actions = document.createElement('div');
+  actions.className = 'skills-preview-actions';
+  const copyBtn = document.createElement('button');
+  copyBtn.type = 'button';
+  copyBtn.className = 'btn-primary btn-sm';
+  copyBtn.textContent = 'Copy output';
+  copyBtn.addEventListener('click', () => {
+    // navigator.clipboard works inside Tauri webviews on all platforms
+    // we ship to; fall back to a manual select+execCommand path if the
+    // permission is blocked (rare).
+    const text = textarea.value;
+    void (async () => {
+      try {
+        await navigator.clipboard.writeText(text);
+        const prev = copyBtn.textContent;
+        copyBtn.textContent = '✓ Copied';
+        copyBtn.disabled = true;
+        setTimeout(() => {
+          copyBtn.textContent = prev ?? 'Copy output';
+          copyBtn.disabled = false;
+        }, 1400);
+      } catch {
+        textarea.select();
+        try { document.execCommand('copy'); } catch { /* ignore */ }
+      }
+    })();
+  });
+  actions.appendChild(copyBtn);
+
+  const selectAllBtn = document.createElement('button');
+  selectAllBtn.type = 'button';
+  selectAllBtn.className = 'btn-ghost btn-sm';
+  selectAllBtn.textContent = 'Select all';
+  selectAllBtn.addEventListener('click', () => {
+    textarea.focus();
+    textarea.setSelectionRange(0, textarea.value.length);
+  });
+  actions.appendChild(selectAllBtn);
+  wrap.appendChild(actions);
+
+  el.appendChild(wrap);
 }
 
 // Legacy dead-code block removed in Phase 4a — the rich Personal Context
@@ -18454,8 +18536,16 @@ function paintSkillsReview(result: SkillTrainResult, opts: {
   // the diff view and run the reveal animation so the user sees what
   // Ghampus actually changed. Library-row opens (no original yet) and
   // no-op trainings (output === baseline) stay on the Output view.
+  //
+  // Preview-mode trains (no saved skillId / sourceId) have nothing
+  // meaningful to diff against — the "original" is just the user's input
+  // text and the "trained" is input + Personal Context block. Showing the
+  // diff in that case hides the newly-rendered preview textarea behind
+  // the diff panel; the user opted into preview specifically to get the
+  // output, so stay on the Output view.
+  const isSaved = result.skillId !== undefined || opts.sourceId !== undefined;
   const hasChanges = !!result.original && result.trained !== result.original;
-  if (hasChanges && result.original) {
+  if (hasChanges && result.original && isSaved) {
     setOutputView('diff');
     renderDiffView({ animate: true });
   } else {

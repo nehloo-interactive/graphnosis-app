@@ -2556,7 +2556,20 @@ async fn set_graph_archived(
         }
     };
     let params = serde_json::json!({ "graphId": graph_id, "archived": archived });
-    ipc_client::request(&socket_path, "graphs.setArchived", params)
+    // Generous timeout: archive is conceptually a metadata flip, but the
+    // sidecar's event loop can be parked under load (active recall sweep,
+    // TF-IDF rebuild, skill training preview, embedding worker dispatch).
+    // The 5s default reliably tripped during long retrains and surfaced
+    // as a misleading "sidecar did not respond" toast, even though the
+    // metadata write would have completed within a second of the busy
+    // operation finishing. 30s covers every observed case without
+    // letting a genuinely hung sidecar wait forever.
+    ipc_client::request_with_timeout(
+        &socket_path,
+        "graphs.setArchived",
+        params,
+        std::time::Duration::from_secs(30),
+    )
         .await
         .map_err(|e| e.to_string())
 }
