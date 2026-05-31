@@ -2309,14 +2309,15 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
         },
         {
           name: 'rollback_skill',
-          description: 'Roll back a skill to a specific previous version by forgetting all versions trained after the target. The target version becomes the current one. Use skill_history first to find the targetSourceId to restore. This is non-reversible — the newer versions are soft-deleted.',
+          description: 'Restore a skill to a prior pre-retrain snapshot. The current source contents are first re-snapshotted (so this rollback can itself be rolled back), then replaced with the snapshot\'s nodes. Use skill_history first to find the snapshotId to restore — each row\'s `snapshotId` field is the value to pass here. Skills now live in a single source per name; snapshots are encrypted side-table files keyed by sourceId.',
           inputSchema: {
             type: 'object' as const,
             properties: {
               graphId: { type: 'string', description: 'Engram slug containing the skill.' },
-              targetSourceId: { type: 'string', description: 'sourceId of the version to restore as current. All versions with a newer ingestedAt are forgotten.' },
+              sourceId: { type: 'string', description: 'sourceId of the skill to roll back. Same value across every history row of the same skill.' },
+              snapshotId: { type: 'string', description: 'snapshotId of the version to restore (returned by skill_history).' },
             },
-            required: ['graphId', 'targetSourceId'],
+            required: ['graphId', 'sourceId', 'snapshotId'],
           },
         },
         {
@@ -3994,10 +3995,10 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
         if (!deps.skillTrainer) return mcpError('Skill trainer not available.');
         const resEngram = requireEngram(deps.host, args.graphId);
         if ('error' in resEngram) return resEngram.error;
-        const history = deps.skillTrainer.getSkillHistory(resEngram.graphId, args.sourceId);
+        const history = await deps.skillTrainer.getSkillHistory(resEngram.graphId, args.sourceId);
         if (!history.length) return mcpError(`No skill history found for "${args.sourceId}".`);
         const lines = history.map((v, i) => [
-          `${i === 0 ? '**[current]**' : `[v${history.length - i}]`} ${v.label}`,
+          `${i === 0 ? '**[current]**' : `[snap ${v.snapshotId}]`} ${v.label}`,
           `  sourceId: ${v.sourceId}`,
           `  Trained: ${v.trainedAt ?? new Date(v.ingestedAt).toISOString()} | Mode: ${v.mode ?? 'unknown'} | Nodes: ${v.nodeCount}`,
         ].join('\n'));
@@ -4005,18 +4006,20 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
       }
 
       case 'rollback_skill': {
+        // Args migrated: the legacy `targetSourceId` field actually identified
+        // the OLD source to keep (under the now-removed per-retrain-source
+        // model). With history living in snapshot files, callers pass the
+        // current skill's sourceId AND the snapshotId to restore.
         const args = z.object({
           graphId: z.string().min(1),
-          targetSourceId: z.string().min(1),
+          sourceId: z.string().min(1),
+          snapshotId: z.string().min(1),
         }).parse(req.params.arguments ?? {});
         if (!deps.skillTrainer) return mcpError('Skill trainer not available.');
         const resEngram = requireEngram(deps.host, args.graphId);
         if ('error' in resEngram) return resEngram.error;
-        const result = await deps.skillTrainer.rollbackSkill(resEngram.graphId, args.targetSourceId);
-        if (!result.forgottenSourceIds.length) {
-          return { content: [{ type: 'text', text: `"${args.targetSourceId}" is already the current version — no newer versions to remove.` }] };
-        }
-        return { content: [{ type: 'text', text: `Rolled back. Removed ${result.forgottenSourceIds.length} newer version(s). "${args.targetSourceId}" is now current.` }] };
+        const result = await deps.skillTrainer.rollbackSkill(resEngram.graphId, args.sourceId, args.snapshotId);
+        return { content: [{ type: 'text', text: `Rolled back to snapshot ${args.snapshotId}. Restored ${result.restoredNodeCount} node(s) into source ${args.sourceId}.` }] };
       }
 
       case 'delete_skill': {

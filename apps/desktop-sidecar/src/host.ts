@@ -14,6 +14,7 @@ import * as gnnStoreMod from './gnn-store.js';
 import * as gllOverlayMod from './gll-overlay.js';
 import { redactId, redactPair, dbg } from './log-redact.js';
 import { GllWriter } from './gll.js';
+import { SkillSnapshotStore } from './skill-snapshots.js';
 
 const { deriveKey, encrypt, decrypt } = crypto;
 const { OpLogWriter } = oplog;
@@ -227,6 +228,9 @@ export class GraphnosisHost {
   private readonly oplogWriter: oplog.OpLogWriter;
   /** Append-only LLM event log — one .gll file per engram. */
   readonly gllWriter: GllWriter;
+  /** Per-source side-table holding pre-retrain snapshots of every
+   *  skill. Backs `skill_history` + `rollback_skill`. */
+  readonly skillSnapshots: SkillSnapshotStore;
   private policyCfg: policy.PolicyConfig;
   // Mutable so runtime model switches (Settings → Search model) can update
   // them without rebuilding the host. The actual re-embed of every graph
@@ -275,6 +279,11 @@ export class GraphnosisHost {
       salt: this.salt,
     });
     this.gllWriter = new GllWriter(opts.cortexDir, this.key, this.salt);
+    this.skillSnapshots = new SkillSnapshotStore({
+      cortexDir: opts.cortexDir,
+      key: this.key,
+      salt: this.salt,
+    });
     this.embed = opts.embed ?? stubEmbed;
     // Background lane: use the dedicated background embed when provided;
     // fall back to the foreground embed (single-worker setups).
@@ -2210,9 +2219,37 @@ export class GraphnosisHost {
     const priorRecord = g.sourceIndex.get(sourceId);
     const nodeIds = g.sourceIndex.forget(sourceId);
     const forgetTrigAttr = opts?.triggeredBy ? { triggeredBy: opts.triggeredBy } : {};
-    for (const nodeId of nodeIds) {
+    const forgetStamp = `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+    for (let i = 0; i < nodeIds.length; i++) {
+      const nodeId = nodeIds[i]!;
       // Capture the content preview BEFORE soft-deleting so the activity log can show it.
       const contentPreview = this.opts.adapter.inspectNodes(g.handle).find(n => n.id === nodeId)?.contentPreview;
+      // ── Dedup-table release pass ────────────────────────────────────────
+      // Rewrite the node's content to a unique tombstone BEFORE soft-deleting.
+      // The SDK keeps a content-hash dedup table covering EVERY node — even
+      // soft-deleted ones (see addDocumentsToGraph in
+      // node_modules/@nehloo/graphnosis/dist/core/graph/incremental.js).
+      // Without tombstoning, a later `ingest` or `insertNodeAt` whose content
+      // matches an old node from THIS forgotten source returns zero new ids,
+      // breaking re-imports and in-place retrain migrations.
+      //
+      // By overwriting content first via applyCorrection({kind:'edit', ...}),
+      // we release the ORIGINAL content hash from the dedup table; the next
+      // insert with that text creates a fresh node. The audit trail is
+      // preserved — both ops appear in the op-log in order — and the user-
+      // visible "forget" semantics are unchanged: confidence still drops to
+      // soft-deleted on the immediately-following delete.
+      try {
+        await this.opts.adapter.applyCorrection(g.handle, {
+          kind: 'edit',
+          nodeId,
+          content: `__gn-forgotten:${forgetStamp}:${i}:${nodeId}__`,
+          reason: `forget source ${sourceId} (dedup-table release)`,
+        });
+      } catch {
+        // Edit refused — proceed to delete anyway. The resurrection fallback
+        // in graphnosis-impl.ts picks up any subsequent dedup hits.
+      }
       // Soft-delete in Graphnosis: node stays for audit, confidence drops, won't be returned by queries.
       await this.opts.adapter.applyCorrection(g.handle, { kind: 'delete', nodeId, reason: `forget source ${sourceId}` });
       this.oplogWriter.emit({
@@ -3236,6 +3273,108 @@ export class GraphnosisHost {
     // Entity overlap may have changed (the deleted node's entities are
     // gone); kickoffRelink will re-evaluate edges across remaining nodes.
     this.kickoffRelink(graphId);
+  }
+
+  /**
+   * Soft-delete EVERY node currently in a source and empty its nodeIds
+   * list. The source record itself stays — its sourceId, sourceRef,
+   * ingestedAt, kind, and any other metadata are preserved. Callers
+   * follow this with a sequence of `insertNodeAt` calls to re-populate
+   * the source with fresh content.
+   *
+   * Powers the in-place retrain flow: `trainSkill` finds the existing
+   * source for a skill, snapshots it, calls `clearSourceNodes`, then
+   * inserts the freshly-trained metadata + title + body + goals into the
+   * SAME sourceId. Result: cross-source edges (skill:calls from other
+   * skills) that pointed at this skill's title see a freshly-inserted
+   * title node WITH A NEW NODE ID — those edges are restored by
+   * `refreshIncomingCallsToSkill` at the end of trainSkill.
+   *
+   * One coalesced `save()` at the end (each per-node delete sets dirty
+   * but doesn't write to disk individually) — much faster than calling
+   * `removeNodeFromSource` in a loop, which would save after every node.
+   * For a 50-node skill that's the difference between ~50 fsync round-
+   * trips and 1.
+   */
+  async clearSourceNodes(
+    graphId: GraphId,
+    sourceId: string,
+    opts?: { triggeredBy?: string; reason?: string },
+  ): Promise<{ removedNodeIds: string[] }> {
+    const g = this.must(graphId);
+    const rec = g.sourceIndex.get(sourceId);
+    if (!rec) throw new Error(`source ${sourceId} not found in engram ${graphId}`);
+    // Snapshot the ids BEFORE we start mutating — sourceIndex.removeNode
+    // mutates rec.nodeIds in place.
+    const removedNodeIds = rec.nodeIds.slice();
+    if (removedNodeIds.length === 0) return { removedNodeIds };
+    const reason = opts?.reason ?? 'cleared for in-place retrain';
+    const clearStamp = `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+    for (let i = 0; i < removedNodeIds.length; i++) {
+      const nodeId = removedNodeIds[i]!;
+      // ── Dedup-table release pass ────────────────────────────────────────
+      // Rewrite the node's content to a unique tombstone BEFORE soft-deleting.
+      // The SDK keeps a content-hash dedup table covering every node — even
+      // soft-deleted ones — so a follow-up `appendDocument` with identical
+      // content returns zero new ids and the in-place retrain dies with
+      // "SDK returned no node ids for content of N chars".
+      //
+      // By overwriting the node's content first, we release the ORIGINAL
+      // content hash from the dedup table; the next insert with that text
+      // creates a fresh node successfully. The tombstone we write here is
+      // unique per (clearStamp, index, nodeId) so no two tombstones collide
+      // with each other either.
+      //
+      // Failure to edit is non-fatal — the soft-delete below still happens
+      // and the node won't surface in recall. The downside is just that the
+      // next insert with identical content may hit dedup and need the
+      // graphnosis-impl.ts resurrection fallback to recover.
+      try {
+        await this.opts.adapter.applyCorrection(g.handle, {
+          kind: 'edit',
+          nodeId,
+          content: `__gn-cleared:${clearStamp}:${i}:${nodeId}__`,
+          reason: `${reason} (dedup-table release)`,
+        });
+      } catch {
+        // Edit refused — proceed to delete anyway. Resurrection fallback
+        // in graphnosis-impl.ts will pick up the slack on next insert.
+      }
+      try {
+        await this.opts.adapter.applyCorrection(g.handle, {
+          kind: 'delete',
+          nodeId,
+          reason,
+        });
+      } catch {
+        // Continue clearing even if one delete fails — orphaned node
+        // remains soft-alive in the graph but is no longer in source.nodeIds.
+      }
+      this.oplogWriter.emit({
+        graphId,
+        op: 'deleteNode',
+        target: { kind: 'node', id: nodeId },
+        after: {
+          reason,
+          ...(opts?.triggeredBy ? { triggeredBy: opts.triggeredBy } : {}),
+        },
+      });
+      g.sourceIndex.removeNode(sourceId, nodeId);
+    }
+    this.oplogWriter.emit({
+      graphId,
+      op: 'reorderSource' as never,
+      target: { kind: 'source', id: sourceId },
+      after: {
+        nodeIds: [],
+        ...(opts?.triggeredBy ? { triggeredBy: opts.triggeredBy } : {}),
+      },
+    });
+    g.dirty = true;
+    await this.save(graphId);
+    // Defer relink — caller will populate the source and run their own
+    // SOP edge linkers after the inserts are done.
+    return { removedNodeIds };
   }
 
   /**
