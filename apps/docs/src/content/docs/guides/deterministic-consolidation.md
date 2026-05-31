@@ -112,3 +112,16 @@ Adding a **local LLM** — via [Ollama](https://ollama.com), the same on-device 
 - **Second-opinion review** of past merges.
 
 A local LLM is optional and always runs on your own machine — nothing about upkeep ever sends your memory anywhere.
+
+---
+
+## Related
+
+[Indelibility & Determinism](/guides/indelibility-and-determinism/) — why no consolidation pass ever weakens a memory.
+
+[Correcting Memories](/guides/correcting-memories/) — the `edit` flow for user-driven changes.
+
+[Federated Multi-Graphs](/reference/federated-multi-graphs/) — the dual-graph the consolidation passes operate on.
+
+[MCP Tools — `duplicate_pairs` / `audit_memory`](/reference/mcp-tools/#brain-maintenance) — read-only windows into the brain engine.
+

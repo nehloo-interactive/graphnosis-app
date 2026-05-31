@@ -141,3 +141,16 @@ Devices that still have the old token will get `401 Unauthorized` on every reque
 
 **Tools listed but `recall` returns nothing**
 - Same as desktop: your cortex may be empty (add files first) or the active engram is empty. Try a broader query.
+
+---
+
+## Related
+
+[Connect Your AI](/getting-started/connect-ai/) — desktop client setup; the wire format is the same as mobile.
+
+[What Leaves Your Device](/guides/network-activity/) — every connection the app makes, including the mobile bridge.
+
+[Keeping Your Cortex Safe](/guides/keeping-your-cortex-safe/) — bearer-token rotation, network isolation, and recovery.
+
+[AI Access Controls](/guides/ai-access-controls/) — tier-aware recall over mobile is the same as desktop.
+

@@ -51,3 +51,16 @@ If something is broken, behaves unexpectedly, or you have an idea for how Graphn
 **[github.com/nehloo-interactive/graphnosis-app/issues](https://github.com/nehloo-interactive/graphnosis-app/issues)**
 
 A good bug report includes what you did, what you expected, and what happened instead — and, if the app showed one, the synapse error message. Feature requests are welcome too; describe the problem you are trying to solve, not just the solution you have in mind.
+
+---
+
+## Related
+
+[What Leaves Your Device](/guides/network-activity/) — every outbound connection, listed and source-linked.
+
+[Indelibility & Determinism](/guides/indelibility-and-determinism/) — the formal claims this guide helps you verify.
+
+[File Formats](/reference/file-formats/) — the on-disk shape of everything Graphnosis writes.
+
+[The Story of Ghampus](/reference/ghampus/) — the four principles you're checking against.
+

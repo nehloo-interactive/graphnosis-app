@@ -182,3 +182,18 @@ The claims on this page are verifiable, not just asserted:
 - **Read the source code.** The app is source-available under FSL-1.1. The relevant files are `apps/desktop-sidecar/src/connectors/`, `apps/desktop/src-tauri/src/lib.rs` (update check), and `apps/desktop-sidecar/src/local-embed.ts` (embedding model).
 
 See [Verify It Yourself](/guides/verify-it-yourself/) for a walkthrough of how to independently confirm these claims.
+
+---
+
+## Related
+
+[Verify It Yourself](/guides/verify-it-yourself/) — the hands-on companion: how to watch every connection in real time.
+
+[AI Access Controls](/guides/ai-access-controls/) — the consent layer above the network layer.
+
+[Auto-ingest from Your Tools](/guides/connectors/) — which connectors hit which hosts, and when.
+
+[Connect Offline Sources](/guides/connect-offline-sources/) — sources that never touch the network.
+
+[Using Graphnosis with AI Clients](/legal/third-party-ai/) — what the AI provider sees on the other side.
+

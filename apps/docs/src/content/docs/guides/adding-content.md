@@ -147,3 +147,16 @@ The move is non-destructive: all chunks, embeddings, and the content cache entry
 ## Removing a source
 
 Open the Source in the Graphnosis window and click **Remove**. This deletes all associated chunks and embeddings from the cortex. The original file on disk is not touched.
+
+---
+
+## Related
+
+[Auto-ingest from Your Tools](/guides/connectors/) — passive ingest via RSS, GitHub, Slack, and more.
+
+[Connect Offline Sources](/guides/connect-offline-sources/) — local files, MQTT, OPC-UA, scans, NAS.
+
+[Graphs & Sensitivity Tiers](/guides/graphs-and-tiers/) — route incoming content to the right engram.
+
+[Correcting Memories](/guides/correcting-memories/) — fix or update what got ingested.
+

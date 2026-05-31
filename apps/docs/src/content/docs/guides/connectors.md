@@ -270,3 +270,16 @@ The webhook URL is `localhost:3458` by default — only reachable from the same 
 - **In-memory credentials:** decrypted on cortex unlock; held in memory for the connector to use. Never logged.
 - **No telemetry:** connector calls go directly from your Mac to the service. Graphnosis has no server in the path.
 - **Per-connector revocation:** to revoke a connector's access, **Remove** it in Settings (deletes the credentials locally) AND revoke the token in the service's developer console (forces immediate cutoff even if the local copy somehow leaks).
+
+---
+
+## Related
+
+[Connect Offline Sources](/guides/connect-offline-sources/) — the on-device counterpart: files, MQTT, OPC-UA, LoRaWAN.
+
+[Adding Content](/guides/adding-content/) — manual ingest of files, URLs, and clips.
+
+[What Leaves Your Device](/guides/network-activity/) — every outbound connection a connector makes.
+
+[Graphs & Sensitivity Tiers](/guides/graphs-and-tiers/) — route each connector to the right engram tier.
+

@@ -124,3 +124,16 @@ When asking your AI client to save into a specific engram, use a name that's spe
 - ⚠️ `notes` (too vague — you'll have one giant engram), `today`, `misc`
 
 You can always rename via the Settings → Engrams panel later. And if your AI client guesses a name that doesn't exist yet (or is close to something that does), Graphnosis shows you a confirmation banner before creating a new engram — no AI ever creates engrams without your okay.
+
+---
+
+## Related
+
+[A GRAPHNOSIS.md for Your AI](/getting-started/graphnosis-md/) — the drop-in instructions file that makes any AI actually use Graphnosis.
+
+[Connect Your AI](/getting-started/connect-ai/) — wire each client into the same cortex.
+
+[Auto-ingest from Your Tools](/guides/connectors/) — passive workflow that compounds across sessions.
+
+[Graphs & Sensitivity Tiers](/guides/graphs-and-tiers/) — keep work, personal, and sensitive material separate.
+

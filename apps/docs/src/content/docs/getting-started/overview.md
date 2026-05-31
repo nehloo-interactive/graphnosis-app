@@ -7,6 +7,14 @@ sidebar:
 
 Graphnosis gives any AI a persistent, private memory — without a cloud service, an account, or sending your data anywhere.
 
+<img
+  src="/graphnosis-logo.png"
+  alt="Graphnosis seahorse logo"
+  width="160"
+  height="160"
+  style="float: right; margin: 0 0 1rem 1.5rem; width: 160px; height: 160px; shape-outside: circle();"
+/>
+
 ## Graphnosis is your local encrypted memory, indexed for deterministic recall — auditable
 
 Here is the problem with how AI "memory" has worked until now.
@@ -103,6 +111,10 @@ A memory is only as useful as what it is connected to. Graphnosis links memories
 
 When you ingest a file or URL, Graphnosis creates a **Source** record and splits the content into chunks. Each chunk is embedded (converted to a vector) locally using a BGE-small-en-v1.5 model running entirely on your device. The embedding is what enables semantic recall — finding relevant memories even when you don't remember the exact words you used.
 
+### Skills — procedural memory as SOPs
+
+Graphnosis ships a dedicated **Skills engram** for procedural memory: Standard Operating Procedures the user has written, anchored to the cortex, and made callable by any MCP client. A skill is a sequence of body steps wired by five edge types (linear, loops, branches, supporting context, and cross-skill calls), with eight goal categories per skill (Success, Out of scope, On completion, Trigger, Prerequisites, On failure, Requires, Produces). The AI executes a skill by calling `walk_skill_structured`, which returns a `SkillExecutionPlan` JSON: required inputs, ordered steps, sub-skill calls with args + return captures, and failure handlers. Three signed `.gsk` demo packs auto-load on first unlock so there is something to try immediately. See [Skills as SOPs](/reference/skills/).
+
 ### Recall via MCP
 
 When you open a conversation in your AI client, Graphnosis is running as an MCP server in the background. The AI client calls the `recall` tool with the current conversation topic. Graphnosis performs a semantic search across your engram graph, selects the top-k most relevant nodes (subject to tier limits and token caps), and returns them as a compact, plain-text context block.
@@ -154,3 +166,18 @@ ChatGPT desktop has limited third-party MCP support as of early 2025. Check the 
 | Rust toolchain | Required only if building from source |
 
 The embedding model (ONNX, ~90 MB) and any optional local LLM for corrections run entirely offline. No GPU required, though an Apple Silicon Mac with Neural Engine will be noticeably faster for embeddings.
+
+---
+
+## Related
+
+[Install & First Cortex](/getting-started/first-cortex/) — get the app running and create your first encrypted cortex.
+
+[Federated Multi-Graphs](/reference/federated-multi-graphs/) — the dual graph inside every engram, and how federation works across many.
+
+[Skills as SOPs](/reference/skills/) — the procedural-memory layer for executable Standard Operating Procedures.
+
+[MCP Tools](/reference/mcp-tools/) — the 45 tools any connected AI client sees.
+
+[The Story of Ghampus](/reference/ghampus/) — why a seahorse, and what he stands for.
+

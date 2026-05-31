@@ -11,7 +11,81 @@ Conventions: **Added** = new features, **Changed** = behavior or UX shifts, **Fi
 
 ---
 
+## v1.12.0 — Skills as Standard Operating Procedures + MemoryStudio
+
+<p style="margin-top:0.5rem;font-size:1.25em;opacity:0.85;">2026-05-31</p>
+
+The big shift in this release: **Skills are now first-class, executable Standard Operating Procedures**. A skill is no longer just a markdown body — it is a graph of steps with goals, loops, branches, anchored context, and cross-skill orchestration that any MCP client can walk and execute. The MCP surface grows from 35 to 45 tools.
+
+### Added
+
+- **Skills as SOPs.** Skills are wired into the cortex as graphs with five evidence-tagged edge types: `skill:seq` for the linear chain, `skill:loop` for "go back to step N", `skill:branch` for conditional forks, `skill:ctx` for recalled memories anchored to a specific step, and `skill:calls` for cross-skill invocation. See [Skills as SOPs](/reference/skills/).
+- **Position-aware recall placement.** Training no longer dumps recalled memories at the end as a flat block — each fragment is placed in the procedure at the position where it actually fits. Two-step deterministic check: similarity to surrounding steps + triplet coherence between `prev` step / fragment / `next` step. Fragments that don't fit anywhere mid-procedure go to a `Supporting context` block instead.
+- **Eight goal categories per skill.** Added `Trigger:`, `Prerequisites:`, `On failure:`, `Requires:`, and `Produces:` to the original three (`Success:`, `Out of scope:`, `On completion:`). Each renders as a colored chip in the editor and is wired to the title with a `contains/skill:goal` edge. The full set is what makes a skill executable rather than just readable.
+- **Cross-skill orchestration.** A step can invoke another skill with `@skill: target-name(arg=value, arg=$priorVar) -> $captureName`. The bare form `@skill: name` still works. The AI executor reads the structured plan from `walk_skill_structured` and resolves variables, captures returns, and routes failures.
+- **`walk_skill` and `walk_skill_structured` MCP tools.** Two paired tools — narrative SOP text for human-facing guidance, JSON `SkillExecutionPlan` for AI execution. The structured plan includes `requires` / `produces`, ordered steps with `calls` metadata, and `failureHandlers` derived from `On failure:` blocks.
+- **Eight more Skills MCP tools.** `get_skill`, `list_skills`, `train_skill`, `export_skill`, `delete_skill`, `skill_history`, `rollback_skill`, `skill_vitality` — the full lifecycle, all deterministic reads/writes against the Skills engram.
+- **45 MCP tools across 10 categories.** Up from 35 / 9. The new **Skills (SOPs)** group is the tenth category.
+- **Bundled Skill Demos.** Three signed `.gsk` demo packs auto-load into a dedicated **Skill Demos** engram on the first unlock of a fresh cortex: *Code review* (single-skill with prerequisites + failure recovery), *Safe Deploy* (six-skill cross-skill orchestration with `$captures` and rollback handlers), and *Comprehensive job memory* (a longer SOP showing position-aware placement on the full goal block). All three are inspectable, editable, and deletable — they are normal skills in a normal engram.
+- **In-place retrain + snapshot history.** Retraining mutates the existing skill source in place via the op-log; the `sourceId` is stable across retrains so inbound `@skill:` references keep resolving. Every retrain writes a snapshot of the prior body, goals, and edges to a per-cortex encrypted side-table. Browse via the `skill_history` MCP tool or the Skills page UI.
+- **Skill rollback.** `rollback_skill` (or the UI button) restores any snapshot. The rollback itself is recorded as a new snapshot so the lineage is preserved — nothing is destroyed.
+- **Pro train path — LLM-rewritten body with attribution.** With the Pro license + Local LLM, the local LLM rewrites body steps to integrate recalled context fluently, while every fact pulled in keeps its `_(from source)_` marker. The rewrite happens entirely on-device. Free path remains the deterministic memory-augmented body (recall appended in-place with attribution); the user picks per skill, the AI client does not.
+- **Autonomous retrain (Pro).** Brain-engine loop that re-runs `train_skill` on a schedule, on cortex growth, on vitality decay, or any of those (hybrid). Three autonomy levels: auto-accept, notify, preview-first. Opt-in per skill from the Skills page.
+- **Streaming trainer with live diff.** Ollama tokens stream back to the desktop during training so the diff paints as Ghampus writes — green/red line-diff hunks update in real time. `< >` arrows navigate hunks; a Cancel button stops the run cleanly. Draft body is auto-saved to `localStorage` every 500ms so refreshing or quitting mid-train does not lose work.
+- **AI-driven engram creation for Skills.** If the AI calls `train_skill` against a cortex with no Skills engram, the sidecar broadcasts an `engram-create-suggested` event (template: `skill`) instead of hard-erroring. The user confirms or renames in the in-app banner; the engram is created with the raw skill ingested as a `skill` source; the AI retries and training proceeds. The `skill` template is also available manually from the New Engram wizard.
+- **MemoryStudio — a first-party UI for what AI clients do via MCP.** New top-level tab covering Skills · Recall · Dig Deeper · Remember · Edit / Correct · GNN Exploration · (All Tools), all running entirely on-device with no internet required. Every panel delegates to the same `host`/`brain` functions used by the MCP tools — no logic duplication, so what you see in Studio is what an AI sees over MCP. See [MemoryStudio](/memory-studio).
+  - **Per-tool result panels.** Recall and Dig Deeper snapshot their rendered DOM + slider state on tab leave and restore on tab enter; switching between tools preserves each one's last result, slider position, and LLM output independently.
+  - **Threshold slider syncs per tool.** Each tool re-anchors the slider to its own saved Δ (separate `localStorage` keys per tool) so a tool always opens at its own preferred strictness, not the previous tool's value.
+  - **Cross-engram Memory Trace.** Clicking nodes across different engrams in the raw-context panel no longer resets the rail's Memory Trace; a global recents list (with per-engram fallback preview lookup) accumulates across switches.
+  - **Remember as the default tab on open**, with a two-click confirm on Save memory — the second click commits, and the pending state resets the moment the textarea content changes.
+  - **Cross-engram search-result clicks switch the active engram** before selecting, so the inspector populates instead of showing empty.
+  - **Collapsible left sidebar.** Chevron toggle in the top-right collapses everything to icon-only (56px wide); state persists across sessions. Memory Trace, AI-clients / Data-sources groups, and bottom-row labels hide; tooltips keep navigation discoverable.
+  - **New rail icons** — MemoryStudio (brain/cognition), Sources (document with corner), Status (EKG pulse). Inline line-art SVGs that tint with the existing fg-dim/fg palette.
+  - **Tab strip polish** — font 14px → 12px, padding 14px → 9px per side (~30px saved across the strip). Each tab gets a thin turquoise left border at 28% opacity as a visual separator; the active tab raises it to 55%; the first tab has no left border.
+  - **GAP status-bar pill** sits left of GLL — pulses green while the trainer is busy, greys when idle, and is clickable to jump straight to the Skills chip.
+- **Loopback verification — privacy as a visible signal.** Tauri `verify_local_llm` command: `pgrep` by process name → `lsof` by port fallback → `lsof -i -P -n -p PID` to enumerate the local LLM daemon's open sockets, classifying each as loopback (`127.0.0.1`, `::1`, `localhost`) or external. The result feeds an inline badge so you can prove at a glance that Ollama is not phoning home.
+- **Ghampus on the dashboard.** The duplicate "Graphnosis · your second cortex" headline is replaced with a Ghampus block: *"Ghampus / your memory seahorse."* with a faint, bobbing seahorse mark behind the text in the top-right of the title.
+- **Meet Ghampus modal.** Clicking the Ghampus title block opens a *"Hi again. I'm Ghampus."* modal with origin story, what-I-do bullets, where-you'll-bump-into-me list, what-I-will-never-do trust spine, and a closing *"Pleased to be your hippocampus."* Backdrop click / Got it / Esc close. Keyboard-accessible (role=button, tabindex, Enter/Space). See [The story of Ghampus](/reference/ghampus/).
+- **What's New carousel modal.** A single multi-slide intro modal (MemoryStudio → Graphnosis Skills / Autonomous Praxis) replaces the previous two separate startup modals. Dot indicators at the top jump between slides; the primary button reads *"Next"* while slides remain and switches to *"Get started"* on the last slide. Single dismissal key (`graphnosis.whatsNewV1Dismissed`) covers the whole carousel.
+- **Pro upgrade flow — Stripe + Cloudflare-hosted `/upgrade`.** New marketing landing at [graphnosis.com/upgrade](/upgrade) (hero, $10/mo card, feature list, FAQ, contact). `/upgrade/checkout` creates a Stripe Checkout Session; on success, `/upgrade/success` emails a magic link with a `graphnosis://claim` URL. Webhook signs license tokens with Ed25519 and stores them in Cloudflare KV. License validation is offline-first after delivery.
+- **`graphnosis://` URL scheme registered (macOS + Windows).** Clicking the post-checkout magic link activates Pro automatically — the deep-link handler routes `graphnosis://claim` into the sidecar's `license:setToken` IPC. Manual paste in **Settings → Pro license** still works for headless or air-gapped setups.
+- **Compact New Engram wizard.** Wizard modal is significantly shorter: subtitle compressed to one line, Display name + Internal ID inputs side-by-side, sensitivity tier section trimmed to two lines, radio captions shortened (*AI always on* / *Ask once* / *Ask hourly*), template-card padding and font tightened. `skill` template added as a free-tier option.
+- **Window state persistence.** Window remembers its size, position, and maximize state across launches. Starts hidden until JS confirms ≥ minWidth/minHeight, then reveals — no more visible jump from a stale stored size.
+- **`recall` → `dig_deeper` escalation flow is now well-defined.** AI clients should call `dig_deeper` with the same query when `recall` returns 0–3 nodes, before telling the user nothing was found. The MCP tool descriptions enforce this. See [MCP Tools — `dig_deeper`](/reference/mcp-tools/#dig_deeper).
+- **0-score node filter.** `recall` and `recall_structured` (via the underlying `query` / `queryRich`) now filter out structural SDK expansion nodes that have no seed score (`score=0`). Only semantically scored nodes appear in AI responses and MemoryStudio. Eliminates the confusing 0.00-confidence rows users were seeing in AI output.
+- **Insights — honest empty-states + faster retry.** The `insights` MCP tool surfaces explicit messages for no-LLM / timeout / no-data, and the background loop retries after 1h on transient failure instead of 6h.
+- **License launcher moved to the top of Settings.** Previously buried in the Settings modal; now visually consistent with the other settings panels (transparent background, top of the Settings pane).
+- **Atlas engram-switch loader.** Switching engrams on the 3D atlas wipes the canvas immediately and pops a centered loading overlay with a turquoise spinner, friendly label (*"Loading <engram name>…"*), and a sub-line that fills in with the node count once the IPC returns. Old engram's nodes no longer linger 1–3s reading as "switch didn't work."
+
+### Changed
+
+- **`.gts` → `.gsk` rename.** The skill wire format extension changed from `.gts` ("Graphnosis Training Skill") to `.gsk` ("Graphnosis Skill Kit") — it reads more naturally to users and matches the file-type association now registered on macOS and Windows. Older `.gts` files still import — the loader matches on magic bytes (`GSK\x01`), not the filename. See [File formats — `.gsk`](/reference/file-formats/#gsk--graphnosis-skill-kit).
+- **`.gsk` packs are Ed25519-signed.** Every export is signed; every import verifies. Tampered or unsigned packs are rejected. The Graphnosis signing secret never enters the codebase. Third parties publishing their own packs use their own keypair and ship the public key alongside.
+- **Tauri file-association registered.** Double-clicking a `.gsk` file in Finder or Explorer prompts the Graphnosis app to import it into the cortex you choose.
+- **One source per skill instead of per-train.** Retraining no longer creates a new source — the existing source is mutated in place. Existing per-train sources from older cortexes are coalesced on first launch (migration is one-shot, no user action required).
+
+### Fixed
+
+- **Preview-mode textbox no longer suppresses input.** A focus-trap bug in the skill preview pane was eating the first character of every edit. Resolved.
+- **Archived skills are now hidden from the Skills picker.** Previously an archived skill could still be selected from the picker and trained, leading to ghost sources.
+- **IPC timeout on long skill trains.** The sidecar IPC bridge was timing out after 30s on cortexes with thousands of recall candidates. The timeout is now adaptive to candidate-set size and `train_skill` carries its own progress channel.
+- **Recall / Dig Deeper button stuck disabled after a search.** `runStudioRecall`'s slider re-run fast-path was returning before entering the `try/finally` that re-enables the button, and most fresh recalls trigger an auto-apply slider re-run via `revealThresholdSlider`. Every exit path now hits `finally { recallBtn.disabled = false }`.
+- **Sidecar 90s startup hang on Windows.** A blocking probe at boot would wait the full 90s when the embed-worker subprocess failed silently. Now terminates failed workers immediately and surfaces the error so the cortex load unblocks.
+- **Orphan lock on Windows after force-quit.** A crash or force-quit on Windows could leave the cortex lock file in place, blocking the next launch. The sidecar now releases the lock cleanly on exit and self-heals on the next launch if it finds a stale one.
+- **Billing — `sendMagicLink` not awaited on Cloudflare Workers.** Workers kill fire-and-forget promises the moment the response is returned, so the magic-link email was sometimes silently dropped. The webhook now `await`s the send before responding to Stripe.
+- **Billing — Stripe `ui_mode` value.** Switched from `'hosted'` to the correct `'hosted_page'` so checkout creation stops 400-ing.
+- **SDK `appendText` sourceRef-header artifact.** A stray header line was leaking into appended text in some skill-edit paths; stripped before write.
+
+### Migrations
+
+- **Skill sources coalesce on first launch.** Cortexes upgraded from v1.11.x with multiple per-train sources per skill are migrated to one-source-per-skill, with the prior versions written into the snapshot side-table as the initial history. Migration is one-shot, idempotent, and runs before any background process starts.
+- **`.gts` files in user folders are not renamed.** The migration is read-only — `.gts` imports still work indefinitely. Re-exporting writes a `.gsk` file alongside.
+
+---
+
 ## v1.11.1 — Startup reliability and status bar polish
+
+<p style="margin-top:0.5rem;font-size:1.25em;opacity:0.85;">2026-05-26</p>
 
 Patch release fixing issues found in installed v1.11.0 builds.
 
@@ -26,6 +100,8 @@ Patch release fixing issues found in installed v1.11.0 builds.
 ---
 
 ## v1.11.0 — Overlay recall, LLM capability split, and UI redesign
+
+<p style="margin-top:0.5rem;font-size:1.25em;opacity:0.85;">2026-05-26</p>
 
 ### Added
 
@@ -75,6 +151,8 @@ Patch release fixing issues found in installed v1.11.0 builds.
 
 ## v0.10.1 — Boot stability and UI polish
 
+<p style="margin-top:0.5rem;font-size:1.25em;opacity:0.85;">2026-05-24</p>
+
 Patch release fixing issues found in installed v0.10.0 DMGs.
 
 ### Fixed
@@ -91,6 +169,8 @@ Patch release fixing issues found in installed v0.10.0 DMGs.
 ---
 
 ## v0.10 — Consent, Activity Log, and safer AI tools
+
+<p style="margin-top:0.5rem;font-size:1.25em;opacity:0.85;">2026-05-24</p>
 
 ### Added
 
@@ -158,6 +238,8 @@ Patch release fixing issues found in installed v0.10.0 DMGs.
 
 ## v0.9 — Deterministic Consolidation
 
+<p style="margin-top:0.5rem;font-size:1.25em;opacity:0.85;">2026-05-22</p>
+
 Theme: **a memory that strengthens, never weakens.** The third tab is reborn as **Deterministic Consolidation** — an engine that makes every memory you add permanent and ever more retrievable. Connections strengthen the more you use them, engrams link to one another, and a daily consolidation pass integrates the whole cortex. Nothing here ever weakens a correct memory.
 
 ### Added
@@ -193,6 +275,8 @@ None. Existing cortexes gain the cross-engram connection store on first run, and
 
 ## v0.8 — Autonomous upkeep
 
+<p style="margin-top:0.5rem;font-size:1.25em;opacity:0.85;">2026-05-21</p>
+
 Theme: **a cortex that maintains itself.** Graphnosis now keeps your memory tidy on its own — merging duplicates it can prove are redundant, weaving connections between related memories, and surfacing the judgment calls it can't safely make. New background passes run on a schedule: what they can fix, they fix; what needs you, they route to Check-in.
 
 ### Added
@@ -218,6 +302,8 @@ None. v0.8 is fully backward-compatible. The self-healing journal is created on 
 ---
 
 ## v0.7 — Sources management, 3D graph performance, and readability
+
+<p style="margin-top:0.5rem;font-size:1.25em;opacity:0.85;">2026-05-20</p>
 
 Theme: **make large cortexes easier to navigate and large graphs easier to work with.** This release adds first-class source management (search, move between engrams), makes the 3D graph usable on 25K-edge graphs without freezing the UI, and addresses a wave of readability and polish issues reported after v0.6.
 
@@ -248,6 +334,8 @@ None. v0.7 is fully backward-compatible with v0.6 cortexes.
 ---
 
 ## v0.6 — Mobile, connectors, and the broader MCP-client universe
+
+<p style="margin-top:0.5rem;font-size:1.25em;opacity:0.85;">2026-05-19</p>
 
 Theme: **make your cortex reachable from anywhere, growing on its own from the tools you already use.** The biggest single release since v0.1 in scope of new surface — a mobile bridge with a 3-step wizard, six service connectors with BYO credentials, encryption for those credentials at rest, broader MCP-client coverage beyond Claude Desktop / Code / Cursor, and a Settings UI to manage all of it.
 
@@ -293,6 +381,8 @@ None required. v0.6 is fully backward-compatible with v0.5 cortexes. The first s
 
 ## v0.5 — More AI clients, smarter remember, background notifications
 
+<p style="margin-top:0.5rem;font-size:1.25em;opacity:0.85;">2026-05-18</p>
+
 Theme: **let any AI client confidently target a specific engram, and tell you when the app's in the background**. Plus a broader AI-client expansion beyond Claude Desktop, and ingest performance you can dial in.
 
 ### Added
@@ -328,6 +418,8 @@ None. v0.5 is fully backward-compatible with v0.4 cortexes.
 
 ## v0.4 — Touch ID, attribution, and a better Check-in
 
+<p style="margin-top:0.5rem;font-size:1.25em;opacity:0.85;">2026-05-16</p>
+
 ### Added
 
 - **Touch ID unlock (macOS).** Lock screen now shows an "Unlock with Touch ID" button once you've signed in with a passphrase at least once. Powered by a Swift sidecar binary that talks to Apple's LocalAuthentication.framework — the actual unlock still reads your saved passphrase from the macOS Keychain after biometric success. Falls back gracefully on Macs without a Touch ID sensor.
@@ -359,6 +451,8 @@ None. v0.5 is fully backward-compatible with v0.4 cortexes.
 ---
 
 ## v0.3 — Recovery, safety, and the synapse story
+
+<p style="margin-top:0.5rem;font-size:1.25em;opacity:0.85;">2026-05-15</p>
 
 The big theme: **make data loss require a series of unlikely mistakes, not just one bad day.** Five new safety layers, a real passphrase-rotation flow, and several long-standing UI bugs fixed in the process.
 
@@ -414,9 +508,23 @@ If you miss the modal (closed too fast, lost focus), regenerate from **Settings 
 
 ## v0.2.x and earlier
 
+<p style="margin-top:0.5rem;font-size:1.25em;opacity:0.85;">2026-05-11 → 2026-05-13</p>
+
 Pre-v0.3 changes weren't tracked in this changelog. The headline features for those releases:
 
-- v0.2.x: PDF ingest worker, op-log recovery flow (sync), source index, embedding cache, MCP relay
-- v0.1.x: Initial release — local-first encrypted cortex, MCP server, federated recall, BGE-small embeddings, Tauri shell
+- v0.2.x · 2026-05-13: PDF ingest worker, op-log recovery flow (sync), source index, embedding cache, MCP relay
+- v0.1.x · 2026-05-11: Initial release — local-first encrypted cortex, MCP server, federated recall, BGE-small embeddings, Tauri shell
+
+---
+
+## `@nehloo/graphnosis` SDK — first publish
+
+<p style="margin-top:0.5rem;font-size:1.25em;opacity:0.85;">2026-04-12</p>
+
+The Graphnosis App is built on top of the open-source **`@nehloo/graphnosis`** SDK (Apache-2.0) — the deterministic dual-graph engine that powers every engram: TF-IDF + embeddings + the directed/undirected edge model, encryption, the op-log, federated recall, and the `recall` / `remember` / `edit` primitives the App's MCP tools delegate to.
+
+The SDK was first published to npm on **2026-04-12**, a month before the App scaffold landed. Every release listed above pins a specific SDK version in `apps/desktop-sidecar/package.json`; the App's behavior is the SDK's behavior plus the desktop shell, the MCP server, MemoryStudio, Skills, connectors, and the brain engine on top.
+
+If you build with Graphnosis directly — without the App — the SDK is what you reach for. The App is one consumer of it; the SDK is the foundation.
 
 Future releases will be tracked here from the date they ship.

@@ -80,9 +80,15 @@ This section exposes **five independent capability toggles** you can enable or d
 
 Both layers are reversible and clearly marked. Neither ever touches **core recall** — an identical query returns identical memories whether or not they are on. What they *do* affect is opt-in and labelled: the GNN adds a separate predictions block to recall enrichment and widens the `edit` candidate set; the Local LLM capabilities operate independently on whichever toggles you have on. Even then nothing escapes review — `edit` always returns a diff you approve — and turning either layer off restores the fully deterministic behaviour.
 
-## See also
+## Related
 
-- [Deterministic Consolidation](/guides/deterministic-consolidation/) — how the background passes strengthen and consolidate your memory.
-- [Correcting Memories](/guides/correcting-memories/) — the audited, reversible way a memory's standing changes.
-- [File Formats](/reference/file-formats/) — the `.gai` graph and the `.gnn` prediction overlay.
-- [MCP Tools](/reference/mcp-tools/) — every tool, with its determinism tier.
+[Deterministic Consolidation](/guides/deterministic-consolidation/) — how the background passes strengthen and consolidate your memory.
+
+[Correcting Memories](/guides/correcting-memories/) — the audited, reversible way a memory's standing changes.
+
+[Federated Multi-Graphs](/reference/federated-multi-graphs/) — the deterministic dual graph the recall guarantees rest on.
+
+[File Formats](/reference/file-formats/) — the `.gai` graph and the `.gnn` prediction overlay.
+
+[MCP Tools](/reference/mcp-tools/) — every tool, with its determinism tier.
+

@@ -254,4 +254,15 @@ The honest line: Graphnosis stops **untrusted** clients from reading your memori
 
 ---
 
-*See also: [Graphs & Sensitivity Tiers](/guides/graphs-and-tiers) · [Using Graphnosis with AI Clients](/legal/third-party-ai) · [Privacy Policy](/legal/privacy-policy)*
+## Related
+
+[Graphs & Sensitivity Tiers](/guides/graphs-and-tiers/) — how tiers are assigned per engram.
+
+[What Leaves Your Device](/guides/network-activity/) — the network-layer companion to the consent gate.
+
+[MCP Tools — `confirm_data_access`](/reference/mcp-tools/#confirm_data_access) — the headless-fallback flow for sensitive recalls.
+
+[Using Graphnosis with AI Clients](/legal/third-party-ai/) — what the AI provider sees once a recall is allowed.
+
+[Privacy Policy](/legal/privacy-policy/) — the user-facing data-handling promises.
+

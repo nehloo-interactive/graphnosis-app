@@ -75,7 +75,10 @@ export default defineConfig({
           label: 'Reference',
           items: [
             { label: 'MCP Tools', slug: 'reference/mcp-tools' },
+            { label: 'Skills as SOPs', slug: 'reference/skills' },
+            { label: 'Federated Multi-Graphs', slug: 'reference/federated-multi-graphs' },
             { label: 'File Formats', slug: 'reference/file-formats' },
+            { label: 'The Story of Ghampus', slug: 'reference/ghampus' },
             { label: 'Environment Variables', slug: 'reference/environment-variables' },
           ],
         },
