@@ -56,6 +56,14 @@
     "resources": [
       "resources/libonnxruntime.1.21.0.dylib"
     ],
+    "fileAssociations": [
+      {
+        "ext": ["gsk"],
+        "name": "Graphnosis Skill Kit",
+        "description": "Graphnosis Skill Pack",
+        "mimeType": "application/x-graphnosis-skill"
+      }
+    ],
     "macOS": {
       "signingIdentity": "Developer ID Application: Nehloo Interactive LLC (C76ZLJ5UQW)",
       "providerShortName": "C76ZLJ5UQW",

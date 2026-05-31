@@ -3,6 +3,7 @@ import type { DirectedEdgeType } from './graphnosis-adapter.js';
 import { findSimilarPairs } from './duplicate-scan.js';
 import { type CrossEngramConnection, makeCrossEngramConnection } from './connection-store.js';
 import { type AssociationEntry } from './association-index.js';
+import { dbg } from './log-redact.js';
 import { DEFAULT_REINFORCEMENT, type ReinforcementSettings, type AppSettings } from '@graphnosis-app/core/settings';
 import { embeddings } from '@graphnosis-app/core';
 import { GnnLinkPredictor, type PairFeatures } from './gnn.js';
@@ -576,7 +577,8 @@ export class ReinforcementEngine {
         if (pruned.length !== before) {
           this.crossEngramConnections = pruned;
           this.crossEngramDirty = true;
-          console.error(
+          // Routine background cleanup — debug-only.
+          dbg(
             `[cross-engram] pruned ${before - pruned.length} stale connection(s) anchored to soft-deleted nodes`,
           );
         }

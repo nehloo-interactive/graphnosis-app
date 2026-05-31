@@ -85,7 +85,7 @@ export interface LicensePayload {
  * the keys distinct in the validator lets us deploy a "GNN-only" or
  * "Skill-only" plan without changing client code.
  *
- *   skill-training       — full Autonomous Praxis pipeline + .gts export
+ *   skill-training       — full Autonomous Praxis pipeline + .gsk export
  *   gnn-exploration      — Graphnosis Neural Network: MCP `gnn_neighbors`,
  *                          MemoryStudio chip, autonomous edge-prediction loop
  */
@@ -186,15 +186,15 @@ export class LicenseValidator {
   }
 
   /**
-   * Verify the Ed25519 signature on an official GTS pack payload.
-   * Delegates to the gts-format module which uses the same libsodium instance.
+   * Verify the Ed25519 signature on an official GSK pack payload.
+   * Delegates to the gsk-format module which uses the same libsodium instance.
    * Returns true for a valid official pack signature.
    * Returns false for community packs (empty signature field — not an error).
    * Throws if a non-empty signature is present but invalid.
    */
-  async verifyGtsSignature(payload: import('./gts-format.js').GtsPayload): Promise<boolean> {
-    const { verifyGtsSignature } = await import('./gts-format.js');
-    return verifyGtsSignature(payload);
+  async verifyGskSignature(payload: import('./gsk-format.js').GskPayload): Promise<boolean> {
+    const { verifyGskSignature } = await import('./gsk-format.js');
+    return verifyGskSignature(payload);
   }
 }
 

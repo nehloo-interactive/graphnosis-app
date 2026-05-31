@@ -8,7 +8,7 @@ import { GoalTracker } from './goal-tracker.js';
 import { findSimilarPairs } from './duplicate-scan.js';
 import { settings as settingsMod } from '@graphnosis-app/core';
 import { predictEdgesForEngram, edgePredictionEnabled } from './edge-prediction.js';
-import { redactId } from './log-redact.js';
+import { redactId, dbg } from './log-redact.js';
 import { ReinforcementEngine } from './reinforcement-engine.js';
 import { MemoryHealthScorer, type MemoryHealth } from './memory-health.js';
 import {
@@ -610,7 +610,13 @@ export class BrainEngine {
     // The Graphnosis Neural Network self-gates on its settings toggle — the
     // timer fires daily but does nothing unless the user has enabled it.
     this.gnnTimer = setInterval(
-      () => { void this.reinforcement.runNeuralNetwork(); },
+      () => {
+        // Skip while a `trainSkill` run holds the overlay-recompute guard —
+        // we don't want the GNN to write predicted edges against a
+        // half-built skill source mid-train.
+        if (this.host.getSkipOverlayRecompute?.()) return;
+        void this.reinforcement.runNeuralNetwork();
+      },
       GNN_INTERVAL_MS,
     ).unref();
 
@@ -619,7 +625,10 @@ export class BrainEngine {
     // the timer fires regardless but does nothing until the user opts in.
     // One engram per tick (round-robin) to keep LLM cost bounded.
     this.edgePredictionTimer = setInterval(
-      () => { void this.runEdgePrediction(); },
+      () => {
+        if (this.host.getSkipOverlayRecompute?.()) return;
+        void this.runEdgePrediction();
+      },
       EDGE_PREDICTION_INTERVAL_MS,
     ).unref();
 
@@ -1298,11 +1307,12 @@ export class BrainEngine {
         } catch (err) {
           console.error('[brain] healing journal save failed:', err);
         }
-        console.log(`[brain] autonomously healed ${healedCount} duplicate(s)`);
+        // Per-cycle background sweep summary — debug-only.
+        dbg(`[brain] autonomously healed ${healedCount} duplicate(s)`);
       }
       if (autoLinkedThisRun > 0) {
         this.emitActivity('auto-link', 'done');
-        console.log(`[brain] auto-linked ${autoLinkedThisRun} related memory pair(s)`);
+        dbg(`[brain] auto-linked ${autoLinkedThisRun} related memory pair(s)`);
       }
 
       this.duplicatePairs.push(...found);
@@ -1719,7 +1729,9 @@ export class BrainEngine {
     this.emitActivity('edge-prediction', 'start');
     try {
       const { candidatesScanned, predicted } = await predictEdgesForEngram(this.host, this.llm, graphId);
-      console.error(`[brain] edge-prediction on engram[${redactId(graphId)}]: scanned=${candidatesScanned}, predicted=${predicted.length}`);
+      // Per-engram, per-cycle prediction stats — debug-only (was firing
+      // every few minutes for every engram in the cortex).
+      dbg(`[brain] edge-prediction on engram[${redactId(graphId)}]: scanned=${candidatesScanned}, predicted=${predicted.length}`);
       this.emitActivity('edge-prediction', 'done');
       if (predicted.length > 0) {
         // Surface freshly-predicted edges as a brain event so the UI can
@@ -1904,7 +1916,8 @@ export class BrainEngine {
         this.insightRetryTimer = null;
         void this.runInsight();
       }, INSIGHT_RETRY_AFTER_FAILURE_MS).unref();
-      console.log(`[brain] insight: ${status} — will retry in ${Math.round(INSIGHT_RETRY_AFTER_FAILURE_MS / 60000)}m`);
+      // Periodic retry-scheduling status — debug-only.
+      dbg(`[brain] insight: ${status} — will retry in ${Math.round(INSIGHT_RETRY_AFTER_FAILURE_MS / 60000)}m`);
     }
   }
 

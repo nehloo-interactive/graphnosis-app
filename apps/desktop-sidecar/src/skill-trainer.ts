@@ -28,7 +28,7 @@ import { settings as settingsMod } from '@graphnosis-app/core';
 
 // ── Public types ─────────────────────────────────────────────────────────────
 
-export type ExportFormat = 'claude-md' | 'cursorrules' | 'system-prompt' | 'openai' | 'raw' | 'gts';
+export type ExportFormat = 'claude-md' | 'cursorrules' | 'system-prompt' | 'openai' | 'raw' | 'gsk';
 export type TrainingMode = 'llm' | 'memory-augmented';
 
 export interface TrainSkillInput {
@@ -55,6 +55,18 @@ export interface TrainSkillInput {
    * After each training the pipeline self-tunes this value based on cited/fetched ratio.
    */
   recallBreadth?: number | null;
+  /** Structured goals — drives goal-aligned recall to surface targeted memories. */
+  goals?: import('./gsk-format.js').SkillGoals;
+  /**
+   * Opt-in: when true, attempt the local-LLM rewrite path for inline memory
+   * attribution. Default false — the trainer chunks the user's pasted text
+   * into paragraph nodes as-is (same path as .gsk import). Fast,
+   * deterministic, never hangs on a large input. The LLM rewrite is only
+   * helpful when the user wants their skill PERSONALIZED against recalled
+   * memories with `(from memory: ...)` markers woven inline — most SOP-style
+   * skills don't need that.
+   */
+  useLlmRewrite?: boolean;
 }
 
 export interface InfluentialNode {
@@ -67,6 +79,8 @@ export interface InfluentialNode {
   sourceLabel?: string;
   /** Where this node came from in the recall pipeline. */
   layer?: 'anchored' | 'gnn-expanded' | 'semantic';
+  /** Which goal dimension this node matched, if any. */
+  goalAlignment?: 'success' | 'scope' | 'completion';
 }
 
 /**
@@ -126,6 +140,21 @@ export interface SkillVitalityResult {
   recommendation: string;
 }
 
+export interface SkillProvenance {
+  /** 'official' = signed by Graphnosis (or other future trusted authors).
+   *  'community' = unsigned, anyone could have authored it. */
+  kind: 'official' | 'community';
+  /** True when the Ed25519 signature on the imported .gsk pack verified
+   *  against the trusted public key. Always false for community packs. */
+  verified: boolean;
+  /** Author string carried in the .gsk pack at build time. */
+  author: string;
+  /** Source pack id and version, useful for change tracking and re-import. */
+  packId?: string;
+  packVersion?: string;
+  importedAt?: string;
+}
+
 export interface SkillListEntry {
   sourceId: string;
   graphId: string;
@@ -136,10 +165,16 @@ export interface SkillListEntry {
   trainedAt?: string;
   mode?: string;
   recallBreadth?: number;
+  /** Present only for skills imported from a .gsk pack (parsed from the
+   *  imported-provenance node written by skill:importGsk). Locally-trained
+   *  skills have no provenance entry. */
+  provenance?: SkillProvenance;
 }
 
 export interface SkillDetail extends SkillListEntry {
   text: string;
+  /** Parsed goals from the stored text, if present. */
+  goals?: import('./gsk-format.js').SkillGoals;
 }
 
 export interface SkillVersionEntry {
@@ -169,7 +204,10 @@ Rules:
    ⚠️ CONFLICT: [skill says X | memory says Y]
 5. Any line in the skill prefixed with [ANCHOR] must be preserved exactly as-is.
    Do not modify, paraphrase, or move anchored lines.
-6. Keep the output in the same format as the input (markdown stays markdown,
+6. If the skill includes a ## Goals section, personalise TOWARD the stated success
+   criteria and AWAY from anything listed as out of scope. Goal-aligned memories
+   (tagged "goal-aligned") carry extra weight — prefer them when resolving conflicts.
+7. Keep the output in the same format as the input (markdown stays markdown,
    plain prose stays plain prose, etc.).
 
 After the full rewritten skill, emit exactly this separator on its own line:
@@ -192,7 +230,7 @@ const FORMAT_HEADERS: Record<ExportFormat, string> = {
   'system-prompt': `<!-- Graphnosis-trained system prompt -->`,
   'openai': `<!-- Graphnosis-trained OpenAI system message -->`,
   'raw': '',
-  'gts': '',
+  'gsk': '',
 };
 
 const FORMAT_WRAPPERS: Partial<Record<ExportFormat, (text: string) => string>> = {
@@ -207,10 +245,18 @@ function buildTrainingUserPrompt(
   memoriesPrompt: string,
   skillName?: string,
   modelTarget?: string,
+  goals?: import('./gsk-format.js').SkillGoals,
 ): string {
   const lines: string[] = [];
   if (skillName) lines.push(`Skill name: ${skillName}`);
   if (modelTarget) lines.push(`Target AI: ${modelTarget}`);
+  if (goals) {
+    lines.push('');
+    lines.push('=== SKILL GOALS ===');
+    if (goals.successLooksLike) lines.push(`Success looks like: ${goals.successLooksLike}`);
+    if (goals.outOfScope)       lines.push(`Out of scope: ${goals.outOfScope}`);
+    if (goals.expectedOnCompletion) lines.push(`Expected on completion: ${goals.expectedOnCompletion}`);
+  }
   lines.push('');
   lines.push('=== ORIGINAL SKILL ===');
   lines.push(skill);
@@ -218,7 +264,7 @@ function buildTrainingUserPrompt(
   lines.push('=== YOUR MEMORIES ===');
   lines.push(memoriesPrompt.slice(0, 3000));
   lines.push('');
-  lines.push('Rewrite the skill to match the user\'s personal style and preferences.');
+  lines.push('Rewrite the skill to match the user\'s personal style and preferences, honouring the Goals above.');
   return lines.join('\n');
 }
 
@@ -238,27 +284,25 @@ function parseTrainingResult(
   };
 }
 
-function buildMemoryAugmented(skill: string, memoriesPrompt: string): string {
-  // Strip the raw audit footer (--- \nAttached N ...) from the memory block
-  // to keep the exported skill clean.
+/**
+ * Phase 3b: returns an ARRAY of plain-text paragraphs (no markdown), one
+ * paragraph per recalled memory. The caller iterates and inserts each as a
+ * `role: 'recalled-memory'` chunk via `insertNodeAt`.
+ *
+ * No more `## Personal Context` heading — attribution lives inline at the
+ * end of each paragraph as `_(from X)_`. The export-time formatter is the
+ * only place that decides on markdown decoration.
+ */
+function buildMemoryAugmented(memoriesPrompt: string): string[] {
+  // Strip the raw audit footer (--- \nAttached N ...) from the memory block.
   const auditSepIdx = memoriesPrompt.lastIndexOf('\n\n---\n');
   const cleanMemories = auditSepIdx !== -1
     ? memoriesPrompt.slice(0, auditSepIdx).trim()
     : memoriesPrompt.trim();
-
-  if (!cleanMemories) return skill;
-
-  return [
-    skill,
-    '',
-    '---',
-    '**Personal Context (from your Graphnosis memories)**',
-    '',
-    '_The sections below were surfaced from your memory and are provided as context_',
-    '_for any AI reading this skill. No local LLM was available for full rewriting._',
-    '',
-    cleanMemories,
-  ].join('\n');
+  if (!cleanMemories) return [];
+  // Split on blank-line boundaries — every recalled paragraph becomes its
+  // own chunk. Filter empties; preserve original phrasing.
+  return cleanMemories.split(/\n{2,}/).map((p) => p.trim()).filter(Boolean);
 }
 
 // ── Breadth helpers ───────────────────────────────────────────────────────────
@@ -329,6 +373,7 @@ export class SkillTrainer {
     graphId: string,
     focusGraphIds?: string[] | null,
     recallBreadth?: number | null,
+    goals?: import('./gsk-format.js').SkillGoals,
   ): Promise<SkillContext> {
     const effectiveBreadth = recallBreadth ?? 50;
     const { maxTokens, maxNodes } = breadthToBudget(effectiveBreadth);
@@ -347,10 +392,14 @@ export class SkillTrainer {
         for (const src of sources) {
           // Derive a human-readable label: filename from a file path, hostname
           // from a URL, or clip ID fragment as a last resort.
+          // skill / clip / ai-conversation refs are stored as "{kind}:{ts}:{label}"
+          // by ingestClip — strip the prefix so only the human name appears.
           const label = src.ref
-            ? (src.ref.includes('/') ? src.ref.split('/').pop() ?? src.ref
-              : src.ref.startsWith('http') ? new URL(src.ref).hostname
-              : src.ref)
+            ? (/^(?:skill|clip|ai-conversation):\d+:/.test(src.ref)
+                ? src.ref.replace(/^(?:skill|clip|ai-conversation):\d+:/, '')
+                : src.ref.includes('/') ? src.ref.split('/').pop() ?? src.ref
+                : src.ref.startsWith('http') ? new URL(src.ref).hostname
+                : src.ref)
             : src.sourceId.slice(0, 12);
           for (const nid of src.nodeIds) {
             nodeToSource.set(nid, label);
@@ -374,6 +423,76 @@ export class SkillTrainer {
       }
     }
     influentialNodes.sort((a, b) => b.score - a.score);
+
+    // ── Goal-aligned recall ────────────────────────────────────────────────────
+    // For each goal dimension (success / scope / completion), run a focused
+    // recall query and tag matching nodes so the UI can surface them separately
+    // from general context. Goal-aligned memories are particularly high-value
+    // because they directly speak to what the skill is trying to achieve —
+    // they should guide personalization more than general context nodes.
+    if (goals) {
+      const goalDimensions: Array<{ query: string; alignment: NonNullable<InfluentialNode['goalAlignment']> }> = [];
+      if (goals.successLooksLike) {
+        goalDimensions.push({
+          query: `${goals.successLooksLike} success outcome achieved`,
+          alignment: 'success',
+        });
+      }
+      if (goals.outOfScope) {
+        goalDimensions.push({
+          query: `${goals.outOfScope} boundary limit out of scope`,
+          alignment: 'scope',
+        });
+      }
+      if (goals.expectedOnCompletion) {
+        goalDimensions.push({
+          query: `${goals.expectedOnCompletion} completion deliverable result`,
+          alignment: 'completion',
+        });
+      }
+
+      const goalNodeBudget = { maxTokens: 800, maxNodes: 4 };
+      const seenNodeIds = new Set(influentialNodes.map((n) => n.nodeId));
+
+      for (const dim of goalDimensions) {
+        try {
+          const goalRecalled = await this.host.recall(dim.query, {
+            budget: goalNodeBudget,
+            ...(focusGraphIds?.length ? { onlyGraphIds: focusGraphIds } : {}),
+          });
+          for (const [gid, nodes] of goalRecalled.byGraph) {
+            for (const node of nodes) {
+              if (seenNodeIds.has(node.nodeId)) {
+                // Already in the list — upgrade its goalAlignment tag
+                const existing = influentialNodes.find((n) => n.nodeId === node.nodeId);
+                if (existing && !existing.goalAlignment) {
+                  existing.goalAlignment = dim.alignment;
+                }
+              } else {
+                seenNodeIds.add(node.nodeId);
+                const sourceLabel = nodeToSource.get(node.nodeId);
+                influentialNodes.push({
+                  nodeId: node.nodeId,
+                  graphId: gid,
+                  score: node.score,
+                  preview: node.text.slice(0, 120),
+                  ...(sourceLabel !== undefined ? { sourceLabel } : {}),
+                  layer: inferNodeLayer(node.score),
+                  goalAlignment: dim.alignment,
+                });
+              }
+            }
+          }
+        } catch { /* goal recall failure is non-fatal — training still proceeds */ }
+      }
+
+      // Re-sort so goal-aligned nodes (high signal) float up alongside anchored nodes.
+      influentialNodes.sort((a, b) => {
+        if (a.goalAlignment && !b.goalAlignment) return -1;
+        if (!a.goalAlignment && b.goalAlignment) return 1;
+        return b.score - a.score;
+      });
+    }
 
     return {
       subgraph: recalled.prompt,
@@ -406,9 +525,16 @@ export class SkillTrainer {
       onChunk,
     } = input;
 
+    // Phase 3b — wrap the whole training run in the overlay-recompute guard
+    // so the GNN edge-prediction loop and the LLM edge-prediction loop don't
+    // write predictions against the half-built skill source mid-train. The
+    // `finally` block guarantees the flag is cleared even if the LLM rewrite
+    // throws.
+    this.host.setSkipOverlayRecompute(true);
+    try {
     // ── Phase 1: Build skill context (deterministic recall) ───────────────────
     const effectiveBreadth = inputBreadth ?? 50;
-    const context = await this.buildSkillContext(skill, graphId, focusGraphIds, effectiveBreadth);
+    const context = await this.buildSkillContext(skill, graphId, focusGraphIds, effectiveBreadth, input.goals);
     const topNodes = context.influentialNodes.slice(0, 10);
 
     // ── Phase 2: Personalize ──────────────────────────────────────────────────
@@ -417,8 +543,17 @@ export class SkillTrainer {
     let diffNotes: string | undefined;
     let mode: TrainingMode;
     let degradedNote: string | undefined;
+    // Paragraph-list of recalled memories (memory-augmented path). Each
+    // paragraph becomes its own `role: 'recalled-memory'` chunk on save.
+    let recalledParagraphs: string[] = [];
 
-    const llmReady = this.llm !== null && await this.pingLlm();
+    // OPT-IN: the LLM rewrite is now off by default. The frontend's compose
+    // form ships useLlmRewrite=false unless the user explicitly checks
+    // "Personalize with local LLM". MCP callers (no UI) get the same default,
+    // so external clients don't accidentally trigger a slow rewrite on a
+    // huge skill text. They can opt in by passing useLlmRewrite=true.
+    const wantsLlmRewrite = input.useLlmRewrite === true;
+    const llmReady = wantsLlmRewrite && this.llm !== null && await this.pingLlm();
 
     if (llmReady && hasMemories) {
       // LLM path — full rewrite with memory attribution. When the caller
@@ -429,7 +564,7 @@ export class SkillTrainer {
         const raw = await this.llmCompleteWithTimeout(
           {
             system: SKILL_TRAINING_SYSTEM_PROMPT,
-            user: buildTrainingUserPrompt(skill, context.subgraph, skillName, modelTarget),
+            user: buildTrainingUserPrompt(skill, context.subgraph, skillName, modelTarget, input.goals),
           },
           // Stream timeout is generous (5min) since the user can watch
           // it work and cancel manually. Non-streaming keeps the
@@ -443,15 +578,23 @@ export class SkillTrainer {
         mode = 'llm';
       } catch (err) {
         // LLM timeout or error — degrade gracefully
-        trained = buildMemoryAugmented(skill, context.subgraph);
+        recalledParagraphs = buildMemoryAugmented(context.subgraph);
+        trained = recalledParagraphs.length > 0
+          ? `${skill}\n\n${recalledParagraphs.join('\n\n')}`
+          : skill;
         mode = 'memory-augmented';
         degradedNote =
           `Local LLM was available but timed out (${(err as Error).message}). ` +
           `Fell back to memory-augmented mode — relevant memories are appended below the skill.`;
       }
     } else if (!llmReady && hasMemories) {
-      // No LLM — append memories as context block
-      trained = buildMemoryAugmented(skill, context.subgraph);
+      // No LLM — append memories as context paragraphs (saved as separate
+      // 'recalled-memory' chunks below; the joined `trained` string is just
+      // the preview the caller renders).
+      recalledParagraphs = buildMemoryAugmented(context.subgraph);
+      trained = recalledParagraphs.length > 0
+        ? `${skill}\n\n${recalledParagraphs.join('\n\n')}`
+        : skill;
       mode = 'memory-augmented';
       degradedNote =
         hasMemories
@@ -476,7 +619,11 @@ export class SkillTrainer {
       : context.nodeCount;
     const tunedBreadth = nudgeBreadth(effectiveBreadth, context.nodeCount, citedNodes);
 
-    // ── Phase 3: Save trained version ─────────────────────────────────────────
+    // ── Phase 3: Save trained version (Phase 3b section-walker) ─────────────
+    // V1 simplification: on retrain we re-ingest the trained text as a fresh
+    // skill source (LCS chunk-diff is deferred to a follow-up). The
+    // section-walker emits one node per logical section so the Trained
+    // Output editor can render and mutate them individually.
     let skillId: string | undefined;
     if (save) {
       const dateStr = new Date().toISOString().slice(0, 10);
@@ -484,10 +631,7 @@ export class SkillTrainer {
         ? `${skillName} (trained ${dateStr})`
         : `Trained skill (${dateStr})`;
 
-      // Store as source kind 'skill' in the Skills engram.
-      // The header encodes training metadata so it's human-readable in the Sources panel.
-      const metadataHeader = [
-        `# ${label}`,
+      const metadataComment = [
         `<!-- Graphnosis skill training metadata`,
         `     trainedAt: ${new Date().toISOString()}`,
         `     mode: ${mode}`,
@@ -495,13 +639,44 @@ export class SkillTrainer {
         `     modelTarget: ${modelTarget ?? 'generic'}`,
         `     recallBreadth: ${tunedBreadth}`,
         `-->`,
-        '',
       ].join('\n');
+
+      // Body paragraphs come from the LLM output (LLM mode) or the user's
+      // original skill text (memory-augmented mode). Recalled memories are
+      // separately tracked in recalledParagraphs.
+      const bodySource = mode === 'llm' ? trained : skill;
+      const bodyParagraphs = bodySource.split(/\n{2,}/).map((p) => p.trim()).filter(Boolean);
+
+      // ── Ingest metadata comment + title + body paragraphs ─────────────────
+      // Recalled-memory paragraphs are handled separately below (Phase 2:
+      // position-aware placement into the SOP sequence).
+      const bodySections = bodyParagraphs.map((p) => ({ role: 'body', text: p }));
+      // All 8 goal categories. Must mirror the .gsk import path. Earlier
+      // versions only emitted the original 3 (Success / Out of scope / On
+      // completion), silently dropping Trigger / Prerequisites / On failure /
+      // Requires / Produces even when the form passed them.
+      const goalSections: Array<{ role: string; text: string }> = [];
+      if (input.goals?.successLooksLike)
+        goalSections.push({ role: 'goal-success', text: `Success: ${input.goals.successLooksLike}` });
+      if (input.goals?.outOfScope)
+        goalSections.push({ role: 'goal-scope', text: `Out of scope: ${input.goals.outOfScope}` });
+      if (input.goals?.expectedOnCompletion)
+        goalSections.push({ role: 'goal-done', text: `On completion: ${input.goals.expectedOnCompletion}` });
+      if (input.goals?.trigger)
+        goalSections.push({ role: 'goal-trigger', text: `Trigger: ${input.goals.trigger}` });
+      if (input.goals?.prerequisites)
+        goalSections.push({ role: 'goal-prereq', text: `Prerequisites: ${input.goals.prerequisites}` });
+      if (input.goals?.onFailure)
+        goalSections.push({ role: 'goal-failure', text: `On failure: ${input.goals.onFailure}` });
+      if (input.goals?.requires)
+        goalSections.push({ role: 'goal-requires', text: `Requires: ${input.goals.requires}` });
+      if (input.goals?.produces)
+        goalSections.push({ role: 'goal-produces', text: `Produces: ${input.goals.produces}` });
 
       const rec = await ingestClip(
         this.host,
         graphId,
-        metadataHeader + trained,
+        metadataComment,
         label,
         {
           addedBy: addedBy ?? 'graphnosis-skill-trainer',
@@ -509,6 +684,74 @@ export class SkillTrainer {
           triggeredBy: 'mcp:train_skill',
         },
       );
+
+      // Always ingest the title node first so the editor renders it correctly.
+      {
+        const len = this.host.getSourceRecord(graphId, rec.sourceId)?.nodeIds.length ?? 1;
+        await this.host.insertNodeAt(graphId, rec.sourceId, len, label, {
+          skipRelink: true, role: 'title', triggeredBy: 'mcp:train_skill',
+        });
+      }
+
+      // Ingest body paragraphs, tracking their nodeIds for placement.
+      // Positions in the source array: [metadata(0), title(1), body[0](2), ...]
+      for (const s of bodySections) {
+        const len = this.host.getSourceRecord(graphId, rec.sourceId)?.nodeIds.length ?? 1;
+        await this.host.insertNodeAt(graphId, rec.sourceId, len, s.text, {
+          skipRelink: true, role: s.role, triggeredBy: 'mcp:train_skill',
+        });
+      }
+
+      // ── Phase 2: position-aware placement of recalled-memory paragraphs ───
+      if (mode === 'memory-augmented' && recalledParagraphs.length > 0) {
+        const candidates: PlacementCandidate[] = recalledParagraphs.map((text, i) => ({
+          text,
+          layer: topNodes[i]?.layer ?? 'semantic',
+        }));
+
+        const placements = await placeRecalledNodes(candidates, bodyParagraphs, this.llm);
+
+        // Insert inline placements in REVERSE position order to preserve indices.
+        // Source prefix before body: metadata(1) + title(1) = 2 fixed nodes.
+        const PREFIX = 2;
+        const inline = placements
+          .filter((p) => p.position !== 'context')
+          .sort((a, b) => (b.position as number) - (a.position as number));
+        for (const p of inline) {
+          const sourcePos = (p.position as number) + PREFIX;
+          await this.host.insertNodeAt(graphId, rec.sourceId, sourcePos, p.text, {
+            skipRelink: true, role: 'recalled-memory', triggeredBy: 'mcp:train_skill',
+          });
+        }
+
+        // Context-section nodes go after all body/inline recalled nodes.
+        for (const p of placements.filter((q) => q.position === 'context')) {
+          const len = this.host.getSourceRecord(graphId, rec.sourceId)?.nodeIds.length ?? 1;
+          await this.host.insertNodeAt(graphId, rec.sourceId, len, p.text, {
+            skipRelink: true, role: 'recalled-memory', triggeredBy: 'mcp:train_skill',
+          });
+        }
+      }
+
+      // Goals always land at the very end.
+      for (const s of goalSections) {
+        const len = this.host.getSourceRecord(graphId, rec.sourceId)?.nodeIds.length ?? 1;
+        await this.host.insertNodeAt(graphId, rec.sourceId, len, s.text, {
+          skipRelink: true, role: s.role, triggeredBy: 'mcp:train_skill',
+        });
+      }
+
+      this.host.triggerRelink(graphId);
+      await linkSkillSequence(this.host, graphId, rec.sourceId);
+      await linkSkillGoals(this.host, graphId, rec.sourceId);
+      await linkSkillLoopsAndBranches(this.host, graphId, rec.sourceId);
+      await linkSkillContextEdges(this.host, graphId, rec.sourceId);
+      await linkSkillCalls(this.host, graphId, rec.sourceId, graphId);
+      // Phase 5 — Decision 7: edges FROM other skills TO this skill's title
+      // node may have become stale (title nodeId likely changed on retrain).
+      // Re-run linkSkillCalls on every OTHER skill so any `@skill: <this>`
+      // reference gets re-pointed to the new title node.
+      await refreshIncomingCallsToSkill(this.host, graphId, rec.sourceId);
       skillId = rec.sourceId;
     }
 
@@ -521,6 +764,9 @@ export class SkillTrainer {
       ...(skillId !== undefined ? { skillId } : {}),
       ...(degradedNote !== undefined ? { degradedNote } : {}),
     };
+    } finally {
+      this.host.setSkipOverlayRecompute(false);
+    }
   }
 
   // ── computeSkillVitality ───────────────────────────────────────────────────
@@ -603,15 +849,15 @@ export class SkillTrainer {
    * is exported. The "direction of personalization" travels; the memories that
    * caused it stay local.
    *
-   * For the 'gts' format, returns a Buffer (encrypted JSON). All other formats
+   * For the 'gsk' format, returns a Buffer (encrypted JSON). All other formats
    * return a string.
    */
   exportSkill(skillText: string, format: ExportFormat): string | Buffer {
-    if (format === 'gts') {
-      // Delegate to gts-format for pack building. The caller (MCP handler or IPC
-      // handler) is responsible for providing the full GtsPayload; this path
+    if (format === 'gsk') {
+      // Delegate to gsk-format for pack building. The caller (MCP handler or IPC
+      // handler) is responsible for providing the full GskPayload; this path
       // returns a minimal single-skill pack from just the skill text.
-      const { buildGtsPackage } = require('./gts-format.js') as typeof import('./gts-format.js');
+      const { buildGskPackage } = require('./gsk-format.js') as typeof import('./gsk-format.js');
       const payload = {
         formatVersion: '1' as const,
         kind: 'community' as const,
@@ -631,7 +877,7 @@ export class SkillTrainer {
         graphnosisMd: '',
         signature: '',
       };
-      return buildGtsPackage(payload);
+      return buildGskPackage(payload);
     }
 
     // Strip the "Personal Context (from your Graphnosis memories)" block and
@@ -645,6 +891,47 @@ export class SkillTrainer {
 
     const withHeader = header ? `${header}\n\n${cleaned}` : cleaned;
     return wrapper ? wrapper(cleaned) : withHeader;
+  }
+
+  /**
+   * Phase 3c — source-driven export.
+   * Reads the skill source's chunks (in nodeIds order, with full untruncated
+   * content) and runs them through `formatTrainedOutputAsMarkdown` for the
+   * target format. This is the export path used by the new editable
+   * Trained Output editor where chunks are plain text in storage but
+   * markdown at export.
+   */
+  exportSkillFromSource(graphId: string, sourceId: string, format: ExportFormat): string | Buffer {
+    const rec = this.host.getSourceRecord(graphId, sourceId);
+    if (!rec) {
+      // Soft fallback — empty string lets the UI render a "nothing to export"
+      // message instead of crashing.
+      return '';
+    }
+    const now = Date.now();
+    const wantedIds = new Set(rec.nodeIds);
+    const liveIds = new Set<string>();
+    for (const n of this.host.listNodes(graphId)) {
+      if (!wantedIds.has(n.id)) continue;
+      if (n.confidence <= 0.2) continue;
+      if (n.validUntil !== undefined && n.validUntil <= now) continue;
+      liveIds.add(n.id);
+      if (liveIds.size === wantedIds.size) break;
+    }
+    const chunks: string[] = rec.nodeIds
+      .filter((id) => liveIds.has(id))
+      .map((id) => this.host.getFullNodeContent(graphId, id) ?? '')
+      .filter(Boolean);
+
+    if (format === 'gsk') {
+      // Reassemble as raw text and reuse the gsk builder.
+      return this.exportSkill(chunks.join('\n\n'), 'gsk');
+    }
+    const body = formatTrainedOutputAsMarkdown(chunks, format);
+    const header = FORMAT_HEADERS[format];
+    const wrapper = FORMAT_WRAPPERS[format];
+    const withHeader = header ? `${header}\n\n${body}` : body;
+    return wrapper ? wrapper(body) : withHeader;
   }
 
 
@@ -673,6 +960,7 @@ export class SkillTrainer {
           .map((id) => nodes.find((n) => n.id === id)?.contentPreview ?? '')
           .join('\n');
         const parsed = parseSkillMetadata(nodeText);
+        const provenance = parseSkillProvenance(nodeText);
         entries.push({
           sourceId: src.sourceId,
           graphId: gid,
@@ -683,6 +971,7 @@ export class SkillTrainer {
           ...(parsed.trainedAt !== undefined ? { trainedAt: parsed.trainedAt } : {}),
           ...(parsed.mode !== undefined ? { mode: parsed.mode } : {}),
           ...(parsed.recallBreadth !== undefined ? { recallBreadth: parsed.recallBreadth } : {}),
+          ...(provenance !== undefined ? { provenance } : {}),
         });
       }
     }
@@ -695,16 +984,35 @@ export class SkillTrainer {
     if (!src) return null;
     const meta = this.host.getGraphMetadata(graphId);
     const now = Date.now();
-    const nodeMap = new Map(
-      this.host.listNodes(graphId)
-        .filter((n) => n.confidence > 0.2 && (!n.validUntil || n.validUntil > now))
-        .map((n) => [n.id, n]),
-    );
+    // Build a sparse content map keyed only by THIS skill's node IDs.
+    // Previously we materialized a Map of every node in the engram via
+    // listNodes(graphId).filter().map(...) — O(N_total) allocations per
+    // click, dominated by Map construction on Skills engrams with many
+    // sibling skills. Iterating once with a wanted-id Set + early break
+    // on full match keeps us at O(N_seen_until_complete) and avoids the
+    // full-engram Map allocation.
+    // Walk the engram once to apply confidence + validUntil filters; then
+    // pull the FULL untruncated content per matching id. listNodes returns
+    // contentPreview (capped at 500 chars by inspectNodes), which silently
+    // ate the trailing Goals + Recipes blocks on long imported skills.
+    // getFullNodeContent reads straight from the SDK store with no cap.
+    const wantedIds = new Set(src.nodeIds);
+    const liveIds = new Set<string>();
+    for (const n of this.host.listNodes(graphId)) {
+      if (!wantedIds.has(n.id)) continue;
+      if (n.confidence <= 0.2) continue;
+      if (n.validUntil !== undefined && n.validUntil <= now) continue;
+      liveIds.add(n.id);
+      if (liveIds.size === wantedIds.size) break;
+    }
     const chunks = src.nodeIds
-      .map((id) => nodeMap.get(id)?.contentPreview ?? '')
+      .filter((id) => liveIds.has(id))
+      .map((id) => this.host.getFullNodeContent(graphId, id) ?? '')
       .filter(Boolean);
     const text = chunks.join('\n\n');
     const parsed = parseSkillMetadata(text);
+    const goals = parseSkillGoals(text);
+    const provenance = parseSkillProvenance(text);
     return {
       sourceId: src.sourceId,
       graphId,
@@ -716,6 +1024,8 @@ export class SkillTrainer {
       ...(parsed.trainedAt !== undefined ? { trainedAt: parsed.trainedAt } : {}),
       ...(parsed.mode !== undefined ? { mode: parsed.mode } : {}),
       ...(parsed.recallBreadth !== undefined ? { recallBreadth: parsed.recallBreadth } : {}),
+      ...(goals !== undefined ? { goals } : {}),
+      ...(provenance !== undefined ? { provenance } : {}),
     };
   }
 
@@ -823,6 +1133,1238 @@ export class SkillTrainer {
 }
 
 
+// ── Skill sequence edges ──────────────────────────────────────────────────────
+
+/**
+ * Evidence tag that marks all directed edges created by this module to encode
+ * the ordered "step N → step N+1" chain of a skill's paragraphs.
+ *
+ * Keeping it unique lets `linkSkillSequence` find and replace stale edges after
+ * any structural mutation (insert, remove, reorder) without touching
+ * SDK-generated or user-created edges.
+ */
+export const SKILL_SEQ_EVIDENCE = 'skill:seq';
+
+/**
+ * Synchronise `precedes` directed edges between a skill source's live content
+ * nodes so the graph always reflects the paragraph order the user sees in the
+ * Trained Output editor.
+ *
+ * Steps:
+ *  1. Read live nodeIds for `sourceId` in storage order.
+ *  2. Strip metadata comment nodes (they're audit artefacts, not steps).
+ *  3. Delete all existing `skill:seq` edges that touch any node in the source.
+ *  4. Re-add `precedes` edges for each consecutive live pair.
+ *
+ * Idempotent — safe to call after every mutation.
+ */
+export async function linkSkillSequence(
+  host: GraphnosisHost,
+  graphId: string,
+  sourceId: string,
+): Promise<void> {
+  const src = host.getSourceRecord(graphId, sourceId);
+  if (!src) return;
+
+  const now = Date.now();
+  const allNodes = host.listNodes(graphId);
+  const nodeMap = new Map(allNodes.map((n) => [n.id, n]));
+
+  // Live content nodes in source order — exclude soft-deleted and metadata chunks.
+  const liveIds = src.nodeIds.filter((id) => {
+    const n = nodeMap.get(id);
+    if (!n || n.confidence <= 0.2) return false;
+    if (n.validUntil !== undefined && n.validUntil <= now) return false;
+    // Skip metadata comment nodes (provenance / training header).
+    return !n.contentPreview.trimStart().startsWith('<!--');
+  });
+
+  // Remove stale skill-sequence edges touching any node in this source.
+  const nodeSet = new Set(src.nodeIds);
+  const { directed } = host.listEdges(graphId);
+  const staleIds = directed
+    .filter((e) => e.evidence === SKILL_SEQ_EVIDENCE && (nodeSet.has(e.from) || nodeSet.has(e.to)))
+    .map((e) => e.id);
+  if (staleIds.length > 0) {
+    await host.unlinkEdgesBatch(graphId, staleIds);
+  }
+
+  if (liveIds.length < 2) return;
+
+  const edges = [];
+  for (let i = 0; i < liveIds.length - 1; i++) {
+    edges.push({
+      from: liveIds[i]!,
+      to: liveIds[i + 1]!,
+      type: 'precedes' as const,
+      weight: 0.9,
+      evidence: SKILL_SEQ_EVIDENCE,
+    });
+  }
+  await host.linkNodesDirectedBatch(graphId, edges);
+}
+
+// ── SOP edge constants ────────────────────────────────────────────────────────
+
+export const SKILL_GOAL_EVIDENCE   = 'skill:goal';
+export const SKILL_LOOP_EVIDENCE   = 'skill:loop';
+export const SKILL_BRANCH_EVIDENCE = 'skill:branch';
+export const SKILL_CTX_EVIDENCE    = 'skill:ctx';
+export const SKILL_CALLS_EVIDENCE  = 'skill:calls';
+
+// ── Loop / branch pattern sets (tiered by language) ───────────────────────────
+
+// Tier 1: explicit syntax (language-neutral, always matched first)
+const LOOP_EXPLICIT: RegExp[] = [
+  /@loop:\s*(\d+)/i,
+  /\[\[loop:\s*(\d+)\]\]/i,
+];
+// Tier 2: English
+const LOOP_EN: RegExp[] = [
+  /\bgo\s+back\s+to\s+step\s+(\d+|\w+)\b/i,
+  /\breturn\s+to\s+step\s+(\d+|\w+)\b/i,
+  /\brepeat\s+(?:from\s+)?step\s+(\d+|\w+)\b/i,
+  /\bretry\s+(?:from\s+)?step\s+(\d+|\w+)\b/i,
+  /\bloop\s+back\s+to\s+step\s+(\d+|\w+)\b/i,
+  /\brestart\s+(?:from\s+)?(?:step\s+)?(\d+|\w+)\b/i,
+];
+// Tier 3: Romanian
+const LOOP_RO: RegExp[] = [
+  /\bîntoarce-te\s+la\s+pasul\s+(\d+|\w+)\b/i,
+  /\brevino\s+la\s+pasul\s+(\d+|\w+)\b/i,
+  /\brepet[ăa]\s+de\s+la\s+pasul\s+(\d+|\w+)\b/i,
+  /\breia\s+de\s+la\s+pasul\s+(\d+|\w+)\b/i,
+];
+// Tier 4: Spanish / French / German / Italian / Portuguese
+const LOOP_EU: RegExp[] = [
+  /\bvuelve\s+al\s+paso\s+(\d+|\w+)\b/i,
+  /\bregresa\s+al\s+paso\s+(\d+|\w+)\b/i,
+  /\brevenir\s+[aà]\s+l.étape\s+(\d+|\w+)\b/i,
+  /\bzurück\s+zu\s+Schritt\s+(\d+|\w+)\b/i,
+  /\btorna\s+al\s+passo\s+(\d+|\w+)\b/i,
+  /\bvolte\s+ao\s+passo\s+(\d+|\w+)\b/i,
+];
+const LOOP_PATTERNS: RegExp[] = [...LOOP_EXPLICIT, ...LOOP_EN, ...LOOP_RO, ...LOOP_EU];
+
+const BRANCH_EXPLICIT: RegExp[] = [
+  /@branch:\s*(\d+)/i,
+  /\[\[branch:\s*(\d+)\]\]/i,
+];
+const BRANCH_EN: RegExp[] = [
+  /\bif\s+.+,\s+(?:skip\s+to|proceed\s+to|go\s+to)\s+step\s+(\d+|\w+)\b/i,
+  /\bdepending\s+on\s+.+,\s+(?:proceed|continue)\s+(?:to\s+step\s+)?(\d+|\w+)\b/i,
+  /\botherwise,?\s+(?:skip|go|proceed)\s+to\s+step\s+(\d+|\w+)\b/i,
+];
+const BRANCH_RO: RegExp[] = [
+  /\bdacă\s+.+,\s+(?:mergi|du-te)\s+la\s+pasul\s+(\d+|\w+)\b/i,
+  /\bîn\s+caz\s+contrar,?\s+(?:mergi|treci)\s+la\s+pasul\s+(\d+|\w+)\b/i,
+];
+const BRANCH_EU: RegExp[] = [
+  /\bsi\s+.+,\s+(?:ve|salta)\s+al\s+paso\s+(\d+|\w+)\b/i,
+  /\bsi\s+.+,\s+passer\s+[aà]\s+l.étape\s+(\d+|\w+)\b/i,
+  /\bwenn\s+.+,\s+(?:gehe|weiter)\s+zu\s+Schritt\s+(\d+|\w+)\b/i,
+];
+const BRANCH_PATTERNS: RegExp[] = [...BRANCH_EXPLICIT, ...BRANCH_EN, ...BRANCH_RO, ...BRANCH_EU];
+
+const SKILL_CALL_PATTERNS: RegExp[] = [
+  /@skill:\s*(.+)/i,
+  /\[\[skill:\s*([^\]]+)\]\]/i,
+  /\b(?:run|use|apply|follow|execute|invoke)\s+the\s+"?([^"]+?)"?\s+skill\b/i,
+  /\b(?:run|use|apply|follow|execute|invoke)\s+"?([^"]+?)"?\s+skill\b/i,
+  /\b(?:aplică|folosește|urmează)\s+skill-ul\s+"?([^"]+?)"?\b/i,
+  /\b(?:aplica|usa|seguir)\s+(?:el\s+)?skill\s+"?([^"]+?)"?\b/i,
+];
+
+// ── SOP shared utilities ──────────────────────────────────────────────────────
+
+function sopTokenize(text: string): Set<string> {
+  return new Set(text.toLowerCase().split(/\W+/).filter((t) => t.length > 1));
+}
+
+function jaccardSop(a: Set<string>, b: Set<string>): number {
+  if (a.size === 0 && b.size === 0) return 0;
+  let inter = 0;
+  for (const t of a) if (b.has(t)) inter++;
+  return inter / (a.size + b.size - inter);
+}
+
+function splitSentences(text: string): string[] {
+  return text
+    .split(/(?<=[.!?])\s+(?=[A-ZÁÉÍÓÚÀÂÊÔÛÄÖÜÃÕ])/)
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
+
+function isNonLatinScript(text: string): boolean {
+  return /[؀-ۿऀ-ॿ฀-๿぀-鿿가-힯]/.test(text);
+}
+
+/** Resolve a step reference captured from a pattern (e.g. "3", "pasul 3", "two") to a 0-based index. */
+function resolveStepRef(
+  ref: string,
+  bodyNodes: ReadonlyArray<{ id: string; content: string }>,
+): number | null {
+  // Prefer numeric: find the first integer in the captured group
+  const numMatch = ref.match(/\d+/);
+  if (numMatch) {
+    const n = parseInt(numMatch[0], 10);
+    if (n >= 1 && n <= bodyNodes.length) return n - 1;
+  }
+  // Fallback: token overlap with node first-line
+  const refToks = sopTokenize(ref);
+  let best = -1, bestScore = 0;
+  for (let i = 0; i < bodyNodes.length; i++) {
+    const nodeToks = sopTokenize(bodyNodes[i]!.content.slice(0, 100));
+    const score = jaccardSop(refToks, nodeToks);
+    if (score > bestScore && score >= 0.2) { bestScore = score; best = i; }
+  }
+  return best >= 0 ? best : null;
+}
+
+/** Load live, non-metadata body nodes for a skill source (same filter as linkSkillSequence). */
+function loadSkillBodyNodes(
+  host: GraphnosisHost,
+  graphId: string,
+  sourceId: string,
+): Array<{ id: string; content: string }> {
+  const src = host.getSourceRecord(graphId, sourceId);
+  if (!src) return [];
+  const now = Date.now();
+  const allNodes = host.listNodes(graphId);
+  const nodeMap = new Map(allNodes.map((n) => [n.id, n]));
+  return src.nodeIds
+    .filter((id) => {
+      const n = nodeMap.get(id);
+      if (!n || n.confidence <= 0.2) return false;
+      if (n.validUntil !== undefined && n.validUntil <= now) return false;
+      return !n.contentPreview.trimStart().startsWith('<!--');
+    })
+    .map((id) => ({
+      id,
+      content: host.getFullNodeContent(graphId, id) ?? nodeMap.get(id)!.contentPreview,
+    }));
+}
+
+// ── linkSkillLoopsAndBranches ─────────────────────────────────────────────────
+
+/**
+ * Scan each live body node for loop and branch references; write directed
+ * `precedes` (evidence `skill:loop`) and `depends-on` (evidence `skill:branch`)
+ * edges. Idempotent — stale edges are removed before fresh ones are added.
+ */
+export async function linkSkillLoopsAndBranches(
+  host: GraphnosisHost,
+  graphId: string,
+  sourceId: string,
+): Promise<{ loopEdges: number; branchEdges: number }> {
+  const bodyNodes = loadSkillBodyNodes(host, graphId, sourceId);
+  if (bodyNodes.length < 2) return { loopEdges: 0, branchEdges: 0 };
+
+  const nodeSet = new Set(bodyNodes.map((n) => n.id));
+  const { directed } = host.listEdges(graphId);
+  const stale = directed
+    .filter(
+      (e) =>
+        (e.evidence === SKILL_LOOP_EVIDENCE || e.evidence === SKILL_BRANCH_EVIDENCE) &&
+        (nodeSet.has(e.from) || nodeSet.has(e.to)),
+    )
+    .map((e) => e.id);
+  if (stale.length > 0) await host.unlinkEdgesBatch(graphId, stale);
+
+  const loopBatch: Array<{ from: string; to: string; type: 'precedes'; weight: number; evidence: string }> = [];
+  const branchBatch: Array<{ from: string; to: string; type: 'depends-on'; weight: number; evidence: string }> = [];
+
+  for (let i = 0; i < bodyNodes.length; i++) {
+    const node = bodyNodes[i]!;
+
+    for (const pat of LOOP_PATTERNS) {
+      const m = node.content.match(pat);
+      if (!m) continue;
+      const j = resolveStepRef(m[1] ?? '', bodyNodes);
+      if (j === null || j === i) continue;
+      if (j < i) {
+        // True loop: step i references an earlier step
+        loopBatch.push({ from: node.id, to: bodyNodes[j]!.id, type: 'precedes', weight: 0.7, evidence: SKILL_LOOP_EVIDENCE });
+      } else {
+        // Forward skip — treat as branch
+        branchBatch.push({ from: node.id, to: bodyNodes[j]!.id, type: 'depends-on', weight: 0.75, evidence: SKILL_BRANCH_EVIDENCE });
+      }
+      break; // one loop pattern per node is enough
+    }
+
+    for (const pat of BRANCH_PATTERNS) {
+      const m = node.content.match(pat);
+      if (!m) continue;
+      const j = resolveStepRef(m[1] ?? '', bodyNodes);
+      if (j === null || j === i) continue;
+      branchBatch.push({ from: node.id, to: bodyNodes[j]!.id, type: 'depends-on', weight: 0.75, evidence: SKILL_BRANCH_EVIDENCE });
+      break;
+    }
+  }
+
+  if (loopBatch.length > 0)   await host.linkNodesDirectedBatch(graphId, loopBatch);
+  if (branchBatch.length > 0) await host.linkNodesDirectedBatch(graphId, branchBatch);
+  return { loopEdges: loopBatch.length, branchEdges: branchBatch.length };
+}
+
+// ── linkSkillContextEdges ─────────────────────────────────────────────────────
+
+/**
+ * Write `supports` (evidence `skill:ctx`) edges from inline recalled-memory
+ * nodes to the body step they follow in source order.
+ */
+export async function linkSkillContextEdges(
+  host: GraphnosisHost,
+  graphId: string,
+  sourceId: string,
+): Promise<void> {
+  const src = host.getSourceRecord(graphId, sourceId);
+  if (!src) return;
+  const now = Date.now();
+  const allNodes = host.listNodes(graphId);
+  const nodeMap = new Map(allNodes.map((n) => [n.id, n]));
+
+  const liveIds = src.nodeIds.filter((id) => {
+    const n = nodeMap.get(id);
+    return n && n.confidence > 0.2 && !(n.validUntil !== undefined && n.validUntil <= now);
+  });
+
+  const { directed } = host.listEdges(graphId);
+  const nodeSet = new Set(liveIds);
+  const stale = directed
+    .filter((e) => e.evidence === SKILL_CTX_EVIDENCE && (nodeSet.has(e.from) || nodeSet.has(e.to)))
+    .map((e) => e.id);
+  if (stale.length > 0) await host.unlinkEdgesBatch(graphId, stale);
+
+  // Recalled-memory heuristic: content ends with "_(from ...)_" attribution marker
+  const RECALLED_MARKER = /_\(from [^)]+\)_\s*$/;
+  const batch: Array<{ from: string; to: string; type: 'supports'; weight: number; evidence: string }> = [];
+
+  let lastBodyId: string | null = null;
+  for (const id of liveIds) {
+    const n = nodeMap.get(id);
+    if (!n) continue;
+    const preview = n.contentPreview;
+    if (preview.trimStart().startsWith('<!--')) continue;
+    if (RECALLED_MARKER.test(preview)) {
+      if (lastBodyId) {
+        batch.push({ from: id, to: lastBodyId, type: 'supports', weight: 0.6, evidence: SKILL_CTX_EVIDENCE });
+      }
+    } else {
+      lastBodyId = id;
+    }
+  }
+  if (batch.length > 0) await host.linkNodesDirectedBatch(graphId, batch);
+}
+
+// ── linkSkillGoals ────────────────────────────────────────────────────────────
+
+/** Regex that identifies goal/constraint nodes by their content prefix.
+ *
+ * Six supported categories:
+ *   Success:       — what good outcome looks like
+ *   Out of scope:  — what the skill must refuse
+ *   On completion: — expected deliverable
+ *   Trigger:       — when an AI should invoke this skill autonomously
+ *   Prerequisites: — what must be true before step 1 runs
+ *   On failure:    — fallback / recovery behavior
+ */
+const GOAL_NODE_RE = /^(?:Success:|Out of scope:|On completion:|Trigger:|Prerequisites:|On failure:|Requires:|Produces:)/i;
+
+/**
+ * Write `contains` (evidence `skill:goal`) directed edges from the skill's
+ * TITLE node to each goal/constraint node (Success, Out of scope, On completion).
+ *
+ * This makes goals reachable from the skill's hub node without polluting the
+ * sequential `precedes` chain. An AI that recalls any goal node can hop to
+ * the title and from there reach all body steps — goal nodes serve as
+ * entry-points to the full skill structure.
+ *
+ * Idempotent — stale edges are removed first.
+ */
+export async function linkSkillGoals(
+  host: GraphnosisHost,
+  graphId: string,
+  sourceId: string,
+): Promise<{ goalEdges: number }> {
+  const src = host.getSourceRecord(graphId, sourceId);
+  if (!src) return { goalEdges: 0 };
+
+  const now = Date.now();
+  const allNodes = host.listNodes(graphId);
+  const nodeMap = new Map(allNodes.map((n) => [n.id, n]));
+
+  const liveIds = src.nodeIds.filter((id) => {
+    const n = nodeMap.get(id);
+    return n && n.confidence > 0.2 && !(n.validUntil !== undefined && n.validUntil <= now);
+  });
+
+  // Title = first live, non-metadata node in source order
+  const titleId = liveIds.find((id) => {
+    const n = nodeMap.get(id)!;
+    return !n.contentPreview.trimStart().startsWith('<!--');
+  });
+  if (!titleId) return { goalEdges: 0 };
+
+  const goalIds = liveIds.filter((id) => {
+    const n = nodeMap.get(id)!;
+    return GOAL_NODE_RE.test(n.contentPreview.trim());
+  });
+
+  // Remove stale skill:goal edges touching this source's nodes
+  const nodeSet = new Set(liveIds);
+  const { directed } = host.listEdges(graphId);
+  const stale = directed
+    .filter((e) => e.evidence === SKILL_GOAL_EVIDENCE && (nodeSet.has(e.from) || nodeSet.has(e.to)))
+    .map((e) => e.id);
+  if (stale.length > 0) await host.unlinkEdgesBatch(graphId, stale);
+
+  if (goalIds.length === 0) return { goalEdges: 0 };
+
+  // Title → goal edges (skill contains these constraints)
+  const edges = goalIds.map((goalId) => ({
+    from: titleId,
+    to: goalId,
+    type: 'contains' as const,
+    weight: 0.85,
+    evidence: SKILL_GOAL_EVIDENCE,
+  }));
+  await host.linkNodesDirectedBatch(graphId, edges);
+  return { goalEdges: edges.length };
+}
+
+// ── Structured call syntax parser ──────────────────────────────────────────
+
+export interface ParsedSkillCall {
+  /** Target skill name (lowercased, trimmed). */
+  target: string;
+  /** Variable names passed as arguments (without the leading `$`). Empty array if none. */
+  args: string[];
+  /** Capture variable name (without the leading `$`). undefined if `-> $X` is absent. */
+  captureAs?: string;
+}
+
+/**
+ * Parse a node's text for the first structured `@skill:` call.
+ *
+ * Supported forms (richest match wins):
+ *   `@skill: name`
+ *   `@skill: name -> $capture`
+ *   `@skill: name(arg=value, arg=$priorVar)`
+ *   `@skill: name(arg=value, arg=$priorVar) -> $capture`
+ *
+ * Also matches the natural-language forms `[[skill: name]]` and
+ * `use/run/follow/etc. the X skill` — though those don't carry args/capture.
+ * Returns null when no call is found.
+ */
+export function parseSkillCall(text: string): ParsedSkillCall | null {
+  // Prefer the full structured form. Anchored at start of line/word boundary.
+  // Capture groups: 1=target, 2=arg-list (optional), 3=capture (optional)
+  const structured = text.match(
+    /@skill:\s*([A-Za-z0-9 _\-]+?)\s*(?:\(([^)]*)\))?\s*(?:->\s*\$([A-Za-z_][\w]*))?(?:\s*$|[\n.;])/i,
+  );
+  if (structured) {
+    const target = (structured[1] ?? '').trim().toLowerCase();
+    const rawArgs = structured[2];
+    const captureAs = structured[3];
+    const args: string[] = [];
+    if (rawArgs) {
+      for (const part of rawArgs.split(',')) {
+        // Accept `arg=value`, `arg=$var`, or just `$var` / `var`
+        const trimmed = part.trim();
+        if (!trimmed) continue;
+        const eq = trimmed.indexOf('=');
+        const valueSide = eq >= 0 ? trimmed.slice(eq + 1).trim() : trimmed;
+        const m = valueSide.match(/^\$?([A-Za-z_][\w]*)$/);
+        if (m && m[1]) args.push(m[1]);
+        else if (eq >= 0) {
+          // For literal values (arg=foo), record the LHS as the argument name
+          const lhs = trimmed.slice(0, eq).trim().match(/^([A-Za-z_][\w]*)$/);
+          if (lhs && lhs[1]) args.push(lhs[1]);
+        }
+      }
+    }
+    return {
+      target,
+      args,
+      ...(captureAs ? { captureAs } : {}),
+    };
+  }
+
+  // Fallback patterns from the existing detector (no args / no capture)
+  for (const pat of SKILL_CALL_PATTERNS) {
+    const m = text.match(pat);
+    if (!m) continue;
+    const target = (m[1] ?? '').trim().toLowerCase();
+    if (!target) continue;
+    return { target, args: [] };
+  }
+  return null;
+}
+
+/** Encode parsed call metadata into the edge `evidence` string.
+ *
+ *   'skill:calls'                                          — bare reference
+ *   'skill:calls;capture=foo'                              — captures return
+ *   'skill:calls;args=a,b;capture=foo'                     — args + capture
+ *   'skill:calls;onFailure=true'                           — call appears in `On failure:` block
+ *   'skill:calls;args=a;capture=foo;onFailure=true'        — combinations
+ */
+export function encodeCallEvidence(parsed: ParsedSkillCall, opts: { onFailure?: boolean } = {}): string {
+  const parts: string[] = [SKILL_CALLS_EVIDENCE];
+  if (parsed.args.length > 0) parts.push(`args=${parsed.args.join(',')}`);
+  if (parsed.captureAs) parts.push(`capture=${parsed.captureAs}`);
+  if (opts.onFailure) parts.push('onFailure=true');
+  return parts.join(';');
+}
+
+/** Decode an `evidence` string written by encodeCallEvidence. */
+export function parseCallEvidence(evidence: string | undefined): { args: string[]; captureAs?: string; onFailure: boolean } {
+  const out: { args: string[]; captureAs?: string; onFailure: boolean } = { args: [], onFailure: false };
+  if (!evidence) return out;
+  const parts = evidence.split(';');
+  for (let i = 1; i < parts.length; i++) { // skip 'skill:calls' base tag
+    const part = parts[i]!;
+    const eq = part.indexOf('=');
+    if (eq < 0) continue;
+    const key = part.slice(0, eq).trim();
+    const value = part.slice(eq + 1).trim();
+    if (key === 'args') out.args = value ? value.split(',').map((s) => s.trim()).filter(Boolean) : [];
+    else if (key === 'capture') out.captureAs = value;
+    else if (key === 'onFailure') out.onFailure = value === 'true';
+  }
+  return out;
+}
+
+// ── linkSkillCalls ────────────────────────────────────────────────────────────
+
+/**
+ * Detect sub-skill invocations in body node text AND in `On failure:` goal nodes.
+ * Writes `contains` directed edges from the referencing node to the called
+ * skill's title node. Args/capture/onFailure metadata is encoded in the edge's
+ * `evidence` string (see encodeCallEvidence).
+ */
+export async function linkSkillCalls(
+  host: GraphnosisHost,
+  graphId: string,
+  sourceId: string,
+  skillsGraphId: string,
+): Promise<{ callEdges: number }> {
+  const src = host.getSourceRecord(graphId, sourceId);
+  if (!src) return { callEdges: 0 };
+
+  const now = Date.now();
+  const allNodes = host.listNodes(graphId);
+  const nodeMap = new Map(allNodes.map((n) => [n.id, n]));
+
+  // Live, non-metadata nodes in source order. We scan ALL of them (body steps
+  // AND goal nodes) because `On failure:` goal nodes can also carry @skill: refs.
+  const liveNodes = src.nodeIds
+    .filter((id) => {
+      const n = nodeMap.get(id);
+      return n && n.confidence > 0.2 && !(n.validUntil !== undefined && n.validUntil <= now)
+        && !n.contentPreview.trimStart().startsWith('<!--');
+    })
+    .map((id) => ({
+      id,
+      content: host.getFullNodeContent(graphId, id) ?? nodeMap.get(id)!.contentPreview,
+    }));
+
+  // Build name → {sourceId, titleNodeId} map from all OTHER skills in the engram
+  const skillSources = host.listSources(skillsGraphId).filter(
+    (s) => s.kind === 'skill' && s.sourceId !== sourceId,
+  );
+  const targetNodeMap = new Map(host.listNodes(skillsGraphId).map((n) => [n.id, n]));
+  type SkillRef = { sourceId: string; titleNodeId: string; name: string };
+  const skillIndex: SkillRef[] = [];
+  for (const s of skillSources) {
+    const titleId = s.nodeIds.find((id) => {
+      const n = targetNodeMap.get(id);
+      return n && n.confidence > 0.2 && !(n.validUntil !== undefined && n.validUntil <= now)
+        && !n.contentPreview.trimStart().startsWith('<!--');
+    });
+    if (!titleId) continue;
+    const name = (host.getFullNodeContent(skillsGraphId, titleId) ?? targetNodeMap.get(titleId)!.contentPreview)
+      .trim().toLowerCase();
+    skillIndex.push({ sourceId: s.sourceId, titleNodeId: titleId, name });
+    const refLabel = s.ref.replace(/^skill:\d+:/, '').trim().toLowerCase();
+    if (refLabel && refLabel !== name) {
+      skillIndex.push({ sourceId: s.sourceId, titleNodeId: titleId, name: refLabel });
+    }
+  }
+
+  const nodeSet = new Set(liveNodes.map((n) => n.id));
+  const { directed } = host.listEdges(graphId);
+  const stale = directed
+    // Match any edge whose evidence starts with the SKILL_CALLS_EVIDENCE base tag,
+    // since structured-call edges have `;capture=...` etc. appended.
+    .filter((e) => e.evidence?.startsWith(SKILL_CALLS_EVIDENCE) &&
+      (nodeSet.has(e.from) || nodeSet.has(e.to)))
+    .map((e) => e.id);
+  if (stale.length > 0) await host.unlinkEdgesBatch(graphId, stale);
+
+  const batch: Array<{ from: string; to: string; type: 'contains'; weight: number; evidence: string }> = [];
+
+  const resolveTarget = (captured: string): SkillRef | null => {
+    let best: SkillRef | null = null;
+    let bestLen = 0;
+    for (const ref of skillIndex) {
+      if (captured.includes(ref.name) || ref.name.includes(captured)) {
+        if (ref.name.length > bestLen) { bestLen = ref.name.length; best = ref; }
+      }
+    }
+    return best;
+  };
+
+  for (const node of liveNodes) {
+    const parsed = parseSkillCall(node.content);
+    if (!parsed || !parsed.target) continue;
+    const target = resolveTarget(parsed.target);
+    if (!target) continue;
+
+    // Detect whether this node is an `On failure:` goal (cross-skill recovery)
+    const isFailureGoal = /^On failure:/i.test(node.content.trim());
+    const evidence = encodeCallEvidence(parsed, { onFailure: isFailureGoal });
+
+    batch.push({
+      from: node.id,
+      to: target.titleNodeId,
+      type: 'contains',
+      weight: 0.95,
+      evidence,
+    });
+  }
+
+  if (batch.length > 0) await host.linkNodesDirectedBatch(graphId, batch);
+  return { callEdges: batch.length };
+}
+
+/**
+ * After skill A is saved, edges FROM other skills TO A's title node may have
+ * become stale (the title node id likely changed during retrain). Re-run
+ * linkSkillCalls on every OTHER skill source in the same engram so any
+ * `@skill: A` reference gets re-pointed to A's new title node.
+ *
+ * O(n_skills) per retrain — acceptable for typical Skills engrams.
+ */
+export async function refreshIncomingCallsToSkill(
+  host: GraphnosisHost,
+  graphId: string,
+  sourceId: string,
+): Promise<{ rewired: number }> {
+  const others = host.listSources(graphId).filter(
+    (s) => s.kind === 'skill' && s.sourceId !== sourceId,
+  );
+  let rewired = 0;
+  for (const s of others) {
+    try {
+      const res = await linkSkillCalls(host, graphId, s.sourceId, graphId);
+      rewired += res.callEdges;
+    } catch { /* per-source failure is non-fatal */ }
+  }
+  return { rewired };
+}
+
+// ── placeRecalledNodes (Phase 2 — surgical placement) ────────────────────────
+
+interface PlacementCandidate { text: string; layer: InfluentialNode['layer'] }
+interface PlacementResult    { text: string; position: number | 'context'; confidence: number }
+
+function tripletCoherence(
+  prev: string | null,
+  candidate: string,
+  next: string | null,
+): number {
+  const prevSents = prev ? splitSentences(prev) : [];
+  const candSents = splitSentences(candidate);
+  const nextSents = next ? splitSentences(next) : [];
+
+  const prevLast = prevSents[prevSents.length - 1] ?? '';
+  const candFirst = candSents[0] ?? '';
+  const candLast  = candSents[candSents.length - 1] ?? '';
+  const nextFirst = nextSents[0] ?? '';
+
+  const scoreIn  = prev  ? jaccardSop(sopTokenize(prevLast), sopTokenize(candFirst)) : 0.5;
+  const scoreOut = next  ? jaccardSop(sopTokenize(candLast),  sopTokenize(nextFirst)) : 0.5;
+  return (scoreIn + scoreOut) / 2;
+}
+
+function placeRecalledNodesDeterministic(
+  candidates: PlacementCandidate[],
+  bodyTexts: string[],
+): PlacementResult[] {
+  return candidates.map((cand) => {
+    if (isNonLatinScript(cand.text) && bodyTexts.some(isNonLatinScript)) {
+      // Non-Latin script + no LLM → safe fallback
+      return { text: cand.text, position: 'context', confidence: 0 };
+    }
+    const candToks = sopTokenize(cand.text);
+    let bestPos = 'context' as number | 'context';
+    let bestScore = 0.25; // minimum threshold to earn an inline position
+    for (let p = 0; p <= bodyTexts.length; p++) {
+      const prev = bodyTexts[p - 1] ?? null;
+      const next = bodyTexts[p] ?? null;
+      const sim =
+        0.6 * jaccardSop(candToks, sopTokenize(prev ?? '')) +
+        0.4 * jaccardSop(candToks, sopTokenize(next ?? ''));
+      const coh = tripletCoherence(prev, cand.text, next);
+      const score = 0.5 * sim + 0.5 * coh;
+      if (score > bestScore) { bestScore = score; bestPos = p; }
+    }
+    return { text: cand.text, position: bestPos, confidence: bestScore };
+  });
+}
+
+/**
+ * Decide where each recalled candidate paragraph belongs in the skill sequence.
+ *
+ * With LLM: sends a single structured prompt; falls back to deterministic on failure.
+ * Without LLM: uses Jaccard similarity + triplet coherence.
+ *
+ * Returns positions relative to body-node order (0 = before first body node,
+ * N = after last body node). `'context'` = append to context section at the end.
+ */
+export async function placeRecalledNodes(
+  candidates: PlacementCandidate[],
+  bodyTexts: string[],
+  llm: import('./correction.js').LocalLlm | null,
+): Promise<PlacementResult[]> {
+  if (candidates.length === 0 || bodyTexts.length === 0) {
+    return candidates.map((c) => ({ text: c.text, position: 'context', confidence: 0 }));
+  }
+
+  if (llm) {
+    try {
+      const stepsBlock = bodyTexts.map((t, i) => `[${i + 1}] ${t.slice(0, 200)}`).join('\n');
+      const fragsBlock = candidates.map((c, i) => `[${i}] "${c.text.slice(0, 150)}"`).join('\n');
+      const raw = await llm.complete({
+        system: [
+          'The skill content may be in any language or a mix of languages.',
+          'You are placing recalled memory fragments into a step-by-step procedure.',
+          'The sequence must read like a coherent SOP — prev step → fragment → next step must flow logically.',
+          'Return ONLY JSON: {"placements":[{"index":0,"position":2,"confidence":0.87},...]}',
+          'position = 0 means before step 1, N means after step N, "context" = no good fit.',
+          'confidence < 0.5 or position="context" → context section.',
+        ].join(' '),
+        user: `== PROCEDURE STEPS ==\n${stepsBlock}\n\n== RECALLED FRAGMENTS TO PLACE ==\n${fragsBlock}`,
+      });
+      const parsed = JSON.parse(raw.trim()) as {
+        placements: Array<{ index: number; position: number | 'context'; confidence: number }>;
+      };
+      const results: PlacementResult[] = candidates.map((c) => ({
+        text: c.text, position: 'context' as const, confidence: 0,
+      }));
+      for (const p of parsed.placements ?? []) {
+        if (p.index < 0 || p.index >= results.length) continue;
+        const pos = p.position === 'context' || p.confidence < 0.5 ? 'context' : p.position;
+        results[p.index] = { text: candidates[p.index]!.text, position: pos, confidence: p.confidence };
+      }
+      return results;
+    } catch {
+      // LLM failed — fall through to deterministic
+    }
+  }
+
+  return placeRecalledNodesDeterministic(candidates, bodyTexts);
+}
+
+// ── walkSkillSequence + formatSkillForRecall (Phase 3) ───────────────────────
+
+export interface StepNode {
+  nodeId: string;
+  text: string;
+  /** 0-based index in the linear chain */
+  index: number;
+  isBranchPoint: boolean;
+  isLoopBack: boolean;
+  /** Resolved sub-skill call (target found in the same engram). */
+  callsSkill?: {
+    targetSourceId: string;
+    targetTitle: string;
+    /** Variable names passed as args (from `@skill: name(arg=$var)`). */
+    args: string[];
+    /** Variable name to store the call's return under (from `-> $capture`). */
+    captureAs?: string;
+  };
+  /** Skill-call reference text that did not resolve to any existing skill.
+   *  Surfaces in the JSON plan so the AI executor knows there's an
+   *  unfulfillable reference (sub-skill not found / typo / cross-engram). */
+  unresolvedCall?: string;
+}
+
+export interface FailureHandler {
+  /** The full text of the `On failure:` goal node, with the prefix stripped. */
+  description: string;
+  /** Resolved recovery skill — present when an `@skill: name` reference inside
+   *  the `On failure:` goal was matched to an existing skill in this engram. */
+  targetSourceId?: string;
+  targetTitle?: string;
+  args: string[];
+  /** Set when the `@skill:` reference inside the goal didn't resolve. */
+  unresolvedCall?: string;
+}
+
+export interface GoalNode {
+  text: string;
+  kind: 'success' | 'scope' | 'completion' | 'trigger' | 'prereq' | 'failure' | 'requires' | 'produces' | 'generic';
+}
+
+export interface WalkedSkill {
+  steps: StepNode[];
+  goals: GoalNode[];
+  contextNodes: Array<{ text: string; anchorStepIndex: number | null }>;
+  /** [fromStepIndex, toStepIndex] pairs for loop edges */
+  loops: Array<[number, number]>;
+  /** [fromStepIndex, toStepIndex] pairs for branch edges */
+  branches: Array<[number, number]>;
+  /** Recovery skills declared in `On failure:` goal nodes. */
+  failureHandlers: FailureHandler[];
+}
+
+const RECALLED_MARKER_RE = /_\(from [^)]+\)_\s*$/;
+
+/**
+ * Walk a skill source as an SOP, returning steps in source order annotated
+ * with loop, branch, and sub-skill metadata derived from the edge graph.
+ *
+ * The linear chain is always reconstructed from `nodeIds` source order
+ * (not by traversing edges), so loop back-edges never cause infinite recursion.
+ */
+export function walkSkillSequence(
+  host: GraphnosisHost,
+  graphId: string,
+  sourceId: string,
+  opts: { recursive?: boolean } = {},
+): WalkedSkill {
+  const src = host.getSourceRecord(graphId, sourceId);
+  if (!src) return { steps: [], goals: [], contextNodes: [], loops: [], branches: [], failureHandlers: [] };
+
+  const now = Date.now();
+  const allNodes = host.listNodes(graphId);
+  const nodeMap = new Map(allNodes.map((n) => [n.id, n]));
+
+  // Live nodes in source order, excluding metadata comments
+  const liveIds = src.nodeIds.filter((id) => {
+    const n = nodeMap.get(id);
+    return n && n.confidence > 0.2 && !(n.validUntil !== undefined && n.validUntil <= now)
+      && !n.contentPreview.trimStart().startsWith('<!--');
+  });
+
+  // Partition: body steps / goal constraints / recalled-memory context nodes.
+  // Keep failure-goal node ids tracked separately — they may carry @skill: refs
+  // that walkSkillSequence promotes into failureHandlers below.
+  const bodyIds: string[] = [];
+  const goalNodes: GoalNode[] = [];
+  const ctxIds: string[] = [];
+  const failureGoalIds: string[] = [];
+  for (const id of liveIds) {
+    const n = nodeMap.get(id)!;
+    const preview = n.contentPreview.trim();
+    const fullText = host.getFullNodeContent(graphId, id) ?? preview;
+    if (RECALLED_MARKER_RE.test(preview)) {
+      ctxIds.push(id);
+    } else if (/^Success:/i.test(preview)) {
+      goalNodes.push({ text: fullText, kind: 'success' });
+    } else if (/^Out of scope:/i.test(preview)) {
+      goalNodes.push({ text: fullText, kind: 'scope' });
+    } else if (/^On completion:/i.test(preview)) {
+      goalNodes.push({ text: fullText, kind: 'completion' });
+    } else if (/^Trigger:/i.test(preview)) {
+      goalNodes.push({ text: fullText, kind: 'trigger' });
+    } else if (/^Prerequisites:/i.test(preview)) {
+      goalNodes.push({ text: fullText, kind: 'prereq' });
+    } else if (/^On failure:/i.test(preview)) {
+      goalNodes.push({ text: fullText, kind: 'failure' });
+      failureGoalIds.push(id);
+    } else if (/^Requires:/i.test(preview)) {
+      goalNodes.push({ text: fullText, kind: 'requires' });
+    } else if (/^Produces:/i.test(preview)) {
+      goalNodes.push({ text: fullText, kind: 'produces' });
+    } else {
+      bodyIds.push(id);
+    }
+  }
+
+  const stepIndexOf = new Map(bodyIds.map((id, i) => [id, i]));
+  const nodeSet = new Set(liveIds);
+  const { directed } = host.listEdges(graphId);
+
+  const loopEdges   = directed.filter((e) => e.evidence === SKILL_LOOP_EVIDENCE   && nodeSet.has(e.from) && nodeSet.has(e.to));
+  const branchEdges = directed.filter((e) => e.evidence === SKILL_BRANCH_EVIDENCE && nodeSet.has(e.from) && nodeSet.has(e.to));
+  // Call edges' evidence starts with 'skill:calls' but may carry suffixes
+  // like ';capture=foo;args=a,b;onFailure=true'.
+  const callEdges   = directed.filter((e) => e.evidence?.startsWith(SKILL_CALLS_EVIDENCE) && nodeSet.has(e.from));
+  const ctxEdges    = directed.filter((e) => e.evidence === SKILL_CTX_EVIDENCE    && nodeSet.has(e.from));
+
+  // Resolve sub-skill call targets — find the owning source for each target node
+  // so we can return its sourceId (not the current skill's sourceId, which was the bug).
+  const callTargetMeta = new Map<string, {
+    targetSourceId: string;
+    targetTitle: string;
+    args: string[];
+    captureAs?: string;
+    onFailure: boolean;
+  }>();
+  const allSources = host.listSources(graphId);
+  for (const e of callEdges) {
+    const targetText = host.getFullNodeContent(graphId, e.to) ??
+      nodeMap.get(e.to)?.contentPreview ?? '';
+    const owner = allSources.find((s) => s.nodeIds.includes(e.to));
+    const evidence = parseCallEvidence(e.evidence ?? '');
+    callTargetMeta.set(e.from, {
+      targetSourceId: owner?.sourceId ?? src.sourceId,
+      targetTitle: targetText.trim().slice(0, 200),
+      args: evidence.args,
+      ...(evidence.captureAs ? { captureAs: evidence.captureAs } : {}),
+      onFailure: evidence.onFailure,
+    });
+  }
+
+  const steps: StepNode[] = bodyIds.map((id, i) => {
+    const text = host.getFullNodeContent(graphId, id) ?? nodeMap.get(id)!.contentPreview;
+    const meta = callTargetMeta.get(id);
+    // Detect unresolved calls: text references @skill: but no edge was created
+    // (typically: typo, deleted target, or cross-engram reference).
+    const parsedFromText = parseSkillCall(text);
+    const unresolved = !meta && parsedFromText && parsedFromText.target;
+    return {
+      nodeId: id,
+      text,
+      index: i,
+      isBranchPoint: branchEdges.some((e) => e.from === id),
+      isLoopBack:    loopEdges.some((e) => e.from === id),
+      ...(meta ? {
+        callsSkill: {
+          targetSourceId: meta.targetSourceId,
+          targetTitle: meta.targetTitle,
+          args: meta.args,
+          ...(meta.captureAs ? { captureAs: meta.captureAs } : {}),
+        },
+      } : {}),
+      ...(unresolved && parsedFromText ? { unresolvedCall: parsedFromText.target } : {}),
+    };
+  });
+
+  // ── Failure handlers — promote `On failure:` goal-node calls ────────────
+  // Each `On failure:` goal node may have a `@skill: name` ref. If it
+  // resolved (edge exists with onFailure=true), surface the target. If it
+  // didn't resolve, surface the unresolved name so the AI client sees the gap.
+  const failureHandlers: FailureHandler[] = [];
+  for (const goalNodeId of failureGoalIds) {
+    const text = host.getFullNodeContent(graphId, goalNodeId) ??
+      nodeMap.get(goalNodeId)?.contentPreview ?? '';
+    const description = text.replace(GOAL_PREFIX_STRIP_RE, '').trim();
+    const meta = callTargetMeta.get(goalNodeId);
+    if (meta && meta.onFailure) {
+      failureHandlers.push({
+        description,
+        targetSourceId: meta.targetSourceId,
+        targetTitle: meta.targetTitle,
+        args: meta.args,
+      });
+    } else {
+      const parsedFromText = parseSkillCall(text);
+      if (parsedFromText && parsedFromText.target) {
+        failureHandlers.push({
+          description,
+          args: parsedFromText.args,
+          unresolvedCall: parsedFromText.target,
+        });
+      } else {
+        // Pure-prose failure description (no skill call) — still useful to the AI.
+        failureHandlers.push({ description, args: [] });
+      }
+    }
+  }
+
+  // If recursive, inline sub-skill steps
+  if (opts.recursive) {
+    for (let i = steps.length - 1; i >= 0; i--) {
+      const step = steps[i]!;
+      if (!step.callsSkill) continue;
+      try {
+        // Try to find the target sourceId by walking call edges from this node
+        const callEdge = callEdges.find((e) => e.from === step.nodeId);
+        if (!callEdge) continue;
+        // Find which source owns the target node
+        const targetSources = host.listSources(graphId).filter((s) =>
+          s.nodeIds.includes(callEdge.to),
+        );
+        if (!targetSources[0]) continue;
+        const subWalked = walkSkillSequence(host, graphId, targetSources[0].sourceId, { recursive: false });
+        const subSteps = subWalked.steps.map((ss) => ({
+          ...ss,
+          index: i + ss.index, // offset for display
+          text: `  [Sub-skill: ${step.callsSkill!.title}] ${ss.text}`,
+        }));
+        steps.splice(i + 1, 0, ...subSteps);
+      } catch { /* sub-skill expansion failure is non-fatal */ }
+    }
+  }
+
+  const contextNodes = ctxIds.map((id) => {
+    const text = host.getFullNodeContent(graphId, id) ?? nodeMap.get(id)!.contentPreview;
+    const ctxEdge = ctxEdges.find((e) => e.from === id);
+    const anchorStepIndex = ctxEdge ? (stepIndexOf.get(ctxEdge.to) ?? null) : null;
+    return { text, anchorStepIndex };
+  });
+
+  const loops: Array<[number, number]> = loopEdges
+    .map((e) => [stepIndexOf.get(e.from) ?? -1, stepIndexOf.get(e.to) ?? -1] as [number, number])
+    .filter(([a, b]) => a >= 0 && b >= 0);
+  const branches: Array<[number, number]> = branchEdges
+    .map((e) => [stepIndexOf.get(e.from) ?? -1, stepIndexOf.get(e.to) ?? -1] as [number, number])
+    .filter(([a, b]) => a >= 0 && b >= 0);
+
+  return { steps, goals: goalNodes, contextNodes, loops, branches, failureHandlers };
+}
+
+const GOAL_KIND_PREFIX: Record<GoalNode['kind'], string> = {
+  success:    '✓ Success:',
+  scope:      '✗ Out of scope:',
+  completion: '⊙ On completion:',
+  trigger:    '⚡ Trigger:',
+  prereq:     '🔑 Prerequisites:',
+  failure:    '⚠ On failure:',
+  requires:   '🔌 Requires:',
+  produces:   '📤 Produces:',
+  generic:    '→',
+};
+
+/** Strip-prefix regex used by formatSkillForRecall and walkSkillToJson to
+ *  remove the redundant `Success:` / `Out of scope:` / etc. text prefix
+ *  before re-emitting with the symbol prefix above. */
+const GOAL_PREFIX_STRIP_RE = /^(?:Success:|Out of scope:|On completion:|Trigger:|Prerequisites:|On failure:|Requires:|Produces:)\s*/i;
+
+/** Format a WalkedSkill as a readable SOP text for AI clients.
+ *
+ * Output order: CONSTRAINTS block (goals) → PROCEDURE (sequential steps).
+ * Goals first because an AI reading the skill needs to know its operating
+ * boundaries BEFORE it starts following steps. */
+export function formatSkillForRecall(walked: WalkedSkill): string {
+  const lines: string[] = [];
+
+  // ── Constraints block ────────────────────────────────────────────────────
+  if (walked.goals.length > 0) {
+    lines.push('CONSTRAINTS:');
+    for (const g of walked.goals) {
+      const prefix = GOAL_KIND_PREFIX[g.kind];
+      // Strip the redundant "Success: / Out of scope: / On completion:" prefix
+      // from the stored text since we're replacing it with the symbol prefix.
+      const body = g.text.replace(GOAL_PREFIX_STRIP_RE, '').trim();
+      lines.push(`  ${prefix} ${body}`);
+    }
+    lines.push('');
+  }
+
+  // ── Procedure ────────────────────────────────────────────────────────────
+  if (walked.steps.length > 0) {
+    lines.push(`PROCEDURE (${walked.steps.length} step${walked.steps.length === 1 ? '' : 's'}):`);
+    for (const step of walked.steps) {
+      lines.push(`  Step ${step.index + 1}: ${step.text}`);
+      for (const ctx of walked.contextNodes) {
+        if (ctx.anchorStepIndex === step.index) lines.push(`    → Context: ${ctx.text}`);
+      }
+      if (step.callsSkill) {
+        const argsPart = step.callsSkill.args.length > 0
+          ? ` with $${step.callsSkill.args.join(', $')}`
+          : '';
+        const capturePart = step.callsSkill.captureAs
+          ? `, capture result as $${step.callsSkill.captureAs}`
+          : '';
+        lines.push(`    → INVOKES SKILL: ${step.callsSkill.targetTitle}${argsPart}${capturePart}`);
+      }
+      if (step.unresolvedCall) {
+        lines.push(`    → ⚠ UNRESOLVED CALL: "${step.unresolvedCall}" — sub-skill not found in this engram`);
+      }
+      if (step.isBranchPoint) {
+        const targets = walked.branches.filter(([f]) => f === step.index).map(([, t]) => `step ${t + 1}`);
+        lines.push(`    → BRANCHES to ${targets.join(' or ')} on condition`);
+      }
+      if (step.isLoopBack) {
+        const targets = walked.loops.filter(([f]) => f === step.index).map(([, t]) => `step ${t + 1}`);
+        lines.push(`    → LOOPS BACK to ${targets.join(', ')}`);
+      }
+    }
+  }
+
+  const unanchored = walked.contextNodes.filter((c) => c.anchorStepIndex === null);
+  if (unanchored.length > 0) {
+    lines.push('');
+    lines.push('Supporting Context:');
+    for (const ctx of unanchored) lines.push(`  - ${ctx.text}`);
+  }
+
+  if (walked.failureHandlers.length > 0) {
+    lines.push('');
+    lines.push('FAILURE HANDLERS:');
+    for (const h of walked.failureHandlers) {
+      if (h.targetTitle) {
+        const argsPart = h.args.length > 0 ? ` with $${h.args.join(', $')}` : '';
+        lines.push(`  → On failure: ${h.description}`);
+        lines.push(`     RECOVERY SKILL: ${h.targetTitle}${argsPart}`);
+      } else if (h.unresolvedCall) {
+        lines.push(`  → On failure: ${h.description}`);
+        lines.push(`     ⚠ UNRESOLVED RECOVERY SKILL: "${h.unresolvedCall}"`);
+      } else {
+        lines.push(`  → On failure: ${h.description}`);
+      }
+    }
+  }
+
+  return lines.join('\n');
+}
+
+// ── walkSkillToJson — structured execution plan (Phase 5) ─────────────────────
+
+/** Machine-readable execution plan for a skill, consumed by `walk_skill_structured`.
+ *  Designed for AI executors that need to actually run the SOP — invoke sub-skills,
+ *  capture return values, handle failure paths. See plan doc for field semantics. */
+export interface SkillExecutionPlan {
+  skill: { sourceId: string; title: string; engramName?: string };
+  /** Variable names this skill expects from its caller (parsed from `Requires:`). */
+  requires: string[];
+  /** Variable names this skill makes available to callers (parsed from `Produces:`). */
+  produces: string[];
+  constraints: {
+    success?: string;
+    outOfScope?: string;
+    completion?: string;
+    trigger?: string;
+    prerequisites?: string;
+  };
+  steps: Array<{
+    /** 1-based step number for human reference. */
+    index: number;
+    text: string;
+    calls?: {
+      targetSourceId: string;
+      targetTitle: string;
+      args: string[];
+      captureAs?: string;
+    };
+    /** Sub-skill name that didn't resolve to any skill in the same engram. */
+    unresolvedCall?: string;
+    /** 1-based step indices the branch may go to. */
+    branchesTo?: number[];
+    /** 1-based step indices this step loops back to. */
+    loopsBackTo?: number[];
+    /** Anchored recalled-memory paragraphs. */
+    supportingContext: string[];
+  }>;
+  failureHandlers: Array<{
+    description: string;
+    targetSourceId?: string;
+    targetTitle?: string;
+    args: string[];
+    unresolvedCall?: string;
+  }>;
+  /** Recalled memories not anchored to any specific step. */
+  unanchoredContext: string[];
+}
+
+/** Parse a `Requires:` / `Produces:` goal body into a list of variable names.
+ *  Strips the prefix, then splits on commas/whitespace, then strips leading `$`.
+ *  Returns deduplicated names in source order. */
+function parseVarList(rawText: string): string[] {
+  const body = rawText.replace(GOAL_PREFIX_STRIP_RE, '').trim();
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const tok of body.split(/[\s,]+/)) {
+    if (!tok) continue;
+    const name = tok.replace(/^\$/, '').replace(/[^\w].*$/, '');
+    if (!name || seen.has(name)) continue;
+    seen.add(name);
+    out.push(name);
+  }
+  return out;
+}
+
+/** Convert a walked skill into a structured execution plan.
+ *
+ * Designed to be the single source of truth for `walk_skill_structured` MCP
+ * tool and any other programmatic consumer. The text-shaped output from
+ * `formatSkillForRecall` is for humans; this JSON is for AI executors. */
+export function walkSkillToJson(
+  walked: WalkedSkill,
+  meta: { sourceId: string; title: string; engramName?: string },
+): SkillExecutionPlan {
+  // Aggregate Requires: / Produces: var names across all matching goal nodes.
+  const requires = walked.goals
+    .filter((g) => g.kind === 'requires')
+    .flatMap((g) => parseVarList(g.text));
+  const produces = walked.goals
+    .filter((g) => g.kind === 'produces')
+    .flatMap((g) => parseVarList(g.text));
+
+  // First-of-kind wins for the narrative constraints (success/scope/etc.).
+  const firstByKind = (kind: GoalNode['kind']): string | undefined => {
+    const g = walked.goals.find((x) => x.kind === kind);
+    return g ? g.text.replace(GOAL_PREFIX_STRIP_RE, '').trim() : undefined;
+  };
+  const constraints: SkillExecutionPlan['constraints'] = {};
+  const setIf = (key: keyof SkillExecutionPlan['constraints'], val: string | undefined): void => {
+    if (val) constraints[key] = val;
+  };
+  setIf('success',       firstByKind('success'));
+  setIf('outOfScope',    firstByKind('scope'));
+  setIf('completion',    firstByKind('completion'));
+  setIf('trigger',       firstByKind('trigger'));
+  setIf('prerequisites', firstByKind('prereq'));
+
+  // Build step records — use 1-based indices throughout the JSON so the AI's
+  // narrative answers ("step 3", "step 5") line up with the structured plan.
+  const steps: SkillExecutionPlan['steps'] = walked.steps.map((s) => {
+    const branchesTo = walked.branches.filter(([f]) => f === s.index).map(([, t]) => t + 1);
+    const loopsBackTo = walked.loops.filter(([f]) => f === s.index).map(([, t]) => t + 1);
+    const supportingContext = walked.contextNodes
+      .filter((c) => c.anchorStepIndex === s.index)
+      .map((c) => c.text);
+    return {
+      index: s.index + 1,
+      text: s.text,
+      ...(s.callsSkill ? {
+        calls: {
+          targetSourceId: s.callsSkill.targetSourceId,
+          targetTitle: s.callsSkill.targetTitle,
+          args: s.callsSkill.args,
+          ...(s.callsSkill.captureAs ? { captureAs: s.callsSkill.captureAs } : {}),
+        },
+      } : {}),
+      ...(s.unresolvedCall ? { unresolvedCall: s.unresolvedCall } : {}),
+      ...(branchesTo.length > 0 ? { branchesTo } : {}),
+      ...(loopsBackTo.length > 0 ? { loopsBackTo } : {}),
+      supportingContext,
+    };
+  });
+
+  const failureHandlers: SkillExecutionPlan['failureHandlers'] = walked.failureHandlers.map((h) => ({
+    description: h.description,
+    ...(h.targetSourceId ? { targetSourceId: h.targetSourceId } : {}),
+    ...(h.targetTitle ? { targetTitle: h.targetTitle } : {}),
+    args: h.args,
+    ...(h.unresolvedCall ? { unresolvedCall: h.unresolvedCall } : {}),
+  }));
+
+  const unanchoredContext = walked.contextNodes
+    .filter((c) => c.anchorStepIndex === null)
+    .map((c) => c.text);
+
+  return {
+    skill: {
+      sourceId: meta.sourceId,
+      title: meta.title,
+      ...(meta.engramName ? { engramName: meta.engramName } : {}),
+    },
+    requires,
+    produces,
+    constraints,
+    steps,
+    failureHandlers,
+    unanchoredContext,
+  };
+}
+
 // ── Skill-management helpers ──────────────────────────────────────────────────
 
 function baseSkillName(label: string): string {
@@ -830,6 +2372,34 @@ function baseSkillName(label: string): string {
 }
 
 interface ParsedSkillMeta { trainedAt?: string; mode?: string; recallBreadth?: number; }
+
+/**
+ * Parse the structured Goals block from stored skill text.
+ * Returns undefined if no Goals block is present.
+ *
+ * Stored format (bold text, no ATX heading — see note in trainSkill):
+ *   **Goals**
+ *   **✓ Success:** ...
+ *   **✗ Out of scope:** ...
+ *   **⊙ On completion:** ...
+ */
+function parseSkillGoals(text: string): import('./gsk-format.js').SkillGoals | undefined {
+  // Match either the old ## Goals format (backward compat) or the new bold format.
+  const block = text.match(/(?:##\s*Goals|(?<!\*)\*\*Goals\*\*)\s*\n+([\s\S]*?)(?:\n(?:##|\*\*)|\s*$)/);
+  if (!block) return undefined;
+  const body = block[1] ?? '';
+  // New format: **✓ Success:** / **✗ Out of scope:** / **⊙ On completion:**
+  // Old format: **Success looks like:** / **Out of scope:** / **Expected on completion:**
+  const success = (body.match(/\*\*[✓]?\s*Success(?:\s+looks like)?:\*\*\s*([^\n]+)/)?.[1] ?? '').trim();
+  const scope   = (body.match(/\*\*[✗]?\s*Out of scope:\*\*\s*([^\n]+)/)?.[1] ?? '').trim();
+  const done    = (body.match(/\*\*[⊙]?\s*(?:On completion|Expected on completion):\*\*\s*([^\n]+)/)?.[1] ?? '').trim();
+  if (!success && !scope && !done) return undefined;
+  return {
+    successLooksLike: success ?? '',
+    outOfScope: scope ?? '',
+    expectedOnCompletion: done ?? '',
+  };
+}
 
 function parseSkillMetadata(text: string): ParsedSkillMeta {
   const result: ParsedSkillMeta = {};
@@ -847,13 +2417,135 @@ function parseSkillMetadata(text: string): ParsedSkillMeta {
   return result;
 }
 
+/**
+ * Parse the imported-provenance comment node written by `skill:importGsk` in
+ * ipc.ts. Shape:
+ *   <!-- imported <iso> · pack:<id> v<ver> · <kind> · verified:<bool> · author:<name> -->
+ *
+ * Returns undefined for locally-trained skills (no provenance node).
+ */
+function parseSkillProvenance(text: string): import('./skill-trainer.js').SkillProvenance | undefined {
+  const m = text.match(
+    /<!--\s*imported\s+(\S+)\s+·\s+pack:(\S+)\s+v(\S+)\s+·\s+(official|community)\s+·\s+verified:(true|false)\s+·\s+author:([^-]+?)\s*-->/,
+  );
+  if (!m) return undefined;
+  return {
+    importedAt: m[1]!,
+    packId: m[2]!,
+    packVersion: m[3]!,
+    kind: m[4]! as 'official' | 'community',
+    verified: m[5]! === 'true',
+    author: m[6]!.trim(),
+  };
+}
+
 // ── Text-cleaning helpers ─────────────────────────────────────────────────────
 
-/** Remove the metadata HTML comment block the trainer prepends on save. */
+/**
+ * Phase 3c — Heuristic role classifier for chunk-driven export.
+ *
+ * Chunks are stored as plain text (no markdown decoration), with `role`
+ * passed as an op-log audit hint only. We don't persist role per chunk in
+ * a sidecar map; instead we recover it heuristically from content + position
+ * so the export-time markdown formatter can re-emit `# title`, `## Recall
+ * Recipes`, `## Goals`, etc., as the target tool expects.
+ *
+ * Rules (applied in order):
+ *  - First non-metadata chunk → 'title'
+ *  - Starts with `<!--` → 'metadata' (skipped on export)
+ *  - Starts with `Success:` / `Out of scope:` / `On completion:` → goal-*
+ *  - Looks like a recipe (line 2 starts with `— `) → 'recipe'
+ *  - Otherwise → 'body'
+ */
+export function classifyChunkRole(content: string, index: number, classified: number): string {
+  const trimmed = content.trim();
+  if (trimmed.startsWith('<!--')) return 'metadata';
+  // First non-metadata chunk is the title.
+  if (classified === 0) return 'title';
+  if (/^Success:\s/i.test(trimmed)) return 'goal-success';
+  if (/^Out of scope:\s/i.test(trimmed)) return 'goal-scope';
+  if (/^On completion:\s/i.test(trimmed)) return 'goal-done';
+  // Recipe shape: first line is "name: trigger", subsequent lines start "— ".
+  const lines = trimmed.split('\n');
+  if (lines.length >= 2 && lines[1]!.startsWith('— ')) return 'recipe';
+  // Recalled-memory marker (from buildMemoryAugmented attribution).
+  if (/_\(from [^)]+\)_\s*$/.test(trimmed)) return 'recalled-memory';
+  return 'body';
+}
+
+/**
+ * Phase 3c — Format a list of plain-text chunks as target-format markdown.
+ *
+ * For 'raw' format: joins chunks with blank-line separators, no decoration.
+ * For 'claude-md' / 'cursorrules' / 'system-prompt' / 'openai': emits
+ * `# title`, body paragraphs verbatim, `## Recall Recipes`, `## Goals`,
+ * with recipes and goals grouped into single sections.
+ *
+ * Metadata chunks (`<!-- ... -->`) are skipped entirely.
+ */
+export function formatTrainedOutputAsMarkdown(chunks: string[], format: ExportFormat): string {
+  if (format === 'raw') {
+    // Plain text, no markdown — but still strip metadata comments since
+    // those are an internal audit artefact.
+    return chunks
+      .filter((c) => !c.trim().startsWith('<!--'))
+      .join('\n\n')
+      .trim();
+  }
+  const titleLines: string[] = [];
+  const bodyLines: string[] = [];
+  const recipeLines: string[] = [];
+  const goalLines: string[] = [];
+  const memoryLines: string[] = [];
+  let classifiedCount = 0;
+  for (let i = 0; i < chunks.length; i++) {
+    const chunk = chunks[i]!;
+    const role = classifyChunkRole(chunk, i, classifiedCount);
+    if (role === 'metadata') continue;
+    classifiedCount++;
+    const text = chunk.trim();
+    switch (role) {
+      case 'title':
+        titleLines.push(`# ${text}`);
+        break;
+      case 'body':
+        bodyLines.push(text);
+        break;
+      case 'recipe':
+        recipeLines.push(text);
+        break;
+      case 'goal-success':
+        goalLines.push(`- ✓ **Success:** ${text.replace(/^Success:\s*/i, '')}`);
+        break;
+      case 'goal-scope':
+        goalLines.push(`- ✗ **Out of scope:** ${text.replace(/^Out of scope:\s*/i, '')}`);
+        break;
+      case 'goal-done':
+        goalLines.push(`- ⊙ **On completion:** ${text.replace(/^On completion:\s*/i, '')}`);
+        break;
+      case 'recalled-memory':
+        memoryLines.push(text);
+        break;
+      default:
+        bodyLines.push(text);
+    }
+  }
+  const parts: string[] = [];
+  if (titleLines.length) parts.push(titleLines.join('\n'));
+  if (bodyLines.length) parts.push(bodyLines.join('\n\n'));
+  if (memoryLines.length) parts.push(memoryLines.join('\n\n'));
+  if (recipeLines.length) parts.push(`## Recall Recipes\n\n${recipeLines.join('\n\n')}`);
+  if (goalLines.length) parts.push(`## Goals\n\n${goalLines.join('\n')}`);
+  return parts.join('\n\n');
+}
+
+/** Remove the metadata HTML comment block the trainer prepends on save.
+ *  Matches both the legacy ATX form (`# label`) and the new bold form
+ *  (`**label**`) — the bold form replaced the ATX H1 to stop the SDK
+ *  chunker from duplicating the title node. */
 function stripMetadataHeader(text: string): string {
-  // Matches: # <label>\n<!-- Graphnosis skill training metadata ... -->\n\n
   return text
-    .replace(/^#[^\n]+\n<!--[\s\S]*?-->\n+/, '')
+    .replace(/^(?:#[^\n]+|\*\*[^\n]+\*\*)\n+<!--[\s\S]*?-->\n+/, '')
     .trim();
 }
 

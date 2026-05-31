@@ -17,6 +17,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { fileURLToPath } from 'node:url';
 import type { EmbedFn } from '@graphnosis-app/core/embeddings';
+import { dbg } from './log-redact.js';
 
 // ── Bun-compiled mode detection ─────────────────────────────────────────────
 //
@@ -174,7 +175,10 @@ function spawnWorker(idx: number): ChildProcess {
 
   child.on('message', (msg: { type?: string; id?: number; vec?: number[]; error?: string }) => {
     if (msg.type === 'ready') {
-      console.error(`[local-embed] worker-${idx} ready`);
+      // Per-worker readiness — debug-only (fires N times on startup, one
+      // per worker process). The pool's overall "embeddings ready" line in
+      // main.ts is the canonical production signal.
+      dbg(`[local-embed] worker-${idx} ready`);
       slotFailures[idx] = 0; // healthy again — reset the failure counter
       spawnNextInitial();    // chain the next slot of the initial pool fill
       return;
