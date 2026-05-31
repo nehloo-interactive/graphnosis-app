@@ -37,6 +37,33 @@ jobs:
       - name: Build workspace packages
         run: pnpm --filter @graphnosis-app/core build
 
+      # Three signed Graphnosis demo .gsk packs auto-load into a "Skill
+      # Demos" engram on first cortex unlock. They must be (re)built BEFORE
+      # the sidecar build, because apps/desktop-sidecar/scripts/
+      # generate-skill-demos-content.mjs reads dist/packs/bundle/*.gsk and
+      # embeds them base64 into src/skill-demos.generated.ts — which ipc.ts
+      # imports. Missing → "Could not resolve: ./skill-demos.generated.js"
+      # which is exactly the v1.12.0 build failure that exposed this gap.
+      - name: Build signed demo .gsk packs
+        env:
+          GSK_SIGNING_KEY_HEX: ${{ secrets.GSK_SIGNING_KEY_HEX }}
+        run: |
+          if [ -z "$GSK_SIGNING_KEY_HEX" ]; then
+            echo "ERROR: GSK_SIGNING_KEY_HEX secret is not set."
+            echo "Generate the keypair locally with scripts/gen-gsk-keypair.mjs,"
+            echo "then add the 64-byte hex secret as a repo Actions secret."
+            exit 1
+          fi
+          node scripts/build-gsk.mjs --sign
+
+      # Generates src/skill-demos.generated.ts (consumed by ipc.ts) and
+      # produces dist/index.js (consumed by Tauri's build.rs which runs
+      # `bun build --compile` to produce
+      # binaries/graphnosis-sidecar-aarch64-apple-darwin — the missing
+      # sidecar binary in the v1.12.0 failure).
+      - name: Build sidecar
+        run: pnpm --filter @graphnosis-app/desktop-sidecar build
+
       - name: Import Developer ID certificate
         env:
           CERTIFICATE_BASE64: ${{ secrets.APPLE_CERTIFICATE_BASE64 }}

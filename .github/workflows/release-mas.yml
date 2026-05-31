@@ -42,6 +42,25 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Build workspace packages
+        run: pnpm --filter @graphnosis-app/core build
+
+      # See the same step in release.yml for rationale.
+      - name: Build signed demo .gsk packs
+        env:
+          GSK_SIGNING_KEY_HEX: ${{ secrets.GSK_SIGNING_KEY_HEX }}
+        run: |
+          if [ -z "$GSK_SIGNING_KEY_HEX" ]; then
+            echo "ERROR: GSK_SIGNING_KEY_HEX secret is not set."
+            echo "Generate the keypair locally with scripts/gen-gsk-keypair.mjs,"
+            echo "then add the 64-byte hex secret as a repo Actions secret."
+            exit 1
+          fi
+          node scripts/build-gsk.mjs --sign
+
+      - name: Build sidecar
+        run: pnpm --filter @graphnosis-app/desktop-sidecar build
+
       - name: Import MAS certificates
         env:
           MAS_APP_CERT_BASE64: ${{ secrets.APPLE_MAS_APP_CERTIFICATE_BASE64 }}
