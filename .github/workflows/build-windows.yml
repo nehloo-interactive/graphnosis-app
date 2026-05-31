@@ -103,9 +103,9 @@ jobs:
           endpoint: https://eus.codesigning.azure.net/
           signing-account-name: nehloo-trusted-signing
           certificate-profile-name: graphnosis-public
-          files-folder: apps/desktop/src-tauri/target/release/bundle
+          files-folder: apps/desktop/src-tauri/target/release/bundle/nsis
           files-folder-filter: exe
-          files-folder-recurse: true
+          files-folder-recurse: false
           timestamp-rfc3161: http://timestamp.acs.microsoft.com
           timestamp-digest: SHA256
 
