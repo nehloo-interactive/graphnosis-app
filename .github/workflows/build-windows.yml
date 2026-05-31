@@ -101,7 +101,7 @@ jobs:
           azure-client-id: ${{ secrets.AZURE_CLIENT_ID }}
           azure-client-secret: ${{ secrets.AZURE_CLIENT_SECRET }}
           endpoint: https://eus.codesigning.azure.net/
-          signing-account-name: nehloo-trusted-signing
+          trusted-signing-account-name: nehloo-trusted-signing
           certificate-profile-name: graphnosis-public
           files-folder: apps/desktop/src-tauri/target/release/bundle/nsis
           files-folder-filter: exe
