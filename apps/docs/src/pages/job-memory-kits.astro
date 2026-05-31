@@ -1,0 +1,2434 @@
+---
+import Layout from '../layouts/Layout.astro';
+import Nav from '../components/Nav.astro';
+import Footer from '../components/Footer.astro';
+
+const categories = [
+  { id: 'all',          label: 'All packs' },
+  // ── alphabetical by label ──
+  { id: 'agentic',      label: 'Agentic AI' },
+  { id: 'architecture', label: 'Architecture & Construction' },
+  { id: 'business',     label: 'Business Operations & B2B' },
+  { id: 'compliance',   label: 'Compliance & Regulatory' },
+  { id: 'creative',     label: 'Creative IP Protection' },
+  { id: 'defense',      label: 'Defense & Aerospace' },
+  { id: 'education',    label: 'Education & Knowledge Work' },
+  { id: 'engineering',  label: 'Engineering' },
+  { id: 'field',        label: 'Field Operations & Trades' },
+  { id: 'finance',      label: 'Finance & Insurance' },
+  { id: 'government',   label: 'Government & Public Sector' },
+  { id: 'healthcare',   label: 'Healthcare' },
+  { id: 'hr',           label: 'HR & People Operations' },
+  { id: 'industrial',   label: 'Industrial / OT' },
+  { id: 'journalism',   label: 'Journalism & Investigation' },
+  { id: 'legal',        label: 'Law (Non-Patent)' },
+  { id: 'longcycle',    label: 'Long-Cycle Knowledge' },
+  { id: 'nonprofit',    label: 'Non-Profits & Communities' },
+  { id: 'robotics',     label: 'Robotics & Cobots' },
+  { id: 'science',      label: 'Scientific Research' },
+  { id: 'ip',           label: 'Specialized IP & Legal' },
+];
+
+// Color per category
+const catColor: Record<string, string> = {
+  engineering:  '#67e8f9',
+  industrial:   '#f59e0b',
+  agentic:      '#a78bfa',
+  longcycle:    '#67e8f9',
+  healthcare:   '#34d399',
+  legal:        '#8b5cf6',
+  ip:           '#a78bfa',
+  finance:      '#60a5fa',
+  government:   '#94a3b8',
+  defense:      '#6b7280',
+  creative:     '#f472b6',
+  journalism:   '#fb923c',
+  science:      '#34d399',
+  education:    '#818cf8',
+  field:        '#f59e0b',
+  architecture: '#d97706',
+  business:     '#fbbf24',
+  hr:           '#e879f9',
+  nonprofit:    '#4ade80',
+  compliance:   '#f87171',
+  robotics:     '#22d3ee',
+};
+
+interface Pack {
+  id: string;
+  name: string;
+  category: string;
+  tagline: string;
+  /** Legacy field retained for backward compatibility — every pack is a
+   *  free .gsk download now. Renders as "Free" in the card regardless of
+   *  the value. Will be removed in a follow-up pass. */
+  price?: number;
+  badge?: string;
+  skills: string[];
+  /** Static asset path served by Cloudflare Pages from
+   *  `apps/docs/public/packs/<id>-graphnosis-demo-skill.gsk`. When the
+   *  download-counter Cloudflare Function ships, this path is intercepted
+   *  server-side without changing the visible URL. */
+  downloadUrl: string;
+}
+
+const packs: Pack[] = [
+
+  // ── Engineering ──────────────────────────────────────────────────────────
+  {
+    id: 'software-developer',
+    name: 'Software Developer',
+    category: 'engineering',
+    tagline: 'For engineers who build with AI daily',
+    price: 79,
+    skills: [
+      'Architecture recall — decision rationale and alternatives surfaced before any code change',
+      'Debug history — prior attempts for similar errors recalled automatically',
+      'Review context — codebase decisions attached to every code review session',
+      'Post-fix capture — lessons from resolved issues saved after each fix',
+    ],
+    downloadUrl: '/packs/software-developer-graphnosis-demo-skill.gsk',
+  },
+  {
+    id: 'devops-sre',
+    name: 'DevOps & SRE',
+    category: 'engineering',
+    tagline: 'For reliability engineers managing complex systems',
+    price: 79,
+    skills: [
+      'Incident history — fault signatures and prior resolution paths recalled before triage',
+      'Service dependency recall — known integration quirks surfaced before changes',
+      'Post-incident capture — root cause and timeline saved for future pattern matching',
+      'Configuration drift memory — prior deviations and their consequences recalled',
+    ],
+    downloadUrl: '/packs/devops-sre-graphnosis-demo-skill.gsk',
+  },
+  {
+    id: 'data-engineer',
+    name: 'Data Engineer',
+    category: 'engineering',
+    tagline: 'For engineers building and maintaining data pipelines',
+    price: 79,
+    skills: [
+      'Schema decision recall — why a column was typed, renamed, or deprecated',
+      'Pipeline rule memory — transformation logic and its exceptions recalled on edit',
+      'Data quality history — prior anomalies, their sources, and resolutions surfaced',
+      'Upstream dependency recall — known issues with source systems, before you rely on them',
+    ],
+    downloadUrl: '/packs/data-engineer-graphnosis-demo-skill.gsk',
+  },
+  {
+    id: 'ml-ai-engineer',
+    name: 'ML / AI Engineer',
+    category: 'engineering',
+    tagline: 'For engineers building, training, and shipping machine learning systems',
+    price: 79,
+    skills: [
+      'Experiment memory — dataset choices, hyperparameter rationale, and what failed recalled before the next run',
+      'Architecture decision recall — why a model architecture was chosen or abandoned, surfaced before redesign',
+      'Deployment lessons — production failures, rollback reasons, and tuning outcomes recalled on next deploy',
+      'Evaluation history — benchmark results and their caveats recalled before claiming improvement',
+    ],
+    downloadUrl: '/packs/ml-ai-engineer-graphnosis-demo-skill.gsk',
+  },
+  {
+    id: 'security-engineer',
+    name: 'Security Engineer',
+    category: 'engineering',
+    tagline: 'For engineers doing threat modeling, vulnerability research, and incident response',
+    price: 99,
+    skills: [
+      'Threat model history — prior threat assessments recalled before designing new surfaces',
+      'Vulnerability investigation memory — prior research threads, false positives, and confirmed findings recalled',
+      'Incident pattern recall — past incident signatures and response playbooks surfaced on new alerts',
+      'Tool and control decision recall — why a specific control was chosen or rejected, before revisiting',
+    ],
+    downloadUrl: '/packs/security-engineer-graphnosis-demo-skill.gsk',
+  },
+  {
+    id: 'embedded-systems',
+    name: 'Embedded Systems Engineer',
+    category: 'engineering',
+    tagline: 'For engineers working on firmware, microcontrollers, and hardware-software interfaces',
+    price: 79,
+    skills: [
+      'Firmware revision history — what changed, why, and what broke recalled before touching the same subsystem',
+      'Hardware-software interface memory — pin assignments, timing constraints, and interface quirks recalled on revisit',
+      'Debug pattern recall — prior fault signatures and their root causes surfaced before deep-dive sessions',
+      'Supplier and component recall — known errata, substitution decisions, and qualification outcomes by part',
+    ],
+    downloadUrl: '/packs/embedded-systems-graphnosis-demo-skill.gsk',
+  },
+  {
+    id: 'mechanical-engineer',
+    name: 'Mechanical Engineer',
+    category: 'engineering',
+    tagline: 'For engineers designing, analyzing, and iterating physical systems',
+    price: 79,
+    skills: [
+      'Design decision recall — tolerance rationale, material selection, and trade-off history surfaced before revision',
+      'Simulation and FEA memory — what was modeled, what assumptions were made, and what was learned',
+      'Supplier and manufacturing recall — known process constraints and supplier quirks recalled before spec release',
+      'Failure mode history — prior field failures and their root causes recalled before similar designs are released',
+    ],
+    downloadUrl: '/packs/mechanical-engineer-graphnosis-demo-skill.gsk',
+  },
+  {
+    id: 'electrical-pcb-engineer',
+    name: 'Electrical / PCB Engineer',
+    category: 'engineering',
+    tagline: 'For electronics engineers designing boards, power systems, and analog circuits',
+    price: 79,
+    skills: [
+      'Schematic decision recall — component selection rationale, reference designator history, and substitution notes',
+      'EMC and signal integrity memory — prior failures, layout changes, and test outcomes recalled before respins',
+      'BOM and supplier recall — last-time-buy decisions, approved alternates, and lead time history per component',
+      'Test and bring-up history — what failed on first power-on, what the fix was, recalled before new board revision',
+    ],
+    downloadUrl: '/packs/electrical-pcb-engineer-graphnosis-demo-skill.gsk',
+  },
+  {
+    id: 'civil-structural-engineer',
+    name: 'Civil & Structural Engineer',
+    category: 'engineering',
+    tagline: 'For engineers managing long-lifecycle infrastructure projects',
+    price: 99,
+    skills: [
+      'Design intent recall — why a structural decision was made recalled across handoffs, inspections, and repairs',
+      'Inspection and condition history — prior findings, deferred items, and remediation outcomes per structure',
+      'Regulatory and code memory — variance decisions, agency correspondence, and interpretation history recalled',
+      'Project constraint memory — site conditions, client constraints, and value-engineering trade-offs recalled on revisit',
+    ],
+    downloadUrl: '/packs/civil-structural-engineer-graphnosis-demo-skill.gsk',
+  },
+  {
+    id: 'chemical-process-engineer',
+    name: 'Chemical / Process Engineer',
+    category: 'engineering',
+    tagline: 'For engineers in process industries: oil & gas, pharma, chemicals, specialty materials',
+    price: 99,
+    skills: [
+      'HAZOP and MOC memory — prior hazard studies, management-of-change decisions, and deferred actions recalled',
+      'Process parameter history — operating envelope rationale, alarm set-point decisions, and deviation log recalled',
+      'Scale-up decision recall — what worked in the lab, what failed at scale, and why — surfaced before the next scale-up',
+      'Regulatory and PSM history — OSHA 1910.119 action items, PHA findings, and compliance rationale recalled',
+    ],
+    downloadUrl: '/packs/chemical-process-engineer-graphnosis-demo-skill.gsk',
+  },
+  {
+    id: 'systems-engineer',
+    name: 'Systems Engineer',
+    category: 'engineering',
+    tagline: 'For engineers managing requirements, interfaces, and trade studies across complex programs',
+    price: 99,
+    skills: [
+      'Requirement traceability memory — where a requirement came from, how it changed, and what drove each revision',
+      'Trade study history — what was compared, what was traded, and why the chosen architecture won',
+      'Interface control recall — ICD versions, open interface issues, and resolution history recalled across teams',
+      'Verification rationale — why a test method was chosen, what was waived, and the justification recalled on audit',
+    ],
+    downloadUrl: '/packs/systems-engineer-graphnosis-demo-skill.gsk',
+  },
+
+  // ── Industrial / OT ──────────────────────────────────────────────────────
+  {
+    id: 'process-equipment',
+    name: 'Process & Equipment',
+    category: 'industrial',
+    tagline: 'For operators and engineers managing critical plant assets',
+    price: 149,
+    badge: 'Air-gap ready',
+    skills: [
+      'Equipment fault history — prior failure signatures recalled before maintenance decisions',
+      'Maintenance lineage — what was done, when, by whom, and what happened after',
+      'Deviation tracking — procedure non-compliances and their outcomes, recalled on next trigger',
+      'Failure pattern recognition — recurring precursor conditions surfaced across time',
+    ],
+    downloadUrl: '/packs/process-equipment-graphnosis-demo-skill.gsk',
+  },
+  {
+    id: 'industrial-quality',
+    name: 'Industrial Quality & Compliance',
+    category: 'industrial',
+    tagline: 'For quality engineers in regulated manufacturing environments',
+    price: 149,
+    skills: [
+      'Inspection history — prior non-conformances recalled before each audit or review',
+      'Procedure deviation memory — past deviations and corrective actions surfaced on demand',
+      'Supplier quality recall — known issues with materials and vendors, before ordering',
+      'Corrective action lineage — what was approved, what was closed, what recurred',
+    ],
+    downloadUrl: '/packs/industrial-quality-graphnosis-demo-skill.gsk',
+  },
+  {
+    id: 'ot-field-technician',
+    name: 'OT Field Technician',
+    category: 'industrial',
+    tagline: 'For technicians on plant floors and remote sites',
+    price: 99,
+    skills: [
+      'Site history recall — what was found, what was done, what was deferred at this location',
+      'Equipment quirk memory — known workarounds and vendor advisories recalled before work',
+      'Safety incident recall — near-misses and prior incidents surfaced before similar tasks',
+      'Handoff capture — end-of-shift notes saved for the next technician automatically',
+    ],
+    downloadUrl: '/packs/ot-field-technician-graphnosis-demo-skill.gsk',
+  },
+  {
+    id: 'scada-energy-operations',
+    name: 'SCADA & Energy Operations',
+    category: 'industrial',
+    tagline: 'For control room operators and engineers in power, water, and gas utilities',
+    price: 149,
+    badge: 'Air-gap ready',
+    skills: [
+      'Alarm and event history — SCADA event logs ingested via OPC-UA or Modbus webhook; recurring alarm patterns recalled before shift handoff',
+      'Switching and isolation memory — prior procedure sequences, interlock rationale, and near-miss history recalled before issuing switching orders',
+      'Asset configuration recall — protection relay settings, set-point history, and non-standard configurations recalled by asset ID',
+      'Regulatory and NERC CIP recall — compliance action items, audit findings, and corrective measures surfaced before inspections',
+    ],
+    downloadUrl: '/packs/scada-energy-operations-graphnosis-demo-skill.gsk',
+  },
+  {
+    id: 'manufacturing-line',
+    name: 'Manufacturing Line Operations',
+    category: 'industrial',
+    tagline: 'For line supervisors and process engineers on production floors',
+    price: 99,
+    skills: [
+      'PLC alarm memory — alarm logs ingested via OPC-UA or Modbus webhook; recurring fault signatures recalled before production decisions',
+      'Changeover and setup recall — prior setup parameters, tooling notes, and first-article outcomes recalled per product or SKU',
+      'Line operator tribal knowledge — informal workarounds and machine quirks captured and recalled across crew rotations',
+      'Quality excursion history — prior OOS events, their root causes, and what containment worked recalled before similar runs',
+    ],
+    downloadUrl: '/packs/manufacturing-line-graphnosis-demo-skill.gsk',
+  },
+  {
+    id: 'building-facilities',
+    name: 'Building & Facilities Management',
+    category: 'industrial',
+    tagline: 'For facilities managers and building engineers overseeing complex properties',
+    price: 79,
+    skills: [
+      'BMS event log memory — fault and alarm history ingested via BACnet/Modbus webhook; recurring patterns recalled per system or zone',
+      'Vendor and contractor recall — prior work quality, response time, pricing history, and known issues recalled before dispatching',
+      'Preventive maintenance memory — what was inspected, what was deferred, and what recurred recalled per asset',
+      'Tenant and occupant context — prior complaints, accommodations, and space history recalled before service calls',
+    ],
+    downloadUrl: '/packs/building-facilities-graphnosis-demo-skill.gsk',
+  },
+  {
+    id: 'research-lab-instruments',
+    name: 'Research Lab Instruments',
+    category: 'industrial',
+    tagline: 'For lab managers and scientists operating HPLC, mass spec, microscopy, and other instruments',
+    price: 149,
+    badge: '21 CFR Part 11',
+    skills: [
+      'Instrument run history — serial/USB output ingested directly; calibration drift, OOS results, and anomalies recalled per instrument',
+      'Calibration and qualification memory — IQ/OQ/PQ records, standard performance baselines, and requalification triggers recalled',
+      'Protocol deviation log — prior deviations, their impact, and corrective actions recalled before repeat runs',
+      'Method and SOP recall — which method version was used, what changed between versions, and why recalled on audit',
+    ],
+    downloadUrl: '/packs/research-lab-instruments-graphnosis-demo-skill.gsk',
+  },
+  {
+    id: 'robotics-mechatronics',
+    name: 'Robotics & Mechatronics',
+    category: 'industrial',
+    tagline: 'For engineers operating robot fleets, autonomous systems, and mechatronic platforms',
+    price: 99,
+    skills: [
+      'Fleet telemetry memory — ROS topic data and sensor logs ingested via webhook; failure mode patterns recalled per robot or platform',
+      'Calibration and tuning history — what parameters were changed, when, why, and the resulting performance recalled per unit',
+      'Firmware and software trail — prior versions, rollback reasons, and field-observed regressions recalled before updates',
+      'Field condition memory — site-specific environmental factors, surface anomalies, and obstacle patterns recalled before deployment',
+    ],
+    downloadUrl: '/packs/robotics-mechatronics-graphnosis-demo-skill.gsk',
+  },
+  {
+    id: 'oil-gas-operations',
+    name: 'Oil & Gas Operations',
+    category: 'industrial',
+    tagline: 'For upstream and midstream engineers managing wells, pipelines, and production facilities',
+    price: 149,
+    skills: [
+      'Well and asset history — completion records, workover rationale, and production anomalies recalled per well; ingests via webhook or file',
+      'ESP and artificial lift recall — prior failure patterns, run-life history, and pump selection rationale recalled before interventions',
+      'HSE incident memory — near-misses, root causes, and corrective action outcomes recalled before similar operations',
+      'Subsurface knowledge recall — geological interpretations, reservoir behavior notes, and petrophysical decisions recalled per field',
+    ],
+    downloadUrl: '/packs/oil-gas-operations-graphnosis-demo-skill.gsk',
+  },
+  {
+    id: 'hvac-commissioning',
+    name: 'HVAC & Building Commissioning',
+    category: 'industrial',
+    tagline: 'For HVAC engineers and commissioning agents managing building system performance',
+    price: 79,
+    skills: [
+      'Control sequence memory — BACnet/Modbus webhook ingest; sequence-of-operations rationale and override history recalled per AHU or zone',
+      'BAS performance history — seasonal baselines, trending anomalies, and energy deviation patterns recalled before recommissioning',
+      'Commissioning issue log — prior deficiencies, their resolution status, and recurring failures recalled across project phases',
+      'Vendor and service recall — prior service work, warranty claims, and known equipment quirks recalled before maintenance decisions',
+    ],
+    downloadUrl: '/packs/hvac-commissioning-graphnosis-demo-skill.gsk',
+  },
+  {
+    id: 'aviation-mro',
+    name: 'Aviation Maintenance (MRO)',
+    category: 'industrial',
+    tagline: 'For aircraft maintenance engineers and MRO technicians',
+    price: 99,
+    skills: [
+      'Tech log and defect history — prior write-ups, deferred defects, and MEL history recalled per tail number before each inspection',
+      'Recurring squawk memory — chronic defect patterns and prior troubleshooting paths recalled before similar fault investigations',
+      'Part and component recall — AD compliance status, known service difficulties, and substitution history recalled per P/N',
+      'Task card and procedure memory — prior execution notes, deviations, and lessons captured for future maintainers via op-log',
+    ],
+    downloadUrl: '/packs/aviation-mro-graphnosis-demo-skill.gsk',
+  },
+
+  // ── Agentic AI ────────────────────────────────────────────────────────────
+  {
+    id: 'research-agent',
+    name: 'Research Agent',
+    category: 'agentic',
+    tagline: 'For developers building agents that accumulate knowledge over time',
+    price: 99,
+    skills: [
+      'Cross-run recall — prior findings surfaced before each new search run, no duplicate effort',
+      'Source provenance memory — where each finding came from, recalled on synthesis',
+      'Hypothesis lineage — what was tested, what was abandoned, why',
+      'Post-run capture — new findings saved after each run for future recall',
+    ],
+    downloadUrl: '/packs/research-agent-graphnosis-demo-skill.gsk',
+  },
+  {
+    id: 'customer-agent',
+    name: 'Customer & Relationship Agent',
+    category: 'agentic',
+    tagline: 'For agents that handle ongoing customer or partner relationships',
+    price: 99,
+    skills: [
+      'Contact history recall — prior interactions, commitments, and open issues before each run',
+      'Account context — relationship health signals and account history recalled automatically',
+      'Commitment tracking — what was promised, to whom, when — surfaced on next contact',
+      'Post-interaction capture — outcome and next actions saved after each session',
+    ],
+    downloadUrl: '/packs/customer-agent-graphnosis-demo-skill.gsk',
+  },
+  {
+    id: 'code-agent',
+    name: 'Code Agent',
+    category: 'agentic',
+    tagline: 'For AI agents that act on codebases across multiple runs',
+    price: 99,
+    skills: [
+      'Architecture context recall — prior design decisions recalled before each coding run',
+      'Debug history — prior attempts and their outcomes recalled when a similar error recurs',
+      'Change rationale memory — why a function was written this way, recalled on modification',
+      'Post-run capture — new decisions and lessons saved after each agent session',
+    ],
+    downloadUrl: '/packs/code-agent-graphnosis-demo-skill.gsk',
+  },
+
+  // ── Long-Cycle Knowledge ──────────────────────────────────────────────────
+  {
+    id: 'project-history',
+    name: 'Project History',
+    category: 'longcycle',
+    tagline: 'For teams managing multi-year projects with complex decision trails',
+    price: 79,
+    skills: [
+      'Decision archaeology — why was this chosen? Rationale, alternatives, and approvals recalled',
+      'Lessons learned recall — prior project outcomes surfaced before the same choice arises',
+      'Stakeholder history — prior positions, commitments, and relationships recalled',
+      'Risk history — what was flagged, what materialised, and what was dismissed last time',
+    ],
+    downloadUrl: '/packs/project-history-graphnosis-demo-skill.gsk',
+  },
+  {
+    id: 'institutional-memory',
+    name: 'Institutional Memory',
+    category: 'longcycle',
+    tagline: 'For organizations preserving knowledge through staff transitions',
+    price: 99,
+    badge: 'High ROI',
+    skills: [
+      'Succession context — what the departing person knew, recalled for the replacement',
+      'Tribal knowledge capture — undocumented practices saved before they walk out the door',
+      'Org decision history — how policies were formed and why, recalled when challenged',
+      'Relationship handoff memory — client and partner history passed to the next account holder',
+    ],
+    downloadUrl: '/packs/institutional-memory-graphnosis-demo-skill.gsk',
+  },
+  {
+    id: 'rd-longcycle',
+    name: 'R&D Long-Cycle',
+    category: 'longcycle',
+    tagline: 'For researchers and innovation teams spanning years of work',
+    price: 99,
+    skills: [
+      'Hypothesis lineage — what was tested, what was rejected, what was shelved and why',
+      'Experiment thread memory — prior results recalled before designing the next experiment',
+      'Collaboration history — who contributed what, when, and what they found',
+      'Dead-end recall — what has already been tried and failed, before the team tries it again',
+    ],
+    downloadUrl: '/packs/rd-longcycle-graphnosis-demo-skill.gsk',
+  },
+
+  // ── Healthcare ────────────────────────────────────────────────────────────
+  {
+    id: 'clinical-session',
+    name: 'Clinical Session',
+    category: 'healthcare',
+    tagline: 'For clinicians with sensitive session histories',
+    price: 79,
+    badge: 'HIPAA-aligned',
+    skills: [
+      'Prior session recall — structured context from past sessions before each appointment',
+      'Treatment history — medication history, interventions, and outcomes surfaced on demand',
+      'PHI boundary enforcement — Sensitive tier engaged; zero PHI tokens reach any cloud API',
+      'Progress note capture — structured session outcomes saved for future recall',
+    ],
+    downloadUrl: '/packs/clinical-session-graphnosis-demo-skill.gsk',
+  },
+  {
+    id: 'care-coordination',
+    name: 'Care Coordination',
+    category: 'healthcare',
+    tagline: 'For care coordinators managing multi-provider patient journeys',
+    price: 99,
+    badge: 'HIPAA-aligned',
+    skills: [
+      'Multi-provider context recall — all prior touchpoints surfaced before each handoff',
+      'Referral history — what was referred, what was received back, what was lost',
+      'Care plan memory — current plan and prior versions recalled when reviewing',
+      'Patient preference recall — documented preferences and prior communications surfaced',
+    ],
+    downloadUrl: '/packs/care-coordination-graphnosis-demo-skill.gsk',
+  },
+  {
+    id: 'clinical-research',
+    name: 'Clinical Research',
+    category: 'healthcare',
+    tagline: 'For clinical researchers managing protocols and trial data',
+    price: 99,
+    skills: [
+      'Protocol version recall — what changed, when, why, and what was the IRB response',
+      'Adverse event memory — prior events, their resolution, and reporting history',
+      'Subject history recall — prior visit data and protocol deviations surfaced per subject',
+      'Regulatory correspondence memory — FDA/EMA interactions recalled before submissions',
+    ],
+    downloadUrl: '/packs/clinical-research-graphnosis-demo-skill.gsk',
+  },
+
+  // ── Law (Non-Patent) ──────────────────────────────────────────────────────
+  {
+    id: 'matter-client',
+    name: 'Matter & Client',
+    category: 'legal',
+    tagline: 'For lawyers who handle ongoing client relationships and matters',
+    price: 79,
+    skills: [
+      'Client history recall — prior commitments, open issues, and relationship context before each call',
+      'Matter memory — prior advice, positions taken, and key dates recalled on demand',
+      'Commitment tracking — verbal and written commitments recalled by client and matter',
+      'Prior work recall — what was drafted, negotiated, or decided in prior engagements',
+    ],
+    downloadUrl: '/packs/matter-client-graphnosis-demo-skill.gsk',
+  },
+  {
+    id: 'litigation-support',
+    name: 'Litigation Support',
+    category: 'legal',
+    tagline: 'For litigators building and managing active cases',
+    price: 99,
+    skills: [
+      'Deposition history — prior witness statements and inconsistencies recalled',
+      'Exhibit and document recall — where a document came from and why it matters, surfaced on demand',
+      'Opposing counsel pattern memory — prior positions and tactics recalled before proceedings',
+      'Timeline construction — key events and their sources recalled when building arguments',
+    ],
+    downloadUrl: '/packs/litigation-support-graphnosis-demo-skill.gsk',
+  },
+  {
+    id: 'regulatory-compliance-legal',
+    name: 'Regulatory & Compliance',
+    category: 'legal',
+    tagline: 'For compliance counsel managing regulatory relationships',
+    price: 99,
+    skills: [
+      'Regulatory correspondence recall — prior interactions with agencies surfaced before submissions',
+      'Audit history memory — what was found, what was remediated, what recurred',
+      'Enforcement pattern recall — prior actions and their outcomes, recalled when a new matter opens',
+      'Compliance program memory — what controls exist, why, and what changed them',
+    ],
+    downloadUrl: '/packs/regulatory-compliance-legal-graphnosis-demo-skill.gsk',
+  },
+
+  // ── Specialized IP & Legal ────────────────────────────────────────────────
+  {
+    id: 'patent-portfolio',
+    name: 'Patent Portfolio',
+    category: 'ip',
+    tagline: 'For IP counsel managing prosecution and portfolio strategy',
+    price: 99,
+    skills: [
+      'Prior art recall — what has already been found and where, before a new search',
+      'Claim evolution memory — how claims changed during prosecution and why',
+      'Prosecution history recall — examiner positions, responses, and outcomes surfaced',
+      'Portfolio gap analysis — what technology areas are covered vs. exposed, recalled on demand',
+    ],
+    downloadUrl: '/packs/patent-portfolio-graphnosis-demo-skill.gsk',
+  },
+  {
+    id: 'trade-secret',
+    name: 'Trade Secret Protection',
+    category: 'ip',
+    tagline: 'For counsel protecting confidential business information',
+    price: 149,
+    skills: [
+      'Asset inventory recall — what is designated as trade secret, who has access, and when',
+      'Disclosure history — every authorized disclosure recalled before a new one is considered',
+      'Access log recall — prior access events and their context surfaced in disputes',
+      'NDA and agreement memory — prior confidentiality terms recalled before new negotiations',
+    ],
+    downloadUrl: '/packs/trade-secret-graphnosis-demo-skill.gsk',
+  },
+  {
+    id: 'ip-due-diligence',
+    name: 'IP Due Diligence',
+    category: 'ip',
+    tagline: 'For counsel and advisors running M&A and licensing IP reviews',
+    price: 99,
+    skills: [
+      'Portfolio assessment memory — prior validity opinions and red flags recalled per asset',
+      'Licensing history recall — prior term negotiations and outcomes surfaced in new deals',
+      'Freedom-to-operate recall — prior FTO analyses recalled before new product launches',
+      'Chain of title memory — ownership history and transfer records surfaced on demand',
+    ],
+    downloadUrl: '/packs/ip-due-diligence-graphnosis-demo-skill.gsk',
+  },
+
+  // ── Finance & Insurance ───────────────────────────────────────────────────
+  {
+    id: 'investment-research',
+    name: 'Investment Research',
+    category: 'finance',
+    tagline: 'For analysts and portfolio managers building long-term theses',
+    price: 79,
+    skills: [
+      'Thesis history — prior investment theses, conviction changes, and outcomes recalled',
+      'Management context recall — prior conversations, commitments, and patterns surfaced',
+      'Sector knowledge memory — prior analysis and its conclusions recalled on new coverage',
+      'Contrarian signal capture — notes saved when conviction diverges from consensus',
+    ],
+    downloadUrl: '/packs/investment-research-graphnosis-demo-skill.gsk',
+  },
+  {
+    id: 'risk-underwriting',
+    name: 'Risk & Underwriting',
+    category: 'finance',
+    tagline: 'For underwriters and risk professionals building exposure history',
+    price: 99,
+    skills: [
+      'Risk factor recall — prior underwriting positions and their loss outcomes surfaced',
+      'Exposure history — prior policy terms, exclusions, and claims recalled per account',
+      'Market conditions memory — prior cycle observations recalled when conditions repeat',
+      'Loss event recall — what happened, root cause, and reserve history for each event',
+    ],
+    downloadUrl: '/packs/risk-underwriting-graphnosis-demo-skill.gsk',
+  },
+  {
+    id: 'client-portfolio',
+    name: 'Client Portfolio',
+    category: 'finance',
+    tagline: 'For advisors managing long-term client financial relationships',
+    price: 99,
+    skills: [
+      'Account history recall — prior positions, decisions, and rationale before each review',
+      'Meeting memory — prior conversations, commitments, and concerns surfaced before calls',
+      'Life event recall — milestones and their financial implications remembered across years',
+      'Goal evolution memory — how client objectives changed and why, recalled on planning',
+    ],
+    downloadUrl: '/packs/client-portfolio-graphnosis-demo-skill.gsk',
+  },
+
+  // ── Government & Public Sector ────────────────────────────────────────────
+  {
+    id: 'policy-regulation',
+    name: 'Policy & Regulation',
+    category: 'government',
+    tagline: 'For policy professionals managing complex regulatory dockets',
+    price: 99,
+    skills: [
+      'Regulatory history recall — prior agency positions and their evolution surfaced',
+      'Stakeholder position memory — who said what, when, and how their view shifted',
+      'Consultation record recall — prior public comment rounds and their outcomes',
+      'Policy decision lineage — what was decided, who approved it, and what changed it',
+    ],
+    downloadUrl: '/packs/policy-regulation-graphnosis-demo-skill.gsk',
+  },
+  {
+    id: 'records-foia',
+    name: 'Records & FOIA',
+    category: 'government',
+    tagline: 'For records officers and FOIA coordinators managing disclosure workflows',
+    price: 79,
+    skills: [
+      'Request history recall — prior requests, their scope, and processing decisions surfaced',
+      'Redaction rationale memory — why a specific exemption was applied, recalled in appeals',
+      'Requester history recall — prior contacts and their patterns surfaced per requester',
+      'Disclosure precedent recall — what was released in prior similar requests',
+    ],
+    downloadUrl: '/packs/records-foia-graphnosis-demo-skill.gsk',
+  },
+  {
+    id: 'grant-program',
+    name: 'Grant & Program Management',
+    category: 'government',
+    tagline: 'For program managers overseeing grants and funded initiatives',
+    price: 79,
+    skills: [
+      'Award history recall — prior grant terms, conditions, and monitoring outcomes',
+      'Grantee context memory — compliance history and prior findings recalled per recipient',
+      'Reporting and milestone recall — what was due, what was submitted, what was flagged',
+      'Program design memory — prior implementation decisions and their outcomes recalled',
+    ],
+    downloadUrl: '/packs/grant-program-graphnosis-demo-skill.gsk',
+  },
+
+  // ── Defense & Aerospace ───────────────────────────────────────────────────
+  {
+    id: 'itar-compliance',
+    name: 'ITAR Compliance',
+    category: 'defense',
+    tagline: 'For export control officers and ITAR-regulated contractors',
+    price: 199,
+    badge: 'Air-gap ready',
+    skills: [
+      'Authorization history recall — prior licenses, their scope, and expiry recalled before transactions',
+      'Jurisdiction memory — prior commodity jurisdiction determinations and their rationale',
+      'Disclosure and access tracking — what was shared with whom, recalled in audits',
+      'Empowered Official memory — prior compliance decisions and their basis surfaced on demand',
+    ],
+    downloadUrl: '/packs/itar-compliance-graphnosis-demo-skill.gsk',
+  },
+  {
+    id: 'defense-contractor',
+    name: 'Defense Contractor',
+    category: 'defense',
+    tagline: 'For program managers on DoD contracts (DFARS / CMMC)',
+    price: 149,
+    skills: [
+      'Contract requirement recall — CDRL, SOW, and clause obligations surfaced before deliverables',
+      'Deliverable history — what was submitted, what was rejected, and the resolution recalled',
+      'DCSA and CMMC context memory — prior assessment findings and remediation history',
+      'Subcontractor flow-down recall — which clauses were passed down, to whom, and when',
+    ],
+    downloadUrl: '/packs/defense-contractor-graphnosis-demo-skill.gsk',
+  },
+  {
+    id: 'mission-systems',
+    name: 'Mission Systems Engineering',
+    category: 'defense',
+    tagline: 'For systems engineers on long-lifecycle aerospace and defense programs',
+    price: 149,
+    skills: [
+      'Specification history recall — what changed between baselines, why, and what drove it',
+      'Test history memory — what was tested, what failed, and the resolution for each anomaly',
+      'Configuration item recall — current configuration and its change history surfaced on demand',
+      'Interface decision memory — why a specific interface was defined this way, recalled on modification',
+    ],
+    downloadUrl: '/packs/mission-systems-graphnosis-demo-skill.gsk',
+  },
+
+  // ── Creative IP Protection ────────────────────────────────────────────────
+  {
+    id: 'manuscript-narrative',
+    name: 'Manuscript & Narrative',
+    category: 'creative',
+    tagline: 'For authors protecting and developing long-form creative work',
+    price: 79,
+    skills: [
+      'Story bible recall — characters, rules, timelines, and world-building recalled on demand',
+      'Draft lineage — prior versions, what changed, and why — never lost between sessions',
+      'Continuity memory — prior established facts recalled before writing new scenes',
+      'Unpublished work boundary — Sensitive tier engaged; zero creative content reaches cloud AI',
+    ],
+    downloadUrl: '/packs/manuscript-narrative-graphnosis-demo-skill.gsk',
+  },
+  {
+    id: 'design-visual-ip',
+    name: 'Design & Visual IP',
+    category: 'creative',
+    tagline: 'For designers protecting unreleased visual and product work',
+    price: 79,
+    skills: [
+      'Asset provenance recall — when each element was created, its source, and its status',
+      'Iteration history — what changed between versions and the brief behind each change',
+      'Style guide memory — brand rules and their rationale recalled across all sessions',
+      'IP boundary enforcement — unreleased assets stay local; no cloud ingestion',
+    ],
+    downloadUrl: '/packs/design-visual-ip-graphnosis-demo-skill.gsk',
+  },
+  {
+    id: 'music-audio-ip',
+    name: 'Music & Audio IP',
+    category: 'creative',
+    tagline: 'For composers, producers, and studios protecting unreleased work',
+    price: 79,
+    skills: [
+      'Composition history — what was written, when, and in what context, recalled on demand',
+      'Sample provenance recall — what was used, from where, and its clearance status',
+      'Rights and ownership memory — who owns what, what was licensed, and on what terms',
+      'Unreleased work boundary — zero audio content or metadata reaches external services',
+    ],
+    downloadUrl: '/packs/music-audio-ip-graphnosis-demo-skill.gsk',
+  },
+
+  // ── Journalism & Investigation ────────────────────────────────────────────
+  {
+    id: 'source-memory',
+    name: 'Source Memory',
+    category: 'journalism',
+    tagline: 'For journalists managing ongoing source relationships',
+    price: 79,
+    skills: [
+      'Source history recall — prior interactions, reliability signals, and relationship context',
+      'Contact commitment memory — what a source said they would provide, recalled on follow-up',
+      'Source pattern recall — prior inconsistencies or reliability issues surfaced before use',
+      'Sensitive source protection — Sensitive tier; source identities never reach cloud AI',
+    ],
+    downloadUrl: '/packs/source-memory-graphnosis-demo-skill.gsk',
+  },
+  {
+    id: 'investigation-thread',
+    name: 'Investigation Thread',
+    category: 'journalism',
+    tagline: 'For investigative journalists tracking complex multi-thread stories',
+    price: 99,
+    skills: [
+      'Evidence chain recall — what was found, where, and what it connects to, surfaced on demand',
+      'Timeline memory — the sequence of events and their sources recalled when writing',
+      'Entity relationship recall — how people, organizations, and documents connect, across time',
+      'Dead end memory — what was investigated and cleared, to avoid repeating the work',
+    ],
+    downloadUrl: '/packs/investigation-thread-graphnosis-demo-skill.gsk',
+  },
+
+  // ── Scientific Research ───────────────────────────────────────────────────
+  {
+    id: 'laboratory-notebook',
+    name: 'Laboratory Notebook',
+    category: 'science',
+    tagline: 'For researchers maintaining an auditable experimental record',
+    price: 79,
+    skills: [
+      'Experiment lineage — prior protocols, results, and deviations recalled before each run',
+      'Reagent and material recall — lot numbers, supplier issues, and substitutions surfaced',
+      'Hypothesis history — what was tested, what was abandoned, and the evidence trail',
+      'Protocol version memory — what changed between versions and the rationale',
+    ],
+    downloadUrl: '/packs/laboratory-notebook-graphnosis-demo-skill.gsk',
+  },
+  {
+    id: 'literature-synthesis',
+    name: 'Literature & Synthesis',
+    category: 'science',
+    tagline: 'For researchers managing large bodies of literature over time',
+    price: 79,
+    skills: [
+      'Prior synthesis recall — what you concluded from a paper, recalled years later',
+      'Research thread memory — the line of inquiry and its evolution across time',
+      'Citation relationship recall — how sources connect to each other and to your argument',
+      'Gap memory — open questions and their prior investigation history surfaced on demand',
+    ],
+    downloadUrl: '/packs/literature-synthesis-graphnosis-demo-skill.gsk',
+  },
+  {
+    id: 'multi-institution-research',
+    name: 'Multi-Institution Research',
+    category: 'science',
+    tagline: 'For researchers managing collaborations, grants, and IRB obligations',
+    price: 99,
+    skills: [
+      'Collaboration history — who contributed what, on what timeline, and with what constraints',
+      'Data provenance recall — where each dataset came from and its usage restrictions',
+      'IRB and ethics memory — prior approvals, amendments, and their conditions recalled',
+      'Grant obligation recall — reporting deadlines, deliverables, and milestones surfaced',
+    ],
+    downloadUrl: '/packs/multi-institution-research-graphnosis-demo-skill.gsk',
+  },
+
+  // ── Education & Knowledge Work ────────────────────────────────────────────
+  {
+    id: 'academic-research',
+    name: 'Academic Research',
+    category: 'education',
+    tagline: 'For doctoral researchers and academics managing long research arcs',
+    price: 79,
+    skills: [
+      'Literature synthesis memory — what you concluded from prior reading, recalled on demand',
+      'Dissertation thread recall — the argument, its evolution, and committee feedback over time',
+      'Advisor and supervisor memory — prior feedback, commitments, and agreed directions',
+      'Conference and submission history — what was presented, rejected, or accepted, and why',
+    ],
+    downloadUrl: '/packs/academic-research-graphnosis-demo-skill.gsk',
+  },
+  {
+    id: 'corporate-ld',
+    name: 'Corporate L&D',
+    category: 'education',
+    tagline: 'For L&D professionals managing learning programs across an organization',
+    price: 79,
+    skills: [
+      'Program history recall — what was run, how it performed, and what changed it',
+      'Competency gap memory — prior needs analyses and their recommended interventions',
+      'Learner cohort history — prior engagement patterns recalled when designing new programs',
+      'Vendor and content history — prior assessments of learning vendors and content quality',
+    ],
+    downloadUrl: '/packs/corporate-ld-graphnosis-demo-skill.gsk',
+  },
+  {
+    id: 'teacher-professor',
+    name: 'Teacher & Professor',
+    category: 'education',
+    tagline: 'For educators who teach, advise, research, and develop curriculum across years',
+    price: 79,
+    skills: [
+      'Course and lesson memory — what worked, what fell flat, and why recalled before the next semester',
+      'Student and cohort patterns — recurring misconceptions, advising notes, and feedback themes by topic',
+      'Curriculum evolution recall — why content changed, what was cut, and what was added and when',
+      'Research-teaching balance — open questions from the classroom that fed research, and vice versa, recalled across projects',
+    ],
+    downloadUrl: '/packs/teacher-professor-graphnosis-demo-skill.gsk',
+  },
+
+  // ── Field Operations & Trades ─────────────────────────────────────────────
+  {
+    id: 'field-service',
+    name: 'Field Service',
+    category: 'field',
+    tagline: 'For field technicians serving equipment at customer sites',
+    price: 79,
+    skills: [
+      'Site history recall — what was found, what was done, and what was deferred at this location',
+      'Equipment quirk memory — known workarounds and vendor advisories recalled before work',
+      'Customer commitment recall — what was promised at prior visits, surfaced on return',
+      'Handoff capture — end-of-visit notes saved for the next technician automatically',
+    ],
+    downloadUrl: '/packs/field-service-graphnosis-demo-skill.gsk',
+  },
+  {
+    id: 'safety-compliance-field',
+    name: 'Safety & Compliance',
+    category: 'field',
+    tagline: 'For safety officers and HSE professionals in operational environments',
+    price: 99,
+    skills: [
+      'Incident history recall — prior incidents with similar characteristics surfaced before work',
+      'Near-miss memory — what was reported, investigated, and remediated recalled on demand',
+      'Procedure deviation recall — past deviations and their consequences surfaced before sign-off',
+      'Inspection history memory — prior findings recalled before each new audit cycle',
+    ],
+    downloadUrl: '/packs/safety-compliance-field-graphnosis-demo-skill.gsk',
+  },
+  {
+    id: 'fleet-operations',
+    name: 'Fleet Operations',
+    category: 'field',
+    tagline: 'For fleet managers overseeing vehicles, drivers, and mobile assets',
+    price: 79,
+    skills: [
+      'Vehicle maintenance history — recurring faults, repair outcomes, and deferred items recalled per asset',
+      'Driver and operator notes — performance patterns, incident history, and coaching context recalled before reviews',
+      'Vendor and repair shop recall — reliability, pricing history, and turnaround patterns by provider',
+      'Route and deployment memory — operational constraints, seasonal issues, and site-specific conditions recalled before dispatch',
+    ],
+    downloadUrl: '/packs/fleet-operations-graphnosis-demo-skill.gsk',
+  },
+
+  // ── Architecture & Construction ───────────────────────────────────────────
+  {
+    id: 'design-planning',
+    name: 'Design & Planning',
+    category: 'architecture',
+    tagline: 'For architects managing complex projects through design and approvals',
+    price: 79,
+    skills: [
+      'Design decision recall — why a specific approach was taken and who approved it',
+      'Code compliance memory — prior interpretations and rulings recalled before submissions',
+      'Client brief history — how requirements evolved and what was agreed at each stage',
+      'Value engineering recall — prior cost decisions and their consequences surfaced on new projects',
+    ],
+    downloadUrl: '/packs/design-planning-graphnosis-demo-skill.gsk',
+  },
+  {
+    id: 'construction-project',
+    name: 'Construction Project Management',
+    category: 'architecture',
+    tagline: 'For project managers on large construction sites',
+    price: 79,
+    skills: [
+      'RFI history recall — prior questions, answers, and the decisions they produced',
+      'Change order memory — what was requested, what was approved, and at what cost',
+      'Subcontractor relationship recall — prior performance, issues, and commitments surfaced',
+      'Punch list and defect memory — open items and their resolution history across the project',
+    ],
+    downloadUrl: '/packs/construction-project-graphnosis-demo-skill.gsk',
+  },
+  {
+    id: 'pre-design-research',
+    name: 'Pre-Design & Site Research',
+    category: 'architecture',
+    tagline: 'For architects and developers in feasibility, programming, and early-phase research',
+    price: 79,
+    skills: [
+      'Site investigation memory — zoning history, environmental findings, and regulatory constraints recalled per site',
+      'Program and brief evolution — how client requirements shifted and why, recalled before design decisions crystallize',
+      'Precedent and typology recall — prior case studies, their lessons, and how they influenced the design direction',
+      'Consultant and stakeholder context — who said what in early-phase meetings, recalled before design reviews',
+    ],
+    downloadUrl: '/packs/pre-design-research-graphnosis-demo-skill.gsk',
+  },
+
+  // ── Business Operations & B2B ─────────────────────────────────────────────
+  {
+    id: 'sales-account',
+    name: 'Sales & Account',
+    category: 'business',
+    tagline: 'For account executives managing complex B2B relationships',
+    price: 99,
+    badge: 'Most popular',
+    skills: [
+      'Account history recall — full relationship context before every call or meeting',
+      'Risk signal memory — health indicators and churn signals recalled across the relationship',
+      'Renewal context recall — account history synthesised before renewal conversations',
+      'Objection history — how prior objections were handled and what the outcome was',
+    ],
+    downloadUrl: '/packs/sales-account-graphnosis-demo-skill.gsk',
+  },
+  {
+    id: 'customer-success',
+    name: 'Customer Success',
+    category: 'business',
+    tagline: 'For CSMs managing ongoing customer health and expansion',
+    price: 79,
+    skills: [
+      'Health signal recall — prior engagement patterns and risk indicators surfaced on review',
+      'Expansion opportunity memory — prior conversations about adjacent needs recalled',
+      'Escalation history — prior issues, their resolution, and the relationship impact recalled',
+      'QBR and review memory — prior commitments made in business reviews surfaced at renewal',
+    ],
+    downloadUrl: '/packs/customer-success-graphnosis-demo-skill.gsk',
+  },
+  {
+    id: 'vendor-operations',
+    name: 'Vendor & Operations',
+    category: 'business',
+    tagline: 'For operations leads managing supplier relationships and contracts',
+    price: 79,
+    skills: [
+      'Supplier history recall — prior performance, issues, and negotiation outcomes surfaced',
+      'Contract term memory — SLA obligations, renewal dates, and key clauses recalled',
+      'Incident and SLA history — prior failures, credits, and remediation recalled per vendor',
+      'Procurement decision recall — why a vendor was chosen over alternatives, surfaced on review',
+    ],
+    downloadUrl: '/packs/vendor-operations-graphnosis-demo-skill.gsk',
+  },
+  {
+    id: 'ceo-founder',
+    name: 'CEO & Founder',
+    category: 'business',
+    tagline: 'For founders and CEOs managing strategy, board relationships, and organizational context',
+    price: 99,
+    skills: [
+      'Strategic decision memory — why a direction was chosen, what was rejected, and the reasoning recalled before pivots',
+      'Board and investor context — prior positions, sensitivities, and commitment history recalled before each meeting',
+      'Stakeholder and partner recall — relationship history, key agreements, and open items recalled before conversations',
+      'Organizational decision trail — hiring decisions, structure changes, and cultural commitments recalled across time',
+    ],
+    downloadUrl: '/packs/ceo-founder-graphnosis-demo-skill.gsk',
+  },
+  {
+    id: 'coo-operations-leader',
+    name: 'COO & Operations Leader',
+    category: 'business',
+    tagline: 'For COOs and heads of operations driving cross-functional execution',
+    price: 79,
+    skills: [
+      'Process decision memory — why an operational process was designed a certain way, recalled before redesign',
+      'Cross-functional context — what each team committed to, what slipped, and why recalled before planning cycles',
+      'Vendor and infrastructure recall — prior performance, contract terms, and negotiation outcomes per supplier',
+      'OKR and initiative history — prior goal rationale, missed targets and their causes, surfaced before the next cycle',
+    ],
+    downloadUrl: '/packs/coo-operations-leader-graphnosis-demo-skill.gsk',
+  },
+  {
+    id: 'cfo-finance-leader',
+    name: 'CFO & Finance Leader',
+    category: 'business',
+    tagline: 'For CFOs and finance leaders managing planning, reporting, and investor relationships',
+    price: 99,
+    skills: [
+      'Financial decision memory — model assumptions, scenario rationale, and forecast variance explanations recalled',
+      'Investor and lender context — prior conversations, commitments, covenants, and sensitivities recalled before calls',
+      'Audit and compliance history — prior findings, management responses, and remediation status recalled per cycle',
+      'Board reporting recall — prior narratives, questions raised, and action items committed to recalled before prep',
+    ],
+    downloadUrl: '/packs/cfo-finance-leader-graphnosis-demo-skill.gsk',
+  },
+  {
+    id: 'cmo-marketing-leader',
+    name: 'CMO & Marketing Leader',
+    category: 'business',
+    tagline: 'For CMOs and heads of marketing managing brand, campaigns, and agency relationships',
+    price: 79,
+    skills: [
+      'Brand decision memory — positioning rationale, rejected directions, and message evolution recalled before campaigns',
+      'Campaign history — prior performance, audience response, channel decisions, and lessons recalled before planning',
+      'Agency and partner recall — prior briefs, feedback patterns, and relationship context recalled before reviews',
+      'Competitive intelligence — prior analysis, positioning shifts, and response decisions recalled as market evolves',
+    ],
+    downloadUrl: '/packs/cmo-marketing-leader-graphnosis-demo-skill.gsk',
+  },
+  {
+    id: 'chief-of-staff',
+    name: 'Chief of Staff',
+    category: 'business',
+    tagline: 'For chiefs of staff and senior EAs supporting principals at the executive level',
+    price: 79,
+    skills: [
+      'Principal context — preferences, working style, prior decisions, and standing commitments recalled before each engagement',
+      'Stakeholder relationship memory — who matters to the principal, prior interactions, and open threads recalled before prep',
+      'Meeting and initiative history — what was agreed, what was deferred, and what is still open recalled before follow-ups',
+      'Recurring brief memory — board prep, investor calls, leadership offsites — prior versions and their evolution recalled',
+    ],
+    downloadUrl: '/packs/chief-of-staff-graphnosis-demo-skill.gsk',
+  },
+  {
+    id: 'strategy-corp-dev',
+    name: 'Strategy & Corporate Development',
+    category: 'business',
+    tagline: 'For strategy leads and corp dev professionals managing M&A, partnerships, and competitive intelligence',
+    price: 99,
+    skills: [
+      'Deal and partnership history — prior conversations, term evolution, and rationale for deals pursued or passed recalled',
+      'Competitive intelligence memory — prior analyses, strategic shift signals, and response decisions recalled as market moves',
+      'Build-buy-partner decision trail — prior frameworks applied, alternatives evaluated, and outcome rationale recalled',
+      'Board and leadership narrative history — prior strategy presentations, objections raised, and direction given recalled',
+    ],
+    downloadUrl: '/packs/strategy-corp-dev-graphnosis-demo-skill.gsk',
+  },
+
+  // ── HR & People Operations ────────────────────────────────────────────────
+  {
+    id: 'hr-business-partner',
+    name: 'HR Business Partner',
+    category: 'hr',
+    tagline: 'For HRBPs embedded in business units, supporting leaders and employees',
+    price: 79,
+    skills: [
+      'Manager and leader context — prior coaching conversations, recurring issues, and commitments recalled before 1:1s',
+      'Employee relations history — prior concerns raised, informal resolutions, and patterns recalled across the business unit',
+      'Organizational change memory — restructuring rationale, role changes, and transition decisions recalled on revisit',
+      'Talent and performance recall — prior review themes, development conversations, and succession context per employee',
+    ],
+    downloadUrl: '/packs/hr-business-partner-graphnosis-demo-skill.gsk',
+  },
+  {
+    id: 'talent-acquisition',
+    name: 'Talent Acquisition & Recruiting',
+    category: 'hr',
+    tagline: 'For recruiters and talent acquisition leads managing pipelines and hiring decisions',
+    price: 79,
+    skills: [
+      'Hiring manager context — role requirements, past feedback patterns, and preference history recalled before sourcing',
+      'Candidate history — prior conversations, prior applications, and reasons for past decisions recalled per candidate',
+      'Sourcing decision memory — which channels worked for which roles, and why alternatives were deprioritized',
+      'Offer and negotiation recall — prior ranges, counteroffers, and outcome patterns recalled before new offers',
+    ],
+    downloadUrl: '/packs/talent-acquisition-graphnosis-demo-skill.gsk',
+  },
+  {
+    id: 'people-operations',
+    name: 'People Operations',
+    category: 'hr',
+    tagline: 'For people ops teams managing onboarding, policies, and the employee lifecycle',
+    price: 79,
+    skills: [
+      'Onboarding memory — what each new hire was told, what was deferred, and what follow-ups are open per person',
+      'Policy decision trail — why a policy was written as it was, prior interpretations, and edge cases recalled on update',
+      'Offboarding and transition recall — prior handoff quality, knowledge transfer gaps, and lessons for next time',
+      'Systems and tooling history — prior vendor decisions, migration rationale, and known issues recalled before changes',
+    ],
+    downloadUrl: '/packs/people-operations-graphnosis-demo-skill.gsk',
+  },
+  {
+    id: 'employee-relations-compliance',
+    name: 'Employee Relations & HR Compliance',
+    category: 'hr',
+    tagline: 'For HR leads managing investigations, policy compliance, and workplace matters',
+    price: 99,
+    skills: [
+      'Investigation and case history — prior similar matters, their outcomes, and precedent recalled before new cases',
+      'Policy interpretation memory — prior edge cases, legal guidance received, and decisions made recalled on similar facts',
+      'Disciplinary and performance action trail — prior warnings, PIPs, and outcomes recalled when similar situations recur',
+      'Regulatory and audit history — prior agency interactions, findings, and corrective actions recalled before compliance reviews',
+    ],
+    downloadUrl: '/packs/employee-relations-compliance-graphnosis-demo-skill.gsk',
+  },
+  {
+    id: 'compensation-benefits',
+    name: 'Compensation & Benefits',
+    category: 'hr',
+    tagline: 'For total rewards leaders managing comp philosophy, benchmarking, and benefits programs',
+    price: 99,
+    skills: [
+      'Compensation philosophy memory — prior band decisions, equity refresh rationale, and exception history recalled before cycles',
+      'Benchmarking and survey history — which surveys were used, what adjustments were made, and why recalled before renewal',
+      'Benefits design decision trail — prior vendor selection, plan design changes, and employee feedback recalled before open enrollment',
+      'Executive comp and equity recall — grant history, vesting decisions, and board approval context recalled per individual',
+    ],
+    downloadUrl: '/packs/compensation-benefits-graphnosis-demo-skill.gsk',
+  },
+  {
+    id: 'workforce-planning',
+    name: 'Workforce Planning',
+    category: 'hr',
+    tagline: 'For HR leaders and finance partners doing headcount planning and org design',
+    price: 79,
+    skills: [
+      'Headcount decision memory — prior approvals, rejected requests, and rationale recalled before planning cycles',
+      'Org design history — prior structures considered, trade-offs made, and outcomes recalled before redesign',
+      'Skills gap and capability recall — prior assessments, build-buy-partner decisions, and their outcomes by function',
+      'Attrition and retention memory — exit themes, prior retention interventions, and their effectiveness recalled',
+    ],
+    downloadUrl: '/packs/workforce-planning-graphnosis-demo-skill.gsk',
+  },
+
+  // ── Non-Profits & Communities ─────────────────────────────────────────────
+  {
+    id: 'nonprofit-foundation',
+    name: 'Non-Profit & Foundation',
+    category: 'nonprofit',
+    tagline: 'For executive directors, program officers, and development staff',
+    price: 79,
+    skills: [
+      'Funder memory — grant history, program officer preferences, prior rejections and approvals recalled per funder',
+      'Program outcome recall — impact data, beneficiary stories, and metrics surfaced for reports and renewals',
+      'Board and stakeholder context — member priorities, prior decisions, and relationship history recalled before meetings',
+      'Donor relationship memory — giving history, communications, stewardship commitments, and recognition recalled per donor',
+    ],
+    downloadUrl: '/packs/nonprofit-foundation-graphnosis-demo-skill.gsk',
+  },
+  {
+    id: 'nonprofit-large-community',
+    name: 'Large Community & Membership Org',
+    category: 'nonprofit',
+    tagline: 'For associations, faith communities, unions, and large member-based organizations',
+    price: 99,
+    badge: 'Community scale',
+    skills: [
+      'Member history recall — engagement patterns, needs, volunteer roles, and prior interactions recalled per member or household',
+      'Program and event memory — attendance history, feedback, recurring issues, and lessons-learned surfaced per program cycle',
+      'Committee and leadership context — working group decisions, term history, conflict resolutions, and institutional knowledge recalled',
+      'Partnership and coalition memory — MOU terms, partner contacts, collaboration history, and shared-goal alignment recalled before outreach',
+    ],
+    downloadUrl: '/packs/nonprofit-large-community-graphnosis-demo-skill.gsk',
+  },
+  {
+    id: 'volunteer-management',
+    name: 'Volunteer Management',
+    category: 'nonprofit',
+    tagline: 'For volunteer coordinators managing large, diverse, rotating volunteer pools',
+    price: 79,
+    skills: [
+      'Volunteer history recall — skills, availability, prior roles, and reliability patterns recalled before scheduling',
+      'Onboarding and training memory — what each volunteer has completed, what was waived, and what needs renewal',
+      'Recognition and engagement recall — milestones, preferences, and prior appreciation history recalled before outreach',
+      'Role and event memory — which volunteers worked which events, how they performed, and what they requested',
+    ],
+    downloadUrl: '/packs/volunteer-management-graphnosis-demo-skill.gsk',
+  },
+
+  // ── Compliance & Regulatory ───────────────────────────────────────────────
+  {
+    id: 'hipaa-compliance',
+    name: 'HIPAA Compliance Officer',
+    category: 'compliance',
+    tagline: 'For healthcare compliance officers managing PHI controls and audit readiness',
+    price: 199,
+    badge: 'MemoryStudio',
+    skills: [
+      'Policy version history — current and superseded HIPAA policies recalled before any update or audit',
+      'Training completion memory — staff training records, attestations, and gaps recalled before audits or enforcement events',
+      'Breach log recall — prior incidents, investigation outcomes, and OCR correspondence recalled before new assessments',
+      'Business Associate Agreement tracking — BAA status, covered entities, and data flows recalled before vendor onboarding',
+      'Risk assessment trail — prior risk analyses, mitigation decisions, and residual risk rationale recalled before reviews',
+      'Memory maintenance — yours to manage in Graphnosis MemoryStudio or, by choice, deterministically with the Self-Healing Brain Engine or non-deterministically with the Neural Network (GNN) and/or Local Layer (GLL)',
+    ],
+    downloadUrl: '/packs/hipaa-compliance-graphnosis-demo-skill.gsk',
+  },
+  {
+    id: 'gdpr-data-protection',
+    name: 'GDPR & Data Protection',
+    category: 'compliance',
+    tagline: 'For DPOs and privacy teams managing GDPR obligations across jurisdictions',
+    price: 199,
+    badge: 'MemoryStudio',
+    skills: [
+      'ROPA memory — Records of Processing Activities, lawful bases, and retention schedules recalled before assessments',
+      'DPIA trail — Data Protection Impact Assessments, outcomes, and residual risk decisions recalled before new processing activities',
+      'DSR handling history — prior Data Subject Requests, response timelines, and exceptions recalled before new requests',
+      'Supervisory authority correspondence — prior DPA interactions, enforcement actions, and commitments recalled before filings',
+      'Third-country transfer records — SCCs, adequacy decisions, and TIA outcomes recalled before new vendor contracts',
+      'Memory maintenance — yours to manage in Graphnosis MemoryStudio or, by choice, deterministically with the Self-Healing Brain Engine or non-deterministically with the Neural Network (GNN) and/or Local Layer (GLL)',
+    ],
+    downloadUrl: '/packs/gdpr-data-protection-graphnosis-demo-skill.gsk',
+  },
+  {
+    id: 'sox-financial-controls',
+    name: 'SOX & Financial Controls',
+    category: 'compliance',
+    tagline: 'For internal audit and controls teams managing Sarbanes-Oxley compliance programs',
+    price: 149,
+    skills: [
+      'Control inventory recall — control descriptions, owners, and test results recalled before walkthrough preparation',
+      'Deficiency tracking — prior control deficiencies, remediation commitments, and management responses recalled before re-testing',
+      'External auditor correspondence — prior PBC requests, auditor findings, and response history recalled before each cycle',
+      'Entity-level controls memory — tone-at-the-top evidence and ELC assessments recalled before COSO framework reviews',
+      'IT general controls trail — ITGC test results, exceptions, and compensating controls recalled before quarterly closes',
+      'Memory maintenance — yours to manage in Graphnosis MemoryStudio or, by choice, deterministically with the Self-Healing Brain Engine or non-deterministically with the Neural Network (GNN) and/or Local Layer (GLL)',
+    ],
+    downloadUrl: '/packs/sox-financial-controls-graphnosis-demo-skill.gsk',
+  },
+  {
+    id: 'iso-27001',
+    name: 'ISO 27001 & Information Security',
+    category: 'compliance',
+    tagline: 'For ISMSs managers and security compliance teams working toward or maintaining certification',
+    price: 149,
+    skills: [
+      'ISMS scope and boundary memory — asset inventory, statement of applicability, and scope decisions recalled before audits',
+      'Risk register trail — threat assessments, risk treatment decisions, and residual risk acceptance recalled before reviews',
+      'Nonconformity and CAPA history — prior audit findings, corrective actions, and closure evidence recalled before surveillance audits',
+      'Supplier security assessment memory — third-party due diligence results and reassessment schedules recalled before renewals',
+      'Incident response log — security incidents, root cause analyses, and lessons learned recalled before tabletop exercises',
+      'Memory maintenance — yours to manage in Graphnosis MemoryStudio or, by choice, deterministically with the Self-Healing Brain Engine or non-deterministically with the Neural Network (GNN) and/or Local Layer (GLL)',
+    ],
+    downloadUrl: '/packs/iso-27001-graphnosis-demo-skill.gsk',
+  },
+  {
+    id: 'fda-21cfr-part11',
+    name: 'FDA 21 CFR Part 11 & GxP',
+    category: 'compliance',
+    tagline: 'For quality and regulatory affairs teams managing electronic records and GxP compliance',
+    price: 199,
+    badge: 'MemoryStudio',
+    skills: [
+      'Validation history recall — IQ/OQ/PQ protocols, test results, and revalidation triggers recalled before system changes',
+      'Audit trail configuration memory — system audit trail settings and gap assessments recalled before inspections',
+      'SOP version control — current and retired SOPs, change rationale, and training dependencies recalled before updates',
+      'FDA correspondence trail — prior inspection observations, 483 responses, and commitment close-out recalled before new audits',
+      'Electronic signature governance — user authentication records and signature meaning attestations recalled before inspections',
+      'Memory maintenance — yours to manage in Graphnosis MemoryStudio or, by choice, deterministically with the Self-Healing Brain Engine or non-deterministically with the Neural Network (GNN) and/or Local Layer (GLL)',
+    ],
+    downloadUrl: '/packs/fda-21cfr-part11-graphnosis-demo-skill.gsk',
+  },
+  {
+    id: 'nerc-cip',
+    name: 'NERC CIP (Energy & Utilities)',
+    category: 'compliance',
+    tagline: 'For compliance and operations staff at electric utilities managing Critical Infrastructure Protection standards',
+    price: 299,
+    badge: 'MemoryStudio',
+    skills: [
+      'BES Cyber Asset inventory — asset classifications, Electronic Security Perimeter boundaries, and ownership recalled before assessments',
+      'Vulnerability management history — prior patch assessments, mitigation decisions, and remediation timelines recalled before quarterly reviews',
+      'Access control and credential memory — physical and electronic access records, provisioning rationale, and revocation history recalled before audits',
+      'Incident response and reporting trail — prior reportable incidents, timelines, and lessons learned recalled before tabletop exercises',
+      'Third-party connectivity records — vendor remote access approvals, monitoring configurations, and review history recalled before renewals',
+      'Memory maintenance — yours to manage in Graphnosis MemoryStudio or, by choice, deterministically with the Self-Healing Brain Engine or non-deterministically with the Neural Network (GNN) and/or Local Layer (GLL)',
+    ],
+    downloadUrl: '/packs/nerc-cip-graphnosis-demo-skill.gsk',
+  },
+  {
+    id: 'aml-bsa',
+    name: 'AML / BSA Compliance',
+    category: 'compliance',
+    tagline: 'For Bank Secrecy Act officers and AML compliance teams managing transaction monitoring and regulatory obligations',
+    price: 149,
+    skills: [
+      'SAR and CTR filing history — prior filings, disposition rationale, and follow-up activity recalled before new alerts',
+      'Customer due diligence memory — CDD and EDD decisions, risk ratings, and review history recalled before enhanced monitoring',
+      'Regulatory examination trail — prior exam findings, MRAs, and remediation commitments recalled before new examinations',
+      'Typology and red-flag library — known patterns, case precedents, and policy interpretations recalled before alert adjudication',
+      'Correspondent banking due diligence — Wolfsberg questionnaire responses and CBDDQ outcomes recalled before relationship reviews',
+      'Memory maintenance — yours to manage in Graphnosis MemoryStudio or, by choice, deterministically with the Self-Healing Brain Engine or non-deterministically with the Neural Network (GNN) and/or Local Layer (GLL)',
+    ],
+    downloadUrl: '/packs/aml-bsa-graphnosis-demo-skill.gsk',
+  },
+  {
+    id: 'esg-reporting',
+    name: 'ESG & Sustainability Reporting',
+    category: 'compliance',
+    tagline: 'For ESG officers and sustainability teams managing disclosures, frameworks, and stakeholder commitments',
+    price: 99,
+    skills: [
+      'Framework mapping memory — GRI, SASB, TCFD, and CSRD mapping decisions recalled before reporting cycles',
+      'Materiality assessment trail — prior materiality exercises, stakeholder inputs, and prioritization rationale recalled before reassessments',
+      'Emissions and data history — Scope 1/2/3 calculation methodologies, boundary decisions, and restatement rationale recalled before filings',
+      'Commitment and target tracking — public commitments, interim milestones, and progress context recalled before disclosures',
+      'Assurance engagement memory — prior assurance findings, boundary agreements, and limited vs. reasonable scopes recalled before new engagements',
+      'Memory maintenance — yours to manage in Graphnosis MemoryStudio or, by choice, deterministically with the Self-Healing Brain Engine or non-deterministically with the Neural Network (GNN) and/or Local Layer (GLL)',
+    ],
+    downloadUrl: '/packs/esg-reporting-graphnosis-demo-skill.gsk',
+  },
+
+  // ── Robotics & Cobots ────────────────────────────────────────────────────
+  // SOP packs for collaborative-robot and humanoid-robot deployments.
+  // Designed as orchestrator skills that an AI executor can WALK step by
+  // step (walk_skill_structured) — every skill carries all 8 goal
+  // categories including Requires / Produces for cross-skill data flow.
+  {
+    id: 'cobot-pick-and-place',
+    name: 'Cobot — Pick & Place',
+    category: 'robotics',
+    tagline: 'For collaborative robots running pick-and-place cells with safety-rated supervision',
+    skills: [
+      'Pre-cycle envelope check — verify the workcell perimeter, safety guards, and operator-presence sensors before each pick',
+      'Per-piece grip recall — prior grip profiles for the current part family surfaced before each pick attempt',
+      'Drift detection — vision-based pose drift compared against the baseline reference and flagged when above tolerance',
+      'Post-cycle telemetry capture — cycle time, grip success, and any protective-stop events saved for the maintenance window',
+    ],
+    downloadUrl: '/packs/cobot-pick-and-place-graphnosis-demo-skill.gsk',
+  },
+  {
+    id: 'cobot-vision-inspection',
+    name: 'Cobot — Vision-Based Defect Inspection',
+    category: 'robotics',
+    tagline: 'For automated vision inspection stations running on collaborative robots or fixed cells',
+    skills: [
+      'Defect classification ground truth — prior defect signatures and accepted exemplars recalled before classifying each part',
+      'Lighting and occlusion guard — flag REVIEW when lighting drift or partial occlusion is detected, never auto-accept',
+      'Reference set recall — engineering reference geometry and tolerance bands surfaced for the active part family',
+      'Post-batch capture — new defect patterns and signature counts saved so the baseline gradually improves with every shift',
+    ],
+    downloadUrl: '/packs/cobot-vision-inspection-graphnosis-demo-skill.gsk',
+  },
+  {
+    id: 'humanoid-warehouse-logistics',
+    name: 'Humanoid — Warehouse Logistics',
+    category: 'robotics',
+    tagline: 'For humanoid robots handling end-to-end transport tasks in dynamic warehouse environments',
+    skills: [
+      'Aisle clearance recall — prior clearance constraints (low headroom, fragile-stack zones, forklift overlap windows) surfaced for the destination aisle',
+      'Path planning with battery margin — plan respects active battery margin and known forklift schedules',
+      'Human-handoff protocol — request human assistance instead of replanning around blocked aisles unsupervised',
+      'Per-cycle path capture — path taken and new obstructions observed saved so the next robot in the fleet inherits the lesson',
+    ],
+    downloadUrl: '/packs/humanoid-warehouse-logistics-graphnosis-demo-skill.gsk',
+  },
+  {
+    id: 'cobot-predictive-maintenance-walkabout',
+    name: 'Cobot — Predictive Maintenance Walkabout',
+    category: 'robotics',
+    tagline: 'For mobile cobots running routine equipment-inspection walkabouts in industrial facilities',
+    skills: [
+      'Per-asset baseline recall — baseline vibration, temperature, and acoustic signature surfaced at each stop',
+      'Drift flagging — readings more than two standard deviations from baseline flagged for the maintenance scheduler',
+      'Scope discipline — flag drift only; never attempt root-cause diagnosis or open a maintenance ticket',
+      'Post-walkabout capture — fresh reading sets saved so the baseline improves with every cycle',
+    ],
+    downloadUrl: '/packs/cobot-predictive-maintenance-walkabout-graphnosis-demo-skill.gsk',
+  },
+
+  // ── Engineering — SOP demos ──────────────────────────────────────────────
+  // These two showcase the SOP (Standard Operating Procedure) model:
+  // explicit Trigger, Prerequisites, On-failure handler, Requires/Produces
+  // for cross-skill data flow, and (for safe-deploy) skill-calls-skill
+  // orchestration.
+  {
+    id: 'safe-deploy',
+    name: 'Safe Deploy — Production Release SOP',
+    category: 'engineering',
+    tagline: 'Multi-skill orchestration: prereq checks → migrations → smoke tests → rollback on failure',
+    skills: [
+      'Environment validator — verify all required services are healthy and the deploy window is open before any migration runs',
+      'Migration runner — apply database migrations and report each migration applied, with rollback handler on failure',
+      'Smoke test orchestrator — run the smoke-test suite against the deployed branch and surface pass/fail counts',
+      'Failure-routed rollback — On-failure handler invokes a dedicated rollback skill with the failure context preserved',
+    ],
+    downloadUrl: '/packs/safe-deploy-graphnosis-demo-skill.gsk',
+  },
+  {
+    id: 'code-review-sop',
+    name: 'Code Review SOP',
+    category: 'engineering',
+    tagline: 'Structured code review SOP with explicit prerequisites and a failure-recovery handler',
+    skills: [
+      'Pre-review prerequisites — diff loaded into context and review depth stated before any analysis begins',
+      'Layered review pass — bugs, design issues, and stylistic problems surfaced as separate findings',
+      'Blocking issue counter — every reviewable change gets either an approval or an actionable comment, never silent skip',
+      'Clarification handler — pause the review and ask the user when an unclear section blocks the comment',
+    ],
+    downloadUrl: '/packs/code-review-sop-graphnosis-demo-skill.gsk',
+  },
+];
+
+// ── Compliance Matrix ──────────────────────────────────────────────────────
+const statusConfig = {
+  compatible:   { bg: '#34d399', label: '✓ Compatible' },
+  conditional:  { bg: '#f59e0b', label: 'Conditional' },
+  incompatible: { bg: '#f87171', label: '✗ Incompatible' },
+  risk:         { bg: '#fb923c', label: 'Risk' },
+} as const;
+type StatusKey = keyof typeof statusConfig;
+
+interface ComplianceRow {
+  regulation: string;
+  note?: string;
+  studio: StatusKey;
+  local: StatusKey;
+  cloud: StatusKey;
+  cloudNote?: string;
+}
+interface ComplianceGroup { label: string; rows: ComplianceRow[]; }
+
+const complianceGroups: ComplianceGroup[] = [
+  {
+    label: 'US Healthcare & Life Sciences',
+    rows: [
+      { regulation: 'HIPAA Privacy & Security Rule',        studio: 'compatible', local: 'compatible', cloud: 'conditional', cloudNote: '¹' },
+      { regulation: 'HITECH Act',                           studio: 'compatible', local: 'compatible', cloud: 'conditional', cloudNote: '¹' },
+      { regulation: '21 CFR Part 11 (FDA electronic records)', studio: 'compatible', local: 'compatible', cloud: 'conditional', cloudNote: '²' },
+      { regulation: 'ICH GCP (clinical trials)',            studio: 'compatible', local: 'compatible', cloud: 'conditional', cloudNote: '²' },
+      { regulation: 'GINA (Genetic Information Non-discrimination Act)', studio: 'compatible', local: 'compatible', cloud: 'conditional', cloudNote: '¹' },
+    ],
+  },
+  {
+    label: 'US Government, Defense & Intelligence',
+    rows: [
+      { regulation: 'ITAR (International Traffic in Arms Regulations)', studio: 'compatible', local: 'compatible', cloud: 'incompatible' },
+      { regulation: 'EAR (Export Administration Regulations)',          studio: 'compatible', local: 'compatible', cloud: 'incompatible' },
+      { regulation: 'CUI (Controlled Unclassified Information)',        studio: 'compatible', local: 'compatible', cloud: 'incompatible' },
+      { regulation: 'DFARS / CMMC (defense contractors)',               studio: 'compatible', local: 'compatible', cloud: 'incompatible' },
+      { regulation: 'FISMA (Federal Information Security)',             studio: 'compatible', local: 'compatible', cloud: 'incompatible', cloudNote: '⁴' },
+      { regulation: 'SCI / Classified Programs', note: 'Requires ISSO approval regardless of tool', studio: 'compatible', local: 'compatible', cloud: 'incompatible' },
+    ],
+  },
+  {
+    label: 'US Financial & Banking',
+    rows: [
+      { regulation: 'GLBA (Gramm-Leach-Bliley Act)',              studio: 'compatible', local: 'compatible', cloud: 'conditional', cloudNote: '²' },
+      { regulation: 'SOX (Sarbanes-Oxley Act)',                   studio: 'compatible', local: 'compatible', cloud: 'conditional', cloudNote: '²' },
+      { regulation: 'MNPI (Material Non-Public Information)',     studio: 'compatible', local: 'compatible', cloud: 'risk',        cloudNote: '³' },
+      { regulation: 'Bank Examination / NDA-protected deal data', studio: 'compatible', local: 'compatible', cloud: 'risk',        cloudNote: '³' },
+    ],
+  },
+  {
+    label: 'US Energy & Critical Infrastructure',
+    rows: [
+      { regulation: 'NERC CIP (Critical Infrastructure Protection)', studio: 'compatible', local: 'compatible', cloud: 'incompatible' },
+      { regulation: 'CEII (Critical Energy Infrastructure Information)', studio: 'compatible', local: 'compatible', cloud: 'incompatible' },
+      { regulation: '10 CFR 50 (Nuclear Plant Safety)',              studio: 'compatible', local: 'compatible', cloud: 'incompatible' },
+      { regulation: '10 CFR 73 (Nuclear Security / Safeguards)',     studio: 'compatible', local: 'compatible', cloud: 'incompatible' },
+    ],
+  },
+  {
+    label: 'Legal Privilege & Confidentiality',
+    rows: [
+      { regulation: 'Attorney-Client Privilege',             studio: 'compatible', local: 'compatible', cloud: 'risk', cloudNote: '³' },
+      { regulation: 'Work Product Doctrine',                 studio: 'compatible', local: 'compatible', cloud: 'risk', cloudNote: '³' },
+      { regulation: 'Grand Jury Secrecy (Rule 6(e))',        studio: 'compatible', local: 'compatible', cloud: 'incompatible' },
+      { regulation: 'Tax Return Data (26 USC §6103)',        studio: 'compatible', local: 'compatible', cloud: 'incompatible' },
+    ],
+  },
+  {
+    label: 'International Privacy',
+    rows: [
+      { regulation: 'GDPR (EU General Data Protection Regulation)', studio: 'compatible', local: 'compatible', cloud: 'conditional', cloudNote: '²' },
+      { regulation: 'UK GDPR',                               studio: 'compatible', local: 'compatible', cloud: 'conditional', cloudNote: '²' },
+      { regulation: 'PIPEDA (Canada)',                       studio: 'compatible', local: 'compatible', cloud: 'conditional', cloudNote: '²' },
+      { regulation: 'LGPD (Brazil)',                         studio: 'compatible', local: 'compatible', cloud: 'conditional', cloudNote: '²' },
+      { regulation: 'PDPA (Singapore / Thailand)',           studio: 'compatible', local: 'compatible', cloud: 'conditional', cloudNote: '²' },
+      { regulation: 'CCPA / CPRA (California)',              studio: 'compatible', local: 'compatible', cloud: 'conditional', cloudNote: '²' },
+    ],
+  },
+  {
+    label: 'Education & Children',
+    rows: [
+      { regulation: 'FERPA (Family Educational Rights and Privacy Act)', studio: 'compatible', local: 'compatible', cloud: 'conditional', cloudNote: '²' },
+      { regulation: 'COPPA (Children\'s Online Privacy Protection)',     studio: 'compatible', local: 'compatible', cloud: 'conditional', cloudNote: '²' },
+    ],
+  },
+  {
+    label: 'Environmental & Research Data',
+    rows: [
+      { regulation: 'ARPA (Archaeological Resources Protection Act) site data', studio: 'compatible', local: 'compatible', cloud: 'incompatible' },
+      { regulation: 'CERCLA CBI (Confidential Business Information)',    studio: 'compatible', local: 'compatible', cloud: 'conditional', cloudNote: '²' },
+    ],
+  },
+  {
+    label: 'Industry Standards & Frameworks',
+    rows: [
+      { regulation: 'ISO 27001',              studio: 'compatible', local: 'compatible', cloud: 'conditional', cloudNote: '⁴' },
+      { regulation: 'NIST SP 800-171 / 800-53', studio: 'compatible', local: 'compatible', cloud: 'conditional', cloudNote: '⁴' },
+      { regulation: 'SOC 2 Type II',          studio: 'compatible', local: 'compatible', cloud: 'conditional', cloudNote: '⁴' },
+    ],
+  },
+  {
+    // Standards governing the engineering record around the cobot /
+    // humanoid kits: collaborative-robot safety design, functional
+    // safety of machinery control systems, and the US-side equivalents.
+    // Graphnosis stores the prior-decisions / drift-history / SOP record
+    // that supports compliance with these standards; the standards
+    // themselves apply to the physical robot and its safety-rated PLC,
+    // which Graphnosis doesn't touch. Cloud AI is flagged 'risk' here
+    // because operator-presence telemetry and protective-stop events
+    // can reveal floor-plan and human-presence patterns that companies
+    // typically don't expose to a third-party model without legal review.
+    label: 'Industrial Robotics & Machine Safety',
+    rows: [
+      { regulation: 'ISO 10218 (Industrial robots — safety requirements)',                    studio: 'compatible', local: 'compatible', cloud: 'risk',        cloudNote: '³' },
+      { regulation: 'ISO/TS 15066 (Collaborative robots / cobot safety)',                     studio: 'compatible', local: 'compatible', cloud: 'risk',        cloudNote: '³' },
+      { regulation: 'ANSI/RIA R15.06 (US industrial robot safety)',                           studio: 'compatible', local: 'compatible', cloud: 'risk',        cloudNote: '³' },
+      { regulation: 'ISO 13849 (Safety-related parts of machinery control systems)',          studio: 'compatible', local: 'compatible', cloud: 'conditional', cloudNote: '⁴' },
+      { regulation: 'IEC 62061 (Functional safety of machinery)',                             studio: 'compatible', local: 'compatible', cloud: 'conditional', cloudNote: '⁴' },
+      { regulation: 'IEC 61508 (Functional safety of electrical / electronic systems)',       studio: 'compatible', local: 'compatible', cloud: 'conditional', cloudNote: '⁴' },
+    ],
+  },
+];
+---
+
+<Layout
+  title="Graphnosis Starter Kits — Pre-built memory for your profession"
+  description="Starter kits for Graphnosis: named recall patterns, engram schemas, and workflow guides pre-configured for your profession. Zero data. No servers."
+>
+  <Nav />
+  <main>
+
+    <!-- Header -->
+    <section class="py-20 px-4 sm:px-6 text-center">
+      <div class="max-w-3xl mx-auto">
+        <div class="inline-flex items-center gap-2 px-3 py-1.5 rounded-full border border-[#2a2a3d] bg-[#1c1c27] text-[#a78bfa] text-xs font-semibold tracking-widest uppercase mb-6">
+          <span class="w-1.5 h-1.5 rounded-full bg-[#a78bfa]"></span>
+          Starter Kits
+        </div>
+        <h1 class="text-4xl sm:text-5xl font-black mb-4 leading-tight">
+          <span class="bg-clip-text text-transparent" style="background-image: linear-gradient(135deg, #67e8f9 0%, #a78bfa 100%);">
+            Job Memory Starter Kits
+          </span>
+        </h1>
+        <p class="text-[#c4c6d6] text-lg leading-relaxed mb-3 max-w-2xl mx-auto">
+          Start managing your job memory for your profession with a starter kit.
+        </p>
+        <p class="text-xl font-semibold mb-4 bg-clip-text text-transparent" style="background-image: linear-gradient(90deg, #a78bfa 0%, #67e8f9 100%);">
+          Local, private, encrypted, deterministic — auditable.
+        </p>
+        <p class="text-[#c4c6d6] text-sm mb-8">
+          One-time purchase · Yours forever · Works with the free Graphnosis download
+        </p>
+
+        <!-- Zero data · zero servers callout -->
+        <div class="bg-[#1c1c27] border border-[#2a2a3d] rounded-xl p-5 text-left flex gap-4 items-start max-w-2xl mx-auto">
+          <svg class="w-5 h-5 shrink-0 mt-0.5 text-[#67e8f9]" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" aria-hidden="true">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M16.5 10.5V6.75a4.5 4.5 0 10-9 0v3.75m-.75 11.25h10.5a2.25 2.25 0 002.25-2.25v-6.75a2.25 2.25 0 00-2.25-2.25H6.75a2.25 2.25 0 00-2.25 2.25v6.75a2.25 2.25 0 002.25 2.25z" />
+          </svg>
+          <div>
+            <p class="text-[#f0f0f5] font-semibold text-sm mb-1">These packs contain zero actual data. Graphnosis has zero servers.</p>
+            <p class="text-[#c4c6d6] text-sm leading-relaxed">
+              A pack is a structure: engram schemas, recall patterns, and connector guides. Your memory is
+              built from your own files, on your own device. Nothing is pre-loaded, nothing is shared,
+              and no Graphnosis server ever touches it. Every kit is a starting point — fully expandable
+              and customizable by you, without limitation, under the free or any tiered plan.
+            </p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Filter bar (static — floating dropdown takes over on scroll) -->
+    <section id="filter-bar" class="px-4 sm:px-6 pb-8 bg-[#13131a]/95 border-b border-[#2a2a3d]">
+      <div class="max-w-7xl mx-auto pt-4 flex flex-col sm:flex-row gap-3">
+        <!-- Search -->
+        <div class="relative shrink-0 sm:w-56">
+          <svg class="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-[#52525b]" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" aria-hidden="true">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M21 21l-5.197-5.197m0 0A7.5 7.5 0 105.196 5.196a7.5 7.5 0 0010.607 10.607z" />
+          </svg>
+          <input
+            id="pack-search"
+            type="search"
+            placeholder="Search packs…"
+            class="w-full pl-9 pr-3 py-2 rounded-full bg-[#1c1c27] border border-[#2a2a3d] focus:border-[#67e8f9] focus:outline-none text-[#f0f0f5] placeholder-[#52525b] text-sm transition-colors"
+          />
+        </div>
+        <!-- Compliance nav chip + category chips -->
+        <div class="flex flex-wrap gap-2">
+          <button
+            id="compliance-nav-chip"
+            class="compliance-nav-chip px-4 py-2 rounded-full text-sm font-semibold border whitespace-nowrap"
+          >
+            Compliance Matrix
+          </button>
+          <button
+            id="it-nav-chip"
+            class="compliance-nav-chip px-4 py-2 rounded-full text-sm font-semibold border whitespace-nowrap"
+          >
+            IT Business Case
+          </button>
+          {categories.map((cat) => (
+            <button
+              class="category-chip px-4 py-2 rounded-full text-sm font-semibold border whitespace-nowrap"
+              data-category={cat.id}
+              data-active={cat.id === 'all' ? 'true' : undefined}
+            >
+              {cat.label}
+            </button>
+          ))}
+        </div>
+      </div>
+    </section>
+
+    <!-- Floating filter dropdown (appears when filter bar scrolls out of view) -->
+    <div
+      id="floating-filter"
+      aria-hidden="true"
+      class="fixed top-16 left-0 right-0 z-40 bg-[#13131a]/95 backdrop-blur-md border-b border-[#2a2a3d]"
+    >
+      <div class="max-w-7xl mx-auto px-4 sm:px-6 py-2.5 flex items-center gap-3">
+        <!-- Mini search -->
+        <div class="relative shrink-0 w-44">
+          <svg class="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-[#52525b] pointer-events-none" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" aria-hidden="true">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M21 21l-5.197-5.197m0 0A7.5 7.5 0 105.196 5.196a7.5 7.5 0 0010.607 10.607z" />
+          </svg>
+          <input
+            id="float-search"
+            type="search"
+            placeholder="Search…"
+            class="w-full pl-8 pr-3 py-1.5 rounded-full bg-[#1c1c27] border border-[#2a2a3d] focus:border-[#67e8f9] focus:outline-none text-[#f0f0f5] placeholder-[#52525b] text-sm transition-colors"
+          />
+        </div>
+        <!-- Category select -->
+        <div class="relative">
+          <select
+            id="float-category"
+            class="appearance-none pl-3 pr-8 py-1.5 rounded-full bg-[#1c1c27] border border-[#2a2a3d] focus:border-[#67e8f9] focus:outline-none text-[#f0f0f5] text-sm font-semibold transition-colors cursor-pointer"
+          >
+            {categories.map(cat => (
+              <option value={cat.id}>{cat.label}</option>
+            ))}
+          </select>
+          <svg class="absolute right-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-[#67e8f9] pointer-events-none" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24" aria-hidden="true">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M19 9l-7 7-7-7" />
+          </svg>
+        </div>
+        <!-- Pack count -->
+        <span id="float-count" class="text-xs text-[#52525b] font-mono ml-auto"></span>
+      </div>
+    </div>
+
+    <!-- Pack grid -->
+    <section class="py-12 px-4 sm:px-6">
+      <div class="max-w-7xl mx-auto">
+
+        <!-- Count -->
+        <p id="pack-count" class="text-xs text-[#52525b] font-mono mb-6 scroll-mt-24" style="scroll-margin-top:5rem">{packs.length} packs</p>
+
+        <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-12" id="pack-grid">
+          {packs.map((pack) => {
+            const color = catColor[pack.category] ?? '#67e8f9';
+            const searchText = [pack.name, pack.tagline, ...pack.skills].join(' ').toLowerCase();
+            return (
+              <article
+                class="pack-card bg-[#1c1c27] border border-[#2a2a3d] rounded-2xl p-8 flex flex-col gap-5 relative"
+                data-category={pack.category}
+                data-search-text={searchText}
+                style={`border-color: ${color}18;`}
+              >
+                {/* Top-right: two-line MEMORY STUDIO / STARTER KIT label */}
+                <div class="absolute top-5 right-5 flex flex-col items-end gap-0.5 select-none">
+                  <span class="text-[9px] font-black tracking-widest uppercase leading-none" style={`color: ${color};`}>MemoryStudio</span>
+                  <span class="text-[9px] font-black tracking-widest uppercase leading-none text-[#f0f0f5]">Starter Kit</span>
+                </div>
+
+                {pack.badge && (
+                  <div
+                    class="absolute -top-3 left-5 text-xs font-black tracking-widest uppercase px-3 py-1 rounded-full text-[#13131a]"
+                    style={`background: ${color};`}
+                  >
+                    {pack.badge}
+                  </div>
+                )}
+
+                <!-- Category label + name -->
+                <div>
+                  <p class="text-xs font-black tracking-widest uppercase mb-1" style={`color: ${color};`}>
+                    {categories.find(c => c.id === pack.category)?.label}
+                  </p>
+                  <h2 class="text-lg font-black text-white leading-snug">{pack.name}</h2>
+                  <p class="text-xs text-[#71717a] mt-0.5">{pack.tagline}</p>
+                </div>
+
+                <!-- Skills -->
+                <ul class="flex flex-col gap-2 flex-1">
+                  {pack.skills.map((skill) => {
+                    const [title, ...rest] = skill.split(' — ');
+                    return (
+                      <li class="flex items-start gap-2 text-sm text-[#e2e4f0]">
+                        <span
+                          class="mt-0.5 w-3.5 h-3.5 shrink-0 rounded-full flex items-center justify-center"
+                          style={`background: ${color}18; border: 1px solid ${color}33;`}
+                        >
+                          <svg class="w-2 h-2" fill="none" stroke="currentColor" stroke-width="3" viewBox="0 0 24 24" aria-hidden="true" style={`color: ${color};`}>
+                            <path stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4L19 7" />
+                          </svg>
+                        </span>
+                        <span>
+                          <span class="font-semibold text-[#f0f0f5]">{title}</span>
+                          {rest.length > 0 && <span class="text-[#e2e4f0]"> — {rest.join(' — ')}</span>}
+                        </span>
+                      </li>
+                    );
+                  })}
+                </ul>
+
+                <!-- What's included.
+                     Refreshed to match what a .gsk pack actually contains
+                     today (skills with SOPs, recall recipes, 8-category
+                     goals, signed by Ed25519, with an optional
+                     GRAPHNOSIS.md companion) — and to drop two bullets
+                     that were aspirational ("Connector setup guide") or
+                     not pack content ("Setup walkthrough"). -->
+                <div class="border-t border-[#2a2a3d] pt-5 flex flex-col gap-3">
+                  <p class="text-xs font-black tracking-widest uppercase text-[#71717a]">This pack will include</p>
+                  <ul class="flex flex-col gap-2">
+                    {[
+                      // Note: `pack.skills.length` here counts bullets shown on
+                      // the card, not the .gsk's internal skill count. Every
+                      // marketplace pack carries exactly one signed skill (the
+                      // bullets are recall patterns within it); the multi-skill
+                      // orchestrator demos like safe-deploy are the only exception
+                      // and they're already labelled as such on the card itself.
+                      `1 signed skill (.gsk pack) with SOP instructions, recall recipes, and the full 8-category goal block (Success, Out of scope, On completion, Trigger, Prerequisites, On failure, Requires, Produces)`,
+                      'AI-executable via walk_skill / walk_skill_structured — any MCP-connected client can walk the skill step by step, or get a structured execution plan with declared inputs, outputs, sub-skill calls, and failure handlers',
+                      'Cross-skill orchestration ready — skills can call other skills via @skill: target(args) -> $capture syntax and route failures to a recovery skill (see the Safe Deploy pack for a worked example)',
+                      'Retrain against your own memory — the Skills Trainer personalises each skill against your cortex; snapshot-based history lets you roll back any retrain you regret',
+                      'Graphnosis-Verified (Ed25519) — every pack on this page is signed by the Graphnosis key; the App\'s importer verifies the signature and shows a ✓ Verified badge before any skill lands in your cortex',
+                      'GRAPHNOSIS.md companion — the pack carries a project-level GRAPHNOSIS.md you can drop into your project root, so any AI session in that project knows how to recall and save into your cortex without prior setup',
+                      'Memory maintenance — yours to manage in Graphnosis MemoryStudio; optionally delegated, deterministically, to the Self-Healing Brain Engine; or non-deterministically enriched by the Neural Network (GNN) and/or Local Layer (GLL)',
+                    ].map(item => (
+                      <li class="flex items-start gap-2 text-sm text-[#b0b3c6]">
+                        <span class="mt-0.5 shrink-0 text-[#5a5a7a]">–</span>
+                        <span>{item}</span>
+                      </li>
+                    ))}
+                  </ul>
+                  <p class="text-sm text-[#9a9db8] leading-relaxed pt-1">
+                    The .gsk file is free and runs entirely inside the free Graphnosis app — no cloud, no servers,
+                    your memory stays yours. This kit is a starting point: every skill, engram, schema, and recall
+                    pattern it ships with is fully expandable and customisable by you, without limitation, under the
+                    free or any tiered plan.
+                  </p>
+                </div>
+
+                <!-- Price + CTA — every pack is a free .gsk download now,
+                     so the price slot shows "Free" and the action button
+                     becomes a download anchor with a `download` attribute
+                     so the browser saves the file rather than rendering its
+                     binary bytes inline. The .gsk filename in the URL is
+                     used verbatim as the download filename via the trailing
+                     path segment. -->
+                <div class="flex flex-col gap-2">
+                  <!-- Small category + pack-name line right above the Download
+                       button so the user always knows which kit they're
+                       grabbing — useful when several cards are visible at
+                       once and the action area is far from the card title. -->
+                  <div class="flex items-baseline gap-2 text-[10px] font-mono uppercase tracking-widest">
+                    <span style={`color: ${color};`}>
+                      {categories.find(c => c.id === pack.category)?.label}
+                    </span>
+                    <span class="text-[#3a3a52]">·</span>
+                    <span class="text-[#9a9db8] normal-case font-sans tracking-normal text-xs">{pack.name}</span>
+                  </div>
+                  <div class="flex items-center justify-between gap-4">
+                    <span class="text-3xl font-black text-white">Free</span>
+                    <a
+                      href={pack.downloadUrl}
+                      download
+                      class="flex-1 inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-full font-bold text-sm transition-opacity hover:opacity-90 text-[#13131a]"
+                      style={`background: ${color};`}
+                    >
+                      Download .gsk
+                      <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24" aria-hidden="true">
+                        <path stroke-linecap="round" stroke-linejoin="round" d="M4 16v2a2 2 0 002 2h12a2 2 0 002-2v-2M7 10l5 5 5-5M12 15V3" />
+                      </svg>
+                    </a>
+                  </div>
+                  <p class="text-center text-[#71717a] leading-none" style="font-size:11px;">
+                    Free, as-is &nbsp;·&nbsp;
+                    <a href="/legal/terms-of-use"   class="text-[#9a9db8] hover:text-[#c4c6d6] transition-colors underline decoration-[#71717a]/50">Terms</a>
+                    &nbsp;·&nbsp;
+                    <a href="/legal/privacy-policy" class="text-[#9a9db8] hover:text-[#c4c6d6] transition-colors underline decoration-[#71717a]/50">Privacy</a>
+                  </p>
+                </div>
+              </article>
+            );
+          })}
+        </div>
+
+        <!-- No results -->
+        <p id="no-results" class="hidden text-center text-[#52525b] py-16 text-sm">
+          No packs match that search. <a href="mailto:templates@graphnosis.com" class="text-[#67e8f9] underline">Request one →</a>
+        </p>
+
+      </div>
+    </section>
+
+    <!-- Compliance Matrix -->
+    <!-- pt-12 separates the matrix from the dense pack-grid above so the
+         section reads as its own page-level concern, not a tail of the
+         grid. pb-24 + scroll-mt-40 preserve the existing bottom spacing
+         and anchor-scroll offset (used by the in-page "Compliance Matrix"
+         nav chip). -->
+    <section id="compliance-matrix" class="pt-12 pb-24 px-4 sm:px-6 scroll-mt-40">
+      <div class="max-w-7xl mx-auto">
+
+        <div class="text-center mb-8">
+          <h2 class="text-2xl font-black text-white mb-3">Compliance Matrix</h2>
+          <p class="text-[#b0b3c6] text-base leading-relaxed max-w-2xl mx-auto">
+            How Graphnosis interacts with regulated data across three operating modes.
+            Every mode stores data locally and encrypted on your device — the only variable
+            is whether an AI model also runs locally (Ollama) or via a cloud API you configure.
+          </p>
+        </div>
+
+        <!-- Key disclaimer -->
+        <div class="bg-[#1c1c27] border border-[#f59e0b]/30 rounded-xl p-5 mb-8 max-w-4xl mx-auto">
+          <div class="flex items-start gap-3">
+            <svg class="w-5 h-5 shrink-0 mt-0.5 text-[#f59e0b]" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" aria-hidden="true">
+              <path stroke-linecap="round" stroke-linejoin="round" d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126zM12 15.75h.007v.008H12v-.008z" />
+            </svg>
+            <div>
+              <p class="text-[#f0f0f5] font-semibold text-sm mb-2">Graphnosis has no servers. Cloud AI is your setup, not ours.</p>
+              <p class="text-[#b0b3c6] text-sm leading-relaxed">
+                Graphnosis never sends your data to any server. <strong class="text-[#f0f0f5]">"Cloud AI"</strong> in this table refers only to cloud AI clients
+                <em>you choose to configure</em> (Claude Desktop, Cursor, ChatGPT, etc.) connected to Graphnosis via MCP.
+                When a cloud AI calls <code class="font-mono text-[#67e8f9]">recall</code>, Graphnosis returns only a small excerpt
+                (≤50 nodes / ≤8,000 tokens) — never the full database.
+                <strong class="text-[#f0f0f5]">Sensitive-tier engrams send zero tokens to cloud AI by default</strong>;
+                a consent gate in the app fires before any sensitive data is attached to a prompt.
+              </p>
+            </div>
+          </div>
+        </div>
+
+        <!-- Table -->
+        <div class="overflow-x-auto rounded-2xl border border-[#2a2a3d]" id="compliance-table-wrap">
+          <table class="w-full text-sm border-collapse" id="compliance-table">
+            <thead id="compliance-thead">
+              <tr class="bg-[#1c1c27] border-b border-[#2a2a3d]">
+                <th class="text-left px-5 py-4 text-[#71717a] font-semibold w-2/5">Regulation</th>
+                <th class="text-center px-4 py-4 font-semibold" style="color:#67e8f9;">
+                  Graphnosis MemoryStudio<br /><span class="text-xs text-[#52525b] font-normal">local only · no AI</span>
+                </th>
+                <th class="text-center px-4 py-4 font-semibold" style="color:#a78bfa;">
+                  Local AI + Graphnosis<br /><span class="text-xs text-[#52525b] font-normal">Ollama · air-gapped</span>
+                </th>
+                <th class="text-center px-4 py-4 font-semibold" style="color:#f59e0b;">
+                  Cloud AI + Graphnosis<br /><span class="text-xs text-[#52525b] font-normal">excerpt only · user-configured</span>
+                </th>
+              </tr>
+            </thead>
+            <tbody>
+              {complianceGroups.map((group, gi) => (
+                <>
+                  <tr class="bg-[#161620] border-t border-b border-[#2a2a3d]">
+                    <td colspan={4} class="px-5 py-2.5 text-xs font-black uppercase tracking-widest text-[#555570]">{group.label}</td>
+                  </tr>
+                  {group.rows.map((row, ri) => {
+                    const sc = statusConfig[row.studio];
+                    const lc = statusConfig[row.local];
+                    const cc = statusConfig[row.cloud];
+                    return (
+                      <tr class={`border-t border-[#1e1e2a] ${(ri % 2 === 0) ? 'bg-[#13131a]' : 'bg-[#161620]'}`}>
+                        <td class="px-5 py-3 text-[#c4c6d6]">
+                          {row.regulation}
+                          {row.note && <span class="block text-xs text-[#52525b] mt-0.5">{row.note}</span>}
+                        </td>
+                        <td class="text-center px-3 py-3">
+                          <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold" style={`background:${sc.bg}18; color:${sc.bg}; border:1px solid ${sc.bg}30;`}>{sc.label}</span>
+                        </td>
+                        <td class="text-center px-3 py-3">
+                          <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold" style={`background:${lc.bg}18; color:${lc.bg}; border:1px solid ${lc.bg}30;`}>{lc.label}</span>
+                        </td>
+                        <td class="text-center px-3 py-3">
+                          <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold" style={`background:${cc.bg}18; color:${cc.bg}; border:1px solid ${cc.bg}30;`}>
+                            {cc.label}{row.cloudNote ?? ''}
+                          </span>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </>
+              ))}
+            </tbody>
+          </table>
+        </div>
+
+        <!-- Footnotes -->
+        <div class="mt-6 max-w-4xl mx-auto flex flex-col gap-2 text-sm text-[#9a9db8]">
+          <p>¹ Requires a Business Associate Agreement (BAA) with your cloud AI provider. Anthropic Enterprise and OpenAI Enterprise offer BAAs.</p>
+          <p>² Requires a Data Processing Agreement (DPA) with your cloud AI provider.</p>
+          <p>³ A small recall excerpt reaches the cloud provider's infrastructure. Legal review recommended for your specific context.</p>
+          <p>⁴ Compatibility depends on your cloud AI provider's own certifications for the relevant standard.</p>
+          <p class="mt-2 text-[#71717a] italic">This matrix is informational only and does not constitute legal advice. Consult your compliance officer for your specific context.</p>
+        </div>
+
+      </div>
+    </section>
+
+    <!-- Business Case for IT -->
+    <section id="it-business-case" class="pb-24 px-4 sm:px-6 scroll-mt-40">
+      <div class="max-w-4xl mx-auto">
+
+        <div class="text-center mb-10">
+          <p class="text-xs font-black tracking-widest uppercase text-[#67e8f9] mb-3">For the IT approval conversation</p>
+          <h2 class="text-2xl font-black text-white mb-3">Business Case for Your IT Department</h2>
+          <p class="text-[#b0b3c6] text-base leading-relaxed max-w-xl mx-auto">
+            The questions IT will ask — and why Graphnosis passes every one of them.
+          </p>
+        </div>
+
+        <div class="grid grid-cols-1 sm:grid-cols-2 gap-5 mb-8">
+          {[
+            {
+              icon: '🔒',
+              title: 'Zero cloud infrastructure',
+              body: 'Graphnosis has no servers, no sync endpoints, no ingestion API, and no telemetry. The application runs entirely on the user\'s device. No data leaves unless the user explicitly configures a cloud AI client — and even then, only a small recall excerpt (≤8,000 tokens) is transmitted, never the full database.',
+              color: '#67e8f9',
+            },
+            {
+              icon: '🔑',
+              title: 'Encryption with user-controlled keys',
+              body: 'Memory is encrypted at rest with XChaCha20-Poly1305 and an Argon2id-derived key. The key is derived from the user\'s passphrase on-device. It is never transmitted, never stored remotely, and never accessible to Graphnosis. IT cannot be compelled to produce keys it never had.',
+              color: '#a78bfa',
+            },
+            {
+              icon: '📋',
+              title: 'Audit trail by design',
+              body: 'Every write to memory is recorded in an append-only op-log with device attribution and timestamp. The log is cryptographically chained and cannot be silently modified. Exportable as a compliance artifact for HIPAA, SOX, 21 CFR Part 11, and similar frameworks.',
+              color: '#34d399',
+            },
+            {
+              icon: '🛡️',
+              title: 'Sensitivity tiers and consent gates',
+              body: 'Three tiers — public, personal, sensitive — govern how much data any AI can ever see. Sensitive-tier engrams (PHI, PII, privileged content) send zero tokens to cloud AI by default. A user-visible consent modal in the app fires before any sensitive data is attached to a prompt. IT can enforce tier policies via policy.json.',
+              color: '#f59e0b',
+            },
+            {
+              icon: '📂',
+              title: 'Source-available — IT can audit the code',
+              body: 'Graphnosis is licensed under FSL (Functional Source License). The complete source is public. IT security teams can inspect every line of the encryption implementation, the MCP server, the op-log, and the network layer. No black boxes, no trust-me-it\'s-secure.',
+              color: '#fb923c',
+            },
+            {
+              icon: '📡',
+              title: 'Standard open protocol — no proprietary cloud',
+              body: 'Graphnosis exposes its 35 memory tools over MCP (Model Context Protocol), an open standard backed by Anthropic. There are no proprietary cloud endpoints, no vendor lock-in, and no hidden API calls. The MCP server runs on localhost only.',
+              color: '#60a5fa',
+            },
+            {
+              icon: '🏢',
+              title: 'Standard desktop install',
+              body: 'Ships as a macOS application (.dmg). No browser extensions required for core functionality. No background services that persist beyond the app lifecycle. Installs and uninstalls cleanly with no residual cloud accounts or credentials.',
+              color: '#94a3b8',
+            },
+            {
+              icon: '✈️',
+              title: 'Fully air-gapped capable',
+              body: 'Enable the local LLM mode (Ollama) and Graphnosis operates with no internet connection whatsoever. Every AI inference runs on-device. This is the deployment model for ITAR, CEII, classified programs, and any environment where network egress is prohibited.',
+              color: '#e879f9',
+            },
+          ].map(item => (
+            <div
+              class="bg-[#1c1c27] border border-[#2a2a3d] rounded-2xl p-6 flex flex-col gap-3"
+              style={`border-color: ${item.color}20;`}
+            >
+              <div class="flex items-center gap-3">
+                <span class="text-2xl" aria-hidden="true">{item.icon}</span>
+                <h3 class="text-base font-black text-white">{item.title}</h3>
+              </div>
+              <p class="text-[#9a9db8] text-sm leading-relaxed">{item.body}</p>
+            </div>
+          ))}
+        </div>
+
+        <!-- Docs CTA -->
+        <div class="text-center">
+          <p class="text-[#71717a] text-sm mb-4">Full technical documentation, architecture diagrams, and security audit guides</p>
+          <a
+            href="https://docs.graphnosis.com"
+            target="_blank"
+            rel="noopener noreferrer"
+            class="inline-flex items-center gap-2 px-7 py-3.5 rounded-full border border-[#67e8f9]/40 hover:border-[#67e8f9]/80 text-[#67e8f9] font-bold text-base transition-colors hover:bg-[#67e8f9]/05"
+          >
+            Read the technical docs
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" aria-hidden="true">
+              <path stroke-linecap="round" stroke-linejoin="round" d="M13.5 6H5.25A2.25 2.25 0 003 8.25v10.5A2.25 2.25 0 005.25 21h10.5A2.25 2.25 0 0018 18.75V10.5m-10.5 6L21 3m0 0h-5.25M21 3v5.25" />
+            </svg>
+          </a>
+        </div>
+
+      </div>
+    </section>
+
+    <!-- Team license CTA -->
+    <section class="pb-16 px-4 sm:px-6">
+      <div class="max-w-3xl mx-auto bg-[#1c1c27] border border-[#2a2a3d] rounded-2xl p-8 text-center">
+        <h2 class="text-2xl font-black text-white mb-3">Need this for a whole team?</h2>
+        <p class="text-[#c4c6d6] mb-6 max-w-lg mx-auto">
+          Individual licenses cover a single user. For firm-wide or team deployments — where multiple
+          people import the same schema — contact us for an organizational license.
+        </p>
+        <a
+          href="mailto:templates@graphnosis.com"
+          class="inline-flex items-center gap-2 px-7 py-3.5 rounded-full bg-[#67e8f9] hover:bg-[#4dd6e8] text-[#13131a] font-bold text-base transition-colors"
+        >
+          Contact for team licensing
+        </a>
+      </div>
+    </section>
+
+    <!-- FAQ -->
+    <section class="pb-24 px-4 sm:px-6">
+      <div class="max-w-3xl mx-auto">
+        <h2 class="text-2xl font-black text-white mb-8">Frequently asked</h2>
+        <div class="flex flex-col gap-6">
+          {[
+            {
+              q: 'What is a starter kit?',
+              a: 'A pre-configured starting point for Graphnosis memory in your specific domain. Each kit includes: an engram schema (which engrams to create and at which sensitivity tier); named recall patterns (the query approach for your professional context); a connector guide (how to ingest your specific sources); and an AI session template (the context file for any AI client — Claude, Cursor, Copilot, or your own agent). These kits will eventually be published as a standalone product called Job Gnosis.',
+            },
+            {
+              q: 'Do I need a pack to use Graphnosis?',
+              a: "No. Graphnosis is free and fully functional without any pack. Packs save you the setup time of figuring out the right memory structure and recall patterns for your specific job. Everything in a pack can be built manually — the pack means you don't have to.",
+            },
+            {
+              q: 'Why does it say zero data and no servers?',
+              a: "Because it's true and it matters. The pack contains no pre-loaded memory — it's a schema and a guide. Your memory is built from your own files on your own machine. Graphnosis has no cloud infrastructure: no sync server, no ingestion API, no telemetry. The source code is available to verify this.",
+            },
+            {
+              q: 'What do I receive after purchase?',
+              a: 'A ZIP with: the engram schema (importable directly into Graphnosis); a recall pattern guide formatted for any AI client context file; a source integration guide for the tools most common in your profession; and a setup walkthrough. Delivered immediately via Stripe.',
+            },
+            {
+              q: "My profession isn't listed.",
+              a: "Email templates@graphnosis.com with your profession and the 3–4 situations where you most need AI to remember what you know. We'll either build the pack or point you to the closest existing one.",
+            },
+          ].map((item) => (
+            <div class="border-b border-[#2a2a3d] pb-6">
+              <h3 class="text-base font-bold text-white mb-2">{item.q}</h3>
+              <p class="text-[#c4c6d6] text-base leading-relaxed">{item.a}</p>
+            </div>
+          ))}
+        </div>
+      </div>
+    </section>
+
+    <!-- Verify it yourself -->
+    <section class="pb-24 px-4 sm:px-6">
+      <div class="max-w-3xl mx-auto">
+        <div class="text-center mb-10">
+          <h2 class="text-2xl font-black text-white mb-3">Verify it yourself</h2>
+          <p class="text-[#b0b3c6] text-base leading-relaxed max-w-xl mx-auto">
+            Every claim on this page is checkable. You don't have to take our word for any of it —
+            the source code, the network monitor, and your own passphrase are all the proof you need.
+          </p>
+        </div>
+        <div class="grid grid-cols-1 sm:grid-cols-2 gap-5">
+          {[
+            {
+              title: 'Watch the network',
+              desc: 'Point Little Snitch or Activity Monitor at the app. Your cortex never leaves. Turn Wi-Fi off — recall still works.',
+              href: '/guides/network-activity',
+              label: 'What leaves your device →',
+              color: '#67e8f9',
+            },
+            {
+              title: 'Audit the encryption',
+              desc: 'XChaCha20-Poly1305 + Argon2id. The crypto code is source-available. Your key, not ours.',
+              href: '/guides/verify-it-yourself',
+              label: 'Verify it yourself →',
+              color: '#a78bfa',
+            },
+            {
+              title: 'Understand access controls',
+              desc: 'Sensitivity tiers, consent gates, and the op-log audit trail — how each layer protects your data before any AI sees it.',
+              href: '/guides/ai-access-controls',
+              label: 'How access controls work →',
+              color: '#34d399',
+            },
+            {
+              title: 'Read the source',
+              desc: 'The FSL-licensed source is public. Every architectural claim on this page is checkable line by line.',
+              href: 'https://github.com/nehloo-interactive/graphnosis-app',
+              label: 'Open source on GitHub →',
+              color: '#f59e0b',
+            },
+          ].map(item => (
+            <a
+              href={item.href}
+              class="group bg-[#1c1c27] border border-[#2a2a3d] rounded-2xl p-6 flex flex-col gap-3 hover:border-opacity-60 transition-colors no-underline"
+              style={`border-color: ${item.color}22;`}
+            >
+              <p class="font-black text-white text-base group-hover:underline">{item.title}</p>
+              <p class="text-[#9a9db8] text-sm leading-relaxed flex-1">{item.desc}</p>
+              <span class="text-sm font-mono" style={`color: ${item.color};`}>{item.label}</span>
+            </a>
+          ))}
+        </div>
+      </div>
+    </section>
+
+  </main>
+  <Footer />
+</Layout>
+
+<style>
+  .category-chip {
+    background: transparent;
+    color: #c4c6d6;
+    border-color: #2a2a3d;
+    transition: color 0.15s ease, border-color 0.15s ease, background 0.15s ease;
+  }
+  .category-chip:hover {
+    color: #f0f0f5;
+    border-color: #67e8f9;
+    background: rgba(103, 232, 249, 0.08);
+  }
+  .category-chip[data-active="true"] {
+    background: #67e8f9;
+    color: #13131a;
+    border-color: #67e8f9;
+  }
+  .category-chip[data-active="true"]:hover {
+    background: #4dd6e8;
+    border-color: #4dd6e8;
+  }
+  /* Floating filter — hidden until filter bar scrolls out of view */
+  #floating-filter {
+    transform: translateY(-100%);
+    transition: transform 0.2s ease;
+  }
+  #floating-filter.is-visible {
+    transform: translateY(0);
+  }
+
+  /* Compliance nav chip — distinct from category chips */
+  .compliance-nav-chip {
+    background: transparent;
+    color: #f59e0b;
+    border-color: rgba(245,158,11,0.30);
+    border-style: dashed;
+    transition: color 0.15s ease, border-color 0.15s ease, background 0.15s ease;
+  }
+  .compliance-nav-chip:hover {
+    color: #fbbf24;
+    border-color: #f59e0b;
+    background: rgba(245, 158, 11, 0.08);
+  }
+</style>
+
+<script>
+  const chips = document.querySelectorAll<HTMLButtonElement>('.category-chip');
+  const cards = document.querySelectorAll<HTMLElement>('.pack-card');
+  const search = document.getElementById('pack-search') as HTMLInputElement;
+  const noResults = document.getElementById('no-results') as HTMLElement;
+  const countEl = document.getElementById('pack-count') as HTMLElement;
+
+  const floatingFilter  = document.getElementById('floating-filter') as HTMLElement;
+  const floatSearch     = document.getElementById('float-search')    as HTMLInputElement;
+  const floatCategory   = document.getElementById('float-category')  as HTMLSelectElement;
+  const floatCount      = document.getElementById('float-count')     as HTMLElement;
+
+  let activeCategory = 'all';
+
+  function syncFloatState() {
+    if (floatCategory) floatCategory.value = activeCategory;
+    if (floatSearch)   floatSearch.value   = search.value;
+    if (floatCount && countEl) floatCount.textContent = countEl.textContent;
+  }
+
+  function filter() {
+    const q = search.value.toLowerCase().trim();
+    let visible = 0;
+    cards.forEach(card => {
+      const matchesCat = activeCategory === 'all' || card.dataset.category === activeCategory;
+      const matchesSearch = !q || (card.dataset.searchText ?? '').includes(q);
+      const show = matchesCat && matchesSearch;
+      card.classList.toggle('hidden', !show);
+      if (show) visible++;
+    });
+    noResults.classList.toggle('hidden', visible > 0);
+    countEl.textContent = visible === cards.length
+      ? `${cards.length} packs`
+      : `${visible} of ${cards.length} packs`;
+    syncFloatState();
+  }
+
+  // Scroll to pack grid — offset by floating bar height when it's visible
+  function scrollToGrid() {
+    const packCount = document.getElementById('pack-count');
+    if (!packCount) return;
+    const floatH = floatingFilter?.classList.contains('is-visible')
+      ? (floatingFilter.getBoundingClientRect().height ?? 0)
+      : 0;
+    const offset = 64 + floatH + 8;
+    const targetY = packCount.getBoundingClientRect().top + window.scrollY - offset;
+    window.scrollTo({ top: targetY, behavior: 'smooth' });
+  }
+
+  chips.forEach(chip => {
+    chip.addEventListener('click', () => {
+      chips.forEach(c => c.removeAttribute('data-active'));
+      chip.setAttribute('data-active', 'true');
+      activeCategory = chip.dataset.category ?? 'all';
+      search.value = '';
+      filter();
+      scrollToGrid();
+    });
+  });
+
+  // Compliance Matrix / IT Business Case nav chips — scroll only, no filter
+  function scrollToSection(id: string) {
+    const el = document.getElementById(id);
+    if (!el) return;
+    const floatH = floatingFilter?.classList.contains('is-visible')
+      ? (floatingFilter.getBoundingClientRect().height ?? 0)
+      : 0;
+    const offset = 64 + floatH + 8;
+    window.scrollTo({ top: el.getBoundingClientRect().top + window.scrollY - offset, behavior: 'smooth' });
+  }
+
+  document.getElementById('compliance-nav-chip')?.addEventListener('click', () => scrollToSection('compliance-matrix'));
+  document.getElementById('it-nav-chip')?.addEventListener('click', () => scrollToSection('it-business-case'));
+
+  search.addEventListener('input', () => {
+    activeCategory = 'all';
+    chips.forEach(c => c.removeAttribute('data-active'));
+    const allChip = document.querySelector<HTMLButtonElement>('.category-chip[data-category="all"]');
+    if (allChip) allChip.setAttribute('data-active', 'true');
+    filter();
+    if (search.value.trim()) scrollToGrid();
+  });
+
+  // Floating search mirrors main search
+  floatSearch?.addEventListener('input', () => {
+    search.value = floatSearch.value;
+    search.dispatchEvent(new Event('input'));
+  });
+
+  // Floating category select mirrors chips
+  floatCategory?.addEventListener('change', () => {
+    const val = floatCategory.value;
+    chips.forEach(c => c.removeAttribute('data-active'));
+    const target = document.querySelector<HTMLButtonElement>(`.category-chip[data-category="${val}"]`);
+    if (target) target.setAttribute('data-active', 'true');
+    activeCategory = val;
+    search.value = '';
+    floatSearch.value = '';
+    filter();
+    scrollToGrid();
+  });
+
+  // Show floating bar only when the filter bar has fully scrolled above the nav (64px)
+  const filterBarEl = document.getElementById('filter-bar');
+  let floatVisible = false;
+  function updateFloatingFilter() {
+    if (!filterBarEl || !floatingFilter) return;
+    const shouldShow = filterBarEl.getBoundingClientRect().bottom < 64;
+    if (shouldShow === floatVisible) return;
+    floatVisible = shouldShow;
+    floatingFilter.classList.toggle('is-visible', shouldShow);
+    floatingFilter.setAttribute('aria-hidden', String(!shouldShow));
+    if (shouldShow) syncFloatState();
+  }
+  window.addEventListener('scroll', updateFloatingFilter, { passive: true });
+  updateFloatingFilter();
+
+  // ── Compliance table sticky header ───────────────────────────────────────
+  // overflow-x:auto breaks CSS sticky relative to viewport, so we use a
+  // JS-driven fixed clone that appears when the original thead scrolls out of
+  // view and disappears once the table bottom leaves the sticky threshold.
+  (function () {
+    const table    = document.getElementById('compliance-table') as HTMLTableElement | null;
+    const thead    = document.getElementById('compliance-thead') as HTMLElement | null;
+    const wrap     = document.getElementById('compliance-table-wrap') as HTMLElement | null;
+    if (!table || !thead || !wrap) return;
+
+    // Build a fixed-position clone of the thead row
+    const cloneWrap = document.createElement('div');
+    cloneWrap.style.cssText = [
+      'position:fixed',
+      'left:0',
+      'right:0',
+      'z-index:45',
+      'display:none',
+      'background:#1c1c27',
+      'border-bottom:1px solid #2a2a3d',
+      'box-shadow:0 4px 12px rgba(0,0,0,0.4)',
+    ].join(';');
+
+    const cloneInner = document.createElement('div');
+    cloneInner.style.cssText = 'max-width:80rem;margin:0 auto;overflow:hidden;';
+
+    const cloneTable = document.createElement('table');
+    cloneTable.style.cssText = 'width:100%;border-collapse:collapse;table-layout:fixed;';
+
+    const cloneThead = thead.cloneNode(true) as HTMLElement;
+    cloneTable.appendChild(cloneThead);
+    cloneInner.appendChild(cloneTable);
+    cloneWrap.appendChild(cloneInner);
+    document.body.appendChild(cloneWrap);
+
+    function stickyOffset(): number {
+      // Nav is always 64px. Add the floating filter height only when it's visible.
+      const ff = document.getElementById('floating-filter');
+      const ffH = ff?.classList.contains('is-visible') ? ff.getBoundingClientRect().height : 0;
+      return 64 + ffH;
+    }
+
+    function syncColumnWidths() {
+      const origCells  = thead.querySelectorAll<HTMLElement>('th');
+      const cloneCells = cloneThead.querySelectorAll<HTMLElement>('th');
+      origCells.forEach((cell, i) => {
+        if (cloneCells[i]) cloneCells[i].style.width = cell.getBoundingClientRect().width + 'px';
+      });
+      cloneTable.style.width = table.getBoundingClientRect().width + 'px';
+    }
+
+    function update() {
+      const offset     = stickyOffset();
+      const theadRect  = thead.getBoundingClientRect();
+      const tableRect  = table.getBoundingClientRect();
+      // Show clone when original thead top has scrolled above the offset line
+      // AND the table bottom is still below it (table still on screen)
+      const show = theadRect.bottom < offset && tableRect.bottom > offset + 40;
+      if (show) {
+        cloneWrap.style.top     = offset + 'px';
+        cloneWrap.style.display = 'block';
+        syncColumnWidths();
+      } else {
+        cloneWrap.style.display = 'none';
+      }
+    }
+
+    window.addEventListener('scroll', update, { passive: true });
+    window.addEventListener('resize', () => { syncColumnWidths(); update(); }, { passive: true });
+  })();
+</script>

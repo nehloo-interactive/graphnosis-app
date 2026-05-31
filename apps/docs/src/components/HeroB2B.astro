@@ -1,0 +1,263 @@
+---
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
+import HeroDiagram from './HeroDiagram.astro';
+
+let version = '';
+try {
+  const conf = JSON.parse(readFileSync(resolve('../../apps/desktop/src-tauri/tauri.conf.json'), 'utf8'));
+  version = conf.version ? `v${conf.version}` : '';
+} catch {}
+---
+
+<!--
+  pt-24 sm:pt-32 (~6–8rem of breathing room above the H1) keeps the headline
+  off the sticky 64-px nav. Without it the "Local, encrypted, deterministic"
+  line ends up flush against the top bar on tall viewports because the
+  section centers vertically before subtracting the nav height.
+-->
+<section
+  id="hero"
+  class="relative min-h-screen flex flex-col items-center justify-center text-center px-4 sm:px-6 pt-24 sm:pt-32 overflow-hidden"
+>
+  <div
+    class="absolute inset-0 pointer-events-none"
+    style="background: radial-gradient(ellipse 80% 60% at 50% 40%, rgba(103,232,249,0.05) 0%, transparent 70%);"
+    aria-hidden="true"
+  ></div>
+
+  <div
+    class="absolute inset-0 pointer-events-none opacity-[0.03]"
+    style="background-image: linear-gradient(#67e8f9 1px, transparent 1px), linear-gradient(90deg, #67e8f9 1px, transparent 1px); background-size: 40px 40px;"
+    aria-hidden="true"
+  ></div>
+
+  <div class="relative z-10 w-full flex flex-col items-center">
+
+    <!-- Badge + H1 -->
+    <!-- "Now available on macOS" pill removed (Windows ships too now); the
+         Download CTA below already conveys OS readiness via the
+         data-download-auto label rewrite. -->
+    <div class="max-w-4xl mx-auto text-center w-full">
+      <h1 class="text-3xl sm:text-4xl lg:text-5xl font-black text-white leading-[1.2] tracking-tight mb-8 overflow-visible">
+        <span class="block pb-1">Local, encrypted, deterministic</span>
+        <span class="block pb-1 bg-clip-text text-transparent" style="background-image: linear-gradient(135deg, #67e8f9 0%, #a78bfa 100%);">job memory</span>
+        <span class="block pb-2">for humans, AI and local intelligence.</span>
+      </h1>
+    </div>
+
+    <p class="text-xl sm:text-2xl font-bold text-center mb-12 max-w-3xl mx-auto bg-clip-text text-transparent" style="background-image: linear-gradient(135deg, #67e8f9 0%, #a78bfa 100%);">
+      Graphnosis is the job memory multi-layer that just remembers —<br />
+      on-premise, private, encrypted, deterministic, indexed with $0.
+    </p>
+
+    <!-- Rotating flow diagram — B2B variant -->
+    <div class="w-full max-w-7xl mx-auto px-4 sm:px-6 mb-2">
+      <HeroDiagram variant="b2b" />
+    </div>
+    <p class="text-center text-[#52525b] mb-10" style="font-size:10px; line-height:1.5;">
+      All other product names, trademarks, and registered trademarks are the property of their respective owners.
+      Graphnosis is not affiliated with, endorsed by, or sponsored by any third party.
+    </p>
+
+    <!-- Professional cross-client stories -->
+    <div class="w-full max-w-7xl mx-auto px-4 sm:px-6">
+      <div class="grid grid-cols-1 md:grid-cols-3 gap-4 text-left mb-12 mt-0">
+
+        <!-- Story 1: Software team -->
+        <article class="bg-[#1c1c27] border border-[#2a2a3d] rounded-xl p-6 flex flex-col gap-4">
+          <div class="text-center flex flex-col items-center gap-1.5">
+            <span class="inline-block text-base font-black tracking-[0.22em] uppercase px-4 py-1.5 rounded-md bg-[#67e8f9]/10 text-[#67e8f9] border border-[#67e8f9]/30">● Engineering</span>
+            <span class="text-xs font-mono text-[#52525b] uppercase tracking-wider">Slack · GitHub · Jira → Cursor · Claude Code</span>
+          </div>
+          <div class="flex items-center gap-2 text-sm text-[#c4c6d6] font-mono flex-wrap">
+            <span>flow</span>
+            <span class="text-[#36C5F0] font-semibold">Slack</span>
+            <span>+</span>
+            <span class="text-[#F78424] font-semibold">GitHub</span>
+            <span>+</span>
+            <span class="text-[#6366F1] font-semibold">ADRs</span>
+            <span>→</span>
+            <span class="text-[#6366F1] font-semibold">Cursor</span>
+            <span>+</span>
+            <span class="text-[#238636] font-semibold">Copilot</span>
+            <span>+</span>
+            <span class="text-[#D97757] font-semibold">Claude Code</span>
+          </div>
+          <p class="text-[#f0f0f5] text-xl font-semibold leading-snug">"New dev joins Monday. Four years of architecture decisions. She needs to know them all."</p>
+          <p class="text-[#c4c6d6] text-base leading-relaxed">You <u>auto-ingest</u> the <span class="font-semibold" style="color:#36C5F0">Slack</span> engineering channel, <span class="font-semibold" style="color:#F78424">GitHub</span> PR history, and your ADR archive. She opens <span class="font-semibold" style="color:#6366F1">Cursor</span> on day one: <span class="bg-amber-400/20 text-amber-100 font-mono text-base px-1.5 py-0.5 rounded">recall why the payment service is isolated</span> — surfaces ADR-042, the three debates in the Slack thread, and the incident that drove the boundary decision. She doesn't re-ask the team. She just knows. When she makes a decision: <span class="bg-amber-400/20 text-amber-100 font-mono text-base px-1.5 py-0.5 rounded">remember we chose Postgres over Redis for the session store — latency acceptable, ops cost lower</span>. The decision is in memory before she closes her laptop.</p>
+          <div class="flex gap-2 mt-auto flex-wrap">
+            <span class="text-sm font-mono px-3 py-1 rounded bg-[#13131a] text-[#67e8f9] border border-[#2a2a3d]">ingest</span>
+            <span class="text-sm font-mono px-3 py-1 rounded bg-[#13131a] text-[#67e8f9] border border-[#2a2a3d]">recall</span>
+            <span class="text-sm font-mono px-3 py-1 rounded bg-[#13131a] text-[#67e8f9] border border-[#2a2a3d]">remember</span>
+          </div>
+        </article>
+
+        <!-- Story 2: Lawyer / consultant -->
+        <article class="bg-[#1c1c27] border border-[#2a2a3d] rounded-xl p-6 flex flex-col gap-4">
+          <div class="text-center flex flex-col items-center gap-1.5">
+            <span class="inline-block text-base font-black tracking-[0.22em] uppercase px-4 py-1.5 rounded-md bg-[#a78bfa]/10 text-[#a78bfa] border border-[#a78bfa]/30">◐ Professional</span>
+            <span class="text-xs font-mono text-[#52525b] uppercase tracking-wider">matter files · correspondence → Claude Desktop</span>
+          </div>
+          <div class="flex items-center gap-2 text-sm text-[#c4c6d6] font-mono flex-wrap">
+            <span>flow</span>
+            <span class="text-[#a78bfa] font-semibold">matter files</span>
+            <span>+</span>
+            <span class="text-[#a78bfa] font-semibold">billed notes</span>
+            <span>+</span>
+            <span class="text-[#a78bfa] font-semibold">correspondence</span>
+            <span>→</span>
+            <span class="text-[#D97757] font-semibold">Claude Desktop</span>
+          </div>
+          <p class="text-[#f0f0f5] text-xl font-semibold leading-snug">"Client calls in 10 minutes. You handled their last matter 9 months ago."</p>
+          <p class="text-[#c4c6d6] text-base leading-relaxed">You <u>auto-ingest</u> your matter files, correspondence archive, and billed work notes — all locally, nothing reaching a cloud server. Before the call in <span class="font-semibold" style="color:#D97757">Claude Desktop</span>: <span class="bg-amber-400/20 text-amber-100 font-mono text-base px-1.5 py-0.5 rounded">recall everything about Meridian's IP situation</span> — surfaces the licensing dispute from last year, the two open action items, and the clause they negotiated in the service agreement. You walk in knowing. Not re-reading. After the call: <span class="bg-amber-400/20 text-amber-100 font-mono text-base px-1.5 py-0.5 rounded">remember we agreed to a 60-day extension on the filing deadline — client confirmed verbal approval</span>. In memory before you close the tab. Sensitive tier: none of it reaches a third party.</p>
+          <div class="flex gap-2 mt-auto flex-wrap">
+            <span class="text-sm font-mono px-3 py-1 rounded bg-[#13131a] text-[#a78bfa] border border-[#2a2a3d]">ingest</span>
+            <span class="text-sm font-mono px-3 py-1 rounded bg-[#13131a] text-[#a78bfa] border border-[#2a2a3d]">recall</span>
+            <span class="text-sm font-mono px-3 py-1 rounded bg-[#13131a] text-[#a78bfa] border border-[#2a2a3d]">remember</span>
+          </div>
+        </article>
+
+        <!-- Story 3: Operations / industrial -->
+        <article class="bg-[#1c1c27] border border-[#2a2a3d] rounded-xl p-6 flex flex-col gap-4">
+          <div class="text-center flex flex-col items-center gap-1.5">
+            <span class="inline-block text-base font-black tracking-[0.22em] uppercase px-4 py-1.5 rounded-md bg-gradient-to-r from-[#67e8f9]/15 to-[#a78bfa]/15 text-[#f0f0f5] border border-[#67e8f9]/30">○ Operations</span>
+            <span class="text-xs font-mono text-[#52525b] uppercase tracking-wider">plant network · runbooks → Local LLM</span>
+          </div>
+          <div class="flex items-center gap-2 text-sm text-[#c4c6d6] font-mono flex-wrap">
+            <span>flow</span>
+            <span class="text-[#f59e0b] font-semibold">SCADA logs</span>
+            <span>+</span>
+            <span class="text-[#f59e0b] font-semibold">maintenance records</span>
+            <span>+</span>
+            <span class="text-[#f59e0b] font-semibold">runbooks</span>
+            <span>→</span>
+            <span class="text-[#a78bfa] font-semibold">Local LLM (Ollama)</span>
+          </div>
+          <p class="text-[#f0f0f5] text-xl font-semibold leading-snug">"Pump 7 is behaving exactly like it did six months before it failed last time."</p>
+          <p class="text-[#c4c6d6] text-base leading-relaxed">Your SCADA historian and maintenance logs are <u>auto-ingested</u> from the plant network — no cloud, ever. Your <span class="font-semibold" style="color:#a78bfa">local LLM</span>: <span class="bg-amber-400/20 text-amber-100 font-mono text-base px-1.5 py-0.5 rounded">recall Pump 7 fault signatures before the last bearing failure</span> — surfaces the three pressure anomalies from the historian, the maintenance note about the seal condition, and the runbook deviation your tech made that voided the warranty. You catch it before it fails — not after. <span class="bg-amber-400/20 text-amber-100 font-mono text-base px-1.5 py-0.5 rounded">remember this pattern: pressure drop preceded bearing failure by 6 days</span>. The next on-call engineer has that knowledge without anyone briefing them.</p>
+          <div class="flex gap-2 mt-auto flex-wrap">
+            <span class="text-sm font-mono px-3 py-1 rounded bg-[#13131a] text-[#f59e0b] border border-[#2a2a3d]">ingest</span>
+            <span class="text-sm font-mono px-3 py-1 rounded bg-[#13131a] text-[#f59e0b] border border-[#2a2a3d]">recall</span>
+            <span class="text-sm font-mono px-3 py-1 rounded bg-[#13131a] text-[#f59e0b] border border-[#2a2a3d]">remember</span>
+          </div>
+        </article>
+
+      </div>
+    </div>
+
+    <!-- Value proposition + CTAs -->
+    <div class="max-w-4xl mx-auto text-center w-full">
+      <p
+        id="graphnosis"
+        class="text-5xl sm:text-6xl lg:text-7xl font-black tracking-tight mt-10 mb-2 bg-clip-text text-transparent scroll-mt-24"
+        style="background-image: linear-gradient(135deg, #67e8f9 0%, #a78bfa 100%);"
+      >Graphnosis</p>
+      <p class="text-base sm:text-lg text-[#c4c6d6] tracking-wide mb-6">Local, encrypted, deterministic job memory — for professionals and the agents you build</p>
+      <img src="/graphnosis-logo.png" alt="Graphnosis" class="w-72 h-72 mx-auto mb-6" />
+
+      <div class="border-t border-[#2a2a3d] pt-12 text-center">
+        <p class="text-xl sm:text-2xl font-bold text-[#f0f0f5] max-w-3xl mx-auto leading-snug mb-5">
+          Graphnosis is your <span class="bg-clip-text text-transparent" style="background-image: linear-gradient(90deg, #67e8f9 0%, #a78bfa 100%);">Local Intelligence</span> &mdash; a novel indexing methodology, modeled on the hippocampus, that connects your memories the way your cortex never quite manages to.
+        </p>
+        <p class="text-lg sm:text-xl text-[#c4c6d6] max-w-3xl mx-auto leading-relaxed mt-5">
+          That&rsquo;s why you want to meet <a href="/reference/ghampus/" class="font-bold bg-clip-text text-transparent hover:opacity-80 transition-opacity" style="background-image: linear-gradient(90deg, #67e8f9 0%, #a78bfa 100%);">Ghampus</a> &mdash; your memory seahorse, shaped like a hippocampus, who remembers and indexes everything for you with precision, privacy, security and, most importantly, deterministically.
+        </p>
+
+        <!-- Brain-to-digital-memory sketch: 4 stages, left-to-right.
+             Each stage maps a brain structure to its Graphnosis equivalent.
+             Stays language-neutral, no images, pure inline SVG + Tailwind. -->
+        <div class="max-w-5xl mx-auto mt-10 mb-10">
+          <div class="grid grid-cols-1 sm:grid-cols-4 gap-3 sm:gap-2 items-stretch text-left">
+            <div class="rounded-xl border border-[#2a2a3d] bg-[#13131a] p-5 flex flex-col gap-2 relative">
+              <p class="text-xs sm:text-sm font-mono uppercase tracking-widest text-[#9a9db8]">Stage 1 &middot; raw input</p>
+              <p class="text-lg sm:text-xl font-bold text-[#67e8f9]">Cortex of files</p>
+              <p class="text-base text-[#c4c6d6] leading-snug">Your notes, docs, chats, PDFs &mdash; the lifetime of material your mind never fully organises.</p>
+            </div>
+            <div class="rounded-xl border border-[#2a2a3d] bg-[#13131a] p-5 flex flex-col gap-2 relative">
+              <p class="text-xs sm:text-sm font-mono uppercase tracking-widest text-[#9a9db8]">Stage 2 &middot; binding</p>
+              <p class="text-lg sm:text-xl font-bold text-[#67e8f9]">Hippocampus indexer</p>
+              <p class="text-base text-[#c4c6d6] leading-snug">The local pipeline that binds fragments into engrams &mdash; deterministic, encrypted, no AI API touched.</p>
+            </div>
+            <div class="rounded-xl border border-[#2a2a3d] bg-[#13131a] p-5 flex flex-col gap-2 relative">
+              <p class="text-xs sm:text-sm font-mono uppercase tracking-widest text-[#9a9db8]">Stage 3 &middot; storage</p>
+              <p class="text-lg sm:text-xl font-bold text-[#a78bfa]">Engram graph</p>
+              <p class="text-base text-[#c4c6d6] leading-snug">Memories wired by synapses &mdash; live, evolving, growing every time you save a new source.</p>
+            </div>
+            <div class="rounded-xl border border-[#2a2a3d] bg-[#13131a] p-5 flex flex-col gap-2 relative">
+              <p class="text-xs sm:text-sm font-mono uppercase tracking-widest text-[#9a9db8]">Stage 4 &middot; recall</p>
+              <p class="text-lg sm:text-xl font-bold text-[#a78bfa]">Prefrontal cortex</p>
+              <p class="text-base text-[#c4c6d6] leading-snug">Any local or cloud AI you connect queries the graph &mdash; same answer, every model, autonomously retrained as memory grows.</p>
+            </div>
+          </div>
+          <p class="text-base sm:text-lg text-[#c4c6d6] text-center mt-5 leading-relaxed">
+            <span class="font-mono text-[#67e8f9]">hippocampus</span> + <span class="font-mono text-[#a78bfa]">engrams</span> = <span class="font-mono text-[#f0f0f5]">Graphnosis</span> &middot;
+            stays local &middot; encrypted at rest &middot; creates synapses between your memories &middot;
+            autonomous retraining as needed &middot; live and evolving with every new source &mdash;
+            from your local files or the cloud tools you already use today.
+          </p>
+        </div>
+
+        <p class="text-base sm:text-lg text-[#c4c6d6] max-w-3xl mx-auto leading-relaxed">
+          It sits alongside your note-taking and document tools, indexes them once, and serves the same deterministic recall to local Ollama or any cloud AI you connect &mdash; no re-ingest at the start of every session, no context window blown on the same files, no second-guessing whether the AI sees what you saw last time. <strong class="text-[#f0f0f5]">Same query, same answer, every model.</strong> Works inside regulated local networks where cloud RAG cannot go.
+        </p>
+      </div>
+
+      <div class="border-t border-[#2a2a3d] pt-12 text-center mt-12">
+        <p class="text-lg sm:text-xl text-[#c4c6d6] max-w-xl mx-auto leading-relaxed mb-2">
+          The indexing pipeline runs entirely on your local device.
+        </p>
+        <p class="text-lg sm:text-xl text-[#c4c6d6] max-w-xl mx-auto leading-relaxed mb-2">
+          No AI API is called during the deterministic ingestion of knowledge.
+        </p>
+        <p class="text-lg sm:text-xl text-[#f0f0f5] font-semibold max-w-xl mx-auto leading-relaxed mb-10">
+          The cost to build your encrypted professional memory: $0.
+        </p>
+      </div>
+
+      <div class="flex flex-col sm:flex-row items-center justify-center gap-4 mb-4">
+        <!-- See Nav.astro's OS-detect script for what data-download-auto does. -->
+        <a
+          href="/download"
+          class="inline-flex items-center gap-2 px-8 py-4 rounded-full bg-[#67e8f9] hover:bg-[#4dd6e8] text-[#13131a] font-bold text-lg transition-colors shadow-lg shadow-[#67e8f9]/20"
+          data-download-auto
+          data-download-version={version}
+        >
+          Download{version ? ` ${version}` : ''}
+        </a>
+        <a
+          href="/job-memory-kits"
+          class="inline-flex items-center gap-1 px-8 py-4 rounded-full bg-[#a78bfa]/10 hover:bg-[#a78bfa]/20 border border-[#a78bfa]/40 text-[#a78bfa] font-semibold text-lg transition-colors"
+        >
+          Browse Job Memory Starter Kits
+          <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" aria-hidden="true">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M17 8l4 4m0 0l-4 4m4-4H3" />
+          </svg>
+        </a>
+        <a
+          href="/getting-started/overview"
+          class="inline-flex items-center gap-1 px-8 py-4 rounded-full border border-[#2a2a3d] hover:border-[#67e8f9] text-[#f0f0f5] font-semibold text-lg transition-colors"
+        >
+          Docs
+        </a>
+      </div>
+
+      <p class="text-sm text-[#c4c6d6] mt-4">
+        <span class="text-[#f0f0f5] font-semibold">Local-first</span>
+        &nbsp;·&nbsp;
+        <span class="text-[#f0f0f5] font-semibold">Encrypted at rest</span>
+        &nbsp;·&nbsp;
+        <span class="text-[#f0f0f5] font-semibold">No cloud AI during ingest</span>
+        &nbsp;·&nbsp;
+        <span class="text-[#f0f0f5] font-semibold">76.4% LongMemEval</span>
+      </p>
+    </div>
+
+  </div>
+
+  <div
+    class="absolute bottom-0 left-0 right-0 h-px"
+    style="background: linear-gradient(90deg, transparent 0%, #2a2a3d 30%, #67e8f9 50%, #2a2a3d 70%, transparent 100%);"
+    aria-hidden="true"
+  ></div>
+</section>

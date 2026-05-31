@@ -39,10 +39,12 @@ if (envVersion) {
 
 {version && (
   <a
-    href="/download/mac"
+    href="/download"
     class="sl-download-pill"
     title={`Download Graphnosis ${version}`}
     aria-label={`Download Graphnosis ${version}`}
+    data-download-auto
+    data-download-version={version}
   >
     <span class="sl-download-pill-label">Download</span>
     <span class="sl-download-pill-version">{version}</span>
@@ -50,6 +52,52 @@ if (envVersion) {
 )}
 
 <Default><slot /></Default>
+
+<!--
+  Starlight docs pages don't render Nav.astro, so the OS-detect script
+  that lives there never executes here. We duplicate the same logic in
+  this component — any anchor with `data-download-auto` (just the pill
+  above, in practice) gets href + label rewritten based on detected OS.
+
+  Falls back to /download (the chooser page) when OS is Linux or
+  unknown. Label remains "Download" + version pill — the OS detection
+  only swaps the href; it does NOT rewrite the pill's split label
+  because the version segment is rendered as a separate <span>.
+-->
+<script is:inline>
+  (function () {
+    function detectOs() {
+      try {
+        var uaData = (navigator).userAgentData;
+        if (uaData && uaData.platform) {
+          var p = uaData.platform.toLowerCase();
+          if (p.indexOf('mac') !== -1) return 'mac';
+          if (p.indexOf('win') !== -1) return 'win';
+          if (p.indexOf('linux') !== -1) return 'linux';
+        }
+      } catch (_) { /* userAgentData unavailable */ }
+      var plat = (navigator.platform || '').toLowerCase();
+      if (plat.indexOf('mac') !== -1) return 'mac';
+      if (plat.indexOf('win') !== -1) return 'win';
+      if (plat.indexOf('linux') !== -1) return 'linux';
+      var ua = (navigator.userAgent || '').toLowerCase();
+      if (ua.indexOf('mac') !== -1) return 'mac';
+      if (ua.indexOf('win') !== -1) return 'win';
+      if (ua.indexOf('linux') !== -1) return 'linux';
+      return null;
+    }
+    var os = detectOs();
+    if (!os) return;
+    var links = document.querySelectorAll('a[data-download-auto]');
+    links.forEach(function (link) {
+      if (os === 'mac')      link.setAttribute('href', '/download/mac');
+      else if (os === 'win') link.setAttribute('href', '/download/win');
+      // 'linux' falls through — chooser page already explains the
+      // "Linux coming soon" status, so leaving href at /download is
+      // the right behaviour.
+    });
+  })();
+</script>
 
 <style>
   /* Filled pill with a fixed dark-cyan background + white text in both

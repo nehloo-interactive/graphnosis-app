@@ -28,12 +28,12 @@ try {
   <div class="relative z-10 w-full flex flex-col items-center">
 
     <!-- Badge + H1 -->
+    <!-- "Now available on macOS" pill removed — Windows shipped, so the
+         badge was both stale and slightly misleading. The CTA button below
+         already says "Download Graphnosis vX.Y.Z for macOS/Windows" once
+         JS picks up the user's OS, which conveys the same "ship-readiness"
+         signal without the macOS-exclusive framing. -->
     <div class="max-w-4xl mx-auto text-center w-full">
-      <div class="inline-flex items-center gap-2 px-3 py-1.5 rounded-full border border-[#2a2a3d] bg-[#1c1c27] text-[#67e8f9] text-xs font-semibold tracking-widest uppercase mb-8">
-        <span class="w-1.5 h-1.5 rounded-full bg-[#67e8f9] animate-pulse"></span>
-        Now available on macOS
-      </div>
-
       <h1 class="text-3xl sm:text-4xl lg:text-5xl font-black text-white leading-normal tracking-tight mb-6">
         <span class="block">Your local encrypted memory,</span>
         <span
@@ -171,11 +171,19 @@ try {
       </div>
 
       <div class="flex flex-col sm:flex-row items-center justify-center gap-4 mb-4">
+        <!-- href defaults to /download (chooser) and the OS-detect script
+             in Nav.astro rewrites it to /download/mac or /download/win
+             based on navigator UA. The visible label is also rewritten
+             so the button reads "Download v1.X.Y for macOS/Windows"
+             rather than a hardcoded "for macOS". data-download-version
+             carries the version so the script doesn't have to re-read it. -->
         <a
-          href="/download/mac"
+          href="/download"
           class="inline-flex items-center gap-2 px-8 py-4 rounded-full bg-[#67e8f9] hover:bg-[#4dd6e8] text-[#13131a] font-bold text-lg transition-colors shadow-lg shadow-[#67e8f9]/20"
+          data-download-auto
+          data-download-version={version}
         >
-          Download{version ? ` ${version}` : ''} for macOS
+          Download{version ? ` ${version}` : ''}
         </a>
         <a
           href="/getting-started/overview"

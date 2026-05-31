@@ -1,0 +1,682 @@
+---
+import Layout from '../layouts/Layout.astro';
+import Nav from '../components/Nav.astro';
+import Footer from '../components/Footer.astro';
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
+
+// Read the current version so Download CTAs can show "Download v1.X.Y".
+// The Nav.astro OS-detect script reads data-download-version off each CTA
+// to build the OS-specific label ("Download v1.X.Y for macOS").
+let version = '';
+try {
+  const conf = JSON.parse(readFileSync(resolve('../../apps/desktop/src-tauri/tauri.conf.json'), 'utf8'));
+  version = conf.version ? `v${conf.version}` : '';
+} catch { /* docs built standalone — no version pill */ }
+---
+
+<Layout
+  title="MemoryStudio — Graphnosis | Offline Memory Management, Locally"
+  description="Recall, remember, edit, and explore your AI's memory directly inside Graphnosis — no internet, no cloud, no AI client required. Deterministic. Encrypted. Yours."
+>
+  <Nav />
+
+  <main>
+
+    <!-- ═══════════════════════════════════════════
+         HERO
+    ═══════════════════════════════════════════ -->
+    <section class="relative py-24 px-4 sm:px-6 overflow-hidden">
+      <!-- Background glow blobs -->
+      <div class="absolute top-0 left-1/4 w-96 h-96 bg-[#67e8f9]/5 rounded-full blur-3xl pointer-events-none"></div>
+      <div class="absolute bottom-0 right-1/4 w-96 h-96 bg-[#a78bfa]/5 rounded-full blur-3xl pointer-events-none"></div>
+
+      <div class="max-w-4xl mx-auto text-center relative z-10">
+        <!-- Badge -->
+        <div class="inline-flex items-center gap-2 px-5 py-2 rounded-full border border-[#2a2a3d] bg-[#1c1c27] text-base font-semibold text-[#c4c6d6] mb-8">
+          <span class="relative flex h-2.5 w-2.5">
+            <span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-[#a78bfa] opacity-75"></span>
+            <span class="relative inline-flex rounded-full h-2.5 w-2.5 bg-[#a78bfa]"></span>
+          </span>
+          MemoryStudio
+        </div>
+
+        <!-- Headline -->
+        <h1 class="text-5xl sm:text-6xl lg:text-7xl font-black text-white leading-[1.05] mb-6">
+          Your memories.<br />
+          <span class="bg-gradient-to-r from-[#67e8f9] to-[#a78bfa] bg-clip-text text-transparent">
+            Your machine.
+          </span><br />
+          Your rules.
+        </h1>
+
+        <!-- Sub-headline -->
+        <p class="text-lg sm:text-xl text-[#c4c6d6] max-w-2xl mx-auto leading-relaxed mb-10">
+          Recall, remember, edit, and explore your memory the way your AI client does &mdash;
+          using the exact same operations, running entirely on your device.
+          No internet. No cloud hop. No third-party model seeing your data.
+          Just you, your cortex, and a deterministic graph that never lies.
+        </p>
+
+        <!-- CTA pair. data-download-auto opts the button into the
+             OS-detect rewrite in Nav.astro (href + label updated client-
+             side to match macOS / Windows). Default href points to the
+             chooser page for users where detection fails. -->
+        <div class="flex flex-col sm:flex-row gap-4 justify-center items-center mb-12">
+          <a
+            href="/download"
+            class="px-8 py-4 rounded-full bg-[#67e8f9] hover:bg-[#4dd6e8] text-[#13131a] font-bold text-lg transition-colors"
+            data-download-auto
+            data-download-version={version}
+          >
+            Download Graphnosis{version ? ` ${version}` : ''}
+          </a>
+          <a
+            href="/job-memory-kits"
+            class="px-8 py-4 rounded-full border border-[#2a2a3d] hover:border-[#a78bfa] text-[#f0f0f5] font-semibold text-lg transition-colors"
+          >
+            Explore Memory Kits &rarr;
+          </a>
+        </div>
+
+        <!-- Stat pills -->
+        <div class="flex flex-wrap justify-center gap-3 text-sm font-mono">
+          <span class="px-4 py-1.5 rounded-full bg-[#1c1c27] border border-[#2a2a3d] text-[#67e8f9]">📵 Offline</span>
+          <span class="px-4 py-1.5 rounded-full bg-[#1c1c27] border border-[#2a2a3d] text-[#67e8f9]">⚡ Deterministic</span>
+          <span class="px-4 py-1.5 rounded-full bg-[#1c1c27] border border-[#2a2a3d] text-[#67e8f9]">🔒 Encrypted at rest</span>
+          <span class="px-4 py-1.5 rounded-full bg-[#1c1c27] border border-[#2a2a3d] text-[#a78bfa]">75 ms median recall</span>
+        </div>
+      </div>
+    </section>
+
+    <!-- ═══════════════════════════════════════════
+         PROBLEM STRIP
+    ═══════════════════════════════════════════ -->
+    <section class="bg-[#1c1c27] py-24 px-4 sm:px-6">
+      <div class="max-w-7xl mx-auto">
+        <div class="text-center mb-16">
+          <p class="font-mono text-xs tracking-widest uppercase text-[#555570] mb-3">The problem with cloud memory</p>
+          <h2 class="text-3xl sm:text-4xl font-black text-white">You shouldn&rsquo;t have to trust a server<br class="hidden sm:block" /> to remember what matters to you.</h2>
+        </div>
+
+        <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
+          <!-- Problem 1 -->
+          <article class="bg-[#13131a] border border-[#2a2a3d] rounded-xl p-6 flex flex-col gap-4">
+            <svg class="w-8 h-8 text-[#ef4444]" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5">
+              <path stroke-linecap="round" stroke-linejoin="round" d="M12 9v2m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
+            </svg>
+            <div>
+              <p class="font-mono text-xs tracking-widest uppercase text-[#555570] mb-1">Problem 1</p>
+              <h3 class="text-lg font-bold text-white mb-2">Your memories live on their servers</h3>
+              <p class="text-[#c4c6d6] text-sm leading-relaxed">
+                Cloud AI memory services store your notes, corrections, and personal context on infrastructure you don't control,
+                under retention policies you didn't write.
+              </p>
+            </div>
+            <div class="border-t border-[#2a2a3d] pt-4 mt-auto">
+              <p class="text-xs font-mono tracking-widest uppercase text-[#67e8f9] mb-1">Graphnosis</p>
+              <p class="text-[#a0a0b8] text-sm">
+                Your cortex is an encrypted file on your disk. No account, no sync, no one else's cloud.
+                The passphrase never leaves your device.
+              </p>
+            </div>
+          </article>
+
+          <!-- Problem 2 -->
+          <article class="bg-[#13131a] border border-[#2a2a3d] rounded-xl p-6 flex flex-col gap-4">
+            <svg class="w-8 h-8 text-[#f59e0b]" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5">
+              <path stroke-linecap="round" stroke-linejoin="round" d="M13.5 10.5L21 3m-7.5 7.5L21 21M3 3l7.5 7.5M3 21l7.5-7.5"/>
+            </svg>
+            <div>
+              <p class="font-mono text-xs tracking-widest uppercase text-[#555570] mb-1">Problem 2</p>
+              <h3 class="text-lg font-bold text-white mb-2">Opaque retrieval &mdash; you can&rsquo;t see what the AI sees</h3>
+              <p class="text-[#c4c6d6] text-sm leading-relaxed">
+                Cloud memory managers give your AI a summary. You never see which nodes were recalled, how they scored,
+                or why a fact was included or dropped.
+              </p>
+            </div>
+            <div class="border-t border-[#2a2a3d] pt-4 mt-auto">
+              <p class="text-xs font-mono tracking-widest uppercase text-[#67e8f9] mb-1">Graphnosis</p>
+              <p class="text-[#a0a0b8] text-sm">
+                MemoryStudio shows you the full subgraph output — the exact structured context your AI client
+                receives, with node types, confidence scores, and source provenance.
+              </p>
+            </div>
+          </article>
+
+          <!-- Problem 3 -->
+          <article class="bg-[#13131a] border border-[#2a2a3d] rounded-xl p-6 flex flex-col gap-4">
+            <svg class="w-8 h-8 text-[#ef4444]" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5">
+              <path stroke-linecap="round" stroke-linejoin="round" d="M19.5 12h-15m0 0l6.75 6.75M4.5 12l6.75-6.75"/>
+            </svg>
+            <div>
+              <p class="font-mono text-xs tracking-widest uppercase text-[#555570] mb-1">Problem 3</p>
+              <h3 class="text-lg font-bold text-white mb-2">One wrong edit and it&rsquo;s overwritten</h3>
+              <p class="text-[#c4c6d6] text-sm leading-relaxed">
+                Cloud memory updates are opaque rewrites. There's no diff, no audit trail, no way to see what changed
+                or roll back a bad correction.
+              </p>
+            </div>
+            <div class="border-t border-[#2a2a3d] pt-4 mt-auto">
+              <p class="text-xs font-mono tracking-widest uppercase text-[#67e8f9] mb-1">Graphnosis</p>
+              <p class="text-[#a0a0b8] text-sm">
+                Every correction goes through a diff-review step. You see before and after. You approve or reject.
+                The op-log records the full lineage — forever.
+              </p>
+            </div>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <!-- ═══════════════════════════════════════════
+         FEATURE GRID — what MemoryStudio does
+    ═══════════════════════════════════════════ -->
+    <section id="features" class="py-24 px-4 sm:px-6">
+      <div class="max-w-7xl mx-auto">
+        <div class="text-center mb-16">
+          <p class="font-mono text-xs tracking-widest uppercase text-[#555570] mb-3">What MemoryStudio does</p>
+          <h2 class="text-3xl sm:text-4xl lg:text-5xl font-black text-white mb-4">
+            Every operation your AI runs.<br class="hidden sm:block" />
+            Now in your hands.
+          </h2>
+          <p class="text-[#c4c6d6] max-w-2xl mx-auto leading-relaxed">
+            The same recall, remember, edit, and explore loop your AI client runs via MCP &mdash;
+            available directly in the app, offline, without sending a single byte to a server.
+            <a href="/job-memory-kits" class="text-[#a78bfa] hover:text-[#c4b5fd] transition-colors ml-1">
+              Seed your engrams with a Memory Kit &rarr;
+            </a>
+          </p>
+        </div>
+
+        <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+
+          <!-- Recall -->
+          <article class="bg-[#1c1c27] border border-[#2a2a3d] rounded-xl p-6">
+            <div class="w-10 h-10 rounded-lg bg-[#67e8f9]/10 flex items-center justify-center mb-4">
+              <svg class="w-5 h-5 text-[#67e8f9]" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5">
+                <path stroke-linecap="round" stroke-linejoin="round" d="M21 21l-5.197-5.197m0 0A7.5 7.5 0 105.196 5.196a7.5 7.5 0 0010.607 10.607z"/>
+              </svg>
+            </div>
+            <h3 class="text-lg font-bold text-white mb-2">Recall</h3>
+            <p class="text-[#c4c6d6] text-sm leading-relaxed">
+              Type a query in any language. Read the exact structured subgraph your AI client would receive via MCP &mdash;
+              nodes, edges, confidence scores, and source provenance. No surprises, no black box.
+            </p>
+            <p class="text-xs font-mono text-[#555570] mt-4">Deterministic &middot; Same query = same result</p>
+          </article>
+
+          <!-- Dig Deeper -->
+          <article class="bg-[#1c1c27] border border-[#2a2a3d] rounded-xl p-6">
+            <div class="w-10 h-10 rounded-lg bg-[#67e8f9]/10 flex items-center justify-center mb-4">
+              <svg class="w-5 h-5 text-[#67e8f9]" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5">
+                <path stroke-linecap="round" stroke-linejoin="round" d="M3.75 3.75v4.5m0-4.5h4.5m-4.5 0L9 9M3.75 20.25v-4.5m0 4.5h4.5m-4.5 0L9 15M20.25 3.75h-4.5m4.5 0v4.5m0-4.5L15 9m5.25 11.25h-4.5m4.5 0v-4.5m0 4.5L15 15"/>
+              </svg>
+            </div>
+            <h3 class="text-lg font-bold text-white mb-2">Dig Deeper</h3>
+            <p class="text-[#c4c6d6] text-sm leading-relaxed">
+              When recall returns thin results, Dig Deeper runs three expansion stages: source-filename search,
+              cross-engram entity hop, and GNN graph expansion. Finds the memory that bare recall misses.
+            </p>
+            <p class="text-xs font-mono text-[#555570] mt-4">Multi-stage &middot; Provenance breakdown included</p>
+          </article>
+
+          <!-- Remember -->
+          <article class="bg-[#1c1c27] border border-[#2a2a3d] rounded-xl p-6">
+            <div class="w-10 h-10 rounded-lg bg-[#a78bfa]/10 flex items-center justify-center mb-4">
+              <svg class="w-5 h-5 text-[#a78bfa]" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5">
+                <path stroke-linecap="round" stroke-linejoin="round" d="M12 9v6m3-3H9m12 0a9 9 0 11-18 0 9 9 0 0118 0z"/>
+              </svg>
+            </div>
+            <h3 class="text-lg font-bold text-white mb-2">Remember</h3>
+            <p class="text-[#c4c6d6] text-sm leading-relaxed">
+              Write a note. The app suggests the right engram based on content similarity, then checks for
+              near-duplicates before saving. Your cortex stays clean, structured, and non-redundant.
+            </p>
+            <p class="text-xs font-mono text-[#555570] mt-4">Auto-routed &middot; Duplicate check built-in</p>
+          </article>
+
+          <!-- Edit / Correct -->
+          <article class="bg-[#1c1c27] border border-[#2a2a3d] rounded-xl p-6">
+            <div class="w-10 h-10 rounded-lg bg-[#a78bfa]/10 flex items-center justify-center mb-4">
+              <svg class="w-5 h-5 text-[#a78bfa]" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5">
+                <path stroke-linecap="round" stroke-linejoin="round" d="M16.862 4.487l1.687-1.688a1.875 1.875 0 112.652 2.652L10.582 16.07a4.5 4.5 0 01-1.897 1.13L6 18l.8-2.685a4.5 4.5 0 011.13-1.897l8.932-8.931zm0 0L19.5 7.125"/>
+              </svg>
+            </div>
+            <h3 class="text-lg font-bold text-white mb-2">Edit &amp; Correct</h3>
+            <p class="text-[#c4c6d6] text-sm leading-relaxed">
+              Describe a correction in plain language. The app surfaces the affected memory, proposes a
+              before/after diff, and waits for your approval. With Ollama running locally, the LLM
+              parses your intent — without sending anything to a cloud model.
+            </p>
+            <p class="text-xs font-mono text-[#555570] mt-4">Diff-reviewed &middot; Op-log auditable</p>
+          </article>
+
+          <!-- GNN Neighbors -->
+          <article class="bg-[#1c1c27] border border-[#2a2a3d] rounded-xl p-6">
+            <div class="w-10 h-10 rounded-lg bg-[#67e8f9]/10 flex items-center justify-center mb-4">
+              <svg class="w-5 h-5 text-[#67e8f9]" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5">
+                <path stroke-linecap="round" stroke-linejoin="round" d="M7.5 21L3 16.5m0 0L7.5 12M3 16.5h13.5m0-13.5L21 7.5m0 0L16.5 12M21 7.5H7.5"/>
+              </svg>
+            </div>
+            <h3 class="text-lg font-bold text-white mb-2">GNN Neighbors</h3>
+            <p class="text-[#c4c6d6] text-sm leading-relaxed">
+              A local graph neural network scans embedding similarity, shared entities, and graph topology
+              to predict connections your explicit notes never made. Explore the hidden structure
+              of your memory — the links that exist but haven&rsquo;t been written yet.
+            </p>
+            <p class="text-xs font-mono text-[#555570] mt-4">Local inference &middot; Opt-in overlay</p>
+          </article>
+
+          <!-- Duplicate Guard -->
+          <article class="bg-[#1c1c27] border border-[#2a2a3d] rounded-xl p-6">
+            <div class="w-10 h-10 rounded-lg bg-[#67e8f9]/10 flex items-center justify-center mb-4">
+              <svg class="w-5 h-5 text-[#67e8f9]" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5">
+                <path stroke-linecap="round" stroke-linejoin="round" d="M9 12.75L11.25 15 15 9.75M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
+              </svg>
+            </div>
+            <h3 class="text-lg font-bold text-white mb-2">Duplicate Guard</h3>
+            <p class="text-[#c4c6d6] text-sm leading-relaxed">
+              Before saving any note, a cosine similarity scan checks your entire cortex for near-identical
+              content. A warning surfaces the best match so you can decide: save as new, edit instead, or discard.
+            </p>
+            <p class="text-xs font-mono text-[#555570] mt-4">No LLM required &middot; Threshold-configurable</p>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <!-- ═══════════════════════════════════════════
+         HOW IT WORKS — 3 steps
+    ═══════════════════════════════════════════ -->
+    <section class="bg-[#1c1c27] py-24 px-4 sm:px-6">
+      <div class="max-w-7xl mx-auto">
+        <div class="text-center mb-16">
+          <p class="font-mono text-xs tracking-widest uppercase text-[#555570] mb-3">How it works</p>
+          <h2 class="text-3xl sm:text-4xl font-black text-white">Three steps. Zero cloud hops.</h2>
+        </div>
+
+        <div class="relative grid grid-cols-1 md:grid-cols-3 gap-8">
+          <!-- Connecting line (desktop only) -->
+          <div class="hidden md:block absolute top-8 left-1/3 right-1/3 h-px bg-gradient-to-r from-[#67e8f9]/20 via-[#a78bfa]/40 to-[#67e8f9]/20 -translate-y-1/2" style="top: 2rem;"></div>
+
+          <!-- Step 1 -->
+          <div class="flex flex-col items-center text-center gap-4 relative">
+            <div class="w-16 h-16 rounded-full bg-gradient-to-br from-[#67e8f9]/20 to-[#67e8f9]/5 border border-[#67e8f9]/30 flex items-center justify-center text-[#67e8f9] font-black text-xl z-10">
+              1
+            </div>
+            <h3 class="text-xl font-bold text-white">Type a query</h3>
+            <p class="text-[#c4c6d6] text-sm leading-relaxed max-w-xs">
+              Ask in any language. Graphnosis searches your local encrypted graph using
+              BGE multilingual embeddings &mdash; no API call, no cloud hop. Median: 75 ms.
+            </p>
+          </div>
+
+          <!-- Step 2 -->
+          <div class="flex flex-col items-center text-center gap-4 relative">
+            <div class="w-16 h-16 rounded-full bg-gradient-to-br from-[#a78bfa]/20 to-[#a78bfa]/5 border border-[#a78bfa]/30 flex items-center justify-center text-[#a78bfa] font-black text-xl z-10">
+              2
+            </div>
+            <h3 class="text-xl font-bold text-white">See your subgraph</h3>
+            <p class="text-[#c4c6d6] text-sm leading-relaxed max-w-xs">
+              Read the exact structured context your AI client receives via MCP &mdash; nodes, edge weights,
+              confidence scores, source provenance. The same view, in your hands, without an AI intermediary.
+            </p>
+          </div>
+
+          <!-- Step 3 -->
+          <div class="flex flex-col items-center text-center gap-4 relative">
+            <div class="w-16 h-16 rounded-full bg-gradient-to-br from-[#67e8f9]/20 to-[#67e8f9]/5 border border-[#67e8f9]/30 flex items-center justify-center text-[#67e8f9] font-black text-xl z-10">
+              3
+            </div>
+            <h3 class="text-xl font-bold text-white">Act on it</h3>
+            <p class="text-[#c4c6d6] text-sm leading-relaxed max-w-xs">
+              Save a note, fix a fact, explore a GNN-predicted connection &mdash;
+              every action writes to your local <code class="text-[#67e8f9] font-mono text-xs bg-[#13131a] px-1.5 py-0.5 rounded">.gai</code> file and nothing else.
+            </p>
+          </div>
+        </div>
+
+        <!-- Stats strip -->
+        <div class="mt-16 grid grid-cols-2 md:grid-cols-4 gap-4">
+          {[
+            { value: '75 ms', label: 'Median recall latency' },
+            { value: '76.4%', label: 'LongMemEval accuracy' },
+            { value: '$0', label: 'Per-query cloud cost' },
+            { value: '100%', label: 'Data stays on your device' },
+          ].map(({ value, label }) => (
+            <div class="bg-[#13131a] border border-[#2a2a3d] rounded-xl p-4 text-center">
+              <p class="text-2xl font-black text-white mb-1">{value}</p>
+              <p class="text-xs text-[#555570] font-mono uppercase tracking-wider">{label}</p>
+            </div>
+          ))}
+        </div>
+      </div>
+    </section>
+
+    <!-- ═══════════════════════════════════════════
+         PRIVACY & DETERMINISM BANNER
+    ═══════════════════════════════════════════ -->
+    <section class="py-24 px-4 sm:px-6">
+      <div class="max-w-4xl mx-auto">
+        <div class="relative rounded-2xl border border-[#2a2a3d] bg-[#1c1c27] p-10 sm:p-14 overflow-hidden">
+          <!-- Gradient accent blob -->
+          <div class="absolute inset-0 bg-gradient-to-br from-[#67e8f9]/4 via-transparent to-[#a78bfa]/4 pointer-events-none rounded-2xl"></div>
+
+          <div class="relative z-10 text-center">
+            <h2 class="text-3xl sm:text-4xl font-black text-white mb-6">
+              Deterministic by design.<br />
+              <span class="bg-gradient-to-r from-[#67e8f9] to-[#a78bfa] bg-clip-text text-transparent">
+                Private by architecture.
+              </span>
+            </h2>
+            <p class="text-[#c4c6d6] text-lg leading-relaxed max-w-2xl mx-auto mb-10">
+              The same query against the same cortex always returns the same result &mdash; no randomness,
+              no model drift, no API non-determinism. Your local BGE model runs the search.
+              When you enable Ollama, the LLM runs on your GPU too.
+              The only thing that travels is what you choose to share &mdash; and Graphnosis was
+              built to make that choice explicit, not accidental.
+            </p>
+
+            <div class="grid grid-cols-2 sm:grid-cols-4 gap-4 text-sm">
+              {[
+                { icon: '🔒', text: 'Encrypted at rest', sub: 'XChaCha20-Poly1305' },
+                { icon: '⚡', text: '75 ms recall', sub: 'Local BGE embeddings' },
+                { icon: '🧠', text: 'Local LLM', sub: 'Ollama, optional' },
+                { icon: '📵', text: 'No telemetry', sub: 'No analytics, ever' },
+              ].map(({ icon, text, sub }) => (
+                <div class="bg-[#13131a] border border-[#2a2a3d] rounded-xl p-4">
+                  <div class="text-2xl mb-2">{icon}</div>
+                  <p class="font-semibold text-white text-sm">{text}</p>
+                  <p class="text-xs text-[#555570] mt-0.5 font-mono">{sub}</p>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ═══════════════════════════════════════════
+         ALIVE MEMORY SYSTEMS
+    ═══════════════════════════════════════════ -->
+    <section class="bg-[#1c1c27] py-24 px-4 sm:px-6">
+      <div class="max-w-7xl mx-auto">
+        <div class="text-center mb-16">
+          <p class="font-mono text-xs tracking-widest uppercase text-[#555570] mb-3">Always running</p>
+          <h2 class="text-3xl sm:text-4xl lg:text-5xl font-black text-white mb-4">
+            Your cortex doesn&rsquo;t sleep.
+          </h2>
+          <p class="text-[#c4c6d6] max-w-2xl mx-auto leading-relaxed">
+            MemoryStudio surfaces two background engines that keep your graph healthy and connected.
+            They don&rsquo;t need a prompt. They don&rsquo;t need internet. They run while you do other things.
+          </p>
+        </div>
+
+        <div class="grid grid-cols-1 lg:grid-cols-2 gap-8">
+
+          <!-- Left: Deterministic Consolidation -->
+          <div class="bg-[#13131a] border border-[#2a2a3d] rounded-2xl p-8">
+            <div class="flex items-center gap-3 mb-6">
+              <div class="w-10 h-10 rounded-lg bg-[#67e8f9]/10 flex items-center justify-center">
+                <svg class="w-5 h-5 text-[#67e8f9]" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5">
+                  <path stroke-linecap="round" stroke-linejoin="round" d="M9 12.75L11.25 15 15 9.75m-3-7.036A11.959 11.959 0 013.598 6 11.99 11.99 0 003 9.749c0 5.592 3.824 10.29 9 11.623 5.176-1.332 9-6.03 9-11.622 0-1.31-.21-2.571-.598-3.751h-.152c-3.196 0-6.1-1.248-8.25-3.285z"/>
+                </svg>
+              </div>
+              <div>
+                <h3 class="text-xl font-bold text-white">Deterministic Consolidation</h3>
+                <p class="text-xs font-mono text-[#67e8f9] mt-0.5">No LLM required &middot; No internet &middot; Byte-reproducible</p>
+              </div>
+            </div>
+
+            <p class="text-[#c4c6d6] text-sm leading-relaxed mb-6 italic">
+              &ldquo;This is what your memory would do naturally if it had a maintenance crew.
+              Pure graph math &mdash; no AI, no API, no guessing.&rdquo;
+            </p>
+
+            <div class="space-y-4">
+              {[
+                {
+                  title: 'Memory health gauge',
+                  desc: 'Vitality score 0–100 based on node connectivity, recency, and redundancy. Know at a glance whether your cortex is thriving or atrophying.',
+                },
+                {
+                  title: 'Duplicate detection',
+                  desc: 'Cosine similarity scans pair near-identical nodes automatically. One tap to review and merge — the healing journal records every decision.',
+                },
+                {
+                  title: 'Healing journal',
+                  desc: 'Immutable audit log of every consolidation decision. Who merged what, when, and why — forever.',
+                },
+                {
+                  title: 'Contradiction detection',
+                  desc: 'Flags nodes asserting conflicting facts about the same entity. Surface the conflict; you decide which version survives.',
+                },
+                {
+                  title: 'Auto-relinking',
+                  desc: 'After a correction, broken references are healed forward through the graph. Structure is preserved even as content evolves.',
+                },
+                {
+                  title: 'Temporal decay',
+                  desc: 'Nodes not reinforced by recall gradually decrease in weight. Your cortex stays fresh — stale facts fade, active ones strengthen.',
+                },
+              ].map(({ title, desc }) => (
+                <div class="flex gap-3">
+                  <div class="mt-1 w-1.5 h-1.5 rounded-full bg-[#67e8f9] flex-shrink-0"></div>
+                  <div>
+                    <p class="text-white font-semibold text-sm">{title}</p>
+                    <p class="text-[#c4c6d6] text-sm leading-relaxed">{desc}</p>
+                  </div>
+                </div>
+              ))}
+            </div>
+
+            <!-- Layered memory architecture — canonical layer -->
+            <div class="border-t border-[#2a2a3d] pt-6 mt-6">
+              <p class="text-xs font-mono uppercase tracking-widest text-[#555570] mb-3">Layered memory architecture</p>
+              <div class="flex gap-3">
+                <code class="text-xs font-mono font-bold text-[#67e8f9] bg-[#1c1c27] px-2 py-1 rounded flex-shrink-0 mt-0.5">.gai</code>
+                <p class="text-[#c4c6d6] text-xs leading-relaxed">Your attested canonical memory. Only you change this.</p>
+              </div>
+            </div>
+          </div>
+
+          <!-- Right: Non-Deterministic Aid -->
+          <div class="bg-[#13131a] border border-[#2a2a3d] rounded-2xl p-8">
+            <div class="flex items-center gap-3 mb-4">
+              <div class="w-10 h-10 rounded-lg bg-[#a78bfa]/10 flex items-center justify-center">
+                <svg class="w-5 h-5 text-[#a78bfa]" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5">
+                  <path stroke-linecap="round" stroke-linejoin="round" d="M9.813 15.904L9 18.75l-.813-2.846a4.5 4.5 0 00-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 003.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 003.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 00-3.09 3.09z"/>
+                </svg>
+              </div>
+              <div>
+                <h3 class="text-xl font-bold text-white">Non-Deterministic Aid</h3>
+                <p class="text-xs font-mono text-[#a78bfa] mt-0.5">Opt-in &middot; Local Ollama &middot; Every inference stays on your device</p>
+              </div>
+            </div>
+
+            <p class="text-[#c4c6d6] text-sm leading-relaxed mb-6 italic">
+              &ldquo;When you want the machine to think, not just search &mdash;
+              without sending your memory to anyone else&rsquo;s model.&rdquo;
+            </p>
+
+            <div class="space-y-4 mb-8">
+              {[
+                {
+                  title: 'Recall enrichment',
+                  desc: 'The local LLM rewrites your query at search time — adding synonyms, bridging languages — before it hits the index. Your search intent, amplified.',
+                },
+                {
+                  title: 'Correction parsing',
+                  desc: '"The deadline moved to March" becomes a structured diff against your existing nodes. Plain language in, precise graph edit out.',
+                },
+                {
+                  title: 'GNN edge prediction',
+                  desc: 'A graph neural network proposes connections between nodes your explicit notes never linked. Surfaced as predictions; you promote or discard.',
+                },
+                {
+                  title: 'GLL assertion synthesis',
+                  desc: 'The LLM reads co-recalled nodes and proposes atomic facts that follow from them. Always labelled as inference — never silently written as truth.',
+                },
+                {
+                  title: 'Insights & predictions',
+                  desc: 'Background analysis of patterns, gaps, and risks across your full cortex. Strategic memory surfaced without you having to ask.',
+                },
+              ].map(({ title, desc }) => (
+                <div class="flex gap-3">
+                  <div class="mt-1 w-1.5 h-1.5 rounded-full bg-[#a78bfa] flex-shrink-0"></div>
+                  <div>
+                    <p class="text-white font-semibold text-sm">{title}</p>
+                    <p class="text-[#c4c6d6] text-sm leading-relaxed">{desc}</p>
+                  </div>
+                </div>
+              ))}
+            </div>
+
+            <!-- Layered memory architecture -->
+            <div class="border-t border-[#2a2a3d] pt-6">
+              <p class="text-xs font-mono uppercase tracking-widest text-[#555570] mb-3">Layered memory architecture</p>
+              <div class="space-y-2">
+                {[
+                  { file: '.gnn', color: 'text-[#a78bfa]', desc: 'Neural network edge predictions. Reviewed, not automatic.' },
+                  { file: '.gll', color: 'text-[#f59e0b]', desc: 'LLM assertions and inferred edges. Always labelled, never merged without approval.' },
+                ].map(({ file, color, desc }) => (
+                  <div class="flex items-start gap-3">
+                    <code class={`text-xs font-mono font-bold ${color} bg-[#1c1c27] px-2 py-1 rounded flex-shrink-0 mt-0.5`}>{file}</code>
+                    <p class="text-[#c4c6d6] text-xs leading-relaxed">{desc}</p>
+                  </div>
+                ))}
+              </div>
+              <p class="text-[#555570] text-xs italic mt-4 leading-relaxed">
+                The LLM never writes to your canonical memory. It advises. You decide.
+                The architecture makes that guarantee structural, not procedural.
+              </p>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ═══════════════════════════════════════════
+         COMPARISON TABLE
+    ═══════════════════════════════════════════ -->
+    <section class="py-24 px-4 sm:px-6">
+      <div class="max-w-5xl mx-auto">
+        <div class="text-center mb-16">
+          <p class="font-mono text-xs tracking-widest uppercase text-[#555570] mb-3">How it compares</p>
+          <h2 class="text-3xl sm:text-4xl font-black text-white">MemoryStudio vs. cloud memory services</h2>
+        </div>
+
+        <div class="rounded-2xl border border-[#2a2a3d] overflow-hidden">
+          <table class="w-full text-sm">
+            <thead>
+              <tr class="bg-[#1c1c27] border-b border-[#2a2a3d]">
+                <th class="text-left px-6 py-4 text-[#555570] font-mono text-xs uppercase tracking-widest w-1/3">Feature</th>
+                <th class="text-left px-6 py-4 text-[#67e8f9] font-bold">MemoryStudio</th>
+                <th class="text-left px-6 py-4 text-[#555570] font-medium">Cloud memory services</th>
+              </tr>
+            </thead>
+            <tbody>
+              {[
+                ['Data location', 'Your disk, encrypted', 'Their servers'],
+                ['Recall method', 'Deterministic subgraph', 'Probabilistic lookup'],
+                ['Correction flow', 'Diff → approve → apply', 'Opaque rewrite'],
+                ['Offline capable', '✅ Always', '❌ Requires internet'],
+                ['Audit trail', 'Op-log on your device', 'None / inaccessible'],
+                ['LLM', 'Local Ollama (optional)', 'Their cloud model'],
+                ['Per-query cost', '$0', 'API fees accumulate'],
+                ['Subgraph visibility', 'Full — nodes, scores, edges', 'Hidden from you'],
+              ].map(([feature, studio, cloud], i) => (
+                <tr class={`border-b border-[#2a2a3d] ${i % 2 === 0 ? 'bg-[#13131a]' : 'bg-[#1c1c27]/50'}`}>
+                  <td class="px-6 py-4 text-[#c4c6d6] font-medium">{feature}</td>
+                  <td class="px-6 py-4 text-white font-semibold">{studio}</td>
+                  <td class="px-6 py-4 text-[#555570]">{cloud}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <!-- ═══════════════════════════════════════════
+         MEMORY KITS CTA
+    ═══════════════════════════════════════════ -->
+    <section class="bg-[#1c1c27] py-24 px-4 sm:px-6">
+      <div class="max-w-4xl mx-auto">
+        <div class="relative rounded-2xl border border-[#a78bfa]/30 bg-gradient-to-br from-[#a78bfa]/5 to-[#67e8f9]/5 p-10 sm:p-14 text-center overflow-hidden">
+          <div class="absolute inset-0 bg-[#13131a]/60 rounded-2xl"></div>
+          <div class="relative z-10">
+            <p class="font-mono text-xs tracking-widest uppercase text-[#a78bfa] mb-4">Memory Kits</p>
+            <h2 class="text-3xl sm:text-4xl font-black text-white mb-6">
+              Don&rsquo;t start from a blank cortex.
+            </h2>
+            <p class="text-[#c4c6d6] text-lg leading-relaxed max-w-2xl mx-auto mb-4">
+              MemoryStudio is most powerful when your engrams already have structure.
+              Graphnosis Memory Kits are pre-built engram templates for specific jobs &mdash;
+              researcher, engineer, clinician, executive &mdash; with the right sensitivity tiers,
+              source scaffolding, and node schema pre-configured.
+            </p>
+            <p class="text-[#c4c6d6] leading-relaxed max-w-2xl mx-auto mb-10">
+              Load a kit, open MemoryStudio, and your first recall will already have something
+              worth exploring. The Deterministic Consolidation engine and GNN have richer material
+              to work with from day one.
+            </p>
+            <div class="flex flex-col sm:flex-row gap-4 justify-center">
+              <a
+                href="/job-memory-kits"
+                class="px-8 py-4 rounded-full bg-[#a78bfa] hover:bg-[#9370e8] text-[#13131a] font-bold text-lg transition-colors"
+              >
+                Browse Memory Kits &rarr;
+              </a>
+              <a
+                href="/getting-started/overview"
+                class="px-8 py-4 rounded-full border border-[#2a2a3d] hover:border-[#a78bfa] text-[#f0f0f5] font-semibold text-lg transition-colors"
+              >
+                What&rsquo;s an engram?
+              </a>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ═══════════════════════════════════════════
+         BOTTOM CTA
+    ═══════════════════════════════════════════ -->
+    <section class="py-24 px-4 sm:px-6">
+      <div class="max-w-3xl mx-auto text-center">
+        <h2 class="text-3xl sm:text-4xl font-black text-white mb-4">
+          MemoryStudio ships with Graphnosis.
+        </h2>
+        <p class="text-[#c4c6d6] text-lg leading-relaxed mb-10">
+          Download Graphnosis, unlock your cortex, and open the MemoryStudio tab.
+          The Studio subscription unlocks the full feature set &mdash; recall, remember, edit, GNN,
+          and both background engines. Your data stays local from the first keystroke.
+        </p>
+        <div class="flex flex-col sm:flex-row gap-4 justify-center">
+          <a
+            href="/download"
+            class="px-8 py-4 rounded-full bg-[#67e8f9] hover:bg-[#4dd6e8] text-[#13131a] font-bold text-lg transition-colors"
+            data-download-auto
+            data-download-version={version}
+          >
+            Download Graphnosis{version ? ` ${version}` : ''}
+          </a>
+          <a
+            href="/getting-started/overview"
+            class="px-8 py-4 rounded-full border border-[#2a2a3d] hover:border-[#67e8f9] text-[#f0f0f5] font-semibold text-lg transition-colors"
+          >
+            Read the docs
+          </a>
+        </div>
+        <p class="text-[#555570] text-sm font-mono mt-8">
+          Free tier available &middot; Studio subscription required for advanced features &middot; macOS 13+ &middot; Windows 10+
+        </p>
+      </div>
+    </section>
+
+  </main>
+
+  <Footer />
+</Layout>

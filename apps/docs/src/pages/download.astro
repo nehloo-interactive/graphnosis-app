@@ -1,0 +1,233 @@
+---
+/**
+ * /download — OS chooser + auto-detect landing page.
+ *
+ * Linked from any Download button that can't (or chooses not to) detect
+ * the user's OS client-side. Shows Mac + Windows download cards, plus a
+ * placeholder for Linux. Detects the user's OS on load and auto-scrolls /
+ * highlights the matching card; an optional auto-redirect kicks in after
+ * 1500 ms for Mac/Windows users (cancellable by hovering or clicking off).
+ *
+ * The download targets are the /download/mac and /download/win redirect
+ * routes in public/_redirects, which currently 302 to the GitHub Releases
+ * artifacts for the latest public version (v1.11.1). When the Cloudflare
+ * Function with env-var version routing ships, those routes intercept
+ * server-side and read CURRENT_VERSION / DMG_FILENAME / WIN_SETUP_FILENAME
+ * without changing the visible URL on this page.
+ */
+import Layout from '../layouts/Layout.astro';
+import Nav from '../components/Nav.astro';
+import Footer from '../components/Footer.astro';
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
+
+// Read the current version from tauri.conf.json at build time. Falls back
+// to empty string if the file isn't where we expect — the page still
+// renders, just without the "Graphnosis v1.X.Y" pill.
+let version = '';
+try {
+  const conf = JSON.parse(readFileSync(resolve('../../apps/desktop/src-tauri/tauri.conf.json'), 'utf8'));
+  version = conf.version ? `v${conf.version}` : '';
+} catch { /* docs site built standalone — skip the pill */ }
+---
+
+<Layout
+  title="Download Graphnosis — macOS & Windows"
+  description="Download the free Graphnosis app for macOS or Windows. Local, encrypted, deterministic memory for your AI — zero servers, zero data leaves your machine."
+>
+  <Nav />
+
+  <main class="min-h-screen">
+
+    <!-- Hero -->
+    <section class="relative py-20 px-4 sm:px-6 overflow-hidden">
+      <div class="absolute top-0 left-1/4 w-96 h-96 bg-[#67e8f9]/5 rounded-full blur-3xl pointer-events-none"></div>
+      <div class="absolute bottom-0 right-1/4 w-96 h-96 bg-[#a78bfa]/5 rounded-full blur-3xl pointer-events-none"></div>
+
+      <div class="max-w-3xl mx-auto text-center relative z-10">
+        {version && (
+          <div class="inline-flex items-center gap-2 px-4 py-1.5 rounded-full border border-[#2a2a3d] bg-[#1c1c27] text-sm font-mono text-[#c4c6d6] mb-6">
+            <span class="text-[#67e8f9] font-semibold">Latest:</span> Graphnosis {version}
+          </div>
+        )}
+        <h1 class="text-4xl sm:text-5xl lg:text-6xl font-black text-white leading-[1.1] mb-5">
+          Download Graphnosis
+        </h1>
+        <p class="text-lg text-[#c4c6d6] max-w-2xl mx-auto leading-relaxed">
+          Free, local-first memory for your AI. Encrypted at rest, runs entirely on your device,
+          works offline. Pick your operating system.
+        </p>
+        <p
+          id="download-detect-note"
+          class="text-sm font-mono text-[#67e8f9] mt-4 hidden"
+        >
+          Detected your OS — your card is highlighted below.
+        </p>
+      </div>
+    </section>
+
+    <!-- OS cards -->
+    <section class="pb-16 px-4 sm:px-6">
+      <div class="max-w-5xl mx-auto grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
+
+        <!-- macOS -->
+        <article
+          id="download-card-mac"
+          class="download-os-card bg-[#1c1c27] border border-[#2a2a3d] rounded-2xl p-7 flex flex-col gap-5 transition-all"
+          data-os="mac"
+        >
+          <div class="w-14 h-14 rounded-xl bg-[#67e8f9]/10 flex items-center justify-center text-3xl" aria-hidden="true">🍎</div>
+          <div>
+            <h2 class="text-2xl font-black text-white mb-1">macOS</h2>
+            <p class="text-sm text-[#9a9db8]">Apple Silicon · macOS 13 Ventura or later</p>
+          </div>
+          <ul class="flex flex-col gap-2 text-sm text-[#b0b3c6] flex-1">
+            <li class="flex items-start gap-2"><span class="text-[#67e8f9] mt-0.5">✓</span><span>Signed &amp; notarized <code class="text-[#67e8f9] font-mono">.dmg</code></span></li>
+            <li class="flex items-start gap-2"><span class="text-[#67e8f9] mt-0.5">✓</span><span>Universal binary (Apple Silicon native)</span></li>
+            <li class="flex items-start gap-2"><span class="text-[#67e8f9] mt-0.5">✓</span><span>Touch ID + Keychain integration</span></li>
+          </ul>
+          <a
+            href="/download/mac"
+            class="inline-flex items-center justify-center gap-2 px-5 py-3 rounded-full bg-[#67e8f9] hover:bg-[#4dd6e8] text-[#13131a] font-bold text-base transition-colors"
+          >
+            <svg class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24" aria-hidden="true">
+              <path stroke-linecap="round" stroke-linejoin="round" d="M4 16v2a2 2 0 002 2h12a2 2 0 002-2v-2M7 10l5 5 5-5M12 15V3" />
+            </svg>
+            Download for macOS{version ? ` ${version}` : ''}
+          </a>
+          <p class="text-center text-[11px] text-[#71717a] leading-none">
+            <a href="/legal/terms-of-use" class="text-[#9a9db8] hover:text-[#c4c6d6] transition-colors underline decoration-[#71717a]/50">Terms</a>
+            &nbsp;·&nbsp;
+            <a href="/legal/privacy-policy" class="text-[#9a9db8] hover:text-[#c4c6d6] transition-colors underline decoration-[#71717a]/50">Privacy</a>
+          </p>
+        </article>
+
+        <!-- Windows -->
+        <article
+          id="download-card-win"
+          class="download-os-card bg-[#1c1c27] border border-[#2a2a3d] rounded-2xl p-7 flex flex-col gap-5 transition-all"
+          data-os="win"
+        >
+          <div class="w-14 h-14 rounded-xl bg-[#60a5fa]/10 flex items-center justify-center text-3xl" aria-hidden="true">🪟</div>
+          <div>
+            <h2 class="text-2xl font-black text-white mb-1">Windows</h2>
+            <p class="text-sm text-[#9a9db8]">x64 · Windows 10 or later</p>
+          </div>
+          <ul class="flex flex-col gap-2 text-sm text-[#b0b3c6] flex-1">
+            <li class="flex items-start gap-2"><span class="text-[#60a5fa] mt-0.5">✓</span><span>NSIS installer (<code class="text-[#60a5fa] font-mono">.exe</code>)</span></li>
+            <li class="flex items-start gap-2"><span class="text-[#60a5fa] mt-0.5">✓</span><span>Code-signed by Nehloo Interactive LLC</span></li>
+            <li class="flex items-start gap-2"><span class="text-[#60a5fa] mt-0.5">✓</span><span>Windows Hello integration</span></li>
+          </ul>
+          <a
+            href="/download/win"
+            class="inline-flex items-center justify-center gap-2 px-5 py-3 rounded-full bg-[#60a5fa] hover:bg-[#3b82f6] text-[#13131a] font-bold text-base transition-colors"
+          >
+            <svg class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24" aria-hidden="true">
+              <path stroke-linecap="round" stroke-linejoin="round" d="M4 16v2a2 2 0 002 2h12a2 2 0 002-2v-2M7 10l5 5 5-5M12 15V3" />
+            </svg>
+            Download for Windows{version ? ` ${version}` : ''}
+          </a>
+          <p class="text-center text-[11px] text-[#71717a] leading-none">
+            <a href="/legal/terms-of-use" class="text-[#9a9db8] hover:text-[#c4c6d6] transition-colors underline decoration-[#71717a]/50">Terms</a>
+            &nbsp;·&nbsp;
+            <a href="/legal/privacy-policy" class="text-[#9a9db8] hover:text-[#c4c6d6] transition-colors underline decoration-[#71717a]/50">Privacy</a>
+          </p>
+        </article>
+
+        <!-- Linux — coming soon -->
+        <article
+          id="download-card-linux"
+          class="download-os-card bg-[#1c1c27] border border-[#2a2a3d] rounded-2xl p-7 flex flex-col gap-5 opacity-70"
+          data-os="linux"
+        >
+          <div class="w-14 h-14 rounded-xl bg-[#fbbf24]/10 flex items-center justify-center text-3xl" aria-hidden="true">🐧</div>
+          <div>
+            <h2 class="text-2xl font-black text-white mb-1">Linux</h2>
+            <p class="text-sm text-[#9a9db8]">x64 · Ubuntu, Fedora, Arch</p>
+          </div>
+          <ul class="flex flex-col gap-2 text-sm text-[#b0b3c6] flex-1">
+            <li class="flex items-start gap-2"><span class="text-[#fbbf24] mt-0.5">→</span><span>AppImage in progress</span></li>
+            <li class="flex items-start gap-2"><span class="text-[#fbbf24] mt-0.5">→</span><span>Deb &amp; RPM planned</span></li>
+            <li class="flex items-start gap-2"><span class="text-[#fbbf24] mt-0.5">→</span><span>Same sidecar + Bun runtime</span></li>
+          </ul>
+          <a
+            href="mailto:beta@graphnosis.com?subject=Linux%20build%20interest"
+            class="inline-flex items-center justify-center gap-2 px-5 py-3 rounded-full bg-[#2a2a3d] hover:bg-[#3a3a52] text-[#f0f0f5] font-bold text-base transition-colors"
+          >
+            Notify me when ready
+          </a>
+          <p class="text-center text-[11px] text-[#71717a] leading-none">
+            We&rsquo;ll email you once the Linux build lands.
+          </p>
+        </article>
+
+      </div>
+    </section>
+
+    <!-- Footnote -->
+    <section class="pb-24 px-4 sm:px-6">
+      <div class="max-w-3xl mx-auto text-center">
+        <p class="text-sm text-[#71717a]">
+          Source available under the FSL license &middot;
+          <a href="https://github.com/nehloo-interactive/graphnosis-app" class="text-[#9a9db8] hover:text-[#c4c6d6] transition-colors underline decoration-[#71717a]/50">
+            View on GitHub
+          </a>
+          &middot; Free forever &middot; No account required
+        </p>
+      </div>
+    </section>
+
+  </main>
+
+  <Footer />
+</Layout>
+
+<style>
+  /* Highlight ring for the OS card matching the user's detected OS.
+     Pure CSS — JS only adds the .is-detected class. */
+  .download-os-card.is-detected {
+    border-color: #67e8f9;
+    box-shadow: 0 0 0 1px #67e8f933, 0 8px 32px -8px #67e8f922;
+    transform: translateY(-2px);
+  }
+</style>
+
+<script is:inline>
+  // Detect the user's OS once on load and highlight the matching card.
+  // No auto-redirect — the user always sees the cards and clicks. The
+  // user-OS hint just helps them spot the right card faster.
+  //
+  // Detection priority:
+  //   1. navigator.userAgentData.platform (modern Chromium / Edge)
+  //   2. navigator.platform (legacy + Safari)
+  //   3. fallback to navigator.userAgent string match
+  (function () {
+    function detectOs() {
+      try {
+        var uaData = (navigator).userAgentData;
+        if (uaData && uaData.platform) {
+          var p = uaData.platform.toLowerCase();
+          if (p.indexOf('mac') !== -1) return 'mac';
+          if (p.indexOf('win') !== -1) return 'win';
+          if (p.indexOf('linux') !== -1) return 'linux';
+        }
+      } catch (_) { /* userAgentData not available */ }
+      var plat = (navigator.platform || '').toLowerCase();
+      if (plat.indexOf('mac') !== -1) return 'mac';
+      if (plat.indexOf('win') !== -1) return 'win';
+      if (plat.indexOf('linux') !== -1) return 'linux';
+      var ua = (navigator.userAgent || '').toLowerCase();
+      if (ua.indexOf('mac') !== -1) return 'mac';
+      if (ua.indexOf('win') !== -1) return 'win';
+      if (ua.indexOf('linux') !== -1) return 'linux';
+      return null;
+    }
+    var os = detectOs();
+    if (!os) return;
+    var card = document.getElementById('download-card-' + os);
+    if (card) card.classList.add('is-detected');
+    var note = document.getElementById('download-detect-note');
+    if (note) note.classList.remove('hidden');
+  })();
+</script>
+</Layout>

@@ -65,14 +65,18 @@
               <p class="text-sm font-semibold text-[#f0f0f5] mb-2">Directed (A → B)</p>
               <ul class="space-y-1.5">
                 {[
-                  ['contains', 'a section contains a paragraph'],
-                  ['precedes', 'one fact follows another in sequence'],
-                  ['cites', 'one source references another'],
+                  ['contains', 'a section contains a paragraph; also: located-in for geographic membership'],
+                  ['precedes', 'one fact or event follows another in time or sequence'],
+                  ['cites', 'one source references another; also: wrote / authored, cited-in'],
                   ['defines', 'a definition explains a concept'],
+                  ['summarizes', 'a note distills a longer source'],
                   ['causes / supports / contradicts', 'causal and logical relationships'],
+                  ['depends-on', 'one fact requires another; also: lives-in, based-in (person → place)'],
                   ['supersedes', 'new information replaces old'],
-                  ['discussed-in', 'knowledge traced to conversation origin'],
-                  ['knows / works-with / reports-to', 'person relationships'],
+                  ['discussed-in', 'knowledge traced to conversation origin; also: mentioned-in'],
+                  ['knows / works-with / reports-to', 'person-to-person relationships'],
+                  ['collaborated-on', 'works-at / founded / member-of / leads — person → org or project'],
+                  ['prefers', 'a person favors an approach, tool, or option'],
                 ].map(([name, desc]) => (
                   <li class="flex items-start gap-2 text-sm">
                     <code class="text-[#67e8f9] font-mono shrink-0 mt-0.5 leading-relaxed">{name}</code>
@@ -87,9 +91,11 @@
                 {[
                   ['similar-to', 'two facts share vocabulary (TF-IDF cosine similarity)'],
                   ['shares-entity', 'two facts mention the same person, place, or concept'],
-                  ['co-occurs', 'two facts appear in the same section'],
+                  ['shares-topic', 'two facts belong to the same topic cluster; also: same-topic in the picker'],
+                  ['co-occurs', 'two facts appear in the same section or source passage'],
+                  ['same-source', 'two facts ingested from the same source file'],
                   ['same-person', 'two mentions of the same person across sources'],
-                  ['related-to', 'general association between people or concepts'],
+                  ['related-to', 'general association — partners-with, related (fallback for all other cases)'],
                 ].map(([name, desc]) => (
                   <li class="flex items-start gap-2 text-sm">
                     <code class="text-[#67e8f9] font-mono shrink-0 mt-0.5">{name}</code>
@@ -123,20 +129,42 @@
           <div>
             <p class="text-sm font-mono tracking-widest text-[#555570] uppercase mb-4">Data Connectors</p>
             <div class="flex flex-wrap gap-3">
-              {['Slack', 'GitHub', 'Linear', 'Trello', 'RSS', 'Obsidian', 'GBrain', 'Webhook', 'AI Context Files'].map(connector => (
-                <span class="px-3 py-1.5 rounded-full border border-[#2a2a3d] text-[#f0f0f5] text-sm font-semibold">{connector}</span>
+              {[
+                { label: 'Slack',             color: '#4A154B' },
+                { label: 'GitHub',            color: '#238636' },
+                { label: 'Linear',            color: '#5E6AD2' },
+                { label: 'Trello',            color: '#0052CC' },
+                { label: 'RSS',               color: '#F97316' },
+                { label: 'Obsidian',          color: '#7C3AED' },
+                { label: 'GBrain',            color: '#0EA5E9' },
+                { label: 'Webhook',           color: '#67e8f9' },
+                { label: 'AI Context Files',  color: '#D97757' },
+                { label: 'OPC-UA',            color: '#f59e0b' },
+                { label: 'Modbus',            color: '#f59e0b' },
+                { label: 'ROS Topics',        color: '#ef4444' },
+                { label: 'LoRaWAN',           color: '#84cc16' },
+                { label: 'Serial / USB',      color: '#94a3b8' },
+              ].map(({ label, color }) => (
+                <span
+                  class="px-3 py-1.5 rounded-full border text-sm font-semibold"
+                  style={`border-color: ${color}44; color: ${color};`}
+                >{label}</span>
               ))}
             </div>
           </div>
         </div>
+        <p class="text-[#3d3d55] mt-6 text-center" style="font-size:10px; line-height:1.5;">
+          All other product names, trademarks, and registered trademarks are the property of their respective owners.
+          Graphnosis is not affiliated with, endorsed by, or sponsored by any third party.
+        </p>
       </article>
     </div>
 
     <!-- MCP tools -->
     <div class="mb-12">
-      <h3 class="text-lg font-bold text-white mb-2">What AI clients can do with Graphnosis</h3>
-      <p class="text-[#c4c6d6] text-sm mb-8">
-        All <span class="text-[#f0f0f5] font-semibold">35 MCP tools</span> across 9 functional categories. The deterministic + approximate sets work out of the box;
+      <h2 class="text-3xl sm:text-4xl lg:text-5xl font-black text-white text-center mb-4">What AI cloud and local clients can do with Graphnosis...</h2>
+      <p class="text-[#c4c6d6] text-base text-center max-w-2xl mx-auto mb-10">
+        All <span class="text-[#f0f0f5] font-semibold">45 MCP tools</span> across 10 functional categories. The deterministic + approximate sets work out of the box;
         the conditional and non-deterministic sets use the optional local LLM (or Neural Network). Every call is visible in the audit log.
         Click any tool for parameters, return shape, and example prompts.
       </p>
@@ -150,6 +178,7 @@
           tools: [
             { name: 'recall', desc: 'Surface relevant context for the current prompt' },
             { name: 'remind', desc: 'Alias for recall — responds to "remind me about X"' },
+            { name: 'dig_deeper', desc: 'Escalate when recall returns thin — expand by source + cross-engram entity hop' },
             { name: 'remember', desc: 'Save a new fact or note to your graph' },
             { name: 'forget', desc: 'Soft-delete a source and every node derived from it' },
             { name: 'apply', desc: 'Commit a reviewed correction diff to the graph' },
@@ -216,6 +245,24 @@
           ],
         },
         {
+          color: '#67e8f9',
+          label: 'Skills (SOPs)',
+          determinism: 'Deterministic · procedural memory',
+          desc: 'Walk and manage Standard Operating Procedures — step sequences with goals, loops, branches, and cross-skill orchestration. Auto-retrained as the cortex grows.',
+          tools: [
+            { name: 'walk_skill', desc: 'Walk a skill step-by-step as narrative SOP text' },
+            { name: 'walk_skill_structured', desc: 'Same walk, returned as a SkillExecutionPlan JSON for AI execution' },
+            { name: 'get_skill', desc: 'Fetch the trained output of a single skill by id' },
+            { name: 'list_skills', desc: 'List every skill in the Skills engram with metadata' },
+            { name: 'train_skill', desc: 'Train or retrain a skill — anchors recall, wires SOP edges' },
+            { name: 'export_skill', desc: 'Export a signed .gsk pack for sharing or backup' },
+            { name: 'delete_skill', desc: 'Remove a skill and its trained output from the graph' },
+            { name: 'skill_history', desc: 'Snapshot history of a skill — every training run' },
+            { name: 'rollback_skill', desc: 'Revert a skill to a prior snapshot' },
+            { name: 'skill_vitality', desc: '0–100 health score for one skill — staleness, anchor coverage' },
+          ],
+        },
+        {
           color: '#a78bfa',
           label: 'Approximate',
           determinism: 'Vector similarity · no LLM',
@@ -250,29 +297,29 @@
         },
       ].map((cat) => (
         <div class="mb-8">
-          <div class="mb-3">
-            <p class="text-xs font-mono tracking-widest uppercase mb-1" style={`color:${cat.color};`}>{cat.label} · <span class="opacity-70">{cat.determinism}</span></p>
-            <p class="text-sm text-[#c4c6d6]">{cat.desc}</p>
+          <div class="mb-4">
+            <p class="text-sm font-mono tracking-widest uppercase mb-2" style={`color:${cat.color};`}>{cat.label} · <span class="opacity-70">{cat.determinism}</span></p>
+            <p class="text-base text-[#c4c6d6]">{cat.desc}</p>
           </div>
-          <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+          <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
             {cat.tools.map((tool) => (
               <a
                 href="/reference/mcp-tools"
-                class="bg-[#13131a] border border-[#2a2a3d] rounded-lg p-3 flex flex-col gap-1.5 transition-colors group"
+                class="bg-[#13131a] border border-[#2a2a3d] rounded-lg p-5 flex flex-col gap-2.5 transition-colors group"
                 style={`--hover-border:${cat.color};`}
                 onmouseover="this.style.borderColor=this.style.getPropertyValue('--hover-border')+'66'"
                 onmouseout="this.style.borderColor=''"
               >
-                <code class="text-sm font-mono font-bold" style={`color:${cat.color};`}>{tool.name}</code>
-                <p class="text-[#c4c6d6] text-xs leading-relaxed">{tool.desc}</p>
+                <code class="text-base font-mono font-bold" style={`color:${cat.color};`}>{tool.name}</code>
+                <p class="text-[#c4c6d6] text-sm leading-relaxed">{tool.desc}</p>
               </a>
             ))}
           </div>
         </div>
       ))}
 
-      <p class="text-sm text-[#a0a0b8] mt-8">
-        <code class="text-[#67e8f9] font-mono">edit</code> is deterministic by default — it returns a diff for review, and nothing is written until you approve it in the app; the optional Neural Network or local LLM can widen it. <code class="text-[#67e8f9] font-mono">forget</code> is a soft delete — nodes stay recoverable from the op-log. Full reference: <a href="/reference/mcp-tools" class="text-[#67e8f9] hover:underline">/reference/mcp-tools</a>.
+      <p class="text-base text-[#a0a0b8] mt-10">
+        <code class="text-[#67e8f9] font-mono text-base">edit</code> is deterministic by default — it returns a diff for review, and nothing is written until you approve it in the app; the optional Neural Network or local LLM can widen it. <code class="text-[#67e8f9] font-mono text-base">forget</code> is a soft delete — nodes stay recoverable from the op-log. Full reference: <a href="/reference/mcp-tools" class="text-[#67e8f9] hover:underline">/reference/mcp-tools</a>.
       </p>
     </div>
 

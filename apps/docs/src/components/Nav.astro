@@ -2,22 +2,11 @@
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 
-// PUBLIC_RELEASED_VERSION is a Cloudflare Pages build-time env var (e.g. "1.11.1").
-// Controls the download button label independently of tauri.conf.json.
-// See StarlightSocialIcons.astro for the full rationale.
 let version = '';
-// Vite replaces `import.meta.env.PUBLIC_*` at build time. Dot access is the
-// supported form — bracket access with a TS type-cast slips past Vite's
-// transform and esbuild then chokes on the residual TS in JSX context.
-const envVersion = import.meta.env.PUBLIC_RELEASED_VERSION as string | undefined;
-if (envVersion) {
-  version = envVersion.startsWith('v') ? envVersion : `v${envVersion}`;
-} else {
-  try {
-    const conf = JSON.parse(readFileSync(resolve('../../apps/desktop/src-tauri/tauri.conf.json'), 'utf8'));
-    version = conf.version ? `v${conf.version}` : '';
-  } catch {}
-}
+try {
+  const conf = JSON.parse(readFileSync(resolve('../../apps/desktop/src-tauri/tauri.conf.json'), 'utf8'));
+  version = conf.version ? `v${conf.version}` : '';
+} catch {}
 ---
 
 <header class="sticky top-0 z-50 backdrop-blur-md bg-[#13131a]/90 border-b border-[#2a2a3d]">
@@ -29,20 +18,26 @@ if (envVersion) {
         <img src="/graphnosis-logo.png" alt="Graphnosis logo" class="w-12 h-12 shrink-0" />
         <span class="flex flex-col">
           <span class="font-black text-lg text-[#67e8f9] tracking-tight">Graphnosis</span>
-          <span class="hidden xl:block text-sm text-[#f0f0f5] font-normal tracking-wide">Your local encrypted memory, indexed for deterministic recall — auditable</span>
+          <span class="hidden xl:block text-sm text-[#f0f0f5] font-normal tracking-wide">Local, private, encrypted, deterministic job memory</span>
         </span>
       </a>
 
       <!-- Desktop nav links -->
-      <div class="hidden md:flex items-center gap-8">
-        <a href="#graphnosis" class="text-sm text-[#c4c6d6] hover:text-[#f0f0f5] transition-colors">Graphnosis</a>
-        <a href="#features" class="text-sm text-[#c4c6d6] hover:text-[#f0f0f5] transition-colors">Features</a>
-        <a href="#clients" class="text-sm text-[#c4c6d6] hover:text-[#f0f0f5] transition-colors">AI Clients</a>
+      <div class="hidden md:flex items-center gap-6">
+        <a href="/memory-studio" class="text-sm font-semibold text-[#67e8f9] hover:text-[#a5f3fc] transition-colors">MemoryStudio</a>
+        <a href="/skills-goals-trainer" class="text-sm font-semibold bg-clip-text text-transparent hover:opacity-80 transition-opacity" style="background-image: linear-gradient(90deg, #67e8f9 0%, #a78bfa 100%);">Skills + Goals</a>
+        <a href="/job-memory-kits" class="text-sm text-[#a78bfa] hover:text-[#c4b5fd] font-semibold transition-colors">Job Memory Kits</a>
         <a href="/getting-started/overview" class="text-sm text-[#c4c6d6] hover:text-[#f0f0f5] transition-colors">Docs</a>
-        <a href="#tech" class="text-sm text-[#c4c6d6] hover:text-[#f0f0f5] transition-colors font-mono">.gai</a>
+        <!-- Default href points to the chooser page (works when JS is off or OS
+             is unknown). The inline script at the bottom rewrites href +
+             label client-side based on detected OS. data-download-version
+             carries the version string so the rewritten label can include
+             "Download v1.X.Y for macOS" without re-reading tauri.conf.json. -->
         <a
-          href="/download/mac"
+          href="/download"
           class="inline-flex items-center px-4 py-2 rounded-full bg-[#67e8f9] hover:bg-[#4dd6e8] text-[#13131a] text-sm font-semibold transition-colors"
+          data-download-auto
+          data-download-version={version}
         >
           Download{version ? ` ${version}` : ''}
         </a>
@@ -51,7 +46,7 @@ if (envVersion) {
       <!-- Mobile hamburger (CSS-only focus-within trick) -->
       <div class="md:hidden flex items-center gap-3">
         {version && (
-          <a href="/download/mac" class="text-xs font-mono font-semibold px-2.5 py-1 rounded-full border border-[#67e8f9] text-[#67e8f9]">{version}</a>
+          <a href="/download" class="text-xs font-mono font-semibold px-2.5 py-1 rounded-full border border-[#67e8f9] text-[#67e8f9]" data-download-auto>{version}</a>
         )}
         <div class="relative" id="mobile-menu-container">
         <button
@@ -72,14 +67,15 @@ if (envVersion) {
     <!-- Mobile menu -->
     <div id="mobile-menu" class="hidden md:hidden pb-4 border-t border-[#2a2a3d] mt-2 pt-4">
       <div class="flex flex-col gap-4">
-        <a href="#graphnosis" class="text-sm text-[#c4c6d6] hover:text-[#f0f0f5] transition-colors">Graphnosis</a>
-        <a href="#features" class="text-sm text-[#c4c6d6] hover:text-[#f0f0f5] transition-colors">Features</a>
-        <a href="#clients" class="text-sm text-[#c4c6d6] hover:text-[#f0f0f5] transition-colors">AI Clients</a>
+        <a href="/memory-studio" class="text-sm font-semibold text-[#67e8f9]">MemoryStudio</a>
+        <a href="/skills-goals-trainer" class="text-sm font-semibold bg-clip-text text-transparent" style="background-image: linear-gradient(90deg, #67e8f9 0%, #a78bfa 100%);">Skills + Goals</a>
+        <a href="/job-memory-kits" class="text-sm text-[#a78bfa] font-semibold hover:text-[#c4b5fd] transition-colors">Job Memory Kits</a>
         <a href="/getting-started/overview" class="text-sm text-[#c4c6d6] hover:text-[#f0f0f5] transition-colors">Docs</a>
-        <a href="#tech" class="text-sm text-[#c4c6d6] hover:text-[#f0f0f5] transition-colors font-mono">.gai</a>
         <a
-          href="/download/mac"
+          href="/download"
           class="inline-flex items-center justify-center px-4 py-2 rounded-full bg-[#67e8f9] hover:bg-[#4dd6e8] text-[#13131a] text-sm font-semibold transition-colors"
+          data-download-auto
+          data-download-version={version}
         >
           Download{version ? ` ${version}` : ''}
         </a>
@@ -87,3 +83,77 @@ if (envVersion) {
     </div>
   </nav>
 </header>
+
+<!--
+  Universal Download-button OS detection.
+
+  Any anchor on the page with `data-download-auto` opts into this:
+    - default href stays `/download` (chooser fallback) until JS runs
+    - on load, we detect the user's OS and rewrite href + label
+    - if detection fails we leave the chooser fallback in place
+
+  The data-download-version attribute (optional) carries the current
+  Graphnosis version so the rewritten label reads
+  "Download v1.X.Y for macOS" rather than just "Download for macOS".
+
+  Mounted in Nav because Nav is rendered on every page that has a top
+  download button. Pages that also want OS-aware buttons in their own
+  body (Hero, memory-studio CTA, etc.) just need to add the same
+  `data-download-auto` attribute and we wire them up here too.
+-->
+<script is:inline>
+  (function () {
+    function detectOs() {
+      try {
+        var uaData = (navigator).userAgentData;
+        if (uaData && uaData.platform) {
+          var p = uaData.platform.toLowerCase();
+          if (p.indexOf('mac') !== -1) return 'mac';
+          if (p.indexOf('win') !== -1) return 'win';
+          if (p.indexOf('linux') !== -1) return 'linux';
+        }
+      } catch (_) { /* userAgentData unavailable */ }
+      var plat = (navigator.platform || '').toLowerCase();
+      if (plat.indexOf('mac') !== -1) return 'mac';
+      if (plat.indexOf('win') !== -1) return 'win';
+      if (plat.indexOf('linux') !== -1) return 'linux';
+      var ua = (navigator.userAgent || '').toLowerCase();
+      if (ua.indexOf('mac') !== -1) return 'mac';
+      if (ua.indexOf('win') !== -1) return 'win';
+      if (ua.indexOf('linux') !== -1) return 'linux';
+      return null;
+    }
+
+    var os = detectOs();
+    var links = document.querySelectorAll('a[data-download-auto]');
+    if (!links.length) return;
+
+    links.forEach(function (link) {
+      var version = link.getAttribute('data-download-version') || '';
+      // The micro-version pill in the mobile nav has only the version
+      // as its visible text (no "Download" prefix); don't replace its
+      // body, just point the href at the right OS.
+      var isMicroPill = (link.textContent || '').trim() === version && version !== '';
+
+      if (os === 'mac') {
+        link.setAttribute('href', '/download/mac');
+        if (!isMicroPill) {
+          link.textContent = 'Download' + (version ? ' ' + version : '') + ' for macOS';
+        }
+      } else if (os === 'win') {
+        link.setAttribute('href', '/download/win');
+        if (!isMicroPill) {
+          link.textContent = 'Download' + (version ? ' ' + version : '') + ' for Windows';
+        }
+      } else {
+        // Linux or unknown — leave the href pointing at the chooser
+        // page. The label gets a slightly more accurate suffix when
+        // we know it's Linux (so the user understands their click
+        // lands on a page that says "Linux coming soon").
+        if (os === 'linux' && !isMicroPill) {
+          link.textContent = 'Download' + (version ? ' ' + version : '') + ' — choose OS';
+        }
+      }
+    });
+  })();
+</script>
