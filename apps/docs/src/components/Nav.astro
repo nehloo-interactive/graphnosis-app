@@ -103,6 +103,22 @@ try {
 -->
 <script is:inline>
   (function () {
+    // Close mobile menu when tapping outside the nav header
+    document.addEventListener('click', function (e) {
+      var container = document.getElementById('mobile-menu-container');
+      var menu = document.getElementById('mobile-menu');
+      var btn = document.getElementById('mobile-menu-btn');
+      if (!menu || menu.classList.contains('hidden')) return;
+      if (container && container.contains(e.target)) return;
+      if (menu.contains(e.target)) return;
+      menu.classList.add('hidden');
+      if (btn) btn.setAttribute('aria-expanded', 'false');
+    }, true);
+  })();
+</script>
+
+<script is:inline>
+  (function () {
     function detectOs() {
       try {
         var uaData = (navigator).userAgentData;
@@ -123,6 +139,10 @@ try {
       if (ua.indexOf('linux') !== -1) return 'linux';
       return null;
     }
+
+    // On mobile (touch + narrow screen), keep all download links on /download chooser
+    var isMobile = window.matchMedia('(max-width: 767px)').matches && navigator.maxTouchPoints > 0;
+    if (isMobile) return;
 
     var os = detectOs();
     var links = document.querySelectorAll('a[data-download-auto]');
