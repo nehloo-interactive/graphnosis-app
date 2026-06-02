@@ -14,11 +14,15 @@
  * NOT the base64url-encoded string. The validator decodes the base64url first,
  * then verifies the signature against the resulting bytes.
  *
- * The secret key arrives via the Cloudflare-bound BillingEnv and never leaves
- * the request context. libsodium-wrappers-sumo runs as WASM in Workers.
+ * Signing uses the native Web Crypto API (`crypto.subtle`), which is available
+ * in Cloudflare Workers without any WASM dependency. The secret key is stored
+ * as a 128-hex-char string (64 raw bytes in libsodium format: 32-byte seed
+ * followed by 32-byte public key). We import only the 32-byte seed, wrapping
+ * it in the fixed PKCS#8 DER header required by Web Crypto's Ed25519 import.
+ * Existing keys generated with libsodium are fully compatible — no rotation
+ * needed.
  */
 
-import sodium from 'libsodium-wrappers-sumo';
 import type { BillingEnv } from './env.js';
 import { requireEnv } from './env.js';
 
@@ -35,23 +39,35 @@ export interface LicensePayload {
   exp: number;
 }
 
-let sodiumReady = false;
+// Fixed 16-byte PKCS#8 DER prefix for a bare 32-byte Ed25519 seed.
+// RFC 8410 OID 1.3.101.112, version 0, no attributes.
+const PKCS8_ED25519_PREFIX = new Uint8Array([
+  0x30, 0x2e,             // SEQUENCE, 46 bytes
+  0x02, 0x01, 0x00,       // INTEGER 0 (version)
+  0x30, 0x05,             // SEQUENCE, 5 bytes (AlgorithmIdentifier)
+    0x06, 0x03, 0x2b, 0x65, 0x70, // OID 1.3.101.112
+  0x04, 0x22,             // OCTET STRING, 34 bytes (PrivateKey wrapper)
+    0x04, 0x20,           // OCTET STRING, 32 bytes (the seed)
+]);
 
-async function ensureReady(env: BillingEnv): Promise<Uint8Array> {
-  if (!sodiumReady) {
-    await sodium.ready;
-    sodiumReady = true;
-  }
+let cachedSigningKey: CryptoKey | null = null;
+
+async function getSigningKey(env: BillingEnv): Promise<CryptoKey> {
+  if (cachedSigningKey) return cachedSigningKey;
   const hex = requireEnv(env, 'LICENSE_SIGNING_SECRET_KEY_HEX', 'REPLACE_ME_128_HEX_CHARS');
-  // libsodium's Ed25519 secret-key (a.k.a. "private key") is 64 bytes:
-  // the 32-byte seed concatenated with the 32-byte public key.
-  const bytes = hexToBytes(hex);
-  if (bytes.length !== sodium.crypto_sign_SECRETKEYBYTES) {
+  const keyBytes = hexToBytes(hex);
+  if (keyBytes.length !== 64) {
     throw new Error(
-      `LICENSE_SIGNING_SECRET_KEY_HEX must encode exactly ${sodium.crypto_sign_SECRETKEYBYTES} bytes (got ${bytes.length}).`,
+      `LICENSE_SIGNING_SECRET_KEY_HEX must encode exactly 64 bytes (got ${keyBytes.length}).`,
     );
   }
-  return bytes;
+  // Bytes 0–31 are the seed; bytes 32–63 are the public key (libsodium layout).
+  const seed = keyBytes.subarray(0, 32);
+  const pkcs8 = new Uint8Array(PKCS8_ED25519_PREFIX.length + 32);
+  pkcs8.set(PKCS8_ED25519_PREFIX);
+  pkcs8.set(seed, PKCS8_ED25519_PREFIX.length);
+  cachedSigningKey = await crypto.subtle.importKey('pkcs8', pkcs8, { name: 'Ed25519' }, false, ['sign']);
+  return cachedSigningKey;
 }
 
 /**
@@ -73,7 +89,7 @@ export async function mintLicenseToken(
   ttlDays = 35,
   plan = 'monthly-subscription',
 ): Promise<string> {
-  const sk = await ensureReady(env);
+  const signingKey = await getSigningKey(env);
   const now = Math.floor(Date.now() / 1000);
   const payload: LicensePayload = {
     sub: customer,
@@ -83,7 +99,8 @@ export async function mintLicenseToken(
     exp: now + ttlDays * 24 * 60 * 60,
   };
   const payloadBytes = new TextEncoder().encode(JSON.stringify(payload));
-  const signature = sodium.crypto_sign_detached(payloadBytes, sk);
+  const signatureBuffer = await crypto.subtle.sign('Ed25519', signingKey, payloadBytes);
+  const signature = new Uint8Array(signatureBuffer);
   return `${bytesToBase64url(payloadBytes)}.${bytesToBase64url(signature)}`;
 }
 
@@ -93,11 +110,15 @@ export async function mintLicenseToken(
  * desktop sidecar's license-validator. Exposed at /api/billing/public-key.
  */
 export async function getSigningPublicKeyHex(env: BillingEnv): Promise<string> {
-  const sk = await ensureReady(env);
-  // libsodium's Ed25519 secret key has the public key embedded in its
-  // second half (bytes 32..64).
-  const pk = sk.slice(32, 64);
-  return bytesToHex(pk);
+  const hex = requireEnv(env, 'LICENSE_SIGNING_SECRET_KEY_HEX', 'REPLACE_ME_128_HEX_CHARS');
+  const keyBytes = hexToBytes(hex);
+  if (keyBytes.length !== 64) {
+    throw new Error(
+      `LICENSE_SIGNING_SECRET_KEY_HEX must encode exactly 64 bytes (got ${keyBytes.length}).`,
+    );
+  }
+  // Bytes 32–63 are the public key in libsodium layout.
+  return bytesToHex(keyBytes.subarray(32, 64));
 }
 
 // ── Base64url + hex codecs (Worker-safe — no Buffer) ──────────────────────────
