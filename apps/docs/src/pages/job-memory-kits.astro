@@ -1740,7 +1740,7 @@ const complianceGroups: ComplianceGroup[] = [
         <p id="pack-count" class="text-xs text-[#52525b] font-mono mb-6 scroll-mt-24" style="scroll-margin-top:5rem">{packs.length} packs</p>
 
         <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-12" id="pack-grid">
-          {packs.map((pack) => {
+          {packs.map((pack, packIndex) => {
             const color = catColor[pack.category] ?? '#67e8f9';
             const searchText = [pack.name, pack.tagline, ...pack.skills].join(' ').toLowerCase();
             return (
@@ -1767,11 +1767,11 @@ const complianceGroups: ComplianceGroup[] = [
 
                 <!-- Category label + name -->
                 <div>
-                  <p class="text-xs font-black tracking-widest uppercase mb-1" style={`color: ${color};`}>
+                  <p class="text-sm font-black tracking-widest uppercase mb-1" style={`color: ${color};`}>
                     {categories.find(c => c.id === pack.category)?.label}
                   </p>
-                  <h2 class="text-lg font-black text-white leading-snug">{pack.name}</h2>
-                  <p class="text-xs text-[#71717a] mt-0.5">{pack.tagline}</p>
+                  <h2 class="text-xl font-black text-white leading-snug">{pack.name}</h2>
+                  <p class="text-sm text-[#71717a] mt-0.5">{pack.tagline}</p>
                 </div>
 
                 <!-- Skills -->
@@ -1779,7 +1779,7 @@ const complianceGroups: ComplianceGroup[] = [
                   {pack.skills.map((skill) => {
                     const [title, ...rest] = skill.split(' — ');
                     return (
-                      <li class="flex items-start gap-2 text-sm text-[#e2e4f0]">
+                      <li class="flex items-start gap-2 text-base text-[#e2e4f0]">
                         <span
                           class="mt-0.5 w-3.5 h-3.5 shrink-0 rounded-full flex items-center justify-center"
                           style={`background: ${color}18; border: 1px solid ${color}33;`}
@@ -1804,8 +1804,12 @@ const complianceGroups: ComplianceGroup[] = [
                      GRAPHNOSIS.md companion) — and to drop two bullets
                      that were aspirational ("Connector setup guide") or
                      not pack content ("Setup walkthrough"). -->
-                <div class="border-t border-[#2a2a3d] pt-5 flex flex-col gap-3">
-                  <p class="text-xs font-black tracking-widest uppercase text-[#71717a]">This pack will include</p>
+                {/* Full "This pack will include" block.
+                    Desktop: shown on every card.
+                    Mobile: shown only on the first card (packIndex === 0);
+                    subsequent cards get a compact one-liner instead. */}
+                <div class={`border-t border-[#2a2a3d] pt-5 flex flex-col gap-3${packIndex > 0 ? ' hidden md:flex' : ''}`}>
+                  <p class="text-sm font-black tracking-widest uppercase text-[#71717a]">This pack will include</p>
                   <ul class="flex flex-col gap-2">
                     {[
                       // Note: `pack.skills.length` here counts bullets shown on
@@ -1822,19 +1826,31 @@ const complianceGroups: ComplianceGroup[] = [
                       'GRAPHNOSIS.md companion — the pack carries a project-level GRAPHNOSIS.md you can drop into your project root, so any AI session in that project knows how to recall and save into your cortex without prior setup',
                       'Memory maintenance — yours to manage in Graphnosis MemoryStudio; optionally delegated, deterministically, to the Self-Healing Brain Engine; or non-deterministically enriched by the Neural Network (GNN) and/or Local Layer (GLL)',
                     ].map(item => (
-                      <li class="flex items-start gap-2 text-sm text-[#b0b3c6]">
+                      <li class="flex items-start gap-2 text-base text-[#b0b3c6]">
                         <span class="mt-0.5 shrink-0 text-[#5a5a7a]">–</span>
                         <span>{item}</span>
                       </li>
                     ))}
                   </ul>
-                  <p class="text-sm text-[#9a9db8] leading-relaxed pt-1">
+                  <p class="text-base text-[#9a9db8] leading-relaxed pt-1">
                     The .gsk file is free and runs entirely inside the free Graphnosis app — no cloud, no servers,
                     your memory stays yours. This kit is a starting point: every skill, engram, schema, and recall
                     pattern it ships with is fully expandable and customisable by you, without limitation, under the
                     free or any tiered plan.
                   </p>
+                  {packIndex === 0 && (
+                    <p class="md:hidden text-sm text-[#71717a] border-t border-[#2a2a3d] pt-3 mt-1">
+                      Every pack on this page includes the same contents listed above.
+                    </p>
+                  )}
                 </div>
+
+                {/* Mobile-only compact note for cards after the first */}
+                {packIndex > 0 && (
+                  <p class="md:hidden text-sm text-[#71717a] border-t border-[#2a2a3d] pt-3">
+                    Same contents as the first pack — signed .gsk skill, AI-executable, Ed25519-verified, with GRAPHNOSIS.md companion.
+                  </p>
+                )}
 
                 <!-- Price + CTA — every pack is a free .gsk download now,
                      so the price slot shows "Free" and the action button
@@ -1848,19 +1864,19 @@ const complianceGroups: ComplianceGroup[] = [
                        button so the user always knows which kit they're
                        grabbing — useful when several cards are visible at
                        once and the action area is far from the card title. -->
-                  <div class="flex items-baseline gap-2 text-[10px] font-mono uppercase tracking-widest">
+                  <div class="flex items-baseline gap-2 text-xs font-mono uppercase tracking-widest">
                     <span style={`color: ${color};`}>
                       {categories.find(c => c.id === pack.category)?.label}
                     </span>
                     <span class="text-[#3a3a52]">·</span>
-                    <span class="text-[#9a9db8] normal-case font-sans tracking-normal text-xs">{pack.name}</span>
+                    <span class="text-[#9a9db8] normal-case font-sans tracking-normal text-sm">{pack.name}</span>
                   </div>
                   <div class="flex items-center justify-between gap-4">
                     <span class="text-3xl font-black text-white">Free</span>
                     <a
                       href={pack.downloadUrl}
                       download
-                      class="flex-1 inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-full font-bold text-sm transition-opacity hover:opacity-90 text-[#13131a]"
+                      class="flex-1 inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-full font-bold text-base transition-opacity hover:opacity-90 text-[#13131a]"
                       style={`background: ${color};`}
                     >
                       Download .gsk
