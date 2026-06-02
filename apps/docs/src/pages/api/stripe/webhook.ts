@@ -27,12 +27,29 @@ import type Stripe from 'stripe';
 import { getStripe, getWebhookSecret } from '../../../server/stripe.js';
 import { mintLicenseToken, type LicensePayload } from '../../../server/sign.js';
 import { putToken, deleteToken, type TokenRecord } from '../../../server/kv.js';
-import { getEnv, requireKv } from '../../../server/env.js';
+import { getEnv, requireEnv, requireKv } from '../../../server/env.js';
 
 export const prerender = false;
 
 export const POST: APIRoute = async ({ request, locals }) => {
   const env = getEnv(locals);
+
+  // ── Early config guard ──────────────────────────────────────────────────────
+  // Fail fast with a clear log if required secrets or bindings are missing.
+  // Without this, a missing secret silently reaches deep into the handler and
+  // logs an unhelpful "handler error" with no detail.
+  try {
+    requireEnv(env, 'STRIPE_SECRET_KEY', 'sk_test_REPLACE_ME');
+    requireEnv(env, 'STRIPE_WEBHOOK_SECRET', 'whsec_REPLACE_ME');
+    requireEnv(env, 'LICENSE_SIGNING_SECRET_KEY_HEX', 'REPLACE_ME_128_HEX_CHARS');
+    requireKv(env, 'BILLING_KV');
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    console.error('[billing webhook] misconfiguration —', msg);
+    return new Response(`Server misconfiguration: ${msg}`, { status: 500 });
+  }
+
+  // ── Signature verification ──────────────────────────────────────────────────
   const sig = request.headers.get('stripe-signature');
   if (!sig) {
     return new Response('Missing Stripe-Signature header.', { status: 400 });
@@ -47,13 +64,17 @@ export const POST: APIRoute = async ({ request, locals }) => {
     // (no node:crypto). Works identically on Node, so this is the portable choice.
     event = await stripe.webhooks.constructEventAsync(rawBody, sig, secret);
   } catch (e) {
-    console.error('[billing webhook] signature verification failed', e);
+    const msg = e instanceof Error ? e.message : String(e);
+    console.error('[billing webhook] signature verification failed —', msg);
     return new Response('Signature verification failed.', { status: 400 });
   }
 
+  // ── Event processing ────────────────────────────────────────────────────────
   try {
     const kv = requireKv(env, 'BILLING_KV');
     const stripe = getStripe(env);
+    console.log('[billing webhook] handling event', event.type, event.id);
+
     switch (event.type) {
       case 'checkout.session.completed': {
         const session = event.data.object as Stripe.Checkout.Session;
@@ -64,6 +85,7 @@ export const POST: APIRoute = async ({ request, locals }) => {
         }
         const subId = typeof session.subscription === 'string' ? session.subscription : session.subscription?.id;
         if (subId) {
+          console.log('[billing webhook] retrieving subscription', subId);
           const sub = await stripe.subscriptions.retrieve(subId);
           await mintAndPersist(env, kv, email, sub);
         } else {
@@ -74,12 +96,14 @@ export const POST: APIRoute = async ({ request, locals }) => {
       case 'customer.subscription.created':
       case 'customer.subscription.updated': {
         const sub = event.data.object as Stripe.Subscription;
+        console.log('[billing webhook] retrieving customer for subscription', sub.id);
         const email = await emailForSubscription(stripe, sub);
         if (email) await mintAndPersist(env, kv, email, sub);
         break;
       }
       case 'customer.subscription.deleted': {
         const sub = event.data.object as Stripe.Subscription;
+        console.log('[billing webhook] retrieving customer for deleted subscription', sub.id);
         const email = await emailForSubscription(stripe, sub);
         if (email) {
           await deleteToken(kv, email);
@@ -93,7 +117,8 @@ export const POST: APIRoute = async ({ request, locals }) => {
     }
     return new Response('ok', { status: 200 });
   } catch (e) {
-    console.error('[billing webhook] handler error', e);
+    const msg = e instanceof Error ? e.message : String(e);
+    console.error('[billing webhook] handler error —', msg);
     // 500 → Stripe will retry. Good when the failure is transient
     // (network, KV write); not so good when the failure is permanent
     // (bad env). We err on the side of retrying.
@@ -116,14 +141,13 @@ async function mintAndPersist(
 ): Promise<void> {
   // Pull plan + features from subscription metadata, falling back to defaults
   // for the monthly-subscription plan we ship today.
-  // Default both features for any new subscription. The metadata override
-  // exists so future plans (e.g. skill-only) can carry a narrower set.
   const metaFeatures = sub?.metadata?.['features'] ?? 'skill-training,gnn-exploration';
   const features = metaFeatures
     .split(',')
     .map((s) => s.trim())
     .filter((s) => s.length > 0);
   const plan = sub?.metadata?.['plan'] ?? 'monthly-subscription';
+  console.log('[billing webhook] minting token for', email, '(plan:', plan, 'features:', features.join(','), ')');
   const token = await mintLicenseToken(env, email, features, 35, plan);
   // The signed token carries its own exp; we mirror it into the KV row so
   // /api/subscription/token can answer "is this current?" without re-verifying
@@ -136,7 +160,7 @@ async function mintAndPersist(
     plan,
   };
   await putToken(kv, email, record);
-  console.log('[billing webhook] minted token for', email, '(features:', features.join(','), ')');
+  console.log('[billing webhook] token persisted for', email);
 }
 
 function decodeExpFromToken(token: string): number {
