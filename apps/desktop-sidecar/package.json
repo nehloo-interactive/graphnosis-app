@@ -31,6 +31,7 @@
     "libsodium-wrappers-sumo": "^0.7.16",
     "mammoth": "^1.12.0",
     "proper-lockfile": "^4.1.2",
+    "reflect-metadata": "^0.2.2",
     "unpdf": "^1.6.2",
     "zod": "^4.3.6"
   },

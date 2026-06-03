@@ -1,4 +1,10 @@
 #!/usr/bin/env node
+// MUST be first: tsyringe (pulled transitively by @simplewebauthn/server →
+// @peculiar/x509, used for WebAuthn) requires the reflect-metadata polyfill to
+// be loaded at the entry point, or it throws at module-init. The Bun-compiled
+// binary evaluates this eagerly at startup, so it must precede every other
+// import (including the deferred dynamic imports below).
+import 'reflect-metadata';
 /**
  * Entry router. Single file that Bun's `--compile` consumes as the binary's
  * entry point.
