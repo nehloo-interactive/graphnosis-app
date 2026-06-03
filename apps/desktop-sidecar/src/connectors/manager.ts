@@ -1,5 +1,6 @@
 import http from 'node:http';
 import { randomUUID } from 'node:crypto';
+import { watch as fsWatch, type FSWatcher } from 'node:fs';
 import type { GraphnosisHost } from '../host.js';
 import { ingestClip } from '../ingest.js';
 import { withEmbedding } from '../embedding-queue.js';
@@ -20,7 +21,20 @@ interface RunningConnector {
   pullTimer: ReturnType<typeof setInterval> | null;
   eventsTotal: number;
   pulling: boolean;
+  /** Active filesystem watchers (one per watched path) for live ingest. */
+  watchers: FSWatcher[];
+  /** Debounce timer coalescing a burst of file-change events into one pull. */
+  watchDebounce: ReturnType<typeof setTimeout> | null;
 }
+
+/** Per-batch ceiling when draining a backlog. High enough that a normal vault
+ *  ingests in one pass (cursor → now, no edge cases); the cursor-advancing
+ *  drain loop only engages for pathologically large folders. */
+const BASE_PULL_LIMIT = 2000;
+const MAX_PULL_LIMIT = 20000;
+const MAX_DRAIN_ITERS = 50;
+/** Quiet window after the last file-change event before a watcher pulls. */
+const WATCH_DEBOUNCE_MS = 1500;
 
 export class ConnectorManager {
   private running = new Map<string, RunningConnector>();
@@ -44,10 +58,11 @@ export class ConnectorManager {
     await this.startWebhookServerIfNeeded();
   }
 
-  /** Clean up all timers and close the webhook server. */
+  /** Clean up all timers, watchers, and close the webhook server. */
   async stop(): Promise<void> {
-    for (const { pullTimer } of this.running.values()) {
-      if (pullTimer) clearInterval(pullTimer);
+    for (const rc of this.running.values()) {
+      if (rc.pullTimer) clearInterval(rc.pullTimer);
+      this.stopWatchers(rc);
     }
     this.running.clear();
     if (this.webhookServer) {
@@ -59,7 +74,7 @@ export class ConnectorManager {
   // ── IPC-facing methods ────────────────────────────────────────────────────
 
   /** List all connector configs with their current runtime statuses. */
-  list(): { configs: ConnectorConfig[]; statuses: ConnectorStatus[] } {
+  list(): { configs: ConnectorConfig[]; statuses: ConnectorStatus[]; pullIntervalMs: number } {
     const configs = this.settings.configs;
     const statuses: ConnectorStatus[] = configs.map(cfg => {
       const rc = this.running.get(cfg.id);
@@ -75,7 +90,7 @@ export class ConnectorManager {
         pulling: rc?.pulling ?? false,
       };
     });
-    return { configs, statuses };
+    return { configs, statuses, pullIntervalMs: this.settings.pullIntervalMs };
   }
 
   /** Install or update a connector. Auto-generates missing required options. */
@@ -107,7 +122,7 @@ export class ConnectorManager {
 
     // Mount or remount the connector if enabled.
     const rc = this.running.get(id);
-    if (rc) { if (rc.pullTimer) clearInterval(rc.pullTimer); this.running.delete(id); }
+    if (rc) { if (rc.pullTimer) clearInterval(rc.pullTimer); this.stopWatchers(rc); this.running.delete(id); }
     if (cfg.enabled) this.mountConnector(cfg);
 
     // Restart webhook server when a new webhook connector is added.
@@ -119,7 +134,7 @@ export class ConnectorManager {
   /** Remove a connector. */
   async remove(id: string): Promise<void> {
     const rc = this.running.get(id);
-    if (rc?.pullTimer) clearInterval(rc.pullTimer);
+    if (rc) { if (rc.pullTimer) clearInterval(rc.pullTimer); this.stopWatchers(rc); }
     this.running.delete(id);
     const newConfigs = this.settings.configs.filter(c => c.id !== id);
     await this.persistConfigs(newConfigs);
@@ -179,8 +194,13 @@ export class ConnectorManager {
         }, this.settings.pullIntervalMs).unref()
       : null;
 
-    const rc: RunningConnector = { connector, pullTimer, eventsTotal: 0, pulling: false };
+    const rc: RunningConnector = { connector, pullTimer, eventsTotal: 0, pulling: false, watchers: [], watchDebounce: null };
     this.running.set(cfg.id, rc);
+
+    // Start filesystem watchers for live ingest (local-file connectors).
+    if (hasPull && typeof connector.watchPaths === 'function') {
+      this.startWatchers(cfg, rc, connector.watchPaths());
+    }
 
     // Run an immediate pull on mount so the engram is populated right away.
     if (hasPull) {
@@ -190,25 +210,124 @@ export class ConnectorManager {
     }
   }
 
+  /**
+   * Start a debounced recursive filesystem watcher per path. A burst of file
+   * changes (e.g. dropping a folder) coalesces into a single pull after a
+   * quiet window. Recursive `fs.watch` is supported on macOS/Windows and
+   * recent Node/Bun on Linux; if the platform rejects it we log once and fall
+   * back to the poll timer (still correct, just not instant).
+   */
+  private startWatchers(cfg: ConnectorConfig, rc: RunningConnector, paths: string[]): void {
+    for (const p of paths) {
+      try {
+        const w = fsWatch(p, { recursive: true, persistent: false }, () => {
+          // Debounce: reset the timer on every change; pull once it goes quiet.
+          if (rc.watchDebounce) clearTimeout(rc.watchDebounce);
+          rc.watchDebounce = setTimeout(() => {
+            rc.watchDebounce = null;
+            void this.doPull(cfg, rc).catch(err => {
+              console.error(`[connector:${cfg.id}] watch-triggered pull failed: ${(err as Error).message}`);
+            });
+          }, WATCH_DEBOUNCE_MS);
+        });
+        w.on('error', (err) => {
+          console.error(`[connector:${cfg.id}] watcher error on ${p}: ${err.message} — falling back to polling.`);
+        });
+        rc.watchers.push(w);
+      } catch (err) {
+        console.error(
+          `[connector:${cfg.id}] could not watch ${p}: ${(err as Error).message} — ` +
+          `relying on the ${Math.round(this.settings.pullIntervalMs / 60000)}-min poll instead.`,
+        );
+      }
+    }
+  }
+
+  /** Tear down a connector's watchers + pending debounce. */
+  private stopWatchers(rc: RunningConnector): void {
+    if (rc.watchDebounce) { clearTimeout(rc.watchDebounce); rc.watchDebounce = null; }
+    for (const w of rc.watchers) { try { w.close(); } catch { /* already closed */ } }
+    rc.watchers = [];
+  }
+
+  /**
+   * Pull and ingest, draining a backlog in cursor-advancing batches. Each batch
+   * is capped at BASE_PULL_LIMIT so a huge folder can't be loaded into memory
+   * all at once; the cursor advances by the newest file actually ingested so
+   * the tail is never silently dropped (the old bug: cursor jumped to `now`,
+   * stranding files beyond the cap). Yields to the event loop between batches
+   * so the sidecar keeps servicing UI IPC during a large ingest. (Embeddings
+   * already run in a worker thread; only the op-log/graph write is on the main
+   * thread, and it is single-writer by design.)
+   */
   private async doPull(cfg: ConnectorConfig, rc: RunningConnector): Promise<number> {
     if (rc.pulling) return 0; // Don't overlap pulls
     rc.pulling = true;
-    const since = cfg.lastPulledAt ? new Date(cfg.lastPulledAt) : undefined;
+    let total = 0;
     try {
-      const events = await rc.connector.pull!(since);
-      const count = await this.ingestEvents(cfg, events);
-      rc.eventsTotal += count;
-      // Persist lastPulledAt + clear lastError
-      await this.updateConnectorState(cfg.id, { lastPulledAt: Date.now(), lastError: undefined });
-      return count;
+      let limit = BASE_PULL_LIMIT;
+      for (let iter = 0; iter < MAX_DRAIN_ITERS; iter++) {
+        const since = cfg.lastPulledAt ? new Date(cfg.lastPulledAt) : undefined;
+        const events = await rc.connector.pull!(since, limit);
+        if (events.length === 0) break;
+
+        const count = await this.ingestEvents(cfg, events);
+        total += count;
+        rc.eventsTotal += count;
+
+        // Feed/API connectors don't carry file mtimes — one logical pull,
+        // advance the cursor to now (legacy behavior) and stop.
+        const fileBacked = events.some(e => typeof e.mtimeMs === 'number');
+        if (!fileBacked) {
+          await this.setCursor(cfg, Date.now());
+          break;
+        }
+
+        // Not capped → we drained everything matched up to now.
+        if (events.length < limit) {
+          await this.setCursor(cfg, Date.now());
+          break;
+        }
+
+        // Capped: advance the cursor to the newest file we ingested so the next
+        // batch is the next-oldest slice (no overlap, no loss).
+        const maxMtime = events.reduce((m, e) => (e.mtimeMs && e.mtimeMs > m ? e.mtimeMs : m), 0);
+        const prev = cfg.lastPulledAt ?? 0;
+        if (maxMtime > prev) {
+          await this.setCursor(cfg, maxMtime);
+          limit = BASE_PULL_LIMIT; // progress made — reset the batch size
+        } else if (limit < MAX_PULL_LIMIT) {
+          // A full batch shares one mtime at the boundary; advancing would strand
+          // its tied tail. Widen the window so they all arrive in one batch.
+          limit = Math.min(limit * 2, MAX_PULL_LIMIT);
+        } else {
+          // Pathological: >MAX_PULL_LIMIT files share a single timestamp.
+          // Advance anyway to avoid an infinite loop; a manual re-pull recovers
+          // any stragglers once their mtimes differ.
+          console.error(`[connector:${cfg.id}] >${MAX_PULL_LIMIT} files share one timestamp; advancing cursor.`);
+          await this.setCursor(cfg, Date.now());
+          break;
+        }
+
+        // Yield so UI IPC stays responsive between batches.
+        await new Promise<void>(resolve => setImmediate(resolve));
+      }
+      await this.updateConnectorState(cfg.id, { lastError: undefined });
+      return total;
     } catch (err) {
       const msg = (err as Error).message;
       console.error(`[connector:${cfg.id}] pull error: ${msg}`);
       await this.updateConnectorState(cfg.id, { lastError: msg });
-      return 0;
+      return total;
     } finally {
       rc.pulling = false;
     }
+  }
+
+  /** Persist a new pull cursor in memory + settings. */
+  private async setCursor(cfg: ConnectorConfig, lastPulledAt: number): Promise<void> {
+    cfg.lastPulledAt = lastPulledAt;
+    await this.updateConnectorState(cfg.id, { lastPulledAt });
   }
 
   private async ingestEvents(cfg: ConnectorConfig, events: ConnectorEvent[]): Promise<number> {
@@ -318,6 +437,35 @@ export class ConnectorManager {
   private async persistConfigs(configs: ConnectorConfig[]): Promise<void> {
     this.settings = { ...this.settings, configs };
     await this.host.setSettings({ connectors: this.settings });
+  }
+
+  /** Current poll interval (ms) — surfaced to the UI via `list()`. */
+  getPullIntervalMs(): number {
+    return this.settings.pullIntervalMs;
+  }
+
+  /**
+   * Change the poll interval at runtime. Clamps to a 60s floor, persists, and
+   * swaps the live timers on every running pull-capable connector (without
+   * re-pulling). Watchers are unaffected — they already give near-instant
+   * ingest; this only governs the backstop poll.
+   */
+  async setPullInterval(ms: number): Promise<number> {
+    const clamped = Math.max(60_000, Math.floor(ms));
+    this.settings = { ...this.settings, pullIntervalMs: clamped };
+    await this.host.setSettings({ connectors: this.settings });
+    for (const [id, rc] of this.running) {
+      if (!rc.connector.pull) continue;
+      if (rc.pullTimer) clearInterval(rc.pullTimer);
+      const cfg = this.settings.configs.find(c => c.id === id);
+      if (!cfg) continue;
+      rc.pullTimer = setInterval(() => {
+        void this.doPull(cfg, rc).catch(err => {
+          console.error(`[connector:${id}] scheduled pull failed: ${(err as Error).message}`);
+        });
+      }, clamped).unref();
+    }
+    return clamped;
   }
 }
 

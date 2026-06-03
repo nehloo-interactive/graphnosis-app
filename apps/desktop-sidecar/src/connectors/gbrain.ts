@@ -1,7 +1,8 @@
-import { readdir, readFile, stat } from 'node:fs/promises';
+import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import type { ConnectorConfig } from '@graphnosis-app/core';
 import type { Connector, ConnectorEvent } from './interface.js';
+import { collectFilesNewerThan } from './local-file-util.js';
 
 /**
  * GBrain connector.
@@ -27,24 +28,31 @@ export class GBrainConnector implements Connector {
 
   private get maxFiles(): number {
     const n = this.config.options['maxFiles'];
-    return typeof n === 'number' && n > 0 ? Math.floor(n) : 50;
+    return typeof n === 'number' && n > 0 ? Math.floor(n) : 2000;
   }
 
-  async pull(since?: Date): Promise<ConnectorEvent[]> {
+  /** The repo folder the manager watches for live changes. */
+  watchPaths(): string[] {
+    return [this.repoPath];
+  }
+
+  async pull(since?: Date, limit?: number): Promise<ConnectorEvent[]> {
     const sinceMs = since?.getTime() ?? 0;
-    const files = await this.collectMarkdownFiles(this.repoPath, sinceMs);
+    const cap = limit ?? this.maxFiles;
+    const files = await collectFilesNewerThan(this.repoPath, sinceMs, { ext: '.md', skipDirs: ['.git'] });
     const events: ConnectorEvent[] = [];
 
-    for (const filePath of files.slice(0, this.maxFiles)) {
+    for (const f of files.slice(0, cap)) {
       try {
-        const content = await readFile(filePath, 'utf8');
+        const content = await readFile(f.path, 'utf8');
         if (!content.trim()) continue;
-        const relativePath = path.relative(this.repoPath, filePath);
-        const label = path.basename(filePath, '.md');
+        const relativePath = path.relative(this.repoPath, f.path);
+        const label = path.basename(f.path, '.md');
         events.push({
           text: `# ${label}\n\n${content}`,
           sourceRef: `gbrain:${this.config.id}:${relativePath}`,
           label,
+          mtimeMs: f.mtimeMs,
         });
       } catch {
         // Skip unreadable files
@@ -52,32 +60,5 @@ export class GBrainConnector implements Connector {
     }
 
     return events;
-  }
-
-  private async collectMarkdownFiles(dir: string, sinceMs: number): Promise<string[]> {
-    const results: string[] = [];
-    let entries: string[];
-    try {
-      entries = await readdir(dir);
-    } catch {
-      return results;
-    }
-
-    for (const entry of entries) {
-      // Skip git internals and hidden dirs
-      if (entry === '.git' || entry.startsWith('.')) continue;
-      const full = path.join(dir, entry);
-      try {
-        const s = await stat(full);
-        if (s.isDirectory()) {
-          results.push(...await this.collectMarkdownFiles(full, sinceMs));
-        } else if (entry.endsWith('.md') && s.mtimeMs > sinceMs) {
-          results.push(full);
-        }
-      } catch {
-        // Skip inaccessible entries
-      }
-    }
-    return results;
   }
 }
