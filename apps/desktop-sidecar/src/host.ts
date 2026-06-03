@@ -215,7 +215,17 @@ export class GraphnosisHost {
    *  reuse the result for all subsequent calls within the same second. The cache
    *  is intentionally short-lived (1s TTL) so a correction applied right after
    *  startup isn't counted twice. */
-  private _oplogReadCache: { events: Awaited<ReturnType<typeof oplog.readAllEvents>>; at: number } | null = null;
+  private _oplogReadCache: { events: Awaited<ReturnType<typeof oplog.readAllEvents>>; at: number; seq: number } | null = null;
+  /**
+   * Monotonic write counter — bumped on every op-log emit (and on
+   * invalidate/compaction). The read cache records the seq it was read at; as
+   * long as no write has happened since, `listOplogEvents()` serves the cache
+   * INDEFINITELY (no cold re-read of the whole 2M-event log on idle Home
+   * opens). A write advances the seq → the next read refreshes. This replaces
+   * the old 60-second TTL, which forced a 16s full re-read every minute even
+   * when nothing had changed.
+   */
+  private _oplogWriteSeq = 0;
   /**
    * In-flight op-log read promise. Set while `readAllEvents` is running;
    * cleared when it resolves or rejects. Shared across concurrent callers of
@@ -295,6 +305,17 @@ export class GraphnosisHost {
       key: this.key,
       salt: this.salt,
     });
+    // Intercept every emit to advance the write-seq, so listOplogEvents() knows
+    // the cached read is stale ONLY after an actual write — not on a timer.
+    // (All op writes in this host go through this.oplogWriter.emit(...), so this
+    // single wrap covers them centrally without touching each call site.)
+    {
+      const rawEmit = this.oplogWriter.emit.bind(this.oplogWriter);
+      this.oplogWriter.emit = (...args: Parameters<typeof rawEmit>) => {
+        this._oplogWriteSeq++;
+        return rawEmit(...args);
+      };
+    }
     this.gllWriter = new GllWriter(opts.cortexDir, this.key, this.salt);
     this.skillSnapshots = new SkillSnapshotStore({
       cortexDir: opts.cortexDir,
@@ -4475,8 +4496,12 @@ export class GraphnosisHost {
    */
   async listOplogEvents(): Promise<Awaited<ReturnType<typeof oplog.readAllEvents>>> {
     // ── Cache hit ──────────────────────────────────────────────────────────
-    // Warm reads (within 60 s of the last full read) short-circuit immediately.
-    if (this._oplogReadCache && Date.now() - this._oplogReadCache.at <= 60_000) {
+    // Serve the cache INDEFINITELY as long as no op has been written since it
+    // was read (write-seq unchanged). This is the incremental fix: idle Home
+    // opens no longer trigger a 16s full re-read every 60s — only an actual
+    // write does. (The cache always holds real readAllEvents output, so every
+    // consumer — vitality, memory-health, Audit, corrections — stays correct.)
+    if (this._oplogReadCache && this._oplogReadCache.seq === this._oplogWriteSeq) {
       return this._oplogReadCache.events;
     }
     // ── Share an in-flight read ────────────────────────────────────────────
@@ -4492,6 +4517,10 @@ export class GraphnosisHost {
     if (this._oplogReadPromise) return this._oplogReadPromise;
 
     const gen = this._oplogReadGeneration;
+    // Capture the write-seq at the START of the read. If a write lands while
+    // readAllEvents is running, the cached seq stays behind current → the next
+    // read refreshes (errs toward re-reading, never serving stale).
+    const seqAtStart = this._oplogWriteSeq;
     this._oplogReadPromise = oplog.readAllEvents(
       path.join(this.opts.cortexDir, 'oplog'),
       this.key,
@@ -4501,7 +4530,7 @@ export class GraphnosisHost {
       // happened mid-read and the data is already stale — let the next caller
       // trigger a fresh read.
       if (this._oplogReadGeneration === gen) {
-        this._oplogReadCache = { events, at: Date.now() };
+        this._oplogReadCache = { events, at: Date.now(), seq: seqAtStart };
       }
       this._oplogReadPromise = null;
       return events;
@@ -4517,6 +4546,9 @@ export class GraphnosisHost {
    *  vitality and corrections counts reflect the change within 60 s. */
   invalidateOplogCache(): void {
     this._oplogReadCache = null;
+    // Advance the write-seq too, so a stale in-flight read can't repopulate a
+    // cache that then looks "fresh" (seq match) to the serve-check.
+    this._oplogWriteSeq++;
     // Clear the in-flight promise so the next caller starts a fresh read
     // rather than getting the result of a read that started before this
     // write (and therefore won't include the new event).
