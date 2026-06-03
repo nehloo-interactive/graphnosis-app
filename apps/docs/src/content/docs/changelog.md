@@ -11,6 +11,31 @@ Conventions: **Added** = new features, **Changed** = behavior or UX shifts, **Fi
 
 ---
 
+## v1.13.0 — Personal Server: reach your cortex from any device
+
+<p style="margin-top:0.5rem;font-size:1.25em;opacity:0.85;">Unreleased</p>
+
+The headline: Graphnosis can now run as a **personal server**. The sidecar serves the full app in a **browser** — so you can reach your cortex from a phone, tablet, or another computer, on your home network or anywhere over [Tailscale](https://tailscale.com), with the cortex staying encrypted on the server. The Mac desktop app is unchanged and remains the primary experience; this is additive.
+
+### Added
+
+- **Browser access (personal-server mode).** Turn on **Settings → Mobile & Remote → Browser access** and Graphnosis serves its UI on a separate port. Scan the QR (or open the URL + paste the access token) from any device. Sessions use a bearer token; live updates stream over the connection so a memory saved on your laptop appears on your phone.
+- **Mobile-responsive UI.** On phones: a bottom nav (Memory · MCP · Status), a slide-out menu, full-screen panels, a bottom inspector drawer, and a 3D engram view that fits the screen. Installable to your home screen as a PWA. Tablets adapt by orientation.
+- **Connect Claude for iOS / Android.** The Mobile & Remote panel hands you an MCP server URL + bearer token (and a QR) to add Graphnosis as an MCP server in your phone's AI client.
+- **Tailscale HTTPS, auto-detected.** Run `tailscale serve` and the app automatically switches the browser and MCP QR codes to real-certificate `https://…ts.net` URLs (which iOS requires) — no certificate setup on your side.
+- **Linux / Docker server.** Run the sidecar headless on a Linux box (systemd unit, `.env`, and a multi-arch Docker image included) for an always-on personal server.
+- **Live file connectors.** The **GBrain**, **Obsidian**, and **AI Context Files** connectors now **watch their folder** and ingest new or changed notes within seconds, instead of only on a timer. The poll interval is now configurable in **Settings → Connectors**.
+
+### Changed
+
+- **Starter skill demos install in one language.** When you add the bundled demo skills, pick **English or Romanian** — only that set of 3 installs, not both.
+
+### Fixed
+
+- **Large folder imports no longer lose files.** A connector pulling a folder of more than ~50 notes previously stopped after the first batch and silently skipped the rest. It now ingests the whole folder, in order, without dropping the tail.
+
+---
+
 ## v1.12.0 — Skills as Standard Operating Procedures + MemoryStudio
 
 <p style="margin-top:0.5rem;font-size:1.25em;opacity:0.85;">2026-05-31</p>

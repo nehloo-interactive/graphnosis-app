@@ -118,6 +118,38 @@ QR switches to `https://…:8443/mcp`. No sidecar TLS config needed — Tailscal
 terminates the cert. (MagicDNS must be enabled in the tailnet for the name to
 resolve.) Disable any time with `tailscale serve --https=8443 off`.
 
+### Optional: restrict who can reach the two ports (tailnet ACL)
+
+`tailscale serve` exposes the ports to your whole tailnet by default. To limit
+which devices/users can reach the browser UI (:3456) and the MCP bridge (:3457),
+add a `grants` (or legacy `acls`) rule in your tailnet policy file (Tailscale
+admin console → Access Controls). Example granting only your own devices and a
+"family" group access to this server's two ports:
+
+```jsonc
+{
+  "groups": {
+    "group:family": ["alice@example.com", "bob@example.com"]
+  },
+  "tagOwners": {
+    "tag:graphnosis-server": ["autogroup:admin"]
+  },
+  "grants": [
+    {
+      // Only you + group:family may reach the personal server's two ports.
+      "src": ["autogroup:member", "group:family"],
+      "dst": ["tag:graphnosis-server"],
+      "ip":  ["tcp:3456", "tcp:3457"]
+    }
+  ]
+}
+```
+
+Tag the server host with `tag:graphnosis-server` (`sudo tailscale up
+--advertise-tags=tag:graphnosis-server`) so the rule targets it. Everyone else
+on the tailnet is denied. Drop `tcp:3457` from the `ip` list to share the
+browser UI but not the MCP bridge (or vice-versa).
+
 ---
 
 ## 6. Docker (alternative to systemd)
