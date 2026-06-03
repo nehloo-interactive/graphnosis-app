@@ -6,6 +6,7 @@ import { ingestClip } from '../ingest.js';
 import { withEmbedding } from '../embedding-queue.js';
 import type { ConnectorConfig, ConnectorSettings } from '@graphnosis-app/core';
 import type { Connector, ConnectorEvent, ConnectorStatus } from './interface.js';
+import { isConnectorKindDisabled } from '../admin-policy.js';
 import { WebhookConnector } from './webhook.js';
 import { RssConnector } from './rss.js';
 import { GitHubConnector } from './github.js';
@@ -68,6 +69,29 @@ export class ConnectorManager {
     if (this.webhookServer) {
       await new Promise<void>((resolve) => this.webhookServer!.close(() => resolve()));
       this.webhookServer = null;
+    }
+  }
+
+  /** Re-apply the admin/IT policy live: stop any running connector whose kind
+   *  is now disabled, and (re)mount enabled connectors whose kind is now
+   *  allowed. Called after the policy changes so blocked data flows stop
+   *  immediately instead of waiting for the next sidecar boot. */
+  reapplyPolicy(): void {
+    // Stop running connectors that are now blocked.
+    for (const [id, rc] of [...this.running.entries()]) {
+      const kind = this.settings.configs.find((c) => c.id === id)?.kind;
+      if (kind && isConnectorKindDisabled(kind)) {
+        if (rc.pullTimer) clearInterval(rc.pullTimer);
+        this.stopWatchers(rc);
+        this.running.delete(id);
+        console.error(`[connector:${id}] stopped — kind '${kind}' disabled by policy.`);
+      }
+    }
+    // Mount enabled connectors that are now allowed but not running.
+    for (const cfg of this.settings.configs) {
+      if (cfg.enabled && !this.running.has(cfg.id) && !isConnectorKindDisabled(cfg.kind)) {
+        this.mountConnector(cfg);
+      }
     }
   }
 
@@ -170,6 +194,12 @@ export class ConnectorManager {
   // ── Internal ──────────────────────────────────────────────────────────────
 
   private mountConnector(cfg: ConnectorConfig): void {
+    // Admin/IT policy: a disabled connector KIND never mounts (enforced here in
+    // the sidecar, the single choke point — the UI can't be trusted to gate).
+    if (isConnectorKindDisabled(cfg.kind)) {
+      console.error(`[connector:${cfg.id}] skipping mount — connector kind '${cfg.kind}' is disabled by policy.`);
+      return;
+    }
     // Skip connectors whose target engram has been archived. An archived
     // engram is hidden from the picker and should receive no new data —
     // running the connector against it can cause write-race quarantine loops

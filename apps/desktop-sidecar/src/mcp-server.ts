@@ -2,6 +2,7 @@ import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 import { z } from 'zod';
+import { isClientDisabled } from './admin-policy.js';
 import type { GraphnosisHost } from './host.js';
 import type { LocalLlm } from './correction.js';
 import { proposeCorrection, applyCorrection, type GnnCandidateExpander } from './correction.js';
@@ -2366,6 +2367,16 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
 
   server.setRequestHandler(CallToolRequestSchema, async (req) => {
     try {
+    // Admin/IT policy: reject EVERY tool call from a disabled AI client. The
+    // user/IT blocks a client by name; enforced here in the sidecar (the only
+    // place a client can't route around).
+    const policyClient = mcpRegistry.getMostRecentClientName() ?? 'unknown-client';
+    if (isClientDisabled(policyClient)) {
+      return {
+        content: [{ type: 'text', text: `⛔ Access blocked. The AI client "${policyClient}" has been disabled by policy. Contact your administrator to re-enable it.` }],
+        isError: true,
+      };
+    }
     switch (req.params.name) {
       case 'recall':
       case 'remind': {

@@ -30,6 +30,7 @@ import type { CorrectionDiff } from './correction.js';
 import { oplog } from '@nehloo-interactive/graphnosis-secure-sync';
 import { withEmbedding } from './embedding-queue.js';
 import type { ConnectorManager } from './connectors/manager.js';
+import { getAdminPolicy, setAdminPolicy } from './admin-policy.js';
 import { getConsentPhraseForTier } from './mcp-server.js';
 import { revokeConsent } from '@graphnosis-app/core/settings';
 
@@ -804,9 +805,19 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
       return result;
     }
     case 'activity.list': {
-      // No filtering server-side; the UI is small enough to handle that
-      // client-side and benefits from showing every event for "all" filter.
-      const events = await deps.host.listOplogEvents();
+      // Optional bounding: `since` (ms epoch) + `limit`. The Audit view omits
+      // both (wants everything); the Home digest passes `since` so it never
+      // drags the entire op-log over IPC on a large cortex (which was timing
+      // out the 5s budget and silently hiding the digest).
+      const a = z.object({
+        since: z.number().int().nonnegative().optional(),
+        limit: z.number().int().positive().optional(),
+      }).parse(params ?? {});
+      let events = await deps.host.listOplogEvents();
+      if (a.since !== undefined) events = events.filter((ev) => ev.ts > a.since!);
+      if (a.limit !== undefined) {
+        events = events.slice().sort((x, y) => y.ts - x.ts).slice(0, a.limit);
+      }
       return { events };
     }
     case 'activity.log': {
@@ -1816,6 +1827,32 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
       };
     }
     // ── Connector IPC ────────────────────────────────────────────────────────
+    case 'policy.get': {
+      // Admin/IT policy state for the "Disabled by IT" Home card + (later)
+      // the editable toggles. `managed` = env-pinned by IT (read-only here).
+      const p = getAdminPolicy();
+      const ALL_CONNECTOR_KINDS = ['webhook', 'rss', 'github', 'slack', 'trello', 'linear', 'obsidian', 'gbrain', 'ai-context'];
+      const clientTypes = deps.host.getSettings().ai.clientTypes ?? {};
+      return {
+        ...p,
+        connectorKinds: ALL_CONNECTOR_KINDS,
+        knownClients: Object.keys(clientTypes),
+      };
+    }
+    case 'policy.set': {
+      // Update the user-editable file policy (throws if env-managed), then
+      // re-enforce live so a just-disabled connector stops immediately.
+      const a = z.object({
+        disabledConnectorKinds: z.array(z.string()).optional(),
+        disabledClients: z.array(z.string()).optional(),
+      }).parse(params ?? {});
+      const next = setAdminPolicy({
+        ...(a.disabledConnectorKinds !== undefined ? { disabledConnectorKinds: a.disabledConnectorKinds } : {}),
+        ...(a.disabledClients !== undefined ? { disabledClients: a.disabledClients } : {}),
+      }); // throws if managed → IPC surfaces the error
+      deps.connectorManager.reapplyPolicy();
+      return next;
+    }
     case 'connectors.list': {
       return deps.connectorManager.list();
     }
@@ -1885,7 +1922,21 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
       // Tailscale Serve detection (MagicDNS + per-port https mapping) — lets the
       // QR/clients use real-cert https URLs. Best-effort; null when Tailscale
       // isn't present.
-      const ts = await detectTailscaleServe(uiPort, mcpPort);
+      //
+      // CRITICAL: this shells out to the `tailscale` CLI several times in
+      // sequence (version + status --json + serve status --json). When the CLI
+      // is installed but cold/slow (the macOS GUI app is a frequent offender),
+      // those per-call timeouts SUM well past the 5s front-end IPC budget — so
+      // the whole getConnectionInfo call would fail and the Port field never
+      // populates, even though port/token/IPs are all available instantly.
+      // Cap the detection with an overall budget: if Tailscale doesn't answer
+      // in time we return the core connection info anyway (the https badge just
+      // stays off; reopening the modal retries against a now-warm CLI).
+      const TS_DETECT_BUDGET_MS = 2500;
+      const ts = await Promise.race([
+        detectTailscaleServe(uiPort, mcpPort).catch(() => null),
+        new Promise<null>((resolve) => setTimeout(() => resolve(null), TS_DETECT_BUDGET_MS)),
+      ]);
       return {
         enabled: bridge?.enabled ?? false,
         host: bridge?.host ?? '127.0.0.1',
