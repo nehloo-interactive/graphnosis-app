@@ -2945,13 +2945,23 @@ async function refreshStats(): Promise<void> {
         const skillBadge = s.kind === 'skill'
           ? `<span class="source-kind-badge source-kind-skill" title="Skill">🛠</span>`
           : '';
+        // Exclude-from-recall toggle (power user). Real sidecar-backed
+        // exclusion — the source's nodes drop out of recall / dig_deeper /
+        // search but stay in this list, stats, and 3D. State lives in graph
+        // metadata (loadedGraphs), so it survives re-renders + persists.
+        const excludedSet = loadedGraphs.find((g) => g.graphId === s.graphId)?.metadata.excludedSources ?? [];
+        const isExcluded = excludedSet.includes(s.sourceId);
+        const excludeBtn = isExcluded
+          ? `<button class="btn-source-include" data-graph-id="${escape(s.graphId)}" data-source-id="${escape(s.sourceId)}" title="Excluded from AI recall. Click to include it again.">Excluded — include</button>`
+          : `<button class="btn-source-exclude" data-graph-id="${escape(s.graphId)}" data-source-id="${escape(s.sourceId)}" title="Stop this source's memories from appearing in recall / dig_deeper / search. It stays in Sources, stats, and 3D.">Exclude from recall</button>`;
         return `
-          <div class="source-row" data-source-id="${escape(s.sourceId)}">
+          <div class="source-row${isExcluded ? ' source-row-excluded' : ''}" data-source-id="${escape(s.sourceId)}">
             ${skillBadge}<span class="source-name" title="${escape(s.ref)}">${escape(s.kind === 'file' ? (s.ref.split('/').pop() ?? s.ref) : formatLegendLabel(s.ref))}</span>
             <span class="source-meta">${s.nodeIds.length} node${s.nodeIds.length === 1 ? '' : 's'}</span>
             ${addedByBadge}
             ${finderBtn}
             ${reingestBtn}
+            ${excludeBtn}
             ${moveBtn}
             <button class="btn-forget" data-graph-id="${escape(s.graphId)}" data-source-id="${escape(s.sourceId)}" data-node-count="${s.nodeIds.length}" data-ref="${escape(s.ref)}" data-kind="${escape(s.kind)}">Forget</button>
           </div>`;
@@ -2989,6 +2999,34 @@ async function refreshStats(): Promise<void> {
             btn.className = nowDisabled ? 'btn-source-enable' : 'btn-source-disable';
           }
         });
+      });
+      // Exclude-from-recall toggle — real sidecar-backed exclusion (persists in
+      // graph metadata; the next recall drops this source's nodes). Distinct
+      // from the Atlas-visibility toggle above.
+      els.sourcesList.querySelectorAll<HTMLButtonElement>('.btn-source-exclude, .btn-source-include').forEach((btn) => {
+        btn.addEventListener('click', () => { void (async () => {
+          const graphId = btn.dataset.graphId ?? '';
+          const sourceId = btn.dataset.sourceId ?? '';
+          if (!graphId || !sourceId) return;
+          const excluding = btn.classList.contains('btn-source-exclude');
+          btn.disabled = true;
+          try {
+            await ipcCall('sources.setExcluded', { graphId, sourceId, excluded: excluding });
+            // Mirror into local metadata so the state survives re-renders.
+            const meta = loadedGraphs.find((g) => g.graphId === graphId)?.metadata;
+            if (meta) {
+              const set = new Set(meta.excludedSources ?? []);
+              if (excluding) set.add(sourceId); else set.delete(sourceId);
+              meta.excludedSources = [...set];
+            }
+            const row = els.sourcesList.querySelector<HTMLDivElement>(`[data-source-id="${CSS.escape(sourceId)}"]`);
+            row?.classList.toggle('source-row-excluded', excluding);
+            btn.textContent = excluding ? 'Excluded — include' : 'Exclude from recall';
+            btn.className = excluding ? 'btn-source-include' : 'btn-source-exclude';
+          } catch (e) {
+            console.error('sources.setExcluded failed', e);
+          } finally { btn.disabled = false; }
+        })(); });
       });
       // Wire each Forget button — two-step inline confirmation flow.
       // First click expands an input; the source is only forgotten once the

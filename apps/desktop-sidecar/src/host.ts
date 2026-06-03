@@ -1037,9 +1037,17 @@ export class GraphnosisHost {
     const g = this.must(graphId);
     const nodes = this.opts.adapter.inspectNodes(g.handle);
     const now = Date.now();
+    // Exclude-from-recall toggle: drop nodes belonging to sources the user
+    // excluded. Applied ONLY here, so it scopes to recall / dig_deeper / node
+    // search — excluded sources still appear in the Sources list, stats, and 3D.
+    const excluded = this.settings.graphMetadata[graphId]?.excludedSources;
+    const excludedNodes = excluded && excluded.length > 0
+      ? new Set(excluded.flatMap((sid) => this.getSourceRecord(graphId, sid)?.nodeIds ?? []))
+      : null;
     return new Set(
       nodes
         .filter((n) => n.confidence > 0.2 && (n.validUntil === undefined || n.validUntil > now))
+        .filter((n) => !excludedNodes || !excludedNodes.has(n.id))
         .map((n) => n.id),
     );
   }
@@ -1179,6 +1187,26 @@ export class GraphnosisHost {
       createdAt: 0,
     };
     await this.setGraphMetadata(graphId, { ...existing, archived });
+  }
+
+  /**
+   * Toggle a source's "exclude from AI recall" flag (persisted in graph
+   * metadata). When excluded, the source's nodes are dropped by activeNodeIds()
+   * — so they vanish from recall / dig_deeper / node-search — but stay fully
+   * present in the Sources list, stats, 3D, and remain forgettable. Takes effect
+   * on the next recall (no re-index needed).
+   */
+  async setSourceExcluded(graphId: GraphId, sourceId: string, excluded: boolean): Promise<void> {
+    // Same fallback as setGraphArchived — an engram created without explicit
+    // metadata (e.g. via createGraph) still gets a record so the flag persists.
+    const existing: settingsMod.GraphMetadata = this.settings.graphMetadata[graphId] ?? {
+      template: 'personal' as settingsMod.GraphTemplate,
+      displayName: graphId,
+      createdAt: 0,
+    };
+    const set = new Set(existing.excludedSources ?? []);
+    if (excluded) set.add(sourceId); else set.delete(sourceId);
+    await this.setGraphMetadata(graphId, { ...existing, excludedSources: [...set] });
   }
 
   async setGraphTier(graphId: GraphId, tier: 'public' | 'personal' | 'sensitive'): Promise<void> {

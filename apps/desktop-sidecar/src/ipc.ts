@@ -1288,6 +1288,16 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
       const { graphId } = z.object({ graphId: z.string().optional() }).parse(params ?? {});
       return deps.host.listSources(graphId);
     }
+    case 'sources.setExcluded': {
+      // Toggle a source's exclude-from-recall flag (power-user). Excluded
+      // sources' nodes are dropped from recall / dig_deeper / search but stay in
+      // the Sources list, stats, and 3D. Takes effect on the next recall.
+      const { graphId, sourceId, excluded } = z.object({
+        graphId: z.string(), sourceId: z.string(), excluded: z.boolean(),
+      }).parse(params);
+      await deps.host.setSourceExcluded(graphId, sourceId, excluded);
+      return { ok: true, excluded };
+    }
     case 'sources.forget': {
       const { graphId, sourceId } = z.object({ graphId: z.string(), sourceId: z.string() }).parse(params);
       const result = await deps.host.forgetSource(graphId, sourceId, { triggeredBy: 'user:forget' });
