@@ -43,14 +43,30 @@ const banner =
 
 // ── Collect bundle/*.gsk ─────────────────────────────────────────────────────
 
-if (!existsSync(BUNDLE_DIR)) {
-  // No bundle dir means build-gsk.mjs hasn't run yet, or no packs are marked
-  // bundle:true. Emit an EMPTY array so the sidecar TypeScript still compiles.
-  // The smoke test fails when this array is empty in CI, so the cost of
-  // forgetting to rebuild packs is visible immediately.
-  console.warn(`[generate-skill-demos] ${BUNDLE_DIR} not found — emitting empty BUNDLED_SKILL_DEMOS.`);
+// Non-destructive guard: the .gsk source bundle (dist/packs/bundle/) is a build
+// artifact produced by `build-gsk.mjs --sign`, which needs the gitignored pack
+// content AND the GSK_SIGNING_KEY_HEX secret. Neither exists on a clean CI
+// checkout, so without this guard the generator would OVERWRITE the committed,
+// populated skill-demos.generated.ts with an empty array — and the smoke test
+// (rightly) fails on an empty BUNDLED_SKILL_DEMOS. When the source bundle is
+// absent but a populated bundle is already committed, keep it: the generated
+// file is a tracked build-time snapshot, exactly like docs-content.generated.ts.
+function committedBundleHasPacks() {
+  try { return existsSync(OUT_FILE) && readFileSync(OUT_FILE, 'utf8').includes('gskBase64:'); }
+  catch { return false; }
+}
+function emitEmptyOrKeep(reason) {
+  if (committedBundleHasPacks()) {
+    console.warn(`[generate-skill-demos] ${reason} — keeping the committed bundle (run build-gsk.mjs --sign to refresh it).`);
+    process.exit(0);
+  }
+  console.warn(`[generate-skill-demos] ${reason} — emitting empty BUNDLED_SKILL_DEMOS.`);
   writeFileSync(OUT_FILE, banner + 'export const BUNDLED_SKILL_DEMOS: BundledSkillDemo[] = [];\n');
   process.exit(0);
+}
+
+if (!existsSync(BUNDLE_DIR)) {
+  emitEmptyOrKeep(`${BUNDLE_DIR} not found`);
 }
 
 const files = readdirSync(BUNDLE_DIR)
@@ -59,9 +75,7 @@ const files = readdirSync(BUNDLE_DIR)
   .sort(); // alphabetical → deterministic compile output
 
 if (files.length === 0) {
-  console.warn(`[generate-skill-demos] no .gsk files in ${BUNDLE_DIR} — emitting empty array.`);
-  writeFileSync(OUT_FILE, banner + 'export const BUNDLED_SKILL_DEMOS: BundledSkillDemo[] = [];\n');
-  process.exit(0);
+  emitEmptyOrKeep(`no .gsk files in ${BUNDLE_DIR}`);
 }
 
 // ── Encode + emit ────────────────────────────────────────────────────────────
