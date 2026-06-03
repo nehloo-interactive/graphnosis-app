@@ -1403,15 +1403,33 @@ export async function linkSkillSequence(
 export const SKILL_GOAL_EVIDENCE   = 'skill:goal';
 export const SKILL_LOOP_EVIDENCE   = 'skill:loop';
 export const SKILL_BRANCH_EVIDENCE = 'skill:branch';
+
+/** Encode a loop edge's evidence with an optional max-iteration cap (D2 loop
+ *  convergence guard). `skill:loop` = no cap; `skill:loop;max=5` = stop after
+ *  5 iterations. The cap is surfaced in walk_skill_structured so AI executors
+ *  enforce it instead of looping forever on a body that makes no progress. */
+export function encodeLoopEvidence(maxIterations?: number): string {
+  return maxIterations && maxIterations > 0
+    ? `${'skill:loop'};max=${maxIterations}`
+    : 'skill:loop';
+}
+/** Extract the max-iteration cap from a loop edge's evidence, or undefined. */
+export function parseLoopMax(evidence: string | undefined): number | undefined {
+  const m = evidence?.match(/(?:^|;)max=(\d+)/);
+  return m ? parseInt(m[1]!, 10) : undefined;
+}
 export const SKILL_CTX_EVIDENCE    = 'skill:ctx';
 export const SKILL_CALLS_EVIDENCE  = 'skill:calls';
 
 // ── Loop / branch pattern sets (tiered by language) ───────────────────────────
 
-// Tier 1: explicit syntax (language-neutral, always matched first)
+// Tier 1: explicit syntax (language-neutral, always matched first).
+// Optional `max=N` after the target step encodes a loop-convergence guard:
+// `@loop: 2 max=5` → loop back to step 2, at most 5 iterations. Group 1 = the
+// target step, group 2 = the optional max-iteration cap.
 const LOOP_EXPLICIT: RegExp[] = [
-  /@loop:\s*(\d+)/i,
-  /\[\[loop:\s*(\d+)\]\]/i,
+  /@loop:\s*(\d+)(?:\s+max=(\d+))?/i,
+  /\[\[loop:\s*(\d+)(?:\s+max=(\d+))?\]\]/i,
 ];
 // Tier 2: English
 const LOOP_EN: RegExp[] = [
@@ -1577,8 +1595,10 @@ export async function linkSkillLoopsAndBranches(
       const j = resolveStepRef(m[1] ?? '', bodyNodes);
       if (j === null || j === i) continue;
       if (j < i) {
-        // True loop: step i references an earlier step
-        loopBatch.push({ from: node.id, to: bodyNodes[j]!.id, type: 'precedes', weight: 0.7, evidence: SKILL_LOOP_EVIDENCE });
+        // True loop: step i references an earlier step. Carry the optional
+        // `max=N` convergence guard (group 2 of the explicit patterns).
+        const maxIterations = m[2] ? parseInt(m[2], 10) : undefined;
+        loopBatch.push({ from: node.id, to: bodyNodes[j]!.id, type: 'precedes', weight: 0.7, evidence: encodeLoopEvidence(maxIterations) });
       } else {
         // Forward skip — treat as branch
         branchBatch.push({ from: node.id, to: bodyNodes[j]!.id, type: 'depends-on', weight: 0.75, evidence: SKILL_BRANCH_EVIDENCE });
@@ -2107,8 +2127,9 @@ export interface WalkedSkill {
   steps: StepNode[];
   goals: GoalNode[];
   contextNodes: Array<{ text: string; anchorStepIndex: number | null }>;
-  /** [fromStepIndex, toStepIndex] pairs for loop edges */
-  loops: Array<[number, number]>;
+  /** [fromStepIndex, toStepIndex, maxIterations?] tuples for loop edges. The
+   *  optional third element is the D2 loop-convergence cap (`@loop: N max=M`). */
+  loops: Array<[number, number, number?]>;
   /** [fromStepIndex, toStepIndex] pairs for branch edges */
   branches: Array<[number, number]>;
   /** Recovery skills declared in `On failure:` goal nodes. */
@@ -2183,7 +2204,9 @@ export function walkSkillSequence(
   const nodeSet = new Set(liveIds);
   const { directed } = host.listEdges(graphId);
 
-  const loopEdges   = directed.filter((e) => e.evidence === SKILL_LOOP_EVIDENCE   && nodeSet.has(e.from) && nodeSet.has(e.to));
+  // Loop edges carry an optional `;max=N` cap, so match the base tag (exact or
+  // with a suffix) rather than strict equality.
+  const loopEdges   = directed.filter((e) => (e.evidence === SKILL_LOOP_EVIDENCE || e.evidence?.startsWith(SKILL_LOOP_EVIDENCE + ';')) && nodeSet.has(e.from) && nodeSet.has(e.to));
   const branchEdges = directed.filter((e) => e.evidence === SKILL_BRANCH_EVIDENCE && nodeSet.has(e.from) && nodeSet.has(e.to));
   // Call edges' evidence starts with 'skill:calls' but may carry suffixes
   // like ';capture=foo;args=a,b;onFailure=true'.
@@ -2303,8 +2326,8 @@ export function walkSkillSequence(
     return { text, anchorStepIndex };
   });
 
-  const loops: Array<[number, number]> = loopEdges
-    .map((e) => [stepIndexOf.get(e.from) ?? -1, stepIndexOf.get(e.to) ?? -1] as [number, number])
+  const loops: Array<[number, number, number?]> = loopEdges
+    .map((e) => [stepIndexOf.get(e.from) ?? -1, stepIndexOf.get(e.to) ?? -1, parseLoopMax(e.evidence)] as [number, number, number?])
     .filter(([a, b]) => a >= 0 && b >= 0);
   const branches: Array<[number, number]> = branchEdges
     .map((e) => [stepIndexOf.get(e.from) ?? -1, stepIndexOf.get(e.to) ?? -1] as [number, number])
@@ -2376,8 +2399,11 @@ export function formatSkillForRecall(walked: WalkedSkill): string {
         lines.push(`    → BRANCHES to ${targets.join(' or ')} on condition`);
       }
       if (step.isLoopBack) {
-        const targets = walked.loops.filter(([f]) => f === step.index).map(([, t]) => `step ${t + 1}`);
-        lines.push(`    → LOOPS BACK to ${targets.join(', ')}`);
+        const stepLoops = walked.loops.filter(([f]) => f === step.index);
+        const targets = stepLoops.map(([, t]) => `step ${t + 1}`);
+        const maxCap = stepLoops.find(([, , m]) => m !== undefined)?.[2];
+        const capPart = maxCap !== undefined ? ` (max ${maxCap} iteration${maxCap === 1 ? '' : 's'})` : '';
+        lines.push(`    → LOOPS BACK to ${targets.join(', ')}${capPart}`);
       }
     }
   }
@@ -2418,6 +2444,10 @@ export interface SkillExecutionPlan {
   skill: { sourceId: string; title: string; engramName?: string };
   /** Variable names this skill expects from its caller (parsed from `Requires:`). */
   requires: string[];
+  /** Inline type hints for required vars (D3), e.g. {branch:"string",
+   *  policy:"{phased|atomic}"}. Only present for vars that declared a `:type`.
+   *  Lets an AI executor validate the values it passes before invoking. */
+  requiresTypes?: Record<string, string>;
   /** Variable names this skill makes available to callers (parsed from `Produces:`). */
   produces: string[];
   constraints: {
@@ -2443,6 +2473,9 @@ export interface SkillExecutionPlan {
     branchesTo?: number[];
     /** 1-based step indices this step loops back to. */
     loopsBackTo?: number[];
+    /** Max iterations for this step's loop-back (D2 convergence guard,
+     *  `@loop: N max=M`). Absent = no cap; the executor decides when to stop. */
+    maxIterations?: number;
     /** Anchored recalled-memory paragraphs. */
     supportingContext: string[];
   }>;
@@ -2474,6 +2507,40 @@ function parseVarList(rawText: string): string[] {
   return out;
 }
 
+/** Parse a `Requires:` body into name + optional inline type hint (D3 arg
+ *  typing). Supports `$branch:string`, `$count:number`, and enum hints like
+ *  `$policy:{phased|atomic}`. Untyped names still parse (type undefined). Splits
+ *  on top-level commas (so an enum's internal `|` and any spaces are preserved),
+ *  and also whitespace-splits comma-chunks that carry no type, so the legacy
+ *  space-separated untyped form keeps working. Deduplicated, source order. */
+export function parseTypedVarList(rawText: string): Array<{ name: string; type?: string }> {
+  const body = rawText.replace(GOAL_PREFIX_STRIP_RE, '').trim();
+  // Top-level comma split that ignores commas inside `{...}` enum braces.
+  const chunks: string[] = [];
+  let depth = 0, cur = '';
+  for (const ch of body) {
+    if (ch === '{') depth++;
+    else if (ch === '}') depth = Math.max(0, depth - 1);
+    if (ch === ',' && depth === 0) { chunks.push(cur); cur = ''; }
+    else cur += ch;
+  }
+  if (cur.trim()) chunks.push(cur);
+
+  const out: Array<{ name: string; type?: string }> = [];
+  const seen = new Set<string>();
+  const add = (tok: string): void => {
+    const m = tok.trim().match(/^\$?([A-Za-z_]\w*)\s*(?::\s*(.+))?$/);
+    if (!m || !m[1] || seen.has(m[1])) return;
+    seen.add(m[1]);
+    out.push({ name: m[1], ...(m[2] && m[2].trim() ? { type: m[2].trim() } : {}) });
+  };
+  for (const chunk of chunks) {
+    if (chunk.includes(':')) add(chunk);                       // typed token
+    else for (const w of chunk.trim().split(/\s+/)) if (w) add(w); // bare name(s)
+  }
+  return out;
+}
+
 /** Convert a walked skill into a structured execution plan.
  *
  * Designed to be the single source of truth for `walk_skill_structured` MCP
@@ -2484,9 +2551,20 @@ export function walkSkillToJson(
   meta: { sourceId: string; title: string; engramName?: string },
 ): SkillExecutionPlan {
   // Aggregate Requires: / Produces: var names across all matching goal nodes.
-  const requires = walked.goals
+  // Requires uses the typed parser (D3) so inline `:type` hints surface; names
+  // are deduplicated across goals in first-seen order.
+  const requiresTyped = walked.goals
     .filter((g) => g.kind === 'requires')
-    .flatMap((g) => parseVarList(g.text));
+    .flatMap((g) => parseTypedVarList(g.text));
+  const requires: string[] = [];
+  const requiresTypes: Record<string, string> = {};
+  const seenReq = new Set<string>();
+  for (const v of requiresTyped) {
+    if (seenReq.has(v.name)) continue;
+    seenReq.add(v.name);
+    requires.push(v.name);
+    if (v.type) requiresTypes[v.name] = v.type;
+  }
   const produces = walked.goals
     .filter((g) => g.kind === 'produces')
     .flatMap((g) => parseVarList(g.text));
@@ -2510,7 +2588,10 @@ export function walkSkillToJson(
   // narrative answers ("step 3", "step 5") line up with the structured plan.
   const steps: SkillExecutionPlan['steps'] = walked.steps.map((s) => {
     const branchesTo = walked.branches.filter(([f]) => f === s.index).map(([, t]) => t + 1);
-    const loopsBackTo = walked.loops.filter(([f]) => f === s.index).map(([, t]) => t + 1);
+    const stepLoops = walked.loops.filter(([f]) => f === s.index);
+    const loopsBackTo = stepLoops.map(([, t]) => t + 1);
+    // The convergence cap for this step's loop (first capped edge wins).
+    const maxIterations = stepLoops.find(([, , m]) => m !== undefined)?.[2];
     const supportingContext = walked.contextNodes
       .filter((c) => c.anchorStepIndex === s.index)
       .map((c) => c.text);
@@ -2528,6 +2609,7 @@ export function walkSkillToJson(
       ...(s.unresolvedCall ? { unresolvedCall: s.unresolvedCall } : {}),
       ...(branchesTo.length > 0 ? { branchesTo } : {}),
       ...(loopsBackTo.length > 0 ? { loopsBackTo } : {}),
+      ...(maxIterations !== undefined ? { maxIterations } : {}),
       supportingContext,
     };
   });
@@ -2551,6 +2633,7 @@ export function walkSkillToJson(
       ...(meta.engramName ? { engramName: meta.engramName } : {}),
     },
     requires,
+    ...(Object.keys(requiresTypes).length > 0 ? { requiresTypes } : {}),
     produces,
     constraints,
     steps,
