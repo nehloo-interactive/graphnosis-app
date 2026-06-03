@@ -5,7 +5,7 @@ sidebar:
   order: 0
 ---
 
-The whole point of a local, encrypted second cortex isn't "save things." It's "save once, retrieve from any AI client, forever, without re-uploading anything." Below are five concrete workflows people use Graphnosis for. Each one is just a sketch — pick whichever AI clients you actually use; the memory is the same in all of them.
+The whole point of a local, encrypted second cortex isn't "save things." It's "save once, retrieve from any AI client or any device, forever, without re-uploading anything." Below are concrete workflows people use Graphnosis for. Each one is just a sketch — pick whichever AI clients and devices you actually use; the memory is the same in all of them.
 
 A reminder of the core loop:
 
@@ -85,7 +85,21 @@ The trip becomes a long, structured memory you can hand to friends, your future 
 
 ---
 
-## 6. The auto-growing inbox — connectors + cross-client recall
+## 6. Save from your phone, recall on your laptop
+
+Memory doesn't only move between AI clients — it moves between *devices*. With a personal server running, you capture something on your phone and it's waiting on your laptop, because both are reading from the one cortex on the server.
+
+A realistic flow:
+
+- **Tuesday, on the train, phone:** Open your cortex in the phone's browser ([browser access](/getting-started/mobile/) over Tailscale). You read an article, jot a few takeaways, and save them to your `research` engram — straight into the same cortex your laptop uses.
+- **Tuesday, also on the phone, Claude for iOS:** Same cortex, this time via the [MCP bridge](/getting-started/mobile/). You ask "what did I already note about this topic?" and your AI recalls the notes you just saved, plus older ones.
+- **Wednesday, back at your desk, Claude Code:** "Pull my research notes from this week into an outline." Everything you captured on the move is right there — no export, no sync app, no copy-paste. The phone was just a remote screen onto the same encrypted cortex.
+
+The cortex never lived on the phone. It stayed encrypted on the server; your phone reached it over Tailscale, and the laptop reads the same store. One memory, every device.
+
+---
+
+## 7. The auto-growing inbox — connectors + cross-client recall
 
 The first five workflows are about you saving things deliberately. This sixth is the inverse — **memory that lands in your cortex without you doing anything**, then becomes recallable across every AI client the same way.
 
