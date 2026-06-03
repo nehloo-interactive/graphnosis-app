@@ -19,6 +19,7 @@ import { startSocketMcpServer } from './mcp-socket-server.js';
 import { mcpRegistry } from './mcp-registry.js';
 import { startHttpMcpServer } from './mcp-http-server.js';
 import { ConnectorManager } from './connectors/manager.js';
+import { initAdminPolicy } from './admin-policy.js';
 import { LLM_CATALOG, makeLlm } from './local-llm.js';
 import { workerEmbed, workerEmbedBackground, terminateEmbedWorker, LOCAL_EMBED_ID, LOCAL_EMBED_DIM, switchEmbedModel, currentEmbedModel, setWorkerCount } from './local-embed.js';
 import type { LocalLlm } from './correction.js';
@@ -1025,6 +1026,10 @@ async function main(): Promise<void> {
   // Service connector manager. Always created (even with zero configs) so
   // connectors.install works on a fresh cortex. Started after IPC so webhook
   // and pull traffic doesn't race against the IPC socket being ready.
+  // Admin/IT policy (disabled connectors + AI clients) — load before the
+  // connector manager starts so blocked kinds never mount.
+  initAdminPolicy(env.cortexDir);
+
   const connectorsCfg = host.getSettings().connectors ?? {
     configs: [], webhookPort: 3458, webhookHost: '127.0.0.1', pullIntervalMs: 15 * 60 * 1000,
   };
