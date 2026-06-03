@@ -4,7 +4,7 @@ v1.12.0
 
 This project uses **Graphnosis** as its long-term memory: a local, encrypted
 store the user owns, reached through MCP. Treat it as the source of truth for
-anything that should outlive this conversation. There are **45 MCP tools across
+anything that should outlive this conversation. There are **47 MCP tools across
 10 groups** — pick by intent; the tool name shapes the audit footer.
 
 ## The two non-negotiable habits
@@ -72,7 +72,7 @@ user to open **Settings → AI → Consent Phrases**, wait for them to type it,
 call `confirm_data_access({phrase, tier})` with exactly what they typed, then
 retry. If they type SKIP, do not retry and do not invent the phrase.
 
-## The 45 tools — pick by intent
+## The 47 tools — pick by intent
 
 ### Core memory (8)
 - `recall` — semantic search; ready-to-read context block. **Escalation
@@ -123,7 +123,7 @@ retry. If they type SKIP, do not retry and do not invent the phrase.
 
 (Merging engrams is a user-only action in the app — no MCP tool.)
 
-### Skills / SOPs (10)
+### Skills / SOPs (12)
 The procedural-memory layer — Standard Operating Procedures stored in the
 **Skills engram** that ships with every cortex. A skill is a graph of body
 steps with 5 evidence-tagged edge types (`skill:seq`, `skill:loop`,
@@ -134,10 +134,18 @@ Requires, Produces).
 - `walk_skill` — step-by-step narrative SOP text with ⟲ (loop) / ⤳ (branch) /
   ⊕ (sub-skill) annotations. Use for **explaining** to the user.
 - `walk_skill_structured` — same walk as a `SkillExecutionPlan` JSON:
-  `requires`, `produces`, ordered `steps[].calls` with args + `captureAs`,
-  and `failureHandlers`. **Prefer this for any procedural execution task** —
-  walk steps in order, invoke sub-skills with the named args, capture
-  returns, route to `failureHandlers[0]` on exception.
+  `requires` (+ `requiresTypes` inline type hints), `produces`, ordered
+  `steps[].calls` with args + `captureAs`, `steps[].parallel` (concurrent
+  sub-skills), `steps[].maxIterations` (loop-convergence cap), cross-engram
+  calls flagged with `targetGraphId`, and `failureHandlers`. **Prefer this for
+  any procedural execution task** — walk steps in order, invoke sub-skills with
+  the named args, run `parallel` members concurrently, respect `maxIterations`
+  on loops, capture returns, route to `failureHandlers[0]` on exception.
+- `save_skill_run` — persist captured vars + progress of a multi-skill run so
+  it can resume in a later session; returns a `runId` (omit to start a new run,
+  pass it back to update). Call as you walk.
+- `resume_skill_run` — reload a saved run by `runId`: captured vars, last
+  completed step, and `nextStepIndex` to continue at.
 - `get_skill` — fetch one trained skill's rendered output.
 - `list_skills` — every skill with metadata.
 - `train_skill` — train or retrain a skill (in-place; one source per skill;

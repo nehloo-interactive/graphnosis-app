@@ -16,6 +16,7 @@ import { redactId, redactPair, dbg } from './log-redact.js';
 import { GllWriter } from './gll.js';
 import { SkillSnapshotStore } from './skill-snapshots.js';
 import { SkillCallLinkStore } from './skill-call-links.js';
+import { SkillRunStore } from './skill-runs.js';
 
 const { deriveKey, encrypt, decrypt } = crypto;
 const { OpLogWriter } = oplog;
@@ -236,6 +237,9 @@ export class GraphnosisHost {
    *  cross-graph edges, so `@skill:` calls that resolve to a skill in another
    *  engram are persisted here and surfaced by the walk. */
   readonly skillCallLinks: SkillCallLinkStore;
+  /** Persistent skill-run records (D5) — captured vars + progress so a
+   *  multi-skill orchestration can resume across sessions. */
+  readonly skillRuns: SkillRunStore;
   private policyCfg: policy.PolicyConfig;
   // Mutable so runtime model switches (Settings → Search model) can update
   // them without rebuilding the host. The actual re-embed of every graph
@@ -290,6 +294,11 @@ export class GraphnosisHost {
       salt: this.salt,
     });
     this.skillCallLinks = new SkillCallLinkStore({
+      cortexDir: opts.cortexDir,
+      key: this.key,
+      salt: this.salt,
+    });
+    this.skillRuns = new SkillRunStore({
       cortexDir: opts.cortexDir,
       key: this.key,
       salt: this.salt,
