@@ -45,6 +45,17 @@ Don't fire off `git commit && git push` mechanically. Do this instead:
 5. **Don't tag or trigger publish workflows without explicit confirmation.**
    Even on a ship signal, ask if a tag is wanted unless Nelu named the
    version.
+6. **Before EVERY tag, regenerate and commit the bundled docs.** Run
+   `node apps/desktop-sidecar/scripts/generate-docs-content.mjs` and commit
+   `apps/desktop-sidecar/src/docs-content.generated.ts` if it changed, then
+   push. That file is a build-time snapshot of `apps/docs/src/content/docs/`
+   compiled into the app binary and ingested **offline** into the
+   `graphnosis-docs` engram — there is NO live fetch from the website. If the
+   bundle is stale, the release ships outdated docs to users until the next
+   version bump re-ingests. Regeneration is deterministic, so a clean tree
+   means it's already in sync. (Do the same sanity check for
+   `skill-demos.generated.ts`, though that one needs the GSK signing key to
+   rebuild.)
 
 ### What you can do without asking
 
