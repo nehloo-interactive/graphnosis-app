@@ -247,23 +247,35 @@ ferry to Naxos. The food in Mykonos was overrated.`;
   // can't onboard new users.
   log('bundled-skill-demos', {});
   if (!Array.isArray(BUNDLED_SKILL_DEMOS) || BUNDLED_SKILL_DEMOS.length === 0) {
-    throw new Error(
-      'FAIL: BUNDLED_SKILL_DEMOS is empty — node scripts/build-gsk.mjs --sign && ' +
-      'apps/desktop-sidecar/scripts/generate-skill-demos-content.mjs must run before build.',
-    );
-  }
-  for (const d of BUNDLED_SKILL_DEMOS) {
-    if (!d.id || !d.filename || typeof d.gskBase64 !== 'string' || d.gskBase64.length === 0) {
-      throw new Error(`FAIL: malformed bundled skill demo — ${JSON.stringify({ id: d.id, filename: d.filename, base64Len: d.gskBase64?.length }).slice(0, 200)}`);
+    // The bundle is generated from the gitignored pack content
+    // (default-skill-packs.ts) + the GSK_SIGNING_KEY_HEX signing key — neither
+    // of which exists in environments like the Linux-server CI, so an empty
+    // bundle is EXPECTED there. Skip (with a loud log) when explicitly allowed;
+    // otherwise fail, so the release pipeline (which DOES build signed packs and
+    // does NOT set this flag) still catches a forgotten pack build.
+    if (process.env.GRAPHNOSIS_SMOKE_ALLOW_EMPTY_DEMOS === '1') {
+      log('bundled-skill-demos.skipped', { reason: 'empty bundle allowed — no pack content / signing key in this environment' });
+    } else {
+      throw new Error(
+        'FAIL: BUNDLED_SKILL_DEMOS is empty — node scripts/build-gsk.mjs --sign && ' +
+        'apps/desktop-sidecar/scripts/generate-skill-demos-content.mjs must run before build. ' +
+        '(Set GRAPHNOSIS_SMOKE_ALLOW_EMPTY_DEMOS=1 in environments that cannot build signed packs.)',
+      );
     }
-    // Sanity check the base64 decodes to a non-trivial .gsk header
-    // (the format starts with a 4-byte magic string per gsk-format.ts).
-    const decodedLen = Buffer.from(d.gskBase64, 'base64').byteLength;
-    if (decodedLen < 64) {
-      throw new Error(`FAIL: bundled skill demo ${d.id} decoded to only ${decodedLen} bytes — corrupt`);
+  } else {
+    for (const d of BUNDLED_SKILL_DEMOS) {
+      if (!d.id || !d.filename || typeof d.gskBase64 !== 'string' || d.gskBase64.length === 0) {
+        throw new Error(`FAIL: malformed bundled skill demo — ${JSON.stringify({ id: d.id, filename: d.filename, base64Len: d.gskBase64?.length }).slice(0, 200)}`);
+      }
+      // Sanity check the base64 decodes to a non-trivial .gsk header
+      // (the format starts with a 4-byte magic string per gsk-format.ts).
+      const decodedLen = Buffer.from(d.gskBase64, 'base64').byteLength;
+      if (decodedLen < 64) {
+        throw new Error(`FAIL: bundled skill demo ${d.id} decoded to only ${decodedLen} bytes — corrupt`);
+      }
     }
+    log('bundled-skill-demos.ok', { packs: BUNDLED_SKILL_DEMOS.length });
   }
-  log('bundled-skill-demos.ok', { packs: BUNDLED_SKILL_DEMOS.length });
 }
 
 function log(phase: string, data: Record<string, unknown>): void {
