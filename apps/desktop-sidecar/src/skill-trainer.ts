@@ -1824,17 +1824,18 @@ export function parseSkillCall(text: string): ParsedSkillCall | null {
  *   'skill:calls;onFailure=true'                           — call appears in `On failure:` block
  *   'skill:calls;args=a;capture=foo;onFailure=true'        — combinations
  */
-export function encodeCallEvidence(parsed: ParsedSkillCall, opts: { onFailure?: boolean } = {}): string {
+export function encodeCallEvidence(parsed: ParsedSkillCall, opts: { onFailure?: boolean; parallel?: boolean } = {}): string {
   const parts: string[] = [SKILL_CALLS_EVIDENCE];
   if (parsed.args.length > 0) parts.push(`args=${parsed.args.join(',')}`);
   if (parsed.captureAs) parts.push(`capture=${parsed.captureAs}`);
   if (opts.onFailure) parts.push('onFailure=true');
+  if (opts.parallel) parts.push('parallel=true');
   return parts.join(';');
 }
 
 /** Decode an `evidence` string written by encodeCallEvidence. */
-export function parseCallEvidence(evidence: string | undefined): { args: string[]; captureAs?: string; onFailure: boolean } {
-  const out: { args: string[]; captureAs?: string; onFailure: boolean } = { args: [], onFailure: false };
+export function parseCallEvidence(evidence: string | undefined): { args: string[]; captureAs?: string; onFailure: boolean; parallel: boolean } {
+  const out: { args: string[]; captureAs?: string; onFailure: boolean; parallel: boolean } = { args: [], onFailure: false, parallel: false };
   if (!evidence) return out;
   const parts = evidence.split(';');
   for (let i = 1; i < parts.length; i++) { // skip 'skill:calls' base tag
@@ -1846,8 +1847,44 @@ export function parseCallEvidence(evidence: string | undefined): { args: string[
     if (key === 'args') out.args = value ? value.split(',').map((s) => s.trim()).filter(Boolean) : [];
     else if (key === 'capture') out.captureAs = value;
     else if (key === 'onFailure') out.onFailure = value === 'true';
+    else if (key === 'parallel') out.parallel = value === 'true';
   }
   return out;
+}
+
+/** A parsed `@parallel:` group — concurrent sub-skill invocations (D4).
+ *  Syntax: `@parallel: [skillA, skillB(arg=$x)] -> [$a, $b]` — dispatch the
+ *  listed skills concurrently, capturing each return under the matching var. */
+export interface ParsedParallelCall {
+  members: Array<{ target: string; args: string[]; captureAs?: string }>;
+}
+
+/** Parse the first `@parallel: [...] -> [...]` group in a node's text. Returns
+ *  null when absent. Each member may carry `(arg=$x)`; captures map positionally
+ *  to the `-> [$a, $b]` list. */
+export function parseParallelCall(text: string): ParsedParallelCall | null {
+  const m = text.match(/@parallel:\s*\[([^\]]*)\]\s*(?:->\s*\[([^\]]*)\])?/i);
+  if (!m) return null;
+  const targets = (m[1] ?? '').split(',').map((s) => s.trim()).filter(Boolean);
+  const captures = (m[2] ?? '').split(',').map((s) => s.trim().replace(/^\$/, ''));
+  const members: ParsedParallelCall['members'] = [];
+  targets.forEach((t, i) => {
+    const cm = t.match(/^([A-Za-z0-9 _\-]+?)\s*(?:\(([^)]*)\))?$/);
+    const target = (cm?.[1] ?? t).trim().toLowerCase();
+    if (!target) return;
+    const args: string[] = [];
+    if (cm?.[2]) {
+      for (const part of cm[2].split(',')) {
+        const eq = part.indexOf('=');
+        const valueSide = (eq >= 0 ? part.slice(eq + 1) : part).trim();
+        const vm = valueSide.match(/^\$?([A-Za-z_]\w*)$/);
+        if (vm?.[1]) args.push(vm[1]);
+      }
+    }
+    const cap = captures[i];
+    members.push({ target, args, ...(cap ? { captureAs: cap } : {}) });
+  });
+  return members.length > 0 ? { members } : null;
 }
 
 // ── linkSkillCalls ────────────────────────────────────────────────────────────
@@ -1931,6 +1968,27 @@ export async function linkSkillCalls(
   };
 
   for (const node of liveNodes) {
+    // D4 — a `@parallel: [...]` group emits one call edge per member, each
+    // tagged `parallel=true` so the walk groups them into a concurrent dispatch.
+    const parallel = parseParallelCall(node.content);
+    if (parallel) {
+      for (const member of parallel.members) {
+        const target = resolveTarget(member.target);
+        if (!target) continue;
+        batch.push({
+          from: node.id,
+          to: target.titleNodeId,
+          type: 'contains',
+          weight: 0.95,
+          evidence: encodeCallEvidence(
+            { target: member.target, args: member.args, ...(member.captureAs ? { captureAs: member.captureAs } : {}) },
+            { parallel: true },
+          ),
+        });
+      }
+      continue;
+    }
+
     const parsed = parseSkillCall(node.content);
     if (!parsed || !parsed.target) continue;
     const target = resolveTarget(parsed.target);
@@ -2100,6 +2158,15 @@ export interface StepNode {
     /** Variable name to store the call's return under (from `-> $capture`). */
     captureAs?: string;
   };
+  /** Resolved concurrent sub-skill calls (D4 — from `@parallel: [a, b] -> [$x,
+   *  $y]`). When present, the executor dispatches all members concurrently.
+   *  Mutually exclusive with callsSkill. */
+  parallelCalls?: Array<{
+    targetSourceId: string;
+    targetTitle: string;
+    args: string[];
+    captureAs?: string;
+  }>;
   /** Skill-call reference text that did not resolve to any existing skill.
    *  Surfaces in the JSON plan so the AI executor knows there's an
    *  unfulfillable reference (sub-skill not found / typo / cross-engram). */
@@ -2214,51 +2281,70 @@ export function walkSkillSequence(
   const ctxEdges    = directed.filter((e) => e.evidence === SKILL_CTX_EVIDENCE    && nodeSet.has(e.from));
 
   // Resolve sub-skill call targets — find the owning source for each target node
-  // so we can return its sourceId (not the current skill's sourceId, which was the bug).
-  const callTargetMeta = new Map<string, {
+  // so we can return its sourceId (not the current skill's sourceId, which was
+  // the bug). A node may have MULTIPLE call edges when it's a `@parallel:` group
+  // (D4), so collect them per node rather than one-per-node.
+  interface CallMeta {
     targetSourceId: string;
     targetTitle: string;
     args: string[];
     captureAs?: string;
     onFailure: boolean;
-  }>();
+    parallel: boolean;
+  }
+  const callsByNode = new Map<string, CallMeta[]>();
   const allSources = host.listSources(graphId);
   for (const e of callEdges) {
     const targetText = host.getFullNodeContent(graphId, e.to) ??
       nodeMap.get(e.to)?.contentPreview ?? '';
     const owner = allSources.find((s) => s.nodeIds.includes(e.to));
     const evidence = parseCallEvidence(e.evidence ?? '');
-    callTargetMeta.set(e.from, {
+    const arr = callsByNode.get(e.from) ?? [];
+    arr.push({
       targetSourceId: owner?.sourceId ?? src.sourceId,
       targetTitle: targetText.trim().slice(0, 200),
       args: evidence.args,
       ...(evidence.captureAs ? { captureAs: evidence.captureAs } : {}),
       onFailure: evidence.onFailure,
+      parallel: evidence.parallel,
     });
+    callsByNode.set(e.from, arr);
   }
 
   const steps: StepNode[] = bodyIds.map((id, i) => {
     const text = host.getFullNodeContent(graphId, id) ?? nodeMap.get(id)!.contentPreview;
-    const meta = callTargetMeta.get(id);
-    // Detect unresolved calls: text references @skill: but no edge was created
-    // (typically: typo, deleted target, or cross-engram reference).
+    const calls = callsByNode.get(id) ?? [];
+    const parallelMembers = calls.filter((c) => c.parallel);
+    const single = calls.find((c) => !c.parallel);
+    // Detect unresolved calls: text references a sub-skill (@skill: or
+    // @parallel:) but no edge resolved (typo, deleted target, cross-engram).
     const parsedFromText = parseSkillCall(text);
-    const unresolved = !meta && parsedFromText && parsedFromText.target;
+    const parsedParallel = parseParallelCall(text);
+    const unresolvedName = calls.length === 0
+      ? (parsedParallel?.members[0]?.target ?? parsedFromText?.target)
+      : undefined;
     return {
       nodeId: id,
       text,
       index: i,
       isBranchPoint: branchEdges.some((e) => e.from === id),
       isLoopBack:    loopEdges.some((e) => e.from === id),
-      ...(meta ? {
+      ...(parallelMembers.length > 0 ? {
+        parallelCalls: parallelMembers.map((m) => ({
+          targetSourceId: m.targetSourceId,
+          targetTitle: m.targetTitle,
+          args: m.args,
+          ...(m.captureAs ? { captureAs: m.captureAs } : {}),
+        })),
+      } : single ? {
         callsSkill: {
-          targetSourceId: meta.targetSourceId,
-          targetTitle: meta.targetTitle,
-          args: meta.args,
-          ...(meta.captureAs ? { captureAs: meta.captureAs } : {}),
+          targetSourceId: single.targetSourceId,
+          targetTitle: single.targetTitle,
+          args: single.args,
+          ...(single.captureAs ? { captureAs: single.captureAs } : {}),
         },
       } : {}),
-      ...(unresolved && parsedFromText ? { unresolvedCall: parsedFromText.target } : {}),
+      ...(unresolvedName ? { unresolvedCall: unresolvedName } : {}),
     };
   });
 
@@ -2271,7 +2357,8 @@ export function walkSkillSequence(
     const text = host.getFullNodeContent(graphId, goalNodeId) ??
       nodeMap.get(goalNodeId)?.contentPreview ?? '';
     const description = text.replace(GOAL_PREFIX_STRIP_RE, '').trim();
-    const meta = callTargetMeta.get(goalNodeId);
+    // Failure goals carry a single recovery call (not a parallel group).
+    const meta = (callsByNode.get(goalNodeId) ?? [])[0];
     if (meta && meta.onFailure) {
       failureHandlers.push({
         description,
@@ -2391,6 +2478,14 @@ export function formatSkillForRecall(walked: WalkedSkill): string {
           : '';
         lines.push(`    → INVOKES SKILL: ${step.callsSkill.targetTitle}${argsPart}${capturePart}`);
       }
+      if (step.parallelCalls && step.parallelCalls.length > 0) {
+        const names = step.parallelCalls.map((p) => {
+          const a = p.args.length > 0 ? ` with $${p.args.join(', $')}` : '';
+          const c = p.captureAs ? ` → $${p.captureAs}` : '';
+          return `${p.targetTitle}${a}${c}`;
+        });
+        lines.push(`    → INVOKES IN PARALLEL: ${names.join(' | ')}`);
+      }
       if (step.unresolvedCall) {
         lines.push(`    → ⚠ UNRESOLVED CALL: "${step.unresolvedCall}" — sub-skill not found in this engram`);
       }
@@ -2467,6 +2562,14 @@ export interface SkillExecutionPlan {
       args: string[];
       captureAs?: string;
     };
+    /** Concurrent sub-skill calls (D4). When present, dispatch all members in
+     *  parallel and capture each return under its captureAs. */
+    parallel?: Array<{
+      targetSourceId: string;
+      targetTitle: string;
+      args: string[];
+      captureAs?: string;
+    }>;
     /** Sub-skill name that didn't resolve to any skill in the same engram. */
     unresolvedCall?: string;
     /** 1-based step indices the branch may go to. */
@@ -2605,6 +2708,14 @@ export function walkSkillToJson(
           args: s.callsSkill.args,
           ...(s.callsSkill.captureAs ? { captureAs: s.callsSkill.captureAs } : {}),
         },
+      } : {}),
+      ...(s.parallelCalls && s.parallelCalls.length > 0 ? {
+        parallel: s.parallelCalls.map((p) => ({
+          targetSourceId: p.targetSourceId,
+          targetTitle: p.targetTitle,
+          args: p.args,
+          ...(p.captureAs ? { captureAs: p.captureAs } : {}),
+        })),
       } : {}),
       ...(s.unresolvedCall ? { unresolvedCall: s.unresolvedCall } : {}),
       ...(branchesTo.length > 0 ? { branchesTo } : {}),
