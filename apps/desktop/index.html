@@ -1709,6 +1709,31 @@
         font-size: 10px; font-weight: 700; letter-spacing: 0.10em; text-transform: uppercase;
         color: var(--fg-dim); opacity: 0.85; margin: 0 0 14px; padding: 0;
       }
+      /* Settings → Access control (admin policy toggles). */
+      .policy-managed-note {
+        font-size: 13px; margin: 0 0 12px; padding: 8px 12px; border-radius: 8px;
+        background: color-mix(in srgb, #d9a445 12%, transparent);
+        border: 1px solid color-mix(in srgb, #d9a445 28%, transparent);
+        color: var(--fg);
+      }
+      .policy-group { margin-bottom: 14px; }
+      .policy-group-label { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; color: var(--fg-dim); margin: 0 0 8px; }
+      .policy-toggles { display: flex; flex-wrap: wrap; gap: 8px; }
+      .policy-toggle {
+        display: inline-flex; align-items: center; gap: 7px;
+        padding: 6px 12px; border-radius: 999px; cursor: pointer;
+        border: 1px solid var(--border); font-size: 13px; color: var(--fg);
+        user-select: none;
+      }
+      .policy-toggle input { margin: 0; cursor: pointer; }
+      .policy-toggle.blocked {
+        background: color-mix(in srgb, var(--error) 12%, transparent);
+        border-color: color-mix(in srgb, var(--error) 30%, transparent);
+        text-decoration: line-through;
+        color: var(--fg-dim);
+      }
+      .policy-toggle input:disabled { cursor: default; }
+
       .consent-active-table { width: 100%; border-collapse: collapse; font-size: 14px; margin-top: 8px; }
       .consent-active-table th { text-align: left; font-size: 12px; font-weight: 600; color: var(--fg-dim); padding: 4px 6px; border-bottom: 1px solid var(--border); }
       .consent-active-table td { padding: 6px 6px; border-bottom: 1px solid color-mix(in oklab, var(--border) 50%, transparent); vertical-align: middle; }
@@ -2163,7 +2188,7 @@
         border: 1px solid transparent;
         color: var(--fg-dim);
         text-align: left;
-        font-size: 14px;
+        font-size: 15.5px;
         cursor: pointer;
         transition: background 80ms, color 80ms;
       }
@@ -3565,6 +3590,407 @@
       /* Action row */
       .studio-action-row { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
       /* Tool chip navigation */
+      /* ── Power-tools drawer ─────────────────────────────────────────────
+         Collapses the manual recall/remember/edit/GNN surface on Home.
+         Closed by default; the rail's Skills destination force-opens it and
+         hides its chrome so the skills sub-pane reads as a clean page. */
+      .power-tools {
+        border: 1px solid var(--border);
+        border-radius: 12px;
+        margin-top: 18px;
+        background: color-mix(in srgb, var(--bg) 94%, var(--fg) 6%);
+        overflow: hidden;
+        /* Keep the flex column chain intact so the recall/dig-deeper panes
+           inside still get height + internal scroll (they're flex:1 children
+           that expect a flex-column parent all the way up to .studio-section). */
+        display: flex; flex-direction: column; flex: 1 1 auto; min-height: 0;
+      }
+      /* Collapsed → shrink to just the header; no longer fills the column. */
+      .power-tools.collapsed { flex: 0 0 auto; }
+      .power-tools-header {
+        -webkit-appearance: none; appearance: none;
+        width: 100%;
+        display: flex; align-items: center; gap: 10px;
+        padding: 12px 14px;
+        background: transparent;
+        border: 0;
+        cursor: pointer;
+        color: var(--fg);
+        text-align: left;
+        font: inherit;
+      }
+      .power-tools-header:hover { background: color-mix(in srgb, var(--bg) 88%, var(--fg) 12%); }
+      .power-tools-icon { font-size: 15px; }
+      .power-tools-title { font-size: 13px; font-weight: 700; }
+      .power-tools-hint {
+        font-size: 11px; color: var(--fg-dim);
+        flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+      }
+      .power-tools-chevron { color: var(--fg-dim); transition: transform .18s ease; flex-shrink: 0; }
+      .power-tools.collapsed .power-tools-chevron { transform: rotate(-90deg); }
+      .power-tools-body {
+        padding: 0 14px 12px;
+        display: flex; flex-direction: column; flex: 1 1 auto; min-height: 0;
+      }
+      .power-tools.collapsed .power-tools-body { display: none; }
+      /* Skills rail destination: force the drawer fully open and strip the
+         drawer chrome + the manual chips/banner so only the skills pane shows. */
+      body.skills-studio-mode .power-tools-header { display: none; }
+      /* Force the drawer open even if the user left it collapsed on Home. */
+      body.skills-studio-mode .power-tools,
+      body.skills-studio-mode .power-tools.collapsed { flex: 1 1 auto; border: 0; background: transparent; margin-top: 0; }
+      body.skills-studio-mode .power-tools-body { display: flex !important; padding: 0; }
+      body.skills-studio-mode .studio-chips { display: none; }
+      body.skills-studio-mode .studio-banner { display: none; }
+      /* The Stranded-Memories trivia bar is irrelevant on the Skills page. */
+      body.skills-studio-mode #trivia-drawer { display: none; }
+
+      /* ── Search page (body.search-mode) ─────────────────────────────────
+         Search is a checkin sub-mode: reveal the search bar + results surface,
+         hide the Home cards, the power-tools drawer, and the stranded deck. */
+      #g-search-bar { display: none; }
+      body.search-mode #home-overview { display: none; }
+      body.search-mode #studio-section { display: none; }
+      body.search-mode #trivia-drawer { display: none; }
+      .g-search-bar .g-search-wrap { flex: 1; }
+      /* Results belong to the Search page only — never leak onto Home/Skills
+         even if a stale query is still in the box. */
+      body:not(.search-mode) #g-search-results { display: none !important; }
+
+      /* Hero search: starts vertically centered with a headline + guidance,
+         then animates UP to the top as soon as the user types (results fill the
+         space below); recenters when the query is cleared. The motion is a
+         padding-top transition (WebKit-safe — flex-grow doesn't animate) plus a
+         max-height/opacity collapse of the guidance. body.search-idle = empty
+         query (toggled in applyGraphnosisFilter / activateMode). */
+      body.search-mode #g-search-bar {
+        display: flex; flex-direction: column;
+        padding-top: 8px;
+        transition: padding-top 0.42s cubic-bezier(0.22, 1, 0.36, 1);
+      }
+      body.search-mode.search-idle #g-search-bar { padding-top: 19vh; }
+      .search-hero-inner {
+        width: 100%; max-width: 680px; margin: 0 auto;
+        display: flex; flex-direction: column; gap: 12px;
+      }
+      .search-hero-head, .search-hero-tips {
+        overflow: hidden; max-height: 0; opacity: 0; margin: 0;
+        transition: max-height 0.38s ease, opacity 0.28s ease;
+      }
+      body.search-mode.search-idle .search-hero-head { max-height: 260px; opacity: 1; }
+      body.search-mode.search-idle .search-hero-tips { max-height: 80px; opacity: 1; }
+      .search-hero-head { text-align: center; }
+      .search-hero-title { font-size: 26px; font-weight: 700; margin: 0 0 8px; letter-spacing: -0.01em; }
+      .search-hero-sub { font-size: 14px; line-height: 1.6; color: var(--fg-dim); margin: 0 auto; max-width: 560px; }
+      .search-hero-tips { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px 16px; }
+      .search-hero-tip { font-size: 12px; color: var(--fg-dim); display: inline-flex; align-items: center; gap: 5px; }
+      .search-hero-tip-muted { font-style: italic; opacity: 0.85; }
+      .search-hero-tip kbd {
+        font: inherit; font-size: 11px; line-height: 1.4; padding: 1px 6px; border-radius: 5px;
+        border: 1px solid var(--border);
+        background: color-mix(in srgb, var(--bg) 86%, var(--fg) 14%);
+      }
+      /* Bigger, more inviting input on the dedicated search page. */
+      body.search-mode .g-search-wrap input[type="search"] {
+        font-size: 16.5px; padding: 13px 16px; border-radius: 12px;
+        transition: box-shadow 0.3s ease;
+      }
+      body.search-mode.search-idle .g-search-wrap input[type="search"] {
+        box-shadow: 0 8px 30px rgba(0, 0, 0, 0.18);
+      }
+      /* While typing, results fill the remaining height + scroll internally. */
+      body.search-mode:not(.search-idle) #g-search-results {
+        flex: 1 1 auto; min-height: 0; overflow-y: auto;
+      }
+
+      /* ── Power Tools page (body.powertools-mode) ─────────────────────────
+         The studio section (manual recall/remember/edit/GNN) is its own rail
+         destination now. It shows ONLY on the Skills or Power-tools pages —
+         never on Home. */
+      body:not(.skills-studio-mode):not(.powertools-mode) #studio-section { display: none !important; }
+      body.powertools-mode #home-overview { display: none; }
+      body.powertools-mode #trivia-drawer { display: none; }
+      /* Force the drawer open + drop the collapse header (the page IS the tools).
+         Unlike Skills mode, the chips stay visible so the user can switch tools. */
+      body.powertools-mode .power-tools-header { display: none; }
+      body.powertools-mode .power-tools,
+      body.powertools-mode .power-tools.collapsed { flex: 1 1 auto; border: 0; background: transparent; margin-top: 0; }
+      body.powertools-mode .power-tools-body { display: flex !important; padding: 0; }
+
+      /* ── Goals page (body.goals-mode) ────────────────────────────────────
+         Slimmed to just the strategic-goals section. The vitality hero,
+         memory-health, self-healing, and recent-activity blocks moved to Home,
+         so hide every #living-brain child except the Goals section. */
+      body.goals-mode #living-brain > *:not(.lb-section-goals) { display: none; }
+
+      /* ── Home overview (#home-overview) ─────────────────────────────────
+         Health + stats cards, shown ONLY on Home (the default checkin view).
+         Hidden in the search and skills sub-modes which reuse this pane. */
+      #home-overview { display: block; margin: 4px 0 10px; }
+      body.search-mode #home-overview,
+      body.skills-studio-mode #home-overview { display: none; }
+      /* Health, now a standalone Home card rather than an inline header item. */
+      .home-health-card {
+        display: flex; align-items: center; gap: 14px;
+        padding: 14px 16px;
+        border: 1px solid var(--border);
+        border-radius: 12px;
+        background: color-mix(in srgb, var(--bg) 94%, var(--fg) 6%);
+      }
+      #home-overview .g-federated-stats { margin-top: 10px; padding-left: 2px; }
+
+      /* ── Home Mission-Control dashboard ─────────────────────────────────
+         Narrow reading column, generous whitespace, card-based (design
+         language). The hero is the glance; cards are the dive. */
+      /* Home is a responsive GRID of smaller boxes (not full-width stacked
+         rows), and it scrolls vertically within the checkin pane. */
+      #home-overview {
+        max-width: 1000px; margin: 0 auto; width: 100%;
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+        gap: 16px;
+        align-content: start;
+        padding: 4px 2px 28px;
+      }
+      /* Home scrolls as a WHOLE panel: the scroll lives on the checkin pane
+         (full-width scrollbar at the panel edge); #home-overview is just the
+         centered content. Only on Home — the search/skills/power-tools
+         sub-surfaces keep their own internal scroll. */
+      body:not(.search-mode):not(.skills-studio-mode):not(.powertools-mode) section.g-tab-pane[data-gpane="checkin"] {
+        overflow-y: auto;
+      }
+      /* Full-width members: the hero banner + the per-engram breakdown. */
+      .home-hero, .home-breakdown-card { grid-column: 1 / -1; }
+      #home-overview .home-card { margin-bottom: 0; }  /* grid gap handles spacing */
+      .home-hero { margin: 0 0 4px; }
+      .home-greeting { font-size: 13px; font-weight: 600; color: var(--fg-dim); letter-spacing: 0.01em; }
+      .home-pulse { font-size: 17px; line-height: 1.5; margin-top: 4px; color: var(--fg); }
+      .home-pulse strong { font-weight: 700; }
+      .home-pulse-grade { font-weight: 700; }
+      .home-pulse-grade.a { color: var(--ok); }
+      .home-pulse-grade.b { color: var(--accent); }
+      .home-pulse-grade.c { color: #d9a445; }
+      .home-pulse-grade.d { color: var(--error); }
+
+      .home-card {
+        border: 1px solid var(--border);
+        border-radius: 14px;
+        padding: 16px 18px;
+        background: color-mix(in srgb, var(--bg) 95%, var(--fg) 5%);
+        margin-bottom: 16px;
+      }
+      .home-card-head { display: flex; align-items: baseline; gap: 10px; margin-bottom: 12px; flex-wrap: wrap; }
+      .home-card-title { font-size: 14px; font-weight: 700; margin: 0; }
+      .home-card-hint { font-size: 11px; color: var(--fg-dim); }
+
+      .home-trust-row { display: flex; gap: 22px; align-items: flex-start; flex-wrap: wrap; }
+      /* Two labeled dimensions: Vitality (the ring) + Trust (the factors). */
+      .home-dim-label {
+        font-size: 10px; font-weight: 700; text-transform: uppercase;
+        letter-spacing: 0.06em; color: var(--fg-dim); margin-bottom: 8px;
+      }
+      .home-dim-vitality { flex: 0 0 auto; }
+      .home-dim-trust { flex: 1 1 240px; }
+      .home-trust-card .home-health-card { flex: 1 1 280px; border: 0; background: transparent; padding: 0; }
+      .home-trust-factors {
+        list-style: none; margin: 0; padding: 0;
+        display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px 18px;
+        flex: 1 1 240px;
+      }
+      .home-factor { display: flex; flex-direction: column; gap: 1px; cursor: help; }
+      .home-factor-val { font-size: 18px; font-weight: 700; color: var(--fg); }
+      .home-factor-label { font-size: 11px; color: var(--fg-dim); }
+
+      .home-engram-bars { margin-top: 16px; }
+      .home-bars-title { font-size: 11px; font-weight: 600; color: var(--fg-dim); text-transform: uppercase; letter-spacing: 0.04em; margin-bottom: 8px; }
+      .home-bar-row { display: flex; align-items: center; gap: 10px; margin-bottom: 6px; }
+      .home-bar-name { font-size: 12px; flex: 0 0 120px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--fg); }
+      .home-bar-track { flex: 1; height: 7px; border-radius: 4px; background: color-mix(in srgb, var(--fg) 12%, transparent); overflow: hidden; }
+      .home-bar-fill { display: block; height: 100%; border-radius: 4px; }
+      .home-bar-fill.ok { background: var(--ok); }
+      .home-bar-fill.accent { background: var(--accent); }
+      .home-bar-fill.warn { background: #d9a445; }
+      .home-bar-fill.error { background: var(--error); }
+      .home-bar-val { font-size: 12px; font-weight: 700; flex: 0 0 28px; text-align: right; color: var(--fg-dim); }
+      .home-bar-row-empty { opacity: 0.5; }
+      .home-bar-row-empty .home-bar-name { font-style: italic; }
+      .home-bar-row-empty .home-bar-val { font-weight: 500; font-size: 11px; flex-basis: 44px; }
+      .home-trust-card .g-federated-stats { margin-top: 16px; padding-top: 12px; border-top: 1px solid var(--border); }
+
+      /* "Since you last opened" digest. */
+      .home-digest-chips { display: flex; flex-wrap: wrap; gap: 8px; }
+      .home-digest-chip {
+        font-size: 13px; padding: 7px 12px; border-radius: 999px;
+        background: color-mix(in srgb, var(--accent) 12%, transparent);
+        border: 1px solid color-mix(in srgb, var(--accent) 28%, transparent);
+        color: var(--fg);
+      }
+      .home-digest-chip strong { font-weight: 700; }
+      .home-digest-quiet { font-size: 13px; line-height: 1.5; color: var(--fg-dim); margin: 0; }
+      .home-digest-link {
+        -webkit-appearance: none; appearance: none;
+        background: none; border: 0; padding: 0; margin-top: 12px;
+        color: var(--accent); font: inherit; font-size: 12px; font-weight: 600;
+        cursor: pointer;
+      }
+      .home-digest-link:hover { text-decoration: underline; }
+
+      /* Two-up hero row: cortex-wide card (left) + active-engram square (right). */
+      .home-hero-row { display: flex; gap: 16px; flex-wrap: wrap; align-items: stretch; }
+      .home-cortex-card { flex: 1 1 380px; margin-bottom: 0; }
+      .home-engram-card {
+        flex: 0 1 240px; margin-bottom: 0;
+        display: flex; flex-direction: column; gap: 8px;
+      }
+      .home-engram-card-label {
+        font-size: 10px; font-weight: 700; text-transform: uppercase;
+        letter-spacing: 0.05em; color: var(--fg-dim);
+      }
+      .home-engram-name {
+        font-size: 16px; font-weight: 700; color: var(--fg);
+        overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+      }
+      .home-engram-card .g-health { display: flex; flex-direction: column; gap: 8px; }
+      /* Cortex vitality ring — the big number + meter on the left card. */
+      .home-cortex-ring { display: flex; flex-direction: column; gap: 8px; flex: 0 0 auto; min-width: 90px; }
+      .home-cortex-ring .g-health-grade { font-size: 34px; font-weight: 800; line-height: 1; }
+      .home-bars-toggle {
+        -webkit-appearance: none; appearance: none; background: none; border: 0;
+        padding: 8px 0 0; color: var(--accent); font: inherit; font-size: 12px;
+        font-weight: 600; cursor: pointer;
+      }
+      .home-bars-toggle:hover { text-decoration: underline; }
+      /* The hero row stacks on narrow widths (the engram square goes full-width). */
+      @media (max-width: 620px) {
+        .home-engram-card { flex-basis: 100%; }
+      }
+
+      /* "Needs you" lane — actionable rows. */
+      .home-needs-body { display: flex; flex-direction: column; gap: 8px; }
+      .home-need-row {
+        -webkit-appearance: none; appearance: none;
+        display: flex; align-items: center; gap: 12px; width: 100%;
+        padding: 10px 12px; border-radius: 10px; cursor: pointer;
+        background: color-mix(in srgb, #d9a445 12%, transparent);
+        border: 1px solid color-mix(in srgb, #d9a445 28%, transparent);
+        color: var(--fg); font: inherit; text-align: left;
+      }
+      .home-need-row:hover { background: color-mix(in srgb, #d9a445 20%, transparent); }
+      .home-need-count { font-size: 18px; font-weight: 800; min-width: 36px; }
+      .home-need-label { flex: 1; font-size: 13px; }
+      .home-need-go { font-size: 12px; font-weight: 600; color: var(--accent); }
+
+      /* "Rediscover" — a single resurfaced memory. */
+      .home-rd-text { font-size: 14px; line-height: 1.55; margin: 0 0 10px; color: var(--fg); }
+      .home-rd-foot { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+      .home-rd-src { font-size: 11px; color: var(--fg-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 60%; }
+      .home-rd-go {
+        -webkit-appearance: none; appearance: none; background: none; border: 0; padding: 0;
+        color: var(--accent); font: inherit; font-size: 12px; font-weight: 600; cursor: pointer;
+      }
+      .home-rd-go:hover { text-decoration: underline; }
+
+      /* "Stranded memories" — the "you can fix this" card. */
+      .home-stranded-row { display: flex; align-items: flex-start; gap: 14px; }
+      .home-stranded-count { font-size: 30px; font-weight: 800; line-height: 1; color: #d9a445; flex: 0 0 auto; }
+      .home-stranded-copy { font-size: 13px; line-height: 1.5; margin: 0; color: var(--fg); }
+      .home-stranded-zero { font-size: 13px; line-height: 1.5; margin: 0; color: var(--ok); }
+      .home-stranded-go {
+        -webkit-appearance: none; appearance: none; background: none; border: 0; padding: 0; margin-top: 12px;
+        color: var(--accent); font: inherit; font-size: 12px; font-weight: 600; cursor: pointer;
+      }
+      .home-stranded-go:hover { text-decoration: underline; }
+
+      /* "Growth" — 30-day sparkline. */
+      .home-growth-stat { font-size: 13px; color: var(--fg); margin-bottom: 10px; }
+      .home-growth-stat strong { font-weight: 700; }
+      .home-spark { display: flex; align-items: flex-end; gap: 2px; height: 56px; }
+      .home-spark-bar { flex: 1; min-width: 2px; background: var(--accent); border-radius: 2px 2px 0 0; }
+      .home-spark-bar.empty { background: color-mix(in srgb, var(--fg) 12%, transparent); }
+
+      /* "On-Premise" — sovereignty/egress ledger. */
+      .home-onprem-list { list-style: none; margin: 0 0 10px; padding: 0; display: flex; flex-direction: column; gap: 7px; }
+      .home-onprem-list li { font-size: 13px; line-height: 1.45; color: var(--fg); }
+      .home-onprem-ok::before { content: "✓ "; color: var(--ok); font-weight: 700; }
+      .home-onprem-strong { color: var(--ok); font-weight: 600; }
+      .home-onprem-posture { font-size: 11px; padding: 1px 7px; border-radius: 999px; white-space: nowrap; }
+      .home-onprem-posture.local { background: color-mix(in srgb, var(--ok) 16%, transparent); color: var(--ok); }
+      .home-onprem-posture.cloud { background: color-mix(in srgb, #d9a445 18%, transparent); color: #d9a445; }
+      .home-onprem-note { font-size: 11px; color: var(--fg-dim); line-height: 1.45; margin: 0; }
+
+      /* Loading skeleton (cards fade from a placeholder, not pop in). */
+      .home-skel {
+        height: 14px; border-radius: 7px; margin: 8px 0;
+        background: linear-gradient(90deg,
+          color-mix(in srgb, var(--fg) 7%, transparent) 25%,
+          color-mix(in srgb, var(--fg) 14%, transparent) 50%,
+          color-mix(in srgb, var(--fg) 7%, transparent) 75%);
+        background-size: 200% 100%;
+        animation: home-shimmer 1.3s ease-in-out infinite;
+      }
+      .home-skel.w70 { width: 70%; }
+      @keyframes home-shimmer { from { background-position: 200% 0; } to { background-position: -200% 0; } }
+
+      /* Memory health — 7-factor grid (richer than the Trust factors). */
+      .home-mhealth-grid {
+        list-style: none; margin: 0 0 10px; padding: 0;
+        display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px 14px;
+      }
+      .home-mhealth-note { font-size: 11px; color: var(--fg-dim); margin: 0; }
+
+      /* Self-healing — the autonomy/trust stats. */
+      .home-sh-stats { display: flex; gap: 24px; flex-wrap: wrap; }
+      .home-sh-val { display: block; font-size: 22px; font-weight: 800; color: var(--ok); }
+      .home-sh-label { font-size: 11px; color: var(--fg-dim); }
+      .home-sh-note { font-size: 11px; color: var(--fg-dim); line-height: 1.45; margin: 10px 0 0; }
+
+      /* Recent brain activity. */
+      .home-ba-cadence { font-size: 13px; line-height: 1.5; margin: 0; color: var(--fg); }
+      .home-ba-cons { font-size: 12px; line-height: 1.5; margin: 8px 0 0; color: var(--fg-dim); }
+
+      /* ── Foresight (Goals page) lanes + Home teaser ─────────────────────── */
+      .foresight-lane-label { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; color: var(--fg-dim); margin: 16px 0 6px; }
+      .foresight-gate { padding: 12px 14px; border: 1px solid var(--border); border-radius: 10px; margin-top: 14px; background: color-mix(in srgb, var(--bg) 94%, var(--fg) 6%); }
+      .foresight-lane { margin-top: 18px; }
+      .foresight-predict-row { display: flex; gap: 8px; }
+      .foresight-predict-row input { flex: 1; min-width: 0; }
+      .foresight-out { margin-top: 10px; }
+      .foresight-insight { padding: 8px 0; border-bottom: 1px solid var(--border); }
+      .foresight-insight strong { display: block; font-size: 13px; }
+      .foresight-insight p { font-size: 12px; color: var(--fg-dim); margin: 2px 0 0; line-height: 1.45; }
+      .foresight-pred-group { margin-bottom: 10px; }
+      .foresight-pred-label { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; }
+      .foresight-pred-group.risk .foresight-pred-label { color: var(--error); }
+      .foresight-pred-group.opp .foresight-pred-label { color: var(--ok); }
+      .foresight-pred-group ul { margin: 4px 0 0; padding-left: 18px; font-size: 13px; line-height: 1.5; }
+      .foresight-rec { font-size: 13px; margin: 8px 0 0; font-style: italic; color: var(--fg); }
+      .foresight-rec::before { content: "→ "; color: var(--accent); font-style: normal; }
+      /* Home teaser card */
+      .home-foresight-title { font-size: 14px; font-weight: 700; margin: 0 0 4px; color: var(--fg); }
+      .home-foresight-text { font-size: 13px; line-height: 1.5; color: var(--fg-dim); margin: 0; }
+      .home-foresight-go {
+        -webkit-appearance: none; appearance: none; background: none; border: 0; padding: 0; margin-top: 12px;
+        color: var(--accent); font: inherit; font-size: 12px; font-weight: 600; cursor: pointer;
+      }
+      .home-foresight-go:hover { text-decoration: underline; }
+
+      /* Quiet empty/error states — cards keep their slot (stable grid order)
+         instead of disappearing and reflowing the layout after data loads. */
+      .home-card-empty { font-size: 13px; line-height: 1.5; margin: 0; color: var(--fg-dim); }
+      .home-card-empty.home-ok { color: var(--ok); }
+      .home-bars-empty { font-size: 12px; color: var(--fg-dim); margin: 8px 0 0; }
+
+      /* "Disabled by IT" governance card. */
+      .home-policy-row { display: flex; align-items: baseline; gap: 10px; margin-bottom: 8px; flex-wrap: wrap; }
+      .home-policy-label { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; color: var(--fg-dim); flex: 0 0 76px; }
+      .home-policy-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+      .home-policy-chip {
+        font-size: 12px; padding: 3px 10px; border-radius: 999px;
+        background: color-mix(in srgb, var(--error) 14%, transparent);
+        border: 1px solid color-mix(in srgb, var(--error) 30%, transparent);
+        color: var(--fg);
+      }
+
       .studio-chips {
         display: flex; flex-wrap: wrap; gap: 6px;
         /* Freeze the chip row at the top of .app-canvas (the scroll host)
@@ -3727,8 +4153,13 @@
       .lb-section[data-studio-tool="skills"] {
         display: flex;
         flex-direction: column;
-        height: calc(100vh - 120px);
-        padding-bottom: var(--trivia-bar-h, 44px);
+        /* Fill the available pane height (the checkin pane is now a flex column)
+           instead of a hardcoded `100vh - 120px` left over from the old tabbed
+           layout — that fixed value fell short of the real space and left a gap
+           below the library/trainer. flex:1 makes the columns use the full
+           height, so the gap fills with content. */
+        flex: 1 1 auto;
+        min-height: 0;
         overflow: hidden;
       }
       .lb-section[data-studio-tool="skills"] .skills-praxis-strip {
@@ -3743,9 +4174,13 @@
       .skills-pane {
         display: grid;
         grid-template-columns: minmax(280px, 360px) 1fr;
+        /* Single explicit row that fills the container. Without this the
+           implicit row is auto-sized to content, so when content is short the
+           row (and both columns' height:100%) fell short — leaving a gap below
+           the library/trainer. minmax(0,1fr) stretches the row to the full pane
+           height and lets each column scroll independently. */
+        grid-template-rows: minmax(0, 1fr);
         gap: 18px;
-        /* stretch so both columns fill the grid row height, enabling
-           independent overflow-y:auto scroll in each column. */
         align-items: stretch;
         height: 100%;
       }
@@ -5468,7 +5903,11 @@
         min-height: 0; /* enable internal scrolling */
       }
       .g-tabs {
-        display: flex;
+        /* The in-pane tab strip is retired: the left rail now drives which
+           inner pane (Home/3D/Goals/Brainstorming/Skills) is shown via
+           activateMode(). Kept in the DOM (switchGraphnosisTab still toggles
+           the panes) but hidden so there's a single nav surface. */
+        display: none;
         gap: 0;
         border-bottom: 1px solid var(--border);
         margin-bottom: 10px;
@@ -5657,6 +6096,12 @@
       section.g-tab-pane[data-gpane="checkin"] {
         position: relative;
         overflow: hidden;
+        /* Flex column so the active sub-surface (Home overview / search results /
+           studio section) fills the pane and scrolls internally. */
+        display: flex;
+        flex-direction: column;
+        flex: 1;
+        min-height: 0;
       }
 
       /* Studio + search results: minimal padding. The trivia drawer
@@ -5710,6 +6155,11 @@
       }
       #trivia-drawer.hidden { display: none; }
 
+      /* Stranded Memories now lives in its own Home card (which opens this deck
+         via "Connect them →"), so the persistent collapsed bottom bar is
+         redundant — hide the handle when closed. The deck still opens as an
+         overlay; when open, .trivia-open re-shows the bar (with its close ✕). */
+      #trivia-drawer:not(.trivia-open) .trivia-bar { display: none; }
       .trivia-bar {
         display: flex;
         align-items: center;
@@ -7672,18 +8122,29 @@
         border-color: var(--fg-dim);
       }
 
-      /* Sticky close-button row at the top of the Memory Inspector.
-         Sticks inside .g-detail (the scroll container) so the button
-         stays visible when the connections list is scrolled. Negative
-         horizontal margin bleeds it to the panel edges; padding restores
-         the gutter so it lines up with the rest of the panel content. */
-      /* Close button floats in the top-right corner of the panel without
-         consuming vertical space — content starts flush at the top. */
+      /* Close-button row, pinned to the top-right of the Memory Inspector.
+         STICKY (not absolute): as absolute inside the scrolling #g-detail it
+         scrolled with content / got painted over by re-rendered inspector
+         blocks — the button vanished visually while its hit-area lingered
+         ("invisible but still clickable"). Sticky + a high z-index + an opaque
+         button keeps it visible on top no matter what scrolls under it. The
+         row itself passes clicks through (pointer-events:none) so it doesn't
+         block the inspector content beneath it; only the button is clickable. */
       .g-detail-close-row {
-        position: absolute;
-        top: 8px;
-        right: 14px;
-        z-index: 10;
+        position: sticky;
+        top: 0;
+        z-index: 30;
+        display: flex;
+        justify-content: flex-end;
+        padding: 8px 0 2px;
+        margin-bottom: -2px;
+        pointer-events: none;
+      }
+      .g-detail-close-row > .g-panel-close-btn {
+        pointer-events: auto;
+        /* Opaque + a faint shadow so it reads clearly over any content that
+           scrolls beneath the sticky row. */
+        box-shadow: 0 1px 4px color-mix(in srgb, var(--bg) 70%, transparent);
       }
 
       .g-detail {
@@ -8293,10 +8754,48 @@
       /* Activity */
       .activity-toolbar {
         display: flex;
+        flex-direction: column;
+        gap: 10px;
+        margin-bottom: 14px;
+      }
+      .activity-controls-row {
+        display: flex;
         gap: 8px;
         align-items: center;
-        margin-bottom: 12px;
       }
+      .activity-search {
+        flex: 1;
+        min-width: 0;
+        padding: 8px 12px;
+        border-radius: 8px;
+        border: 1px solid var(--border);
+        background: var(--bg);
+        color: var(--fg);
+        font-size: 14px;
+        box-sizing: border-box;
+      }
+      .activity-search:focus {
+        outline: 2px solid var(--accent);
+        outline-offset: -1px;
+        border-color: transparent;
+      }
+      .activity-engram-select {
+        padding: 7px 10px;
+        border-radius: 8px;
+        border: 1px solid var(--border);
+        background: var(--bg-elev);
+        color: var(--fg);
+        font-size: 14px;
+        max-width: 220px;
+      }
+      /* Per-chip count badge appended after the label. */
+      .g-activity-chip .chip-count {
+        margin-left: 6px;
+        font-size: 11px;
+        opacity: 0.65;
+        font-variant-numeric: tabular-nums;
+      }
+      .g-activity-chip.active .chip-count { opacity: 0.9; }
       .activity-toolbar select {
         padding: 5px 8px;
         border-radius: 6px;
@@ -8458,7 +8957,7 @@
              drag-drop overlay so it's never obscured during a drop. -->
         <div id="g-toast-stack" class="g-toast-stack" aria-live="polite" aria-atomic="false">
           <div class="g-toast-panel-header">
-            <span class="g-toast-panel-title">Ingesting files <span id="g-toast-count" class="g-toast-count"></span></span>
+            <span class="g-toast-panel-title"><span id="g-toast-panel-label">Ingesting files</span> <span id="g-toast-count" class="g-toast-count"></span></span>
             <button id="btn-toast-dismiss-all" class="g-toast-dismiss-all">Dismiss all</button>
           </div>
           <div id="g-toast-list" class="g-toast-list"></div>
@@ -8619,14 +9118,49 @@
                 </svg>
               </button>
             </div>
-            <button class="rail-btn active" data-mode="atlas" title="MemoryStudio — check-in, 3D map, and AI-grounded recall">
-              <span class="rail-icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2a4.5 4.5 0 0 0-4.5 4.5v0A3.5 3.5 0 0 0 4 10v1.5A3.5 3.5 0 0 0 7.5 15v3A4 4 0 0 0 12 22"/><path d="M12 2a4.5 4.5 0 0 1 4.5 4.5v0A3.5 3.5 0 0 1 20 10v1.5A3.5 3.5 0 0 1 16.5 15v3A4 4 0 0 1 12 22"/><path d="M12 6v16"/></svg></span>
-              <span class="rail-label">MemoryStudio</span>
+            <button class="rail-btn active" data-mode="atlas" title="Home — your memory at a glance: search, check-in deck, health">
+              <span class="rail-icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 9.5L12 3l9 6.5"/><path d="M5 9v11a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V9"/><path d="M9 21v-7h6v7"/></svg></span>
+              <span class="rail-label">Home</span>
               <span id="rail-corrections-badge" class="rail-badge hidden" title="Pending corrections waiting in the deck">0</span>
+            </button>
+            <button class="rail-btn" data-mode="engram" title="3D Engram — your memory graph, rendered in space">
+              <span class="rail-icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/><polyline points="3.27 6.96 12 12.01 20.73 6.96"/><line x1="12" y1="22.08" x2="12" y2="12"/></svg></span>
+              <span class="rail-label">3D Engram</span>
+              <span></span>
             </button>
             <button class="rail-btn" data-mode="sources" title="Files that fed your memory">
               <span class="rail-icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="8" y1="13" x2="16" y2="13"/><line x1="8" y1="17" x2="13" y2="17"/></svg></span>
               <span class="rail-label">Sources</span>
+              <span></span>
+            </button>
+            <button class="rail-btn" data-mode="skills" title="Skills w/ Goals — train and run your stored procedures (SOPs)">
+              <span class="rail-icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 10L12 5 2 10l10 5 10-5z"/><path d="M6 12v5c0 1 2.7 3 6 3s6-2 6-3v-5"/></svg></span>
+              <span class="rail-label">Skills w/ Goals</span>
+              <span></span>
+            </button>
+            <button class="rail-btn" data-mode="goals" title="Foresight — predict the future from your growing memory (develop · predict · insights)">
+              <span class="rail-icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="M11 7v4l2.5 1.5"/><path d="M20 20l-3.5-3.5"/></svg></span>
+              <span class="rail-label">Foresight</span>
+              <span></span>
+            </button>
+            <button class="rail-btn" data-mode="brainstorm" title="Brainstorming — neural-network &amp; local-LLM exploration of your graph">
+              <span class="rail-icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18h6"/><path d="M10 22h4"/><path d="M12 2a7 7 0 0 0-4 12.7c.5.5.9 1.2.9 1.8h6.2c0-.6.4-1.3.9-1.8A7 7 0 0 0 12 2z"/></svg></span>
+              <span class="rail-label">Brainstorming</span>
+              <span></span>
+            </button>
+            <button class="rail-btn" data-mode="search" title="Search — find any memory across your engrams">
+              <span class="rail-icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg></span>
+              <span class="rail-label">Search</span>
+              <span></span>
+            </button>
+            <button class="rail-btn" data-mode="activity" title="Activity — every change to your memory, who made it, and when">
+              <span class="rail-icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg></span>
+              <span class="rail-label">Activity</span>
+              <span></span>
+            </button>
+            <button class="rail-btn" data-mode="power-tools" title="Manual tools — recall / remember / edit / GNN by hand (your AI usually does this)">
+              <span class="rail-icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14.7 6.3a4 4 0 0 0-5.4 5.4L3 18v3h3l6.3-6.3a4 4 0 0 0 5.4-5.4l-2.6 2.6-2-2 2.6-2.6z"/></svg></span>
+              <span class="rail-label">Manual tools</span>
               <span></span>
             </button>
             <!-- Nodes rail tab removed — its functionality (search,
@@ -8708,51 +9242,11 @@
 
             <!-- GRAPHNOSIS — memory check-in dashboard + 3D atlas -->
             <section class="mode-pane hidden" data-pane="atlas">
-              <!-- Header row: title | cortex picker | search | health gauge.
-                   All four are flex items in a single row so the health box
-                   can be pinned to the same 360px width as the inspector. -->
-              <header class="pane-header g-pane-header">
-                <!-- The "Ghampus / your memory seahorse" identity block that
-                     used to lead this header has been removed: Ghampus now
-                     lives ONLY in the top app bar (the seahorse mark + label
-                     next to the wordmark, which is the click target for the
-                     "Meet Ghampus" modal). Dropping the duplicate here lets the
-                     search box + federated stats (.g-search-wrap, flex:1)
-                     extend all the way to the left edge of the pane. -->
-                <!-- The engram picker that used to live here has moved to
-                     the top app header — visible from every view, smaller
-                     footprint, single source of truth across panes. -->
-                <div class="g-search-wrap" style="display: flex; flex-direction: column; gap: 4px;">
-                  <div style="position: relative;">
-                    <input type="search" id="g-search" placeholder="Look for a memory — ⌘F, ↑↓ to move, Enter to open" />
-                    <button id="g-search-clear" class="g-search-clear hidden" title="Clear search">×</button>
-                  </div>
-                  <div id="g-federated-stats" class="g-federated-stats">
-                    <span id="stat-total-memories">—</span>
-                    <span class="stat-sep">·</span>
-                    <span id="stat-total-sources">—</span>
-                    <span class="stat-sep">·</span>
-                    <span id="stat-total-engrams">—</span>
-                    <span class="stat-sep">·</span>
-                    <span id="stat-avg-trust">avg trust —</span>
-                  </div>
-                </div>
-                <div id="g-health" class="g-health g-health-inline">
-                  <div class="g-health-gauge">
-                    <div id="g-health-grade" class="g-health-grade">—</div>
-                    <div id="g-health-meter" class="g-health-meter">
-                      <div id="g-health-fill" class="g-health-fill"></div>
-                    </div>
-                  </div>
-                  <div class="g-health-meta">
-                    <p id="g-health-phrase" class="g-health-phrase">Loading your memory health…</p>
-                    <p id="g-health-detail" class="g-health-detail subtitle"></p>
-                  </div>
-                  <!-- Active engram name — shown on mobile (where the header
-                       engram picker is hidden) next to the health grade. -->
-                  <span id="g-health-engram" class="g-health-engram"></span>
-                </div>
-              </header>
+              <!-- The shared pane-header (search + federated stats + health gauge)
+                   was dismantled in the Home revamp: search moved to its own rail
+                   destination (body.search-mode reveals the bar + results inside
+                   the checkin pane); health + stats became cards in #home-overview
+                   on the Home dashboard. See the checkin pane below. -->
 
               <!-- Main grid: dashboard/atlas on the left, persistent detail pane right -->
               <div class="g-main">
@@ -8766,6 +9260,216 @@
 
                   <!-- CHECK-IN DASHBOARD (default) -->
                   <section class="g-tab-pane" data-gpane="checkin">
+                    <!-- ── Search bar — visible ONLY in search mode (body.search-mode);
+                         lifted out of the old shared header. Its handlers are all
+                         ID-based (#g-search / #g-search-clear) so nothing rewired. -->
+                    <div id="g-search-bar" class="g-search-bar">
+                      <div class="search-hero-inner">
+                        <!-- Idle-only headline + guidance. CSS hides this once
+                             body loses .search-idle (a query is present). -->
+                        <div class="search-hero-head">
+                          <h2 class="search-hero-title">Search your memory</h2>
+                          <p class="search-hero-sub">Type a few words and matches appear instantly across every engram — ranked by relevance. This is a literal, deterministic search of what you've stored; no AI guessing, nothing leaves your machine.</p>
+                        </div>
+                        <div class="g-search-wrap" style="display: flex; flex-direction: column; gap: 4px;">
+                          <div style="position: relative;">
+                            <input type="search" id="g-search" placeholder="Search your memory — type to recall · ↑↓ to move · Enter to open" />
+                            <button id="g-search-clear" class="g-search-clear hidden" title="Clear search">×</button>
+                          </div>
+                        </div>
+                        <!-- Idle-only tips. Also hidden once typing begins. -->
+                        <div class="search-hero-tips">
+                          <span class="search-hero-tip"><kbd>↑</kbd><kbd>↓</kbd> move</span>
+                          <span class="search-hero-tip"><kbd>Enter</kbd> open · AI synthesis</span>
+                          <span class="search-hero-tip"><kbd>Esc</kbd> clear</span>
+                          <span class="search-hero-tip search-hero-tip-muted">scope to one engram &amp; sort once results show</span>
+                        </div>
+                      </div>
+                    </div>
+
+                    <!-- ── Home overview — visible ONLY on Home (hidden in search/skills
+                         modes). Health gauge + federated stats lifted out of the old
+                         header; the Mission-Control dashboard cards build out below
+                         this in Stage 2d. -->
+                    <div id="home-overview" class="home-overview">
+                      <!-- Hero: time-aware greeting + one CORTEX-WIDE sentence. -->
+                      <div class="home-hero">
+                        <div id="home-greeting" class="home-greeting">Welcome back</div>
+                        <div id="home-pulse" class="home-pulse">Loading your memory…</div>
+                      </div>
+
+                      <!-- Cortex-wide Trust & Vitality + the active engram as a
+                           compact card. Both are grid items in #home-overview
+                           (smaller boxes, not full-width rows). -->
+                        <section class="home-card home-cortex-card">
+                          <div class="home-card-head">
+                            <h3 class="home-card-title">Trust &amp; Vitality</h3>
+                            <span class="home-card-hint">across your whole cortex</span>
+                          </div>
+                          <div class="home-trust-row">
+                            <div class="home-dim home-dim-vitality">
+                              <div class="home-dim-label">Vitality</div>
+                              <div class="home-cortex-ring">
+                                <div id="home-cortex-grade" class="g-health-grade">—</div>
+                                <div class="g-health-meter"><div id="home-cortex-fill" class="g-health-fill"></div></div>
+                              </div>
+                            </div>
+                            <div class="home-dim home-dim-trust">
+                              <div class="home-dim-label">Trust</div>
+                              <ul id="home-trust-factors" class="home-trust-factors"></ul>
+                            </div>
+                          </div>
+                        </section>
+
+                        <section class="home-card home-engram-card">
+                          <div class="home-engram-card-label">Active engram</div>
+                          <div id="home-engram-name" class="home-engram-name">—</div>
+                          <div id="g-health" class="g-health">
+                            <div class="g-health-gauge">
+                              <div id="g-health-grade" class="g-health-grade">—</div>
+                              <div id="g-health-meter" class="g-health-meter">
+                                <div id="g-health-fill" class="g-health-fill"></div>
+                              </div>
+                            </div>
+                            <div class="g-health-meta">
+                              <p id="g-health-phrase" class="g-health-phrase">Loading…</p>
+                              <p id="g-health-detail" class="g-health-detail subtitle"></p>
+                            </div>
+                            <span id="g-health-engram" class="g-health-engram"></span>
+                          </div>
+                        </section>
+
+                      <!-- Memory health — the richer 7-factor retrieval-quality
+                           breakdown (brain:getMemoryHealth), cortex-wide. -->
+                      <section class="home-card home-mhealth-card" id="home-mhealth">
+                        <div class="home-card-head">
+                          <h3 class="home-card-title">Memory health</h3>
+                          <span class="home-card-hint">retrieval quality across every engram</span>
+                        </div>
+                        <div id="home-mhealth-body" class="home-mhealth-body"><div class="home-skel"></div><div class="home-skel w70"></div></div>
+                      </section>
+
+                      <!-- Self-healing — the autonomy + trust signal: duplicates
+                           merged automatically, nothing ever lost. -->
+                      <section class="home-card home-selfheal-card" id="home-selfheal">
+                        <div class="home-card-head">
+                          <h3 class="home-card-title">Self-healing</h3>
+                          <span class="home-card-hint">duplicates merged automatically — nothing is ever lost</span>
+                        </div>
+                        <div id="home-selfheal-body" class="home-selfheal-body"><div class="home-skel"></div><div class="home-skel w70"></div></div>
+                      </section>
+
+                      <!-- Needs you — what's waiting on the user (actionable lane).
+                           Pending corrections · stranded memories · duplicate pairs
+                           · conflicts. Hidden when there's nothing to do. -->
+                      <section class="home-card home-needs-card" id="home-needs" style="display:none">
+                        <div class="home-card-head">
+                          <h3 class="home-card-title">Needs you</h3>
+                          <span class="home-card-hint">a few minutes of tending</span>
+                        </div>
+                        <div id="home-needs-body" class="home-needs-body"></div>
+                      </section>
+
+                      <!-- Stranded memories — its own card so the user always has a
+                           clear, reassuring "you can fix this" action on their memory. -->
+                      <section class="home-card home-stranded-card" id="home-stranded" style="display:none">
+                        <div class="home-card-head">
+                          <h3 class="home-card-title">Stranded memories</h3>
+                          <span class="home-card-hint">memories with no connections yet</span>
+                        </div>
+                        <div id="home-stranded-body" class="home-stranded-body"></div>
+                      </section>
+
+                      <!-- Since you last opened — autonomy digest (op-log diff). -->
+                      <section class="home-card home-digest-card" id="home-digest" style="display:none">
+                        <div class="home-card-head">
+                          <h3 class="home-card-title">Since you last opened</h3>
+                          <span class="home-card-hint" id="home-digest-when"></span>
+                        </div>
+                        <div id="home-digest-body" class="home-digest-body"></div>
+                      </section>
+
+                      <!-- Foresight teaser — the FUTURE dimension (pairs with the
+                           past-looking digest above). Surfaces the top insight +
+                           a door into the Foresight page. LLM-gated. -->
+                      <section class="home-card home-foresight-card" id="home-foresight" style="display:none">
+                        <div class="home-card-head">
+                          <h3 class="home-card-title">Foresight</h3>
+                          <span class="home-card-hint">what's ahead, from your memory</span>
+                        </div>
+                        <div id="home-foresight-body" class="home-foresight-body"></div>
+                      </section>
+
+                      <!-- Recent brain activity — the background loops working while
+                           you're away: cadence + last consolidation. -->
+                      <section class="home-card home-brainact-card" id="home-brainact">
+                        <div class="home-card-head">
+                          <h3 class="home-card-title">Recent brain activity</h3>
+                          <span class="home-card-hint">your second brain, running on its own</span>
+                        </div>
+                        <div id="home-brainact-body" class="home-brainact-body"><div class="home-skel"></div><div class="home-skel w70"></div></div>
+                      </section>
+
+                      <!-- Rediscover — a memory worth a second look (serendipity). -->
+                      <section class="home-card home-rediscover-card" id="home-rediscover" style="display:none">
+                        <div class="home-card-head">
+                          <h3 class="home-card-title">Rediscover</h3>
+                          <span class="home-card-hint">something you haven't revisited</span>
+                        </div>
+                        <div id="home-rediscover-body" class="home-rediscover-body"></div>
+                      </section>
+
+                      <!-- Growth — memories added per day over the last 30 days
+                           (op-log, bounded via activity.list since). -->
+                      <section class="home-card home-growth-card" id="home-growth" style="display:none">
+                        <div class="home-card-head">
+                          <h3 class="home-card-title">Growth</h3>
+                          <span class="home-card-hint" id="home-growth-when">last 30 days</span>
+                        </div>
+                        <div id="home-growth-body" class="home-growth-body"></div>
+                      </section>
+
+                      <!-- On-Premise — sovereignty/egress ledger. HONEST: shows what
+                           is verifiable client-side (cortex location, local LLM,
+                           connected AI clients + cloud/local posture, connectors as
+                           inbound). Absolute "nothing leaves" claims wait on the
+                           network egress audit (task #24). -->
+                      <section class="home-card home-onprem-card" id="home-onprem">
+                        <div class="home-card-head">
+                          <h3 class="home-card-title">On-Premise</h3>
+                          <span class="home-card-hint">where your memory lives &amp; what leaves</span>
+                        </div>
+                        <div id="home-onprem-body" class="home-onprem-body"></div>
+                      </section>
+
+                      <!-- Disabled by IT — governance transparency. Only shown when
+                           a connector or AI client is blocked by policy. Placed near
+                           the end so hiding it (the common case) never reflows the
+                           cards above. -->
+                      <section class="home-card home-policy-card" id="home-policy" style="display:none">
+                        <div class="home-card-head">
+                          <h3 class="home-card-title" id="home-policy-title">Disabled by policy</h3>
+                          <span class="home-card-hint" id="home-policy-source"></span>
+                        </div>
+                        <div id="home-policy-body" class="home-policy-body"></div>
+                      </section>
+
+                      <!-- Breakdown (the dive): per-engram vitality bars. Bars
+                           collapse to a top-N with a "show all" toggle. -->
+                      <section class="home-card home-breakdown-card">
+                        <div id="home-engram-bars" class="home-engram-bars"></div>
+                        <div id="g-federated-stats" class="g-federated-stats">
+                          <span id="stat-total-memories">—</span>
+                          <span class="stat-sep">·</span>
+                          <span id="stat-total-sources">—</span>
+                          <span class="stat-sep">·</span>
+                          <span id="stat-total-engrams">—</span>
+                          <span class="stat-sep">·</span>
+                          <span id="stat-avg-trust">avg trust —</span>
+                        </div>
+                      </section>
+                    </div>
+
                     <!-- Search results take over when there's an active query;
                          hidden otherwise so the dashboard owns the surface. -->
                     <div id="g-search-results" class="g-search-results hidden">
@@ -8810,6 +9514,21 @@
 
                       <div id="studio-workspace" class="studio-workspace">
 
+                        <!-- Power-tools drawer — the manual recall/remember/edit/GNN
+                             surface. Collapsed by default: these operations are what
+                             your AI client already does for you via MCP; this is the
+                             manual fallback. The Skills rail destination reuses the
+                             skills sub-pane below by force-opening this drawer and
+                             hiding its chrome (body.skills-studio-mode, see CSS). -->
+                        <div id="studio-power-tools" class="power-tools collapsed">
+                          <button type="button" id="power-tools-toggle" class="power-tools-header" aria-expanded="false" title="Manual memory tools — your AI usually does these for you">
+                            <span class="power-tools-icon" aria-hidden="true">🛠</span>
+                            <span class="power-tools-title">Manual tools</span>
+                            <span class="power-tools-hint">manual fallback — your AI client does this for you</span>
+                            <span class="power-tools-chevron" aria-hidden="true">▾</span>
+                          </button>
+                          <div id="power-tools-body" class="power-tools-body">
+
                         <div id="studio-banner" class="studio-banner">
                           <span class="studio-banner-text">🧠 <strong>MemoryStudio.</strong>
                             Interact with your memory the way your AI client does — full subgraph
@@ -8833,7 +9552,8 @@
 
                         <!-- Tool chip navigation -->
                         <div class="studio-chips">
-                          <button class="studio-chip" data-tool="skills">Skills w/ Goals</button>
+                          <!-- "Skills w/ Goals" chip removed — Skills is now a
+                               first-class rail destination (data-mode="skills"). -->
                           <button class="studio-chip" data-tool="recall">Recall</button>
                           <button class="studio-chip" data-tool="dig-deeper">Dig Deeper</button>
                           <button class="studio-chip active" data-tool="remember">Remember</button>
@@ -9403,6 +10123,8 @@
                              buttons (and Remember's duplicate list, etc.)
                              to land behind the drawer. Height matches the
                              drawer overlay + a comfortable visual buffer. -->
+                          </div><!-- /power-tools-body -->
+                        </div><!-- /studio-power-tools -->
                         <div class="studio-bottom-spacer" aria-hidden="true"></div>
                       </div><!-- /studio-workspace -->
                     </div><!-- /studio-section -->
@@ -9571,11 +10293,13 @@
                         </div>
                       </div>
 
-                      <div class="lb-section">
-                        <p class="lb-section-title">Goals &amp; Strategic Thinking</p>
+                      <div class="lb-section lb-section-goals">
+                        <p class="lb-section-title">Foresight</p>
                         <p class="brain-subtitle">
-                          Strategic plans Graphnosis is tracking for you, with deadline awareness.
+                          Your goals, projected forward by your growing memory — predict what's
+                          ahead, surface risks &amp; opportunities, and see the patterns the brain found.
                         </p>
+                        <p class="foresight-lane-label">Your goals</p>
                         <div id="lb-goals" class="lb-block"></div>
                         <div id="lb-goal-form" class="lb-goal-form hidden">
                           <input id="lb-goal-context" type="text"
@@ -9590,6 +10314,30 @@
                           </div>
                         </div>
                         <button id="btn-new-goal" class="btn-sm">+ Develop a new goal…</button>
+
+                        <!-- ── Foresight lanes (LLM-grounded) — Predict + Insights.
+                             Gated on the local LLM; goals above always work. -->
+                        <div id="foresight-llm-gate" class="foresight-gate hidden">
+                          <p class="brain-subtitle" style="margin:0 0 8px;">Turn on the <strong>Local LLM</strong> to unlock Foresight — predictions, risks, and insights grounded in your memory, computed on-device.</p>
+                          <button id="btn-foresight-llm" class="btn-sm">Set up Local LLM →</button>
+                        </div>
+                        <div id="foresight-body" class="foresight-body">
+                          <div class="foresight-lane">
+                            <p class="foresight-lane-label">Predict</p>
+                            <p class="brain-subtitle" style="margin:-2px 0 8px;">Before you act, see the risks &amp; opportunities your memory implies.</p>
+                            <div class="foresight-predict-row">
+                              <input id="foresight-predict-input" type="text" placeholder="What are you about to do? (e.g. launch in Romania)" />
+                              <button id="btn-foresight-predict" class="btn-sm primary">Predict</button>
+                            </div>
+                            <div id="foresight-predict-out" class="foresight-out"></div>
+                          </div>
+                          <div class="foresight-lane">
+                            <p class="foresight-lane-label">Insights</p>
+                            <p class="brain-subtitle" style="margin:-2px 0 8px;">Patterns &amp; gaps the brain surfaced across your memory.</p>
+                            <div id="foresight-insights" class="foresight-out"></div>
+                          </div>
+                        </div>
+
                         <div class="lb-mcp-tools-hint">
                           <p class="lb-mcp-tools-title">Available via AI clients (Claude, Cursor…)</p>
                           <div class="lb-mcp-tool-row">
@@ -9958,16 +10706,21 @@ ollama list</code></pre>
                 <p class="brain-subtitle">your episodic timeline — every memory event, in order</p>
               </header>
               <div class="activity-toolbar">
-                <select id="activity-filter-kind">
-                  <option value="all">All events</option>
-                  <option value="ingestSource">Ingests</option>
-                  <option value="forgetSource">Forgets</option>
-                  <option value="editNode">Edits</option>
-                  <option value="supersede">Supersedes</option>
-                  <option value="addNode">Node adds</option>
-                  <option value="deleteNode">Node deletes</option>
-                </select>
-                <button id="btn-activity-refresh">Refresh</button>
+                <div class="activity-controls-row">
+                  <input id="activity-search" type="search" class="activity-search" placeholder="Filter events — file name, engram, reason…" autocomplete="off" />
+                  <select id="activity-engram-select" class="activity-engram-select" aria-label="Scope to one engram">
+                    <option value="">All engrams</option>
+                  </select>
+                  <button id="btn-activity-refresh" class="btn-sm" title="Reload the most recent events">↻ Refresh</button>
+                </div>
+                <div class="g-activity-filters" id="activity-chips" role="group" aria-label="Filter by event type">
+                  <button class="g-activity-chip active" data-cat="all">All</button>
+                  <button class="g-activity-chip" data-cat="add">Added</button>
+                  <button class="g-activity-chip" data-cat="edit">Edited</button>
+                  <button class="g-activity-chip" data-cat="connect">Connections</button>
+                  <button class="g-activity-chip" data-cat="merge">Merged</button>
+                  <button class="g-activity-chip" data-cat="remove">Removed</button>
+                </div>
                 <span id="activity-stats" class="subtitle"></span>
               </div>
               <div id="activity-list" class="activity-list">
@@ -10168,6 +10921,18 @@ ollama list</code></pre>
                   <span>minutes</span>
                   <span class="connectors-interval-note">Local folders also sync instantly on change.</span>
                 </div>
+              </div>
+              <!-- Access control: which connector kinds + AI clients are allowed
+                   to touch this cortex. Enforced in the sidecar. Editable when the
+                   sidecar is yours (you're admin); read-only when IT manages it. -->
+              <div class="panel" id="settings-panel-policy">
+                <p class="panel-title">Access control</p>
+                <p class="subtitle" style="font-size: 15px; margin: -4px 0 10px;">
+                  Block connector kinds or AI clients from reaching this cortex.
+                  Enforced in the sidecar — a blocked item can't read or write your
+                  memory, no matter what the app shows.
+                </p>
+                <div id="settings-policy-body" aria-live="polite"></div>
               </div>
               <div class="panel">
                 <p class="panel-title">Cortex tools</p>
@@ -11898,22 +12663,11 @@ ollama list</code></pre>
 
     <!-- Mobile bottom navigation — hidden on desktop via mobile.css media query -->
     <nav class="mobile-bottom-nav" aria-label="Main navigation">
-      <button class="mobile-nav-btn active" data-mode="atlas" aria-label="Memory Studio">
+      <button class="mobile-nav-btn active" data-mode="atlas" aria-label="Home">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-          <path d="M9 3a3 3 0 0 0-3 3 3 3 0 0 0-1 5.8A3 3 0 0 0 7 17a2.5 2.5 0 0 0 5 .5V5a2 2 0 0 0-2-2z"/>
-          <path d="M15 3a3 3 0 0 1 3 3 3 3 0 0 1 1 5.8A3 3 0 0 1 17 17a2.5 2.5 0 0 1-5 .5"/>
+          <path d="M3 9.5L12 3l9 6.5"/><path d="M5 9v11a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V9"/><path d="M9 21v-7h6v7"/>
         </svg>
-        <span class="mobile-nav-label">Memory</span>
-      </button>
-      <button class="mobile-nav-btn" data-mode="sources" aria-label="Sources">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-          <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
-          <polyline points="14 2 14 8 20 8"/>
-          <line x1="16" y1="13" x2="8" y2="13"/>
-          <line x1="16" y1="17" x2="8" y2="17"/>
-          <polyline points="10 9 9 9 8 9"/>
-        </svg>
-        <span class="mobile-nav-label">Sources</span>
+        <span class="mobile-nav-label">Home</span>
       </button>
       <button class="mobile-nav-btn" data-mode="mcp-tools" aria-label="MCP Tools">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
@@ -11922,20 +12676,36 @@ ollama list</code></pre>
         </svg>
         <span class="mobile-nav-label">MCP</span>
       </button>
-      <button class="mobile-nav-btn" data-mode="status" aria-label="Status">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-          <path d="M3 12h3.5l2.5 7 4-14 2.5 7H21"/>
+      <button class="mobile-nav-btn" data-mode="skills" aria-label="Skills">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M22 10L12 5 2 10l10 5 10-5z"/><path d="M6 12v5c0 1 2.7 3 6 3s6-2 6-3v-5"/>
         </svg>
-        <span class="mobile-nav-label">Status</span>
+        <span class="mobile-nav-label">Skills</span>
       </button>
-      <button class="mobile-nav-btn" data-mode="settings" aria-label="Settings">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-          <circle cx="12" cy="12" r="3"/>
-          <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+      <button class="mobile-nav-btn" id="mobile-more-btn" data-nav="more" aria-label="More destinations" aria-expanded="false" aria-haspopup="true">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <circle cx="5" cy="12" r="1.4"/><circle cx="12" cy="12" r="1.4"/><circle cx="19" cy="12" r="1.4"/>
         </svg>
-        <span class="mobile-nav-label">Settings</span>
+        <span class="mobile-nav-label">More</span>
       </button>
     </nav>
+
+    <!-- "More" bottom sheet — overflow rail destinations that don't fit the
+         4-slot mobile bar. Opened by the More nav button; body.mobile-more-open
+         drives the slide-up (mobile.css). Each item routes through activateMode. -->
+    <div id="mobile-more-sheet" class="mobile-more-sheet" aria-hidden="true">
+      <div class="mobile-more-backdrop" data-more-close></div>
+      <div class="mobile-more-panel" role="dialog" aria-label="More destinations">
+        <div class="mobile-more-grip" aria-hidden="true"></div>
+        <button class="mobile-more-item" data-mode="engram">3D Engram</button>
+        <button class="mobile-more-item" data-mode="sources">Sources</button>
+        <button class="mobile-more-item" data-mode="activity">Activity</button>
+        <button class="mobile-more-item" data-mode="goals">Foresight</button>
+        <button class="mobile-more-item" data-mode="brainstorm">Brainstorming</button>
+        <button class="mobile-more-item" data-mode="status">Status</button>
+        <button class="mobile-more-item" data-mode="settings">Settings</button>
+      </div>
+    </div>
 
     <!-- Rotate-to-portrait gate — shown only on phone-sized devices in
          landscape (CSS media query). The web can't force device orientation,

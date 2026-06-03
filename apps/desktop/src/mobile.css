@@ -189,6 +189,66 @@ body.browser-auto-unlock #view-unlock .forgot-passphrase-link {
   line-height: 1;
 }
 
+/* ── "More" bottom sheet ─────────────────────────────────────────────────────
+   Overflow rail destinations that don't fit the 4-slot bar. Hidden until
+   body.mobile-more-open (set by the More nav button). Slides up over the bar;
+   tap an item or the backdrop to dismiss. */
+.mobile-more-sheet { display: none; }
+body.mobile-more-open .mobile-more-sheet {
+  display: block;
+  position: fixed;
+  inset: 0;
+  z-index: 300;
+}
+.mobile-more-backdrop {
+  position: absolute;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.45);
+}
+.mobile-more-panel {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: var(--bg-elev, #fff);
+  border-top: 1px solid var(--border, #e2e8f0);
+  border-radius: 16px 16px 0 0;
+  padding: 6px 12px calc(16px + env(safe-area-inset-bottom, 0px));
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  box-shadow: 0 -8px 30px rgba(0, 0, 0, 0.28);
+  animation: mobile-more-up 0.22s ease;
+}
+@keyframes mobile-more-up {
+  from { transform: translateY(100%); }
+  to   { transform: translateY(0); }
+}
+.mobile-more-grip {
+  width: 36px;
+  height: 4px;
+  border-radius: 2px;
+  background: var(--border, #cbd5e1);
+  margin: 4px auto 10px;
+  flex-shrink: 0;
+}
+.mobile-more-item {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  padding: 14px 12px;
+  background: none;
+  border: none;
+  border-radius: 10px;
+  color: var(--fg, #0f172a);
+  font-size: 15px;
+  font-weight: 600;
+  text-align: left;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+.mobile-more-item:active { background: color-mix(in srgb, var(--fg, #000) 8%, transparent); }
+
 /* ── Mobile layout ─────────────────────────────────────────────────────────
    Phones (≤768px, any orientation) AND tablets in PORTRAIT (≤1024px portrait —
    covers iPad Mini/Air/Pro held upright). Tablet LANDSCAPE keeps the desktop
