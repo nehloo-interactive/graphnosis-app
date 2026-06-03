@@ -2,8 +2,43 @@ import http from 'node:http';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
+import {
+  generateRegistrationOptions,
+  verifyRegistrationResponse,
+  generateAuthenticationOptions,
+  verifyAuthenticationResponse,
+} from '@simplewebauthn/server';
 import { dispatch, type IpcDeps } from './ipc.js';
 import type { RawFrame } from './events.js';
+
+/**
+ * Derive the WebAuthn relying-party ID + expected origin from the request.
+ * WebAuthn requires a SECURE CONTEXT — https (e.g. via Tailscale Serve, which
+ * sets x-forwarded-proto) or localhost. Plain http to a non-localhost host
+ * (http://100.x:3456) is NOT a secure context, so biometric unlock isn't
+ * offered there and the token stays the only path. Returns null when insecure.
+ */
+function deriveRp(req: http.IncomingMessage): { rpID: string; origin: string } | null {
+  const hostHeader = (req.headers['host'] as string | undefined) ?? '';
+  if (!hostHeader) return null;
+  const hostname = hostHeader.split(':')[0] ?? '';
+  const isLocal = hostname === 'localhost' || hostname === '127.0.0.1';
+  const xfproto = (req.headers['x-forwarded-proto'] as string | undefined) ?? '';
+  const https = xfproto === 'https';
+  if (!https && !isLocal) return null; // insecure context — no WebAuthn
+  const scheme = https ? 'https' : 'http';
+  return { rpID: hostname, origin: `${scheme}://${hostHeader}` };
+}
+
+/** A short-lived WebAuthn challenge. */
+interface PendingChallenge { challenge: string; expiresAt: number; }
+const CHALLENGE_TTL_MS = 5 * 60 * 1000;
+
+/** The authenticator-transport union (`AuthenticatorTransportFuture[]`), derived
+ *  from the library's own option types since it doesn't export the name in a way
+ *  we can import here. Our store keeps transports as plain string[]; cast through
+ *  this when handing them back to the library. */
+type WebAuthnTransports = NonNullable<NonNullable<Parameters<typeof generateRegistrationOptions>[0]['excludeCredentials']>[number]['transports']>;
 
 export interface HttpUiOptions {
   deps: IpcDeps;
@@ -163,12 +198,24 @@ function servePlaceholder(res: http.ServerResponse): void {
  */
 export async function startHttpUiServer(opts: HttpUiOptions): Promise<http.Server> {
   const sessions = new Map<string, Session>();
+  // WebAuthn challenges (A8). Registration is keyed by the requesting session
+  // token; authentication by a server-issued challengeId returned to the client.
+  const regChallenges = new Map<string, PendingChallenge>();
+  const authChallenges = new Map<string, PendingChallenge>();
+
+  const mintSession = (): string => {
+    const t = randomUUID();
+    sessions.set(t, { expiresAt: Date.now() + SESSION_TTL_MS });
+    return t;
+  };
 
   const pruneTimer = setInterval(() => {
     const now = Date.now();
     for (const [t, s] of sessions) {
       if (s.expiresAt < now) sessions.delete(t);
     }
+    for (const [k, c] of regChallenges) if (c.expiresAt < now) regChallenges.delete(k);
+    for (const [k, c] of authChallenges) if (c.expiresAt < now) authChallenges.delete(k);
   }, 60 * 60 * 1000).unref();
 
   const checkSession = (req: http.IncomingMessage): boolean => {
@@ -202,11 +249,132 @@ export async function startHttpUiServer(opts: HttpUiOptions): Promise<http.Serve
         res.end(JSON.stringify({ error: 'Invalid token' }));
         return;
       }
-      const sessionToken = randomUUID();
-      sessions.set(sessionToken, { expiresAt: Date.now() + SESSION_TTL_MS });
       res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ token: sessionToken }));
+      res.end(JSON.stringify({ token: mintSession() }));
       return;
+    }
+
+    // ── WebAuthn (A8 — biometric / security-key unlock) ──────────────────
+    const sendJson = (code: number, obj: unknown): void => {
+      res.writeHead(code, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(obj));
+    };
+
+    // GET /api/webauthn/status — does this context support WebAuthn + how many
+    // credentials are registered? Drives whether the UI shows the biometric
+    // button. Unauthenticated (no secrets revealed).
+    if (req.method === 'GET' && urlPath === '/api/webauthn/status') {
+      const rp = deriveRp(req);
+      const creds = await opts.deps.host.webauthnCredentials.list();
+      return sendJson(200, { available: rp !== null, registered: creds.length });
+    }
+
+    // POST /api/webauthn/register/options — AUTHED. Begin registering this
+    // device. Returns creation options; challenge stored against the session.
+    if (req.method === 'POST' && urlPath === '/api/webauthn/register/options') {
+      if (!checkSession(req)) { rejectUnauthorized(res); return; }
+      const rp = deriveRp(req);
+      if (!rp) return sendJson(400, { error: 'WebAuthn needs a secure context (https or localhost).' });
+      const existing = await opts.deps.host.webauthnCredentials.loadAll();
+      const options = await generateRegistrationOptions({
+        rpName: 'Graphnosis',
+        rpID: rp.rpID,
+        userName: 'graphnosis',
+        userID: new TextEncoder().encode('graphnosis-user'),
+        attestationType: 'none',
+        excludeCredentials: existing.map((c) => ({ id: c.id, ...(c.transports ? { transports: c.transports as WebAuthnTransports } : {}) })),
+        authenticatorSelection: { residentKey: 'preferred', userVerification: 'preferred' },
+      });
+      const sessionToken = (req.headers['authorization'] as string).slice(7);
+      regChallenges.set(sessionToken, { challenge: options.challenge, expiresAt: Date.now() + CHALLENGE_TTL_MS });
+      return sendJson(200, options);
+    }
+
+    // POST /api/webauthn/register/verify — AUTHED. Verify attestation + store
+    // the credential. Body: { response, label }.
+    if (req.method === 'POST' && urlPath === '/api/webauthn/register/verify') {
+      if (!checkSession(req)) { rejectUnauthorized(res); return; }
+      const rp = deriveRp(req);
+      if (!rp) return sendJson(400, { error: 'WebAuthn needs a secure context.' });
+      let body: { response?: unknown; label?: string };
+      try { body = (await readJsonBody(req)) as typeof body; } catch { return sendJson(400, { error: 'Invalid JSON' }); }
+      const sessionToken = (req.headers['authorization'] as string).slice(7);
+      const pending = regChallenges.get(sessionToken);
+      if (!pending || pending.expiresAt < Date.now()) return sendJson(400, { error: 'Registration challenge expired — try again.' });
+      try {
+        const verification = await verifyRegistrationResponse({
+          response: body.response as Parameters<typeof verifyRegistrationResponse>[0]['response'],
+          expectedChallenge: pending.challenge,
+          expectedOrigin: rp.origin,
+          expectedRPID: rp.rpID,
+        });
+        regChallenges.delete(sessionToken);
+        if (!verification.verified || !verification.registrationInfo) return sendJson(400, { error: 'Registration could not be verified.' });
+        const c = verification.registrationInfo.credential;
+        await opts.deps.host.webauthnCredentials.add({
+          id: c.id,
+          publicKey: Buffer.from(c.publicKey).toString('base64url'),
+          counter: c.counter,
+          ...(c.transports ? { transports: c.transports } : {}),
+          label: (body.label && String(body.label).slice(0, 60)) || 'This device',
+          createdAt: Date.now(),
+        });
+        return sendJson(200, { verified: true });
+      } catch (e) {
+        return sendJson(400, { error: e instanceof Error ? e.message : 'Registration failed' });
+      }
+    }
+
+    // POST /api/webauthn/auth/options — UNAUTHED (it's the login). Returns
+    // request options + a challengeId the client echoes back on verify.
+    if (req.method === 'POST' && urlPath === '/api/webauthn/auth/options') {
+      const rp = deriveRp(req);
+      if (!rp) return sendJson(400, { error: 'WebAuthn needs a secure context.' });
+      const creds = await opts.deps.host.webauthnCredentials.loadAll();
+      if (creds.length === 0) return sendJson(400, { error: 'No registered devices.' });
+      const options = await generateAuthenticationOptions({
+        rpID: rp.rpID,
+        allowCredentials: creds.map((c) => ({ id: c.id, ...(c.transports ? { transports: c.transports as WebAuthnTransports } : {}) })),
+        userVerification: 'preferred',
+      });
+      const challengeId = randomUUID();
+      authChallenges.set(challengeId, { challenge: options.challenge, expiresAt: Date.now() + CHALLENGE_TTL_MS });
+      return sendJson(200, { challengeId, options });
+    }
+
+    // POST /api/webauthn/auth/verify — UNAUTHED. Verify the assertion; on
+    // success mint a session bearer token (same as /api/unlock).
+    // Body: { challengeId, response }.
+    if (req.method === 'POST' && urlPath === '/api/webauthn/auth/verify') {
+      const rp = deriveRp(req);
+      if (!rp) return sendJson(400, { error: 'WebAuthn needs a secure context.' });
+      let body: { challengeId?: string; response?: { id?: string } };
+      try { body = (await readJsonBody(req)) as typeof body; } catch { return sendJson(400, { error: 'Invalid JSON' }); }
+      const pending = body.challengeId ? authChallenges.get(body.challengeId) : undefined;
+      if (!pending || pending.expiresAt < Date.now()) return sendJson(400, { error: 'Authentication challenge expired — try again.' });
+      const credId = body.response?.id;
+      const stored = credId ? await opts.deps.host.webauthnCredentials.getById(credId) : null;
+      if (!stored) return sendJson(400, { error: 'Unknown credential.' });
+      try {
+        const verification = await verifyAuthenticationResponse({
+          response: body.response as Parameters<typeof verifyAuthenticationResponse>[0]['response'],
+          expectedChallenge: pending.challenge,
+          expectedOrigin: rp.origin,
+          expectedRPID: rp.rpID,
+          credential: {
+            id: stored.id,
+            publicKey: new Uint8Array(Buffer.from(stored.publicKey, 'base64url')),
+            counter: stored.counter,
+            ...(stored.transports ? { transports: stored.transports as WebAuthnTransports } : {}),
+          },
+        });
+        authChallenges.delete(body.challengeId!);
+        if (!verification.verified) return sendJson(401, { error: 'Authentication failed.' });
+        await opts.deps.host.webauthnCredentials.updateCounter(stored.id, verification.authenticationInfo.newCounter);
+        return sendJson(200, { token: mintSession() });
+      } catch (e) {
+        return sendJson(400, { error: e instanceof Error ? e.message : 'Authentication failed' });
+      }
     }
 
     // ── GET /api/events — SSE ────────────────────────────────────────────
