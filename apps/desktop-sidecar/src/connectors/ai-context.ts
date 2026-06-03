@@ -44,7 +44,12 @@ export class AiContextConnector implements Connector {
     return configured;
   }
 
-  async pull(since?: Date): Promise<ConnectorEvent[]> {
+  /** The project / home directories the manager watches for live changes. */
+  watchPaths(): string[] {
+    return this.paths;
+  }
+
+  async pull(since?: Date, limit?: number): Promise<ConnectorEvent[]> {
     const sinceMs = since?.getTime() ?? 0;
     const events: ConnectorEvent[] = [];
 
@@ -70,7 +75,10 @@ export class AiContextConnector implements Connector {
       }
     }
 
-    return events;
+    // Oldest-first so a capped pull advances the cursor correctly (matches the
+    // markdown connectors). Then honor the per-pull limit.
+    events.sort((a, b) => (a.mtimeMs ?? 0) - (b.mtimeMs ?? 0));
+    return limit ? events.slice(0, limit) : events;
   }
 
   private async tryIngest(
@@ -90,6 +98,7 @@ export class AiContextConnector implements Connector {
         text: `# ${relativePath}\n_Project: ${projectRoot}_\n\n${content}`,
         sourceRef: `ai-context:${this.config.id}:${filePath}`,
         label,
+        mtimeMs: s.mtimeMs,
       };
     } catch {
       return null;
