@@ -8,6 +8,8 @@
  * call sites are unchanged between the two modes.
  */
 
+import { startRegistration, startAuthentication } from '@simplewebauthn/browser';
+
 // ── Environment detection ────────────────────────────────────────────────────
 
 export const IS_TAURI: boolean =
@@ -33,6 +35,55 @@ export function getBrowserSession(): string | null {
 export function clearBrowserSession(): void {
   _sessionToken = null;
   sessionStorage.removeItem(SESSION_KEY);
+}
+
+// ── WebAuthn (A8 — biometric / security-key unlock, browser mode) ─────────────
+
+export interface WebAuthnStatus { available: boolean; registered: number; }
+
+/** Whether biometric unlock is usable in this context (secure context required)
+ *  and how many devices are registered. Drives the lock-screen affordance. */
+export async function webauthnStatus(): Promise<WebAuthnStatus> {
+  try {
+    const res = await fetch('/api/webauthn/status');
+    if (!res.ok) return { available: false, registered: 0 };
+    return await res.json() as WebAuthnStatus;
+  } catch { return { available: false, registered: 0 }; }
+}
+
+/** Authenticate with a registered device, mint + store a session. On success
+ *  the caller proceeds exactly as after a token unlock. */
+export async function webauthnAuthenticate(): Promise<void> {
+  const optRes = await fetch('/api/webauthn/auth/options', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}',
+  });
+  const opt = await optRes.json() as { challengeId?: string; options?: unknown; error?: string };
+  if (!optRes.ok || !opt.challengeId || !opt.options) throw new Error(opt.error ?? 'Could not start biometric unlock.');
+  const assertion = await startAuthentication({ optionsJSON: opt.options as Parameters<typeof startAuthentication>[0]['optionsJSON'] });
+  const verRes = await fetch('/api/webauthn/auth/verify', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ challengeId: opt.challengeId, response: assertion }),
+  });
+  const ver = await verRes.json() as { token?: string; error?: string };
+  if (!verRes.ok || !ver.token) throw new Error(ver.error ?? 'Biometric unlock failed.');
+  setBrowserSession(ver.token);
+  startSse();
+}
+
+/** Register THIS device for biometric unlock. Requires an active session. */
+export async function webauthnRegister(label: string): Promise<void> {
+  const token = getBrowserSession();
+  if (!token) throw new Error('Unlock first, then set up biometric unlock.');
+  const headers = { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` };
+  const optRes = await fetch('/api/webauthn/register/options', { method: 'POST', headers, body: '{}' });
+  const opt = await optRes.json() as Record<string, unknown> & { error?: string };
+  if (!optRes.ok) throw new Error(opt.error ?? 'Could not start registration.');
+  const attestation = await startRegistration({ optionsJSON: opt as Parameters<typeof startRegistration>[0]['optionsJSON'] });
+  const verRes = await fetch('/api/webauthn/register/verify', {
+    method: 'POST', headers, body: JSON.stringify({ response: attestation, label }),
+  });
+  const ver = await verRes.json() as { verified?: boolean; error?: string };
+  if (!verRes.ok || !ver.verified) throw new Error(ver.error ?? 'Registration failed.');
 }
 
 // ── Command → sidecar IPC method translation ─────────────────────────────────
