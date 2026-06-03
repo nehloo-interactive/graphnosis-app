@@ -62,6 +62,14 @@ export interface Connector {
   watchPaths?(): string[];
 
   /**
+   * The sourceRefs of EVERY file the connector currently sees on disk (not just
+   * the modified-since set `pull` returns). Used only in opt-in mirror mode to
+   * detect deletions: any previously-ingested sourceRef absent from this set
+   * had its file removed, so the manager prunes it. File-backed connectors only.
+   */
+  listCurrentSourceRefs?(): Promise<string[]>;
+
+  /**
    * Handle an inbound webhook POST body. Called by the manager's HTTP
    * server when a request arrives at `/webhook/<connectorId>/<token>`.
    * Optional — pull-only connectors omit this.

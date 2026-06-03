@@ -36,6 +36,12 @@ export class GBrainConnector implements Connector {
     return [this.repoPath];
   }
 
+  /** sourceRefs of every .md file currently on disk (for mirror-mode pruning). */
+  async listCurrentSourceRefs(): Promise<string[]> {
+    const files = await collectFilesNewerThan(this.repoPath, 0, { ext: '.md', skipDirs: ['.git'] });
+    return files.map((f) => `gbrain:${this.config.id}:${path.relative(this.repoPath, f.path)}`);
+  }
+
   async pull(since?: Date, limit?: number): Promise<ConnectorEvent[]> {
     const sinceMs = since?.getTime() ?? 0;
     const cap = limit ?? this.maxFiles;

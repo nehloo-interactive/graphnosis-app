@@ -312,6 +312,8 @@ export class ConnectorManager {
         // Yield so UI IPC stays responsive between batches.
         await new Promise<void>(resolve => setImmediate(resolve));
       }
+      // Mirror mode (opt-in): prune sources whose files were deleted on disk.
+      await this.pruneMirroredDeletes(cfg, rc);
       await this.updateConnectorState(cfg.id, { lastError: undefined });
       return total;
     } catch (err) {
@@ -332,22 +334,60 @@ export class ConnectorManager {
 
   private async ingestEvents(cfg: ConnectorConfig, events: ConnectorEvent[]): Promise<number> {
     if (events.length === 0) return 0;
+    const mirror = cfg.options['mirrorDeletes'] === true;
     let count = 0;
     for (const ev of events) {
       try {
-        await withEmbedding(() =>
+        const rec = await withEmbedding(() =>
           ingestClip(this.host, cfg.graphId, ev.text, ev.label, {
             addedBy: `connector:${cfg.kind}`,
             sourceKind: ev.sourceKind ?? 'clip',
             triggeredBy: `connector:${cfg.kind}`,
           }),
         );
+        // Mirror mode: track file → source so we can prune on delete, and
+        // replace (not duplicate) when a file is modified and re-ingested.
+        if (mirror && ev.sourceRef && rec?.sourceId) {
+          const prev = await this.host.connectorFileMap.get(ev.sourceRef);
+          if (prev && prev !== rec.sourceId) {
+            try { await this.host.forgetSource(cfg.graphId, prev, { triggeredBy: 'connector:mirror-replace' }); }
+            catch { /* old source already gone — fine */ }
+          }
+          await this.host.connectorFileMap.set(ev.sourceRef, rec.sourceId);
+        }
         count++;
       } catch (err) {
         console.error(`[connector:${cfg.id}] ingest failed for ${ev.sourceRef}: ${(err as Error).message}`);
       }
     }
     return count;
+  }
+
+  /**
+   * Mirror mode (opt-in): forget any source whose backing file the connector no
+   * longer sees on disk. Off by default — connectors are additive, so a deleted
+   * file leaves its memory in the cortex unless the user enabled mirrorDeletes.
+   */
+  private async pruneMirroredDeletes(cfg: ConnectorConfig, rc: RunningConnector): Promise<number> {
+    if (cfg.options['mirrorDeletes'] !== true) return 0;
+    if (typeof rc.connector.listCurrentSourceRefs !== 'function') return 0;
+    const prefix = `${cfg.kind}:${cfg.id}:`;
+    const mapped = await this.host.connectorFileMap.entriesForPrefix(prefix);
+    if (mapped.length === 0) return 0;
+    const current = new Set(await rc.connector.listCurrentSourceRefs());
+    let pruned = 0;
+    for (const [sourceRef, sourceId] of mapped) {
+      if (current.has(sourceRef)) continue; // file still there
+      try {
+        await this.host.forgetSource(cfg.graphId, sourceId, { triggeredBy: 'connector:mirror-prune' });
+        await this.host.connectorFileMap.delete(sourceRef);
+        pruned++;
+      } catch (e) {
+        console.error(`[connector:${cfg.id}] mirror-prune failed for ${sourceRef}: ${(e as Error).message}`);
+      }
+    }
+    if (pruned > 0) console.error(`[connector:${cfg.id}] mirror mode: pruned ${pruned} deleted file(s).`);
+    return pruned;
   }
 
   private async startWebhookServerIfNeeded(): Promise<void> {
