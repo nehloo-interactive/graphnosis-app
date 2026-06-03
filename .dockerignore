@@ -1,0 +1,23 @@
+# Rebuilt inside the image — never ship the host's (macOS) copies.
+node_modules
+**/node_modules
+**/dist
+apps/desktop/src-tauri/target
+apps/desktop/src-tauri/binaries
+
+# VCS / editor / agent state
+.git
+.github
+.claude
+**/*.log
+
+# Local data — must never enter the image (cortex is a runtime volume)
+**/*.gai
+**/*.gnn
+**/*.gll
+**/cortex
+**/GraphnosisCortex
+tests
+
+# OS cruft
+.DS_Store
