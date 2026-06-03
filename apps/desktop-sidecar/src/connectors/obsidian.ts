@@ -36,6 +36,12 @@ export class ObsidianConnector implements Connector {
     return [this.vaultPath];
   }
 
+  /** sourceRefs of every .md file currently on disk (for mirror-mode pruning). */
+  async listCurrentSourceRefs(): Promise<string[]> {
+    const files = await collectFilesNewerThan(this.vaultPath, 0, { ext: '.md', skipDirs: ['.obsidian'] });
+    return files.map((f) => `obsidian:${this.config.id}:${path.relative(this.vaultPath, f.path)}`);
+  }
+
   async pull(since?: Date, limit?: number): Promise<ConnectorEvent[]> {
     const sinceMs = since?.getTime() ?? 0;
     const cap = limit ?? this.maxFiles;

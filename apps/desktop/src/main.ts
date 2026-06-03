@@ -15452,6 +15452,19 @@ function renderConnectorSetupBody(kind: ConnectorKind, existing?: ConnectorConfi
       <input type="text" id="connector-new-engram-name" placeholder="New engram name…" style="display:none;margin-top:6px;" />
       <span class="field-hint">Ingested events become source nodes in this engram.</span>
     </div>`;
+  // Opt-in mirror toggle for local-file connectors. Off = additive (default):
+  // deleting a file leaves its memory in the cortex. On = the engram mirrors the
+  // folder: deleting or renaming a file forgets the corresponding source, and
+  // editing a file replaces (not duplicates) it.
+  const mirrorDeletesField = `
+    <div class="connector-field">
+      <label style="display:flex;align-items:flex-start;gap:8px;cursor:pointer;font-weight:400;">
+        <input type="checkbox" id="connector-mirror-deletes" ${opts['mirrorDeletes'] === true ? 'checked' : ''} style="margin-top:3px;" />
+        <span>Mirror deletions
+          <span class="field-hint" style="display:block;margin-top:2px;">By default, deleting a file keeps its memory (Graphnosis is durable memory, not a folder mirror). Turn this on to also <strong>remove</strong> a memory when its file is deleted, and replace it when edited. Destructive — affects this engram only.</span>
+        </span>
+      </label>
+    </div>`;
   // Shown at the bottom of every connector form — applies universally.
   const privacyNote = `
     <div class="connector-help" style="border-left-color:var(--ok); margin-top:4px;">
@@ -15595,7 +15608,8 @@ function renderConnectorSetupBody(kind: ConnectorKind, existing?: ConnectorConfi
             <button type="button" id="connector-obsidian-browse" class="btn-secondary" style="white-space:nowrap;">Browse…</button>
           </div>
           <span class="field-hint">Absolute path to the folder Obsidian uses as your vault.</span>
-        </div>`;
+        </div>
+        ${mirrorDeletesField}`;
       break;
     case 'gbrain':
       html = `
@@ -15614,7 +15628,8 @@ function renderConnectorSetupBody(kind: ConnectorKind, existing?: ConnectorConfi
             <button type="button" id="connector-gbrain-browse" class="btn-secondary" style="white-space:nowrap;">Browse…</button>
           </div>
           <span class="field-hint">Absolute path to the root of your GBrain git repository.</span>
-        </div>`;
+        </div>
+        ${mirrorDeletesField}`;
       break;
     case 'ai-context':
       html = `
@@ -15637,7 +15652,8 @@ function renderConnectorSetupBody(kind: ConnectorKind, existing?: ConnectorConfi
           <textarea id="connector-aicontext-paths" rows="4" placeholder="/Users/you/Developer/my-project&#10;/Users/you/Developer/another-project">${escapeHtml(((opts['paths'] as string[]) ?? []).join('\n'))}</textarea>
           <button type="button" id="connector-aicontext-browse" class="btn-secondary" style="margin-top:6px;">Browse…</button>
           <span class="field-hint">Point at the root of each project folder. Only the known AI context filenames above will be read — nothing else.</span>
-        </div>`;
+        </div>
+        ${mirrorDeletesField}`;
       break;
     case 'webhook': {
       const token = (opts['webhookToken'] as string) || '<generated on save>';
@@ -15742,18 +15758,21 @@ function collectConnectorFormData(kind: ConnectorKind): Partial<ConnectorConfigS
       const vaultPath = $m<HTMLInputElement>('connector-obsidian-vault')?.value.trim() || '';
       if (!vaultPath) { alert('Vault path is required.'); return null; }
       options['vaultPath'] = vaultPath;
+      options['mirrorDeletes'] = $m<HTMLInputElement>('connector-mirror-deletes')?.checked === true;
       break;
     }
     case 'gbrain': {
       const repoPath = $m<HTMLInputElement>('connector-gbrain-repo')?.value.trim() || '';
       if (!repoPath) { alert('Repo path is required.'); return null; }
       options['repoPath'] = repoPath;
+      options['mirrorDeletes'] = $m<HTMLInputElement>('connector-mirror-deletes')?.checked === true;
       break;
     }
     case 'ai-context': {
       const paths = ($m<HTMLTextAreaElement>('connector-aicontext-paths')?.value || '')
         .split('\n').map((s) => s.trim()).filter(Boolean);
       options['paths'] = paths;
+      options['mirrorDeletes'] = $m<HTMLInputElement>('connector-mirror-deletes')?.checked === true;
       break;
     }
     case 'webhook': {

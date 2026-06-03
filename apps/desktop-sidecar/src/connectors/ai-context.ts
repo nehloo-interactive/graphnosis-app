@@ -49,6 +49,30 @@ export class AiContextConnector implements Connector {
     return this.paths;
   }
 
+  /** sourceRefs of every context file currently on disk (for mirror-mode
+   *  pruning) — the same candidate set pull() scans, filtered to existing files. */
+  async listCurrentSourceRefs(): Promise<string[]> {
+    const refs: string[] = [];
+    const exists = async (p: string): Promise<boolean> => {
+      try { return (await stat(p)).isFile(); } catch { return false; }
+    };
+    for (const dir of this.paths) {
+      for (const filename of CONTEXT_FILENAMES) {
+        const filePath = path.join(dir, filename);
+        if (await exists(filePath)) refs.push(`ai-context:${this.config.id}:${filePath}`);
+      }
+      try {
+        const entries = await readdir(path.join(dir, CURSOR_RULES_DIR));
+        for (const entry of entries) {
+          if (!entry.endsWith('.md')) continue;
+          const filePath = path.join(dir, CURSOR_RULES_DIR, entry);
+          if (await exists(filePath)) refs.push(`ai-context:${this.config.id}:${filePath}`);
+        }
+      } catch { /* no cursor rules dir */ }
+    }
+    return refs;
+  }
+
   async pull(since?: Date, limit?: number): Promise<ConnectorEvent[]> {
     const sinceMs = since?.getTime() ?? 0;
     const events: ConnectorEvent[] = [];
