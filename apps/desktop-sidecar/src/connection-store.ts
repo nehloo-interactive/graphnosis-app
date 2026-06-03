@@ -66,7 +66,7 @@ export async function encodeConnectionStore(
   connections: CrossEngramConnection[],
   dataKey: Uint8Array,
 ): Promise<Uint8Array> {
-  const envelope: StoreEnvelope = { version: CURRENT_VERSION, connections };
+  const envelope: StoreEnvelope = { version: CURRENT_VERSION, connections: dedupeConnections(connections) };
   const plaintext = new TextEncoder().encode(JSON.stringify(envelope));
   const salt = randomBytes(16);
   return crypto.encrypt(plaintext, dataKey, salt);
@@ -92,7 +92,7 @@ export async function decodeConnectionStore(
       console.error(`[connection-store] unknown store version ${parsed.version} — treating as empty`);
       return [];
     }
-    return parsed.connections;
+    return dedupeConnections(parsed.connections);
   } catch (e) {
     console.error(`[connection-store] decode failed: ${(e as Error).message} — treating as empty`);
     return [];
@@ -104,4 +104,32 @@ export function makeCrossEngramConnection(
   fields: Omit<CrossEngramConnection, 'id'>,
 ): CrossEngramConnection {
   return { id: randomBytes(8).toString('hex'), ...fields };
+}
+
+/**
+ * Collapse duplicate connections — multiple entries for the same UNDIRECTED node
+ * pair (the discovery + reinforcement loops could append the same pair more than
+ * once, so the connection panel showed repeats). Merge keeps the strongest
+ * weight, the union of shared entities, the earliest createdAt, and the latest
+ * reinforcement. The surviving entry keeps the first id seen. Applied on both
+ * encode (cleans the store on the next save) and decode (so a store written
+ * before this fix never renders dupes).
+ */
+export function dedupeConnections(connections: CrossEngramConnection[]): CrossEngramConnection[] {
+  const byPair = new Map<string, CrossEngramConnection>();
+  for (const c of connections) {
+    const a = `${c.graphA}:${c.nodeA}`;
+    const b = `${c.graphB}:${c.nodeB}`;
+    const key = a < b ? `${a}|${b}` : `${b}|${a}`; // undirected
+    const existing = byPair.get(key);
+    if (!existing) { byPair.set(key, { ...c }); continue; }
+    existing.weight = Math.max(existing.weight, c.weight);
+    existing.createdAt = Math.min(existing.createdAt, c.createdAt);
+    const lr = Math.max(existing.lastReinforcedAt ?? 0, c.lastReinforcedAt ?? 0);
+    if (lr > 0) existing.lastReinforcedAt = lr;
+    if (c.sharedEntities?.length || existing.sharedEntities?.length) {
+      existing.sharedEntities = [...new Set([...(existing.sharedEntities ?? []), ...(c.sharedEntities ?? [])])];
+    }
+  }
+  return [...byPair.values()];
 }
