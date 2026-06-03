@@ -10964,6 +10964,29 @@ ollama list</code></pre>
             <div id="settings-license-status" class="row" style="margin-bottom: 8px;"></div>
           </div>
           <div class="settings-section">
+            <p class="settings-section-label">Refresh from billing server</p>
+            <p class="subtitle" style="margin-bottom: 10px;">
+              Enter the email on your Stripe receipt. We'll fetch your current token from
+              <code>graphnosis.com</code> and activate it here — useful after a reinstall
+              or if the magic-link email never arrived.
+            </p>
+            <div class="row" style="margin-bottom: 8px;">
+              <label style="display:flex; flex-direction:column; gap:4px; flex:1;">
+                <input id="settings-license-email"
+                       type="email"
+                       autocomplete="email"
+                       spellcheck="false"
+                       autocapitalize="off"
+                       placeholder="you@example.com"
+                       style="font-size: 13px;" />
+              </label>
+            </div>
+            <div class="row" style="gap:8px;">
+              <button id="btn-settings-license-refresh" class="primary">Refresh from server</button>
+              <span id="settings-license-feedback" class="subtitle"></span>
+            </div>
+          </div>
+          <div class="settings-section">
             <p class="settings-section-label">Paste a license token</p>
             <p class="subtitle" style="margin-bottom: 10px;">
               If you received a token via email but the deep link didn't activate it automatically,
@@ -10981,14 +11004,8 @@ ollama list</code></pre>
               </label>
             </div>
             <div class="row" style="gap:8px;">
-              <button id="btn-settings-license-apply" class="primary">Apply token</button>
-              <button id="btn-settings-license-refresh">Refresh from server</button>
-              <span id="settings-license-feedback" class="subtitle"></span>
+              <button id="btn-settings-license-apply">Apply token</button>
             </div>
-            <p class="subtitle" style="margin-top: 10px;">
-              Refresh asks our billing server (<code>graphnosis.com</code>) for your current token.
-              You'll be prompted for the email on your Stripe receipt.
-            </p>
           </div>
         </div>
         <div class="modal-footer">

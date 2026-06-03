@@ -17095,7 +17095,11 @@ function bindSettingsLicensePanel(): void {
       if (result.ok) {
         if (feedback) feedback.textContent = `Saved — ${result.plan ?? 'Pro'} active.`;
         if (input) input.value = '';
-        if (result.sub) localStorage.setItem(BILLING_EMAIL_KEY, result.sub);
+        if (result.sub) {
+          localStorage.setItem(BILLING_EMAIL_KEY, result.sub);
+          const ei = document.getElementById('settings-license-email') as HTMLInputElement | null;
+          if (ei) ei.value = result.sub;
+        }
         await refreshSettingsLicenseStatus();
       } else {
         if (feedback) feedback.textContent = `Rejected: ${result.reason ?? 'invalid_or_expired'}`;
@@ -17108,14 +17112,26 @@ function bindSettingsLicensePanel(): void {
     }
   });
 
+  const emailInput = document.getElementById('settings-license-email') as HTMLInputElement | null;
+
+  // Persist the email to localStorage whenever the user edits the field so
+  // the next cortex-unlock poll picks it up automatically.
+  emailInput?.addEventListener('blur', () => {
+    const v = emailInput.value.trim();
+    if (v) localStorage.setItem(BILLING_EMAIL_KEY, v);
+  });
+
   refreshBtn?.addEventListener('click', async () => {
-    let email = await getBillingEmail();
+    const email = (emailInput?.value ?? '').trim()
+      || (await getBillingEmail())
+      || '';
     if (!email) {
-      email = window.prompt('Email on your Stripe receipt:') ?? '';
-      email = email.trim();
-      if (!email) return;
-      localStorage.setItem(BILLING_EMAIL_KEY, email);
+      emailInput?.focus();
+      if (feedback) feedback.textContent = 'Enter your Stripe receipt email first.';
+      return;
     }
+    localStorage.setItem(BILLING_EMAIL_KEY, email);
+    if (emailInput && !emailInput.value) emailInput.value = email;
     refreshBtn.disabled = true;
     if (feedback) feedback.textContent = 'Asking the billing server…';
     try {
@@ -20517,11 +20533,19 @@ function openLicenseModal(): void {
   const modal = document.getElementById('license-modal');
   if (!modal) return;
   modal.classList.remove('hidden');
-  // Refresh status + focus the input on the next frame so the modal has
-  // painted before we touch it.
   setTimeout(() => {
     void refreshSettingsLicenseStatus();
-    (document.getElementById('settings-license-input') as HTMLTextAreaElement | null)?.focus();
+    const emailInput = document.getElementById('settings-license-email') as HTMLInputElement | null;
+    if (emailInput && !emailInput.value) {
+      emailInput.value = localStorage.getItem(BILLING_EMAIL_KEY) ?? '';
+    }
+    // Focus the email input when empty (primary action for reinstall case);
+    // otherwise focus the token textarea so ⌘V paste works immediately.
+    if (emailInput && !emailInput.value) {
+      emailInput.focus();
+    } else {
+      (document.getElementById('settings-license-input') as HTMLTextAreaElement | null)?.focus();
+    }
   }, 30);
 }
 
