@@ -54,6 +54,7 @@
       "binaries/graphnosis-mcp-relay"
     ],
     "resources": [
+      "dist",
       "resources/libonnxruntime.1.21.0.dylib"
     ],
     "fileAssociations": [
