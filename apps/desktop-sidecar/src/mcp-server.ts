@@ -9,7 +9,7 @@ import { ingestClip } from './ingest.js';
 import { withEmbedding } from './embedding-queue.js';
 import { mcpRegistry } from './mcp-registry.js';
 import type { BrainEngine } from './brain-engine.js';
-import { createHmac } from 'node:crypto';
+import { createHmac, randomUUID } from 'node:crypto';
 import { recordConsent, revokeConsent, policyGrantMs, type ClientPolicy, type ConsentPolicyChoice } from '@graphnosis-app/core/settings';
 import { registerPrompt as registerConsentPrompt, listPendingPrompts } from './consent-prompts.js';
 import type { ConsentRecord } from '@graphnosis-app/core/settings';
@@ -2284,6 +2284,33 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
           },
         },
         {
+          name: 'save_skill_run',
+          description: 'Persist the state of a multi-skill execution so it can be RESUMED in a later session (D5). Call this as you walk a skill, after each step or capture, passing the variables you have captured so far and how far you have got. Captured vars normally live only for one conversation; this stores them in the cortex. Returns { runId } — pass that same runId on subsequent saves (to update the run) and to resume_skill_run later. Omit runId on the first call to start a new run.',
+          inputSchema: {
+            type: 'object' as const,
+            properties: {
+              runId:              { type: 'string', description: 'Existing run to update. Omit to start a new run (a runId is generated and returned).' },
+              skillGraphId:       { type: 'string', description: 'Engram slug of the skill being executed.' },
+              skillSourceId:      { type: 'string', description: 'sourceId of the skill being executed.' },
+              planTitle:          { type: 'string', description: 'Optional human-readable skill title, for listing.' },
+              capturedVars:       { type: 'object', description: 'Map of captured variable name (without `$`) → value, accumulated so far.' },
+              completedStepIndex: { type: 'number', description: '1-based index of the last COMPLETED step (0 = none yet). Resume continues at this + 1.' },
+            },
+            required: ['skillGraphId', 'skillSourceId', 'capturedVars', 'completedStepIndex'],
+          },
+        },
+        {
+          name: 'resume_skill_run',
+          description: 'Resume a previously-saved multi-skill execution (D5). Returns the saved run: the skill reference, the captured variables, the last completed step, and nextStepIndex (the 1-based step to continue at). Pair with walk_skill_structured on the returned skill to get the remaining steps. Use list… nothing — you must already have the runId from a prior save_skill_run.',
+          inputSchema: {
+            type: 'object' as const,
+            properties: {
+              runId: { type: 'string', description: 'The runId returned by save_skill_run.' },
+            },
+            required: ['runId'],
+          },
+        },
+        {
           name: 'get_skill',
           description: 'Retrieve the full text and metadata of a specific trained skill by its sourceId. Returns the skill text (metadata header + trained content), training mode, recallBreadth, and node count. Use list_skills first to find the sourceId.',
           inputSchema: {
@@ -3971,6 +3998,46 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
           ...(meta?.displayName ? { engramName: meta.displayName } : {}),
         });
         return { content: [{ type: 'text', text: JSON.stringify(plan, null, 2) }] };
+      }
+
+      case 'save_skill_run': {
+        const args = z.object({
+          runId:              z.string().min(1).optional(),
+          skillGraphId:       z.string().min(1),
+          skillSourceId:      z.string().min(1),
+          planTitle:          z.string().optional(),
+          capturedVars:       z.record(z.string(), z.unknown()),
+          completedStepIndex: z.number().int().nonnegative(),
+        }).parse(req.params.arguments ?? {});
+        const now = Date.now();
+        const runId = args.runId ?? randomUUID();
+        const existing = args.runId ? await deps.host.skillRuns.read(args.runId) : null;
+        await deps.host.skillRuns.save({
+          runId,
+          skillGraphId: args.skillGraphId,
+          skillSourceId: args.skillSourceId,
+          ...(args.planTitle ? { planTitle: args.planTitle } : {}),
+          capturedVars: args.capturedVars,
+          completedStepIndex: args.completedStepIndex,
+          createdAt: existing?.createdAt ?? now,
+          updatedAt: now,
+        });
+        return { content: [{ type: 'text', text: JSON.stringify({ runId, saved: true, completedStepIndex: args.completedStepIndex }, null, 2) }] };
+      }
+
+      case 'resume_skill_run': {
+        const args = z.object({ runId: z.string().min(1) }).parse(req.params.arguments ?? {});
+        const rec = await deps.host.skillRuns.read(args.runId);
+        if (!rec) return mcpError(`No saved skill-run with runId "${args.runId}". It may have completed (and been deleted) or never been saved.`);
+        return { content: [{ type: 'text', text: JSON.stringify({
+          runId: rec.runId,
+          skill: { graphId: rec.skillGraphId, sourceId: rec.skillSourceId, ...(rec.planTitle ? { title: rec.planTitle } : {}) },
+          capturedVars: rec.capturedVars,
+          completedStepIndex: rec.completedStepIndex,
+          nextStepIndex: rec.completedStepIndex + 1,
+          updatedAt: rec.updatedAt,
+          hint: 'Call walk_skill_structured on skill.graphId/sourceId, then continue at nextStepIndex with capturedVars in scope.',
+        }, null, 2) }] };
       }
 
       case 'get_skill': {
