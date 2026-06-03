@@ -4,6 +4,16 @@ export interface VitalityReport {
   overall: number;
   byGraph: Record<string, number>;
   computedAt: number;
+  /** Cortex-wide trust aggregates (across ALL engrams) — computed in the same
+   *  pass that scores vitality, so the Home dashboard can show decomposable
+   *  trust factors without loading every engram's nodes client-side. */
+  trust?: {
+    activeNodes: number;
+    avgConfidence: number;          // 0–1, mean across all active nodes
+    highConfidenceFraction: number; // share at confidence ≥ 0.7
+    connectedFraction: number;      // share woven to ≥1 other node
+    orphans: number;                // active nodes standing alone
+  };
 }
 
 /**
@@ -45,6 +55,8 @@ export class VitalityScorer {
     const byGraph: Record<string, number> = {};
     let totalWeight = 0;
     let weightedSum = 0;
+    // Cortex-wide trust accumulators (across every engram).
+    let tActive = 0, tConfSum = 0, tHighConf = 0, tConnected = 0;
 
     // Read recent op-log events once, group by graphId.
     const cutoff = Date.now() - 7 * 24 * 60 * 60 * 1000;
@@ -92,8 +104,15 @@ export class VitalityScorer {
 
       // Confidence — average active-node confidence, stretched so the band
       // human-added memories actually occupy (≈0.35–0.95) spans 0–1.
-      const avgConf = active.reduce((s, n) => s + n.confidence, 0) / activeCount;
+      const confSum = active.reduce((s, n) => s + n.confidence, 0);
+      const avgConf = confSum / activeCount;
       const confidence = clamp((avgConf - 0.35) / 0.6);
+
+      // Fold this engram into the cortex-wide trust aggregates.
+      tActive += activeCount;
+      tConfSum += confSum;
+      tHighConf += active.filter((n) => n.confidence >= 0.7).length;
+      tConnected += connectedActive;
 
       // Activity — op-log events in the last 7 days; a maintained cortex
       // scores high, a long-neglected one low.
@@ -116,7 +135,18 @@ export class VitalityScorer {
       ? Math.round((weightedSum / totalWeight) * 100)
       : 0;
 
-    const report: VitalityReport = { overall, byGraph, computedAt: Date.now() };
+    const report: VitalityReport = {
+      overall,
+      byGraph,
+      computedAt: Date.now(),
+      trust: {
+        activeNodes: tActive,
+        avgConfidence: tActive > 0 ? tConfSum / tActive : 0,
+        highConfidenceFraction: tActive > 0 ? tHighConf / tActive : 0,
+        connectedFraction: tActive > 0 ? tConnected / tActive : 0,
+        orphans: tActive - tConnected,
+      },
+    };
     this.cache = report;
     this.cacheExpireAt = Date.now() + VitalityScorer.TTL_MS;
     return report;
