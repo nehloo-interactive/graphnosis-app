@@ -14464,7 +14464,7 @@ function renderMobileStep2(): void {
   // (already WireGuard-encrypted) when no https mapping is configured.
   const url = (info.mcpTailscaleHttps && info.mcpTailscaleHttpsUrl)
     ? `${info.mcpTailscaleHttpsUrl}/mcp`
-    : `http://${preferredIp}:${info.port}`;
+    : `http://${preferredIp}:${info.port}/mcp`;
   const urlEl = $m<HTMLSpanElement>('mobile-mcp-url');
   const tokEl = $m<HTMLSpanElement>('mobile-mcp-token');
   if (urlEl) urlEl.textContent = url;
@@ -23601,6 +23601,17 @@ function resetRememberConfirmState(): void {
   if (btn) { btn.textContent = 'Save memory'; btn.classList.remove('danger'); btn.classList.add('primary'); }
 }
 document.getElementById('studio-remember-text')?.addEventListener('input', resetRememberConfirmState);
+// Auto-run the duplicate check when the user leaves the textarea, so the
+// "similar memory already exists" warning surfaces without an extra click.
+// Guarded on a minimum length and de-duped against the last-checked text
+// (blur fires on every focus loss, including clicking the Save button).
+let lastDupCheckedText = '';
+document.getElementById('studio-remember-text')?.addEventListener('blur', () => {
+  const text = (document.getElementById('studio-remember-text') as HTMLTextAreaElement | null)?.value.trim() ?? '';
+  if (text.length < 12 || text === lastDupCheckedText) return;
+  lastDupCheckedText = text;
+  void runStudioCheckDuplicate();
+});
 document.getElementById('btn-studio-remember')?.addEventListener('click', () => {
   const text = (document.getElementById('studio-remember-text') as HTMLTextAreaElement | null)?.value.trim() ?? '';
   if (!text) return;
