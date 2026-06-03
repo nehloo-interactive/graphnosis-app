@@ -17,6 +17,7 @@ import { GllWriter } from './gll.js';
 import { SkillSnapshotStore } from './skill-snapshots.js';
 import { SkillCallLinkStore } from './skill-call-links.js';
 import { SkillRunStore } from './skill-runs.js';
+import { WebAuthnCredentialStore } from './webauthn-store.js';
 
 const { deriveKey, encrypt, decrypt } = crypto;
 const { OpLogWriter } = oplog;
@@ -240,6 +241,9 @@ export class GraphnosisHost {
   /** Persistent skill-run records (D5) — captured vars + progress so a
    *  multi-skill orchestration can resume across sessions. */
   readonly skillRuns: SkillRunStore;
+  /** Registered WebAuthn credentials (A8) — biometric/security-key unlock for
+   *  the browser UI. Authenticates access to the server, not cortex decryption. */
+  readonly webauthnCredentials: WebAuthnCredentialStore;
   private policyCfg: policy.PolicyConfig;
   // Mutable so runtime model switches (Settings → Search model) can update
   // them without rebuilding the host. The actual re-embed of every graph
@@ -299,6 +303,11 @@ export class GraphnosisHost {
       salt: this.salt,
     });
     this.skillRuns = new SkillRunStore({
+      cortexDir: opts.cortexDir,
+      key: this.key,
+      salt: this.salt,
+    });
+    this.webauthnCredentials = new WebAuthnCredentialStore({
       cortexDir: opts.cortexDir,
       key: this.key,
       salt: this.salt,
