@@ -1151,6 +1151,17 @@
       .tour-connect-btn:hover { background: var(--color-brand-turquoise-soft); }
       /* ── Sidebar get-connected shortcuts ─────────────────────────────── */
       .rail-get-connected { padding: 10px 8px 4px; display: flex; flex-direction: column; gap: 6px; }
+      .rail-get-connected-header {
+        display: flex; align-items: center; gap: 6px; width: 100%;
+        background: none; border: 0; padding: 2px; cursor: pointer;
+        font: inherit; font-size: 10px; text-transform: uppercase; letter-spacing: .07em;
+        color: var(--color-fg-dim); transition: color 100ms;
+      }
+      .rail-get-connected-header:hover { color: var(--fg); }
+      .rail-gc-chevron { display: inline-block; transition: transform 120ms; font-size: 9px; }
+      .rail-get-connected.collapsed .rail-gc-chevron { transform: rotate(-90deg); }
+      .rail-get-connected.collapsed .rail-get-connected-body { display: none; }
+      .rail-get-connected-body { display: flex; flex-direction: column; gap: 6px; }
       .rail-get-connected-label { font-size: 10px; color: var(--color-fg-dim); text-transform: uppercase; letter-spacing: .07em; padding: 0 2px 2px; }
       .rail-get-connected-group { display: flex; flex-wrap: wrap; gap: 4px; }
       .rail-shortcut-btn {
@@ -2079,6 +2090,28 @@
         color: var(--fg);
       }
       .app-header-right { display: flex; gap: 6px; align-items: center; flex-shrink: 0; }
+      /* Contextual-help "?" affordance placed next to a feature label. */
+      .help-q {
+        display: inline-flex; align-items: center; justify-content: center;
+        width: 16px; height: 16px; margin-left: 5px; padding: 0; vertical-align: middle;
+        border-radius: 50%; border: 1px solid var(--border); background: transparent;
+        color: var(--fg-dim); font-size: 10px; font-weight: 700; line-height: 1; cursor: help;
+        transition: color 100ms, border-color 100ms;
+      }
+      .help-q:hover { color: var(--accent); border-color: var(--accent); }
+      .help-popover {
+        position: fixed; z-index: 1000; max-width: 280px;
+        background: var(--bg-elev); border: 1px solid var(--border); border-radius: 8px;
+        padding: 10px 12px; box-shadow: 0 8px 24px rgba(0,0,0,0.35);
+      }
+      /* Lightweight markdown styling inside the docs-help modal. */
+      .docs-help-body h1, .docs-help-body h2, .docs-help-body h3 { margin: 18px 0 8px; line-height: 1.3; }
+      .docs-help-body h1 { font-size: 19px; } .docs-help-body h2 { font-size: 16px; } .docs-help-body h3 { font-size: 14px; }
+      .docs-help-body p { margin: 0 0 10px; }
+      .docs-help-body ul, .docs-help-body ol { margin: 0 0 10px 18px; }
+      .docs-help-body li { margin: 3px 0; }
+      .docs-help-body code { background: var(--bg-base, #161b22); padding: 1px 5px; border-radius: 4px; font-size: 0.88em; }
+      .docs-help-body a { color: var(--accent); }
       .btn-help {
         width: 24px; height: 24px;
         border-radius: 50%;
@@ -8621,19 +8654,27 @@
               <div id="g-memory-trace-list" class="g-memory-trace-list"></div>
             </div>
             <div id="rail-get-connected" class="rail-get-connected">
-              <!-- Mode chips above any label — these describe the posture
-                   of the whole app (standalone / how data flows in from
-                   off-the-grid sources), not specific integrations.
-                   The Local LLM + Neural Network chips render below
-                   inside #rail-gc-aimode when they're turned on. -->
-              <div class="rail-get-connected-group" id="rail-gc-mode"></div>
-              <div class="rail-get-connected-label" style="margin-top: 8px;">AI clients</div>
-              <div class="rail-get-connected-group" id="rail-gc-aimode"></div>
-              <div class="rail-get-connected-group" id="rail-gc-clients"></div>
-              <!-- Data sources section: AI clients READ from the cortex;
-                   data sources FEED it. -->
-              <div class="rail-get-connected-label" style="margin-top: 8px;">Data sources</div>
-              <div class="rail-get-connected-group" id="rail-gc-connectors"></div>
+              <!-- Collapsible header — declutters the rail once the user has
+                   connected a client + a data source. State persists. -->
+              <button type="button" id="rail-gc-toggle" class="rail-get-connected-header" aria-expanded="true" title="Show / hide connections">
+                <span class="rail-gc-chevron" aria-hidden="true">▾</span>
+                <span>Get connected</span>
+              </button>
+              <div id="rail-gc-body" class="rail-get-connected-body">
+                <!-- Mode chips above any label — these describe the posture
+                     of the whole app (standalone / how data flows in from
+                     off-the-grid sources), not specific integrations.
+                     The Local LLM + Neural Network chips render below
+                     inside #rail-gc-aimode when they're turned on. -->
+                <div class="rail-get-connected-group" id="rail-gc-mode"></div>
+                <div class="rail-get-connected-label" style="margin-top: 8px;">AI clients</div>
+                <div class="rail-get-connected-group" id="rail-gc-aimode"></div>
+                <div class="rail-get-connected-group" id="rail-gc-clients"></div>
+                <!-- Data sources section: AI clients READ from the cortex;
+                     data sources FEED it. -->
+                <div class="rail-get-connected-label" style="margin-top: 8px;">Data sources</div>
+                <div class="rail-get-connected-group" id="rail-gc-connectors"></div>
+              </div>
             </div>
             <!-- Pinned-to-bottom row: MCP Tools + Settings share the rail's
                  width 50/50. The row carries the margin-top:auto pin that the
@@ -10303,6 +10344,26 @@ ollama list</code></pre>
          in the dashboard header. Funny, useful, trust-building intro to the
          mascot. Pairs with the first-run tour but stays available forever
          from anywhere the seahorse appears. -->
+    <!-- Contextual help: a "?" near a feature opens this single-topic, dismissable
+         modal with the relevant bundled docs article. Deep dives link out. -->
+    <div id="docs-help-modal" class="modal-backdrop hidden">
+      <div class="modal" style="max-width: 680px; max-height: 80vh; overflow-y: auto;">
+        <div class="modal-header" style="display:flex; align-items:center; justify-content:space-between; gap:12px;">
+          <h2 id="docs-help-title" style="margin:0; font-size:18px;">Help</h2>
+          <button id="docs-help-close" class="btn-ghost" aria-label="Close" style="font-size:18px; line-height:1;">×</button>
+        </div>
+        <div class="modal-body docs-help-body" id="docs-help-body" style="line-height:1.6;"></div>
+        <div style="margin-top:16px; padding-top:12px; border-top:1px solid var(--border);">
+          <a id="docs-help-fulllink" href="#" data-extlink="" style="font-size:13px;">Open the full guide on docs.graphnosis.com ↗</a>
+        </div>
+      </div>
+    </div>
+    <!-- Short contextual blurb popover anchored to a "?" — "read more" opens the modal. -->
+    <div id="help-popover" class="help-popover hidden" role="dialog">
+      <p id="help-popover-blurb" style="margin:0 0 8px; font-size:13px; line-height:1.5;"></p>
+      <button id="help-popover-more" type="button" class="btn-ghost" style="font-size:12px;">Read the full guide →</button>
+    </div>
+
     <div id="ghampus-modal" class="modal-backdrop hidden">
       <div class="modal" style="max-width: 620px;">
         <div class="modal-header" style="display:flex; align-items:center; gap:14px;">

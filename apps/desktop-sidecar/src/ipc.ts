@@ -2492,6 +2492,16 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
     // "user deleted it" so we never nag a user who said no — while still
     // auto-re-ingesting after an app update (docs may have changed).
 
+    case 'docs:getArticle': {
+      // Fetch one bundled docs article by slug for the in-app contextual-help
+      // modal (the "?" affordance). Reads straight from the binary-embedded
+      // BUNDLED_DOCS — offline, no recall fuzziness.
+      const { slug } = z.object({ slug: z.string().min(1) }).parse(params ?? {});
+      const doc = BUNDLED_DOCS.find((d) => d.slug === slug || d.slug.endsWith(`/${slug}`));
+      if (!doc) return { found: false };
+      return { found: true, slug: doc.slug, title: doc.title, markdown: doc.markdown };
+    }
+
     case 'docs:checkOffer': {
       const { appVersion } = z.object({ appVersion: z.string() }).parse(params ?? {});
       const settings = deps.host.getSettings();
