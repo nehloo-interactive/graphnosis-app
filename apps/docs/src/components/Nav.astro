@@ -34,7 +34,7 @@ try {
              carries the version string so the rewritten label can include
              "Download v1.X.Y for macOS" without re-reading tauri.conf.json. -->
         <a
-          href="/downloads"
+          href="/download"
           class="inline-flex items-center px-4 py-2 rounded-full bg-[#67e8f9] hover:bg-[#4dd6e8] text-[#13131a] text-sm font-semibold transition-colors"
           data-download-auto
           data-download-version={version}
@@ -46,7 +46,7 @@ try {
       <!-- Mobile hamburger (CSS-only focus-within trick) -->
       <div class="md:hidden flex items-center gap-3">
         {version && (
-          <a href="/downloads" class="text-xs font-mono font-semibold px-2.5 py-1 rounded-full border border-[#67e8f9] text-[#67e8f9]" data-download-auto>{version}</a>
+          <a href="/download" class="text-xs font-mono font-semibold px-2.5 py-1 rounded-full border border-[#67e8f9] text-[#67e8f9]" data-download-auto>{version}</a>
         )}
         <div class="relative" id="mobile-menu-container">
         <button
@@ -72,7 +72,7 @@ try {
         <a href="/job-memory-kits" class="text-xl text-[#a78bfa] font-semibold hover:text-[#c4b5fd] transition-colors">Job Memory Kits</a>
         <a href="/getting-started/overview" class="text-xl text-[#c4c6d6] hover:text-[#f0f0f5] transition-colors">Docs</a>
         <a
-          href="/downloads"
+          href="/download"
           class="inline-flex items-center justify-center w-full px-6 py-3 rounded-full bg-[#67e8f9] hover:bg-[#4dd6e8] text-[#13131a] text-lg font-semibold transition-colors"
           data-download-auto
           data-download-version={version}
@@ -140,7 +140,7 @@ try {
       return null;
     }
 
-    // On mobile (touch + narrow screen), keep all download links on /downloads chooser
+    // On mobile (touch + narrow screen), keep all download links on /download chooser
     var isMobile = window.matchMedia('(max-width: 767px)').matches && navigator.maxTouchPoints > 0;
     if (isMobile) return;
 
@@ -156,12 +156,12 @@ try {
       var isMicroPill = (link.textContent || '').trim() === version && version !== '';
 
       if (os === 'mac') {
-        link.setAttribute('href', '/downloads/mac');
+        link.setAttribute('href', '/download/mac');
         if (!isMicroPill) {
           link.textContent = 'Download' + (version ? ' ' + version : '') + ' for macOS';
         }
       } else if (os === 'win') {
-        link.setAttribute('href', '/downloads/win');
+        link.setAttribute('href', '/download/win');
         if (!isMicroPill) {
           link.textContent = 'Download' + (version ? ' ' + version : '') + ' for Windows';
         }

@@ -39,7 +39,7 @@ if (envVersion) {
 
 {version && (
   <a
-    href="/downloads"
+    href="/download"
     class="sl-download-pill"
     title={`Download Graphnosis ${version}`}
     aria-label={`Download Graphnosis ${version}`}
@@ -90,8 +90,8 @@ if (envVersion) {
     if (!os) return;
     var links = document.querySelectorAll('a[data-download-auto]');
     links.forEach(function (link) {
-      if (os === 'mac')      link.setAttribute('href', '/downloads/mac');
-      else if (os === 'win') link.setAttribute('href', '/downloads/win');
+      if (os === 'mac')      link.setAttribute('href', '/download/mac');
+      else if (os === 'win') link.setAttribute('href', '/download/win');
       // 'linux' falls through — chooser page already explains the
       // "Linux coming soon" status, so leaving href at /download is
       // the right behaviour.
