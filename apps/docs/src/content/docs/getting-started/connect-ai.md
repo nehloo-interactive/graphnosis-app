@@ -184,20 +184,14 @@ Any MCP 1.x client that supports stdio transport can connect. Use:
 
 ## Connect from your phone (or any HTTP MCP client)
 
-Mobile AI clients (Claude for iOS, Claude for Android) and any other tool that speaks MCP over HTTP can reach your cortex from a different device — your phone in your pocket, a browser extension on a different Mac, a remote scripting environment.
+There are two ways to reach your cortex from another device, both configured under **Settings → Mobile & Remote**:
 
-Graphnosis exposes an opt-in HTTP/SSE MCP server on port `3457` with bearer-token auth. The setup is **3 clicks** via the in-app wizard:
+- **Browser access (personal server)** — Graphnosis serves the full app UI on port `3456`, so you open your cortex in any phone or tablet browser. Enable it, then scan the QR (it encodes the URL + access token for one-scan unlock).
+- **MCP access** — mobile AI clients (Claude for iOS, Claude for Android) and any tool that speaks MCP over HTTP reach your cortex on port `3457` with bearer-token auth. Copy the MCP Server URL + bearer token from the same panel and paste them into the client's MCP server settings.
 
-1. Open Graphnosis → **Settings → Mobile & Remote Access → "Set up mobile access…"**
-2. Step 1: toggle **Enable** on, leave the default port (`3457`), choose `loopback-only` if you only want connections from the same Mac OR `all-interfaces` if you want LAN / Tailscale connections.
-3. Step 2: confirm the network interface (Tailscale is auto-detected and recommended if you have it — encrypted, no public-port exposure).
-4. Step 3: copy the MCP Server URL + bearer token. Paste both into your mobile AI client's MCP server settings.
+Both are opt-in and use the same Tailscale-vs-LAN security model. The full walkthrough — QR pairing, the `loopback-only` vs `all-interfaces` tradeoff, `tailscale serve` for HTTPS on iOS, token revocation, and running a headless personal server — is in **[Connect from your phone](/getting-started/mobile/)**.
 
-The wizard is fully detailed in **[Connect from your phone](/getting-started/mobile/)** — read that for screenshots and the security tradeoff explanation.
-
-**Why Tailscale is the recommended path:** the alternative — `all-interfaces` on your LAN — works at home but breaks the moment you leave the house. Tailscale gives you an encrypted overlay network that follows you everywhere without exposing a port to the public internet. Install it once on both devices; the wizard auto-detects the Tailscale IP.
-
-**The bearer token is unique per cortex and auto-rotates** on every wizard re-open. Treat it like a password: revoke by toggling Mobile Access off and back on in Settings.
+**Why Tailscale is the recommended path:** the alternative — `all-interfaces` on your LAN — works at home but breaks the moment you leave the house. Tailscale gives you an encrypted overlay network that follows you everywhere without exposing a port to the public internet. Install it once on both devices; the panel auto-detects the Tailscale IP.
 
 ## The 45 MCP tools
 
@@ -248,15 +242,18 @@ So you can have a Graphnosis-aware AI with one click, or opt out entirely — yo
 
 ## Beyond AI clients: auto-ingest from your existing tools
 
-Graphnosis is not just a memory you talk to — it's a memory that **grows on its own** from services you already use. Six built-in connectors pull or receive new content on a schedule:
+Graphnosis is not just a memory you talk to — it's a memory that **grows on its own** from tools you already use. Built-in connectors pull, receive, or watch for new content and ingest it into the engram you choose:
 
-| Connector | Pulls | Setup |
+| Connector | Ingests | Setup |
 |---|---|---|
 | **RSS / Atom** | new entries from any feed URL(s) | paste URLs, no credentials |
 | **GitHub** | issues, PRs, releases from repos you watch | BYO Personal Access Token |
 | **Slack** | starred items + (optional) channel history | BYO Slack app Bot/User Token |
 | **Trello** | cards + checklists from boards you choose | BYO API Key + Token |
 | **Linear** | issues with priority/state/assignee/label filters | BYO Personal API Key |
+| **Obsidian** | notes from a vault folder, watched live | folder path, no credentials |
+| **GBrain** | Markdown from a local knowledge repo, watched live | folder path, no credentials |
+| **AI Context Files** | `CLAUDE.md` / `AGENTS.md` / `.cursorrules` etc. from your projects | folder paths, no credentials |
 | **Webhook** | anything that can POST JSON (Zapier, IFTTT, custom scripts) | auto-generated unique URL |
 
 All connectors are configured in **Settings → Connectors** in the Graphnosis app. **Your credentials, your apps** — Graphnosis is never in the OAuth callback chain. Credentials are stored encrypted at rest in your cortex (XChaCha20-Poly1305, same as your memory files).
