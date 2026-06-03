@@ -8368,6 +8368,11 @@
             </div>
             <div class="actions">
               <button id="btn-unlock" class="primary">Unlock</button>
+              <!-- Browser-mode biometric/security-key unlock (A8). Hidden unless
+                   the personal-server reports WebAuthn is available + a device is
+                   registered. Wired in main.ts; never shown in the Tauri app
+                   (which uses native Touch ID). -->
+              <button id="btn-webauthn-unlock" class="btn-secondary hidden" type="button">🔑 Unlock with biometrics</button>
               <!-- Live unlock/boot status — a pulsing sphere + the current
                    boot step, at subtitle size. Replaces the old static
                    "Touch the sensor" / "Starting synapse" label; hidden

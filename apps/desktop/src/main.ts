@@ -11,6 +11,9 @@ import {
   requestPermission,
   sendNotification,
   startSse,
+  webauthnStatus,
+  webauthnAuthenticate,
+  webauthnRegister,
   emitBrowserEvent,
   getBrowserSession,
 } from './platform';
@@ -3519,6 +3522,51 @@ els.btnUnlock.addEventListener('click', async () => {
  * it after the user confirms "create the missing folder" without rebuilding
  * the click handler's pre-flight checks.
  */
+// ── A8 — biometric / security-key unlock (browser mode only) ─────────────────
+
+/** Authenticate with a registered WebAuthn device. On success the session is
+ *  minted server-side; render the unlocked state (same transition the token
+ *  unlock uses in browser mode). */
+async function webauthnUnlock(): Promise<void> {
+  const waBtn = document.getElementById('btn-webauthn-unlock') as HTMLButtonElement | null;
+  els.btnUnlock.disabled = true;
+  if (waBtn) waBtn.disabled = true;
+  const progressBar = document.getElementById('unlock-progress');
+  progressBar?.classList.remove('hidden');
+  els.unlockStatus.classList.remove('hidden');
+  els.bootStatusText.textContent = 'Verifying…';
+  try {
+    await webauthnAuthenticate();
+    els.bootStatusText.textContent = '';
+    render({ unlocked: true, cortex_dir: null, sidecar_running: true } as StatusSnapshot);
+  } catch (e) {
+    progressBar?.classList.add('hidden');
+    els.bootStatusText.textContent = '';
+    els.btnUnlock.disabled = false;
+    if (waBtn) waBtn.disabled = false;
+    showError(e instanceof Error ? e.message : String(e));
+  }
+}
+
+/** After a browser token-unlock, offer to register this device for biometric
+ *  unlock — once, only when available and none registered yet. */
+let biometricSetupOffered = false;
+async function maybeOfferBiometricSetup(): Promise<void> {
+  if (IS_TAURI || biometricSetupOffered) return;
+  biometricSetupOffered = true;
+  let st: { available: boolean; registered: number };
+  try { st = await webauthnStatus(); } catch { return; }
+  if (!st.available || st.registered > 0) return;
+  if (!confirm('Set up biometric / security-key unlock on this device, so you don\'t need to paste the access token next time?')) return;
+  const tid = addIngestToast('Setting up biometric unlock', 'Follow your device\'s prompt…');
+  try {
+    await webauthnRegister('This device');
+    finishIngestToast(tid, 'success', 'Biometric unlock enabled for this device.');
+  } catch (e) {
+    finishIngestToast(tid, 'error', `Setup failed: ${e instanceof Error ? e.message : String(e)}`);
+  }
+}
+
 async function attemptUnlock(): Promise<void> {
   els.btnUnlock.disabled = true;
   els.bootStatusText.textContent = 'Starting synapse…';
@@ -3552,6 +3600,8 @@ async function attemptUnlock(): Promise<void> {
     els.passphrase.value = '';
     els.bootStatusText.textContent = '';
     render(status);
+    // Offer biometric setup once, after a successful browser token-unlock.
+    void maybeOfferBiometricSetup();
   } catch (e) {
     const msg = String(e);
     // Auto-unlock (QR / ?token=) failed — reveal the lock form again so the
@@ -15916,6 +15966,17 @@ if (!IS_TAURI) {
     if (sub) sub.textContent = 'Connecting to your Graphnosis server…';
     setTimeout(() => { void attemptUnlock(); }, 0);
   }
+
+  // A8 — show the biometric-unlock button only when the server reports WebAuthn
+  // is usable in this context AND a device is registered. Wired to webauthnUnlock.
+  void (async () => {
+    const st = await webauthnStatus();
+    const waBtn = document.getElementById('btn-webauthn-unlock') as HTMLButtonElement | null;
+    if (waBtn && st.available && st.registered > 0) {
+      waBtn.classList.remove('hidden');
+      waBtn.addEventListener('click', () => { void webauthnUnlock(); });
+    }
+  })();
 }
 
 // ── Window drag via Tauri startDragging API ───────────────────────────────
