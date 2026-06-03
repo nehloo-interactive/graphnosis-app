@@ -30,6 +30,16 @@ RUN pnpm -r build
 # NOTE: we copy the full node_modules into the runtime stage rather than
 # pruning. pnpm's workspace symlink layout makes a reliable prod-prune fiddly,
 # and correctness beats image size for v1. Slim later if size matters.
+#
+# OPTIONAL air-gapped pre-warm: the embedding model (fastembed → BGE-small-en,
+# ~90 MB) is NOT bundled — it downloads from storage.googleapis.com on first
+# embed. The runtime persists it on the /data volume (GRAPHNOSIS_EMBED_CACHE
+# below), so it's a one-time fetch. For a fully air-gapped server, uncomment to
+# bake the default model into the image instead, then COPY it + point the cache
+# at it in the runtime stage:
+#   RUN cd apps/desktop-sidecar && node -e "const{FlagEmbedding,EmbeddingModel}=require('fastembed');FlagEmbedding.init({model:EmbeddingModel.BGESmallENV15,cacheDir:'/opt/graphnosis-models',showDownloadProgress:false}).then(()=>console.log('warmed')).catch(e=>{console.error(e);process.exit(1)})"
+# The multilingual e5-large model (~2.2 GB) is opt-in and intentionally never
+# baked — it fetches on demand only if the user enables multilingual embeddings.
 
 # ── Runtime ───────────────────────────────────────────────────────────────────
 FROM node:22-bookworm-slim AS runtime
@@ -51,7 +61,12 @@ ENV NODE_ENV=production \
     GRAPHNOSIS_BIND=0.0.0.0 \
     GRAPHNOSIS_HTTP_UI_PORT=3456 \
     GRAPHNOSIS_HTTP_UI_STATIC=/app/apps/desktop/dist \
-    GRAPHNOSIS_CORTEX=/data/cortex
+    GRAPHNOSIS_CORTEX=/data/cortex \
+    GRAPHNOSIS_EMBED_CACHE=/data/models
+# Embedding model cache on the /data volume so the ~90 MB download happens once
+# and survives container recreation (otherwise every fresh container re-fetches
+# it). The graphnosis user must be able to write /data — chown the host mount to
+# the container's graphnosis uid, or use a named volume.
 # Provide at runtime (-e): GRAPHNOSIS_PASSPHRASE, GRAPHNOSIS_HTTP_UI_TOKEN.
 
 # Cortex lives on a mounted volume so it persists across container restarts.
