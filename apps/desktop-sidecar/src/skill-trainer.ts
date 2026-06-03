@@ -25,6 +25,7 @@ import type { GraphnosisHost } from './host.js';
 import type { LocalLlm } from './correction.js';
 import { ingestClip } from './ingest.js';
 import { SkillSnapshotStore } from './skill-snapshots.js';
+import type { SkillCallLinkStore, SkillCallLink } from './skill-call-links.js';
 import { settings as settingsMod } from '@graphnosis-app/core';
 
 // ── Public types ─────────────────────────────────────────────────────────────
@@ -846,6 +847,9 @@ export class SkillTrainer {
       await linkSkillLoopsAndBranches(this.host, graphId, skillId);
       await linkSkillContextEdges(this.host, graphId, skillId);
       await linkSkillCalls(this.host, graphId, skillId, graphId);
+      // D1 — resolve any `@skill:` refs that DON'T match a skill in this engram
+      // against other skill engrams, persisting hits in the cross-engram table.
+      await linkCrossEngramCalls(this.host, this.host.skillCallLinks, graphId, skillId, skillEngramIds(this.host));
       // Phase 5 — Decision 7: edges FROM other skills TO this skill's title
       // node may have become stale (title nodeId likely changed on retrain).
       // Re-run linkSkillCalls on every OTHER skill so any `@skill: <this>`
@@ -1257,6 +1261,7 @@ export class SkillTrainer {
     await linkSkillLoopsAndBranches(this.host, graphId, sourceId);
     await linkSkillContextEdges(this.host, graphId, sourceId);
     await linkSkillCalls(this.host, graphId, sourceId, graphId);
+    await linkCrossEngramCalls(this.host, this.host.skillCallLinks, graphId, sourceId, skillEngramIds(this.host));
     await refreshIncomingCallsToSkill(this.host, graphId, sourceId);
 
     return { restoredNodeCount: snapshot.nodes.length };
@@ -2011,6 +2016,123 @@ export async function linkSkillCalls(
   return { callEdges: batch.length };
 }
 
+// ── Cross-engram skill calls (D1) ─────────────────────────────────────────────
+
+/** Engrams that contain at least one trained skill — the candidate set for
+ *  cross-engram call resolution. */
+export function skillEngramIds(host: GraphnosisHost): string[] {
+  return host.listGraphs().filter((g) => host.listSources(g).some((s) => s.kind === 'skill'));
+}
+
+interface SkillIndexEntry { sourceId: string; titleNodeId: string; title: string; matchName: string; }
+
+/** Build a name→skill index for one engram: each skill contributes its title
+ *  (lowercased) and its source-ref label as match names. Mirrors the inline
+ *  index linkSkillCalls builds, reused for cross-engram resolution. */
+function buildSkillIndex(host: GraphnosisHost, graphId: string, excludeSourceId?: string): SkillIndexEntry[] {
+  const now = Date.now();
+  const nodeMap = new Map(host.listNodes(graphId).map((n) => [n.id, n]));
+  const isLive = (id: string): boolean => {
+    const n = nodeMap.get(id);
+    return !!n && n.confidence > 0.2 && !(n.validUntil !== undefined && n.validUntil <= now)
+      && !n.contentPreview.trimStart().startsWith('<!--');
+  };
+  const out: SkillIndexEntry[] = [];
+  for (const s of host.listSources(graphId)) {
+    if (s.kind !== 'skill' || s.sourceId === excludeSourceId) continue;
+    const titleId = s.nodeIds.find(isLive);
+    if (!titleId) continue;
+    const title = (host.getFullNodeContent(graphId, titleId) ?? nodeMap.get(titleId)!.contentPreview).trim();
+    const name = title.toLowerCase();
+    out.push({ sourceId: s.sourceId, titleNodeId: titleId, title, matchName: name });
+    const refLabel = s.ref.replace(/^skill:\d+:/, '').trim().toLowerCase();
+    if (refLabel && refLabel !== name) out.push({ sourceId: s.sourceId, titleNodeId: titleId, title, matchName: refLabel });
+  }
+  return out;
+}
+
+/** Longest-match resolve a target name against a skill index (same heuristic as
+ *  linkSkillCalls.resolveTarget). */
+function resolveInIndex(index: SkillIndexEntry[], target: string): SkillIndexEntry | null {
+  let best: SkillIndexEntry | null = null;
+  let bestLen = 0;
+  for (const e of index) {
+    if (target.includes(e.matchName) || e.matchName.includes(target)) {
+      if (e.matchName.length > bestLen) { bestLen = e.matchName.length; best = e; }
+    }
+  }
+  return best;
+}
+
+/**
+ * Resolve `@skill:` / `@parallel:` references that DON'T match a skill in the
+ * caller's own engram against OTHER skill engrams, and persist the hits in the
+ * cross-engram side-table (D1). The SDK can't represent a cross-graph edge, so
+ * this is how cross-engram calls are recorded; the walk consults the table to
+ * surface them. Idempotent per caller source (replaces its prior links).
+ *
+ * @param candidateGraphIds engrams to search for targets (the caller's own is
+ *   skipped — same-engram calls are handled by intra-graph edges in
+ *   linkSkillCalls).
+ */
+export async function linkCrossEngramCalls(
+  host: GraphnosisHost,
+  store: SkillCallLinkStore,
+  callerGraphId: string,
+  callerSourceId: string,
+  candidateGraphIds: string[],
+): Promise<{ crossLinks: number }> {
+  const src = host.getSourceRecord(callerGraphId, callerSourceId);
+  if (!src) { await store.setForSource(callerGraphId, callerSourceId, []); return { crossLinks: 0 }; }
+
+  const now = Date.now();
+  const callerNodeMap = new Map(host.listNodes(callerGraphId).map((n) => [n.id, n]));
+  const liveNodes = src.nodeIds
+    .filter((id) => {
+      const n = callerNodeMap.get(id);
+      return n && n.confidence > 0.2 && !(n.validUntil !== undefined && n.validUntil <= now)
+        && !n.contentPreview.trimStart().startsWith('<!--');
+    })
+    .map((id) => ({ id, content: host.getFullNodeContent(callerGraphId, id) ?? callerNodeMap.get(id)!.contentPreview }));
+
+  const ownIndex = buildSkillIndex(host, callerGraphId, callerSourceId);
+  const otherIndices = candidateGraphIds
+    .filter((g) => g !== callerGraphId)
+    .map((g) => ({ graphId: g, index: buildSkillIndex(host, g) }));
+
+  const links: SkillCallLink[] = [];
+  const record = (nodeId: string, targetName: string, args: string[], captureAs: string | undefined, onFailure: boolean, parallel: boolean): void => {
+    if (resolveInIndex(ownIndex, targetName)) return; // same-engram → intra-graph edge already handles it
+    for (const oi of otherIndices) {
+      const hit = resolveInIndex(oi.index, targetName);
+      if (hit) {
+        links.push({
+          callerGraphId, callerSourceId, callerNodeId: nodeId, targetName,
+          targetGraphId: oi.graphId, targetSourceId: hit.sourceId, targetTitle: hit.title.slice(0, 200),
+          args, ...(captureAs ? { captureAs } : {}), onFailure, parallel,
+        });
+        return; // first matching engram wins
+      }
+    }
+  };
+
+  for (const node of liveNodes) {
+    const parallel = parseParallelCall(node.content);
+    if (parallel) {
+      for (const m of parallel.members) record(node.id, m.target, m.args, m.captureAs, false, true);
+      continue;
+    }
+    const parsed = parseSkillCall(node.content);
+    if (parsed?.target) {
+      const isFailure = /^On failure:/i.test(node.content.trim());
+      record(node.id, parsed.target, parsed.args, parsed.captureAs, isFailure, false);
+    }
+  }
+
+  await store.setForSource(callerGraphId, callerSourceId, links);
+  return { crossLinks: links.length };
+}
+
 /**
  * After skill A is saved, edges FROM other skills TO A's title node may have
  * become stale (the title node id likely changed during retrain). Re-run
@@ -2149,10 +2271,13 @@ export interface StepNode {
   index: number;
   isBranchPoint: boolean;
   isLoopBack: boolean;
-  /** Resolved sub-skill call (target found in the same engram). */
+  /** Resolved sub-skill call. `targetGraphId` is set only for a cross-engram
+   *  call (D1 — target lives in another engram, resolved via the side-table);
+   *  absent for same-engram calls. */
   callsSkill?: {
     targetSourceId: string;
     targetTitle: string;
+    targetGraphId?: string;
     /** Variable names passed as args (from `@skill: name(arg=$var)`). */
     args: string[];
     /** Variable name to store the call's return under (from `-> $capture`). */
@@ -2160,10 +2285,11 @@ export interface StepNode {
   };
   /** Resolved concurrent sub-skill calls (D4 — from `@parallel: [a, b] -> [$x,
    *  $y]`). When present, the executor dispatches all members concurrently.
-   *  Mutually exclusive with callsSkill. */
+   *  Mutually exclusive with callsSkill. Members may be cross-engram (D1). */
   parallelCalls?: Array<{
     targetSourceId: string;
     targetTitle: string;
+    targetGraphId?: string;
     args: string[];
     captureAs?: string;
   }>;
@@ -2216,7 +2342,7 @@ export function walkSkillSequence(
   host: GraphnosisHost,
   graphId: string,
   sourceId: string,
-  opts: { recursive?: boolean } = {},
+  opts: { recursive?: boolean; crossEngramLinks?: SkillCallLink[] } = {},
 ): WalkedSkill {
   const src = host.getSourceRecord(graphId, sourceId);
   if (!src) return { steps: [], goals: [], contextNodes: [], loops: [], branches: [], failureHandlers: [] };
@@ -2311,13 +2437,26 @@ export function walkSkillSequence(
     callsByNode.set(e.from, arr);
   }
 
+  // Cross-engram side-table hits (D1) scoped to this caller node. These carry a
+  // targetGraphId; in-engram edge calls don't.
+  const crossLinks = opts.crossEngramLinks ?? [];
+  interface UnifiedCall { targetSourceId: string; targetTitle: string; args: string[]; captureAs?: string; parallel: boolean; targetGraphId?: string }
+
   const steps: StepNode[] = bodyIds.map((id, i) => {
     const text = host.getFullNodeContent(graphId, id) ?? nodeMap.get(id)!.contentPreview;
-    const calls = callsByNode.get(id) ?? [];
+    const inEngram: UnifiedCall[] = (callsByNode.get(id) ?? []).map((c) => ({
+      targetSourceId: c.targetSourceId, targetTitle: c.targetTitle, args: c.args,
+      ...(c.captureAs ? { captureAs: c.captureAs } : {}), parallel: c.parallel,
+    }));
+    const cross: UnifiedCall[] = crossLinks.filter((l) => l.callerNodeId === id).map((l) => ({
+      targetSourceId: l.targetSourceId, targetTitle: l.targetTitle, args: l.args,
+      ...(l.captureAs ? { captureAs: l.captureAs } : {}), parallel: l.parallel, targetGraphId: l.targetGraphId,
+    }));
+    const calls: UnifiedCall[] = [...inEngram, ...cross];
     const parallelMembers = calls.filter((c) => c.parallel);
     const single = calls.find((c) => !c.parallel);
     // Detect unresolved calls: text references a sub-skill (@skill: or
-    // @parallel:) but no edge resolved (typo, deleted target, cross-engram).
+    // @parallel:) but neither an edge nor a cross-engram link resolved.
     const parsedFromText = parseSkillCall(text);
     const parsedParallel = parseParallelCall(text);
     const unresolvedName = calls.length === 0
@@ -2335,6 +2474,7 @@ export function walkSkillSequence(
           targetTitle: m.targetTitle,
           args: m.args,
           ...(m.captureAs ? { captureAs: m.captureAs } : {}),
+          ...(m.targetGraphId ? { targetGraphId: m.targetGraphId } : {}),
         })),
       } : single ? {
         callsSkill: {
@@ -2342,6 +2482,7 @@ export function walkSkillSequence(
           targetTitle: single.targetTitle,
           args: single.args,
           ...(single.captureAs ? { captureAs: single.captureAs } : {}),
+          ...(single.targetGraphId ? { targetGraphId: single.targetGraphId } : {}),
         },
       } : {}),
       ...(unresolvedName ? { unresolvedCall: unresolvedName } : {}),
@@ -2559,14 +2700,18 @@ export interface SkillExecutionPlan {
     calls?: {
       targetSourceId: string;
       targetTitle: string;
+      /** Set only for a cross-engram call (D1) — the engram the target lives in. */
+      targetGraphId?: string;
       args: string[];
       captureAs?: string;
     };
     /** Concurrent sub-skill calls (D4). When present, dispatch all members in
-     *  parallel and capture each return under its captureAs. */
+     *  parallel and capture each return under its captureAs. Members may be
+     *  cross-engram (targetGraphId set). */
     parallel?: Array<{
       targetSourceId: string;
       targetTitle: string;
+      targetGraphId?: string;
       args: string[];
       captureAs?: string;
     }>;
@@ -2705,6 +2850,7 @@ export function walkSkillToJson(
         calls: {
           targetSourceId: s.callsSkill.targetSourceId,
           targetTitle: s.callsSkill.targetTitle,
+          ...(s.callsSkill.targetGraphId ? { targetGraphId: s.callsSkill.targetGraphId } : {}),
           args: s.callsSkill.args,
           ...(s.callsSkill.captureAs ? { captureAs: s.callsSkill.captureAs } : {}),
         },
@@ -2713,6 +2859,7 @@ export function walkSkillToJson(
         parallel: s.parallelCalls.map((p) => ({
           targetSourceId: p.targetSourceId,
           targetTitle: p.targetTitle,
+          ...(p.targetGraphId ? { targetGraphId: p.targetGraphId } : {}),
           args: p.args,
           ...(p.captureAs ? { captureAs: p.captureAs } : {}),
         })),

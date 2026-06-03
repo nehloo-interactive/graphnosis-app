@@ -15,6 +15,7 @@ import * as gllOverlayMod from './gll-overlay.js';
 import { redactId, redactPair, dbg } from './log-redact.js';
 import { GllWriter } from './gll.js';
 import { SkillSnapshotStore } from './skill-snapshots.js';
+import { SkillCallLinkStore } from './skill-call-links.js';
 
 const { deriveKey, encrypt, decrypt } = crypto;
 const { OpLogWriter } = oplog;
@@ -231,6 +232,10 @@ export class GraphnosisHost {
   /** Per-source side-table holding pre-retrain snapshots of every
    *  skill. Backs `skill_history` + `rollback_skill`. */
   readonly skillSnapshots: SkillSnapshotStore;
+  /** Cross-engram skill-call side-table (D1). The SDK can't represent
+   *  cross-graph edges, so `@skill:` calls that resolve to a skill in another
+   *  engram are persisted here and surfaced by the walk. */
+  readonly skillCallLinks: SkillCallLinkStore;
   private policyCfg: policy.PolicyConfig;
   // Mutable so runtime model switches (Settings → Search model) can update
   // them without rebuilding the host. The actual re-embed of every graph
@@ -280,6 +285,11 @@ export class GraphnosisHost {
     });
     this.gllWriter = new GllWriter(opts.cortexDir, this.key, this.salt);
     this.skillSnapshots = new SkillSnapshotStore({
+      cortexDir: opts.cortexDir,
+      key: this.key,
+      salt: this.salt,
+    });
+    this.skillCallLinks = new SkillCallLinkStore({
       cortexDir: opts.cortexDir,
       key: this.key,
       salt: this.salt,
@@ -1276,6 +1286,14 @@ export class GraphnosisHost {
       }
     } catch (e) {
       console.error(`[graphnosis-host] deleteGraph: could not prune connection store: ${(e as Error).message}`);
+    }
+
+    // Purge cross-engram skill-call links (D1) that referenced this graph as
+    // caller or target, so the side-table doesn't dangle after engram delete.
+    try {
+      await this.skillCallLinks.pruneGraph(graphId);
+    } catch (e) {
+      console.error(`[graphnosis-host] deleteGraph: could not prune skill-call links: ${(e as Error).message}`);
     }
 
     // Purge stale GNN predicted edges that referenced this graph.
