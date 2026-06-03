@@ -537,6 +537,10 @@
       .source-row { display: flex; align-items: center; gap: 8px; padding: 6px 0; font-size: 14px; }
       .source-row-disabled .source-name { opacity: 0.4; }
       .source-row-disabled .source-meta { opacity: 0.4; }
+      /* Excluded-from-recall: dim the name + strike it so it reads as "present
+         but not used by the AI", distinct from forgotten/disabled. */
+      .source-row-excluded .source-name { opacity: 0.55; text-decoration: line-through; text-decoration-thickness: 1px; }
+      .btn-source-include { color: var(--color-status-warn-gold, #b8860b); }
       .source-name { color: var(--fg); flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
       .source-meta { color: var(--fg-dim); white-space: nowrap; }
       .source-moved-label { color: var(--fg-dim); font-size: 13px; white-space: nowrap; font-style: italic; }

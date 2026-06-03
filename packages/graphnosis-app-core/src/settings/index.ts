@@ -518,6 +518,14 @@ export interface GraphMetadata {
   consentIntervalMs?: number;
 
   /**
+   * Source IDs (within this graph) excluded from AI recall. Their nodes are
+   * dropped from `recall`, `dig_deeper`, and node search — but stay fully
+   * present everywhere else (Sources list, stats, 3D, forget). A power-user
+   * "exclude from recall" toggle; NOT a delete and NOT a hide-everywhere.
+   */
+  excludedSources?: string[];
+
+  /**
    * Corrections accumulated before the last op-log compaction. Added to the
    * live event count in `refreshAllCorrectionsFromOplog` so the total never
    * regresses when old `editNode`/`supersede` events are pruned.
