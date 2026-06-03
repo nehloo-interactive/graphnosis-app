@@ -20539,13 +20539,6 @@ function openLicenseModal(): void {
     if (emailInput && !emailInput.value) {
       emailInput.value = localStorage.getItem(BILLING_EMAIL_KEY) ?? '';
     }
-    // Focus the email input when empty (primary action for reinstall case);
-    // otherwise focus the token textarea so ⌘V paste works immediately.
-    if (emailInput && !emailInput.value) {
-      emailInput.focus();
-    } else {
-      (document.getElementById('settings-license-input') as HTMLTextAreaElement | null)?.focus();
-    }
   }, 30);
 }
 
