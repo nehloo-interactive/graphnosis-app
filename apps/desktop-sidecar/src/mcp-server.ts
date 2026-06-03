@@ -3936,7 +3936,10 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
         if ('error' in resEngramW) return resEngramW.error;
         const { walkSkillSequence: walkFn, formatSkillForRecall: formatFn } =
           await import('./skill-trainer.js');
-        const walked = walkFn(deps.host, resEngramW.graphId, args.sourceId, { recursive: args.recursive });
+        // D1 — pre-load cross-engram call links (the walk is sync) so any
+        // `@skill:` ref resolving to another engram surfaces in the SOP.
+        const crossLinksW = await deps.host.skillCallLinks.getForSource(resEngramW.graphId, args.sourceId);
+        const walked = walkFn(deps.host, resEngramW.graphId, args.sourceId, { recursive: args.recursive, crossEngramLinks: crossLinksW });
         if (walked.steps.length === 0) {
           return mcpError(`Skill "${args.sourceId}" has no steps. Use get_skill to read it as raw text, or train_skill to rebuild it.`);
         }
@@ -3953,7 +3956,8 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
         if ('error' in resEngramS) return resEngramS.error;
         const { walkSkillSequence: walkFn2, walkSkillToJson } =
           await import('./skill-trainer.js');
-        const walked = walkFn2(deps.host, resEngramS.graphId, args.sourceId, { recursive: args.recursive });
+        const crossLinksS = await deps.host.skillCallLinks.getForSource(resEngramS.graphId, args.sourceId);
+        const walked = walkFn2(deps.host, resEngramS.graphId, args.sourceId, { recursive: args.recursive, crossEngramLinks: crossLinksS });
         if (walked.steps.length === 0 && walked.goals.length === 0) {
           return mcpError(`Skill "${args.sourceId}" has no steps or goals to walk. Use get_skill, or train_skill to rebuild it.`);
         }

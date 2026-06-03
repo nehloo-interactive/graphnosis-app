@@ -19,6 +19,8 @@ import {
   linkSkillLoopsAndBranches,
   linkSkillContextEdges,
   linkSkillCalls,
+  linkCrossEngramCalls,
+  skillEngramIds,
   walkSkillSequence,
   formatSkillForRecall,
   baseSkillName,
@@ -609,6 +611,7 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
         linkSkillLoopsAndBranches(deps.host, args.graphId, args.sourceId),
         linkSkillContextEdges(deps.host, args.graphId, args.sourceId),
         linkSkillCalls(deps.host, args.graphId, args.sourceId, args.graphId),
+        linkCrossEngramCalls(deps.host, deps.host.skillCallLinks, args.graphId, args.sourceId, skillEngramIds(deps.host)),
       ]).catch(() => {});
       return { ok: true, nodeId: result.nodeId };
     }
@@ -628,6 +631,7 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
           linkSkillLoopsAndBranches(deps.host, args.graphId, args.sourceId),
           linkSkillContextEdges(deps.host, args.graphId, args.sourceId),
           linkSkillCalls(deps.host, args.graphId, args.sourceId, args.graphId),
+          linkCrossEngramCalls(deps.host, deps.host.skillCallLinks, args.graphId, args.sourceId, skillEngramIds(deps.host)),
         ]).catch(() => {});
         return { ok: true };
       } catch (e) {
@@ -652,6 +656,7 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
           linkSkillLoopsAndBranches(deps.host, args.graphId, args.sourceId),
           linkSkillContextEdges(deps.host, args.graphId, args.sourceId),
           linkSkillCalls(deps.host, args.graphId, args.sourceId, args.graphId),
+          linkCrossEngramCalls(deps.host, deps.host.skillCallLinks, args.graphId, args.sourceId, skillEngramIds(deps.host)),
         ]).catch(() => {});
         return { ok: true };
       } catch (e) {
@@ -3424,6 +3429,7 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
       const [loops, calls, goals] = await Promise.all([
         linkSkillLoopsAndBranches(deps.host, args.graphId, args.sourceId),
         linkSkillCalls(deps.host, args.graphId, args.sourceId, args.graphId),
+        linkCrossEngramCalls(deps.host, deps.host.skillCallLinks, args.graphId, args.sourceId, skillEngramIds(deps.host)),
         linkSkillGoals(deps.host, args.graphId, args.sourceId),
       ]);
       await linkSkillContextEdges(deps.host, args.graphId, args.sourceId);
