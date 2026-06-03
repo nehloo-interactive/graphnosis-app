@@ -752,6 +752,32 @@ async fn pick_gsk_file(app: AppHandle) -> Result<Option<String>, String> {
 /// (sequential `ingest_file` invokes, each with its own toast).
 ///
 /// Empty result = user cancelled (or selected nothing).
+/// Recursively collect files with supported ingest extensions under `dir`.
+/// Hidden directories (names starting with '.') are skipped.
+fn collect_files_recursive(dir: &std::path::Path, out: &mut Vec<String>) {
+    let Ok(entries) = std::fs::read_dir(dir) else { return };
+    const SUPPORTED: &[&str] = &[
+        "md", "markdown", "txt", "html", "htm", "json", "csv", "pdf", "docx",
+    ];
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            if path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .map_or(false, |s| s.starts_with('.'))
+            {
+                continue;
+            }
+            collect_files_recursive(&path, out);
+        } else if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
+            if SUPPORTED.iter().any(|&s| s.eq_ignore_ascii_case(ext)) {
+                out.push(path.to_string_lossy().into_owned());
+            }
+        }
+    }
+}
+
 /// Let the user pick one or more folders via the native OS dialog.
 /// Empty result = user cancelled.
 #[tauri::command]
@@ -790,6 +816,30 @@ async fn pick_files(app: AppHandle) -> Result<Vec<String>, String> {
         None => Vec::new(),
     };
     Ok(paths)
+}
+
+/// Pick one or more folders for ingest. Returns a flat list of all supported
+/// files found recursively inside the selected folder(s). Hidden directories
+/// (e.g. .git) are skipped. Empty result = user cancelled or no supported files.
+#[tauri::command]
+async fn pick_folder_for_ingest(app: AppHandle) -> Result<Vec<String>, String> {
+    let picked = app
+        .dialog()
+        .file()
+        .set_title("Choose folders to ingest into Graphnosis")
+        .blocking_pick_folders();
+    let folders = match picked {
+        Some(f) => f
+            .into_iter()
+            .filter_map(|p| p.into_path().ok())
+            .collect::<Vec<_>>(),
+        None => return Ok(Vec::new()),
+    };
+    let mut files = Vec::new();
+    for folder in &folders {
+        collect_files_recursive(folder, &mut files);
+    }
+    Ok(files)
 }
 
 /// Result of an MCP-client configure flow. The UI shows the user what
@@ -3125,6 +3175,7 @@ pub fn run() {
             pick_gsk_file,
             pick_files,
             pick_folders,
+            pick_folder_for_ingest,
             forget_source,
             reingest_source,
             purge_forgotten,

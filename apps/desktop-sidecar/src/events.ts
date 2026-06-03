@@ -65,13 +65,21 @@ function isTcpAddress(socketPath: string): boolean {
   return /^\d{1,3}(?:\.\d{1,3}){3}:\d+$/.test(socketPath);
 }
 
-export async function startEvents(deps: EventsDeps): Promise<{ server: net.Server; broadcastRaw: BroadcastRawFn }> {
+export interface EventsHandle {
+  server: net.Server;
+  broadcastRaw: BroadcastRawFn;
+  /** Subscribe to every outbound frame (mutations + raw progress). Returns an unsubscribe fn. */
+  subscribe: (fn: (frame: RawFrame) => void) => () => void;
+}
+
+export async function startEvents(deps: EventsDeps): Promise<EventsHandle> {
   if (!isTcpAddress(deps.socketPath)) {
     await fs.mkdir(path.dirname(deps.socketPath), { recursive: true });
     await fs.rm(deps.socketPath, { force: true });
   }
 
   const sockets = new Set<net.Socket>();
+  const inProcessSubscribers = new Set<(frame: RawFrame) => void>();
   const state: ThrottleState = {
     pending: null,
     lastSeenByGraph: new Map(),
@@ -89,6 +97,9 @@ export async function startEvents(deps: EventsDeps): Promise<{ server: net.Serve
       sock.write(line, (err) => {
         if (err) { sock.destroy(); sockets.delete(sock); }
       });
+    }
+    for (const fn of inProcessSubscribers) {
+      try { fn(frame); } catch { /* best-effort — SSE client may have disconnected */ }
     }
   };
 
@@ -169,17 +180,23 @@ export async function startEvents(deps: EventsDeps): Promise<{ server: net.Serve
 
   server.on('close', () => {
     unsubscribe();
+    inProcessSubscribers.clear();
     if (state.trailingTimer !== null) {
       clearTimeout(state.trailingTimer);
       state.trailingTimer = null;
     }
   });
 
+  const subscribe = (fn: (frame: RawFrame) => void): (() => void) => {
+    inProcessSubscribers.add(fn);
+    return () => inProcessSubscribers.delete(fn);
+  };
+
   return new Promise((resolve, reject) => {
     server.once('error', reject);
     const onListening = () => {
       console.error(`[graphnosis-sidecar] events socket listening on ${deps.socketPath}`);
-      resolve({ server, broadcastRaw });
+      resolve({ server, broadcastRaw, subscribe });
     };
     if (isTcpAddress(deps.socketPath)) {
       const colonIdx = deps.socketPath.lastIndexOf(':');

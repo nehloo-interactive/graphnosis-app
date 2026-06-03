@@ -2,7 +2,7 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, interactive-widget=resizes-content" />
     <title>Graphnosis: Your Local Encrypted Second cortex</title>
     <!-- Apply stored theme synchronously — runs before CSS is parsed so
          the webview never flashes the wrong background. Must be a plain
@@ -25,6 +25,12 @@
          named CSS custom property. Loaded BEFORE the inline style block
          so the inline rules can reference --color-* tokens directly. -->
     <link rel="stylesheet" href="/src/theme-tokens.css" />
+    <link rel="manifest" href="/manifest.json" />
+    <meta name="theme-color" content="#0e0e0f" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="Graphnosis" />
     <style>
       /* ─── Theme tokens are loaded from /src/theme-tokens.css ──────────────
          All colors live there as named tokens. Three theme states:
@@ -1857,14 +1863,7 @@
         flex: 1;
         overflow: hidden;
       }
-      .app-title-row {
-        display: flex; align-items: center; gap: 8px;
-      }
-      /* Clickable title + tagline — both jump to MemoryStudio from any
-         mode in the app. Visually identical to the non-clickable state
-         except for a hand cursor on hover; no background, no transition,
-         no focus ring, no tooltip. The hand-cursor alone is enough hint. */
-      .app-home-link { cursor: pointer; }
+      .app-title-row { display: flex; align-items: center; gap: 8px; }
       .app-title {
         font-size: 18px;
         font-weight: 800;
@@ -3686,7 +3685,7 @@
       /* Skills section container: fixed-height flex column so both inner
          panels fill the available space and scroll independently. The parent
          .app-canvas must NOT scroll while on this view.
-         padding-bottom reserves space above the Solo Memories trivia bar
+         padding-bottom reserves space above the Stranded Memories trivia bar
          (position:fixed, 44px tall) so the library footer is always reachable. */
       .lb-section[data-studio-tool="skills"] {
         display: flex;
@@ -5063,6 +5062,8 @@
         background: var(--bg-elev);
         font-size: 15px;
         color: var(--fg-dim);
+        position: relative;
+        z-index: 60;
       }
       .status-bar-right {
         margin-left: auto;
@@ -5633,7 +5634,7 @@
       /* ── Trivia drawer ─────────────────────────────────────────────────── */
       /* Fixed to the viewport bottom so the bar remains visible even when
          the parent canvas scrolls. left:var(--rail-width) keeps it right of
-         the navigation rail; bottom accounts for the ~34px status bar.
+         the navigation rail; bottom accounts for the status bar.
          right defaults to the Memory Inspector column width (360px) so the
          drawer stays anchored to the Skills + Trainer / browse column —
          the inspector stays visible on the right even when the drawer rolls
@@ -5723,13 +5724,12 @@
       }
       .trivia-bar-pill.hidden { display: none; }
       .trivia-bar-close {
-        font-size: 13px; color: var(--fg-dim); background: none; border: none;
-        cursor: pointer; padding: 1px 5px; border-radius: 4px; line-height: 1;
-        transition: color 0.14s, background 0.14s; flex-shrink: 0;
-        opacity: 0; pointer-events: none; transition: opacity 0.2s;
+        /* Inherits sizing/shape from .g-panel-close-btn; visibility toggled here. */
+        opacity: 0;
+        pointer-events: none;
+        transition: opacity 0.2s, color 0.14s, background 0.14s, border-color 0.14s;
       }
       #trivia-drawer.trivia-open .trivia-bar-close { opacity: 1; pointer-events: auto; }
-      .trivia-bar-close:hover { color: var(--fg); background: var(--bg); }
 
       .trivia-body {
         /* Plain block scroll container — used to be display: flex column,
@@ -5892,8 +5892,14 @@
          the deck — useful when the deck stretches, but pointless once
          the deck is content-sized in this drawer. Disable its stretch
          here so it just renders at its max-height (6em capped on the
-         inner text). */
+         inner text).
+         Also: g-deck-trivia-body has height:100% which only resolves when
+         its parent has an explicit height — in the drawer the parent is
+         flex:0 0 auto (auto height), so height:100% collapses. Override
+         both so the body and text are content-sized in the drawer context. */
       .trivia-body .g-deck-trivia-candidate { flex: 0 0 auto; }
+      .trivia-body .g-deck-trivia-body { height: auto; }
+      .trivia-body .g-deck-trivia-text { flex: 0 0 auto; }
       .trivia-body .g-deck-pinned {
         position: sticky;
         top: 0;
@@ -6139,6 +6145,15 @@
         word-break: break-word;
       }
       .engram-suggest-actions { display: flex; gap: 8px; justify-content: flex-end; }
+      /* Skill-demos language picker — a two-option segmented control. */
+      .skill-demos-lang { display: inline-flex; gap: 4px; margin: 4px 0 10px; padding: 3px; background: var(--bg-elev); border: 1px solid var(--border); border-radius: 8px; }
+      .skill-demos-lang-btn {
+        appearance: none; border: 0; background: transparent; color: var(--fg-dim);
+        font-family: inherit; font-size: 13px; font-weight: 600; padding: 5px 14px;
+        border-radius: 6px; cursor: pointer; transition: background 0.12s, color 0.12s;
+      }
+      .skill-demos-lang-btn:hover { color: var(--fg); }
+      .skill-demos-lang-btn.active { background: var(--accent); color: #fff; }
       .engram-suggest-candidates { display: flex; flex-direction: column; gap: 4px; margin: 6px 0 10px; }
       .engram-suggest-candidates.hidden { display: none; }
       .engram-suggest-cand {
@@ -6176,6 +6191,9 @@
          suggestion banner — same border, same elevation, same accent. */
       .connectors-list { display: flex; flex-direction: column; gap: 6px; margin-bottom: 10px; }
       .connectors-list:empty { display: none; }
+      .connectors-interval-row { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; font-size: 13.5px; color: var(--fg-dim); margin-top: 4px; }
+      .connectors-interval-row input { width: 64px; padding: 5px 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg-elev); color: var(--fg); font-family: inherit; font-size: 13.5px; }
+      .connectors-interval-note { flex-basis: 100%; font-size: 12px; opacity: 0.8; }
       .connector-row {
         display: grid;
         grid-template-columns: 22px 1fr auto;
@@ -6290,24 +6308,84 @@
       .g-toast-stack {
         position: fixed;
         right: 18px;
-        /* Clear the status bar (.app-statusbar ≈ 34px tall) so toasts stack
-           ABOVE it instead of overlapping the MCP / vitality / version pills. */
         bottom: 48px;
         z-index: 200;
-        display: flex;
-        flex-direction: column-reverse;
-        gap: 8px;
-        max-width: 380px;
-        pointer-events: none; /* container lets clicks pass; toasts opt back in */
+        width: 380px;
+        display: none; /* shown via JS when toasts exist */
+        flex-direction: column;
+        background: color-mix(in oklab, var(--bg) 82%, transparent);
+        backdrop-filter: blur(14px);
+        -webkit-backdrop-filter: blur(14px);
+        border: 1px solid var(--border);
+        border-radius: 12px;
+        box-shadow: 0 8px 32px color-mix(in oklab, var(--fg) 14%, transparent);
+        overflow: hidden;
+        pointer-events: auto;
       }
+      .g-toast-stack.has-toasts { display: flex; }
+
+      /* Panel header — title + count badge + dismiss-all button */
+      .g-toast-panel-header {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 10px 12px 8px;
+        border-bottom: 1px solid var(--border);
+        flex-shrink: 0;
+      }
+      .g-toast-panel-title {
+        font-size: 13px;
+        font-weight: 600;
+        color: var(--fg-dim);
+        flex: 1;
+        display: flex;
+        align-items: center;
+        gap: 6px;
+      }
+      .g-toast-count {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        min-width: 18px;
+        height: 18px;
+        padding: 0 5px;
+        border-radius: 9px;
+        background: var(--accent);
+        color: #fff;
+        font-size: 11px;
+        font-weight: 700;
+        line-height: 1;
+      }
+      .g-toast-dismiss-all {
+        background: none;
+        border: 1px solid var(--border);
+        border-radius: 5px;
+        color: var(--fg-dim);
+        font-size: 12px;
+        padding: 2px 8px;
+        cursor: pointer;
+        flex-shrink: 0;
+        transition: color 0.12s, background 0.12s;
+      }
+      .g-toast-dismiss-all:hover { color: var(--fg); background: var(--bg-elev); }
+
+      /* Scrollable toast list */
+      .g-toast-list {
+        overflow-y: auto;
+        max-height: 360px;
+        padding: 8px;
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+      }
+
       .g-toast {
         pointer-events: auto;
-        background: var(--bg);
+        background: color-mix(in oklab, var(--bg-elev) 70%, transparent);
         border: 1px solid var(--border);
         border-left: 3px solid var(--fg-dim);
         border-radius: 8px;
         padding: 10px 12px;
-        box-shadow: 0 6px 24px var(--color-border-strong);
         font-size: 14px;
         color: var(--fg);
         display: grid;
@@ -6315,9 +6393,8 @@
         gap: 8px;
         align-items: center;
         opacity: 0;
-        transform: translateY(6px);
+        transform: translateY(4px);
         transition: opacity 140ms ease, transform 140ms ease;
-        max-width: 100%;
       }
       .g-toast.visible { opacity: 1; transform: translateY(0); }
       .g-toast-icon {
@@ -7533,12 +7610,50 @@
       /* Memory Inspector — hidden by default; shown when a node is selected */
       .g-detail.hidden { display: none !important; }
 
+      /* Shared close button used by the Memory Inspector and the Stranded
+         Memories drawer. Large enough to tap comfortably, visually obvious. */
+      .g-panel-close-btn {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        flex-shrink: 0;
+        width: 28px;
+        height: 28px;
+        font-size: 16px;
+        line-height: 1;
+        color: var(--fg-dim);
+        background: var(--bg);
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        cursor: pointer;
+        transition: color 0.14s, background 0.14s, border-color 0.14s;
+      }
+      .g-panel-close-btn:hover {
+        color: var(--fg);
+        background: var(--bg-elev);
+        border-color: var(--fg-dim);
+      }
+
+      /* Sticky close-button row at the top of the Memory Inspector.
+         Sticks inside .g-detail (the scroll container) so the button
+         stays visible when the connections list is scrolled. Negative
+         horizontal margin bleeds it to the panel edges; padding restores
+         the gutter so it lines up with the rest of the panel content. */
+      /* Close button floats in the top-right corner of the panel without
+         consuming vertical space — content starts flush at the top. */
+      .g-detail-close-row {
+        position: absolute;
+        top: 8px;
+        right: 14px;
+        z-index: 10;
+      }
+
       .g-detail {
         background: var(--bg-elev);
         border: 1px solid var(--border);
         border-radius: 6px;
-        /* No top padding — the sticky header provides it internally so it
-           sits flush against the top edge with no see-through gap. */
+        /* position:relative anchors the absolutely-positioned close button. */
+        position: relative;
         padding: 0 14px 14px;
         /* Flex column wrapper so the suggestion panel's Connect/Cancel bar
            can sit as a true bottom-aligned footer of THIS pane (not the
@@ -7574,7 +7689,8 @@
       .g-detail-empty {
         color: var(--fg-dim);
         font-size: 14px;
-        padding-top: 14px;
+        /* Top padding clears the absolutely-positioned close button (8px top + 28px button + 6px gap). */
+        padding-top: 42px;
       }
       .g-detail-shortcuts {
         margin-top: 16px;
@@ -7601,7 +7717,8 @@
         position: sticky;
         top: 0;
         margin: 0 -14px;
-        padding: 14px 14px 12px;
+        /* Extra right padding clears the absolutely-positioned close button. */
+        padding: 14px 46px 12px 14px;
         background: var(--bg-elev);
         border-bottom: 1px solid var(--border);
         z-index: 1;
@@ -8296,7 +8413,13 @@
         <!-- Ingest toast stack. One row per file in flight; rows morph
              pending → success/error and fade out. Lives under the
              drag-drop overlay so it's never obscured during a drop. -->
-        <div id="g-toast-stack" class="g-toast-stack" aria-live="polite" aria-atomic="false"></div>
+        <div id="g-toast-stack" class="g-toast-stack" aria-live="polite" aria-atomic="false">
+          <div class="g-toast-panel-header">
+            <span class="g-toast-panel-title">Ingesting files <span id="g-toast-count" class="g-toast-count"></span></span>
+            <button id="btn-toast-dismiss-all" class="g-toast-dismiss-all">Dismiss all</button>
+          </div>
+          <div id="g-toast-list" class="g-toast-list"></div>
+        </div>
         <!-- Engram-create suggestion banner. An AI client (via MCP `remember`
              with target_engram=<name>) asked to save into an engram that
              doesn't exist yet. The sidecar refuses the write and broadcasts
@@ -8348,9 +8471,16 @@
               <span class="engram-suggest-icon">🧠</span>
               <span id="skill-demos-offer-headline">
                 Add 3 starter skill demos? They teach your AI how to recall,
-                save, and protect memories well — available in English and
-                Romanian.
+                save, and protect memories well. Pick a language — only that
+                set of 3 is installed.
               </span>
+            </div>
+            <!-- Single-language choice: each bundled pack ships English +
+                 Romanian variants of the same SOP; we install only the chosen
+                 set (3 skills), not both (6). -->
+            <div class="skill-demos-lang" id="skill-demos-lang" role="radiogroup" aria-label="Demo language">
+              <button type="button" class="skill-demos-lang-btn active" data-lang="en" role="radio" aria-checked="true">English</button>
+              <button type="button" class="skill-demos-lang-btn" data-lang="ro" role="radio" aria-checked="false">Română</button>
             </div>
             <div class="engram-suggest-actions">
               <button type="button" class="btn-primary" id="skill-demos-offer-add">Add demos</button>
@@ -8360,21 +8490,43 @@
         </div>
         <!-- Top header: cortex identity + global actions -->
         <header class="app-header" data-tauri-drag-region>
-          <div class="app-header-left">
-            <!-- Both the title and the tagline are "go home" affordances —
-                 clicking either jumps to MemoryStudio from anywhere in the
-                 app. Visually unchanged from non-clickable state — no
-                 hover, no cursor, no tooltip. data-tauri-drag-region="false"
-                 still needed so the click fires instead of being captured
-                 by the window-drag region above. -->
-            <div class="app-title-row app-home-link"
-                 id="app-title-home"
-                 data-tauri-drag-region="false">
-              <span class="app-title">Graphnosis</span>
+          <div class="app-header-left" data-tauri-drag-region>
+            <!-- Title + tagline are pure decoration (no click action). They
+                 must stay part of the window-drag region, so they carry the
+                 positive data-tauri-drag-region attribute explicitly — Tauri's
+                 drag handler keys off the clicked element, and the gradient
+                 title span otherwise wouldn't inherit the header's region. -->
+            <div class="app-title-row" data-tauri-drag-region>
+              <span class="app-title" data-tauri-drag-region>Graphnosis</span>
+              <!-- Ghampus mark + label: the sole "Meet Ghampus" entry point now
+                   that the studio identity block is gone. Opts OUT of the
+                   window-drag region so the click reaches the handler instead
+                   of being swallowed by Tauri's drag region. -->
+              <span class="header-ghampus-btn" id="header-ghampus-btn" role="button" tabindex="0"
+                    title="Who is Ghampus?" data-tauri-drag-region="false">
+                <img class="header-ghampus" src="/graphnosis-logo-transparent-bg.png" alt="" aria-hidden="true" />
+                <span class="header-ghampus-label">Ghampus, the AI seahorse</span>
+              </span>
             </div>
-            <span class="header-tagline app-home-link"
-                  id="app-tagline-home"
-                  data-tauri-drag-region="false">Your local encrypted memory, indexed for deterministic recall — auditable</span>
+            <span class="header-tagline" data-tauri-drag-region>Your local encrypted memory, indexed for deterministic recall — auditable</span>
+          </div>
+          <!-- Mobile-only top-right cluster: engram (brain) · search · menu.
+               Absolutely positioned so flex layout can never push it off-screen.
+               Hidden on desktop via mobile.css. -->
+          <div class="mobile-topbar-actions">
+            <button id="mobile-search-toggle" class="mobile-menu-toggle" aria-label="Search" aria-expanded="false">
+              <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <circle cx="11" cy="11" r="8"/>
+                <line x1="21" y1="21" x2="16.65" y2="16.65"/>
+              </svg>
+            </button>
+            <button id="mobile-menu-toggle" class="mobile-menu-toggle" aria-label="Menu" aria-expanded="false">
+              <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true">
+                <line x1="3" y1="6" x2="21" y2="6"/>
+                <line x1="3" y1="12" x2="21" y2="12"/>
+                <line x1="3" y1="18" x2="21" y2="18"/>
+              </svg>
+            </button>
           </div>
           <div class="app-header-right">
             <!-- Active engram picker cluster: vertical stack of "Active engram:"
@@ -8385,11 +8537,12 @@
               <span id="sensitivity-badge" class="sensitivity-badge" style="display:none;" title="Click to change this engram's sensitivity tier"></span>
             </div>
             <select id="atlas-graph-picker" class="header-engram-picker" title="Switch active engram"></select>
-            <button id="btn-add-file" class="primary">Add file to engram…</button>
+            <button id="btn-add-file" class="primary">+Files</button>
+            <button id="btn-add-folder" class="primary">+Folders</button>
             <button id="btn-new-graph" title="Create a new engram — an independent neighborhood of memory">+ New engram</button>
             <button id="btn-report-bug" class="btn-help" title="Report a bug on GitHub" aria-label="Report a bug"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m8 2 1.88 1.88"/><path d="M14.12 3.88 16 2"/><path d="M9 7.13v-1a3.003 3.003 0 1 1 6 0v1"/><path d="M12 20c-3.3 0-6-2.7-6-6v-3a4 4 0 0 1 4-4h4a4 4 0 0 1 4 4v3c0 3.3-2.7 6-6 6"/><path d="M12 20v-9"/><path d="M6.53 9C4.6 8.8 3 7.1 3 5"/><path d="M6 13H2"/><path d="M3 21c0-2.1 1.7-3.9 3.8-4"/><path d="M20.97 5c0 2.1-1.6 3.8-3.5 4"/><path d="M22 13h-4"/><path d="M17.2 17c2.1.1 3.8 1.9 3.8 4"/></svg></button>
             <button id="btn-help" class="btn-help" title="Open documentation">?</button>
-            <button id="btn-lock">Lock memory</button>
+            <button id="btn-lock">Lock cortex</button>
           </div>
         </header>
 
@@ -8447,6 +8600,12 @@
               <span class="rail-icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 12 7 12 10 4 14 20 17 12 21 12"/></svg></span>
               <span class="rail-label">Status</span>
               <span id="rail-mcp-indicator" class="rail-mcp-indicator"></span>
+            </button>
+            <!-- Opens the Copilot setup modal (not a pane — no data-mode). -->
+            <button class="rail-btn" id="rail-btn-copilot" title="Connect VS Code — Copilot Chat to this cortex">
+              <span class="rail-icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="11" r="1.4"/><circle cx="15" cy="11" r="1.4"/><path d="M5 13a7 7 0 0 1 14 0v2a3 3 0 0 1-3 3H8a3 3 0 0 1-3-3z"/><path d="M12 4v2"/></svg></span>
+              <span class="rail-label">Copilot</span>
+              <span></span>
             </button>
             <!-- Memory trace: grows to fill space between nav buttons and settings.
                  The inner list gets overflow-y:auto so it scrolls independently.
@@ -8506,26 +8665,13 @@
                    All four are flex items in a single row so the health box
                    can be pinned to the same 360px width as the inspector. -->
               <header class="pane-header g-pane-header">
-                <!-- Dashboard identity: the mascot, not the wordmark. "Graphnosis ·
-                     your second cortex" lives in the top bar; here we introduce
-                     Ghampus by name so the user has a *face* on this page rather
-                     than a duplicated logo. "Memory seahorse" earns the cute by
-                     leaning on the hippocampus etymology (Greek: seahorse). -->
-                <div class="g-pane-header-title" id="ghampus-header" style="position:relative; cursor: pointer;" role="button" tabindex="0" title="Who is Ghampus?">
-                  <!-- Seahorse mark is absolutely-positioned so it sits BEHIND
-                       the "Ghampus" / tagline text without pushing either out
-                       of place. Faded with low opacity so the text stays
-                       legible on top. Same bob animation as the trainer
-                       banner so the character feels alive across surfaces.
-                       Whole block is clickable — opens the "Meet Ghampus"
-                       modal so the user can read the friendly + trust-
-                       building intro from anywhere they see the mark. -->
-                  <img src="/graphnosis-logo-transparent-bg.png" alt=""
-                       class="ghampus-header-mascot"
-                       aria-hidden="true" />
-                  <h2 style="position:relative; z-index:1;">Ghampus</h2>
-                  <p class="brain-subtitle" style="position:relative; z-index:1;">your memory seahorse.</p>
-                </div>
+                <!-- The "Ghampus / your memory seahorse" identity block that
+                     used to lead this header has been removed: Ghampus now
+                     lives ONLY in the top app bar (the seahorse mark + label
+                     next to the wordmark, which is the click target for the
+                     "Meet Ghampus" modal). Dropping the duplicate here lets the
+                     search box + federated stats (.g-search-wrap, flex:1)
+                     extend all the way to the left edge of the pane. -->
                 <!-- The engram picker that used to live here has moved to
                      the top app header — visible from every view, smaller
                      footprint, single source of truth across panes. -->
@@ -8555,6 +8701,9 @@
                     <p id="g-health-phrase" class="g-health-phrase">Loading your memory health…</p>
                     <p id="g-health-detail" class="g-health-detail subtitle"></p>
                   </div>
+                  <!-- Active engram name — shown on mobile (where the header
+                       engram picker is hidden) next to the health grade. -->
+                  <span id="g-health-engram" class="g-health-engram"></span>
                 </div>
               </header>
 
@@ -9197,7 +9346,7 @@
 
                         <!-- Bottom spacer: a real flow-level element with
                              explicit height that guarantees scroll content
-                             can clear the Solo Memories trivia bar (which
+                             can clear the Stranded Memories trivia bar (which
                              overlays the canvas with a 44px sliver at the
                              bottom). We use a real element instead of
                              relying on padding-bottom on the scroll container
@@ -9216,11 +9365,11 @@
                       <!-- Bar: always visible handle, shows stats, click to open/close -->
                       <div id="trivia-bar" class="trivia-bar" role="button" tabindex="0" aria-label="Open memory review">
                         <span class="trivia-bar-icon">◈</span>
-                        <span class="trivia-bar-label">Solo Memories</span>
+                        <span class="trivia-bar-label">Stranded Memories</span>
                         <span class="trivia-bar-sep">·</span>
                         <span id="trivia-bar-stats" class="trivia-bar-stats">Loading…</span>
                         <span id="trivia-bar-pill" class="trivia-bar-pill hidden"></span>
-                        <button id="btn-trivia-close" class="trivia-bar-close" title="Close" aria-label="Close memory review">✕</button>
+                        <button id="btn-trivia-close" class="trivia-bar-close g-panel-close-btn" title="Close" aria-label="Close memory review">✕</button>
                       </div>
                       <!-- Body: full deck, revealed when drawer opens -->
                       <div class="trivia-body">
@@ -9248,6 +9397,13 @@
                   <!-- 3D Atlas tab — unchanged from before. -->
                   <section class="g-tab-pane hidden" data-gpane="atlas">
                     <div class="atlas-toolbar" style="justify-content: flex-end;">
+                      <!-- Mobile-only: toggles the colour legend (hidden by default on phones). -->
+                      <button id="btn-atlas-legend" class="mobile-legend-toggle" title="Show / hide the colour legend" aria-label="Toggle legend" aria-pressed="false">
+                        <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                          <line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/>
+                          <circle cx="3.5" cy="6" r="1.5"/><circle cx="3.5" cy="12" r="1.5"/><circle cx="3.5" cy="18" r="1.5"/>
+                        </svg>
+                      </button>
                       <button id="btn-atlas-alive" title="Toggle cosmos motion — drift, breathing, and node elasticity" style="font-weight:600">🧠 Alive Engram: On</button>
                       <button id="btn-atlas-fit" title="Frame all visible nodes">Fit</button>
                       <button id="btn-atlas-reset" title="Clear selection emphasis">Reset</button>
@@ -9271,12 +9427,16 @@
                            via localStorage ('graphnosis_atlas_nav_hidden'). -->
                       <div id="atlas-nav-help" class="atlas-nav-help">
                         <button id="btn-atlas-nav-close" class="atlas-nav-close" title="Hide">×</button>
-                        <div class="atlas-nav-row"><kbd>drag</kbd> <span>rotate</span></div>
-                        <div class="atlas-nav-row"><kbd>⌃</kbd>+<kbd>drag</kbd> <span>pan</span></div>
-                        <div class="atlas-nav-row"><kbd>scroll</kbd> <span>zoom</span></div>
-                        <div class="atlas-nav-row"><kbd>click</kbd> <span>select</span></div>
-                        <div class="atlas-nav-row"><kbd>Esc</kbd> <span>deselect</span></div>
-                        <div class="atlas-nav-row"><kbd>⌘K</kbd> <span>find a memory</span></div>
+                        <div class="atlas-nav-row atlas-nav-desktop"><kbd>drag</kbd> <span>rotate</span></div>
+                        <div class="atlas-nav-row atlas-nav-desktop"><kbd>⌃</kbd>+<kbd>drag</kbd> <span>pan</span></div>
+                        <div class="atlas-nav-row atlas-nav-desktop"><kbd>scroll</kbd> <span>zoom</span></div>
+                        <div class="atlas-nav-row atlas-nav-desktop"><kbd>click</kbd> <span>select</span></div>
+                        <div class="atlas-nav-row atlas-nav-desktop"><kbd>Esc</kbd> <span>deselect</span></div>
+                        <div class="atlas-nav-row atlas-nav-desktop"><kbd>⌘K</kbd> <span>find a memory</span></div>
+                        <div class="atlas-nav-row atlas-nav-mobile"><kbd>1-fgr drag</kbd> <span>rotate</span></div>
+                        <div class="atlas-nav-row atlas-nav-mobile"><kbd>3-fgr drag</kbd> <span>move</span></div>
+                        <div class="atlas-nav-row atlas-nav-mobile"><kbd>pinch</kbd> <span>zoom</span></div>
+                        <div class="atlas-nav-row atlas-nav-mobile"><kbd>tap</kbd> <span>select node</span></div>
                       </div>
                       <aside id="atlas-legend" class="atlas-legend">
                         <p class="legend-title">Edge categories</p>
@@ -9689,8 +9849,8 @@ ollama list</code></pre>
 
                 <!-- Detail pane: persistent right-side inspector -->
                 <aside class="g-detail hidden" id="g-detail">
-                  <div style="display:flex;align-items:center;justify-content:flex-end;padding:8px 0 0;">
-                    <button id="btn-detail-close" class="btn-ghost btn-sm" type="button" title="Close inspector">✕</button>
+                  <div class="g-detail-close-row">
+                    <button id="btn-detail-close" class="g-panel-close-btn" type="button" title="Close inspector" aria-label="Close inspector">✕</button>
                   </div>
                   <div class="g-detail-empty">
                     <p class="brain-subtitle" style="margin: 0;">Pick a memory or search to inspect it.</p>
@@ -9727,7 +9887,7 @@ ollama list</code></pre>
                 </a>
               </div>
               <div class="sources-filter-bar">
-                <input type="search" id="sources-filter" placeholder="Filter sources…" autocomplete="off" />
+                <input type="search" id="sources-filter" placeholder="Filter…" autocomplete="off" />
                 <select id="sources-engram-select" class="sources-engram-select" title="Filter by engram">
                   <option value="">All engrams</option>
                 </select>
@@ -9919,6 +10079,7 @@ ollama list</code></pre>
                 <button id="btn-configure-claude-desktop" data-mcp-client="claude-desktop">Configure Claude Desktop…</button>
                 <button id="btn-configure-claude-code" data-mcp-client="claude-code" style="margin-left: 6px;">Configure Claude Code (CLI)…</button>
                 <button id="btn-configure-cursor" data-mcp-client="cursor" style="margin-left: 6px;">Configure Cursor…</button>
+                <button id="btn-configure-copilot" style="margin-left: 6px;">Configure Copilot…</button>
               </div>
               <div class="panel">
                 <p class="panel-title">Mobile & Remote Access</p>
@@ -9949,6 +10110,16 @@ ollama list</code></pre>
                 </div>
                 <div id="connectors-list" class="connectors-list" aria-live="polite">
                   <!-- Populated by refreshConnectorsList() in main.ts -->
+                </div>
+                <!-- Poll interval: how often connectors re-scan as a backstop.
+                     Local-file connectors (GBrain, Obsidian, AI Context) also
+                     watch the folder and ingest within seconds of a change, so
+                     this mainly governs cloud connectors + first-scan retries. -->
+                <div class="connectors-interval-row" id="connectors-interval-row">
+                  <label for="connectors-interval-input">Check for new items every</label>
+                  <input type="number" id="connectors-interval-input" min="1" max="1440" step="1" value="15" />
+                  <span>minutes</span>
+                  <span class="connectors-interval-note">Local folders also sync instantly on change.</span>
                 </div>
               </div>
               <div class="panel">
@@ -10207,19 +10378,19 @@ ollama list</code></pre>
 
         </div>
         <div class="modal-sticky-fields">
-          <div style="display:flex; gap:10px;">
+          <div class="gw-name-id-row" style="display:flex; gap:10px;">
             <div class="row" style="flex:1;">
               <label for="gw-name">Display name</label>
               <input type="text" id="gw-name" placeholder="e.g. Work project · Music notes · Reading 2026" />
             </div>
-            <div class="row" style="flex:0 0 210px;">
+            <div class="row gw-id-field" style="flex:0 0 210px;">
               <label for="gw-id">Internal ID</label>
               <input type="text" id="gw-id" placeholder="slug-id" title="Filename inside your cortex — can't be changed later." />
             </div>
           </div>
           <div class="row" style="margin-top:8px;">
             <label>Sensitivity tier</label>
-            <div style="display:flex; gap:6px; margin-top:3px;">
+            <div class="gw-tier-row" style="display:flex; gap:6px; margin-top:3px;">
               <label style="flex:1; display:flex; align-items:center; gap:5px; cursor:pointer; font-size:12px;">
                 <input type="radio" name="gw-tier" value="public" />
                 <span style="color:var(--color-status-ok-bright); font-weight:600;">Public</span>
@@ -11405,42 +11576,44 @@ ollama list</code></pre>
               <li>Tap <strong>Save</strong> — Graphnosis tools appear in your next conversation</li>
             </ol>
 
-            <!-- VS Code / Copilot Chat integration -->
+            <!-- VS Code / Copilot Chat now has its own modal (#copilot-setup-modal),
+                 opened from Settings → "Configure Copilot…" and the sidebar Copilot button. -->
+
+            <!-- ── Browser access (personal-server mode) ──────────────────── -->
             <div style="margin-top: 16px; border-top: 1px solid var(--border); padding-top: 14px;">
-              <p style="font-size: 14px; font-weight: 600; margin: 0 0 10px; color: var(--fg-dim);">VS Code — Copilot Chat</p>
-
-              <!-- Option A: Extension -->
-              <div class="vscode-option">
-                <div class="vscode-option-header">
-                  <span class="vscode-option-label">Option A — Extension <span class="badge-recommended">Recommended</span></span>
-                </div>
-                <p class="subtitle" style="margin: 4px 0 8px;">
-                  Copilot calls <code>recall</code> automatically on relevant prompts — no <code>@</code> prefix needed.
-                  Also adds the <code>@graphnosis</code> participant and a "Save to memory" status bar shortcut.
-                </p>
-                <div style="display: flex; gap: 8px; flex-wrap: wrap;">
-                  <button class="copy-btn primary" id="btn-open-vscode-extension">Install extension</button>
-                  <button class="copy-btn" id="btn-copy-vscode-token">Copy token</button>
-                </div>
-                <p class="subtitle" style="margin: 6px 0 0; font-size: 13px;">
-                  After installing: open VS Code Settings → search <code>graphnosis</code> → paste the token above into <strong>Bearer Token</strong>.
-                </p>
+              <p style="font-size: 14px; font-weight: 600; margin: 0 0 6px;">Browser access — open the full app on any device</p>
+              <p class="subtitle" style="font-size: 14px; margin: 0 0 10px;">
+                Serve the Graphnosis UI in a browser so you can reach your cortex from a phone, tablet, or another computer —
+                locally or over Tailscale. Separate port from the MCP bridge above.
+              </p>
+              <div class="row" style="margin-bottom: 10px;">
+                <label style="display: flex; align-items: center; gap: 10px; cursor: pointer;">
+                  <input type="checkbox" id="mobile-httpui-enabled" style="width: 16px; height: 16px;" />
+                  <span>
+                    <strong>Enable browser access</strong>
+                    <span class="mobile-badge off" id="mobile-httpui-badge">Off</span>
+                  </span>
+                </label>
               </div>
-
-              <!-- Option B: mcp.json -->
-              <div class="vscode-option" style="margin-top: 10px;">
-                <div class="vscode-option-header">
-                  <span class="vscode-option-label">Option B — <code>.vscode/mcp.json</code></span>
+              <div id="mobile-httpui-details" style="display: none;">
+                <div class="mobile-qr-block">
+                  <img id="mobile-httpui-qr" alt="QR code to open Graphnosis in your browser" class="hidden" />
+                  <p class="mobile-qr-caption">Scan to open Graphnosis on your phone — unlocks automatically</p>
                 </div>
-                <p class="subtitle" style="margin: 4px 0 6px;">
-                  Adds Graphnosis as an MCP server for manual tool use. Save the snippet below as
-                  <code>.vscode/mcp.json</code> in your project root, then use tools explicitly in Copilot Chat.
-                </p>
+                <p style="font-size: 14px; font-weight: 600; margin: 0 0 4px; color: var(--fg-dim);">Browser URL</p>
                 <div class="copy-row">
-                  <span class="copy-field" id="mobile-vscode-config"
-                    style="font-family: monospace; font-size: 13px; max-height: 80px; overflow: auto; white-space: pre;"></span>
-                  <button class="copy-btn" id="btn-copy-vscode-config">Copy</button>
+                  <span class="copy-field" id="mobile-httpui-url"></span>
+                  <button class="copy-btn" data-copy-target="mobile-httpui-url">Copy</button>
                 </div>
+                <p style="font-size: 14px; font-weight: 600; margin: 8px 0 4px; color: var(--fg-dim);">Access token</p>
+                <div class="copy-row">
+                  <span class="copy-field secret" id="mobile-httpui-token" title="Click to select all"></span>
+                  <button class="copy-btn" data-copy-target="mobile-httpui-token">Copy</button>
+                </div>
+                <p class="subtitle" style="font-size: 14px; margin-top: 6px;">
+                  The QR encodes the token so the phone unlocks with one scan. The URL + token also work if typed manually.
+                  Changes take effect the next time the cortex is unlocked.
+                </p>
               </div>
             </div>
           </div>
@@ -11450,6 +11623,54 @@ ollama list</code></pre>
           <button id="btn-mobile-back" class="hidden">Back</button>
           <button id="btn-mobile-next" class="primary">Next</button>
           <button id="btn-mobile-close">Close</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── VS Code / Copilot Chat setup (own modal) ──────────────────────── -->
+    <div id="copilot-setup-modal" class="modal-backdrop hidden">
+      <div class="modal" style="max-width: 560px;">
+        <div class="modal-header">
+          <h2>VS Code — Copilot Chat</h2>
+          <p class="subtitle">Wire GitHub Copilot Chat in VS Code to this cortex over MCP.</p>
+        </div>
+        <div class="modal-body">
+          <!-- Option A: Extension -->
+          <div class="vscode-option">
+            <div class="vscode-option-header">
+              <span class="vscode-option-label">Option A — Extension <span class="badge-recommended">Recommended</span></span>
+            </div>
+            <p class="subtitle" style="margin: 4px 0 8px;">
+              Copilot calls <code>recall</code> automatically on relevant prompts — no <code>@</code> prefix needed.
+              Also adds the <code>@graphnosis</code> participant and a "Save to memory" status bar shortcut.
+            </p>
+            <div style="display: flex; gap: 8px; flex-wrap: wrap;">
+              <button class="copy-btn primary" id="btn-copilot-open-extension">Install extension</button>
+              <button class="copy-btn" id="btn-copilot-copy-token">Copy token</button>
+            </div>
+            <p class="subtitle" style="margin: 6px 0 0; font-size: 13px;">
+              After installing: open VS Code Settings → search <code>graphnosis</code> → paste the token into <strong>Bearer Token</strong>.
+            </p>
+          </div>
+          <!-- Option B: mcp.json -->
+          <div class="vscode-option" style="margin-top: 10px;">
+            <div class="vscode-option-header">
+              <span class="vscode-option-label">Option B — <code>.vscode/mcp.json</code></span>
+            </div>
+            <p class="subtitle" style="margin: 4px 0 6px;">
+              Adds Graphnosis as an MCP server for manual tool use. Save the snippet below as
+              <code>.vscode/mcp.json</code> in your project root, then use tools explicitly in Copilot Chat.
+            </p>
+            <div class="copy-row">
+              <span class="copy-field" id="copilot-vscode-config"
+                style="font-family: monospace; font-size: 13px; max-height: 120px; overflow: auto; white-space: pre;"></span>
+              <button class="copy-btn" id="btn-copilot-copy-config">Copy</button>
+            </div>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <span class="filler"></span>
+          <button id="btn-copilot-close">Close</button>
         </div>
       </div>
     </div>
@@ -11589,6 +11810,60 @@ ollama list</code></pre>
           Don't show this on startup
         </label>
       </div>
+    </div>
+
+    <!-- Mobile bottom navigation — hidden on desktop via mobile.css media query -->
+    <nav class="mobile-bottom-nav" aria-label="Main navigation">
+      <button class="mobile-nav-btn active" data-mode="atlas" aria-label="Memory Studio">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M9 3a3 3 0 0 0-3 3 3 3 0 0 0-1 5.8A3 3 0 0 0 7 17a2.5 2.5 0 0 0 5 .5V5a2 2 0 0 0-2-2z"/>
+          <path d="M15 3a3 3 0 0 1 3 3 3 3 0 0 1 1 5.8A3 3 0 0 1 17 17a2.5 2.5 0 0 1-5 .5"/>
+        </svg>
+        <span class="mobile-nav-label">Memory</span>
+      </button>
+      <button class="mobile-nav-btn" data-mode="sources" aria-label="Sources">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+          <polyline points="14 2 14 8 20 8"/>
+          <line x1="16" y1="13" x2="8" y2="13"/>
+          <line x1="16" y1="17" x2="8" y2="17"/>
+          <polyline points="10 9 9 9 8 9"/>
+        </svg>
+        <span class="mobile-nav-label">Sources</span>
+      </button>
+      <button class="mobile-nav-btn" data-mode="mcp-tools" aria-label="MCP Tools">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <circle cx="5" cy="6" r="2"/><circle cx="19" cy="6" r="2"/><circle cx="12" cy="18.5" r="2.2"/>
+          <path d="M6.7 7.3 10.6 16.6M17.3 7.3 13.4 16.6"/>
+        </svg>
+        <span class="mobile-nav-label">MCP</span>
+      </button>
+      <button class="mobile-nav-btn" data-mode="status" aria-label="Status">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M3 12h3.5l2.5 7 4-14 2.5 7H21"/>
+        </svg>
+        <span class="mobile-nav-label">Status</span>
+      </button>
+      <button class="mobile-nav-btn" data-mode="settings" aria-label="Settings">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <circle cx="12" cy="12" r="3"/>
+          <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+        </svg>
+        <span class="mobile-nav-label">Settings</span>
+      </button>
+    </nav>
+
+    <!-- Rotate-to-portrait gate — shown only on phone-sized devices in
+         landscape (CSS media query). The web can't force device orientation,
+         so we block the landscape layout and ask the user to rotate. -->
+    <div id="rotate-portrait-overlay" class="rotate-portrait-overlay" aria-hidden="true">
+      <svg viewBox="0 0 24 24" width="56" height="56" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <rect x="7" y="2" width="10" height="20" rx="2"/>
+        <path d="M2 9a6 6 0 0 1 6-6" />
+        <polyline points="2 5 2 9 6 9"/>
+      </svg>
+      <p class="rotate-portrait-title">Rotate to portrait</p>
+      <p class="rotate-portrait-sub">Graphnosis is designed for portrait on phones.</p>
     </div>
 
     <script type="module" src="/src/main.ts"></script>

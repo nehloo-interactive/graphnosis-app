@@ -1,0 +1,913 @@
+/* ── Graphnosis Mobile Responsive Layer ───────────────────────────────────────
+ *
+ * Applies below 768px (portrait phone / small tablet).
+ * Landscape ≥600px reverts to the desktop sidebar layout automatically.
+ * The 3D graph stays — it's a full-screen view the user navigates to.
+ * ─────────────────────────────────────────────────────────────────────────── */
+
+/* ── Bottom navigation bar ─────────────────────────────────────────────────── */
+
+/* Hamburger toggle — hidden on desktop, shown ≤768px by the media query. */
+.mobile-menu-toggle {
+  display: none;
+}
+
+/* Active-engram name in the health panel — mobile-only (desktop shows it in
+   the header picker). Hidden on desktop. */
+.g-health-engram {
+  display: none;
+}
+
+/* Legend toggle button (3D Engram toolbar) — mobile-only. */
+.mobile-legend-toggle {
+  display: none;
+}
+
+/* Mobile top-right action cluster (engram · search · menu) — mobile-only. */
+.mobile-topbar-actions {
+  display: none;
+}
+
+/* 3D Engram nav cheatsheet: touch rows hidden on desktop. */
+.atlas-nav-row.atlas-nav-mobile {
+  display: none;
+}
+
+/* Left-align the header title + tagline in the BROWSER (no macOS traffic
+   lights → no 88px inset needed). Only the Mac app keeps the inset. Scoped to
+   widths where the full desktop header shows (≥1025px, or ≥769px landscape) so
+   it doesn't override the mobile layout's own header padding. */
+@media (min-width: 1025px), (min-width: 769px) and (orientation: landscape) {
+  body.browser-mode .app-header { padding-left: 16px !important; }
+}
+
+/* Top-bar Ghampus mascot + label, right of the "Graphnosis" title.
+   The wrapper is the clickable "Meet Ghampus" target (the studio identity
+   block was removed, so this is now the only way in). Inline-flex keeps the
+   mascot + label on one baseline; it carries the cursor + focus affordance. */
+.header-ghampus-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0;
+  cursor: pointer;
+  border-radius: 6px;
+  outline: none;
+}
+.header-ghampus-btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.header-ghampus-btn:hover .header-ghampus-label { color: var(--fg); }
+@keyframes ghampus-bob {
+  0%, 100% { transform: translateY(0) rotate(-2deg); }
+  50%      { transform: translateY(-3px) rotate(2deg); }
+}
+.header-ghampus {
+  height: 44px;
+  width: auto;
+  flex-shrink: 0;
+  opacity: 0.95;
+  /* Pull the mascot tight against the title + tagline. The PNG carries some
+     internal transparent padding, so a generous negative margin closes the
+     visual gap without overlapping the opaque glyphs/text. */
+  margin: 0 -10px;
+  animation: ghampus-bob 3.2s ease-in-out infinite;
+  transform-origin: 50% 70%;
+}
+@media (prefers-reduced-motion: reduce) {
+  .header-ghampus { animation: none; }
+}
+.header-ghampus-label {
+  font-style: italic;
+  color: var(--fg-dim);
+  white-space: nowrap;
+  min-width: 0;
+  /* Shrink dynamically so the tagline fits between the mascot and the search
+     button on narrow screens instead of being clipped — scales with viewport. */
+  font-size: clamp(8px, 2.5vw, 12px);
+}
+
+/* Auto-unlock (QR / ?token=): hide the lock FORM so it doesn't flash before
+   the app loads — only the logo/title + a "Connecting…" line shows. The
+   "Forgot passphrase" link is hidden too. Reverted (class removed in main.ts)
+   if the token is rejected, so the form reappears for a retry. */
+body.browser-auto-unlock #view-unlock .unlock-card,
+body.browser-auto-unlock #view-unlock .forgot-passphrase-link {
+  display: none !important;
+}
+
+/* ── Server-side folder picker (browser / personal-server mode) ───────────── */
+.folder-picker-overlay {
+  position: fixed; inset: 0; z-index: 1100;
+  display: flex; align-items: center; justify-content: center;
+  background: rgba(0,0,0,0.5);
+}
+.folder-picker {
+  width: min(440px, 92vw); max-height: 80vh;
+  display: flex; flex-direction: column;
+  background: var(--color-bg-elev, var(--bg-elev, #161b22));
+  border: 1px solid var(--border); border-radius: 12px;
+  box-shadow: 0 16px 48px rgba(0,0,0,0.5); overflow: hidden;
+}
+.folder-picker-head {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 12px 14px; border-bottom: 1px solid var(--border);
+}
+.folder-picker-x {
+  background: none; border: none; color: var(--fg-dim); font-size: 20px;
+  cursor: pointer; line-height: 1; padding: 0 4px;
+}
+.folder-picker-path {
+  padding: 8px 14px; font-family: ui-monospace, monospace; font-size: 12px;
+  color: var(--fg-dim); word-break: break-all; border-bottom: 1px solid var(--border);
+}
+.folder-picker-list { overflow-y: auto; padding: 6px; flex: 1; min-height: 80px; }
+.folder-picker-list .fp-row {
+  display: block; width: 100%; text-align: left; padding: 9px 10px;
+  background: none; border: none; border-radius: 6px; color: var(--fg);
+  font-size: 14px; cursor: pointer;
+}
+.folder-picker-list .fp-row:hover { background: color-mix(in oklab, var(--accent) 10%, transparent); }
+.folder-picker-list .fp-up { color: var(--accent); }
+.folder-picker-list .fp-empty { padding: 12px; color: var(--fg-dim); font-size: 13px; }
+.folder-picker-actions {
+  display: flex; justify-content: flex-end; gap: 8px;
+  padding: 12px 14px; border-top: 1px solid var(--border);
+}
+
+.mobile-bottom-nav {
+  display: none; /* hidden on desktop; shown by media query below */
+  position: fixed;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  height: 56px;
+  background: var(--color-bg-elev, var(--bg-elev, #fff));
+  border-top: 1px solid var(--border, #e2e8f0);
+  z-index: 200;
+  /* Safe area inset for iPhone home bar */
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+}
+
+.mobile-nav-btn {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  padding: 6px 4px;
+  background: none;
+  border: none;
+  color: var(--fg-muted, #94a3b8);
+  cursor: pointer;
+  /* Minimum 44×44 touch target (iOS HIG) */
+  min-height: 44px;
+  -webkit-tap-highlight-color: transparent;
+  transition: color 0.15s;
+}
+
+.mobile-nav-btn:active {
+  opacity: 0.7;
+}
+
+.mobile-nav-btn.active {
+  color: var(--accent, #0ea5e9);
+}
+
+.mobile-nav-btn svg {
+  width: 22px;
+  height: 22px;
+  stroke-width: 1.7;
+  flex-shrink: 0;
+}
+
+.mobile-nav-label {
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.01em;
+  line-height: 1;
+}
+
+/* ── Mobile layout ─────────────────────────────────────────────────────────
+   Phones (≤768px, any orientation) AND tablets in PORTRAIT (≤1024px portrait —
+   covers iPad Mini/Air/Pro held upright). Tablet LANDSCAPE keeps the desktop
+   two-column layout, condensed to fit (see the tablet-landscape block below). */
+
+@media (max-width: 768px), (max-width: 1024px) and (orientation: portrait) {
+  /* Show the bottom nav ONLY once the cortex is unlocked — the panes it
+     switches between live inside #view-app, which is hidden on the lock
+     screen. render() toggles body.app-unlocked. */
+  body.app-unlocked .mobile-bottom-nav {
+    display: flex;
+    transition: transform 0.25s ease;
+  }
+
+  /* ── On-screen keyboard: slide the bottom nav out of the way and give the
+     canvas room to scroll the focused field above the keyboard. main.ts adds
+     body.keyboard-open + sets --kb-height via the VisualViewport API. Reverts
+     (animated) when the keyboard hides. */
+  body.app-unlocked.keyboard-open .mobile-bottom-nav {
+    transform: translateY(120%);
+  }
+  body.keyboard-open .app-canvas {
+    padding-bottom: calc(var(--kb-height, 0px) + 12px) !important;
+  }
+
+  /* Kill page-level horizontal scroll — content must reflow to the viewport,
+     not spill past it. Individual rows (tabs, chips) opt into their own
+     horizontal scroll below. */
+  html, body, #view-app, .app-shell, .app-body, .app-canvas, .mode-pane {
+    max-width: 100vw !important;
+    overflow-x: hidden !important;
+  }
+
+  /* Single-column layout — canvas fills full width */
+  .app-body {
+    grid-template-columns: 1fr !important;
+  }
+
+  /* Hide the desktop status-bar footer — the bottom nav replaces it. Leaving it
+     in the shell's bottom grid row made the canvas end above it (the fixed nav
+     overlapping), creating dead space; removing it lets the interior fill all
+     the way down to the tab bar (most visible in short landscape viewports). */
+  .app-statusbar { display: none !important; }
+
+  /* Hide the desktop sidebar entirely */
+  .app-rail {
+    display: none !important;
+  }
+
+  /* Canvas: tighten horizontal padding, leave room for fixed bottom nav */
+  .app-canvas {
+    padding: 8px 12px calc(56px + env(safe-area-inset-bottom, 0px) + 8px) !important;
+  }
+
+  /* ── Header: title · engram picker · search · hamburger ────────────────
+     Drop the 88px Mac traffic-light inset. The header stays one tidy row:
+     the engram picker stays visible (most-used control); the rest of the
+     actions collapse behind the ☰. */
+  .app-header {
+    padding: 8px 10px !important;
+    /* Reserve room on the right for the fixed action cluster (search + menu
+       ≈ 2 × 38px) so the title never underlaps it. */
+    padding-right: 90px !important;
+    flex-wrap: nowrap !important;
+    gap: 6px !important;
+    -webkit-app-region: no-drag;
+    position: relative;
+    overflow: visible !important;
+    justify-content: flex-start !important;
+  }
+  .app-header-left { flex: 1 1 auto; min-width: 0; }
+  .app-title { font-size: 17px !important; }
+
+  /* Top-right cluster: FIXED to the viewport (not the header) so it can never
+     drift past the right edge even if some content briefly overflows. The
+     header never scrolls (it's a grid row above the scrolling canvas), so this
+     stays aligned with it. */
+  .mobile-topbar-actions {
+    align-items: center;
+    gap: 2px;
+    position: fixed !important;
+    right: 8px;
+    top: 6px;
+    z-index: 60;
+  }
+  /* Only once unlocked — no search/menu on the lock screen (matches bottom nav). */
+  body.app-unlocked .mobile-topbar-actions { display: flex !important; }
+
+  /* Toggles — bulletproof visible: explicit size, colour. */
+  .mobile-menu-toggle {
+    display: inline-flex !important;
+    visibility: visible !important;
+    opacity: 1 !important;
+    align-items: center;
+    justify-content: center;
+    flex: 0 0 auto !important;
+    width: 38px; height: 38px;
+    padding: 0;
+    background: transparent;
+    border: none;
+    color: var(--fg, #e6edf3) !important;
+    cursor: pointer;
+  }
+
+  /* Brain engram picker: a 🧠 button with a transparent native <select>
+     overlaid on top, so tapping opens the native engram list (showing full
+     names) while the header only ever shows the compact icon. */
+  .mobile-engram-wrap { position: relative; display: inline-flex; }
+  .mobile-engram-select {
+    position: absolute; inset: 0;
+    width: 100%; height: 100%;
+    opacity: 0; cursor: pointer;
+    -webkit-appearance: none; appearance: none;
+    border: none; background: none;
+    z-index: 1;   /* on top of the icon button so taps open the list */
+  }
+
+  /* ── Action cluster: fully hidden when closed (engram picker is NOT in the
+     header on mobile — the active engram name shows in the health panel); a
+     dropdown panel with exactly four actions when the hamburger is open. ──── */
+  .app-header-right {
+    display: none !important;
+  }
+  body.mobile-menu-open .app-header-right {
+    display: flex !important;
+    position: absolute;
+    top: 100%;
+    /* Anchor from the LEFT with an explicit viewport-based width instead of
+       left+right. left+right resolves against .app-header, which can be wider
+       than the viewport on mobile — that's what made the menu spill off the
+       right edge. box-sizing:border-box so the 12px padding stays inside. */
+    left: 8px;
+    right: auto;
+    width: calc(100vw - 16px) !important;
+    max-width: calc(100vw - 16px) !important;
+    box-sizing: border-box !important;
+    flex-direction: column !important;
+    align-items: stretch !important;
+    gap: 6px !important;
+    padding: 10px !important;
+    background: var(--color-bg-elev, var(--bg-elev));
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    box-shadow: 0 12px 32px rgba(0,0,0,0.4);
+    z-index: 300;
+  }
+  /* Menu surfaces: engram picker (the mobile engram switcher), +New engram,
+     +Files, +Folders, Lock cortex. Hide the sensitivity stack, bug, help. */
+  body.mobile-menu-open .app-header-right > .header-engram-stack,
+  body.mobile-menu-open .app-header-right > #btn-report-bug,
+  body.mobile-menu-open .app-header-right > #btn-help {
+    display: none !important;
+  }
+  /* The engram picker is wrapped by the custom-picker (.engram-picker-wrap +
+     #engram-picker-button) — target those, not the now-hidden native select. */
+  body.mobile-menu-open .app-header-right > .engram-picker-wrap,
+  body.mobile-menu-open .app-header-right > #btn-add-file,
+  body.mobile-menu-open .app-header-right > #btn-add-folder,
+  body.mobile-menu-open .app-header-right > #btn-new-graph,
+  body.mobile-menu-open .app-header-right > #btn-lock {
+    display: flex !important;
+    width: 100% !important;
+    max-width: none !important;
+    box-sizing: border-box !important;
+    font-size: 13.5px !important;
+    padding: 8px 12px !important;
+    justify-content: flex-start;
+    text-align: left;
+  }
+  /* The picker button fills its full-width wrap. */
+  body.mobile-menu-open .app-header-right > .engram-picker-wrap {
+    padding: 0 !important;
+  }
+  body.mobile-menu-open .app-header-right > .engram-picker-wrap > #engram-picker-button {
+    width: 100% !important;
+    max-width: none !important;   /* lift the desktop 220px cap so it fills the row */
+    box-sizing: border-box !important;
+    justify-content: space-between !important;
+    font-size: 13.5px !important;
+    padding: 8px 12px !important;
+  }
+
+  /* Hide header elements that don't fit on narrow screens */
+  .app-header .header-tagline,
+  .app-header .header-subtitle {
+    display: none;
+  }
+
+  /* Hide header elements that don't fit on narrow screens */
+  .app-header .header-tagline,
+  .app-header .header-subtitle {
+    display: none;
+  }
+
+  /* ── Dashboard header: stack vertically, hide Ghampus, search-on-demand ── */
+  .g-pane-header {
+    flex-direction: column !important;
+    align-items: stretch !important;
+    gap: 10px !important;
+  }
+  /* Ghampus mascot + tagline block: removed on mobile to save vertical space */
+  #ghampus-header { display: none !important; }
+
+  /* Search: hidden until the magnifier in the header is tapped */
+  .g-search-wrap { width: 100% !important; display: none !important; }
+  body.mobile-search-open .g-search-wrap { display: flex !important; }
+
+  /* Cortex stats: single line, scroll horizontally instead of wrapping */
+  #g-federated-stats {
+    width: 100% !important;
+    display: flex !important;
+    flex-wrap: nowrap !important;
+    overflow-x: auto !important;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: none;
+    gap: 6px;
+    font-size: 13px;
+    white-space: nowrap;
+  }
+  #g-federated-stats::-webkit-scrollbar { display: none; }
+  #g-federated-stats > span { flex-shrink: 0; }
+
+  /* ── Engram health: compact pill, tap to expand ─────────────────────────
+     The desktop inline variant uses `flex: 0 0 360px` (a 360px WIDTH in the
+     desktop row). In our mobile column that flex-basis becomes a 360px HEIGHT
+     — the giant empty box. Force auto sizing + a compact inline pill, and
+     reveal the phrase/numbers only when tapped (.g-health-expanded). */
+  .g-health,
+  .g-health.g-health-inline {
+    display: flex !important;
+    flex-wrap: wrap !important;   /* lets the detail box drop to its own row */
+    flex: 0 0 auto !important;
+    width: 100% !important;
+    max-width: 100% !important;
+    height: auto !important;
+    align-items: center;
+    gap: 6px 10px !important;
+    padding: 8px 12px !important;
+    cursor: pointer;
+  }
+  .g-health .g-health-gauge { flex: 0 0 auto; flex-direction: row !important; }
+  .g-health .g-health-meta { display: none; }
+  /* Bar row: "A —— [engram name, 2 lines max]" — engram name fills the rest. */
+  .g-health .g-health-engram {
+    display: -webkit-box !important;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+    flex: 1 1 auto;
+    min-width: 0;
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--fg);
+    line-height: 1.25;
+  }
+  /* Tap → the phrase + status appear in a SEPARATE box BELOW the bar, two
+     rows (phrase, then the memories/trust line). */
+  .g-health.g-health-expanded .g-health-meta {
+    display: block !important;
+    flex: 1 1 100% !important;
+    /* Always wrap to its own row BELOW the bar, so the grade + engram name stay
+       together on the top row (the engram span sits after .meta in the DOM, so
+       without this it would get pushed to a third row under the box). */
+    order: 1;
+    margin-top: 8px;
+    padding: 10px 12px;
+    background: var(--color-bg, var(--bg, #0e0e0f));
+    border: 1px solid var(--border);
+    border-radius: 8px;
+  }
+  .g-health.g-health-expanded .g-health-phrase { margin: 0 0 4px !important; }
+  .g-health.g-health-expanded .g-health-detail { margin: 0 !important; }
+
+  /* ── MemoryStudio main grid: single column (no 360px inspector overflow) ── */
+  .g-main { grid-template-columns: 1fr !important; }
+
+  /* ── Inspector / Memory-trace as an ANIMATED full-screen DRAWER ──────────
+     The drawer stays rendered (so it can transition) and slides in from the
+     right; when .hidden it slides back off-screen. On a node tap the inspector
+     loses .hidden → slides in; its × button re-adds .hidden → slides out.
+     We override the global `.hidden { display:none }` here so the transform
+     can animate instead of snapping. */
+  #g-detail {
+    position: fixed !important;
+    top: 0; left: 0; right: 0;
+    bottom: calc(56px + env(safe-area-inset-bottom, 0px)) !important;
+    width: 100% !important;
+    max-width: 100% !important;
+    margin: 0 !important;
+    /* Below the bottom tab bar (z-index 200) so the nav is never covered. */
+    z-index: 190 !important;
+    background: var(--color-bg, var(--bg, #0e0e0f)) !important;
+    border: none !important;
+    overflow-y: auto !important;
+    -webkit-overflow-scrolling: touch;
+    padding: 12px 14px calc(env(safe-area-inset-bottom, 0px) + 12px) !important;
+    box-shadow: 0 -2px 24px rgba(0,0,0,0.5);
+    transform: translateY(100%);   /* slide up from the bottom */
+    transition: transform 0.45s cubic-bezier(0.22, 1, 0.36, 1);
+    will-change: transform;
+  }
+  #g-detail.hidden {
+    display: block !important;   /* keep rendered so the slide animates */
+    transform: translateY(100%);
+    pointer-events: none;
+  }
+  #g-detail:not(.hidden) {
+    transform: translateY(0);
+    pointer-events: auto;
+  }
+
+  /* ── MemoryStudio intro banner: hidden on mobile so the Remember tool is
+     the first thing the user sees (the default tool is forced to 'remember'
+     on mobile in main.ts). */
+  .studio-banner { display: none !important; }
+
+  /* ── Ingest toast stack: full-width, sit above the bottom nav ──────────── */
+  .g-toast-stack {
+    right: 8px !important;
+    left: 8px !important;
+    width: auto !important;
+    bottom: calc(56px + env(safe-area-inset-bottom, 0px) + 8px) !important;
+  }
+
+  /* needs-review / stranded overlays: contained, scrollable, above content */
+  .needs-review-overlay { padding: 12px 14px !important; }
+
+  /* ── New Engram wizard modal: stack everything so nothing overflows ─────── */
+  /* Display name + Internal ID: stack vertically, both full-width. */
+  .gw-name-id-row { flex-direction: column !important; gap: 10px !important; }
+  .gw-name-id-row > .row { flex: 0 0 auto !important; width: 100% !important; }
+  /* Sensitivity tier: one option per row (was 3 cramped columns). */
+  .gw-tier-row { flex-direction: column !important; gap: 8px !important; }
+  .gw-tier-row > label { flex: 0 0 auto !important; }
+  /* Template grid: single column on the narrowest screens. */
+  .graph-templates { grid-template-columns: 1fr !important; }
+  /* Footer: the long privacy note wraps to its own full-width row above the
+     Cancel / Create buttons instead of crowding them. */
+  .modal-footer { flex-wrap: wrap !important; justify-content: flex-end !important; }
+  .modal-footer .filler { flex: 1 1 100% !important; order: -1; margin-bottom: 4px; }
+
+  /* ── Tab row: single row, horizontal scroll (per explicit request) ──────
+     The four view tabs (MemoryStudio / 3D Engram / Deterministic Consolidation
+     / Non-Deterministic Aid) stay on one row and scroll sideways. */
+  .g-tabs {
+    flex-wrap: nowrap !important;
+    overflow-x: auto !important;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: none;
+  }
+  .g-tabs::-webkit-scrollbar { display: none; }
+  .g-tab { flex-shrink: 0; }
+
+  /* Studio action chips WRAP (no horizontal scroll). */
+  .studio-chips { flex-wrap: wrap !important; overflow-x: visible !important; }
+  .studio-chip { flex-shrink: 0; }
+  /* "All Tools" chip is redundant on mobile — the bottom-nav MCP tab covers it. */
+  .studio-chip-all-tools { display: none !important; }
+
+  /* ── Skills w/ Goals: flow naturally instead of a fixed-height inner
+     viewport (which clipped the first row under the sticky chips and capped
+     the trainer). Let the library + trainer stack and grow; the page scrolls. */
+  .lb-section[data-studio-tool="skills"] {
+    height: auto !important;
+    overflow: visible !important;
+    padding-bottom: 0 !important;
+  }
+  .lb-section[data-studio-tool="skills"] .skills-pane,
+  .skills-pane { height: auto !important; overflow: visible !important; }
+  .skills-library,
+  .skills-trainer { height: auto !important; overflow: visible !important; min-height: 0 !important; }
+  .skills-library-list { overflow: visible !important; max-height: none !important; }
+
+  /* ── Recall tool: stack the two result panels vertically, Raw Context on
+     top, each as tall as its content (no side-by-side, no internal scroll). */
+  .studio-recall-panels {
+    grid-template-columns: 1fr !important;
+    flex: none !important;
+  }
+  #studio-raw-panel { order: -1 !important; }   /* Raw Context above Local LLM */
+  .studio-recall-panel { min-height: 0 !important; }
+  .studio-panel-content {
+    flex: none !important;
+    overflow: visible !important;
+    max-height: none !important;
+  }
+
+  /* ── Cards / panels: never exceed the viewport ──────────────────────────── */
+  .panel, .mode-pane > *, .studio-banner, .checkin-deck, .checkin-card,
+  .skills-trainer, .source-row, .settings-section {
+    max-width: 100% !important;
+    box-sizing: border-box;
+  }
+
+  /* Atlas pane: let the 3D canvas fill the available height */
+  [data-pane="atlas"] {
+    display: flex;
+    flex-direction: column;
+  }
+
+  /* Atlas canvas (Three.js/Deck.gl container) — expand to fill */
+  .atlas-canvas-wrap,
+  #atlas-canvas-container,
+  canvas.atlas-canvas {
+    flex: 1 1 0;
+    min-height: 0;
+    width: 100% !important;
+  }
+
+  /* Search bar: full width on mobile */
+  .atlas-search-row,
+  .search-bar-wrap {
+    width: 100% !important;
+    max-width: none !important;
+  }
+
+  /* Mode pane: ensure it uses full height within the scrollable canvas */
+  .mode-pane {
+    min-height: 100%;
+  }
+
+  /* Checkin deck / card stack: slightly narrower gap */
+  .checkin-deck {
+    gap: 8px;
+  }
+
+  /* Inspector / detail panels: full width */
+  .inspector-panel,
+  .detail-panel,
+  .node-detail {
+    width: 100% !important;
+    max-width: none !important;
+  }
+
+  /* Skills grid: single column */
+  .skills-grid,
+  .skill-list {
+    grid-template-columns: 1fr !important;
+  }
+
+  /* Sources list: full width rows */
+  .source-row,
+  .source-item {
+    flex-wrap: wrap;
+  }
+
+  /* Settings: full-width sections */
+  .settings-section {
+    max-width: none !important;
+  }
+
+  /* Modals: fit ABOVE the bottom tab bar so the footer (Save/Cancel) is always
+     reachable. Top-align the backdrop and reserve space for the nav; cap the
+     modal height to the area above it (the .modal-body already scrolls). */
+  .modal-backdrop {
+    align-items: flex-start !important;
+    padding: 10px 10px calc(56px + env(safe-area-inset-bottom, 0px) + 14px) !important;
+    overflow-y: auto !important;
+  }
+  /* Let the whole modal grow to its content and scroll as ONE unit inside the
+     backdrop — instead of an internally-split body+pinned-fields layout that
+     squished the templates section to near-zero height on a phone. */
+  .modal {
+    width: 100% !important;
+    max-width: none !important;
+    max-height: none !important;
+  }
+  .modal-body {
+    overflow: visible !important;
+    max-height: none !important;
+    flex: none !important;
+  }
+  .modal-sticky-fields { flex: none !important; }
+
+  /* Chips / studio chips: allow wrapping */
+  .studio-chips,
+  .chip-row {
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+
+  /* Reduce some excessive padding in content cards */
+  .panel {
+    padding: 12px 14px !important;
+  }
+
+  /* ── Onboarding tour: fit the viewport, scroll the body, pin the buttons ── */
+  .tour-card {
+    /* FIXED height (not auto) so every step has the identical footprint and
+       the Skip/Back/Next row sits at the same Y on every card — the user
+       never has to hunt for the buttons. Same principle as the desktop
+       640px height, but sized to the phone viewport. 100dvh accounts for
+       mobile browser chrome (address bar) better than vh. */
+    height: calc(100dvh - 24px) !important;
+    max-height: calc(100dvh - 24px) !important;
+    margin: 12px !important;
+    padding: 18px 18px !important;
+  }
+
+  /* Body scrolls internally; everything above/below stays put */
+  .tour-body {
+    overflow-y: auto !important;
+    -webkit-overflow-scrolling: touch;
+    min-height: 0; /* allow the flex child to shrink so overflow engages */
+  }
+
+  /* Step dots + connect area must not be squeezed by the scrolling body */
+  .tour-step-indicator { flex-shrink: 0; }
+  .tour-connect-area.visible { flex-shrink: 1; }
+
+  /* Action row pinned at the bottom of the card, always visible */
+  .tour-actions {
+    flex-shrink: 0;
+    padding-top: 12px;
+    margin-top: 4px;
+    border-top: 1px solid var(--color-border, #2d3748);
+    background: var(--color-surface-card, inherit);
+  }
+
+  /* ── Stranded Memories trivia bar: hidden on mobile (for now) ───────────── */
+  #trivia-drawer { display: none !important; }
+
+  /* ── Sources: filter on its own row; engram select + Reingest below ─────── */
+  .sources-filter-bar {
+    flex-wrap: wrap !important;
+    gap: 8px !important;
+  }
+  .sources-filter-bar > input[type="search"] { flex: 1 1 100% !important; }
+  .sources-engram-select { max-width: none !important; flex: 1 1 auto !important; }
+  #sources-reingest-all-btn { flex: 0 0 auto !important; }
+  /* The Re-chunk confirmation sits full-width below the bar, not as an
+     overlapping fixed-width popup. */
+  .sources-reingest-all-confirm {
+    min-width: 0 !important;
+    width: 100% !important;
+    box-sizing: border-box;
+  }
+
+  /* ── Source rows: title on top (wraps), meta + chips + buttons underneath ─ */
+  .source-row {
+    flex-wrap: wrap !important;
+    align-items: center;
+    gap: 6px !important;
+  }
+  .source-row .source-name {
+    flex: 1 1 100% !important;
+    white-space: normal !important;
+    overflow-wrap: anywhere;
+    font-weight: 600;
+  }
+  .source-row .source-meta,
+  .source-row .source-added-by,
+  .source-row .source-kind-badge,
+  .source-row button {
+    flex: 0 0 auto;
+  }
+  /* "Show in Finder" is a native macOS action — meaningless in the browser. */
+  .source-row .btn-show-finder { display: none !important; }
+  /* The JS-built "Move to:" inline editor → two rows:
+       row 1: "Move to:" + engram dropdown
+       row 2: [Move] [Cancel]
+     (the actions span has flex-basis 100% so it wraps below). */
+  .source-row-move-picker {
+    flex-wrap: wrap !important;
+    row-gap: 8px !important;
+    width: 100%;
+  }
+  .source-row-move-label { flex: 0 0 auto !important; }
+  .source-row-move-select { flex: 1 1 auto !important; min-width: 0; }
+  .source-row-move-actions {
+    flex: 1 1 100% !important;
+    display: flex !important;
+    gap: 8px;
+  }
+  .source-row-move-actions button { flex: 0 0 auto; }
+
+  /* ── Search mode: when the header magnifier is active, the search owns the
+     whole view — hide the tabs, chips, health, stats, and dashboard content. */
+  body.mobile-search-open .g-tabs,
+  body.mobile-search-open .studio-chips,
+  body.mobile-search-open #g-health,
+  body.mobile-search-open #g-federated-stats,
+  body.mobile-search-open .studio-section,
+  body.mobile-search-open .checkin-deck,
+  body.mobile-search-open .lb-section {
+    display: none !important;
+  }
+
+  /* ── 3D Engram: legend hidden by default (toggled via a button beside the
+     Alive Engram control); graph fills + centers. */
+  .mobile-legend-toggle {
+    display: inline-flex !important;
+    align-items: center; justify-content: center;
+    width: 36px; height: 32px; padding: 0;
+    color: var(--fg); background: transparent; border: 1px solid var(--border);
+    border-radius: 6px; cursor: pointer;
+  }
+  .mobile-legend-toggle[aria-pressed="true"] { color: var(--accent); border-color: var(--accent); }
+  .atlas-legend { display: none !important; }
+  body.atlas-legend-open .atlas-legend { display: block !important; }
+
+  /* Nav cheatsheet: show TOUCH gestures, hide the mouse/keyboard shortcuts. */
+  .atlas-nav-row.atlas-nav-desktop { display: none !important; }
+  .atlas-nav-row.atlas-nav-mobile { display: flex !important; }
+
+  /* ── Settings tables: stack so action buttons wrap instead of overlapping
+     or shrinking to nonsense. snapshot-row + connector-row are GRIDS (collapse
+     to one column); settings-graph-row (engrams + quarantine) is FLEX (wrap). */
+  .snapshot-row { grid-template-columns: 1fr !important; gap: 6px !important; }
+  /* Connector row: [icon] [name … ENABLED] on row 1, meta under it, action
+     buttons on a full-width row 2 — no centered-orphan icon, badge right-aligned. */
+  .connector-row {
+    grid-template-columns: auto 1fr !important;
+    gap: 4px 10px !important;
+    align-items: start !important;
+  }
+  .connector-row-title { flex-wrap: wrap !important; align-items: center !important; }
+  .connector-row-status { margin-left: auto; }
+  .connector-row-actions {
+    grid-column: 1 / -1 !important;
+    flex-wrap: wrap !important;
+  }
+  .settings-graph-row {
+    flex-wrap: wrap !important;
+    align-items: flex-start !important;
+    gap: 6px !important;
+  }
+  .settings-graph-row > * { min-width: 0; }
+}
+
+/* ── Phone landscape → blocked: ask the user to rotate to portrait ──────────
+   The web can't lock device orientation (only an installed PWA's manifest can,
+   and that would wrongly lock tablets too). So on phone-sized devices in
+   landscape we cover everything with a rotate-to-portrait gate. The
+   `max-height: 500px` guard targets phones (short side ≤500px) and never
+   tablets (whose short side is ≥744px), so iPads still rotate freely. */
+.rotate-portrait-overlay { display: none; }
+@media (orientation: landscape) and (max-height: 500px) {
+  .rotate-portrait-overlay {
+    display: flex;
+    position: fixed;
+    inset: 0;
+    z-index: 100000;          /* above every other layer incl. modals + nav */
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 10px;
+    padding: 24px;
+    text-align: center;
+    background: var(--color-bg, var(--bg, #0e0e0f));
+    color: var(--fg, #e6edf3);
+  }
+  .rotate-portrait-overlay svg { color: var(--accent); opacity: 0.9; }
+  .rotate-portrait-title { margin: 0; font-size: 17px; font-weight: 700; }
+  .rotate-portrait-sub { margin: 0; font-size: 13px; color: var(--fg-dim); }
+}
+
+/* ── Tablet LANDSCAPE (e.g. iPad Mini/Air/Pro held sideways) ────────────────
+   Keep the desktop two-column layout but condense it so it fits below the
+   1280px the desktop app assumes. Scoped to 769–1279px, landscape, and a tall
+   viewport (min-height 501px) so it never catches phones in landscape (which
+   are short and handled by the block above). */
+@media (min-width: 769px) and (max-width: 1279px) and (orientation: landscape) and (min-height: 501px) {
+  /* No Mac traffic-light inset in a browser — reclaim 72px; wrap if still tight. */
+  .app-header {
+    padding-left: 16px !important;
+    flex-wrap: wrap !important;
+    row-gap: 6px !important;
+  }
+  .app-header-right { flex-wrap: wrap !important; }
+  .app-header-right button,
+  .app-header-right select {
+    font-size: 13px !important;
+    padding: 5px 9px !important;
+  }
+  /* Health gauge stops forcing a fixed 360px so the header row fits. */
+  .g-health.g-health-inline {
+    flex: 0 1 auto !important;
+    width: auto !important;
+    min-width: 0 !important;
+    max-width: 300px !important;
+  }
+  /* Narrower sidebar → more room for the panes (collapse still wins via its
+     own body.rail-collapsed rule, which this :not() excludes). */
+  body:not(.rail-collapsed) { --rail-width: 240px; }
+  /* Status bar wraps instead of spilling off the right edge. */
+  .app-statusbar { flex-wrap: wrap !important; height: auto !important; row-gap: 4px; }
+  /* Safety net: never scroll the document sideways. */
+  html, body { overflow-x: hidden !important; }
+}
+
+/* ── Touch-friendly overrides (all touch devices) ─────────────────────────── */
+
+@media (pointer: coarse) {
+  /* Larger hit targets for interactive elements */
+  .rail-btn,
+  .btn,
+  button:not(.mobile-nav-btn) {
+    min-height: 36px;
+  }
+
+  /* Slightly larger font for readability */
+  .source-row,
+  .node-preview,
+  .chip {
+    font-size: 14px;
+  }
+}
+
+/* ── Dark mode: bottom nav background ─────────────────────────────────────── */
+
+:root[data-theme="dark"] .mobile-bottom-nav {
+  background: var(--color-bg-elev, #1a1f2e);
+  border-top-color: var(--border, #2d3748);
+}
+
+@media (prefers-color-scheme: dark) {
+  .mobile-bottom-nav {
+    background: var(--color-bg-elev, #1a1f2e);
+    border-top-color: var(--border, #2d3748);
+  }
+}

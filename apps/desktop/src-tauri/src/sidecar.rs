@@ -272,6 +272,14 @@ async fn start_inner(app: &AppHandle, cortex_dir: &Path, passphrase: &str, recov
             preferred_default_graph.unwrap_or("personal"),
         )
         .env("GRAPHNOSIS_EVENTS_SOCKET", &events_socket_path);
+    // Tell the sidecar where the compiled browser UI lives so its optional
+    // HTTP UI server (personal-server mode) can serve the real app at `/`
+    // instead of the built-in placeholder. The Bun-compiled sidecar can't
+    // resolve this itself (its import.meta.url is a virtual-fs path), so the
+    // shell resolves it here and passes an absolute path.
+    if let Some(ui_dir) = resolve_http_ui_static() {
+        cmd.env("GRAPHNOSIS_HTTP_UI_STATIC", &ui_dir);
+    }
     if !dyld_search_path.is_empty() {
         #[cfg(target_os = "macos")]
         cmd.env("DYLD_FALLBACK_LIBRARY_PATH", &dyld_search_path);
@@ -637,6 +645,38 @@ pub fn resolve_relay_path() -> Result<PathBuf> {
         bundled.display(),
         dev.display(),
     )
+}
+
+/// Resolve the compiled browser-UI directory (index.html + assets) to hand the
+/// sidecar via `GRAPHNOSIS_HTTP_UI_STATIC`, so its personal-server HTTP UI can
+/// serve the real app instead of a placeholder.
+///
+/// Order:
+///   1. `$GRAPHNOSIS_HTTP_UI_STATIC` — explicit override.
+///   2. `<src-tauri>/../dist` — dev source tree (`tauri dev`). The path is
+///      baked in at compile time via CARGO_MANIFEST_DIR.
+///   3. `<exe-dir>/../Resources/dist` — bundled .app (Tauri copies the
+///      `../dist` resource into Contents/Resources/dist).
+fn resolve_http_ui_static() -> Option<PathBuf> {
+    if let Ok(explicit) = env::var("GRAPHNOSIS_HTTP_UI_STATIC") {
+        let p = PathBuf::from(explicit);
+        if p.join("index.html").exists() { return Some(p); }
+    }
+    // Dev: CARGO_MANIFEST_DIR is .../apps/desktop/src-tauri → ../dist.
+    let dev = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..").join("dist");
+    if dev.join("index.html").exists() {
+        return Some(dev);
+    }
+    // Production: resource bundled next to the app binary.
+    if let Ok(exe) = env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            let res = dir.join("..").join("Resources").join("dist");
+            if res.join("index.html").exists() {
+                return Some(res);
+            }
+        }
+    }
+    None
 }
 
 /// Resolve the path to the compiled sidecar binary.

@@ -29,6 +29,10 @@ export interface IngestBundledSkillDemosResult {
   packsAttempted: number;
   /** How many individual skills (across all packs) were saved as sources. */
   skillsIngested: number;
+  /** Language variant that was ingested. */
+  language: 'en' | 'ro';
+  /** Skills skipped because they were in the other language variant. */
+  skillsSkippedOtherLanguage: number;
   /** Skills we skipped because their body text was empty. */
   skillsSkippedEmpty: string[];
   /** Per-pack errors. Other packs still proceed if one throws. */
@@ -39,19 +43,45 @@ export interface IngestBundledSkillDemosResult {
   verified: Array<{ filename: string; verified: boolean }>;
 }
 
+/** Romanian letters that never appear in the English variants. The bundled
+ *  packs ship each SOP twice (English + Romanian); every Romanian skill *name*
+ *  carries at least one of these diacritics (ă â î ș ț, both the comma-below
+ *  and legacy cedilla code points), while the English names are pure ASCII.
+ *  That asymmetry is a stable, signature-free signal — we can't add a
+ *  `language` field to the signed .gsk payload without re-signing. */
+const RO_DIACRITICS = /[ăâîșțĂÂÎȘȚşţŞŢ]/;
+
+/** Classify a bundled skill as English or Romanian.
+ *
+ *  Detect on the NAME only, never the body: the English bodies quote Romanian
+ *  example words (e.g. "trăit", "locuit") to teach cross-language recall, so a
+ *  body-wide diacritic scan misclassifies the English "Use Graphnosis well" as
+ *  Romanian. The authored names are clean ASCII (English) vs. diacritic-bearing
+ *  (Romanian), which splits the six variants 3 / 3 reliably. */
+function detectSkillLanguage(skill: { name: string }): 'en' | 'ro' {
+  return RO_DIACRITICS.test(skill.name) ? 'ro' : 'en';
+}
+
 /**
- * Import every pack in `BUNDLED_SKILL_DEMOS` into `graphId`. Returns a
- * summary the caller can surface to the user / log to telemetry. Best-effort:
- * one bad pack never blocks the rest, mirroring the docs-ingest contract.
+ * Import every pack in `BUNDLED_SKILL_DEMOS` into `graphId`, keeping only the
+ * skills in the chosen `language` (English or Romanian — defaults to English).
+ * Each bundled pack carries both variants of one SOP, so a single-language
+ * ingest lands 3 skills, not 6. Returns a summary the caller can surface to
+ * the user / log to telemetry. Best-effort: one bad pack never blocks the
+ * rest, mirroring the docs-ingest contract.
  */
 export async function ingestBundledSkillDemos(
   host: GraphnosisHost,
   graphId: string,
   licenseValidator: LicenseValidator | undefined,
+  opts?: { language?: 'en' | 'ro' },
 ): Promise<IngestBundledSkillDemosResult> {
+  const language: 'en' | 'ro' = opts?.language ?? 'en';
   const result: IngestBundledSkillDemosResult = {
     packsAttempted: BUNDLED_SKILL_DEMOS.length,
     skillsIngested: 0,
+    language,
+    skillsSkippedOtherLanguage: 0,
     skillsSkippedEmpty: [],
     packErrors: [],
     verified: [],
@@ -85,6 +115,11 @@ export async function ingestBundledSkillDemos(
     result.verified.push({ filename: entry.filename, verified });
 
     for (const skill of payload.skills) {
+      // Keep only the chosen-language variant of each SOP.
+      if (detectSkillLanguage(skill) !== language) {
+        result.skillsSkippedOtherLanguage++;
+        continue;
+      }
       const body = (skill.trainedTextFallback?.trim() || skill.baseText?.trim() || '').trim();
       if (!body) {
         result.skillsSkippedEmpty.push(skill.name);
