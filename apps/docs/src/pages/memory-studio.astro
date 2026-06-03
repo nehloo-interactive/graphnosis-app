@@ -6,8 +6,6 @@ import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 
 // Read the current version so Download CTAs can show "Download v1.X.Y".
-// The Nav.astro OS-detect script reads data-download-version off each CTA
-// to build the OS-specific label ("Download v1.X.Y for macOS").
 let version = '';
 try {
   const conf = JSON.parse(readFileSync(resolve('../../apps/desktop/src-tauri/tauri.conf.json'), 'utf8'));
@@ -58,18 +56,14 @@ try {
           Just you, your cortex, and a deterministic graph that never lies.
         </p>
 
-        <!-- CTA pair. data-download-auto opts the button into the
-             OS-detect rewrite in Nav.astro (href + label updated client-
-             side to match macOS / Windows). Default href points to the
-             chooser page for users where detection fails. -->
+        <!-- CTA pair. Links to the /download chooser where the visitor
+             picks their OS. -->
         <div class="flex flex-col sm:flex-row gap-4 justify-center items-center mb-12">
           <a
             href="/download"
             class="px-8 py-4 rounded-full bg-[#67e8f9] hover:bg-[#4dd6e8] text-[#13131a] font-bold text-lg transition-colors"
-            data-download-auto
-            data-download-version={version}
           >
-            Download Graphnosis{version ? ` ${version}` : ''}
+            Download{version ? ` ${version}` : ''}
           </a>
           <a
             href="/job-memory-kits"
@@ -658,10 +652,8 @@ try {
           <a
             href="/download"
             class="px-8 py-4 rounded-full bg-[#67e8f9] hover:bg-[#4dd6e8] text-[#13131a] font-bold text-lg transition-colors"
-            data-download-auto
-            data-download-version={version}
           >
-            Download Graphnosis{version ? ` ${version}` : ''}
+            Download{version ? ` ${version}` : ''}
           </a>
           <a
             href="/getting-started/overview"
