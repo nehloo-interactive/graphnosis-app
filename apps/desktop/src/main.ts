@@ -1,14 +1,19 @@
 import QRCode from 'qrcode';
-import { invoke } from '@tauri-apps/api/core';
-import { getVersion } from '@tauri-apps/api/app';
-import { listen } from '@tauri-apps/api/event';
-import { getCurrentWebview } from '@tauri-apps/api/webview';
-import { getCurrentWindow } from '@tauri-apps/api/window';
+import './mobile.css';
 import {
+  IS_TAURI,
+  invoke,
+  listen,
+  getVersion,
+  getCurrentWindow,
+  getCurrentWebview,
   isPermissionGranted,
   requestPermission,
   sendNotification,
-} from '@tauri-apps/plugin-notification';
+  startSse,
+  emitBrowserEvent,
+  getBrowserSession,
+} from './platform';
 import {
   Atlas,
   type AtlasNode,
@@ -603,6 +608,7 @@ const els = {
   btnOpenFolder: $<HTMLButtonElement>('btn-open-folder'),
   btnLock: $<HTMLButtonElement>('btn-lock'),
   btnAddFile: $<HTMLButtonElement>('btn-add-file'),
+  btnAddFolder: $<HTMLButtonElement>('btn-add-folder'),
   cortexLabel: $<HTMLSpanElement>('cortex-label'),
   activeEngramLabel: $<HTMLSpanElement>('active-engram-label'),
   sourcesList: $<HTMLDivElement>('sources-list'),
@@ -610,6 +616,8 @@ const els = {
   sourcesEngramSelect: $<HTMLSelectElement>('sources-engram-select'),
   dropZone: $<HTMLDivElement>('drop-zone'),
   toastStack: $<HTMLDivElement>('g-toast-stack'),
+  toastList: $<HTMLDivElement>('g-toast-list'),
+  toastCount: $<HTMLSpanElement>('g-toast-count'),
   btnRecover: $<HTMLButtonElement>('btn-recover'),
   recoveryModal: $<HTMLDivElement>('recovery-modal'),
   recoveryTitle: $<HTMLHeadingElement>('recovery-title'),
@@ -982,6 +990,12 @@ let toastSeq = 0;
 const liveToasts = new Map<string, HTMLDivElement>();
 const liveToastTimers = new Map<string, ReturnType<typeof setInterval>>();
 
+function syncToastPanel(): void {
+  const count = liveToasts.size;
+  els.toastStack.classList.toggle('has-toasts', count > 0);
+  els.toastCount.textContent = String(count);
+}
+
 function addIngestToast(label: string, message?: string): string {
   const id = `t${++toastSeq}`;
   const root = document.createElement('div');
@@ -1004,9 +1018,10 @@ function addIngestToast(label: string, message?: string): string {
   labelEl.textContent = label;
   msgEl.textContent = message ?? '';
   closeBtn.addEventListener('click', () => removeIngestToast(id));
-  els.toastStack.appendChild(root);
+  els.toastList.appendChild(root);
   requestAnimationFrame(() => root.classList.add('visible'));
   liveToasts.set(id, root);
+  syncToastPanel();
   // Tick elapsed time every second.
   const startedAt = Date.now();
   const timer = setInterval(() => {
@@ -1054,9 +1069,24 @@ function removeIngestToast(id: string): void {
   if (timer !== undefined) { clearInterval(timer); liveToastTimers.delete(id); }
   root.classList.remove('visible');
   // Match the CSS transition (140ms) before yanking from DOM.
-  window.setTimeout(() => root.remove(), 180);
+  window.setTimeout(() => { root.remove(); syncToastPanel(); }, 180);
   liveToasts.delete(id);
+  syncToastPanel();
 }
+
+document.getElementById('btn-toast-dismiss-all')?.addEventListener('click', () => {
+  // Dismiss all completed (success/error) toasts immediately; leave pending
+  // ones running so in-flight ingests aren't silently hidden.
+  const done = [...liveToasts.entries()].filter(
+    ([, el]) => !el.classList.contains('g-toast--pending')
+  );
+  done.forEach(([id]) => removeIngestToast(id));
+  // Also clear any non-tracked action toasts (e.g. clipboard capture).
+  els.toastList.querySelectorAll<HTMLDivElement>('.g-toast:not(.g-toast--pending)').forEach((el) => {
+    el.classList.remove('visible');
+    window.setTimeout(() => { el.remove(); syncToastPanel(); }, 180);
+  });
+});
 
 // ── Native macOS notification helpers ──────────────────────────────────────
 // We request permission lazily on first send (less intrusive than asking at
@@ -1314,6 +1344,9 @@ function render(status: StatusSnapshot): void {
       els.unlockStatus.classList.add('hidden');
       els.viewUnlock.classList.add('hidden');
       els.viewApp.classList.remove('hidden');
+      // Reveal the mobile bottom nav (gated on this class in mobile.css) now
+      // that the app shell — and the panes the nav switches — are visible.
+      document.body.classList.add('app-unlocked');
       // Clear any stale error from either banner so a fresh unlock starts
       // with a clean slate. Without this, a wrong-passphrase message from
       // the previous attempt would survive into the unlocked app view.
@@ -1407,6 +1440,9 @@ function render(status: StatusSnapshot): void {
   } else {
     els.viewApp.classList.add('hidden');
     els.viewUnlock.classList.remove('hidden');
+    // Hide the mobile bottom nav on the lock screen — its panes are inside
+    // the now-hidden #view-app.
+    document.body.classList.remove('app-unlocked');
     // Clear any stale error from either banner so re-locking shows a
     // clean lock screen. Without this, the lock-screen banner would
     // surface the last in-app error (a Move/Forget/Reingest failure)
@@ -1481,7 +1517,12 @@ function refreshActiveEngramLabel(): void {
     return;
   }
   const meta = loadedGraphs.find((g) => g.graphId === id);
-  if (els.activeEngramLabel) els.activeEngramLabel.textContent = meta?.metadata.displayName ?? id;
+  const displayName = meta?.metadata.displayName ?? id;
+  if (els.activeEngramLabel) els.activeEngramLabel.textContent = displayName;
+  // Mobile shows the active engram name in the health panel (the header picker
+  // is hidden on phones). Harmless on desktop — CSS hides it there.
+  const healthEngram = document.getElementById('g-health-engram');
+  if (healthEngram) healthEngram.textContent = displayName;
   updateSensitivityBadge(meta?.metadata.sensitivityTier ?? 'personal');
 }
 
@@ -1560,6 +1601,23 @@ function syncEngramPicker(): void {
   // even if the user hasn't opened the Skills tab yet (the DOM elements
   // exist from initial load). Guarded inside the function with null checks.
   populateSkillsEngramPickers();
+  // Mirror the engram list into the mobile header's brain-icon picker.
+  syncMobileEngramPicker(visibleGraphs);
+}
+
+/** Keep the mobile header's brain-icon engram <select> in sync with the
+ *  engram list + active selection. */
+function syncMobileEngramPicker(visibleGraphs: GraphWithMetadata[]): void {
+  const sel = document.getElementById('mobile-engram-picker') as HTMLSelectElement | null;
+  if (!sel) return;
+  sel.innerHTML = visibleGraphs
+    .map((g) => {
+      const name = escape(g.metadata.displayName ?? g.graphId);
+      const disabled = g.loaded === false ? ' disabled' : '';
+      return `<option value="${escape(g.graphId)}"${disabled}>${name}</option>`;
+    })
+    .join('');
+  if (atlasActiveGraph) sel.value = atlasActiveGraph;
 }
 
 function syncSourcesEngramDropdown(): void {
@@ -1693,6 +1751,10 @@ function renderRailGetConnected(): void {
   els.railGcClients.appendChild(makeClientChip('Claude Desktop', () => openConfigureClientModal('claude-desktop')));
   els.railGcClients.appendChild(makeClientChip('Claude Code', () => openConfigureClientModal('claude-code')));
   els.railGcClients.appendChild(makeClientChip('Cursor', () => openConfigureClientModal('cursor')));
+  // Copilot has its own setup modal (VS Code / Copilot Chat MCP wiring) rather
+  // than the generic configure-client flow. It never lights "connected" — the
+  // live-relay map keys on Claude/Cursor sessions, not Copilot Chat.
+  els.railGcClients.appendChild(makeChip('Copilot', false, () => { void openCopilotModal(); }));
 
   // (Mobile-access chip removed from the rail; the feature is still
   // available from the menu-bar tray and from Settings → Mobile.)
@@ -2127,6 +2189,10 @@ function activateMode(mode: Mode): void {
   document.querySelectorAll<HTMLButtonElement>('.rail-btn').forEach((b) => {
     b.classList.toggle('active', b.dataset.mode === mode);
   });
+  // Mobile bottom nav visual state (no-op on desktop — buttons don't exist)
+  document.querySelectorAll<HTMLButtonElement>('.mobile-nav-btn').forEach((b) => {
+    b.classList.toggle('active', b.dataset.mode === mode);
+  });
   // Pane visibility
   document.querySelectorAll<HTMLElement>('.mode-pane').forEach((p) => {
     p.classList.toggle('hidden', p.dataset.pane !== mode);
@@ -2195,6 +2261,256 @@ document.querySelectorAll<HTMLButtonElement>('.rail-btn').forEach((btn) => {
     const m = btn.dataset.mode as Mode | undefined;
     if (m) activateMode(m);
   });
+});
+
+// ── Mobile bottom nav ────────────────────────────────────────────────────────
+// activateMode() already syncs .mobile-nav-btn active states (see above).
+// Wire clicks here — activateMode handles everything else including the sync.
+document.querySelectorAll<HTMLButtonElement>('.mobile-nav-btn').forEach((btn) => {
+  btn.addEventListener('click', () => {
+    const m = btn.dataset.mode as Mode | undefined;
+    if (!m) return;
+    // Tapping any bottom-nav tab exits mobile search mode (the magnifier
+    // overlay). Clear the query + results so the dashboard returns.
+    if (document.body.classList.contains('mobile-search-open')) {
+      document.body.classList.remove('mobile-search-open');
+      document.getElementById('mobile-search-toggle')?.setAttribute('aria-expanded', 'false');
+      const searchEl = document.getElementById('g-search') as HTMLInputElement | null;
+      if (searchEl && searchEl.value) {
+        searchEl.value = '';
+        searchEl.dispatchEvent(new Event('input', { bubbles: true }));
+      }
+      document.getElementById('g-search-results')?.classList.add('hidden');
+    }
+    activateMode(m);
+    // The Memory tab lands on MemoryStudio (the checkin sub-tab), not whatever
+    // inner tab (3D Engram, etc.) was last open.
+    if (m === 'atlas') switchGraphnosisTab('checkin');
+  });
+});
+
+// ── Swipe-to-navigate (mobile) ───────────────────────────────────────────────
+{
+  const PANE_ORDER: Mode[] = ['atlas', 'sources', 'mcp-tools', 'status', 'settings'];
+  const SWIPE_MIN_PX = 48;   // minimum horizontal distance to register a swipe
+  const SWIPE_MAX_Y  = 80;   // maximum vertical drift before we ignore the gesture
+
+  let touchStartX = 0;
+  let touchStartY = 0;
+
+  const canvas = document.querySelector<HTMLElement>('.app-canvas');
+  if (canvas) {
+    canvas.addEventListener('touchstart', (e: TouchEvent) => {
+      const t = e.touches[0];
+      if (!t) return;
+      touchStartX = t.clientX;
+      touchStartY = t.clientY;
+    }, { passive: true });
+
+    canvas.addEventListener('touchend', (e: TouchEvent) => {
+      // Only activate on narrow screens where the bottom nav is visible.
+      if (window.innerWidth > 768) return;
+      const t = e.changedTouches[0];
+      if (!t) return;
+      const dx = t.clientX - touchStartX;
+      const dy = Math.abs(t.clientY - touchStartY);
+      if (Math.abs(dx) < SWIPE_MIN_PX || dy > SWIPE_MAX_Y) return;
+      const idx = PANE_ORDER.indexOf(currentMode as Mode);
+      if (idx === -1) return;
+      const next = dx < 0
+        ? PANE_ORDER[Math.min(idx + 1, PANE_ORDER.length - 1)]  // swipe left → next
+        : PANE_ORDER[Math.max(idx - 1, 0)];                     // swipe right → prev
+      if (next && next !== currentMode) { activateMode(next); syncMobileNav(next); }
+    }, { passive: true });
+  }
+}
+
+// ── Modals always re-open scrolled to the top ─────────────────────────────────
+// Centralised: watch every .modal-backdrop for the hidden→visible transition
+// and reset its scroll position (the backdrop, the .modal, and .modal-body all
+// scroll in different layouts/breakpoints). Covers all modals, desktop + mobile,
+// without touching each open path.
+{
+  const resetModalScroll = (backdrop: HTMLElement): void => {
+    backdrop.scrollTop = 0;
+    backdrop.querySelectorAll<HTMLElement>('.modal, .modal-body, .modal-sticky-fields')
+      .forEach((n) => { n.scrollTop = 0; });
+  };
+  const obs = new MutationObserver((muts) => {
+    for (const m of muts) {
+      const el = m.target as HTMLElement;
+      const wasHidden = (m.oldValue ?? '').includes('hidden');
+      if (wasHidden && !el.classList.contains('hidden')) {
+        // Defer a frame so layout has settled before we reset scrollTop.
+        requestAnimationFrame(() => resetModalScroll(el));
+      }
+    }
+  });
+  document.querySelectorAll<HTMLElement>('.modal-backdrop').forEach((el) => {
+    obs.observe(el, { attributes: true, attributeFilter: ['class'], attributeOldValue: true });
+  });
+}
+
+// ── Mobile hamburger menu ─────────────────────────────────────────────────────
+// Toggles body.mobile-menu-open, which reveals the .app-header-right action
+// cluster as a dropdown (see mobile.css). Closes on action-button tap or on
+// any tap outside the menu.
+{
+  const toggle = document.getElementById('mobile-menu-toggle');
+  toggle?.addEventListener('click', (e) => {
+    e.stopPropagation();
+    const open = document.body.classList.toggle('mobile-menu-open');
+    toggle.setAttribute('aria-expanded', open ? 'true' : 'false');
+  });
+  // Tapping any action inside the dropdown closes it.
+  document.querySelector('.app-header-right')?.addEventListener('click', () => {
+    document.body.classList.remove('mobile-menu-open');
+    toggle?.setAttribute('aria-expanded', 'false');
+  });
+  // Tap outside closes it.
+  document.addEventListener('click', (e) => {
+    if (!document.body.classList.contains('mobile-menu-open')) return;
+    const t = e.target as HTMLElement;
+    if (t.closest('.app-header-right') || t.closest('#mobile-menu-toggle')) return;
+    document.body.classList.remove('mobile-menu-open');
+    toggle?.setAttribute('aria-expanded', 'false');
+  });
+}
+
+// ── Engram health: tap to expand on mobile ────────────────────────────────────
+// The dashboard health gauge collapses to just the grade + meter on phones
+// (mobile.css hides .g-health-meta); tapping toggles the detail text.
+document.getElementById('g-health')?.addEventListener('click', () => {
+  if (window.innerWidth > 768) return; // desktop shows details inline already
+  document.getElementById('g-health')?.classList.toggle('g-health-expanded');
+});
+
+// ── Fit the top-bar Ghampus tagline to the available space ───────────────────
+// CSS clamp() only scales with the viewport; this measures the actual gap left
+// in the title row (after the title + mascot) and sizes the tagline to fill it,
+// so "Ghampus, the AI seahorse" never wraps or clips. Runs on load + resize.
+function fitGhampusLabel(): void {
+  const label = document.querySelector<HTMLElement>('.header-ghampus-label');
+  const header = label?.closest<HTMLElement>('.app-header');
+  if (!label || !header) return;
+  const MAX = 13, MIN = 7;
+  label.style.fontSize = `${MAX}px`;
+  // Measure the ACTUAL gap: from where the tagline starts to whatever bounds it
+  // on the right — the mobile search/menu cluster, the desktop action cluster,
+  // or the header edge. Use the leftmost (tightest) of those.
+  const labelLeft = label.getBoundingClientRect().left;
+  let rightBound = header.getBoundingClientRect().right - 8;
+  for (const sel of ['.mobile-topbar-actions', '.app-header-right']) {
+    const el = document.querySelector<HTMLElement>(sel);
+    if (el && getComputedStyle(el).display !== 'none') {
+      rightBound = Math.min(rightBound, el.getBoundingClientRect().left);
+    }
+  }
+  const avail = rightBound - labelLeft - 8; // breathing buffer
+  if (avail <= 0) { label.style.fontSize = `${MIN}px`; return; }
+  const natural = label.scrollWidth;
+  if (natural > avail) {
+    label.style.fontSize = `${Math.max(MIN, Math.floor(MAX * avail / natural))}px`;
+  }
+}
+window.addEventListener('resize', () => fitGhampusLabel());
+window.addEventListener('load', () => fitGhampusLabel());
+if (document.fonts?.ready) void document.fonts.ready.then(() => fitGhampusLabel());
+setTimeout(fitGhampusLabel, 250);
+// The robust trigger: re-fit whenever the TITLE's measured width changes. The
+// "Graphnosis" webfont swaps in after first paint (fallback → real font), which
+// shifts where the tagline starts — fonts.ready can resolve before that reflow
+// lands, so the one-shot fits ran on stale metrics (the SE "too small on reload,
+// fine after resizing" bug). Observing the title catches the swap precisely.
+{
+  const titleEl = document.querySelector<HTMLElement>('.app-title');
+  if (titleEl && 'ResizeObserver' in window) {
+    let raf = 0;
+    const ro = new ResizeObserver(() => {
+      cancelAnimationFrame(raf);
+      raf = requestAnimationFrame(fitGhampusLabel);
+    });
+    ro.observe(titleEl); // fires once immediately, then on every width change
+  }
+}
+
+// ── Mobile search toggle ──────────────────────────────────────────────────────
+// The dashboard search box is hidden on phones until the header magnifier is
+// tapped. Tapping it jumps to the Memory view, reveals the search, and focuses
+// the input. Tapping again hides it.
+document.getElementById('mobile-search-toggle')?.addEventListener('click', (e) => {
+  e.stopPropagation();
+  const opening = !document.body.classList.contains('mobile-search-open');
+  document.body.classList.toggle('mobile-search-open', opening);
+  document.getElementById('mobile-search-toggle')?.setAttribute('aria-expanded', opening ? 'true' : 'false');
+  if (opening) {
+    if (currentMode !== 'atlas') { activateMode('atlas'); syncMobileNav('atlas'); }
+    setTimeout(() => document.getElementById('g-search')?.focus(), 60);
+  }
+});
+
+// Clearing the search (× button) also exits mobile search mode so the
+// dashboard reappears.
+document.getElementById('g-search-clear')?.addEventListener('click', () => {
+  document.body.classList.remove('mobile-search-open');
+  document.getElementById('mobile-search-toggle')?.setAttribute('aria-expanded', 'false');
+});
+
+// ── 3D Engram legend toggle (mobile) ──────────────────────────────────────────
+document.getElementById('btn-atlas-legend')?.addEventListener('click', (e) => {
+  const open = document.body.classList.toggle('atlas-legend-open');
+  (e.currentTarget as HTMLElement).setAttribute('aria-pressed', open ? 'true' : 'false');
+});
+
+// ── Mobile on-screen-keyboard handling ────────────────────────────────────────
+// On iOS Safari the keyboard overlays the page (the layout viewport doesn't
+// shrink), so fixed elements (bottom nav) end up behind it and a focused field
+// near the bottom gets covered. We use the VisualViewport API to detect the
+// keyboard, slide the bottom nav out of the way, give the canvas room to scroll
+// the field above the keyboard, and keep the focused element in view. Resetting
+// (animated) happens automatically when the keyboard hides and the viewport
+// grows back. Android/Chrome already reflow via interactive-widget=resizes-content.
+{
+  const vv = window.visualViewport;
+  if (vv) {
+    let kbOpen = false;
+    const scrollFocusedIntoView = (): void => {
+      const el = document.activeElement as HTMLElement | null;
+      if (el && /^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName)) {
+        try { el.scrollIntoView({ block: 'center', behavior: 'smooth' }); } catch { /* older WebKit */ }
+      }
+    };
+    const onViewportChange = (): void => {
+      // Keyboard height ≈ how much the visual viewport shrank from the window.
+      const kb = Math.max(0, window.innerHeight - vv.height - vv.offsetTop);
+      const open = kb > 120; // threshold filters out URL-bar show/hide jitter
+      if (open !== kbOpen) {
+        kbOpen = open;
+        document.body.classList.toggle('keyboard-open', open);
+        document.documentElement.style.setProperty('--kb-height', `${Math.round(open ? kb : 0)}px`);
+      }
+      if (open) scrollFocusedIntoView();
+    };
+    vv.addEventListener('resize', onViewportChange);
+    vv.addEventListener('scroll', onViewportChange);
+    // Belt-and-suspenders: when a field is focused, ensure it's scrolled into
+    // view a beat after the keyboard animation begins (covers the case where
+    // the resize event already fired before focus settled).
+    document.addEventListener('focusin', (e) => {
+      const t = e.target as HTMLElement | null;
+      if (t && /^(INPUT|TEXTAREA)$/.test(t.tagName)) {
+        setTimeout(scrollFocusedIntoView, 300);
+      }
+    });
+  }
+}
+
+// ── Mobile brain-icon engram picker ───────────────────────────────────────────
+// The transparent <select> overlaid on the 🧠 button opens the native engram
+// list; selecting one switches the active engram (same path as the desktop picker).
+document.getElementById('mobile-engram-picker')?.addEventListener('change', (e) => {
+  const v = (e.currentTarget as HTMLSelectElement).value;
+  if (v && v !== atlasActiveGraph) void switchActiveEngram(v);
 });
 
 // ── Left rail collapse toggle ────────────────────────────────────────────────
@@ -2853,8 +3169,10 @@ async function refreshStats(): Promise<void> {
             ).join('') +
             `<option value="__new__">New Engram…</option>` +
             `</select>` +
-            `<button class="source-row-move-go">Move</button>` +
-            `<button class="source-row-move-cancel">Cancel</button>`;
+            `<span class="source-row-move-actions">` +
+              `<button class="source-row-move-go">Move</button>` +
+              `<button class="source-row-move-cancel">Cancel</button>` +
+            `</span>`;
 
           const select    = picker.querySelector<HTMLSelectElement>('.source-row-move-select')!;
           const nameInput = picker.querySelector<HTMLInputElement>('.source-row-move-name-input')!;
@@ -2999,6 +3317,13 @@ els.sourcesFilter.addEventListener('input', () => {
 
 els.sourcesEngramSelect.addEventListener('change', () => {
   sourcesEngramFilter = els.sourcesEngramSelect.value;
+  // Switching engrams cancels any pending Re-chunk confirmation — its
+  // engram/cortex buttons were scoped to the previously-selected engram, so
+  // leaving the widget open would act on the wrong target. Applies on desktop
+  // and mobile alike.
+  document.querySelector('.sources-reingest-all-confirm')?.remove();
+  const reBtn = document.getElementById('sources-reingest-all-btn') as HTMLButtonElement | null;
+  if (reBtn) { reBtn.style.display = ''; delete reBtn.dataset['confirming']; }
   // If the selected engram's group doesn't exist in the DOM yet (e.g. the
   // engram was never the active one during this session so inspector_stats
   // hasn't rendered its source rows), applySourcesFilter() would show nothing.
@@ -3175,12 +3500,15 @@ els.btnUnlock.addEventListener('click', async () => {
   showError(null);
   // Client-side guards. Sidecar would also reject these, but failing fast in
   // the UI is friendlier than a 30s wait for the timeout error.
-  if (!els.cortexDir.value.trim()) {
+  // Browser mode (personal-server): the server owns the cortex — the user
+  // can't and shouldn't pick one, so skip the cortex-folder guard. The
+  // passphrase field holds the HTTP UI access token instead.
+  if (IS_TAURI && !els.cortexDir.value.trim()) {
     showError('Choose a Graphnosis cortex folder first.');
     return;
   }
   if (!els.passphrase.value) {
-    showError('Enter your cortex passphrase.');
+    showError(IS_TAURI ? 'Enter your cortex passphrase.' : 'Enter your access token.');
     return;
   }
   await attemptUnlock();
@@ -3226,6 +3554,11 @@ async function attemptUnlock(): Promise<void> {
     render(status);
   } catch (e) {
     const msg = String(e);
+    // Auto-unlock (QR / ?token=) failed — reveal the lock form again so the
+    // user can correct the token. No-op in normal (non-auto) unlock flows.
+    document.body.classList.remove('browser-auto-unlock');
+    const sub0 = document.getElementById('subtitle');
+    if (sub0 && !IS_TAURI) sub0.textContent = 'Your local encrypted memory, indexed for deterministic recall — auditable';
     // First-run friendly: if the cortex folder doesn't exist, don't dead-
     // end — offer to create it on the spot. The Rust error has the form
     // "cortex folder does not exist: <path>"; we parse and confirm.
@@ -4094,7 +4427,11 @@ function renderSettingsGraphsList(): void {
           loadedGraphs = (await invoke('list_graphs_with_metadata', { includeUnloaded: true })) as GraphWithMetadata[];
           if (atlasActiveGraph === graphId) {
             atlasActiveGraph = pickAtlasGraph(); refreshActiveEngramLabel();
-            if (mainAtlas) { mainAtlas.dispose(); mainAtlas = null; }
+            // Clear stale data immediately so the 3D view doesn't freeze on
+            // the deleted engram. Keep mainAtlas alive so refreshAtlasView()
+            // can push the new engram's data without needing a remount.
+            graphnosisAllNodes = [];
+            if (mainAtlas) { mainAtlas.setNodes([]); mainAtlas.setEdges([], []); }
           }
           // Refresh the skills library so orphaned skills disappear immediately.
           await fetchSkillsLibrary();
@@ -4874,7 +5211,18 @@ function showSnapshotOffer(opts?: SnapshotOfferOptions): Promise<boolean> {
 els.btnAddFile.addEventListener('click', async () => {
   showError(null);
   try {
-    const paths = (await invoke('pick_files')) as string[];
+    // Browser/personal-server mode: no native file dialog and the files live on
+    // the SERVER — pick a server folder and ingest its supported files (the
+    // server-side picker only lists folders; per-file selection is a follow-up).
+    let paths: string[];
+    if (IS_TAURI) {
+      paths = (await invoke('pick_files')) as string[];
+    } else {
+      const folders = await pickFolders();
+      if (!folders.length) return;
+      const res = await invoke<{ files: string[] }>('fs_list_files', { path: folders[0], recursive: false });
+      paths = res.files ?? [];
+    }
     if (paths.length === 0) return;
     // Defense-in-depth: the native dialog already filters extensions, but
     // "All files" is one click away. Re-check here so a stray .key / .zip /
@@ -4895,6 +5243,39 @@ els.btnAddFile.addEventListener('click', async () => {
     await ingestBatch(supported);
   } catch (e) {
     showError(`Pick failed: ${e}`);
+  }
+});
+
+els.btnAddFolder.addEventListener('click', async () => {
+  showError(null);
+  try {
+    // Browser/personal-server mode: pick a folder on the SERVER and ingest its
+    // supported files (recursively); the Tauri app uses the native dialog.
+    let paths: string[];
+    if (IS_TAURI) {
+      paths = (await invoke('pick_folder_for_ingest')) as string[];
+    } else {
+      const folders = await pickFolders();
+      if (!folders.length) return;
+      const res = await invoke<{ files: string[] }>('fs_list_files', { path: folders[0], recursive: true });
+      paths = res.files ?? [];
+    }
+    if (paths.length === 0) return;
+    const { supported, rejected } = partitionIngestPaths(paths);
+    if (supported.length === 0) {
+      showError(`No supported files found in the selected folder(s). Supported: ${INGEST_SUPPORTED_HUMAN}.`);
+      return;
+    }
+    if (rejected.length > 0) {
+      showError(`Skipping ${rejected.length} unsupported file${rejected.length === 1 ? '' : 's'}. Ingesting ${supported.length} supported file${supported.length === 1 ? '' : 's'}.`);
+    }
+    const plural = supported.length === 1 ? 'file' : 'files';
+    await showSnapshotOffer({
+      subtitle: `Found ${supported.length} supported ${plural}. Save a snapshot before ingesting?`,
+    });
+    await ingestBatch(supported);
+  } catch (e) {
+    showError(`Folder pick failed: ${e}`);
   }
 });
 
@@ -5055,6 +5436,10 @@ els.btnGwCreate.addEventListener('click', async () => {
     // toward dropping in a file or having Claude remember something.
     atlasActiveGraph = graphId; refreshActiveEngramLabel();
     if (els.atlasGraphPicker) els.atlasGraphPicker.value = graphId;
+    // Clear old engram data immediately so the 3D atlas never flashes stale
+    // nodes while the new (empty) engram's data is loading asynchronously.
+    graphnosisAllNodes = [];
+    if (mainAtlas) { mainAtlas.setNodes([]); mainAtlas.setEdges([], []); }
     activateMode('atlas');
     void refreshAtlasView();
   } catch (e) {
@@ -5625,7 +6010,7 @@ function updateTriviaBar(): void {
 
   // Build a compact stat string from what's available
   const parts: string[] = [];
-  if (orphans > 0) parts.push(`${orphans} solo`);
+  if (orphans > 0) parts.push(`${orphans} stranded`);
   if (lowConf > 0) parts.push(`${lowConf} low-trust`);
   if (pending > 0) parts.push(`${pending} pending`);
   statsEl.textContent = parts.join(' · ') + (total > 0 ? ' · tap to connect' : '');
@@ -5649,12 +6034,19 @@ function openTrivia(): void {
   drawer?.classList.add('trivia-open');
   // Reset green badge — user is now reviewing
   document.getElementById('trivia-bar-pill')?.classList.remove('new-cards');
+  // Select the current stranded node in the right-panel Node Inspector so
+  // the user sees full context the moment the drawer opens.
+  const currentItem = graphnosisDeck[graphnosisDeckIndex];
+  if (currentItem) selectGraphnosisNode(currentItem.node.id, { trace: true });
 }
 
 function closeTrivia(): void {
   if (!triviaOpen) return;
   triviaOpen = false;
   document.getElementById('trivia-drawer')?.classList.remove('trivia-open');
+  // Collapse the right-panel Node Inspector — it was opened by the drawer,
+  // so it should close with it.
+  selectGraphnosisNode(null);
 }
 
 // Tally entity → occurrence count across the reviewable corpus. Used by
@@ -6282,6 +6674,12 @@ async function renderDeckTriviaCandidate(sourceNode: NodeRecord, override?: Node
       </div>
     </div>
   `;
+
+  // Clicking the candidate text loads it in the right-panel Node Inspector,
+  // mirroring the source node's click-to-inspect behaviour in the card head.
+  slot.querySelector<HTMLElement>('.g-deck-trivia-text')?.addEventListener('click', () => {
+    selectGraphnosisNode(candidate.id, { trace: true });
+  });
 
   // Forget / Skip used to live inside the candidate panel; they've moved
   // to the top-level card actions where they unambiguously target the
@@ -7459,6 +7857,7 @@ function renderDetailPane(): void {
     </div>
     </div>
   `;
+  els.gDetail.scrollTop = 0;
   // The suggestion panel is collapsed by default in the detail pane.
   // Clicking the button mounts the shared renderer; on Connect or Cancel
   // it collapses again and the Connections section refreshes via
@@ -9111,10 +9510,11 @@ function switchGraphnosisTab(tab: GraphnosisTab): void {
       // resetEmphasis again after the (possibly first-time) mount so a
       // freshly-created engine also opens with the full graph un-dimmed.
       if (enteringFresh) mainAtlas?.resetEmphasis();
-      // Frame the graph ONLY on the very first mount. A reset clears the
-      // selection, not the view — re-entries keep the camera where the user
-      // left it instead of snapping back to a fit.
-      if (firstMount) setTimeout(() => mainAtlas?.zoomToFit(700, 20), 1200);
+      // Frame the graph on first mount. On mobile, also re-frame on every
+      // entry so the node cloud is always centred in the (narrow) viewport —
+      // the user can't easily re-fit by hand on a phone.
+      const isMobile = window.innerWidth <= 768;
+      if (firstMount || isMobile) setTimeout(() => mainAtlas?.zoomToFit(700, 20), 1200);
     })();
   } else if (tab === 'checkin') {
     // Returning to the MemoryStudio / dashboard tab — re-render in case
@@ -9315,10 +9715,10 @@ function renderAtlasLegend(): void {
     row.addEventListener('click', (e) => {
       mainAtlas?.hoverCategory(null); // clear preview on click-commit
       if (!mainAtlas) return;
-      // Cmd/Ctrl-click: additive toggle (multi-select). Plain click: isolate
-      // — show only this category, hide every other. Matches the Photoshop /
-      // Figma / iTunes convention for filterable legend rows.
-      if (e.metaKey || e.ctrlKey) {
+      // Cmd/Ctrl-click (or any tap on mobile): additive toggle (multi-select).
+      // Plain desktop click: isolate — show only this category, hide the rest.
+      // Mobile has no modifier key, and toggle is the more forgiving gesture.
+      if (e.metaKey || e.ctrlKey || window.innerWidth <= 768) {
         const current = mainAtlas.getCategoryVisibility()[cat];
         mainAtlas.setCategoryVisible(cat, !current);
       } else {
@@ -9365,9 +9765,9 @@ function renderAtlasLegend(): void {
       const key = row.dataset['sourceKey'];
       if (key === undefined || !mainAtlas) return;
       const sourcesSnapshot = mainAtlas.sourcesWithCounts();
-      // Same semantic as category rows: Cmd/Ctrl-click = additive toggle,
-      // plain click = isolate this source (re-click reverts to show all).
-      if (e.metaKey || e.ctrlKey) {
+      // Same semantic as category rows: Cmd/Ctrl-click (or any tap on mobile)
+      // = additive toggle; plain desktop click = isolate (re-click shows all).
+      if (e.metaKey || e.ctrlKey || window.innerWidth <= 768) {
         const current = sourcesSnapshot.find((s) => s.key === key)?.visible ?? true;
         mainAtlas.setSourceVisible(key, !current);
       } else {
@@ -12705,7 +13105,8 @@ function showClipboardToast(text: string): void {
     }
   });
   closeBtn.addEventListener('click', dismiss);
-  els.toastStack.appendChild(root);
+  els.toastList.appendChild(root);
+  els.toastStack.classList.add('has-toasts');
   requestAnimationFrame(() => root.classList.add('visible'));
   // Auto-dismiss after 12s if no action taken.
   setTimeout(dismiss, 12_000);
@@ -12935,6 +13336,8 @@ let skillDemosOfferChecked = false;
 interface SkillDemosIngestResult {
   packsAttempted: number;
   skillsIngested: number;
+  language?: 'en' | 'ro';
+  skillsSkippedOtherLanguage?: number;
   skillsSkippedEmpty: string[];
   packErrors: Array<{ filename: string; reason: string }>;
   verified: Array<{ filename: string; verified: boolean }>;
@@ -12996,16 +13399,37 @@ function hideSkillDemosOfferBanner(): void {
   document.getElementById('skill-demos-offer-banner')?.classList.add('hidden');
 }
 
+// Selected language for the skill-demos install. Defaults to English; the
+// two-button segmented control in the offer banner toggles it. Only the
+// chosen-language set of 3 skills is ingested (never both / all 6).
+let skillDemosLang: 'en' | 'ro' = 'en';
+document.getElementById('skill-demos-lang')?.querySelectorAll<HTMLButtonElement>('.skill-demos-lang-btn')
+  .forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const lang = btn.dataset['lang'];
+      if (lang !== 'en' && lang !== 'ro') return;
+      skillDemosLang = lang;
+      document.getElementById('skill-demos-lang')
+        ?.querySelectorAll<HTMLButtonElement>('.skill-demos-lang-btn')
+        .forEach((b) => {
+          const on = b === btn;
+          b.classList.toggle('active', on);
+          b.setAttribute('aria-checked', on ? 'true' : 'false');
+        });
+    });
+  });
+
 document.getElementById('skill-demos-offer-add')?.addEventListener('click', () => {
   const addBtn = document.getElementById('skill-demos-offer-add') as HTMLButtonElement | null;
   const dismissBtn = document.getElementById('skill-demos-offer-dismiss') as HTMLButtonElement | null;
   if (addBtn) { addBtn.disabled = true; addBtn.textContent = 'Adding demos…'; }
   if (dismissBtn) dismissBtn.disabled = true;
   void (async () => {
-    const tid = addIngestToast('Adding Skill Demos', 'Importing the 3 bundled starter skills…');
+    const langLabel = skillDemosLang === 'ro' ? 'Romanian' : 'English';
+    const tid = addIngestToast('Adding Skill Demos', `Importing the 3 bundled ${langLabel} starter skills…`);
     try {
       const appVersion = await getVersion();
-      const result = await ipcCall<SkillDemosIngestResult>('skillDemos:ingest', { appVersion });
+      const result = await ipcCall<SkillDemosIngestResult>('skillDemos:ingest', { appVersion, language: skillDemosLang });
       hideSkillDemosOfferBanner();
       finishIngestToast(
         tid, 'success',
@@ -13013,7 +13437,7 @@ document.getElementById('skill-demos-offer-add')?.addEventListener('click', () =
         (result.packErrors.length ? `, ${result.packErrors.length} failed` : ''),
       );
       await fetchGraphsMetadata();
-      // Refresh the in-memory skills library so the 6 freshly-ingested
+      // Refresh the in-memory skills library so the 3 freshly-ingested
       // demo skills surface in the Skills w/ Goals list. fetchGraphsMetadata
       // updates the engram picker but the skills list reads from a
       // separate `skillsLibrary` cache that needs its own refetch.
@@ -13939,6 +14363,23 @@ interface MobileConnectionInfo {
   token: string;
   localIps: string[];
   tailscaleIp?: string;
+  /** Tailscale MagicDNS name (host.tailnet.ts.net) when detectable. */
+  tailscaleHost?: string | null;
+  /** True when `tailscale serve` fronts the browser-UI port over HTTPS. */
+  tailscaleHttps?: boolean;
+  /** True when a SECOND `tailscale serve` mapping fronts the MCP port (:3457)
+   *  over HTTPS — lets the MCP QR/clients use a real-cert URL (iOS ATS). */
+  mcpTailscaleHttps?: boolean;
+  /** Public https origin for the MCP bridge (https://host[:port]); append
+   *  `/mcp`. Null unless the second Serve mapping is active. */
+  mcpTailscaleHttpsUrl?: string | null;
+  /** Browser UI (personal-server mode) connection details. */
+  httpUi?: {
+    enabled: boolean;
+    host: string;
+    port: number;
+    token: string;
+  };
 }
 
 let mobileConnInfo: MobileConnectionInfo | null = null;
@@ -14016,7 +14457,14 @@ function renderMobileStep2(): void {
   const info = mobileConnInfo;
   if (!info) return;
   const preferredIp = info.tailscaleIp ?? info.localIps[0] ?? '127.0.0.1';
-  const url = `http://${preferredIp}:${info.port}`;
+  // Prefer the real-cert https URL when a second Tailscale Serve mapping fronts
+  // the MCP port (iOS ATS rejects plaintext to non-localhost hosts). The Serve
+  // handler proxies `/` → the local bridge, and the bridge's MCP endpoint is at
+  // `/mcp`, so the public URL is `<origin>/mcp`. Falls back to http-over-tailnet
+  // (already WireGuard-encrypted) when no https mapping is configured.
+  const url = (info.mcpTailscaleHttps && info.mcpTailscaleHttpsUrl)
+    ? `${info.mcpTailscaleHttpsUrl}/mcp`
+    : `http://${preferredIp}:${info.port}`;
   const urlEl = $m<HTMLSpanElement>('mobile-mcp-url');
   const tokEl = $m<HTMLSpanElement>('mobile-mcp-token');
   if (urlEl) urlEl.textContent = url;
@@ -14057,6 +14505,54 @@ function renderMobileStep2(): void {
       2,
     );
     vscodeEl.textContent = mcpJson;
+  }
+
+  // ── Browser access (personal-server mode) ──────────────────────────────
+  renderHttpUiBlock(preferredIp);
+}
+
+/** Render the browser-access sub-panel of the mobile wizard: enable state,
+ *  badge, URL (with ?token= for one-scan unlock), token, and QR. */
+function renderHttpUiBlock(preferredIp: string): void {
+  const ui = mobileConnInfo?.httpUi;
+  const enabledCb = $m<HTMLInputElement>('mobile-httpui-enabled');
+  const badge = $m<HTMLElement>('mobile-httpui-badge');
+  const details = $m<HTMLDivElement>('mobile-httpui-details');
+  const urlEl = $m<HTMLSpanElement>('mobile-httpui-url');
+  const tokEl = $m<HTMLSpanElement>('mobile-httpui-token');
+  const qrImg = $m<HTMLImageElement>('mobile-httpui-qr');
+
+  const enabled = ui?.enabled ?? false;
+  const token = ui?.token ?? '';
+  const port = ui?.port ?? 3456;
+
+  if (enabledCb) enabledCb.checked = enabled;
+  if (badge) {
+    badge.textContent = enabled ? 'On' : 'Off';
+    badge.className = `mobile-badge ${enabled ? 'on' : 'off'}`;
+  }
+  // Show details only once enabled AND a token exists (token is minted on save).
+  const showDetails = enabled && !!token;
+  if (details) details.style.display = showDetails ? '' : 'none';
+  if (!showDetails) return;
+
+  // Prefer Tailscale Serve HTTPS (real cert, no iOS ATS exception) when it's
+  // active: https://<host>.ts.net/ — Serve proxies 443 → the local sidecar, so
+  // there's no port in the URL. Otherwise fall back to http://<ip>:<port>.
+  const tsHost = mobileConnInfo?.tailscaleHost;
+  const useHttps = !!(tsHost && mobileConnInfo?.tailscaleHttps);
+  const base = useHttps ? `https://${tsHost}` : `http://${preferredIp}:${port}`;
+  const url = `${base}/?token=${encodeURIComponent(token)}`;
+  const displayUrl = `${base}/`; // shown without the token
+  if (urlEl) urlEl.textContent = displayUrl;
+  if (tokEl) {
+    tokEl.textContent = mobileTokenRevealed ? token : token.replace(/./g, '•');
+    tokEl.setAttribute('data-token', token);
+  }
+  if (qrImg) {
+    QRCode.toDataURL(url, { width: 200, margin: 2, color: { dark: '#000000', light: '#ffffff' } })
+      .then((dataUrl) => { qrImg.src = dataUrl; qrImg.classList.remove('hidden'); })
+      .catch(() => { qrImg.classList.add('hidden'); });
   }
 }
 
@@ -14181,6 +14677,41 @@ async function openMobileWizard(): Promise<void> {
     if (btnNext && mobileWizardStep === 0) btnNext.disabled = !cb.checked;
   });
 
+  // Browser-access enable toggle — persists mobile.httpUi and re-fetches so
+  // the sidecar-minted token + QR render immediately. Takes effect on next
+  // cortex unlock (same as the MCP bridge).
+  document.getElementById('mobile-httpui-enabled')?.addEventListener('change', (e) => {
+    const cb = e.currentTarget as HTMLInputElement;
+    const badge = $m<HTMLElement>('mobile-httpui-badge');
+    if (badge) {
+      badge.textContent = cb.checked ? 'On' : 'Off';
+      badge.className = `mobile-badge ${cb.checked ? 'on' : 'off'}`;
+    }
+    void (async () => {
+      const footerNote = $m<HTMLSpanElement>('mobile-footer-note');
+      try {
+        // Browser access binds to 0.0.0.0 so it's reachable from other devices
+        // on the LAN / Tailscale — that's the whole point of this mode (a phone
+        // opening the UI). Access is gated by the token. Loopback-only browser
+        // access would be pointless (you'd just use the desktop app). When
+        // disabling, bind back to loopback.
+        const bindHost = cb.checked ? '0.0.0.0' : '127.0.0.1';
+        const patch = {
+          mobile: {
+            httpUi: { enabled: cb.checked, port: 3456, host: bindHost },
+          },
+        };
+        await invoke('update_settings', { settings: patch });
+        mobileConnInfo = (await invoke('get_mobile_connection_info')) as MobileConnectionInfo;
+        const preferredIp = mobileConnInfo.tailscaleIp ?? mobileConnInfo.localIps[0] ?? '127.0.0.1';
+        renderHttpUiBlock(preferredIp);
+        if (footerNote) footerNote.textContent = 'Browser access updated — takes effect on next unlock.';
+      } catch (err) {
+        if (footerNote) footerNote.textContent = `Save failed: ${err}`;
+      }
+    })();
+  });
+
   // Copy buttons (static delegation). Checks data-token attribute first
   // (for the obfuscated token field), then falls back to textContent.
   document.getElementById('mobile-setup-modal')?.addEventListener('click', (e) => {
@@ -14218,6 +14749,50 @@ async function openMobileWizard(): Promise<void> {
   document.getElementById('link-tailscale')?.addEventListener('click', (e) => {
     e.preventDefault();
     void invoke('open_external_url', { url: 'https://tailscale.com/download' });
+  });
+}
+
+// ── VS Code / Copilot Chat setup (own modal) ──────────────────────────────────
+async function openCopilotModal(): Promise<void> {
+  const modal = document.getElementById('copilot-setup-modal');
+  if (!modal) return;
+  let info: MobileConnectionInfo | null = null;
+  try { info = (await invoke('get_mobile_connection_info')) as MobileConnectionInfo; }
+  catch { /* still open the modal; snippet shows a hint */ }
+  const port = info?.port ?? 3457;
+  const token = info?.token ?? '';
+  const cfgEl = document.getElementById('copilot-vscode-config');
+  if (cfgEl) {
+    cfgEl.textContent = token
+      ? JSON.stringify(
+          { servers: { graphnosis: { type: 'http', url: `http://127.0.0.1:${port}/mcp`, headers: { Authorization: `Bearer ${token}` } } } },
+          null, 2,
+        )
+      : 'Unlock the cortex first — the bearer token is generated on unlock.';
+  }
+  (modal as HTMLElement).dataset['token'] = token;
+  modal.classList.remove('hidden');
+}
+
+{
+  const openCopilot = (): void => { void openCopilotModal(); };
+  document.getElementById('btn-configure-copilot')?.addEventListener('click', openCopilot);
+  document.getElementById('rail-btn-copilot')?.addEventListener('click', openCopilot);
+  document.getElementById('btn-copilot-close')?.addEventListener('click', () => {
+    document.getElementById('copilot-setup-modal')?.classList.add('hidden');
+  });
+  document.getElementById('btn-copilot-open-extension')?.addEventListener('click', () => {
+    void invoke('plugin:opener|open_url', {
+      url: 'https://marketplace.visualstudio.com/items?itemName=nehloo-interactive.graphnosis',
+    });
+  });
+  document.getElementById('btn-copilot-copy-token')?.addEventListener('click', (e) => {
+    const token = document.getElementById('copilot-setup-modal')?.dataset['token'] ?? '';
+    if (token) mobileCopyBtn(e.currentTarget as HTMLButtonElement, token);
+  });
+  document.getElementById('btn-copilot-copy-config')?.addEventListener('click', (e) => {
+    const text = document.getElementById('copilot-vscode-config')?.textContent ?? '';
+    if (text) mobileCopyBtn(e.currentTarget as HTMLButtonElement, text);
   });
 
   // Revoke & Regenerate — generates a fresh UUID, saves it via update_settings,
@@ -14465,12 +15040,18 @@ async function refreshConnectorsList(): Promise<void> {
   const wrap = document.getElementById('connectors-list');
   if (!wrap) return;
   try {
-    const res = await invoke<{ configs: ConnectorConfigShape[]; statuses: ConnectorStatus[] }>(
+    const res = await invoke<{ configs: ConnectorConfigShape[]; statuses: ConnectorStatus[]; pullIntervalMs?: number }>(
       'list_connectors',
     );
     // Reflect installed connectors in the sidebar's Get-connected status list.
     installedConnectorKinds = new Set(res.configs.map((c) => c.kind));
     renderRailGetConnected();
+    // Populate the poll-interval input (ms → minutes) without clobbering a
+    // value the user is mid-edit on (don't overwrite a focused field).
+    const intervalInput = document.getElementById('connectors-interval-input') as HTMLInputElement | null;
+    if (intervalInput && typeof res.pullIntervalMs === 'number' && document.activeElement !== intervalInput) {
+      intervalInput.value = String(Math.round(res.pullIntervalMs / 60_000));
+    }
     if (!res.configs.length) {
       wrap.innerHTML = `
         <p style="color: var(--fg-dim); font-size: 14px; padding: 10px 4px; margin: 0;">
@@ -14498,6 +15079,27 @@ async function refreshConnectorsList(): Promise<void> {
       <span style="color: #f87171; font-size: 14px;">Couldn't load connectors: ${escapeHtml(String(e))}</span>
     </div>`;
   }
+}
+
+// Poll-interval control: persist via the generic settings update (the sidecar
+// routes connectors.pullIntervalMs to the ConnectorManager, which swaps live
+// timers). Commit on change/blur; clamp to the 1–1440 min range.
+{
+  const intervalInput = document.getElementById('connectors-interval-input') as HTMLInputElement | null;
+  intervalInput?.addEventListener('change', () => {
+    const mins = Math.min(1440, Math.max(1, Math.round(Number(intervalInput.value) || 15)));
+    intervalInput.value = String(mins);
+    void (async () => {
+      try {
+        await invoke('update_settings', { settings: { connectors: { pullIntervalMs: mins * 60_000 } } });
+        const tid = addIngestToast('Connector poll interval', `Now checking every ${mins} min`);
+        finishIngestToast(tid, 'success', `Now checking every ${mins} min`);
+      } catch (e) {
+        const tid = addIngestToast('Couldn’t update interval', String(e));
+        finishIngestToast(tid, 'error', String(e));
+      }
+    })();
+  });
 }
 
 function renderConnectorRow(cfg: ConnectorConfigShape, status?: ConnectorStatus): string {
@@ -14600,30 +15202,107 @@ function openConnectorSetupModal(kind: ConnectorKind, existing?: ConnectorConfig
   body.innerHTML = renderConnectorSetupBody(kind, existing);
   // Populate engram dropdown after body renders
   populateEngramDropdown('connector-graphid', existing?.graphId);
-  // Wire folder browse button for ai-context connector
+  // "+ New engram" button — switch the dropdown to new-engram mode and prefill
+  // a relevant, unique suggested name.
+  document.getElementById('connector-new-engram-btn')?.addEventListener('click', () => {
+    const sel = document.getElementById('connector-graphid') as HTMLSelectElement | null;
+    const nameInput = document.getElementById('connector-new-engram-name') as HTMLInputElement | null;
+    if (sel) { sel.value = '__new__'; sel.dispatchEvent(new Event('change')); }
+    if (nameInput) {
+      nameInput.style.display = '';
+      if (!nameInput.value.trim()) nameInput.value = suggestEngramName(kind);
+      nameInput.focus();
+      nameInput.select();
+    }
+  });
+  // Folder browse — uses the native dialog in the Tauri app, or a server-side
+  // folder picker in browser/personal-server mode (pickFolders abstracts both).
   document.getElementById('connector-aicontext-browse')?.addEventListener('click', async () => {
-    const picked = await invoke<string[]>('pick_folders');
+    const picked = await pickFolders();
     if (!picked.length) return;
     const ta = document.getElementById('connector-aicontext-paths') as HTMLTextAreaElement | null;
     if (!ta) return;
     const current = ta.value.split('\n').map((s) => s.trim()).filter(Boolean);
     ta.value = [...new Set([...current, ...picked])].join('\n');
   });
-  // Wire folder browse button for obsidian connector (single folder)
   document.getElementById('connector-obsidian-browse')?.addEventListener('click', async () => {
-    const picked = await invoke<string[]>('pick_folders');
-    if (!picked.length) return;
+    const picked = await pickFolders();
     const inp = document.getElementById('connector-obsidian-vault') as HTMLInputElement | null;
-    if (inp) inp.value = picked[0] ?? '';
+    if (inp && picked[0]) inp.value = picked[0];
   });
-  // Wire folder browse button for gbrain connector (single folder)
   document.getElementById('connector-gbrain-browse')?.addEventListener('click', async () => {
-    const picked = await invoke<string[]>('pick_folders');
-    if (!picked.length) return;
+    const picked = await pickFolders();
     const inp = document.getElementById('connector-gbrain-repo') as HTMLInputElement | null;
-    if (inp) inp.value = picked[0] ?? '';
+    if (inp && picked[0]) inp.value = picked[0];
   });
   modal.classList.remove('hidden');
+}
+
+/**
+ * Pick one or more folders. In the Tauri app this is the native OS dialog. In
+ * browser / personal-server mode there's no native dialog AND the relevant
+ * disk is the SERVER's, so we open a server-side folder navigator backed by
+ * the `fs.listDir` IPC. Returns selected absolute path(s), or [] if cancelled.
+ */
+async function pickFolders(): Promise<string[]> {
+  if (IS_TAURI) {
+    const picked = await invoke<string[]>('pick_folders');
+    return picked ?? [];
+  }
+  const chosen = await browserFolderPicker();
+  return chosen ? [chosen] : [];
+}
+
+interface ListDirResult { path: string; parent: string; dirs: Array<{ name: string; path: string }>; }
+
+/** Server-side folder navigator (browser/personal-server mode). Walks the
+ *  server's directories via the `fs.listDir` IPC; resolves the chosen absolute
+ *  path, or null if cancelled. */
+function browserFolderPicker(): Promise<string | null> {
+  return new Promise<string | null>((resolve) => {
+    const overlay = document.createElement('div');
+    overlay.className = 'folder-picker-overlay';
+    overlay.innerHTML =
+      `<div class="folder-picker">` +
+        `<div class="folder-picker-head"><strong>Choose a folder on the server</strong>` +
+          `<button class="folder-picker-x" aria-label="Cancel">×</button></div>` +
+        `<div class="folder-picker-path" id="fp-path"></div>` +
+        `<div class="folder-picker-list" id="fp-list"></div>` +
+        `<div class="folder-picker-actions">` +
+          `<button class="folder-picker-cancel">Cancel</button>` +
+          `<button class="folder-picker-use primary">Use this folder</button>` +
+        `</div>` +
+      `</div>`;
+    document.body.appendChild(overlay);
+    let current = '';
+    const pathEl = overlay.querySelector('#fp-path') as HTMLElement;
+    const listEl = overlay.querySelector('#fp-list') as HTMLElement;
+    const close = (val: string | null): void => { overlay.remove(); resolve(val); };
+
+    const load = async (p?: string): Promise<void> => {
+      listEl.innerHTML = '<div class="fp-empty">Loading…</div>';
+      try {
+        const res = await invoke<ListDirResult>('fs_list_dir', p ? { path: p } : {});
+        current = res.path;
+        pathEl.textContent = res.path;
+        const up = res.parent && res.parent !== res.path
+          ? `<button class="fp-row fp-up" data-path="${escapeHtml(res.parent)}">⬆ ..</button>` : '';
+        listEl.innerHTML = up + (res.dirs.length
+          ? res.dirs.map((d) => `<button class="fp-row" data-path="${escapeHtml(d.path)}">📁 ${escapeHtml(d.name)}</button>`).join('')
+          : '<div class="fp-empty">No subfolders here</div>');
+        listEl.querySelectorAll<HTMLButtonElement>('.fp-row').forEach((b) =>
+          b.addEventListener('click', () => void load(b.dataset['path'])));
+      } catch (e) {
+        listEl.innerHTML = `<div class="fp-empty">Couldn't read folder: ${escapeHtml(String(e))}</div>`;
+      }
+    };
+
+    overlay.querySelector('.folder-picker-x')?.addEventListener('click', () => close(null));
+    overlay.querySelector('.folder-picker-cancel')?.addEventListener('click', () => close(null));
+    overlay.querySelector('.folder-picker-use')?.addEventListener('click', () => close(current || null));
+    overlay.addEventListener('click', (e) => { if (e.target === overlay) close(null); });
+    void load();
+  });
 }
 
 function connectorSubtitleFor(kind: ConnectorKind): string {
@@ -14640,19 +15319,48 @@ function connectorSubtitleFor(kind: ConnectorKind): string {
   }
 }
 
+// Relevant base label per connector kind — used to suggest a new engram name
+// and a connector slug by default.
+const CONNECTOR_SUGGEST_BASE: Record<ConnectorKind, string> = {
+  rss: 'RSS Feeds', github: 'GitHub', slack: 'Slack', trello: 'Trello',
+  linear: 'Linear', obsidian: 'Obsidian Notes', gbrain: 'GBrain Notes',
+  'ai-context': 'AI Context', webhook: 'Webhook Inbox',
+};
+
+/** A slug like "obsidian-7f3a" — relevant + unlikely to collide. */
+function suggestConnectorId(kind: ConnectorKind): string {
+  const suffix = Date.now().toString(36).slice(-4);
+  return `${kind}-${suffix}`;
+}
+
+/** A relevant engram display name, deduped against existing engrams ("… 2"). */
+function suggestEngramName(kind: ConnectorKind): string {
+  const base = CONNECTOR_SUGGEST_BASE[kind] ?? 'Imported';
+  const taken = new Set(loadedGraphs.map((g) => (g.metadata.displayName ?? g.graphId).toLowerCase()));
+  if (!taken.has(base.toLowerCase())) return base;
+  for (let i = 2; i < 100; i++) {
+    const candidate = `${base} ${i}`;
+    if (!taken.has(candidate.toLowerCase())) return candidate;
+  }
+  return `${base} ${Date.now().toString(36).slice(-3)}`;
+}
+
 function renderConnectorSetupBody(kind: ConnectorKind, existing?: ConnectorConfigShape): string {
   const opts = (existing?.options ?? {}) as Record<string, unknown>;
   const creds = existing?.credentials ?? {};
   const idField = `
     <div class="connector-field">
       <label for="connector-id">Connector ID (slug)</label>
-      <input type="text" id="connector-id" placeholder="e.g. my-rss-news" value="${escapeHtml(existing?.id ?? '')}" ${existing ? 'readonly' : ''} />
-      <span class="field-hint">${existing ? 'Cannot change after install.' : 'Letters, numbers, hyphens. Auto-generated if blank.'}</span>
+      <input type="text" id="connector-id" placeholder="e.g. my-rss-news" value="${escapeHtml(existing?.id ?? suggestConnectorId(kind))}" ${existing ? 'readonly' : ''} />
+      <span class="field-hint">${existing ? 'Cannot change after install.' : 'Letters, numbers, hyphens. Edit or clear to auto-generate.'}</span>
     </div>`;
   const graphField = `
     <div class="connector-field">
       <label for="connector-graphid">Target engram</label>
-      <select id="connector-graphid"></select>
+      <div class="connector-engram-row" style="display:flex;gap:6px;align-items:center;">
+        <select id="connector-graphid" style="flex:1;min-width:0;"></select>
+        <button type="button" id="connector-new-engram-btn" class="btn-secondary" style="white-space:nowrap;">+ New engram</button>
+      </div>
       <input type="text" id="connector-new-engram-name" placeholder="New engram name…" style="display:none;margin-top:6px;" />
       <span class="field-hint">Ingested events become source nodes in this engram.</span>
     </div>`;
@@ -14786,7 +15494,8 @@ function renderConnectorSetupBody(kind: ConnectorKind, existing?: ConnectorConfi
       html = `
         <div class="connector-help">
           No API key needed — Graphnosis reads your vault's <code>.md</code> files directly from disk.
-          Point it at your vault folder and it will auto-ingest new and modified notes on each pull.
+          Point it at your vault folder and it will ingest new and modified notes within
+          seconds (it watches the folder), with a periodic re-scan as a backstop.
           The <code>.obsidian/</code> config directory is always skipped.
         </div>
         ${idField}
@@ -14804,7 +15513,8 @@ function renderConnectorSetupBody(kind: ConnectorKind, existing?: ConnectorConfi
       html = `
         <div class="connector-help">
           No API key needed — Graphnosis reads GBrain's <code>.md</code> files directly from your local git repo.
-          Point it at the repo folder and it will auto-ingest new and modified notes on each pull.
+          Point it at the repo folder and it will ingest new and modified notes within
+          seconds (it watches the folder), with a periodic re-scan as a backstop.
           GBrain wikilinks (<code>[[wiki/...]]</code>) are preserved in the ingested text.
         </div>
         ${idField}
@@ -15164,6 +15874,49 @@ void (async () => {
     showError(String(e));
   }
 })();
+
+// ── Browser-mode lock screen adaptation ──────────────────────────────────
+// When running in a plain browser (IS_TAURI === false), the lock screen
+// repurposes the passphrase field as an HTTP UI token input.
+// The cortex path row is hidden (the server owns the cortex).
+if (!IS_TAURI) {
+  // Marks every browser context (no Tauri). Used by CSS to drop the macOS
+  // traffic-light header inset — only the Mac app needs that left padding.
+  document.body.classList.add('browser-mode');
+  const cortexRow = document.querySelector<HTMLElement>('#cortex-dir')?.closest<HTMLElement>('.row');
+  if (cortexRow) cortexRow.style.display = 'none';
+  document.getElementById('btn-pick')?.style.setProperty('display', 'none');
+  const lbl = document.querySelector<HTMLLabelElement>('label[for="passphrase"]');
+  if (lbl) lbl.textContent = 'Access token';
+  const inp = document.getElementById('passphrase') as HTMLInputElement | null;
+  if (inp) inp.placeholder = 'Your Graphnosis HTTP UI access token';
+  const warn = document.querySelector<HTMLElement>('.passphrase-warning');
+  if (warn) warn.textContent =
+    'On the computer running Graphnosis, open Settings → Mobile & Remote → Browser access. ' +
+    'Scan the QR code to connect automatically, or copy the access token shown there and paste it here.';
+  document.getElementById('link-forgot-passphrase')?.style.setProperty('display', 'none');
+  const panelTitle = document.querySelector<HTMLElement>('.panel-title');
+  if (panelTitle) panelTitle.textContent = 'Connect to your Graphnosis server';
+
+  // QR / deep-link auto-unlock. A QR code encodes
+  // `https://<tailscale-host>:3456/?token=<token>`; scanning it on a phone
+  // lands here with the token in the query string. Pre-fill, strip it from
+  // the visible URL (so it isn't left in history / bookmarks), and unlock.
+  const urlToken = new URLSearchParams(location.search).get('token');
+  if (urlToken && inp) {
+    inp.value = urlToken;
+    const clean = location.pathname + location.hash;
+    window.history.replaceState({}, '', clean);
+    // Auto-unlocking: suppress the lock-screen FORM so the user doesn't see it
+    // flash before the app appears. body.browser-auto-unlock hides the unlock
+    // card (CSS) and shows a quiet "Connecting…" line instead. On failure the
+    // class is removed (see attemptUnlock's catch) so the form reappears.
+    document.body.classList.add('browser-auto-unlock');
+    const sub = document.getElementById('subtitle');
+    if (sub) sub.textContent = 'Connecting to your Graphnosis server…';
+    setTimeout(() => { void attemptUnlock(); }, 0);
+  }
+}
 
 // ── Window drag via Tauri startDragging API ───────────────────────────────
 // CSS -webkit-app-region:drag is set on .app-header but Tauri 2 on macOS
@@ -16757,7 +17510,13 @@ type StudioTool = 'skills' | 'recall' | 'dig-deeper' | 'remember' | 'edit' | 'gn
 // it never overwrites the stored choice with itself.
 // Default to 'skills' on first launch (no prior selection in localStorage).
 // Returning users land on whatever they last had open.
-let activeStudioTool: StudioTool = (localStorage.getItem(STUDIO_CHIP_KEY) as StudioTool | null) ?? 'skills';
+// On mobile (browser, ≤768px) always default to 'remember' — the most common
+// phone action is capturing a quick memory, and Skills/Recall panels are
+// cramped on a small screen.
+let activeStudioTool: StudioTool =
+  (typeof window !== 'undefined' && window.innerWidth <= 768)
+    ? 'remember'
+    : ((localStorage.getItem(STUDIO_CHIP_KEY) as StudioTool | null) ?? 'skills');
 
 function switchStudioTool(tool: StudioTool, save = true): void {
   activeStudioTool = tool;
@@ -16818,16 +17577,20 @@ function switchStudioTool(tool: StudioTool, save = true): void {
     studioSliderSyncOnTabSwitch?.(tool === 'dig-deeper');
   }
 
-  // Focus the primary input of the active section
-  const inputIds: Record<StudioTool, string> = {
-    skills: 'skills-input-text',
+  // Focus the primary input of the active section.
+  // EXCEPT 'skills': its input sits far down the pane, so auto-focusing it
+  // scrolls the view down (and pops the keyboard on mobile) the moment the tab
+  // opens. Leave Skills unfocused so the user lands at the top.
+  const inputIds: Record<StudioTool, string | null> = {
+    skills: null,
     recall: 'studio-recall-query',
     'dig-deeper': 'studio-recall-query',
     remember: 'studio-remember-text',
     edit: 'studio-edit-correction',
     gnn: 'studio-gnn-query',
   };
-  setTimeout(() => (document.getElementById(inputIds[tool]) as HTMLElement | null)?.focus(), 50);
+  const focusId = inputIds[tool];
+  if (focusId) setTimeout(() => (document.getElementById(focusId) as HTMLElement | null)?.focus(), 50);
 
   // Skills tab — mount the library on entry. Cheap when cached, refreshes
   // vitality for the visible window. Deferred via queueMicrotask so the
@@ -19799,8 +20562,6 @@ function closeLicenseModal(): void {
     });
   };
   wireHome('rail-logo-home');
-  wireHome('app-title-home');
-  wireHome('app-tagline-home');
   // Ghampus header on the dashboard ("Ghampus / your memory seahorse." +
   // mascot mark) opens the "Meet Ghampus" modal — funny + trust-building
   // intro to the mascot. Click OR keyboard activation; backdrop click +
@@ -19811,7 +20572,7 @@ function closeLicenseModal(): void {
   const closeGhampusModal = (): void => {
     document.getElementById('ghampus-modal')?.classList.add('hidden');
   };
-  const ghampusHeader = document.getElementById('ghampus-header');
+  const ghampusHeader = document.getElementById('header-ghampus-btn');
   if (ghampusHeader) {
     ghampusHeader.addEventListener('click', openGhampusModal);
     ghampusHeader.addEventListener('keydown', (e) => {

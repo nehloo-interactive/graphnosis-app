@@ -2,7 +2,8 @@
 
 import path from 'node:path';
 import os from 'node:os';
-import { promises as fs, watch as fsWatch } from 'node:fs';
+import { promises as fs, watch as fsWatch, existsSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { randomUUID } from 'node:crypto';
 import lockfile from 'proper-lockfile';
 import { embeddings, settings as settingsMod } from '@graphnosis-app/core';
@@ -12,6 +13,7 @@ import { GraphnosisImpl } from './graphnosis-impl.js';
 import { startIpc } from './ipc.js';
 import { dbg } from './log-redact.js';
 import { startEvents } from './events.js';
+import { startHttpUiServer } from './http-ui-server.js';
 import { startStdioMcpServer } from './mcp-server.js';
 import { startSocketMcpServer } from './mcp-socket-server.js';
 import { mcpRegistry } from './mcp-registry.js';
@@ -714,7 +716,7 @@ async function main(): Promise<void> {
   // App's UI, and the first ingest.file event arrives once IPC is up.
   const eventsSocketPath = process.env.GRAPHNOSIS_EVENTS_SOCKET
     ?? path.join(env.cortexDir, 'events.sock');
-  const { broadcastRaw } = await startEvents({ host, socketPath: eventsSocketPath });
+  const { broadcastRaw, subscribe: subscribeEvents } = await startEvents({ host, socketPath: eventsSocketPath });
 
   // Watch the parent directory of the cortex folder for rename events.
   // If the cortex folder itself is renamed or moved while the cortex is open,
@@ -1031,7 +1033,7 @@ async function main(): Promise<void> {
   // Tauri shell IPC (custom JSON-RPC, not MCP).
   const ipcSocketPath = process.env.GRAPHNOSIS_IPC_SOCKET
     ?? path.join(env.cortexDir, 'sidecar.sock');
-  await startIpc({
+  const ipcDeps = {
     host,
     socketPath: ipcSocketPath,
     pendingDiffs,
@@ -1045,8 +1047,73 @@ async function main(): Promise<void> {
     llm: () => llm,
     skillTrainer,
     licenseValidator,
-  });
+  };
+  await startIpc(ipcDeps);
   console.error(`[graphnosis-sidecar] IPC listening on ${ipcSocketPath}`);
+
+  // Optional HTTP UI server for browser-based access (personal server mode).
+  // Two ways to enable, in priority order:
+  //   1. Env vars (server/headless deploy): GRAPHNOSIS_HTTP_UI=1
+  //   2. Settings (desktop-app-hosted): Settings → Mobile & Remote → Browser access
+  // Env vars win when both are present. Useful for Mac Mini / Linux server
+  // setups where the user connects from a phone via Tailscale.
+  //
+  // Env vars:
+  //   GRAPHNOSIS_HTTP_UI=1              — enable
+  //   GRAPHNOSIS_HTTP_UI_PORT=3456      — port (default 3456)
+  //   GRAPHNOSIS_BIND=0.0.0.0           — bind address (default 127.0.0.1)
+  //   GRAPHNOSIS_HTTP_UI_TOKEN=<token>  — static auth token (auto-generated if absent)
+  //   GRAPHNOSIS_HTTP_UI_STATIC=<path>  — path to compiled web UI files (optional)
+  {
+    const envEnabled = process.env.GRAPHNOSIS_HTTP_UI === '1';
+    const uiCfg = host.getSettings().mobile?.httpUi;
+    const settingsEnabled = uiCfg?.enabled === true && !!uiCfg.token;
+    if (envEnabled || settingsEnabled) {
+      const uiPort = process.env.GRAPHNOSIS_HTTP_UI_PORT
+        ? parseInt(process.env.GRAPHNOSIS_HTTP_UI_PORT, 10)
+        : (uiCfg?.port ?? 3456);
+      const uiBind = process.env.GRAPHNOSIS_BIND ?? uiCfg?.host ?? '127.0.0.1';
+      let uiToken = process.env.GRAPHNOSIS_HTTP_UI_TOKEN ?? uiCfg?.token ?? '';
+      if (!uiToken) {
+        uiToken = randomUUID();
+        console.error(`[graphnosis-sidecar] HTTP UI token (save this): ${uiToken}`);
+      }
+      // Resolve the compiled web UI to serve at `/`. Priority:
+      //   1. GRAPHNOSIS_HTTP_UI_STATIC env (explicit override / packaged app
+      //      passes the bundled resource path here)
+      //   2. The desktop package's dist in the monorepo (dev)
+      // Falls back to the built-in placeholder page if none is found.
+      const here = path.dirname(fileURLToPath(import.meta.url)); // …/desktop-sidecar/dist
+      const staticCandidates = [
+        process.env.GRAPHNOSIS_HTTP_UI_STATIC,
+        path.resolve(here, '../../desktop/dist'),  // monorepo: apps/desktop/dist
+        path.resolve(here, '../web'),              // future: bundled-alongside layout
+      ].filter((c): c is string => !!c);
+      let uiStaticDir: string | undefined;
+      for (const c of staticCandidates) {
+        if (existsSync(path.join(c, 'index.html'))) { uiStaticDir = c; break; }
+      }
+      if (uiStaticDir) {
+        console.error(`[graphnosis-sidecar] HTTP UI serving web app from ${uiStaticDir}`);
+      } else {
+        console.error('[graphnosis-sidecar] HTTP UI: no built web app found — serving status placeholder');
+      }
+      try {
+        const httpUiServer = await startHttpUiServer({
+          deps: ipcDeps,
+          port: uiPort,
+          host: uiBind,
+          token: uiToken,
+          subscribeEvents,
+          ...(uiStaticDir ? { staticDir: uiStaticDir } : {}),
+        });
+        process.on('SIGINT',  () => httpUiServer.close());
+        process.on('SIGTERM', () => httpUiServer.close());
+      } catch (e) {
+        console.error(`[graphnosis-sidecar] HTTP UI on :${uiPort} failed: ${(e as Error).message}`);
+      }
+    }
+  }
 
   // Load remaining engrams sequentially and await completion before starting
   // any background machinery. The default engram is already in memory (loaded

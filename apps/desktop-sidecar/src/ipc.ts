@@ -137,6 +137,111 @@ function isTcpAddress(socketPath: string): boolean {
   return /^\d{1,3}(?:\.\d{1,3}){3}:\d+$/.test(socketPath);
 }
 
+/**
+ * Detected Tailscale Serve state. `host` is the MagicDNS name; the two
+ * `*Https` flags say whether Serve is fronting that local port with a real
+ * https cert, and the `*HttpsUrl` carry the public origin to advertise.
+ *
+ * Two independent mappings matter because the browser UI and the MCP bridge
+ * live on different local ports (3456 / 3457) and Tailscale Serve fronts ONE
+ * backend per https endpoint:
+ *   tailscale serve --bg http://127.0.0.1:3456            → https://host/        (UI, port 443)
+ *   tailscale serve --bg --https=8443 http://127.0.0.1:3457 → https://host:8443/ (MCP)
+ */
+interface TailscaleServeInfo {
+  host: string;
+  /** Back-compat alias for uiHttps (older callers read `.https`). */
+  https: boolean;
+  uiHttps: boolean;
+  uiHttpsUrl?: string;
+  mcpHttps: boolean;
+  mcpHttpsUrl?: string;
+}
+
+/**
+ * Best-effort detection of this machine's Tailscale MagicDNS name and which
+ * local ports Tailscale Serve fronts over HTTPS. Used to hand the browser/QR
+ * and the MCP QR `https://<host>.<tailnet>.ts.net[:port]` URLs (valid cert, no
+ * iOS ATS exception) instead of plain `http://100.x:PORT`. Returns null if
+ * Tailscale isn't found or status can't be read; callers fall back to http.
+ *
+ * @param uiPort  local browser-UI port (default 3456)
+ * @param mcpPort local MCP-bridge port (default 3457)
+ */
+async function detectTailscaleServe(uiPort: number, mcpPort: number): Promise<TailscaleServeInfo | null> {
+  const { execFile } = await import('node:child_process');
+  const { promisify } = await import('node:util');
+  const run = promisify(execFile);
+  const candidates = [
+    'tailscale',
+    '/Applications/Tailscale.app/Contents/MacOS/Tailscale', // macOS GUI app
+    '/usr/bin/tailscale',
+    '/usr/local/bin/tailscale',
+  ];
+  let bin: string | null = null;
+  for (const c of candidates) {
+    try { await run(c, ['version'], { timeout: 2000 }); bin = c; break; }
+    catch { /* try next */ }
+  }
+  if (!bin) return null;
+
+  let host = '';
+  try {
+    const { stdout } = await run(bin, ['status', '--json'], { timeout: 3000 });
+    const dns = (JSON.parse(stdout) as { Self?: { DNSName?: string } })?.Self?.DNSName;
+    if (dns) host = dns.replace(/\.$/, ''); // strip trailing dot → host.tailnet.ts.net
+  } catch { /* status unavailable */ }
+  if (!host) return null;
+
+  let uiHttps = false, mcpHttps = false;
+  let uiHttpsUrl: string | undefined, mcpHttpsUrl: string | undefined;
+
+  // Build the public origin for an https endpoint on `port` (omit :443).
+  const origin = (port: number): string => `https://${host}${port === 443 ? '' : `:${port}`}`;
+
+  // Preferred path: parse `serve status --json` and map each https web handler
+  // to the local backend port it proxies, so we know WHICH service (UI vs MCP)
+  // is reachable over https and on which public port.
+  let parsedJson = false;
+  try {
+    const { stdout } = await run(bin, ['serve', 'status', '--json'], { timeout: 3000 });
+    if (stdout?.trim()) {
+      const status = JSON.parse(stdout) as {
+        Web?: Record<string, { Handlers?: Record<string, { Proxy?: string }> }>;
+      };
+      for (const [endpoint, cfg] of Object.entries(status.Web ?? {})) {
+        // endpoint key shape: "host.tailnet.ts.net:443"
+        const publicPort = Number(endpoint.split(':').pop()) || 443;
+        for (const handler of Object.values(cfg.Handlers ?? {})) {
+          const proxy = handler.Proxy ?? '';
+          if (proxy.includes(`:${uiPort}`)) { uiHttps = true; uiHttpsUrl = origin(publicPort); }
+          if (proxy.includes(`:${mcpPort}`)) { mcpHttps = true; mcpHttpsUrl = origin(publicPort); }
+        }
+      }
+      parsedJson = true;
+    }
+  } catch { /* fall through to the legacy heuristic */ }
+
+  // Legacy fallback: older `tailscale serve status` has no JSON. We can only
+  // tell that *some* https handler is active, not which port — assume it's the
+  // UI (the common single-mapping setup) and leave MCP as http.
+  if (!parsedJson) {
+    try {
+      const { stdout } = await run(bin, ['serve', 'status'], { timeout: 3000 });
+      if (stdout && /https|:443\b/i.test(stdout)) { uiHttps = true; uiHttpsUrl = origin(443); }
+    } catch { /* give up — http fallback */ }
+  }
+
+  return {
+    host,
+    https: uiHttps,
+    uiHttps,
+    mcpHttps,
+    ...(uiHttpsUrl !== undefined ? { uiHttpsUrl } : {}),
+    ...(mcpHttpsUrl !== undefined ? { mcpHttpsUrl } : {}),
+  };
+}
+
 export async function startIpc(deps: IpcDeps): Promise<net.Server> {
   if (!isTcpAddress(deps.socketPath)) {
     await fs.mkdir(path.dirname(deps.socketPath), { recursive: true });
@@ -224,7 +329,7 @@ function flattenByGraph(
   return all.sort((a, b) => b.score - a.score);
 }
 
-async function dispatch(deps: IpcDeps, method: string, params: unknown): Promise<unknown> {
+export async function dispatch(deps: IpcDeps, method: string, params: unknown): Promise<unknown> {
   switch (method) {
     // ── Consent prompt resolution (in-app modal flow) ──────────────────
     case 'consent.resolvePrompt': {
@@ -1116,7 +1221,10 @@ async function dispatch(deps: IpcDeps, method: string, params: unknown): Promise
           deps.brainEngine?.notifyIngestComplete();
         } catch (e) {
           const message = e instanceof Error ? e.message : String(e);
-          console.error(`[graphnosis-sidecar] background ingest failed for ${filePath}:`, e);
+          // Empty files (0 bytes) produce no nodes — not a real error, skip the noise.
+          if (!message.includes('0 bytes')) {
+            console.error(`[graphnosis-sidecar] background ingest failed for ${filePath}:`, e);
+          }
           deps.broadcastRaw({
             kind: 'ingest.done',
             name: 'ingest.done',
@@ -1287,6 +1395,45 @@ async function dispatch(deps: IpcDeps, method: string, params: unknown): Promise
     }
     case 'settings.get': {
       return deps.host.getSettings();
+    }
+    case 'fs.listDir': {
+      // Server-side folder navigator for the browser/personal-server folder
+      // picker (connectors' vault path). Lists DIRECTORY NAMES only — no file
+      // contents — and is reachable only through the authed IPC/HTTP surface.
+      // Defaults to the user's home directory.
+      const { path: p } = z.object({ path: z.string().optional() }).parse(params ?? {});
+      const base = (p && p.trim()) ? path.resolve(p) : os.homedir();
+      const entries = await fs.readdir(base, { withFileTypes: true });
+      const dirs = entries
+        .filter((e) => e.isDirectory() && !e.name.startsWith('.'))
+        .map((e) => ({ name: e.name, path: path.join(base, e.name) }))
+        .sort((a, b) => a.name.localeCompare(b.name));
+      return { path: base, parent: path.dirname(base), dirs };
+    }
+    case 'fs.listFiles': {
+      // Enumerate FILE paths under a directory (for browser-mode +Files /
+      // +Folders ingest). Extension filtering is done client-side by
+      // partitionIngestPaths, so we return every regular file. Recursive walk
+      // is depth-capped and skips dotfiles/dirs. Token-gated like fs.listDir.
+      const { path: p, recursive } = z.object({
+        path: z.string().min(1),
+        recursive: z.boolean().optional(),
+      }).parse(params ?? {});
+      const root = path.resolve(p);
+      const files: string[] = [];
+      const walk = async (dir: string, depth: number): Promise<void> => {
+        let entries: import('node:fs').Dirent[];
+        try { entries = await fs.readdir(dir, { withFileTypes: true }); }
+        catch { return; }
+        for (const e of entries) {
+          if (e.name.startsWith('.')) continue;
+          const full = path.join(dir, e.name);
+          if (e.isDirectory()) { if (recursive && depth < 6) await walk(full, depth + 1); }
+          else if (e.isFile()) files.push(full);
+        }
+      };
+      await walk(root, 0);
+      return { files };
     }
     case 'quarantine.list': {
       // List every .gai.corrupt-<ts> / .bundle.corrupt-<ts> file currently
@@ -1459,12 +1606,24 @@ async function dispatch(deps: IpcDeps, method: string, params: unknown): Promise
             host: z.enum(['127.0.0.1', '0.0.0.0']).optional(),
             token: z.string().optional(),
             allowedOrigins: z.array(z.string()).optional(),
-          }),
+          }).optional(),
+          httpUi: z.object({
+            enabled: z.boolean(),
+            port: z.number().int().min(1024).max(65535).optional(),
+            host: z.enum(['127.0.0.1', '0.0.0.0']).optional(),
+            token: z.string().optional(),
+          }).optional(),
         }).optional(),
         brain: z.object({
           clipboardCapture: z.object({
             enabled: z.boolean(),
           }).optional(),
+        }).optional(),
+        connectors: z.object({
+          // Poll interval (ms) for all connectors. 60s floor. Owned by the
+          // ConnectorManager (which also persists the configs blob), so it's
+          // applied via the manager below rather than the generic patch.
+          pullIntervalMs: z.number().int().min(60_000).max(86_400_000),
         }).optional(),
       }).parse(params ?? {});
       // Strip undefined keys explicitly for exactOptionalPropertyTypes.
@@ -1512,23 +1671,38 @@ async function dispatch(deps: IpcDeps, method: string, params: unknown): Promise
       }
       if (parsed.mobile) {
         // Fill from current settings so partial updates don't lose fields.
-        const currentBridge = deps.host.getSettings().mobile?.httpBridge;
+        const currentMobile = deps.host.getSettings().mobile;
+        const currentBridge = currentMobile?.httpBridge;
+        const currentUi = currentMobile?.httpUi;
         const inBridge = parsed.mobile.httpBridge;
-        // Auto-generate a token when enabling the bridge for the first time.
-        // The App UI reads it back from the returned settings and shows it to
-        // the user exactly once so they can copy it into their mobile client.
-        const token = inBridge.token
-          || currentBridge?.token
-          || (inBridge.enabled ? randomUUID() : '');
-        patch.mobile = {
-          httpBridge: {
-            enabled: inBridge.enabled,
-            port: inBridge.port ?? currentBridge?.port ?? 3457,
-            host: inBridge.host ?? currentBridge?.host ?? '127.0.0.1',
-            token,
-            allowedOrigins: inBridge.allowedOrigins ?? currentBridge?.allowedOrigins ?? [],
-          },
-        };
+        const inUi = parsed.mobile.httpUi;
+
+        // httpBridge is required on the stored shape. Update it if the caller
+        // passed it; otherwise preserve the current value (or a disabled default).
+        const httpBridge = inBridge
+          ? {
+              enabled: inBridge.enabled,
+              port: inBridge.port ?? currentBridge?.port ?? 3457,
+              host: inBridge.host ?? currentBridge?.host ?? '127.0.0.1',
+              // Auto-generate a token on first enable; UI shows it once.
+              token: inBridge.token || currentBridge?.token || (inBridge.enabled ? randomUUID() : ''),
+              allowedOrigins: inBridge.allowedOrigins ?? currentBridge?.allowedOrigins ?? [],
+            }
+          : (currentBridge ?? { enabled: false, port: 3457, host: '127.0.0.1', token: '', allowedOrigins: [] });
+
+        patch.mobile = { httpBridge };
+
+        // httpUi is the parallel browser-UI server block. Same token lifecycle.
+        if (inUi) {
+          patch.mobile.httpUi = {
+            enabled: inUi.enabled,
+            port: inUi.port ?? currentUi?.port ?? 3456,
+            host: inUi.host ?? currentUi?.host ?? '127.0.0.1',
+            token: inUi.token || currentUi?.token || (inUi.enabled ? randomUUID() : ''),
+          };
+        } else if (currentUi) {
+          patch.mobile.httpUi = currentUi;
+        }
       }
       if (parsed.brain) {
         const currentBrain = deps.host.getSettings().brain ?? {};
@@ -1538,6 +1712,12 @@ async function dispatch(deps: IpcDeps, method: string, params: unknown): Promise
             ? { clipboardCapture: parsed.brain.clipboardCapture }
             : {}),
         };
+      }
+      // Connector poll interval is owned by the ConnectorManager (it persists
+      // the connectors blob and swaps live timers). Apply it through the
+      // manager instead of the generic patch so the two don't race.
+      if (parsed.connectors?.pullIntervalMs !== undefined) {
+        await deps.connectorManager.setPullInterval(parsed.connectors.pullIntervalMs);
       }
       return deps.host.setSettings(patch);
     }
@@ -1684,13 +1864,34 @@ async function dispatch(deps: IpcDeps, method: string, params: unknown): Promise
           }
         }
       }
+      const ui = settings.mobile?.httpUi;
+      const mcpPort = bridge?.port ?? 3457;
+      const uiPort = ui?.port ?? 3456;
+      // Tailscale Serve detection (MagicDNS + per-port https mapping) — lets the
+      // QR/clients use real-cert https URLs. Best-effort; null when Tailscale
+      // isn't present.
+      const ts = await detectTailscaleServe(uiPort, mcpPort);
       return {
         enabled: bridge?.enabled ?? false,
         host: bridge?.host ?? '127.0.0.1',
-        port: bridge?.port ?? 3457,
+        port: mcpPort,
         token: bridge?.token ?? '',
         localIps,
         tailscaleIp,
+        tailscaleHost: ts?.host ?? null,   // host.tailnet.ts.net (if detectable)
+        tailscaleHttps: ts?.uiHttps ?? false, // true when Serve fronts the UI port over https
+        // MCP-over-https (a SECOND Serve mapping, e.g. --https=8443 → :3457).
+        // Independent of the UI mapping; when present, the MCP QR/clients can
+        // use a real-cert https URL that satisfies iOS ATS.
+        mcpTailscaleHttps: ts?.mcpHttps ?? false,
+        mcpTailscaleHttpsUrl: ts?.mcpHttpsUrl ?? null, // https://host[:port] (append /mcp)
+        // Browser UI (personal-server mode) connection details.
+        httpUi: {
+          enabled: ui?.enabled ?? false,
+          host: ui?.host ?? '127.0.0.1',
+          port: uiPort,
+          token: ui?.token ?? '',
+        },
       };
     }
 
@@ -2380,9 +2581,11 @@ async function dispatch(deps: IpcDeps, method: string, params: unknown): Promise
         const sourceCount = deps.host.listSources(SKILL_DEMOS_ENGRAM_ID)
           .filter((s) => s.kind === 'skill').length;
         const versionMismatch = sdState?.ingestedAppVersion !== appVersion;
-        // Each bundled .gsk pack contributes 2 skills (English + Romanian
-        // variants), so the expected source count is 2 × pack count.
-        const expectedSources = BUNDLED_SKILL_DEMOS.length * 2;
+        // Single-language install: each bundled .gsk pack contributes exactly
+        // one skill (the chosen-language variant). Expected source count is
+        // therefore one per pack. (Users who installed both languages under an
+        // older build have 2× and read as complete — >= passes.)
+        const expectedSources = BUNDLED_SKILL_DEMOS.length;
         const sourcesIncomplete = sourceCount < expectedSources;
         decision = (versionMismatch || sourcesIncomplete) ? 'reingest' : 'none';
       } else if (sdState?.declined === true) {
@@ -2397,7 +2600,15 @@ async function dispatch(deps: IpcDeps, method: string, params: unknown): Promise
     }
 
     case 'skillDemos:ingest': {
-      const { appVersion } = z.object({ appVersion: z.string() }).parse(params ?? {});
+      const { appVersion, language: reqLanguage } = z.object({
+        appVersion: z.string(),
+        language: z.enum(['en', 'ro']).optional(),
+      }).parse(params ?? {});
+      // Resolve the language: explicit choice (fresh install) wins; otherwise
+      // reuse the stored choice (silent re-ingest on app-version bump);
+      // default to English for the legacy/no-choice path.
+      const language: 'en' | 'ro' =
+        reqLanguage ?? deps.host.getSettings().skillDemosEngram?.language ?? 'en';
       const exists = deps.host.listGraphs().includes(SKILL_DEMOS_ENGRAM_ID);
       if (exists) {
         // Wipe and recreate — same rationale as docs:ingest. Partial prior
@@ -2412,10 +2623,10 @@ async function dispatch(deps: IpcDeps, method: string, params: unknown): Promise
         createdAt: Date.now(),
       });
       const result = await withEmbedding(() =>
-        ingestBundledSkillDemos(deps.host, SKILL_DEMOS_ENGRAM_ID, deps.licenseValidator ?? undefined),
+        ingestBundledSkillDemos(deps.host, SKILL_DEMOS_ENGRAM_ID, deps.licenseValidator ?? undefined, { language }),
       );
       await deps.host.setSettings({
-        skillDemosEngram: { declined: false, ingestedAppVersion: appVersion },
+        skillDemosEngram: { declined: false, ingestedAppVersion: appVersion, language },
       });
       return result;
     }

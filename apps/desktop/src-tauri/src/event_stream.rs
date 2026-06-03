@@ -102,15 +102,17 @@ pub fn spawn(app: AppHandle, socket_path: PathBuf) -> EventStreamHandle {
                 }
                 Some(Err(e)) => {
                     consecutive_failures += 1;
-                    // Quiet the log after the first handful of retries —
-                    // if the sidecar has been gone for >30s it isn't coming
-                    // back without an explicit unlock. The retry continues
-                    // (so a re-unlock reconnects automatically) but the
-                    // 5000ms spam stops cluttering the dev terminal.
-                    if consecutive_failures <= 3 || consecutive_failures % 12 == 0 {
+                    // Log ONCE on the first loss, then go silent — when the
+                    // cortex is locked (or the sidecar is gone) the socket
+                    // simply won't exist until the next unlock, and repeating
+                    // the message every few seconds just clutters the terminal.
+                    // The retry loop keeps running so a re-unlock reconnects
+                    // automatically; a clean reconnect resets the counter and
+                    // re-arms this one-shot log.
+                    if consecutive_failures == 1 {
                         eprintln!(
-                            "[event_stream] connection lost: {} (retry in {}ms, attempt {})",
-                            e, backoff_ms, consecutive_failures,
+                            "[event_stream] connection lost: {} — retrying quietly until reconnect.",
+                            e,
                         );
                     }
                 }

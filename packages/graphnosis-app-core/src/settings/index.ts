@@ -556,6 +556,31 @@ export interface HttpBridgeSettings {
 }
 
 /**
+ * Personal-server browser UI. When enabled, the sidecar serves the full
+ * Graphnosis web UI + JSON-RPC API on its own port (default 3456, separate
+ * from the MCP bridge on 3457). Users reach it from any device's browser —
+ * locally or over Tailscale. A QR code in Settings encodes
+ * `http://<host>:<port>/?token=<token>` for one-tap phone unlock.
+ *
+ * Distinct from HttpBridgeSettings: that exposes MCP tools to AI clients;
+ * this exposes the human UI. Separate ports → separate Tailscale ACLs.
+ */
+export interface HttpUiSettings {
+  /** Whether the browser UI server is active. False by default. */
+  enabled: boolean;
+  /** TCP port to bind on. Default 3456. */
+  port: number;
+  /** Interface to bind on. '127.0.0.1' (loopback only) or '0.0.0.0' (LAN / Tailscale). */
+  host: string;
+  /**
+   * Static token a browser exchanges (POST /api/unlock) for a session bearer
+   * token. Auto-generated (UUID v4) on first enable. Shown once in Settings +
+   * encoded into the pairing QR code.
+   */
+  token: string;
+}
+
+/**
  * Per-skill autonomous-retrain configuration. Stored under
  * AppSettings.skillAutoRetrain[sourceId] when the user opts a skill in.
  *
@@ -643,6 +668,8 @@ export interface AppSettings {
    */
   mobile?: {
     httpBridge: HttpBridgeSettings;
+    /** Browser UI server (personal-server mode). Absent = disabled. */
+    httpUi?: HttpUiSettings;
   };
   /**
    * Service connector settings. Absent = no connectors configured.
@@ -723,6 +750,11 @@ export interface AppSettings {
     declined?: boolean;
     /** App version at the last successful bundled-demos ingest. */
     ingestedAppVersion?: string;
+    /** Language the user chose at install. Each bundled pack carries an
+     *  English + Romanian variant of the same SOP; only the chosen-language
+     *  variant is ingested (3 skills, not 6). Reused on silent re-ingest at
+     *  app-version bumps so the refresh keeps the same language. */
+    language?: 'en' | 'ro';
   };
   /**
    * Alive Brain — background intelligence settings. Absent on older cortexes;
@@ -1117,6 +1149,18 @@ export function mergeWithDefaults(partial: Partial<AppSettings> | null | undefin
           : [],
       },
     };
+    // Browser UI server — optional sub-block. Only materialise it if present
+    // so old cortexes (httpBridge only) keep an undefined httpUi.
+    const hu = (partial.mobile as { httpUi?: Partial<HttpUiSettings> }).httpUi;
+    if (hu) {
+      mobile.httpUi = {
+        enabled: typeof hu.enabled === 'boolean' ? hu.enabled : false,
+        port: typeof hu.port === 'number' && hu.port > 0 && hu.port < 65536
+          ? Math.floor(hu.port) : 3456,
+        host: typeof hu.host === 'string' && hu.host.length > 0 ? hu.host : '127.0.0.1',
+        token: typeof hu.token === 'string' ? hu.token : '',
+      };
+    }
   }
 
   // Connector settings — optional. Absent = no connectors configured.
@@ -1168,6 +1212,7 @@ export function mergeWithDefaults(partial: Partial<AppSettings> | null | undefin
       ...(typeof sd.ingestedAppVersion === 'string' && sd.ingestedAppVersion.length > 0
         ? { ingestedAppVersion: sd.ingestedAppVersion }
         : {}),
+      ...(sd.language === 'en' || sd.language === 'ro' ? { language: sd.language } : {}),
     };
   }
 

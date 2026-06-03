@@ -2624,7 +2624,10 @@ export class Atlas {
     // Use the VISIBLE canvas width (right of the legend) for the horizontal
     // FOV calculation so the graph fits entirely in the open area, not behind
     // the overlay. Clamp so we don't blow up on pathologically narrow windows.
-    const LEGEND_PX = 212; // legend left(12) + width(200)
+    // On mobile the legend is hidden, so there's no need to reserve space for
+    // it or shift the graph right — centre in the full canvas instead.
+    const legendVisible = typeof window === 'undefined' || window.innerWidth > 768;
+    const LEGEND_PX = legendVisible ? 212 : 0; // legend left(12) + width(200)
     const visibleW  = Math.max(rect.width - LEGEND_PX, rect.width * 0.3);
     const halfFovH  = Math.atan(tanHalfV * visibleW / rect.height);
 
