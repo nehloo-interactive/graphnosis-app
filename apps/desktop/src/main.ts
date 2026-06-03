@@ -14865,7 +14865,8 @@ async function openCopilotModal(): Promise<void> {
 {
   const openCopilot = (): void => { void openCopilotModal(); };
   document.getElementById('btn-configure-copilot')?.addEventListener('click', openCopilot);
-  document.getElementById('rail-btn-copilot')?.addEventListener('click', openCopilot);
+  // (rail-btn-copilot removed from the sidebar; Copilot setup is reached from
+  // Settings → "Configure Copilot…" and the AI Clients chip.)
   document.getElementById('btn-copilot-close')?.addEventListener('click', () => {
     document.getElementById('copilot-setup-modal')?.classList.add('hidden');
   });
