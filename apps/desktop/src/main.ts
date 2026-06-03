@@ -1771,7 +1771,31 @@ function renderRailGetConnected(): void {
   for (const [kind, label] of connectorShortcuts) {
     els.railGcConnectors.appendChild(makeChip(label, installedConnectorKinds.has(kind), () => openConnectorSetupModal(kind)));
   }
+
+  applyGcCollapsedState();
 }
+
+// ── "Get connected" collapse (declutter the rail once set up) ────────────────
+const GC_COLLAPSED_KEY = 'graphnosis:rail-gc-collapsed';
+function applyGcCollapsed(collapsed: boolean): void {
+  const section = document.getElementById('rail-get-connected');
+  const toggle = document.getElementById('rail-gc-toggle');
+  section?.classList.toggle('collapsed', collapsed);
+  toggle?.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
+}
+/** Apply the persisted choice if the user set one; otherwise auto-collapse once
+ *  at least one AI client AND one connector are connected (they're set up). */
+function applyGcCollapsedState(): void {
+  const stored = localStorage.getItem(GC_COLLAPSED_KEY);
+  if (stored === '1' || stored === '0') { applyGcCollapsed(stored === '1'); return; }
+  const setUp = liveMcpClients.size > 0 && installedConnectorKinds.size > 0;
+  applyGcCollapsed(setUp);
+}
+document.getElementById('rail-gc-toggle')?.addEventListener('click', () => {
+  const collapsed = !document.getElementById('rail-get-connected')?.classList.contains('collapsed');
+  localStorage.setItem(GC_COLLAPSED_KEY, collapsed ? '1' : '0');
+  applyGcCollapsed(collapsed);
+});
 
 // Standalone-mode explainer modal — dismiss on "Got it" or backdrop click.
 document.getElementById('standalone-modal-close')
@@ -3699,6 +3723,107 @@ els.btnOpenFolder.addEventListener('click', async () => {
 document.getElementById('btn-help')?.addEventListener('click', () => {
   void invoke('plugin:opener|open_url', { url: 'https://docs.graphnosis.com' });
 });
+
+// ── Contextual help: "?" → short blurb popover + in-app docs modal ───────────
+// Reused by panes (Stage 1+) to replace inline prose. A "?" with data-help-slug
+// opens the bundled docs article in a focused, dismissable modal; an optional
+// data-help-blurb shows a 1-2 sentence popover first with a "read more" link.
+const DOCS_BASE = 'https://docs.graphnosis.com';
+
+/** Minimal, safe markdown → HTML for the bundled docs articles (escape first). */
+function renderMarkdownLite(md: string): string {
+  const esc = (s: string): string => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  const inline = (s: string): string => esc(s)
+    .replace(/`([^`]+)`/g, '<code>$1</code>')
+    .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+    .replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" data-extlink="$2">$1</a>');
+  const out: string[] = [];
+  let inList = false;
+  const closeList = (): void => { if (inList) { out.push('</ul>'); inList = false; } };
+  for (const raw of md.split('\n')) {
+    const line = raw.trimEnd();
+    const h = line.match(/^(#{1,3})\s+(.*)$/);
+    if (h) { closeList(); out.push(`<h${h[1]!.length}>${inline(h[2]!)}</h${h[1]!.length}>`); continue; }
+    const li = line.match(/^\s*[-*]\s+(.*)$/);
+    if (li) { if (!inList) { out.push('<ul>'); inList = true; } out.push(`<li>${inline(li[1]!)}</li>`); continue; }
+    if (!line.trim()) { closeList(); continue; }
+    if (line === '---') { closeList(); out.push('<hr/>'); continue; }
+    closeList(); out.push(`<p>${inline(line)}</p>`);
+  }
+  closeList();
+  return out.join('\n');
+}
+
+/** Open the in-app docs modal for a slug; falls back to the website on miss. */
+async function openDocsModal(slug: string): Promise<void> {
+  const modal = document.getElementById('docs-help-modal');
+  const titleEl = document.getElementById('docs-help-title');
+  const bodyEl = document.getElementById('docs-help-body');
+  const linkEl = document.getElementById('docs-help-fulllink') as HTMLAnchorElement | null;
+  if (!modal || !bodyEl || !titleEl) return;
+  const fullUrl = `${DOCS_BASE}/${slug.replace(/^\//, '')}`;
+  if (linkEl) { linkEl.dataset['extlink'] = fullUrl; linkEl.href = fullUrl; }
+  titleEl.textContent = 'Loading…';
+  bodyEl.innerHTML = '';
+  modal.classList.remove('hidden');
+  try {
+    const doc = await ipcCall<{ found: boolean; title?: string; markdown?: string }>('docs:getArticle', { slug });
+    if (!doc.found || !doc.markdown) {
+      modal.classList.add('hidden');
+      void invoke('plugin:opener|open_url', { url: fullUrl });
+      return;
+    }
+    titleEl.textContent = doc.title ?? 'Help';
+    bodyEl.innerHTML = renderMarkdownLite(doc.markdown);
+  } catch {
+    modal.classList.add('hidden');
+    void invoke('plugin:opener|open_url', { url: fullUrl });
+  }
+}
+
+/** Build a "?" help button — data-help-slug (+ optional data-help-blurb). */
+function helpButton(slug: string, blurb?: string): HTMLButtonElement {
+  const b = document.createElement('button');
+  b.type = 'button';
+  b.className = 'help-q';
+  b.textContent = '?';
+  b.setAttribute('aria-label', 'Help');
+  b.dataset['helpSlug'] = slug;
+  if (blurb) b.dataset['helpBlurb'] = blurb;
+  return b;
+}
+void helpButton; // exported for later stages; referenced to avoid unused warning
+
+document.getElementById('docs-help-close')?.addEventListener('click', () => document.getElementById('docs-help-modal')?.classList.add('hidden'));
+document.getElementById('docs-help-modal')?.addEventListener('click', (e) => { if (e.target === e.currentTarget) (e.currentTarget as HTMLElement).classList.add('hidden'); });
+
+{
+  const helpPopover = document.getElementById('help-popover');
+  let helpPopoverSlug = '';
+  const hideHelpPopover = (): void => helpPopover?.classList.add('hidden');
+  document.getElementById('help-popover-more')?.addEventListener('click', () => { hideHelpPopover(); void openDocsModal(helpPopoverSlug); });
+  document.addEventListener('click', (e) => {
+    const t = e.target as HTMLElement;
+    const q = t.closest<HTMLElement>('[data-help-slug]');
+    if (q) {
+      const slug = q.dataset['helpSlug'] ?? '';
+      const blurb = q.dataset['helpBlurb'];
+      helpPopoverSlug = slug;
+      if (!blurb) { void openDocsModal(slug); return; }
+      const blurbEl = document.getElementById('help-popover-blurb');
+      if (blurbEl) blurbEl.textContent = blurb;
+      if (helpPopover) {
+        const r = q.getBoundingClientRect();
+        helpPopover.style.left = `${Math.max(8, Math.min(r.left, window.innerWidth - 296))}px`;
+        helpPopover.style.top = `${r.bottom + 6}px`;
+        helpPopover.classList.remove('hidden');
+      }
+      e.stopPropagation();
+      return;
+    }
+    if (helpPopover && !helpPopover.classList.contains('hidden') && !t.closest('#help-popover')) hideHelpPopover();
+  });
+}
 
 document.getElementById('btn-report-bug')?.addEventListener('click', () => {
   void invoke('plugin:opener|open_url', {
