@@ -42,6 +42,13 @@ jobs:
         run: pnpm -r build
 
       - name: Sidecar smoke test (no Tauri)
+        # The bundled skill-demo packs are built from gitignored content + the
+        # GSK signing key, neither of which is available here — so the bundle is
+        # legitimately empty in this server CI. Allow that one check to skip;
+        # everything else (encryption, ingest, recall, forget, docs bundle) still
+        # runs strictly. The release pipeline does NOT set this flag.
+        env:
+          GRAPHNOSIS_SMOKE_ALLOW_EMPTY_DEMOS: '1'
         run: pnpm --filter @graphnosis-app/desktop-sidecar smoke
 
       - name: HTTP UI server end-to-end
