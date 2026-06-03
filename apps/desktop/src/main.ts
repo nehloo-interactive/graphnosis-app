@@ -699,7 +699,9 @@ const els = {
   atlasSourceList: $<HTMLDivElement>('atlas-source-list'),
   // Activity
   activityList: $<HTMLDivElement>('activity-list'),
-  activityFilterKind: $<HTMLSelectElement>('activity-filter-kind'),
+  activitySearch: $<HTMLInputElement>('activity-search'),
+  activityEngramSelect: $<HTMLSelectElement>('activity-engram-select'),
+  activityChips: $<HTMLDivElement>('activity-chips'),
   activityStats: $<HTMLSpanElement>('activity-stats'),
   btnActivityRefresh: $<HTMLButtonElement>('btn-activity-refresh'),
   // Snapshot offer (pre-ingest prompt)
@@ -845,7 +847,21 @@ let currentRecoveryPlan: RecoveryPlan | null = null;
 let unlockPending = false;
 
 // Brain engine state — refreshed by refreshBrainState()
-let brainVitalityReport: { overall: number; byGraph: Record<string, number>; computedAt: number } | null = null;
+let brainVitalityReport: {
+  overall: number;
+  byGraph: Record<string, number>;
+  computedAt: number;
+  trust?: {
+    activeNodes: number;
+    avgConfidence: number;
+    highConfidenceFraction: number;
+    connectedFraction: number;
+    orphans: number;
+  };
+} | null = null;
+// Cortex-wide totals cached from inspector_stats (refreshFederatedStats) so the
+// Home hero can show whole-cortex numbers, not just the active engram's.
+let cortexStats: { memories: number; sources: number; engrams: number } | null = null;
 let brainInsights: Array<{ id: string; graphId: string; kind: string; title: string; body: string; relevantNodeIds: string[]; createdAt: number; dismissed?: boolean }> = [];
 // A near-duplicate / possibly-conflicting memory pair the autonomous
 // brain could NOT safely auto-merge — surfaced in the Check-in deck's
@@ -997,6 +1013,12 @@ function syncToastPanel(): void {
   const count = liveToasts.size;
   els.toastStack.classList.toggle('has-toasts', count > 0);
   els.toastCount.textContent = String(count);
+  // Contextual header: this stack carries both real file-ingest jobs AND
+  // one-off notices (e.g. Skills warnings via showSkillsToast). Only call it
+  // "Ingesting files" when an actual ingest is in flight; otherwise it's a
+  // generic notification (so a Skills warning never reads as a file ingest).
+  const label = document.getElementById('g-toast-panel-label');
+  if (label) label.textContent = ingestJobToasts.size > 0 ? 'Ingesting files' : 'Notifications';
 }
 
 function addIngestToast(label: string, message?: string): string {
@@ -1279,12 +1301,11 @@ void listen<{ jobId: string; graphId: string; fileName: string; nodesAdded: numb
       //     the final file in a multi-file drop. (We already .delete()'d
       //     this job id above, so size === 0 means no more in flight.)
       if (n > 0 && ingestJobToasts.size === 0) {
-        // Side rail → Graphnosis (atlas mode-pane). The 3D Engram inner
-        // tab lives inside that pane.
-        if (currentMode !== 'atlas') activateMode('atlas');
-        // Inner tab → 3D Engram. switchGraphnosisTab handles the mount,
-        // pushDataIntoAtlas, and zoomToFit; no node gets auto-selected.
-        switchGraphnosisTab('atlas');
+        // Jump to the 3D Engram rail destination. activateMode('engram')
+        // shows the shared atlas pane and delegates to switchGraphnosisTab
+        // ('atlas') — which handles the mount, pushDataIntoAtlas, and
+        // zoomToFit; no node gets auto-selected. Rail highlights 3D Engram.
+        activateMode('engram');
       }
     }
     // Trigger the atlas/sources refresh now that the graph has new data.
@@ -1695,8 +1716,7 @@ function renderRailGetConnected(): void {
     return b;
   };
   const openNonDeterministic = (): void => {
-    activateMode('atlas');
-    switchGraphnosisTab('nondeterministic');
+    activateMode('brainstorm');
   };
 
   const llmOn = brainLlmReady;
@@ -2204,27 +2224,102 @@ function shortCortexLabel(p: string): string {
 
 // ── View router ────────────────────────────────────────────────────────
 
-type Mode = 'atlas' | 'sources' | 'activity' | 'status' | 'settings' | 'mcp-tools';
-// Graphnosis (mode='atlas') is the default landing pane post-unlock. The
-// internal symbol stays 'atlas' for backwards compatibility with the
-// existing DOM data-pane attributes.
+type Mode =
+  | 'atlas'        // Home (the checkin dashboard sub-tab of the big pane)
+  | 'engram'       // 3D Engram (the atlas sub-tab)
+  | 'goals'        // Goals & strategic thinking (the brain sub-tab)
+  | 'skills'       // Skills library/trainer (a studio tool inside checkin)
+  | 'brainstorm'   // Neural-net + local-LLM exploration (nondeterministic sub-tab)
+  | 'search'       // Dedicated memory-search page (checkin sub-mode, body.search-mode)
+  | 'power-tools'  // Manual recall/remember/edit/GNN page (checkin sub-mode, body.powertools-mode)
+  | 'sources'
+  | 'activity'     // Audit
+  | 'status'
+  | 'settings'
+  | 'mcp-tools';
+// Home (mode='atlas') is the default landing pane post-unlock. The internal
+// symbol stays 'atlas' for backwards compatibility with the existing DOM
+// data-pane attributes and the ~20 activateMode('atlas') call-sites.
 let currentMode: Mode = 'atlas';
+
+// ── Rail-driven inner navigation ──────────────────────────────────────────
+// The four former in-pane tabs (MemoryStudio / 3D Engram / Deterministic
+// Consolidation / Non-Deterministic Aid) are now first-class rail
+// destinations. They still share ONE mode-pane (data-pane="atlas") plus its
+// header (search/health) and the Inspector (#g-detail) — so rather than
+// physically re-parent the DOM, each of these "sub-modes" shows that pane and
+// delegates to switchGraphnosisTab() (and, for Skills, switchStudioTool()).
+// Standalone destinations (sources/activity/status/settings/mcp-tools) map to
+// their own data-pane. The .g-tabs strip is hidden (index.html); the rail is
+// the single nav surface.
+const ATLAS_SUBMODES: Record<string, { gtab: GraphnosisTab; studioTool?: StudioTool }> = {
+  atlas:      { gtab: 'checkin' },                    // Home
+  engram:     { gtab: 'atlas' },                      // 3D Engram
+  goals:      { gtab: 'brain' },                      // Goals + consolidation
+  brainstorm: { gtab: 'nondeterministic' },           // Neural-net / Local-LLM
+  skills:        { gtab: 'checkin', studioTool: 'skills' }, // Skills studio tool
+  search:        { gtab: 'checkin' },                  // Dedicated search page (body.search-mode)
+  'power-tools': { gtab: 'checkin' },                  // Manual tools page (body.powertools-mode)
+};
+// Which physical mode-pane backs a given rail mode.
+function paneForMode(mode: Mode): string {
+  return ATLAS_SUBMODES[mode] ? 'atlas' : mode;
+}
+// True when the shared atlas mode-pane (Home / 3D Engram / Goals / Skills /
+// Brainstorming) is the one on screen — i.e. the search header, the deck, and
+// the 3D canvas are all live. Refresh guards that used to check
+// `currentMode === 'atlas'` should use this so they also fire under the
+// sub-modes that share that pane.
+function isAtlasPaneMode(mode: Mode = currentMode): boolean {
+  return paneForMode(mode) === 'atlas';
+}
 
 function activateMode(mode: Mode): void {
   currentMode = mode;
+  // Skills is a rail destination that reuses the skills sub-pane inside the
+  // Power-tools drawer. This body class force-opens the drawer and hides its
+  // chrome (header + manual chips + banner) so Skills reads as a clean page.
+  document.body.classList.toggle('skills-studio-mode', mode === 'skills');
+  // Search is also a checkin sub-mode: body.search-mode reveals the search bar
+  // + results surface and hides the Home cards / power-tools / deck (CSS).
+  document.body.classList.toggle('search-mode', mode === 'search');
+  // Power Tools — manual recall/remember/edit/GNN as its own page. The studio
+  // drawer is force-opened + the Home overview hidden (CSS).
+  document.body.classList.toggle('powertools-mode', mode === 'power-tools');
+  // Goals — slimmed to just the strategic-goals section for now (the brain's
+  // vitality/health/self-healing/activity moved to Home). CSS hides the rest
+  // of #living-brain. Goals will grow into future-prediction (non-deterministic).
+  document.body.classList.toggle('goals-mode', mode === 'goals');
   // Rail button visual state
   document.querySelectorAll<HTMLButtonElement>('.rail-btn').forEach((b) => {
     b.classList.toggle('active', b.dataset.mode === mode);
   });
-  // Mobile bottom nav visual state (no-op on desktop — buttons don't exist)
-  document.querySelectorAll<HTMLButtonElement>('.mobile-nav-btn').forEach((b) => {
-    b.classList.toggle('active', b.dataset.mode === mode);
-  });
-  // Pane visibility
+  // Mobile bottom nav visual state (no-op on desktop — buttons don't exist).
+  // Marks "More" active for any overflow mode (see syncMobileNav).
+  syncMobileNav(mode);
+  // Pane visibility — atlas sub-modes (engram/goals/skills/brainstorm) all
+  // resolve to the shared data-pane="atlas".
+  const pane = paneForMode(mode);
   document.querySelectorAll<HTMLElement>('.mode-pane').forEach((p) => {
-    p.classList.toggle('hidden', p.dataset.pane !== mode);
+    p.classList.toggle('hidden', p.dataset.pane !== pane);
   });
-  // Lazy-load per mode
+  // Atlas sub-modes: show the shared pane, then drive the inner view.
+  // switchGraphnosisTab() owns all the per-view refresh/animation lifecycle
+  // (atlas mount, dashboard render, neuronField start/stop, brain/LLM refresh).
+  const sub = ATLAS_SUBMODES[mode];
+  if (sub) {
+    switchGraphnosisTab(sub.gtab);
+    if (sub.studioTool) switchStudioTool(sub.studioTool);
+    if (mode === 'search') {
+      // Entering search: recenter the hero box + show guidance unless a query
+      // is already in flight (e.g. coming back to a live result set).
+      document.body.classList.toggle('search-idle', els.gSearch.value.trim().length === 0);
+      setTimeout(() => (document.getElementById('g-search') as HTMLInputElement | null)?.focus(), 50);
+    }
+    if (mode === 'goals') void renderForesight(); // Foresight lanes (Predict + Insights)
+    return;
+  }
+  // Lazy-load per standalone mode
   if (mode === 'sources') {
     // Default the engram dropdown to the active engram each time the
     // Sources page is entered so the user immediately sees their current
@@ -2237,12 +2332,8 @@ function activateMode(mode: Mode): void {
     updateReingestAllLabel();
     void refreshStats();
   }
-  if (mode === 'atlas') {
-    // Returning to the 3D Engram from another left-sidebar screen — reset it
-    // to a neutral view (no selection/emphasis); the camera is left alone.
-    if (graphnosisActiveTab === 'atlas') resetAtlasView();
-    void refreshAtlasView();
-  }
+  // (mode === 'atlas' and the other atlas sub-modes returned early above —
+  //  switchGraphnosisTab handles their refresh lifecycle.)
   if (mode === 'activity') void refreshActivityView();
   if (mode === 'status') {
     // Status pane re-uses the same data the Graphnosis recap reads.
@@ -2291,12 +2382,53 @@ document.querySelectorAll<HTMLButtonElement>('.rail-btn').forEach((btn) => {
 });
 
 // ── Mobile bottom nav ────────────────────────────────────────────────────────
-// activateMode() already syncs .mobile-nav-btn active states (see above).
-// Wire clicks here — activateMode handles everything else including the sync.
+// The 4-slot mobile bar: Home · MCP · Skills · More. The first three carry a
+// data-mode; "More" (data-nav="more") opens a bottom sheet with the overflow
+// destinations. syncMobileNav highlights "More" whenever the active mode is one
+// of those overflow destinations.
+const MOBILE_PRIMARY_MODES = new Set<Mode>(['atlas', 'mcp-tools', 'skills']);
+function syncMobileNav(mode: Mode): void {
+  const overflow = !MOBILE_PRIMARY_MODES.has(mode);
+  document.querySelectorAll<HTMLButtonElement>('.mobile-nav-btn').forEach((b) => {
+    const isMore = b.dataset['nav'] === 'more';
+    b.classList.toggle('active', isMore ? overflow : b.dataset.mode === mode);
+  });
+}
+
+function closeMobileMoreSheet(): void {
+  document.body.classList.remove('mobile-more-open');
+  document.getElementById('mobile-more-sheet')?.setAttribute('aria-hidden', 'true');
+  document.getElementById('mobile-more-btn')?.setAttribute('aria-expanded', 'false');
+}
+function openMobileMoreSheet(): void {
+  document.body.classList.add('mobile-more-open');
+  document.getElementById('mobile-more-sheet')?.setAttribute('aria-hidden', 'false');
+  document.getElementById('mobile-more-btn')?.setAttribute('aria-expanded', 'true');
+}
+
+// "More" sheet wiring: open on the More button, route each item through
+// activateMode, close on item tap / backdrop tap.
+document.getElementById('mobile-more-btn')?.addEventListener('click', (e) => {
+  e.stopPropagation();
+  if (document.body.classList.contains('mobile-more-open')) closeMobileMoreSheet();
+  else openMobileMoreSheet();
+});
+document.querySelectorAll<HTMLButtonElement>('.mobile-more-item').forEach((item) => {
+  item.addEventListener('click', () => {
+    const m = item.dataset.mode as Mode | undefined;
+    closeMobileMoreSheet();
+    if (m) activateMode(m);
+  });
+});
+document.querySelector('[data-more-close]')?.addEventListener('click', () => closeMobileMoreSheet());
+
 document.querySelectorAll<HTMLButtonElement>('.mobile-nav-btn').forEach((btn) => {
   btn.addEventListener('click', () => {
+    // "More" is handled by its own listener above (opens the sheet).
+    if (btn.dataset['nav'] === 'more') return;
     const m = btn.dataset.mode as Mode | undefined;
     if (!m) return;
+    closeMobileMoreSheet();
     // Tapping any bottom-nav tab exits mobile search mode (the magnifier
     // overlay). Clear the query + results so the dashboard returns.
     if (document.body.classList.contains('mobile-search-open')) {
@@ -2318,7 +2450,9 @@ document.querySelectorAll<HTMLButtonElement>('.mobile-nav-btn').forEach((btn) =>
 
 // ── Swipe-to-navigate (mobile) ───────────────────────────────────────────────
 {
-  const PANE_ORDER: Mode[] = ['atlas', 'sources', 'mcp-tools', 'status', 'settings'];
+  // Swipe cycles the primary mobile destinations only (the same 3 in the bar,
+  // minus "More" which is a sheet, not a pane).
+  const PANE_ORDER: Mode[] = ['atlas', 'mcp-tools', 'skills'];
   const SWIPE_MIN_PX = 48;   // minimum horizontal distance to register a swipe
   const SWIPE_MAX_Y  = 80;   // maximum vertical drift before we ignore the gesture
 
@@ -2471,7 +2605,8 @@ document.getElementById('mobile-search-toggle')?.addEventListener('click', (e) =
   document.body.classList.toggle('mobile-search-open', opening);
   document.getElementById('mobile-search-toggle')?.setAttribute('aria-expanded', opening ? 'true' : 'false');
   if (opening) {
-    if (currentMode !== 'atlas') { activateMode('atlas'); syncMobileNav('atlas'); }
+    // Search is now a dedicated page — jump there + focus the box.
+    if (currentMode !== 'search') { activateMode('search'); syncMobileNav('search'); }
     setTimeout(() => document.getElementById('g-search')?.focus(), 60);
   }
 });
@@ -2897,9 +3032,9 @@ function stopMcpPolling(): void {
 }
 
 async function refreshStats(): Promise<void> {
-  els.sourcesList.innerHTML = '<p class="subtitle">Loading…</p>';
+  els.sourcesList.innerHTML = '<div class="home-skel"></div><div class="home-skel w70"></div><div class="home-skel"></div>';
   try {
-    const data = (await invoke('inspector_stats')) as StatsSummary;
+    const data = (await withTimeout(invoke('inspector_stats'), 25_000, 'inspector_stats')) as StatsSummary;
     // Stash for the Graphnosis dashboard so it can render the active
     // engram's forgotten-on-disk count + corrections-applied lifetime
     // counter without a second IPC roundtrip.
@@ -3343,7 +3478,13 @@ async function refreshStats(): Promise<void> {
       });
     }
   } catch (e) {
-    els.sourcesList.innerHTML = `<p class="error">${escape(String(e))}</p>`;
+    const msg = String(e);
+    const timedOut = msg.includes('timed out');
+    els.sourcesList.innerHTML = timedOut
+      ? '<p class="subtitle">Couldn’t load sources — the stats read timed out. ' +
+        '<button id="btn-sources-retry" class="btn-sm" type="button">Retry</button></p>'
+      : `<p class="error">${escape(msg)}</p>`;
+    document.getElementById('btn-sources-retry')?.addEventListener('click', () => void refreshStats());
   }
   applySourcesFilter();
 }
@@ -4785,7 +4926,51 @@ async function refreshEmbeddingPicker(): Promise<void> {
 // changes made elsewhere (recovery from op-log, new ingest, quarantine
 // happening at startup) are reflected without a manual refresh.
 
+// Settings → Access control. Toggles for each connector kind + known AI client.
+// Editable when the sidecar is the user's (admin); read-only when IT-managed
+// (env-pinned). "Unchecked = blocked"; every change routes through policy.set,
+// which the sidecar enforces (and refuses if managed).
+async function renderPolicySettings(): Promise<void> {
+  const body = document.getElementById('settings-policy-body');
+  if (!body) return;
+  let p: { disabledConnectorKinds: string[]; disabledClients: string[]; managed: boolean; connectorKinds: string[]; knownClients: string[] } | null = null;
+  try { p = await ipcCall('policy.get', {}); } catch { body.innerHTML = '<p class="subtitle" style="margin:0;">Access-control policy unavailable.</p>'; return; }
+  if (!p) { body.innerHTML = ''; return; }
+  const disC = new Set(p.disabledConnectorKinds);
+  const disK = new Set(p.disabledClients);
+  const ro = p.managed;
+  const toggle = (attr: string, val: string, blocked: boolean): string =>
+    `<label class="policy-toggle${blocked ? ' blocked' : ''}">` +
+    `<input type="checkbox" ${attr}="${escapeHtml(val)}"${blocked ? '' : ' checked'}${ro ? ' disabled' : ''}>` +
+    `<span>${escapeHtml(val)}</span></label>`;
+  const connToggles = p.connectorKinds.map((k) => toggle('data-policy-connector', k, disC.has(k))).join('');
+  const clientToggles = p.knownClients.length
+    ? p.knownClients.map((c) => toggle('data-policy-client', c, disK.has(c))).join('')
+    : '<p class="subtitle" style="margin:0;">No AI clients have connected yet — they’ll appear here once they do.</p>';
+  body.innerHTML =
+    (ro ? '<p class="policy-managed-note">🔒 Managed by your administrator — read-only on this device.</p>' : '') +
+    `<div class="policy-group"><p class="policy-group-label">Connector kinds</p><div class="policy-toggles">${connToggles}</div></div>` +
+    `<div class="policy-group"><p class="policy-group-label">AI clients</p><div class="policy-toggles">${clientToggles}</div></div>` +
+    (ro ? '' : '<p class="subtitle" style="margin:8px 0 0;">Unchecked = blocked. Changes apply immediately and are enforced in the sidecar.</p>');
+  if (ro) return;
+  const apply = async (): Promise<void> => {
+    const disabledConnectorKinds = [...body.querySelectorAll<HTMLInputElement>('[data-policy-connector]')]
+      .filter((i) => !i.checked).map((i) => i.dataset['policyConnector'] ?? '').filter(Boolean);
+    const disabledClients = [...body.querySelectorAll<HTMLInputElement>('[data-policy-client]')]
+      .filter((i) => !i.checked).map((i) => i.dataset['policyClient'] ?? '').filter(Boolean);
+    try {
+      await ipcCall('policy.set', { disabledConnectorKinds, disabledClients });
+      void refreshHomePolicy();
+    } catch (e) {
+      console.warn('[policy] set failed', e);
+    }
+    void renderPolicySettings(); // re-render to reflect blocked styling + any rejection
+  };
+  body.querySelectorAll<HTMLInputElement>('input[type="checkbox"]').forEach((i) => i.addEventListener('change', () => void apply()));
+}
+
 function renderSettingsTab(): void {
+  void renderPolicySettings(); // Access-control toggles (admin) / read-only (IT-managed)
   // Engrams + quarantine moved out of the Settings tab into the dedicated
   // Cortex Management modal (red-ish button under Cortex tools). Renders
   // for those happen when the modal opens — see #btn-cortex-management.
@@ -5551,7 +5736,7 @@ async function fetchGraphsMetadata(): Promise<void> {
     // parallel — by the time activateMode's lazy-load ran, loadedGraphs
     // was empty and refresh*View bailed out. Now that the fetch resolved,
     // re-trigger the currently-active mode so its view actually populates.
-    if (currentMode === 'atlas') void refreshAtlasView();
+    if (isAtlasPaneMode()) void refreshAtlasView();
   } catch (e) {
     console.error('list_graphs_with_metadata failed', e);
   }
@@ -5739,6 +5924,11 @@ function updatePendingBadge(count: number): void {
 let mainAtlas: Atlas | null = null;
 let atlasActiveGraph: string | null = null;
 let atlasLoadedForGraph: string | null = null; // guards re-fetch when picker doesn't change
+// In-flight loadGraphnosisData promises, keyed by graphId. Dedupes concurrent
+// loads of the same engram — e.g. the picker's refreshAtlasView and the 3D-tab
+// entry guard both want the new engram; without this they'd double-fetch and
+// worsen contention on the single-threaded sidecar.
+const _loadGraphnosisInFlight = new Map<string, Promise<void>>();
 let lastEdgesByGraph: Map<string, { directed: AtlasDirectedEdge[]; undirected: AtlasUndirectedEdge[] }> = new Map();
 
 const LAST_ENGRAM_KEY = 'graphnosis:lastActiveEngram';
@@ -5785,11 +5975,13 @@ function nodesToAtlas(
 }
 
 async function fetchActiveNodes(graphId: string): Promise<NodeRecord[]> {
-  return (await invoke('list_nodes', { graphId })) as NodeRecord[];
+  // Hard deadline: a node read starved behind a heavy cortex-wide call on the
+  // single-threaded sidecar must reject rather than hang the loader forever.
+  return (await withTimeout(invoke('list_nodes', { graphId }), 25_000, 'list_nodes')) as NodeRecord[];
 }
 
 async function fetchEdges(graphId: string): Promise<{ directed: AtlasDirectedEdge[]; undirected: AtlasUndirectedEdge[] }> {
-  return (await invoke('list_edges', { graphId })) as { directed: AtlasDirectedEdge[]; undirected: AtlasUndirectedEdge[] };
+  return (await withTimeout(invoke('list_edges', { graphId }), 25_000, 'list_edges')) as { directed: AtlasDirectedEdge[]; undirected: AtlasUndirectedEdge[] };
 }
 
 // Top-level entry the rail calls when the user picks the Graphnosis pane.
@@ -5806,7 +5998,16 @@ async function refreshAtlasView(): Promise<void> {
   if (!atlasActiveGraph) return;
 
   // Always refresh the data backing the list (fast) + the Atlas data cache.
-  await loadGraphnosisData(atlasActiveGraph);
+  // loadGraphnosisData now throws on a failed engram SWITCH (rather than
+  // silently keeping the old engram); swallow it here so the picker flow
+  // continues — the 3D-tab entry guard will retry + surface a loading/retry
+  // state if the user navigates there before it succeeds.
+  try {
+    await loadGraphnosisData(atlasActiveGraph);
+  } catch {
+    /* stale cache left in place; atlasLoadedForGraph still points at the old
+       engram so the atlas entry guard re-loads on demand. */
+  }
   applyGraphnosisFilter(); // renders the list + stats
 
   // Atlas is mounted on demand by switchGraphnosisTab when the user
@@ -5822,7 +6023,23 @@ async function refreshAtlasView(): Promise<void> {
 // Fetch nodes + edges for the active engram and cache them. Also recomputes
 // `graphnosisOrphanIds` — used by both the health score and the deck queue
 // to identify memories that aren't connected to anything yet.
-async function loadGraphnosisData(graphId: string): Promise<void> {
+function loadGraphnosisData(graphId: string): Promise<void> {
+  // Dedupe: if a load for this exact engram is already running, reuse it.
+  const existing = _loadGraphnosisInFlight.get(graphId);
+  if (existing) return existing;
+  const p = loadGraphnosisDataInner(graphId).finally(() => {
+    _loadGraphnosisInFlight.delete(graphId);
+  });
+  _loadGraphnosisInFlight.set(graphId, p);
+  return p;
+}
+
+async function loadGraphnosisDataInner(graphId: string): Promise<void> {
+  // A genuine engram SWITCH (different graph than what's cached) must not
+  // silently keep the previous engram's data on failure — that's the "old
+  // engram still loaded in 3D, new one never arrives" bug. We only preserve
+  // stale data on a same-engram refresh blip (where keeping it is correct).
+  const isSwitch = graphId !== atlasLoadedForGraph;
   try {
     const [records, edges] = await Promise.all([
       fetchActiveNodes(graphId),
@@ -5865,6 +6082,11 @@ async function loadGraphnosisData(graphId: string): Promise<void> {
     // ONE node. Now: keep the previous cache so the UI stays usable;
     // the next successful poll (3 s cadence) will reconcile any drift.
     console.error('graphnosis load failed; keeping previous in-memory data', e);
+    // On a switch there IS no valid previous data for this engram — keeping the
+    // old engram's nodes would be wrong. Leave atlasLoadedForGraph pointing at
+    // the old graph (so the next entry re-triggers a load) and rethrow so the
+    // caller can surface a retry rather than silently showing stale data.
+    if (isSwitch) throw e;
   }
 }
 
@@ -5971,6 +6193,8 @@ interface HealthSummary {
   avgConfidence: number;
   connectedFraction: number;
   activeNodes: number;
+  orphans: number;               // active nodes standing alone (no edges)
+  highConfidenceFraction: number; // share of active nodes at trust ≥ 0.7
 }
 
 function computeHealth(): HealthSummary {
@@ -5987,6 +6211,8 @@ function computeHealth(): HealthSummary {
       avgConfidence: 0,
       connectedFraction: 0,
       activeNodes: 0,
+      orphans: 0,
+      highConfidenceFraction: 0,
     };
   }
   const avgConfidence = active.reduce((s, n) => s + n.confidence, 0) / active.length;
@@ -6012,7 +6238,7 @@ function computeHealth(): HealthSummary {
     orphans === 1 ? '1 standing alone' :
     `${orphans} standing alone`;
   const detail = `${active.length} memor${active.length === 1 ? 'y' : 'ies'} · avg trust ${avgConfidence.toFixed(2)} · ${orphansLabel}`;
-  return { score, grade, phrase, detail, avgConfidence, connectedFraction, activeNodes: active.length };
+  return { score, grade, phrase, detail, avgConfidence, connectedFraction, activeNodes: active.length, orphans, highConfidenceFraction };
 }
 
 function renderHealth(): void {
@@ -6028,7 +6254,667 @@ function renderHealth(): void {
     'var(--error)';
   els.gHealthPhrase.textContent = h.phrase;
   els.gHealthDetail.textContent = h.detail;
+  // The Home dashboard reuses this health data — refresh it in lockstep so the
+  // hero pulse + trust factors never drift from the gauge.
+  renderHomeDashboard();
 }
+
+// Short relative-time label for the Home pulse ("2h ago", "3d ago").
+function relTimeShort(ms: number): string {
+  if (!ms) return 'never';
+  const d = Date.now() - ms;
+  if (d < 60_000) return 'just now';
+  const min = Math.floor(d / 60_000);
+  if (min < 60) return `${min}m ago`;
+  const hr = Math.floor(min / 60);
+  if (hr < 24) return `${hr}h ago`;
+  const day = Math.floor(hr / 24);
+  if (day < 30) return `${day}d ago`;
+  const mon = Math.floor(day / 30);
+  if (mon < 12) return `${mon}mo ago`;
+  return `${Math.floor(mon / 12)}y ago`;
+}
+
+// ── Home: Mission-Control dashboard ───────────────────────────────────────
+// Hero + cortex Trust & Vitality are CORTEX-WIDE: cortexStats (inspector_stats
+// totals) + brainVitalityReport.overall + brainVitalityReport.trust (the
+// sidecar's whole-cortex aggregates, computed once + cached). The active
+// engram lives in its own compact square card (the #g-health gauge, driven by
+// computeHealth — which only sees the loaded engram). Every number is a real,
+// decomposable fact, not a black-box composite.
+function gradeFromScore(s: number): 'A' | 'B' | 'C' | 'D' {
+  return s >= 85 ? 'A' : s >= 70 ? 'B' : s >= 50 ? 'C' : 'D';
+}
+function gradeWord(g: string): string {
+  return g === 'A' ? 'healthy' : g === 'B' ? 'solid' : g === 'C' ? 'needs a check' : 'needs tending';
+}
+function gradeColor(g: string): string {
+  return g === 'A' ? 'var(--ok)' : g === 'B' ? 'var(--accent)' : g === 'C' ? '#d9a445' : 'var(--error)';
+}
+
+function renderHomeDashboard(): void {
+  const greetEl = document.getElementById('home-greeting');
+  const pulseEl = document.getElementById('home-pulse');
+  if (!greetEl || !pulseEl) return;
+
+  const hr = new Date().getHours();
+  greetEl.textContent =
+    hr < 5  ? 'Still up' :
+    hr < 12 ? 'Good morning' :
+    hr < 18 ? 'Good afternoon' :
+              'Good evening';
+
+  const vit = brainVitalityReport;
+  const cortexVit = vit?.overall ?? null;
+  const totalMem = cortexStats?.memories ?? null;
+  const totalEng = cortexStats?.engrams ?? null;
+  const lastGrew = loadedGraphs.reduce((m, g) => Math.max(m, g.lastMutationAt ?? 0), 0);
+
+  // ── Cortex-wide hero pulse ──
+  if (totalMem === 0) {
+    pulseEl.textContent = 'Your memory is empty — drop a file or have your AI remember something to begin.';
+  } else {
+    const parts: string[] = [];
+    if (totalMem != null) parts.push(`<strong>${totalMem.toLocaleString()}</strong> ${totalMem === 1 ? 'memory' : 'memories'}`);
+    if (totalEng != null) parts.push(`<strong>${totalEng}</strong> engram${totalEng === 1 ? '' : 's'}`);
+    if (cortexVit != null) {
+      const g = gradeFromScore(cortexVit);
+      parts.push(`vitality <strong>${cortexVit}</strong> <span class="home-pulse-grade ${g.toLowerCase()}">${gradeWord(g)}</span>`);
+    }
+    if (lastGrew > 0) parts.push(`last grew ${relTimeShort(lastGrew)}`);
+    pulseEl.innerHTML = parts.length ? parts.join(' · ') : 'Loading your memory…';
+  }
+
+  // ── Cortex vitality ring ──
+  const cg = document.getElementById('home-cortex-grade');
+  const cf = document.getElementById('home-cortex-fill') as HTMLElement | null;
+  if (cg && cf && cortexVit != null) {
+    const g = gradeFromScore(cortexVit);
+    cg.textContent = String(cortexVit);
+    cg.className = `g-health-grade ${g.toLowerCase()}`;
+    cf.style.width = `${cortexVit}%`;
+    cf.style.background = gradeColor(g);
+  }
+
+  // ── Cortex-wide trust factors (sidecar aggregates; fallback to active engram
+  //    until the sidecar with .trust is rebuilt). ──
+  const factorsEl = document.getElementById('home-trust-factors');
+  if (factorsEl) {
+    const pct = (f: number): string => `${Math.round(f * 100)}%`;
+    const t = vit?.trust;
+    let factors: Array<[string, string, string]>;
+    if (t && t.activeNodes > 0) {
+      factors = [
+        ['Avg trust', t.avgConfidence.toFixed(2), 'mean confidence across all active memories (cortex-wide)'],
+        ['High-trust', pct(t.highConfidenceFraction), 'share at confidence ≥ 0.70 (cortex-wide)'],
+        ['Connected', pct(t.connectedFraction), 'memories woven to ≥1 other (cortex-wide)'],
+        ['Standing alone', t.orphans.toLocaleString(), 'orphans with no connections yet (cortex-wide)'],
+      ];
+    } else {
+      const h = computeHealth();
+      factors = [
+        ['Avg trust', h.avgConfidence.toFixed(2), 'active engram — cortex-wide pending a sidecar update'],
+        ['High-trust', pct(h.highConfidenceFraction), 'active engram'],
+        ['Connected', pct(h.connectedFraction), 'active engram'],
+        ['Standing alone', String(h.orphans), 'active engram'],
+      ];
+    }
+    factorsEl.innerHTML = factors.map(([label, val, tip]) =>
+      `<li class="home-factor" title="${escapeHtml(tip)}"><span class="home-factor-val">${escapeHtml(val)}</span><span class="home-factor-label">${escapeHtml(label)}</span></li>`,
+    ).join('');
+  }
+
+  // ── Active engram square card name (the #g-health gauge is driven by
+  //    renderHealth() → computeHealth(), which measures the loaded engram). ──
+  const nameEl = document.getElementById('home-engram-name');
+  if (nameEl) {
+    const g = loadedGraphs.find((x) => x.graphId === atlasActiveGraph);
+    nameEl.textContent = g?.metadata.displayName ?? atlasActiveGraph ?? '—';
+  }
+
+  renderHomeEngramBars();
+  refreshHomeStranded();   // dedicated stranded-memories card (cheap, sync)
+  refreshHomeOnPremise();  // sovereignty/egress ledger (cheap, sync)
+}
+
+// Per-engram vitality bars — collapsed to a top-N with a "show all" toggle so a
+// 20-engram cortex doesn't render a wall of bars (and the row count stays cheap).
+function renderHomeEngramBars(): void {
+  const barsEl = document.getElementById('home-engram-bars');
+  if (!barsEl) return;
+  // Vitality not fetched yet → leave the loading skeleton in place (no flash).
+  if (!brainVitalityReport) return;
+  const rows = Object.entries(brainVitalityReport.byGraph ?? {})
+    .map(([gid, score]) => {
+      const g = loadedGraphs.find((x) => x.graphId === gid);
+      if (g?.metadata.archived) return null;
+      return { name: g?.metadata.displayName ?? gid, score: score as number };
+    })
+    .filter((r): r is { name: string; score: number } => r !== null)
+    .sort((a, b) => b.score - a.score);
+  barsEl.style.display = '';
+  if (rows.length === 0) {
+    barsEl.innerHTML = `<div class="home-bars-title">Per engram</div><p class="home-bars-empty">No engrams to break down yet.</p>`;
+    return;
+  }
+  // Show ALL engrams by default — no top-N cap. A high safety ceiling avoids a
+  // pathological freeze on absurd counts; realistic cortexes have dozens, not
+  // thousands, of engrams, so this never triggers in practice.
+  const CAP = 300;
+  const shown = rows.length > CAP ? rows.slice(0, CAP) : rows;
+  const bar = (r: { name: string; score: number }): string => {
+    if (r.score <= 0) {
+      return `<div class="home-bar-row home-bar-row-empty"><span class="home-bar-name">${escapeHtml(r.name)}</span>` +
+        `<span class="home-bar-track"></span><span class="home-bar-val">empty</span></div>`;
+    }
+    const tone = r.score >= 85 ? 'ok' : r.score >= 70 ? 'accent' : r.score >= 50 ? 'warn' : 'error';
+    return `<div class="home-bar-row"><span class="home-bar-name">${escapeHtml(r.name)}</span>` +
+      `<span class="home-bar-track"><span class="home-bar-fill ${tone}" style="width:${r.score}%"></span></span>` +
+      `<span class="home-bar-val">${r.score}</span></div>`;
+  };
+  const more = rows.length > CAP
+    ? `<p class="home-bars-empty">+ ${(rows.length - CAP).toLocaleString()} more engrams</p>`
+    : '';
+  barsEl.innerHTML = `<div class="home-bars-title">Per engram (${rows.length.toLocaleString()})</div>${shown.map(bar).join('')}${more}`;
+}
+
+// "Since you last opened" — the autonomy digest. The anchor (last app-open
+// time) is frozen ONCE per session at module load: we read the previous value,
+// then immediately stamp now, so the digest always compares against the PRIOR
+// launch and re-rendering Home never advances the window.
+const HOME_DIGEST_KEY = 'graphnosis:lastOpenedAt';
+const homeDigestSinceAnchor: number = (() => {
+  const prev = Number(localStorage.getItem(HOME_DIGEST_KEY)) || 0;
+  try { localStorage.setItem(HOME_DIGEST_KEY, String(Date.now())); } catch { /* private mode */ }
+  return prev;
+})();
+
+async function refreshHomeDigest(): Promise<void> {
+  const card = document.getElementById('home-digest');
+  const body = document.getElementById('home-digest-body');
+  const whenEl = document.getElementById('home-digest-when');
+  if (!card || !body) return;
+
+  const anchor = homeDigestSinceAnchor;
+  const firstLook = anchor === 0;
+
+  // First launch: no prior anchor → show the welcome without dragging the whole
+  // op-log over IPC. Otherwise fetch ONLY events since the anchor (bounded) so a
+  // large cortex doesn't blow the 5s budget (which silently hid this card).
+  let since: OpLogEvent[] = [];
+  if (!firstLook) {
+    try {
+      // 25s covers a cold full op-log read (~16s on a large cortex); warm = instant.
+      const r = await ipcCallTimeout<{ events: OpLogEvent[] }>('activity.list', { since: anchor, limit: 5000 }, 25_000);
+      since = r.events ?? [];
+    } catch { card.style.display = ''; body.innerHTML = '<p class="home-card-empty">Couldn’t load recent activity right now.</p>'; return; }
+  }
+  if (whenEl) whenEl.textContent = firstLook ? 'your first look' : `since ${relTimeShort(anchor)}`;
+
+  const count = (ops: OpLogEvent['op'][]): number => since.filter((e) => ops.includes(e.op)).length;
+  const groups: Array<[number, string]> = [
+    [count(['ingestSource', 'addNode']), 'new memor{y|ies}'],
+    [count(['addEdge']),                 'new connection{|s}'],
+    [count(['editNode', 'supersede']),   'correction{|s}'],
+    [count(['merge']),                   'consolidation{|s}'],
+    [count(['deleteNode', 'forgetSource']), 'removed'],
+  ];
+  const plural = (n: number, tmpl: string): string => {
+    const m = tmpl.match(/\{([^|]*)\|([^}]*)\}/);
+    if (!m) return tmpl;
+    return tmpl.replace(/\{[^}]*\}/, n === 1 ? m[1] : m[2]);
+  };
+
+  if (firstLook || since.length === 0) {
+    body.innerHTML = `<p class="home-digest-quiet">${
+      firstLook
+        ? 'Welcome. As your AI writes to your memory and the brain consolidates it in the background, this is where you’ll see exactly what changed since your last visit.'
+        : 'All quiet since your last visit — nothing changed.'
+    }</p>`;
+    card.style.display = '';
+    return;
+  }
+
+  const chips = groups
+    .filter(([n]) => n > 0)
+    .map(([n, tmpl]) =>
+      `<span class="home-digest-chip"><strong>${n}</strong> ${escapeHtml(plural(n, tmpl))}</span>`,
+    )
+    .join('');
+  body.innerHTML =
+    `<div class="home-digest-chips">${chips}</div>` +
+    `<button type="button" class="home-digest-link" data-go-audit>See the full trail in Audit →</button>`;
+  card.style.display = '';
+  body.querySelector('[data-go-audit]')?.addEventListener('click', () => activateMode('activity'));
+}
+
+// ── Home: "Needs you" lane ────────────────────────────────────────────────
+// What's waiting on the user: pending corrections, duplicate pairs, stranded
+// memories. (Conflicts will join once #22's precision work lands — surfacing
+// noisy false-positive conflicts would undercut the trust story.) Each row
+// opens the review deck, the unified surface where these are resolved.
+async function refreshHomeNeeds(): Promise<void> {
+  const card = document.getElementById('home-needs');
+  const body = document.getElementById('home-needs-body');
+  if (!card || !body) return;
+
+  const corrections = graphnosisPendingDiffs.length;
+  let duplicates = 0;
+  try {
+    const pairs = await ipcCallTimeout<unknown[]>('brain:getDuplicatePairs', {});
+    duplicates = Array.isArray(pairs) ? pairs.length : 0;
+  } catch { /* leave 0 */ }
+
+  // Stranded memories have their own dedicated card (refreshHomeStranded); keep
+  // this lane to corrections + duplicates so we don't double-surface them.
+  type NeedRow = { n: number; label: string; tip: string };
+  const rows: NeedRow[] = [];
+  if (corrections > 0) rows.push({ n: corrections, label: corrections === 1 ? 'pending correction' : 'pending corrections', tip: 'AI-proposed edits awaiting your approval' });
+  if (duplicates > 0) rows.push({ n: duplicates, label: duplicates === 1 ? 'duplicate pair' : 'duplicate pairs', tip: 'near-identical memories to merge or keep' });
+
+  if (rows.length === 0) {
+    card.style.display = '';
+    body.innerHTML = '<p class="home-card-empty home-ok">You’re all caught up — nothing needs your attention. ✓</p>';
+    return;
+  }
+  body.innerHTML = rows.map((r) =>
+    `<button type="button" class="home-need-row" title="${escapeHtml(r.tip)}">` +
+    `<span class="home-need-count">${r.n.toLocaleString()}</span>` +
+    `<span class="home-need-label">${escapeHtml(r.label)}</span>` +
+    `<span class="home-need-go">Review →</span></button>`,
+  ).join('');
+  card.style.display = '';
+  body.querySelectorAll('.home-need-row').forEach((el) => {
+    el.addEventListener('click', () => openTrivia());
+  });
+}
+
+// ── Home: "Rediscover" lane ───────────────────────────────────────────────
+// Serendipity — resurface one substantive memory from the active engram for a
+// second look. Picked fresh on each Home entry (variety), then click to open
+// it in the 3D Engram with the inspector.
+function refreshHomeRediscover(): void {
+  const card = document.getElementById('home-rediscover');
+  const body = document.getElementById('home-rediscover-body');
+  if (!card || !body) return;
+  const now = Date.now();
+  const candidates = graphnosisAllNodes.filter(
+    (n) => n.confidence > 0.4
+      && (n.validUntil === undefined || n.validUntil > now)
+      && !isStructuralNoise(n)
+      && !!n.contentPreview && n.contentPreview.trim().length > 30,
+  );
+  if (candidates.length === 0) {
+    card.style.display = '';
+    body.innerHTML = '<p class="home-card-empty">Nothing to resurface yet — keep feeding your memory.</p>';
+    return;
+  }
+  const pick = candidates[Math.floor(Math.random() * candidates.length)];
+  const raw = pick.contentPreview.trim();
+  const snippet = raw.length > 220 ? `${raw.slice(0, 220)}…` : raw;
+  const where = pick.sourceFile ? `<span class="home-rd-src">${escapeHtml(pick.sourceFile)}</span>` : '';
+  body.innerHTML =
+    `<p class="home-rd-text">${escapeHtml(snippet)}</p>` +
+    `<div class="home-rd-foot">${where}<button type="button" class="home-rd-go" data-rd-open>Open this memory →</button></div>`;
+  card.style.display = '';
+  body.querySelector('[data-rd-open]')?.addEventListener('click', () => {
+    activateMode('engram');
+    selectGraphnosisNode(pick.id, { trace: true });
+  });
+}
+
+// ── Home: "Stranded memories" card ────────────────────────────────────────
+// Its own card (not just a Needs-you row) so the user always sees a clear,
+// reassuring "you can still fix your memory" action. Shows a positive state
+// when nothing is stranded (trust signal either way).
+function refreshHomeStranded(): void {
+  const card = document.getElementById('home-stranded');
+  const body = document.getElementById('home-stranded-body');
+  if (!card || !body) return;
+  const n = brainVitalityReport?.trust?.orphans ?? graphnosisOrphanIds.size;
+  card.style.display = '';
+  if (n <= 0) {
+    body.innerHTML = `<p class="home-stranded-zero">Every memory is woven to at least one other — nothing standing alone. ✓</p>`;
+    return;
+  }
+  body.innerHTML =
+    `<div class="home-stranded-row">` +
+      `<span class="home-stranded-count">${n.toLocaleString()}</span>` +
+      `<p class="home-stranded-copy">memor${n === 1 ? 'y is' : 'ies are'} standing alone, with no connections yet. ` +
+      `A couple of minutes in the review deck weaves them back in — entirely your call.</p>` +
+    `</div>` +
+    `<button type="button" class="home-stranded-go" data-stranded-connect>Connect them →</button>`;
+  body.querySelector('[data-stranded-connect]')?.addEventListener('click', () => openTrivia());
+}
+
+// ── Home: "Growth" card ───────────────────────────────────────────────────
+// Memories added per day over the last 30 days — a sparkline from the op-log
+// (bounded via activity.list `since`, so it stays cheap on a large cortex).
+async function refreshHomeGrowth(): Promise<void> {
+  const card = document.getElementById('home-growth');
+  const body = document.getElementById('home-growth-body');
+  if (!card || !body) return;
+  const DAYS = 30;
+  const since = Date.now() - DAYS * 864e5;
+  let events: OpLogEvent[] = [];
+  try {
+    // Cap the slice — 30 days of op-log on a big cortex can be tens of
+    // thousands of events; an unbounded payload was hanging this card. The
+    // 25s timeout covers a COLD full op-log read (~16s on a large cortex); once
+    // the host's read cache is warm, subsequent opens are instant. (Real fix:
+    // incremental/tail op-log reads so this isn't a whole-log scan — flagged.)
+    const r = await ipcCallTimeout<{ events: OpLogEvent[] }>('activity.list', { since, limit: 5000 }, 25_000);
+    events = r.events ?? [];
+  } catch { card.style.display = ''; body.innerHTML = '<p class="home-card-empty">Couldn’t load growth right now.</p>'; return; }
+  const adds = events.filter((e) => e.op === 'ingestSource' || e.op === 'addNode');
+  if (adds.length === 0) {
+    card.style.display = '';
+    body.innerHTML = '<p class="home-card-empty">No new memories in the last 30 days.</p>';
+    return;
+  }
+
+  const dayStart = (ms: number): number => { const d = new Date(ms); d.setHours(0, 0, 0, 0); return d.getTime(); };
+  const todayStart = dayStart(Date.now());
+  const buckets = new Array(DAYS).fill(0) as number[];
+  for (const e of adds) {
+    const idx = DAYS - 1 - Math.floor((todayStart - dayStart(e.ts)) / 864e5);
+    if (idx >= 0 && idx < DAYS) buckets[idx] += 1;
+  }
+  const max = Math.max(...buckets, 1);
+  const bars = buckets.map((c, i) => {
+    const pctH = c > 0 ? Math.max(8, Math.round((c / max) * 100)) : 2;
+    const day = new Date(todayStart - (DAYS - 1 - i) * 864e5);
+    return `<span class="home-spark-bar${c > 0 ? '' : ' empty'}" style="height:${pctH}%" title="${day.toLocaleDateString()}: ${c}"></span>`;
+  }).join('');
+  body.innerHTML =
+    `<div class="home-growth-stat"><strong>${adds.length.toLocaleString()}</strong> added in the last ${DAYS} days</div>` +
+    `<div class="home-spark" aria-hidden="true">${bars}</div>`;
+  card.style.display = '';
+}
+
+// ── Home: "On-Premise" card ───────────────────────────────────────────────
+// Honest sovereignty/egress ledger from what's verifiable CLIENT-SIDE: the
+// memory store + local LLM are on-device; AI clients pull memory on demand
+// (the only off-premise path, and only for cloud clients); connectors are
+// inbound. Absolute "no telemetry / 0 bytes" claims wait on the network egress
+// audit (task #24) so we never overclaim.
+function refreshHomeOnPremise(): void {
+  const body = document.getElementById('home-onprem-body');
+  if (!body) return;
+  const clients = [...liveMcpClients];
+  const connectors = [...installedConnectorKinds].map((c) => String(c));
+  const isCloud = (name: string): boolean => /claude|cursor|chatgpt|openai|copilot|gemini|windsurf|anthropic/i.test(name);
+
+  // Verified by the egress audit: store on disk, embeddings via local ONNX,
+  // LLM via local Ollama, and ZERO telemetry/analytics code anywhere.
+  const rows: string[] = [
+    `<li class="home-onprem-ok">Memory store — <strong>on this device, encrypted</strong></li>`,
+    `<li class="home-onprem-ok">Embeddings &amp; local LLM — <strong>computed on-device</strong></li>`,
+    `<li class="home-onprem-ok">Telemetry &amp; analytics — <strong>none, ever</strong></li>`,
+  ];
+  if (clients.length === 0 && connectors.length === 0) {
+    rows.push(`<li class="home-onprem-strong">Your memory never leaves this device — no AI client or data source is connected.</li>`);
+  } else {
+    if (clients.length > 0) {
+      const labels = clients.map((c) =>
+        `${escapeHtml(c)} <span class="home-onprem-posture ${isCloud(c) ? 'cloud' : 'local'}">${isCloud(c) ? '→ cloud when you chat' : 'on-device'}</span>`,
+      ).join(', ');
+      rows.push(`<li>AI clients that can read your memory: ${labels}</li>`);
+    }
+    if (connectors.length > 0) {
+      rows.push(`<li>Data sources you connected <span class="home-onprem-posture local">inbound only</span>: ${escapeHtml(connectors.join(', '))}</li>`);
+    }
+  }
+  body.innerHTML =
+    `<ul class="home-onprem-list">${rows.join('')}</ul>` +
+    `<p class="home-onprem-note">Graphnosis never transmits your memory on its own. The only outbound traffic: AI clients you connected (they pull memory on demand), data sources you connected (inbound), and app update checks (no memory data).</p>`;
+}
+
+// Show a loading skeleton in every async Home card BEFORE its fetch resolves,
+// so cards fade from a placeholder rather than popping in from nothing.
+function showHomeSkeletons(): void {
+  const SKEL = '<div class="home-skel"></div><div class="home-skel w70"></div>';
+  // Every async card gets a skeleton in its FINAL slot up front, so the grid
+  // order is fixed before any data lands (cards fade in place, never reorder).
+  for (const id of ['home-needs', 'home-stranded', 'home-digest', 'home-foresight', 'home-brainact', 'home-rediscover', 'home-growth', 'home-mhealth', 'home-selfheal']) {
+    const card = document.getElementById(id);
+    const body = document.getElementById(`${id}-body`);
+    if (card && body && !body.querySelector(':not(.home-skel)')) {
+      card.style.display = '';
+      body.innerHTML = SKEL;
+    }
+  }
+  // The per-engram breakdown shows its loading progress from the very start too.
+  const bars = document.getElementById('home-engram-bars');
+  if (bars && !bars.querySelector('.home-bar-row')) {
+    bars.style.display = '';
+    bars.innerHTML = `<div class="home-bars-title">Per engram</div>${SKEL}${SKEL}${SKEL}`;
+  }
+}
+
+// Heavy Home data loads, run ONE AT A TIME with a yield between each, and
+// CANCELED the moment the user navigates away. Firing them all at once hammered
+// the single-threaded sidecar (memory-health walks the whole graph), which
+// starved engram-switching + the 3D graph — the freezing the user saw.
+let homeLoadToken = 0;
+function scheduleHomeDataLoad(): void {
+  const token = ++homeLoadToken;
+  const stillHome = (): boolean =>
+    token === homeLoadToken &&
+    graphnosisActiveTab === 'checkin' &&
+    !document.body.classList.contains('search-mode') &&
+    !document.body.classList.contains('skills-studio-mode') &&
+    !document.body.classList.contains('powertools-mode');
+  // Run the loads SEQUENTIALLY (≤1 sidecar call in flight at a time) so they
+  // don't hammer the single-threaded sidecar all at once — and so an engram
+  // switch's nodes.list waits behind at most ONE Home call, not six. No
+  // artificial gaps (the earlier requestIdleCallback delays were the "cards
+  // drag" slowness). The stillHome() check before each step CANCELS the rest
+  // the moment the user navigates or switches engrams (which bumps the token).
+  // Order: cheap/cached + visible first; the heaviest (memory-health graph
+  // walk) last. digest+growth share one op-log read (first warms, second is
+  // instant). Each fn is timeout-bounded → no step can stall the chain.
+  void (async () => {
+    const steps = [refreshHomeNeeds, refreshHomePolicy, refreshHomeForesight, refreshHomeDigest, refreshHomeGrowth, refreshHomeBrainData];
+    for (const step of steps) {
+      if (!stillHome()) return;
+      try { await step(); } catch { /* per-card fns own their errors */ }
+    }
+  })();
+}
+
+// ── Home autonomy cards (Self-healing · Memory health · Recent brain activity)
+// These reuse the brain's already-computed data — but it's only loaded on the
+// brain/Goals pane, so fetch the two pieces Home needs on Home entry.
+async function refreshHomeBrainData(): Promise<void> {
+  // Each of the three brain cards loads + renders INDEPENDENTLY (decoupled), so
+  // the heavy memory-health walk can't hold the others hostage. All bounded by
+  // a client timeout → on slow/failure each shows its quiet empty state.
+  renderHomeBrainActivity(); // no fetch — brainStatus is already in memory
+
+  void ipcCallTimeout('brain:getHealingJournal', {})
+    .then((hj) => { brainHealingJournal = (hj as BrainHealingRecord[]) ?? brainHealingJournal; })
+    .catch(() => { /* keep prior */ })
+    .finally(() => renderHomeSelfHealing());
+
+  void ipcCallTimeout('brain:getMemoryHealth', {})
+    .then((mh) => { brainMemoryHealth = mh as typeof brainMemoryHealth; })
+    .catch(() => { /* keep prior; renders empty state if still null */ })
+    .finally(() => renderHomeMemoryHealth());
+}
+
+function renderHomeMemoryHealth(): void {
+  const card = document.getElementById('home-mhealth');
+  const body = document.getElementById('home-mhealth-body');
+  if (!card || !body) return;
+  const h = brainMemoryHealth;
+  if (!h) { card.style.display = ''; body.innerHTML = '<p class="home-card-empty">Memory health isn’t available right now.</p>'; return; }
+  card.style.display = '';
+  const pct = (f: number): string => `${Math.round(f * 100)}%`;
+  const factors: Array<[string, string]> = [
+    ['Overall', String(h.overall)],
+    ['Connectivity', pct(h.connectivity)],
+    ['Integration', pct(h.integration)],
+    ['Confidence', pct(h.confidence)],
+    ['Coherence', pct(h.coherence)],
+    ['Reinforcement', pct(h.reinforcementActivity)],
+    ['Weight spread', pct(h.weightSpread)],
+  ];
+  body.innerHTML =
+    `<ul class="home-mhealth-grid">` +
+    factors.map(([l, v]) => `<li class="home-factor"><span class="home-factor-val">${escapeHtml(v)}</span><span class="home-factor-label">${escapeHtml(l)}</span></li>`).join('') +
+    `</ul>` +
+    `<p class="home-mhealth-note">${h.crossEngramConnections.toLocaleString()} cross-engram connections · ${h.inferredEdges.toLocaleString()} inferred edges</p>`;
+}
+
+function renderHomeSelfHealing(): void {
+  const card = document.getElementById('home-selfheal');
+  const body = document.getElementById('home-selfheal-body');
+  if (!card || !body) return;
+  card.style.display = '';
+  const merged = brainHealingJournal.length;
+  const rechecked = brainHealingJournal.filter((r) => r.llmReviewed).length;
+  if (merged === 0) {
+    body.innerHTML = `<p class="home-stranded-zero">No duplicates have needed merging yet — your memory is clean. ✓</p>`;
+    return;
+  }
+  body.innerHTML =
+    `<div class="home-sh-stats">` +
+      `<div class="home-sh-stat"><span class="home-sh-val">${merged.toLocaleString()}</span><span class="home-sh-label">merged automatically</span></div>` +
+      `<div class="home-sh-stat"><span class="home-sh-val">${rechecked.toLocaleString()}</span><span class="home-sh-label">re-checked by local AI</span></div>` +
+    `</div>` +
+    `<p class="home-sh-note">Nothing is ever lost — every merge is a soft-delete you can undo from Recovery.</p>`;
+}
+
+function renderHomeBrainActivity(): void {
+  const card = document.getElementById('home-brainact');
+  const body = document.getElementById('home-brainact-body');
+  if (!card || !body) return;
+  const iv = brainStatus?.intervals;
+  const cons = brainStatus?.lastConsolidation ?? null;
+  if (!iv && !cons) { card.style.display = ''; body.innerHTML = '<p class="home-card-empty">Background checks run automatically while the app is open.</p>'; return; }
+  card.style.display = '';
+  const parts: string[] = [];
+  if (iv) {
+    if (iv['duplicateScan']) parts.push(`duplicate scan every ${formatInterval(iv['duplicateScan'])}`);
+    if (iv['synapse']) parts.push(`new connections every ${formatInterval(iv['synapse'])}`);
+    if (iv['consolidation']) parts.push(`consolidation every ${formatInterval(iv['consolidation'])}`);
+    if (iv['insight']) parts.push(`insights every ${formatInterval(iv['insight'])}`);
+  }
+  const cadence = parts.length ? `Runs on its own — ${parts.join(' · ')}.` : 'Background checks run automatically while the app is open.';
+  const consLine = cons
+    ? `<p class="home-ba-cons">Last consolidation ${relTimeShort(cons.at)} — ${cons.inferredEdges.toLocaleString()} connections inferred, ${cons.communities.toLocaleString()} clusters, ${cons.edgesCleaned.toLocaleString()} dead edges cleaned.</p>`
+    : '';
+  body.innerHTML = `<p class="home-ba-cadence">${escapeHtml(cadence)}</p>${consLine}`;
+}
+
+// ── Home: "Disabled by IT" governance card ────────────────────────────────
+// Reads the sidecar admin policy. Shown ONLY when a connector or AI client is
+// blocked (no governance noise otherwise). `managed` = pinned by IT on the
+// sidecar host (read-only); else set by the device admin (the user).
+async function refreshHomePolicy(): Promise<void> {
+  const card = document.getElementById('home-policy');
+  const body = document.getElementById('home-policy-body');
+  const title = document.getElementById('home-policy-title');
+  const source = document.getElementById('home-policy-source');
+  if (!card || !body) return;
+  let p: { disabledConnectorKinds: string[]; disabledClients: string[]; managed: boolean } | null = null;
+  try { p = await ipcCall('policy.get', {}); } catch { card.style.display = 'none'; return; }
+  if (!p || (p.disabledConnectorKinds.length === 0 && p.disabledClients.length === 0)) {
+    card.style.display = 'none';
+    return;
+  }
+  if (title) title.textContent = p.managed ? 'Disabled by IT' : 'Disabled by policy';
+  if (source) source.textContent = p.managed ? 'managed by your administrator' : 'set on this device';
+  const chips = (items: string[]): string => items.map((i) => `<span class="home-policy-chip">${escapeHtml(i)}</span>`).join('');
+  const rows: string[] = [];
+  if (p.disabledConnectorKinds.length) rows.push(`<div class="home-policy-row"><span class="home-policy-label">Connectors</span><div class="home-policy-chips">${chips(p.disabledConnectorKinds)}</div></div>`);
+  if (p.disabledClients.length) rows.push(`<div class="home-policy-row"><span class="home-policy-label">AI clients</span><div class="home-policy-chips">${chips(p.disabledClients)}</div></div>`);
+  body.innerHTML = `${rows.join('')}<p class="home-card-empty">Enforced in the sidecar — blocked items can’t read or write your memory.</p>`;
+  card.style.display = '';
+}
+
+// ── Foresight (the Goals rail destination) ────────────────────────────────
+// Goals (deterministic) always show above. These LLM-grounded lanes — Predict
+// + Insights — gate on the local LLM; when it's off, a single CTA replaces them
+// (Goals stays usable). Called on entry to the 'goals' rail mode.
+async function renderForesight(): Promise<void> {
+  const gate = document.getElementById('foresight-llm-gate');
+  const fbody = document.getElementById('foresight-body');
+  if (!gate && !fbody) return;
+  let llmReady = false;
+  try {
+    const s = await ipcCall<{ ollamaReachable: boolean; installedModels: string[]; enabled: boolean }>('llm:status', {});
+    llmReady = !!(s.ollamaReachable && s.installedModels?.length && s.enabled);
+  } catch { llmReady = false; }
+  gate?.classList.toggle('hidden', llmReady);
+  if (fbody) fbody.style.display = llmReady ? '' : 'none';
+  if (!llmReady) return;
+
+  const insEl = document.getElementById('foresight-insights');
+  if (insEl) {
+    insEl.innerHTML = '<div class="home-skel"></div><div class="home-skel w70"></div>';
+    try {
+      const ins = await ipcCallTimeout<typeof brainInsights>('brain:getInsights', {});
+      brainInsights = ins ?? brainInsights;
+    } catch { /* keep prior */ }
+    const active = brainInsights.filter((i) => !i.dismissed);
+    insEl.innerHTML = active.length
+      ? active.slice(0, 6).map((i) => `<div class="foresight-insight"><strong>${escapeHtml(i.title)}</strong><p>${escapeHtml(i.body)}</p></div>`).join('')
+      : '<p class="home-card-empty">No insights yet — they surface as your memory grows.</p>';
+  }
+}
+
+async function runForesightPredict(): Promise<void> {
+  const input = document.getElementById('foresight-predict-input') as HTMLInputElement | null;
+  const out = document.getElementById('foresight-predict-out');
+  const action = input?.value.trim();
+  if (!action || !out) return;
+  out.innerHTML = '<div class="home-skel"></div><div class="home-skel w70"></div>';
+  try {
+    const r = await ipcCallTimeout<{ risks: string[]; opportunities: string[]; recommendation: string }>('brain:predict', { action }, 60_000);
+    const grp = (label: string, items: string[] | undefined, cls: string): string =>
+      items && items.length ? `<div class="foresight-pred-group ${cls}"><span class="foresight-pred-label">${label}</span><ul>${items.map((x) => `<li>${escapeHtml(x)}</li>`).join('')}</ul></div>` : '';
+    const html = grp('Risks', r.risks, 'risk') + grp('Opportunities', r.opportunities, 'opp') +
+      (r.recommendation ? `<p class="foresight-rec">${escapeHtml(r.recommendation)}</p>` : '');
+    out.innerHTML = html || '<p class="home-card-empty">No prediction returned.</p>';
+  } catch { out.innerHTML = '<p class="home-card-empty">Prediction unavailable — is the Local LLM on?</p>'; }
+}
+
+// Home "Foresight" teaser card (the 12th card — the FUTURE dimension). Top
+// insight + a door into the Foresight page. LLM-gated like the page.
+async function refreshHomeForesight(): Promise<void> {
+  const card = document.getElementById('home-foresight');
+  const body = document.getElementById('home-foresight-body');
+  if (!card || !body) return;
+  card.style.display = '';
+  let llmReady = false;
+  try {
+    const s = await ipcCall<{ ollamaReachable: boolean; installedModels: string[]; enabled: boolean }>('llm:status', {});
+    llmReady = !!(s.ollamaReachable && s.installedModels?.length && s.enabled);
+  } catch { llmReady = false; }
+  const door = '<button type="button" class="home-foresight-go" data-foresight-open>Open Foresight →</button>';
+  if (!llmReady) {
+    body.innerHTML = `<p class="home-card-empty">Turn on the Local LLM to see what's ahead — predictions &amp; insights from your memory.</p>${door}`;
+  } else {
+    try {
+      const ins = await ipcCallTimeout<typeof brainInsights>('brain:getInsights', {});
+      brainInsights = ins ?? brainInsights;
+    } catch { /* keep prior */ }
+    const top = brainInsights.filter((i) => !i.dismissed)[0];
+    body.innerHTML = top
+      ? `<p class="home-foresight-title">${escapeHtml(top.title)}</p><p class="home-foresight-text">${escapeHtml(top.body)}</p><button type="button" class="home-foresight-go" data-foresight-open>Explore Foresight →</button>`
+      : `<p class="home-card-empty">No predictions yet — develop a goal or run a prediction in Foresight.</p>${door}`;
+  }
+  body.querySelector('[data-foresight-open]')?.addEventListener('click', () => activateMode('goals'));
+}
+
+// Foresight controls (wired once at module load; the page is always in the DOM).
+document.getElementById('btn-foresight-llm')?.addEventListener('click', () => openNonDeterministic());
+document.getElementById('btn-foresight-predict')?.addEventListener('click', () => void runForesightPredict());
+document.getElementById('foresight-predict-input')?.addEventListener('keydown', (e) => {
+  if ((e as KeyboardEvent).key === 'Enter') void runForesightPredict();
+});
 
 // ── Review deck queue ─────────────────────────────────────────────────
 
@@ -7416,15 +8302,19 @@ function applyGraphnosisFilter(): void {
   const qRaw = els.gSearch.value.trim();
   const q = qRaw.toLowerCase();
 
-  // No query → show normal dashboard, hide results.
+  // No query → show normal dashboard, hide results. body.search-idle recenters
+  // the hero search box + reveals its guidance (see the search-mode CSS).
   if (q.length === 0) {
     els.gSearchResults.classList.add('hidden');
+    document.body.classList.add('search-idle');
     clearSearchSynthesis();
     renderDashboard();
     return;
   }
 
-  // Query present → switch to results view; close trivia if it was open.
+  // Query present → switch to results view; close trivia if it was open. Drop
+  // search-idle so the hero box animates up to the top + results fill below.
+  document.body.classList.remove('search-idle');
   closeTrivia();
   els.gSearchResults.classList.remove('hidden');
 
@@ -9719,6 +10609,27 @@ function switchGraphnosisTab(tab: GraphnosisTab): void {
     if (enteringFresh) resetAtlasView();
     void (async () => {
       const firstMount = await mountAtlasIfNeeded();
+      // STALE GUARD: the cached node set (graphnosisAllNodes /
+      // atlasLoadedForGraph) may not be for the engram currently selected in
+      // the picker — e.g. the user switched engrams on Home and the background
+      // load is still queued behind a heavy cortex-wide call on the
+      // single-threaded sidecar, or it failed. Pushing now would show the
+      // PREVIOUS engram. Detect that and load the right engram first, with a
+      // visible loading state, so 3D always reflects the active engram.
+      const targetGraph = atlasActiveGraph;
+      if (targetGraph && atlasLoadedForGraph !== targetGraph) {
+        showAtlasLoading(engramName(targetGraph));
+        try {
+          await loadGraphnosisData(targetGraph); // deduped — joins the picker's load if in-flight
+        } catch {
+          // Surface a retry instead of silently showing the old engram.
+          if (atlasActiveGraph === targetGraph) showAtlasLoadError(targetGraph);
+          return;
+        }
+        // Bail if the user switched engrams again while we were loading.
+        if (atlasActiveGraph !== targetGraph) return;
+        hideAtlasLoading();
+      }
       pushDataIntoAtlas();
       // resetEmphasis again after the (possibly first-time) mount so a
       // freshly-created engine also opens with the full graph un-dimmed.
@@ -9733,6 +10644,10 @@ function switchGraphnosisTab(tab: GraphnosisTab): void {
     // Returning to the MemoryStudio / dashboard tab — re-render in case
     // selection/data changed while away.
     if (els.gSearch.value.trim().length === 0) renderDashboard();
+    showHomeSkeletons();      // placeholders so async cards fade in (fixed slots)
+    renderHomeDashboard();    // hero + Trust&Vitality (cheap, sync, from cached data)
+    refreshHomeRediscover();  // SYNC + instant — render now, never queue it behind IPCs
+    scheduleHomeDataLoad();   // the IPC fetches — light ones concurrent, heavy one deferred
     updateStudioVisibility();
     populateStudioEngramSelects();
     void refreshStudioLlmBadge();
@@ -10013,11 +10928,15 @@ els.atlasGraphPicker.addEventListener('change', () => void (async () => {
   atlasActiveGraph = els.atlasGraphPicker.value;
   persistActiveEngram(atlasActiveGraph);
   refreshActiveEngramLabel();
-  // Auto-switch to the 3D Engram tab so the user immediately sees the visual
-  // effect of their engram selection.
-  switchGraphnosisTab('atlas');
+  // Scope the CURRENT view to the picked engram — do NOT yank the user to the
+  // 3D Engram (plan decision #3). The data reload below refreshes whatever
+  // view is active; the picker is a scope control, not a navigation jump.
   graphnosisSelectedId = null;
   atlasSelectedId = null;
+  // Cancel any pending Home data loads — they're cortex-wide (not per-engram)
+  // and would otherwise keep the single-threaded sidecar busy while this
+  // engram's nodes.list is trying to load, making the switch crawl.
+  homeLoadToken++;
   // Keep the Sources dropdown in sync with the newly active engram.
   // Also force a full refreshStats() so the sources DOM is rebuilt from
   // a fresh IPC snapshot — this fixes the "no sources listed" stale-DOM
@@ -10054,6 +10973,9 @@ els.atlasGraphPicker.addEventListener('change', () => void (async () => {
   disabledSources.clear();
   if (mainAtlas) resetAtlasView();
   await refreshAtlasView();
+  // Re-render the Home dashboard's active-engram card + gauge in place when the
+  // user is on Home (the picker scoped the view; it didn't navigate away).
+  if (graphnosisActiveTab === 'checkin') renderHealth();
   // After switching engrams, fit the camera to the new graph.
   // A short delay lets the physics warmup ticks settle before zoomToFit runs,
   // otherwise the bounding-sphere calculation catches nodes mid-simulation.
@@ -10119,10 +11041,9 @@ document.addEventListener('keydown', (e: KeyboardEvent) => {
     const tag = (e.target as HTMLElement).tagName;
     if (tag === 'INPUT' || tag === 'TEXTAREA') return;
     e.preventDefault();
-    // Ensure we're on the main Graphnosis pane (atlas mode).
-    if (currentMode !== 'atlas') activateMode('atlas');
-    // Switch to the Check-in tab.
-    if (graphnosisActiveTab !== 'checkin') switchGraphnosisTab('checkin');
+    // ⌘F opens the dedicated Search page (activateMode handles the pane +
+    // checkin tab + body.search-mode + focusing the box).
+    if (currentMode !== 'search') activateMode('search');
     els.gSearch.focus();
     els.gSearch.select();
   }
@@ -10149,6 +11070,14 @@ els.gSearch.addEventListener('input', () => {
 });
 
 els.gSearch.addEventListener('keydown', (e) => {
+  // Esc clears the query → recenters the hero box (see search-mode CSS).
+  if (e.key === 'Escape' && els.gSearch.value.length > 0) {
+    e.preventDefault();
+    els.gSearch.value = '';
+    els.gSearchClear.classList.add('hidden');
+    applyGraphnosisFilter();
+    return;
+  }
   if (e.key !== 'Enter') return;
   e.preventDefault();
   const q = els.gSearch.value.trim();
@@ -10217,7 +11146,7 @@ document.getElementById('btn-detail-close')?.addEventListener('click', () => {
 // Esc — deselect, or cancel edit.
 
 document.addEventListener('keydown', (e) => {
-  if (currentMode !== 'atlas') return;
+  if (!isAtlasPaneMode()) return;
   const target = e.target as HTMLElement | null;
   const inField = !!target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable);
 
@@ -10269,7 +11198,7 @@ document.addEventListener('keydown', (e) => {
   // Typing a printable character while on a non-search tab → auto-switch
   // to Check-in so the keystroke lands in the search field naturally.
   if (graphnosisActiveTab !== 'checkin' && !e.metaKey && !e.ctrlKey && !e.altKey && e.key.length === 1) {
-    switchGraphnosisTab('checkin');
+    activateMode('atlas');
     els.gSearch.focus();
     // Don't preventDefault — the character propagates into the now-focused search input.
     return;
@@ -10339,24 +11268,95 @@ function cssColorForCategory(cat: EdgeCategory): string {
 // ── Activity (op-log timeline) ────────────────────────────────────────
 
 async function refreshActivityView(): Promise<void> {
-  els.activityList.innerHTML = '<p class="subtitle">Loading…</p>';
+  els.activityList.innerHTML = '<div class="home-skel"></div><div class="home-skel w70"></div><div class="home-skel"></div>';
   try {
-    const r = (await invoke('list_activity')) as { events: OpLogEvent[] };
-    renderActivity(r.events);
-  } catch (e) {
-    els.activityList.innerHTML = `<p class="error">${escape(String(e))}</p>`;
+    // Bounded + timed-out: the old `list_activity` Rust passthrough pulled the
+    // ENTIRE op-log (2M+ events) with no bound and no timeout → "Loading…"
+    // forever on a large cortex. The most-recent 1000 events is plenty for an
+    // activity timeline; the sidecar's incremental cache keeps repeat loads fast.
+    const r = await ipcCallTimeout<{ events: OpLogEvent[] }>('activity.list', { limit: 1000 }, 25_000);
+    activityEvents = r.events ?? [];
+    populateActivityEngramSelect();
+    applyActivityFilter();
+  } catch {
+    els.activityList.innerHTML =
+      '<p class="subtitle">Couldn’t load activity — the op-log read timed out. ' +
+      '<button id="btn-activity-retry" class="btn-sm" type="button">Retry</button></p>';
+    document.getElementById('btn-activity-retry')?.addEventListener('click', () => void refreshActivityView());
   }
 }
 
-function renderActivity(events: OpLogEvent[]): void {
-  const filter = els.activityFilterKind.value;
-  const filtered = filter === 'all' ? events : events.filter((e) => e.op === filter);
-  filtered.sort((a, b) => b.ts - a.ts); // newest first
+// Most-recent events from the last activity.list fetch. Chip/search/engram
+// filtering runs against this cache so it's instant (no re-fetch per keystroke).
+let activityEvents: OpLogEvent[] = [];
+type ActivityCat = 'all' | 'add' | 'edit' | 'connect' | 'merge' | 'remove';
+let activityCat: ActivityCat = 'all';
+// op → friendly category. Drives both the chips and their count badges.
+const ACTIVITY_CAT_OPS: Record<Exclude<ActivityCat, 'all'>, OpLogEvent['op'][]> = {
+  add: ['addNode', 'ingestSource'],
+  edit: ['editNode', 'supersede'],
+  connect: ['addEdge', 'deleteEdge'],
+  merge: ['merge'],
+  remove: ['deleteNode', 'forgetSource'],
+};
+function activityCatOf(op: OpLogEvent['op']): Exclude<ActivityCat, 'all'> | null {
+  for (const cat of Object.keys(ACTIVITY_CAT_OPS) as Array<Exclude<ActivityCat, 'all'>>) {
+    if (ACTIVITY_CAT_OPS[cat].includes(op)) return cat;
+  }
+  return null;
+}
 
-  els.activityStats.textContent = `${filtered.length} of ${events.length} event${events.length === 1 ? '' : 's'}`;
+/** Fill the engram scope dropdown from the engrams present in the loaded
+ *  events, preserving the current selection if still valid. */
+function populateActivityEngramSelect(): void {
+  const prev = els.activityEngramSelect.value;
+  const ids = Array.from(new Set(activityEvents.map((e) => e.graphId)));
+  ids.sort((a, b) => engramName(a).localeCompare(engramName(b)));
+  els.activityEngramSelect.innerHTML =
+    '<option value="">All engrams</option>' +
+    ids.map((id) => `<option value="${escape(id)}">${escape(engramName(id))}</option>`).join('');
+  if (prev && ids.includes(prev)) els.activityEngramSelect.value = prev;
+}
+
+/** Filter the cached events by category chip + engram scope + text query, then
+ *  render. Also refreshes the per-chip count badges (counts respect the engram
+ *  scope + text query but NOT the active category, so each chip shows how many
+ *  it would surface). */
+function applyActivityFilter(): void {
+  const engram = els.activityEngramSelect.value;
+  const query = els.activitySearch.value.trim().toLowerCase();
+
+  // Base set: engram scope + text query (category applied after, for counts).
+  const matchesText = (e: OpLogEvent): boolean => {
+    if (!query) return true;
+    const hay = `${e.op} ${e.graphId} ${engramName(e.graphId)} ${activityLabel(e).replace(/<[^>]+>/g, '')} ${activityDetail(e).replace(/<[^>]+>/g, '')}`.toLowerCase();
+    return hay.includes(query);
+  };
+  const base = activityEvents.filter((e) => (!engram || e.graphId === engram) && matchesText(e));
+
+  // Chip count badges (over the base set).
+  const counts: Record<ActivityCat, number> = { all: base.length, add: 0, edit: 0, connect: 0, merge: 0, remove: 0 };
+  for (const e of base) { const c = activityCatOf(e.op); if (c) counts[c]++; }
+  const CHIP_LABELS: Record<ActivityCat, string> = {
+    all: 'All', add: 'Added', edit: 'Edited', connect: 'Connections', merge: 'Merged', remove: 'Removed',
+  };
+  els.activityChips.querySelectorAll<HTMLButtonElement>('.g-activity-chip').forEach((chip) => {
+    const cat = (chip.dataset.cat ?? 'all') as ActivityCat;
+    chip.classList.toggle('active', cat === activityCat);
+    chip.innerHTML = `${escape(CHIP_LABELS[cat])}<span class="chip-count">${counts[cat]}</span>`;
+  });
+
+  const filtered = (activityCat === 'all' ? base : base.filter((e) => activityCatOf(e.op) === activityCat));
+  renderActivity(filtered, activityEvents.length);
+}
+
+function renderActivity(events: OpLogEvent[], total: number): void {
+  const filtered = events.slice().sort((a, b) => b.ts - a.ts); // newest first
+
+  els.activityStats.textContent = `${filtered.length} of ${total} recent event${total === 1 ? '' : 's'}`;
 
   if (filtered.length === 0) {
-    els.activityList.innerHTML = '<p class="subtitle">No events match this filter.</p>';
+    els.activityList.innerHTML = '<p class="subtitle">No events match these filters.</p>';
     return;
   }
 
@@ -10439,7 +11439,21 @@ function activityDetail(e: OpLogEvent): string {
   return '';
 }
 
-els.activityFilterKind.addEventListener('change', () => void refreshActivityView());
+// Category chips → filter the cached events (no re-fetch).
+els.activityChips.addEventListener('click', (e) => {
+  const chip = (e.target as HTMLElement).closest<HTMLButtonElement>('.g-activity-chip');
+  if (!chip) return;
+  activityCat = (chip.dataset.cat ?? 'all') as ActivityCat;
+  applyActivityFilter();
+});
+// Text filter + engram scope → also re-filter the cache live.
+let activitySearchTimer: number | null = null;
+els.activitySearch.addEventListener('input', () => {
+  if (activitySearchTimer !== null) clearTimeout(activitySearchTimer);
+  activitySearchTimer = window.setTimeout(() => applyActivityFilter(), 120);
+});
+els.activityEngramSelect.addEventListener('change', () => applyActivityFilter());
+// Refresh re-fetches from the sidecar (picks up new events).
 els.btnActivityRefresh.addEventListener('click', () => void refreshActivityView());
 
 // ── Snapshots ────────────────────────────────────────────────────────
@@ -11114,7 +12128,7 @@ async function switchActiveEngram(graphId: string): Promise<void> {
     // engram instead of showing the previous engram's leftover camera
     // position. The atlas engine is a headless THREE.js scene — pushing
     // data + fitting is cheap when invisible (no rendering until visible).
-    if (currentMode === 'atlas') {
+    if (isAtlasPaneMode()) {
       void refreshAtlasView();
     } else if (mainAtlas) {
       pushDataIntoAtlas();
@@ -11142,6 +12156,27 @@ function showAtlasLoading(label: string, sub?: string): void {
 
 function hideAtlasLoading(): void {
   document.getElementById('atlas-loading-overlay')?.classList.add('hidden');
+}
+
+/** Surface a load failure on the atlas overlay with a one-click Retry, instead
+ *  of silently leaving the previously-selected engram on screen. */
+function showAtlasLoadError(graphId: string): void {
+  const overlay = document.getElementById('atlas-loading-overlay');
+  if (!overlay) return;
+  const labelEl = overlay.querySelector<HTMLElement>('.atlas-loading-label');
+  const subEl = document.getElementById('atlas-loading-sub');
+  const spinner = overlay.querySelector<HTMLElement>('.atlas-loading-spinner');
+  if (spinner) spinner.style.display = 'none';
+  if (labelEl) labelEl.textContent = `Couldn’t load ${engramName(graphId)}`;
+  if (subEl) {
+    subEl.innerHTML = 'The engram read timed out. <button id="btn-atlas-retry" class="btn-sm" type="button">Retry</button>';
+    subEl.querySelector<HTMLButtonElement>('#btn-atlas-retry')?.addEventListener('click', () => {
+      if (spinner) spinner.style.display = '';
+      // Re-enter the atlas tab path, which re-runs the stale guard + load.
+      switchGraphnosisTab('atlas');
+    });
+  }
+  overlay.classList.remove('hidden');
 }
 
 /** Update just the sub-line of the loading overlay — used to surface
@@ -11233,7 +12268,7 @@ function processEngramsLoadingRefresh(allDone: boolean): void {
       return;
     }
     syncEngramPicker();
-    if (allDone && currentMode === 'atlas') void refreshAtlasView();
+    if (allDone && isAtlasPaneMode()) void refreshAtlasView();
     if (activeStudioTool === 'skills') {
       if (_skillsRefreshTimer) clearTimeout(_skillsRefreshTimer);
       _skillsRefreshTimer = window.setTimeout(() => {
@@ -11292,6 +12327,30 @@ function schedulePeriodicGreyedRefresh(): void {
 // `sidecar_ipc_call`. Used for brain and LLM methods.
 async function ipcCall<T = unknown>(method: string, params: unknown): Promise<T> {
   return invoke<T>('sidecar_ipc_call', { method, params });
+}
+
+// ipcCall with a hard client-side deadline. The base ipcCall can hang
+// indefinitely if a heavy sidecar call (a full-graph walk, a huge op-log
+// slice) is slow — leaving Home cards stuck on their skeletons forever. Home's
+// non-critical cards use this so a slow call rejects → the card shows its quiet
+// empty state instead of spinning. NOTE: it doesn't cancel the sidecar work;
+// it just stops the UI from waiting on it.
+function ipcCallTimeout<T = unknown>(method: string, params: unknown, ms = 8000): Promise<T> {
+  return Promise.race([
+    ipcCall<T>(method, params),
+    new Promise<T>((_resolve, reject) => setTimeout(() => reject(new Error(`ipc '${method}' timed out after ${ms}ms`)), ms)),
+  ]);
+}
+
+// Same hard-deadline guard, but for raw Tauri `invoke` (Rust commands like
+// `inspector_stats`) rather than sidecar IPC. A Rust command that fans out to a
+// slow sidecar op-log walk can hang the same way — this stops the UI from
+// waiting forever. Does NOT cancel the underlying Rust work.
+function withTimeout<T>(p: Promise<T>, ms: number, label = 'operation'): Promise<T> {
+  return Promise.race([
+    p,
+    new Promise<T>((_resolve, reject) => setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms)),
+  ]);
 }
 
 // ── Brain / Alive state ───────────────────────────────────────────────────
@@ -13212,27 +14271,23 @@ els.btnOpenOllamaSite.addEventListener('click', (e) => {
 });
 
 els.brainVitality.addEventListener('click', () => {
-  // Jump to the Autonomous Brain tab from the status bar chip.
-  activateMode('atlas');
-  switchGraphnosisTab('brain');
+  // Jump to the Goals / consolidation rail destination from the status chip.
+  activateMode('goals');
 });
 
 // Background-process line — same target as the vitality chip; the
 // Deterministic Consolidation tab is where the live feed + schedule live.
 els.statusProcess?.addEventListener('click', () => {
-  activateMode('atlas');
-  switchGraphnosisTab('brain');
+  activateMode('goals');
 });
 
 // Layered intelligence pills — jump straight to the Non-Deterministic Aid
 // tab where the matching toggle (Local LLM master / GNN enable) lives.
 els.statusGllPill?.addEventListener('click', () => {
-  activateMode('atlas');
-  switchGraphnosisTab('nondeterministic');
+  activateMode('brainstorm');
 });
 els.statusGnnPill?.addEventListener('click', () => {
-  activateMode('atlas');
-  switchGraphnosisTab('nondeterministic');
+  activateMode('brainstorm');
 });
 
 // ── Clipboard ambient capture ──────────────────────────────────────────────
@@ -16262,8 +17317,7 @@ document.getElementById('g-search-rerank')?.addEventListener('change', () => {
   }
 });
 document.getElementById('g-search-llm-btn')?.addEventListener('click', () => {
-  activateMode('atlas');
-  switchGraphnosisTab('nondeterministic');
+  activateMode('brainstorm');
 });
 
 // Permanent delegation listener for citation clicks — attached once to the
@@ -17773,10 +18827,15 @@ type StudioTool = 'skills' | 'recall' | 'dig-deeper' | 'remember' | 'edit' | 'gn
 // On mobile (browser, ≤768px) always default to 'remember' — the most common
 // phone action is capturing a quick memory, and Skills/Recall panels are
 // cramped on a small screen.
-let activeStudioTool: StudioTool =
-  (typeof window !== 'undefined' && window.innerWidth <= 768)
-    ? 'remember'
-    : ((localStorage.getItem(STUDIO_CHIP_KEY) as StudioTool | null) ?? 'skills');
+let activeStudioTool: StudioTool = (() => {
+  if (typeof window !== 'undefined' && window.innerWidth <= 768) return 'remember';
+  const saved = localStorage.getItem(STUDIO_CHIP_KEY) as StudioTool | null;
+  // 'skills' is no longer a studio chip — it's a rail destination. Never let
+  // it be the drawer's resting tool (a stale persisted value would otherwise
+  // show the skills pane with no active chip when the drawer is opened).
+  if (!saved || saved === 'skills') return 'remember';
+  return saved;
+})();
 
 function switchStudioTool(tool: StudioTool, save = true): void {
   activeStudioTool = tool;
@@ -17916,6 +18975,27 @@ function initStudioChips(): void {
   switchStudioTool(activeStudioTool, false);
 }
 initStudioChips();
+
+// ── Power-tools drawer (Home) ────────────────────────────────────────────────
+// Collapses the manual recall/remember/edit/GNN surface. Closed by default;
+// the user's open/closed choice persists. The Skills rail destination
+// force-opens it via body.skills-studio-mode (CSS), independent of this state.
+{
+  const POWER_TOOLS_KEY = 'graphnosis:power-tools-open';
+  const drawer = document.getElementById('studio-power-tools');
+  const toggle = document.getElementById('power-tools-toggle');
+  const applyOpen = (open: boolean): void => {
+    drawer?.classList.toggle('collapsed', !open);
+    toggle?.setAttribute('aria-expanded', open ? 'true' : 'false');
+  };
+  // Default closed unless the user previously opened it.
+  applyOpen(localStorage.getItem(POWER_TOOLS_KEY) === '1');
+  toggle?.addEventListener('click', () => {
+    const open = drawer?.classList.contains('collapsed') ?? false; // about to open
+    applyOpen(open);
+    localStorage.setItem(POWER_TOOLS_KEY, open ? '1' : '0');
+  });
+}
 
 // ── Graphnosis Skills (MemoryStudio first chip) ──────────────────────────────
 //
@@ -18457,12 +19537,18 @@ async function createSkillEngramInline(): Promise<void> {
   }
 }
 
+// True only after a skill:list call SUCCEEDS. The orphan-skills warning gates
+// on this so a transient skill:list failure (→ empty list) never cries "you
+// accidentally removed your skills."
+let skillsLibraryLoadOk = false;
 async function fetchSkillsLibrary(): Promise<void> {
   try {
     skillsLibrary = (await ipcCall<SkillListEntry[]>('skill:list', {})) ?? [];
+    skillsLibraryLoadOk = true;
   } catch (e) {
     console.warn('[skills] skill:list failed', e);
     skillsLibrary = [];
+    skillsLibraryLoadOk = false;
   }
 }
 
@@ -18516,12 +19602,16 @@ async function mountSkillsPane(): Promise<void> {
   // on initial paint instead of after a flicker.
   await Promise.all([fetchRetrainNotifications(), fetchPendingProposals()]);
   renderSkillsLibrary();
-  // Orphan detection: if skill engrams exist but the library is empty,
-  // the user may have accidentally forgotten all their skills.
+  // Orphan detection: if skill engrams exist but the library is empty, the
+  // user may have accidentally forgotten all their skills. Guard hard against
+  // false alarms: only when skill:list actually SUCCEEDED (not a transient
+  // failure → empty) and we're NOT mid-ingest (a post-ingest refresh can race
+  // ahead of skill:list repopulating). Otherwise this fires the alarming
+  // "you removed your skills" message during normal, healthy states.
   const skillEngrams = loadedGraphs.filter(
     (g) => !g.metadata.archived && g.loaded !== false && g.metadata.template === 'skill',
   );
-  if (skillEngrams.length > 0 && skillsLibrary.length === 0) {
+  if (skillEngrams.length > 0 && skillsLibrary.length === 0 && skillsLibraryLoadOk && ingestJobToasts.size === 0) {
     showSkillsToast(
       `You have ${skillEngrams.length} Skills engram${skillEngrams.length === 1 ? '' : 's'} but no skills — you may have accidentally removed them. Check Sources in each Skills engram.`,
       'error',
@@ -20856,8 +21946,7 @@ function closeLicenseModal(): void {
   if (gapPill) {
     gapPill.style.cursor = 'pointer';
     gapPill.addEventListener('click', () => {
-      goHome();
-      switchStudioTool('skills');
+      activateMode('skills');
     });
   }
 }
@@ -21804,6 +22893,9 @@ async function refreshFederatedStats(): Promise<void> {
     const totalMemories = active.reduce((s, g) => s + g.totalNodes, 0);
     const totalSources = active.reduce((s, g) => s + g.sources, 0);
     const engrams = active.length;
+    // Cache cortex-wide totals for the Home hero + refresh it if mounted.
+    cortexStats = { memories: totalMemories, sources: totalSources, engrams };
+    renderHomeDashboard();
     const nodes = graphnosisAllNodes.filter((n) => n.confidence > 0.2);
     const avgTrust = nodes.length > 0
       ? (nodes.reduce((s, n) => s + n.confidence, 0) / nodes.length).toFixed(2)
