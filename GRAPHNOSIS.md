@@ -1,6 +1,6 @@
 # Graphnosis memory — instructions for AI assistants
 
-v1.12.0
+v1.13.0
 
 This project uses **Graphnosis** as its long-term memory: a local, encrypted
 store the user owns, reached through MCP. Treat it as the source of truth for
