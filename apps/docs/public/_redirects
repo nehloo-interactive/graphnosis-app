@@ -6,4 +6,11 @@
 # /download/win has no Pages Function yet — static fallback until functions/download/win.ts
 # lands. Bump the version manually when a new Windows installer is published.
 /download/win  https://github.com/nehloo-interactive/graphnosis-app/releases/download/v1.12.0/Graphnosis_1.12.0_x64-setup.exe  302
-/download/mac  https://github.com/nehloo-interactive/graphnosis-app/releases/download/v1.12.0/Graphnosis_1.12.0_aarch64.dmg  302
+# Linux desktop builds. These 302s resolve only once the .AppImage / .deb are
+# attached to the GitHub release — which needs the deb+appimage Tauri bundle
+# targets and a Linux build job in release.yml (not yet present). Confirm the
+# exact artifact filenames Tauri produces before relying on these (Tauri tends
+# to lowercase the .deb package name, e.g. graphnosis_1.12.0_amd64.deb).
+/download/linux      https://github.com/nehloo-interactive/graphnosis-app/releases/download/v1.12.0/Graphnosis_1.12.0_amd64.AppImage  302
+/download/linux-deb  https://github.com/nehloo-interactive/graphnosis-app/releases/download/v1.12.0/Graphnosis_1.12.0_amd64.deb        302
+/download/mac  https://github.com/nehloo-interactive/graphnosis-app/releases/download/v1.13.0/Graphnosis_1.13.0_aarch64.dmg  302

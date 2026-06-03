@@ -69,10 +69,8 @@ try {
           <a
             href="/download"
             class="px-8 py-4 rounded-full bg-[#67e8f9] hover:bg-[#4dd6e8] text-[#13131a] font-bold text-lg transition-colors"
-            data-download-auto
-            data-download-version={version}
           >
-            Download Graphnosis {version}
+            Download{version ? ` ${version}` : ''}
           </a>
           <a
             href="/job-memory-kits"
@@ -844,10 +842,8 @@ complete &mdash; invoke the rollback path.</code></pre>
           <a
             href="/download"
             class="px-8 py-4 rounded-full bg-[#67e8f9] hover:bg-[#4dd6e8] text-[#13131a] font-bold text-lg transition-colors"
-            data-download-auto
-            data-download-version={version}
           >
-            Download Graphnosis {version}
+            Download{version ? ` ${version}` : ''}
           </a>
           <a
             href="/job-memory-kits"

@@ -2,18 +2,22 @@
 /**
  * /download — OS chooser + auto-detect landing page.
  *
- * Linked from any Download button that can't (or chooses not to) detect
- * the user's OS client-side. Shows Mac + Windows download cards, plus a
- * placeholder for Linux. Detects the user's OS on load and auto-scrolls /
- * highlights the matching card; an optional auto-redirect kicks in after
- * 1500 ms for Mac/Windows users (cancellable by hovering or clicking off).
+ * Linked from every Download button on the site. Shows macOS, Windows and
+ * Linux download cards (Linux offers both an AppImage and an Ubuntu/Debian
+ * .deb), plus a Linux install guide below the cards. Detects the user's OS
+ * on load purely to highlight the matching card — no auto-redirect; the
+ * visitor always clicks.
  *
- * The download targets are the /download/mac and /download/win redirect
- * routes in public/_redirects, which currently 302 to the GitHub Releases
- * artifacts for the latest public version (v1.11.1). When the Cloudflare
- * Function with env-var version routing ships, those routes intercept
- * server-side and read CURRENT_VERSION / DMG_FILENAME / WIN_SETUP_FILENAME
- * without changing the visible URL on this page.
+ * The download targets are the /download/{mac,win,linux,linux-deb} redirect
+ * routes in public/_redirects, which 302 to the GitHub Releases artifacts
+ * for the current version. The /download/mac route is additionally served
+ * by functions/download/mac.ts (env-var version routing) without changing
+ * the visible URL here.
+ *
+ * NOTE: the Linux routes resolve only once Linux artifacts (.AppImage /
+ * .deb) are actually attached to the GitHub release — that requires adding
+ * the deb+appimage Tauri bundle targets and a Linux build job to the
+ * release workflow. Until then the cards/guide render but the links 404.
  */
 import Layout from '../layouts/Layout.astro';
 import Nav from '../components/Nav.astro';
@@ -29,11 +33,17 @@ try {
   const conf = JSON.parse(readFileSync(resolve('../../apps/desktop/src-tauri/tauri.conf.json'), 'utf8'));
   version = conf.version ? `v${conf.version}` : '';
 } catch { /* docs site built standalone — skip the pill */ }
+
+// Bare semver (no leading "v") for artifact filenames in the Linux install
+// snippets — Tauri names its bundles Graphnosis_<semver>_amd64.AppImage etc.
+// Falls back to a literal placeholder so the snippets still read sensibly
+// if the version couldn't be resolved at build time.
+const semver = version ? version.replace(/^v/, '') : '1.x.y';
 ---
 
 <Layout
-  title="Download Graphnosis — macOS & Windows"
-  description="Download the free Graphnosis app for macOS or Windows. Local, encrypted, deterministic memory for your AI — zero servers, zero data leaves your machine."
+  title="Download Graphnosis — macOS, Windows & Linux"
+  description="Download the free Graphnosis app for macOS, Windows, or Linux (AppImage & Ubuntu/Debian .deb). Local, encrypted, deterministic memory for your AI — zero servers, zero data leaves your machine."
 >
   <Nav />
 
@@ -142,10 +152,10 @@ try {
           </p>
         </article>
 
-        <!-- Linux — coming soon -->
+        <!-- Linux -->
         <article
           id="download-card-linux"
-          class="download-os-card bg-[#1c1c27] border border-[#2a2a3d] rounded-2xl p-7 flex flex-col gap-5 opacity-70"
+          class="download-os-card bg-[#1c1c27] border border-[#2a2a3d] rounded-2xl p-7 flex flex-col gap-5"
           data-os="linux"
         >
           <div class="w-14 h-14 rounded-xl bg-white/[0.06] flex items-center justify-center" aria-hidden="true">
@@ -156,24 +166,92 @@ try {
           </div>
           <div>
             <h2 class="text-2xl font-black text-white mb-1">Linux</h2>
-            <p class="text-sm text-[#9a9db8]">x64 · Ubuntu, Fedora, Arch</p>
+            <p class="text-sm text-[#9a9db8]">x86_64 · Ubuntu, Debian, Fedora, Arch</p>
           </div>
           <ul class="flex flex-col gap-2 text-sm text-[#b0b3c6] flex-1">
-            <li class="flex items-start gap-2"><span class="text-[#fbbf24] mt-0.5">→</span><span>AppImage in progress</span></li>
-            <li class="flex items-start gap-2"><span class="text-[#fbbf24] mt-0.5">→</span><span>Deb &amp; RPM planned</span></li>
-            <li class="flex items-start gap-2"><span class="text-[#fbbf24] mt-0.5">→</span><span>Same sidecar + Bun runtime</span></li>
+            <li class="flex items-start gap-2"><span class="text-[#a78bfa] mt-0.5">✓</span><span><code class="text-[#a78bfa] font-mono">.AppImage</code> — runs on any distro</span></li>
+            <li class="flex items-start gap-2"><span class="text-[#a78bfa] mt-0.5">✓</span><span><code class="text-[#a78bfa] font-mono">.deb</code> — Debian / Ubuntu, menu entry + apt updates</span></li>
+            <li class="flex items-start gap-2"><span class="text-[#a78bfa] mt-0.5">✓</span><span>Same encrypted sidecar &amp; offline-first runtime</span></li>
           </ul>
-          <a
-            href="mailto:beta@graphnosis.com?subject=Linux%20build%20interest"
-            class="inline-flex items-center justify-center gap-2 px-5 py-3 rounded-full bg-[#2a2a3d] hover:bg-[#3a3a52] text-[#f0f0f5] font-bold text-base transition-colors"
-          >
-            Notify me when ready
-          </a>
+          <div class="flex flex-col gap-2">
+            <a
+              href="/download/linux"
+              class="inline-flex items-center justify-center gap-2 px-5 py-3 rounded-full bg-[#a78bfa] hover:bg-[#9069f0] text-[#13131a] font-bold text-base transition-colors"
+            >
+              <svg class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24" aria-hidden="true">
+                <path stroke-linecap="round" stroke-linejoin="round" d="M4 16v2a2 2 0 002 2h12a2 2 0 002-2v-2M7 10l5 5 5-5M12 15V3" />
+              </svg>
+              Download for Linux{version ? ` ${version}` : ''}
+            </a>
+            <a
+              href="/download/linux-deb"
+              class="inline-flex items-center justify-center gap-2 px-5 py-2.5 rounded-full border border-[#a78bfa]/40 hover:border-[#a78bfa] bg-[#a78bfa]/10 hover:bg-[#a78bfa]/20 text-[#c4b5fd] font-semibold text-sm transition-colors"
+            >
+              Ubuntu / Debian <code class="font-mono">.deb</code>
+            </a>
+          </div>
           <p class="text-center text-[11px] text-[#71717a] leading-none">
-            We&rsquo;ll email you once the Linux build lands.
+            <a href="#linux-install" class="text-[#9a9db8] hover:text-[#c4c6d6] transition-colors underline decoration-[#71717a]/50">Install guide</a>
+            &nbsp;·&nbsp;
+            <a href="/legal/terms-of-use" class="text-[#9a9db8] hover:text-[#c4c6d6] transition-colors underline decoration-[#71717a]/50">Terms</a>
+            &nbsp;·&nbsp;
+            <a href="/legal/privacy-policy" class="text-[#9a9db8] hover:text-[#c4c6d6] transition-colors underline decoration-[#71717a]/50">Privacy</a>
           </p>
         </article>
 
+      </div>
+    </section>
+
+    <!-- Linux install guide -->
+    <section id="linux-install" class="pb-16 px-4 sm:px-6 scroll-mt-24">
+      <div class="max-w-3xl mx-auto">
+        <h2 class="text-2xl sm:text-3xl font-black text-white mb-2">Installing on Linux</h2>
+        <p class="text-[#c4c6d6] mb-8 leading-relaxed">
+          Graphnosis ships two Linux builds for <code class="text-[#a78bfa] font-mono">x86_64</code>.
+          The <strong class="text-white">AppImage</strong> runs on any distribution with no install step;
+          the <strong class="text-white">.deb</strong> integrates with Debian / Ubuntu (app-menu entry and
+          <code class="text-[#a78bfa] font-mono">apt</code> updates). Both bundle the same encrypted,
+          offline-first sidecar.
+        </p>
+
+        <!-- AppImage -->
+        <div class="bg-[#1c1c27] border border-[#2a2a3d] rounded-2xl p-6 mb-6">
+          <h3 class="text-lg font-bold text-white mb-1 flex items-center gap-2">
+            <code class="text-[#a78bfa] font-mono text-base">.AppImage</code>
+            <span class="text-sm font-normal text-[#9a9db8]">— any distribution</span>
+          </h3>
+          <p class="text-sm text-[#b0b3c6] mb-4 leading-relaxed">
+            Download, mark it executable, and run it — no root, no install. On Ubuntu 22.04+ you may
+            need FUSE: <code class="text-[#a78bfa] font-mono">sudo apt install libfuse2</code>.
+          </p>
+          <pre class="install-snippet"><code># Make it executable and launch
+chmod +x Graphnosis_{semver}_amd64.AppImage
+./Graphnosis_{semver}_amd64.AppImage</code></pre>
+        </div>
+
+        <!-- Ubuntu / Debian .deb -->
+        <div class="bg-[#1c1c27] border border-[#2a2a3d] rounded-2xl p-6">
+          <h3 class="text-lg font-bold text-white mb-1 flex items-center gap-2">
+            <code class="text-[#a78bfa] font-mono text-base">.deb</code>
+            <span class="text-sm font-normal text-[#9a9db8]">— Ubuntu / Debian</span>
+          </h3>
+          <p class="text-sm text-[#b0b3c6] mb-4 leading-relaxed">
+            Installs to <code class="text-[#a78bfa] font-mono">/usr/bin</code> with a desktop entry.
+            Using <code class="text-[#a78bfa] font-mono">apt</code> pulls in any missing dependencies
+            automatically.
+          </p>
+          <pre class="install-snippet"><code># Recommended — resolves dependencies
+sudo apt install ./Graphnosis_{semver}_amd64.deb
+
+# Or with dpkg, then fix any missing deps
+sudo dpkg -i Graphnosis_{semver}_amd64.deb
+sudo apt-get install -f</code></pre>
+          <p class="text-xs text-[#71717a] mt-4 leading-relaxed">
+            Launch from your app menu, or run <code class="text-[#9a9db8] font-mono">graphnosis</code>
+            from a terminal. Update later with <code class="text-[#9a9db8] font-mono">sudo apt install ./Graphnosis_…_amd64.deb</code>
+            or by reinstalling a newer <code class="text-[#9a9db8] font-mono">.deb</code>.
+          </p>
+        </div>
       </div>
     </section>
 
@@ -208,6 +286,29 @@ try {
     border-color: #67e8f9;
     box-shadow: 0 0 0 1px #67e8f933, 0 8px 32px -8px #67e8f922;
     transform: translateY(-2px);
+  }
+
+  /* Copy-paste install snippets in the Linux guide. Monospace, scrollable
+     on narrow viewports, with a subtle border so they read as terminal
+     blocks rather than body text. */
+  .install-snippet {
+    margin: 0;
+    padding: 14px 16px;
+    border-radius: 10px;
+    background: #13131a;
+    border: 1px solid #2a2a3d;
+    overflow-x: auto;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 13px;
+    line-height: 1.6;
+    color: #e4e4ef;
+    white-space: pre;
+  }
+  .install-snippet code {
+    font-family: inherit;
+    color: inherit;
+    background: none;
+    padding: 0;
   }
 </style>
 

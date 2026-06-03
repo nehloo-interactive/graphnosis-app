@@ -36,8 +36,8 @@ try {
 
     <!-- Badge + H1 -->
     <!-- "Now available on macOS" pill removed (Windows ships too now); the
-         Download CTA below already conveys OS readiness via the
-         data-download-auto label rewrite. -->
+         Download CTA links to the /download chooser where the visitor
+         picks their OS. -->
     <div class="max-w-4xl mx-auto text-center w-full">
       <h1 class="text-3xl sm:text-4xl lg:text-5xl font-black text-white leading-[1.2] tracking-tight mb-8 overflow-visible">
         <span class="block pb-1">Local, encrypted, deterministic</span>
@@ -216,12 +216,9 @@ try {
       </div>
 
       <div class="flex flex-col sm:flex-row items-center justify-center gap-4 mb-4">
-        <!-- See Nav.astro's OS-detect script for what data-download-auto does. -->
         <a
           href="/download"
           class="inline-flex items-center gap-2 px-8 py-4 rounded-full bg-[#67e8f9] hover:bg-[#4dd6e8] text-[#13131a] font-bold text-lg transition-colors shadow-lg shadow-[#67e8f9]/20"
-          data-download-auto
-          data-download-version={version}
         >
           Download{version ? ` ${version}` : ''}
         </a>
