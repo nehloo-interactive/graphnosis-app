@@ -1,0 +1,46 @@
+[Unit]
+# Graphnosis personal server — headless sidecar serving the browser UI + API.
+# No Tauri shell. Reach it from any device's browser, locally or over Tailscale.
+Description=Graphnosis personal server (sidecar + browser UI)
+After=network-online.target tailscaled.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+
+# Dedicated unprivileged user (create with: sudo useradd -r -m -d /var/lib/graphnosis graphnosis)
+User=graphnosis
+Group=graphnosis
+
+# Absolute path to the repo checkout (where `pnpm -r build` was run).
+WorkingDirectory=/opt/graphnosis/GraphnosisApp
+
+# Secrets + config live here (chmod 600). See graphnosis-server.env.example.
+# GRAPHNOSIS_PASSPHRASE in this file is what lets the server auto-unlock on
+# boot — a deliberate tradeoff the operator opts into. Omit it to require a
+# manual unlock from the browser after each restart.
+EnvironmentFile=/etc/graphnosis/server.env
+
+# Run the sidecar via Node (simplest on Linux — native modules resolve from
+# node_modules). Requires Node >= 20 on PATH. To use the Bun-compiled binary
+# instead, replace ExecStart with the binary path and set LD_LIBRARY_PATH to
+# the dir holding libonnxruntime.so.
+ExecStart=/usr/bin/node apps/desktop-sidecar/dist/index.js
+
+Restart=on-failure
+RestartSec=3
+
+# Hardening (relax if a feature needs more access)
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+# The cortex dir + model cache must be writable — list them explicitly.
+ReadWritePaths=/var/lib/graphnosis
+
+# Graceful shutdown: the sidecar flushes graphs + releases the cortex lock on SIGTERM.
+KillSignal=SIGTERM
+TimeoutStopSec=60
+
+[Install]
+WantedBy=multi-user.target

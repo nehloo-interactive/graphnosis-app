@@ -1,0 +1,126 @@
+name: Linux Server
+
+# Validates that the headless sidecar builds + runs on Linux (x64) and
+# publishes a multi-arch Docker image for the personal-server deployment.
+# Complements test.yml (which only covers macOS).
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build-test:
+    name: Build + smoke (Linux x64)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v3
+        with:
+          version: 10
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      # onnxruntime links against the OpenMP runtime; the smoke test exercises
+      # embeddings, so the runner needs libgomp1 present.
+      - name: Install native runtime libs
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libgomp1
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build workspace (core + sidecar + web UI)
+        run: pnpm -r build
+
+      - name: Sidecar smoke test (no Tauri)
+        run: pnpm --filter @graphnosis-app/desktop-sidecar smoke
+
+      - name: HTTP UI server end-to-end
+        # Boot the sidecar with the browser UI enabled against a throwaway
+        # cortex, then assert /api/unlock + an authed RPC + static UI all work.
+        run: |
+          set -euo pipefail
+          export GRAPHNOSIS_CORTEX="$RUNNER_TEMP/ci-cortex"
+          export GRAPHNOSIS_PASSPHRASE="ci-pass"
+          export GRAPHNOSIS_HTTP_UI=1
+          export GRAPHNOSIS_HTTP_UI_PORT=3456
+          export GRAPHNOSIS_HTTP_UI_TOKEN="ci-token"
+          export GRAPHNOSIS_HTTP_UI_STATIC="$PWD/apps/desktop/dist"
+          node apps/desktop-sidecar/dist/index.js & SID=$!
+          # Wait for the UI server to bind (up to ~40s; embeddings init first).
+          for i in $(seq 1 40); do
+            if curl -fsS -o /dev/null "http://127.0.0.1:3456/"; then break; fi
+            sleep 1
+          done
+          echo "— static UI —"; curl -fsS "http://127.0.0.1:3456/" | grep -q "<title" && echo "ok"
+          echo "— unlock —"
+          SESSION=$(curl -fsS -X POST "http://127.0.0.1:3456/api/unlock" \
+            -H 'Content-Type: application/json' -d '{"token":"ci-token"}' \
+            | node -e "process.stdin.on('data',d=>{const j=JSON.parse(d);if(!j.token)process.exit(1);process.stdout.write(j.token)})")
+          echo "— authed rpc —"
+          curl -fsS -X POST "http://127.0.0.1:3456/api/rpc" \
+            -H 'Content-Type: application/json' -H "Authorization: Bearer $SESSION" \
+            -d '{"method":"graphs.list","params":null}' | grep -q '"result"' && echo "ok"
+          echo "— rejects bad token —"
+          code=$(curl -s -o /dev/null -w '%{http_code}' -X POST "http://127.0.0.1:3456/api/rpc" \
+            -H 'Content-Type: application/json' -H "Authorization: Bearer nope" \
+            -d '{"method":"graphs.list","params":null}')
+          [ "$code" = "401" ] && echo "ok (401)"
+          kill $SID 2>/dev/null || true
+
+  docker:
+    name: Docker image (amd64 + arm64)
+    needs: build-test
+    # Don't push from PRs (no write to GHCR from forks; avoids junk tags).
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up QEMU (arm64 emulation)
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Image metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository }}/graphnosis-server
+          tags: |
+            type=ref,event=branch
+            type=ref,event=tag
+            type=sha
+            type=raw,value=latest,enable={{is_default_branch}}
+
+      - name: Build + push (multi-arch)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
