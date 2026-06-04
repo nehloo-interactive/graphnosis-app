@@ -39,7 +39,7 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Build workspace (core + sidecar + web UI)
-        run: pnpm -r build
+        run: pnpm -r --filter '!@graphnosis-app/docs' build
 
       - name: Sidecar smoke test (no Tauri)
         # The bundled skill-demo packs are built from gitignored content + the
