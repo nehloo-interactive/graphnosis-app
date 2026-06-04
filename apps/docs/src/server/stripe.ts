@@ -35,3 +35,10 @@ export function getMonthlySubscriptionPriceId(env: BillingEnv): string {
 export function getBillingBaseUrl(env: BillingEnv): string {
   return requireEnv(env, 'PUBLIC_BILLING_BASE_URL').replace(/\/$/, '');
 }
+
+/** Stripe-hosted Customer Portal login URL. The desktop's "Manage or cancel
+ *  subscription" button → /account → here. Stripe owns the email auth and the
+ *  whole portal, so Graphnosis serves no account page or identity of its own. */
+export function getStripePortalUrl(env: BillingEnv): string {
+  return requireEnv(env, 'STRIPE_PORTAL_LOGIN_URL', 'https://billing.stripe.com/p/login/REPLACE_ME');
+}
