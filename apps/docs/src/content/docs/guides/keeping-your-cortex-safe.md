@@ -1,11 +1,11 @@
 ---
-title: Keeping your cortex safe
+title: Keeping your Cortex safe
 description: Passphrases, recovery phrases, snapshots, auto-quarantine, and the safety nets Graphnosis puts between you and data loss.
 sidebar:
   order: 5
 ---
 
-Your cortex is the seahorse-shaped memory layer for your AI — the hippocampus of your stack. It lives on your machine, encrypted with a key only you hold. That means **Graphnosis can never reset your password or recover your data for you**. The good news: the app ships several layered safety nets so that "permanent data loss" requires a series of unlikely mistakes, not just one bad day.
+Your Cortex is the seahorse-shaped memory layer for your AI — the hippocampus of your stack. It lives on your machine, encrypted with a key only you hold. That means **Graphnosis can never reset your password or recover your data for you**. The good news: the app ships several layered safety nets so that "permanent data loss" requires a series of unlikely mistakes, not just one bad day.
 
 This guide walks through each layer and what to do when.
 
@@ -13,7 +13,7 @@ This guide walks through each layer and what to do when.
 
 | Layer | What it protects against | How to use it |
 |------|---------------------------|---------------|
-| **Passphrase** | Anyone else opening your cortex | Strong + memorable; stored in Keychain after first unlock |
+| **Passphrase** | Anyone else opening your Cortex | Strong + memorable; stored in Keychain after first unlock |
 | **24-word recovery phrase** | Forgetting your passphrase | Shown once at first unlock; written down somewhere offline |
 | **Atomic writes** | Power loss / force-quit mid-save | Automatic — no action needed |
 | **Auto-quarantine** | Corrupt files blocking unlock | Automatic — Graphnosis moves bad files aside on detection |
@@ -23,13 +23,13 @@ This guide walks through each layer and what to do when.
 
 ## Passphrase
 
-When you first create a cortex, you pick a passphrase. Graphnosis runs it through **Argon2id** (a slow, memory-hard hash) to derive a **wrapping key**. That wrapping key unlocks `master.enc`, which holds the actual **data key** that encrypts everything in your cortex.
+When you first create a Cortex, you pick a passphrase. Graphnosis runs it through **Argon2id** (a slow, memory-hard hash) to derive a **wrapping key**. That wrapping key unlocks `master.enc`, which holds the actual **data key** that encrypts everything in your Cortex.
 
 This two-tier design (passphrase → wrapping key → data key → engrams) is why changing your passphrase is **instant**: only `master.enc` is rewritten. Your engrams, op-log, and embeddings are not re-encrypted.
 
 ### Unlocking with Touch ID (macOS)
 
-After your first passphrase unlock — which stores the passphrase in your macOS Keychain — the lock screen shows an **👆 Touch ID** button next to the Unlock button. Click it, touch the sensor, and your cortex opens without typing the passphrase.
+After your first passphrase unlock — which stores the passphrase in your macOS Keychain — the lock screen shows an **👆 Touch ID** button next to the Unlock button. Click it, touch the sensor, and your Cortex opens without typing the passphrase.
 
 How it works: a small Swift sidecar binary (`graphnosis-biometric`) talks to Apple's LocalAuthentication.framework to evaluate biometric policy. On success, Graphnosis reads the stored passphrase from the Keychain and runs the regular unlock flow. The passphrase itself never leaves the Keychain; biometric just gates access to it.
 
@@ -48,7 +48,7 @@ In either case: your 24-word recovery phrase **remains valid** against the new p
 
 ## 24-word recovery phrase
 
-A **BIP-39 mnemonic** (256-bit entropy → 24 English words) generated locally when you first set up your cortex. The phrase wraps a backup copy of your data key in `recovery.enc`, also stored locally inside your cortex folder.
+A **BIP-39 mnemonic** (256-bit entropy → 24 English words) generated locally when you first set up your Cortex. The phrase wraps a backup copy of your data key in `recovery.enc`, also stored locally inside your Cortex folder.
 
 **Where to keep it:**
 
@@ -58,11 +58,11 @@ A **BIP-39 mnemonic** (256-bit entropy → 24 English words) generated locally w
 
 **Show me my phrase again?** No — it's shown once and never persisted in plaintext. If you didn't record it, treat your passphrase as your only key and don't lose it.
 
-**Backfilling on a pre-v0.3 cortex.** If you created your cortex with an earlier version of Graphnosis, the recovery phrase didn't exist yet. On your next unlock with v0.3+, Graphnosis automatically:
+**Backfilling on a pre-v0.3 Cortex.** If you created your Cortex with an earlier version of Graphnosis, the recovery phrase didn't exist yet. On your next unlock with v0.3+, Graphnosis automatically:
 
-1. Migrates your cortex to the wrapped-key format (writes `master.enc`).
+1. Migrates your Cortex to the wrapped-key format (writes `master.enc`).
 2. Generates a fresh 24-word phrase and writes `recovery.enc`.
-3. Shows you the phrase via the same one-time modal a fresh cortex sees.
+3. Shows you the phrase via the same one-time modal a fresh Cortex sees.
 
 You only get one chance to see it. Write it down before clicking through.
 
@@ -72,7 +72,7 @@ If you forget your passphrase, click **"Forgot passphrase? Use recovery phrase"*
 
 What happens next:
 
-- Your cortex unlocks for this session only (not saved to Keychain).
+- Your Cortex unlocks for this session only (not saved to Keychain).
 - A **"Set a new passphrase?"** modal pops up so you can pick a new passphrase you'll remember.
 - The data key is unchanged. Your engrams, op-log, and embeddings are not re-encrypted.
 
@@ -86,9 +86,7 @@ Every `.gai` engram and `.bundle` source-index write is now atomic: Graphnosis w
 
 This closes the most common cause of cortex corruption: a save being interrupted mid-write during a long ingest (force-quit, OS kill on memory pressure, sudden power loss).
 
-You don't have to do anything to enable this — every save goes through this atomic write sequence automatically.
-
-**Auto-recovery from interrupted shutdown.** If Graphnosis was quit mid-operation (e.g. OS force-killed it during sleep), on the next unlock the sidecar detects any in-progress writes left behind and completes or rolls them back automatically. You no longer need to manually trigger op-log recovery after an unclean shutdown — it happens transparently before the lock screen lifts.
+You don't have to do anything to enable this. As of v0.3 every save uses this path.
 
 ---
 
@@ -159,7 +157,7 @@ The cache is encrypted with the same data key as everything else.
 
 ## Snapshots
 
-A **snapshot** is a point-in-time copy of every encrypted file in your cortex (engrams, bundles, embcache, content, `salt.bin`, `master.enc`, `recovery.enc`, settings). Stored under `<cortex>/.snapshots/<ISO-date>/`. Same encryption as the live files — your snapshots are not weaker than your cortex.
+A **snapshot** is a point-in-time copy of every encrypted file in your Cortex (engrams, bundles, embcache, content, `salt.bin`, `master.enc`, `recovery.enc`, settings). Stored under `<cortex>/.snapshots/<ISO-date>/`. Same encryption as the live files — your snapshots are not weaker than your Cortex.
 
 Graphnosis offers to create a snapshot before any of these operations:
 
@@ -173,21 +171,11 @@ You can also create a snapshot any time from the app (Snapshots view) or list/re
 
 ---
 
-## Purging forgotten nodes
-
-When you `forget` memory nodes, they are soft-deleted — demoted from recall but kept on disk for audit lineage and recovery. Over time these accumulate. To permanently purge them:
-
-Open **Settings → Cortex Management**. When two or more engrams have forgotten (soft-deleted) nodes, a **Purge All** button appears. Clicking it permanently removes all soft-deleted nodes across every engram in one operation. This is irreversible — purged nodes cannot be recovered from the op-log. A snapshot is offered before the purge proceeds.
-
-For single-engram cleanup, use the per-engram **Purge forgotten nodes** option in the same panel.
-
----
-
 ## What if everything goes wrong at once?
 
 The doomsday scenario: lost passphrase, lost recovery phrase, corrupted `.gai`, no snapshot, original files moved.
 
-If all five layers fail, your cortex is permanently inaccessible — and that's by design. Graphnosis has no master key, no Nehloo server, no back door. The encryption is real.
+If all five layers fail, your Cortex is permanently inaccessible — and that's by design. Graphnosis has no master key, no Nehloo server, no back door. The encryption is real.
 
 The realistic answer is to make it impossible for all five to fail simultaneously. The combination that actually matters:
 
@@ -196,16 +184,3 @@ The realistic answer is to make it impossible for all five to fail simultaneousl
 3. **Take a snapshot before any destructive operation** when Graphnosis offers (just hit Confirm).
 
 Do those three things and the doomsday scenario stops being plausible.
-
----
-
-## Related
-
-[Recovery](/guides/recovery/) — what to do when one of the safety layers actually fires.
-
-[Indelibility & Determinism](/guides/indelibility-and-determinism/) — why no operation is ever truly destructive.
-
-[File Formats](/reference/file-formats/) — the on-disk shape of `.gai`, `master.enc`, `recovery.enc`, and the bundle.
-
-[Verify It Yourself](/guides/verify-it-yourself/) — confirm the safety claims by hand.
-

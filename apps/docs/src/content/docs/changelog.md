@@ -7,362 +7,13 @@ sidebar:
 
 What changed in each release, in user-facing terms. Internal refactors and dev-only cleanups aren't listed.
 
-Conventions: **Added** = new features, **Changed** = behavior or UX shifts, **Fixed** = bugs, **Security** = anything affecting your data, **Migrations** = automatic upgrades the app applies to existing cortexes.
-
----
-
-## v1.13.0 — Personal Server: reach your cortex from any device
-
-<p style="margin-top:0.5rem;font-size:1.25em;opacity:0.85;">Unreleased</p>
-
-The headline: Graphnosis can now run as a **personal server**. The sidecar serves the full app in a **browser** — so you can reach your cortex from a phone, tablet, or another computer, on your home network or anywhere over [Tailscale](https://tailscale.com), with the cortex staying encrypted on the server. The Mac desktop app is unchanged and remains the primary experience; this is additive.
-
-### Added
-
-- **Browser access (personal-server mode).** Turn on **Settings → Mobile & Remote → Browser access** and Graphnosis serves its UI on a separate port. Scan the QR (or open the URL + paste the access token) from any device. Sessions use a bearer token; live updates stream over the connection so a memory saved on your laptop appears on your phone.
-- **Mobile-responsive UI.** On phones: a bottom nav (Memory · MCP · Status), a slide-out menu, full-screen panels, a bottom inspector drawer, and a 3D engram view that fits the screen. Installable to your home screen as a PWA. Tablets adapt by orientation.
-- **Connect Claude for iOS / Android.** The Mobile & Remote panel hands you an MCP server URL + bearer token (and a QR) to add Graphnosis as an MCP server in your phone's AI client.
-- **Tailscale HTTPS, auto-detected.** Run `tailscale serve` and the app automatically switches the browser and MCP QR codes to real-certificate `https://…ts.net` URLs (which iOS requires) — no certificate setup on your side.
-- **Linux / Docker server.** Run the sidecar headless on a Linux box (systemd unit, `.env`, and a multi-arch Docker image included) for an always-on personal server.
-- **Live file connectors.** The **GBrain**, **Obsidian**, and **AI Context Files** connectors now **watch their folder** and ingest new or changed notes within seconds, instead of only on a timer. The poll interval is now configurable in **Settings → Connectors**.
-
-### Changed
-
-- **Starter skill demos install in one language.** When you add the bundled demo skills, pick **English or Romanian** — only that set of 3 installs, not both.
-
-### Fixed
-
-- **Large folder imports no longer lose files.** A connector pulling a folder of more than ~50 notes previously stopped after the first batch and silently skipped the rest. It now ingests the whole folder, in order, without dropping the tail.
-
----
-
-## v1.12.0 — Skills as Standard Operating Procedures + MemoryStudio
-
-<p style="margin-top:0.5rem;font-size:1.25em;opacity:0.85;">2026-05-31</p>
-
-The big shift in this release: **Skills are now first-class, executable Standard Operating Procedures**. A skill is no longer just a markdown body — it is a graph of steps with goals, loops, branches, anchored context, and cross-skill orchestration that any MCP client can walk and execute. The MCP surface grows from 35 to 45 tools.
-
-### Added
-
-- **Skills as SOPs.** Skills are wired into the cortex as graphs with five evidence-tagged edge types: `skill:seq` for the linear chain, `skill:loop` for "go back to step N", `skill:branch` for conditional forks, `skill:ctx` for recalled memories anchored to a specific step, and `skill:calls` for cross-skill invocation. See [Skills as SOPs](/reference/skills/).
-- **Position-aware recall placement.** Training no longer dumps recalled memories at the end as a flat block — each fragment is placed in the procedure at the position where it actually fits. Two-step deterministic check: similarity to surrounding steps + triplet coherence between `prev` step / fragment / `next` step. Fragments that don't fit anywhere mid-procedure go to a `Supporting context` block instead.
-- **Eight goal categories per skill.** Added `Trigger:`, `Prerequisites:`, `On failure:`, `Requires:`, and `Produces:` to the original three (`Success:`, `Out of scope:`, `On completion:`). Each renders as a colored chip in the editor and is wired to the title with a `contains/skill:goal` edge. The full set is what makes a skill executable rather than just readable.
-- **Cross-skill orchestration.** A step can invoke another skill with `@skill: target-name(arg=value, arg=$priorVar) -> $captureName`. The bare form `@skill: name` still works. The AI executor reads the structured plan from `walk_skill_structured` and resolves variables, captures returns, and routes failures.
-- **`walk_skill` and `walk_skill_structured` MCP tools.** Two paired tools — narrative SOP text for human-facing guidance, JSON `SkillExecutionPlan` for AI execution. The structured plan includes `requires` / `produces`, ordered steps with `calls` metadata, and `failureHandlers` derived from `On failure:` blocks.
-- **Eight more Skills MCP tools.** `get_skill`, `list_skills`, `train_skill`, `export_skill`, `delete_skill`, `skill_history`, `rollback_skill`, `skill_vitality` — the full lifecycle, all deterministic reads/writes against the Skills engram.
-- **45 MCP tools across 10 categories.** Up from 35 / 9. The new **Skills (SOPs)** group is the tenth category.
-- **Bundled Skill Demos.** Three signed `.gsk` demo packs auto-load into a dedicated **Skill Demos** engram on the first unlock of a fresh cortex: *Code review* (single-skill with prerequisites + failure recovery), *Safe Deploy* (six-skill cross-skill orchestration with `$captures` and rollback handlers), and *Comprehensive job memory* (a longer SOP showing position-aware placement on the full goal block). All three are inspectable, editable, and deletable — they are normal skills in a normal engram.
-- **In-place retrain + snapshot history.** Retraining mutates the existing skill source in place via the op-log; the `sourceId` is stable across retrains so inbound `@skill:` references keep resolving. Every retrain writes a snapshot of the prior body, goals, and edges to a per-cortex encrypted side-table. Browse via the `skill_history` MCP tool or the Skills page UI.
-- **Skill rollback.** `rollback_skill` (or the UI button) restores any snapshot. The rollback itself is recorded as a new snapshot so the lineage is preserved — nothing is destroyed.
-- **Pro train path — LLM-rewritten body with attribution.** With the Pro license + Local LLM, the local LLM rewrites body steps to integrate recalled context fluently, while every fact pulled in keeps its `_(from source)_` marker. The rewrite happens entirely on-device. Free path remains the deterministic memory-augmented body (recall appended in-place with attribution); the user picks per skill, the AI client does not.
-- **Autonomous retrain (Pro).** Brain-engine loop that re-runs `train_skill` on a schedule, on cortex growth, on vitality decay, or any of those (hybrid). Three autonomy levels: auto-accept, notify, preview-first. Opt-in per skill from the Skills page.
-- **Streaming trainer with live diff.** Ollama tokens stream back to the desktop during training so the diff paints as Ghampus writes — green/red line-diff hunks update in real time. `< >` arrows navigate hunks; a Cancel button stops the run cleanly. Draft body is auto-saved to `localStorage` every 500ms so refreshing or quitting mid-train does not lose work.
-- **AI-driven engram creation for Skills.** If the AI calls `train_skill` against a cortex with no Skills engram, the sidecar broadcasts an `engram-create-suggested` event (template: `skill`) instead of hard-erroring. The user confirms or renames in the in-app banner; the engram is created with the raw skill ingested as a `skill` source; the AI retries and training proceeds. The `skill` template is also available manually from the New Engram wizard.
-- **MemoryStudio — a first-party UI for what AI clients do via MCP.** New top-level tab covering Skills · Recall · Dig Deeper · Remember · Edit / Correct · GNN Exploration · (All Tools), all running entirely on-device with no internet required. Every panel delegates to the same `host`/`brain` functions used by the MCP tools — no logic duplication, so what you see in Studio is what an AI sees over MCP. See [MemoryStudio](/memory-studio).
-  - **Per-tool result panels.** Recall and Dig Deeper snapshot their rendered DOM + slider state on tab leave and restore on tab enter; switching between tools preserves each one's last result, slider position, and LLM output independently.
-  - **Threshold slider syncs per tool.** Each tool re-anchors the slider to its own saved Δ (separate `localStorage` keys per tool) so a tool always opens at its own preferred strictness, not the previous tool's value.
-  - **Cross-engram Memory Trace.** Clicking nodes across different engrams in the raw-context panel no longer resets the rail's Memory Trace; a global recents list (with per-engram fallback preview lookup) accumulates across switches.
-  - **Remember as the default tab on open**, with a two-click confirm on Save memory — the second click commits, and the pending state resets the moment the textarea content changes.
-  - **Cross-engram search-result clicks switch the active engram** before selecting, so the inspector populates instead of showing empty.
-  - **Collapsible left sidebar.** Chevron toggle in the top-right collapses everything to icon-only (56px wide); state persists across sessions. Memory Trace, AI-clients / Data-sources groups, and bottom-row labels hide; tooltips keep navigation discoverable.
-  - **New rail icons** — MemoryStudio (brain/cognition), Sources (document with corner), Status (EKG pulse). Inline line-art SVGs that tint with the existing fg-dim/fg palette.
-  - **Tab strip polish** — font 14px → 12px, padding 14px → 9px per side (~30px saved across the strip). Each tab gets a thin turquoise left border at 28% opacity as a visual separator; the active tab raises it to 55%; the first tab has no left border.
-  - **GAP status-bar pill** sits left of GLL — pulses green while the trainer is busy, greys when idle, and is clickable to jump straight to the Skills chip.
-- **Loopback verification — privacy as a visible signal.** Tauri `verify_local_llm` command: `pgrep` by process name → `lsof` by port fallback → `lsof -i -P -n -p PID` to enumerate the local LLM daemon's open sockets, classifying each as loopback (`127.0.0.1`, `::1`, `localhost`) or external. The result feeds an inline badge so you can prove at a glance that Ollama is not phoning home.
-- **Ghampus on the dashboard.** The duplicate "Graphnosis · your second cortex" headline is replaced with a Ghampus block: *"Ghampus / your memory seahorse."* with a faint, bobbing seahorse mark behind the text in the top-right of the title.
-- **Meet Ghampus modal.** Clicking the Ghampus title block opens a *"Hi again. I'm Ghampus."* modal with origin story, what-I-do bullets, where-you'll-bump-into-me list, what-I-will-never-do trust spine, and a closing *"Pleased to be your hippocampus."* Backdrop click / Got it / Esc close. Keyboard-accessible (role=button, tabindex, Enter/Space). See [The story of Ghampus](/reference/ghampus/).
-- **What's New carousel modal.** A single multi-slide intro modal (MemoryStudio → Graphnosis Skills / Autonomous Praxis) replaces the previous two separate startup modals. Dot indicators at the top jump between slides; the primary button reads *"Next"* while slides remain and switches to *"Get started"* on the last slide. Single dismissal key (`graphnosis.whatsNewV1Dismissed`) covers the whole carousel.
-- **Pro upgrade flow — Stripe + Cloudflare-hosted `/upgrade`.** New marketing landing at [graphnosis.com/upgrade](/upgrade) (hero, $10/mo card, feature list, FAQ, contact). `/upgrade/checkout` creates a Stripe Checkout Session; on success, `/upgrade/success` emails a magic link with a `graphnosis://claim` URL. Webhook signs license tokens with Ed25519 and stores them in Cloudflare KV. License validation is offline-first after delivery.
-- **`graphnosis://` URL scheme registered (macOS + Windows).** Clicking the post-checkout magic link activates Pro automatically — the deep-link handler routes `graphnosis://claim` into the sidecar's `license:setToken` IPC. Manual paste in **Settings → Pro license** still works for headless or air-gapped setups.
-- **Compact New Engram wizard.** Wizard modal is significantly shorter: subtitle compressed to one line, Display name + Internal ID inputs side-by-side, sensitivity tier section trimmed to two lines, radio captions shortened (*AI always on* / *Ask once* / *Ask hourly*), template-card padding and font tightened. `skill` template added as a free-tier option.
-- **Window state persistence.** Window remembers its size, position, and maximize state across launches. Starts hidden until JS confirms ≥ minWidth/minHeight, then reveals — no more visible jump from a stale stored size.
-- **`recall` → `dig_deeper` escalation flow is now well-defined.** AI clients should call `dig_deeper` with the same query when `recall` returns 0–3 nodes, before telling the user nothing was found. The MCP tool descriptions enforce this. See [MCP Tools — `dig_deeper`](/reference/mcp-tools/#dig_deeper).
-- **0-score node filter.** `recall` and `recall_structured` (via the underlying `query` / `queryRich`) now filter out structural SDK expansion nodes that have no seed score (`score=0`). Only semantically scored nodes appear in AI responses and MemoryStudio. Eliminates the confusing 0.00-confidence rows users were seeing in AI output.
-- **Insights — honest empty-states + faster retry.** The `insights` MCP tool surfaces explicit messages for no-LLM / timeout / no-data, and the background loop retries after 1h on transient failure instead of 6h.
-- **License launcher moved to the top of Settings.** Previously buried in the Settings modal; now visually consistent with the other settings panels (transparent background, top of the Settings pane).
-- **Atlas engram-switch loader.** Switching engrams on the 3D atlas wipes the canvas immediately and pops a centered loading overlay with a turquoise spinner, friendly label (*"Loading <engram name>…"*), and a sub-line that fills in with the node count once the IPC returns. Old engram's nodes no longer linger 1–3s reading as "switch didn't work."
-
-### Changed
-
-- **`.gts` → `.gsk` rename.** The skill wire format extension changed from `.gts` ("Graphnosis Training Skill") to `.gsk` ("Graphnosis Skill Kit") — it reads more naturally to users and matches the file-type association now registered on macOS and Windows. Older `.gts` files still import — the loader matches on magic bytes (`GSK\x01`), not the filename. See [File formats — `.gsk`](/reference/file-formats/#gsk--graphnosis-skill-kit).
-- **`.gsk` packs are Ed25519-signed.** Every export is signed; every import verifies. Tampered or unsigned packs are rejected. The Graphnosis signing secret never enters the codebase. Third parties publishing their own packs use their own keypair and ship the public key alongside.
-- **Tauri file-association registered.** Double-clicking a `.gsk` file in Finder or Explorer prompts the Graphnosis app to import it into the cortex you choose.
-- **One source per skill instead of per-train.** Retraining no longer creates a new source — the existing source is mutated in place. Existing per-train sources from older cortexes are coalesced on first launch (migration is one-shot, no user action required).
-
-### Fixed
-
-- **Preview-mode textbox no longer suppresses input.** A focus-trap bug in the skill preview pane was eating the first character of every edit. Resolved.
-- **Archived skills are now hidden from the Skills picker.** Previously an archived skill could still be selected from the picker and trained, leading to ghost sources.
-- **IPC timeout on long skill trains.** The sidecar IPC bridge was timing out after 30s on cortexes with thousands of recall candidates. The timeout is now adaptive to candidate-set size and `train_skill` carries its own progress channel.
-- **Recall / Dig Deeper button stuck disabled after a search.** `runStudioRecall`'s slider re-run fast-path was returning before entering the `try/finally` that re-enables the button, and most fresh recalls trigger an auto-apply slider re-run via `revealThresholdSlider`. Every exit path now hits `finally { recallBtn.disabled = false }`.
-- **Sidecar 90s startup hang on Windows.** A blocking probe at boot would wait the full 90s when the embed-worker subprocess failed silently. Now terminates failed workers immediately and surfaces the error so the cortex load unblocks.
-- **Orphan lock on Windows after force-quit.** A crash or force-quit on Windows could leave the cortex lock file in place, blocking the next launch. The sidecar now releases the lock cleanly on exit and self-heals on the next launch if it finds a stale one.
-- **Billing — `sendMagicLink` not awaited on Cloudflare Workers.** Workers kill fire-and-forget promises the moment the response is returned, so the magic-link email was sometimes silently dropped. The webhook now `await`s the send before responding to Stripe.
-- **Billing — Stripe `ui_mode` value.** Switched from `'hosted'` to the correct `'hosted_page'` so checkout creation stops 400-ing.
-- **SDK `appendText` sourceRef-header artifact.** A stray header line was leaking into appended text in some skill-edit paths; stripped before write.
-
-### Migrations
-
-- **Skill sources coalesce on first launch.** Cortexes upgraded from v1.11.x with multiple per-train sources per skill are migrated to one-source-per-skill, with the prior versions written into the snapshot side-table as the initial history. Migration is one-shot, idempotent, and runs before any background process starts.
-- **`.gts` files in user folders are not renamed.** The migration is read-only — `.gts` imports still work indefinitely. Re-exporting writes a `.gsk` file alongside.
-
----
-
-## v1.11.1 — Startup reliability and status bar polish
-
-<p style="margin-top:0.5rem;font-size:1.25em;opacity:0.85;">2026-05-26</p>
-
-Patch release fixing issues found in installed v1.11.0 builds.
-
-### Fixed
-
-- **All engrams are fully loaded before any background process starts.** Connectors (RSS, GitHub, Slack, etc.) and the brain engine now wait for the complete cortex to be in memory before they begin. Previously, connectors could fire ingest jobs on engrams that hadn't finished decrypting yet, causing partial writes and the greyed-out engrams visible in the picker until the load caught up.
-- **Update notification "OK" now opens the in-app install modal.** Clicking OK on the macOS system notification did nothing if Graphnosis was minimised or hidden — the event was delivered to a hidden webview and the listener never fired. The click handler now brings the window forward and re-emits the event so the Install modal appears reliably.
-- **CI release: DMG located dynamically instead of by hardcoded filename.** The release workflow now finds whatever DMG Tauri produces (arch suffix varies by runner) rather than assuming `_aarch64.dmg`. Fixes the v1.11.1 CI failure where the build produced the DMG at the correct path but the step couldn't find it because the package version was mismatched.
-- **Status bar items right-aligned reliably.** Version, Vitality, GLL, GNN, and the MCP client indicator are now wrapped in a single flex container with `margin-left:auto`, replacing a fragile empty-span spacer approach that left the items drifting at intermediate positions on some window widths.
-- **Offline source categories added to landing page.** The "Auto-ingest from the tools you already use" section on graphnosis.com now lists the full range of off-the-grid sources — smart home, IoT sensors, local networks, research instruments, personal agents, robotics, agriculture — with a link to the step-by-step recipes guide.
-
----
-
-## v1.11.0 — Overlay recall, LLM capability split, and UI redesign
-
-<p style="margin-top:0.5rem;font-size:1.25em;opacity:0.85;">2026-05-26</p>
-
-### Added
-
-- **`dig_deeper` MCP tool.** New escalation tool for queries that `recall` can't fully answer — it searches harder, crosses engram boundaries, and tells your AI which strategy found each result. AI clients should call it before reporting "nothing found." See [MCP Tools](/reference/mcp-tools/#dig_deeper).
-- **Inferred layer in recall responses.** When overlay engines are running, recall results now include a clearly-labelled inferred section — predictions from the neural network and the local LLM, kept visually separate from your attested memory so you always know what's real versus what's suggested.
-- **AI now flags thin or lopsided recalls.** Eight core tools surface a heads-up when a recall looks suspiciously narrow — too few results for what was asked, or one engram drowning out all the others — so you know to prompt your AI to look harder.
-- **Source-filename hint in recall.** When a query matches a source filename but not the nodes inside it, `recall` names the source so your AI can follow up instead of stopping at "nothing found."
-- **LLM capability split.** The Non-Deterministic Aid panel now has five independently-toggleable switches instead of a single on/off: **Recall enrichment**, **Correction parsing**, **Distillation**, **Insights & predictions**, and **Edge prediction**. All off by default, all on-device.
-- **Edge prediction loop.** With Edge prediction enabled, a background process periodically finds memory pairs that look related but aren't yet connected, proposes a link, and queues it for your review in the Graphnosis Local Layer (.GLL) section of the Non-Deterministic Aid tab.
-- **Full light-mode palette.** The app now has a complete, designed light theme. Dark mode is unchanged.
-- **Overlay engine indicators in the status bar.** Two small pills — turquoise for the Local LLM, purple for the Neural Network — sit beside the MCP client indicator, dimmed when the engine is idle and pulsing when it's active.
-- **⌘F global search shortcut.** Pressing ⌘F from anywhere in the app jumps to the search input.
-- **3D atlas: grab-to-rotate, ⌘-drag-to-move.** Plain drag now rotates the graph like a globe. ⌘-held switches back to per-node repositioning.
-- **Lock screen cortex-missing notice.** If the last-used cortex folder has been moved, renamed, or is on an unmounted drive, the lock screen tells you before you try to unlock.
-- **Browse… buttons for Obsidian and GBrain connectors.** Folder picker in each connector's setup modal — no more manual path typing.
-- **Privacy notice on all connector forms.** Every connector now shows a one-line local-first reminder: credentials stay on your device, encrypted alongside your cortex.
-- **Network activity guide.** New guide covering what Graphnosis connects to, why, and how to verify it yourself. See [Network activity](/guides/network-activity/).
-- **Purge All in Cortex Management.** When two or more engrams have forgotten nodes, a single **Purge All** button clears them all in one step.
-- **Windows: full sidecar + relay support.** The bundled binaries now work on Windows, and the in-app **Configure Claude Desktop / Claude Code / Cursor** flows support Windows paths and config locations.
-- **Search bar shows which engram you're searching.** The stats line below the search input now reads "Coding · 4 matches for 'sensors'" so you always know which engram produced the results.
-- **Semantic search tells you when results are off-topic.** If the embedding search returns results that don't actually contain your search terms, the stats line now says so explicitly: "No match for 'sensors' — showing 30 nearest (may not be relevant)." Previously those results silently appeared and looked like real matches.
-- **Engram picker updates in real time as each engram loads.** Previously all pending engrams turned active at the same moment (when the last one finished). Now each one becomes clickable the moment it's ready.
-- **Startup is significantly faster for large cortexes.** Engrams are available for search and recall the moment each one finishes loading, instead of all at once at the end. Cortexes with many engrams that previously took 30–40 seconds to become responsive are now usable in a few seconds.
-
-### Changed
-
-- **35 MCP tools.** `dig_deeper` joins the Core memory group — up from 34.
-- **`correct` renamed to `edit`.** The tool now covers three situations: correcting a factual error, updating outdated content, and appending new detail to an existing memory. The old name `correct` still works as a backward-compatible alias — existing AI clients don't need a session restart.
-- **Vitality no longer resets on every boot.** The score you left with is what you see on the next unlock, not an inflated placeholder while the first background scan runs.
-- **Status bar layout.** Overlay engine pills and the MCP client indicator are now pushed to the far right, leaving the left side clear for the theme toggle and cortex path. The ⌘K search chip is gone — ⌘F handles it.
-- **Clicking the MCP indicator opens the Status page.**
-- **Predicted edges hidden by default in the 3D atlas.** The overlay edges no longer appear unless you turn them on — the canonical view stays clean.
-- **Recall audit footer no longer lists every engram.** Only engrams that contributed results appear in the footer; the rest are summarised as a count. Previously all engram names — including sensitive ones — were listed on every recall.
-- **Engram scoping in recall now works regardless of how your AI formats the parameter.** `only_engrams` and `except_engrams` accept a list, a JSON-encoded string, or a bare name — all three were previously handled inconsistently.
-
-### Fixed
-
-- **Vitality 97 → 75 drop on boot.** Vitality now persists across sessions.
-- **Interrupted shutdown left cortex in a broken state.** A force-quit or crash during a graph save used to require manually triggering "Recover from op-log" in Settings. Graphnosis now self-heals on the next launch and shows a toast with the recovery count.
-- **Error banners appeared on the lock screen.** They now only show inside the authenticated app.
-- **Recall missed memories with accented characters.** "Stefan" and "Ștefan", "resume" and "résumé" — diacritic variants now match each other in entity search. Your stored text is unchanged.
-- **Graphnosis no longer pegs CPU when Ollama is unresponsive.** The connection now times out and backs off cleanly.
-- **Connectors no longer write to archived engrams.** Previously an archived engram could still receive connector updates (RSS feeds, GitHub, etc.), which caused a quarantine loop on the next boot. Connectors now skip archived targets entirely.
-- **Closing Graphnosis unexpectedly no longer leaves the sidecar running in the background.** A crash or force-quit now also terminates the background process, preventing a stale sidecar from blocking the next launch.
-
----
-
-## v0.10.1 — Boot stability and UI polish
-
-<p style="margin-top:0.5rem;font-size:1.25em;opacity:0.85;">2026-05-24</p>
-
-Patch release fixing issues found in installed v0.10.0 DMGs.
-
-### Fixed
-
-- **Consent toast storm on first launch.** Dozens of "Memory access requires confirmation" popups appeared on boot because `markClientSeen()` was deferred until the user clicked through the first-connect modal — meanwhile the background poller kept firing a new modal for each engram that finished loading. The fix: mark the client as seen immediately when the modal opens, and add a guard so only one first-connect modal can be pending at a time.
-- **3D node tooltip stuck at top of canvas.** The node label was rendering at a fixed position in the top-left corner of the 3D view instead of floating near the cursor. The graph library's internal `d3.pointer()` returns incorrect coordinates in the Tauri production webview; replaced with a custom `.atlas-node-tip` element positioned via `mousemove` using raw `clientX/clientY − getBoundingClientRect()`.
-- **QR code blank in mobile setup.** The QR code in the mobile/remote setup wizard (Step 3) rendered as a white blank. The Tauri CSP's `default-src 'self'` blocked the `data:` URL the QR library writes into an `<img>` element. Fixed by adding `img-src 'self' data: blob:` to the CSP.
-- **Graphnosis Docs duplicated on app update.** Every time the app detected a newer bundled docs version and re-ingested, it appended a new copy of the docs to the existing `graphnosis-docs` engram instead of replacing it. The `docs:ingest` handler now purges all existing sources in that engram before re-ingesting.
-- **Sidebar logo not centered.** The Graphnosis logo in the left sidebar was visually offset. Fixed the wrapper to use `display:flex; justify-content:center` instead of relying on `margin:auto` inside the flex column.
-- **`forget` tool modal described source-level behavior.** The in-app MCP Tools browser entry for `forget` still said the tool removes a source. Updated to describe node-level soft-delete, the `recall_structured` prerequisite for finding node IDs, and that removing an entire source is a user-only action in the Sources page.
-- **MCP Tools modal brand badge layout.** The Graphnosis logo and wordmark now appear as a top-right badge (logo above label) with `align-items:flex-start` on the header, cleanly separated from the tool name on the left. The "Full MCP Tools reference" docs link is flush left in the footer via `margin-right:auto`.
-- **Updater bundle missing from CI.** The release workflow was not producing the `.app.tar.gz` needed by the Tauri updater endpoint. Added `"createUpdaterArtifacts": true` to `tauri.conf.json`.
-
----
-
-## v0.10 — Consent, Activity Log, and safer AI tools
-
-<p style="margin-top:0.5rem;font-size:1.25em;opacity:0.85;">2026-05-24</p>
-
-### Added
-
-- **Consent gate for sensitive data.** Before any `sensitive` engram is served to an AI client, the Graphnosis app pops a one-click prompt: **Deny / Allow once / Allow for 1 hour / Allow for today**. Personal-tier recalls are silent by default (installation + MCP config are already two informed actions). The old phrase-typing flow is preserved as a headless fallback for SSH / CI / no-GUI sessions. See [AI Access Controls](/guides/ai-access-controls).
-- **Per-(client, tier) consent records.** Every grant, expiration, and revocation is logged inside your cortex. Settings → AI shows currently-active grants and a full history modal. Records never leave your device.
-- **Configurable consent intervals.** Pick how long a confirmation is remembered before re-prompting: every access, 15 min, 30 min, 1 hour, 4 hours, daily, weekly, monthly, 6 months, or permanent. Per-engram overrides in Cortex Management → Edit Engrams; the stricter setting wins.
-- **First-connect policy chooser.** The first time a never-seen AI client triggers the consent flow, the app pops a one-time chooser so you can set per-tier defaults (always-allow / ask-1h / ask-1d / ask-every-time / never-allow). Editable later in Settings → AI → Client policies.
-- **Recall rate limit.** Each AI client is limited to 10 recall calls per 60 seconds. Catches burst-scan patterns.
-- **Session replay blocker.** A recall whose query is ≥ 85% similar (Jaccard token set) to a query issued within the last 60 seconds by the same client is blocked on the 3rd occurrence. First two identical queries pass (legitimate retries); sustained 3rd+ is the scraping pattern.
-- **Opt-in session caps.** Three optional cumulative-volume caps in Settings → AI → Optional session caps: token cap (default 100 000 when enabled), node cap (default 500), engram-breadth cap (default 6). All off by default.
-- **Settings → AI → Extra precaution mode.** New checkbox that gates `personal`-tier recalls behind the same in-app prompt + per-client policies + first-connect chooser as sensitive recalls. Off by default.
-- **Top-bar sensitivity badge.** A color-coded PUBLIC / PERSONAL / SENSITIVE pill next to the active engram in the top bar. Click to change tier or set a per-engram consent interval.
-- **First-connect AI client modal.** When a new AI client connects for the first time, Graphnosis asks whether it's a chat assistant or an autonomous agent. Agent mode overrides the consent interval to "every recall" — extra friction for unattended automation.
-- **34 MCP tools across 9 categories.** The toolset expanded from the original 11 to 34: full Engram discovery (`list_engrams`, `suggest_engram`, `browse_engram`, `recent`, `get_engram_schema`); structured recall variants (`recall_structured`, `recall_with_citations`, `compare_engrams`, `cross_search`); source operations (`find_source`, `recall_source`, `transfer_source`); engram operations (`ingest_batch`, `engram_summary`); brain maintenance (`duplicate_pairs`, `healing_journal`, `gnn_status`); approximate similarity (`audit_memory`, `check_duplicate`); and Local-LLM-backed (`gnn_neighbors`, `llm_query`, `llm_distill`). Full reference: [MCP Tools](/reference/mcp-tools/).
-- **Activity Log in Status pane — full upgrade.** The Status tab's activity feed now loads 20 entries at a time and adds more on scroll (IntersectionObserver sentinel). Each row shows: a short content preview (first ~120 chars of the memory), a **triggeredBy badge** indicating who initiated the action (`user · ingest`, `user · forget`, `mcp · remember`, `brain · consolidation`, `connector · <kind>`, etc.), and an **Open in Sources ↗** button for source-linked events. Historical entries without attribution show no badge — no backfill.
-- **Actor attribution on all write paths (`triggeredBy`).** Every op-log event written by the sidecar now carries a `triggeredBy` field identifying the actor — `mcp:remember`, `mcp:forget`, `mcp:correct`, `user:ingest`, `user:forget`, `user:correct`, `brain:reinforcement`, `brain:consolidation`, `connector:<kind>`. The Activity Log surfaces this as a colour-coded badge. New cortexes and all events going forward are attributed automatically; no migration of historical events.
-- **3D Engram edge hard-lock.** Any edge category with more than 10,000 edges is permanently hard-locked: it is never rendered, never toggled by the legend, and never triggered by hover — regardless of any setting. The legend row for a locked category is shown at 25% opacity with a "not-allowed" cursor and no interactivity. This prevents THREE.js geometry-allocation freezes on large cortexes (the trigger was a 65K-edge semantic graph). Categories between 5,000 and 10,000 remain in the existing auto-hide tier (off by default, re-enableable); categories below 5,000 are always interactive.
-- **In-app MCP Tools browser.** New **MCP Tools** button in the left sidebar (next to Settings) opens a dedicated page listing every tool grouped by category, with a short description, determinism class, and 1–3 example prompts you can paste straight into your AI client.
-- **Boot loads your last-active engram first.** Graphnosis now remembers which engram you had selected and loads it as the default on next unlock — the lock screen reveals with the correct engram already showing. See [Boot & engram loading](/guides/boot-and-engram-loading/).
-- **Sequential background engram loading.** Secondary engrams load one at a time with event-loop yields between each, so the desktop app's first `list_nodes` call doesn't sit queued behind 12 concurrent decryption jobs. Reveals in ~3 seconds instead of 25–30 seconds on cortexes with many engrams. Status bar shows a live "Loading N more engrams…" countdown while the rest stream in.
-- **Engram picker shows pending engrams.** The active-engram dropdown lists every engram immediately on unlock — the ones still loading appear greyed out and aren't clickable until they finish. Positions stay alphabetical with no reshuffling.
-- **Local LLM-assisted search.** Two checkboxes inline with the search box (only enabled when the local LLM is reachable): "🤖 Synthesize answer" writes a 1-paragraph answer with citations, "Enhanced ranking" re-orders results by LLM-judged relevance. Settings → AI → "Use Local LLM only for search" restricts the LLM to in-app search and disables `develop`/`predict`/`insights`/`llm_query` MCP tools.
-- **Local LLM checkbox toggle.** The Go Non-Deterministic tab's Local LLM master switch is now a labeled checkbox instead of separate Enable/Turn off buttons.
-- **"Local LLM…" button replaces the static search-row hint.** The previous "Requires a local AI model — enable in Go Non-Deterministic" cluttering the search row is now a small "Local LLM…" button that takes you directly to the toggle.
-- **Search-results × close button.** A close button in the search-results header mirrors the in-input × — clears the query and returns to the dashboard without scrolling back up to the input.
-- **Needs Your Review overlay polish.** The overlay now shows an immediate loading placeholder while populating (was empty for ~1s), and auto-closes when you switch away from the Deterministic Consolidation tab.
-- **Amber idle indicator on MCP connections.** AI tools panel rows turn amber + show `· Idle Xm` (compact: `47s` / `12m` / `3h`) when a connection hasn't seen a request in 15+ min. Returns to green pulse automatically on the next request. The status-bar dot and left-sidebar chip for that client also turn amber while idle.
-- **× force-close button per MCP connection.** Hover any row in the AI tools panel to reveal a × button; one click force-closes that connection. **Non-destructive** — the relay auto-reconnects on its next tool call and a fresh row appears. Hidden for `stdio` transport.
-- **Relay reconnect window: indefinite.** The MCP relay used to give up after 24 hours of waiting for the sidecar to come back. Now it parks forever (only exits when the AI client closes its stdin pipe). Closing Graphnosis for a week and reopening just works — your AI clients reconnect on their next tool call, no restart needed. Power users can still set a finite timeout via `GRAPHNOSIS_RELAY_RECONNECT_MS` env var or `settings.json:mcpRelay.reconnectMs`.
-
-### Changed
-
-- **`forget` MCP tool is now node-level only.** `forget` takes `nodeIds` (one ID or an array of up to 20), never a source ID. Removing an entire ingested file, URL, or clip is a **user-only action** done from the Sources page in the app — AI clients have no API path to delete a whole source. The correct workflow: `recall_structured` to find the exact node(s), confirm the text, then `forget(nodeIds=[...])`. If a source has 500 nodes and only one fact is stale, only that node is removed; the other 499 are untouched.
-- **`merge_engrams` removed from the MCP toolset.** Merging engrams is now a user-only action in the app UI. AI clients can move individual sources between engrams via `transfer_source`, but cannot trigger a full engram merge. This prevents irreversible structural changes from automated AI flows.
-- **Tagline updated.** "Your local encrypted memory, indexed for deterministic recall — auditable." The new ending reflects that every access decision is logged and reversible.
-- **Sensitive-tier defaults.** Sensitive engrams now require consent every hour by default (was: blocked outright). The block-by-default behavior is still available — pick "Every access" or set the engram to never be granted consent.
-- **Personal-tier recalls are silent by default.** The consent gate only fires for `sensitive`-tier recalls (or any tier in extra-precaution mode).
-- **Federated recall silently scopes to consented tiers.** When the AI doesn't name specific engrams, Graphnosis silently excludes any un-consented sensitive engrams from the search instead of firing a prompt. The prompt only fires when the AI explicitly names a sensitive engram via `only_engrams`. Stops the surprise where merely *having* a sensitive engram caused every personal-data query to prompt.
-- **MCP `recall` audit footer.** When consent is valid, recall results now end with `[<client> — <tier> access: valid until <time>. Revoke in Settings → AI.]` so the AI surface always shows the current authorization state.
-- **MCP consent errors now render correctly in Claude's UI.** The consent-required notice was being returned as a JSON-RPC `-32603 Internal Error`, which Claude renders as a generic "Tool execution failed" with no detail. Now returned as a proper tool result with `isError: true` so the full notice reaches the AI client's UI.
-- **Background neuron-field animation rewritten.** The ambient "cortex simulation" behind the vitality card now uses pure Brownian motion with per-node pulsation and short directed-edge synapse pulses, replacing the prior attraction-based simulation that collapsed nodes into 2D lines. Opacity dropped from 0.55 → 0.2 so it reads as a true backdrop.
-- **"Cortex secured" capitalization.** Lock-screen boot status now reads "Cortex secured" instead of "cortex secured".
-
-### Security
-
-- **5-attempt lockout per (client, tier).** Five consecutive failed `confirm_data_access` attempts in 10 minutes revokes that pair's consent and notifies you. Other consents are unaffected.
-- **Per-cortex HMAC secret.** Each cortex generates a 32-byte secret on first unlock that drives consent phrase rotation. Stored encrypted in your settings; never exposed via MCP, IPC responses, or logs.
-- **MCP write protection.** `consentHmacKey`, `dataAccessConsents`, `consentIntervalSensitiveMs`, `consentIntervalPersonalMs`, and `clientTypes` are not writable via any MCP tool. Only the authenticated Tauri IPC channel can update them.
-- **Fast-fail when cortex is locked.** Tool calls reaching the MCP relay while the cortex is locked now respond immediately with a clear "Graphnosis is locked" error instead of hanging up to 24 hours.
-
-### Fixed
-
-- **3D Engram freeze on Cmd+Tab and source-legend hover (large graphs).** On cortexes with 65K+ semantic edges, switching apps or hovering any source row in the legend would freeze the UI for several seconds. Two causes fixed: (1) rapid hover events coalesced into a single `requestAnimationFrame`-gated refresh instead of stacking; (2) the `linkVisibility` peek-through callback — which temporarily reveals all edges for a hovered source — is now gated at 10,000 total links. Above that threshold the callback returns the current visibility state unchanged, preventing THREE.js from allocating geometry for tens of thousands of hidden edges in a single frame.
-- **Lock-screen freeze during boot.** The lock screen would sit on "Loading memories…" for 25–30s on large cortexes. The sidecar was using `Promise.all` for 12 concurrent decryption jobs, saturating the Node event loop and starving the IPC socket so the boot's `list_nodes` call sat queued. Sequential loading + `setImmediate` yields between each load lets IPC interleave and reveals the lock screen in ~3 seconds.
-- **Stale localStorage engram preference.** If you deleted the engram you'd last selected, the next boot would silently create a fresh empty engram with that name. Now falls back to `personal` instead.
-- **HMAC key race condition.** Concurrent `get_consent_phrase` calls during Settings panel open no longer race on the atomic settings write. The in-flight promise is cached so the first save wins and concurrent callers share the same key.
-- **`mergeWithDefaults` was dropping `consentHmacKey`.** Every settings save was silently regenerating the phrase secret, breaking consent validation. The key is now explicitly preserved through merge.
-
-### Migrations
-
-- **HMAC secret generation.** Older cortexes that pre-date v0.10 will generate a fresh consent secret on first unlock. No user action required.
-- **Consent records.** Cortexes with no `dataAccessConsents` field are treated as having no granted consents. The first recall from an AI client triggers the first-time notice.
-
----
-
-## v0.9 — Deterministic Consolidation
-
-<p style="margin-top:0.5rem;font-size:1.25em;opacity:0.85;">2026-05-22</p>
-
-Theme: **a memory that strengthens, never weakens.** The third tab is reborn as **Deterministic Consolidation** — an engine that makes every memory you add permanent and ever more retrievable. Connections strengthen the more you use them, engrams link to one another, and a daily consolidation pass integrates the whole cortex. Nothing here ever weakens a correct memory.
-
-### Added
-
-- **Connection reinforcement.** Memories recalled together have the connection between them strengthened ("fire together, wire together"); a repeatedly co-recalled pair with no link yet earns one. Reinforcement is live — strengthened connections genuinely rank higher in future recalls — and saturating, so it never runs away.
-- **Cross-engram connections.** Graphnosis now links memories *across* engrams — via shared named entities or high semantic similarity — so a query in one engram can surface what you know in another. Stored encrypted alongside your cortex.
-- **Consolidation.** A daily deep pass: transitive inference (if A→B and B→C, infer A→C), community detection, and redundancy cleanup (dead edges left dangling to already-deleted memories). All additive or tidying — a connection between two live memories is never removed.
-- **Memory health.** The tab's headline is now a retrieval-quality report — connectivity, integration, confidence, coherence, reinforcement activity, and a saturation guard — instead of a raw size-and-density score.
-- **Graphnosis Neural Network (opt-in).** A new **Go Non-Deterministic** tab adds an optional, off-by-default neural network that predicts likely-missing connections between your memories. Predictions live in a separate encrypted overlay (`neural-network.gnn`) — never mixed into your deterministic graph — and surface only as clearly-labelled, one-click-removable suggestions. That tab is also the new home for the optional local-LLM setup and AI-generated insights.
-- **Add the Graphnosis docs to your cortex.** On unlock, Graphnosis offers to load its own documentation into a dedicated `graphnosis-docs` engram, so your AI can answer questions about Graphnosis itself. The docs are bundled inside the app — adding them is fully offline, with no network access — and refresh when you update the app.
-
-### Changed
-
-- **The third tab is now "Deterministic Consolidation"** (was "Autonomous upkeep").
-- **Memories no longer decay from disuse.** Anything you deliberately add — a file, URL, clip, or saved conversation — keeps its confidence indefinitely. The only things that lower a memory's standing are explicit correctness events (contradiction, supersession, your own correction), all audited and reversible.
-- **Recalled memories are reinforced.** Appearing in a recall result now gives a memory a small confidence boost — the strengthening half of the old decay/reinforce pair, now active.
-- **The local LLM is now opt-in.** Graphnosis no longer uses a local LLM just because one happens to be running. Insights and the richer `develop` / `predict` synthesis stay off until you explicitly enable the local LLM in the Go Non-Deterministic tab — detection is never consent.
-- **`correct` no longer needs an AI model.** The correction tool is deterministic by default — it supersedes the closest-matching memory with your fix, reproducibly, with no model required. The optional Neural Network widens its candidate set and the optional local LLM upgrades it to multi-edit diffs, but neither is required. With the local LLM off, `develop` / `predict` / `insights` also degrade gracefully — returning the deterministic recalled context with a clear note instead of failing quietly.
-- **Vitality is a ratio-based score.** The 0–100 vitality reading is now computed from connectivity, confidence, recent activity, and coherence, so it ranges meaningfully across a cortex's life instead of pinning near the top.
-
-### Fixed
-
-- **cortexes that wouldn't open.** A crashed embedding worker could stall the sidecar so a cortex never finished unlocking. The worker pool now routes around a dead worker and recovers.
-- **Your AI client keeps working across Cortex switches.** The MCP connection now uses a fixed per-user socket path, so a client you configured once (Claude Desktop, Cursor, …) keeps working after you switch or reopen cortexes.
-- **A moved, renamed, or deleted cortex folder no longer crashes the app.** If the folder Graphnosis remembered is gone, the app reports it cleanly instead of failing to start.
-- **UI polish.** The lock-screen footer no longer breaks awkwardly, the top-left logo is centered, the Settings → Connectors section renders cleanly, and the main tab strip no longer clips the first tab.
-
-### Migrations
-
-None. Existing cortexes gain the cross-engram connection store on first run, and may be offered the bundled Graphnosis documentation; the neural network and local LLM both default to off until you opt in. No memory is altered on upgrade.
-
----
-
-## v0.8 — Autonomous upkeep
-
-<p style="margin-top:0.5rem;font-size:1.25em;opacity:0.85;">2026-05-21</p>
-
-Theme: **a cortex that maintains itself.** Graphnosis now keeps your memory tidy on its own — merging duplicates it can prove are redundant, weaving connections between related memories, and surfacing the judgment calls it can't safely make. New background passes run on a schedule: what they can fix, they fix; what needs you, they route to Check-in.
-
-### Added
-
-- **Autonomous self-healing.** A background duplicate scan merges memories that are *provably* the same — byte-identical text, or one fully contained within a longer one. Merges are automatic, conservative (a merge never loses information), and reversible (soft-delete, recorded in the op-log). The Autonomous tab's Self-healing section shows the running count. Full detail in [Deterministic Consolidation](/guides/deterministic-consolidation/).
-- **"Needs your review" in Check-in.** Near-duplicate pairs that *aren't* provably identical — a differing number, an added negation, a partial overlap — surface in the Check-in tab with both memories side by side and a one-click **Same memory — merge** / **Keep both** decision. Graphnosis heals what's certain; you decide what's ambiguous.
-- **Automatic connection weaving.** Memories that are clearly related but distinct get an automatic "related" connection, so isolated memories aren't left floating. Conservative — already-dense memories are skipped, and typed/directional relationships are still left to you in the Check-in deck.
-- **Post-ingest scan.** Ingesting a file now triggers a duplicate scan shortly after it completes, so new content is checked promptly instead of waiting for the next scheduled pass.
-- **Visible upkeep schedule.** The Autonomous tab now shows the cadence of every background pass (duplicate scan every 20 min, connection forming 45 min, goal check 4 h, insights 6 h, memory decay 24 h).
-- **Standalone / Local LLM shortcuts.** Two buttons in the sidebar's "Get connected" section explain the two modes — fully deterministic Standalone (the default) vs. adding a local LLM for insights and deeper connection-forming.
-
-### Changed
-
-- **The third tab is now "Autonomous"** — it collects vitality, self-healing, insights, goals, and live activity in one place.
-- **Vitality shows 0 until it's calculated**, so a still-starting-up score is never mistaken for a real one.
-- **"Cache everything" is the default** content-cache mode, selected out of the box.
-- **The memory trace clears on lock.** Locking your cortex now clears the left-rail recents list and the detail pane, so a re-unlock starts with a clean slate.
-
-### Migrations
-
-None. v0.8 is fully backward-compatible. The self-healing journal is created on first run; existing cortexes gain it automatically.
-
----
-
-## v0.7 — Sources management, 3D graph performance, and readability
-
-<p style="margin-top:0.5rem;font-size:1.25em;opacity:0.85;">2026-05-20</p>
-
-Theme: **make large cortexes easier to navigate and large graphs easier to work with.** This release adds first-class source management (search, move between engrams), makes the 3D graph usable on 25K-edge graphs without freezing the UI, and addresses a wave of readability and polish issues reported after v0.6.
-
-### Added
-
-- **Sources search filter.** A "Filter sources…" input sits above the Sources list. Typing narrows the list instantly — source names and file paths both match. Engram group headings hide automatically when none of their sources match, so you only see the groups that are relevant.
-- **Move a source to another engram.** Each source row now has a **Move to…** button. A compact inline picker appears with a list of your other engrams (sorted alphabetically). Pick an existing engram or choose **New Engram…** to create one right from the picker — the new engram is created with a Personal template and your chosen display name, and the move happens in the same gesture. All chunks, embeddings, and the content cache entry transfer with the source; the graph re-links automatically after the move.
-- **Help button in the top bar.** A `?` button next to the Lock button opens [docs.graphnosis.com](https://docs.graphnosis.com) in your default browser.
-
-### Changed
-
-- **Sticky engram headings in Sources.** When you scroll through a long sources list, the current engram's name header sticks to the menu bar so you always know which engram you're looking at. The heading is replaced by the next engram's heading as it scrolls into view.
-- **Semantic edges auto-hide on large graphs.** When a graph has more than 5,000 semantic (embedding-similarity) edges, Graphnosis automatically hides that category in the 3D view to keep framerate navigable. The legend shows semantic edges as "off" so you can re-enable them at any time. Switching to a smaller graph that is below the threshold restores them automatically.
-- **3D graph layout no longer freezes the UI during initial layout.** The force simulation now scales its parameters to the graph's node count. Large graphs (1,500+ nodes) skip the synchronous warmup pass and run with a faster alpha-decay and fewer collision iterations — the graph appears immediately and settles in the background. Periodic reheat is also disabled above this threshold. Small graphs are unaffected.
-- **3D graph reset no longer shifts the view.** Previously the Reset button moved the orbit pivot to the world origin, which caused the camera to visibly jump when the pivot didn't coincide with the view center. Reset now only clears selection emphasis (node size, opacity); the camera stays exactly where it was.
-- **Engrams sorted alphabetically in all pickers.** The top-bar engram dropdown, the move-to picker, the connector target selector, and the Settings engram lists all now sort by display name instead of creation order.
-- **`ai-conversation` source references rendered as readable labels everywhere.** The detail-pane breadcrumb and trivia-card source label now show `AI: <topic>` (or `AI conversation` when no topic is set), matching the formatting the Sources list and atlas legend already used. The raw `ai-conversation:<timestamp>:<topic>` ref no longer appears anywhere in the UI.
-
-### Fixed
-
-- **Sources list scroll position preserved after a move.** Confirming a move previously reloaded the list and scrolled it back to the top. The view now stays in place.
-- **Sources list auto-refreshes after a move completes** rather than requiring a manual pane switch to see the updated state.
-
-### Migrations
-
-None. v0.7 is fully backward-compatible with v0.6 cortexes.
+Conventions: **Added** = new features, **Changed** = behavior or UX shifts, **Fixed** = bugs, **Security** = anything affecting your data, **Migrations** = automatic upgrades the app applies to existing Cortexes.
 
 ---
 
 ## v0.6 — Mobile, connectors, and the broader MCP-client universe
 
-<p style="margin-top:0.5rem;font-size:1.25em;opacity:0.85;">2026-05-19</p>
-
-Theme: **make your cortex reachable from anywhere, growing on its own from the tools you already use.** The biggest single release since v0.1 in scope of new surface — a mobile bridge with a 3-step wizard, six service connectors with BYO credentials, encryption for those credentials at rest, broader MCP-client coverage beyond Claude Desktop / Code / Cursor, and a Settings UI to manage all of it.
+Theme: **make your Cortex reachable from anywhere, growing on its own from the tools you already use.** The biggest single release since v0.1 in scope of new surface — a mobile bridge with a 3-step wizard, six service connectors with BYO credentials, encryption for those credentials at rest, broader MCP-client coverage beyond Claude Desktop / Code / Cursor, and a Settings UI to manage all of it.
 
 ### Added
 
@@ -377,7 +28,7 @@ Theme: **make your cortex reachable from anywhere, growing on its own from the t
   - **Generic webhook** — receive POSTs from Zapier, IFTTT, custom scripts, iOS Shortcuts; auto-generated unique URL per connector
   Full walkthroughs per connector at [Auto-ingest from your tools](/guides/connectors/).
 - **Settings → Connectors panel.** Install, configure, pull-now, edit, remove — all 6 kinds. Status pills (enabled / disabled / error / pulling), last-pull timestamp, event counts, target engram, per-row actions. Lives between AI Clients and Cortex Tools in Settings.
-- **Connector credentials encrypted at rest.** XChaCha20-Poly1305 with the cortex data key, base64-stored in `settings.json` as `credentialsEnc`. Same primitive as `.gai` files. Cloud-sync-safe — providers see ciphertext only. Migration from v0.6 plaintext is automatic on next save.
+- **Connector credentials encrypted at rest.** XChaCha20-Poly1305 with the Cortex data key, base64-stored in `settings.json` as `credentialsEnc`. Same primitive as `.gai` files. Cloud-sync-safe — providers see ciphertext only. Migration from v0.6 plaintext is automatic on next save.
 - **Broader MCP-client coverage.** Added drop-in support documentation for Zed, Cline (VS Code), Continue.dev, Goose (Block), 5ire, Witsy, LibreChat, and Open WebUI — all the same `graphnosis` server entry, just different config-file paths per client.
 - **Sources pane → Settings deep links.** Above the Sources list, a quiet hint banner: "Want this list to grow on its own? Connect an AI client → · Set up a connector →". One click jumps to Settings, scrolls the relevant panel into view with a brief accent ring.
 - **Custom engram picker** in the top bar — always opens **downward** (replaces native `<select>` whose macOS-default open direction often drifted upward off the top bar). Outside-click and Escape close. Selected option indicator + chevron button.
@@ -396,23 +47,21 @@ Theme: **make your cortex reachable from anywhere, growing on its own from the t
 
 ### Security
 
-- **Connector credential encryption at rest** (described above) closes the gap where v0.5 / pre-v0.6.1 settings.json stored Slack/GitHub/Trello/Linear tokens plaintext. Anyone backing up or cloud-syncing their cortex folder pre-v0.6.1 should re-paste their connector credentials so the new encrypted-at-rest path takes effect, then verify `settings.json` shows `"credentialsEnc"` instead of `"credentials"` for each connector.
+- **Connector credential encryption at rest** (described above) closes the gap where v0.5 / pre-v0.6.1 settings.json stored Slack/GitHub/Trello/Linear tokens plaintext. Anyone backing up or cloud-syncing their Cortex folder pre-v0.6.1 should re-paste their connector credentials so the new encrypted-at-rest path takes effect, then verify `settings.json` shows `"credentialsEnc"` instead of `"credentials"` for each connector.
 
 ### Migrations
 
-None required. v0.6 is fully backward-compatible with v0.5 cortexes. The first settings save after upgrading to v0.6.1 transparently encrypts any plaintext connector credentials.
+None required. v0.6 is fully backward-compatible with v0.5 Cortexes. The first settings save after upgrading to v0.6.1 transparently encrypts any plaintext connector credentials.
 
 ---
 
 ## v0.5 — More AI clients, smarter remember, background notifications
 
-<p style="margin-top:0.5rem;font-size:1.25em;opacity:0.85;">2026-05-18</p>
-
 Theme: **let any AI client confidently target a specific engram, and tell you when the app's in the background**. Plus a broader AI-client expansion beyond Claude Desktop, and ingest performance you can dial in.
 
 ### Added
 
-- **Claude Code (CLI) and Cursor support** alongside Claude Desktop. The "Connect an AI client" modal in the menu-bar tray now writes the correct config for all three. Settings → AI Clients lets you re-run the configuration for any of them at any time. All three use the same stdio MCP transport against the bundled sidecar binary — same cortex, same memory, three faces.
+- **Claude Code (CLI) and Cursor support** alongside Claude Desktop. The "Connect an AI client" modal in the menu-bar tray now writes the correct config for all three. Settings → AI Clients lets you re-run the configuration for any of them at any time. All three use the same stdio MCP transport against the bundled sidecar binary — same Cortex, same memory, three faces.
 - **`target_engram` parameter on `remember`.** An AI client can now say "save this to my `book-notes` engram" instead of dumping into the default. Graphnosis resolves the name with a normalized exact match, then a dependency-free fuzzy matcher (substring containment + token-set Jaccard + Levenshtein) and surfaces one of three outcomes:
   - **Exact match** → write immediately.
   - **Close matches** → a banner top-center in the app lists ranked candidates with match reasons (`contains your text · 90%`, `same words · 100%`, `close spelling · 75%`). You pick which existing engram to use or create a new one with the AI's suggested name.
@@ -428,7 +77,7 @@ Theme: **let any AI client confidently target a specific engram, and tell you wh
 ### Changed
 
 - **`remember` MCP tool parameters.** Renamed `graph` → `graphId`, removed `tags` (never wired through), added `kind` and `label`. See [MCP Tools reference](/reference/mcp-tools/) for the current shape.
-- **Synapse copy across the app.** "this App's Synapse" / "this App's running Synapse" → "Graphnosis Synapse" everywhere it appeared (configure-client modal, tour, status text). The synapse story is now consistent: the synapse is the bridge between your AI client and your cortex, period.
+- **Synapse copy across the app.** "this App's Synapse" / "this App's running Synapse" → "Graphnosis Synapse" everywhere it appeared (configure-client modal, tour, status text). The synapse story is now consistent: the synapse is the bridge between your AI client and your Cortex, period.
 - **Configure-client modal post-success state.** After a successful Connect, the modal now shows a check + "Done" instead of leaving "Apply" visible (Apply was a stale instruction — there was nothing left to apply).
 
 ### Fixed
@@ -437,13 +86,11 @@ Theme: **let any AI client confidently target a specific engram, and tell you wh
 
 ### Migrations
 
-None. v0.5 is fully backward-compatible with v0.4 cortexes.
+None. v0.5 is fully backward-compatible with v0.4 Cortexes.
 
 ---
 
 ## v0.4 — Touch ID, attribution, and a better Check-in
-
-<p style="margin-top:0.5rem;font-size:1.25em;opacity:0.85;">2026-05-16</p>
 
 ### Added
 
@@ -466,7 +113,7 @@ None. v0.5 is fully backward-compatible with v0.4 cortexes.
 - **"How are these connected?" picker** (opened from candidate panel's "Other…"):
   - Overlays the right-side memory-trace sidebar instead of dimming the whole screen — you can still see source + candidate while picking.
   - Auto-closes when you click either node text, switch to 3D Engram, click anywhere else on the deck card, or hit Escape.
-- **Lock screen title**: "Unlock your private cortex" → "Unlock your private second cortex of memories:".
+- **Lock screen title**: "Unlock your private Cortex" → "Unlock your private second cortex of memories:".
 - **Last-used cortex path** is now pre-filled and the passphrase field auto-focuses on launch.
 
 ### Fixed
@@ -477,13 +124,11 @@ None. v0.5 is fully backward-compatible with v0.4 cortexes.
 
 ## v0.3 — Recovery, safety, and the synapse story
 
-<p style="margin-top:0.5rem;font-size:1.25em;opacity:0.85;">2026-05-15</p>
-
 The big theme: **make data loss require a series of unlikely mistakes, not just one bad day.** Five new safety layers, a real passphrase-rotation flow, and several long-standing UI bugs fixed in the process.
 
 ### Added
 
-- **24-word BIP-39 recovery phrase.** Generated locally when you create a new cortex (or auto-backfilled on first unlock of a pre-v0.3 cortex). Shown exactly once via a gated lock-screen modal — the unlock → app transition is paused until you acknowledge. See [Recovery](/guides/recovery/).
+- **24-word BIP-39 recovery phrase.** Generated locally when you create a new Cortex (or auto-backfilled on first unlock of a pre-v0.3 Cortex). Shown exactly once via a gated lock-screen modal — the unlock → app transition is paused until you acknowledge. See [Recovery](/guides/recovery/).
 - **Passphrase change.** Settings → after a recovery-mode unlock, the app offers to set a new passphrase. Instant — only the wrapper file is rewritten; engrams stay encrypted with the same data key. The recovery phrase remains valid.
 - **Regenerate recovery phrase.** Settings → Recovery phrase → typed-confirmation flow. Useful if you never saw the original modal, suspect the phrase is exposed, or want periodic rotation.
 - **Cortex Management.** Settings → Cortex Tools → red "Cortex Management…" button opens a dedicated modal for every destructive engram operation: forgotten-memories purge, engram archive/delete, quarantined-file restore/delete. Every action gated by typed confirmation.
@@ -494,15 +139,15 @@ The big theme: **make data loss require a series of unlikely mistakes, not just 
 - **Two-worker embedding pool.** Embedding work runs in dedicated worker threads instead of the main process, keeping the UI responsive during large ingests (the 4233-page PDF case).
 - **Auto-jump to 3D Engram after ingest.** When the last file in a batch finishes successfully and adds at least one node, the UI hops to the 3D Engram view so you immediately see your new memories in the graph.
 - **Seahorse / hippocampus / engram brand story.** The seahorse logo is now explained inline: "hippocampus" is Greek for seahorse — the brain region the logo references is exactly the structure Graphnosis embodies in software (encoding, storage, retrieval).
-- **Keeping your cortex safe guide.** New doc consolidating the five safety layers and what to do when things go wrong.
+- **Keeping your Cortex safe guide.** New doc consolidating the five safety layers and what to do when things go wrong.
 
 ### Changed
 
 - **Settings tab reorganization.** The Preferences modal is now just app-behavior knobs (cache mode, forget behavior, MCP relay, AI client routing). Engrams management, quarantined files, and the "forgotten memories" / purge surface all moved into the new Cortex Management modal. Recovery-phrase regeneration is a top-level Settings tab panel.
 - **Tray menu**: "Open inspector…" → "Open Graphnosis…".
-- **Unlock screen title**: "Unlock your Graphnosis cortex folder" → "Unlock your private cortex". Passphrase field gained an inline warning about the passphrase being the only key + recovery-phrase fallback.
+- **Unlock screen title**: "Unlock your Graphnosis Cortex folder" → "Unlock your private Cortex". Passphrase field gained an inline warning about the passphrase being the only key + recovery-phrase fallback.
 - **Content cache default cap raised** from 50 MB → 512 MB per source. Now covers realistic large reference manuals (e.g. a 4233-page PDF at ~210 MB) without users having to change settings.
-- **Tour copy updated** to reference the hippocampus / engram / synapse / seahorse story and to explain that Graphnosis must be running and the cortex unlocked for AI clients to read memories.
+- **Tour copy updated** to reference the hippocampus / engram / synapse / seahorse story and to explain that Graphnosis must be running and the Cortex unlocked for AI clients to read memories.
 - **Status pane** is now a read-only health snapshot. "Forgotten memories" footer moved to Cortex Management (where every destructive op lives).
 
 ### Fixed
@@ -517,15 +162,15 @@ The big theme: **make data loss require a series of unlikely mistakes, not just 
 ### Security
 
 - **Two-tier key model (`master.enc`).** Passphrase no longer directly derives the data key. Argon2id(passphrase, salt) derives a wrap key that decrypts `master.enc`, which holds the actual data key. Industry-standard pattern; makes passphrase rotation an O(1) operation instead of having to re-encrypt every file in the cortex.
-- **Recovery phrase wraps the data key, not the passphrase.** The previous documentation said the opposite. The phrase is an independent unlock path: phrase → Argon2id → recovery wrap key → `recovery.enc` → data key. Lose the passphrase, the phrase still works; lose both, no one (including us) can open your cortex.
+- **Recovery phrase wraps the data key, not the passphrase.** The previous documentation said the opposite. The phrase is an independent unlock path: phrase → Argon2id → recovery wrap key → `recovery.enc` → data key. Lose the passphrase, the phrase still works; lose both, no one (including us) can open your Cortex.
 - **Atomic writes** close a class of "I unlocked yesterday but today the file is corrupt" scenarios that had no recoverable cause beyond "the save was interrupted."
 
 ### Migrations
 
-These run automatically on first unlock of a pre-v0.3 cortex; no user action required.
+These run automatically on first unlock of a pre-v0.3 Cortex; no user action required.
 
-1. **`master.enc` written.** Existing cortexes use the legacy "passphrase = data key" model. On first v0.3 unlock, the app derives the same key, writes `master.enc` wrapping it, and from that point on uses the wrapped-key path. Old code can still open the cortex until you change the passphrase.
-2. **`recovery.enc` generated.** Pre-v0.3 cortexes had no recovery phrase. The first v0.3 unlock generates a fresh 24-word phrase, wraps the data key, writes `recovery.enc`, and shows the phrase via the one-time lock-screen modal. **Write it down before clicking Continue.**
+1. **`master.enc` written.** Existing Cortexes use the legacy "passphrase = data key" model. On first v0.3 unlock, the app derives the same key, writes `master.enc` wrapping it, and from that point on uses the wrapped-key path. Old code can still open the Cortex until you change the passphrase.
+2. **`recovery.enc` generated.** Pre-v0.3 Cortexes had no recovery phrase. The first v0.3 unlock generates a fresh 24-word phrase, wraps the data key, writes `recovery.enc`, and shows the phrase via the one-time lock-screen modal. **Write it down before clicking Continue.**
 
 If you miss the modal (closed too fast, lost focus), regenerate from **Settings → Recovery phrase** any time.
 
@@ -533,23 +178,9 @@ If you miss the modal (closed too fast, lost focus), regenerate from **Settings 
 
 ## v0.2.x and earlier
 
-<p style="margin-top:0.5rem;font-size:1.25em;opacity:0.85;">2026-05-11 → 2026-05-13</p>
-
 Pre-v0.3 changes weren't tracked in this changelog. The headline features for those releases:
 
-- v0.2.x · 2026-05-13: PDF ingest worker, op-log recovery flow (sync), source index, embedding cache, MCP relay
-- v0.1.x · 2026-05-11: Initial release — local-first encrypted cortex, MCP server, federated recall, BGE-small embeddings, Tauri shell
-
----
-
-## `@nehloo/graphnosis` SDK — first publish
-
-<p style="margin-top:0.5rem;font-size:1.25em;opacity:0.85;">2026-04-12</p>
-
-The Graphnosis App is built on top of the open-source **`@nehloo/graphnosis`** SDK (Apache-2.0) — the deterministic dual-graph engine that powers every engram: TF-IDF + embeddings + the directed/undirected edge model, encryption, the op-log, federated recall, and the `recall` / `remember` / `edit` primitives the App's MCP tools delegate to.
-
-The SDK was first published to npm on **2026-04-12**, a month before the App scaffold landed. Every release listed above pins a specific SDK version in `apps/desktop-sidecar/package.json`; the App's behavior is the SDK's behavior plus the desktop shell, the MCP server, MemoryStudio, Skills, connectors, and the brain engine on top.
-
-If you build with Graphnosis directly — without the App — the SDK is what you reach for. The App is one consumer of it; the SDK is the foundation.
+- v0.2.x: PDF ingest worker, op-log recovery flow (sync), source index, embedding cache, MCP relay
+- v0.1.x: Initial release — local-first encrypted Cortex, MCP server, federated recall, BGE-small embeddings, Tauri shell
 
 Future releases will be tracked here from the date they ship.

@@ -1,18 +1,11 @@
 ---
 title: Auto-ingest from Your Tools
-description: Connect RSS, GitHub, Slack, Trello, Linear, Obsidian, GBrain, AI context files, or any webhook to grow your cortex automatically — your credentials, your apps, encrypted at rest.
+description: Connect RSS, GitHub, Slack, Trello, Linear, or any webhook to grow your Cortex automatically — your credentials, your apps, encrypted at rest.
 sidebar:
   order: 2
 ---
 
-The first version of Graphnosis was a memory you talk to. The point of connectors is to make it a memory that **grows on its own** from the tools you already use. The built-in connectors pull or receive new content, ingest it into the engram of your choice, and let your AI clients recall it the same way they recall anything else you've added.
-
-There are two families:
-
-- **Network connectors** (RSS, GitHub, Slack, Trello, Linear, Webhook) — reach out to a service on a schedule (or receive a push) using credentials you supply.
-- **Local-file connectors** (Obsidian, GBrain, AI Context Files) — watch a folder on your own disk and ingest new or changed files within seconds.
-
-All credentials and paths are stored locally, encrypted at rest in your cortex.
+The first version of Graphnosis was a memory you talk to. The point of connectors is to make it a memory that **grows on its own** from the tools you already use. Six built-in connectors pull or receive new content on a schedule, ingest it into the engram of your choice, and let your AI clients recall it the same way they recall anything else you've added.
 
 ## How connectors work
 
@@ -20,19 +13,13 @@ Every connector follows the same pattern:
 
 1. You install it once in **Settings → Connectors** in the Graphnosis app.
 2. You choose a **target engram** for ingested events.
-3. You paste credentials, point it at a folder, or accept an auto-generated webhook URL.
-4. Graphnosis pulls on a schedule — or webhook-style connectors fire on push, and local-file connectors fire on file change.
-5. Each new event becomes a memory node in your engram, available to every AI client connected to your cortex.
-
-**The poll schedule.** Network connectors pull on a shared schedule, configurable in **Settings → Connectors** (default: every 15 minutes; you can lower it, with a 60-second floor). Local-file connectors don't wait for the schedule — they watch their folder and ingest within seconds of a change — but the same poll runs as a backstop in case a filesystem event is missed.
+3. You paste credentials (or accept an auto-generated webhook URL).
+4. Graphnosis pulls on a schedule (default: every 15 minutes) — or webhook-style connectors fire on push.
+5. Each new event becomes a memory node in your engram, available to every AI client connected to your Cortex.
 
 **Why BYO credentials.** Most cloud memory products use a "first-party OAuth app" model — you log into Slack via their app, they hold a token on your behalf, they're a 4th-party data processor in every workflow. Graphnosis goes the other way: **you create your own app/key** in each service's developer console and paste credentials into Graphnosis. The trade is 1–5 minutes of upfront setup-in-service per connector, and the win is **end-to-end privacy** — Graphnosis is never in the OAuth callback chain, the service-side relationship is between you and that service.
 
-**Credentials are encrypted at rest.** Every connector credential (PATs, tokens, API keys) is encrypted with your cortex data key before it touches disk. Same crypto primitive as your `.gai` memory files. You can safely sync your cortex folder via iCloud Drive / Dropbox / S3 — cloud providers see ciphertext only.
-
-**Privacy notice.** Every connector form displays a one-line privacy notice confirming that credentials are encrypted locally and that Graphnosis never relays them to Nehloo servers. This notice is informational — it doesn't gate setup.
-
-**Folder pickers.** The Obsidian and GBrain connector modals include a **Browse…** button next to their folder path fields. Click it to open a native folder picker instead of typing a path by hand.
+**Credentials are encrypted at rest.** As of v0.6.1, every connector credential (PATs, tokens, API keys) is XChaCha20-Poly1305 encrypted with your Cortex data key before it touches disk. Same crypto primitive as your `.gai` memory files. You can safely sync your Cortex folder via iCloud Drive / Dropbox / S3 — cloud providers see ciphertext only.
 
 ## RSS / Atom feeds — the simplest connector
 
@@ -208,92 +195,6 @@ That's it. Linear's personal API keys are first-class — no OAuth dance, no app
 
 ---
 
-## Local-file connectors — watch a folder
-
-The next three connectors don't reach out to any service. They watch a folder on your own disk and ingest files as they appear or change — no credentials, no network. They share one behavior worth understanding up front:
-
-- **Live watch.** Each one registers a recursive filesystem watcher on its folder. When you create or edit a matching file, the connector ingests it within a few seconds (a short quiet-window debounce coalesces a burst of changes — say, syncing a whole vault — into a single pull).
-- **Poll backstop.** The shared connector poll (default 15 min, configurable in **Settings → Connectors** with a 60-second floor) re-scans the folder regardless, so nothing is lost if the OS drops a filesystem event. On platforms where the recursive watcher isn't available, the connector falls back to this poll alone — slower, but still correct.
-- **Incremental.** Only files modified since the last successful pull are ingested. A first pull of a large folder drains in batches so the app stays responsive.
-
-Set the folder once and these run themselves.
-
----
-
-## Obsidian — your vault as memory
-
-**What it ingests:** Markdown notes (`.md`) from an Obsidian vault folder you point at. New and edited notes flow in as you write them.
-
-**Setup time:** under a minute. No credentials.
-
-### How to add
-
-1. **Settings → Connectors → Obsidian**
-2. Set the **vault path** — click **Browse…** to pick the folder with a native folder picker, or paste the path
-3. Pick the target engram
-4. Click **Save**
-
-The connector ingests the existing notes on first save, then watches the vault for changes.
-
-### How to disable
-
-Toggle the connector off (or **Remove** it) in **Settings → Connectors**. Disabling stops the watcher and the poll; removing also deletes the stored folder path.
-
-### Tips
-
-- **One vault, one engram.** Route your vault to a dedicated engram (e.g. `obsidian`) so vault notes don't blur into manually-added content.
-- **`.obsidian/` config files are skipped** — only your actual notes are ingested.
-
----
-
-## GBrain — your local knowledge repo
-
-**What it ingests:** Markdown files (`.md`) from a GBrain git repository folder. GBrain stores knowledge as Markdown in a local repo; this connector reads those files directly — no database, no API key.
-
-**Setup time:** under a minute. No credentials.
-
-### How to add
-
-1. **Settings → Connectors → GBrain**
-2. Set the **repo path** — click **Browse…** to pick the folder, or paste the path
-3. Pick the target engram
-4. Click **Save**
-
-The `.git` folder is skipped; only the knowledge Markdown is ingested. New and changed files flow in within seconds.
-
-### How to disable
-
-Toggle off or **Remove** in **Settings → Connectors**.
-
----
-
-## AI Context Files — your assistant instructions as memory
-
-**What it ingests:** the standard AI-assistant context files from project folders you point at — `CLAUDE.md`, `CLAUDE.local.md`, `AGENTS.md`, `MEMORY.md`, `.cursorrules`, `.cursor/rules/*.md`, `GEMINI.md`, `.windsurfrules`, and `.github/copilot-instructions.md`. Your global `~/.claude/CLAUDE.md` is always included automatically.
-
-This makes the instructions you've written for *other* AI tools recallable inside Graphnosis — useful when you want one AI to know the conventions you've set for another.
-
-**Setup time:** under a minute. No credentials.
-
-### How to add
-
-1. **Settings → Connectors → AI Context Files**
-2. Add one or more **project / home directory paths** to scan (the global `~/.claude` directory is added for you)
-3. Pick the target engram
-4. Click **Save**
-
-The connector ingests the matching files it finds, then watches those directories for changes.
-
-### How to disable
-
-Toggle off or **Remove** in **Settings → Connectors**.
-
-### Tips
-
-- **Point it at your active project roots.** It only ingests the known context filenames, so pointing it at a code repo picks up that repo's `CLAUDE.md` / `AGENTS.md` and nothing else.
-
----
-
 ## Webhook — anything that can POST
 
 **What it does:** generates a unique URL that any external service can POST events to. Push-only (no pull schedule).
@@ -340,23 +241,6 @@ The webhook URL is `localhost:3458` by default — only reachable from the same 
 - **From your LAN:** use the wizard's mobile-setup flow to bind the **MCP HTTP bridge** to all interfaces. (Note: webhooks ride a separate port, `3458`. Same security tradeoff.)
 - **From the public internet:** use a tunnel like Cloudflare Tunnel, ngrok, or Tailscale Funnel. The webhook token in the URL is your authentication.
 
-## On the roadmap — not yet available
-
-These connectors are planned but **not built yet**. They don't appear in **Settings → Connectors** today. Listed so you know what's coming, not as something you can enable now:
-
-- **Notion** — pages and databases
-- **Google Drive** — docs, sheets, and files
-- **Apple Notes / Reminders** — notes and reminders
-- **Things** — tasks and projects
-- **Todoist** — tasks and projects
-- **ChatGPT export** — your exported conversation archive
-- **Discord** — messages and threads
-- **Telegram** — saved messages and channels
-- **Web bookmarklet** — save the current page URL + selection from any browser
-- **Browser "save current page" extension** — one-click capture of the page you're reading
-
-If one of these is the connector you most want, let us know — demand shapes the order they ship in.
-
 ## Troubleshooting
 
 **"auth expired" status on a connector**
@@ -370,7 +254,7 @@ If one of these is the connector you most want, let us know — demand shapes th
   - Linear: `Authentication failed` means the API key is wrong or rotated.
 
 **Pulls happen but events don't show up in the engram**
-- Check the **target engram** dropdown in the connector's row — events go to the engram set at install time. Connectors automatically skip archived engrams; if the target engram is archived, re-activate it or edit the connector to point to a different engram.
+- Check the **target engram** dropdown in the connector's row — events go to the engram set at install time. If you've since renamed or archived that engram, the connector still references it but the engram isn't in the active set.
 - Verify in **Sources** that the connector's `source.<id>` entries are appearing. If yes but no nodes are showing in your atlas / recall, your engram might need a refresh (Settings → Cortex Tools → Refresh stats).
 
 **Too many events on first pull**
@@ -378,20 +262,7 @@ If one of these is the connector you most want, let us know — demand shapes th
 
 ## Security and storage notes
 
-- **Credentials at rest:** XChaCha20-Poly1305 encrypted with your cortex data key in `<cortex>/settings.json` (as a `credentialsEnc` blob). Cloud-sync-safe — providers only ever see ciphertext.
-- **In-memory credentials:** decrypted on cortex unlock; held in memory for the connector to use. Never logged.
+- **Credentials at rest:** XChaCha20-Poly1305 encrypted with your Cortex data key in `<cortex>/settings.json` (as a `credentialsEnc` blob). Cloud-sync-safe — providers only ever see ciphertext.
+- **In-memory credentials:** decrypted on Cortex unlock; held in memory for the connector to use. Never logged.
 - **No telemetry:** connector calls go directly from your Mac to the service. Graphnosis has no server in the path.
 - **Per-connector revocation:** to revoke a connector's access, **Remove** it in Settings (deletes the credentials locally) AND revoke the token in the service's developer console (forces immediate cutoff even if the local copy somehow leaks).
-
----
-
-## Related
-
-[Connect Offline Sources](/guides/connect-offline-sources/) — the on-device counterpart: files, MQTT, OPC-UA, LoRaWAN.
-
-[Adding Content](/guides/adding-content/) — manual ingest of files, URLs, and clips.
-
-[What Leaves Your Device](/guides/network-activity/) — every outbound connection a connector makes.
-
-[Graphs & Sensitivity Tiers](/guides/graphs-and-tiers/) — route each connector to the right engram tier.
-

@@ -1,12 +1,4 @@
 ---
-import { readFileSync } from 'node:fs';
-import { resolve } from 'node:path';
-
-let version = '';
-try {
-  const conf = JSON.parse(readFileSync(resolve('../../apps/desktop/src-tauri/tauri.conf.json'), 'utf8'));
-  version = conf.version ? `v${conf.version}` : '';
-} catch {}
 ---
 
 <header class="sticky top-0 z-50 backdrop-blur-md bg-[#13131a]/90 border-b border-[#2a2a3d]">
@@ -18,34 +10,27 @@ try {
         <img src="/graphnosis-logo.png" alt="Graphnosis logo" class="w-12 h-12 shrink-0" />
         <span class="flex flex-col">
           <span class="font-black text-lg text-[#67e8f9] tracking-tight">Graphnosis</span>
-          <span class="hidden xl:block text-sm text-[#f0f0f5] font-normal tracking-wide">Local, private, encrypted, deterministic job memory</span>
+          <span class="text-sm text-[#f0f0f5] font-normal tracking-wide">Your Local Encrypted Second Cortex</span>
         </span>
       </a>
 
       <!-- Desktop nav links -->
-      <div class="hidden md:flex items-center gap-6">
-        <a href="/memory-studio" class="text-sm font-semibold text-[#67e8f9] hover:text-[#a5f3fc] transition-colors">MemoryStudio</a>
-        <a href="/skills-goals-trainer" class="text-sm font-semibold bg-clip-text text-transparent hover:opacity-80 transition-opacity" style="background-image: linear-gradient(90deg, #67e8f9 0%, #a78bfa 100%);">Skills + Goals</a>
-        <a href="/job-memory-kits" class="text-sm text-[#a78bfa] hover:text-[#c4b5fd] font-semibold transition-colors">Job Memory Kits</a>
-        <a href="/getting-started/overview" class="text-sm text-[#c4c6d6] hover:text-[#f0f0f5] transition-colors">Docs</a>
-        <!-- Always points to the /download chooser page; the visitor picks
-             their OS there. We intentionally do NOT detect OS or rewrite the
-             label client-side — every Download button reads the same
-             "Download v1.X.Y" everywhere. -->
+      <div class="hidden md:flex items-center gap-8">
+        <a href="#graphnosis" class="text-sm text-[#71717a] hover:text-[#f0f0f5] transition-colors">Graphnosis</a>
+        <a href="#features" class="text-sm text-[#71717a] hover:text-[#f0f0f5] transition-colors">Features</a>
+        <a href="#clients" class="text-sm text-[#71717a] hover:text-[#f0f0f5] transition-colors">AI Clients</a>
+        <a href="/getting-started/overview" class="text-sm text-[#71717a] hover:text-[#f0f0f5] transition-colors">Docs</a>
+        <a href="#tech" class="text-sm text-[#71717a] hover:text-[#f0f0f5] transition-colors font-mono">.gai</a>
         <a
-          href="/download"
+          href="/download/mac"
           class="inline-flex items-center px-4 py-2 rounded-full bg-[#67e8f9] hover:bg-[#4dd6e8] text-[#13131a] text-sm font-semibold transition-colors"
         >
-          Download{version ? ` ${version}` : ''}
+          Download
         </a>
       </div>
 
       <!-- Mobile hamburger (CSS-only focus-within trick) -->
-      <div class="md:hidden flex items-center gap-3">
-        {version && (
-          <a href="/download" class="text-xs font-mono font-semibold px-2.5 py-1 rounded-full border border-[#67e8f9] text-[#67e8f9]">{version}</a>
-        )}
-        <div class="relative" id="mobile-menu-container">
+      <div class="md:hidden relative" id="mobile-menu-container">
         <button
           id="mobile-menu-btn"
           aria-label="Toggle menu"
@@ -57,40 +42,24 @@ try {
           <span class="block w-5 h-0.5 bg-[#f0f0f5] transition-opacity"></span>
           <span class="block w-5 h-0.5 bg-[#f0f0f5] transition-transform"></span>
         </button>
-        </div>
       </div>
     </div>
 
     <!-- Mobile menu -->
-    <div id="mobile-menu" class="hidden md:hidden pb-6 border-t border-[#2a2a3d] mt-2 pt-6">
-      <div class="flex flex-col gap-6 items-center">
-        <a href="/memory-studio" class="text-xl font-semibold text-[#67e8f9]">MemoryStudio</a>
-        <a href="/skills-goals-trainer" class="text-xl font-semibold bg-clip-text text-transparent" style="background-image: linear-gradient(90deg, #67e8f9 0%, #a78bfa 100%);">Skills + Goals</a>
-        <a href="/job-memory-kits" class="text-xl text-[#a78bfa] font-semibold hover:text-[#c4b5fd] transition-colors">Job Memory Kits</a>
-        <a href="/getting-started/overview" class="text-xl text-[#c4c6d6] hover:text-[#f0f0f5] transition-colors">Docs</a>
+    <div id="mobile-menu" class="hidden md:hidden pb-4 border-t border-[#2a2a3d] mt-2 pt-4">
+      <div class="flex flex-col gap-4">
+        <a href="#graphnosis" class="text-sm text-[#71717a] hover:text-[#f0f0f5] transition-colors">Graphnosis</a>
+        <a href="#features" class="text-sm text-[#71717a] hover:text-[#f0f0f5] transition-colors">Features</a>
+        <a href="#clients" class="text-sm text-[#71717a] hover:text-[#f0f0f5] transition-colors">AI Clients</a>
+        <a href="/getting-started/overview" class="text-sm text-[#71717a] hover:text-[#f0f0f5] transition-colors">Docs</a>
+        <a href="#tech" class="text-sm text-[#71717a] hover:text-[#f0f0f5] transition-colors font-mono">.gai</a>
         <a
-          href="/download"
-          class="inline-flex items-center justify-center w-full px-6 py-3 rounded-full bg-[#67e8f9] hover:bg-[#4dd6e8] text-[#13131a] text-lg font-semibold transition-colors"
+          href="#"
+          class="inline-flex items-center justify-center px-4 py-2 rounded-full bg-[#67e8f9] hover:bg-[#4dd6e8] text-[#13131a] text-sm font-semibold transition-colors"
         >
-          Download{version ? ` ${version}` : ''}
+          Download
         </a>
       </div>
     </div>
   </nav>
 </header>
-
-<script is:inline>
-  (function () {
-    // Close mobile menu when tapping outside the nav header
-    document.addEventListener('click', function (e) {
-      var container = document.getElementById('mobile-menu-container');
-      var menu = document.getElementById('mobile-menu');
-      var btn = document.getElementById('mobile-menu-btn');
-      if (!menu || menu.classList.contains('hidden')) return;
-      if (container && container.contains(e.target)) return;
-      if (menu.contains(e.target)) return;
-      menu.classList.add('hidden');
-      if (btn) btn.setAttribute('aria-expanded', 'false');
-    }, true);
-  })();
-</script>

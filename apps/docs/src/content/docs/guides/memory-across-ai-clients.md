@@ -1,15 +1,15 @@
 ---
 title: Memory Across AI Clients
-description: Real-world workflows where one Graphnosis cortex keeps the same memory consistent across Claude Desktop, Claude Code, Cursor, and any other MCP client.
+description: Real-world workflows where one Graphnosis Cortex keeps the same memory consistent across Claude Desktop, Claude Code, Cursor, and any other MCP client.
 sidebar:
   order: 0
 ---
 
-The whole point of a local, encrypted second cortex isn't "save things." It's "save once, retrieve from any AI client or any device, forever, without re-uploading anything." Below are concrete workflows people use Graphnosis for. Each one is just a sketch — pick whichever AI clients and devices you actually use; the memory is the same in all of them.
+The whole point of a local, encrypted second cortex isn't "save things." It's "save once, retrieve from any AI client, forever, without re-uploading anything." Below are five concrete workflows people use Graphnosis for. Each one is just a sketch — pick whichever AI clients you actually use; the memory is the same in all of them.
 
 A reminder of the core loop:
 
-> Save in client A → Update or expand in client B → Recall in client C — all reading from the same encrypted cortex on your Mac, no re-ingest, no copy-paste, no cloud history.
+> Save in client A → Update or expand in client B → Recall in client C — all reading from the same encrypted Cortex on your Mac, no re-ingest, no copy-paste, no cloud history.
 
 ---
 
@@ -85,23 +85,9 @@ The trip becomes a long, structured memory you can hand to friends, your future 
 
 ---
 
-## 6. Save from your phone, recall on your laptop
+## 6. The auto-growing inbox — connectors + cross-client recall
 
-Memory doesn't only move between AI clients — it moves between *devices*. With a personal server running, you capture something on your phone and it's waiting on your laptop, because both are reading from the one cortex on the server.
-
-A realistic flow:
-
-- **Tuesday, on the train, phone:** Open your cortex in the phone's browser ([browser access](/getting-started/mobile/) over Tailscale). You read an article, jot a few takeaways, and save them to your `research` engram — straight into the same cortex your laptop uses.
-- **Tuesday, also on the phone, Claude for iOS:** Same cortex, this time via the [MCP bridge](/getting-started/mobile/). You ask "what did I already note about this topic?" and your AI recalls the notes you just saved, plus older ones.
-- **Wednesday, back at your desk, Claude Code:** "Pull my research notes from this week into an outline." Everything you captured on the move is right there — no export, no sync app, no copy-paste. The phone was just a remote screen onto the same encrypted cortex.
-
-The cortex never lived on the phone. It stayed encrypted on the server; your phone reached it over Tailscale, and the laptop reads the same store. One memory, every device.
-
----
-
-## 7. The auto-growing inbox — connectors + cross-client recall
-
-The first five workflows are about you saving things deliberately. This sixth is the inverse — **memory that lands in your cortex without you doing anything**, then becomes recallable across every AI client the same way.
+The first five workflows are about you saving things deliberately. This sixth is the inverse — **memory that lands in your Cortex without you doing anything**, then becomes recallable across every AI client the same way.
 
 A realistic flow:
 
@@ -111,7 +97,7 @@ A realistic flow:
 - **Thursday, on your phone, Claude for iOS:** Using the [mobile bridge](/getting-started/mobile/), same query, same answer — your `work` engram is reachable from anywhere over Tailscale.
 - **Friday, back in Cursor on the laptop:** Ask "draft a status update for the team based on what landed this week." Your AI pulls the week's connector-ingested context across Slack + GitHub + your manual notes.
 
-You stopped curating. The cortex curates itself from the tools you already use, and every AI client you connect to it sees the same picture. Cross-device, cross-client, cross-source — one consistent memory.
+You stopped curating. The Cortex curates itself from the tools you already use, and every AI client you connect to it sees the same picture. Cross-device, cross-client, cross-source — one consistent memory.
 
 Setup walkthroughs for each connector: [Auto-ingest from your tools](/guides/connectors/).
 
@@ -123,8 +109,8 @@ Four things show up in every example:
 
 1. **You don't pick "the right AI client" up front.** You use whichever client is in front of you at the moment — desktop, mobile, IDE. The memory is independent of any single AI.
 2. **You don't re-upload anything.** Graphnosis stores the summary once; every AI client recalls just the slice relevant to the current prompt. Smaller context windows, faster responses, lower token costs.
-3. **Your data doesn't leave your machine.** The cortex is encrypted on your Mac. The AI client only ever sees the few hundred tokens that matter for the current prompt — not your whole archive, and never the underlying files. Mobile clients reach you over a bearer-authenticated local-network bridge or Tailscale — still your network, still your devices.
-4. **The cortex grows whether you're paying attention or not.** Manual saves (workflows 1–5) plus passive connector ingest (workflow 6) compound. After a few weeks, ask your AI anything about your work and the relevant context is just there.
+3. **Your data doesn't leave your machine.** The Cortex is encrypted on your Mac. The AI client only ever sees the few hundred tokens that matter for the current prompt — not your whole archive, and never the underlying files. Mobile clients reach you over a bearer-authenticated local-network bridge or Tailscale — still your network, still your devices.
+4. **The Cortex grows whether you're paying attention or not.** Manual saves (workflows 1–5) plus passive connector ingest (workflow 6) compound. After a few weeks, ask your AI anything about your work and the relevant context is just there.
 
 If you find yourself thinking "I wish my AI remembered that thing I told it last week" — that's the thing Graphnosis exists to solve. Pick one of the workflows above, swap the topic for whatever you actually care about, and try it for a few days.
 
@@ -138,16 +124,3 @@ When asking your AI client to save into a specific engram, use a name that's spe
 - ⚠️ `notes` (too vague — you'll have one giant engram), `today`, `misc`
 
 You can always rename via the Settings → Engrams panel later. And if your AI client guesses a name that doesn't exist yet (or is close to something that does), Graphnosis shows you a confirmation banner before creating a new engram — no AI ever creates engrams without your okay.
-
----
-
-## Related
-
-[A GRAPHNOSIS.md for Your AI](/getting-started/graphnosis-md/) — the drop-in instructions file that makes any AI actually use Graphnosis.
-
-[Connect Your AI](/getting-started/connect-ai/) — wire each client into the same cortex.
-
-[Auto-ingest from Your Tools](/guides/connectors/) — passive workflow that compounds across sessions.
-
-[Graphs & Sensitivity Tiers](/guides/graphs-and-tiers/) — keep work, personal, and sensitive material separate.
-

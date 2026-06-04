@@ -1,106 +1,86 @@
 ---
 title: Correcting Memories
-description: How to fix, update, or extend memories with the edit flow — deterministic by default, reviewed before anything is written.
+description: How to fix inaccurate or outdated memories using the correction flow.
 sidebar:
   order: 3
 ---
 
-Information changes. Something you ingested six months ago may now be outdated, or you want to add detail to an existing memory. Graphnosis has a structured **edit flow** that changes a memory precisely, without re-ingesting an entire source — and without ever quietly destroying what was there before.
+Information changes. Something you ingested six months ago may now be outdated. Graphnosis has a structured correction flow that lets you update memories precisely, without re-ingesting an entire source.
 
-## What an edit is
+## What a correction is
 
-An edit is a natural-language statement of what should change. It covers three situations:
+A correction targets a specific chunk (or group of chunks) and proposes a natural-language change. A local LLM reviews the proposal, generates a diff, and asks you to confirm before anything is written. No AI model — local or cloud — can modify your Cortex without your explicit confirmation.
 
-- **Correction** — "actually it was September, not August." Fixes a factual error.
-- **Update** — "my plans changed — update my Q3 milestones to…" Replaces outdated content.
-- **Append / add detail** — "add these items to my project plan." Extends an existing memory.
+## Prerequisites
 
-Graphnosis turns that statement into a **diff** — a precise, structured set of changes — and shows it to you. **Nothing is written until you approve the diff.** No AI model, local or cloud, can modify your cortex without your explicit confirmation.
+The correction flow requires **Ollama** running locally with the `llama3.2:3b-instruct-q4_K_M` model:
 
-An edit is one of the few **correctness events** that can change a memory's standing (see [Indelibility & Determinism](/guides/indelibility-and-determinism/)). It does this safely: the original memory is **superseded**, not erased.
+```bash
+# Install Ollama from https://ollama.com, then:
+ollama pull llama3.2:3b-instruct-q4_K_M
+```
 
-## Deterministic by default
+Ollama must be running (`ollama serve`) when you trigger a correction. Graphnosis will show an error if it cannot reach Ollama at `http://localhost:11434`.
 
-The correction flow works with **no AI model installed** — this is the default.
+:::note
+The local LLM is used only to generate and review the diff — it never receives your full Cortex. It only sees the specific chunk you're correcting and your proposed change.
+:::
 
-Given your correction, Graphnosis recalls the single closest-matching memory and proposes one change: **supersede** that memory with your correction text. If nothing matches, it proposes recording the correction as a new memory instead. This is fully deterministic — the same correction always produces the same diff.
+## Correcting a memory from the UI
 
-## With a Local LLM (optional)
+1. Open the Graphnosis window and find the chunk you want to correct (use the search bar).
+2. Click the chunk to open the detail view.
+3. Click **Correct this memory**.
+4. Type your correction in natural language, for example: *"The API endpoint changed from /v1/search to /v2/query in March 2025."*
+5. Graphnosis sends the chunk + your description to Ollama and shows you a proposed diff.
+6. Review the diff. If it looks right, click **Apply**. If not, edit your description and try again.
 
-If you enable the optional [Local LLM](/guides/indelibility-and-determinism/#local-llm), the correction flow auto-switches to a more capable path: the model reads several candidate memories and can propose a **multi-part diff** — superseding one memory, editing another, adding a third — all in one reviewed step. This path is non-deterministic (the proposed diff can vary between runs), which is why it is opt-in and off by default.
+## Correcting via MCP (from a conversation)
 
-Either way, the diff is only ever a **preview**. You review it before anything is committed.
+Your AI can initiate a correction mid-conversation using the `correct` and `apply` tools.
 
-## Corrections preserve the original
-
-Applying a correction does **not** overwrite or delete the old memory. The default `supersede` operation keeps the original for audit lineage — it is demoted, not destroyed — and the op-log records the full before/after. You can trace the history at any time, and corrections are reversible. This is the indelibility guarantee in action: **a correction never loses information.**
-
-## Initiating an edit from your AI
-
-Your AI can start an edit mid-conversation using the `edit` and `apply` MCP tools. (`correct` also works as a backward-compatible alias.)
-
-**Step 1 — the AI calls `edit`:**
+**Step 1 — the AI calls `correct`:**
 
 ```json
 {
-  "tool": "edit",
+  "tool": "correct",
   "arguments": {
-    "correction": "The API endpoint changed from /v1/search to /v2/query in March 2025.",
-    "graphId": "work"
+    "chunkId": "abc123",
+    "proposal": "The endpoint changed from /v1/search to /v2/query."
   }
 }
 ```
 
-`correction` is required; `graphId` is optional (when omitted, Graphnosis infers the engram from the closest-matching memory). The tool **writes nothing** — it returns a `diffId`, a `mode` (`"deterministic"` or `"llm-assisted"`), the proposed `preview` diff, and the candidate memories it considered.
+The `correct` tool does not write anything. It returns a `correctionId` and a proposed diff for your review.
 
-**Step 2 — you approve the diff.** Normally you do this in the app (see below). An AI client should only call `apply` if you have explicitly reviewed the diff and told it to commit:
+**Step 2 — you (or the AI, with your permission) calls `apply`:**
 
 ```json
 {
   "tool": "apply",
   "arguments": {
-    "graphId": "work",
-    "diffId": "diff_m8x2k1"
+    "correctionId": "xyz789"
   }
 }
 ```
 
-`apply` commits the change via the op-log and returns `Applied.`
+`apply` commits the change. The original chunk is replaced, a new embedding is generated, and the op-log records the correction event.
 
 :::caution
-Never let an AI client call `apply` without your review. In Claude Desktop and Cursor you can require tool-call confirmation in the client settings.
+Never allow your AI client to call `apply` without reviewing the diff. In Claude Desktop and Cursor, you can require tool-call confirmation in the client settings.
 :::
 
-## Reviewing a correction in the app
+## What happens to the original chunk
 
-When a correction is proposed, it appears as a pending diff in the **Check-in** tab — and Graphnosis fires a system notification if its window is in the background. There you see exactly what will change and decide:
+After applying a correction:
 
-- **Approve** — the diff is applied via the op-log.
-- **Reject** — the proposed diff is discarded; nothing changes.
-
-Graphnosis proposes; you decide. A correction is never applied on your behalf.
-
-## What happens when a correction is applied
-
-- The targeted memory is **superseded** — kept for lineage, demoted so it no longer surfaces in recall.
-- The corrected content becomes a new, active memory with a fresh embedding.
-- The op-log records a `correction` event referencing both the old and new content, so the change is fully auditable and reversible.
+- The original chunk text is overwritten with the corrected version.
+- A new embedding is computed for the corrected text.
+- The op-log records a `correction` event referencing both the old and new content (for audit purposes).
+- The old content is not retained in the active graph, but it remains in the op-log if you need to trace history.
 
 ## Correction scope
 
-The deterministic path corrects **one memory** — the closest match — per call. The LLM-assisted path can touch several memories in a single diff.
+A single correction targets one chunk at a time. If an error spans multiple chunks (for example, a wrong date mentioned in several places), you'll need to correct each chunk individually or reingest the updated source file.
 
-If an error spans many memories (for example, a wrong date repeated across a whole document), it is usually faster to update the source file and use **Reingest** from the Source detail view.
-
----
-
-## Related
-
-[Indelibility & Determinism](/guides/indelibility-and-determinism/) — why `edit` supersedes rather than overwrites.
-
-[MCP Tools — `edit`](/reference/mcp-tools/#edit) — what an AI client actually calls.
-
-[Deterministic Consolidation](/guides/deterministic-consolidation/) — the background passes that merge near-duplicates.
-
-[Recovery](/guides/recovery/) — how to roll back if a correction went wrong.
-
+For bulk updates, reingest is usually faster: update the source file and use **Reingest** from the Source detail view.
