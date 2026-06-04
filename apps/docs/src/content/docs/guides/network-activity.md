@@ -21,10 +21,10 @@ Before the full inventory, the clear negatives — categories that might reasona
 | Crash reporting | **None.** No Sentry, Bugsnag, or equivalent. Crashes stay on your machine. |
 | Cloud LLM API calls | **None.** No calls to OpenAI, Anthropic, Google, or any hosted model. The optional AI layer uses a local Ollama instance, entirely on your device. |
 | Cloud sync or backup | **None.** Your cortex files never leave your machine over the network. Sync to another device is manual (copy the cortex folder) or via your own setup. |
-| Calls to Graphnosis / Nehloo servers | **None.** There is no Graphnosis cloud backend. No memory is uploaded, no usage is reported, no server is consulted. |
-| User identity tracking | **None.** The app has no account, no login, and no way to identify who is using it. |
+| Calls to Graphnosis / Nehloo servers | **None for your memory.** There is no Graphnosis cloud backend — no memory is uploaded, no usage is reported. The one exception is **Pro licensing**: a subscriber's device checks the billing server for its license token. It sends only an email + a per-subscription secret, never any cortex content. See [Pro licensing](#pro-licensing-subscribers-only) below. |
+| User identity tracking | **None in the app.** No account, no login, no analytics, no way to tie usage to a person. Pro **billing** necessarily involves identity — Stripe holds your email and card — but that lives with Stripe and the billing server only; it is never linked to your memory, your recalls, or how you use the app. Don't subscribe and there is no identity anywhere. |
 
-You can verify the last point the blunt way: **disconnect from the network entirely.** Recall, ingest, correction, the 3D atlas, the brain engine — everything works offline. None of the core functions need a network because none of them talk to a server.
+You can verify the core claim the blunt way: **disconnect from the network entirely.** Recall, ingest, correction, the 3D atlas, the brain engine — and Pro feature gating, which verifies your license token locally — all work offline. None of the core functions need a network because none of them talk to a server.
 
 ---
 
@@ -50,6 +50,22 @@ These requests happen without any action from you.
 - **What is sent:** An HTTP GET to fetch the model files. No user data.
 - **What is received:** The ONNX model weights, cached to your local app data directory.
 - **After the first run:** Never downloaded again. The model lives on disk and is loaded locally for every recall and ingest operation from that point on.
+
+### Pro licensing (subscribers only)
+
+This applies **only if you subscribe to Graphnosis Pro.** On the free tier, none of it happens — there is no email, no billing server contact, no identity anywhere.
+
+- **License token check.**
+  - **When:** On cortex unlock, and periodically while open, for a device that holds a Pro subscription.
+  - **Where:** The billing server — `https://graphnosis.com/api/subscription/token`.
+  - **What is sent:** Your subscription email and a per-subscription secret (the poll key, delivered once when you activated). Nothing else — no cortex content, no usage, no identifiers beyond those two.
+  - **What is received:** Your current signed license token (or nothing, if there's no active subscription). The token is then **verified locally** against a public key baked into the app — the server is never consulted to *use* a Pro feature, only to *fetch* the token. Pro gating works fully offline once the token is stored.
+- **Manage subscription.**
+  - **When:** Only when you click "Manage or cancel subscription" in Settings → License.
+  - **Where:** Opens `graphnosis.com/account`, which immediately redirects to **Stripe's** hosted billing portal (`billing.stripe.com`). Graphnosis serves no account page of its own and handles no login — Stripe owns the email verification and the portal.
+  - **What is sent:** Nothing from the app beyond opening the link. You authenticate with Stripe directly; Graphnosis never sees your card.
+
+Payment itself is handled entirely by Stripe at checkout. Graphnosis never receives or stores card details.
 
 ---
 
