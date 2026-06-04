@@ -103,7 +103,9 @@ jobs:
       - name: Ensure PSGallery is registered
         shell: powershell
         run: |
-          Register-PSRepository -Default -ErrorAction SilentlyContinue
+          if (-not (Get-PSRepository -Name PSGallery -ErrorAction SilentlyContinue)) {
+            try { Register-PSRepository -Default } catch { Write-Host "Register-PSRepository: $_" }
+          }
           Set-PSRepository -Name PSGallery -InstallationPolicy Trusted
 
       - name: Sign installer (Azure Artifact Signing)
