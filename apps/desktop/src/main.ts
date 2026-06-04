@@ -3328,12 +3328,17 @@ async function refreshStats(): Promise<void> {
     if (data.sources.length === 0) {
       els.sourcesList.innerHTML = '<p class="subtitle">No sources yet. Use the `remember` MCP tool from Claude or drag a file in.</p>';
     } else {
-      // Group sources by engram, preserving the order engrams appear in
-      // loadedGraphs (active first, then archived). Within each group sort
+      // Group sources by engram, in loadedGraphs order. Archived engrams (and
+      // their sources) are hidden everywhere except Settings → Cortex
+      // management — so drop their sources here too. Within each group sort
       // newest-first by ingestedAt.
-      const groupOrder = loadedGraphs.map((g) => g.graphId);
+      const archivedGraphs = new Set(
+        loadedGraphs.filter((g) => g.metadata.archived).map((g) => g.graphId),
+      );
+      const groupOrder = loadedGraphs.filter((g) => !g.metadata.archived).map((g) => g.graphId);
       const byEngram = new Map<string, SourceRecord[]>();
       for (const s of data.sources) {
+        if (archivedGraphs.has(s.graphId)) continue;
         if (!byEngram.has(s.graphId)) byEngram.set(s.graphId, []);
         byEngram.get(s.graphId)!.push(s);
       }
@@ -13564,7 +13569,7 @@ const PRESENTATION_KEY = 'graphnosis:presentationConfig';
 // allowlist, so it reveals only for the engrams/sources the user picked.
 type PresSurface =
   | 'cortexPath' | 'stats' | 'vitality' | 'mcpClients' | 'connectors'
-  | 'recents' | 'studioResults' | 'remoteAccess' | 'statusProcess' | 'appVersion' | 'license';
+  | 'recents' | 'studioResults' | 'predict' | 'foresight' | 'remoteAccess' | 'statusProcess' | 'appVersion' | 'license';
 const PRES_SURFACE_DEFS: Array<{ key: PresSurface; label: string; hint: string }> = [
   { key: 'stats',          label: 'Stats & counts',     hint: 'Node / source / engram totals, growth bars' },
   { key: 'vitality',       label: 'Vitality & health',  hint: 'Cortex grade, memory-health figures' },
@@ -13573,6 +13578,8 @@ const PRES_SURFACE_DEFS: Array<{ key: PresSurface; label: string; hint: string }
   { key: 'connectors',     label: 'Data sources / connectors', hint: 'Connector names + file paths in Get Connected' },
   { key: 'recents',        label: 'Recents',            hint: 'Recently-touched memory previews' },
   { key: 'studioResults',  label: 'Memory Studio results', hint: 'Recall / dig-deeper output (per-engram sections still follow your engram picks)' },
+  { key: 'predict',        label: 'Foresight — Predict',  hint: 'The Predict output (risks & opportunities) on the Foresight page' },
+  { key: 'foresight',      label: 'Foresight — Insights', hint: 'The Insights output on the Foresight page and the Home Foresight teaser' },
   { key: 'remoteAccess',   label: 'Remote access (QR / URL / token)', hint: 'Mobile & Remote QR codes, server URL, and bearer token — leave OFF to keep credentials hidden' },
   { key: 'statusProcess',  label: 'Background process line', hint: 'The live "Self-healing…/GLL…" status-bar text' },
   { key: 'appVersion',     label: 'App version',        hint: 'The version pill in the status bar' },
@@ -14261,7 +14268,12 @@ async function renderPresentationSources(): Promise<void> {
   let data: StatsSummary | null = null;
   try { data = (await invoke('inspector_stats')) as StatsSummary; } catch { /* leave loading */ }
   if (!list.isConnected) return; // page navigated away
-  const sources = data?.sources ?? [];
+  // Archived engrams (and their sources) must never appear anywhere — drop
+  // their sources before they reach the cache or the grouped display.
+  const archivedGraphs = new Set(
+    loadedGraphs.filter((g) => g.metadata.archived).map((g) => g.graphId),
+  );
+  const sources = (data?.sources ?? []).filter((s) => !archivedGraphs.has(s.graphId));
   presSourcesCache = sources; // so Select-all knows every source id
   if (sources.length === 0) { list.innerHTML = '<p class="pres-empty">No sources ingested yet.</p>'; return; }
   const byGraph = new Map<string, SourceRecord[]>();
@@ -18686,6 +18698,10 @@ function populateEngramDropdown(selectId: string, selectedId?: string): void {
   sel.innerHTML =
     `<option value="__new__">New Engram…</option>` +
     [...loadedGraphs]
+      // Archived engrams must never appear as a choice. Keep the currently
+      // selected one (if it happens to be archived) so editing an existing
+      // connector/scope doesn't silently drop its target.
+      .filter((g) => !g.metadata.archived || g.graphId === selectedId)
       .sort((a, b) => (a.metadata.displayName ?? a.graphId).localeCompare(b.metadata.displayName ?? b.graphId))
       .map((g) => `<option value="${escapeHtml(g.graphId)}" ${g.graphId === fallback ? 'selected' : ''}>${escapeHtml(g.metadata.displayName ?? g.graphId)}</option>`)
       .join('');

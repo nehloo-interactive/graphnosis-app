@@ -4332,6 +4332,10 @@
       }
 
       /* ── Foresight (Goals page) lanes + Home teaser ─────────────────────── */
+      /* Each Foresight section sits in its own card. */
+      .foresight-card { padding: 14px 16px; border: 1px solid var(--border); border-radius: 12px; margin-top: 14px; background: color-mix(in srgb, var(--bg) 96%, var(--fg) 4%); position: relative; }
+      .foresight-card > .foresight-lane-label:first-child { margin-top: 0; }
+      .foresight-card > .foresight-lane:first-child .foresight-lane-label { margin-top: 0; }
       .foresight-lane-label { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; color: var(--fg-dim); margin: 16px 0 6px; }
       .foresight-gate { padding: 12px 14px; border: 1px solid var(--border); border-radius: 10px; margin-top: 14px; background: color-mix(in srgb, var(--bg) 94%, var(--fg) 6%); }
       .foresight-lane { margin-top: 18px; }
@@ -10116,7 +10120,7 @@
                           <h3 class="home-card-title">Foresight</h3>
                           <span class="home-card-hint">what's ahead, from your memory</span>
                         </div>
-                        <div id="home-foresight-body" class="home-foresight-body"></div>
+                        <div id="home-foresight-body" class="home-foresight-body" data-pres="surface:foresight"></div>
                       </section>
 
                       <!-- Recent brain activity — the background loops working while
@@ -11016,21 +11020,24 @@
                           Your goals, projected forward by your growing memory — predict what's
                           ahead, surface risks &amp; opportunities, and see the patterns the brain found.
                         </p>
-                        <p class="foresight-lane-label">Your goals</p>
-                        <div id="lb-goals" class="lb-block"></div>
-                        <div id="lb-goal-form" class="lb-goal-form hidden">
-                          <input id="lb-goal-context" type="text"
-                                 placeholder="What do you want to develop? (e.g. launch the mobile app)" />
-                          <input id="lb-goal-strategy" type="text"
-                                 placeholder="Strategy or approach (e.g. lean MVP)" />
-                          <input id="lb-goal-goals" type="text"
-                                 placeholder="What does success look like? (e.g. 100 users by Q3)" />
-                          <div class="lb-goal-form-actions">
-                            <button id="btn-lb-goal-cancel" class="btn-sm">Cancel</button>
-                            <button id="btn-lb-goal-develop" class="btn-sm primary">Develop &amp; save goal</button>
+                        <!-- Goals card (deterministic; per-goal redaction lives on each goal card) -->
+                        <div class="foresight-card">
+                          <p class="foresight-lane-label">Your goals</p>
+                          <div id="lb-goals" class="lb-block"></div>
+                          <div id="lb-goal-form" class="lb-goal-form hidden">
+                            <input id="lb-goal-context" type="text"
+                                   placeholder="What do you want to develop? (e.g. launch the mobile app)" />
+                            <input id="lb-goal-strategy" type="text"
+                                   placeholder="Strategy or approach (e.g. lean MVP)" />
+                            <input id="lb-goal-goals" type="text"
+                                   placeholder="What does success look like? (e.g. 100 users by Q3)" />
+                            <div class="lb-goal-form-actions">
+                              <button id="btn-lb-goal-cancel" class="btn-sm">Cancel</button>
+                              <button id="btn-lb-goal-develop" class="btn-sm primary">Develop &amp; save goal</button>
+                            </div>
                           </div>
+                          <button id="btn-new-goal" class="btn-sm">+ Develop a new goal…</button>
                         </div>
-                        <button id="btn-new-goal" class="btn-sm">+ Develop a new goal…</button>
 
                         <!-- ── Foresight lanes (LLM-grounded) — Predict + Insights.
                              Gated on the local LLM; goals above always work. -->
@@ -11039,19 +11046,23 @@
                           <button id="btn-foresight-llm" class="btn-sm">Set up Local LLM →</button>
                         </div>
                         <div id="foresight-body" class="foresight-body">
-                          <div class="foresight-lane">
+                          <!-- Predict card — title/description stay visible; only the
+                               output redacts (its own "Predict" surface toggle). -->
+                          <div class="foresight-card">
                             <p class="foresight-lane-label">Predict</p>
                             <p class="brain-subtitle" style="margin:-2px 0 8px;">Before you act, see the risks &amp; opportunities your memory implies.</p>
                             <div class="foresight-predict-row">
                               <input id="foresight-predict-input" type="text" placeholder="What are you about to do? (e.g. launch in Romania)" />
                               <button id="btn-foresight-predict" class="btn-sm primary">Predict</button>
                             </div>
-                            <div id="foresight-predict-out" class="foresight-out"></div>
+                            <div id="foresight-predict-out" class="foresight-out" data-pres="surface:predict"></div>
                           </div>
-                          <div class="foresight-lane">
+                          <!-- Insights card — title/description stay visible; only the
+                               output redacts (the "Insights" surface toggle). -->
+                          <div class="foresight-card">
                             <p class="foresight-lane-label">Insights</p>
                             <p class="brain-subtitle" style="margin:-2px 0 8px;">Patterns &amp; gaps the brain surfaced across your memory.</p>
-                            <div id="foresight-insights" class="foresight-out"></div>
+                            <div id="foresight-insights" class="foresight-out" data-pres="surface:foresight"></div>
                           </div>
                         </div>
 
