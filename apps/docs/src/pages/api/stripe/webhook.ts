@@ -26,7 +26,7 @@ import type { APIRoute } from 'astro';
 import type Stripe from 'stripe';
 import { getStripe, getWebhookSecret } from '../../../server/stripe.js';
 import { mintLicenseToken, type LicensePayload } from '../../../server/sign.js';
-import { putToken, deleteToken, type TokenRecord } from '../../../server/kv.js';
+import { putToken, getToken, deleteToken, type TokenRecord } from '../../../server/kv.js';
 import { getEnv, requireEnv, requireKv } from '../../../server/env.js';
 
 export const prerender = false;
@@ -153,14 +153,30 @@ async function mintAndPersist(
   // /api/subscription/token can answer "is this current?" without re-verifying
   // the signature on every poll.
   const expSeconds = decodeExpFromToken(token);
+  // Poll secret: gate the by-email poll so only the device that claimed this
+  // subscription (and thus holds the secret) can pull the token. Preserve any
+  // existing secret across refreshes so a live device's stored key stays valid;
+  // mint a fresh one only on first issue.
+  const existing = await getToken(kv, email);
+  const pollSecret = existing?.pollSecret ?? randomSecret();
   const record: TokenRecord = {
     token,
     exp: expSeconds,
     updatedAt: Date.now(),
     plan,
+    pollSecret,
   };
   await putToken(kv, email, record);
   console.log('[billing webhook] token persisted for', email);
+}
+
+/** 32-byte URL-safe random secret (Web Crypto — Worker-safe). */
+function randomSecret(): string {
+  const bytes = new Uint8Array(24);
+  crypto.getRandomValues(bytes);
+  let s = '';
+  for (const b of bytes) s += b.toString(16).padStart(2, '0');
+  return s;
 }
 
 function decodeExpFromToken(token: string): number {

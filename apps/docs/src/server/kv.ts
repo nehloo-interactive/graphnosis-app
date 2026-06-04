@@ -30,6 +30,11 @@ export interface TokenRecord {
   exp: number;
   updatedAt: number;
   plan: string;
+  /** Shared secret the desktop must present (as `?key=`) to poll this email's
+   *  token. Delivered once via the claim deep link, then stored by the app.
+   *  Stops anyone who merely knows the email from pulling the signed token.
+   *  Stable across token refreshes (preserved on re-mint). */
+  pollSecret?: string;
 }
 
 const CLAIM_TTL_SECONDS = 30 * 60;        // 30 min — magic-link claim window
