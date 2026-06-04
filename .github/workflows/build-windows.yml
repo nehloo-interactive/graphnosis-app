@@ -1,0 +1,215 @@
+name: Build (Windows)
+
+# Manual trigger for Windows test builds.
+# Produces a signed NSIS (.exe) and/or MSI installer as a downloadable artifact.
+# Signing uses Azure Artifact Signing (nehloo-trusted-signing / graphnosis-public profile).
+# Windows-specific config is in src-tauri/tauri.windows.conf.json (auto-loaded by Tauri).
+#
+# Set upload_to_release=true when ref is a release tag (e.g. v1.13.1) to attach
+# the signed MSI directly to the matching GitHub Release. This is the recommended
+# path for backfilling Windows packages onto an already-published release.
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: 'Branch or tag to build (default: main)'
+        required: false
+        default: 'main'
+      upload_to_release:
+        description: 'Upload signed MSI to the GitHub Release for this tag'
+        required: false
+        default: false
+        type: boolean
+
+jobs:
+  build-windows:
+    runs-on: windows-2022
+    permissions:
+      contents: write
+      id-token: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.ref }}
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v3
+        with:
+          version: 10
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install Rust (stable, x86_64-pc-windows-msvc)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - name: Install Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build workspace core package
+        run: pnpm --filter @graphnosis-app/core build
+
+      # See the same step in release.yml for rationale. PowerShell variant
+      # for the Windows runner — same shell-agnostic effect.
+      - name: Build signed demo .gsk packs
+        shell: pwsh
+        env:
+          GSK_SIGNING_KEY_HEX: ${{ secrets.GSK_SIGNING_KEY_HEX }}
+        run: |
+          if (-not $env:GSK_SIGNING_KEY_HEX) {
+            Write-Error "GSK_SIGNING_KEY_HEX secret is not set. Generate the keypair locally with scripts/gen-gsk-keypair.mjs, then add the 64-byte hex secret as a repo Actions secret."
+            exit 1
+          }
+          node scripts/build-gsk.mjs --sign
+
+      - name: Build sidecar
+        run: pnpm --filter @graphnosis-app/desktop-sidecar build
+
+      # Stage onnxruntime.dll so the sidecar can load ONNX embeddings at
+      # runtime. Falls back to a TF-IDF-only warning if not found — the build
+      # still succeeds. The dll is NOT listed in tauri-windows.conf.json
+      # resources because build.rs also copies it; explicit staging here
+      # is belt-and-suspenders for CI.
+      - name: Stage onnxruntime.dll (optional)
+        shell: pwsh
+        run: |
+          $dest = "apps/desktop/src-tauri/resources"
+          New-Item -ItemType Directory -Force -Path $dest | Out-Null
+          $dll = Get-ChildItem -Recurse -Filter "onnxruntime.dll" node_modules/.pnpm `
+            -ErrorAction SilentlyContinue |
+            Where-Object { $_.FullName -match "win32.x64" } |
+            Select-Object -First 1
+          if ($dll) {
+            Copy-Item $dll.FullName "$dest/onnxruntime.dll"
+            Write-Host "Staged $($dll.FullName) -> $dest/onnxruntime.dll"
+          } else {
+            Write-Warning "onnxruntime.dll not found — embeddings will use TF-IDF fallback"
+          }
+
+      - name: Build (Windows)
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+        run: pnpm --filter @graphnosis-app/desktop tauri:build
+
+      # The signing action runs `Install-Module TrustedSigning -Repository
+      # PSGallery` internally (in Windows PowerShell 5.1), which intermittently
+      # fails with "Unable to find repository 'PSGallery'" on the runner image.
+      # Register the default repo in 5.1 so the action's Install-Module resolves
+      # it. `Register-PSRepository -Default` re-adds PSGallery without the NuGet
+      # provider bootstrap (which fails in pwsh 7 — chicken/egg).
+      - name: Ensure PSGallery is registered
+        shell: powershell
+        run: |
+          if (-not (Get-PSRepository -Name PSGallery -ErrorAction SilentlyContinue)) {
+            try { Register-PSRepository -Default } catch { Write-Host "Register-PSRepository: $_" }
+          }
+          Set-PSRepository -Name PSGallery -InstallationPolicy Trusted
+
+      - name: Sign NSIS installer (Azure Artifact Signing)
+        uses: azure/trusted-signing-action@v0.5.11
+        with:
+          azure-tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          azure-client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          azure-client-secret: ${{ secrets.AZURE_CLIENT_SECRET }}
+          endpoint: https://eus.codesigning.azure.net/
+          trusted-signing-account-name: nehloo-trusted-signing
+          certificate-profile-name: graphnosis-public
+          files-folder: apps/desktop/src-tauri/target/release/bundle/nsis
+          files-folder-filter: exe
+          files-folder-recurse: false
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+
+      - name: Sign MSI (Azure Artifact Signing)
+        uses: azure/trusted-signing-action@v0.5.11
+        with:
+          azure-tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          azure-client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          azure-client-secret: ${{ secrets.AZURE_CLIENT_SECRET }}
+          endpoint: https://eus.codesigning.azure.net/
+          trusted-signing-account-name: nehloo-trusted-signing
+          certificate-profile-name: graphnosis-public
+          files-folder: apps/desktop/src-tauri/target/release/bundle/msi
+          files-folder-filter: msi
+          files-folder-recurse: false
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+
+      - name: Find MSI
+        id: find
+        shell: pwsh
+        run: |
+          $msi = Get-ChildItem -Recurse `
+            apps/desktop/src-tauri/target/release/bundle/msi `
+            -Filter "*.msi" -ErrorAction SilentlyContinue |
+            Select-Object -First 1
+          if (-not $msi) {
+            Write-Error "No MSI found in bundle/msi output"
+            exit 1
+          }
+          echo "path=$($msi.FullName)" >> $env:GITHUB_OUTPUT
+          echo "name=$($msi.Name)" >> $env:GITHUB_OUTPUT
+
+      - name: Upload installer artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.find.outputs.name }}
+          path: ${{ steps.find.outputs.path }}
+          retention-days: 14
+
+      - name: Upload MSI to GitHub release
+        if: ${{ inputs.upload_to_release }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: pwsh
+        run: |
+          gh release upload "${{ github.event.inputs.ref }}" `
+            "${{ steps.find.outputs.path }}" --clobber
+
+  update-cloudflare:
+    runs-on: ubuntu-latest
+    needs: build-windows
+    if: ${{ inputs.upload_to_release }}
+    steps:
+      - name: Update WINDOWS_FILENAME in Cloudflare Pages
+        env:
+          CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+          CF_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
+          CF_PROJECT_NAME: ${{ secrets.CF_PROJECT_NAME }}
+          MSI_NAME: ${{ needs.build-windows.outputs.msi }}
+        run: |
+          curl -s -X PATCH \
+            "https://api.cloudflare.com/client/v4/accounts/$CF_ACCOUNT_ID/pages/projects/$CF_PROJECT_NAME" \
+            -H "Authorization: Bearer $CF_API_TOKEN" \
+            -H "Content-Type: application/json" \
+            -d "{
+              \"deployment_configs\": {
+                \"production\": {
+                  \"env_vars\": {
+                    \"WINDOWS_FILENAME\": { \"value\": \"$MSI_NAME\" }
+                  }
+                }
+              }
+            }"
+
+      - name: Trigger Cloudflare Pages redeploy
+        env:
+          CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+          CF_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
+          CF_PROJECT_NAME: ${{ secrets.CF_PROJECT_NAME }}
+        run: |
+          curl -s -X POST \
+            "https://api.cloudflare.com/client/v4/accounts/$CF_ACCOUNT_ID/pages/projects/$CF_PROJECT_NAME/deployments" \
+            -H "Authorization: Bearer $CF_API_TOKEN"
