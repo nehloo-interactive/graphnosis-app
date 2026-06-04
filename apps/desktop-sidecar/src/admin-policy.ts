@@ -71,7 +71,10 @@ export function isConnectorKindDisabled(kind: string): boolean {
   return getAdminPolicy().disabledConnectorKinds.includes(kind);
 }
 export function isClientDisabled(name: string): boolean {
-  return getAdminPolicy().disabledClients.includes(name);
+  // Case-insensitive so a block on "Cursor" stops a client reporting "cursor",
+  // and the toggle label format doesn't have to match the relay's exactly.
+  const lower = name.toLowerCase();
+  return getAdminPolicy().disabledClients.some((d) => d.toLowerCase() === lower);
 }
 
 /** Update the user-editable file policy. Throws if the policy is env-managed
