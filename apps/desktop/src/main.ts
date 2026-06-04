@@ -232,6 +232,10 @@ interface NodeRecord {
   confidence: number;
   validUntil?: number;
   sourceFile: string;
+  /** The node's true allowlist sourceId (e.g. `clip:497ecba…`), resolved
+   *  server-side via the source index. Distinct from `sourceFile` (the SDK's
+   *  raw file string). Drives per-source redaction in Presentation Mode. */
+  sourceId?: string;
   contentPreview: string;
   /** Section heading the node lives under (markdown `#`/`##` etc.). */
   section?: string;
@@ -256,7 +260,7 @@ interface NodeRecord {
   _gnnScore?: number;
 }
 
-interface SearchHit { nodeId: string; score: number; text: string; type?: string }
+interface SearchHit { nodeId: string; score: number; text: string; type?: string; sourceId?: string }
 
 // Catalogue of graph templates. `tier: free` are creatable; `power` and
 // `enterprise` show with a lock for now (creation gated until pricing lands).
@@ -305,6 +309,17 @@ interface OpLogEvent {
   target: { kind: 'node' | 'edge' | 'source'; id: string };
   before?: unknown;
   after?: unknown;
+  // Server-side node-content enrichment (activity.list). The sidecar resolves
+  // opaque node ids → content previews for EVERY loaded engram, so rows for
+  // engrams not currently open in the UI still read as content, not ids.
+  resolved?: { target?: string; from?: string; to?: string };
+  // Server-computed "who made it" — kept in sync with the sidecar's actorOf so
+  // the row badge, the "who" dropdown, and the server-side filter never drift.
+  actor?: string;
+  actorCls?: string;
+  // Server-resolved allowlist sourceId for a node-kind target (activity.list).
+  // Lets the Activity row redact per-source precisely in Presentation Mode.
+  targetSourceId?: string;
 }
 
 interface SnapshotInfo {
@@ -481,6 +496,13 @@ interface PurgeReport {
 declare const __APP_VERSION__: string;
 
 const $ = <T extends HTMLElement>(id: string): T => document.getElementById(id) as T;
+
+/** True only inside the Tauri desktop shell. In browser/personal-server mode the
+ *  Tauri window/webview native APIs (scaleFactor, onDragDropEvent, setSize…) are
+ *  absent, so callers must skip them to avoid noisy "not a function" errors. */
+function isTauriRuntime(): boolean {
+  return typeof (window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ !== 'undefined';
+}
 
 // ── Theme (light / dark / auto) ──────────────────────────────────────────
 //
@@ -701,9 +723,15 @@ const els = {
   activityList: $<HTMLDivElement>('activity-list'),
   activitySearch: $<HTMLInputElement>('activity-search'),
   activityEngramSelect: $<HTMLSelectElement>('activity-engram-select'),
+  activityActorSelect: $<HTMLSelectElement>('activity-actor-select'),
   activityChips: $<HTMLDivElement>('activity-chips'),
   activityStats: $<HTMLSpanElement>('activity-stats'),
   btnActivityRefresh: $<HTMLButtonElement>('btn-activity-refresh'),
+  activityDateFrom: $<HTMLInputElement>('activity-date-from'),
+  activityDateTo: $<HTMLInputElement>('activity-date-to'),
+  activityHourFrom: $<HTMLInputElement>('activity-hour-from'),
+  activityHourTo: $<HTMLInputElement>('activity-hour-to'),
+  activityDateClear: $<HTMLButtonElement>('activity-date-clear'),
   // Snapshot offer (pre-ingest prompt)
   snapshotOfferModal: $<HTMLDivElement>('snapshot-offer-modal'),
   snapshotOfferNote: $<HTMLSpanElement>('snapshot-offer-note'),
@@ -1534,15 +1562,30 @@ function render(status: StatusSnapshot): void {
  * loaded-graphs metadata, falling back to the raw graphId.
  */
 function refreshActiveEngramLabel(): void {
+  const atlasTitle = document.getElementById('atlas-engram-title');
   const id = atlasActiveGraph;
+  if (id === FULL_CORTEX) {
+    if (els.activeEngramLabel) els.activeEngramLabel.textContent = 'Full Cortex';
+    if (atlasTitle) { atlasTitle.textContent = '🌌 Full Cortex'; atlasTitle.removeAttribute('data-pres'); }
+    updateSensitivityBadge(null);
+    return;
+  }
   if (!id) {
     if (els.activeEngramLabel) els.activeEngramLabel.textContent = '—';
+    if (atlasTitle) { atlasTitle.textContent = '—'; atlasTitle.removeAttribute('data-pres'); }
     updateSensitivityBadge(null);
     return;
   }
   const meta = loadedGraphs.find((g) => g.graphId === id);
   const displayName = meta?.metadata.displayName ?? id;
   if (els.activeEngramLabel) els.activeEngramLabel.textContent = displayName;
+  // Large title above the 3D graph. Tag it so it redacts in Presentation Mode
+  // when this engram isn't allowlisted.
+  if (atlasTitle) {
+    atlasTitle.textContent = displayName;
+    atlasTitle.setAttribute('data-pres', `engram:${id}`);
+    if (presActive()) applyPresentationMasking(atlasTitle.parentElement ?? atlasTitle);
+  }
   // Mobile shows the active engram name in the health panel (the header picker
   // is hidden on phones). Harmless on desktop — CSS hides it there.
   const healthEngram = document.getElementById('g-health-engram');
@@ -1572,7 +1615,13 @@ function updateSensitivityBadge(tier: 'public' | 'personal' | 'sensitive' | null
  *  Sources dropdown, Skills target picker, Move-source dialog, etc. */
 function formatEngramLabel(g: GraphWithMetadata): string {
   const name = g.metadata.displayName ?? g.graphId;
-  if (g.metadata.template === 'skill') return `🛠️ ${name}`;
+  if (g.metadata.template === 'skill') {
+    // Strip any leading wrench/tool emoji already baked into the display name
+    // (some engrams — e.g. the bundled "Skills Demo" — were created with one),
+    // so we don't render a double 🛠️🛠️ once we add our own prefix.
+    const clean = name.replace(/^(?:[\u{1F6E0}\u{1F527}]\u{FE0F}?\s*)+/u, '').trim() || name;
+    return `🛠️ ${clean}`;
+  }
   return name;
 }
 
@@ -1601,13 +1650,15 @@ function syncEngramPicker(): void {
   // `.disabled` class to its own button. The native popover ignores this
   // attribute on macOS, but the native popover isn't what the user sees:
   // installCustomEngramPicker() replaces it with our own dropdown.
-  els.atlasGraphPicker.innerHTML = visibleGraphs
-    .map((g) => {
-      const name = escape(formatEngramLabel(g));
-      const disabled = g.loaded === false ? ' disabled' : '';
-      return `<option value="${escape(g.graphId)}"${disabled}>${name}</option>`;
-    })
-    .join('');
+  els.atlasGraphPicker.innerHTML =
+    `<option value="${FULL_CORTEX}"${atlasActiveGraph === FULL_CORTEX ? ' selected' : ''}>🌌 Full Cortex</option>` +
+    visibleGraphs
+      .map((g) => {
+        const name = escape(formatEngramLabel(g));
+        const disabled = g.loaded === false ? ' disabled' : '';
+        return `<option value="${escape(g.graphId)}"${disabled}>${name}</option>`;
+      })
+      .join('');
   // Keep the search Engram filter dropdown in lockstep with loadedGraphs.
   syncSearchEngramSelect();
   // pickAtlasGraph already filters to loaded engrams, so we don't accidentally
@@ -1694,6 +1745,24 @@ function syncSourcesEngramDropdown(): void {
  *  refreshes; each one re-renders the sidebar status list. */
 let liveMcpClients = new Set<string>();
 let liveIdleClients = new Set<string>();
+/** Lowercased friendly names of AI clients blocked via Access Control. Cached
+ *  from policy.get (refreshed on Home load + when the policy is edited) so the
+ *  connected-client displays can mark a blocked client as blocked, not just
+ *  "connected" (blocking rejects its tool calls but the relay stays alive). */
+let blockedClientNames = new Set<string>();
+function isClientBlocked(friendlyName: string): boolean {
+  return blockedClientNames.has(friendlyName.toLowerCase());
+}
+/** Latest MCP connection list (with versions / connect times / request counts),
+ *  captured from renderMcpStatus so the Home Get-Connected card can list each
+ *  connected client without a second fetch. */
+let lastMcpConnections: McpConnection[] = [];
+/** kind → display label for data-source connectors. Shared by the Get-Connected
+ *  page chips and the Home card list. */
+const CONNECTOR_SHORTCUTS: Array<[ConnectorKind, string]> = [
+  ['rss', 'RSS'], ['github', 'GitHub'], ['slack', 'Slack'], ['trello', 'Trello'],
+  ['linear', 'Linear'], ['obsidian', 'Obsidian'], ['gbrain', 'GBrain'], ['ai-context', 'AI Context Files'],
+];
 /** Friendly name of the most recently active (non-idle) client — persists
  *  when all clients become idle so the status bar still shows a useful name. */
 let lastNonIdleClient: string | null = null;
@@ -1784,15 +1853,103 @@ function renderRailGetConnected(): void {
 
   // Connectors — lit when installed.
   els.railGcConnectors.innerHTML = '';
-  const connectorShortcuts: Array<[ConnectorKind, string]> = [
-    ['rss','RSS'],['github','GitHub'],['slack','Slack'],['trello','Trello'],
-    ['linear','Linear'],['obsidian','Obsidian'],['gbrain','GBrain'],['ai-context','AI Context Files'],
-  ];
-  for (const [kind, label] of connectorShortcuts) {
+  for (const [kind, label] of CONNECTOR_SHORTCUTS) {
     els.railGcConnectors.appendChild(makeChip(label, installedConnectorKinds.has(kind), () => openConnectorSetupModal(kind)));
   }
 
   applyGcCollapsedState();
+  refreshGetConnectedStatus();
+}
+
+/** Update the Get Connected status summary (page strip + rail badge + Home
+ *  card) from the live connection state. Cheap + sync — safe to call from
+ *  renderRailGetConnected and on mode entry. */
+function refreshGetConnectedStatus(): void {
+  const clients = liveMcpClients.size;
+  const sources = installedConnectorKinds.size;
+  const llmOn = brainLlmReady;
+  const gnnOn = brainNeuralNetworkStatus?.enabled === true;
+  // Posture: "Standalone" until the cortex is reachable by an AI client or
+  // augmented by a local model; then it's "Connected".
+  const posture = (clients > 0 || llmOn || gnnOn) ? 'Connected' : 'Standalone';
+
+  const setText = (id: string, v: string): void => {
+    const el = document.getElementById(id);
+    if (el) el.textContent = v;
+  };
+  setText('gc-status-clients-n', String(clients));
+  setText('gc-status-sources-n', String(sources));
+  setText('gc-status-posture', posture);
+
+  // Rail badge: total active connections (clients + sources); hidden at zero.
+  const badge = document.getElementById('rail-gc-count');
+  if (badge) {
+    const total = clients + sources;
+    badge.textContent = String(total);
+    badge.classList.toggle('hidden', total === 0);
+  }
+
+  // Home teaser card — a scrollable list of the actual connected clients +
+  // data sources, with a summary line + the open-page CTA.
+  const card = document.getElementById('home-getconnected');
+  if (card) {
+    const body = document.getElementById('home-getconnected-body');
+    if (body) {
+      // ── ONLINE: which AI client is reading the cortex right now. Always
+      //    shown — connected users see who's tapped in; offline users see that
+      //    nothing is, and that their cortex stays private. ──
+      const clientRows = lastMcpConnections.map((c) => {
+        const name = friendlyClient(c.clientName);
+        const version = c.clientVersion ? ` · v${escape(c.clientVersion)}` : '';
+        const since = c.connectedAt ? new Date(c.connectedAt).toLocaleTimeString() : '';
+        const blocked = isClientBlocked(name);
+        return `<div class="home-gc-row${blocked ? ' home-gc-row-blocked' : ''}">
+          <span class="home-gc-dot ${blocked ? 'home-gc-dot-blocked' : 'home-gc-dot-client'}"></span>
+          <div class="home-gc-row-body">
+            <div class="home-gc-row-name">${escape(name)}${version}${blocked ? ' <span class="home-gc-blocked-tag">blocked</span>' : ''}</div>
+            ${blocked ? '<div class="home-gc-row-meta">connection rejected by Access Control</div>' : (since ? `<div class="home-gc-row-meta">Connected ${escape(since)}</div>` : '')}
+          </div>
+        </div>`;
+      }).join('');
+      const onlineGroup =
+        `<div class="home-gc-grouplabel">Online · reading your cortex</div>` +
+        (clientRows || `<p class="home-gc-empty subtitle">No AI client connected — your cortex stays private.</p>`);
+
+      // ── OFFLINE & LOCAL: the off-the-grid sources feeding the cortex. The
+      //    "connect off-the-grid sources" affordance is ALWAYS present so every
+      //    user — even fully air-gapped — knows they can grow their memory from
+      //    local data with no internet. ──
+      const connectorRows = CONNECTOR_SHORTCUTS
+        .filter(([kind]) => installedConnectorKinds.has(kind))
+        .map(([, label]) => `<div class="home-gc-row">
+          <span class="home-gc-dot home-gc-dot-source"></span>
+          <div class="home-gc-row-body"><div class="home-gc-row-name">${escape(label)}</div></div>
+        </div>`).join('');
+      const offlineGroup =
+        `<div class="home-gc-grouplabel">Feeding your cortex · local &amp; online</div>` +
+        connectorRows +
+        `<button type="button" class="home-gc-add" id="home-gc-add-offline" title="Local files, folders, NAS, sensors, scanned PDFs — no internet required, plus online connectors like GitHub or Slack">+ Connect off-the-grid &amp; local sources</button>`;
+
+      const bodyHtml =
+        `<div class="home-gc-list">${onlineGroup}${offlineGroup}</div>` +
+        `<button type="button" class="home-card-cta" id="home-getconnected-open">Get Connected</button>`;
+
+      // Only touch the DOM when the content actually changed — the 3s MCP poll
+      // calls this constantly, and rewriting innerHTML each time reset the list's
+      // scroll to the top. Skip when identical; preserve scroll when not.
+      if (body.dataset['gcSig'] !== bodyHtml) {
+        const prevScroll = body.querySelector<HTMLElement>('.home-gc-list')?.scrollTop ?? 0;
+        body.innerHTML = bodyHtml;
+        body.dataset['gcSig'] = bodyHtml;
+        const newList = body.querySelector<HTMLElement>('.home-gc-list');
+        if (newList) newList.scrollTop = prevScroll;
+        body.querySelector<HTMLButtonElement>('#home-getconnected-open')
+          ?.addEventListener('click', () => activateMode('get-connected'));
+        body.querySelector<HTMLButtonElement>('#home-gc-add-offline')
+          ?.addEventListener('click', () => activateMode('get-connected'));
+      }
+    }
+  }
 }
 
 // ── "Get connected" collapse (declutter the rail once set up) ────────────────
@@ -1827,6 +1984,105 @@ els.standaloneModal.addEventListener('click', (e) => {
 // Local & offline explainer modal — same dismiss pattern. The docs link
 // routes through the Tauri opener so the full guide opens in the system
 // browser (rather than navigating inside the WebView).
+// Get Connected page: off-the-grid & local-source RECIPE cards. Each card maps
+// a real-world scenario to the underlying flow that powers it — a connector
+// setup form, or the file picker. Webhook is the generic catch-all (anything
+// that can POST JSON) and leads. `tags` feed the filter box. `action` runs on
+// click. Add as many recipes here as we can think of — the grid + filter scale.
+interface GcRecipe { id: string; icon: string; title: string; badge?: string; tags: string; desc: string; run: () => void; }
+const GC_RECIPES: GcRecipe[] = [
+  { id: 'webhook', icon: '🪝', title: 'Webhook', badge: 'generic', tags: 'push json api endpoint http post zapier ifttt curl script',
+    desc: 'Any device or script that can POST JSON — the catch-all that powers most recipes below.', run: () => openConnectorSetupModal('webhook') },
+  { id: 'obsidian', icon: '🗒️', title: 'Obsidian vault', tags: 'notes markdown md folder vault watch',
+    desc: 'Browse to your vault — .md notes ingested within seconds, re-scanned on a schedule.', run: () => openConnectorSetupModal('obsidian') },
+  { id: 'gbrain', icon: '🌿', title: 'Git notes (GBrain)', tags: 'git repo markdown wikilinks',
+    desc: 'A local git repo of markdown; wikilinks preserved.', run: () => openConnectorSetupModal('gbrain') },
+  { id: 'ai-context', icon: '🤖', title: 'AI context files', tags: 'claude agents cursor rules copilot gemini windsurf project',
+    desc: 'Index CLAUDE.md, AGENTS.md, .cursorrules and friends from any project folder.', run: () => openConnectorSetupModal('ai-context') },
+  // Merged: one card for browsing/dropping any file, folder, or PDF (the two
+  // earlier cards overlapped). Markdown folders still get continuous sync via
+  // Obsidian/GBrain above; this is the universal drop-anything path.
+  { id: 'files', icon: '📄', title: 'Files, folders & PDFs', tags: 'drag drop pdf ocr scan document docx txt folder directory one-off',
+    desc: 'Browse or drop any document or folder — scanned PDFs are OCR’d locally. For continuous markdown-folder sync, use Obsidian or GBrain above.', run: () => document.getElementById('btn-add-file')?.click() },
+  { id: 'smarthome', icon: '🏠', title: 'Smart home (Home Assistant / MQTT)', tags: 'mqtt home assistant iot broker automation hub',
+    desc: 'Point the Webhook at a small bridge that subscribes to your MQTT broker and POSTs events.', run: () => openConnectorSetupModal('webhook') },
+  { id: 'sensors', icon: '🌡️', title: 'Sensors / IoT / lab / agricultural', tags: 'serial arduino raspberry pi sensor telemetry json lines',
+    desc: 'Anything emitting JSON lines to a file or hitting a webhook becomes a source. A 5-line POST script is enough.', run: () => openConnectorSetupModal('webhook') },
+  { id: 'nas', icon: '💾', title: 'NAS / network drives', tags: 'synology qnap network share smb nfs mount drive',
+    desc: 'Mount the share as a local folder, then drop it here (or, for markdown, point Obsidian/GBrain at it).', run: () => document.getElementById('btn-add-file')?.click() },
+  { id: 'localdb', icon: '🗄️', title: 'Local databases (SQLite, Postgres on LAN)', tags: 'sql sqlite postgres mysql csv json export cron query',
+    desc: 'Export to JSON/CSV and drop it, or run a cron query-and-POST to the Webhook.', run: () => openConnectorSetupModal('webhook') },
+  { id: 'notesapps', icon: '📝', title: 'Notes apps (Apple Notes, Bear, Logseq…)', tags: 'apple notes bear logseq notion roam export cli',
+    desc: 'Use the app’s CLI export to a folder, then drop it (markdown exports can use Obsidian for live sync).', run: () => document.getElementById('btn-add-file')?.click() },
+  { id: 'logs', icon: '📻', title: 'Router syslog · DVR · audio', tags: 'syslog log dvr camera audio whisper transcript recording',
+    desc: 'Any structured log on disk + a watcher. Audio: transcribe locally with whisper.cpp first, then drop the folder.', run: () => document.getElementById('btn-add-file')?.click() },
+  { id: 'email', icon: '✉️', title: 'Local email archive (mbox / Maildir)', tags: 'email mbox maildir imap export eml',
+    desc: 'Export a mailbox to a folder of .eml/.txt and drop it — keeps correspondence searchable, fully offline.', run: () => document.getElementById('btn-add-file')?.click() },
+  { id: 'scripts', icon: '📋', title: 'Scripts & cron jobs', tags: 'cron script bash python automation scheduled task',
+    desc: 'Any scheduled job — back up a value, scrape a local file, summarise a log — can POST its result to the Webhook.', run: () => openConnectorSetupModal('webhook') },
+
+  // ── Online sources via a no-code bridge (Zapier / IFTTT / Make → Webhook).
+  //    Zero backend: the bridge POSTs to your local webhook. ──
+  { id: 'bridge', icon: '🔗', title: 'Zapier · IFTTT · Make', badge: 'bridge', tags: 'zapier ifttt make integromat automation no-code bridge online',
+    desc: 'Connect 1000s of online apps with no code — point the bridge’s webhook action at your Graphnosis webhook URL.', run: () => openConnectorSetupModal('webhook') },
+  { id: 'gmail', icon: '✉️', title: 'Gmail', tags: 'gmail email google online zapier',
+    desc: 'New/starred emails → via Zapier or IFTTT → your webhook. Keeps important mail in your cortex.', run: () => openConnectorSetupModal('webhook') },
+  { id: 'gcal', icon: '📅', title: 'Google Calendar', tags: 'calendar google event meeting online zapier',
+    desc: 'New events or event summaries → via Zapier → your webhook.', run: () => openConnectorSetupModal('webhook') },
+  { id: 'notion', icon: '📓', title: 'Notion', tags: 'notion pages database online zapier make',
+    desc: 'New/updated pages or database rows → via Zapier/Make → your webhook. (Native connector planned.)', run: () => openConnectorSetupModal('webhook') },
+  { id: 'discord', icon: '💬', title: 'Discord', tags: 'discord chat server channel online zapier',
+    desc: 'Saved messages or channel posts → via Zapier/IFTTT → your webhook.', run: () => openConnectorSetupModal('webhook') },
+  { id: 'reddit', icon: '👽', title: 'Reddit', tags: 'reddit saved posts subreddit online ifttt',
+    desc: 'Saved posts or a subreddit feed → via IFTTT/Zapier → your webhook.', run: () => openConnectorSetupModal('webhook') },
+  { id: 'social', icon: '🐦', title: 'X / Bluesky', tags: 'twitter x bluesky social posts bookmarks online ifttt zapier',
+    desc: 'Your posts, likes, or bookmarks → via IFTTT/Zapier → your webhook.', run: () => openConnectorSetupModal('webhook') },
+  { id: 'youtube', icon: '▶️', title: 'YouTube', tags: 'youtube video uploads likes watch later online ifttt',
+    desc: 'New uploads from a channel, or your likes → via IFTTT/Zapier → your webhook (titles + descriptions).', run: () => openConnectorSetupModal('webhook') },
+  { id: 'tasks', icon: '✅', title: 'Todoist / Asana', tags: 'todoist asana tasks projects online zapier',
+    desc: 'Completed tasks or new items → via Zapier → your webhook.', run: () => openConnectorSetupModal('webhook') },
+  { id: 'stripe', icon: '💳', title: 'Stripe events', tags: 'stripe payments charges events online webhook',
+    desc: 'Stripe sends events to webhooks natively — point a Stripe webhook (or Zapier) at your URL.', run: () => openConnectorSetupModal('webhook') },
+  { id: 'forms', icon: '📝', title: 'Typeform / Calendly', tags: 'typeform calendly forms bookings responses online zapier',
+    desc: 'Form responses or new bookings → via native webhooks or Zapier → your webhook.', run: () => openConnectorSetupModal('webhook') },
+];
+
+/** Render the recipe cards into #gc-recipes, filtered by the search box. */
+function renderGcRecipes(filter = ''): void {
+  const wrap = document.getElementById('gc-recipes');
+  if (!wrap) return;
+  const q = filter.trim().toLowerCase();
+  const matches = q
+    ? GC_RECIPES.filter((r) => `${r.title} ${r.desc} ${r.tags}`.toLowerCase().includes(q))
+    : GC_RECIPES;
+  if (matches.length === 0) {
+    wrap.innerHTML = '<p class="gc-recipe-empty subtitle">No recipe matches that — try “webhook”, “folder”, “pdf”, or “sensor”.</p>';
+    return;
+  }
+  wrap.innerHTML = matches.map((r) => `
+    <button class="gc-scenario" data-gc-recipe="${escape(r.id)}" type="button">
+      <span class="gc-scenario-icon" aria-hidden="true">${r.icon}</span>
+      <span class="gc-scenario-body">
+        <span class="gc-scenario-name">${escape(r.title)}${r.badge ? ` <span class="gc-scenario-badge">${escape(r.badge)}</span>` : ''}</span>
+        <span class="gc-scenario-desc">${escape(r.desc)}</span>
+      </span>
+    </button>`).join('');
+}
+
+document.getElementById('gc-recipes')?.addEventListener('click', (e) => {
+  const btn = (e.target as HTMLElement).closest<HTMLButtonElement>('.gc-scenario');
+  if (!btn) return;
+  GC_RECIPES.find((r) => r.id === btn.dataset['gcRecipe'])?.run();
+});
+{
+  const filterInput = document.getElementById('gc-recipe-filter') as HTMLInputElement | null;
+  filterInput?.addEventListener('input', () => renderGcRecipes(filterInput.value));
+}
+// "See every MCP tool…" link next to the AI-client chips → MCP Tools page.
+document.getElementById('gc-mcp-tools-link')?.addEventListener('click', (e) => {
+  e.preventDefault();
+  activateMode('mcp-tools');
+});
 document.getElementById('offline-sources-modal-close')
   ?.addEventListener('click', () => els.offlineSourcesModal.classList.add('hidden'));
 els.offlineSourcesModal?.addEventListener('click', (e) => {
@@ -2235,6 +2491,8 @@ type Mode =
   | 'sources'
   | 'activity'     // Audit
   | 'status'
+  | 'get-connected' // Grow your cortex — AI clients + data sources (own page)
+  | 'presentation'  // Demo-safe redaction config page (own page)
   | 'settings'
   | 'mcp-tools';
 // Home (mode='atlas') is the default landing pane post-unlock. The internal
@@ -2259,7 +2517,7 @@ const ATLAS_SUBMODES: Record<string, { gtab: GraphnosisTab; studioTool?: StudioT
   brainstorm: { gtab: 'nondeterministic' },           // Neural-net / Local-LLM
   skills:        { gtab: 'checkin', studioTool: 'skills' }, // Skills studio tool
   search:        { gtab: 'checkin' },                  // Dedicated search page (body.search-mode)
-  'power-tools': { gtab: 'checkin' },                  // Manual tools page (body.powertools-mode)
+  'power-tools': { gtab: 'checkin', studioTool: 'remember' }, // MemoryStudio page — defaults to Remember (body.powertools-mode)
 };
 // Which physical mode-pane backs a given rail mode.
 function paneForMode(mode: Mode): string {
@@ -2283,6 +2541,9 @@ function activateMode(mode: Mode): void {
   // Search is also a checkin sub-mode: body.search-mode reveals the search bar
   // + results surface and hides the Home cards / power-tools / deck (CSS).
   document.body.classList.toggle('search-mode', mode === 'search');
+  // Any navigation exits the Stranded-Memories connect view (re-entered only by
+  // the Home "Connect Stranded Memories" button via openTrivia).
+  document.body.classList.remove('connect-mode');
   // Power Tools — manual recall/remember/edit/GNN as its own page. The studio
   // drawer is force-opened + the Home overview hidden (CSS).
   document.body.classList.toggle('powertools-mode', mode === 'power-tools');
@@ -2324,10 +2585,15 @@ function activateMode(mode: Mode): void {
     // Default the engram dropdown to the active engram each time the
     // Sources page is entered so the user immediately sees their current
     // context. refreshStats() rebuilds the dropdown options and will
-    // honour this pre-set selection value.
-    if (atlasActiveGraph) {
-      sourcesEngramFilter = atlasActiveGraph;
-      els.sourcesEngramSelect.value = atlasActiveGraph;
+    // honour this pre-set selection value. Full Cortex isn't a real engram,
+    // so it maps to "All engrams" (empty filter).
+    const sourcesScope = atlasActiveGraph === FULL_CORTEX ? '' : atlasActiveGraph;
+    if (sourcesScope) {
+      sourcesEngramFilter = sourcesScope;
+      els.sourcesEngramSelect.value = sourcesScope;
+    } else {
+      sourcesEngramFilter = '';
+      els.sourcesEngramSelect.value = '';
     }
     updateReingestAllLabel();
     void refreshStats();
@@ -2335,6 +2601,19 @@ function activateMode(mode: Mode): void {
   // (mode === 'atlas' and the other atlas sub-modes returned early above —
   //  switchGraphnosisTab handles their refresh lifecycle.)
   if (mode === 'activity') void refreshActivityView();
+  if (mode === 'presentation') {
+    renderPresentationPane();
+    document.querySelector<HTMLElement>('.app-canvas')?.scrollTo({ top: 0 });
+  }
+  if (mode === 'get-connected') {
+    // Render the AI-client + data-source chips, the connection-status summary,
+    // the off-the-grid recipe cards, and the configured-connector instances.
+    renderRailGetConnected();
+    refreshGetConnectedStatus();
+    renderGcRecipes((document.getElementById('gc-recipe-filter') as HTMLInputElement | null)?.value ?? '');
+    void refreshConnectorsList();
+    document.querySelector<HTMLElement>('.app-canvas')?.scrollTo({ top: 0 });
+  }
   if (mode === 'status') {
     // Status pane re-uses the same data the Graphnosis recap reads.
     // refreshStats() repopulates lastInspectorStats which then drives
@@ -2764,6 +3043,7 @@ function renderMcpStatus(connections: McpConnection[]): void {
   updateStatusBar(connections);
   // Mirror the live client set into the sidebar's Get-connected status list.
   liveMcpClients = new Set(connections.map((c) => friendlyClient(c.clientName)));
+  lastMcpConnections = connections; // feeds the Home Get-Connected card list
   renderRailGetConnected();
   // Single target now that Overview is gone: the Graphnosis dashboard's
   // AI tools card. The status-bar dot (top) gives the at-a-glance signal
@@ -2807,22 +3087,26 @@ function renderMcpStatus(connections: McpConnection[]): void {
       const transportLabel = c.transport === 'stdio' ? 'stdio (legacy)' : 'relay';
       const idleMs = now - c.lastActivityAt;
       const isIdle = idleMs >= MCP_IDLE_MS;
+      const blocked = isClientBlocked(name);
       const idleLabel = isIdle
         ? ` · <span class="mcp-idle-tag">Idle ${formatIdleDuration(idleMs)}</span>`
         : '';
-      const dotClass = isIdle ? 'mcp-dot mcp-dot-idle' : 'mcp-dot';
-      const dotTitle = isIdle ? `Idle ${formatIdleDuration(idleMs)} — no requests since last activity` : 'Live';
+      const dotClass = blocked ? 'mcp-dot mcp-dot-blocked' : (isIdle ? 'mcp-dot mcp-dot-idle' : 'mcp-dot');
+      const dotTitle = blocked
+        ? 'Blocked by Access Control — tool calls from this client are rejected'
+        : (isIdle ? `Idle ${formatIdleDuration(idleMs)} — no requests since last activity` : 'Live');
+      const blockedTag = blocked ? ' · <span class="mcp-blocked-tag">Blocked</span>' : '';
       // stdio transport has no kicker — Claude spawned this process directly,
       // we can't force-close it from here. Hide the × for those rows.
       const showKick = c.transport !== 'stdio';
       const kickBtn = showKick
         ? `<button class="mcp-kick" data-conn-id="${escape(c.id)}" title="Force-close this connection. The AI client's relay auto-reconnects on its next request — this just clears stale entries." aria-label="Disconnect ${escape(name)}">×</button>`
         : '';
-      return `<div class="mcp-row">
+      return `<div class="mcp-row${blocked ? ' mcp-row-blocked' : ''}">
         <span class="${dotClass}" title="${dotTitle}"></span>
         <div style="flex: 1; min-width: 0;">
-          <div class="mcp-client-name">${escape(name)}${version}</div>
-          <div class="mcp-meta">Connected ${since} · ${reqs} · ${transportLabel}${idleLabel}</div>
+          <div class="mcp-client-name">${escape(name)}${version}${blockedTag}</div>
+          <div class="mcp-meta">${blocked ? 'Access denied · ' : `Connected ${since} · `}${reqs} · ${transportLabel}${idleLabel}</div>
         </div>
         ${kickBtn}
       </div>`;
@@ -3115,7 +3399,7 @@ async function refreshStats(): Promise<void> {
           : `<button class="btn-source-exclude" data-graph-id="${escape(s.graphId)}" data-source-id="${escape(s.sourceId)}" title="Stop this source's memories from appearing in recall / dig_deeper / search. It stays in Sources, stats, and 3D.">Exclude from recall</button>`;
         return `
           <div class="source-row${isExcluded ? ' source-row-excluded' : ''}" data-source-id="${escape(s.sourceId)}">
-            ${skillBadge}<span class="source-name" title="${escape(s.ref)}">${escape(s.kind === 'file' ? (s.ref.split('/').pop() ?? s.ref) : formatLegendLabel(s.ref))}</span>
+            ${skillBadge}<span class="source-name" title="${escape(s.ref)}" data-pres="source:${escape(s.sourceId)}" data-pres-engram="${escape(s.graphId)}">${escape(s.kind === 'file' ? (s.ref.split('/').pop() ?? s.ref) : formatLegendLabel(s.ref))}</span>
             <span class="source-meta">${s.nodeIds.length} node${s.nodeIds.length === 1 ? '' : 's'}</span>
             ${addedByBadge}
             ${finderBtn}
@@ -3131,7 +3415,7 @@ async function refreshStats(): Promise<void> {
         const sources = byEngram.get(graphId)!;
         return `
           <div class="sources-engram-group" data-graph-id="${escape(graphId)}">
-            <div class="sources-engram-heading">${escape(displayName)}</div>
+            <div class="sources-engram-heading"><span data-pres="engram:${escape(graphId)}">${escape(displayName)}</span></div>
             ${sources.map(renderSourceRow).join('')}
           </div>`;
       }).join('');
@@ -4035,17 +4319,18 @@ function renderPlan(plan: RecoveryPlan): void {
   </div>`;
 
   for (const [graphId, items] of byGraph) {
-    html += `<p class="recovery-section-title">Graph: ${escape(graphId)}</p>`;
+    html += `<p class="recovery-section-title"><span data-pres="engram:${escape(graphId)}">Graph: ${escape(graphId)}</span></p>`;
     for (const item of items) {
       const when = new Date(item.ingestedAt).toLocaleString();
       const canCheck = item.status === 'recoverable' || item.status === 'recoverable-from-cache';
       const checkbox = canCheck
         ? `<input type="checkbox" class="recovery-check" data-source-id="${escape(item.sourceId)}" checked />`
         : `<span class="glyph">${statusGlyph(item.status)}</span>`;
+      // The ref carries the source/clip content (sensitive) → tag node+engram.
       html += `<div class="recovery-item ${item.status}">
         <div>${checkbox}</div>
         <div>
-          <div class="ref">${escape(item.ref)}</div>
+          <div class="ref" data-pres="node:${escape(item.sourceId)}" data-pres-source="${escape(item.sourceId)}" data-pres-engram="${escape(graphId)}">${escape(item.ref)}</div>
           <div class="meta">${escape(item.kind)} · ingested ${escape(when)}</div>
         </div>
         <span class="badge">${escape(statusLabel(item.status))}</span>
@@ -4309,9 +4594,11 @@ function openConfigureClientModal(clientId: McpClientId): void {
   els.claudeFooterNote.textContent = 'After applying, restart the client so it re-reads the config.';
 }
 
-els.btnConfigureClaudeDesktop.addEventListener('click', () => openConfigureClientModal('claude-desktop'));
-els.btnConfigureClaudeCode.addEventListener('click', () => openConfigureClientModal('claude-code'));
-els.btnConfigureCursor.addEventListener('click', () => openConfigureClientModal('cursor'));
+// These Settings buttons were removed (AI client integration now lives on the
+// Get Connected page chips). Guard with ?. so their absence can't crash boot.
+els.btnConfigureClaudeDesktop?.addEventListener('click', () => openConfigureClientModal('claude-desktop'));
+els.btnConfigureClaudeCode?.addEventListener('click', () => openConfigureClientModal('claude-code'));
+els.btnConfigureCursor?.addEventListener('click', () => openConfigureClientModal('cursor'));
 
 els.btnClaudeClose.addEventListener('click', () => {
   els.claudeModal.classList.add('hidden');
@@ -4501,7 +4788,7 @@ function renderSettingsGraphsList(): void {
     const skillBadge = isSkillEngram ? `<span class="sgr-badge sgr-badge-skill" title="${skillCount} skill${skillCount === 1 ? '' : 's'}">🛠 ${skillCount}</span>` : '';
     return `
       <div class="settings-graph-row${archived ? ' is-archived' : ''}" data-sgr-id="${escape(g.graphId)}" data-skill-count="${skillCount}">
-        <span class="sgr-name" title="Click to rename" data-sgr-id="${escape(g.graphId)}">${escape(formatEngramLabel(g))}</span>
+        <span class="sgr-name" title="Click to rename" data-sgr-id="${escape(g.graphId)}" data-pres="engram:${escape(g.graphId)}">${escape(formatEngramLabel(g))}</span>
         ${archived ? '<span class="sgr-badge">archived</span>' : ''}
         ${isActive ? '<span class="sgr-badge">active</span>' : ''}
         ${skillBadge}
@@ -4936,13 +5223,18 @@ async function renderPolicySettings(): Promise<void> {
   let p: { disabledConnectorKinds: string[]; disabledClients: string[]; managed: boolean; connectorKinds: string[]; knownClients: string[] } | null = null;
   try { p = await ipcCall('policy.get', {}); } catch { body.innerHTML = '<p class="subtitle" style="margin:0;">Access-control policy unavailable.</p>'; return; }
   if (!p) { body.innerHTML = ''; return; }
+  blockedClientNames = new Set((p.disabledClients ?? []).map((s) => s.toLowerCase()));
   const disC = new Set(p.disabledConnectorKinds);
   const disK = new Set(p.disabledClients);
   const ro = p.managed;
-  const toggle = (attr: string, val: string, blocked: boolean): string =>
-    `<label class="policy-toggle${blocked ? ' blocked' : ''}">` +
-    `<input type="checkbox" ${attr}="${escapeHtml(val)}"${blocked ? '' : ' checked'}${ro ? ' disabled' : ''}>` +
-    `<span>${escapeHtml(val)}</span></label>`;
+  const toggle = (attr: string, val: string, blocked: boolean): string => {
+    // Presentation Mode: redact the identity label (AI client / connector kind)
+    // — the checkbox stays usable. Clients follow mcpClients, connectors connectors.
+    const surface = attr === 'data-policy-client' ? 'surface:mcpClients' : 'surface:connectors';
+    return `<label class="policy-toggle${blocked ? ' blocked' : ''}">` +
+      `<input type="checkbox" ${attr}="${escapeHtml(val)}"${blocked ? '' : ' checked'}${ro ? ' disabled' : ''}>` +
+      `<span data-pres="${surface}">${escapeHtml(val)}</span></label>`;
+  };
   const connToggles = p.connectorKinds.map((k) => toggle('data-policy-connector', k, disC.has(k))).join('');
   const clientToggles = p.knownClients.length
     ? p.knownClients.map((c) => toggle('data-policy-client', c, disK.has(c))).join('')
@@ -4960,7 +5252,12 @@ async function renderPolicySettings(): Promise<void> {
       .filter((i) => !i.checked).map((i) => i.dataset['policyClient'] ?? '').filter(Boolean);
     try {
       await ipcCall('policy.set', { disabledConnectorKinds, disabledClients });
+      // Update the local block cache immediately so every connected-client
+      // surface (status bar, rail indicator, MCP list, Home card) re-paints
+      // the blocked state on the very next render without waiting for a poll.
+      blockedClientNames = new Set(disabledClients.map((s) => s.toLowerCase()));
       void refreshHomePolicy();
+      void fetchMcpStatus(); // re-render status bar + rail indicator + MCP list
     } catch (e) {
       console.warn('[policy] set failed', e);
     }
@@ -5681,6 +5978,8 @@ els.btnAddFolder.addEventListener('click', async () => {
 // file drops in Tauri 2 (browser's drag/drop API gives us no real file paths).
 
 void (async () => {
+  // Native file-drop is a Tauri-only API; browser DnD gives no real paths.
+  if (!isTauriRuntime()) return;
   const webview = getCurrentWebview();
   await webview.onDragDropEvent((event) => {
     const payload = event.payload;
@@ -5872,10 +6171,26 @@ function updateStatusBar(connections: McpConnection[]): void {
       }
     }
   } else {
+    // Blocked clients (rejected by Access Control) shouldn't claim the
+    // status-bar "connected" signal — surface a live/idle client instead.
+    const allowed = connections.filter((c) => !isClientBlocked(friendlyClient(c.clientName)));
+    if (allowed.length === 0) {
+      // Every connected client is blocked — say so plainly rather than green.
+      const blockedName = friendlyClient(
+        [...connections].sort((a, b) => friendlyClient(a.clientName).localeCompare(friendlyClient(b.clientName)))[0]?.clientName,
+      );
+      els.statusMcpDot.className = 'status-dot';
+      els.statusMcpText.textContent = `${blockedName} · blocked`;
+      if (railIndicator) {
+        railIndicator.innerHTML =
+          `<span class="rail-mcp-dot"></span><span class="rail-mcp-name" title="${escape(blockedName)} (blocked by Access Control)">${escape(blockedName)} · blocked</span>`;
+      }
+      return;
+    }
     // Prefer an actively non-idle client; fall back to any connected client.
     // If all are idle, still show the most recently active one (no idle styling).
-    const nonIdle = connections.filter((c) => !liveIdleClients.has(friendlyClient(c.clientName)));
-    const pool = nonIdle.length > 0 ? nonIdle : connections;
+    const nonIdle = allowed.filter((c) => !liveIdleClients.has(friendlyClient(c.clientName)));
+    const pool = nonIdle.length > 0 ? nonIdle : allowed;
     const sorted = [...pool].sort((a, b) =>
       friendlyClient(a.clientName).localeCompare(friendlyClient(b.clientName))
     );
@@ -5924,6 +6239,77 @@ function updatePendingBadge(count: number): void {
 let mainAtlas: Atlas | null = null;
 let atlasActiveGraph: string | null = null;
 let atlasLoadedForGraph: string | null = null; // guards re-fetch when picker doesn't change
+// "Full Cortex" galaxy view: engrams as super-nodes + cross-engram edge bundles.
+// Sentinel picker value '__full__'. atlasGalaxyMode gates the per-engram data
+// paths off so they don't overwrite the galaxy.
+const FULL_CORTEX = '__full__';
+let atlasGalaxyMode = false;
+let _galaxyLoading = false; // re-entrancy guard (activateMode re-enters the tab guard)
+
+/** Render the whole cortex as a constellation: one super-node per engram (size
+ *  ∝ memory count, distinct colour), linked by aggregated cross-engram edges.
+ *  Light + freeze-free (~N engrams, not N×1000 nodes). Click a super-node to
+ *  zoom into that engram. */
+async function loadFullCortexGalaxy(): Promise<void> {
+  if (_galaxyLoading) return;
+  _galaxyLoading = true;
+  atlasGalaxyMode = true;
+  atlasActiveGraph = FULL_CORTEX;
+  atlasLoadedForGraph = FULL_CORTEX;
+  refreshActiveEngramLabel();
+  if (currentMode !== 'engram') { activateMode('engram'); syncMobileNav('engram'); }
+  await mountAtlasIfNeeded();
+  showAtlasLoading('Full Cortex', 'mapping your engrams…');
+  try {
+    const [stats, cross] = await Promise.all([
+      withTimeout(invoke('inspector_stats'), 25_000, 'inspector_stats').then((s) => s as StatsSummary).catch(() => null),
+      ipcCallTimeout<Array<{ graphA: string; graphB: string; weight: number }>>('brain:getCrossEngramConnections', {}, 20_000).catch(() => []),
+    ]);
+    if (!atlasGalaxyMode) return; // user navigated away mid-load
+    const graphs = loadedGraphs.filter((g) => !g.metadata.archived);
+    const countById = new Map((stats?.graphs ?? []).map((g) => [g.graphId, g.activeNodes]));
+    const maxCount = Math.max(1, ...[...countById.values()], 1);
+
+    // Super-nodes — text carries the engram name + count; sourceFile=graphId so
+    // each gets a distinct colour; confidence ∝ count drives its size.
+    const superNodes: AtlasNode[] = graphs.map((g) => {
+      const count = countById.get(g.graphId) ?? 0;
+      // Presentation Mode: non-allowlisted engrams show a generic label so the
+      // galaxy reveals the cortex's shape without leaking engram names/sizes.
+      const masked = presActive() && !presRevealEngram(g.graphId);
+      return {
+        id: `__galaxy:${g.graphId}`,
+        text: masked ? 'Engram ████' : `${g.metadata.displayName ?? g.graphId} · ${count.toLocaleString()} memories`,
+        sourceFile: g.graphId,
+        confidence: 0.35 + 0.65 * (count / maxCount),
+      };
+    });
+
+    // Aggregate cross-engram connections into one weighted edge per engram pair.
+    const pairW = new Map<string, number>();
+    const present = new Set(graphs.map((g) => g.graphId));
+    for (const c of cross) {
+      if (!c || c.graphA === c.graphB || !present.has(c.graphA) || !present.has(c.graphB)) continue;
+      const [x, y] = [c.graphA, c.graphB].sort();
+      pairW.set(`${x}|${y}`, (pairW.get(`${x}|${y}`) ?? 0) + (typeof c.weight === 'number' ? c.weight : 0.5));
+    }
+    const galaxyEdges: AtlasUndirectedEdge[] = [...pairW.entries()].map(([key, w], i) => {
+      const [x, y] = key.split('|');
+      return { id: `gx:${i}`, a: `__galaxy:${x}`, b: `__galaxy:${y}`, type: 'related-to' as AtlasUndirectedEdge['type'], weight: Math.min(1, w / 5) };
+    });
+
+    setAtlasLoadingSub(`${superNodes.length} engrams · ${galaxyEdges.length} cross-links`);
+    mainAtlas?.setNodes(superNodes);
+    mainAtlas?.setEdges([], galaxyEdges);
+    mainAtlas?.resetEmphasis();
+    setTimeout(() => mainAtlas?.zoomToFit(800, 50), 700);
+  } catch {
+    showAtlasLoadError(FULL_CORTEX);
+  } finally {
+    hideAtlasLoading();
+    _galaxyLoading = false;
+  }
+}
 // In-flight loadGraphnosisData promises, keyed by graphId. Dedupes concurrent
 // loads of the same engram — e.g. the picker's refreshAtlasView and the 3D-tab
 // entry guard both want the new engram; without this they'd double-fetch and
@@ -5956,14 +6342,24 @@ function nodesToAtlas(
   posMap?: Map<string, { x: number; y: number; z: number }>,
 ): AtlasNode[] {
   const now = Date.now();
+  // Presentation Mode: the 3D canvas can't be CSS-redacted, so mask labels at
+  // the data layer. Each node now carries its server-resolved sourceId, so the
+  // reveal decision is PER NODE via the same rule the DOM uses — a node reveals
+  // iff its source is allowlisted, or its engram is allowlisted and not narrowed
+  // by per-source picks. Nodes with an unknown sourceId in a source-narrowed
+  // engram still fail safe (redacted) inside presRevealSource.
+  const active = presActive();
+  const eng = atlasActiveGraph ?? '';
   return records
     .filter((n) => n.confidence > 0.2 && (n.validUntil === undefined || n.validUntil > now))
     .map((n) => {
       const pos = posMap?.get(n.id);
+      const redact = active && !presRevealSource(n.sourceId, eng);
       return {
         id: n.id,
-        text: n.contentPreview,
+        text: redact ? '████████' : n.contentPreview,
         sourceFile: n.sourceFile,
+        sourceId: n.sourceId,
         confidence: n.confidence,
         // Carry forward known positions so setNodes() can detect existing
         // nodes without re-seeding them near the cluster center. This is the
@@ -5988,6 +6384,7 @@ async function fetchEdges(graphId: string): Promise<{ directed: AtlasDirectedEdg
 // Refreshes everything: picker, list, detail. Atlas is lazy-loaded.
 async function refreshAtlasView(): Promise<void> {
   syncEngramPicker();
+  if (atlasGalaxyMode) { void loadFullCortexGalaxy(); return; } // galaxy owns the canvas
   const visibleGraphs = loadedGraphs.filter((g) => !g.metadata.archived);
   if (visibleGraphs.length === 0) {
     els.gDashboard.classList.add('hidden');
@@ -6024,6 +6421,7 @@ async function refreshAtlasView(): Promise<void> {
 // `graphnosisOrphanIds` — used by both the health score and the deck queue
 // to identify memories that aren't connected to anything yet.
 function loadGraphnosisData(graphId: string): Promise<void> {
+  if (graphId === FULL_CORTEX) return Promise.resolve(); // galaxy isn't a per-engram load
   // Dedupe: if a load for this exact engram is already running, reuse it.
   const existing = _loadGraphnosisInFlight.get(graphId);
   if (existing) return existing;
@@ -6293,6 +6691,8 @@ function gradeColor(g: string): string {
 }
 
 function renderHomeDashboard(): void {
+  // Get Connected teaser card — cheap + sync, render it now (no IPC).
+  refreshGetConnectedStatus();
   const greetEl = document.getElementById('home-greeting');
   const pulseEl = document.getElementById('home-pulse');
   if (!greetEl || !pulseEl) return;
@@ -6375,6 +6775,40 @@ function renderHomeDashboard(): void {
   renderHomeEngramBars();
   refreshHomeStranded();   // dedicated stranded-memories card (cheap, sync)
   refreshHomeOnPremise();  // sovereignty/egress ledger (cheap, sync)
+  annotateHomeHelp();      // "?" explainers on each card (idempotent)
+}
+
+// Plain-language explainer for each Home card, shown via a "?" on hover so the
+// metrics aren't cryptic. Keyed by the card title's leading text.
+const HOME_HELP: Record<string, string> = {
+  'Trust & Vitality': 'An at-a-glance 0–100 health score for this cortex — how connected, active, and consistent your memories are. Higher is healthier.',
+  'Connections': 'Which AI clients are reading your memory right now, and which data sources are feeding it.',
+  'Memory health': 'Retrieval-quality signals: how many memories are decaying (losing trust over time), when the next decay happens, and how densely they\'re linked (synapses).',
+  'Self-healing': 'Duplicate memories the autonomous brain merged on its own — no action needed from you.',
+  'Needs you': 'Items waiting on your decision: duplicate pairs to merge and AI-proposed corrections to confirm or reject.',
+  'Stranded memories': 'Memories with no links to anything else — orphans worth connecting so recall and dig-deeper can reach them.',
+  'Since you last opened': 'A digest of what changed in your cortex since your previous session.',
+  'Foresight': 'Your goals projected forward — predictions, risks, and opportunities the brain surfaces from your memory (needs the local LLM).',
+  'Autonomous Brain': 'Background, rule-based maintenance that runs on a schedule: consolidation, auto-linking, decay, and goal checks. Deterministic — no LLM, no randomness.',
+  'Growth': 'New sources added over the last 90 days. Each bar is a day — click one to open that day in Activity.',
+  'On-Premise': 'Where your memory lives and exactly what leaves your device. Graphnosis never transmits your memory on its own.',
+  'Disabled by policy': 'Connectors or AI clients that an administrator (or you) have blocked from this cortex.',
+};
+/** Append a hover "?" explainer to each Home card title. Idempotent — safe to
+ *  call on every Home render. */
+function annotateHomeHelp(): void {
+  document.querySelectorAll<HTMLElement>('.home-card-title').forEach((h) => {
+    if (h.querySelector('.home-help')) return; // already annotated
+    const key = (h.childNodes[0]?.textContent ?? '').trim();
+    const text = HOME_HELP[key];
+    if (!text) return;
+    const q = document.createElement('span');
+    q.className = 'home-help';
+    q.textContent = '?';
+    q.title = text;
+    q.setAttribute('aria-label', text);
+    h.appendChild(q);
+  });
 }
 
 // Per-engram vitality bars — collapsed to a top-N with a "show all" toggle so a
@@ -6388,9 +6822,9 @@ function renderHomeEngramBars(): void {
     .map(([gid, score]) => {
       const g = loadedGraphs.find((x) => x.graphId === gid);
       if (g?.metadata.archived) return null;
-      return { name: g?.metadata.displayName ?? gid, score: score as number };
+      return { gid, name: g?.metadata.displayName ?? gid, score: score as number };
     })
-    .filter((r): r is { name: string; score: number } => r !== null)
+    .filter((r): r is { gid: string; name: string; score: number } => r !== null)
     .sort((a, b) => b.score - a.score);
   barsEl.style.display = '';
   if (rows.length === 0) {
@@ -6402,13 +6836,14 @@ function renderHomeEngramBars(): void {
   // thousands, of engrams, so this never triggers in practice.
   const CAP = 300;
   const shown = rows.length > CAP ? rows.slice(0, CAP) : rows;
-  const bar = (r: { name: string; score: number }): string => {
+  const bar = (r: { gid: string; name: string; score: number }): string => {
+    const nameSpan = `<span class="home-bar-name" data-pres="engram:${escapeHtml(r.gid)}">${escapeHtml(r.name)}</span>`;
     if (r.score <= 0) {
-      return `<div class="home-bar-row home-bar-row-empty"><span class="home-bar-name">${escapeHtml(r.name)}</span>` +
+      return `<div class="home-bar-row home-bar-row-empty">${nameSpan}` +
         `<span class="home-bar-track"></span><span class="home-bar-val">empty</span></div>`;
     }
     const tone = r.score >= 85 ? 'ok' : r.score >= 70 ? 'accent' : r.score >= 50 ? 'warn' : 'error';
-    return `<div class="home-bar-row"><span class="home-bar-name">${escapeHtml(r.name)}</span>` +
+    return `<div class="home-bar-row">${nameSpan}` +
       `<span class="home-bar-track"><span class="home-bar-fill ${tone}" style="width:${r.score}%"></span></span>` +
       `<span class="home-bar-val">${r.score}</span></div>`;
   };
@@ -6483,7 +6918,7 @@ async function refreshHomeDigest(): Promise<void> {
     .join('');
   body.innerHTML =
     `<div class="home-digest-chips">${chips}</div>` +
-    `<button type="button" class="home-digest-link" data-go-audit>See the full trail in Audit →</button>`;
+    `<button type="button" class="home-digest-link" data-go-audit>See the full trail in Activity →</button>`;
   card.style.display = '';
   body.querySelector('[data-go-audit]')?.addEventListener('click', () => activateMode('activity'));
 }
@@ -6507,10 +6942,10 @@ async function refreshHomeNeeds(): Promise<void> {
 
   // Stranded memories have their own dedicated card (refreshHomeStranded); keep
   // this lane to corrections + duplicates so we don't double-surface them.
-  type NeedRow = { n: number; label: string; tip: string };
+  type NeedRow = { n: number; label: string; tip: string; kind: 'corrections' | 'duplicates' };
   const rows: NeedRow[] = [];
-  if (corrections > 0) rows.push({ n: corrections, label: corrections === 1 ? 'pending correction' : 'pending corrections', tip: 'AI-proposed edits awaiting your approval' });
-  if (duplicates > 0) rows.push({ n: duplicates, label: duplicates === 1 ? 'duplicate pair' : 'duplicate pairs', tip: 'near-identical memories to merge or keep' });
+  if (corrections > 0) rows.push({ n: corrections, label: corrections === 1 ? 'pending correction' : 'pending corrections', tip: 'AI-proposed edits awaiting your approval', kind: 'corrections' });
+  if (duplicates > 0) rows.push({ n: duplicates, label: duplicates === 1 ? 'duplicate pair' : 'duplicate pairs', tip: 'near-identical memories to merge or keep', kind: 'duplicates' });
 
   if (rows.length === 0) {
     card.style.display = '';
@@ -6518,14 +6953,19 @@ async function refreshHomeNeeds(): Promise<void> {
     return;
   }
   body.innerHTML = rows.map((r) =>
-    `<button type="button" class="home-need-row" title="${escapeHtml(r.tip)}">` +
+    `<button type="button" class="home-need-row" data-need-kind="${r.kind}" title="${escapeHtml(r.tip)}">` +
     `<span class="home-need-count">${r.n.toLocaleString()}</span>` +
     `<span class="home-need-label">${escapeHtml(r.label)}</span>` +
     `<span class="home-need-go">Review →</span></button>`,
   ).join('');
   card.style.display = '';
-  body.querySelectorAll('.home-need-row').forEach((el) => {
-    el.addEventListener('click', () => openTrivia());
+  body.querySelectorAll<HTMLButtonElement>('.home-need-row').forEach((el) => {
+    el.addEventListener('click', () => {
+      // Duplicate pairs → the merge overlay (Keep both / Merge); pending
+      // corrections → the review deck (where AI diffs sit at the top).
+      if (el.dataset['needKind'] === 'duplicates') void renderNeedsReview();
+      else openTrivia();
+    });
   });
 }
 
@@ -6583,7 +7023,7 @@ function refreshHomeStranded(): void {
       `<p class="home-stranded-copy">memor${n === 1 ? 'y is' : 'ies are'} standing alone, with no connections yet. ` +
       `A couple of minutes in the review deck weaves them back in — entirely your call.</p>` +
     `</div>` +
-    `<button type="button" class="home-stranded-go" data-stranded-connect>Connect them →</button>`;
+    `<button type="button" class="home-stranded-go" data-stranded-connect>Connect Stranded Memories →</button>`;
   body.querySelector('[data-stranded-connect]')?.addEventListener('click', () => openTrivia());
 }
 
@@ -6594,22 +7034,25 @@ async function refreshHomeGrowth(): Promise<void> {
   const card = document.getElementById('home-growth');
   const body = document.getElementById('home-growth-body');
   if (!card || !body) return;
-  const DAYS = 30;
+  // Clicking the card jumps to Activity, pre-filtered to ingests, for the full
+  // history. Wired idempotently (onclick replaces).
+  card.style.cursor = 'pointer';
+  card.onclick = () => { activityCat = 'ingested'; activityWindow = ACTIVITY_WINDOW_START; activateMode('activity'); };
+  const DAYS = 90;
   const since = Date.now() - DAYS * 864e5;
   let events: OpLogEvent[] = [];
   try {
-    // Cap the slice — 30 days of op-log on a big cortex can be tens of
-    // thousands of events; an unbounded payload was hanging this card. The
-    // 25s timeout covers a COLD full op-log read (~16s on a large cortex); once
-    // the host's read cache is warm, subsequent opens are instant. (Real fix:
-    // incremental/tail op-log reads so this isn't a whole-log scan — flagged.)
-    const r = await ipcCallTimeout<{ events: OpLogEvent[] }>('activity.list', { since, limit: 5000 }, 25_000);
+    // Count SOURCES (ingestSource), not individual nodes: a single ingest emits
+    // many addNode events, so counting nodes makes the chart a recent spike with
+    // 89 empty days. `ops` pulls just the sources from the full op-log (accurate,
+    // cheap, won't hit the cap), giving a meaningful, spread-out daily chart.
+    const r = await ipcCallTimeout<{ events: OpLogEvent[] }>('activity.list', { since, ops: ['ingestSource'], limit: 10000 }, 25_000);
     events = r.events ?? [];
   } catch { card.style.display = ''; body.innerHTML = '<p class="home-card-empty">Couldn’t load growth right now.</p>'; return; }
-  const adds = events.filter((e) => e.op === 'ingestSource' || e.op === 'addNode');
+  const adds = events.filter((e) => e.op === 'ingestSource');
   if (adds.length === 0) {
     card.style.display = '';
-    body.innerHTML = '<p class="home-card-empty">No new memories in the last 30 days.</p>';
+    body.innerHTML = `<p class="home-card-empty">No new sources in the last ${DAYS} days.</p>`;
     return;
   }
 
@@ -6627,7 +7070,7 @@ async function refreshHomeGrowth(): Promise<void> {
     return `<span class="home-spark-bar${c > 0 ? '' : ' empty'}" style="height:${pctH}%" title="${day.toLocaleDateString()}: ${c}"></span>`;
   }).join('');
   body.innerHTML =
-    `<div class="home-growth-stat"><strong>${adds.length.toLocaleString()}</strong> added in the last ${DAYS} days</div>` +
+    `<div class="home-growth-stat"><strong>${adds.length.toLocaleString()}</strong> source${adds.length === 1 ? '' : 's'} added in the last ${DAYS} days</div>` +
     `<div class="home-spark" aria-hidden="true">${bars}</div>`;
   card.style.display = '';
 }
@@ -6657,12 +7100,12 @@ function refreshHomeOnPremise(): void {
   } else {
     if (clients.length > 0) {
       const labels = clients.map((c) =>
-        `${escapeHtml(c)} <span class="home-onprem-posture ${isCloud(c) ? 'cloud' : 'local'}">${isCloud(c) ? '→ cloud when you chat' : 'on-device'}</span>`,
+        `<span data-pres="surface:mcpClients">${escapeHtml(c)}</span> <span class="home-onprem-posture ${isCloud(c) ? 'cloud' : 'local'}">${isCloud(c) ? '→ cloud when you chat' : 'on-device'}</span>`,
       ).join(', ');
       rows.push(`<li>AI clients that can read your memory: ${labels}</li>`);
     }
     if (connectors.length > 0) {
-      rows.push(`<li>Data sources you connected <span class="home-onprem-posture local">inbound only</span>: ${escapeHtml(connectors.join(', '))}</li>`);
+      rows.push(`<li>Data sources you connected <span class="home-onprem-posture local">inbound only</span>: <span data-pres="surface:connectors">${escapeHtml(connectors.join(', '))}</span></li>`);
     }
   }
   body.innerHTML =
@@ -6676,7 +7119,7 @@ function showHomeSkeletons(): void {
   const SKEL = '<div class="home-skel"></div><div class="home-skel w70"></div>';
   // Every async card gets a skeleton in its FINAL slot up front, so the grid
   // order is fixed before any data lands (cards fade in place, never reorder).
-  for (const id of ['home-needs', 'home-stranded', 'home-digest', 'home-foresight', 'home-brainact', 'home-rediscover', 'home-growth', 'home-mhealth', 'home-selfheal']) {
+  for (const id of ['home-needs', 'home-stranded', 'home-digest', 'home-foresight', 'home-brainact', 'home-growth', 'home-mhealth', 'home-selfheal']) {
     const card = document.getElementById(id);
     const body = document.getElementById(`${id}-body`);
     if (card && body && !body.querySelector(':not(.home-skel)')) {
@@ -6783,7 +7226,9 @@ function renderHomeSelfHealing(): void {
       `<div class="home-sh-stat"><span class="home-sh-val">${merged.toLocaleString()}</span><span class="home-sh-label">merged automatically</span></div>` +
       `<div class="home-sh-stat"><span class="home-sh-val">${rechecked.toLocaleString()}</span><span class="home-sh-label">re-checked by local AI</span></div>` +
     `</div>` +
-    `<p class="home-sh-note">Nothing is ever lost — every merge is a soft-delete you can undo from Recovery.</p>`;
+    `<p class="home-sh-note">Nothing is ever lost — every merge is a soft-delete you can undo from Recovery.</p>` +
+    `<button type="button" class="home-digest-link" id="home-sh-activity">See merges in Activity →</button>`;
+  body.querySelector<HTMLButtonElement>('#home-sh-activity')?.addEventListener('click', () => { activityCat = 'merged'; activityWindow = ACTIVITY_WINDOW_START; activateMode('activity'); });
 }
 
 function renderHomeBrainActivity(): void {
@@ -6805,7 +7250,36 @@ function renderHomeBrainActivity(): void {
   const consLine = cons
     ? `<p class="home-ba-cons">Last consolidation ${relTimeShort(cons.at)} — ${cons.inferredEdges.toLocaleString()} connections inferred, ${cons.communities.toLocaleString()} clusters, ${cons.edgesCleaned.toLocaleString()} dead edges cleaned.</p>`
     : '';
-  body.innerHTML = `<p class="home-ba-cadence">${escapeHtml(cadence)}</p>${consLine}`;
+
+  // Schedule line — last self-check + next scan (from brainStatus), resurfaced
+  // from the retired Deterministic Consolidation tab.
+  const lastRun = brainStatus?.lastRun?.['duplicateScan'];
+  const interval = brainStatus?.intervals?.['duplicateScan'] ?? 20 * 60 * 1000;
+  let schedule = 'Background self-checks run automatically.';
+  if (lastRun) {
+    const until = lastRun + interval - Date.now();
+    schedule = until <= 0
+      ? `Last self-check ${relTimeShort(lastRun)} · next scan due now.`
+      : `Last self-check ${relTimeShort(lastRun)} · next in ${formatInterval(until)}.`;
+  }
+
+  body.innerHTML =
+    `<p class="home-ba-cadence">${escapeHtml(cadence)}</p>` +
+    consLine +
+    `<p class="home-ba-schedule">🩺 ${escapeHtml(schedule)}</p>` +
+    `<div class="home-ba-actions">` +
+      `<button type="button" class="home-card-cta" id="home-brain-scan">↻ Scan now</button>` +
+      `<button type="button" class="home-digest-link" id="home-brain-activity">See in Activity →</button>` +
+    `</div>` +
+    `<p class="home-ba-det">Deterministic — same memory, same result, fully auditable.</p>`;
+  body.querySelector<HTMLButtonElement>('#home-brain-activity')?.addEventListener('click', () => { activityCat = 'all'; activityWindow = ACTIVITY_WINDOW_START; activateMode('activity'); });
+  body.querySelector<HTMLButtonElement>('#home-brain-scan')?.addEventListener('click', (ev) => {
+    const btn = ev.currentTarget as HTMLButtonElement;
+    btn.disabled = true; btn.textContent = '↻ Scanning…';
+    void ipcCall('brain:runScan', {}).catch(() => { /* non-fatal */ });
+    // Refresh status shortly after so the schedule line updates.
+    window.setTimeout(() => { void refreshBrainStatus().then(() => renderHomeBrainActivity()); }, 1500);
+  });
 }
 
 // ── Home: "Disabled by IT" governance card ────────────────────────────────
@@ -6820,6 +7294,8 @@ async function refreshHomePolicy(): Promise<void> {
   if (!card || !body) return;
   let p: { disabledConnectorKinds: string[]; disabledClients: string[]; managed: boolean } | null = null;
   try { p = await ipcCall('policy.get', {}); } catch { card.style.display = 'none'; return; }
+  blockedClientNames = new Set((p?.disabledClients ?? []).map((s) => s.toLowerCase()));
+  refreshGetConnectedStatus(); // re-mark blocked clients in the Connections card
   if (!p || (p.disabledConnectorKinds.length === 0 && p.disabledClients.length === 0)) {
     card.style.display = 'none';
     return;
@@ -7131,10 +7607,15 @@ function openTrivia(): void {
   triviaCardsSeen = true;
   const drawer = document.getElementById('trivia-drawer');
   drawer?.classList.add('trivia-open');
+  // connect-mode turns the deck into a focused MAIN-COLUMN view (not a fixed
+  // bottom drawer): the Home overview hides, the deck fills the content column,
+  // and the Inspector opens on the right via the normal grid (no overlap).
+  document.body.classList.add('connect-mode');
+  document.querySelector<HTMLElement>('.app-canvas')?.scrollTo({ top: 0 });
   // Reset green badge — user is now reviewing
   document.getElementById('trivia-bar-pill')?.classList.remove('new-cards');
   // Select the current stranded node in the right-panel Node Inspector so
-  // the user sees full context the moment the drawer opens.
+  // the user sees full context the moment the deck opens.
   const currentItem = graphnosisDeck[graphnosisDeckIndex];
   if (currentItem) selectGraphnosisNode(currentItem.node.id, { trace: true });
 }
@@ -7143,8 +7624,8 @@ function closeTrivia(): void {
   if (!triviaOpen) return;
   triviaOpen = false;
   document.getElementById('trivia-drawer')?.classList.remove('trivia-open');
-  // Collapse the right-panel Node Inspector — it was opened by the drawer,
-  // so it should close with it.
+  document.body.classList.remove('connect-mode');
+  // Collapse the right-panel Node Inspector — it was opened by the deck.
   selectGraphnosisNode(null);
 }
 
@@ -8202,7 +8683,7 @@ function updateGraphnosisForgottenRow(): void {
     return `
       <div class="g-recap-forgotten-row">
         <span class="g-recap-forgotten-label" title="${escape(name)}">
-          ${escape(name)} ${countLabel}
+          <span data-pres="engram:${escape(g.graphId)}">${escape(name)}</span> ${countLabel}
         </span>
         <span class="purge-status" style="font-size:12px; color:var(--fg-dim); margin-right:6px;">${isPurgingNow ? 'Purging…' : ''}</span>
         <button class="btn-g-purge" data-graph-id="${escape(g.graphId)}" title="${purgeTitle}"${isPurgingNow ? ' disabled' : ''}>Purge now</button>
@@ -8308,6 +8789,10 @@ function applyGraphnosisFilter(): void {
     els.gSearchResults.classList.add('hidden');
     document.body.classList.add('search-idle');
     clearSearchSynthesis();
+    // The Inspector still shows the detail of whatever search result was last
+    // clicked — that context is gone now, so reset it along with the results.
+    graphnosisSelectedId = null;
+    renderDetailEmpty();
     renderDashboard();
     return;
   }
@@ -8483,6 +8968,10 @@ function renderListWithInfiniteScroll(rows: NodeRecord[]): void {
     return;
   }
   els.gList.innerHTML = '';
+  // Full re-render = a fresh result set (new query / re-run / GNN merge), so
+  // reset the scroll to the top — otherwise the list keeps the previous
+  // results' scroll offset and the new top hits are off-screen.
+  els.gList.scrollTop = 0;
   appendNextListBatch();
 }
 
@@ -8607,6 +9096,7 @@ async function runSemanticFallback(
           id: h.nodeId,
           confidence: h.score,
           sourceFile: '',
+          sourceId: h.sourceId,
           contentPreview: h.text,
           _graphId: graphId,
         } satisfies NodeRecord;
@@ -8681,7 +9171,7 @@ function renderListRow(n: NodeRecord, rowIndex?: number): string {
   // cortex area each search result came from. Only added when we know
   // the engram (most rows, since loadGraphnosisData tags every record).
   const engramChip = n._graphId
-    ? `<span class="g-row-engram-chip" title="Engram">${escape(engramName(n._graphId))}</span>`
+    ? `<span class="g-row-engram-chip" title="Engram" data-pres="engram:${escape(n._graphId)}">${escape(engramName(n._graphId))}</span>`
     : '';
   // GNN-augmented result chip — appears on rows surfaced via the neural
   // network's edge predictions rather than direct substring/semantic match.
@@ -8703,8 +9193,8 @@ function renderListRow(n: NodeRecord, rowIndex?: number): string {
   return `<div class="g-list-row${selected}${softCls}" data-node-id="${escape(n.id)}" data-graph-id="${escape(n._graphId ?? '')}" tabindex="-1">
     <span class="g-row-conf" title="trust ${n.confidence.toFixed(2)}">${numLabel}${confidenceDot}</span>
     <div>
-      <div class="g-row-text">${escape(cleanContent)}</div>
-      ${metaLine ? `<div class="g-row-meta"><span class="g-row-source" title="${escape(renderBreadcrumbPlain(n))}">${metaLine}</span></div>` : ''}
+      <div class="g-row-text" data-pres="node:${escape(n.id)}" data-pres-engram="${escape(n._graphId ?? '')}"${presSourceAttr(n.sourceId)}>${escape(cleanContent)}</div>
+      ${metaLine ? `<div class="g-row-meta"><span class="g-row-source" title="${escape(renderBreadcrumbPlain(n))}" data-pres="node:${escape(n.id)}" data-pres-engram="${escape(n._graphId ?? '')}"${presSourceAttr(n.sourceId)}>${metaLine}</span></div>` : ''}
     </div>
   </div>`;
 }
@@ -8820,6 +9310,7 @@ function pushRecent(nodeId: string): void {
 }
 
 function renderRecents(): void {
+  if (!els.gMemoryTrace) return; // Memory Trace removed from the rail.
   const recents = graphnosisRecentsGlobal;
   if (recents.length === 0) {
     els.gMemoryTrace.classList.add('hidden');
@@ -8845,7 +9336,7 @@ function renderRecents(): void {
     const label = cleanText
       ? (cleanText.length > 36 ? cleanText.slice(0, 33) + '…' : cleanText)
       : nodeId.slice(0, 8) + '…';
-    return `<button class="rail-memory-chip" data-node-id="${escape(nodeId)}" data-graph-id="${escape(graphId)}" title="${escape(sourceText || nodeId)}">${escape(label)}</button>`;
+    return `<button class="rail-memory-chip" data-node-id="${escape(nodeId)}" data-graph-id="${escape(graphId)}" data-pres="node:${escape(nodeId)}" data-pres-engram="${escape(graphId)}"${presSourceAttr(localNode?.sourceId ?? studioNode?.sourceId ?? nodeSourceId(nodeId, graphId))} title="${escape(sourceText || nodeId)}">${escape(label)}</button>`;
   }).join('');
   els.gMemoryTraceList.querySelectorAll<HTMLButtonElement>('.rail-memory-chip').forEach((btn) => {
     const id = btn.dataset['nodeId'];
@@ -8909,12 +9400,12 @@ function renderDetailPane(): void {
   // display. Save sends the raw text back through node.directEdit.
   const isEditing = graphnosisEditingId === node.id;
   const contentBlock = isEditing
-    ? `<textarea class="g-detail-edit-textarea" id="g-detail-edit">${escape(node.contentPreview)}</textarea>
+    ? `<textarea class="g-detail-edit-textarea" id="g-detail-edit" data-pres="node:${escape(node.id)}" data-pres-engram="${escape(atlasActiveGraph ?? '')}"${presSourceAttr(node.sourceId)}>${escape(node.contentPreview)}</textarea>
        <div class="g-detail-actions">
          <button class="primary" id="btn-detail-save">Save correction</button>
          <button id="btn-detail-cancel-edit">Cancel</button>
        </div>`
-    : `<div class="g-detail-content">${escape(cleanContent)}</div>`;
+    : `<div class="g-detail-content" data-pres="node:${escape(node.id)}" data-pres-engram="${escape(atlasActiveGraph ?? '')}"${presSourceAttr(node.sourceId)}>${escape(cleanContent)}</div>`;
 
   // Connection list — Atlas-derived. Falls back to empty if Atlas hasn't
   // been initialized yet. For the v1 we just read from cached edges and
@@ -8946,8 +9437,8 @@ function renderDetailPane(): void {
   els.gDetailBody.innerHTML = `
     <div class="g-detail-header">
       <div class="g-detail-conf">${confidenceDot} memory trace${isActive ? '' : ' · forgotten'}</div>
-      <div class="g-detail-chips">${typeChip}${trustChip}${validUntilChip}</div>
-      ${breadcrumbHtml ? `<div class="g-detail-breadcrumb" title="${escape(renderBreadcrumbPlain(node))}">${breadcrumbHtml}</div>` : ''}
+      <div class="g-detail-chips" data-pres="node:${escape(node.id)}" data-pres-engram="${escape(atlasActiveGraph ?? '')}"${presSourceAttr(node.sourceId)}>${typeChip}${trustChip}${validUntilChip}</div>
+      ${breadcrumbHtml ? `<div class="g-detail-breadcrumb" title="${escape(renderBreadcrumbPlain(node))}" data-pres="node:${escape(node.id)}" data-pres-engram="${escape(atlasActiveGraph ?? '')}"${presSourceAttr(node.sourceId)}>${breadcrumbHtml}</div>` : ''}
       ${contentBlock}
       ${actionRow}
     </div>
@@ -8956,7 +9447,7 @@ function renderDetailPane(): void {
       ${renderConnectionsBlock(conns)}
     </div>
     <div class="g-detail-suggest-wrap">
-      <div id="g-detail-suggest" class="g-detail-suggest hidden" data-node-id="${escape(node.id)}"></div>
+      <div id="g-detail-suggest" class="g-detail-suggest hidden" data-node-id="${escape(node.id)}" data-pres="node:${escape(node.id)}" data-pres-engram="${escape(atlasActiveGraph ?? '')}"${presSourceAttr(node.sourceId)}></div>
     </div>
     </div>
   `;
@@ -9254,9 +9745,9 @@ function renderConnectionsBlock(conns: ConnRow[]): string {
           data-directed="${isDirected}">
           <span class="g-detail-conn-arrow" style="color: ${cssColorForCategory(c.category)};">${arrow}</span>
           <div style="flex:1;min-width:0;">
-            <div class="g-detail-conn-text">${escape(neighborLabel(c.neighborId))}</div>
+            <div class="g-detail-conn-text" data-pres="node:${escape(c.neighborId)}" data-pres-engram="${escape(atlasActiveGraph ?? '')}"${presSourceAttr(nodeSourceId(c.neighborId, atlasActiveGraph ?? undefined))}>${escape(neighborLabel(c.neighborId))}</div>
             <div class="g-detail-conn-meta">
-              ${meta}
+              <span data-pres="node:${escape(c.neighborId)}" data-pres-engram="${escape(atlasActiveGraph ?? '')}"${presSourceAttr(nodeSourceId(c.neighborId, atlasActiveGraph ?? undefined))}>${meta}</span>
               ${retype}
             </div>
           </div>
@@ -10609,6 +11100,8 @@ function switchGraphnosisTab(tab: GraphnosisTab): void {
     if (enteringFresh) resetAtlasView();
     void (async () => {
       const firstMount = await mountAtlasIfNeeded();
+      // Full Cortex galaxy owns the canvas — (re)render it instead of an engram.
+      if (atlasGalaxyMode || atlasActiveGraph === FULL_CORTEX) { await loadFullCortexGalaxy(); return; }
       // STALE GUARD: the cached node set (graphnosisAllNodes /
       // atlasLoadedForGraph) may not be for the engram currently selected in
       // the picker — e.g. the user switched engrams on Home and the background
@@ -10646,7 +11139,6 @@ function switchGraphnosisTab(tab: GraphnosisTab): void {
     if (els.gSearch.value.trim().length === 0) renderDashboard();
     showHomeSkeletons();      // placeholders so async cards fade in (fixed slots)
     renderHomeDashboard();    // hero + Trust&Vitality (cheap, sync, from cached data)
-    refreshHomeRediscover();  // SYNC + instant — render now, never queue it behind IPCs
     scheduleHomeDataLoad();   // the IPC fetches — light ones concurrent, heavy one deferred
     updateStudioVisibility();
     populateStudioEngramSelects();
@@ -10701,6 +11193,18 @@ async function mountAtlasIfNeeded(): Promise<boolean> {
   mainAtlas = await createAtlasEngine(kind, {
     container: els.atlasContainer,
     onSelect: (node) => {
+      // Galaxy super-node → zoom into that engram (exit Full Cortex view).
+      if (node && node.id.startsWith('__galaxy:')) {
+        atlasGalaxyMode = false;
+        // After the engram renders, clear any selection/emphasis so the user
+        // lands on the full engram with every node shown unselected — rather
+        // than inheriting the clicked super-node's highlighted state.
+        void switchActiveEngram(node.id.slice('__galaxy:'.length)).then(() => {
+          selectGraphnosisNode(null);
+          mainAtlas?.resetEmphasis();
+        });
+        return;
+      }
       // User clicked a node directly in the 3D canvas — record it as the
       // atlas-local selection (drives emphasis on next data rebuild), then
       // sync to the list/detail pane via the shared selection model.
@@ -10715,6 +11219,7 @@ async function mountAtlasIfNeeded(): Promise<boolean> {
 
 function pushDataIntoAtlas(): void {
   if (!mainAtlas || !atlasActiveGraph) return;
+  if (atlasGalaxyMode) return; // the galaxy owns the atlas nodes/edges
   // Snapshot current node positions BEFORE overwriting allNodes, so existing
   // nodes carry their settled simulation positions into the next render.
   // Without this, every setNodes() call looked like a full re-layout.
@@ -10878,7 +11383,7 @@ function renderAtlasLegend(): void {
     const pretty = formatLegendLabel(s.label);
     return `<div class="legend-row ${cls}" data-source-key="${escape(s.key)}" title="${escape(s.label || s.key || '(no source)')}">
       <span class="legend-swatch-dot" style="background: ${swatch};"></span>
-      <span class="source-name">${escape(pretty)}</span>
+      <span class="source-name" data-pres="engram:${escape(atlasActiveGraph ?? '')}">${escape(pretty)}</span>
       <span class="legend-count">${s.nodeCount}</span>
     </div>`;
   }).join('');
@@ -10915,6 +11420,21 @@ function renderAtlasLegend(): void {
 }
 
 els.atlasGraphPicker.addEventListener('change', () => void (async () => {
+  // Full Cortex → the galaxy view (engrams as super-nodes), not a per-engram load.
+  if (els.atlasGraphPicker.value === FULL_CORTEX) {
+    // Full Cortex spans everything → the per-page scope dropdowns
+    // (Search / Sources / Activity) reset to "All engrams".
+    resetPageScopesForFullCortex();
+    await loadFullCortexGalaxy();
+    return;
+  }
+  atlasGalaxyMode = false;
+  // Conditional jump to the 3D Engram view. Selecting an engram from the
+  // top picker means "show me this engram" — but only yank the user to 3D
+  // from browse contexts (Home / Search). On task/config panes (Sources,
+  // Activity, Settings, Skills, etc.) the picker just scopes in place so we
+  // don't interrupt what they're doing.
+  const jumpTo3D = currentMode === 'atlas' || currentMode === 'search';
   // Safety net: the picker also lists not-yet-loaded engrams as <option disabled>
   // for awareness during boot. Native <select> shouldn't fire `change` on a
   // disabled option, but if it ever does (custom dropdowns, keyboard nav
@@ -10928,9 +11448,10 @@ els.atlasGraphPicker.addEventListener('change', () => void (async () => {
   atlasActiveGraph = els.atlasGraphPicker.value;
   persistActiveEngram(atlasActiveGraph);
   refreshActiveEngramLabel();
-  // Scope the CURRENT view to the picked engram — do NOT yank the user to the
-  // 3D Engram (plan decision #3). The data reload below refreshes whatever
-  // view is active; the picker is a scope control, not a navigation jump.
+  // From a browse context, navigate to the 3D Engram so the user lands on
+  // the visualization of the engram they just picked. Both 'atlas' and
+  // 'search' share the atlas mode-pane, so this just flips the inner view.
+  if (jumpTo3D) activateMode('engram');
   graphnosisSelectedId = null;
   atlasSelectedId = null;
   // Cancel any pending Home data loads — they're cortex-wide (not per-engram)
@@ -11051,7 +11572,8 @@ document.addEventListener('keydown', (e: KeyboardEvent) => {
 
 // Status-bar MCP area → navigate to Status page on click.
 document.getElementById('status-mcp-area')?.addEventListener('click', () => {
-  activateMode('status');
+  // Status page removed — the AI-client list lives on Get Connected now.
+  activateMode('get-connected');
 });
 
 els.gSearch.addEventListener('focus', () => {
@@ -11267,37 +11789,106 @@ function cssColorForCategory(cat: EdgeCategory): string {
 
 // ── Activity (op-log timeline) ────────────────────────────────────────
 
+// Growing fetch window: autonomous-brain ops (e.g. mass edge re-links) can fill
+// the most-recent N events and bury the user's ingests/edits/forgets, which are
+// older. So we start at 2000 and grow the window (see auto-load in renderActivity)
+// until there's real variety. The sidecar's incremental cache makes re-slicing a
+// bigger window cheap after the first cold read.
+// Default ~500 events loaded; the user clicks "Load more" for more. The
+// autonomous brain can emit tens of thousands of edge ops a day, so for a
+// specific category (Ingested/Forgotten/Edits…) we pass `ops` to the sidecar so
+// it pulls THAT type from the full op-log — no longer buried under edge spam.
+const ACTIVITY_WINDOW_START = 500;
+const ACTIVITY_WINDOW_STEP = 500;
+const ACTIVITY_WINDOW_MAX = 10000;
+let activityWindow = ACTIVITY_WINDOW_START;
+let activityHasMore = false;      // fetched == window → more events may exist
+let activityLoading = false;      // guards re-entrancy + the button spinner
+
+/** Read the date-range inputs → an absolute ms window for the op-log fetch.
+ *  `since` is exclusive (IPC uses `ts > since`), so we subtract 1ms from the
+ *  start-of-day; `until` is inclusive end-of-day. Returns {} when no dates set. */
+function activityDateBounds(): { since?: number; until?: number } {
+  const out: { since?: number; until?: number } = {};
+  const from = els.activityDateFrom.value;
+  const to = els.activityDateTo.value;
+  if (from) out.since = new Date(`${from}T00:00:00`).getTime() - 1;
+  if (to) out.until = new Date(`${to}T23:59:59.999`).getTime();
+  return out;
+}
+function activityDateRangeActive(): boolean {
+  return Boolean(els.activityDateFrom.value || els.activityDateTo.value);
+}
+
 async function refreshActivityView(): Promise<void> {
-  els.activityList.innerHTML = '<div class="home-skel"></div><div class="home-skel w70"></div><div class="home-skel"></div>';
+  if (activityLoading) return;
+  activityLoading = true;
+  if (activityEvents.length === 0) {
+    els.activityList.innerHTML = '<div class="home-skel"></div><div class="home-skel w70"></div><div class="home-skel"></div>';
+  }
   try {
-    // Bounded + timed-out: the old `list_activity` Rust passthrough pulled the
-    // ENTIRE op-log (2M+ events) with no bound and no timeout → "Loading…"
-    // forever on a large cortex. The most-recent 1000 events is plenty for an
-    // activity timeline; the sidecar's incremental cache keeps repeat loads fast.
-    const r = await ipcCallTimeout<{ events: OpLogEvent[] }>('activity.list', { limit: 1000 }, 25_000);
+    const bounds = activityDateBounds();
+    const dateScoped = activityDateRangeActive();
+    // With an explicit date range, pull the WHOLE range from the op-log (up to
+    // the hard cap) rather than the recent-N window — old days are otherwise
+    // unreachable. Without one, keep the cheap recent-window paging.
+    const params: { limit: number; ops?: string[]; since?: number; until?: number; actor?: string } =
+      { limit: dateScoped ? ACTIVITY_WINDOW_MAX : activityWindow };
+    if (activityCat !== 'all') params.ops = ACTIVITY_CAT_OPS[activityCat]; // server-side type filter
+    if (bounds.since !== undefined) params.since = bounds.since;
+    if (bounds.until !== undefined) params.until = bounds.until;
+    // Actor ("who") is now a SERVER-side filter (applied across the full op-log,
+    // like categories) so picking a rare actor surfaces their events even when
+    // outside the recent window.
+    const actorSel = els.activityActorSelect.value;
+    if (actorSel) params.actor = actorSel;
+    const r = await ipcCallTimeout<{ events: OpLogEvent[]; actors?: string[] }>('activity.list', params, 25_000);
     activityEvents = r.events ?? [];
+    activityServerActors = r.actors ?? []; // complete distinct-actor set for the dropdown
+    // Date-scoped fetches pull the whole range (no recent-window paging), so
+    // "more" only means we hit the hard cap; otherwise it's window-relative.
+    activityHasMore = dateScoped
+      ? activityEvents.length >= ACTIVITY_WINDOW_MAX
+      : activityEvents.length >= activityWindow;
     populateActivityEngramSelect();
+    populateActivityActorSelect();
     applyActivityFilter();
   } catch {
     els.activityList.innerHTML =
       '<p class="subtitle">Couldn’t load activity — the op-log read timed out. ' +
       '<button id="btn-activity-retry" class="btn-sm" type="button">Retry</button></p>';
-    document.getElementById('btn-activity-retry')?.addEventListener('click', () => void refreshActivityView());
+    document.getElementById('btn-activity-retry')?.addEventListener('click', () => { activityWindow = ACTIVITY_WINDOW_START; void refreshActivityView(); });
+  } finally {
+    activityLoading = false;
   }
+}
+
+/** Grow the fetch window by a batch and reload (the "Load more" button). */
+function loadMoreActivity(): void {
+  if (activityLoading || activityWindow >= ACTIVITY_WINDOW_MAX) return;
+  activityWindow = Math.min(ACTIVITY_WINDOW_MAX, activityWindow + ACTIVITY_WINDOW_STEP);
+  void refreshActivityView();
 }
 
 // Most-recent events from the last activity.list fetch. Chip/search/engram
 // filtering runs against this cache so it's instant (no re-fetch per keystroke).
 let activityEvents: OpLogEvent[] = [];
-type ActivityCat = 'all' | 'add' | 'edit' | 'connect' | 'merge' | 'remove';
+let activityFiltered: OpLogEvent[] = []; // last filtered set
+type ActivityCat = 'all' | 'ingested' | 'nodes' | 'edits' | 'edges' | 'merged' | 'forgotten';
 let activityCat: ActivityCat = 'all';
-// op → friendly category. Drives both the chips and their count badges.
+// op → friendly category. Granular: ingests, nodes, edits, edges, merges,
+// forgets. Drives both the chips and their count badges.
 const ACTIVITY_CAT_OPS: Record<Exclude<ActivityCat, 'all'>, OpLogEvent['op'][]> = {
-  add: ['addNode', 'ingestSource'],
-  edit: ['editNode', 'supersede'],
-  connect: ['addEdge', 'deleteEdge'],
-  merge: ['merge'],
-  remove: ['deleteNode', 'forgetSource'],
+  ingested: ['ingestSource'],
+  nodes: ['addNode', 'deleteNode'],
+  edits: ['editNode', 'supersede'],
+  edges: ['addEdge', 'deleteEdge'],
+  merged: ['merge'],
+  forgotten: ['forgetSource'],
+};
+const ACTIVITY_CAT_LABELS: Record<ActivityCat, string> = {
+  all: 'All', ingested: 'Ingested', nodes: 'Nodes', edits: 'Edits',
+  edges: 'Edges', merged: 'Merged', forgotten: 'Forgotten',
 };
 function activityCatOf(op: OpLogEvent['op']): Exclude<ActivityCat, 'all'> | null {
   for (const cat of Object.keys(ACTIVITY_CAT_OPS) as Array<Exclude<ActivityCat, 'all'>>) {
@@ -11306,137 +11897,391 @@ function activityCatOf(op: OpLogEvent['op']): Exclude<ActivityCat, 'all'> | null
   return null;
 }
 
-/** Fill the engram scope dropdown from the engrams present in the loaded
- *  events, preserving the current selection if still valid. */
+/** Fill the engram scope dropdown from ALL loaded engrams (not just those that
+ *  happen to appear in the recent-events window), preserving the selection. */
 function populateActivityEngramSelect(): void {
   const prev = els.activityEngramSelect.value;
-  const ids = Array.from(new Set(activityEvents.map((e) => e.graphId)));
-  ids.sort((a, b) => engramName(a).localeCompare(engramName(b)));
+  const graphs = loadedGraphs.filter((g) => !g.metadata.archived);
+  const ids = graphs.map((g) => g.graphId)
+    .sort((a, b) => engramName(a).localeCompare(engramName(b)));
   els.activityEngramSelect.innerHTML =
     '<option value="">All engrams</option>' +
     ids.map((id) => `<option value="${escape(id)}">${escape(engramName(id))}</option>`).join('');
   if (prev && ids.includes(prev)) els.activityEngramSelect.value = prev;
 }
 
-/** Filter the cached events by category chip + engram scope + text query, then
- *  render. Also refreshes the per-chip count badges (counts respect the engram
- *  scope + text query but NOT the active category, so each chip shows how many
- *  it would surface). */
+/** Fill the "who" dropdown from the distinct actors present in the loaded
+ *  events (You, Autonomous brain, Claude Code / other AI clients, App…),
+ *  preserving the current selection. */
+// Distinct actor labels are computed SERVER-SIDE across the full op-log scope
+// (activity.list returns `actors`), so the dropdown is always complete — no
+// dependence on which events happen to be in the recent-N window.
+let activityServerActors: string[] = [];
+function populateActivityActorSelect(): void {
+  const prev = els.activityActorSelect.value;
+  els.activityActorSelect.innerHTML =
+    '<option value="">Anyone</option>' +
+    activityServerActors.map((l) => `<option value="${escape(l)}">${escape(l)}</option>`).join('');
+  // Keep the current selection even if it's not in the latest set (e.g. it's
+  // the active filter and the server excluded it from `actors`); re-add it.
+  if (prev) {
+    if (!activityServerActors.includes(prev)) {
+      els.activityActorSelect.insertAdjacentHTML('beforeend', `<option value="${escape(prev)}">${escape(prev)}</option>`);
+    }
+    els.activityActorSelect.value = prev;
+  }
+}
+
+/** Category is server-filtered (via `ops`); here we only apply the engram scope
+ *  + text query to the fetched set, then render. */
+/** Parse a "HH:MM" time input → minutes-since-midnight, or null if empty. */
+function activityHourMinutes(val: string): number | null {
+  const m = /^(\d{2}):(\d{2})$/.exec(val);
+  if (!m) return null;
+  return Number(m[1]) * 60 + Number(m[2]);
+}
+
 function applyActivityFilter(): void {
   const engram = els.activityEngramSelect.value;
+  // Actor is filtered server-side (refetch on change) — not here.
   const query = els.activitySearch.value.trim().toLowerCase();
-
-  // Base set: engram scope + text query (category applied after, for counts).
   const matchesText = (e: OpLogEvent): boolean => {
     if (!query) return true;
     const hay = `${e.op} ${e.graphId} ${engramName(e.graphId)} ${activityLabel(e).replace(/<[^>]+>/g, '')} ${activityDetail(e).replace(/<[^>]+>/g, '')}`.toLowerCase();
     return hay.includes(query);
   };
-  const base = activityEvents.filter((e) => (!engram || e.graphId === engram) && matchesText(e));
-
-  // Chip count badges (over the base set).
-  const counts: Record<ActivityCat, number> = { all: base.length, add: 0, edit: 0, connect: 0, merge: 0, remove: 0 };
-  for (const e of base) { const c = activityCatOf(e.op); if (c) counts[c]++; }
-  const CHIP_LABELS: Record<ActivityCat, string> = {
-    all: 'All', add: 'Added', edit: 'Edited', connect: 'Connections', merge: 'Merged', remove: 'Removed',
+  // Hour-of-day window (applies to every selected day). Supports wrap-around
+  // (e.g. 22:00 → 06:00 = overnight) by inverting the test when from > to.
+  const hourFrom = activityHourMinutes(els.activityHourFrom.value);
+  const hourTo = activityHourMinutes(els.activityHourTo.value);
+  const matchesHour = (e: OpLogEvent): boolean => {
+    if (hourFrom === null && hourTo === null) return true;
+    const d = new Date(e.ts);
+    const mins = d.getHours() * 60 + d.getMinutes();
+    const lo = hourFrom ?? 0;
+    const hi = hourTo ?? 24 * 60 - 1;
+    return lo <= hi ? (mins >= lo && mins <= hi) : (mins >= lo || mins <= hi);
   };
   els.activityChips.querySelectorAll<HTMLButtonElement>('.g-activity-chip').forEach((chip) => {
     const cat = (chip.dataset.cat ?? 'all') as ActivityCat;
     chip.classList.toggle('active', cat === activityCat);
-    chip.innerHTML = `${escape(CHIP_LABELS[cat])}<span class="chip-count">${counts[cat]}</span>`;
+    chip.textContent = ACTIVITY_CAT_LABELS[cat]; // no counts — category now pulls full history
   });
-
-  const filtered = (activityCat === 'all' ? base : base.filter((e) => activityCatOf(e.op) === activityCat));
-  renderActivity(filtered, activityEvents.length);
+  // Reflect whether any date/hour filter is active on the Clear button.
+  const rangeActive = activityDateRangeActive() || hourFrom !== null || hourTo !== null;
+  els.activityDateClear.classList.toggle('hidden', !rangeActive);
+  activityFiltered = activityEvents
+    .filter((e) => (!engram || e.graphId === engram)
+      && matchesText(e) && matchesHour(e))
+    .slice().sort((a, b) => b.ts - a.ts);
+  renderActivity();
 }
 
-function renderActivity(events: OpLogEvent[], total: number): void {
-  const filtered = events.slice().sort((a, b) => b.ts - a.ts); // newest first
+const activityDayLabel = (ts: number): string => {
+  const d = new Date(ts);
+  const today = new Date();
+  const yesterday = new Date(today); yesterday.setDate(today.getDate() - 1);
+  if (d.toDateString() === today.toDateString()) return 'Today';
+  if (d.toDateString() === yesterday.toDateString()) return 'Yesterday';
+  return d.toLocaleDateString(undefined, { weekday: 'long', month: 'short', day: 'numeric' });
+};
+const activityTime = (ts: number): string => new Date(ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 
-  els.activityStats.textContent = `${filtered.length} of ${total} recent event${total === 1 ? '' : 's'}`;
+/** Who/what triggered an op — derived from the scattered provenance fields
+ *  (addedBy / correctedBy MCP client, triggeredBy user:/brain:/ipc:, edge reason). */
+function activityActor(e: OpLogEvent): { label: string; cls: string } {
+  // Prefer the server-computed actor (activity.list attaches it) so labels match
+  // the dropdown + filter exactly; fall back to client classification otherwise.
+  if (e.actor) return { label: e.actor, cls: e.actorCls ?? 'app' };
+  const a = (e.after ?? {}) as Record<string, unknown>;
+  const b = (e.before ?? {}) as Record<string, unknown>;
+  const client = (a['addedBy'] ?? a['correctedBy']) as string | undefined;
+  if (client) return { label: friendlyClient(client), cls: 'ai' };
+  const trig = ((a['triggeredBy'] ?? b['triggeredBy']) as string | undefined) ?? '';
+  const reason = ((a['reason'] ?? b['reason']) as string | undefined) ?? '';
+  if (trig.startsWith('user:')) return { label: 'You', cls: 'user' };
+  if (trig.startsWith('brain:') || /\bbrain:|auto-relink|auto-link/i.test(reason)) return { label: 'Autonomous brain', cls: 'brain' };
+  if (/user-confirmed/i.test(reason)) return { label: 'You', cls: 'user' };
+  if (trig.startsWith('ipc:')) return { label: 'App', cls: 'app' };
+  return { label: 'System', cls: 'app' };
+}
 
-  if (filtered.length === 0) {
+/** Grouping key: identical events (same op, engram, actor, detail) collapse. */
+function activitySig(e: OpLogEvent): string {
+  // Use the grouping-stable detail (omits per-node addNode content) so 350
+  // identical "Added a memory node" events still collapse into one ×350 group.
+  return `${e.op}|${e.graphId}|${activityActor(e).label}|${activityDetail(e, { forGrouping: true }).replace(/<[^>]+>/g, '')}`;
+}
+
+function actorBadge(a: { label: string; cls: string }): string {
+  // Presentation Mode: external identities redact — connectors follow the
+  // connectors surface, AI clients the mcpClients surface. "You" / "Autonomous
+  // brain" / "App" / "System" are generic and stay visible.
+  const tag = a.label.startsWith('connector:') ? 'surface:connectors'
+    : a.cls === 'ai' ? 'surface:mcpClients' : '';
+  const attr = tag ? ` data-pres="${tag}"` : '';
+  return `<span class="activity-actor actor-${a.cls}" title="Who made this change"${attr}>${escape(a.label)}</span>`;
+}
+
+/** Translate the internal reason/trigger codes into plain language an auditor
+ *  can read. The parenthetical in auto-relink reasons IS the shared entity. */
+function humanizeReason(reason: string): string {
+  const r = reason.toLowerCase();
+  const paren = reason.match(/\(([^)]+)\)/)?.[1];
+  if (r.includes('consolidation-cleanup')) return 'removed a redundant connection during consolidation';
+  if (r.includes('transitive-inference')) return 'inferred from a chain of related memories';
+  // NOTE: the SDK's "same-person" heuristic flags any capitalised entity (e.g.
+  // "Remote Access", "2026"), so don't assert it's a person — just say both
+  // memories reference it. The SAME-PERSON badge already conveys the edge type.
+  if (r.startsWith('auto-relink: same-person')) return paren ? `both reference ${paren}` : 'both reference the same entity';
+  if (r.startsWith('auto-relink: shares-entity')) return paren ? `both mention ${paren}` : 'both mention the same entity';
+  if (r.startsWith('auto-relink')) return paren ? `shared reference — ${paren}` : 'shared reference';
+  if (r.startsWith('auto-link')) { const m = reason.match(/(\d+%)/); return m ? `semantically similar (${m[1]})` : 'semantically similar'; }
+  if (r.includes('reinforcement')) return 'confidence reinforced by repeated recall';
+  if (r.includes('user-confirmed')) return 'you confirmed this connection';
+  if (r.startsWith('user:')) return 'you · ' + reason.slice(5);
+  if (r.startsWith('brain:')) return 'autonomous brain · ' + reason.slice(6);
+  if (r.startsWith('ipc:')) return 'app · ' + reason.slice(4);
+  return reason;
+}
+
+/** Best-effort node-id → content preview, from the engrams currently loaded in
+ *  memory. Rebuilt per render. Cross-engram / unvisited engrams won't resolve
+ *  client-side — full coverage needs sidecar enrichment (see the audit plan). */
+let _activityNodePreviews = new Map<string, string>();
+function rebuildActivityNodePreviews(): void {
+  _activityNodePreviews = new Map();
+  for (const nodes of graphnosisGlobalNodes.values()) for (const n of nodes) if (n.contentPreview) _activityNodePreviews.set(n.id, n.contentPreview);
+  for (const n of graphnosisAllNodes) if (n.contentPreview) _activityNodePreviews.set(n.id, n.contentPreview);
+}
+function nodePreview(id: string): string | null {
+  const p = _activityNodePreviews.get(id);
+  return p && p.trim() ? p.trim() : null;
+}
+
+function renderActivity(): void {
+  rebuildActivityNodePreviews(); // for resolving node ids → content in rows
+  const total = activityEvents.length;
+  const all = activityFiltered;
+
+  if (all.length === 0) {
+    els.activityStats.textContent = `0 of ${total} loaded event${total === 1 ? '' : 's'}`;
     els.activityList.innerHTML = '<p class="subtitle">No events match these filters.</p>';
     return;
   }
 
-  // Group by day for readability.
+  // Group by day, then collapse identical events (same op · ENGRAM · actor ·
+  // detail) within each day. The engram is part of the signature, so groups
+  // never merge across engrams. Count top-level items to drive auto-load.
   const byDay = new Map<string, OpLogEvent[]>();
-  const dayLabel = (ts: number): string => {
-    const d = new Date(ts);
-    const today = new Date();
-    const yesterday = new Date(today); yesterday.setDate(today.getDate() - 1);
-    if (d.toDateString() === today.toDateString()) return 'Today';
-    if (d.toDateString() === yesterday.toDateString()) return 'Yesterday';
-    return d.toLocaleDateString(undefined, { weekday: 'long', month: 'short', day: 'numeric' });
-  };
-  for (const e of filtered) {
-    const key = dayLabel(e.ts);
-    const arr = byDay.get(key) ?? [];
-    arr.push(e);
-    byDay.set(key, arr);
+  for (const e of all) {
+    const k = activityDayLabel(e.ts);
+    (byDay.get(k) ?? byDay.set(k, []).get(k)!).push(e);
   }
 
   let html = '';
+  let topLevelItems = 0;
   for (const [day, dayEvents] of byDay) {
     html += `<p class="activity-day-divider">${escape(day)}</p>`;
+    const groups = new Map<string, OpLogEvent[]>();
+    const order: string[] = [];
     for (const e of dayEvents) {
-      html += renderActivityRow(e);
+      const sig = activitySig(e);
+      if (!groups.has(sig)) { groups.set(sig, []); order.push(sig); }
+      groups.get(sig)!.push(e);
+    }
+    for (const sig of order) {
+      const evs = groups.get(sig)!;
+      html += evs.length > 1 ? renderActivityGroup(evs) : renderActivityRow(evs[0]);
+      topLevelItems++;
     }
   }
+
+  const scope = activityCat === 'all' ? '' : ` · ${ACTIVITY_CAT_LABELS[activityCat]} only`;
+  els.activityStats.textContent = `${topLevelItems} group${topLevelItems === 1 ? '' : 's'} · ${all.length} event${all.length === 1 ? '' : 's'} loaded${scope}`;
+
+  if (activityHasMore && activityWindow < ACTIVITY_WINDOW_MAX) {
+    html += `<button id="activity-load-more" class="activity-load-more" type="button">↓ Load ${ACTIVITY_WINDOW_STEP} more…</button>`;
+  } else if (activityWindow >= ACTIVITY_WINDOW_MAX && activityHasMore) {
+    html += `<p class="subtitle" style="text-align:center; padding:10px;">Showing the most recent ${ACTIVITY_WINDOW_MAX.toLocaleString()} — filter by a category or engram to dig deeper.</p>`;
+  }
   els.activityList.innerHTML = html;
+
+  document.getElementById('activity-load-more')?.addEventListener('click', (e) => {
+    const btn = e.currentTarget as HTMLButtonElement;
+    btn.innerHTML = '<span class="activity-spinner"></span> Loading…';
+    btn.disabled = true;
+    loadMoreActivity();
+  });
+  els.activityList.querySelectorAll<HTMLButtonElement>('.activity-group-head').forEach((h) => {
+    h.addEventListener('click', () => h.closest('.activity-group')?.classList.toggle('open'));
+  });
 }
 
 function renderActivityRow(e: OpLogEvent): string {
-  const time = new Date(e.ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-  const label = activityLabel(e);
   const detail = activityDetail(e);
   return `<div class="activity-row">
-    <span class="ar-when">${escape(time)}</span>
+    <span class="ar-when">${escape(activityTime(e.ts))}</span>
     <span class="ar-dot ${e.op}"></span>
     <div>
-      <div>${label}</div>
-      ${detail ? `<div class="ar-detail">${detail}</div>` : ''}
+      <div>${activityLabel(e)} ${actorBadge(activityActor(e))}</div>
+      ${detail ? `<div class="ar-detail" data-pres="node:${escape(e.target.id)}" data-pres-engram="${escape(e.graphId)}"${presSourceAttr(e.target.kind === 'source' ? e.target.id : e.targetSourceId)}>${detail}</div>` : ''}
     </div>
   </div>`;
 }
 
+/** Collapsed-by-default box for N identical same-day events. */
+/** Per-event descriptor for an expanded subrow — the specific thing each
+ *  (otherwise-identical) event touched: the source filename, the corrected
+ *  content, the edge endpoints + type, etc. Falls back to the target id. */
+function activitySubrowDesc(e: OpLogEvent): string {
+  const a = (e.after ?? {}) as Record<string, unknown>;
+  const b = (e.before ?? {}) as Record<string, unknown>;
+  const clip = (s: string, n: number): string => escape(s.length > n ? s.slice(0, n) + '…' : s);
+  if (e.op === 'ingestSource') {
+    const ref = a['ref'] as string | undefined;
+    return ref ? `<span class="ar-sub-name">${clip(ref, 110)}</span>` : `<code>${escape(e.target.id.slice(0, 16))}…</code>`;
+  }
+  if (e.op === 'forgetSource') {
+    const ref = (b['ref'] ?? a['ref']) as string | undefined;
+    return ref ? `<span class="ar-sub-name">${clip(ref, 110)}</span>` : `<code>${escape(e.target.id.slice(0, 16))}…</code>`;
+  }
+  // Resolve a node id → content preview. Prefer the server-side `resolved`
+  // block (works for ANY engram), then the client-side cache (only the open
+  // engram), then fall back to the truncated id.
+  const nodeRef = (id: string | undefined, max = 70, resolved?: string): string => {
+    const p = resolved ?? (id ? nodePreview(id) : undefined);
+    if (p) return `<span class="ar-sub-name">“${clip(p, max)}”</span>`;
+    return id ? `<code>${escape(id.slice(0, 12))}…</code>` : '';
+  };
+  if (e.op === 'addNode') {
+    return nodeRef(e.target.id, 120, e.resolved?.target);
+  }
+  if (e.op === 'editNode' || e.op === 'supersede') {
+    const content = (a['content'] as string | undefined) ?? e.resolved?.target ?? nodePreview(e.target.id) ?? undefined;
+    if (content) return `<span class="ar-sub-name">“${clip(content, 140)}”</span>`;
+    const reason = a['reason'] as string | undefined;
+    if (reason) return `<span class="ar-why">${escape(humanizeReason(reason))}</span>`;
+  }
+  if (e.op === 'deleteNode') {
+    const preview = (b['preview'] as string | undefined) ?? e.resolved?.target ?? nodePreview(e.target.id) ?? undefined;
+    if (preview) return `<span class="ar-sub-name">was: “${clip(preview, 130)}”</span>`;
+    const reason = a['reason'] as string | undefined;
+    if (reason) return `<span class="ar-why">${escape(humanizeReason(reason))}</span>`;
+  }
+  if (e.op === 'addEdge' || e.op === 'deleteEdge') {
+    const type = a['type'] as string | undefined;
+    const from = a['fromNodeId'] as string | undefined;
+    const to = a['toNodeId'] as string | undefined;
+    const reason = a['reason'] as string | undefined;
+    const parts: string[] = [];
+    if (type) parts.push(`<span class="ar-kind">${escape(type)}</span>`);
+    if (from && to) parts.push(`${nodeRef(from, 46, e.resolved?.from)} → ${nodeRef(to, 46, e.resolved?.to)}`);
+    if (reason) parts.push(`<span class="ar-why">${escape(humanizeReason(reason))}</span>`);
+    if (parts.length) return parts.join(' · ');
+  }
+  return `<code>${escape(e.target.id.slice(0, 18))}…</code>`;
+}
+
+/** Full (untruncated) plain-text descriptor for a subrow's hover tooltip. */
+function activitySubrowTitle(e: OpLogEvent): string {
+  const a = (e.after ?? {}) as Record<string, unknown>;
+  const full = (id: string | undefined, resolved?: string): string => resolved ?? (id ? (nodePreview(id) ?? id) : '');
+  if (e.op === 'addEdge' || e.op === 'deleteEdge') {
+    const from = full(a['fromNodeId'] as string | undefined, e.resolved?.from);
+    const to = full(a['toNodeId'] as string | undefined, e.resolved?.to);
+    const reason = a['reason'] as string | undefined;
+    return `From: ${from}\nTo: ${to}${reason ? `\nWhy: ${humanizeReason(reason)}` : ''}`;
+  }
+  if (e.op === 'ingestSource' || e.op === 'forgetSource') {
+    const ref = (a['ref'] ?? (e.before as Record<string, unknown> | undefined)?.['ref']) as string | undefined;
+    return ref ?? e.target.id;
+  }
+  return full(e.target.id, e.resolved?.target) || e.target.id;
+}
+
+function renderActivityGroup(evs: OpLogEvent[]): string {
+  const e = evs[0];
+  // Group head uses the grouping-stable detail (reason/confidence only) since
+  // the N events differ in per-item content — that lives in the subrows.
+  const detail = activityDetail(e, { forGrouping: true });
+  const last = activityTime(evs[0].ts);
+  const first = activityTime(evs[evs.length - 1].ts);
+  const range = first === last ? last : `${first}–${last}`;
+  const children = evs.map((x) => `<div class="activity-subrow" title="${escape(activitySubrowTitle(x))}"><span class="ar-when">${escape(activityTime(x.ts))}</span><span class="activity-subrow-desc" data-pres="node:${escape(x.target.id)}" data-pres-engram="${escape(x.graphId)}"${presSourceAttr(x.target.kind === 'source' ? x.target.id : x.targetSourceId)}>${activitySubrowDesc(x)}</span></div>`).join('');
+  return `<div class="activity-group">
+    <button class="activity-group-head" type="button">
+      <span class="ar-when">${escape(range)}</span>
+      <span class="ar-dot ${e.op}"></span>
+      <div class="activity-group-main">
+        <div>${activityLabel(e)} ${actorBadge(activityActor(e))} <span class="activity-group-count">×${evs.length}</span></div>
+        <div class="ar-detail">${evs.length} identical events${detail ? ` · <span data-pres="node:${escape(e.target.id)}" data-pres-engram="${escape(e.graphId)}"${presSourceAttr(e.target.kind === 'source' ? e.target.id : e.targetSourceId)}>${detail}</span>` : ''} — tap to expand</div>
+      </div>
+      <span class="activity-group-chevron" aria-hidden="true">▾</span>
+    </button>
+    <div class="activity-group-children">${children}</div>
+  </div>`;
+}
+
 function activityLabel(e: OpLogEvent): string {
+  // Show the friendly engram name, not the raw slug. Fall back to the slug
+  // only if the engram isn't loaded (engramName handles that).
+  const inEngram = ` in <span class="ar-engram" data-pres="engram:${escape(e.graphId)}">${escape(engramName(e.graphId))}</span>`;
+  const a = (e.after ?? {}) as Record<string, unknown>;
   switch (e.op) {
     case 'ingestSource': {
-      const rec = e.after as { ref?: string; nodeIds?: string[] } | undefined;
-      const file = rec?.ref ? (rec.ref.split('/').pop() ?? rec.ref) : 'source';
-      const count = rec?.nodeIds?.length ?? 0;
-      return `Ingested <strong>${escape(file)}</strong> (+${count} node${count === 1 ? '' : 's'}) in <code>${escape(e.graphId)}</code>`;
+      const ref = typeof a['ref'] === 'string' ? a['ref'] as string : 'source';
+      const file = ref.split('/').pop() ?? ref;
+      const count = Array.isArray(a['nodeIds']) ? (a['nodeIds'] as unknown[]).length : 0;
+      const kind = typeof a['kind'] === 'string' ? ` <span class="ar-kind">${escape(a['kind'] as string)}</span>` : '';
+      return `Ingested <strong data-pres="source:${escape(e.target.id)}" data-pres-engram="${escape(e.graphId)}">${escape(file)}</strong>${kind} <span class="ar-quiet">+${count} node${count === 1 ? '' : 's'}</span>${inEngram}`;
     }
-    case 'forgetSource':
-      return `Forgot source <code>${escape(e.target.id.slice(0, 16))}…</code> in <code>${escape(e.graphId)}</code>`;
-    case 'editNode':
-      return `Edited a memory in <code>${escape(e.graphId)}</code>`;
-    case 'supersede':
-      return `Superseded a memory in <code>${escape(e.graphId)}</code>`;
-    case 'addNode':
-      return `Added a node in <code>${escape(e.graphId)}</code>`;
-    case 'deleteNode':
-      return `Soft-deleted a node in <code>${escape(e.graphId)}</code>`;
-    case 'addEdge':
-      return `Added an edge in <code>${escape(e.graphId)}</code>`;
-    case 'deleteEdge':
-      return `Removed an edge in <code>${escape(e.graphId)}</code>`;
-    case 'merge':
-      return `Merged nodes in <code>${escape(e.graphId)}</code>`;
-    default:
-      return `${escape(e.op)} in <code>${escape(e.graphId)}</code>`;
+    case 'forgetSource': {
+      const ref = typeof a['ref'] === 'string' ? (a['ref'] as string) : ((e.before as Record<string, unknown> | undefined)?.['ref'] as string | undefined);
+      const nc = (e.before as Record<string, unknown> | undefined)?.['nodeCount'];
+      const file = ref ? (ref.split('/').pop() ?? ref) : `${e.target.id.slice(0, 12)}…`;
+      return `Forgot source <strong data-pres="source:${escape(e.target.id)}" data-pres-engram="${escape(e.graphId)}">${escape(file)}</strong>${typeof nc === 'number' ? ` <span class="ar-quiet">(${nc} node${nc === 1 ? '' : 's'})</span>` : ''}${inEngram}`;
+    }
+    case 'editNode':   return `Corrected a memory${inEngram}`;
+    case 'supersede':  return `Replaced a memory with a corrected version${inEngram}`;
+    case 'addNode':    return `Added a memory node${inEngram}`;
+    case 'deleteNode': return `Soft-deleted a memory${inEngram}`;
+    case 'addEdge': {
+      const t = typeof a['type'] === 'string' ? ` <span class="ar-kind">${escape(a['type'] as string)}</span>` : '';
+      return `Linked two memories${t}${inEngram}`;
+    }
+    case 'deleteEdge': return `Unlinked two memories${inEngram}`;
+    case 'merge':      return `Merged duplicate memories${inEngram}`;
+    default:           return `${escape(e.op)}${inEngram}`;
   }
 }
 
-function activityDetail(e: OpLogEvent): string {
-  if (e.op === 'editNode' || e.op === 'supersede') {
-    const after = e.after as { content?: string; reason?: string } | undefined;
-    const reason = after?.reason ? `reason: ${escape(after.reason)}` : '';
-    return reason;
+/** The "why / what changed" line — pulled from the op's before/after payload. */
+function activityDetail(e: OpLogEvent, opts?: { forGrouping?: boolean }): string {
+  const a = (e.after ?? {}) as Record<string, unknown>;
+  const b = (e.before ?? {}) as Record<string, unknown>;
+  const bits: string[] = [];
+  const reason = (a['reason'] ?? b['reason']) as string | undefined;
+  if (reason) bits.push(`<span class="ar-why">${escape(humanizeReason(reason))}</span>`);
+  // Per-item content (the specific node touched) is omitted in `forGrouping`
+  // mode so N events with different content still collapse into one ×N group;
+  // the expanded subrows (activitySubrowDesc) carry each item's content. It's
+  // shown on single (ungrouped) rows and on every subrow.
+  if (!opts?.forGrouping) {
+    const content = (a['content'] as string | undefined) ?? (e.op === 'editNode' || e.op === 'supersede' ? e.resolved?.target : undefined);
+    if (content && (e.op === 'editNode' || e.op === 'supersede')) {
+      bits.push(`“${escape(content.slice(0, 120))}${content.length > 120 ? '…' : ''}”`);
+    }
+    const preview = (b['preview'] as string | undefined) ?? (e.op === 'deleteNode' ? e.resolved?.target : undefined);
+    if (preview && (e.op === 'deleteNode' || e.op === 'forgetSource')) {
+      bits.push(`was: “${escape(preview.slice(0, 100))}${preview.length > 100 ? '…' : ''}”`);
+    }
+    if (e.op === 'addNode' && e.resolved?.target) {
+      bits.push(`“${escape(e.resolved.target.slice(0, 120))}${e.resolved.target.length > 120 ? '…' : ''}”`);
+    }
   }
-  return '';
+  if (typeof a['confidence'] === 'number') bits.push(`confidence → ${(a['confidence'] as number).toFixed(2)}`);
+  return bits.join(' · ');
 }
 
 // Category chips → filter the cached events (no re-fetch).
@@ -11444,7 +12289,10 @@ els.activityChips.addEventListener('click', (e) => {
   const chip = (e.target as HTMLElement).closest<HTMLButtonElement>('.g-activity-chip');
   if (!chip) return;
   activityCat = (chip.dataset.cat ?? 'all') as ActivityCat;
-  applyActivityFilter();
+  // Category is now a SERVER-side filter (so a rare type pulls from the full
+  // op-log, not the recent window) — refetch with the new ops, reset paging.
+  activityWindow = ACTIVITY_WINDOW_START;
+  void refreshActivityView();
 });
 // Text filter + engram scope → also re-filter the cache live.
 let activitySearchTimer: number | null = null;
@@ -11453,6 +12301,21 @@ els.activitySearch.addEventListener('input', () => {
   activitySearchTimer = window.setTimeout(() => applyActivityFilter(), 120);
 });
 els.activityEngramSelect.addEventListener('change', () => applyActivityFilter());
+els.activityActorSelect.addEventListener('change', () => { activityWindow = ACTIVITY_WINDOW_START; void refreshActivityView(); });
+// Date range changes the fetch window (since/until) → re-fetch from the op-log.
+els.activityDateFrom.addEventListener('change', () => { activityWindow = ACTIVITY_WINDOW_START; void refreshActivityView(); });
+els.activityDateTo.addEventListener('change', () => { activityWindow = ACTIVITY_WINDOW_START; void refreshActivityView(); });
+// Hour-of-day is a client-side narrowing of the already-fetched set.
+els.activityHourFrom.addEventListener('change', () => applyActivityFilter());
+els.activityHourTo.addEventListener('change', () => applyActivityFilter());
+els.activityDateClear.addEventListener('click', () => {
+  els.activityDateFrom.value = '';
+  els.activityDateTo.value = '';
+  els.activityHourFrom.value = '';
+  els.activityHourTo.value = '';
+  activityWindow = ACTIVITY_WINDOW_START;
+  void refreshActivityView();
+});
 // Refresh re-fetches from the sidecar (picks up new events).
 els.btnActivityRefresh.addEventListener('click', () => void refreshActivityView());
 
@@ -11499,7 +12362,7 @@ async function refreshSnapshots(): Promise<void> {
     els.snapshotsBody.innerHTML = r.snapshots.map((s) => `
       <div class="snapshot-row" style="display:flex; align-items:center; gap:12px; padding:8px 0;">
         <div style="flex:1; min-width:0;">
-          <div style="overflow:hidden; text-overflow:ellipsis;"><code>${escape(s.id)}</code></div>
+          <div style="overflow:hidden; text-overflow:ellipsis;"><code data-pres="surface:__snapshots__">${escape(s.id)}</code></div>
           <div class="snapshot-meta">${escape(new Date(s.createdAt).toLocaleString())}</div>
         </div>
         <div class="snapshot-meta">${s.fileCount} files</div>
@@ -12091,8 +12954,23 @@ document.getElementById('first-connect-save')?.addEventListener('click', () => {
  * reveal catch-up check. Refreshes Check-in deck AND atlas view so the UI
  * actually reflects the new engram (not just the picker label).
  */
+/** Full Cortex has no single active engram, so the per-page scope dropdowns
+ *  (Search / Sources / Activity) fall back to "All engrams". Resets the
+ *  selects + their filter state and re-applies whichever scoped view is live. */
+function resetPageScopesForFullCortex(): void {
+  searchEngramFilter = '';
+  try { localStorage.removeItem('search:engramFilter'); } catch { /* storage off */ }
+  if (els.gSearchEngramSelect) els.gSearchEngramSelect.value = '';
+  sourcesEngramFilter = '';
+  if (els.sourcesEngramSelect) els.sourcesEngramSelect.value = '';
+  if (els.activityEngramSelect) els.activityEngramSelect.value = '';
+  if (currentMode === 'sources') applySourcesFilter();
+  if (currentMode === 'activity') applyActivityFilter();
+}
+
 async function switchActiveEngram(graphId: string): Promise<void> {
-  if (atlasActiveGraph === graphId) return;
+  if (atlasActiveGraph === graphId && !atlasGalaxyMode) return;
+  atlasGalaxyMode = false; // leaving Full Cortex for a real engram
   atlasActiveGraph = graphId;
   persistActiveEngram(graphId);
   refreshActiveEngramLabel();
@@ -12356,7 +13234,7 @@ function withTimeout<T>(p: Promise<T>, ms: number, label = 'operation'): Promise
 // ── Brain / Alive state ───────────────────────────────────────────────────
 
 type BrainGoal = {
-  nodeId: string; graphId: string; title: string;
+  nodeId: string; sourceId: string; graphId: string; title: string;
   milestones: string[]; targetDate?: number; createdAt: number;
 };
 let brainGoals: BrainGoal[] = [];
@@ -12662,6 +13540,847 @@ function renderLivingBrainPane(): void {
  *  back to the raw id if the graph isn't in loadedGraphs (e.g. archived). */
 function engramName(graphId: string): string {
   return loadedGraphs.find((g) => g.graphId === graphId)?.metadata.displayName ?? graphId;
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Presentation Mode — demo-safe redaction layer.
+//
+// Lets the user pre-select exactly what to reveal (per-item: engrams / sources
+// / skills / goals, plus fixed "surface" toggles) and then navigate the real
+// app with everything else REDACTED IN PLACE (solid blocks; layout preserved,
+// not hidden, not blurred). This is a DEFAULT-DENY model: any element tagged
+// `data-pres="<kind>:<id>"` is redacted by CSS unless the masking sweep marks
+// it `.pres-reveal`. A missed tag (or a render we didn't anticipate) fails
+// SAFE — it stays masked. A MutationObserver re-sweeps on every DOM change so
+// async / freshly-rendered content can't slip through unmasked.
+//
+// IMPORTANT for future code: any NEW surface that shows personal content must
+// carry a `data-pres="…"` attribute, or it will appear in full during a demo.
+// ─────────────────────────────────────────────────────────────────────────
+const PRESENTATION_KEY = 'graphnosis:presentationConfig';
+// Surfaces are fixed app-wide chrome (not per-engram data). Memory CONTENT
+// (search results, studio results, activity row text, node previews) is NOT a
+// surface — it's tagged `node:`/`source:` and governed by the engram/source
+// allowlist, so it reveals only for the engrams/sources the user picked.
+type PresSurface =
+  | 'cortexPath' | 'stats' | 'vitality' | 'mcpClients' | 'connectors'
+  | 'recents' | 'studioResults' | 'remoteAccess' | 'statusProcess' | 'appVersion' | 'license';
+const PRES_SURFACE_DEFS: Array<{ key: PresSurface; label: string; hint: string }> = [
+  { key: 'stats',          label: 'Stats & counts',     hint: 'Node / source / engram totals, growth bars' },
+  { key: 'vitality',       label: 'Vitality & health',  hint: 'Cortex grade, memory-health figures' },
+  { key: 'cortexPath',     label: 'Cortex folder path',  hint: 'The on-disk location in the status bar' },
+  { key: 'mcpClients',     label: 'AI clients',         hint: 'Connected MCP client names (status bar, Home, MCP Tools)' },
+  { key: 'connectors',     label: 'Data sources / connectors', hint: 'Connector names + file paths in Get Connected' },
+  { key: 'recents',        label: 'Recents',            hint: 'Recently-touched memory previews' },
+  { key: 'studioResults',  label: 'Memory Studio results', hint: 'Recall / dig-deeper output (per-engram sections still follow your engram picks)' },
+  { key: 'remoteAccess',   label: 'Remote access (QR / URL / token)', hint: 'Mobile & Remote QR codes, server URL, and bearer token — leave OFF to keep credentials hidden' },
+  { key: 'statusProcess',  label: 'Background process line', hint: 'The live "Self-healing…/GLL…" status-bar text' },
+  { key: 'appVersion',     label: 'App version',        hint: 'The version pill in the status bar' },
+  { key: 'license',        label: 'License / account',  hint: 'Subscription + account identifiers in Settings' },
+];
+const presState = {
+  active: false, // NEVER persisted — the app always boots un-masked.
+  allow: {
+    engrams: new Set<string>(),
+    sources: new Set<string>(),
+    skills: new Set<string>(),
+    goals: new Set<string>(),
+  },
+  surfaces: Object.fromEntries(PRES_SURFACE_DEFS.map((d) => [d.key, false])) as Record<PresSurface, boolean>,
+  // Phrases to black out wherever they appear in VISIBLE content (even inside
+  // revealed engrams) — e.g. a project codename you never want on screen.
+  phrases: [] as string[],
+};
+function presActive(): boolean { return presState.active; }
+
+// Snapshot of what was selected the moment Presentation Mode started, keyed
+// `<kind>:<id>`. While active, the config-page checkboxes for everything NOT in
+// this set are disabled — so you can't reveal anything new mid-demo (you can
+// still UNcheck a started-checked item to hide more). Cleared on exit.
+let presStartChecked = new Set<string>();
+function snapshotPresStartChecked(): void {
+  presStartChecked = new Set<string>([
+    ...[...presState.allow.engrams].map((id) => `engram:${id}`),
+    ...[...presState.allow.sources].map((id) => `source:${id}`),
+    ...[...presState.allow.skills].map((id) => `skill:${id}`),
+    ...[...presState.allow.goals].map((id) => `goal:${id}`),
+    ...PRES_SURFACE_DEFS.filter((d) => presState.surfaces[d.key]).map((d) => `surface:${d.key}`),
+  ]);
+}
+/** Lock the config page during a live presentation: disable every checkbox not
+ *  selected at start; re-enable all when not presenting. */
+function applyPresConfigLock(): void {
+  const body = document.getElementById('presentation-body');
+  if (!body) return;
+  body.querySelectorAll<HTMLInputElement>('input[data-pres-pick]').forEach((cb) => {
+    cb.disabled = presState.active && !presStartChecked.has(`${cb.dataset['presPick']}:${cb.dataset['id']}`);
+  });
+  // Bulk "Select all" toggles can only ADD reveals, so disable them while
+  // presenting (the per-row checked boxes can still be unchecked to hide more,
+  // and "Clear all" stays live since clearing only reduces what's shown).
+  body.querySelectorAll<HTMLButtonElement>('.pres-selectall, .pres-grp-selectall').forEach((btn) => {
+    btn.disabled = presState.active;
+  });
+}
+
+/** Should an `engram:` tagged element reveal? (also the cascade source.) */
+function presRevealEngram(graphId: string): boolean { return presState.allow.engrams.has(graphId); }
+
+// Engrams that have ≥1 individually-selected source — recomputed each sweep
+// from presSourcesCache (sourceId → graphId). When an engram is in this set,
+// the engram-level cascade is OVERRIDDEN by the per-source picks: only the
+// checked sources (and their nodes) reveal; the rest redact.
+let presEngramsWithSourceSel = new Set<string>();
+function recomputePresSourceScopes(): void {
+  presEngramsWithSourceSel = new Set();
+  if (presState.allow.sources.size === 0) return;
+  const byId = new Map(presSourcesCache.map((s) => [s.sourceId, s.graphId]));
+  for (const sid of presState.allow.sources) {
+    const gid = byId.get(sid);
+    if (gid) presEngramsWithSourceSel.add(gid);
+  }
+}
+
+/** Node/source reveal. The explicitly-checked source always reveals. The
+ *  engram-level cascade reveals everything in a checked engram — UNLESS the
+ *  user narrowed that engram by checking specific sources, in which case only
+ *  the checked sources reveal. A node whose source is unknown inside such a
+ *  narrowed engram fails SAFE (redacts) — we can't prove it belongs to a
+ *  selected source, so we hide it. */
+function presRevealSource(sourceId: string | undefined, graphId: string | undefined): boolean {
+  if (sourceId && presState.allow.sources.has(sourceId)) return true;
+  if (graphId && presState.allow.engrams.has(graphId)) {
+    return !presEngramsWithSourceSel.has(graphId); // cascade only when un-narrowed
+  }
+  return false;
+}
+
+/** Resolve a node's allowlist sourceId from the loaded caches (server-enriched
+ *  on `list_nodes`/`search_nodes`). Used at render sites that have a nodeId but
+ *  not the full record (connection neighbors, recents) so they can carry an
+ *  exact `data-pres-source` for per-source redaction. */
+function nodeSourceId(nodeId: string, graphId?: string): string | undefined {
+  if (graphId) {
+    const hit = graphnosisGlobalNodes.get(graphId)?.find((n) => n.id === nodeId);
+    if (hit?.sourceId) return hit.sourceId;
+  }
+  return graphnosisAllNodes.find((n) => n.id === nodeId)?.sourceId;
+}
+
+/** Build the ` data-pres-source="…"` attribute fragment (empty when unknown, so
+ *  the node falls back to engram-level / fail-safe redaction). */
+function presSourceAttr(sourceId: string | undefined): string {
+  return sourceId ? ` data-pres-source="${escape(sourceId)}"` : '';
+}
+
+/** Decide reveal/redact for a single tagged element from its data attributes. */
+function presElementRevealed(el: HTMLElement): boolean {
+  const tag = el.dataset['pres'];
+  if (!tag) return true;
+  const idx = tag.indexOf(':');
+  const kind = idx === -1 ? tag : tag.slice(0, idx);
+  const id = idx === -1 ? '' : tag.slice(idx + 1);
+  const eng = el.dataset['presEngram'];
+  const src = el.dataset['presSource'];
+  switch (kind) {
+    case 'engram': return presRevealEngram(id);
+    case 'source': return presRevealSource(id, eng);
+    case 'node':   return presRevealSource(src, eng);
+    case 'skill':  return presState.allow.skills.has(id) || (!!eng && presState.allow.engrams.has(eng));
+    case 'goal':   return presState.allow.goals.has(id) || (!!eng && presState.allow.engrams.has(eng));
+    case 'surface': return !!presState.surfaces[id as PresSurface];
+    default: return false; // unknown kind → redact (safe default)
+  }
+}
+
+/** Reveal-sweep: every `[data-pres]` under root is revealed iff allowlisted.
+ *  Anything inside a `[data-pres-exempt]` subtree (the config page itself) is
+ *  always revealed so the user can read names while choosing. */
+function applyPresentationMasking(root: ParentNode = document.querySelector('main') ?? document.body): void {
+  if (!presState.active) return;
+  recomputePresSourceScopes(); // which engrams are narrowed by per-source picks
+  root.querySelectorAll<HTMLElement>('[data-pres]').forEach((el) => {
+    if (el.closest('[data-pres-exempt]')) { el.classList.add('pres-reveal'); return; }
+    el.classList.toggle('pres-reveal', presElementRevealed(el));
+  });
+  // Disable native hover popups while presenting — `title` (and image `alt` /
+  // `aria-label`, which some platforms surface on hover or to a11y tools)
+  // can't be CSS-masked and routinely leak full content (filenames, node text,
+  // reasons). Stash each in a data-pres-* attr so we can restore it on exit.
+  // Skip the config page (data-pres-exempt) so its helper tooltips still work.
+  for (const attr of ['title', 'alt', 'aria-label'] as const) {
+    const stash = `data-pres-${attr}`;
+    root.querySelectorAll<HTMLElement>(`[${attr}]`).forEach((el) => {
+      if (el.closest('[data-pres-exempt]')) return;
+      if (el.hasAttribute(stash)) return; // already stripped
+      el.setAttribute(stash, el.getAttribute(attr) ?? '');
+      el.removeAttribute(attr);
+    });
+  }
+  // Native <select> option labels can't be CSS-masked (the browser renders the
+  // list natively), so rewrite the LABEL of any option that names an
+  // unselected engram to a block — covers every engram scope dropdown (search,
+  // activity, sources, studio, skills target) and their open lists at once.
+  // The text-equality guards keep our own writes from retriggering the observer.
+  const PRES_BLOCK = '████████';
+  const graphIds = new Set(loadedGraphs.map((g) => g.graphId));
+  // Generic Activity actors that are never an external identity (never redacted).
+  const GENERIC_ACTORS = new Set(['', 'You', 'Autonomous brain', 'System', 'App', 'Unknown client']);
+  root.querySelectorAll<HTMLOptionElement>('option').forEach((opt) => {
+    // Decide whether this option's label must be hidden.
+    //  • Activity "who" select: every actor that isn't generic is an external
+    //    identity → connectors follow the connectors surface, the rest (AI
+    //    clients / agents) follow mcpClients.
+    //  • Elsewhere: engram-scope selects (graphId values) + connector options.
+    const inActorSelect = opt.closest('select')?.id === 'activity-actor-select';
+    const isEngram = graphIds.has(opt.value);
+    const isConnector = opt.value.startsWith('connector:');
+    let hide: boolean;
+    if (inActorSelect) {
+      if (GENERIC_ACTORS.has(opt.value)) return;
+      hide = isConnector ? !presState.surfaces.connectors : !presState.surfaces.mcpClients;
+    } else {
+      if (!isEngram && !isConnector) return; // All / sentinels / non-engram selects
+      hide = isEngram ? !presRevealEngram(opt.value) : !presState.surfaces.connectors;
+    }
+    if (!hide) {
+      if (opt.dataset['presOrig'] != null && opt.text !== opt.dataset['presOrig']) opt.text = opt.dataset['presOrig'];
+      if (opt.dataset['presOrig'] != null) delete opt.dataset['presOrig'];
+    } else {
+      if (opt.dataset['presOrig'] == null) opt.dataset['presOrig'] = opt.text;
+      if (opt.text !== PRES_BLOCK) opt.text = PRES_BLOCK;
+    }
+  });
+  applyPhraseRedaction(root);
+}
+
+/** Black out user-specified phrases wherever they appear in visible text —
+ *  even inside revealed content. Replaces each match with same-length block
+ *  chars inside a `.pres-phrase` span (original stashed for restore on exit).
+ *  Idempotent: the replacement text contains no phrase, so re-sweeps converge.
+ *  Only runs when phrases are set, so it's zero-cost for everyone else. */
+function applyPhraseRedaction(root: ParentNode): void {
+  const phrases = presState.phrases.map((p) => p.trim()).filter((p) => p.length >= 2);
+  if (phrases.length === 0) return;
+  const re = new RegExp(
+    phrases.sort((a, b) => b.length - a.length).map((p) => p.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|'),
+    'gi',
+  );
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
+    acceptNode(n): number {
+      const p = (n as Text).parentElement;
+      if (!p) return NodeFilter.FILTER_REJECT;
+      if (p.classList.contains('pres-phrase')) return NodeFilter.FILTER_REJECT; // already redacted
+      if (p.closest('[data-pres-exempt]')) return NodeFilter.FILTER_REJECT;     // config inputs
+      if (['SCRIPT', 'STYLE', 'TEXTAREA', 'INPUT', 'OPTION'].includes(p.tagName)) return NodeFilter.FILTER_REJECT;
+      re.lastIndex = 0;
+      return re.test(n.nodeValue ?? '') ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_REJECT;
+    },
+  });
+  const nodes: Text[] = [];
+  let cur: Node | null;
+  while ((cur = walker.nextNode())) nodes.push(cur as Text);
+  for (const node of nodes) {
+    const text = node.nodeValue ?? '';
+    re.lastIndex = 0;
+    const frag = document.createDocumentFragment();
+    let last = 0;
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(text)) !== null) {
+      if (m.index > last) frag.appendChild(document.createTextNode(text.slice(last, m.index)));
+      const span = document.createElement('span');
+      span.className = 'pres-phrase';
+      span.dataset['presPhraseOrig'] = m[0];
+      span.textContent = '█'.repeat(m[0].length);
+      frag.appendChild(span);
+      last = m.index + m[0].length;
+      if (m.index === re.lastIndex) re.lastIndex++; // zero-width guard
+    }
+    if (last < text.length) frag.appendChild(document.createTextNode(text.slice(last)));
+    node.parentNode?.replaceChild(frag, node);
+  }
+}
+
+let presObserver: MutationObserver | null = null;
+let presSweepScheduled = false;
+function schedulePresSweep(): void {
+  if (presSweepScheduled) return;
+  presSweepScheduled = true;
+  requestAnimationFrame(() => { presSweepScheduled = false; applyPresentationMasking(); });
+}
+function attachPresObserver(): void {
+  if (presObserver) return;
+  const root = document.querySelector('main') ?? document.body;
+  // Observe new/removed nodes only (attributeFilter on data-pres). We do NOT
+  // observe `class`, so our own `.pres-reveal` toggles can't retrigger a loop.
+  presObserver = new MutationObserver(() => schedulePresSweep());
+  presObserver.observe(root, { childList: true, subtree: true, attributes: true, attributeFilter: ['data-pres'] });
+}
+function detachPresObserver(): void { presObserver?.disconnect(); presObserver = null; }
+
+/** Redact MemoryStudio's raw-context prompt per engram while presenting. The
+ *  prompt is one text blob with `## <Engram display name>` section headers;
+ *  sections whose engram isn't allowlisted get their header + body replaced
+ *  with a block. (The whole panel is also gated by the `studioResults` surface
+ *  — this is the finer, per-engram pass for when that surface is on.) */
+function presRedactRecallPrompt(prompt: string): string {
+  if (!presActive()) return prompt;
+  const allowedNames = new Set([...presState.allow.engrams].map((id) => engramName(id)));
+  const lines = prompt.split('\n');
+  const out: string[] = [];
+  let curAllowed = true;
+  let inSection = false;
+  for (const line of lines) {
+    const m = /^##\s+(.+?)\s*$/.exec(line);
+    if (m) {
+      inSection = true;
+      curAllowed = allowedNames.has(m[1] ?? '');
+      out.push(curAllowed ? line : '## ████████');
+      if (!curAllowed) out.push('[content hidden — this engram isn’t selected for Presentation Mode]');
+      continue;
+    }
+    if (!inSection || curAllowed) out.push(line); // preamble + allowed sections pass through
+  }
+  return out.join('\n');
+}
+
+/** Re-push 3D data so canvas labels pick up (or drop) redaction — the THREE.js
+ *  canvas can't be masked by CSS, so masking happens in nodesToAtlas/galaxy. */
+function presRefreshAtlas(): void {
+  if (!mainAtlas) return;
+  if (atlasGalaxyMode || atlasActiveGraph === FULL_CORTEX) { void loadFullCortexGalaxy(); return; }
+  pushDataIntoAtlas();
+}
+
+function showPresentationBanner(): void {
+  document.getElementById('presentation-banner')?.classList.remove('hidden');
+}
+function hidePresentationBanner(): void {
+  document.getElementById('presentation-banner')?.classList.add('hidden');
+}
+
+function startPresentation(): void {
+  presState.active = true;
+  savePresentationConfig();
+  snapshotPresStartChecked(); // freeze what's revealable; lock the rest
+  document.body.classList.add('presentation-active');
+  attachPresObserver();
+  applyPresentationMasking();
+  applyPresConfigLock();
+  presRefreshAtlas();
+  showPresentationBanner();
+  // Start the demo on Home so the user lands on the dashboard, not the config.
+  activateMode('atlas');
+}
+function stopPresentation(): void {
+  if (!presState.active) return;
+  presState.active = false;
+  document.body.classList.remove('presentation-active');
+  detachPresObserver();
+  document.querySelectorAll('.pres-reveal').forEach((el) => el.classList.remove('pres-reveal'));
+  // Restore native tooltips / alt / aria-label stashed during masking.
+  for (const attr of ['title', 'alt', 'aria-label'] as const) {
+    const stash = `data-pres-${attr}`;
+    document.querySelectorAll<HTMLElement>(`[${stash}]`).forEach((el) => {
+      el.setAttribute(attr, el.getAttribute(stash) ?? '');
+      el.removeAttribute(stash);
+    });
+  }
+  // Restore <select> option labels masked during presentation.
+  document.querySelectorAll<HTMLOptionElement>('option[data-pres-orig]').forEach((opt) => {
+    opt.text = opt.dataset['presOrig'] ?? opt.text;
+    delete opt.dataset['presOrig'];
+  });
+  // Unwrap phrase-redaction spans back to their original text.
+  document.querySelectorAll<HTMLElement>('span.pres-phrase').forEach((span) => {
+    span.replaceWith(document.createTextNode(span.dataset['presPhraseOrig'] ?? span.textContent ?? ''));
+  });
+  presStartChecked.clear();
+  applyPresConfigLock(); // re-enable all checkboxes
+  presRefreshAtlas();
+  hidePresentationBanner();
+  // Re-render the config page so its Start/Stop affordance reflects the state.
+  if (currentMode === 'presentation') renderPresentationPane();
+}
+
+function savePresentationConfig(): void {
+  try {
+    localStorage.setItem(PRESENTATION_KEY, JSON.stringify({
+      engrams: [...presState.allow.engrams],
+      sources: [...presState.allow.sources],
+      skills: [...presState.allow.skills],
+      goals: [...presState.allow.goals],
+      surfaces: presState.surfaces,
+      phrases: presState.phrases,
+    }));
+  } catch { /* storage off — selection just won't persist */ }
+}
+function loadPresentationConfig(): void {
+  try {
+    const raw = localStorage.getItem(PRESENTATION_KEY);
+    if (!raw) return;
+    const o = JSON.parse(raw) as Partial<{ engrams: string[]; sources: string[]; skills: string[]; goals: string[]; surfaces: Record<string, boolean>; phrases: string[] }>;
+    presState.allow.engrams = new Set(o.engrams ?? []);
+    presState.allow.sources = new Set(o.sources ?? []);
+    presState.allow.skills = new Set(o.skills ?? []);
+    presState.allow.goals = new Set(o.goals ?? []);
+    if (o.surfaces) for (const d of PRES_SURFACE_DEFS) presState.surfaces[d.key] = !!o.surfaces[d.key];
+    presState.phrases = Array.isArray(o.phrases) ? o.phrases.filter((p) => typeof p === 'string') : [];
+  } catch { /* corrupt config — ignore, start blank */ }
+}
+
+/** Total number of things the user has chosen to reveal. */
+function presSelectionCount(): number {
+  return presState.allow.engrams.size + presState.allow.sources.size
+    + presState.allow.skills.size + presState.allow.goals.size
+    + PRES_SURFACE_DEFS.filter((d) => presState.surfaces[d.key]).length;
+}
+
+function presCheckboxRow(checked: boolean, dataAttr: string, title: string, sub?: string, presTag?: string): string {
+  // `.pres-row-flag` is shown via CSS (:has(input:checked)) — a green "will be
+  // visible" tag so the user can see at a glance what they've opted to reveal.
+  // `presTag` tags the NAME so it redacts on the config page too while masking
+  // is active (the checkbox stays usable) — so the page itself is screen-share
+  // safe. Surfaces pass no tag (their labels are generic, not sensitive).
+  const titleAttr = presTag ? ` data-pres="${escape(presTag)}"` : '';
+  return `<label class="pres-row">
+    <input type="checkbox" ${checked ? 'checked' : ''} ${dataAttr} />
+    <span class="pres-row-body">
+      <span class="pres-row-title"${titleAttr}>${escape(title)}</span>
+      ${sub ? `<span class="pres-row-sub">${escape(sub)}</span>` : ''}
+    </span>
+    <span class="pres-row-flag">✓ will be visible</span>
+  </label>`;
+}
+
+// Cache of the last-fetched source list so "Select all" for Sources knows every
+// id without re-hitting inspector_stats.
+let presSourcesCache: SourceRecord[] = [];
+
+/** All ids currently selectable for a category — drives the Select-all toggle. */
+function presAllIdsFor(kind: 'engram' | 'source' | 'skill' | 'goal' | 'surface'): string[] {
+  if (kind === 'engram') return loadedGraphs.filter((g) => !g.metadata.archived).map((g) => g.graphId);
+  if (kind === 'source') return presSourcesCache.map((s) => s.sourceId);
+  if (kind === 'skill') return skillsLibrary.map((s) => s.sourceId);
+  if (kind === 'goal') return brainGoals.map((g) => g.sourceId);
+  return PRES_SURFACE_DEFS.map((d) => d.key);
+}
+function presSetFor(kind: 'engram' | 'source' | 'skill' | 'goal'): Set<string> {
+  return kind === 'engram' ? presState.allow.engrams
+    : kind === 'source' ? presState.allow.sources
+    : kind === 'skill' ? presState.allow.skills
+    : presState.allow.goals;
+}
+/** Toggle a whole category: select all if any are unselected, else clear. */
+function togglePresSelectAll(kind: 'engram' | 'source' | 'skill' | 'goal' | 'surface'): void {
+  const ids = presAllIdsFor(kind);
+  if (kind === 'surface') {
+    const allOn = ids.every((k) => presState.surfaces[k as PresSurface]);
+    for (const k of ids) presState.surfaces[k as PresSurface] = !allOn;
+  } else {
+    const set = presSetFor(kind);
+    const allOn = ids.length > 0 && ids.every((id) => set.has(id));
+    set.clear();
+    if (!allOn) for (const id of ids) set.add(id);
+  }
+  savePresentationConfig();
+  renderPresentationPane();
+  if (presState.active) { applyPresentationMasking(); presRefreshAtlas(); }
+}
+
+/** Select/clear every source in one engram group — updates in place so the
+ *  group stays open and the sources list doesn't re-fetch/flash. */
+function togglePresSourceGroup(graphId: string, det: HTMLElement | null): void {
+  if (!graphId || !det) return;
+  const ids = presSourcesCache.filter((s) => s.graphId === graphId).map((s) => s.sourceId);
+  if (ids.length === 0) return;
+  const allOn = ids.every((id) => presState.allow.sources.has(id));
+  for (const id of ids) { if (allOn) presState.allow.sources.delete(id); else presState.allow.sources.add(id); }
+  savePresentationConfig();
+  // Reflect the new state in this group's checkboxes, badge, and button.
+  det.querySelectorAll<HTMLInputElement>('input[data-pres-pick="source"]').forEach((cb) => { cb.checked = !allOn; });
+  const selNow = allOn ? 0 : ids.length;
+  const badge = det.querySelector<HTMLElement>('.pres-group-visible');
+  if (badge) { badge.textContent = selNow > 0 ? `✓ ${selNow} will be visible` : ''; badge.classList.toggle('hidden', selNow === 0); }
+  const grpBtn = det.querySelector<HTMLElement>('[data-pres-grp-selectall]');
+  if (grpBtn) grpBtn.textContent = allOn ? 'Select all' : 'Clear';
+  // Update the Sources section "N selected" meta + the global item count.
+  const body = document.getElementById('presentation-body');
+  body?.querySelectorAll('.pres-section').forEach((sec) => {
+    if (sec.querySelector('h3')?.textContent === 'Sources') {
+      const meta = sec.querySelector('.pres-section-meta');
+      if (meta) meta.textContent = `${presState.allow.sources.size} selected`;
+    }
+  });
+  const count = presSelectionCount();
+  const countEl = body?.querySelector('.pres-count');
+  if (countEl) countEl.textContent = `${count} item${count === 1 ? '' : 's'} selected`;
+  if (presState.active) { applyPresentationMasking(); presRefreshAtlas(); }
+}
+
+/** Section header with a Select-all/Clear toggle. */
+function presSectionHead(title: string, kind: 'engram' | 'source' | 'skill' | 'goal' | 'surface', selectedLabel: string, hasItems: boolean): string {
+  const ids = presAllIdsFor(kind);
+  const allOn = ids.length > 0 && (kind === 'surface'
+    ? ids.every((k) => presState.surfaces[k as PresSurface])
+    : ids.every((id) => presSetFor(kind).has(id)));
+  const btn = hasItems
+    ? `<button class="pres-selectall" type="button" data-pres-selectall="${kind}">${allOn ? 'Clear' : 'Select all'}</button>`
+    : '';
+  return `<div class="pres-section-head"><h3>${escape(title)}</h3><div class="pres-section-right">${btn}<span class="pres-section-meta">${escape(selectedLabel)}</span></div></div>`;
+}
+
+/** Build the Presentation Mode config page: categorized checklists (all OFF by
+ *  default) + surface toggles + the Start/Stop control. */
+function renderPresentationPane(): void {
+  const host = document.getElementById('presentation-body');
+  if (!host) return;
+  const active = presState.active;
+  const count = presSelectionCount();
+
+  const engrams = loadedGraphs
+    .filter((g) => !g.metadata.archived)
+    .sort((a, b) => (a.metadata.displayName ?? a.graphId).localeCompare(b.metadata.displayName ?? b.graphId));
+  const engramSection = engrams.length === 0
+    ? '<p class="pres-empty">No engrams loaded.</p>'
+    : engrams.map((g) => presCheckboxRow(
+        presState.allow.engrams.has(g.graphId),
+        `data-pres-pick="engram" data-id="${escape(g.graphId)}"`,
+        formatEngramLabel(g),
+        'Reveals this engram and everything in it',
+        `engram:${g.graphId}`,
+      )).join('');
+
+  const goals = brainGoals.slice();
+  const goalSection = goals.length === 0
+    ? '<p class="pres-empty">No goals yet.</p>'
+    : goals.map((g) => presCheckboxRow(
+        presState.allow.goals.has(g.sourceId),
+        `data-pres-pick="goal" data-id="${escape(g.sourceId)}"`,
+        g.title,
+        engramName(g.graphId),
+        `goal:${g.sourceId}`,
+      )).join('');
+
+  const surfaceSection = PRES_SURFACE_DEFS.map((d) => presCheckboxRow(
+    presState.surfaces[d.key],
+    `data-pres-pick="surface" data-id="${escape(d.key)}"`,
+    d.label,
+    d.hint,
+    `surface:${d.key}`, // unchecked surface rows redact on the config page too
+  )).join('');
+
+  host.innerHTML = `
+    <div class="pres-config">
+      <div class="pres-scroll">
+        <div class="pres-intro">
+          <p>Pick exactly what stays visible while you demo or screen-share. <strong>Everything starts hidden</strong> — check an item to reveal it in full. Everything you don't pick is redacted in place (solid blocks), so your cortex's structure shows but its contents stay private.</p>
+          <div class="pres-warning">
+            <strong>⚠️ Best-effort, not a guarantee.</strong> Verify every screen yourself before sharing. New content, tooltips, notifications, and anything loaded after you start may not be masked. You accept full responsibility for what you reveal — you'll confirm this before it activates. See the <a href="#" id="pres-warning-terms">Terms of Use</a> and <a href="#" id="pres-warning-privacy">Privacy Policy</a>.
+          </div>
+        </div>
+
+        <section class="pres-section">
+          ${presSectionHead('Engrams', 'engram', `${presState.allow.engrams.size} selected`, engrams.length > 0)}
+          <div class="pres-list">${engramSection}</div>
+        </section>
+
+        <section class="pres-section">
+          ${presSectionHead('Sources', 'source', `${presState.allow.sources.size} selected`, false)}
+          <div class="pres-list" id="pres-sources-list"><p class="pres-empty">Loading sources…</p></div>
+        </section>
+
+        <section class="pres-section">
+          ${presSectionHead('Skills', 'skill', `${presState.allow.skills.size} selected`, skillsLibrary.length > 0)}
+          <div class="pres-list" id="pres-skills-list"><p class="pres-empty">Loading skills…</p></div>
+        </section>
+
+        <section class="pres-section">
+          ${presSectionHead('Goals', 'goal', `${presState.allow.goals.size} selected`, goals.length > 0)}
+          <div class="pres-list">${goalSection}</div>
+        </section>
+
+        <section class="pres-section">
+          ${presSectionHead('Surfaces', 'surface', 'app-wide details', true)}
+          <div class="pres-list">${surfaceSection}</div>
+        </section>
+
+        <section class="pres-section" data-pres="surface:__phrases__">
+          <div class="pres-section-head"><h3>Always redact these phrases</h3></div>
+          <p class="pres-row-sub" style="margin:0 0 6px;">Blacked out wherever they appear on screen — even inside revealed content. One per line, case-insensitive.</p>
+          <textarea id="pres-phrases" class="pres-phrases" rows="3" placeholder="e.g. project codename&#10;a client's name&#10;an address">${escape(presState.phrases.join('\n'))}</textarea>
+        </section>
+      </div>
+
+      <div class="pres-actions">
+        <button class="pres-clear" id="pres-clear-btn" type="button">Clear all</button>
+        <button class="pres-start ${active ? 'is-active' : ''}" id="pres-start-btn" type="button">
+          ${active ? '■ Stop Presentation Mode' : '▶ Review & Start Presentation Mode'}
+        </button>
+        <span class="pres-count">${count} item${count === 1 ? '' : 's'} selected</span>
+      </div>
+    </div>`;
+
+  // Sources + skills are fetched lazily (inspector_stats / skill:list).
+  void renderPresentationSources();
+  void renderPresentationSkills();
+
+  host.querySelectorAll<HTMLInputElement>('input[data-pres-pick]').forEach((cb) => {
+    cb.addEventListener('change', () => onPresPickChange(cb));
+  });
+  host.querySelectorAll<HTMLButtonElement>('[data-pres-selectall]').forEach((btn) => {
+    btn.addEventListener('click', () => togglePresSelectAll(btn.dataset['presSelectall'] as 'engram' | 'source' | 'skill' | 'goal' | 'surface'));
+  });
+  const phrasesEl = host.querySelector<HTMLTextAreaElement>('#pres-phrases');
+  phrasesEl?.addEventListener('input', () => {
+    presState.phrases = phrasesEl.value.split('\n').map((p) => p.trim()).filter(Boolean);
+    savePresentationConfig();
+    if (presState.active) applyPresentationMasking();
+  });
+  host.querySelector('#pres-warning-terms')?.addEventListener('click', (e) => {
+    e.preventDefault();
+    void invoke('plugin:opener|open_url', { url: 'https://docs.graphnosis.com/legal/terms-of-use' });
+  });
+  host.querySelector('#pres-warning-privacy')?.addEventListener('click', (e) => {
+    e.preventDefault();
+    void invoke('plugin:opener|open_url', { url: 'https://docs.graphnosis.com/legal/privacy-policy' });
+  });
+  host.querySelector<HTMLButtonElement>('#pres-clear-btn')?.addEventListener('click', () => {
+    presState.allow.engrams.clear(); presState.allow.sources.clear();
+    presState.allow.skills.clear(); presState.allow.goals.clear();
+    for (const d of PRES_SURFACE_DEFS) presState.surfaces[d.key] = false;
+    savePresentationConfig();
+    renderPresentationPane();
+    if (presState.active) applyPresentationMasking();
+  });
+  host.querySelector<HTMLButtonElement>('#pres-start-btn')?.addEventListener('click', () => {
+    if (presState.active) requestStopPresentation();
+    else requestStartPresentation();
+  });
+  applyPresConfigLock(); // disable unchecked-at-start boxes while presenting
+}
+
+/** Skills list — fetched lazily; the library may be empty until skill:list runs
+ *  (it's normally loaded only when the Skills pane opens). Imported .gsk skills
+ *  appear here too. */
+async function renderPresentationSkills(): Promise<void> {
+  const list = document.getElementById('pres-skills-list');
+  if (!list) return;
+  if (skillsLibrary.length === 0) {
+    try { await fetchSkillsLibrary(); } catch { /* leave to empty-state */ }
+  }
+  if (!list.isConnected) return;
+  const skills = skillsLibrary.slice().sort((a, b) => skillDisplayName(a.label).localeCompare(skillDisplayName(b.label)));
+  if (skills.length === 0) { list.innerHTML = '<p class="pres-empty">No skills trained or imported yet.</p>'; return; }
+  list.innerHTML = skills.map((s) => presCheckboxRow(
+    presState.allow.skills.has(s.sourceId),
+    `data-pres-pick="skill" data-id="${escape(s.sourceId)}"`,
+    skillDisplayName(s.label),
+    s.engramName,
+    `skill:${s.sourceId}`,
+  )).join('');
+  list.querySelectorAll<HTMLInputElement>('input[data-pres-pick]').forEach((cb) => {
+    cb.addEventListener('change', () => onPresPickChange(cb));
+  });
+  applyPresConfigLock();
+  // Refresh the Skills section head now that we know the real count (so the
+  // Select-all button appears once the library has loaded).
+  const head = list.closest('.pres-section')?.querySelector('.pres-section-head');
+  if (head) head.outerHTML = presSectionHead('Skills', 'skill', `${presState.allow.skills.size} selected`, skills.length > 0);
+  document.querySelector<HTMLButtonElement>('[data-pres-selectall="skill"]')
+    ?.addEventListener('click', () => togglePresSelectAll('skill'));
+}
+
+/** Build the "what will be visible" list shown in the consent modal so the user
+ *  confirms against the actual items, not an abstraction. */
+function presBuildConsentSummary(): string {
+  const groups: Array<{ label: string; items: string[] }> = [];
+  if (presState.allow.engrams.size) {
+    groups.push({ label: 'Engrams', items: [...presState.allow.engrams].map((id) => engramName(id)) });
+  }
+  if (presState.allow.sources.size) {
+    const byId = new Map(presSourcesCache.map((s) => [s.sourceId, s]));
+    groups.push({ label: 'Sources', items: [...presState.allow.sources].map((id) => {
+      const s = byId.get(id); return s ? (s.ref.split('/').pop() || s.ref) : id;
+    }) });
+  }
+  if (presState.allow.skills.size) {
+    const byId = new Map(skillsLibrary.map((s) => [s.sourceId, s]));
+    groups.push({ label: 'Skills', items: [...presState.allow.skills].map((id) => {
+      const s = byId.get(id); return s ? skillDisplayName(s.label) : id;
+    }) });
+  }
+  if (presState.allow.goals.size) {
+    const byId = new Map(brainGoals.map((g) => [g.sourceId, g]));
+    groups.push({ label: 'Goals', items: [...presState.allow.goals].map((id) => byId.get(id)?.title ?? id) });
+  }
+  const surfaces = PRES_SURFACE_DEFS.filter((d) => presState.surfaces[d.key]).map((d) => d.label);
+  if (surfaces.length) groups.push({ label: 'App surfaces', items: surfaces });
+
+  if (groups.length === 0) {
+    return '<div class="pres-consent-summary-head pres-consent-summary-empty">Nothing selected — <strong>every screen will be fully redacted.</strong></div>';
+  }
+  const body = groups.map((g) => `<div class="pres-consent-group"><div class="pres-consent-group-label">${escape(g.label)}</div><ul>${g.items.map((it) => `<li>${escape(it)}</li>`).join('')}</ul></div>`).join('');
+  return `<div class="pres-consent-summary-head">These items will be shown in full — everything else stays redacted:</div>${body}`;
+}
+
+/** Open the consent gate. Masking only activates after the user ticks the
+ *  responsibility checkbox and clicks Enter — never silently. */
+function requestStartPresentation(): void {
+  if (presSelectionCount() === 0
+      && !confirm('You haven\'t selected anything to reveal — every screen will be fully redacted. Continue to the consent step anyway?')) {
+    return;
+  }
+  const modal = document.getElementById('presentation-consent-modal');
+  const check = document.getElementById('presentation-consent-check') as HTMLInputElement | null;
+  const enter = document.getElementById('presentation-consent-enter') as HTMLButtonElement | null;
+  if (!modal || !check || !enter) { startPresentation(); return; } // fail-open to feature, never block
+  const summary = document.getElementById('presentation-consent-summary');
+  if (summary) summary.innerHTML = presBuildConsentSummary();
+  check.checked = false;
+  enter.disabled = true;
+  modal.classList.remove('hidden');
+}
+
+/** Confirm before LEAVING — exiting instantly un-redacts everything, so an
+ *  accidental exit during a live share is the real hazard. Routes through a
+ *  warning modal (falls back to native confirm if the modal is missing). */
+function requestStopPresentation(): void {
+  if (!presState.active) return;
+  const modal = document.getElementById('presentation-exit-modal');
+  if (!modal) {
+    if (confirm('Exit Presentation Mode? Everything hidden becomes visible again — stop sharing your screen first.')) stopPresentation();
+    return;
+  }
+  modal.classList.remove('hidden');
+}
+
+async function renderPresentationSources(): Promise<void> {
+  const list = document.getElementById('pres-sources-list');
+  if (!list) return;
+  let data: StatsSummary | null = null;
+  try { data = (await invoke('inspector_stats')) as StatsSummary; } catch { /* leave loading */ }
+  if (!list.isConnected) return; // page navigated away
+  const sources = data?.sources ?? [];
+  presSourcesCache = sources; // so Select-all knows every source id
+  if (sources.length === 0) { list.innerHTML = '<p class="pres-empty">No sources ingested yet.</p>'; return; }
+  const byGraph = new Map<string, SourceRecord[]>();
+  for (const s of sources) { (byGraph.get(s.graphId) ?? byGraph.set(s.graphId, []).get(s.graphId)!).push(s); }
+  const graphOrder = [...byGraph.keys()].sort((a, b) => engramName(a).localeCompare(engramName(b)));
+  list.innerHTML = graphOrder.map((gid) => {
+    const rows = byGraph.get(gid)!.map((s) => {
+      const file = (s.ref.split('/').pop() || s.ref).slice(0, 80);
+      return presCheckboxRow(
+        presState.allow.sources.has(s.sourceId),
+        `data-pres-pick="source" data-id="${escape(s.sourceId)}"`,
+        file,
+        s.kind,
+        `source:${s.sourceId}`,
+      );
+    }).join('');
+    const grpSources = byGraph.get(gid)!;
+    const sel = grpSources.filter((s) => presState.allow.sources.has(s.sourceId)).length;
+    const allOn = grpSources.length > 0 && sel === grpSources.length;
+    const visTag = sel > 0 ? `<span class="pres-group-visible" data-pres-group="${escape(gid)}">✓ ${sel} will be visible</span>` : `<span class="pres-group-visible hidden" data-pres-group="${escape(gid)}"></span>`;
+    const grpBtn = `<button type="button" class="pres-selectall pres-grp-selectall" data-pres-grp-selectall="${escape(gid)}">${allOn ? 'Clear' : 'Select all'}</button>`;
+    return `<details class="pres-source-group" data-pres-grp-engram="${escape(gid)}"><summary><span data-pres="engram:${escape(gid)}">${escape(engramName(gid))}</span> <span class="pres-row-sub">(${grpSources.length})</span>${visTag}<span class="pres-grp-summary-right">${grpBtn}</span></summary>${rows}</details>`;
+  }).join('');
+  list.querySelectorAll<HTMLInputElement>('input[data-pres-pick]').forEach((cb) => {
+    cb.addEventListener('change', () => onPresPickChange(cb));
+  });
+  applyPresConfigLock();
+  // Per-engram "Select all sources" — toggles every source in just that group.
+  list.querySelectorAll<HTMLButtonElement>('[data-pres-grp-selectall]').forEach((btn) => {
+    btn.addEventListener('click', (e) => {
+      e.preventDefault(); e.stopPropagation(); // don't collapse the <details>
+      togglePresSourceGroup(btn.dataset['presGrpSelectall'] ?? '', btn.closest<HTMLElement>('.pres-source-group'));
+    });
+  });
+  // Now that sources are loaded, surface the Select-all toggle in the head.
+  const head = list.closest('.pres-section')?.querySelector('.pres-section-head');
+  if (head) head.outerHTML = presSectionHead('Sources', 'source', `${presState.allow.sources.size} selected`, false);
+  document.querySelector<HTMLButtonElement>('[data-pres-selectall="source"]')
+    ?.addEventListener('click', () => togglePresSelectAll('source'));
+}
+
+/** Apply a single checkbox change to presState, persist, and (if live) re-mask. */
+function onPresPickChange(cb: HTMLInputElement): void {
+  const kind = cb.dataset['presPick'];
+  const id = cb.dataset['id'] ?? '';
+  const on = cb.checked;
+  if (kind === 'engram') { on ? presState.allow.engrams.add(id) : presState.allow.engrams.delete(id); }
+  else if (kind === 'source') { on ? presState.allow.sources.add(id) : presState.allow.sources.delete(id); }
+  else if (kind === 'skill') { on ? presState.allow.skills.add(id) : presState.allow.skills.delete(id); }
+  else if (kind === 'goal') { on ? presState.allow.goals.add(id) : presState.allow.goals.delete(id); }
+  else if (kind === 'surface') { presState.surfaces[id as PresSurface] = on; }
+  savePresentationConfig();
+  // Update the live section counters without a full re-render (keeps scroll).
+  const body = document.getElementById('presentation-body');
+  body?.querySelectorAll('.pres-section').forEach((sec) => {
+    const h = sec.querySelector('h3')?.textContent;
+    const meta = sec.querySelector('.pres-section-meta');
+    if (!meta) return;
+    if (h === 'Engrams') meta.textContent = `${presState.allow.engrams.size} selected`;
+    else if (h === 'Sources') meta.textContent = `${presState.allow.sources.size} selected`;
+    else if (h === 'Skills') meta.textContent = `${presState.allow.skills.size} selected`;
+    else if (h === 'Goals') meta.textContent = `${presState.allow.goals.size} selected`;
+  });
+  const count = presSelectionCount();
+  const countEl = body?.querySelector('.pres-count');
+  if (countEl) countEl.textContent = `${count} item${count === 1 ? '' : 's'} selected`;
+  // Update the collapsed source-group's "N will be visible" badge so the count
+  // is correct even when the group's rows are hidden.
+  if (kind === 'source') {
+    const grp = cb.closest<HTMLElement>('.pres-source-group');
+    const badge = grp?.querySelector<HTMLElement>('.pres-group-visible');
+    if (badge) {
+      const sel = grp!.querySelectorAll('input[data-pres-pick="source"]:checked').length;
+      badge.textContent = sel > 0 ? `✓ ${sel} will be visible` : '';
+      badge.classList.toggle('hidden', sel === 0);
+    }
+  }
+  if (presState.active) { applyPresentationMasking(); presRefreshAtlas(); }
+}
+
+/** One-time wiring: the consent gate, the exit banner, and Esc-to-exit. */
+function initPresentation(): void {
+  loadPresentationConfig();
+  // Exit paths all confirm first — leaving instantly un-redacts everything.
+  document.getElementById('presentation-banner')?.addEventListener('click', () => requestStopPresentation());
+  document.getElementById('presentation-banner-lock')?.addEventListener('click', () => requestStopPresentation());
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && presState.active) { e.preventDefault(); requestStopPresentation(); }
+  });
+
+  // Consent gate wiring.
+  const modal = document.getElementById('presentation-consent-modal');
+  const check = document.getElementById('presentation-consent-check') as HTMLInputElement | null;
+  const enter = document.getElementById('presentation-consent-enter') as HTMLButtonElement | null;
+  const cancel = document.getElementById('presentation-consent-cancel');
+  const closeConsent = (): void => modal?.classList.add('hidden');
+  check?.addEventListener('change', () => { if (enter) enter.disabled = !check.checked; });
+  cancel?.addEventListener('click', closeConsent);
+  enter?.addEventListener('click', () => {
+    if (!check?.checked) return; // belt-and-suspenders — Enter is disabled until ticked
+    closeConsent();
+    startPresentation();
+  });
+  document.getElementById('presentation-consent-terms')?.addEventListener('click', (e) => {
+    e.preventDefault();
+    void invoke('plugin:opener|open_url', { url: 'https://docs.graphnosis.com/legal/terms-of-use' });
+  });
+  document.getElementById('presentation-consent-privacy')?.addEventListener('click', (e) => {
+    e.preventDefault();
+    void invoke('plugin:opener|open_url', { url: 'https://docs.graphnosis.com/legal/privacy-policy' });
+  });
+
+  // Exit gate wiring.
+  const exitModal = document.getElementById('presentation-exit-modal');
+  document.getElementById('presentation-exit-cancel')?.addEventListener('click', () => exitModal?.classList.add('hidden'));
+  document.getElementById('presentation-exit-confirm')?.addEventListener('click', () => {
+    exitModal?.classList.add('hidden');
+    stopPresentation();
+  });
 }
 
 function vitalityCopy(v: number): [string, string] {
@@ -13067,7 +14786,8 @@ function renderLbGoals(): void {
     const milestones = g.milestones.length > 0
       ? `<div class="lb-goal-meta">Milestones: ${escape(g.milestones.slice(0, 3).join(' · '))}</div>`
       : '';
-    return `<div class="lb-goal">
+    return `<div class="lb-goal" data-goal-source="${escape(g.sourceId)}" data-goal-graph="${escape(g.graphId)}" data-goal-title="${escape(g.title)}" data-pres="goal:${escape(g.sourceId)}" data-pres-engram="${escape(g.graphId)}">
+      <button class="lb-goal-delete" type="button" title="Delete this goal" aria-label="Delete goal: ${escape(g.title)}">×</button>
       <div class="lb-goal-title">${escape(g.title)}
         <span class="lb-engram-chip" title="Engram">${escape(engramName(g.graphId))}</span>
       </div>
@@ -13075,6 +14795,25 @@ function renderLbGoals(): void {
       ${milestones}
     </div>`;
   }).join('');
+
+  // Delete buttons — confirm, then forget the backing `goal:` source. Goals
+  // aren't a separate store: each is a source the SDK tagged `goal:<ts>`, so
+  // deleting the source removes the goal (and its nodes) from the cortex.
+  host.querySelectorAll<HTMLButtonElement>('.lb-goal-delete').forEach((btn) => {
+    btn.addEventListener('click', (ev) => {
+      ev.stopPropagation();
+      const card = btn.closest<HTMLElement>('.lb-goal');
+      const sourceId = card?.dataset['goalSource'];
+      const graphId = card?.dataset['goalGraph'];
+      const title = card?.dataset['goalTitle'] ?? 'this goal';
+      if (!sourceId || !graphId) return;
+      if (!confirm(`Delete the goal “${title}”?\n\nThis removes the goal and its tracked milestones from your cortex. It can't be undone.`)) return;
+      btn.disabled = true;
+      void ipcCall('sources.forget', { graphId, sourceId })
+        .then(() => { card?.remove(); void refreshBrainState(); })
+        .catch((e) => { btn.disabled = false; console.warn('[goals] delete failed', e); alert(`Could not delete the goal: ${e}`); });
+    });
+  });
 }
 
 /** Show the empty-state line only when the feed has no real activity items. */
@@ -14271,8 +16010,9 @@ els.btnOpenOllamaSite.addEventListener('click', (e) => {
 });
 
 els.brainVitality.addEventListener('click', () => {
-  // Jump to the Goals / consolidation rail destination from the status chip.
-  activateMode('goals');
+  // Vitality + Trust now live on the Home dashboard, so the status chip jumps
+  // there (was the old Goals/consolidation tab).
+  activateMode('atlas');
 });
 
 // Background-process line — same target as the vitality chip; the
@@ -16153,7 +17893,9 @@ function installCustomEngramPicker(): void {
     const opts = Array.from(sel.options);
     dropdown.innerHTML = opts.map((o) => {
       const isDisabled = o.disabled;
+      const isFull = o.value === '__full__';
       const classes = ['engram-picker-option'];
+      if (isFull) classes.push('engram-picker-option-full');
       if (o.value === sel.value) classes.push('selected');
       if (isDisabled) classes.push('disabled');
       const aria = isDisabled ? ' aria-disabled="true"' : '';
@@ -16166,10 +17908,17 @@ function installCustomEngramPicker(): void {
       const title = isDisabled
         ? ' title="Still loading from disk — usually a few seconds, sometimes longer for large engrams. Click outside and reopen the picker to refresh."'
         : '';
-      return `<button type="button" class="${classes.join(' ')}" data-value="${escapeHtml(o.value)}" role="option" aria-selected="${o.value === sel.value}"${aria}${title}>${spinner}${escapeHtml(o.text)}</button>`;
+      const divider = isFull ? '<div class="engram-picker-divider" aria-hidden="true"></div>' : '';
+      // Presentation Mode: the option's engram name redacts unless allowlisted
+      // (the name text only — the row stays clickable).
+      return `<button type="button" class="${classes.join(' ')}" data-value="${escapeHtml(o.value)}" role="option" aria-selected="${o.value === sel.value}"${aria}${title}>${spinner}<span data-pres="engram:${escapeHtml(o.value)}">${escapeHtml(o.text)}</span></button>${divider}`;
     }).join('');
     const curOpt = opts.find((o) => o.value === sel.value) ?? opts.find((o) => !o.disabled) ?? opts[0];
     labelEl.textContent = curOpt?.text ?? '—';
+    // Presentation Mode: the picker label shows the active engram name → tag it
+    // so it redacts unless that engram is allowlisted.
+    labelEl.setAttribute('data-pres', `engram:${sel.value}`);
+    if (presActive()) applyPresentationMasking(labelEl.parentElement ?? labelEl);
   };
 
   // 3. Intercept `.value` setter so external assignments (`sel.value = X`)
@@ -16305,9 +18054,42 @@ const CONNECTOR_KIND_GLYPH: Record<ConnectorKind, string> = {
   obsidian: '🔮', gbrain: '🧠', 'ai-context': '📎',
 };
 
-async function refreshConnectorsList(): Promise<void> {
-  const wrap = document.getElementById('connectors-list');
+/** Paint the configured-connector instances onto the Get Connected page
+ *  (#gc-connectors-list) — every instance, including multiples of the same
+ *  kind. Reuses renderConnectorRow + the shared row-action handlers, so a user
+ *  with 3 Obsidian vaults or 12 NAS folders sees + manages each one here. */
+function paintGcConnectorList(configs: ConnectorConfigShape[], statuses: ConnectorStatus[]): void {
+  const wrap = document.getElementById('gc-connectors-list');
+  const head = document.getElementById('gc-connected-head');
+  const intervalRow = document.getElementById('gc-interval-row');
   if (!wrap) return;
+  if (configs.length === 0) {
+    wrap.innerHTML = '';
+    if (head) head.style.display = 'none';
+    if (intervalRow) intervalRow.style.display = 'none';
+    return;
+  }
+  if (head) head.style.display = '';
+  if (intervalRow) intervalRow.style.display = '';
+  const statusById = new Map(statuses.map((s) => [s.id, s]));
+  wrap.innerHTML = configs.map((cfg) => renderConnectorRow(cfg, statusById.get(cfg.id))).join('');
+  wrap.querySelectorAll<HTMLButtonElement>('button[data-connector-action]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const action = btn.dataset['connectorAction'];
+      const id = btn.dataset['connectorId'];
+      if (!id) return;
+      if (action === 'pull') void handleConnectorPull(id, btn);
+      else if (action === 'remove') void handleConnectorRemove(id);
+      else if (action === 'edit') void handleConnectorEdit(id, configs);
+    });
+  });
+}
+
+// Fetches the connector list and paints it wherever it's surfaced. The Settings
+// Connectors panel was removed, so this no longer depends on #connectors-list —
+// it always updates the Get Connected page list + the rail status, and paints
+// the legacy Settings list only if that element still exists.
+async function refreshConnectorsList(): Promise<void> {
   try {
     const res = await invoke<{ configs: ConnectorConfigShape[]; statuses: ConnectorStatus[]; pullIntervalMs?: number }>(
       'list_connectors',
@@ -16315,46 +18097,59 @@ async function refreshConnectorsList(): Promise<void> {
     // Reflect installed connectors in the sidebar's Get-connected status list.
     installedConnectorKinds = new Set(res.configs.map((c) => c.kind));
     renderRailGetConnected();
-    // Populate the poll-interval input (ms → minutes) without clobbering a
-    // value the user is mid-edit on (don't overwrite a focused field).
-    const intervalInput = document.getElementById('connectors-interval-input') as HTMLInputElement | null;
+    // The connector list now lives on the Get Connected page (in sync with
+    // every connector add/edit/remove, which all call through here).
+    paintGcConnectorList(res.configs, res.statuses);
+    // Default check-interval control (the per-connector fallback), now on the
+    // Get Connected page. Don't clobber a value the user is mid-edit on.
+    const intervalInput = document.getElementById('gc-default-interval') as HTMLInputElement | null;
     if (intervalInput && typeof res.pullIntervalMs === 'number' && document.activeElement !== intervalInput) {
       intervalInput.value = String(Math.round(res.pullIntervalMs / 60_000));
     }
-    if (!res.configs.length) {
-      wrap.innerHTML = `
-        <p style="color: var(--fg-dim); font-size: 14px; padding: 10px 4px; margin: 0;">
-          No connectors installed yet. Pick one above to start auto-ingesting from your existing tools.
-        </p>`;
-      return;
+    // Legacy Settings list (kept working if the element is still present).
+    const wrap = document.getElementById('connectors-list');
+    if (wrap) {
+      if (!res.configs.length) {
+        wrap.innerHTML = '<p style="color: var(--fg-dim); font-size: 14px; padding: 10px 4px; margin: 0;">No connectors installed yet.</p>';
+      } else {
+        const statusById = new Map(res.statuses.map((s) => [s.id, s]));
+        wrap.innerHTML = res.configs.map((cfg) => renderConnectorRow(cfg, statusById.get(cfg.id))).join('');
+        wrap.querySelectorAll<HTMLButtonElement>('button[data-connector-action]').forEach((btn) => {
+          btn.addEventListener('click', () => {
+            const action = btn.dataset['connectorAction'];
+            const id = btn.dataset['connectorId'];
+            if (!id) return;
+            if (action === 'pull') void handleConnectorPull(id, btn);
+            else if (action === 'remove') void handleConnectorRemove(id);
+            else if (action === 'edit') void handleConnectorEdit(id, res.configs);
+          });
+        });
+      }
     }
-    const statusById = new Map(res.statuses.map((s) => [s.id, s]));
-    wrap.innerHTML = res.configs
-      .map((cfg) => renderConnectorRow(cfg, statusById.get(cfg.id)))
-      .join('');
-    // Wire row buttons after render
-    wrap.querySelectorAll<HTMLButtonElement>('button[data-connector-action]').forEach((btn) => {
-      btn.addEventListener('click', () => {
-        const action = btn.dataset['connectorAction'];
-        const id = btn.dataset['connectorId'];
-        if (!id) return;
-        if (action === 'pull') void handleConnectorPull(id, btn);
-        else if (action === 'remove') void handleConnectorRemove(id);
-        else if (action === 'edit') void handleConnectorEdit(id, res.configs);
-      });
-    });
   } catch (e) {
-    wrap.innerHTML = `<div class="connector-row" style="grid-template-columns: 1fr;">
-      <span style="color: #f87171; font-size: 14px;">Couldn't load connectors: ${escapeHtml(String(e))}</span>
-    </div>`;
+    const gcWrap = document.getElementById('gc-connectors-list');
+    const head = document.getElementById('gc-connected-head');
+    if (head) head.style.display = '';
+    const timedOut = /within \d+s|timed out|did not respond/i.test(String(e));
+    if (gcWrap) {
+      gcWrap.innerHTML =
+        `<div class="gc-connectors-error">` +
+        `<p>${timedOut ? 'The sidecar was busy and didn’t answer in time.' : 'Couldn’t load your connectors.'} ` +
+        `<span class="subtitle">${escapeHtml(String(e))}</span></p>` +
+        `<button id="gc-connectors-retry" class="gc-retry-btn" type="button">↻ Retry</button>` +
+        (timedOut ? `<p class="subtitle gc-connectors-trouble">If this keeps happening, a large cortex can make the first read slow — wait a moment and retry, or reopen the app.</p>` : '') +
+        `</div>`;
+      gcWrap.querySelector<HTMLButtonElement>('#gc-connectors-retry')
+        ?.addEventListener('click', () => void refreshConnectorsList());
+    }
   }
 }
 
-// Poll-interval control: persist via the generic settings update (the sidecar
-// routes connectors.pullIntervalMs to the ConnectorManager, which swaps live
-// timers). Commit on change/blur; clamp to the 1–1440 min range.
+// Default poll-interval control (Get Connected page): the fallback used by any
+// connector without its own per-connector interval. Persists via the generic
+// settings update; the sidecar swaps live timers. Clamp to 1–1440 min.
 {
-  const intervalInput = document.getElementById('connectors-interval-input') as HTMLInputElement | null;
+  const intervalInput = document.getElementById('gc-default-interval') as HTMLInputElement | null;
   intervalInput?.addEventListener('change', () => {
     const mins = Math.min(1440, Math.max(1, Math.round(Number(intervalInput.value) || 15)));
     intervalInput.value = String(mins);
@@ -16387,17 +18182,22 @@ function renderConnectorRow(cfg: ConnectorConfigShape, status?: ConnectorStatus)
   const events = status?.eventsTotal ?? 0;
   const eventsStr = events > 0 ? ` · ${events} event${events === 1 ? '' : 's'} this session` : '';
   const errorStr = cfg.lastError ? ` · ${escapeHtml(cfg.lastError)}` : '';
+  // Effective check interval: per-connector override, else "default".
+  const ovr = (cfg.options as Record<string, unknown> | undefined)?.['intervalMs'];
+  const intervalStr = typeof ovr === 'number' && ovr >= 60_000
+    ? ` · every ${Math.round(ovr / 60_000)} min`
+    : ' · default interval';
 
   return `
     <div class="connector-row" data-connector-id="${escapeHtml(cfg.id)}">
       <span class="connector-row-kind" aria-hidden="true">${glyph}</span>
       <div class="connector-row-body">
         <div class="connector-row-title">
-          <span class="connector-row-name">${escapeHtml(label)} · ${escapeHtml(cfg.id)}</span>
+          <span class="connector-row-name" data-pres="engram:${escapeHtml(cfg.graphId)}">${escapeHtml(label)} · ${escapeHtml(cfg.id)}</span>
           <span class="connector-row-status ${statusKind}">${escapeHtml(statusLabel)}</span>
         </div>
         <span class="connector-row-meta">
-          → engram ${escapeHtml(cfg.graphId)} · ${escapeHtml(lastPullStr)}${escapeHtml(eventsStr)}${errorStr}
+          → engram <span data-pres="engram:${escapeHtml(cfg.graphId)}">${escapeHtml(cfg.graphId)}</span> · ${escapeHtml(lastPullStr)}${escapeHtml(intervalStr)}${escapeHtml(eventsStr)}${errorStr}
         </span>
       </div>
       <div class="connector-row-actions">
@@ -16646,6 +18446,19 @@ function renderConnectorSetupBody(kind: ConnectorKind, existing?: ConnectorConfi
         </span>
       </label>
     </div>`;
+  // Per-connector check interval (optional). Blank = use the global default.
+  // Applies to every kind; appended to the form just above the privacy note.
+  const curIntervalMin = typeof opts['intervalMs'] === 'number' && (opts['intervalMs'] as number) > 0
+    ? String(Math.round((opts['intervalMs'] as number) / 60_000)) : '';
+  const intervalField = `
+    <div class="connector-field">
+      <label for="connector-interval">Check this source every <span style="font-weight:400;color:var(--fg-dim);">(optional)</span></label>
+      <div style="display:flex;gap:6px;align-items:center;">
+        <input type="number" id="connector-interval" min="1" max="1440" step="1" placeholder="default" value="${curIntervalMin}" style="width:120px;" />
+        <span>minutes</span>
+      </div>
+      <span class="field-hint">Leave blank to use the default interval. Local-folder connectors also sync instantly on change.</span>
+    </div>`;
   // Shown at the bottom of every connector form — applies universally.
   const privacyNote = `
     <div class="connector-help" style="border-left-color:var(--ok); margin-top:4px;">
@@ -16856,13 +18669,13 @@ function renderConnectorSetupBody(kind: ConnectorKind, existing?: ConnectorConfi
           </div>
           <span class="field-hint">Paste into Zapier / IFTTT / your script's webhook target.</span>
         </div>` : `
-        <div class="connector-help" style="border-left-color: var(--fg-dim);">
-          The unique webhook URL is generated when you click Save.
+        <div class="connector-help connector-help-accent">
+          🔑 <strong>Your unique webhook URL appears here once you click Save.</strong> Copy it then, and point your device, script, or Zapier/IFTTT/Make at it.
         </div>`}`;
       break;
     }
   }
-  return html + privacyNote;
+  return html + intervalField + privacyNote;
 }
 
 function populateEngramDropdown(selectId: string, selectedId?: string): void {
@@ -16960,6 +18773,16 @@ function collectConnectorFormData(kind: ConnectorKind): Partial<ConnectorConfigS
       // Token auto-generated server-side if missing.
       break;
     }
+  }
+  // Per-connector check interval (optional, universal). Blank → no override
+  // (the sidecar falls back to the global default).
+  const intervalRaw = ($m<HTMLInputElement>('connector-interval')?.value || '').trim();
+  if (intervalRaw) {
+    const mins = Math.min(1440, Math.max(1, Math.round(Number(intervalRaw) || 0)));
+    options['intervalMs'] = mins > 0 ? mins * 60_000 : undefined;
+  } else {
+    // Blank → clear any existing override (merge persists, undefined is dropped).
+    options['intervalMs'] = undefined;
   }
   return {
     ...(id ? { id } : {}),
@@ -17059,6 +18882,8 @@ function collectConnectorFormData(kind: ConnectorKind): Partial<ConnectorConfigS
     if (!link) return;
     e.preventDefault();
     const target = link.dataset['jumpSettings'];
+    // Connectors + AI clients now live on the Get Connected page, not Settings.
+    if (target === 'connectors' || target === 'ai-clients') { activateMode('get-connected'); return; }
     activateMode('settings');
     // Defer scroll so the pane has finished its display:block transition.
     setTimeout(() => {
@@ -17092,6 +18917,8 @@ function collectConnectorFormData(kind: ConnectorKind): Partial<ConnectorConfigS
  * invisible to the user so they never see the window jump.
  */
 async function ensureMinWindowSize(): Promise<void> {
+  // No native window to size in browser/personal-server mode.
+  if (!isTauriRuntime()) return;
   const MIN_W = 1280;
   const MIN_H = 760;
   const w = getCurrentWindow();
@@ -17139,6 +18966,7 @@ void (async () => {
     // screen — if that's where we land — already has the path filled in.
     _initGConfirmModal();
     prefillLastCortexDir();
+    initPresentation(); // load saved selection + wire Esc/banner (boots un-masked)
 
     // 1. Correct the window size in the background while the window is
     //    still hidden (visible:false in tauri.conf.json, VISIBLE excluded
@@ -17738,7 +19566,7 @@ function renderActiveConsents(consents: AppSettings['ai']['dataAccessConsents'])
       <tbody>
         ${active.map((c) => `
           <tr>
-            <td>${escape(c.clientName)}</td>
+            <td><span data-pres="surface:mcpClients">${escape(c.clientName)}</span></td>
             <td><span style="color:${tierColors[c.tier] ?? 'inherit'}; font-weight:600;">${escape(c.tier)}</span></td>
             <td style="font-size:13px; color:var(--fg-dim);">${formatConsentExpiry(c)}</td>
             <td><button class="btn-revoke-one" data-consent-id="${escape(c.consentId)}" data-client="${escape(c.clientName)}" data-tier="${escape(c.tier)}" style="font-size:12px; padding:2px 8px;">Revoke</button></td>
@@ -18293,6 +20121,10 @@ const BILLING_BASE_URL: string = (() => {
 })();
 
 const BILLING_EMAIL_KEY = 'billing:email';
+// Per-subscription poll secret, delivered once via the claim deep link. The
+// by-email token poll requires it server-side, so a bare email can't pull a
+// subscriber's token.
+const BILLING_POLL_KEY = 'billing:pollKey';
 
 interface LicenseStatus {
   present: boolean;
@@ -18331,22 +20163,32 @@ async function pollLicenseTokenFromServer(): Promise<void> {
   const email = await getBillingEmail();
   if (!email) return;
   try {
-    const url = `${BILLING_BASE_URL}/api/subscription/token?email=${encodeURIComponent(email)}`;
-    const res = await fetch(url, { method: 'GET' });
-    if (res.status === 204) return; // no token for this email yet
-    if (!res.ok) return;
-    const data = (await res.json()) as { token?: string };
-    if (!data.token) return;
-    const result = await ipcLicenseSetToken(data.token);
-    if (result.ok) {
+    // Done in the sidecar (Node) — a browser fetch to graphnosis.com is blocked
+    // by CORS in BOTH dev (localhost:5173) and the installed app (tauri://…),
+    // since the billing API only allows its own web origin. The sidecar has no
+    // such restriction, validates the token, and persists it on success.
+    const key = localStorage.getItem(BILLING_POLL_KEY) ?? undefined;
+    const result = await ipcCall<{ ok: boolean; reason?: string; plan?: string }>(
+      'license:pollServer', { email, key, baseUrl: BILLING_BASE_URL },
+    );
+    if (result?.ok) {
       console.log('[license] refreshed from server', result.plan);
       void refreshSettingsLicenseStatus();
-    } else {
-      console.warn('[license] server token rejected:', result.reason);
+    } else if (result?.reason && result.reason !== 'no_token') {
+      console.warn('[license] server poll:', result.reason);
     }
   } catch (e) {
     console.warn('[license] poll failed', e);
   }
+}
+
+/** When subscribed, hide the "get a license" sections (Subscribe / Refresh /
+ *  Paste) and show "Manage subscription"; otherwise the reverse. */
+function setLicenseSectionMode(subscribed: boolean): void {
+  document.querySelectorAll<HTMLElement>('#license-modal .license-acquire')
+    .forEach((s) => s.classList.toggle('hidden', subscribed));
+  document.querySelectorAll<HTMLElement>('#license-modal .license-manage')
+    .forEach((s) => s.classList.toggle('hidden', !subscribed));
 }
 
 async function refreshSettingsLicenseStatus(): Promise<void> {
@@ -18355,21 +20197,27 @@ async function refreshSettingsLicenseStatus(): Promise<void> {
   const status = await ipcLicenseStatus();
   if (!status.present) {
     el.innerHTML = '<span class="subtitle">No license stored. Paste a token below or refresh.</span>';
+    setLicenseSectionMode(false);
     return;
   }
   if (!status.valid) {
     el.innerHTML = '<span class="subtitle" style="color:var(--error);">Stored token is invalid or expired.</span>';
+    setLicenseSectionMode(false);
     return;
   }
+  setLicenseSectionMode(true); // active subscription → show manage, hide acquire
   const expires = status.expiresAt ? new Date(status.expiresAt).toLocaleDateString() : '—';
   const feats = (status.features ?? []).join(', ');
   const warn = status.expiringSoon
     ? ' <span style="color:var(--color-status-warn-gold);font-weight:600;">— expires soon</span>'
     : '';
+  // Email (sub) + expiry date are PII and ALWAYS redacted while presenting —
+  // the `__licensepii__` sentinel has no surface toggle, so there's no way to
+  // reveal them on a shared screen. Plan + features stay visible.
   el.innerHTML = `
     <div style="display:flex; flex-direction:column; gap:2px;">
-      <span><strong style="color:var(--ok);">${escape(status.plan ?? 'Pro')}</strong> active for <strong>${escape(status.sub ?? '')}</strong></span>
-      <span class="subtitle">Features: ${escape(feats)} · Expires ${escape(expires)}${warn}</span>
+      <span><strong style="color:var(--ok);">${escape(status.plan ?? 'Pro')}</strong> active for <strong data-pres="surface:__licensepii__">${escape(status.sub ?? '')}</strong></span>
+      <span class="subtitle">Features: ${escape(feats)} · Expires <span data-pres="surface:__licensepii__">${escape(expires)}</span>${warn}</span>
     </div>
   `;
 }
@@ -18379,6 +20227,13 @@ function bindSettingsLicensePanel(): void {
   const refreshBtn = document.getElementById('btn-settings-license-refresh') as HTMLButtonElement | null;
   const input = document.getElementById('settings-license-input') as HTMLTextAreaElement | null;
   const feedback = document.getElementById('settings-license-feedback');
+
+  // Manage / cancel — opens the email-verified billing portal on graphnosis.com
+  // (NOT a by-email portal link, which would have the same leak as the old
+  // token poll; the server gates portal access behind magic-link auth).
+  document.getElementById('btn-license-manage')?.addEventListener('click', () => {
+    void invoke('plugin:opener|open_url', { url: `${BILLING_BASE_URL}/account` });
+  });
 
   applyBtn?.addEventListener('click', async () => {
     const token = input?.value.trim() ?? '';
@@ -18530,6 +20385,10 @@ async function applyDeepLinkUrls(urls: string[]): Promise<void> {
       if (url.host === 'claim' || url.pathname === '/claim' || raw.startsWith('graphnosis://claim')) {
         const token = url.searchParams.get('token');
         if (!token) continue;
+        // Poll secret (`key`) — stored so future silent refreshes can satisfy
+        // the now-authenticated by-email poll endpoint.
+        const key = url.searchParams.get('key');
+        if (key) try { localStorage.setItem(BILLING_POLL_KEY, key); } catch { /* storage off */ }
         const result = await ipcLicenseSetToken(token);
         if (result.ok) {
           if (result.sub) localStorage.setItem(BILLING_EMAIL_KEY, result.sub);
@@ -19395,6 +21254,18 @@ function pickDefaultSkillsTargetGraph(): { graphId: string } | null {
   return { graphId: first.graphId };
 }
 
+/** Show the ⚠️ preview-mode warning ONLY when the "Saving to" target is the
+ *  non-persisting sentinel. Must be called after EVERY change to the select —
+ *  including programmatic `value =` assignments (create / import flows), which
+ *  don't fire a 'change' event — otherwise the warning gets stranded visible
+ *  even though a real engram is now selected. */
+function syncSkillsPreviewWarning(): void {
+  const sel = document.getElementById('skills-input-engram') as HTMLSelectElement | null;
+  const warn = document.getElementById('skills-preview-warning');
+  if (!sel || !warn) return;
+  warn.classList.toggle('hidden', sel.value !== '__preview__');
+}
+
 function populateSkillsEngramPickers(): void {
   // Bail if the DOM elements aren't in the document yet (called extremely
   // early during boot via syncEngramPicker — before the studio panes are
@@ -19403,6 +21274,7 @@ function populateSkillsEngramPickers(): void {
   const target = document.getElementById('skills-input-engram') as HTMLSelectElement | null;
   const focus = document.getElementById('skills-input-focus') as HTMLDivElement | null;
   if (!target && !focus) return;
+  // (syncSkillsPreviewWarning is defined below; hoisted, safe to call from here.)
 
   // ── Target engram — Skills-template engrams + preview option ──────────
   // Top option: "Preview only — don't save" (sentinel '__preview__'). The
@@ -19437,8 +21309,7 @@ function populateSkillsEngramPickers(): void {
       }
     }
     // Keep the ⚠️ preview-mode warning in sync with the value we just set.
-    const warn = document.getElementById('skills-preview-warning');
-    if (warn) warn.classList.toggle('hidden', target.value !== '__preview__');
+    syncSkillsPreviewWarning();
   }
 
   // ── Focus engrams — ALL loaded engrams ────────────────────────────────
@@ -19458,7 +21329,7 @@ function populateSkillsEngramPickers(): void {
         return `
           <label class="skills-focus-item">
             <input type="checkbox" value="${escape(g.graphId)}"${checked} />
-            <span>${name}</span>
+            <span data-pres="engram:${escape(g.graphId)}">${name}</span>
           </label>
         `;
       })
@@ -19493,6 +21364,7 @@ async function createSkillsEngramQuiet(displayName: string): Promise<string | nu
     syncEngramPicker();
     const targetSel = document.getElementById('skills-input-engram') as HTMLSelectElement | null;
     if (targetSel) targetSel.value = graphId;
+    syncSkillsPreviewWarning(); // real engram now selected — drop the "won't be saved" note
     showSkillsToast(`Created Skills engram "${trimmed}"`, 'success');
     return graphId;
   } catch (e) {
@@ -19529,6 +21401,7 @@ async function createSkillEngramInline(): Promise<void> {
     syncEngramPicker();
     const targetSel = document.getElementById('skills-input-engram') as HTMLSelectElement | null;
     if (targetSel) targetSel.value = graphId;
+    syncSkillsPreviewWarning(); // real engram now selected — drop the "won't be saved" note
     showSkillsToast(`Created Skills engram "${displayName}"`, 'success');
   } catch (e) {
     console.warn('[skills] create skill engram failed', e);
@@ -19977,9 +21850,9 @@ function renderSkillRow(s: SkillListEntry, hasChildren = false, groupExpanded = 
 
   return `
     <div class="skill-row${activeClass}" data-source-id="${escape(s.sourceId)}" data-graph-id="${escape(s.graphId)}">
-      <div class="skill-row-title" title="${escape(skillDisplayName(s.label))}">${toggle}${escape(displayName)}</div>
+      <div class="skill-row-title" title="${escape(skillDisplayName(s.label))}">${toggle}<span data-pres="skill:${escape(s.sourceId)}" data-pres-engram="${escape(s.graphId)}">${escape(displayName)}</span></div>
       <div class="skill-row-top">
-        <span class="skill-row-engram" title="${escape(s.engramName)}">${escape(s.engramName)}</span>
+        <span class="skill-row-engram" title="${escape(s.engramName)}" data-pres="engram:${escape(s.graphId)}">${escape(s.engramName)}</span>
         ${kindChip}
         ${authorBadge}
         ${modeChip}
@@ -20007,7 +21880,12 @@ function showSkillsComposeMode(): void {
   const back = document.getElementById('btn-skills-trainer-back');
   back?.classList.add('hidden');
   const title = document.getElementById('skills-trainer-title');
-  if (title) { title.textContent = 'Train a skill'; title.contentEditable = 'false'; }
+  if (title) {
+    title.textContent = 'Train a skill';
+    title.contentEditable = 'false';
+    title.removeAttribute('data-pres'); // not a saved skill — nothing to redact
+    title.removeAttribute('data-pres-engram');
+  }
   skillsActiveSourceId = null;
   skillsActiveResult = null;
   renderSkillsLibrary();
@@ -20112,6 +21990,14 @@ async function paintTrainedOutputSourceDriven(
     parts.push(renderInsertSlotHtml(i + 1, node.id));
   }
   el.innerHTML = parts.join('');
+  // Presentation Mode: redact this skill's trained output (and its title)
+  // unless the skill is allowlisted (or its engram is). Tagging the container
+  // masks all chunks at once.
+  el.setAttribute('data-pres', `skill:${skillId}`);
+  el.setAttribute('data-pres-engram', graphId);
+  const titleEl = document.getElementById('skills-trainer-title');
+  if (titleEl) { titleEl.setAttribute('data-pres', `skill:${skillId}`); titleEl.setAttribute('data-pres-engram', graphId); }
+  if (presActive()) applyPresentationMasking();
   bindCardInteractions(el, skillId, graphId);
 }
 
@@ -21923,10 +23809,13 @@ function closeLicenseModal(): void {
   const closeGhampusModal = (): void => {
     document.getElementById('ghampus-modal')?.classList.add('hidden');
   };
-  const ghampusHeader = document.getElementById('header-ghampus-btn');
-  if (ghampusHeader) {
-    ghampusHeader.addEventListener('click', openGhampusModal);
-    ghampusHeader.addEventListener('keydown', (e) => {
+  // "Meet Ghampus" entry points: the header mark (legacy) and the Home/Overview
+  // Trust & Vitality card mark (where it moved to).
+  for (const id of ['header-ghampus-btn', 'home-ghampus-btn']) {
+    const el = document.getElementById(id);
+    if (!el) continue;
+    el.addEventListener('click', openGhampusModal);
+    el.addEventListener('keydown', (e) => {
       if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openGhampusModal(); }
     });
   }
@@ -22810,16 +24699,11 @@ function _bindSkillsHandlersInner(): void {
   // (which defaults to '__preview__' when no Skills engram exists) is
   // reflected immediately on first render.
   const targetSel = document.getElementById('skills-input-engram') as HTMLSelectElement | null;
-  const previewWarn = document.getElementById('skills-preview-warning');
-  const syncPreviewWarning = (): void => {
-    if (!targetSel || !previewWarn) return;
-    previewWarn.classList.toggle('hidden', targetSel.value !== '__preview__');
-  };
-  targetSel?.addEventListener('change', syncPreviewWarning);
+  targetSel?.addEventListener('change', syncSkillsPreviewWarning);
   // Initial sync — the dropdown is populated by populateSkillsEngramPickers
   // which runs later via syncEngramPicker(); a microtask defer is enough to
   // catch the first render without a polling loop.
-  queueMicrotask(syncPreviewWarning);
+  queueMicrotask(syncSkillsPreviewWarning);
 }
 bindSkillsHandlers();
 
@@ -22969,7 +24853,7 @@ function renderRawRecallResult(
 
   const output = document.getElementById('studio-recall-output');
   if (output) {
-    output.textContent = result.prompt;
+    output.textContent = presRedactRecallPrompt(result.prompt);
     // Highlight the query's main words so the user can spot literal matches at
     // a glance — both for raw context and (later, in runLlmInterpretation) the
     // LLM output. Uses the cached studioCurrentQuery set at recall-time.
@@ -23490,6 +25374,22 @@ function runLlmInterpretation(
   // Always update the confidence affordance — it doesn't depend on the LLM.
   updateLlmConfidence(byGraph);
 
+  // Presentation Mode: the LLM interpretation is a FUSED synthesis across every
+  // recalled node — sentences blend engrams, so there's no reliable way to
+  // redact "just the hidden parts". Safe rule: show it only when EVERY engram
+  // that contributed is allowlisted; otherwise block the whole panel (and don't
+  // even run the LLM over hidden content). The raw-context panel, being
+  // structured per `## engram` section, is redacted in place separately.
+  if (presActive() && !Object.keys(byGraph).every((gid) => presRevealEngram(gid))) {
+    if (llmOutput) {
+      llmOutput.innerHTML = '<p class="studio-llm-redacted">🔒 Interpretation hidden — it draws on engram(s) not selected for Presentation Mode. Scope the recall to a selected engram to see it.</p>';
+    }
+    llmProgress?.classList.add('hidden');
+    llmUnavailable?.classList.add('hidden');
+    if (llmStatus) llmStatus.textContent = '';
+    return;
+  }
+
   if (!ollamaReadyForSearch) {
     // Suggestion F: non-LLM fallback. Programmatically summarize the top 3
     // nodes so the panel is never empty, even without Ollama.
@@ -23741,7 +25641,7 @@ async function runStudioRecall(digDeeper: boolean, thresholdDelta?: number): Pro
 
 // ── Node cache & inspector ───────────────────────────────────────────────────
 
-interface StudioNode { nodeId: string; graphId: string; text: string; score: number; type?: string; }
+interface StudioNode { nodeId: string; graphId: string; text: string; score: number; type?: string; sourceId?: string; }
 const studioNodeCache = new Map<string, StudioNode>();
 
 /** Module-level cache of the currently-active LocalLlmBackend descriptor.
@@ -24335,8 +26235,9 @@ function renderStudioNodeChips(byGraph: Record<string, unknown>): void {
       const text = ((n as { text?: string }).text ?? '').trim();
       const score = (n as { score?: number }).score ?? 0;
       const type = (n as { type?: string }).type;
+      const sourceId = (n as { sourceId?: string }).sourceId;
       if (!nodeId) continue;
-      const node: StudioNode = { nodeId, graphId, text, score, type };
+      const node: StudioNode = { nodeId, graphId, text, score, type, sourceId };
       studioNodeCache.set(nodeId, node);
       all.push(node);
     }
@@ -24388,6 +26289,10 @@ function renderStudioNodeChips(byGraph: Record<string, unknown>): void {
     const btn = document.createElement('button');
     btn.className = 'studio-node-chip';
     btn.dataset['nodeId'] = node.nodeId;
+    // Presentation Mode: tag the chip so the sweep redacts it per-source.
+    btn.dataset['pres'] = `node:${node.nodeId}`;
+    btn.dataset['presEngram'] = node.graphId;
+    if (node.sourceId) btn.dataset['presSource'] = node.sourceId;
     btn.innerHTML =
       `<span class="studio-chip-type">${escapeHtml(typeLabel)}</span>` +
       `<span class="studio-chip-snippet">${escapeHtml(snippet)}</span>` +
