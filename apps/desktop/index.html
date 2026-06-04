@@ -2,30 +2,34 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Graphnosis: Your Local Encrypted Second Cortex</title>
-    <style>
-      :root {
-        color-scheme: light dark;
-        --bg: #ffffff;
-        --bg-elev: #f7f7f8;
-        --fg: #1a1a1a;
-        --fg-dim: #5b5b5b;
-        --accent: #1a4f63;
-        --border: rgba(0, 0, 0, 0.08);
-        --error: #b91c1c;
-        --ok: #15803d;
-      }
-      @media (prefers-color-scheme: dark) {
-        :root {
-          --bg: #1a1a1c;
-          --bg-elev: #232327;
-          --fg: #ededed;
-          --fg-dim: #9a9a9c;
-          --accent: #6ab3c8;
-          --border: rgba(255, 255, 255, 0.1);
-          --error: #f87171;
-          --ok: #4ade80;
+    <meta name="viewport" content="width=device-width, initial-scale=1, interactive-widget=resizes-content" />
+    <title>Graphnosis: Your Local Encrypted Second cortex</title>
+    <!-- Apply stored theme synchronously — runs before CSS is parsed so
+         the webview never flashes the wrong background. Must be a plain
+         script (not type="module") so it executes immediately, blocking
+         the parser just long enough to stamp data-theme on <html>. -->
+    <script>
+      (function () {
+        var s = localStorage.getItem('graphnosis:theme');
+        var t = (s === 'light' || s === 'dark' || s === 'auto') ? s : 'dark';
+        if (t !== 'auto') document.documentElement.setAttribute('data-theme', t);
+        // Paint the root background SYNCHRONOUSLY, before the external
+        // theme-tokens.css loads. Without this, the very first webview frame
+        // is the WKWebView default white — a visible flash on launch / unlock,
+        // because `body { background: var(--bg) }` can't resolve until the
+        // stylesheet arrives. These two hexes intentionally mirror --bg in
+        // theme-tokens.css (dark #1a1a1c / light #f8fafc); this is the one
+        // sanctioned hardcode (bootstrap critical path, like the meta
+        // theme-color below) — keep them in sync if --bg ever changes.
+        var isDark = t === 'dark'
+          || (t === 'auto' && window.matchMedia
+              && window.matchMedia('(prefers-color-scheme: dark)').matches);
+        document.documentElement.style.backgroundColor = isDark ? '#1a1a1c' : '#f8fafc';
+        // Stamp the OS platform synchronously before first paint so CSS
+        // platform overrides (e.g. .platform-windows .app-header) apply
+        // without a layout flash. navigator.userAgent is reliable in Tauri.
+        if (navigator.userAgent.indexOf('Windows') !== -1) {
+          document.documentElement.classList.add('platform-windows');
         }
       })();
     </script>
@@ -556,7 +560,7 @@
         border-left: 2px solid var(--accent);
         border-radius: 6px;
         background: color-mix(in oklab, var(--accent) 5%, transparent);
-        font-size: 12px;
+        font-size: 14px;
         color: var(--fg-dim);
       }
       .sources-grow-hint-text { color: var(--fg); }
@@ -567,8 +571,12 @@
       }
       .sources-grow-hint-link:hover { text-decoration: underline; }
       .sources-grow-hint-sep { color: var(--fg-dim); opacity: 0.5; }
-      .sources-engram-heading { font-size: 11px; font-weight: 600; color: var(--fg-dim); text-transform: uppercase; letter-spacing: 0.05em; padding-bottom: 4px; margin-bottom: 2px; border-bottom: 1px solid var(--border); }
-      .source-row { display: flex; align-items: center; gap: 8px; padding: 6px 0; font-size: 12px; }
+      .sources-filter-bar { margin: 8px 0 6px; display: flex; gap: 6px; align-items: center; }
+      .sources-filter-bar input[type="search"] { flex: 1; padding: 6px 9px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg-elev); color: var(--fg); font-family: inherit; font-size: 14px; box-sizing: border-box; min-width: 0; }
+      .sources-filter-bar input[type="search"]::placeholder { color: var(--fg-dim); }
+      .sources-engram-select { flex-shrink: 0; padding: 6px 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg-elev); color: var(--fg); font-family: inherit; font-size: 14px; max-width: 160px; cursor: pointer; }
+      .sources-engram-heading { font-size: 15px; font-weight: 600; color: var(--fg-dim); text-transform: uppercase; letter-spacing: 0.05em; padding-bottom: 4px; margin-bottom: 2px; border-bottom: 1px solid var(--border); position: sticky; top: -20px; background: var(--bg); z-index: 1; padding-top: 20px; }
+      .source-row { display: flex; align-items: center; gap: 8px; padding: 6px 0; font-size: 14px; }
       .source-row-disabled .source-name { opacity: 0.4; }
       .source-row-disabled .source-meta { opacity: 0.4; }
       /* Excluded-from-recall: dim the name + strike it so it reads as "present
@@ -1589,9 +1597,9 @@
         transition: background 0.2s;
       }
       .wizard-step-dot.active { background: var(--accent); }
-      .wizard-step-dot.done { background: var(--ok, #4caf50); }
+      .wizard-step-dot.done { background: var(--ok, var(--color-status-ok-bright)); }
       .wizard-step-label {
-        font-size: 11px; color: var(--fg-dim);
+        font-size: 15px; color: var(--fg-dim);
         margin-left: 2px;
       }
       .copy-row {
@@ -1605,7 +1613,7 @@
         border: 1px solid var(--border);
         border-radius: 6px;
         font-family: ui-monospace, 'Cascadia Code', monospace;
-        font-size: 12px;
+        font-size: 14px;
         color: var(--fg);
         user-select: all;
         overflow: hidden;
@@ -1617,7 +1625,7 @@
       .copy-btn {
         flex-shrink: 0;
         padding: 7px 12px;
-        font-size: 12px;
+        font-size: 14px;
         border-radius: 6px;
         background: var(--bg-elev);
         border: 1px solid var(--border);
@@ -1625,31 +1633,197 @@
         cursor: pointer;
         transition: background 0.15s;
       }
-      .copy-btn:hover { background: var(--accent); color: #fff; border-color: var(--accent); }
-      .copy-btn.copied { background: var(--ok, #4caf50); color: #fff; border-color: transparent; }
+      .copy-btn:hover { background: var(--accent); color: var(--color-fg-on-accent); border-color: var(--accent); }
+      .copy-btn.copied { background: var(--ok, var(--color-status-ok-bright)); color: var(--color-fg-on-accent); border-color: transparent; }
+      .vscode-option { background: var(--bg-elev); border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; }
+      .vscode-option-header { margin-bottom: 2px; }
+      .vscode-option-label { font-size: 13px; font-weight: 600; color: var(--fg); }
+      .badge-recommended { display: inline-block; margin-left: 6px; padding: 1px 6px; border-radius: 4px; font-size: 11px; font-weight: 600; background: color-mix(in oklab, var(--accent) 72%, white); color: white; vertical-align: middle; }
+      :root[data-theme="dark"] .badge-recommended { background: var(--accent); color: color-mix(in oklab, var(--accent) 12%, black); }
+      @media (prefers-color-scheme: dark) {
+        :root:not([data-theme="light"]) .badge-recommended { background: var(--accent); color: color-mix(in oklab, var(--accent) 12%, black); }
+      }
+
+      /* Sensitivity tier badge in the topbar — color-coded PUBLIC / PERSONAL / SENSITIVE */
+      .sensitivity-badge {
+        display: inline-flex; align-items: center;
+        padding: 2px 8px; border-radius: 4px;
+        font-size: 10px; font-weight: 700; letter-spacing: 0.06em;
+        cursor: pointer; user-select: none;
+        border: 1px solid transparent;
+        transition: opacity 0.15s;
+      }
+      .sensitivity-badge[data-tier="public"]    { background: var(--color-status-ok-soft); color: var(--color-status-ok-bright); border-color: var(--color-status-ok-border); }
+      .sensitivity-badge[data-tier="personal"]  { background: var(--color-status-warn-soft); color: var(--color-status-warn-gold); border-color: var(--color-status-warn-border); }
+      .sensitivity-badge[data-tier="sensitive"] { background: var(--color-status-error-soft); color: var(--color-status-error); border-color: var(--color-status-error-border); }
+      .sensitivity-badge:hover { opacity: 0.75; }
+      /* Vertical stack: "Active engram:" label on top, tier badge below.
+         Sits to the LEFT of the engram dropdown. The badge is right-aligned
+         within the stack so its right edge sits under the right edge of the
+         "Active engram:" label (rather than left-aligned under "A"). */
+      .header-engram-stack {
+        display: inline-flex; flex-direction: column;
+        align-items: flex-end; justify-content: center;
+        gap: 3px; line-height: 1;
+      }
+      .header-engram-stack .header-engram-label { line-height: 1; }
+      .header-engram-stack .sensitivity-badge { padding: 1px 6px; font-size: 9px; }
+      /* Sensitivity popover — opens from the topbar badge */
+      .sensitivity-popover {
+        position: absolute; z-index: 9999;
+        background: var(--bg-elev); border: 1px solid var(--border); border-radius: 10px;
+        box-shadow: 0 12px 28px var(--color-overlay-heavy);
+        padding: 14px; min-width: 320px;
+        display: flex; flex-direction: column; gap: 10px;
+      }
+      .sensitivity-popover.hidden { display: none; }
+      .sensitivity-popover .sp-header { font-size: 13px; font-weight: 700; color: var(--fg); }
+      .sensitivity-popover .sp-row { display: flex; flex-direction: column; gap: 6px; }
+      .sensitivity-popover .sp-tier-options { display: flex; gap: 6px; }
+      .sensitivity-popover .sp-tier-opt {
+        flex: 1; display: flex; flex-direction: column; align-items: center; gap: 2px;
+        padding: 8px 4px; border-radius: 6px; cursor: pointer;
+        border: 2px solid var(--border); background: var(--bg);
+        font-size: 11px; font-weight: 700; letter-spacing: 0.04em;
+        transition: border-color 0.15s, background 0.15s;
+      }
+      .sensitivity-popover .sp-tier-opt[data-tier="public"][aria-pressed="true"]    { border-color: var(--color-status-ok-bright); background: var(--color-status-ok-soft); color: var(--color-status-ok-bright); }
+      .sensitivity-popover .sp-tier-opt[data-tier="personal"][aria-pressed="true"]  { border-color: var(--color-status-warn-gold); background: var(--color-status-warn-soft); color: var(--color-status-warn-gold); }
+      .sensitivity-popover .sp-tier-opt[data-tier="sensitive"][aria-pressed="true"] { border-color: var(--color-status-error); background: var(--color-status-error-soft); color: var(--color-status-error); }
+      .sensitivity-popover .sp-tier-sub { font-size: 10px; font-weight: 400; color: var(--fg-dim); letter-spacing: normal; }
+      .sensitivity-popover .sp-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 4px; }
+      .consent-phrase-copy {
+        background: none; border: 1px solid var(--border); border-radius: 4px;
+        color: var(--fg-dim); cursor: pointer; padding: 2px 8px;
+        font-size: 11px; font-weight: 600; letter-spacing: 0.04em;
+        transition: background 0.15s, color 0.15s;
+      }
+      .consent-phrase-copy:hover { background: var(--bg); color: var(--fg); }
+      .consent-phrase-copy.copied { background: var(--ok, var(--color-status-ok-bright)); color: var(--color-fg-on-accent); border-color: transparent; }
+      /* Consent section inside Settings modal */
+      .consent-phrase-box {
+        background: var(--bg-elev); border: 1px solid var(--border); border-radius: 8px;
+        padding: 10px 14px; margin-top: 8px; display: flex; align-items: center; gap: 12px;
+      }
+      .consent-phrase-word { font-size: 16px; font-weight: 700; font-family: ui-monospace, monospace; color: var(--fg); }
+      .consent-phrase-countdown { font-size: 12px; color: var(--fg-dim); white-space: nowrap; }
+      /* ── Settings modal sections ──────────────────────────────────────── */
+      .settings-section {
+        background: var(--bg-elev);
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        padding: 16px 18px;
+        margin-bottom: 14px;
+      }
+      .settings-section.no-top-border { /* keep class for compat, no extra rules needed */ }
+      /* Pro license launcher — full-width button at the top of Settings
+         that opens the dedicated license modal. Styled as a primary CTA
+         to surface the subscription affordance without burying it in the
+         per-cortex preferences. */
+      .settings-license-launcher {
+        margin: 0 0 14px;
+        padding: 0;
+        border-bottom: none;
+      }
+      .settings-license-launcher-btn {
+        width: 100%;
+        display: flex; align-items: center; gap: 14px;
+        padding: 4px 4px;
+        /* Transparent so the button picks up whichever container's
+           background it sits in (regular panel on the Settings pane,
+           bg-elev row inside the modal). A faint border on hover gives
+           feedback without the heavy blue tint of the old AI-accent
+           styling. */
+        background: transparent;
+        border: 1px solid transparent;
+        border-radius: 8px;
+        color: var(--fg);
+        cursor: pointer;
+        text-align: left;
+        transition: background 0.12s, border-color 0.12s;
+      }
+      .settings-license-launcher-btn:hover {
+        background: color-mix(in oklab, var(--fg) 6%, transparent);
+        border-color: var(--border);
+      }
+      .settings-license-launcher-icon { font-size: 22px; flex-shrink: 0; }
+      .settings-license-launcher-text {
+        flex: 1; min-width: 0;
+        display: flex; flex-direction: column; gap: 2px;
+      }
+      .settings-license-launcher-text strong { font-size: 14px; font-weight: 700; }
+      .settings-license-launcher-text .subtitle { font-size: 12px; margin: 0; }
+      .settings-license-launcher-arrow {
+        font-size: 20px;
+        color: var(--fg-dim);
+        flex-shrink: 0;
+        transition: transform 0.12s;
+      }
+      .settings-license-launcher-btn:hover .settings-license-launcher-arrow {
+        transform: translateX(2px);
+        color: var(--fg);
+      }
+      .settings-section-label {
+        font-size: 10px; font-weight: 700; letter-spacing: 0.10em; text-transform: uppercase;
+        color: var(--fg-dim); opacity: 0.85; margin: 0 0 14px; padding: 0;
+      }
+      /* Settings → Access control (admin policy toggles). */
+      .policy-managed-note {
+        font-size: 13px; margin: 0 0 12px; padding: 8px 12px; border-radius: 8px;
+        background: color-mix(in srgb, #d9a445 12%, transparent);
+        border: 1px solid color-mix(in srgb, #d9a445 28%, transparent);
+        color: var(--fg);
+      }
+      .policy-group { margin-bottom: 14px; }
+      .policy-group-label { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; color: var(--fg-dim); margin: 0 0 8px; }
+      .policy-toggles { display: flex; flex-wrap: wrap; gap: 8px; }
+      .policy-toggle {
+        display: inline-flex; align-items: center; gap: 7px;
+        padding: 6px 12px; border-radius: 999px; cursor: pointer;
+        border: 1px solid var(--border); font-size: 13px; color: var(--fg);
+        user-select: none;
+      }
+      .policy-toggle input { margin: 0; cursor: pointer; }
+      .policy-toggle.blocked {
+        background: color-mix(in srgb, var(--error) 12%, transparent);
+        border-color: color-mix(in srgb, var(--error) 30%, transparent);
+        text-decoration: line-through;
+        color: var(--fg-dim);
+      }
+      .policy-toggle input:disabled { cursor: default; }
+
+      .consent-active-table { width: 100%; border-collapse: collapse; font-size: 14px; margin-top: 8px; }
+      .consent-active-table th { text-align: left; font-size: 12px; font-weight: 600; color: var(--fg-dim); padding: 4px 6px; border-bottom: 1px solid var(--border); }
+      .consent-active-table td { padding: 6px 6px; border-bottom: 1px solid color-mix(in oklab, var(--border) 50%, transparent); vertical-align: middle; }
+      .consent-active-table td:last-child { text-align: right; }
+      /* First-connect agent-type modal */
+      .agent-type-option { display: flex; flex-direction: column; gap: 4px; padding: 12px 14px; border-radius: 8px; border: 2px solid var(--border); cursor: pointer; flex: 1; background: var(--bg-elev); }
+      .agent-type-option:hover { border-color: var(--accent); }
+      .agent-type-option strong { font-size: 15px; }
+      .agent-type-option span { font-size: 13px; color: var(--fg-dim); }
       .mobile-step { display: none; }
       .mobile-step.active { display: block; }
       .mobile-badge {
         display: inline-block;
         padding: 2px 8px;
         border-radius: 10px;
-        font-size: 11px;
+        font-size: 15px;
         font-weight: 600;
         margin-left: 6px;
       }
-      .mobile-badge.on { background: var(--ok, #4caf50); color: #fff; }
+      .mobile-badge.on { background: var(--ok, var(--color-status-ok-bright)); color: var(--color-fg-on-accent); }
       .mobile-badge.off { background: var(--border); color: var(--fg-dim); }
       .mobile-ip-row {
         padding: 6px 10px;
         background: var(--bg-elev);
         border-radius: 6px;
         margin-bottom: 6px;
-        font-size: 12px;
+        font-size: 14px;
         font-family: ui-monospace, 'Cascadia Code', monospace;
         display: flex; align-items: center; gap: 8px;
       }
       .mobile-ip-tag {
-        font-size: 10px;
+        font-size: 14px;
         padding: 1px 6px;
         border-radius: 8px;
         border: 1px solid var(--border);
@@ -1666,7 +1840,7 @@
         counter-increment: step-counter;
         padding: 6px 0 6px 28px;
         position: relative;
-        font-size: 12px;
+        font-size: 14px;
         line-height: 1.5;
         border-bottom: 1px solid var(--border);
       }
@@ -1676,12 +1850,35 @@
         position: absolute; left: 0;
         width: 18px; height: 18px;
         background: var(--accent);
-        color: #fff;
+        color: var(--color-fg-on-accent);
         border-radius: 50%;
-        font-size: 10px;
+        font-size: 14px;
         font-weight: 700;
         display: flex; align-items: center; justify-content: center;
         top: 7px;
+      }
+      .mobile-qr-block {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 6px;
+        margin: 4px 0 16px;
+      }
+      .mobile-qr-block img {
+        width: 160px;
+        height: 160px;
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        background: var(--color-bg-elev);
+        display: block;
+      }
+      .mobile-qr-block img.hidden { display: none; }
+      .mobile-qr-caption {
+        font-size: 12px;
+        color: var(--fg-dim);
+        text-align: center;
+        max-width: 200px;
+        line-height: 1.4;
       }
 
       /* =================================================================
@@ -1865,10 +2062,27 @@
         align-items: center;
       }
       .engram-picker-chevron {
-        margin-left: 6px;
+        margin-left: 4px;
         font-size: 9px;
         color: var(--fg-dim);
         line-height: 1;
+        flex-shrink: 0;
+      }
+      /* Custom picker button: flex so the label can truncate and the
+         chevron stays pinned to the right edge. */
+      button.header-engram-picker {
+        display: flex;
+        align-items: center;
+        overflow: hidden;
+        background-image: none; /* arrow handled by .engram-picker-chevron */
+        padding-right: 10px;
+      }
+      .engram-picker-button-label {
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        min-width: 0;
+        flex: 1;
       }
       .engram-picker-dropdown {
         position: absolute;
@@ -1882,7 +2096,7 @@
         background: var(--bg-elev);
         border: 1px solid var(--border);
         border-radius: 8px;
-        box-shadow: 0 8px 24px rgba(0, 0, 0, 0.25);
+        box-shadow: 0 8px 24px var(--color-overlay-strong);
         padding: 4px;
         display: flex;
         flex-direction: column;
@@ -1893,17 +2107,61 @@
         background: transparent;
         border: none;
         color: var(--fg);
-        font-size: 13px;
+        font-size: 14px;
         text-align: left;
         padding: 6px 10px;
         border-radius: 4px;
         cursor: pointer;
-        white-space: nowrap;
-        overflow: hidden;
-        text-overflow: ellipsis;
+        /* Wrap long engram names onto multiple lines instead of cutting
+           them off with ellipsis — the dropdown is capped at max-width
+           320px and some names (UnpublishedRomania, Graphnosis-app-nf9p)
+           overflow that. word-break keeps even a single un-spaced name
+           breakable at any character so nothing escapes the panel. */
+        white-space: normal;
+        word-break: break-word;
+        line-height: 1.3;
       }
       .engram-picker-option:hover {
         background: color-mix(in oklab, var(--fg) 8%, transparent);
+      }
+      /* "Full Cortex" — the highlighted top option, with a divider beneath it. */
+      .engram-picker-option-full {
+        font-weight: 700;
+        color: var(--fg);
+        background: color-mix(in oklab, var(--accent) 14%, transparent);
+      }
+      .engram-picker-option-full:hover { background: color-mix(in oklab, var(--accent) 24%, transparent); }
+      .engram-picker-option-full.selected { background: color-mix(in oklab, var(--accent) 28%, transparent); }
+      .engram-picker-divider { height: 1px; margin: 5px 4px; background: var(--border); }
+      .engram-picker-option.disabled {
+        /* Pending engrams — listed for awareness but the sidecar hasn't
+           decrypted them into memory yet, so picking one would just
+           surface a "Graph not loaded" IPC error. Hard-coded grey (not
+           var(--fg-dim) which is only slightly darker than --fg and reads
+           as "normal" on this dark background) makes the disabled state
+           unmistakable. Drops the disabled flag on the next engrams-loading
+           event once that engram finishes loading. */
+        color: var(--color-fg-faint) !important;
+        cursor: not-allowed;
+      }
+      .engram-picker-option.disabled:hover {
+        background: transparent;
+      }
+      /* Rotating spinner shown inside disabled (still-loading) engram options.
+         Tells the user the engram isn't permanently broken — it's actively
+         loading from disk. Click outside + reopen the picker to refresh. */
+      .engram-picker-loading-spinner {
+        display: inline-block;
+        margin-right: 6px;
+        font-size: 12px;
+        line-height: 1;
+        opacity: 0.7;
+        animation: engramPickerSpin 1.1s linear infinite;
+        transform-origin: 50% 55%;
+      }
+      @keyframes engramPickerSpin {
+        from { transform: rotate(0deg); }
+        to   { transform: rotate(360deg); }
       }
       .engram-picker-option.selected {
         background: color-mix(in oklab, var(--accent) 16%, transparent);
@@ -6955,123 +7213,6 @@
       }
       .connector-webhook-url-row code { flex: 1; word-break: break-all; color: var(--accent); }
 
-      /* ── Service connectors panel ────────────────────────────────────────
-         Settings → Connectors. Lists installed connectors with status pills
-         (enabled / disabled / error / pulling), and a row of "Add ..." chips
-         to launch the per-kind setup modal. Same visual family as the engram
-         suggestion banner — same border, same elevation, same accent. */
-      .connectors-list { display: flex; flex-direction: column; gap: 6px; margin-bottom: 10px; }
-      .connectors-list:empty { display: none; }
-      .connector-row {
-        display: grid;
-        grid-template-columns: 22px 1fr auto;
-        gap: 10px;
-        align-items: center;
-        padding: 8px 10px;
-        border: 1px solid var(--border);
-        border-radius: 6px;
-        background: color-mix(in oklab, var(--fg) 3%, transparent);
-        font-size: 12px;
-      }
-      .connector-row-kind { font-size: 16px; line-height: 1; text-align: center; }
-      .connector-row-body { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
-      .connector-row-title { color: var(--fg); display: flex; gap: 8px; align-items: baseline; }
-      .connector-row-name { font-weight: 500; }
-      .connector-row-status {
-        font-size: 10px;
-        padding: 1px 6px;
-        border-radius: 999px;
-        text-transform: uppercase;
-        letter-spacing: 0.04em;
-      }
-      .connector-row-status.enabled { color: #4ade80; background: color-mix(in oklab, #4ade80 12%, transparent); }
-      .connector-row-status.disabled { color: var(--fg-dim); background: color-mix(in oklab, var(--fg-dim) 12%, transparent); }
-      .connector-row-status.error    { color: #f87171; background: color-mix(in oklab, #f87171 12%, transparent); }
-      .connector-row-status.pulling  { color: var(--accent); background: color-mix(in oklab, var(--accent) 14%, transparent); }
-      .connector-row-meta { color: var(--fg-dim); font-size: 11px; }
-      .connector-row-actions { display: flex; gap: 4px; flex-shrink: 0; }
-      .connector-row-actions button {
-        font-size: 11px;
-        padding: 3px 8px;
-        border-radius: 4px;
-        border: 1px solid var(--border);
-        background: transparent;
-        color: var(--fg);
-        cursor: pointer;
-      }
-      .connector-row-actions button:hover { background: color-mix(in oklab, var(--fg) 6%, transparent); }
-      .connector-row-actions button.danger { color: #f87171; }
-      .connector-row-actions button.danger:hover { background: color-mix(in oklab, #f87171 12%, transparent); }
-
-      .connectors-add-row {
-        display: flex;
-        gap: 6px;
-        align-items: center;
-        flex-wrap: wrap;
-        padding-top: 4px;
-      }
-      .connectors-add-label { font-size: 11px; color: var(--fg-dim); margin-right: 4px; }
-      .btn-add-connector {
-        font-size: 11px;
-        padding: 3px 8px;
-        border-radius: 4px;
-        border: 1px dashed var(--border);
-        background: transparent;
-        color: var(--fg-dim);
-        cursor: pointer;
-      }
-      .btn-add-connector:hover {
-        background: color-mix(in oklab, var(--accent) 8%, transparent);
-        border-color: var(--accent);
-        color: var(--fg);
-      }
-
-      /* ── Connector setup modal ──────────────────────────────────────────
-         Reused for all 6 kinds. The body is rendered dynamically per-kind
-         in main.ts since each connector has a different credentials/options
-         shape — modal chrome is shared. */
-      .connector-modal-body { display: flex; flex-direction: column; gap: 12px; }
-      .connector-help {
-        font-size: 11px;
-        color: var(--fg-dim);
-        background: color-mix(in oklab, var(--fg) 4%, transparent);
-        border-left: 2px solid var(--accent);
-        padding: 8px 10px;
-        border-radius: 0 6px 6px 0;
-      }
-      .connector-help a { color: var(--accent); }
-      .connector-help ol { margin: 4px 0 0; padding-left: 18px; }
-      .connector-help li { margin-bottom: 2px; }
-      .connector-field { display: flex; flex-direction: column; gap: 3px; }
-      .connector-field label { font-size: 11px; color: var(--fg-dim); }
-      .connector-field input, .connector-field select, .connector-field textarea {
-        font-size: 12px;
-        padding: 6px 8px;
-        background: var(--bg);
-        border: 1px solid var(--border);
-        border-radius: 4px;
-        color: var(--fg);
-        font-family: inherit;
-      }
-      .connector-field textarea { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; min-height: 60px; resize: vertical; }
-      .connector-field .field-hint { font-size: 10px; color: var(--fg-dim); font-style: italic; }
-      .connector-field-row { display: flex; gap: 8px; }
-      .connector-field-row .connector-field { flex: 1; }
-      .connector-checkboxes { display: flex; gap: 12px; flex-wrap: wrap; }
-      .connector-checkboxes label { font-size: 12px; color: var(--fg); display: flex; gap: 4px; align-items: center; cursor: pointer; }
-      .connector-webhook-url-row {
-        display: flex;
-        gap: 6px;
-        align-items: center;
-        padding: 6px 8px;
-        background: var(--bg);
-        border: 1px solid var(--border);
-        border-radius: 4px;
-        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-        font-size: 11px;
-      }
-      .connector-webhook-url-row code { flex: 1; word-break: break-all; color: var(--accent); }
-
       .g-toast-stack {
         position: fixed;
         right: 18px;
@@ -9441,11 +9582,11 @@
           <img src="/graphnosis-logo.png" alt="Graphnosis"
                width="120" height="120"
                style="margin-bottom: 20px; border-radius: 22px; opacity: 0.92; flex-shrink: 0; display: block;" />
-          <h1 style="text-align: center; width: 100%;">Graphnosis</h1>
-          <p class="subtitle" id="subtitle" style="text-align: center;">Your local encrypted second cortex</p>
-          <div id="error" class="error hidden"></div>
+          <h1>Graphnosis</h1>
+          <p class="subtitle" id="subtitle">Your local encrypted memory, indexed for deterministic recall — auditable</p>
+          <div id="error-unlock" class="error hidden"></div>
           <div class="panel unlock-card">
-            <p class="panel-title">Unlock your encrypted second cortex:</p>
+            <p class="panel-title">Unlock your local encrypted cortex</p>
             <div class="row">
               <label for="cortex-dir" class="visually-hidden">cortex folder path</label>
               <div class="pick-row">
@@ -9564,14 +9705,18 @@
             </div>
           </div>
         </div>
-        <!-- Top header: cortex identity + global actions -->
-        <header class="app-header" data-tauri-drag-region>
-          <div class="app-header-left">
-            <!-- Title row: brain icon + app title (we render this ourselves
-                 now that hiddenTitle:true silences the OS one). -->
-            <div class="app-title-row">
-              <span class="brain-glyph" title="Cortex unlocked">🧠</span>
-              <span class="app-title">Graphnosis: Your Local Encrypted Second Cortex</span>
+        <!-- Graphnosis-docs ingest offer. Shown once on cortex unlock when
+             the `graphnosis-docs` engram has never been offered, ingested,
+             or declined. Lets the user add the Graphnosis documentation so
+             their AI can answer questions about Graphnosis itself. -->
+        <div id="docs-offer-banner" class="engram-suggest hidden" role="dialog" aria-live="polite">
+          <div class="engram-suggest-body">
+            <div class="engram-suggest-title">
+              <span class="engram-suggest-icon">📚</span>
+              <span id="docs-offer-headline">
+                Add the Graphnosis docs to your cortex? Your AI will be able to
+                answer questions about Graphnosis itself.
+              </span>
             </div>
             <div class="engram-suggest-actions">
               <button type="button" class="btn-primary" id="docs-offer-add">Add docs</button>
@@ -11253,6 +11398,13 @@ ollama list</code></pre>
                   Set up a connector →
                 </a>
               </div>
+              <div class="sources-filter-bar">
+                <input type="search" id="sources-filter" placeholder="Filter…" autocomplete="off" />
+                <select id="sources-engram-select" class="sources-engram-select" title="Filter by engram">
+                  <option value="">All engrams</option>
+                </select>
+                <button id="sources-reingest-all-btn" class="btn-sm" title="Re-chunk and re-embed every source in all engrams using current settings">Reingest all</button>
+              </div>
               <div id="sources-list"><p class="subtitle">Loading…</p></div>
             </section>
 
@@ -11518,11 +11670,14 @@ ollama list</code></pre>
                 </p>
                 <button id="btn-settings" class="primary">Open preferences…</button>
               </div>
-              <div class="panel" id="settings-panel-ai-clients">
-                <p class="panel-title">AI client integration</p>
-                <p class="subtitle" style="font-size: 11px; margin: -4px 0 10px;">
-                  Wire MCP-aware AI clients to talk to Graphnosis Synapse — your corpus callosum.
-                  Each one updates only its own user-level MCP config; existing servers untouched.
+              <!-- Appearance: inline theme picker. Mirrors the bottom-left
+                   status-bar toggle but exposes the named choice explicitly,
+                   which is useful when discovering the feature. Wired in
+                   main.ts via wireThemeToggle(). -->
+              <div class="panel" id="settings-panel-appearance">
+                <p class="panel-title">Appearance</p>
+                <p class="subtitle" style="font-size: 15px; margin: -4px 0 10px;">
+                  Color scheme. Auto follows your macOS setting; Light and Dark force a fixed mode.
                 </p>
                 <div class="appearance-picker" role="radiogroup" aria-label="Color scheme">
                   <label class="appearance-option">
@@ -11559,34 +11714,6 @@ ollama list</code></pre>
                   memory, no matter what the app shows.
                 </p>
                 <div id="settings-policy-body" aria-live="polite"></div>
-              </div>
-              <div class="panel">
-                <p class="panel-title">Mobile & Remote Access</p>
-                <p class="subtitle" style="font-size: 11px; margin: -4px 0 10px;">
-                  Connect Claude for iOS, Claude for Android, or any HTTP MCP-capable client
-                  to this Cortex over your local network or Tailscale VPN.
-                </p>
-                <button id="btn-mobile-setup">Set up mobile access…</button>
-              </div>
-              <div class="panel" id="settings-panel-connectors">
-                <p class="panel-title">Connectors</p>
-                <p class="subtitle" style="font-size: 11px; margin: -4px 0 10px;">
-                  Auto-ingest from RSS, GitHub, Slack, Trello, Linear, or any service
-                  that can POST to a webhook. Your credentials, your apps — Graphnosis
-                  is just the receiver. Stored locally and encrypted at rest.
-                </p>
-                <div id="connectors-list" class="connectors-list" aria-live="polite">
-                  <!-- Populated by refreshConnectorsList() in main.ts -->
-                </div>
-                <div class="connectors-add-row">
-                  <span class="connectors-add-label">Add connector:</span>
-                  <button class="btn-add-connector" data-kind="rss">RSS</button>
-                  <button class="btn-add-connector" data-kind="github">GitHub</button>
-                  <button class="btn-add-connector" data-kind="slack">Slack</button>
-                  <button class="btn-add-connector" data-kind="trello">Trello</button>
-                  <button class="btn-add-connector" data-kind="linear">Linear</button>
-                  <button class="btn-add-connector" data-kind="webhook">Webhook</button>
-                </div>
               </div>
               <div class="panel">
                 <p class="panel-title">Cortex tools</p>
@@ -12801,6 +12928,224 @@ ollama list</code></pre>
          (each connector has a different credentials/options shape).
          Footer always has Save / Cancel; Save handler is bound at open time
          so it can capture the kind + form state. -->
+    <!-- Standalone-mode explainer — opened from the "Standalone" shortcut
+         in the sidebar's Get connected section. -->
+    <!-- Tool explainer — opened by clicking a tool chip in the onboarding card. -->
+    <div id="tool-info-modal" class="modal-backdrop hidden">
+      <div class="modal" style="max-width: 460px;">
+        <div class="modal-header tool-info-modal-header">
+          <div>
+            <h2 id="tool-info-name" style="font-family: monospace;">tool</h2>
+            <p class="subtitle" id="tool-info-determinism"></p>
+          </div>
+          <div class="tool-info-logo-col">
+            <img src="/graphnosis-logo.png" alt="Graphnosis" width="32" height="32" style="border-radius:8px; opacity:0.9;" />
+            <span>Graphnosis</span>
+          </div>
+        </div>
+        <div class="modal-body">
+          <p id="tool-info-body" style="font-size: 14px; line-height: 1.6; margin: 0;"></p>
+          <div id="tool-info-examples" class="tool-info-examples"></div>
+        </div>
+        <div class="modal-footer">
+          <a id="tool-info-docs-link" class="tool-info-docs-link" href="#" title="Open the full MCP Tools reference in your browser">📖 Full MCP Tools reference</a>
+          <button id="tool-info-close" class="primary">Got it</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Update available modal — shown when run_update_check emits
+         `graphnosis://update-available` with the new version string.
+         "Install & Restart" calls install_update; "Later" dismisses. -->
+    <div id="update-available-modal" class="modal-backdrop hidden">
+      <div class="modal" style="max-width: 420px;">
+        <div class="modal-header" style="display:flex; justify-content:space-between; align-items:flex-start; gap:12px;">
+          <div style="flex:1; min-width:0;">
+            <h2 style="font-size:16px; margin:0 0 4px;">Update available</h2>
+            <p class="subtitle" id="update-available-version" style="margin:0;"></p>
+          </div>
+          <div style="display:flex; flex-direction:column; align-items:center; gap:3px; flex-shrink:0;">
+            <img src="/graphnosis-logo.png" alt="Graphnosis" width="32" height="32" style="border-radius:8px; opacity:0.9;" />
+            <span style="font-size:10px; color:var(--fg-dim); letter-spacing:.04em;">Graphnosis</span>
+          </div>
+        </div>
+        <div class="modal-body">
+          <p style="font-size:14px; line-height:1.6; margin:0;">
+            A new version of Graphnosis is ready to install. The app will download the update and restart automatically — your cortex stays safe and encrypted throughout.
+          </p>
+        </div>
+        <div class="modal-footer">
+          <button id="update-later-btn" class="secondary" style="margin-right:auto;">Later</button>
+          <button id="update-install-btn" class="primary">Install &amp; Restart</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Consent prompt (Option 1) — pops when an AI client tries to read
+         personal/sensitive memories without a current grant. Sidecar emits
+         `graphnosis://consent-prompt`; one click resolves it. Replaces the
+         old phrase-typing flow for users with the desktop app open. -->
+    <div id="consent-prompt-modal" class="modal-backdrop hidden">
+      <div class="modal" style="max-width: 520px;">
+        <div class="modal-header" style="display:flex; align-items:flex-start; gap:12px;">
+          <div style="flex:1; min-width:0;">
+            <h2 id="consent-prompt-title" style="font-size:16px;">An AI client wants to read your memories</h2>
+            <p class="subtitle" id="consent-prompt-subtitle"></p>
+          </div>
+          <img src="/graphnosis-logo.png" alt="Graphnosis" width="32" height="32" style="border-radius:8px; opacity:0.9; flex-shrink:0;" />
+        </div>
+        <div class="modal-body">
+          <p style="font-size:13px; line-height:1.5; margin:0 0 12px; color:var(--fg-dim);">
+            Your selected memories will be sent <strong>from your Mac directly to the AI provider</strong>.
+            Graphnosis itself receives, logs, and retains nothing.
+          </p>
+          <div id="consent-prompt-tiers" style="display:flex; flex-direction:column; gap:6px; margin:0 0 12px;"></div>
+          <p style="font-size:12px; line-height:1.4; margin:0; color:var(--fg-dim);">
+            <a id="consent-prompt-privacy" href="#" style="color:var(--fg-dim); text-decoration:underline;" target="_blank">Provider privacy policy ↗</a>
+            &nbsp;·&nbsp;
+            You can revoke anytime in <strong>Settings → AI</strong>.
+          </p>
+        </div>
+        <div class="modal-footer" style="flex-wrap:wrap; gap:6px;">
+          <button id="consent-prompt-deny" class="btn-sm" style="margin-right:auto;">Deny</button>
+          <button id="consent-prompt-once" class="btn-sm">Allow once</button>
+          <button id="consent-prompt-1h" class="btn-sm">Allow for 1 hour</button>
+          <button id="consent-prompt-1d" class="primary">Allow for today</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- First-connect policy chooser (Option 3) — pops once the very first
+         time a new AI client connects. Lets the user set a per-tier default
+         so future recalls don't keep prompting. Editable later in
+         Settings → AI → Client policies. -->
+    <div id="first-connect-modal" class="modal-backdrop hidden">
+      <div class="modal" style="max-width: 560px;">
+        <div class="modal-header" style="display:flex; align-items:flex-start; gap:12px;">
+          <div style="flex:1; min-width:0;">
+            <h2 id="first-connect-title" style="font-size:16px;">A new AI client is connecting</h2>
+            <p class="subtitle">Set its default access policy. You'll be asked the first time it tries to recall — this just decides what you see after that. Editable in Settings → AI.</p>
+          </div>
+          <img src="/graphnosis-logo.png" alt="Graphnosis" width="32" height="32" style="border-radius:8px; opacity:0.9; flex-shrink:0;" />
+        </div>
+        <div class="modal-body">
+          <div class="first-connect-row">
+            <div class="first-connect-label">
+              <strong>Personal tier</strong>
+              <p>Notes, decisions, work context. Default recommended.</p>
+            </div>
+            <select id="first-connect-personal" class="first-connect-select">
+              <option value="ask-grant-1h" selected>Ask, then allow for 1 hour</option>
+              <option value="ask-grant-1d">Ask, then allow for today</option>
+              <option value="ask-every-time">Ask every time</option>
+              <option value="always-allow">Always allow (no prompts)</option>
+              <option value="never-allow">Never allow</option>
+            </select>
+          </div>
+          <div class="first-connect-row">
+            <div class="first-connect-label">
+              <strong>Sensitive tier</strong>
+              <p>Health, financial, biometric. Tighter by default.</p>
+            </div>
+            <select id="first-connect-sensitive" class="first-connect-select">
+              <option value="ask-every-time" selected>Ask every time</option>
+              <option value="ask-grant-1h">Ask, then allow for 1 hour</option>
+              <option value="ask-grant-1d">Ask, then allow for today</option>
+              <option value="always-allow">Always allow (no prompts)</option>
+              <option value="never-allow">Never allow</option>
+            </select>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <span class="filler"></span>
+          <button id="first-connect-save" class="primary">Save policy</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Local & offline sources — opened from the "Local & offline" chip
+         in the sidebar. Pure educational modal: explains the categories
+         of off-the-grid data Graphnosis can ingest via existing
+         infrastructure (drag-drop, mounted folders, the Webhook
+         connector). No specific connector UI here; concrete recipes
+         live in the full /guides/connect-offline-sources docs page. -->
+    <div id="offline-sources-modal" class="modal-backdrop hidden">
+      <div class="modal" style="max-width: 640px;">
+        <div class="modal-header">
+          <h2>Local &amp; offline sources</h2>
+          <p class="subtitle">Anything you can pipe into a file or a webhook can feed Graphnosis — no cloud round-trip, no API keys.</p>
+        </div>
+        <div class="modal-body">
+          <p style="font-size: 14px; line-height: 1.55; margin: 0 0 16px;">
+            The connectors under <strong>Data sources</strong> all talk to cloud SaaS. But your cortex
+            doesn't have to. Graphnosis runs entirely on your machine — and so do these patterns
+            for plugging in off-the-grid data. Use them as starting points; the full guide has
+            scripts and step-by-step setup for each.
+          </p>
+          <div class="offline-cat-list">
+            <div class="offline-cat">
+              <div class="offline-cat-name">📁 Local files &amp; folders</div>
+              <div class="offline-cat-how">Drag files onto the app, or use the <strong>Obsidian</strong> / <strong>AI Context Files</strong> / <strong>GBrain</strong> connectors below. Folders re-scan on schedule.</div>
+            </div>
+            <div class="offline-cat">
+              <div class="offline-cat-name">🏠 Smart-home (Home Assistant, MQTT)</div>
+              <div class="offline-cat-how">Point the <strong>Webhook</strong> connector at a small bridge script that subscribes to your MQTT broker and POSTs events. Or just watch the broker's log file as plain text.</div>
+            </div>
+            <div class="offline-cat">
+              <div class="offline-cat-name">🌡 Sensors / IoT / lab / agricultural</div>
+              <div class="offline-cat-how">Anything emitting JSON lines to a file or hitting a webhook becomes a source. A 5-line script reading a serial sensor and POSTing once a minute is enough.</div>
+            </div>
+            <div class="offline-cat">
+              <div class="offline-cat-name">💾 NAS / network drives</div>
+              <div class="offline-cat-how">Mount the share as a local folder; treat it as <em>Local files</em>. Graphnosis re-scans on schedule, same as Obsidian.</div>
+            </div>
+            <div class="offline-cat">
+              <div class="offline-cat-name">📄 Scanned PDFs / paper records</div>
+              <div class="offline-cat-how">Drop the PDF onto the app — OCR runs locally, no cloud round-trip. Handwritten notes, intake forms, contracts, grant reports — all become searchable.</div>
+            </div>
+            <div class="offline-cat">
+              <div class="offline-cat-name">🗄 Local databases (SQLite, Postgres on LAN)</div>
+              <div class="offline-cat-how">Export to JSON or CSV + drop, or point the <strong>Webhook</strong> connector at a small query-and-POST script on a cron.</div>
+            </div>
+            <div class="offline-cat">
+              <div class="offline-cat-name">📝 Local notes apps (Apple Notes, Bear, Logseq, Notion local cache)</div>
+              <div class="offline-cat-how">Most have CLI export tools — pipe the output to a watched folder and Graphnosis ingests new entries automatically.</div>
+            </div>
+            <div class="offline-cat">
+              <div class="offline-cat-name">📻 Router syslog, DVR transcripts, audio recordings</div>
+              <div class="offline-cat-how">Any structured log on disk + a watcher script. Audio: transcribe locally with <em>whisper.cpp</em> first; drop the transcript folder.</div>
+            </div>
+          </div>
+          <p style="font-size: 13px; line-height: 1.55; margin: 16px 0 0; color: var(--fg-dim);">
+            Everything in this list runs end-to-end on your machine. No cloud round-trip, no API keys,
+            no data leaving the network. The only thing Graphnosis needs is a file or an HTTP webhook —
+            what's on the other side of either is up to you.
+          </p>
+        </div>
+        <div class="modal-footer">
+          <a id="offline-sources-docs-link" href="#" style="font-size:13px; color:var(--fg-dim); text-decoration:none; border-bottom:1px dotted currentColor;" title="Open the full Connect Offline Sources guide">📖 Full guide — scripts &amp; step-by-step setup</a>
+          <span class="filler"></span>
+          <button id="offline-sources-modal-close" class="primary">Got it</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="standalone-modal" class="modal-backdrop hidden">
+      <div class="modal" style="max-width: 520px;">
+        <div class="modal-header">
+          <h2 id="standalone-modal-title">Standalone — the default mode</h2>
+          <p class="subtitle" id="standalone-modal-subtitle">Graphnosis is fully functional with no AI model installed.</p>
+        </div>
+        <!-- Body is rendered by updateStandaloneModalCopy() in main.ts so we
+             can show different text when AI clients / Local LLM / GNN are
+             active vs. when the user is in pure standalone mode. -->
+        <div class="modal-body" id="standalone-modal-body"></div>
+        <div class="modal-footer">
+          <button id="standalone-modal-close" class="btn-primary">Got it</button>
+        </div>
+      </div>
+    </div>
+
     <div id="connector-setup-modal" class="modal-backdrop hidden">
       <div class="modal" style="max-width: 560px;">
         <div class="modal-header">
@@ -12823,7 +13168,7 @@ ollama list</code></pre>
       <div class="modal" style="max-width: 560px;">
         <div class="modal-header">
           <h2>Mobile & Remote Access</h2>
-          <p class="subtitle">Connect Claude for iOS, Android, or any HTTP MCP client to this Cortex.</p>
+          <p class="subtitle">Connect Claude for iOS, Android, or any HTTP MCP client to this cortex.</p>
         </div>
         <div class="modal-body" id="mobile-setup-body">
           <!-- Step dots -->
@@ -12836,10 +13181,10 @@ ollama list</code></pre>
 
           <!-- Step 0: Enable HTTP bridge -->
           <div class="mobile-step active" id="mobile-step-0">
-            <p style="font-size: 13px; line-height: 1.6; margin: 0 0 14px;">
-              Graphnosis can expose your Cortex's MCP tools (recall, remember, correct, apply,
+            <p style="font-size: 14px; line-height: 1.6; margin: 0 0 14px;">
+              Graphnosis can expose your cortex's MCP tools (recall, remember, correct, apply,
               forget, stats) over a local HTTP endpoint so mobile AI clients can connect.
-              A random bearer token is generated once and never changes unless you regenerate it.
+              A random bearer token is generated on first enable. Use <strong>Revoke &amp; Regenerate</strong> in Step 3 to rotate it at any time.
             </p>
             <div class="row" style="margin-bottom: 0;">
               <label style="display: flex; align-items: center; gap: 10px; cursor: pointer;">
@@ -12852,39 +13197,39 @@ ollama list</code></pre>
             </div>
             <div id="mobile-port-row" style="margin-top: 14px; display: none;">
               <div style="display: flex; align-items: center; gap: 10px;">
-                <label for="mobile-bridge-port" style="font-size: 12px; white-space: nowrap;">Port:</label>
+                <label for="mobile-bridge-port" style="font-size: 14px; white-space: nowrap;">Port:</label>
                 <input type="number" id="mobile-bridge-port" min="1024" max="65535"
-                  style="width: 90px; padding: 6px 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg-elev); color: var(--fg); font-size: 12px;" />
-                <label for="mobile-bridge-host" style="font-size: 12px; white-space: nowrap;">Bind:</label>
+                  style="width: 90px; padding: 6px 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg-elev); color: var(--fg); font-size: 14px;" />
+                <label for="mobile-bridge-host" style="font-size: 14px; white-space: nowrap;">Bind:</label>
                 <select id="mobile-bridge-host"
-                  style="padding: 6px 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg-elev); color: var(--fg); font-size: 12px;">
+                  style="padding: 6px 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg-elev); color: var(--fg); font-size: 14px;">
                   <option value="127.0.0.1">Loopback only — safest (use Tailscale to forward)</option>
                   <option value="0.0.0.0">All interfaces — direct LAN access</option>
                 </select>
               </div>
-              <p class="subtitle" style="font-size: 11px; margin-top: 6px;">
+              <p class="subtitle" style="font-size: 15px; margin-top: 6px;">
                 <strong>Loopback</strong> is safest — only processes on this machine can connect.
                 Use Tailscale to expose it remotely without opening a port.
                 <strong>All interfaces</strong> lets devices on the same WiFi connect directly.
               </p>
             </div>
-            <p id="mobile-step0-note" class="subtitle" style="font-size: 11px; margin-top: 12px; color: var(--fg-dim);"></p>
+            <p id="mobile-step0-note" class="subtitle" style="font-size: 15px; margin-top: 12px; color: var(--fg-dim);"></p>
           </div>
 
           <!-- Step 1: Network setup -->
           <div class="mobile-step" id="mobile-step-1">
-            <p style="font-size: 13px; margin: 0 0 14px;">
+            <p style="font-size: 14px; margin: 0 0 14px;">
               Your mobile device needs a network path to this computer.
               Detected network addresses:
             </p>
             <div id="mobile-ip-list"></div>
             <div id="mobile-tailscale-tip" style="display: none; margin-top: 12px; padding: 10px 12px;
-              background: var(--bg-elev); border-left: 3px solid var(--accent); border-radius: 4px; font-size: 12px;">
+              background: var(--bg-elev); border-left: 3px solid var(--accent); border-radius: 4px; font-size: 14px;">
               <strong style="color: var(--accent);">Tailscale detected</strong> — your Tailscale IP is the
               most reliable address to use. It works from any network, not just your home WiFi.
             </div>
             <div id="mobile-no-tailscale-tip" style="display: none; margin-top: 12px; padding: 10px 12px;
-              background: var(--bg-elev); border-left: 3px solid var(--border); border-radius: 4px; font-size: 12px;">
+              background: var(--bg-elev); border-left: 3px solid var(--border); border-radius: 4px; font-size: 14px;">
               <strong>No Tailscale detected.</strong>
               For the best experience — especially when you're not on the same WiFi — install
               <a href="#" id="link-tailscale" style="color: var(--accent); cursor: pointer;">Tailscale</a>
@@ -12895,30 +13240,79 @@ ollama list</code></pre>
 
           <!-- Step 2: Connection details -->
           <div class="mobile-step" id="mobile-step-2">
-            <p style="font-size: 13px; margin: 0 0 14px;">
+            <p style="font-size: 14px; margin: 0 0 12px;">
               Use these details to add Graphnosis as an MCP server in your mobile AI client.
             </p>
-            <p style="font-size: 12px; font-weight: 600; margin: 0 0 4px; color: var(--fg-dim);">MCP Server URL</p>
+            <div class="mobile-qr-block" data-pres="surface:remoteAccess">
+              <img id="mobile-qr-img" alt="QR code for MCP Server URL" class="hidden" />
+              <p class="mobile-qr-caption">Scan to fill in the server URL on your phone</p>
+            </div>
+            <p style="font-size: 14px; font-weight: 600; margin: 0 0 4px; color: var(--fg-dim);">MCP Server URL</p>
             <div class="copy-row">
-              <span class="copy-field" id="mobile-mcp-url"></span>
+              <span class="copy-field" id="mobile-mcp-url" data-pres="surface:remoteAccess"></span>
               <button class="copy-btn" data-copy-target="mobile-mcp-url">Copy</button>
             </div>
-            <p style="font-size: 12px; font-weight: 600; margin: 8px 0 4px; color: var(--fg-dim);">Bearer Token</p>
+            <p style="font-size: 14px; font-weight: 600; margin: 8px 0 4px; color: var(--fg-dim);">Bearer Token</p>
             <div class="copy-row">
-              <span class="copy-field secret" id="mobile-mcp-token" title="Click to select all"></span>
+              <span class="copy-field secret" id="mobile-mcp-token" title="Click to select all" data-pres="surface:remoteAccess"></span>
               <button class="copy-btn" data-copy-target="mobile-mcp-token">Copy</button>
               <button class="copy-btn" id="mobile-token-reveal">Show</button>
             </div>
-            <p class="subtitle" style="font-size: 11px; margin-bottom: 14px;">
-              Treat the token like a password — it grants full read/write access to your Cortex.
+            <p class="subtitle" style="font-size: 15px; margin-bottom: 8px;">
+              Treat the token like a password — it grants full read/write access to your cortex.
             </p>
-            <p style="font-size: 12px; font-weight: 600; margin: 0 0 8px;">How to connect in Claude for iOS / Android</p>
+            <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 14px;">
+              <button id="btn-mobile-revoke-token" class="copy-btn" style="color: var(--red, #e05252);">Revoke &amp; Regenerate</button>
+              <span id="mobile-revoke-note" style="font-size: 13px; color: var(--fg-dim);"></span>
+            </div>
+            <p style="font-size: 14px; font-weight: 600; margin: 0 0 8px;">How to connect in Claude for iOS / Android</p>
             <ol class="mobile-client-steps">
               <li>Open Claude → Settings → <strong>Claude.ai account</strong> → <strong>MCP Servers</strong></li>
               <li>Tap <strong>Add server</strong> and paste the URL above into "Server URL"</li>
               <li>Under Authentication, choose <strong>Bearer token</strong> and paste the token above</li>
               <li>Tap <strong>Save</strong> — Graphnosis tools appear in your next conversation</li>
             </ol>
+
+            <!-- VS Code / Copilot Chat now has its own modal (#copilot-setup-modal),
+                 opened from Settings → "Configure Copilot…" and the sidebar Copilot button. -->
+
+            <!-- ── Browser access (personal-server mode) ──────────────────── -->
+            <div style="margin-top: 16px; border-top: 1px solid var(--border); padding-top: 14px;">
+              <p style="font-size: 14px; font-weight: 600; margin: 0 0 6px;">Browser access — open the full app on any device</p>
+              <p class="subtitle" style="font-size: 14px; margin: 0 0 10px;">
+                Serve the Graphnosis UI in a browser so you can reach your cortex from a phone, tablet, or another computer —
+                locally or over Tailscale. Separate port from the MCP bridge above.
+              </p>
+              <div class="row" style="margin-bottom: 10px;">
+                <label style="display: flex; align-items: center; gap: 10px; cursor: pointer;">
+                  <input type="checkbox" id="mobile-httpui-enabled" style="width: 16px; height: 16px;" />
+                  <span>
+                    <strong>Enable browser access</strong>
+                    <span class="mobile-badge off" id="mobile-httpui-badge">Off</span>
+                  </span>
+                </label>
+              </div>
+              <div id="mobile-httpui-details" style="display: none;">
+                <div class="mobile-qr-block" data-pres="surface:remoteAccess">
+                  <img id="mobile-httpui-qr" alt="QR code to open Graphnosis in your browser" class="hidden" />
+                  <p class="mobile-qr-caption">Scan to open Graphnosis on your phone — unlocks automatically</p>
+                </div>
+                <p style="font-size: 14px; font-weight: 600; margin: 0 0 4px; color: var(--fg-dim);">Browser URL</p>
+                <div class="copy-row">
+                  <span class="copy-field" id="mobile-httpui-url"></span>
+                  <button class="copy-btn" data-copy-target="mobile-httpui-url">Copy</button>
+                </div>
+                <p style="font-size: 14px; font-weight: 600; margin: 8px 0 4px; color: var(--fg-dim);">Access token</p>
+                <div class="copy-row">
+                  <span class="copy-field secret" id="mobile-httpui-token" title="Click to select all"></span>
+                  <button class="copy-btn" data-copy-target="mobile-httpui-token">Copy</button>
+                </div>
+                <p class="subtitle" style="font-size: 14px; margin-top: 6px;">
+                  The QR encodes the token so the phone unlocks with one scan. The URL + token also work if typed manually.
+                  Changes take effect the next time the cortex is unlocked.
+                </p>
+              </div>
+            </div>
           </div>
         </div>
         <div class="modal-footer">
@@ -12926,6 +13320,54 @@ ollama list</code></pre>
           <button id="btn-mobile-back" class="hidden">Back</button>
           <button id="btn-mobile-next" class="primary">Next</button>
           <button id="btn-mobile-close">Close</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── VS Code / Copilot Chat setup (own modal) ──────────────────────── -->
+    <div id="copilot-setup-modal" class="modal-backdrop hidden">
+      <div class="modal" style="max-width: 560px;">
+        <div class="modal-header">
+          <h2>VS Code — Copilot Chat</h2>
+          <p class="subtitle">Wire GitHub Copilot Chat in VS Code to this cortex over MCP.</p>
+        </div>
+        <div class="modal-body">
+          <!-- Option A: Extension -->
+          <div class="vscode-option">
+            <div class="vscode-option-header">
+              <span class="vscode-option-label">Option A — Extension <span class="badge-recommended">Recommended</span></span>
+            </div>
+            <p class="subtitle" style="margin: 4px 0 8px;">
+              Copilot calls <code>recall</code> automatically on relevant prompts — no <code>@</code> prefix needed.
+              Also adds the <code>@graphnosis</code> participant and a "Save to memory" status bar shortcut.
+            </p>
+            <div style="display: flex; gap: 8px; flex-wrap: wrap;">
+              <button class="copy-btn primary" id="btn-copilot-open-extension">Install extension</button>
+              <button class="copy-btn" id="btn-copilot-copy-token">Copy token</button>
+            </div>
+            <p class="subtitle" style="margin: 6px 0 0; font-size: 13px;">
+              After installing: open VS Code Settings → search <code>graphnosis</code> → paste the token into <strong>Bearer Token</strong>.
+            </p>
+          </div>
+          <!-- Option B: mcp.json -->
+          <div class="vscode-option" style="margin-top: 10px;">
+            <div class="vscode-option-header">
+              <span class="vscode-option-label">Option B — <code>.vscode/mcp.json</code></span>
+            </div>
+            <p class="subtitle" style="margin: 4px 0 6px;">
+              Adds Graphnosis as an MCP server for manual tool use. Save the snippet below as
+              <code>.vscode/mcp.json</code> in your project root, then use tools explicitly in Copilot Chat.
+            </p>
+            <div class="copy-row">
+              <span class="copy-field" id="copilot-vscode-config"
+                style="font-family: monospace; font-size: 13px; max-height: 120px; overflow: auto; white-space: pre;"></span>
+              <button class="copy-btn" id="btn-copilot-copy-config">Copy</button>
+            </div>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <span class="filler"></span>
+          <button id="btn-copilot-close">Close</button>
         </div>
       </div>
     </div>

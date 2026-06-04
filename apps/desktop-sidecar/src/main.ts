@@ -16,8 +16,10 @@ import { startEvents } from './events.js';
 import { startHttpUiServer } from './http-ui-server.js';
 import { startStdioMcpServer } from './mcp-server.js';
 import { startSocketMcpServer } from './mcp-socket-server.js';
+import { mcpRegistry } from './mcp-registry.js';
 import { startHttpMcpServer } from './mcp-http-server.js';
 import { ConnectorManager } from './connectors/manager.js';
+import { initAdminPolicy } from './admin-policy.js';
 import { LLM_CATALOG, makeLlm } from './local-llm.js';
 import { workerEmbed, workerEmbedBackground, terminateEmbedWorker, LOCAL_EMBED_ID, LOCAL_EMBED_DIM, switchEmbedModel, currentEmbedModel, setWorkerCount } from './local-embed.js';
 import type { LocalLlm } from './correction.js';
@@ -964,22 +966,70 @@ async function main(): Promise<void> {
   // Optional HTTP bridge for mobile and remote MCP clients. Disabled by
   // default; user enables in Settings → "Mobile & Remote". Requires a
   // sidecar restart to take effect (same as mcpRelay settings).
+  // Token is passed as a live getter so Revoke & Regenerate takes effect
+  // immediately on the running server without a restart.
   const httpBridgeCfg = host.getSettings().mobile?.httpBridge;
   if (httpBridgeCfg?.enabled && httpBridgeCfg.token) {
-    const httpServer = await startHttpMcpServer({
-      deps: mcpDeps,
-      port: httpBridgeCfg.port,
-      host: httpBridgeCfg.host,
-      token: httpBridgeCfg.token,
-      allowedOrigins: httpBridgeCfg.allowedOrigins,
-    });
-    process.on('SIGINT', () => httpServer.close());
-    process.on('SIGTERM', () => httpServer.close());
+    try {
+      const httpServer = await startHttpMcpServer({
+        deps: mcpDeps,
+        port: httpBridgeCfg.port,
+        host: httpBridgeCfg.host,
+        token: () => host.getSettings().mobile?.httpBridge?.token ?? '',
+        allowedOrigins: httpBridgeCfg.allowedOrigins,
+      });
+      process.on('SIGINT', () => httpServer.close());
+      process.on('SIGTERM', () => httpServer.close());
+    } catch (e) {
+      // A port conflict here means another sidecar is still running and holding
+      // the same port. Log clearly but don't crash — the rest of the sidecar
+      // (IPC, MCP socket, local VS Code bridge) still works without it.
+      console.error(`[graphnosis-sidecar] mobile HTTP bridge on :${httpBridgeCfg.port} failed — port in use or another sidecar is running: ${(e as Error).message}`);
+    }
+  }
+
+  // Always-on local HTTP bridge for the VS Code / Copilot extension.
+  // Binds exclusively on 127.0.0.1 — never reachable from outside the machine.
+  // Token is auto-generated on first start and persisted in settings so the
+  // extension reconnects without re-configuration. Skipped only if the mobile
+  // bridge is already bound to the same loopback port (avoids EADDRINUSE).
+  {
+    const currentSettings = host.getSettings();
+    const localPort = currentSettings.vscode?.localBridgePort ?? 3457;
+    const mobileConflicts = httpBridgeCfg?.enabled
+      && httpBridgeCfg.host === '127.0.0.1'
+      && httpBridgeCfg.port === localPort;
+
+    if (!mobileConflicts) {
+      let localToken = currentSettings.vscode?.localBridgeToken;
+      if (!localToken) {
+        localToken = randomUUID();
+        await host.setSettings({ vscode: { localBridgeToken: localToken, localBridgePort: localPort } });
+      }
+      try {
+        const localHttpServer = await startHttpMcpServer({
+          deps: mcpDeps,
+          port: localPort,
+          host: '127.0.0.1',
+          token: localToken,
+          allowedOrigins: [],
+        });
+        process.on('SIGINT', () => localHttpServer.close());
+        process.on('SIGTERM', () => localHttpServer.close());
+        console.error(`[graphnosis-sidecar] local HTTP bridge (VS Code) on http://127.0.0.1:${localPort}/mcp`);
+      } catch (e) {
+        console.error(`[graphnosis-sidecar] local HTTP bridge on :${localPort} failed (port in use?): ${(e as Error).message}`);
+      }
+    }
   }
 
   // Service connector manager. Always created (even with zero configs) so
   // connectors.install works on a fresh cortex. Started after IPC so webhook
   // and pull traffic doesn't race against the IPC socket being ready.
+  // Admin/IT policy (disabled connectors + AI clients) — load before the
+  // connector manager starts so blocked kinds never mount.
+  initAdminPolicy(env.cortexDir);
+
   const connectorsCfg = host.getSettings().connectors ?? {
     configs: [], webhookPort: 3458, webhookHost: '127.0.0.1', pullIntervalMs: 15 * 60 * 1000,
   };
@@ -988,12 +1038,128 @@ async function main(): Promise<void> {
   // Tauri shell IPC (custom JSON-RPC, not MCP).
   const ipcSocketPath = process.env.GRAPHNOSIS_IPC_SOCKET
     ?? path.join(env.cortexDir, 'sidecar.sock');
-  await startIpc({ host, socketPath: ipcSocketPath, pendingDiffs, restartMcpListener, broadcastRaw, connectorManager });
+  const ipcDeps = {
+    host,
+    socketPath: ipcSocketPath,
+    pendingDiffs,
+    restartMcpListener,
+    broadcastRaw,
+    connectorManager,
+    brainEngine,
+    // Search features (synthesize, rerank) only need Ollama reachable with a
+    // model — no master toggle required. The full llmEnabled gate lives on the
+    // MCP getter above and on the BrainEngine; IPC search calls bypass it.
+    llm: () => llm,
+    skillTrainer,
+    licenseValidator,
+  };
+  await startIpc(ipcDeps);
   console.error(`[graphnosis-sidecar] IPC listening on ${ipcSocketPath}`);
 
+  // Optional HTTP UI server for browser-based access (personal server mode).
+  // Two ways to enable, in priority order:
+  //   1. Env vars (server/headless deploy): GRAPHNOSIS_HTTP_UI=1
+  //   2. Settings (desktop-app-hosted): Settings → Mobile & Remote → Browser access
+  // Env vars win when both are present. Useful for Mac Mini / Linux server
+  // setups where the user connects from a phone via Tailscale.
+  //
+  // Env vars:
+  //   GRAPHNOSIS_HTTP_UI=1              — enable
+  //   GRAPHNOSIS_HTTP_UI_PORT=3456      — port (default 3456)
+  //   GRAPHNOSIS_BIND=0.0.0.0           — bind address (default 127.0.0.1)
+  //   GRAPHNOSIS_HTTP_UI_TOKEN=<token>  — static auth token (auto-generated if absent)
+  //   GRAPHNOSIS_HTTP_UI_STATIC=<path>  — path to compiled web UI files (optional)
+  {
+    const envEnabled = process.env.GRAPHNOSIS_HTTP_UI === '1';
+    const uiCfg = host.getSettings().mobile?.httpUi;
+    const settingsEnabled = uiCfg?.enabled === true && !!uiCfg.token;
+    if (envEnabled || settingsEnabled) {
+      const uiPort = process.env.GRAPHNOSIS_HTTP_UI_PORT
+        ? parseInt(process.env.GRAPHNOSIS_HTTP_UI_PORT, 10)
+        : (uiCfg?.port ?? 3456);
+      const uiBind = process.env.GRAPHNOSIS_BIND ?? uiCfg?.host ?? '127.0.0.1';
+      let uiToken = process.env.GRAPHNOSIS_HTTP_UI_TOKEN ?? uiCfg?.token ?? '';
+      if (!uiToken) {
+        uiToken = randomUUID();
+        console.error(`[graphnosis-sidecar] HTTP UI token (save this): ${uiToken}`);
+      }
+      // Resolve the compiled web UI to serve at `/`. Priority:
+      //   1. GRAPHNOSIS_HTTP_UI_STATIC env (explicit override / packaged app
+      //      passes the bundled resource path here)
+      //   2. The desktop package's dist in the monorepo (dev)
+      // Falls back to the built-in placeholder page if none is found.
+      const here = path.dirname(fileURLToPath(import.meta.url)); // …/desktop-sidecar/dist
+      const staticCandidates = [
+        process.env.GRAPHNOSIS_HTTP_UI_STATIC,
+        path.resolve(here, '../../desktop/dist'),  // monorepo: apps/desktop/dist
+        path.resolve(here, '../web'),              // future: bundled-alongside layout
+      ].filter((c): c is string => !!c);
+      let uiStaticDir: string | undefined;
+      for (const c of staticCandidates) {
+        if (existsSync(path.join(c, 'index.html'))) { uiStaticDir = c; break; }
+      }
+      if (uiStaticDir) {
+        console.error(`[graphnosis-sidecar] HTTP UI serving web app from ${uiStaticDir}`);
+      } else {
+        console.error('[graphnosis-sidecar] HTTP UI: no built web app found — serving status placeholder');
+      }
+      try {
+        const httpUiServer = await startHttpUiServer({
+          deps: ipcDeps,
+          port: uiPort,
+          host: uiBind,
+          token: uiToken,
+          subscribeEvents,
+          ...(uiStaticDir ? { staticDir: uiStaticDir } : {}),
+        });
+        process.on('SIGINT',  () => httpUiServer.close());
+        process.on('SIGTERM', () => httpUiServer.close());
+      } catch (e) {
+        console.error(`[graphnosis-sidecar] HTTP UI on :${uiPort} failed: ${(e as Error).message}`);
+      }
+    }
+  }
+
+  // Load remaining engrams sequentially and await completion before starting
+  // any background machinery. The default engram is already in memory (loaded
+  // above), so IPC remains responsive throughout. broadcastRaw fires incremental
+  // progress events so the UI can show/grey each engram as it becomes ready.
+  // Connectors and the brain engine start only after the full cortex is in
+  // memory — avoids ingest races on not-yet-loaded engrams and keeps startup
+  // sequencing predictable.
+  await loadAllGraphsFromDisk(host, env.cortexDir, env.defaultGraph, broadcastRaw);
+  await backfillGraphMetadata(host);
+  // Single oplog read for all engrams — far cheaper than one read per engram.
+  void host.refreshAllCorrectionsFromOplog();
+  brainEngine.start();
+
   await connectorManager.start();
-  process.on('SIGINT', () => { void connectorManager.stop(); });
-  process.on('SIGTERM', () => { void connectorManager.stop(); });
+
+  // Full graceful shutdown: flush dirty graphs, stop brain + connectors, then
+  // release the lock and exit. Replaces the shallow pre-brain handlers above.
+  fullShutdownReady = true;
+  let shuttingDown = false;
+  const gracefulShutdown = async (): Promise<void> => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    brainEngine.stop();
+    await connectorManager.stop().catch(() => {});
+    for (const graphId of host.listGraphs()) {
+      try { await host.save(graphId); } catch { /* best-effort — don't block exit */ }
+    }
+    await safeRelease();
+    process.exit(0);
+  };
+  process.on('SIGINT',  () => { void gracefulShutdown(); });
+  process.on('SIGTERM', () => { void gracefulShutdown(); });
+
+  // (Previously: a 60s timer that force-closed MCP connections idle > 15
+  // min. Removed in favor of an amber-bubble idle indicator in the
+  // desktop UI — see renderMcpStatus() — which keeps stale entries
+  // visible but visually distinct, while letting the user decide whether
+  // to manually kick them via the × button. `mcpRegistry.sweepIdle()`
+  // remains available as a method if a future caller wants explicit
+  // bulk cleanup, just not on a timer.)
 
   // MCP server over stdio — the legacy path. Stays active so existing
   // configurations (where Claude Desktop spawns this binary directly) keep

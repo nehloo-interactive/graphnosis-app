@@ -1521,7 +1521,7 @@ dependencies = [
 
 [[package]]
 name = "graphnosis-app"
-version = "0.6.0"
+version = "1.13.1"
 dependencies = [
  "anyhow",
  "base64 0.22.1",

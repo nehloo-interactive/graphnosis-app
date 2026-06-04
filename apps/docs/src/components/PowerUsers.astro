@@ -7,7 +7,7 @@
     <div class="flex flex-col md:flex-row items-start justify-between gap-12 mb-16">
       <div class="flex-1">
         <blockquote class="border-l-4 border-[#a78bfa] pl-6 mb-16">
-          <p class="text-[#71717a] text-lg italic leading-relaxed">
+          <p class="text-[#c4c6d6] text-lg italic leading-relaxed">
             "Engram <span class="not-italic font-semibold text-[#f0f0f5]">/ˈɛnɡram/</span> — a hypothetical means by which memory traces are stored as biophysical or biochemical changes in the brain. First named by Richard Semon, 1904.<br /><br /><span class="not-italic font-semibold text-[#f0f0f5]">Graphnosis calls its multi-graph a</span> <span class="not-italic font-semibold text-[#a78bfa]">Graphnosis Engram</span><span class="not-italic text-[#f0f0f5]">.</span>"
           </p>
         </blockquote>
@@ -18,7 +18,7 @@
           </h2>
         </div>
 
-        <p class="text-[#71717a] max-w-2xl leading-relaxed">
+        <p class="text-[#c4c6d6] max-w-2xl leading-relaxed">
           Each engram in Graphnosis is an independent encrypted memory space — your work projects, personal notes, research, health records. Separate graphs, separate keys, separate rules. Your AI draws from the right one automatically.
         </p>
       </div>
@@ -35,7 +35,7 @@
 
         <article class="bg-[#13131a] border border-[#2a2a3d] rounded-xl p-6 flex flex-col gap-3">
           <a href="/getting-started/overview" class="text-base font-bold text-white hover:text-[#67e8f9] transition-colors">Temporal awareness ↗</a>
-          <p class="text-[#71717a] text-base leading-relaxed mb-3">Every memory node tracks five temporal properties:</p>
+          <p class="text-[#c4c6d6] text-base leading-relaxed mb-3">Every memory node tracks five temporal properties:</p>
           <ul class="space-y-1.5">
             {[
               ['createdAt', 'when the knowledge was first ingested'],
@@ -46,7 +46,7 @@
             ].map(([name, desc]) => (
               <li class="flex items-start gap-2 text-sm">
                 <code class="text-[#67e8f9] font-mono shrink-0 mt-0.5">{name}</code>
-                <span class="text-[#71717a]">{desc}</span>
+                <span class="text-[#c4c6d6]">{desc}</span>
               </li>
             ))}
           </ul>
@@ -54,29 +54,33 @@
 
         <article class="bg-[#13131a] border border-[#2a2a3d] rounded-xl p-6 flex flex-col gap-3">
           <a href="/guides/graphs-and-tiers" class="text-base font-bold text-white hover:text-[#67e8f9] transition-colors">Contradiction detection ↗</a>
-          <p class="text-[#71717a] text-base leading-relaxed">When new content conflicts with existing memory, Graphnosis flags it instead of silently overwriting. The <code class="text-[#67e8f9] font-mono text-sm">contradicts</code> edge type records the conflict with provenance; <code class="text-[#67e8f9] font-mono text-sm">supersedes</code> marks when new information replaces old. You decide what the ground truth is.</p>
+          <p class="text-[#c4c6d6] text-base leading-relaxed">When new content conflicts with existing memory, Graphnosis flags it instead of silently overwriting. The <code class="text-[#67e8f9] font-mono text-sm">contradicts</code> edge type records the conflict with provenance; <code class="text-[#67e8f9] font-mono text-sm">supersedes</code> marks when new information replaces old. You decide what the ground truth is.</p>
         </article>
 
         <article class="bg-[#13131a] border border-[#2a2a3d] rounded-xl p-6 flex flex-col gap-3 md:col-span-2">
           <a href="/guides/graphs-and-tiers" class="text-base font-bold text-white hover:text-[#67e8f9] transition-colors">Relationship edges — the dual graph ↗</a>
-          <p class="text-[#71717a] text-base leading-relaxed mb-4">Both directed and undirected edges exist over the same node set. This dual structure gives AI richer reasoning paths than either graph type alone.</p>
+          <p class="text-[#c4c6d6] text-base leading-relaxed mb-4">Both directed and undirected edges exist over the same node set. This dual structure gives AI richer reasoning paths than either graph type alone.</p>
           <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <div>
               <p class="text-sm font-semibold text-[#f0f0f5] mb-2">Directed (A → B)</p>
               <ul class="space-y-1.5">
                 {[
-                  ['contains', 'a section contains a paragraph'],
-                  ['precedes', 'one fact follows another in sequence'],
-                  ['cites', 'one source references another'],
+                  ['contains', 'a section contains a paragraph; also: located-in for geographic membership'],
+                  ['precedes', 'one fact or event follows another in time or sequence'],
+                  ['cites', 'one source references another; also: wrote / authored, cited-in'],
                   ['defines', 'a definition explains a concept'],
+                  ['summarizes', 'a note distills a longer source'],
                   ['causes / supports / contradicts', 'causal and logical relationships'],
+                  ['depends-on', 'one fact requires another; also: lives-in, based-in (person → place)'],
                   ['supersedes', 'new information replaces old'],
-                  ['discussed-in', 'knowledge traced to conversation origin'],
-                  ['knows / works-with / reports-to', 'person relationships'],
+                  ['discussed-in', 'knowledge traced to conversation origin; also: mentioned-in'],
+                  ['knows / works-with / reports-to', 'person-to-person relationships'],
+                  ['collaborated-on', 'works-at / founded / member-of / leads — person → org or project'],
+                  ['prefers', 'a person favors an approach, tool, or option'],
                 ].map(([name, desc]) => (
                   <li class="flex items-start gap-2 text-sm">
                     <code class="text-[#67e8f9] font-mono shrink-0 mt-0.5 leading-relaxed">{name}</code>
-                    <span class="text-[#71717a]">{desc}</span>
+                    <span class="text-[#c4c6d6]">{desc}</span>
                   </li>
                 ))}
               </ul>
@@ -87,17 +91,24 @@
                 {[
                   ['similar-to', 'two facts share vocabulary (TF-IDF cosine similarity)'],
                   ['shares-entity', 'two facts mention the same person, place, or concept'],
-                  ['co-occurs', 'two facts appear in the same section'],
+                  ['shares-topic', 'two facts belong to the same topic cluster; also: same-topic in the picker'],
+                  ['co-occurs', 'two facts appear in the same section or source passage'],
+                  ['same-source', 'two facts ingested from the same source file'],
                   ['same-person', 'two mentions of the same person across sources'],
-                  ['related-to', 'general association between people or concepts'],
+                  ['related-to', 'general association — partners-with, related (fallback for all other cases)'],
                 ].map(([name, desc]) => (
                   <li class="flex items-start gap-2 text-sm">
                     <code class="text-[#67e8f9] font-mono shrink-0 mt-0.5">{name}</code>
-                    <span class="text-[#71717a]">{desc}</span>
+                    <span class="text-[#c4c6d6]">{desc}</span>
                   </li>
                 ))}
               </ul>
             </div>
+          </div>
+          <div class="border-t border-[#2a2a3d] pt-4 mt-4">
+            <p class="text-[#c4c6d6] text-base leading-relaxed">
+              Switch on the optional <span class="text-[#a78bfa] font-semibold">Graphnosis Neural Network</span> and a third layer of predicted edges joins the same nodes — connections the deterministic passes never recorded, kept apart in a separate <code class="text-[#a78bfa] font-mono">.gnn</code> overlay. The dual-graph becomes a triple-graph. And because recall, consolidation, and cross-engram links all federate across every engram you've granted, the whole Cortex behaves as one multi-graph system — the structure your AI reasons over.
+            </p>
           </div>
         </article>
 
@@ -110,7 +121,7 @@
           <div>
             <p class="text-sm font-mono tracking-widest text-[#555570] uppercase mb-4">AI Clients</p>
             <div class="flex flex-wrap gap-3">
-              {['Claude Desktop', 'Claude Code', 'Cursor', 'Zed', 'Any MCP-aware tool'].map(client => (
+              {['Claude Desktop', 'Claude Code', 'Cursor', 'Zed', 'GitHub Copilot', 'Any MCP-aware tool'].map(client => (
                 <span class="px-3 py-1.5 rounded-full border border-[#2a2a3d] text-[#f0f0f5] text-sm font-semibold">{client}</span>
               ))}
             </div>
@@ -118,36 +129,197 @@
           <div>
             <p class="text-sm font-mono tracking-widest text-[#555570] uppercase mb-4">Data Connectors</p>
             <div class="flex flex-wrap gap-3">
-              {['Slack', 'GitHub', 'Linear', 'Trello', 'Local files & folders'].map(connector => (
-                <span class="px-3 py-1.5 rounded-full border border-[#2a2a3d] text-[#f0f0f5] text-sm font-semibold">{connector}</span>
+              {[
+                { label: 'Slack',             color: '#4A154B' },
+                { label: 'GitHub',            color: '#238636' },
+                { label: 'Linear',            color: '#5E6AD2' },
+                { label: 'Trello',            color: '#0052CC' },
+                { label: 'RSS',               color: '#F97316' },
+                { label: 'Obsidian',          color: '#7C3AED' },
+                { label: 'GBrain',            color: '#0EA5E9' },
+                { label: 'Webhook',           color: '#67e8f9' },
+                { label: 'AI Context Files',  color: '#D97757' },
+                { label: 'OPC-UA',            color: '#f59e0b' },
+                { label: 'Modbus',            color: '#f59e0b' },
+                { label: 'ROS Topics',        color: '#ef4444' },
+                { label: 'LoRaWAN',           color: '#84cc16' },
+                { label: 'Serial / USB',      color: '#94a3b8' },
+              ].map(({ label, color }) => (
+                <span
+                  class="px-3 py-1.5 rounded-full border text-sm font-semibold"
+                  style={`border-color: ${color}44; color: ${color};`}
+                >{label}</span>
               ))}
             </div>
           </div>
         </div>
+        <p class="text-[#3d3d55] mt-6 text-center" style="font-size:10px; line-height:1.5;">
+          All other product names, trademarks, and registered trademarks are the property of their respective owners.
+          Graphnosis is not affiliated with, endorsed by, or sponsored by any third party.
+        </p>
       </article>
     </div>
 
     <!-- MCP tools -->
     <div class="mb-12">
-      <h3 class="text-lg font-bold text-white mb-2">What AI clients can do with Graphnosis</h3>
-      <p class="text-[#71717a] text-sm mb-6">These are the tools your AI uses. You can see every call in the audit log.</p>
-      <div class="grid grid-cols-1 sm:grid-cols-3 gap-4">
-        {[
-          { name: 'recall', desc: 'Surface relevant context for the current prompt', slug: 'recall' },
-          { name: 'remind', desc: 'Alias for recall — responds to "remind me about X"', slug: 'recall' },
-          { name: 'remember', desc: 'Save a new fact or note to your graph', slug: 'remember' },
-          { name: 'correct', desc: 'Propose a change — previewed, user-approved before write', slug: 'correct' },
-          { name: 'forget', desc: 'Soft-delete a source and all nodes derived from it', slug: 'forget' },
-          { name: 'stats', desc: 'Inspect node counts and graph state', slug: 'stats' },
-        ].map((tool) => (
-          <a href="/reference/mcp-tools" class="bg-[#13131a] border border-[#2a2a3d] hover:border-[#67e8f9]/40 rounded-lg p-5 flex flex-col gap-3 transition-colors group">
-            <code class="text-[#67e8f9] text-lg font-mono font-bold">{tool.name}</code>
-            <p class="text-[#71717a] text-base leading-relaxed">{tool.desc}</p>
-          </a>
-        ))}
-      </div>
-      <p class="text-base text-[#a0a0b8] mt-6">
-        The <code class="text-[#67e8f9] font-mono">correct</code> tool generates a diff preview parsed by a local LLM — nothing is written until you approve it in the app. <code class="text-[#67e8f9] font-mono">forget</code> is a soft delete; nodes are recoverable from the op-log.
+      <h2 class="text-3xl sm:text-4xl lg:text-5xl font-black text-white text-center mb-4">What AI cloud and local clients can do with Graphnosis...</h2>
+      <p class="text-[#c4c6d6] text-base text-center max-w-2xl mx-auto mb-10">
+        All <span class="text-[#f0f0f5] font-semibold">45 MCP tools</span> across 10 functional categories. The deterministic + approximate sets work out of the box;
+        the conditional and non-deterministic sets use the optional local LLM (or Neural Network). Every call is visible in the audit log.
+        Click any tool for parameters, return shape, and example prompts.
+      </p>
+
+      {[
+        {
+          color: '#67e8f9',
+          label: 'Core memory',
+          determinism: 'Deterministic · the default',
+          desc: 'Reproducible and auditable — identical input, identical result, no AI model required.',
+          tools: [
+            { name: 'recall', desc: 'Surface relevant context for the current prompt' },
+            { name: 'remind', desc: 'Alias for recall — responds to "remind me about X"' },
+            { name: 'dig_deeper', desc: 'Escalate when recall returns thin — expand by source + cross-engram entity hop' },
+            { name: 'remember', desc: 'Save a new fact or note to your graph' },
+            { name: 'forget', desc: 'Soft-delete a source and every node derived from it' },
+            { name: 'apply', desc: 'Commit a reviewed correction diff to the graph' },
+            { name: 'stats', desc: 'Inspect engram inventory, node counts, sources' },
+            { name: 'vitality', desc: '0–100 score of how alive and well-connected memory is' },
+          ],
+        },
+        {
+          color: '#67e8f9',
+          label: 'Engram discovery',
+          determinism: 'Deterministic · navigation',
+          desc: 'Lets the AI find its way around your cortex without guessing names.',
+          tools: [
+            { name: 'list_engrams', desc: 'Every engram with tier + source counts' },
+            { name: 'suggest_engram', desc: 'Best engram to save a note into' },
+            { name: 'browse_engram', desc: 'Sources inside one engram, newest first' },
+            { name: 'recent', desc: 'Most recently ingested sources across all engrams' },
+            { name: 'get_engram_schema', desc: 'Metadata for one engram (tier, template, name)' },
+          ],
+        },
+        {
+          color: '#67e8f9',
+          label: 'Structured recall',
+          determinism: 'Deterministic · advanced',
+          desc: 'Variants of recall for when the AI needs more than a prose context block.',
+          tools: [
+            { name: 'recall_structured', desc: 'Recall returned as a JSON array of node objects' },
+            { name: 'recall_with_citations', desc: 'Recall with inline source citation per fact' },
+            { name: 'compare_engrams', desc: 'Same query against two engrams, side-by-side' },
+            { name: 'cross_search', desc: 'Federated recall over a hand-picked subset' },
+          ],
+        },
+        {
+          color: '#67e8f9',
+          label: 'Source operations',
+          determinism: 'Deterministic · op-log primitives',
+          desc: 'Act on a whole saved source — file, URL, clip. All recoverable.',
+          tools: [
+            { name: 'find_source', desc: 'Keyword substring search across source IDs / refs' },
+            { name: 'recall_source', desc: 'Full content of one source, in ingestion order' },
+            { name: 'transfer_source', desc: 'Move a source from one engram to another' },
+          ],
+        },
+        {
+          color: '#67e8f9',
+          label: 'Engram operations',
+          determinism: 'Deterministic · bulk',
+          desc: 'Engram-level moves and consolidations.',
+          tools: [
+            { name: 'ingest_batch', desc: 'Save up to 20 notes in one call, each routed' },
+            { name: 'engram_summary', desc: 'Readable snapshot — counts + node previews' },
+          ],
+        },
+        {
+          color: '#67e8f9',
+          label: 'Brain maintenance',
+          determinism: 'Deterministic · brain windows',
+          desc: 'Read-only views into the autonomous brain engine + consent gate.',
+          tools: [
+            { name: 'duplicate_pairs', desc: 'Near-duplicate pairs the brain flagged for review' },
+            { name: 'healing_journal', desc: 'Audit log of autonomous corrections the brain made' },
+            { name: 'gnn_status', desc: 'Neural Network state + predicted-edge count' },
+            { name: 'confirm_data_access', desc: 'Headless-fallback consent for sensitive engrams' },
+          ],
+        },
+        {
+          color: '#67e8f9',
+          label: 'Skills (SOPs)',
+          determinism: 'Deterministic · procedural memory',
+          desc: 'Walk and manage Standard Operating Procedures — step sequences with goals, loops, branches, and cross-skill orchestration. Auto-retrained as the cortex grows.',
+          tools: [
+            { name: 'walk_skill', desc: 'Walk a skill step-by-step as narrative SOP text' },
+            { name: 'walk_skill_structured', desc: 'Same walk, returned as a SkillExecutionPlan JSON for AI execution' },
+            { name: 'get_skill', desc: 'Fetch the trained output of a single skill by id' },
+            { name: 'list_skills', desc: 'List every skill in the Skills engram with metadata' },
+            { name: 'train_skill', desc: 'Train or retrain a skill — anchors recall, wires SOP edges' },
+            { name: 'export_skill', desc: 'Export a signed .gsk pack for sharing or backup' },
+            { name: 'delete_skill', desc: 'Remove a skill and its trained output from the graph' },
+            { name: 'skill_history', desc: 'Snapshot history of a skill — every training run' },
+            { name: 'rollback_skill', desc: 'Revert a skill to a prior snapshot' },
+            { name: 'skill_vitality', desc: '0–100 health score for one skill — staleness, anchor coverage' },
+          ],
+        },
+        {
+          color: '#a78bfa',
+          label: 'Approximate',
+          determinism: 'Vector similarity · no LLM',
+          desc: 'Similarity scans across the cortex — deterministic given the embedding state.',
+          tools: [
+            { name: 'audit_memory', desc: 'Detect near-duplicate content across engrams' },
+            { name: 'check_duplicate', desc: 'Pre-flight check before remember — anything similar?' },
+          ],
+        },
+        {
+          color: '#a78bfa',
+          label: 'Conditional',
+          determinism: 'Deterministic by default · LLM-aware',
+          desc: 'Deterministic when no LLM/GNN is enabled; richer multi-edit diff when they are.',
+          tools: [
+            { name: 'edit', desc: 'Propose a structured diff — correction, update, or append — user-approved before any write' },
+          ],
+        },
+        {
+          color: '#a78bfa',
+          label: 'Non-deterministic',
+          determinism: 'Local LLM required · opt-in',
+          desc: 'Retrieval stays deterministic; the local LLM (Ollama) produces the prose, so output varies between runs. Off by default.',
+          tools: [
+            { name: 'develop', desc: 'Draft a strategic plan grounded in your memory' },
+            { name: 'predict', desc: 'Risks and opportunities before you act' },
+            { name: 'insights', desc: 'Patterns, gaps, conflicts surfaced by the background loop' },
+            { name: 'gnn_neighbors', desc: 'Neural Network–predicted related nodes' },
+            { name: 'llm_query', desc: 'Local-LLM synthesised answer grounded in recall' },
+            { name: 'llm_distill', desc: 'Local-LLM fact extraction — ready for ingest_batch' },
+          ],
+        },
+      ].map((cat) => (
+        <div class="mb-8">
+          <div class="mb-4">
+            <p class="text-sm font-mono tracking-widest uppercase mb-2" style={`color:${cat.color};`}>{cat.label} · <span class="opacity-70">{cat.determinism}</span></p>
+            <p class="text-base text-[#c4c6d6]">{cat.desc}</p>
+          </div>
+          <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+            {cat.tools.map((tool) => (
+              <a
+                href="/reference/mcp-tools"
+                class="bg-[#13131a] border border-[#2a2a3d] rounded-lg p-5 flex flex-col gap-2.5 transition-colors group"
+                style={`--hover-border:${cat.color};`}
+                onmouseover="this.style.borderColor=this.style.getPropertyValue('--hover-border')+'66'"
+                onmouseout="this.style.borderColor=''"
+              >
+                <code class="text-base font-mono font-bold" style={`color:${cat.color};`}>{tool.name}</code>
+                <p class="text-[#c4c6d6] text-sm leading-relaxed">{tool.desc}</p>
+              </a>
+            ))}
+          </div>
+        </div>
+      ))}
+
+      <p class="text-base text-[#a0a0b8] mt-10">
+        <code class="text-[#67e8f9] font-mono text-base">edit</code> is deterministic by default — it returns a diff for review, and nothing is written until you approve it in the app; the optional Neural Network or local LLM can widen it. <code class="text-[#67e8f9] font-mono text-base">forget</code> is a soft delete — nodes stay recoverable from the op-log. Full reference: <a href="/reference/mcp-tools" class="text-[#67e8f9] hover:underline">/reference/mcp-tools</a>.
       </p>
     </div>
 

@@ -1,11 +1,11 @@
 ---
 title: Adding Content
-description: How to ingest files, web pages, and clips into your Cortex.
+description: How to ingest files, web pages, and clips into your cortex.
 sidebar:
   order: 1
 ---
 
-Your Cortex is only useful if you put things in it. Graphnosis supports several ingest methods: files, URLs, and quick clips.
+Your cortex is only useful if you put things in it. Graphnosis supports several ingest methods: files, URLs, and quick clips.
 
 ## Supported file types
 
@@ -89,7 +89,7 @@ The badge derives from the MCP `initialize` handshake's `clientInfo.name`. It's 
 
 **Two flavors of AI-saved memory**: the `remember` tool now accepts `kind: 'clip' | 'ai-conversation'`. AI clients use `clip` (the default) when extracting a fact from external content (a doc you shared, a search result, an article). They use `ai-conversation` when saving a turn or summary of the CURRENT conversation — so you can tell *"Claude paraphrased me"* from *"Claude saw this in a doc I shared"*. Both appear in the Sources list; the source ref makes the kind explicit.
 
-**Correction attribution**: when an AI client applies a correction via the `apply` MCP tool (after you approved a `correct` proposal), the op-log records `correctedBy: <client name>` on every node edit/supersede/delete. The Activity view surfaces this for full audit.
+**Edit attribution**: when an AI client applies a change via the `apply` MCP tool (after you approved an `edit` proposal), the op-log records `correctedBy: <client name>` on every node edit/supersede/delete. The Activity view surfaces this for full audit.
 
 ## Auto-relink: how new memories connect to old ones
 
@@ -107,7 +107,7 @@ The pass is throttled and capped (`autoRelinkMaxNodes` in Settings, default 5,00
 
 ## Content caching: why it matters for recovery
 
-When you ingest a file, the raw bytes are also cached in your Cortex (encrypted, in `content/`) — by default for any source up to 512MB. This is the difference between:
+When you ingest a file, the raw bytes are also cached in your cortex (encrypted, in `content/`) — by default for any source up to 512MB. This is the difference between:
 
 - **Cache hit**: if you later move/delete the original file, or the `.gai` file is somehow damaged, you can rebuild from cache without ever touching the original source again. Fast, automatic, no user action beyond clicking "Recover" in the app.
 - **Cache miss** (e.g. you raised the cap, or disabled caching): recovery only works if the original file is still at the exact path you ingested it from. If it's moved, the source shows up as `file-missing` in the Recovery panel.
@@ -120,6 +120,43 @@ There is no hard file size limit, but files over ~50 MB of raw text may take sev
 
 If a file you've ingested has changed, you can reingest it from the Source detail view. The old chunks are replaced with fresh ones from the updated content. The Source's `updated_at` timestamp is updated accordingly.
 
+## Filtering sources
+
+The Sources pane has a **Filter sources…** search bar at the top. Typing any text immediately hides sources that don't match — by filename, URL, or clip snippet. Engram headings collapse automatically when none of their sources match, so the list stays clean.
+
+Press **⌘F** anywhere in the app to jump focus directly to the search bar — you don't have to click into it first.
+
+A **stats bar** below the search field shows the active engram name and match count (e.g. "Coding · 4 matches") so you know at a glance which engram you're searching and how many sources matched.
+
+When the lexical search finds no exact matches, Graphnosis falls back to semantic similarity. Results from the semantic fallback are clearly labelled as off-topic matches so you can tell them apart from direct hits.
+
+The filter is session-only: it resets when you close the app, and it never hides anything permanently. Clear the field to restore the full list.
+
+## Moving a source to another engram
+
+Sometimes a source ends up in the wrong engram. You can move it without reingesting.
+
+1. Hover the source row in the **Sources** pane.
+2. Click **Move to…** — a picker appears inline.
+3. Choose the destination engram from the dropdown, or select **New Engram…** to create one on the spot.
+   - If you choose **New Engram…**, type a display name in the field that appears. Graphnosis will generate a URL-safe graph ID automatically and create the engram before moving the source.
+4. Click **Move**. The source disappears from the current engram's list and appears in the destination.
+
+The move is non-destructive: all chunks, embeddings, and the content cache entry travel with the source. Nothing is reprocessed. AI recall from the destination engram will include the source on the next call, subject to that engram's sensitivity tier.
+
 ## Removing a source
 
-Open the Source in the Graphnosis window and click **Remove**. This deletes all associated chunks and embeddings from the Cortex. The original file on disk is not touched.
+Open the Source in the Graphnosis window and click **Remove**. This deletes all associated chunks and embeddings from the cortex. The original file on disk is not touched.
+
+---
+
+## Related
+
+[Auto-ingest from Your Tools](/guides/connectors/) — passive ingest via RSS, GitHub, Slack, and more.
+
+[Connect Offline Sources](/guides/connect-offline-sources/) — local files, MQTT, OPC-UA, scans, NAS.
+
+[Graphs & Sensitivity Tiers](/guides/graphs-and-tiers/) — route incoming content to the right engram.
+
+[Correcting Memories](/guides/correcting-memories/) — fix or update what got ingested.
+
