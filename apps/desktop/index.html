@@ -13,6 +13,18 @@
         var s = localStorage.getItem('graphnosis:theme');
         var t = (s === 'light' || s === 'dark' || s === 'auto') ? s : 'dark';
         if (t !== 'auto') document.documentElement.setAttribute('data-theme', t);
+        // Paint the root background SYNCHRONOUSLY, before the external
+        // theme-tokens.css loads. Without this, the very first webview frame
+        // is the WKWebView default white — a visible flash on launch / unlock,
+        // because `body { background: var(--bg) }` can't resolve until the
+        // stylesheet arrives. These two hexes intentionally mirror --bg in
+        // theme-tokens.css (dark #1a1a1c / light #f8fafc); this is the one
+        // sanctioned hardcode (bootstrap critical path, like the meta
+        // theme-color below) — keep them in sync if --bg ever changes.
+        var isDark = t === 'dark'
+          || (t === 'auto' && window.matchMedia
+              && window.matchMedia('(prefers-color-scheme: dark)').matches);
+        document.documentElement.style.backgroundColor = isDark ? '#1a1a1c' : '#f8fafc';
         // Stamp the OS platform synchronously before first paint so CSS
         // platform overrides (e.g. .platform-windows .app-header) apply
         // without a layout flash. navigator.userAgent is reliable in Tauri.
@@ -113,6 +125,22 @@
       .actions { display: flex; gap: 8px; align-items: center; }
       .pick-row { display: flex; gap: 8px; }
       .pick-row input { flex: 1; }
+      /* Lock-screen inputs — a subtle accent-tinted border + faint fill so it's
+         obvious what the user needs to fill in, with a clear focus state. */
+      #cortex-dir, #passphrase {
+        border: 1px solid color-mix(in oklab, var(--accent) 40%, var(--border));
+        background: color-mix(in oklab, var(--accent) 5%, var(--bg-elev));
+        transition: border-color 120ms, box-shadow 120ms, background 120ms;
+      }
+      #cortex-dir:hover, #passphrase:hover {
+        border-color: color-mix(in oklab, var(--accent) 60%, var(--border));
+      }
+      #cortex-dir:focus, #passphrase:focus {
+        outline: none;
+        border-color: var(--accent);
+        background: var(--bg-elev);
+        box-shadow: 0 0 0 3px color-mix(in oklab, var(--accent) 22%, transparent);
+      }
       .error { color: var(--error); padding: 8px 10px; border-radius: 6px; background: color-mix(in oklab, var(--error) 10%, transparent); margin-bottom: 16px; font-size: 14px; white-space: pre-wrap; word-break: break-word; max-height: 280px; overflow-y: auto; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; line-height: 1.45; display: flex; align-items: flex-start; gap: 8px; }
       .error .error-msg-text { flex: 1; min-width: 0; }
       .error .error-dismiss-btn { flex-shrink: 0; background: none; border: none; color: var(--error); opacity: 0.7; cursor: pointer; font-size: 18px; line-height: 1; padding: 0 2px; margin-top: -1px; }
@@ -492,6 +520,20 @@
         color: var(--color-status-warn-amber);
         font-weight: 500;
       }
+      /* Blocked: client is connected at the transport level but Access
+         Control rejects its tool calls. No pulse — it's not doing anything. */
+      .mcp-dot-blocked {
+        background: var(--danger, #e5484d);
+        animation: none;
+      }
+      .mcp-blocked-tag {
+        color: var(--danger, #e5484d);
+        font-weight: 700;
+        text-transform: uppercase;
+        font-size: 0.82em;
+        letter-spacing: 0.03em;
+      }
+      .mcp-row-blocked { opacity: 0.72; }
       @keyframes mcp-pulse {
         0%, 100% { opacity: 1; }
         50% { opacity: 0.4; }
@@ -1150,9 +1192,18 @@
       }
       .tour-connect-btn:hover { background: var(--color-brand-turquoise-soft); }
       /* ── Sidebar get-connected shortcuts ─────────────────────────────── */
-      .rail-get-connected { padding: 10px 8px 4px; display: flex; flex-direction: column; gap: 6px; }
+      .rail-get-connected {
+        padding: 10px 8px 4px; display: flex; flex-direction: column; gap: 6px;
+        /* Shrink when the rail runs short of vertical space so the chips never
+           push MCP Tools / Settings off the bottom. min-height:0 lets it shrink
+           below content height; overflow:hidden clips so the body scrolls. */
+        flex: 0 1 auto;
+        min-height: 0;
+        overflow: hidden;
+      }
       .rail-get-connected-header {
         display: flex; align-items: center; gap: 6px; width: 100%;
+        flex-shrink: 0; /* keep the toggle pinned; only the body below scrolls */
         background: none; border: 0; padding: 2px; cursor: pointer;
         font: inherit; font-size: 10px; text-transform: uppercase; letter-spacing: .07em;
         color: var(--color-fg-dim); transition: color 100ms;
@@ -1161,7 +1212,14 @@
       .rail-gc-chevron { display: inline-block; transition: transform 120ms; font-size: 9px; }
       .rail-get-connected.collapsed .rail-gc-chevron { transform: rotate(-90deg); }
       .rail-get-connected.collapsed .rail-get-connected-body { display: none; }
-      .rail-get-connected-body { display: flex; flex-direction: column; gap: 6px; }
+      .rail-get-connected-body {
+        display: flex; flex-direction: column; gap: 6px;
+        /* The scroll region: when the rail is short, the chips scroll here
+           instead of pushing the pinned bottom buttons down/off-screen. */
+        min-height: 0;
+        overflow-y: auto;
+        scrollbar-width: thin;
+      }
       .rail-get-connected-label { font-size: 10px; color: var(--color-fg-dim); text-transform: uppercase; letter-spacing: .07em; padding: 0 2px 2px; }
       .rail-get-connected-group { display: flex; flex-wrap: wrap; gap: 4px; }
       .rail-shortcut-btn {
@@ -2066,6 +2124,15 @@
       .engram-picker-option:hover {
         background: color-mix(in oklab, var(--fg) 8%, transparent);
       }
+      /* "Full Cortex" — the highlighted top option, with a divider beneath it. */
+      .engram-picker-option-full {
+        font-weight: 700;
+        color: var(--fg);
+        background: color-mix(in oklab, var(--accent) 14%, transparent);
+      }
+      .engram-picker-option-full:hover { background: color-mix(in oklab, var(--accent) 24%, transparent); }
+      .engram-picker-option-full.selected { background: color-mix(in oklab, var(--accent) 28%, transparent); }
+      .engram-picker-divider { height: 1px; margin: 5px 4px; background: var(--border); }
       .engram-picker-option.disabled {
         /* Pending engrams — listed for awareness but the sidecar hasn't
            decrypted them into memory yet, so picking one would just
@@ -2171,11 +2238,18 @@
       .app-rail {
         background: var(--bg-elev);
         border-right: 1px solid var(--border);
-        padding: 8px 6px;
+        /* No bottom padding — the sticky Settings button sits flush against the
+           status bar so scrolled Memory-trace rows can't peek beneath it. */
+        padding: 8px 6px 0;
         display: flex;
         flex-direction: column;
         gap: 2px;
-        overflow: hidden; /* only the trace list scrolls, not the whole rail */
+        /* The whole rail scrolls as one (single scrollbar) so every item stays
+           reachable at small window heights; Settings stays pinned at the
+           bottom via position:sticky. */
+        overflow-y: auto;
+        overflow-x: hidden;
+        scrollbar-width: thin;
       }
       .rail-btn {
         display: grid;
@@ -2292,13 +2366,24 @@
       }
       .rail-badge {
         background: var(--accent);
-        color: white;
+        /* Dark text on the light-turquoise accent — far higher contrast than
+           the old white-on-accent (which read as a faint wash). */
+        color: #06232b;
         font-size: 14px;
-        font-weight: 600;
-        padding: 1px 6px;
+        font-weight: 700;
+        padding: 1px 7px;
         border-radius: 8px;
       }
+      /* Get Connected count badge: dark-gray background with turquoise text
+         (instead of the default turquoise-on-dark). */
+      #rail-gc-count {
+        background: color-mix(in srgb, var(--fg) 16%, var(--bg));
+        color: var(--accent);
+      }
       /* Inline AI-client indicator inside the Status rail button */
+      /* Trailing cluster on the Overview rail item: corrections badge + the
+         live AI-client indicator, right-aligned in the rail button's 3rd cell. */
+      .rail-trailing { display: inline-flex; align-items: center; gap: 6px; justify-self: end; min-width: 0; }
       .rail-mcp-indicator {
         display: flex;
         align-items: center;
@@ -2334,10 +2419,31 @@
          margin creates the gap; when it's visible, the trace's flex:1
          eats the space and the row sits snug below it. */
       .rail-bottom-row {
-        margin-top: auto;
+        /* (Legacy — MCP Tools + Settings are now standalone full-width rail
+           buttons; this wrapper is no longer used.) */
         flex-shrink: 0;
         display: flex;
         gap: 4px;
+        margin-top: 2px;
+      }
+      /* Settings pins to the bottom of the rail; the auto top-margin absorbs
+         all the free space between MCP Tools and Settings. */
+      /* Settings: pinned (sticky) to the bottom of the scrolling rail, with its
+         icon + label centered. An opaque background + top border keep it legible
+         as Memory-Trace rows scroll underneath. */
+      .rail-btn-settings {
+        position: sticky;
+        bottom: 0;
+        z-index: 3;
+        margin-top: 0;
+        /* Extend the opaque background down to the status bar (negative margin
+           + matching padding) so no Memory-trace row shows through/beneath it. */
+        margin-bottom: -8px;
+        padding-bottom: 16px;
+        background: var(--bg-elev);
+        border-top: 1px solid var(--border);
+        border-radius: 0;
+        /* Left-aligned like every other rail item (keeps the .rail-btn grid). */
       }
       .rail-btn-half {
         flex: 1 1 0;
@@ -2386,18 +2492,19 @@
          child to clip its content without overflowing its parent.
          The inner list gets overflow-y:auto so only it scrolls. */
       .rail-memory-trace {
-        padding: 8px 6px 2px;
-        flex: 1 1 0;
-        min-height: 0;
-        overflow: hidden;
+        padding: 10px 6px 2px;
+        /* Natural height with a usable floor; the rail (not this block) owns
+           the scroll. A discrete divider separates it from the menu above. */
+        flex: 0 0 auto;
+        min-height: 168px;
         display: flex;
         flex-direction: column;
+        margin-top: 6px;
+        border-top: 1px solid var(--border);
       }
       .g-memory-trace-list {
-        flex: 1;
-        min-height: 0;
-        overflow-y: auto;
-        scrollbar-width: thin;
+        display: flex;
+        flex-direction: column;
       }
       .rail-memory-trace-title {
         font-size: 11px;
@@ -2416,7 +2523,7 @@
         font-size: 12px;
         background: transparent;
         border: 1px solid transparent;
-        color: var(--fg);
+        color: var(--fg-dim); /* lighter gray — quieter than the menu items */
         cursor: pointer;
         white-space: nowrap;
         overflow: hidden;
@@ -2709,6 +2816,22 @@
         border: 1px solid var(--border); border-radius: 8px;
         padding: 10px 12px; margin-bottom: 8px; background: var(--bg-elev);
       }
+      .lb-goal { position: relative; }
+      /* Per-goal delete affordance — top-right ×, dimmed until hover. */
+      .lb-goal-delete {
+        position: absolute; top: 6px; right: 6px;
+        width: 22px; height: 22px; padding: 0; line-height: 1;
+        display: flex; align-items: center; justify-content: center;
+        border: none; border-radius: 6px; background: transparent;
+        color: var(--fg-dim); font-size: 16px; cursor: pointer;
+        opacity: 0; transition: opacity 100ms, background 100ms, color 100ms;
+      }
+      .lb-goal:hover .lb-goal-delete { opacity: 1; }
+      .lb-goal-delete:hover { background: color-mix(in oklab, var(--error) 16%, transparent); color: var(--error); }
+      .lb-goal-delete:focus-visible { opacity: 1; outline: 2px solid var(--accent); outline-offset: 1px; }
+      .lb-goal-delete:disabled { opacity: 0.4; cursor: default; }
+      /* Keep the delete button from overlapping the title on narrow cards. */
+      .lb-goal .lb-goal-title { padding-right: 26px; }
       .lb-insight-kind {
         display: inline-block; font-size: 10px; font-weight: 700;
         text-transform: uppercase; letter-spacing: 0.05em;
@@ -3781,7 +3904,237 @@
       }
       .home-card-head { display: flex; align-items: baseline; gap: 10px; margin-bottom: 12px; flex-wrap: wrap; }
       .home-card-title { font-size: 14px; font-weight: 700; margin: 0; }
+      /* Inline "?" explainer — hover for a plain-language tooltip on each card. */
+      .home-help {
+        display: inline-flex; align-items: center; justify-content: center;
+        width: 15px; height: 15px; margin-left: 6px; vertical-align: middle;
+        border-radius: 50%; border: 1px solid var(--border);
+        font-size: 10px; font-weight: 700; line-height: 1;
+        color: var(--fg-dim); cursor: help; user-select: none;
+        transition: color 100ms, border-color 100ms, background 100ms;
+      }
+      .home-help:hover { color: var(--fg); border-color: var(--accent); background: color-mix(in oklab, var(--accent) 12%, transparent); }
       .home-card-hint { font-size: 11px; color: var(--fg-dim); }
+
+      /* ── Get Connected page (data-pane="get-connected") ─────────────────── */
+      .gc-status {
+        display: flex; flex-wrap: wrap; gap: 12px;
+        margin: 4px 0 18px;
+      }
+      .gc-status-item {
+        flex: 1 1 140px;
+        display: flex; flex-direction: column; gap: 2px;
+        padding: 12px 14px;
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        background: color-mix(in srgb, var(--bg) 94%, var(--fg) 6%);
+      }
+      .gc-status-num { font-size: 22px; font-weight: 700; line-height: 1.1; }
+      .gc-status-posture { font-size: 18px; }
+      .gc-status-label { font-size: 11px; color: var(--fg-dim); text-transform: uppercase; letter-spacing: .05em; }
+      /* Each of the 4 sections (App posture · AI clients · Data sources ·
+         Off-the-grid) is its own card with a gap between, so the options read
+         as distinct groups. */
+      .gc-section {
+        padding: 16px 18px;
+        border: 1px solid var(--border);
+        border-radius: 12px;
+        background: color-mix(in srgb, var(--bg) 96%, var(--fg) 4%);
+        margin-bottom: 16px;
+      }
+      .gc-section-title {
+        font-size: 19px; font-weight: 800; margin: 0 0 3px;
+        display: flex; align-items: baseline; gap: 9px; flex-wrap: wrap;
+        letter-spacing: -0.01em;
+      }
+      .gc-section-tag {
+        font-size: 12px; font-weight: 500; color: var(--fg-dim);
+        text-transform: uppercase; letter-spacing: .05em;
+      }
+      .gc-section-hint { font-size: 13px; line-height: 1.55; color: var(--fg-dim); margin: 0 0 10px; max-width: 620px; }
+      .gc-mobile-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 12px; flex-wrap: wrap; }
+      .gc-mobile-title { font-size: 14px; font-weight: 700; }
+      .gc-inline-link { color: var(--accent); text-decoration: none; font-weight: 600; white-space: nowrap; }
+      .gc-inline-link:hover { text-decoration: underline; }
+      .mode-pane[data-pane="get-connected"] .rail-get-connected-group { gap: 6px; }
+      .gc-subsection-title {
+        font-size: 13px; font-weight: 700; margin: 18px 0 2px;
+        text-transform: uppercase; letter-spacing: .04em; color: var(--fg-dim);
+      }
+      /* Scenario cards — one per way to connect an offline/local source. */
+      .gc-scenarios {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+        gap: 10px;
+      }
+      .gc-scenario {
+        display: flex; align-items: flex-start; gap: 11px;
+        text-align: left;
+        padding: 13px 14px;
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        background: color-mix(in srgb, var(--bg) 94%, var(--fg) 6%);
+        cursor: pointer;
+        transition: border-color 120ms, background 120ms, transform 80ms;
+      }
+      .gc-scenario:hover {
+        border-color: var(--accent);
+        background: color-mix(in oklab, var(--accent) 8%, var(--bg));
+      }
+      .gc-scenario:active { transform: translateY(1px); }
+      .gc-scenario-icon { font-size: 20px; line-height: 1.1; flex-shrink: 0; }
+      .gc-scenario-body { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+      .gc-scenario-name { font-size: 14px; font-weight: 700; display: flex; align-items: center; gap: 7px; }
+      .gc-scenario-badge {
+        font-size: 9.5px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase;
+        padding: 1px 6px; border-radius: 6px;
+        background: var(--accent); color: #06232b;
+      }
+      .gc-scenario-desc { font-size: 12px; line-height: 1.5; color: var(--fg-dim); }
+
+      /* Prominent "Off-the-grid & local sources" header. */
+      .gc-offgrid-head {
+        display: flex; align-items: center; gap: 10px;
+        margin: 22px 0 4px;
+        padding: 10px 12px;
+        border-radius: 10px;
+        background: linear-gradient(90deg, color-mix(in oklab, var(--accent) 16%, var(--bg)), transparent);
+        border: 1px solid color-mix(in oklab, var(--accent) 30%, var(--border));
+      }
+      .gc-offgrid-icon { font-size: 20px; line-height: 1; }
+      .gc-offgrid-title { font-size: 17px; font-weight: 800; margin: 0; letter-spacing: -0.01em; }
+      .gc-offgrid-badge {
+        margin-left: auto;
+        font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .05em;
+        padding: 3px 9px; border-radius: 20px;
+        background: var(--accent); color: #06232b;
+      }
+      .gc-recipe-filter {
+        width: 100%; box-sizing: border-box;
+        margin: 6px 0 12px;
+        padding: 9px 13px;
+        border: 1px solid var(--border);
+        border-radius: 9px;
+        background: var(--bg);
+        color: var(--fg);
+        font-size: 13.5px;
+      }
+      .gc-recipe-filter:focus { outline: 2px solid var(--accent); outline-offset: -1px; border-color: transparent; }
+      .gc-recipe-empty { padding: 14px 4px; }
+      /* Configured-connector instances list on the page. */
+      .gc-connectors-list { display: flex; flex-direction: column; gap: 8px; margin-top: 8px; }
+      .gc-interval-row {
+        display: flex; align-items: center; flex-wrap: wrap; gap: 8px;
+        margin-top: 12px; font-size: 13px; color: var(--fg-dim);
+      }
+      .gc-interval-row input {
+        width: 76px; padding: 6px 8px; border-radius: 7px;
+        border: 1px solid var(--border); background: var(--bg); color: var(--fg);
+      }
+      .gc-interval-note { font-size: 12px; opacity: 0.85; flex-basis: 100%; }
+      /* High-contrast variant of the connector help note (e.g. the webhook
+         "URL generated on Save" callout). */
+      .connector-help-accent {
+        border-left-color: var(--accent) !important;
+        background: color-mix(in oklab, var(--accent) 12%, var(--bg)) !important;
+        color: var(--fg) !important;
+      }
+      /* Connectors-list load error + retry. */
+      .gc-connectors-error {
+        padding: 14px 16px; border: 1px solid color-mix(in oklab, var(--error, #f87171) 50%, var(--border));
+        border-radius: 10px; background: color-mix(in oklab, var(--error, #f87171) 8%, var(--bg));
+      }
+      .gc-connectors-error p { margin: 0 0 8px; font-size: 14px; color: var(--fg); }
+      .gc-connectors-trouble { margin-top: 8px !important; }
+      .gc-retry-btn {
+        font-size: 13px; font-weight: 600; padding: 7px 14px; border-radius: 8px;
+        border: 1px solid var(--accent); background: color-mix(in oklab, var(--accent) 14%, transparent);
+        color: var(--fg); cursor: pointer;
+      }
+      .gc-retry-btn:hover { background: color-mix(in oklab, var(--accent) 24%, transparent); }
+
+      /* ── Connector setup form — highlight the actionable fields & buttons so
+         the user can immediately see what to fill in and what to click. ── */
+      #connector-setup-modal .connector-modal-body input[type="text"],
+      #connector-setup-modal .connector-modal-body input[type="password"],
+      #connector-setup-modal .connector-modal-body textarea,
+      #connector-setup-modal .connector-modal-body select {
+        border: 1px solid color-mix(in oklab, var(--accent) 40%, var(--border));
+        background: color-mix(in srgb, var(--bg) 92%, var(--accent) 8%);
+      }
+      #connector-setup-modal .connector-modal-body input:focus,
+      #connector-setup-modal .connector-modal-body textarea:focus,
+      #connector-setup-modal .connector-modal-body select:focus {
+        outline: 2px solid var(--accent);
+        outline-offset: -1px;
+        border-color: transparent;
+      }
+      /* Browse buttons: outline in accent so "click to pick a folder" is obvious. */
+      #connector-setup-modal [id$="-browse"] {
+        border: 1px solid var(--accent);
+        color: var(--accent);
+        font-weight: 600;
+      }
+      #connector-setup-modal [id$="-browse"]:hover {
+        background: color-mix(in oklab, var(--accent) 14%, transparent);
+      }
+      /* Save: the primary next action — give it a soft accent halo. */
+      #connector-setup-save {
+        box-shadow: 0 0 0 3px color-mix(in oklab, var(--accent) 22%, transparent);
+      }
+      /* Home Get Connected teaser card */
+      .home-getconnected-body { display: flex; flex-direction: column; gap: 10px; }
+      .home-card-line { font-size: 13px; line-height: 1.5; color: var(--fg); margin: 0; }
+      /* Scrollable list of connected clients + data sources */
+      .home-gc-list {
+        max-height: 168px;
+        overflow-y: auto;
+        scrollbar-width: thin;
+        display: flex; flex-direction: column; gap: 1px;
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        padding: 4px;
+      }
+      .home-gc-grouplabel {
+        font-size: 10px; text-transform: uppercase; letter-spacing: .06em;
+        color: var(--fg-dim); padding: 6px 4px 2px;
+      }
+      .home-gc-grouplabel:first-child { padding-top: 2px; }
+      .home-gc-row {
+        display: flex; align-items: center; gap: 8px;
+        padding: 5px 4px; border-radius: 5px;
+      }
+      .home-gc-row:hover { background: color-mix(in oklab, var(--accent) 6%, transparent); }
+      .home-gc-dot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; }
+      .home-gc-dot-client { background: var(--ok); }
+      .home-gc-dot-source { background: var(--accent); }
+      .home-gc-dot-blocked { background: var(--danger, #e5484d); }
+      .home-gc-row-blocked .home-gc-row-name { color: var(--fg-dim); }
+      .home-gc-blocked-tag { display: inline-block; font-size: 9.5px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; color: var(--danger, #e5484d); background: color-mix(in oklab, var(--danger, #e5484d) 14%, transparent); border-radius: 4px; padding: 1px 5px; margin-left: 6px; vertical-align: middle; }
+      .home-gc-row-body { min-width: 0; flex: 1; }
+      .home-gc-row-name { font-size: 12.5px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+      .home-gc-row-meta { font-size: 11px; color: var(--fg-dim); }
+      .home-gc-empty { margin: 8px 4px; }
+      /* Always-present invitation to feed the cortex from offline/local data. */
+      .home-gc-add {
+        margin: 4px 2px 2px;
+        text-align: left;
+        font-size: 12.5px; font-weight: 600;
+        color: var(--accent);
+        background: none; border: 0; padding: 5px 4px;
+        cursor: pointer; border-radius: 5px;
+      }
+      .home-gc-add:hover { background: color-mix(in oklab, var(--accent) 10%, transparent); }
+      .home-card-cta {
+        align-self: flex-start;
+        font-size: 13px; font-weight: 600;
+        padding: 7px 12px; border-radius: 8px;
+        border: 1px solid var(--accent);
+        background: color-mix(in oklab, var(--accent) 12%, transparent);
+        color: var(--fg); cursor: pointer;
+        transition: background 120ms;
+      }
+      .home-card-cta:hover { background: color-mix(in oklab, var(--accent) 22%, transparent); }
 
       .home-trust-row { display: flex; gap: 22px; align-items: flex-start; flex-wrap: wrap; }
       /* Two labeled dimensions: Vitality (the ring) + Trust (the factors). */
@@ -3837,7 +4190,25 @@
 
       /* Two-up hero row: cortex-wide card (left) + active-engram square (right). */
       .home-hero-row { display: flex; gap: 16px; flex-wrap: wrap; align-items: stretch; }
-      .home-cortex-card { flex: 1 1 380px; margin-bottom: 0; }
+      .home-cortex-card { flex: 1 1 380px; margin-bottom: 0; position: relative; }
+      .home-ghampus {
+        /* Floats top-right, right-aligned (logo on top, tagline beneath), out of
+           the normal flow so it never shifts the title / Vitality / Trust rows. */
+        position: absolute; top: 38px; right: 18px; z-index: 1;
+        display: flex; flex-direction: column; align-items: flex-end; gap: 4px;
+        cursor: pointer; user-select: none;
+        transition: transform 0.15s ease;
+      }
+      .home-ghampus:hover { transform: translateY(-1px); }
+      .home-ghampus-img {
+        width: 76px; height: 76px; display: block;
+        animation: ghampus-bob 4s ease-in-out infinite;
+      }
+      @keyframes ghampus-bob { 0%,100% { transform: translateY(0); } 50% { transform: translateY(-3px); } }
+      .home-ghampus-tagline {
+        text-align: right; font-style: italic; font-weight: 600;
+        font-size: 12.5px; line-height: 1.35; color: var(--fg-dim);
+      }
       .home-engram-card {
         flex: 0 1 240px; margin-bottom: 0;
         display: flex; flex-direction: column; gap: 8px;
@@ -3871,11 +4242,11 @@
         -webkit-appearance: none; appearance: none;
         display: flex; align-items: center; gap: 12px; width: 100%;
         padding: 10px 12px; border-radius: 10px; cursor: pointer;
-        background: color-mix(in srgb, #d9a445 12%, transparent);
-        border: 1px solid color-mix(in srgb, #d9a445 28%, transparent);
+        background: color-mix(in srgb, var(--fg) 9%, var(--bg));
+        border: 1px solid var(--border);
         color: var(--fg); font: inherit; text-align: left;
       }
-      .home-need-row:hover { background: color-mix(in srgb, #d9a445 20%, transparent); }
+      .home-need-row:hover { background: color-mix(in srgb, var(--fg) 14%, var(--bg)); border-color: color-mix(in oklab, var(--accent) 40%, var(--border)); }
       .home-need-count { font-size: 18px; font-weight: 800; min-width: 36px; }
       .home-need-label { flex: 1; font-size: 13px; }
       .home-need-go { font-size: 12px; font-weight: 600; color: var(--accent); }
@@ -3904,8 +4275,10 @@
       /* "Growth" — 30-day sparkline. */
       .home-growth-stat { font-size: 13px; color: var(--fg); margin-bottom: 10px; }
       .home-growth-stat strong { font-weight: 700; }
-      .home-spark { display: flex; align-items: flex-end; gap: 2px; height: 56px; }
-      .home-spark-bar { flex: 1; min-width: 2px; background: var(--accent); border-radius: 2px 2px 0 0; }
+      /* overflow:hidden + min-width:0 so 90 bars never exceed the card width
+         (the old 2px floor × 90 bars overflowed). */
+      .home-spark { display: flex; align-items: flex-end; gap: 1px; height: 56px; overflow: hidden; width: 100%; }
+      .home-spark-bar { flex: 1 1 0; min-width: 0; background: var(--accent); border-radius: 2px 2px 0 0; }
       .home-spark-bar.empty { background: color-mix(in srgb, var(--fg) 12%, transparent); }
 
       /* "On-Premise" — sovereignty/egress ledger. */
@@ -3947,6 +4320,16 @@
       /* Recent brain activity. */
       .home-ba-cadence { font-size: 13px; line-height: 1.5; margin: 0; color: var(--fg); }
       .home-ba-cons { font-size: 12px; line-height: 1.5; margin: 8px 0 0; color: var(--fg-dim); }
+      .home-ba-schedule { font-size: 12.5px; line-height: 1.5; margin: 8px 0 0; color: var(--fg-dim); }
+      .home-ba-actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-top: 12px; }
+      .home-ba-actions .home-card-cta { padding: 6px 12px; }
+      .home-ba-actions .home-ba-det { font-size: 11px; color: var(--fg-dim); font-style: italic; }
+      /* "deterministic" badge next to the Autonomous Brain title. */
+      .home-deterministic-badge {
+        font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .05em;
+        padding: 2px 7px; border-radius: 20px; vertical-align: middle; cursor: help;
+        background: color-mix(in oklab, var(--ok) 22%, transparent); color: var(--fg);
+      }
 
       /* ── Foresight (Goals page) lanes + Home teaser ─────────────────────── */
       .foresight-lane-label { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; color: var(--fg-dim); margin: 16px 0 6px; }
@@ -5888,14 +6271,23 @@
         flex: 1;
         min-height: 0; /* allow children to shrink + scroll internally */
         overflow: hidden;
+        /* Drawer animation: the inspector column collapses/expands smoothly
+           rather than snapping. WebKit (Tauri/macOS) interpolates
+           grid-template-columns between same-track-count values. */
+        transition: grid-template-columns 0.28s cubic-bezier(0.4, 0, 0.2, 1), gap 0.28s ease;
       }
-      /* When the right-side Memory Inspector is hidden (e.g. MemoryStudio
-         tabs where no node is selected), let the main content column expand
-         to fill the freed space. The grid snaps back to two columns as soon
-         as #g-detail loses .hidden — no JS needed. */
+      /* When the right-side Memory Inspector is hidden, the column animates to
+         0 (drawer slides shut) and the left content expands to fill it. We keep
+         TWO tracks (1fr 0px, not 1fr) so the transition can interpolate. */
       .g-main:has(> #g-detail.hidden) {
-        grid-template-columns: 1fr;
+        grid-template-columns: 1fr 0px;
+        gap: 0;
       }
+      /* The inspector stays in layout (overriding the global .hidden
+         display:none) so the grid track can animate it to/from 0 width; its
+         content is clipped by the 0-width track + .g-main overflow:hidden. */
+      #g-detail { min-width: 0; }
+      #g-detail.hidden { display: flex !important; }
       .g-browse {
         display: flex;
         flex-direction: column;
@@ -6131,9 +6523,13 @@
         left: var(--rail-width, 280px);
         /* Default: leave room for the Memory Inspector on the right. */
         right: calc(var(--trivia-inspector-w) + 24px);
-        height: calc(100vh - 60px - 34px);
+        /* Top edge sits 92px down so the open deck clears the app-header
+           (Active engram / +Files) instead of overflowing into it. */
+        height: calc(100vh - 92px - 34px);
         top: auto;
-        transform: translateY(calc(100% - var(--trivia-bar-h)));
+        /* Fully off-screen when closed — no peeking bar/edge. The deck is
+           opened only via the Home "Connect Stranded Memories →" card button. */
+        transform: translateY(100%);
         transition: transform 0.32s cubic-bezier(0.35, 0, 0.2, 1), right 0.18s ease;
         background: var(--bg);
         border-top: 1px solid var(--border);
@@ -6154,6 +6550,30 @@
         box-shadow: none;
       }
       #trivia-drawer.hidden { display: none; }
+
+      /* ── Connect Stranded Memories — focused MAIN-COLUMN view (body.connect-mode).
+         Replaces the buggy fixed bottom drawer: the deck flows in the left
+         content column (filling it, scrolling internally) while the Inspector
+         opens on the right via the normal .g-main grid — no overlap, no
+         overflow, no squeeze. ── */
+      body.connect-mode #home-overview,
+      body.connect-mode #studio-section,
+      body.connect-mode #g-search-bar,
+      body.connect-mode #g-search-results { display: none !important; }
+      body.connect-mode #trivia-drawer {
+        display: flex !important;
+        position: static;
+        left: auto; right: auto; top: auto; bottom: auto;
+        width: auto; height: auto; max-height: none;
+        transform: none !important;
+        flex: 1 1 auto; min-height: 0;
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        box-shadow: none;
+        overflow-y: auto;
+        z-index: auto;
+        margin: 0;
+      }
 
       /* Stranded Memories now lives in its own Home card (which opens this deck
          via "Connect them →"), so the persistent collapsed bottom bar is
@@ -8431,6 +8851,20 @@
         font-size: 14px;
       }
       .atlas-toolbar .filler { flex: 1; }
+      /* Large active-engram title above the 3D graph, left-aligned. The auto
+         right-margin pushes the toolbar buttons to the right edge. */
+      .atlas-engram-title {
+        margin: 0 auto 0 2px;
+        font-size: 24px;
+        font-weight: 700;
+        letter-spacing: -0.01em;
+        line-height: 1.1;
+        color: var(--fg);
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        max-width: 55%;
+      }
       #btn-atlas-reset.node-selected {
         background: var(--accent, var(--color-brand-turquoise-bright));
         color: var(--color-surface-card);
@@ -8804,10 +9238,42 @@
         color: var(--fg);
         font-size: 14px;
       }
+      /* Date + hour range row. Pulls older events from the full op-log via
+         since/until, then narrows by time-of-day client-side. */
+      .activity-daterow {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        flex-wrap: wrap;
+      }
+      .activity-daterow-label {
+        font-size: 11px;
+        font-weight: 600;
+        text-transform: uppercase;
+        letter-spacing: 0.04em;
+        color: var(--fg-dim);
+      }
+      .activity-daterow-hour { margin-left: 10px; }
+      .activity-daterow-sep { color: var(--fg-dim); font-size: 12px; }
+      .activity-date, .activity-time {
+        padding: 5px 8px;
+        border-radius: 6px;
+        border: 1px solid var(--border);
+        background: var(--bg-elev);
+        color: var(--fg);
+        font-size: 13px;
+        font-family: inherit;
+      }
+      .activity-date:focus, .activity-time:focus {
+        outline: 2px solid var(--accent);
+        outline-offset: -1px;
+        border-color: transparent;
+      }
+      .activity-date-clear { margin-left: 4px; }
       .activity-list { display: flex; flex-direction: column; gap: 8px; }
       .activity-row {
         display: grid;
-        grid-template-columns: 100px 14px 1fr;
+        grid-template-columns: 110px 14px 1fr;  /* matches .activity-group-head so single + group rows align */
         gap: 8px;
         align-items: start;
         padding: 8px 10px;
@@ -8828,6 +9294,17 @@
         color: var(--fg-dim);
         margin-top: 2px;
       }
+      /* Richer row detail bits. */
+      .ar-kind {
+        font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .04em;
+        padding: 1px 6px; border-radius: 5px; vertical-align: middle;
+        background: color-mix(in srgb, var(--fg) 12%, var(--bg)); color: var(--fg-dim);
+      }
+      .ar-quiet { color: var(--fg-dim); font-weight: 400; }
+      .ar-why { font-style: italic; color: var(--fg-dim); }
+      /* Engram name in an activity row — friendly display name, lightly
+         emphasised (replaces the old monospace slug in <code>). */
+      .ar-engram { font-weight: 600; color: var(--fg); }
       .activity-day-divider {
         font-size: 15px;
         text-transform: uppercase;
@@ -8836,6 +9313,48 @@
         margin: 14px 0 6px;
         font-weight: 600;
       }
+      /* Actor badge — who/what made the change. */
+      .activity-actor {
+        display: inline-block; font-size: 11px; font-weight: 700;
+        padding: 1px 7px; border-radius: 20px; margin-left: 4px;
+        vertical-align: middle;
+      }
+      .activity-actor.actor-user  { background: color-mix(in oklab, var(--accent) 22%, transparent); color: var(--fg); }
+      .activity-actor.actor-ai    { background: color-mix(in oklab, var(--ok) 22%, transparent); color: var(--fg); }
+      .activity-actor.actor-brain { background: color-mix(in oklab, var(--color-brand-purple-bright, #a78bfa) 26%, transparent); color: var(--fg); }
+      .activity-actor.actor-app   { background: color-mix(in srgb, var(--fg) 14%, var(--bg)); color: var(--fg-dim); }
+      /* Grouped identical events — collapsed by default. */
+      .activity-group { background: var(--bg-elev); border-radius: 6px; margin-bottom: 8px; overflow: hidden; }
+      .activity-group-head {
+        display: grid; grid-template-columns: 110px 14px 1fr auto; gap: 8px; align-items: start;
+        width: 100%; text-align: left; padding: 8px 10px; cursor: pointer;
+        background: transparent; border: 0; color: var(--fg); font: inherit;
+      }
+      .activity-group-head:hover { background: color-mix(in oklab, var(--accent) 5%, transparent); }
+      .activity-group-count { font-size: 12px; font-weight: 700; color: var(--accent); }
+      .activity-group-chevron { color: var(--fg-dim); transition: transform 0.15s ease; }
+      .activity-group.open .activity-group-chevron { transform: rotate(180deg); }
+      .activity-group-children { display: none; padding: 0 10px 8px 132px; }
+      .activity-group.open .activity-group-children { display: block; }
+      .activity-subrow { display: grid; grid-template-columns: 78px 1fr; gap: 12px; padding: 5px 0; font-size: 13px; color: var(--fg-dim); border-top: 1px solid var(--border); align-items: start; }
+      .activity-subrow .ar-when { color: var(--fg-dim); }
+      .activity-subrow-desc { min-width: 0; line-height: 1.45; }
+      .activity-subrow-desc .ar-sub-name { color: var(--fg); }
+      .activity-subrow-desc code { font-family: ui-monospace, monospace; opacity: 0.75; }
+      .activity-load-more {
+        display: block; width: 100%; margin: 12px 0 4px; padding: 9px;
+        border: 1px dashed var(--border); border-radius: 8px;
+        background: transparent; color: var(--accent); font-weight: 600; cursor: pointer;
+      }
+      .activity-load-more:hover { background: color-mix(in oklab, var(--accent) 8%, transparent); border-style: solid; }
+      .activity-load-more:disabled { opacity: 0.7; cursor: default; }
+      .activity-spinner {
+        display: inline-block; width: 13px; height: 13px; vertical-align: -2px;
+        border: 2px solid color-mix(in oklab, var(--accent) 40%, transparent);
+        border-top-color: var(--accent); border-radius: 50%;
+        animation: activity-spin 0.7s linear infinite; margin-right: 6px;
+      }
+      @keyframes activity-spin { to { transform: rotate(360deg); } }
 
       /* Snapshots list */
       .snapshot-row {
@@ -8849,10 +9368,213 @@
       }
       .snapshot-row:last-child { border-bottom: 0; }
       .snapshot-meta { color: var(--fg-dim); font-size: 15px; }
+
+      /* ── Presentation Mode ──────────────────────────────────────────────
+         Default-deny redaction. When body.presentation-active is set, every
+         element tagged [data-pres] is covered by a solid block UNLESS the
+         masking sweep marked it .pres-reveal. Solid block (not blur) so it
+         can't be recovered from a recording; ::after preserves layout width. */
+      body.presentation-active [data-pres]:not(.pres-reveal) {
+        color: transparent !important;
+        position: relative;
+        user-select: none;
+        border-radius: 3px;
+      }
+      body.presentation-active [data-pres]:not(.pres-reveal) > * { visibility: hidden; }
+      body.presentation-active [data-pres]:not(.pres-reveal)::after {
+        content: "";
+        position: absolute;
+        inset: 0;
+        background: var(--fg-dim);
+        opacity: 0.92;
+        border-radius: 3px;
+        pointer-events: none;
+      }
+      /* The config page (and anything else explicitly exempt) is never masked. */
+      body.presentation-active [data-pres-exempt] [data-pres] {
+        color: inherit !important;
+        user-select: auto;
+      }
+      body.presentation-active [data-pres-exempt] [data-pres] > * { visibility: visible; }
+      body.presentation-active [data-pres-exempt] [data-pres]::after { display: none; }
+
+      /* Exit chip — sits inline beside the Graphnosis wordmark while masking
+         is active. Click (or Esc) to exit. */
+      .presentation-banner {
+        display: inline-flex; align-items: center; gap: 8px;
+        margin-left: 14px; vertical-align: middle;
+        padding: 5px 12px;
+        border: none;
+        border-radius: 8px;
+        background: var(--error, #e5484d);
+        color: #fff;
+        font-size: 11px; font-weight: 700; letter-spacing: 0.05em;
+        text-transform: uppercase;
+        cursor: pointer;
+        box-shadow: 0 2px 10px rgba(0,0,0,0.3);
+      }
+      .presentation-banner.hidden { display: none; }
+      /* Keep the red background on hover — the global button:hover rule would
+         otherwise wash it to a translucent accent tint. */
+      .presentation-banner:hover { background: color-mix(in oklab, var(--error, #e5484d) 88%, #000); }
+      /* Lock-screen copy: centered at the top, shown only while masking is
+         active AND the cortex is locked (the in-header banner is unreachable). */
+      .presentation-banner-lock {
+        display: none;
+        position: fixed; top: 14px; left: 50%; transform: translateX(-50%);
+        margin-left: 0; z-index: 99999; box-shadow: 0 4px 16px rgba(0,0,0,0.4);
+      }
+      body.presentation-active:not(.app-unlocked) .presentation-banner-lock { display: inline-flex; }
+      .presentation-banner-dot {
+        width: 8px; height: 8px; border-radius: 50%; background: #fff;
+        animation: graphnosis-pulse 1.4s ease-in-out infinite;
+      }
+      .presentation-banner-exit { font-weight: 500; text-transform: none; letter-spacing: 0; opacity: 0.9; }
+
+      /* Config page layout. Full-width column so the action bar can span edge
+         to edge; the reading content is centered inside .pres-scroll. */
+      /* Fill the canvas height so the sticky action bar's margin-top:auto can
+         push it flush to the bottom (status bar) even when content is short. */
+      .mode-pane[data-pane="presentation"] { height: 100%; }
+      #presentation-body { height: 100%; }
+      .pres-config { display: flex; flex-direction: column; min-height: 100%; }
+      .pres-scroll { max-width: 720px; width: 100%; margin: 0 auto; padding-bottom: 16px; }
+      .pres-intro { color: var(--fg-dim); font-size: 14px; line-height: 1.55; margin-bottom: 18px; }
+      .pres-intro strong { color: var(--fg); }
+      .pres-warning a { color: var(--error, #e5484d); font-weight: 600; }
+      .pres-warning {
+        margin-top: 12px; padding: 11px 14px; border-radius: 8px;
+        background: color-mix(in oklab, var(--error, #e5484d) 12%, transparent);
+        border: 1px solid color-mix(in oklab, var(--error, #e5484d) 40%, transparent);
+        color: var(--fg); font-size: 13px; line-height: 1.55;
+      }
+      .pres-warning strong { color: var(--error, #e5484d); }
+      .pres-section { margin-bottom: 22px; }
+      .pres-section-head {
+        display: flex; align-items: baseline; justify-content: space-between;
+        border-bottom: 1px solid var(--border); padding-bottom: 6px; margin-bottom: 8px;
+      }
+      .pres-section-head h3 { margin: 0; font-size: 14px; font-weight: 600; }
+      .pres-section-right { display: flex; align-items: center; gap: 10px; }
+      .pres-section-meta { font-size: 12px; color: var(--fg-dim); }
+      .pres-selectall {
+        font-size: 12px; padding: 3px 9px; border-radius: 6px;
+        border: 1px solid var(--border); background: var(--bg-elev);
+        color: var(--accent); font-weight: 600; cursor: pointer;
+      }
+      .pres-selectall:hover { background: color-mix(in oklab, var(--accent) 12%, var(--bg-elev)); }
+      .pres-list { display: flex; flex-direction: column; gap: 2px; }
+      .pres-empty { color: var(--fg-dim); font-size: 13px; margin: 4px 0; }
+      .pres-row {
+        display: flex; align-items: flex-start; gap: 10px;
+        padding: 7px 8px; border-radius: 8px; cursor: pointer;
+      }
+      .pres-row:hover { background: color-mix(in oklab, var(--accent) 6%, transparent); }
+      .pres-row input { margin-top: 2px; flex-shrink: 0; width: 15px; height: 15px; accent-color: var(--accent); }
+      .pres-row-body { min-width: 0; display: flex; flex-direction: column; flex: 1; }
+      .pres-row-title { font-size: 13.5px; font-weight: 500; }
+      .pres-row-sub { font-size: 11.5px; color: var(--fg-dim); }
+      /* "will be visible" tag — shown only when the row's checkbox is ticked. */
+      .pres-row-flag {
+        display: none; align-self: center; flex-shrink: 0;
+        font-size: 10.5px; font-weight: 700; letter-spacing: 0.02em;
+        color: var(--ok); background: color-mix(in oklab, var(--ok) 15%, transparent);
+        padding: 2px 7px; border-radius: 5px; white-space: nowrap;
+      }
+      .pres-row:has(input:checked) .pres-row-flag { display: inline-block; }
+      .pres-row:has(input:checked) { background: color-mix(in oklab, var(--ok) 7%, transparent); }
+      .pres-source-group { margin: 2px 0; }
+      .pres-source-group > summary {
+        cursor: pointer; font-size: 13px; font-weight: 600; padding: 5px 4px;
+        list-style: revert;
+      }
+      .pres-source-group[open] > summary { margin-bottom: 2px; }
+      .pres-source-group .pres-row { margin-left: 16px; }
+      /* Full-bleed action bar, sticky to the bottom of the scroll viewport so
+         it reads as a solid panel right above the status bar (no content
+         peeking through). margin-top:auto pushes it down when content is short. */
+      .pres-actions {
+        position: sticky; bottom: 0; z-index: 5;
+        margin-top: auto;
+        /* Bleed past the .app-canvas padding (10px 24px 20px) so the bar sits
+           flush against the status bar with no gap, edge to edge. */
+        margin-bottom: -20px; margin-left: -24px; margin-right: -24px;
+        display: flex; align-items: center; gap: 12px;
+        padding: 14px 24px 18px;
+        background: var(--bg-elev);
+        border-top: 1px solid var(--border);
+        box-shadow: 0 -6px 18px rgba(0,0,0,0.22);
+      }
+      .pres-group-visible {
+        margin-left: 8px; font-size: 10.5px; font-weight: 700; letter-spacing: 0.02em;
+        color: var(--ok); background: color-mix(in oklab, var(--ok) 15%, transparent);
+        padding: 1px 7px; border-radius: 5px; vertical-align: middle;
+      }
+      .pres-group-visible.hidden { display: none; }
+      .pres-grp-summary-right { margin-left: 10px; }
+      .pres-grp-selectall { font-size: 11px; padding: 2px 8px; }
+      /* Locked controls while presenting — clearly non-interactive. */
+      .pres-row input:disabled { opacity: 0.35; cursor: not-allowed; }
+      .pres-selectall:disabled, .pres-grp-selectall:disabled { opacity: 0.4; cursor: not-allowed; }
+      .pres-start {
+        padding: 10px 18px; border-radius: 9px; border: none;
+        background: var(--accent); color: #000; font-weight: 700; font-size: 14px; cursor: pointer;
+        transition: background 100ms, transform 60ms;
+      }
+      /* Hover turns the Review & Start button red with white text — a clear
+         "you're about to enter Presentation Mode" cue. */
+      .pres-start:hover { background: var(--error, #e5484d); color: #fff; }
+      .pres-start:active { transform: translateY(1px); }
+      .pres-start.is-active { background: var(--error, #e5484d); color: #fff; }
+      .pres-start.is-active:hover { background: color-mix(in oklab, var(--error, #e5484d) 82%, #000); }
+      .pres-clear {
+        padding: 9px 14px; border-radius: 9px; border: 1px solid var(--border);
+        background: var(--bg-elev); color: var(--fg-dim); font-size: 13px; cursor: pointer;
+      }
+      .pres-clear:hover { color: var(--fg); background: color-mix(in oklab, var(--fg) 6%, var(--bg-elev)); }
+      .pres-count { font-size: 12px; color: var(--fg-dim); margin-left: auto; }
+      .pres-phrases {
+        width: 100%; box-sizing: border-box; resize: vertical; min-height: 64px;
+        padding: 8px 10px; border-radius: 8px; border: 1px solid var(--border);
+        background: var(--bg); color: var(--fg); font-size: 13px; line-height: 1.5;
+        font-family: inherit;
+      }
+      .pres-phrases:focus { outline: 2px solid var(--accent); outline-offset: -1px; border-color: transparent; }
+      /* Phrase-match redaction — same dark block as the field redaction. */
+      .pres-phrase {
+        background: var(--fg-dim); color: transparent; border-radius: 3px;
+        user-select: none; padding: 0 1px;
+      }
+      .studio-llm-redacted { color: var(--fg-dim); font-size: 13px; line-height: 1.6; padding: 12px; font-style: italic; }
+
+      /* Consent modal — scrollable body + the "what will be visible" summary. */
+      .presentation-consent-body { padding: 20px; max-height: min(60vh, 520px); overflow-y: auto; }
+      .pres-consent-summary {
+        margin: 0 0 14px; padding: 12px 14px; border-radius: 8px;
+        background: color-mix(in oklab, var(--ok) 8%, transparent);
+        border: 1px solid color-mix(in oklab, var(--ok) 30%, transparent);
+      }
+      .pres-consent-summary-head { font-size: 13px; font-weight: 600; margin-bottom: 8px; }
+      .pres-consent-summary-empty { color: var(--error, #e5484d); font-weight: 500; }
+      .pres-consent-group { margin: 6px 0; }
+      .pres-consent-group-label {
+        font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em;
+        color: var(--fg-dim); margin-bottom: 2px;
+      }
+      .pres-consent-group ul { margin: 0; padding-left: 18px; font-size: 13px; line-height: 1.5; }
     </style>
   </head>
   <body>
     <main>
+      <!-- Presentation Mode banner for the LOCK SCREEN. The in-header banner is
+           hidden while locked (the whole app view is), so this centered copy
+           keeps the cue visible if you lock while presenting. CSS shows it only
+           when masking is active AND the cortex is locked. -->
+      <button id="presentation-banner-lock" class="presentation-banner presentation-banner-lock" type="button" title="Exit Presentation Mode (Esc)">
+        <span class="presentation-banner-dot" aria-hidden="true"></span>
+        <span>PRESENTATION MODE · SOME CONTENT REDACTED</span>
+        <span class="presentation-banner-exit">click or Esc to exit</span>
+      </button>
       <!-- ── Unlock view (full-screen until cortex is open) ─────────────── -->
       <section id="view-unlock" class="unlock-shell">
         <div class="unlock-wrapper">
@@ -8868,7 +9590,7 @@
             <div class="row">
               <label for="cortex-dir" class="visually-hidden">cortex folder path</label>
               <div class="pick-row">
-                <input type="text" id="cortex-dir" placeholder="/Users/you/GraphnosisCortex" />
+                <input type="text" id="cortex-dir" placeholder="/Users/you/GraphnosisCortex" data-pres="surface:cortexPath" />
                 <button id="btn-pick">Choose…</button>
               </div>
               <!-- Shown only when the pre-filled last-used path no longer exists
@@ -8883,7 +9605,7 @@
                 <span id="touchid-hint" class="touchid-inline-hint hidden">Unlock with Touch ID →</span>
               </div>
               <div class="passphrase-input-wrap">
-                <input type="password" id="passphrase" placeholder="Your Graphnosis cortex passphrase" />
+                <input type="password" id="passphrase" placeholder="Your Graphnosis cortex passphrase" data-pres="surface:cortexPath" />
                 <button id="btn-touchid-inline" class="touchid-inline-btn hidden" type="button"
                         title="Unlock with Touch ID" aria-label="Unlock with Touch ID">
                   <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
@@ -9040,15 +9762,15 @@
                  title span otherwise wouldn't inherit the header's region. -->
             <div class="app-title-row" data-tauri-drag-region>
               <span class="app-title" data-tauri-drag-region>Graphnosis</span>
-              <!-- Ghampus mark + label: the sole "Meet Ghampus" entry point now
-                   that the studio identity block is gone. Opts OUT of the
-                   window-drag region so the click reaches the handler instead
-                   of being swallowed by Tauri's drag region. -->
-              <span class="header-ghampus-btn" id="header-ghampus-btn" role="button" tabindex="0"
-                    title="Who is Ghampus?" data-tauri-drag-region="false">
-                <img class="header-ghampus" src="/graphnosis-logo-transparent-bg.png" alt="" aria-hidden="true" />
-                <span class="header-ghampus-label">Ghampus, the AI seahorse</span>
-              </span>
+              <!-- Presentation Mode exit chip — sits beside the wordmark while
+                   masking is active. Click (or press Esc) to exit. -->
+              <button id="presentation-banner" class="presentation-banner hidden" type="button" title="Exit Presentation Mode (Esc)">
+                <span class="presentation-banner-dot" aria-hidden="true"></span>
+                <span>PRESENTATION MODE · SOME CONTENT REDACTED</span>
+                <span class="presentation-banner-exit">click or Esc to exit</span>
+              </button>
+              <!-- Ghampus mark + tagline moved to the Overview Trust & Vitality
+                   card (#home-ghampus-btn). -->
             </div>
             <span class="header-tagline" data-tauri-drag-region>Your local encrypted memory, indexed for deterministic recall — auditable</span>
           </div>
@@ -9101,7 +9823,7 @@
                    id="rail-logo-home"
                    role="button"
                    tabindex="0"
-                   title="Go to MemoryStudio" />
+                   title="Go to Home" />
               <button id="rail-collapse-toggle" class="rail-collapse-toggle"
                       title="Collapse sidebar"
                       aria-label="Collapse sidebar"
@@ -9118,10 +9840,29 @@
                 </svg>
               </button>
             </div>
-            <button class="rail-btn active" data-mode="atlas" title="Home — your memory at a glance: search, check-in deck, health">
+            <button class="rail-btn active" data-mode="atlas" title="Overview — your memory at a glance: search, check-in deck, health, live AI-client status">
               <span class="rail-icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 9.5L12 3l9 6.5"/><path d="M5 9v11a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V9"/><path d="M9 21v-7h6v7"/></svg></span>
-              <span class="rail-label">Home</span>
-              <span id="rail-corrections-badge" class="rail-badge hidden" title="Pending corrections waiting in the deck">0</span>
+              <span class="rail-label">Overview</span>
+              <!-- Trailing cluster (right-aligned): pending-corrections badge +
+                   the live AI-client status indicator (moved here from the
+                   now-removed Status item). -->
+              <span class="rail-trailing">
+                <span id="rail-corrections-badge" class="rail-badge hidden" title="Pending corrections waiting in the deck">0</span>
+                <span id="rail-mcp-indicator" class="rail-mcp-indicator" data-pres="surface:mcpClients"></span>
+              </span>
+            </button>
+            <!-- Get Connected — directly under Home: grow your cortex (AI clients
+                 read it, data sources feed it). Chips/recipes live on its page. -->
+            <button class="rail-btn" data-mode="get-connected" title="Get Connected — grow your cortex: connect AI clients to read it and data sources to feed it">
+              <span class="rail-icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.07 0l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.07 0l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg></span>
+              <span class="rail-label">Get Connected</span>
+              <span id="rail-gc-count" class="rail-badge hidden" title="Connected AI clients + data sources">0</span>
+            </button>
+            <!-- MCP Tools — directly under Get Connected. -->
+            <button class="rail-btn" data-mode="mcp-tools" title="Browse all MCP tools Graphnosis exposes">
+              <span class="rail-icon">⚒︎</span>
+              <span class="rail-label">MCP Tools</span>
+              <span></span>
             </button>
             <button class="rail-btn" data-mode="engram" title="3D Engram — your memory graph, rendered in space">
               <span class="rail-icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/><polyline points="3.27 6.96 12 12.01 20.73 6.96"/><line x1="12" y1="22.08" x2="12" y2="12"/></svg></span>
@@ -9158,9 +9899,9 @@
               <span class="rail-label">Activity</span>
               <span></span>
             </button>
-            <button class="rail-btn" data-mode="power-tools" title="Manual tools — recall / remember / edit / GNN by hand (your AI usually does this)">
+            <button class="rail-btn" data-mode="power-tools" title="MemoryStudio — recall / remember / edit / GNN by hand (your AI usually does this for you via MCP)">
               <span class="rail-icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14.7 6.3a4 4 0 0 0-5.4 5.4L3 18v3h3l6.3-6.3a4 4 0 0 0 5.4-5.4l-2.6 2.6-2-2 2.6-2.6z"/></svg></span>
-              <span class="rail-label">Manual tools</span>
+              <span class="rail-label">MemoryStudio</span>
               <span></span>
             </button>
             <!-- Nodes rail tab removed — its functionality (search,
@@ -9173,63 +9914,23 @@
                  Graphnosis check-in deck. The pending-count badge
                  moved to the Graphnosis rail item so it's still
                  visible at a glance. -->
-            <button class="rail-btn" data-mode="status" title="Engram counts, lifetime corrections, AI clients tapped in">
-              <span class="rail-icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 12 7 12 10 4 14 20 17 12 21 12"/></svg></span>
-              <span class="rail-label">Status</span>
-              <span id="rail-mcp-indicator" class="rail-mcp-indicator"></span>
+            <!-- Status item + page removed (obsolete): recap moved to Overview,
+                 AI-client list to Get Connected, op-log to Activity, and the live
+                 client indicator to the Overview rail item. MCP Tools moved up
+                 under Get Connected. -->
+            <!-- Memory trace removed — redundant with Activity / Search / the
+                 Inspector, and it cluttered the rail. Settings is the last item,
+                 pinned to the bottom. -->
+            <button class="rail-btn" data-mode="presentation" title="Presentation Mode — pick what to reveal during a demo or screen-share; everything else is redacted">
+              <span class="rail-icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg></span>
+              <span class="rail-label">Presentation Mode</span>
+              <span></span>
             </button>
-            <!-- Copilot setup lives in Settings → "Configure Copilot…" and the
-                 AI Clients chip; removed from the rail to declutter the nav. -->
-            <!-- Memory trace: grows to fill space between nav buttons and settings.
-                 The inner list gets overflow-y:auto so it scrolls independently.
-                 Settings is pinned to the bottom via margin-top:auto (see CSS). -->
-            <div id="g-memory-trace" class="rail-memory-trace hidden">
-              <div class="rail-memory-trace-title">Memory trace</div>
-              <div id="g-memory-trace-list" class="g-memory-trace-list"></div>
-            </div>
-            <div id="rail-get-connected" class="rail-get-connected">
-              <!-- Collapsible header — declutters the rail once the user has
-                   connected a client + a data source. State persists. -->
-              <button type="button" id="rail-gc-toggle" class="rail-get-connected-header" aria-expanded="true" title="Show / hide connections">
-                <span class="rail-gc-chevron" aria-hidden="true">▾</span>
-                <span>Get connected</span>
-              </button>
-              <div id="rail-gc-body" class="rail-get-connected-body">
-                <!-- Mode chips above any label — these describe the posture
-                     of the whole app (standalone / how data flows in from
-                     off-the-grid sources), not specific integrations.
-                     The Local LLM + Neural Network chips render below
-                     inside #rail-gc-aimode when they're turned on. -->
-                <div class="rail-get-connected-group" id="rail-gc-mode"></div>
-                <div class="rail-get-connected-label" style="margin-top: 8px;">AI clients</div>
-                <div class="rail-get-connected-group" id="rail-gc-aimode"></div>
-                <div class="rail-get-connected-group" id="rail-gc-clients"></div>
-                <!-- Data sources section: AI clients READ from the cortex;
-                     data sources FEED it. -->
-                <div class="rail-get-connected-label" style="margin-top: 8px;">Data sources</div>
-                <div class="rail-get-connected-group" id="rail-gc-connectors"></div>
-              </div>
-            </div>
-            <!-- Pinned-to-bottom row: MCP Tools + Settings share the rail's
-                 width 50/50. The row carries the margin-top:auto pin that the
-                 Settings button used to own when it was the only bottom item. -->
-            <div class="rail-bottom-row">
-              <button class="rail-btn rail-btn-half" data-mode="mcp-tools" title="Browse all MCP tools Graphnosis exposes">
-                <!-- ⚒︎ = U+2692 + U+FE0E (text variant selector). Forces the
-                     hammer-and-pick glyph to render monochrome line-art so it
-                     matches the weight of the gear (⚙) on the Settings
-                     button — the emoji form 🛠 renders full-color and at a
-                     different scale, breaking visual parity. -->
-                <span class="rail-icon">⚒︎</span>
-                <span class="rail-label">MCP Tools</span>
-                <span></span>
-              </button>
-              <button class="rail-btn rail-btn-half" data-mode="settings" title="Preferences">
-                <span class="rail-icon">⚙</span>
-                <span class="rail-label">Settings</span>
-                <span></span>
-              </button>
-            </div>
+            <button class="rail-btn rail-btn-settings" data-mode="settings" title="Preferences">
+              <span class="rail-icon">⚙</span>
+              <span class="rail-label">Settings</span>
+              <span></span>
+            </button>
           </nav>
           <div class="app-canvas">
             <!-- Persistent error banner (any mode). Paired with #error-unlock
@@ -9295,13 +9996,21 @@
                       <!-- Hero: time-aware greeting + one CORTEX-WIDE sentence. -->
                       <div class="home-hero">
                         <div id="home-greeting" class="home-greeting">Welcome back</div>
-                        <div id="home-pulse" class="home-pulse">Loading your memory…</div>
+                        <div id="home-pulse" class="home-pulse" data-pres="surface:stats">Loading your memory…</div>
                       </div>
 
                       <!-- Cortex-wide Trust & Vitality + the active engram as a
                            compact card. Both are grid items in #home-overview
                            (smaller boxes, not full-width rows). -->
                         <section class="home-card home-cortex-card">
+                          <!-- Ghampus mark + tagline — FLOATS at the top-right of
+                               the card (absolute), right-aligned, so it never
+                               shifts the vertical position of the title, Vitality,
+                               or Trust rows. Click = "Who is Ghampus?". -->
+                          <div class="home-ghampus" id="home-ghampus-btn" role="button" tabindex="0" title="Who is Ghampus?">
+                            <img class="home-ghampus-img" src="/graphnosis-logo-transparent-bg.png" alt="" aria-hidden="true" />
+                            <span class="home-ghampus-tagline">Safe to trust Ghampus,<br>your second hippocampus</span>
+                          </div>
                           <div class="home-card-head">
                             <h3 class="home-card-title">Trust &amp; Vitality</h3>
                             <span class="home-card-hint">across your whole cortex</span>
@@ -9310,7 +10019,7 @@
                             <div class="home-dim home-dim-vitality">
                               <div class="home-dim-label">Vitality</div>
                               <div class="home-cortex-ring">
-                                <div id="home-cortex-grade" class="g-health-grade">—</div>
+                                <div id="home-cortex-grade" class="g-health-grade" data-pres="surface:vitality">—</div>
                                 <div class="g-health-meter"><div id="home-cortex-fill" class="g-health-fill"></div></div>
                               </div>
                             </div>
@@ -9323,7 +10032,7 @@
 
                         <section class="home-card home-engram-card">
                           <div class="home-engram-card-label">Active engram</div>
-                          <div id="home-engram-name" class="home-engram-name">—</div>
+                          <div id="home-engram-name" class="home-engram-name" data-pres="surface:stats">—</div>
                           <div id="g-health" class="g-health">
                             <div class="g-health-gauge">
                               <div id="g-health-grade" class="g-health-grade">—</div>
@@ -9338,6 +10047,16 @@
                             <span id="g-health-engram" class="g-health-engram"></span>
                           </div>
                         </section>
+
+                      <!-- Get Connected teaser (3rd card) — always-available
+                           nudge to grow the cortex; opens the full page. -->
+                      <section class="home-card home-getconnected-card" id="home-getconnected">
+                        <div class="home-card-head">
+                          <h3 class="home-card-title" id="home-getconnected-title">Connections</h3>
+                          <span class="home-card-hint" id="home-getconnected-hint">Online · reading — Offline &amp; online · feeding</span>
+                        </div>
+                        <div id="home-getconnected-body" class="home-getconnected-body" data-pres="surface:mcpClients"><div class="home-skel"></div><div class="home-skel w70"></div></div>
+                      </section>
 
                       <!-- Memory health — the richer 7-factor retrieval-quality
                            breakdown (brain:getMemoryHealth), cortex-wide. -->
@@ -9356,7 +10075,7 @@
                           <h3 class="home-card-title">Self-healing</h3>
                           <span class="home-card-hint">duplicates merged automatically — nothing is ever lost</span>
                         </div>
-                        <div id="home-selfheal-body" class="home-selfheal-body"><div class="home-skel"></div><div class="home-skel w70"></div></div>
+                        <div id="home-selfheal-body" class="home-selfheal-body" data-pres="surface:stats"><div class="home-skel"></div><div class="home-skel w70"></div></div>
                       </section>
 
                       <!-- Needs you — what's waiting on the user (actionable lane).
@@ -9367,7 +10086,7 @@
                           <h3 class="home-card-title">Needs you</h3>
                           <span class="home-card-hint">a few minutes of tending</span>
                         </div>
-                        <div id="home-needs-body" class="home-needs-body"></div>
+                        <div id="home-needs-body" class="home-needs-body" data-pres="surface:recents"></div>
                       </section>
 
                       <!-- Stranded memories — its own card so the user always has a
@@ -9377,7 +10096,7 @@
                           <h3 class="home-card-title">Stranded memories</h3>
                           <span class="home-card-hint">memories with no connections yet</span>
                         </div>
-                        <div id="home-stranded-body" class="home-stranded-body"></div>
+                        <div id="home-stranded-body" class="home-stranded-body" data-pres="surface:recents"></div>
                       </section>
 
                       <!-- Since you last opened — autonomy digest (op-log diff). -->
@@ -9404,29 +10123,24 @@
                            you're away: cadence + last consolidation. -->
                       <section class="home-card home-brainact-card" id="home-brainact">
                         <div class="home-card-head">
-                          <h3 class="home-card-title">Recent brain activity</h3>
-                          <span class="home-card-hint">your second brain, running on its own</span>
+                          <h3 class="home-card-title">Autonomous Brain <span class="home-deterministic-badge" title="Rule-based and reproducible — no LLM, no randomness. The same memory always yields the same connections, and every change is auditable.">deterministic</span></h3>
+                          <span class="home-card-hint">your second brain — maintains your memory on its own · powered by Ghampus</span>
                         </div>
-                        <div id="home-brainact-body" class="home-brainact-body"><div class="home-skel"></div><div class="home-skel w70"></div></div>
+                        <div id="home-brainact-body" class="home-brainact-body" data-pres="surface:stats"><div class="home-skel"></div><div class="home-skel w70"></div></div>
                       </section>
 
                       <!-- Rediscover — a memory worth a second look (serendipity). -->
-                      <section class="home-card home-rediscover-card" id="home-rediscover" style="display:none">
-                        <div class="home-card-head">
-                          <h3 class="home-card-title">Rediscover</h3>
-                          <span class="home-card-hint">something you haven't revisited</span>
-                        </div>
-                        <div id="home-rediscover-body" class="home-rediscover-body"></div>
-                      </section>
+                      <!-- Rediscover card removed — low signal, overlapped with
+                           Stranded Memories + the deck. -->
 
-                      <!-- Growth — memories added per day over the last 30 days
-                           (op-log, bounded via activity.list since). -->
+                      <!-- Growth — memories added per day over the last 90 days
+                           (op-log, ops-filtered to adds). Click → Activity. -->
                       <section class="home-card home-growth-card" id="home-growth" style="display:none">
                         <div class="home-card-head">
                           <h3 class="home-card-title">Growth</h3>
-                          <span class="home-card-hint" id="home-growth-when">last 30 days</span>
+                          <span class="home-card-hint" id="home-growth-when">last 90 days · tap for full history</span>
                         </div>
-                        <div id="home-growth-body" class="home-growth-body"></div>
+                        <div id="home-growth-body" class="home-growth-body" data-pres="surface:stats"></div>
                       </section>
 
                       <!-- On-Premise — sovereignty/egress ledger. HONEST: shows what
@@ -9457,7 +10171,7 @@
                       <!-- Breakdown (the dive): per-engram vitality bars. Bars
                            collapse to a top-N with a "show all" toggle. -->
                       <section class="home-card home-breakdown-card">
-                        <div id="home-engram-bars" class="home-engram-bars"></div>
+                        <div id="home-engram-bars" class="home-engram-bars" data-pres="surface:stats"></div>
                         <div id="g-federated-stats" class="g-federated-stats">
                           <span id="stat-total-memories">—</span>
                           <span class="stat-sep">·</span>
@@ -9523,7 +10237,7 @@
                         <div id="studio-power-tools" class="power-tools collapsed">
                           <button type="button" id="power-tools-toggle" class="power-tools-header" aria-expanded="false" title="Manual memory tools — your AI usually does these for you">
                             <span class="power-tools-icon" aria-hidden="true">🛠</span>
-                            <span class="power-tools-title">Manual tools</span>
+                            <span class="power-tools-title">MemoryStudio</span>
                             <span class="power-tools-hint">manual fallback — your AI client does this for you</span>
                             <span class="power-tools-chevron" aria-hidden="true">▾</span>
                           </button>
@@ -9992,7 +10706,7 @@
                               <div id="studio-llm-progress" class="studio-llm-progress hidden">
                                 <div class="studio-llm-progress-bar"></div>
                               </div>
-                              <div id="studio-llm-output" class="studio-panel-content"></div>
+                              <div id="studio-llm-output" class="studio-panel-content" data-pres="surface:studioResults"></div>
                               <div id="studio-llm-unavailable" class="studio-llm-unavailable hidden">
                                 <p>Local LLM not running.</p>
                                 <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px;justify-content:center;">
@@ -10014,9 +10728,9 @@
                               </div>
                               <div class="studio-panel-content">
                                 <div id="studio-recall-meta" class="studio-result-meta"></div>
-                                <pre id="studio-recall-output" class="studio-subgraph-output"></pre>
+                                <pre id="studio-recall-output" class="studio-subgraph-output" data-pres="surface:studioResults"></pre>
                                 <!-- Node list — scrolls with the subgraph text above -->
-                                <div id="studio-recall-nodes" class="studio-node-list">
+                                <div id="studio-recall-nodes" class="studio-node-list" data-pres="surface:studioResults">
                                   <div class="studio-node-list-header">
                                     <span class="studio-node-list-label">Nodes</span>
                                     <span class="studio-node-pro-badge">Studio</span>
@@ -10166,6 +10880,9 @@
                   <!-- 3D Atlas tab — unchanged from before. -->
                   <section class="g-tab-pane hidden" data-gpane="atlas">
                     <div class="atlas-toolbar" style="justify-content: flex-end;">
+                      <!-- Large active-engram title, left-aligned above the graph.
+                           margin-right:auto pushes the toolbar buttons to the right. -->
+                      <h2 id="atlas-engram-title" class="atlas-engram-title">—</h2>
                       <!-- Mobile-only: toggles the colour legend (hidden by default on phones). -->
                       <button id="btn-atlas-legend" class="mobile-legend-toggle" title="Show / hide the colour legend" aria-label="Toggle legend" aria-pressed="false">
                         <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
@@ -10245,15 +10962,15 @@
                           </p>
                           <div id="lb-brain-stats" class="lb-stats-row" style="display:none;">
                             <div class="lb-stat">
-                              <span class="lb-stat-value" id="lb-stat-decay-nodes">–</span>
+                              <span class="lb-stat-value" id="lb-stat-decay-nodes" data-pres="surface:vitality">–</span>
                               <span class="lb-stat-label">nodes adjusted by decay</span>
                             </div>
                             <div class="lb-stat">
-                              <span class="lb-stat-value" id="lb-stat-decay-when">–</span>
+                              <span class="lb-stat-value" id="lb-stat-decay-when" data-pres="surface:vitality">–</span>
                               <span class="lb-stat-label">last memory decay</span>
                             </div>
                             <div class="lb-stat">
-                              <span class="lb-stat-value" id="lb-stat-synapses">–</span>
+                              <span class="lb-stat-value" id="lb-stat-synapses" data-pres="surface:vitality">–</span>
                               <span class="lb-stat-label">connections formed this session</span>
                             </div>
                           </div>
@@ -10711,21 +11428,118 @@ ollama list</code></pre>
                   <select id="activity-engram-select" class="activity-engram-select" aria-label="Scope to one engram">
                     <option value="">All engrams</option>
                   </select>
+                  <select id="activity-actor-select" class="activity-engram-select" aria-label="Filter by who made the change" title="Filter by who made the change">
+                    <option value="">Anyone</option>
+                  </select>
                   <button id="btn-activity-refresh" class="btn-sm" title="Reload the most recent events">↻ Refresh</button>
                 </div>
                 <div class="g-activity-filters" id="activity-chips" role="group" aria-label="Filter by event type">
                   <button class="g-activity-chip active" data-cat="all">All</button>
-                  <button class="g-activity-chip" data-cat="add">Added</button>
-                  <button class="g-activity-chip" data-cat="edit">Edited</button>
-                  <button class="g-activity-chip" data-cat="connect">Connections</button>
-                  <button class="g-activity-chip" data-cat="merge">Merged</button>
-                  <button class="g-activity-chip" data-cat="remove">Removed</button>
+                  <button class="g-activity-chip" data-cat="ingested">Ingested</button>
+                  <button class="g-activity-chip" data-cat="nodes">Nodes</button>
+                  <button class="g-activity-chip" data-cat="edits">Edits</button>
+                  <button class="g-activity-chip" data-cat="edges">Edges</button>
+                  <button class="g-activity-chip" data-cat="merged">Merged</button>
+                  <button class="g-activity-chip" data-cat="forgotten">Forgotten</button>
+                </div>
+                <div class="activity-daterow" id="activity-daterow">
+                  <span class="activity-daterow-label">Date</span>
+                  <input id="activity-date-from" type="date" class="activity-date" aria-label="From date" title="Only show events on or after this date" />
+                  <span class="activity-daterow-sep">→</span>
+                  <input id="activity-date-to" type="date" class="activity-date" aria-label="To date" title="Only show events on or before this date" />
+                  <span class="activity-daterow-label activity-daterow-hour">Hours</span>
+                  <input id="activity-hour-from" type="time" class="activity-time" aria-label="From hour" title="Earliest time of day (applies to every selected day)" />
+                  <span class="activity-daterow-sep">→</span>
+                  <input id="activity-hour-to" type="time" class="activity-time" aria-label="To hour" title="Latest time of day (applies to every selected day)" />
+                  <button id="activity-date-clear" class="btn-sm activity-date-clear hidden" title="Clear the date and hour filters">Clear</button>
                 </div>
                 <span id="activity-stats" class="subtitle"></span>
               </div>
               <div id="activity-list" class="activity-list">
                 <p class="subtitle">Loading…</p>
               </div>
+            </section>
+
+            <!-- GET CONNECTED pane — grow your cortex. Promoted from the old
+                 in-rail collapsible chip block into a full, scrollable, guided
+                 page: app posture + AI clients (read) + data sources (feed),
+                 with a live connection-status summary. The #rail-gc-* chip
+                 containers live here now; renderRailGetConnected() targets them
+                 by ID, unchanged. -->
+            <section class="mode-pane hidden" data-pane="get-connected">
+              <header class="pane-header">
+                <h2>Get Connected</h2>
+                <p class="brain-subtitle">grow your cortex — connect AI clients to read it, and data sources to feed it</p>
+              </header>
+
+              <!-- Live status summary strip -->
+              <div id="gc-status" class="gc-status">
+                <div class="gc-status-item">
+                  <span id="gc-status-clients-n" class="gc-status-num">0</span>
+                  <span class="gc-status-label">AI clients connected</span>
+                </div>
+                <div class="gc-status-item">
+                  <span id="gc-status-sources-n" class="gc-status-num">0</span>
+                  <span class="gc-status-label">data sources feeding</span>
+                </div>
+                <div class="gc-status-item">
+                  <span id="gc-status-posture" class="gc-status-num gc-status-posture">Standalone</span>
+                  <span class="gc-status-label">current posture</span>
+                </div>
+              </div>
+
+              <!-- App posture: standalone / local & offline (mode chips) -->
+              <section class="gc-section">
+                <h3 class="gc-section-title">App posture</h3>
+                <p class="gc-section-hint">How your memory flows. Standalone means nothing leaves this machine; layer on a local LLM or neural network without giving up that posture.</p>
+                <div class="rail-get-connected-group" id="rail-gc-mode"></div>
+                <div class="rail-get-connected-group" id="rail-gc-aimode" style="margin-top:6px;"></div>
+                <!-- Mobile & Remote Access — moved here from Settings. Reach this
+                     cortex from a phone/tablet/another machine over LAN or Tailscale. -->
+                <div class="gc-mobile-row">
+                  <div>
+                    <div class="gc-mobile-title">📱 Mobile &amp; remote access</div>
+                    <div class="gc-section-hint" style="margin:2px 0 0;">Reach this cortex from Claude for iOS/Android or any HTTP MCP client over your LAN or Tailscale.</div>
+                  </div>
+                  <button id="btn-mobile-setup" class="rail-shortcut-btn">Set up…</button>
+                </div>
+              </section>
+
+              <!-- AI clients READ from the cortex -->
+              <section class="gc-section">
+                <h3 class="gc-section-title">AI clients <span class="gc-section-tag">read your memory</span></h3>
+                <p class="gc-section-hint">Connect an AI client over MCP so it can recall, remember, and correct your memory in context. Click a chip to set it up. A lit chip is connected right now. <a href="#" class="gc-inline-link" id="gc-mcp-tools-link">See every MCP tool your client can call →</a></p>
+                <div class="rail-get-connected-group" id="rail-gc-clients"></div>
+              </section>
+
+              <!-- Data sources FEED the cortex -->
+              <section class="gc-section">
+                <h3 class="gc-section-title">Data sources <span class="gc-section-tag">feed your memory</span></h3>
+                <p class="gc-section-hint">Point Graphnosis at the places your knowledge already lives — it ingests them locally and keeps them in sync. A lit chip is already connected.</p>
+                <div class="rail-get-connected-group" id="rail-gc-connectors"></div>
+
+                <div class="gc-offgrid-head">
+                  <span class="gc-offgrid-icon" aria-hidden="true">🛰️</span>
+                  <h4 class="gc-offgrid-title">Off-the-grid &amp; local sources</h4>
+                  <span class="gc-offgrid-badge">zero internet</span>
+                </div>
+                <p class="gc-section-hint">Anything you can pipe into a file or a webhook can feed Graphnosis — no cloud round-trip, no API keys. Pick a recipe to set it up; each stores encrypted on this machine.</p>
+                <input id="gc-recipe-filter" class="gc-recipe-filter" type="search" placeholder="Filter recipes — webhook · obsidian · NAS · sensors · PDF · MQTT …" autocomplete="off" />
+                <div class="gc-scenarios" id="gc-recipes"></div>
+
+                <!-- Configured connector instances — every source the user has
+                     set up (multiple of the same kind supported; each keyed by
+                     its own slug + target engram). Rendered by the shared
+                     connector-list painter. Hidden when there are none. -->
+                <h4 class="gc-subsection-title" id="gc-connected-head" style="display:none;">Your connected sources</h4>
+                <div id="gc-connectors-list" class="gc-connectors-list" data-pres="surface:connectors"></div>
+                <div class="gc-interval-row" id="gc-interval-row" style="display:none;">
+                  <label for="gc-default-interval">Default check interval — every</label>
+                  <input type="number" id="gc-default-interval" min="1" max="1440" step="1" value="15" />
+                  <span>minutes</span>
+                  <span class="gc-interval-note">Per-source overrides set in each connector’s form. Local folders also sync instantly on change.</span>
+                </div>
+              </section>
             </section>
 
             <!-- STATUS pane — engram counts, lifetime corrections,
@@ -10742,15 +11556,15 @@ ollama list</code></pre>
               <div id="g-recap" class="g-recap">
                 <div class="g-recap-row">
                   <span class="g-recap-label">Memories</span>
-                  <span id="g-recap-memories" class="g-recap-value">—</span>
+                  <span id="g-recap-memories" class="g-recap-value" data-pres="surface:stats">—</span>
                 </div>
                 <div class="g-recap-row">
                   <span class="g-recap-label">Sources feeding this engram</span>
-                  <span id="g-recap-sources" class="g-recap-value">—</span>
+                  <span id="g-recap-sources" class="g-recap-value" data-pres="surface:stats">—</span>
                 </div>
                 <div class="g-recap-row">
                   <span class="g-recap-label">Average confidence</span>
-                  <span id="g-recap-avg" class="g-recap-value">—</span>
+                  <span id="g-recap-avg" class="g-recap-value" data-pres="surface:stats">—</span>
                 </div>
                 <div class="g-recap-row" title="Lifetime count of corrections applied to this engram (edits + supersedes from the correct/apply pipeline)">
                   <span class="g-recap-label">Corrections applied (lifetime)</span>
@@ -10773,7 +11587,7 @@ ollama list</code></pre>
                   AI tools connected
                   <span class="brain-subtitle" style="margin-left: 6px;">tapped into your memory right now</span>
                 </p>
-                <div id="g-mcp-list" class="g-mcp-list">
+                <div id="g-mcp-list" class="g-mcp-list" data-pres="surface:mcpClients">
                   <p class="subtitle">Checking…</p>
                 </div>
               </div>
@@ -10812,6 +11626,19 @@ ollama list</code></pre>
                 <p class="brain-subtitle">Every tool Graphnosis exposes to your AI clients. Click any name for a short description.</p>
               </header>
               <div id="mcp-tools-content" class="panel" style="padding: 0; overflow: hidden;"></div>
+            </section>
+
+            <!-- PRESENTATION MODE pane — the demo-safe redaction config page.
+                 NOT exempt: while masking is active, unchecked item NAMES redact
+                 here too (the checkboxes stay usable) so the config page itself
+                 is screen-share safe. During setup (masking off) the sweep
+                 doesn't run, so every name is readable for selection. -->
+            <section class="mode-pane hidden" data-pane="presentation">
+              <header class="pane-header">
+                <h2>Presentation Mode</h2>
+                <p class="brain-subtitle">Pick what stays visible during a demo or screen-share — everything else is redacted in place.</p>
+              </header>
+              <div id="presentation-body"></div>
             </section>
 
             <!-- SETTINGS pane: actions + entry to settings modal -->
@@ -10870,58 +11697,12 @@ ollama list</code></pre>
                   </label>
                 </div>
               </div>
-              <div class="panel" id="settings-panel-ai-clients">
-                <p class="panel-title">AI client integration</p>
-                <p class="subtitle" style="font-size: 15px; margin: -4px 0 10px;">
-                  Wire MCP-aware AI clients to talk to Graphnosis Synapse — your corpus callosum.
-                  Each one updates only its own user-level MCP config; existing servers untouched.
-                </p>
-                <button id="btn-configure-claude-desktop" data-mcp-client="claude-desktop">Configure Claude Desktop…</button>
-                <button id="btn-configure-claude-code" data-mcp-client="claude-code" style="margin-left: 6px;">Configure Claude Code (CLI)…</button>
-                <button id="btn-configure-cursor" data-mcp-client="cursor" style="margin-left: 6px;">Configure Cursor…</button>
-                <button id="btn-configure-copilot" style="margin-left: 6px;">Configure Copilot…</button>
-              </div>
-              <div class="panel">
-                <p class="panel-title">Mobile & Remote Access</p>
-                <p class="subtitle" style="font-size: 15px; margin: -4px 0 10px;">
-                  Connect Claude for iOS, Claude for Android, or any HTTP MCP-capable client
-                  to this cortex over your local network or Tailscale VPN.
-                </p>
-                <button id="btn-mobile-setup">Set up mobile access…</button>
-              </div>
-              <div class="panel" id="settings-panel-connectors">
-                <p class="panel-title">Connectors</p>
-                <p class="subtitle" style="font-size: 15px; margin: -4px 0 10px;">
-                  Auto-ingest from RSS, GitHub, Slack, Trello, Linear, or any service
-                  that can POST to a webhook. Your credentials, your apps — Graphnosis
-                  is just the receiver. Stored locally and encrypted at rest.
-                </p>
-                <div class="connectors-add-row">
-                  <span class="connectors-add-label">Add connector:</span>
-                  <button class="btn-add-connector" data-kind="rss">RSS</button>
-                  <button class="btn-add-connector" data-kind="github">GitHub</button>
-                  <button class="btn-add-connector" data-kind="slack">Slack</button>
-                  <button class="btn-add-connector" data-kind="trello">Trello</button>
-                  <button class="btn-add-connector" data-kind="linear">Linear</button>
-                  <button class="btn-add-connector" data-kind="obsidian">Obsidian</button>
-                  <button class="btn-add-connector" data-kind="gbrain">GBrain</button>
-                  <button class="btn-add-connector" data-kind="ai-context">AI Context Files</button>
-                  <button class="btn-add-connector" data-kind="webhook">Webhook</button>
-                </div>
-                <div id="connectors-list" class="connectors-list" aria-live="polite">
-                  <!-- Populated by refreshConnectorsList() in main.ts -->
-                </div>
-                <!-- Poll interval: how often connectors re-scan as a backstop.
-                     Local-file connectors (GBrain, Obsidian, AI Context) also
-                     watch the folder and ingest within seconds of a change, so
-                     this mainly governs cloud connectors + first-scan retries. -->
-                <div class="connectors-interval-row" id="connectors-interval-row">
-                  <label for="connectors-interval-input">Check for new items every</label>
-                  <input type="number" id="connectors-interval-input" min="1" max="1440" step="1" value="15" />
-                  <span>minutes</span>
-                  <span class="connectors-interval-note">Local folders also sync instantly on change.</span>
-                </div>
-              </div>
+              <!-- AI Client Integration panel removed from Settings — the AI
+                   client chips on the Get Connected page configure each client.
+                   Mobile & Remote Access moved to Get Connected → App posture. -->
+              <!-- Connectors panel removed from Settings — it now lives on the
+                   Get Connected page (chips, recipe cards, the per-instance list,
+                   and the default + per-connector check interval). -->
               <!-- Access control: which connector kinds + AI clients are allowed
                    to touch this cortex. Enforced in the sidecar. Editable when the
                    sidecar is yours (you're admin); read-only when IT manages it. -->
@@ -10995,7 +11776,7 @@ ollama list</code></pre>
             <span class="theme-icon-light" aria-hidden="true">☀</span>
             <span class="theme-icon-dark"  aria-hidden="true">☾</span>
           </button>
-          <span id="cortex-label" class="status-cortex" title="Current cortex folder">cortex</span>
+          <span id="cortex-label" class="status-cortex" title="Current cortex folder" data-pres="surface:cortexPath">cortex</span>
           <!-- Everything from here right is right-aligned via .status-bar-right
                (margin-left:auto wrapper). Only the theme toggle + cortex label
                stay on the left. -->
@@ -11011,12 +11792,12 @@ ollama list</code></pre>
                  tab so the user can see the schedule and recent activity. -->
             <span id="status-process" class="status-process" style="display:none; font-size:12px; opacity:0.75; cursor:pointer; align-items:center; gap:6px;" title="Background process — click for the live activity feed.">
               <span class="status-process-dot" style="width:6px; height:6px; border-radius:50%; background:var(--accent, var(--color-status-info)); display:inline-block; animation: graphnosis-pulse 1.4s ease-in-out infinite;"></span>
-              <span id="status-process-text"></span>
+              <span id="status-process-text" data-pres="surface:statusProcess"></span>
             </span>
             <!-- App version pill, sits left of Vitality. Populated in main.ts
                  from __APP_VERSION__ (vite-injected at build from package.json). -->
-            <span id="status-version" class="status-version" title="About Graphnosis" style="font-size:12px; opacity:0.6; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; transition: opacity 100ms;" onmouseenter="this.style.opacity='1';this.style.textDecoration='underline'" onmouseleave="this.style.opacity='0.6';this.style.textDecoration='none'"></span>
-            <span id="brain-vitality" style="display:none; font-size:12px; opacity:0.7; cursor:pointer;" title="Open Deterministic Consolidation tab">🧠 Vitality –</span>
+            <span id="status-version" class="status-version" title="About Graphnosis" data-pres="surface:appVersion" style="font-size:12px; opacity:0.6; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; transition: opacity 100ms;" onmouseenter="this.style.opacity='1';this.style.textDecoration='underline'" onmouseleave="this.style.opacity='0.6';this.style.textDecoration='none'"></span>
+            <span id="brain-vitality" style="display:none; font-size:12px; opacity:0.7; cursor:pointer;" title="Open Home — Trust &amp; Vitality" data-pres="surface:vitality">🧠 Vitality –</span>
             <!-- GAP — Graphnosis Autonomous Praxis. Hidden when idle; pulses
                  green while the Skills trainer is running. Click jumps to the
                  Skills chip in MemoryStudio so the user can watch progress. -->
@@ -11028,7 +11809,7 @@ ollama list</code></pre>
             <span id="status-gnn-pill" class="status-layer-pill pill-inactive" style="background:var(--color-brand-purple-warm); color:#000;" title="Graphnosis Neural Network — predicted-edge overlay on top of your engrams. Click to open Non-Deterministic Aid.">GNN</span>
             <span class="status-mcp" id="status-mcp-area" style="cursor:pointer;" title="Go to Status page">
               <span id="status-mcp-dot" class="status-dot"></span>
-              <span id="status-mcp-text">checking clients…</span>
+              <span id="status-mcp-text" data-pres="surface:mcpClients">checking clients…</span>
             </span>
           </div>
         </footer>
@@ -11055,6 +11836,58 @@ ollama list</code></pre>
           <span class="filler"></span>
           <button id="embedding-switch-cancel" class="btn-sm">Cancel</button>
           <button id="embedding-switch-close" class="btn-sm" disabled>Close</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Presentation Mode CONSENT gate. Shown before masking activates. The
+         user must explicitly accept responsibility before the app will redact
+         anything — masking is best-effort, not a guarantee. -->
+    <div id="presentation-consent-modal" class="modal-backdrop hidden">
+      <div class="modal" style="max-width:560px;">
+        <div class="modal-header">
+          <h2>⚠️ Before you present</h2>
+          <p class="subtitle">Read this carefully — you are responsible for whatever stays visible during Presentation Mode.</p>
+        </div>
+        <div class="modal-body presentation-consent-body">
+          <p style="margin:0 0 12px;">Presentation Mode redacts the items you didn't select. It is a <strong>best-effort convenience, not a security guarantee</strong>. Please:</p>
+          <ul style="margin:0 0 14px; padding-left:20px; line-height:1.6; font-size:13.5px;">
+            <li><strong>Verify every screen yourself</strong> before sharing — walk through each page and confirm nothing sensitive is visible.</li>
+            <li>New or unexpected content, tooltips, notifications, modals, the 3D view, and anything loaded after you start <strong>may not be masked</strong>.</li>
+            <li>Redaction is visual only — it does not stop screen readers, browser dev-tools, or other apps from reading the underlying data.</li>
+            <li>Exiting Presentation Mode (Esc, the banner, or the Stop button) <strong>instantly reveals everything</strong> again.</li>
+          </ul>
+          <div id="presentation-consent-summary" class="pres-consent-summary"></div>
+          <p style="margin:0 0 14px; font-size:13.5px;">You are solely responsible for the outcome of using this feature, including anything inadvertently disclosed during a demo, recording, or screen-share. Graphnosis provides this feature “as is”, without warranty. See the <a href="#" id="presentation-consent-terms">Terms of Use</a> and <a href="#" id="presentation-consent-privacy">Privacy Policy</a>.</p>
+          <label class="pres-row" style="border:1px solid var(--border); border-radius:8px; padding:10px 12px;">
+            <input type="checkbox" id="presentation-consent-check" />
+            <span class="pres-row-body"><span class="pres-row-title">I understand and accept full responsibility for what I reveal.</span></span>
+          </label>
+        </div>
+        <div class="modal-footer" style="padding:14px 20px;">
+          <span class="filler"></span>
+          <button id="presentation-consent-cancel" class="btn-sm">Cancel</button>
+          <button id="presentation-consent-enter" class="btn-sm" disabled>Enter Presentation Mode</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Presentation Mode EXIT gate. Leaving instantly un-redacts everything,
+         so confirm the user isn't still sharing before revealing. -->
+    <div id="presentation-exit-modal" class="modal-backdrop hidden">
+      <div class="modal" style="max-width:500px;">
+        <div class="modal-header">
+          <h2>⚠️ Exit Presentation Mode?</h2>
+          <p class="subtitle">Everything hidden will become visible again — immediately.</p>
+        </div>
+        <div class="modal-body" style="padding:20px;">
+          <p style="margin:0 0 12px;">Exiting reveals <strong>every redacted engram, source, memory, and stat</strong> across the whole app at once.</p>
+          <p style="margin:0; font-size:13.5px; color:var(--fg-dim);">If you're still screen-sharing, recording, or presenting, <strong style="color:var(--error,#e5484d);">stop sharing first</strong>, then exit.</p>
+        </div>
+        <div class="modal-footer" style="padding:14px 20px;">
+          <span class="filler"></span>
+          <button id="presentation-exit-cancel" class="btn-sm">Stay in Presentation Mode</button>
+          <button id="presentation-exit-confirm" class="btn-sm" style="background:var(--error,#e5484d); color:#fff; border-color:transparent; font-weight:600;">Exit &amp; reveal everything</button>
         </div>
       </div>
     </div>
@@ -11616,7 +12449,7 @@ ollama list</code></pre>
             <div style="flex: 1;">
               <div style="font-size: 13px; font-weight: 600; color: var(--fg-dim); margin-bottom: 4px;">Personal phrase <span id="consent-phrase-personal-tier" style="font-weight:400;">(rotates every 24 h)</span></div>
               <div class="consent-phrase-box" id="consent-phrase-personal-box">
-                <span class="consent-phrase-word" id="consent-phrase-personal">—</span>
+                <span class="consent-phrase-word" id="consent-phrase-personal" data-pres="surface:__consentphrases__">—</span>
                 <span class="consent-phrase-countdown" id="consent-phrase-personal-countdown"></span>
                 <button class="consent-phrase-copy" id="btn-copy-phrase-personal" data-tier="personal" style="margin-left:auto;" title="Copy this phrase to clipboard. Other apps on your machine may be able to read it from there.">Copy</button>
               </div>
@@ -11624,7 +12457,7 @@ ollama list</code></pre>
             <div style="flex: 1;">
               <div style="font-size: 13px; font-weight: 600; color: var(--fg-dim); margin-bottom: 4px;">Sensitive phrase <span style="font-weight:400;">(rotates every 1 h)</span></div>
               <div class="consent-phrase-box" id="consent-phrase-sensitive-box">
-                <span class="consent-phrase-word" id="consent-phrase-sensitive">—</span>
+                <span class="consent-phrase-word" id="consent-phrase-sensitive" data-pres="surface:__consentphrases__">—</span>
                 <span class="consent-phrase-countdown" id="consent-phrase-sensitive-countdown"></span>
                 <button class="consent-phrase-copy" id="btn-copy-phrase-sensitive" data-tier="sensitive" style="margin-left:auto;" title="Copy this phrase to clipboard. Other apps on your machine may be able to read it from there.">Copy</button>
               </div>
@@ -11780,7 +12613,7 @@ ollama list</code></pre>
                modal and find an in-app Pro gate (Skills / GNN). Mirrors
                the CTA in the GNN upgrade card so the path to subscription
                is identical wherever it surfaces. -->
-          <div class="settings-section no-top-border">
+          <div class="settings-section no-top-border license-acquire">
             <p class="settings-section-label">Subscribe to Pro</p>
             <p class="subtitle" style="margin-bottom: 10px;">
               No token yet? Start a Graphnosis Pro subscription — we'll
@@ -11795,7 +12628,7 @@ ollama list</code></pre>
             <p class="settings-section-label">Current status</p>
             <div id="settings-license-status" class="row" style="margin-bottom: 8px;"></div>
           </div>
-          <div class="settings-section">
+          <div class="settings-section license-acquire">
             <p class="settings-section-label">Refresh from billing server</p>
             <p class="subtitle" style="margin-bottom: 10px;">
               Enter the email on your Stripe receipt. We'll fetch your current token from
@@ -11818,7 +12651,7 @@ ollama list</code></pre>
               <span id="settings-license-feedback" class="subtitle"></span>
             </div>
           </div>
-          <div class="settings-section">
+          <div class="settings-section license-acquire">
             <p class="settings-section-label">Paste a license token</p>
             <p class="subtitle" style="margin-bottom: 10px;">
               If you received a token via email but the deep link didn't activate it automatically,
@@ -11837,6 +12670,21 @@ ollama list</code></pre>
             </div>
             <div class="row" style="gap:8px;">
               <button id="btn-settings-license-apply">Apply token</button>
+            </div>
+          </div>
+          <!-- Manage / cancel — shown only when an active subscription is
+               detected. Opens the Stripe-side billing portal (email-verified
+               there) so the user can update payment or cancel. -->
+          <div class="settings-section license-manage hidden">
+            <p class="settings-section-label">Manage subscription</p>
+            <p class="subtitle" style="margin-bottom: 10px;">
+              Update your payment method or cancel anytime. Opens your secure
+              billing portal on <code>graphnosis.com</code> — you'll verify by
+              email there; Graphnosis never sees your card.
+            </p>
+            <div class="row" style="gap:8px;">
+              <button id="btn-license-manage" class="primary">Manage or cancel subscription</button>
+              <span class="subtitle">opens graphnosis.com/account</span>
             </div>
           </div>
         </div>
@@ -12395,18 +13243,18 @@ ollama list</code></pre>
             <p style="font-size: 14px; margin: 0 0 12px;">
               Use these details to add Graphnosis as an MCP server in your mobile AI client.
             </p>
-            <div class="mobile-qr-block">
+            <div class="mobile-qr-block" data-pres="surface:remoteAccess">
               <img id="mobile-qr-img" alt="QR code for MCP Server URL" class="hidden" />
               <p class="mobile-qr-caption">Scan to fill in the server URL on your phone</p>
             </div>
             <p style="font-size: 14px; font-weight: 600; margin: 0 0 4px; color: var(--fg-dim);">MCP Server URL</p>
             <div class="copy-row">
-              <span class="copy-field" id="mobile-mcp-url"></span>
+              <span class="copy-field" id="mobile-mcp-url" data-pres="surface:remoteAccess"></span>
               <button class="copy-btn" data-copy-target="mobile-mcp-url">Copy</button>
             </div>
             <p style="font-size: 14px; font-weight: 600; margin: 8px 0 4px; color: var(--fg-dim);">Bearer Token</p>
             <div class="copy-row">
-              <span class="copy-field secret" id="mobile-mcp-token" title="Click to select all"></span>
+              <span class="copy-field secret" id="mobile-mcp-token" title="Click to select all" data-pres="surface:remoteAccess"></span>
               <button class="copy-btn" data-copy-target="mobile-mcp-token">Copy</button>
               <button class="copy-btn" id="mobile-token-reveal">Show</button>
             </div>
@@ -12445,7 +13293,7 @@ ollama list</code></pre>
                 </label>
               </div>
               <div id="mobile-httpui-details" style="display: none;">
-                <div class="mobile-qr-block">
+                <div class="mobile-qr-block" data-pres="surface:remoteAccess">
                   <img id="mobile-httpui-qr" alt="QR code to open Graphnosis in your browser" class="hidden" />
                   <p class="mobile-qr-caption">Scan to open Graphnosis on your phone — unlocks automatically</p>
                 </div>
@@ -12702,7 +13550,8 @@ ollama list</code></pre>
         <button class="mobile-more-item" data-mode="activity">Activity</button>
         <button class="mobile-more-item" data-mode="goals">Foresight</button>
         <button class="mobile-more-item" data-mode="brainstorm">Brainstorming</button>
-        <button class="mobile-more-item" data-mode="status">Status</button>
+        <button class="mobile-more-item" data-mode="get-connected">Get Connected</button>
+        <button class="mobile-more-item" data-mode="presentation">Presentation Mode</button>
         <button class="mobile-more-item" data-mode="settings">Settings</button>
       </div>
     </div>

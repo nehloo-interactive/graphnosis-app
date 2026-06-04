@@ -39,6 +39,9 @@ export interface AtlasNode {
   id: string;
   text: string;
   sourceFile?: string;
+  /** Allowlist sourceId (server-resolved). Carried for Presentation Mode
+   *  per-source label masking; not used by the force simulation. */
+  sourceId?: string;
   confidence: number;
   // 3d-force-graph mutates these during simulation. Optional on input.
   x?: number; y?: number; z?: number;

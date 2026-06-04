@@ -2801,10 +2801,19 @@ async fn install_update(app: AppHandle) -> Result<(), String> {
     use tauri_plugin_updater::UpdaterExt;
     let updater = app.updater().map_err(|e| e.to_string())?;
     match updater.check().await.map_err(|e| e.to_string())? {
-        Some(update) => update
-            .download_and_install(|_, _| {}, || {})
-            .await
-            .map_err(|e| e.to_string()),
+        Some(update) => {
+            update
+                .download_and_install(|_, _| {}, || {})
+                .await
+                .map_err(|e| e.to_string())?;
+            // CRITICAL: on macOS `download_and_install` installs the new bundle
+            // but does NOT relaunch — it just returns. The frontend modal sat on
+            // "Installing…" forever because nothing restarted (the update was
+            // already applied, hence it appeared after a manual quit+reopen).
+            // app.restart() swaps in the new binary now and never returns (-> !),
+            // so it's the tail expression — it coerces to the arm's Result type.
+            app.restart()
+        }
         None => Err("No update available".to_string()),
     }
 }
@@ -3256,11 +3265,27 @@ pub fn run() {
                     eprintln!("[graphnosis-app] failed to install app menu: {e}");
                 }
             }
-            // Show the main window on startup. The user sees the unlock view
-            // immediately; tray "Show" still works for re-showing after ⌘W.
+            // Do NOT show the main window here. The frontend (main.ts boot
+            // IIFE) reveals it via revealWindow() AFTER it has corrected the
+            // window size (ensureMinWindowSize) and painted the first frame.
+            // Showing it eagerly here — before the webview sizes/paints —
+            // caused two visible-every-launch glitches: a white flash (the
+            // WKWebView default background before CSS paints) and a resize
+            // jump (the window appearing at the restored size, then snapping
+            // when ensureMinWindowSize ran). Letting JS own the reveal fixes
+            // both. Safety net: if the frontend hasn't shown the window within
+            // a few seconds (e.g. a JS load failure), reveal it anyway so the
+            // user is never staring at nothing. Tray "Show" remains the
+            // ultimate fallback for re-showing after ⌘W.
             if let Some(win) = app.get_webview_window("main") {
-                let _ = win.show();
-                let _ = win.set_focus();
+                let win_fallback = win.clone();
+                tauri::async_runtime::spawn(async move {
+                    tokio::time::sleep(std::time::Duration::from_secs(4)).await;
+                    if !win_fallback.is_visible().unwrap_or(false) {
+                        let _ = win_fallback.show();
+                        let _ = win_fallback.set_focus();
+                    }
+                });
             }
             // Tray icon + menu.
             tray::create(app.handle())?;
