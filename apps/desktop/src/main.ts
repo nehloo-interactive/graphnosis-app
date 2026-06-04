@@ -11222,38 +11222,6 @@ function formatLegendLabel(raw: string | undefined | null): string {
   return raw;
 }
 
-/**
- * Pretty-print a source label for the atlas legend. The atlas's source
- * registry uses the raw sourceRef as the legend label, which for AI-
- * created memories looks like `ai-conversation:<timestamp-or-id>:<topic>`
- * — readable to debuggers, not to users.
- *
- * We collapse anything starting with a recognized source-kind prefix to
- * a short human form ("AI: <topic>", "Clip: <topic>"). Falls through
- * unchanged for user-supplied labels like "collaboration" or "book.md".
- *
- * Truncation isn't done here — CSS `text-overflow: ellipsis` on
- * `.source-name` handles it; the full string lives in the row's
- * `title` attribute for hover.
- */
-function formatLegendLabel(raw: string | undefined | null): string {
-  if (!raw) return '(no source)';
-  // ai-conversation:<id>:<topic>  →  AI: <topic>
-  // ai-conversation:<id>          →  AI: <id>     (fallback when label missing)
-  if (raw.startsWith('ai-conversation:')) {
-    const rest = raw.slice('ai-conversation:'.length);
-    const secondColon = rest.indexOf(':');
-    return secondColon !== -1 ? `AI: ${rest.slice(secondColon + 1)}` : `AI: ${rest}`;
-  }
-  // clip:<id>:<topic>  →  Clip: <topic>  — same pattern for consistency.
-  if (raw.startsWith('clip:')) {
-    const rest = raw.slice('clip:'.length);
-    const secondColon = rest.indexOf(':');
-    return secondColon !== -1 ? `Clip: ${rest.slice(secondColon + 1)}` : `Clip: ${rest}`;
-  }
-  return raw;
-}
-
 function renderAtlasLegend(): void {
   if (!mainAtlas) return;
   // Edge categories
