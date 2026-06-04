@@ -954,13 +954,45 @@ export async function loadSettings(cortexDir: string): Promise<AppSettings> {
   }
 }
 
+// Per-cortex write queue. Multiple callers can hit saveSettings concurrently
+// (e.g. several deleteGraph→persistSettings while the docs engram is re-ingested
+// on a version bump). With a single fixed `settings.json.tmp` name and no
+// serialization they race: one rename consumes the tmp, the next finds nothing
+// → "ENOENT … rename settings.json.tmp -> settings.json". Chaining writes per
+// dir also stops the silent lost-update where two concurrent writers race and
+// last-rename-wins drops the other's changes.
+const _saveQueues = new Map<string, Promise<void>>();
+let _saveSeq = 0;
+
 export async function saveSettings(cortexDir: string, settings: AppSettings): Promise<void> {
+  const prev = _saveQueues.get(cortexDir) ?? Promise.resolve();
+  // Snapshot the payload at call time, then run after any in-flight write.
+  const next = prev.catch(() => {}).then(() => saveSettingsInner(cortexDir, settings));
+  _saveQueues.set(cortexDir, next);
+  try {
+    await next;
+  } finally {
+    // Drop the entry once we're the settled tail (a later write may have
+    // chained on and become the new tail — leave that one in place).
+    if (_saveQueues.get(cortexDir) === next) _saveQueues.delete(cortexDir);
+  }
+}
+
+async function saveSettingsInner(cortexDir: string, settings: AppSettings): Promise<void> {
   await fs.mkdir(cortexDir, { recursive: true });
-  // Write atomically: write to tmp, then rename.
+  // Write atomically: write to a unique tmp, then rename. The unique suffix is
+  // defense-in-depth against any out-of-process writer; serialization above is
+  // what actually removes the in-process race.
   const target = settingsPath(cortexDir);
-  const tmp = `${target}.tmp`;
-  await fs.writeFile(tmp, JSON.stringify(settings, null, 2));
-  await fs.rename(tmp, target);
+  const tmp = `${target}.${process.pid}.${++_saveSeq}.tmp`;
+  try {
+    await fs.writeFile(tmp, JSON.stringify(settings, null, 2));
+    await fs.rename(tmp, target);
+  } catch (e) {
+    // Best-effort cleanup so an interrupted write doesn't leave an orphan tmp.
+    await fs.rm(tmp, { force: true }).catch(() => {});
+    throw e;
+  }
 }
 
 /**
