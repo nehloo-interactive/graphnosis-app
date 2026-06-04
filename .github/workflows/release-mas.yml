@@ -1,17 +1,16 @@
 name: Release (Mac App Store)
 
-# Trigger manually or on the same v* tags as the DMG release.
-# MAS submissions go through App Review, so they can be triggered
-# on the same tag as the DMG without coupling the release schedules.
+# DISABLED on tag pushes for now: the MAS signing certs (MAS_APP_CERT_BASE64,
+# MAS_APP_CERT_PASSWORD, MAS_INSTALLER_CERT_BASE64, MAS_INSTALLER_CERT_PASSWORD)
+# aren't configured, so this failed on every release. Manual-only until the
+# Apple Distribution + Mac Installer Distribution certs are added as repo
+# secrets — then re-add the `push: tags` trigger below to resume auto-builds.
 on:
   workflow_dispatch:
     inputs:
       version:
         description: 'Version tag to build (e.g. v0.7.0)'
         required: false
-  push:
-    tags:
-      - 'v*'
 
 jobs:
   build-and-submit:
