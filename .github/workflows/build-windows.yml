@@ -95,17 +95,15 @@ jobs:
         run: pnpm --filter @graphnosis-app/desktop tauri:build
 
       # The signing action runs `Install-Module TrustedSigning -Repository
-      # PSGallery` internally. On windows-2022 runners PSGallery is sometimes
-      # not registered (intermittent: the job passed once, failed most runs
-      # with "Unable to find repository 'PSGallery'"). Register it explicitly
-      # so the action's Install-Module is deterministic.
+      # PSGallery` internally (in Windows PowerShell 5.1), which intermittently
+      # fails with "Unable to find repository 'PSGallery'" on the runner image.
+      # Register the default repo in 5.1 so the action's Install-Module resolves
+      # it. `Register-PSRepository -Default` re-adds PSGallery without the NuGet
+      # provider bootstrap (which fails in pwsh 7 — chicken/egg).
       - name: Ensure PSGallery is registered
-        shell: pwsh
+        shell: powershell
         run: |
-          Install-PackageProvider -Name NuGet -Force | Out-Null
-          if (-not (Get-PSRepository -Name PSGallery -ErrorAction SilentlyContinue)) {
-            Register-PSRepository -Default
-          }
+          Register-PSRepository -Default -ErrorAction SilentlyContinue
           Set-PSRepository -Name PSGallery -InstallationPolicy Trusted
 
       - name: Sign installer (Azure Artifact Signing)
