@@ -94,6 +94,20 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
         run: pnpm --filter @graphnosis-app/desktop tauri:build
 
+      # The signing action runs `Install-Module TrustedSigning -Repository
+      # PSGallery` internally. On windows-2022 runners PSGallery is sometimes
+      # not registered (intermittent: the job passed once, failed most runs
+      # with "Unable to find repository 'PSGallery'"). Register it explicitly
+      # so the action's Install-Module is deterministic.
+      - name: Ensure PSGallery is registered
+        shell: pwsh
+        run: |
+          Install-PackageProvider -Name NuGet -Force | Out-Null
+          if (-not (Get-PSRepository -Name PSGallery -ErrorAction SilentlyContinue)) {
+            Register-PSRepository -Default
+          }
+          Set-PSRepository -Name PSGallery -InstallationPolicy Trusted
+
       - name: Sign installer (Azure Artifact Signing)
         uses: azure/trusted-signing-action@v0.5.11
         with:
