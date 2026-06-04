@@ -3,7 +3,7 @@ title: Terms of Use
 description: The terms governing your use of Graphnosis and what Nehloo Interactive is and isn't responsible for.
 ---
 
-*Last updated: May 2026*
+*Last updated: June 2026*
 *Effective date: May 2026*
 
 Please read these Terms of Use carefully before using Graphnosis. By downloading, installing, or using Graphnosis, you agree to be bound by these terms. If you do not agree, do not use the software.
@@ -94,11 +94,23 @@ You agree not to use the Software to:
 
 ---
 
-### 4.6 Nehloo's role
+### 4.6 Presentation Mode
+
+Graphnosis includes an optional **Presentation Mode** that visually redacts selected on-screen content so you can demo, record, or share your screen without exposing your full cortex. You acknowledge and agree that:
+
+- **Presentation Mode is a best-effort convenience, not a security or privacy guarantee.** It hides content visually in the application's own interface; it does not encrypt, remove, or otherwise protect the underlying data, which remains fully present on your device.
+- It may not mask all content. Newly rendered, dynamically loaded, or unanticipated UI — including tooltips, notifications, modal dialogs, the 3D visualization, operating-system surfaces, and content from features added in future versions — may appear unredacted.
+- Redaction is visual only and does not prevent access to the underlying data by screen readers, browser or developer tools, accessibility software, other applications, or anyone with access to your device.
+- Before activating Presentation Mode you must affirmatively consent via an in-app gate, and you must independently verify on each screen that no sensitive content is visible before and during any sharing.
+- **You are solely responsible for any information disclosed while using (or after exiting) Presentation Mode**, including during any demo, recording, livestream, or screen-share. Exiting the mode immediately reveals all previously hidden content.
+
+To the fullest extent permitted by law, Nehloo Interactive disclaims all liability for any disclosure of information arising from your use or misuse of Presentation Mode, consistent with Sections 5 and 6.
+
+### 4.7 Nehloo's role
 
 **Nehloo Interactive is the developer and distributor of Graphnosis software. Nehloo is not a data controller or processor for data you store in your cortex or share with AI providers.** You are the controller of your own cortex data. Nehloo does not hold, process, or have access to your cortex data in any form. For data Nehloo does hold (your account email and newsletter subscription), Nehloo acts as data controller and complies with applicable law.
 
-### 4.7 Use of the latest version
+### 4.8 Use of the latest version
 
 The consent and privacy protections described in these Terms apply to current and recent releases of Graphnosis. Older versions released before **v0.10** do not include the Layer 4 consent mechanism described in §4.3. Nehloo strongly recommends updating to the latest release. Nehloo is not liable for privacy outcomes arising from use of outdated software versions.
 
