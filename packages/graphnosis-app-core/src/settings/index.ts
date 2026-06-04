@@ -703,6 +703,12 @@ export interface AppSettings {
    * Each ConnectorConfig includes credentials (plaintext) and pull schedule state.
    */
   connectors?: ConnectorSettings;
+  /**
+   * HMAC key (hex-encoded, 32 bytes) for consent phrase rotation. Generated
+   * once per cortex; absent on cortexes created before consent phrases were
+   * introduced. If absent, confirm_data_access generates one on first use.
+   */
+  consentHmacKey?: string;
 }
 
 /**
