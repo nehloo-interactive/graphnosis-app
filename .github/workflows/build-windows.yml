@@ -29,6 +29,16 @@ jobs:
       id-token: write
 
     steps:
+      - name: Validate inputs
+        if: ${{ inputs.upload_to_release }}
+        shell: pwsh
+        run: |
+          $ref = "${{ github.event.inputs.ref }}"
+          if ($ref -notmatch '^v\d+\.\d+') {
+            Write-Error "upload_to_release=true requires ref to be a version tag (e.g. v1.13.1), got: '$ref'"
+            exit 1
+          }
+
       - name: Checkout
         uses: actions/checkout@v4
         with:
