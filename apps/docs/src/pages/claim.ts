@@ -49,8 +49,14 @@ export const GET: APIRoute = async ({ url, request, locals }) => {
   const accept = request.headers.get('accept') ?? '';
   const wantsRedirect = accept.includes('text/html');
 
+  // Carry the poll secret so the app can refresh silently later (the by-email
+  // poll now requires it). The paste fallback below stays token-only — a manual
+  // paste sets the token directly and doesn't need the poll path.
+  const keyParam = tokenRec.pollSecret ? `&key=${encodeURIComponent(tokenRec.pollSecret)}` : '';
+  const deepLink = `graphnosis://claim?token=${encodeURIComponent(tokenRec.token)}${keyParam}`;
+
   if (!wantsRedirect) {
-    return Response.redirect(`graphnosis://claim?token=${encodeURIComponent(tokenRec.token)}`, 303);
+    return Response.redirect(deepLink, 303);
   }
 
   const safeToken = htmlEscape(tokenRec.token);
@@ -76,7 +82,7 @@ export const GET: APIRoute = async ({ url, request, locals }) => {
      automatically. If nothing happens after a few seconds, copy the token
      below into Graphnosis → Settings → License.</p>
   <div class="card">
-    <a class="btn" id="open-app" href="graphnosis://claim?token=${encodeURIComponent(tokenRec.token)}">Open Graphnosis</a>
+    <a class="btn" id="open-app" href="${htmlEscape(deepLink)}">Open Graphnosis</a>
   </div>
   <p class="muted">License token (paste into Settings → License if needed):</p>
   <div class="mono">${safeToken}</div>
