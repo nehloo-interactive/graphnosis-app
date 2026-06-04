@@ -1,120 +1,147 @@
 ---
 title: Connect from Your Phone
-description: Wire Claude for iOS, Claude for Android, or any HTTP MCP client into your Cortex over your local network or Tailscale VPN.
+description: Reach your cortex from any device's browser — open the full Graphnosis app over your local network or Tailscale, scan a QR to unlock, and connect Claude for iOS/Android over MCP.
 sidebar:
   order: 4
 ---
 
-Your Cortex lives on your Mac. Your phone can still read from it — when Graphnosis is running and unlocked on the Mac, your mobile AI client connects over the network (LAN at home, Tailscale anywhere else) and gets the same `recall` / `remember` / `correct` / `forget` tools your desktop AI does. Same memory, same answers, different device.
+Your cortex lives on your computer. Your phone — or any other device with a browser — can still reach it. When Graphnosis is running and unlocked, it can serve the **full app UI** over the network, so you open your cortex in mobile Safari or Chrome and get the same atlas, recall, and capture you have on the desktop. The cortex itself never leaves the server; it stays encrypted on disk and only the screens you look at travel over the wire.
 
-This page walks through the 3-step in-app wizard. If you've already enabled mobile access once, the wizard skips straight to the "copy URL + token" step on subsequent opens — no toggle-fiddling for re-pairing a new device.
+There are two ways to reach your cortex remotely, and you can use both at once:
+
+1. **Browser access (personal server)** — the app UI in any browser, on port `3456`. This is the new "open my cortex from my phone" path.
+2. **MCP access** — wire a mobile AI client (Claude for iOS/Android) into your cortex over MCP, on port `3457`. This is the "let my phone's AI recall from my memory" path.
+
+The desktop app is unchanged and remains the primary way to use Graphnosis. Browser access is an opt-in addition, not a replacement.
+
+## How browser access works
+
+When you enable browser access, the sidecar starts a second HTTP server:
+
+- **Port `3456`** serves the full web UI plus a small JSON-RPC + event API that the UI talks to. This is separate from the MCP server on **port `3457`**.
+- You authenticate once with an **access token**. The server exchanges it for a short-lived browser session (24 hours), and the browser uses that session for everything after.
+- The cortex stays encrypted on the server. The browser is just a remote screen — there's no copy of your memory on the phone.
+
+The same machine can run the desktop app and the browser server side by side. (On a headless Linux box with no desktop app at all, the browser server *is* the whole product — see [the self-host guide](#run-it-headless-on-a-server) below.)
 
 ## Before you start
 
 Two things should be true:
 
-1. **Graphnosis is running on your Mac with the Cortex unlocked.** Same rule as any AI client: the menu-bar icon must be visible and your passphrase entered.
-2. **Your phone can reach your Mac.** Either:
+1. **Graphnosis is running with the cortex unlocked.** Same rule as any AI client: the app must be running and your passphrase entered. A locked cortex serves the login screen but no memories.
+2. **Your phone can reach the server.** Either:
    - Same Wi-Fi network (LAN), OR
-   - Both devices on Tailscale (recommended — works anywhere, not just home)
+   - Both devices on the same Tailscale network (recommended — works anywhere, not just home).
 
-Tailscale is free for personal use, takes ~5 minutes to install on both devices, and removes "I'm at a café and can't reach my Cortex" as a problem class. If you don't have it, the wizard surfaces a download link in Step 2.
+Tailscale is free for personal use, takes a few minutes to install on both devices, and removes "I'm at a café and can't reach my cortex" as a problem class. More on it below.
 
-## Step-by-step: the mobile setup wizard
+## Enable browser access
 
-### Open the wizard
+In Graphnosis, click the menu-bar icon, then **Settings → Mobile & Remote → Browser access** and turn it **on**.
 
-In Graphnosis, click the menu-bar icon, then **Settings → Mobile & Remote Access → "Set up mobile access…"**.
+The panel then shows everything you need to connect:
 
-The wizard opens to one of two states:
-- **First time:** Step 1 (enable + configure). Walk through all three steps.
-- **Returning:** Step 3 (copy URL + token). The bridge is already on; just re-copy for a new device.
+- A **QR code** — scan it with your phone's camera. The QR encodes the URL *and* the access token together, so one scan opens the app already authenticated — no typing.
+- The **URL** (e.g. `http://100.64.0.3:3456/` over Tailscale, or `http://192.168.1.42:3456/` on your LAN) and the **access token**, both with a one-click copy button, for the manual path.
 
-### Step 1 — Enable and choose your network interface
+### From your phone
 
-Three controls:
+- **One-scan path:** open the camera, scan the QR, tap the link. The app loads and unlocks in one step.
+- **Manual path:** open the URL in your phone's browser, then paste the access token when prompted. The server swaps it for a browser session and you're in.
 
-- **Enable HTTP bridge** toggle — turns the MCP-over-HTTP server on/off. Off is the default; the bridge only listens when you flip this on.
-- **Port** field — defaults to `3457`. Change only if you have a port conflict.
-- **Bind interface** — `loopback-only` (127.0.0.1) or `all-interfaces` (0.0.0.0). Critical security decision:
+Add the app to your home screen (Share → Add to Home Screen) and it behaves like an installed app on the next launch.
 
-| Choice | What it does | When to use |
-|---|---|---|
-| `loopback-only` (default) | Bridge only accepts connections from the same Mac | You're connecting from a browser extension or local script on this Mac, not a phone |
-| `all-interfaces` | Bridge accepts connections from any device that can reach this Mac's IP | You want mobile / Tailscale / LAN access |
+## Why Tailscale is recommended
 
-`all-interfaces` is the right choice for mobile pairing — but it does mean the bridge is reachable from any device on your local network. The bearer token (set in Step 3) is your only authentication layer. Use a strong network (your own home Wi-Fi, Tailscale) and don't run this on a public café network with `all-interfaces` selected.
+Plain LAN access works at home, but the moment your phone leaves that Wi-Fi network the URL stops resolving. [Tailscale](https://tailscale.com/download) fixes that: it builds an encrypted overlay network (WireGuard) between your own devices, so your phone reaches the server by its stable `100.x.y.z` address whether you're on home Wi-Fi, on cellular, or on a café network — **without exposing any port to the public internet**. Traffic is end-to-end encrypted between your devices.
 
-Click **Save & Next**.
+Install it once:
 
-### Step 2 — Confirm the network address
+1. **On the server** — `curl -fsSL https://tailscale.com/install.sh | sh` (Linux/macOS) or the desktop installer, then `tailscale up`.
+2. **On your phone** — install the Tailscale app from the App Store / Play Store and sign in with the **same account** so both devices land on the same tailnet.
 
-Graphnosis auto-detects every network interface on your Mac and surfaces them in this order of preference:
+With both devices on the tailnet, use the `100.x.y.z` URL the panel shows. The QR auto-detects Tailscale and prefers it.
 
-1. **Tailscale IP** (100.x.x.x range) — shown with an accent badge and a "great, use this one" tip. Tailscale traffic is end-to-end encrypted between your devices and routes through Tailscale's relay servers when direct connection isn't possible — gives you "Cortex anywhere" without exposing a port to the public internet.
-2. **LAN IPs** (e.g. 192.168.1.x, 10.x.x.x) — usable from any device on the same Wi-Fi network.
-3. **No Tailscale detected?** The wizard surfaces a [tailscale.com/download](https://tailscale.com/download) link. We strongly recommend installing it before continuing if you'll ever leave your home network.
+### HTTPS for iOS — `tailscale serve`
 
-Pick the IP that matches your usage. The wizard remembers the choice and uses it to build the MCP Server URL in Step 3.
+Plain `http://100.x:3456` already rides WireGuard and is encrypted, but **iOS refuses plaintext HTTP to non-localhost hosts** (App Transport Security). To reach the server from an iPhone, front it with a real certificate using `tailscale serve`, which terminates a valid `*.ts.net` cert for you — no certificate setup on the server.
 
-Click **Next**.
-
-### Step 3 — Copy URL + token, paste into your mobile AI client
-
-The wizard shows two values, each with a one-click Copy button:
-
-- **MCP Server URL** — looks like `http://100.64.0.3:3457/` (Tailscale) or `http://192.168.1.42:3457/` (LAN). This is the address your mobile AI client will POST MCP requests to.
-- **Bearer token** — a UUID like `a1b2c3d4-...-9876`. Masked by default; click the eye icon to reveal. This is your only auth — treat it like a password.
-
-Below the values, numbered instructions for **Claude for iOS** and **Claude for Android**:
-
-#### Claude for iOS
-
-1. Open the Claude app
-2. Settings → MCP Servers → Add server
-3. Name: `Graphnosis` (or whatever)
-4. Type: `HTTP`
-5. URL: paste the MCP Server URL from the wizard
-6. Authorization header: `Bearer <paste the token>`
-7. Save
-
-The new MCP server should show as connected within ~5 seconds. Start a new chat and your AI now has the 7 Graphnosis tools (`recall`, `remember`, etc.) available.
-
-#### Claude for Android
-
-Same flow — Settings → MCP Servers → Add server → fill in URL and Bearer token.
-
-### Returning to add another device
-
-Open the wizard again later — it skips to Step 3 since the bridge is already on. Copy the URL + token to the new device. No need to re-enable or re-configure anything.
-
-## Revoking access
-
-To cut off a device that has the token:
-
-1. Open **Settings → Mobile & Remote Access → "Set up mobile access…"**
-2. Step 1: toggle **Enable** off, then **Save & Next**
-3. Step 1 again: toggle **Enable** back on, **Save & Next**
-4. Step 3 now shows a **new** bearer token — the old one no longer works
-
-Devices that still have the old token will get `401 Unauthorized` on every request. Re-paste the new token only on devices you trust.
+Once `tailscale serve` is running, the **QR auto-switches** to the `https://<host>.<tailnet>.ts.net/` address. The browser UI (`:3456`) and the MCP bridge (`:3457`) each need their own Serve mapping — one puts the UI on `443`, a second puts MCP on `8443`. The exact two commands live in the self-host guide at **`deploy/linux/README.md`** in the repository (section *Reach it from your phone over Tailscale → real-cert HTTPS*); that guide is the source of truth, so we don't duplicate the commands here.
 
 ## Security model
 
-- **Encryption:** all bridge traffic is plain HTTP from Graphnosis's perspective. Encryption is provided by the network layer you choose — Tailscale (WireGuard, end-to-end) or HTTPS-via-reverse-proxy if you've set one up. **Plain LAN HTTP is unencrypted** — fine for "same Wi-Fi as me," not fine for "shared WeWork network."
-- **Authentication:** bearer token in the `Authorization` header. Requests without it return 401. Requests with the wrong token return 401.
-- **CORS:** the bridge sets `Access-Control-Allow-Origin: *` so browser-based clients can connect. Combined with the bearer auth, this is safe (origin doesn't auth anything; the token does).
-- **No public-internet exposure by default:** the bridge binds to `127.0.0.1` (loopback) until you explicitly choose `all-interfaces`. Even then, it's only reachable from your LAN unless you've explicitly forwarded the port at your router (don't).
+- **The access token gates entry.** Browser access binds nothing to a public address by itself — the token is what authorizes a device. Treat it like a password. A correct token is exchanged for a 24-hour browser session; a wrong token is rejected with `401 Unauthorized`.
+- **Loopback vs all-interfaces.** The server can bind two ways:
+  - **Loopback only (`127.0.0.1`)** — reachable *only* from the same machine. This is the safe default for a desktop where you'd reach it through a Tailscale/`tailscale serve` front rather than directly.
+  - **All interfaces (`0.0.0.0`)** — reachable from any device that can route to this machine's IP. This is what LAN and direct-Tailscale-IP access need. The tradeoff: any device on the same network can *attempt* a connection — but without the token, every attempt is rejected. Use it on networks you trust (home Wi-Fi, your tailnet), not on shared/public Wi-Fi.
+- **Revoke a leaked token.** In **Settings → Mobile & Remote**, click **Revoke & Regenerate**. The old token stops working immediately; any device still holding it gets `401` on its next request. Re-scan the new QR on the devices you trust.
+
+## Without Tailscale
+
+**LAN only (home or office Wi-Fi).** If your phone and the server are always on the same network, you don't need Tailscale at all — use the LAN URL the panel shows. The limit: it stops working the moment the phone leaves that network, and it's plain HTTP (fine for your own Wi-Fi, not for a shared WeWork/café network).
+
+**Public access without Tailscale — Cloudflare Tunnel (advanced, optional).** If you specifically need to reach the server from anywhere and don't want Tailscale, Cloudflare's `cloudflared` punches an encrypted HTTPS tunnel from Cloudflare's edge to your machine — no port forwarding, free for personal use:
+
+```sh
+brew install cloudflared
+cloudflared tunnel --url http://localhost:3456
+```
+
+`cloudflared` prints a public `https://….trycloudflare.com` URL; open it on your phone and paste the access token. The privacy tradeoff vs Tailscale: **Cloudflare terminates TLS, so it sees the unencrypted request before it reaches your machine.** Tailscale (peer-to-peer WireGuard) does not — its servers only relay metadata. If that distinction matters to you, prefer Tailscale. This path is for people who know they want it.
+
+## Connect Claude for iOS / Android (MCP)
+
+Browser access gives you the *app*. To give your phone's *AI client* recall from your cortex, add Graphnosis as an MCP server using the **MCP Server URL** and **bearer token** from the same **Settings → Mobile & Remote** panel. The MCP bridge runs on port `3457`.
+
+### Claude for iOS
+
+1. Open the Claude app
+2. **Settings → MCP Servers → Add server**
+3. **Name:** `Graphnosis` (or anything)
+4. **Type:** `HTTP`
+5. **URL:** paste the MCP Server URL from the panel (over `tailscale serve` this is the `https://…:8443/mcp` form iOS requires)
+6. **Authorization header:** `Bearer <paste the token>`
+7. Save
+
+The server should show as connected within a few seconds. Start a new chat and your AI has the Graphnosis tools (`recall`, `remember`, `dig_deeper`, …) available.
+
+### Claude for Android
+
+Same flow — **Settings → MCP Servers → Add server** → fill in the URL and Bearer token.
+
+To cut off a device, use **Revoke & Regenerate** in the same panel — it rotates the token, and every device holding the old one gets `401` on its next request.
+
+## Run it headless on a server
+
+You don't need a Mac or a desktop app at all. The sidecar runs standalone on a Linux box (or in Docker) and serves the same browser UI on `:3456` and MCP on `:3457`, reachable from your phone over Tailscale. The cortex stays encrypted on that machine.
+
+Full instructions — build, systemd unit, Docker image, `tailscale serve` HTTPS, and tailnet ACLs to control who can reach the two ports — are in the self-host guide at **`deploy/linux/README.md`** in the repository. Run a personal server once and every device on your tailnet can open your cortex.
 
 ## Troubleshooting
 
-**Mobile client says "could not connect" / timeout**
-- Confirm Graphnosis is running and Cortex unlocked. Without unlock, the bridge accepts connections but every tool call returns "Cortex is locked."
-- Verify the IP you picked is reachable from the phone: open Safari on the phone, navigate to `http://<picked-ip>:3457/`. If you get a "401 Unauthorized" response, the IP is reachable and the bridge is up — the issue is the token. If you get a connection timeout, the IP isn't reachable (firewall, wrong interface choice, off-network).
-- If using Tailscale: confirm both devices show "Connected" in the Tailscale app.
+**Phone can't load the URL / connection times out**
+- Confirm Graphnosis is running and the cortex is unlocked.
+- Check the bind setting: a `127.0.0.1` (loopback-only) server is not reachable from another device — switch to all-interfaces, or front it with `tailscale serve`.
+- Verify reachability: open the URL in the phone's browser. A login/token prompt means the server is reachable and the issue (if any) is the token. A timeout means the IP isn't reachable (wrong interface, firewall, off-network).
+- On Tailscale: confirm both devices show "Connected" in the Tailscale app.
 
-**Connected but tools return 401**
-- The bearer token doesn't match. Re-open the wizard and re-copy the token; it may have rotated since you last copied it.
+**iPhone refuses to load `http://…`**
+- iOS blocks plaintext HTTP to non-localhost hosts. Set up `tailscale serve` so the QR/URL switches to `https://…ts.net` — see the self-host guide.
 
-**Tools listed but `recall` returns nothing**
-- Same as desktop: your Cortex may be empty (add files first) or the active engram is empty. Try a broader query.
+**Loaded the app but it says the cortex is locked**
+- Unlock it on the server (or via the browser login screen). Browser access serves the login screen but no memories until the cortex is unlocked.
+
+**MCP client connects but tools return 401**
+- The bearer token doesn't match. Re-open **Settings → Mobile & Remote** and re-copy the token.
+
+---
+
+## Related
+
+[Connect Your AI](/getting-started/connect-ai/) — desktop client setup; the MCP wire format is the same as mobile.
+
+[Memory Across AI Clients](/guides/memory-across-ai-clients/) — save on one device, recall on another, including the phone flow.
+
+[What Leaves Your Device](/guides/network-activity/) — every connection the app makes, including the browser server and the mobile bridge.
+
+[Keeping Your Cortex Safe](/guides/keeping-your-cortex-safe/) — token rotation, network isolation, and recovery.

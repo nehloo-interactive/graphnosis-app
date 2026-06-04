@@ -9,10 +9,24 @@ const platforms = [
   },
   {
     name: 'Windows',
-    status: 'coming',
-    statusLabel: 'Coming soon',
-    note: 'Windows 11 · In development',
+    status: 'available',
+    statusLabel: 'Available now',
+    note: 'Windows 10 or later',
     icon: `<svg viewBox="0 0 24 24" fill="currentColor" class="w-8 h-8" aria-hidden="true"><path d="M3 12V6.75l6-1.32v6.57H3zm17 0V5.25l-9 1.98V12h9zm-17 .75h6v6.43l-6-1.31v-5.12zm17 0h-9v5.77l9 1.98v-7.75z"/></svg>`,
+  },
+  {
+    name: 'Linux',
+    status: 'available',
+    statusLabel: 'Available now',
+    note: 'AppImage · any distro',
+    icon: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" class="w-8 h-8" aria-hidden="true"><rect x="2" y="3" width="20" height="18" rx="2"/><path d="M8 9l4 4-4 4M14 17h3"/></svg>`,
+  },
+  {
+    name: 'Ubuntu',
+    status: 'available',
+    statusLabel: 'Available now',
+    note: 'Debian & Ubuntu .deb',
+    icon: `<svg viewBox="0 0 24 24" fill="currentColor" class="w-8 h-8" aria-hidden="true"><path d="M12 2 3 7v10l9 5 9-5V7l-9-5zm0 2.18L18.5 8 12 11.82 5.5 8 12 4.18zM5 9.5l6 3.46v6.84l-6-3.33V9.5zm14 0v6.97l-6 3.33v-6.84l6-3.46z"/></svg>`,
   },
   {
     name: 'iOS',
@@ -39,23 +53,32 @@ const platforms = [
       <h2 class="text-3xl sm:text-4xl lg:text-5xl font-black text-white mb-4">
         Graphnosis is synapsing.
       </h2>
-      <p class="text-[#71717a] max-w-xl mx-auto leading-relaxed">
-        Local-first memory for every device you own. macOS is live today — other platforms are on the roadmap.
+      <p class="text-[#c4c6d6] max-w-xl mx-auto leading-relaxed">
+        Local-first memory for every device you own. macOS, Windows and Linux are live today — mobile is on the roadmap.
       </p>
     </div>
 
-    <!-- Platform cards -->
-    <div class="grid grid-cols-2 lg:grid-cols-4 gap-6">
-      {platforms.map((p) => (
-        <article class={[
-          'bg-[#13131a] border rounded-xl p-6 flex flex-col items-center text-center gap-4',
-          p.status === 'available' ? 'border-[#67e8f9]/40' : 'border-[#2a2a3d]',
+    <!-- Platform cards. Available platforms link to the /download chooser;
+         "coming soon" cards stay non-clickable (nothing to download yet). -->
+    <div class="grid grid-cols-2 lg:grid-cols-3 gap-6">
+      {platforms.map((p) => {
+        const isAvailable = p.status === 'available';
+        const Tag = isAvailable ? 'a' : 'article';
+        return (
+        <Tag
+          href={isAvailable ? '/download' : undefined}
+          aria-label={isAvailable ? `Download Graphnosis for ${p.name}` : undefined}
+          class={[
+          'bg-[#13131a] border rounded-xl p-6 flex flex-col items-center text-center gap-4 no-underline',
+          isAvailable
+            ? 'border-[#67e8f9]/40 transition-all hover:border-[#67e8f9] hover:-translate-y-0.5 hover:shadow-lg hover:shadow-[#67e8f9]/10'
+            : 'border-[#2a2a3d]',
         ].join(' ')}>
 
           <!-- Platform icon -->
           <div class={[
             'w-14 h-14 rounded-xl flex items-center justify-center',
-            p.status === 'available' ? 'text-[#67e8f9] bg-[#67e8f9]/10' : 'text-[#71717a] bg-[#1c1c27]',
+            p.status === 'available' ? 'text-[#67e8f9] bg-[#67e8f9]/10' : 'text-[#c4c6d6] bg-[#1c1c27]',
           ].join(' ')} aria-hidden="true" set:html={p.icon} />
 
           <!-- Platform name -->
@@ -68,15 +91,16 @@ const platforms = [
               {p.statusLabel}
             </span>
           ) : (
-            <span class="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-[#1c1c27] border border-[#2a2a3d] text-[#71717a] text-xs font-semibold">
+            <span class="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-[#1c1c27] border border-[#2a2a3d] text-[#c4c6d6] text-sm font-semibold">
               {p.statusLabel}
             </span>
           )}
 
           <!-- Note -->
-          <p class="text-[10px] text-[#71717a] leading-snug">{p.note}</p>
-        </article>
-      ))}
+          <p class="text-sm text-[#c4c6d6] leading-snug">{p.note}</p>
+        </Tag>
+        );
+      })}
     </div>
 
   </div>

@@ -12,6 +12,14 @@ export interface ConnectorEvent {
   /** Human-friendly label for the node (title, subject line, card name…). */
   label: string;
   sourceKind?: 'clip' | 'ai-conversation';
+  /**
+   * Source-file modification time (ms epoch), for file-backed connectors only.
+   * The manager uses this to advance the pull cursor to the newest file it
+   * actually ingested when a pull is capped — so the tail of a large folder
+   * drop isn't lost. Absent on API/feed connectors (the manager then advances
+   * the cursor to wall-clock now, the legacy behavior).
+   */
+  mtimeMs?: number;
 }
 
 /** Runtime status exposed to the App's connector panel via IPC. */
@@ -36,8 +44,30 @@ export interface Connector {
    * Fetch new events since `since`. Called on the pull schedule and on
    * demand via `connectors.triggerPull`. Optional — webhook-only connectors
    * omit this.
+   *
+   * `limit` caps how many items this single call returns. File-backed
+   * connectors MUST honor it (return the oldest `limit` matched files and set
+   * `mtimeMs` on each event) so the manager can drain a large backlog in
+   * cursor-advancing batches. Feed/API connectors may ignore it.
    */
-  pull?(since?: Date): Promise<ConnectorEvent[]>;
+  pull?(since?: Date, limit?: number): Promise<ConnectorEvent[]>;
+
+  /**
+   * Absolute filesystem paths this connector ingests from. When present, the
+   * manager starts a debounced recursive filesystem watcher on these paths and
+   * triggers an incremental pull within seconds of a change — so local-file
+   * connectors don't wait for the poll timer. Optional; non-file connectors
+   * omit it and rely on polling / webhooks.
+   */
+  watchPaths?(): string[];
+
+  /**
+   * The sourceRefs of EVERY file the connector currently sees on disk (not just
+   * the modified-since set `pull` returns). Used only in opt-in mirror mode to
+   * detect deletions: any previously-ingested sourceRef absent from this set
+   * had its file removed, so the manager prunes it. File-backed connectors only.
+   */
+  listCurrentSourceRefs?(): Promise<string[]>;
 
   /**
    * Handle an inbound webhook POST body. Called by the manager's HTTP
