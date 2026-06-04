@@ -23,6 +23,11 @@ export interface BillingEnv {
   STRIPE_PRICE_MONTHLY_SUBSCRIPTION?: string;
   RESEND_FROM_ADDRESS?: string;
   PUBLIC_BILLING_BASE_URL?: string;
+  /** Stripe-hosted Customer Portal login URL (billing.stripe.com/p/login/…).
+   *  Configured in the Stripe Dashboard → Customer portal. /account redirects
+   *  here so billing identity lives entirely with Stripe — Graphnosis serves
+   *  no account page of its own. */
+  STRIPE_PORTAL_LOGIN_URL?: string;
   // KV namespace binding
   BILLING_KV?: KVNamespace;
 }
