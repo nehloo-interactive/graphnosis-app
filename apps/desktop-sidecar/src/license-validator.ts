@@ -32,16 +32,20 @@ import sodium from 'libsodium-wrappers-sumo';
 
 // ── Ed25519 signing public key ────────────────────────────────────────────────
 //
-// This constant is the Nehloo license-signing public key (32 raw bytes).
-// The matching private key lives ONLY on the Nehloo signing service backend
-// and is never stored in or referenced from this repository.
+// The live Nehloo license-signing PUBLIC key (32 raw bytes). It is the verify
+// pair of the private key the billing Worker signs tokens with
+// (LICENSE_SIGNING_SECRET_KEY_HEX, stored only as a Worker secret — never in
+// this repo). Tokens minted by the deployed signing service verify against
+// these bytes; this is the production key, not a placeholder.
 //
-// ⚠️  PLACEHOLDER — swap in the real production public key before deploying
-//     the signing service. Until then, all token verification calls will
-//     return null (no features unlocked), which is the correct behaviour for
-//     a pre-production build.
+// A public key is safe to embed — it can only VERIFY signatures, never create
+// them. The private key alone can mint tokens, and it never leaves the Worker
+// secret store.
 //
-// How to generate a real keypair (one-time setup, keep the private key secret):
+// Rotating the keypair (only if the private key is ever exposed): generate a
+// fresh pair, set the new private key in the Worker's LICENSE_SIGNING_SECRET_
+// KEY_HEX, then copy the new public key here (the deployed /api/billing/public-
+// key endpoint prints it). BOTH SIDES MUST FLIP TOGETHER or live tokens break.
 //   node --input-type=module << 'EOF'
 //     import sodium from 'libsodium-wrappers-sumo';
 //     await sodium.ready;
@@ -49,9 +53,6 @@ import sodium from 'libsodium-wrappers-sumo';
 //     console.log('Public key (hex):', Buffer.from(kp.publicKey).toString('hex'));
 //     console.log('Secret key (hex):', Buffer.from(kp.privateKey).toString('hex'));
 //   EOF
-//
-// Paste the public key bytes here (32 bytes, big-endian hex octets).
-// Store the secret key securely in your signing service; never commit it.
 const SIGNING_PUBLIC_KEY = new Uint8Array([
   0xe6, 0x59, 0xe0, 0x5c, 0x6c, 0x01, 0x9a, 0x90,
   0xf5, 0x15, 0xc8, 0x2f, 0x05, 0x56, 0xf2, 0x3f,
@@ -107,17 +108,28 @@ export type LicenseFeature = 'skill-training' | 'gnn-exploration';
  * safe to share one `LicenseValidator` instance across all MCP handlers.
  */
 export class LicenseValidator {
+  /** The key used to verify token signatures. Defaults to the embedded
+   *  production SIGNING_PUBLIC_KEY; overridable only for tests (so the
+   *  verification logic can be exercised with a generated keypair without the
+   *  real private key). Production callers never pass one. */
+  private readonly verifyKey: Uint8Array;
+
   // Private constructor — callers must use LicenseValidator.create().
-  private constructor() {}
+  private constructor(verifyKey: Uint8Array) {
+    this.verifyKey = verifyKey;
+  }
 
   /**
    * Initialise the validator. Awaits libsodium WASM boot (one-time cost,
    * shared across all callers). Safe to call concurrently — all callers
    * share the same WASM instance.
+   *
+   * @param publicKeyOverride TEST ONLY — verify against this key instead of the
+   *   embedded production key. Omit in all production code paths.
    */
-  static async create(): Promise<LicenseValidator> {
+  static async create(publicKeyOverride?: Uint8Array): Promise<LicenseValidator> {
     await sodium.ready;
-    return new LicenseValidator();
+    return new LicenseValidator(publicKeyOverride ?? SIGNING_PUBLIC_KEY);
   }
 
   /**
@@ -145,7 +157,7 @@ export class LicenseValidator {
       if (sig.length !== sodium.crypto_sign_BYTES) return null;
 
       // Verify the signature over the raw JSON bytes.
-      const valid = sodium.crypto_sign_verify_detached(sig, payloadBytes, SIGNING_PUBLIC_KEY);
+      const valid = sodium.crypto_sign_verify_detached(sig, payloadBytes, this.verifyKey);
       if (!valid) return null;
 
       const payload = JSON.parse(new TextDecoder().decode(payloadBytes)) as LicensePayload;
