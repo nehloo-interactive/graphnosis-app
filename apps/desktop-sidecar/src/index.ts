@@ -5,6 +5,38 @@
 // binary evaluates this eagerly at startup, so it must precede every other
 // import (including the deferred dynamic imports below).
 import 'reflect-metadata';
+
+// Quiet routine operational chatter (per-operation host/brain/connector logs)
+// unless GRAPHNOSIS_DEBUG is set. These are debug noise, not user-facing signal.
+// The filter is an ALLOWLIST of known-benign informational patterns: only lines
+// matching NOISY are dropped, so no real error or warning is ever suppressed.
+// We wrap console.error/warn too (not just log/info) because dbg() — which emits
+// most of this chatter — writes to stderr (it must: the MCP stdio transport owns
+// stdout). Without wrapping stderr, the per-ingest "auto-relink wove …" summaries
+// flooded the dev terminal during large/connector ingests. Patched at the entry
+// point so it also catches SDK-host logs ([graphnosis-host], [host], etc.).
+if (!process.env['GRAPHNOSIS_DEBUG']) {
+  const NOISY: RegExp[] = [
+    /auto-relink wove/,
+    /auto-relink skipped/,
+    /oplog compaction skipped/,
+    /corrections sweep:/,
+    /pruned \d+ stale connection/,
+    /autonomously healed \d+ duplicate/,
+    /skipping mount/, // connector skip (disabled kind / archived engram) — expected state
+  ];
+  const wrap = (orig: (...a: unknown[]) => void) => (...args: unknown[]): void => {
+    const first = typeof args[0] === 'string' ? args[0] : '';
+    if (NOISY.some((re) => re.test(first))) return;
+    orig(...args);
+  };
+  console.log = wrap(console.log.bind(console)) as typeof console.log;
+  console.info = wrap(console.info.bind(console)) as typeof console.info;
+  // stderr too — dbg() lands here, and so do the noisiest per-ingest summaries.
+  // Real errors don't match NOISY, so they still surface.
+  console.error = wrap(console.error.bind(console)) as typeof console.error;
+  console.warn = wrap(console.warn.bind(console)) as typeof console.warn;
+}
 /**
  * Entry router. Single file that Bun's `--compile` consumes as the binary's
  * entry point.

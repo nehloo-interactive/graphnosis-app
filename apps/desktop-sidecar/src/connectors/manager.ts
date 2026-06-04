@@ -197,7 +197,9 @@ export class ConnectorManager {
     // Admin/IT policy: a disabled connector KIND never mounts (enforced here in
     // the sidecar, the single choke point — the UI can't be trusted to gate).
     if (isConnectorKindDisabled(cfg.kind)) {
-      console.error(`[connector:${cfg.id}] skipping mount — connector kind '${cfg.kind}' is disabled by policy.`);
+      // Expected operational state, not an error — log at .log so the entry-point
+      // noise filter (see index.ts) suppresses it unless GRAPHNOSIS_DEBUG is set.
+      console.log(`[connector:${cfg.id}] skipping mount — connector kind '${cfg.kind}' is disabled by policy.`);
       return;
     }
     // Skip connectors whose target engram has been archived. An archived
@@ -207,7 +209,9 @@ export class ConnectorManager {
     // new corrupt .gai that gets quarantined again on the next boot).
     const targetMeta = this.host.getSettings().graphMetadata[cfg.graphId];
     if (targetMeta?.archived) {
-      console.error(
+      // Expected operational state, not an error — log at .log so the entry-point
+      // noise filter (see index.ts) suppresses it unless GRAPHNOSIS_DEBUG is set.
+      console.log(
         `[connector:${cfg.id}] skipping mount — target engram '${cfg.graphId}' is archived.` +
         ` Unarchive the engram in Settings to re-enable this connector.`,
       );
@@ -221,7 +225,7 @@ export class ConnectorManager {
           void this.doPull(cfg, rc).catch(err => {
             console.error(`[connector:${cfg.id}] scheduled pull failed: ${(err as Error).message}`);
           });
-        }, this.settings.pullIntervalMs).unref()
+        }, this.intervalForCfg(cfg)).unref()
       : null;
 
     const rc: RunningConnector = { connector, pullTimer, eventsTotal: 0, pulling: false, watchers: [], watchDebounce: null };
@@ -366,7 +370,15 @@ export class ConnectorManager {
     if (events.length === 0) return 0;
     const mirror = cfg.options['mirrorDeletes'] === true;
     let count = 0;
+    let sinceYield = 0;
     for (const ev of events) {
+      // Cooperative yield: with MANY SMALL files, each ingest's await often
+      // resolves on the microtask queue (cached/cheap embeddings + a synchronous
+      // op-log write), so the macrotask queue — where the IPC socket is serviced
+      // — never runs and the UI freezes mid-batch. A setImmediate every few
+      // files hands the event loop back so IPC stays responsive. (doPull only
+      // yields between BATCHES, which isn't enough inside one large batch.)
+      if (++sinceYield >= 4) { sinceYield = 0; await new Promise<void>((r) => setImmediate(r)); }
       try {
         const rec = await withEmbedding(() =>
           ingestClip(this.host, cfg.graphId, ev.text, ev.label, {
@@ -520,6 +532,14 @@ export class ConnectorManager {
    * re-pulling). Watchers are unaffected — they already give near-instant
    * ingest; this only governs the backstop poll.
    */
+  /** Effective pull interval for a connector: its own `options.intervalMs`
+   *  override (≥ 60s) if set, else the global default. */
+  private intervalForCfg(cfg: { options?: Record<string, unknown> }): number {
+    const v = cfg.options?.['intervalMs'];
+    if (typeof v === 'number' && v >= 60_000) return Math.floor(v);
+    return this.settings.pullIntervalMs;
+  }
+
   async setPullInterval(ms: number): Promise<number> {
     const clamped = Math.max(60_000, Math.floor(ms));
     this.settings = { ...this.settings, pullIntervalMs: clamped };
@@ -529,11 +549,12 @@ export class ConnectorManager {
       if (rc.pullTimer) clearInterval(rc.pullTimer);
       const cfg = this.settings.configs.find(c => c.id === id);
       if (!cfg) continue;
+      // Respect a per-connector override; otherwise use the new global default.
       rc.pullTimer = setInterval(() => {
         void this.doPull(cfg, rc).catch(err => {
           console.error(`[connector:${id}] scheduled pull failed: ${(err as Error).message}`);
         });
-      }, clamped).unref();
+      }, this.intervalForCfg(cfg)).unref();
     }
     return clamped;
   }

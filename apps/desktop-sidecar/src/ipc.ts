@@ -501,11 +501,17 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
         query: z.string(),
         k: z.number().int().positive().max(200).optional(),
       }).parse(params);
-      return withEmbedding(() => deps.host.searchNodes(args.graphId, args.query, args.k ?? 30));
+      const hits = await withEmbedding(() => deps.host.searchNodes(args.graphId, args.query, args.k ?? 30));
+      // Enrich each hit with its true allowlist sourceId so the client can
+      // redact per-source precisely in Presentation Mode (the SDK's source.file
+      // string is NOT the allowlist sourceId). getNodeSource is a Map lookup.
+      return hits.map((h) => ({ ...h, sourceId: deps.host.getNodeSource(args.graphId, h.nodeId) }));
     }
     case 'nodes.list': {
       const args = z.object({ graphId: z.string() }).parse(params);
-      return deps.host.listNodes(args.graphId);
+      const nodes = deps.host.listNodes(args.graphId);
+      // Attach allowlist sourceId per node (see search.nodes note).
+      return nodes.map((n) => ({ ...n, sourceId: deps.host.getNodeSource(args.graphId, n.id) }));
     }
     case 'edges.list': {
       const args = z.object({ graphId: z.string() }).parse(params);
@@ -809,16 +815,118 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
       // both (wants everything); the Home digest passes `since` so it never
       // drags the entire op-log over IPC on a large cortex (which was timing
       // out the 5s budget and silently hiding the digest).
+      // `ops` filters to specific op kinds BEFORE the limit slice — so a rare
+      // type (forgetSource, ingestSource) can be pulled from the full op-log
+      // without being buried under millions of autonomous-brain edge events.
       const a = z.object({
         since: z.number().int().nonnegative().optional(),
+        until: z.number().int().nonnegative().optional(),
         limit: z.number().int().positive().optional(),
+        ops: z.array(z.string()).optional(),
+        actor: z.string().optional(), // server-side "who made it" filter (full op-log)
       }).parse(params ?? {});
+      // Who-made-it classification — mirrors the desktop's activityActor +
+      // friendlyClient so the actor labels in the row badges (client-rendered)
+      // match the dropdown + server filter exactly. Keep in sync with main.ts.
+      const friendlyClientName = (name?: string): string => {
+        if (!name) return 'Unknown client';
+        const map: Record<string, string> = {
+          'claude-ai': 'Claude Desktop', 'claude-desktop': 'Claude Desktop',
+          'claude-code': 'Claude Code', 'cursor-vscode': 'Cursor', 'cursor': 'Cursor',
+          'zed': 'Zed', 'windsurf': 'Windsurf',
+        };
+        if (map[name]) return map[name]!;
+        if (name.startsWith('local-agent-mode-')) return 'Claude Skills agent';
+        return name;
+      };
+      const actorOf = (ev: { after?: unknown; before?: unknown }): { label: string; cls: string } => {
+        const aa = (ev.after ?? {}) as Record<string, unknown>;
+        const bb = (ev.before ?? {}) as Record<string, unknown>;
+        const client = (aa['addedBy'] ?? aa['correctedBy']) as string | undefined;
+        if (client) return { label: friendlyClientName(client), cls: 'ai' };
+        const trig = ((aa['triggeredBy'] ?? bb['triggeredBy']) as string | undefined) ?? '';
+        const reason = ((aa['reason'] ?? bb['reason']) as string | undefined) ?? '';
+        if (trig.startsWith('user:')) return { label: 'You', cls: 'user' };
+        if (trig.startsWith('brain:') || /\bbrain:|auto-relink|auto-link/i.test(reason)) return { label: 'Autonomous brain', cls: 'brain' };
+        if (/user-confirmed/i.test(reason)) return { label: 'You', cls: 'user' };
+        if (trig.startsWith('ipc:')) return { label: 'App', cls: 'app' };
+        return { label: 'System', cls: 'app' };
+      };
       let events = await deps.host.listOplogEvents();
       if (a.since !== undefined) events = events.filter((ev) => ev.ts > a.since!);
+      if (a.until !== undefined) events = events.filter((ev) => ev.ts <= a.until!);
+      if (a.ops !== undefined && a.ops.length > 0) {
+        const set = new Set(a.ops);
+        events = events.filter((ev) => set.has(ev.op));
+      }
+      // Distinct actors across the WHOLE current scope (since/until/ops), before
+      // the limit slice — so the desktop's "who" dropdown is complete even when
+      // the recent-N window is dominated by one actor's events.
+      const actorSet = new Set<string>();
+      for (const ev of events) actorSet.add(actorOf(ev).label);
+      const actors = [...actorSet].sort((x, y) => x.localeCompare(y));
+      // Server-side actor filter — applied across the full op-log, like `ops`.
+      if (a.actor) events = events.filter((ev) => actorOf(ev).label === a.actor);
       if (a.limit !== undefined) {
         events = events.slice().sort((x, y) => y.ts - x.ts).slice(0, a.limit);
+      } else {
+        events = events.slice().sort((x, y) => y.ts - x.ts);
       }
-      return { events };
+      // ── Node-content enrichment ────────────────────────────────────────
+      // The op-log stores opaque node ids. The Activity UI can only resolve
+      // ids that belong to the engram CURRENTLY loaded in the desktop, so
+      // rows for other engrams (or background-brain ops) showed bare ids
+      // ("2fNzp1WtPShx…"). Resolve them here instead: the sidecar can reach
+      // EVERY loaded engram's nodes. We build a per-graph id→preview map
+      // lazily (only for graphs that actually appear in the returned slice)
+      // and attach a `resolved` block the client prefers over the raw id.
+      // Soft-deleted nodes may no longer be inspectable — those keep the id.
+      const loadedSet = new Set(deps.host.listGraphs());
+      const previewCache = new Map<string, Map<string, string>>();
+      const previewMap = (graphId: string): Map<string, string> => {
+        let m = previewCache.get(graphId);
+        if (!m) {
+          m = new Map();
+          if (loadedSet.has(graphId)) {
+            try {
+              for (const n of deps.host.listNodes(graphId) as Array<{ id: string; contentPreview?: string }>) {
+                if (n.contentPreview) m.set(n.id, n.contentPreview);
+              }
+            } catch { /* graph unreadable — leave map empty */ }
+          }
+          previewCache.set(graphId, m);
+        }
+        return m;
+      };
+      const clipPrev = (s: string | undefined): string | undefined =>
+        s ? (s.length > 160 ? s.slice(0, 160) : s) : undefined;
+      const enriched = events.map((ev) => {
+        const m = previewMap(ev.graphId);
+        const after = (ev.after ?? {}) as Record<string, unknown>;
+        const resolved: { target?: string; from?: string; to?: string } = {};
+        let targetSourceId: string | undefined;
+        if (ev.target?.kind === 'node') {
+          const p = clipPrev(m.get(ev.target.id));
+          if (p) resolved.target = p;
+          // Resolve the node's allowlist sourceId so the Activity row can be
+          // redacted per-source in Presentation Mode (precise, not fail-safe).
+          targetSourceId = deps.host.getNodeSource(ev.graphId, ev.target.id);
+        }
+        if (ev.op === 'addEdge' || ev.op === 'deleteEdge') {
+          const from = clipPrev(m.get(after['fromNodeId'] as string));
+          const to = clipPrev(m.get(after['toNodeId'] as string));
+          if (from) resolved.from = from;
+          if (to) resolved.to = to;
+        }
+        // Attach the computed actor so the desktop's row badge matches the
+        // dropdown + filter exactly (one source of truth, no label drift).
+        const who = actorOf(ev);
+        const extra: Record<string, unknown> = { actor: who.label, actorCls: who.cls };
+        if (Object.keys(resolved).length > 0) extra['resolved'] = resolved;
+        if (targetSourceId) extra['targetSourceId'] = targetSourceId;
+        return { ...ev, ...extra };
+      });
+      return { events: enriched, actors };
     }
     case 'activity.log': {
       const args = z.object({
@@ -1818,11 +1926,19 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
       const sub = await withEmbedding(() => deps.host.recall(query, {
         budget: { maxTokens: maxTokens ?? 2000, maxNodes: maxNodes ?? 20 },
       }));
+      // Enrich each recalled node with its allowlist sourceId so MemoryStudio
+      // can redact per-source precisely in Presentation Mode.
+      const byGraph: Record<string, unknown> = {};
+      for (const [gid, nodes] of sub.byGraph) {
+        byGraph[gid] = (nodes as Array<{ nodeId: string }>).map(
+          (n) => ({ ...n, sourceId: deps.host.getNodeSource(gid, n.nodeId) }),
+        );
+      }
       return {
         prompt: sub.prompt,
         tokensUsed: sub.tokensUsed,
         nodesIncluded: sub.nodesIncluded,
-        byGraph: Object.fromEntries(sub.byGraph),
+        byGraph,
         audit: sub.audit,
       };
     }
@@ -1833,10 +1949,14 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
       const p = getAdminPolicy();
       const ALL_CONNECTOR_KINDS = ['webhook', 'rss', 'github', 'slack', 'trello', 'linear', 'obsidian', 'gbrain', 'ai-context'];
       const clientTypes = deps.host.getSettings().ai.clientTypes ?? {};
+      // Always offer the supported clients as blockable, even before they've
+      // ever connected, unioned with any others the registry has seen.
+      const SUPPORTED_CLIENTS = ['Claude Desktop', 'Claude Code', 'Cursor', 'Copilot', 'Claude Skills agent'];
+      const knownClients = Array.from(new Set([...SUPPORTED_CLIENTS, ...Object.keys(clientTypes)]));
       return {
         ...p,
         connectorKinds: ALL_CONNECTOR_KINDS,
-        knownClients: Object.keys(clientTypes),
+        knownClients,
       };
     }
     case 'policy.set': {
@@ -3996,6 +4116,40 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
         sub: payload.sub,
         expiresAt: payload.exp * 1000,
       };
+    }
+
+    case 'license:pollServer': {
+      // Server-side subscription poll. The browser `fetch` from the frontend is
+      // blocked by CORS — both in dev (origin http://localhost:5173) AND in the
+      // installed app (origin tauri://localhost) — because graphnosis.com only
+      // allows its own web origin. Doing the request HERE (Node, no CORS) works
+      // in every build. On success the token is validated + persisted just like
+      // license:setToken.
+      const args = z.object({
+        email: z.string().min(3),
+        key: z.string().optional(),
+        baseUrl: z.string().optional(),
+      }).parse(params ?? {});
+      const base = (args.baseUrl ?? 'https://graphnosis.com').replace(/\/$/, '');
+      const keyParam = args.key ? `&key=${encodeURIComponent(args.key)}` : '';
+      const url = `${base}/api/subscription/token?email=${encodeURIComponent(args.email)}${keyParam}`;
+      let token: string | undefined;
+      try {
+        const res = await fetch(url, { method: 'GET' });
+        if (res.status === 204) return { ok: false, reason: 'no_token' };
+        if (!res.ok) return { ok: false, reason: `http_${res.status}` };
+        const data = (await res.json()) as { token?: string };
+        token = data.token;
+      } catch (e) {
+        return { ok: false, reason: `fetch_failed: ${(e as Error).message}` };
+      }
+      if (!token) return { ok: false, reason: 'no_token' };
+      const trimmed = token.trim();
+      if (!/^[A-Za-z0-9_\-]+\.[A-Za-z0-9_\-]+$/.test(trimmed)) return { ok: false, reason: 'malformed' };
+      const payload = deps.licenseValidator?.verifyToken(trimmed) ?? null;
+      if (!payload) return { ok: false, reason: 'invalid_or_expired' };
+      await deps.host.setLicenseToken(trimmed);
+      return { ok: true, plan: payload.plan, features: payload.features, sub: payload.sub, expiresAt: payload.exp * 1000 };
     }
 
     case 'license:status': {

@@ -1763,6 +1763,97 @@ export class GraphnosisHost {
         }
       });
     entry.embeddingsBuilding = buildPromise;
+    // Fire-and-forget orphan sweep — see sweepSourceRefArtifacts for the
+    // why. Runs on the background lane, never blocks the unlock path.
+    void this.sweepSourceRefArtifacts(graphId).catch((e: unknown) => {
+      console.error(
+        `[graphnosis-host] sourceRef-artifact sweep failed for engram[${redactId(graphId)}]: ${(e as Error).message}`,
+      );
+    });
+  }
+
+  /**
+   * Find and soft-delete orphan nodes whose CONTENT is literally a
+   * sourceRef ("skill:<ts>:<label>" / "clip:<ts>:<label>" /
+   * "ai-conversation:<ts>:<label>") and which are NOT referenced by any
+   * source's nodeIds list.
+   *
+   * Background: the SDK's `appendText` wraps input as
+   * `# ${sourceRef}\n\n${text}` before chunking, so the H1 always has
+   * the raw sourceRef as its content. When that H1 chunk gets created
+   * but the host-side splice into `source.nodeIds` fails or is skipped
+   * (e.g. on a "0 chars" filter throw, on a content-hash dedup, or on
+   * any caller error path), the H1 is left in the SDK graph with no
+   * source pointer — a live orphan. The adapter-side filter we ship
+   * NOW prevents new orphans; this sweep cleans up any that
+   * accumulated before the fix shipped.
+   *
+   * Defensive: only sweeps nodes whose content matches the strict
+   * sourceRef shape AND which carry a real source pointer in their
+   * SDK metadata (`n.source.file`) that ALSO equals their content.
+   * Real user notes that happen to contain `clip:1779...` as ordinary
+   * text will not match.
+   *
+   * Idempotent: re-running the sweep on an already-clean graph is a
+   * no-op. Each soft-delete bumps confidence to 0, so a second pass
+   * filters them out before doing any work.
+   */
+  private async sweepSourceRefArtifacts(graphId: GraphId): Promise<void> {
+    const g = this.graphs.get(graphId);
+    if (!g) return;
+    // Build the set of nodeIds that ARE referenced by some source.
+    const referenced = new Set<string>();
+    for (const s of g.sourceIndex.list()) {
+      for (const nid of s.nodeIds) referenced.add(nid);
+    }
+    // sourceRef shape: "<kind>:<13-digit-ms-timestamp>:<label>". Tight
+    // enough to avoid sweeping legitimate user notes that contain the
+    // word "skill:" in prose.
+    const SOURCE_REF_RE = /^(skill|clip|ai-conversation):\d{10,16}:.+/;
+    const nodes = this.opts.adapter.inspectNodes(g.handle);
+    const now = Date.now();
+    const victims: string[] = [];
+    for (const n of nodes) {
+      // Already soft-deleted? skip — no need to delete twice.
+      if (n.confidence <= 0.2) continue;
+      if (n.validUntil !== undefined && n.validUntil <= now) continue;
+      // Already linked to a source? skip — it's a real chunk, not an
+      // orphan, even if its content looks like a sourceRef.
+      if (referenced.has(n.id)) continue;
+      // Defensive content check (full text, trimmed). contentPreview
+      // is truncated to ~120 chars — the sourceRef pattern is always
+      // shorter than that, but using full content avoids edge cases.
+      const full = this.opts.adapter.getFullNodeContent(g.handle, n.id) ?? '';
+      const trimmed = full.trim();
+      if (!SOURCE_REF_RE.test(trimmed)) continue;
+      // Second defensive check: the SDK's per-node `sourceFile`
+      // should equal this same sourceRef — that's how appendText sets
+      // it. If a user manually edited a node to have this exact text,
+      // their node would have a DIFFERENT sourceFile (the real file
+      // they ingested). This guard preserves user data.
+      if (n.sourceFile && n.sourceFile !== trimmed) continue;
+      victims.push(n.id);
+    }
+    if (victims.length === 0) return;
+    for (const id of victims) {
+      try {
+        await this.opts.adapter.applyCorrection(g.handle, {
+          kind: 'delete',
+          nodeId: id,
+          reason: 'sourceRef-header orphan sweep (post-load housekeeping)',
+        });
+      } catch {
+        // Non-fatal — leave the node soft-alive; recall confidence
+        // filters will still hide it from users.
+      }
+    }
+    // Persist the deletions so they survive a restart. The sweep is
+    // idempotent so re-running doesn't write again.
+    g.dirty = true;
+    try { await this.save(graphId); } catch { /* save failure is non-fatal */ }
+    console.error(
+      `[graphnosis-host] sourceRef-artifact sweep: removed ${victims.length} orphan node(s) from engram[${redactId(graphId)}]`,
+    );
   }
 
   /** Resolve when the background embedding build for `graphId` finishes

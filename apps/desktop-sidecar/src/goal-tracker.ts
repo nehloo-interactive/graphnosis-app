@@ -11,6 +11,7 @@ interface PlanSummary {
 
 export interface GoalNode {
   nodeId: string;
+  sourceId: string;
   graphId: string;
   title: string;
   milestones: string[];
@@ -72,6 +73,7 @@ export class GoalTracker {
         const targetDate = extractDate(fullText);
         goals.push({
           nodeId: firstNodeId,
+          sourceId: src.sourceId,
           graphId,
           title: first.section ?? first.contentPreview.slice(0, 60),
           milestones: extractMilestones(fullText),
