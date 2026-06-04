@@ -37,6 +37,11 @@ export interface LicensePayload {
   iat: number;
   /** Expiry, Unix seconds. */
   exp: number;
+  /** True when the subscription will auto-renew at `exp`; false when it has
+   *  been set to cancel at period end (so `exp` is a hard expiry, not a
+   *  renewal). Drives the "Renews" vs "Expires" label in the desktop. Older
+   *  tokens minted before this field default to renewing. */
+  renews?: boolean;
 }
 
 // Fixed 16-byte PKCS#8 DER prefix for a bare 32-byte Ed25519 seed.
@@ -88,6 +93,7 @@ export async function mintLicenseToken(
   features: string[],
   ttlDays = 35,
   plan = 'monthly-subscription',
+  renews = true,
 ): Promise<string> {
   const signingKey = await getSigningKey(env);
   const now = Math.floor(Date.now() / 1000);
@@ -97,6 +103,7 @@ export async function mintLicenseToken(
     features,
     iat: now,
     exp: now + ttlDays * 24 * 60 * 60,
+    renews,
   };
   const payloadBytes = new TextEncoder().encode(JSON.stringify(payload));
   const signatureBuffer = await crypto.subtle.sign('Ed25519', signingKey, payloadBytes);

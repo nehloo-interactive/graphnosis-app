@@ -72,6 +72,10 @@ export interface LicensePayload {
   iat: number;
   /** Expiry, Unix seconds. */
   exp: number;
+  /** True/absent when the subscription auto-renews at `exp`; false when it's
+   *  set to cancel at period end. Drives the "Renews" vs "Expires" label.
+   *  Optional for backward-compat with tokens minted before this field. */
+  renews?: boolean;
 }
 
 /**

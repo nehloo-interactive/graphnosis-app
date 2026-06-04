@@ -147,8 +147,15 @@ async function mintAndPersist(
     .map((s) => s.trim())
     .filter((s) => s.length > 0);
   const plan = sub?.metadata?.['plan'] ?? 'monthly-subscription';
-  console.log('[billing webhook] minting token for', email, '(plan:', plan, 'features:', features.join(','), ')');
-  const token = await mintLicenseToken(env, email, features, 35, plan);
+  // Renewal state: a subscription set to cancel at period end is still active
+  // (token stays valid until `exp`) but won't auto-renew — the desktop shows
+  // "Expires" instead of "Renews". Stripe fires customer.subscription.updated
+  // when the user toggles cancel_at_period_end, so a fresh token reflecting the
+  // new state is minted automatically. No subscription object → treat as
+  // renewing (manual/admin mint).
+  const renews = sub ? !(sub.cancel_at_period_end ?? false) : true;
+  console.log('[billing webhook] minting token for', email, '(plan:', plan, 'features:', features.join(','), 'renews:', renews, ')');
+  const token = await mintLicenseToken(env, email, features, 35, plan, renews);
   // The signed token carries its own exp; we mirror it into the KV row so
   // /api/subscription/token can answer "is this current?" without re-verifying
   // the signature on every poll.
