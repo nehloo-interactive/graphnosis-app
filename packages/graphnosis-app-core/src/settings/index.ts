@@ -7,7 +7,7 @@ import path from 'node:path';
 
 // ── Connector types ───────────────────────────────────────────────────────────
 
-export type ConnectorKind = 'webhook' | 'rss' | 'github' | 'slack' | 'trello' | 'linear' | 'obsidian' | 'gbrain' | 'ai-context';
+export type ConnectorKind = 'webhook' | 'rss' | 'github' | 'slack' | 'trello' | 'linear';
 
 export interface ConnectorConfig {
   /** User-chosen slug — must be unique within a cortex. */
@@ -661,6 +661,27 @@ export interface VsCodeBridgeSettings {
   localBridgePort: number;
 }
 
+export interface HttpBridgeSettings {
+  /** Whether the HTTP bridge is active. False by default. */
+  enabled: boolean;
+  /** TCP port to bind on. Default 3457. */
+  port: number;
+  /** Interface to bind on. '127.0.0.1' (loopback only) or '0.0.0.0' (LAN / Tailscale). */
+  host: string;
+  /**
+   * Bearer token mobile clients must present in Authorization headers.
+   * Auto-generated (UUID v4) on first enable via the App's Settings UI.
+   * Shown once in the UI; user copies it into their mobile MCP client config.
+   */
+  token: string;
+  /**
+   * Browser origins allowed to call the bridge (for future browser extensions / PWAs).
+   * Empty array = no browser origin is allowed (direct HTTP clients like mobile apps
+   * don't send an Origin header so they are unaffected by this list).
+   */
+  allowedOrigins: string[];
+}
+
 export interface AppSettings {
   contentCache: ContentCacheSettings;
   forget: ForgetSettings;
@@ -676,177 +697,12 @@ export interface AppSettings {
    */
   mobile?: {
     httpBridge: HttpBridgeSettings;
-    /** Browser UI server (personal-server mode). Absent = disabled. */
-    httpUi?: HttpUiSettings;
   };
   /**
    * Service connector settings. Absent = no connectors configured.
    * Each ConnectorConfig includes credentials (plaintext) and pull schedule state.
    */
   connectors?: ConnectorSettings;
-  /**
-   * VS Code / Copilot integration settings. Absent on older cortexes; the
-   * sidecar auto-populates on first boot after the feature ships.
-   */
-  vscode?: VsCodeBridgeSettings;
-  /**
-   * HMAC-SHA256 secret key for rotating consent phrase generation.
-   * Hex-encoded 32 bytes. Generated once per cortex and stored here
-   * (inside the encrypted cortex on disk — encrypted at rest).
-   * NEVER exposed via any MCP tool, IPC response, or log line.
-   */
-  consentHmacKey?: string;
-
-  /**
-   * Encrypted license token from the Nehloo signing service.
-   *
-   * On-disk: XChaCha20-Poly1305 ciphertext of the raw token string,
-   * base64-encoded, encrypted with the cortex data key (same key used
-   * for connector credentials). On-disk value is always the ciphertext;
-   * the host decrypts on demand via `getLicenseToken()`.
-   *
-   * A missing or undecryptable field means the user has no active license
-   * and gated features (e.g. skill training) degrade to their free tier.
-   * NEVER expose this field via any MCP tool, IPC response, or log line.
-   */
-  licenseEnc?: string;
-
-  /**
-   * Per-skill autonomous-retrain configuration, keyed by sourceId.
-   *
-   * The sidecar's scheduler (apps/desktop-sidecar) reads this map every few
-   * minutes and re-trains skills whose triggers have fired. Pro-gated:
-   * writes require a valid `skill-training` license token; reads are open.
-   * The map is owned by the user — never broadcast to MCP, the AI client,
-   * or any cloud service.
-   *
-   * Missing or null = no autonomous retraining for that skill (manual only).
-   */
-  skillAutoRetrain?: Record<string, SkillAutoRetrainConfig>;
-
-  /**
-   * Notification queue — sourceIds the scheduler retrained while running
-   * under `autonomyLevel: 'notify'` that the user hasn't acknowledged yet.
-   * Library rows show a 🆕 dot for every entry in this set; clicking the
-   * row clears it. Persisted so notifications survive an app restart.
-   */
-  skillRetrainNotifications?: string[];
-
-  /**
-   * Review queue — proposed retrain outputs the scheduler produced while
-   * running under `autonomyLevel: 'preview-first'`. The new text isn't
-   * promoted to a real skill source until the user Accepts; Reject
-   * discards. Keyed by sourceId so a single skill only has one pending
-   * proposal at a time (newer proposals overwrite older ones).
-   */
-  skillRetrainPending?: Record<string, SkillRetrainProposal>;
-
-  /** Docs-engram ingest state. Absent on cortexes that never saw the offer. */
-  docsEngram?: {
-    /** true once the user clicked "Not now" on the docs-ingest offer. */
-    declined?: boolean;
-    /** App version at the last successful docs ingest. Drives auto-re-ingest. */
-    ingestedAppVersion?: string;
-  };
-  /** Skill-Demos-engram ingest state. Twin of docsEngram. Absent on cortexes
-   *  that never saw the offer. The state machine treats `declined === true`
-   *  as a permanent opt-out, and a `ingestedAppVersion` mismatch with the
-   *  current app version as "re-import on next unlock" (so updated demos
-   *  reach existing users automatically on app upgrade). */
-  skillDemosEngram?: {
-    /** true once the user clicked "Not now" on the bundled-demos offer. */
-    declined?: boolean;
-    /** App version at the last successful bundled-demos ingest. */
-    ingestedAppVersion?: string;
-    /** Language the user chose at install. Each bundled pack carries an
-     *  English + Romanian variant of the same SOP; only the chosen-language
-     *  variant is ingested (3 skills, not 6). Reused on silent re-ingest at
-     *  app-version bumps so the refresh keeps the same language. */
-    language?: 'en' | 'ro';
-  };
-  /**
-   * Alive Brain — background intelligence settings. Absent on older cortexes;
-   * BrainEngine starts all activities immediately when unset (treats them
-   * as "never run"). Persisted to settings.json after each completed run.
-   */
-  brain?: {
-    /** Unix-ms timestamps of each completed background activity. */
-    lastRun?: {
-      duplicateScan?: number;
-      synapse?: number;
-      insight?: number;
-      temporalDecay?: number;
-      goalCheck?: number;
-      reinforce?: number;
-      consolidation?: number;
-      crossEngram?: number;
-    };
-    /** Count of pending (non-dismissed) insight cards in BrainEngine memory. */
-    pendingInsightsCount?: number;
-    /**
-     * Diagnostic record for the most recent insight pass — surfaces in the
-     * Insights tab's empty-state so the user understands WHY nothing
-     * appeared (LLM unreachable, scan timed out, no insightful patterns,
-     * etc.) instead of staring at an indistinguishable "No insights yet".
-     */
-    lastInsightResult?: {
-      /** Unix-ms when the run finished (success or failure). */
-      at: number;
-      /**
-       * Outcome:
-       *   - 'ok'           — completed normally; `count` new insights added.
-       *   - 'no-llm'       — local LLM disabled or unreachable.
-       *   - 'no-data'      — every engram had fewer than 5 top nodes; nothing to summarise.
-       *   - 'timeout'      — bailed after consecutive LLM timeouts on a slow model.
-       *   - 'parse-error'  — the LLM responded but the output couldn't be parsed as JSON.
-       *   - 'error'        — any other unexpected failure (see `message`).
-       */
-      status: 'ok' | 'no-llm' | 'no-data' | 'timeout' | 'parse-error' | 'error';
-      /** New insights added on this run (always 0 for non-ok statuses). */
-      count: number;
-      /** Optional human-readable detail attached to `error` / `timeout` / `parse-error`. */
-      message?: string;
-    };
-    /** Count of detected duplicate pairs since last dismissal. */
-    pendingDuplicatePairsCount?: number;
-    /** Temporal decay configuration. */
-    temporalDecay?: {
-      /** When false, the daily confidence decay loop is skipped entirely. Default true. */
-      enabled: boolean;
-      /** Percent confidence lost per day of non-recall for a typical node. Default 0.5. */
-      dailyRatePercent: number;
-      /** When true, nodes that appear in recall results gain a small confidence boost. Default true. */
-      reinforceOnRecall: boolean;
-      /** Clips and ephemeral notes decay this many times faster than files. Default 3. */
-      clipDecayMultiplier: number;
-    };
-    /** Autonomous Indelibility — connection reinforcement + consolidation. */
-    reinforcement?: ReinforcementSettings;
-    /** Graphnosis Neural Network — a non-deterministic trained link-predictor. OFF by default. */
-    neuralNetwork?: {
-      /** When true, the trained link-predictor may add predicted connections. Default false. */
-      enabled: boolean;
-    };
-    /** Ambient clipboard capture — watches clipboard for long text and offers to save it. */
-    clipboardCapture?: {
-      /** When true, clipboard is polled while the app is focused. Default false. */
-      enabled: boolean;
-    };
-    /**
-     * Last successful vitality compute. Persisted each time BrainEngine
-     * emits vitality and read on the next boot so the user sees their
-     * familiar score immediately instead of an inflated "0 duplicates"
-     * estimate (which would later drop to the real value once the post-
-     * boot duplicate scan completes). The animateVitality UI smoothly
-     * transitions from this cached number to the next live compute.
-     */
-    lastVitality?: {
-      /** Overall vitality score, 0-100. */
-      overall: number;
-      /** Unix ms when this was computed. */
-      computedAt: number;
-    };
-  };
 }
 
 /**
@@ -1189,18 +1045,6 @@ export function mergeWithDefaults(partial: Partial<AppSettings> | null | undefin
           : [],
       },
     };
-    // Browser UI server — optional sub-block. Only materialise it if present
-    // so old cortexes (httpBridge only) keep an undefined httpUi.
-    const hu = (partial.mobile as { httpUi?: Partial<HttpUiSettings> }).httpUi;
-    if (hu) {
-      mobile.httpUi = {
-        enabled: typeof hu.enabled === 'boolean' ? hu.enabled : false,
-        port: typeof hu.port === 'number' && hu.port > 0 && hu.port < 65536
-          ? Math.floor(hu.port) : 3456,
-        host: typeof hu.host === 'string' && hu.host.length > 0 ? hu.host : '127.0.0.1',
-        token: typeof hu.token === 'string' ? hu.token : '',
-      };
-    }
   }
 
   // Connector settings — optional. Absent = no connectors configured.
@@ -1215,104 +1059,6 @@ export function mergeWithDefaults(partial: Partial<AppSettings> | null | undefin
       webhookHost: cs.webhookHost === '0.0.0.0' ? '0.0.0.0' : '127.0.0.1',
       pullIntervalMs: typeof cs.pullIntervalMs === 'number' && cs.pullIntervalMs >= 60_000
         ? Math.floor(cs.pullIntervalMs) : 15 * 60 * 1000,
-    };
-  }
-
-  // VS Code bridge — optional. Pass through if present; validate individual fields.
-  let vscode: AppSettings['vscode'] | undefined;
-  if (partial?.vscode) {
-    const v = partial.vscode;
-    vscode = {
-      localBridgeToken: typeof v.localBridgeToken === 'string' ? v.localBridgeToken : '',
-      localBridgePort: typeof v.localBridgePort === 'number' && v.localBridgePort > 0 && v.localBridgePort < 65536
-        ? Math.floor(v.localBridgePort) : 3457,
-    };
-  }
-
-  // Docs-engram ingest state — optional. Absent on cortexes that never saw
-  // the offer. Validate the two fields by type; drop anything malformed so a
-  // hand-edited settings.json can't corrupt the auto-re-ingest state machine.
-  let docsEngram: AppSettings['docsEngram'] | undefined;
-  if (partial?.docsEngram) {
-    const de = partial.docsEngram;
-    docsEngram = {
-      ...(typeof de.declined === 'boolean' ? { declined: de.declined } : {}),
-      ...(typeof de.ingestedAppVersion === 'string' && de.ingestedAppVersion.length > 0
-        ? { ingestedAppVersion: de.ingestedAppVersion }
-        : {}),
-    };
-  }
-
-  // Skill-Demos-engram ingest state — same validation shape as docsEngram.
-  let skillDemosEngram: AppSettings['skillDemosEngram'] | undefined;
-  if (partial?.skillDemosEngram) {
-    const sd = partial.skillDemosEngram;
-    skillDemosEngram = {
-      ...(typeof sd.declined === 'boolean' ? { declined: sd.declined } : {}),
-      ...(typeof sd.ingestedAppVersion === 'string' && sd.ingestedAppVersion.length > 0
-        ? { ingestedAppVersion: sd.ingestedAppVersion }
-        : {}),
-      ...(sd.language === 'en' || sd.language === 'ro' ? { language: sd.language } : {}),
-    };
-  }
-
-  // Brain / Alive Brain — pass through if present, validate individual fields.
-  let brain: AppSettings['brain'] | undefined;
-  if (partial?.brain) {
-    const b = partial.brain;
-    const td = b.temporalDecay;
-    const rf = b.reinforcement;
-    brain = {
-      ...(b.lastRun !== undefined ? { lastRun: b.lastRun } : {}),
-      ...(typeof b.pendingInsightsCount === 'number' ? { pendingInsightsCount: b.pendingInsightsCount } : {}),
-      // Last-insight diagnostic — opaque pass-through; the brain engine
-      // owns this shape and writes it after every runInsight() pass.
-      ...(b.lastInsightResult && typeof b.lastInsightResult === 'object'
-        ? { lastInsightResult: b.lastInsightResult }
-        : {}),
-      ...(typeof b.pendingDuplicatePairsCount === 'number' ? { pendingDuplicatePairsCount: b.pendingDuplicatePairsCount } : {}),
-      ...(td !== undefined ? {
-        temporalDecay: {
-          enabled: typeof td.enabled === 'boolean' ? td.enabled : true,
-          dailyRatePercent: typeof td.dailyRatePercent === 'number' && td.dailyRatePercent > 0 ? td.dailyRatePercent : 0.5,
-          reinforceOnRecall: typeof td.reinforceOnRecall === 'boolean' ? td.reinforceOnRecall : true,
-          clipDecayMultiplier: typeof td.clipDecayMultiplier === 'number' && td.clipDecayMultiplier > 0 ? td.clipDecayMultiplier : 3,
-        },
-      } : {}),
-      ...(rf !== undefined ? {
-        reinforcement: {
-          enabled: typeof rf.enabled === 'boolean' ? rf.enabled : DEFAULT_REINFORCEMENT.enabled,
-          reinforceRate: typeof rf.reinforceRate === 'number' && rf.reinforceRate > 0 ? rf.reinforceRate : DEFAULT_REINFORCEMENT.reinforceRate,
-          baselineWeight: typeof rf.baselineWeight === 'number' && rf.baselineWeight > 0 ? rf.baselineWeight : DEFAULT_REINFORCEMENT.baselineWeight,
-          newConnectionCoActivationThreshold: typeof rf.newConnectionCoActivationThreshold === 'number' && rf.newConnectionCoActivationThreshold > 0 ? Math.floor(rf.newConnectionCoActivationThreshold) : DEFAULT_REINFORCEMENT.newConnectionCoActivationThreshold,
-          consolidationIntervalHours: typeof rf.consolidationIntervalHours === 'number' && rf.consolidationIntervalHours > 0 ? rf.consolidationIntervalHours : DEFAULT_REINFORCEMENT.consolidationIntervalHours,
-          crossEngramEnabled: typeof rf.crossEngramEnabled === 'boolean' ? rf.crossEngramEnabled : DEFAULT_REINFORCEMENT.crossEngramEnabled,
-          crossEngramMinSim: typeof rf.crossEngramMinSim === 'number' && rf.crossEngramMinSim > 0 ? rf.crossEngramMinSim : DEFAULT_REINFORCEMENT.crossEngramMinSim,
-        },
-      } : {}),
-      ...(b.neuralNetwork !== undefined ? {
-        neuralNetwork: {
-          enabled: typeof b.neuralNetwork.enabled === 'boolean' ? b.neuralNetwork.enabled : false,
-        },
-      } : {}),
-      ...(b.lastVitality !== undefined
-          && typeof b.lastVitality.overall === 'number'
-          && Number.isFinite(b.lastVitality.overall)
-          && typeof b.lastVitality.computedAt === 'number'
-        ? {
-            lastVitality: {
-              // Clamp to a valid percent range; reject NaN/Infinity defensively.
-              overall: Math.max(0, Math.min(100, b.lastVitality.overall)),
-              computedAt: b.lastVitality.computedAt,
-            },
-          }
-        : {}),
-      // Clipboard capture — opt-in, off by default. Must be explicitly
-      // threaded through here or mergeWithDefaults silently drops it on
-      // every setSettings/loadSettings call, making the toggle non-persistent.
-      ...(b.clipboardCapture !== undefined
-        ? { clipboardCapture: { enabled: typeof b.clipboardCapture.enabled === 'boolean' ? b.clipboardCapture.enabled : false } }
-        : {}),
     };
   }
 
@@ -1344,70 +1090,8 @@ export function mergeWithDefaults(partial: Partial<AppSettings> | null | undefin
       ...(typeof ai.extraPrecautionMode === 'boolean' ? { extraPrecautionMode: ai.extraPrecautionMode } : {}),
     },
     graphMetadata,
-    ...(consentHmacKey !== undefined ? { consentHmacKey } : {}),
-    ...(typeof partial?.licenseEnc === 'string' ? { licenseEnc: partial.licenseEnc } : {}),
-    // Skill auto-retrain config map — opaque pass-through; the sidecar
-    // owns its shape and validates per-entry before scheduling anything.
-    ...(partial?.skillAutoRetrain && typeof partial.skillAutoRetrain === 'object'
-      ? { skillAutoRetrain: partial.skillAutoRetrain }
-      : {}),
-    ...(Array.isArray(partial?.skillRetrainNotifications)
-      ? { skillRetrainNotifications: partial.skillRetrainNotifications.filter((v): v is string => typeof v === 'string') }
-      : {}),
-    ...(partial?.skillRetrainPending && typeof partial.skillRetrainPending === 'object'
-      ? { skillRetrainPending: partial.skillRetrainPending }
-      : {}),
     ...(mobile !== undefined ? { mobile } : {}),
     ...(connectors !== undefined ? { connectors } : {}),
-    ...(vscode !== undefined ? { vscode } : {}),
-    ...(docsEngram !== undefined ? { docsEngram } : {}),
-    ...(skillDemosEngram !== undefined ? { skillDemosEngram } : {}),
-    ...(brain !== undefined ? { brain } : {}),
-  };
-}
-
-/**
- * Resolved (gap-filled) local-LLM capability flags. Every capability is a
- * concrete boolean — defaults are applied here so callers don't repeat the
- * "&& settings.ai.llmCapabilities?.X ?? defaultForX" dance everywhere.
- *
- * Rules:
- *   - When the master switch (`ai.llmEnabled`) is false, EVERY capability
- *     resolves to false regardless of the stored map. The master toggle
- *     short-circuits — even legacy cortexes with `llmCapabilities` set
- *     can't bypass it. Treat this as the kill switch.
- *   - When the master switch is true and a capability key is absent from
- *     the stored map, the default applies: ON for the four non-mutating /
- *     overlay-only capabilities, OFF for `edgePrediction` (the only one
- *     that runs an autonomous background loop).
- *   - Explicit `false` in the stored map always wins over the default.
- */
-export interface ResolvedLlmCapabilities {
-  recallEnrichment: boolean;
-  correctionParsing: boolean;
-  distillation: boolean;
-  insights: boolean;
-  edgePrediction: boolean;
-}
-
-export function resolveLlmCapabilities(settings: AppSettings): ResolvedLlmCapabilities {
-  const master = settings.ai.llmEnabled === true;
-  if (!master) {
-    return {
-      recallEnrichment: false,
-      correctionParsing: false,
-      distillation: false,
-      insights: false,
-      edgePrediction: false,
-    };
-  }
-  const c = settings.ai.llmCapabilities ?? {};
-  return {
-    recallEnrichment: c.recallEnrichment ?? true,
-    correctionParsing: c.correctionParsing ?? true,
-    distillation: c.distillation ?? true,
-    insights: c.insights ?? true,
-    edgePrediction: c.edgePrediction ?? false,
   };
 }
 

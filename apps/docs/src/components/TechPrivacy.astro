@@ -8,7 +8,7 @@
       <h2 class="text-3xl sm:text-4xl lg:text-5xl font-black text-white mb-4">
         Encrypted by architecture
       </h2>
-      <p class="text-[#c4c6d6] max-w-2xl leading-relaxed">
+      <p class="text-[#71717a] max-w-2xl leading-relaxed">
         Your archive is encrypted with <span class="text-[#f0f0f5] font-semibold">XChaCha20-Poly1305</span> the moment it touches disk, derived from a passphrase only you know via <span class="text-[#f0f0f5] font-semibold">Argon2id</span>. Only the slice your AI needs leaves the device, and only to the AI you chose — never to a Graphnosis server. Because we don't have any. Here's the actual technical picture.
       </p>
     </div>
@@ -16,8 +16,8 @@
     <!-- The .gai format -->
     <div class="bg-[#1c1c27] border border-[#2a2a3d] rounded-xl p-6 mb-8">
       <h3 class="text-lg font-bold text-white mb-3"><a href="/reference/file-formats" class="hover:text-[#67e8f9] transition-colors">The <code class="text-[#67e8f9] font-mono">.gai</code> file format ↗</a></h3>
-      <p class="text-[#c4c6d6] text-base leading-relaxed">
-        When Graphnosis indexes your files it writes encrypted binary <code class="text-[#67e8f9] font-mono">.gai</code> files — not copies of your documents. These are knowledge graphs: nodes (extracted facts), typed edges (relationships between them), embeddings for semantic search, and metadata. They're designed to be read efficiently by AI, not by humans. Your original files are never modified.
+      <p class="text-[#71717a] text-base leading-relaxed">
+        When Graphnosis indexes your files it writes encrypted binary <code class="text-[#67e8f9] text-xs font-mono">.gai</code> files — not copies of your documents. These are knowledge graphs: nodes (extracted facts), typed edges (relationships between them), embeddings for semantic search, and metadata. They're designed to be read efficiently by AI, not by humans. Your original files are never modified.
       </p>
     </div>
 
@@ -27,38 +27,42 @@
       <article class="bg-[#1c1c27] border border-[#2a2a3d] rounded-xl p-6 flex flex-col gap-3">
         <span class="text-xs font-black tracking-widest uppercase" style="background: linear-gradient(135deg, #67e8f9, #a78bfa); -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text;">01</span>
         <a href="/guides/keeping-your-cortex-safe" class="text-base font-bold text-white hover:text-[#67e8f9] transition-colors">XChaCha20-Poly1305 at rest ↗</a>
-        <p class="text-[#c4c6d6] text-base leading-relaxed">Every <code class="font-mono">.gai</code> file is encrypted with XChaCha20-Poly1305 before touching disk — 256-bit security, a 192-bit nonce space that eliminates nonce-reuse risk, and authenticated encryption so tampering is detected on read.</p>
+        <p class="text-[#71717a] text-sm leading-relaxed">Every <code class="font-mono">.gai</code> file is encrypted with XChaCha20-Poly1305 before touching disk — 256-bit security, a 192-bit nonce space that eliminates nonce-reuse risk, and authenticated encryption so tampering is detected on read.</p>
+        <a href="https://github.com/nehloo-interactive/graphnosis-secure-sync" target="_blank" rel="noopener noreferrer" class="inline-flex items-center gap-1 text-xs text-[#67e8f9] hover:underline font-mono mt-1">
+          graphnosis-secure-sync
+          <svg class="w-3 h-3" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M17 8l4 4m0 0l-4 4m4-4H3"/></svg>
+        </a>
       </article>
 
       <article class="bg-[#1c1c27] border border-[#2a2a3d] rounded-xl p-6 flex flex-col gap-3">
         <span class="text-xs font-black tracking-widest uppercase" style="background: linear-gradient(135deg, #67e8f9, #a78bfa); -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text;">02</span>
         <a href="/guides/keeping-your-cortex-safe" class="text-base font-bold text-white hover:text-[#67e8f9] transition-colors">Argon2id key derivation ↗</a>
-        <p class="text-[#c4c6d6] text-base leading-relaxed">Your passphrase is never stored. Argon2id (the OWASP-recommended PHC winner) derives the encryption key with tunable memory and CPU cost. Brute-force attackers pay full cost on every guess.</p>
+        <p class="text-[#71717a] text-sm leading-relaxed">Your passphrase is never stored. Argon2id (the OWASP-recommended PHC winner) derives the encryption key with tunable memory and CPU cost. Brute-force attackers pay full cost on every guess.</p>
       </article>
 
       <article class="bg-[#1c1c27] border border-[#2a2a3d] rounded-xl p-6 flex flex-col gap-3">
         <span class="text-xs font-black tracking-widest uppercase" style="background: linear-gradient(135deg, #67e8f9, #a78bfa); -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text;">03</span>
         <a href="/guides/keeping-your-cortex-safe" class="text-base font-bold text-white hover:text-[#67e8f9] transition-colors">Touch ID unlock, no passphrase on disk ↗</a>
-        <p class="text-[#c4c6d6] text-base leading-relaxed">On macOS, the derived key is sealed in the system Keychain and gated by Touch ID. You type your passphrase once at install. After that, your fingerprint unlocks Graphnosis — the key never leaves the Keychain in plaintext.</p>
+        <p class="text-[#71717a] text-sm leading-relaxed">On macOS, the derived key is sealed in the system Keychain and gated by Touch ID. You type your passphrase once at install. After that, your fingerprint unlocks Graphnosis — the key never leaves the Keychain in plaintext.</p>
       </article>
 
       <article class="bg-[#1c1c27] border border-[#2a2a3d] rounded-xl p-6 flex flex-col gap-3">
         <span class="text-xs font-black tracking-widest uppercase" style="background: linear-gradient(135deg, #67e8f9, #a78bfa); -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text;">04</span>
         <h3 class="text-base font-bold text-white">Local embeddings — no API calls</h3>
-        <p class="text-[#c4c6d6] text-base leading-relaxed">Semantic search uses a quantised BGE embedding model bundled with the app, run via ONNX Runtime entirely on your machine. Your content is never sent to OpenAI, Cohere, or any external embedding service. Search works fully offline.</p>
+        <p class="text-[#71717a] text-sm leading-relaxed">Semantic search uses a quantised BGE embedding model bundled with the app, run via ONNX Runtime entirely on your machine. Your content is never sent to OpenAI, Cohere, or any external embedding service. Search works fully offline.</p>
       </article>
 
       <article class="bg-[#1c1c27] border border-[#2a2a3d] rounded-xl p-6 flex flex-col gap-3">
         <span class="text-xs font-black tracking-widest uppercase" style="background: linear-gradient(135deg, #67e8f9, #a78bfa); -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text;">05</span>
         <a href="/guides/graphs-and-tiers" class="text-base font-bold text-white hover:text-[#67e8f9] transition-colors">Only a micro-subgraph reaches your AI ↗</a>
-        <p class="text-[#c4c6d6] text-base leading-relaxed">At recall time, Graphnosis sends a small ranked excerpt — at most 50 nodes and 8,000 tokens. Raw file contents, other engrams, and Sensitive-tier nodes stay encrypted on disk. The AI never sees your full knowledge base, only what's relevant right now.</p>
+        <p class="text-[#71717a] text-sm leading-relaxed">At recall time, Graphnosis sends a small ranked excerpt — at most 50 nodes and 8,000 tokens. Raw file contents, other engrams, and Sensitive-tier nodes stay encrypted on disk. The AI never sees your full knowledge base, only what's relevant right now.</p>
       </article>
 
       <article class="bg-[#1c1c27] border border-[#2a2a3d] rounded-xl p-6 flex flex-col gap-3">
         <span class="text-xs font-black tracking-widest uppercase" style="background: linear-gradient(135deg, #67e8f9, #a78bfa); -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text;">06</span>
         <h3 class="text-base font-bold text-white">This is your AI engram</h3>
-        <p class="text-[#c4c6d6] text-base leading-relaxed mb-1">Nodes, typed edges with weights, embeddings — binary-packed, instantly machine-readable. No prose. No ambiguity.</p>
-        <div class="bg-[#0a0a10] rounded-lg p-3 font-mono text-sm leading-5 overflow-hidden flex-1 flex flex-col justify-between">
+        <p class="text-[#71717a] text-sm leading-relaxed mb-1">Nodes, typed edges with weights, embeddings — binary-packed, instantly machine-readable. No prose. No ambiguity.</p>
+        <div class="bg-[#0a0a10] rounded-lg p-3 font-mono text-[10px] leading-5 overflow-hidden flex-1 flex flex-col justify-between">
           <div class="text-[#4ade80] space-y-px">
             <div><span class="text-[#1e3a1e] mr-2">00000000</span>47 41 49 01 00 8d de 00 <span class="opacity-50 ml-1">GAI.....</span></div>
             <div><span class="text-[#1e3a1e] mr-2">00000010</span>a9 6e 6f 64 65 43 6f 75 <span class="opacity-50 ml-1">ion.nod.</span></div>
@@ -75,20 +79,18 @@
 
     </div>
 
-    <!-- Optional non-deterministic layer -->
-    <div class="bg-[#1c1c27] border border-[#2a2a3d] rounded-xl p-6">
-      <div class="flex flex-wrap items-center gap-2.5 mb-3">
-        <span class="text-[10px] font-black tracking-widest uppercase px-2 py-0.5 rounded-full border border-[#a78bfa]/40 text-[#a78bfa]">Opt-in</span>
-        <h3 class="text-lg font-bold text-white">
-          <a href="/reference/file-formats" class="hover:text-[#a78bfa] transition-colors">Going non-deterministic — the optional layer ↗</a>
-        </h3>
+    <!-- Attribution -->
+    <div class="border-t border-[#2a2a3d] pt-8 flex flex-col sm:flex-row items-start sm:items-center gap-4 justify-between">
+      <div>
+        <p class="text-sm text-[#71717a] leading-relaxed">
+          Encryption, key derivation, and graph operations are powered by{' '}
+          <a href="https://www.npmjs.com/package/@nehloo/graphnosis" target="_blank" rel="noopener noreferrer" class="text-[#67e8f9] hover:underline font-mono text-xs">@nehloo/graphnosis</a>
+          — open source, Apache-2.0.
+        </p>
+        <p class="text-sm text-[#71717a] mt-1 leading-relaxed">
+          The Graphnosis App is licensed under <span class="text-[#f0f0f5] font-semibold">FSL-1.1</span> — source-available.
+        </p>
       </div>
-      <p class="text-[#c4c6d6] text-base leading-relaxed mb-3">
-        Everything above is deterministic — the same input always produces the same graph. If you want more, two enhancements are available, both <span class="text-[#f0f0f5] font-semibold">off by default</span> and neither ever altering your deterministic graph. An optional <span class="text-[#f0f0f5] font-semibold">local LLM</span>, run on your own machine via Ollama, sharpens insights and synthesis. And the <span class="text-[#f0f0f5] font-semibold">Graphnosis Neural Network (GNN)</span> revisits the engrams across your whole Cortex and predicts connections it judges likely real but not yet recorded — links the deterministic pass never made between related memories.
-      </p>
-      <p class="text-[#c4c6d6] text-base leading-relaxed">
-        Because the GNN is non-deterministic — two training runs can differ — its output is quarantined from your real graph. Predictions never touch your <code class="text-[#67e8f9] font-mono">.gai</code> engrams; they live in a separate encrypted overlay — a <code class="text-[#a78bfa] font-mono">.gnn</code> file — and surface only as clearly-labelled, one-click-removable suggestions. The deterministic dual-graph stays exactly as indexed; the GNN simply adds a reviewable third layer over the same nodes. Delete the <code class="text-[#a78bfa] font-mono">.gnn</code> and nothing of yours is lost.
-      </p>
     </div>
 
   </div>

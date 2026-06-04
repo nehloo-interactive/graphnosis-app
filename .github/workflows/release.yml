@@ -6,11 +6,14 @@ on:
       - 'v*'
 
 jobs:
-  build-and-release:
+  build-mac:
     runs-on: macos-latest
     permissions:
       contents: write
-
+    outputs:
+      version: ${{ steps.meta.outputs.version }}
+      semver: ${{ steps.meta.outputs.semver }}
+      dmg: ${{ steps.release.outputs.dmg_filename }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -37,13 +40,6 @@ jobs:
       - name: Build workspace packages
         run: pnpm --filter @graphnosis-app/core build
 
-      # Three signed Graphnosis demo .gsk packs auto-load into a "Skill
-      # Demos" engram on first cortex unlock. They must be (re)built BEFORE
-      # the sidecar build, because apps/desktop-sidecar/scripts/
-      # generate-skill-demos-content.mjs reads dist/packs/bundle/*.gsk and
-      # embeds them base64 into src/skill-demos.generated.ts — which ipc.ts
-      # imports. Missing → "Could not resolve: ./skill-demos.generated.js"
-      # which is exactly the v1.12.0 build failure that exposed this gap.
       - name: Build signed demo .gsk packs
         env:
           GSK_SIGNING_KEY_HEX: ${{ secrets.GSK_SIGNING_KEY_HEX }}
@@ -56,11 +52,6 @@ jobs:
           fi
           node scripts/build-gsk.mjs --sign
 
-      # Generates src/skill-demos.generated.ts (consumed by ipc.ts) and
-      # produces dist/index.js (consumed by Tauri's build.rs which runs
-      # `bun build --compile` to produce
-      # binaries/graphnosis-sidecar-aarch64-apple-darwin — the missing
-      # sidecar binary in the v1.12.0 failure).
       - name: Build sidecar
         run: pnpm --filter @graphnosis-app/desktop-sidecar build
 
@@ -107,9 +98,6 @@ jobs:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
           APPLE_TEAM_ID: C76ZLJ5UQW
-          # Tauri reads this to sign the .app.tar.gz update artifact.
-          # The private key content (not the path) goes in the secret.
-          # Key was generated without a password so no _PASSWORD var is needed.
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
         run: pnpm --filter @graphnosis-app/desktop tauri:build
 
@@ -118,10 +106,8 @@ jobs:
         run: |
           VERSION=${GITHUB_REF_NAME}
           SEMVER=${VERSION#v}
-          DMG="Graphnosis_${SEMVER}_aarch64.dmg"
           echo "version=$VERSION" >> $GITHUB_OUTPUT
           echo "semver=$SEMVER" >> $GITHUB_OUTPUT
-          echo "dmg=$DMG" >> $GITHUB_OUTPUT
 
       - name: Collect updater artifacts and generate latest.json
         id: updater
@@ -130,7 +116,6 @@ jobs:
           VERSION="${{ steps.meta.outputs.version }}"
           BUNDLE_DIR="apps/desktop/src-tauri/target/release/bundle/macos"
 
-          # Tauri produces Graphnosis.app.tar.gz + .sig when TAURI_SIGNING_PRIVATE_KEY is set.
           TAR_SRC="${BUNDLE_DIR}/Graphnosis.app.tar.gz"
           SIG_SRC="${TAR_SRC}.sig"
           TAR_DEST="${BUNDLE_DIR}/Graphnosis_${SEMVER}_aarch64.app.tar.gz"
@@ -143,7 +128,6 @@ jobs:
           SIG=$(cat "$SIG_SRC")
           PUB_DATE=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 
-          # Produce latest.json consumed by tauri-plugin-updater in shipped apps.
           cat > latest.json << EOF
           {
             "version": "${SEMVER}",
@@ -169,9 +153,6 @@ jobs:
           VERSION="${{ steps.meta.outputs.version }}"
           TAR_PATH="${{ steps.updater.outputs.tar_path }}"
 
-          # Locate the DMG produced by Tauri — the arch suffix in the filename
-          # varies by runner (aarch64 on Apple Silicon, x86_64 on Intel).
-          # Search both the native-target dir and the cross-compile target dir.
           DMG_PATH=$(find apps/desktop/src-tauri/target -name "*.dmg" | head -1)
           if [ -z "$DMG_PATH" ]; then
             echo "ERROR: no .dmg found under apps/desktop/src-tauri/target" && exit 1
@@ -186,6 +167,149 @@ jobs:
             --title "Graphnosis ${VERSION}" \
             --generate-notes
 
+      - name: Clean up keychain
+        if: always()
+        run: security delete-keychain $RUNNER_TEMP/build.keychain
+
+  build-windows:
+    runs-on: windows-2022
+    needs: build-mac
+    permissions:
+      contents: write
+      id-token: write
+    outputs:
+      msi: ${{ steps.find.outputs.name }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v3
+        with:
+          version: 10
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install Rust (stable, x86_64-pc-windows-msvc)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - name: Install Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build workspace core package
+        run: pnpm --filter @graphnosis-app/core build
+
+      - name: Build signed demo .gsk packs
+        shell: pwsh
+        env:
+          GSK_SIGNING_KEY_HEX: ${{ secrets.GSK_SIGNING_KEY_HEX }}
+        run: |
+          if (-not $env:GSK_SIGNING_KEY_HEX) {
+            Write-Error "GSK_SIGNING_KEY_HEX secret is not set."
+            exit 1
+          }
+          node scripts/build-gsk.mjs --sign
+
+      - name: Build sidecar
+        run: pnpm --filter @graphnosis-app/desktop-sidecar build
+
+      - name: Stage onnxruntime.dll (optional)
+        shell: pwsh
+        run: |
+          $dest = "apps/desktop/src-tauri/resources"
+          New-Item -ItemType Directory -Force -Path $dest | Out-Null
+          $dll = Get-ChildItem -Recurse -Filter "onnxruntime.dll" node_modules/.pnpm `
+            -ErrorAction SilentlyContinue |
+            Where-Object { $_.FullName -match "win32.x64" } |
+            Select-Object -First 1
+          if ($dll) {
+            Copy-Item $dll.FullName "$dest/onnxruntime.dll"
+            Write-Host "Staged $($dll.FullName) -> $dest/onnxruntime.dll"
+          } else {
+            Write-Warning "onnxruntime.dll not found — embeddings will use TF-IDF fallback"
+          }
+
+      - name: Build (Windows)
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+        run: pnpm --filter @graphnosis-app/desktop tauri:build
+
+      - name: Ensure PSGallery is registered
+        shell: powershell
+        run: |
+          if (-not (Get-PSRepository -Name PSGallery -ErrorAction SilentlyContinue)) {
+            try { Register-PSRepository -Default } catch { Write-Host "Register-PSRepository: $_" }
+          }
+          Set-PSRepository -Name PSGallery -InstallationPolicy Trusted
+
+      - name: Sign NSIS installer (Azure Artifact Signing)
+        uses: azure/trusted-signing-action@v0.5.11
+        with:
+          azure-tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          azure-client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          azure-client-secret: ${{ secrets.AZURE_CLIENT_SECRET }}
+          endpoint: https://eus.codesigning.azure.net/
+          trusted-signing-account-name: nehloo-trusted-signing
+          certificate-profile-name: graphnosis-public
+          files-folder: apps/desktop/src-tauri/target/release/bundle/nsis
+          files-folder-filter: exe
+          files-folder-recurse: false
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+
+      - name: Sign MSI (Azure Artifact Signing)
+        uses: azure/trusted-signing-action@v0.5.11
+        with:
+          azure-tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          azure-client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          azure-client-secret: ${{ secrets.AZURE_CLIENT_SECRET }}
+          endpoint: https://eus.codesigning.azure.net/
+          trusted-signing-account-name: nehloo-trusted-signing
+          certificate-profile-name: graphnosis-public
+          files-folder: apps/desktop/src-tauri/target/release/bundle/msi
+          files-folder-filter: msi
+          files-folder-recurse: false
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+
+      - name: Find MSI
+        id: find
+        shell: pwsh
+        run: |
+          $msi = Get-ChildItem -Recurse `
+            apps/desktop/src-tauri/target/release/bundle/msi `
+            -Filter "*.msi" -ErrorAction SilentlyContinue |
+            Select-Object -First 1
+          if (-not $msi) {
+            Write-Error "No MSI found in bundle/msi output"
+            exit 1
+          }
+          echo "path=$($msi.FullName)" >> $env:GITHUB_OUTPUT
+          echo "name=$($msi.Name)" >> $env:GITHUB_OUTPUT
+
+      - name: Upload MSI to GitHub release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: pwsh
+        run: |
+          gh release upload "${{ needs.build-mac.outputs.version }}" `
+            "${{ steps.find.outputs.path }}" --clobber
+
+  update-cloudflare:
+    runs-on: ubuntu-latest
+    needs: [build-mac, build-windows]
+    steps:
       - name: Update Cloudflare Pages env vars
         env:
           CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
@@ -200,9 +324,10 @@ jobs:
               \"deployment_configs\": {
                 \"production\": {
                   \"env_vars\": {
-                    \"CURRENT_VERSION\": { \"value\": \"${{ steps.meta.outputs.version }}\" },
-                    \"DMG_FILENAME\": { \"value\": \"${{ steps.release.outputs.dmg_filename }}\" },
-                    \"PUBLIC_RELEASED_VERSION\": { \"value\": \"${{ steps.meta.outputs.version }}\" }
+                    \"CURRENT_VERSION\": { \"value\": \"${{ needs.build-mac.outputs.version }}\" },
+                    \"DMG_FILENAME\": { \"value\": \"${{ needs.build-mac.outputs.dmg }}\" },
+                    \"WINDOWS_FILENAME\": { \"value\": \"${{ needs.build-windows.outputs.msi }}\" },
+                    \"PUBLIC_RELEASED_VERSION\": { \"value\": \"${{ needs.build-mac.outputs.version }}\" }
                   }
                 }
               }
@@ -217,7 +342,3 @@ jobs:
           curl -s -X POST \
             "https://api.cloudflare.com/client/v4/accounts/$CF_ACCOUNT_ID/pages/projects/$CF_PROJECT_NAME/deployments" \
             -H "Authorization: Bearer $CF_API_TOKEN"
-
-      - name: Clean up keychain
-        if: always()
-        run: security delete-keychain $RUNNER_TEMP/build.keychain

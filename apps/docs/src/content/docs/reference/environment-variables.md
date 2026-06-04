@@ -1,82 +1,66 @@
 ---
 title: Environment Variables
-description: All environment variables read by the Graphnosis sidecar.
+description: All environment variables supported by the Graphnosis sidecar.
 sidebar:
   order: 2
 ---
 
-The Graphnosis sidecar (`graphnosis-sidecar`) reads its configuration from environment variables.
+These variables are read by the Graphnosis sidecar (`graphnosis-sidecar`). Set them in the `env` block of your MCP client config, or in your shell environment when running the sidecar directly.
 
-**In normal use you do not set any of these.** The Graphnosis desktop app sets them automatically each time it spawns the sidecar for the active cortex. They are documented here for headless / standalone runs and for debugging.
-
-## cortex & unlock
+## Core
 
 | Variable | Required | Default | Description |
 |----------|----------|---------|-------------|
-| `GRAPHNOSIS_CORTEX` | Yes | — | Absolute path to the cortex folder. The sidecar will not start without it. |
-| `GRAPHNOSIS_PASSPHRASE` | No | — | Unlocks the cortex non-interactively. **Use only in trusted environments** — see the security note below. If unset, the app's unlock prompt is used. |
-| `GRAPHNOSIS_RECOVERY_PHRASE` | No | — | The 24-word recovery phrase, as an alternative to `GRAPHNOSIS_PASSPHRASE` for unlocking. |
-| `GRAPHNOSIS_DEVICE_ID` | No | `<hostname>-<pid>` | Identifier recorded in the op-log for changes made from this device. |
-| `GRAPHNOSIS_DEFAULT_GRAPH` | No | `personal` | The engram an ambient `remember` writes to when no target engram is given. |
-| `GRAPHNOSIS_POLICY` | No | — | Path to a JSON file defining per-engram sensitivity tiers. Without it, all engrams use default policy. |
-
-## Local LLM
-
-| Variable | Required | Default | Description |
-|----------|----------|---------|-------------|
-| `GRAPHNOSIS_LLM` | No | — | The local LLM model id the sidecar should load (e.g. `llama-3.2-3b`). The optional Local LLM powers `develop` / `predict` / `insights` and the LLM-assisted `edit` path. When unset, no model id is pre-selected. |
+| `GRAPHNOSIS_CORTEX_PATH` | Yes | — | Absolute path to the Cortex folder. The sidecar will not start without this. |
+| `GRAPHNOSIS_PASSPHRASE` | No | — | Unlock the Cortex non-interactively. **Use only in trusted environments.** If not set, the app prompts the user via the menu bar UI. |
+| `GRAPHNOSIS_GRAPHS` | No | all graphs | Comma-separated list of graph names to expose via MCP. Unlisted graphs are invisible to AI clients. Example: `work,research`. |
 
 ## Embedding
 
 | Variable | Required | Default | Description |
 |----------|----------|---------|-------------|
-| `GRAPHNOSIS_EMBED_WORKERS` | No | `2` | Number of parallel embedding worker processes. Raise it on machines with more cores to speed up ingest. |
-| `GRAPHNOSIS_EMBED_CACHE` | No | platform cache dir | Directory for the embedding cache. |
-| `GRAPHNOSIS_EMBED_CACHE_DIR` | No | `$HOME` | Directory an embedding worker process uses for its model / tokenizer cache. |
-| `GRAPHNOSIS_EMBED_DISABLE` | No | — | Set to `1` to disable on-device embeddings entirely. Debugging only — recall quality degrades sharply without embeddings. |
+| `GRAPHNOSIS_EMBED_CONCURRENCY` | No | `2` | Number of concurrent embedding worker processes. Increase on machines with more cores to speed up ingest. |
+| `GRAPHNOSIS_EMBED_MODEL_DIR` | No | `<cortex>/models` | Override the directory where the ONNX embedding model is stored. Useful if you want to share the model cache across multiple Cortexes. |
 
-## Sockets
-
-The sidecar communicates over Unix domain sockets. The app assigns these paths; override them only for unusual multi-instance setups.
+## MCP server
 
 | Variable | Required | Default | Description |
 |----------|----------|---------|-------------|
-| `GRAPHNOSIS_MCP_SOCKET` | No | `~/.graphnosis/mcp.sock` | Unix socket the MCP server listens on. The app sets this to a fixed per-user path so an MCP client configured once keeps working across cortex switches. Falls back to `<cortex>/mcp.sock` when unset. |
-| `GRAPHNOSIS_IPC_SOCKET` | No | `<cortex>/sidecar.sock` | Unix socket for desktop-app ↔ sidecar IPC. |
-| `GRAPHNOSIS_EVENTS_SOCKET` | No | `<cortex>/events.sock` | Unix socket the sidecar emits live events on. |
+| `GRAPHNOSIS_MCP_TRANSPORT` | No | `stdio` | Transport to use. Accepted values: `stdio`, `unix`. Use `unix` to listen on a Unix socket instead of stdio. |
+| `GRAPHNOSIS_MCP_SOCKET` | No | `~/.graphnosis/mcp.sock` | Path for the Unix socket. Only used when `GRAPHNOSIS_MCP_TRANSPORT=unix`. |
 
-## MCP relay
+## Corrections (Ollama)
 
 | Variable | Required | Default | Description |
 |----------|----------|---------|-------------|
-| `GRAPHNOSIS_RELAY_WAIT_MS` | No | built-in | Initial wait, in milliseconds, before the MCP relay first connects. |
-| `GRAPHNOSIS_RELAY_RECONNECT_MS` | No | built-in | Interval, in milliseconds, between MCP relay reconnection attempts. |
+| `GRAPHNOSIS_OLLAMA_URL` | No | `http://localhost:11434` | Base URL for the Ollama API. Override if Ollama is running on a different port or host. |
+| `GRAPHNOSIS_OLLAMA_MODEL` | No | `llama3.2:3b-instruct-q4_K_M` | Ollama model to use for the correction diff flow. Must be pulled before use. |
 
-## Internal
+## Logging
 
-`GRAPHNOSIS_WORKER_ROLE` is set by the sidecar on itself when it forks an embedding worker process. Do not set it manually.
+| Variable | Required | Default | Description |
+|----------|----------|---------|-------------|
+| `GRAPHNOSIS_LOG_LEVEL` | No | `info` | Log verbosity. Accepted values: `error`, `warn`, `info`, `debug`, `trace`. |
+| `GRAPHNOSIS_LOG_FILE` | No | stderr | Absolute path to write log output. If not set, logs go to stderr (visible in the Tauri dev terminal). |
 
-## Example: running the sidecar standalone
+## Example: Claude Desktop config with env vars
 
-```sh
-GRAPHNOSIS_CORTEX="/Users/you/Documents/MyCortex" \
-GRAPHNOSIS_PASSPHRASE="your-passphrase" \
-graphnosis-sidecar
+```json
+{
+  "mcpServers": {
+    "graphnosis": {
+      "command": "/Applications/Graphnosis.app/Contents/MacOS/graphnosis-sidecar",
+      "args": ["--mcp-stdio"],
+      "env": {
+        "GRAPHNOSIS_CORTEX_PATH": "/Users/you/Documents/MyCortex",
+        "GRAPHNOSIS_GRAPHS": "work,research",
+        "GRAPHNOSIS_LOG_LEVEL": "warn"
+      }
+    }
+  }
+}
 ```
 
 ## Security note on `GRAPHNOSIS_PASSPHRASE`
 
-Passing your passphrase as an environment variable means it may be visible in process listings (`ps aux`) and in any config file that holds it on disk. Only use it on a machine you control, with software you trust. For interactive use, leave it unset and unlock through the app's prompt instead.
-
----
-
-## Related
-
-[Boot & Engram Loading](/guides/boot-and-engram-loading/) — how these variables shape startup.
-
-[Graphs & Sensitivity Tiers](/guides/graphs-and-tiers/) — what `GRAPHNOSIS_GRAPHS` actually scopes.
-
-[What Leaves Your Device](/guides/network-activity/) — relevant when you enable the HTTP MCP bridge.
-
-[File Formats](/reference/file-formats/) — the files these paths point at.
-
+Passing your passphrase as an environment variable means it may be visible in process listings (`ps aux`) and in the MCP client config file on disk. Only use this in environments where you control the machine and trust the software reading the config. For interactive use, leave this variable unset and use the app's unlock prompt instead.

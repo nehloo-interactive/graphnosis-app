@@ -1,6 +1,6 @@
 ---
 title: Recovery
-description: How to recover your cortex using the 24-word recovery phrase.
+description: How to recover your Cortex using the 24-word recovery phrase.
 sidebar:
   order: 4
 ---
@@ -9,7 +9,7 @@ If you ever forget your passphrase, the 24-word recovery phrase is your fallback
 
 ## How it works
 
-When you create a brand-new cortex, Graphnosis generates a **24-word BIP-39 mnemonic** (256 bits of entropy). The phrase encrypts a backup copy of your data-encryption key, stored on disk as `recovery.enc` inside your cortex folder.
+When you create a brand-new Cortex, Graphnosis generates a **24-word BIP-39 mnemonic** (256 bits of entropy). The phrase encrypts a backup copy of your data-encryption key, stored on disk as `recovery.enc` inside your Cortex folder.
 
 **Two independent paths to your data:**
 
@@ -21,7 +21,7 @@ When you create a brand-new cortex, Graphnosis generates a **24-word BIP-39 mnem
 Both arrive at the same key. Both succeed only with the correct input. Both happen entirely on your machine — Graphnosis has no servers and no master key.
 
 :::caution
-The phrase is shown **exactly once**, right after the cortex is created. After you dismiss the modal there is no way to display it again from the app. If you lose both your passphrase **and** the phrase, your cortex is permanently inaccessible. There is no recovery from that — by design.
+The phrase is shown **exactly once**, right after the Cortex is created. After you dismiss the modal there is no way to display it again from the app. If you lose both your passphrase **and** the phrase, your Cortex is permanently inaccessible. There is no recovery from that — by design.
 :::
 
 ## Where to keep the phrase
@@ -37,21 +37,21 @@ Anywhere you would keep something you cannot regenerate.
 
 1. Open Graphnosis. On the unlock screen, click **"Forgot passphrase? Use recovery phrase"** below the Unlock button.
 2. A 24-word input area appears. Type or paste your phrase (space-separated, order matters).
-3. Click **Recover access**. The app reads `recovery.enc`, decrypts it with your phrase, and unlocks the cortex for this session.
+3. Click **Recover access**. The app reads `recovery.enc`, decrypts it with your phrase, and unlocks the Cortex for this session.
 
 If the phrase is wrong, the app surfaces a "Wrong recovery phrase" error. Order matters — check every word and try again.
 
 ## After recovery
 
-A recovery-mode unlock does **not** persist anything to your Mac's Keychain. The cortex stays unlocked only for the current session — next time you launch the app you'll see the unlock screen again.
+A recovery-mode unlock does **not** persist anything to your Mac's Keychain. The Cortex stays unlocked only for the current session — next time you launch the app you'll see the unlock screen again.
 
 ### Set a new passphrase (offered automatically)
 
-The moment your cortex unlocks via recovery, Graphnosis offers a **"Set a new passphrase?"** modal. Picking a new passphrase here:
+The moment your Cortex unlocks via recovery, Graphnosis offers a **"Set a new passphrase?"** modal. Picking a new passphrase here:
 
 - Is **instant** — only the wrapping key in `master.enc` is rewritten. Your engrams, op-log, content cache, and embeddings are not re-encrypted. The data key stays the same.
 - Is **safe** — your 24-word recovery phrase remains valid against the new passphrase, because the recovery phrase wraps the same persistent data key.
-- Saves the new passphrase to your Mac's **Keychain** so the next launch auto-unlocks the cortex without re-prompting.
+- Saves the new passphrase to your Mac's **Keychain** so the next launch auto-unlocks the Cortex without re-prompting.
 
 You can also click **Skip for now** — your old (forgotten) passphrase would still technically work if you ever recall it, but for most people the cleaner path is to just set a fresh one right after recovery.
 
@@ -63,7 +63,7 @@ If you skipped and want to change the passphrase later: that flow isn't surfaced
 
 1. Settings opens, you click **Regenerate recovery phrase…**.
 2. A typed-confirmation modal appears. You type `regenerate recovery phrase` to confirm.
-3. Graphnosis generates a fresh 24-word phrase, atomically replaces `recovery.enc`, and shows you the new phrase in the same one-time modal a fresh cortex sees.
+3. Graphnosis generates a fresh 24-word phrase, atomically replaces `recovery.enc`, and shows you the new phrase in the same one-time modal a fresh Cortex sees.
 4. The OLD phrase stops working immediately. The NEW phrase is now the only fallback to the passphrase.
 
 The data key is preserved — every engram, embcache, op-log entry, and content blob still decrypts with the same key. Only the wrapper changes.
@@ -86,23 +86,23 @@ Your old passphrase is unchanged by default. If you eventually remember it (or f
 
 If you want a different passphrase, the **"Set a new passphrase?"** modal that appears right after recovery is the easiest path. Picking a new one there *does* invalidate the old one (rewraps `master.enc` so the old passphrase no longer decrypts the data key). The recovery phrase keeps working.
 
-## Moving a cortex to a new machine
+## Moving a Cortex to a new machine
 
-The cortex folder is fully portable. To move:
+The Cortex folder is fully portable. To move:
 
-1. Copy the entire cortex folder (everything inside it) to the new machine — usually via iCloud Drive, Dropbox, an external disk, or `rsync`.
+1. Copy the entire Cortex folder (everything inside it) to the new machine — usually via iCloud Drive, Dropbox, an external disk, or `rsync`.
 2. Open Graphnosis on the new machine. Point it at the folder. Enter your passphrase.
 
-That's it. No re-setup, no key import, no re-ingest. The `recovery.enc` file moves with the cortex, so your fallback path is preserved.
+That's it. No re-setup, no key import, no re-ingest. The `recovery.enc` file moves with the Cortex, so your fallback path is preserved.
 
 ## What if `recovery.enc` is missing?
 
-cortexes created with versions of Graphnosis older than v0.3 (which introduced the recovery phrase) do **not** have a `recovery.enc` file. For those cortexes:
+Cortexes created with versions of Graphnosis older than v0.3 (which introduced the recovery phrase) do **not** have a `recovery.enc` file. For those Cortexes:
 
 - Continue using your passphrase as normal.
-- On the next major version that ships the re-passphrase flow, you will be prompted to generate a recovery phrase for your existing cortex.
+- On the next major version that ships the re-passphrase flow, you will be prompted to generate a recovery phrase for your existing Cortex.
 
-If you try to "Recover access" on a cortex without `recovery.enc`, the app will tell you so.
+If you try to "Recover access" on a Cortex without `recovery.enc`, the app will tell you so.
 
 ## Corrupted or lost data
 
@@ -137,16 +137,3 @@ A native macOS notification fires when the recovery finishes, regardless of whic
 ### Why corruption happens in the first place
 
 The usual cause is a `save()` being interrupted mid-write — force-quit, OS kill (low memory), or a crash during the multi-second window it takes to encrypt and persist a large engram. As of Graphnosis v0.3, every `.gai` / `.bundle` write is **atomic**: the sidecar writes to a sibling `.tmp` file, `fsync`s it to stable storage, then `rename`s it onto the final path. POSIX `rename(2)` is atomic, so a process kill at any point leaves either the old file intact or the new file fully written — never a half-blob. This class of corruption shouldn't recur on cortexes created with v0.3 or later.
-
----
-
-## Related
-
-[Keeping Your Cortex Safe](/guides/keeping-your-cortex-safe/) — the five safety layers that prevent recovery being needed.
-
-[Indelibility & Determinism](/guides/indelibility-and-determinism/) — why nothing is ever truly destroyed.
-
-[File Formats](/reference/file-formats/) — what `.gai`, `.bundle`, and `master.enc` actually contain.
-
-[Boot & Engram Loading](/guides/boot-and-engram-loading/) — what the app does at startup to self-heal.
-

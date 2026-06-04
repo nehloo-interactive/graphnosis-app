@@ -1352,78 +1352,17 @@ export class GraphnosisHost {
     const { [graphId]: _removed, ...rest } = this.settings.graphMetadata;
     const next = { ...this.settings, graphMetadata: rest };
     await this.persistSettings(next);
-
-    // Purge stale cross-engram connections that referenced this graph.
-    try {
-      const connections = await this.loadConnectionStore();
-      const cleaned = connections.filter((c) => c.graphA !== graphId && c.graphB !== graphId);
-      if (cleaned.length !== connections.length) {
-        await this.saveConnectionStore(cleaned);
-      }
-    } catch (e) {
-      console.error(`[graphnosis-host] deleteGraph: could not prune connection store: ${(e as Error).message}`);
-    }
-
-    // Purge cross-engram skill-call links (D1) that referenced this graph as
-    // caller or target, so the side-table doesn't dangle after engram delete.
-    try {
-      await this.skillCallLinks.pruneGraph(graphId);
-    } catch (e) {
-      console.error(`[graphnosis-host] deleteGraph: could not prune skill-call links: ${(e as Error).message}`);
-    }
-
-    // Purge stale GNN predicted edges that referenced this graph.
-    try {
-      const gnnEdges = await this.loadGnnStore();
-      const cleanedEdges = gnnEdges.filter((e) => e.graphId !== graphId);
-      if (cleanedEdges.length !== gnnEdges.length) {
-        await this.saveGnnStore(cleanedEdges);
-      }
-    } catch (e) {
-      console.error(`[graphnosis-host] deleteGraph: could not prune GNN store: ${(e as Error).message}`);
-    }
-
-    // Purge stale GLL overlay entries that referenced this graph.
-    try {
-      const gll = await this.loadGllOverlay();
-      const cleanedGllEdges = gll.edges.filter((e) => e.graphId !== graphId);
-      const cleanedGllAssertions = gll.assertions.filter((a) => a.graphId !== graphId);
-      if (cleanedGllEdges.length !== gll.edges.length || cleanedGllAssertions.length !== gll.assertions.length) {
-        await this.saveGllOverlay(cleanedGllEdges, cleanedGllAssertions);
-      }
-    } catch (e) {
-      console.error(`[graphnosis-host] deleteGraph: could not prune GLL overlay: ${(e as Error).message}`);
-    }
   }
 
   /** Update settings, persist to <cortex>/settings.json, return the merged result. */
   async setSettings(partial: Partial<settingsMod.AppSettings>): Promise<settingsMod.AppSettings> {
-    // Serialise through settingsWriteQueue so concurrent callers (the brain
-    // engine fires background writes every few seconds) always merge from the
-    // latest committed this.settings, never from a stale snapshot captured
-    // before a concurrent write committed. Without this, a brain-engine write
-    // in flight at the same time as a user preference save reads the old
-    // this.settings and its disk write can land after the user's write,
-    // silently reverting fields like ai.autoReingestOnFileChange to false.
-    let resolveSlot!: () => void;
-    const slot = new Promise<void>(r => { resolveSlot = r; });
-    const prev = this.settingsWriteQueue;
-    this.settingsWriteQueue = slot;
-
-    let next!: settingsMod.AppSettings;
-    try {
-      await prev; // wait for any concurrent write to finish and commit
-      // Merge now — this.settings reflects the latest committed state.
-      // Shallow merge per top-level key — keeps contentCache fully replaced if
-      // the caller passes one, while leaving room for future top-level keys.
-      next = settingsMod.mergeWithDefaults({
-        ...this.settings,
-        ...partial,
-      });
-      await this.persistSettings(next);
-    } finally {
-      resolveSlot(); // unblock the next queued write regardless of outcome
-    }
+    // Shallow merge per top-level key — keeps contentCache fully replaced if
+    // the caller passes one, while leaving room for future top-level keys.
+    const next: settingsMod.AppSettings = settingsMod.mergeWithDefaults({
+      ...this.settings,
+      ...partial,
+    });
+    await this.persistSettings(next);
     // Notify listeners with the persisted value so they don't react to
     // a stale in-flight patch.
     for (const fn of this.settingsListeners) {

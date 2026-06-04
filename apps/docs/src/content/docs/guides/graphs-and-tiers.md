@@ -5,13 +5,13 @@ sidebar:
   order: 2
 ---
 
-Graphs let you organize your cortex into distinct namespaces. Sensitivity tiers let you decide how much of each graph an AI is allowed to see — including the option to block AI access entirely.
+Graphs let you organize your Cortex into distinct namespaces. Sensitivity tiers let you decide how much of each graph an AI is allowed to see — including the option to block AI access entirely.
 
 **Important:** even for graphs with open tiers, your AI never receives everything in that graph. On every `recall` call, Graphnosis performs a semantic search and returns only the nodes most relevant to your current question, subject to the token cap for that graph. The rest stays encrypted and untouched. This is intentional — Graphnosis acts as your hippocampus, retrieving targeted memory traces, not dumping your files.
 
 ## Multiple graphs
 
-A single cortex can hold multiple graphs. You might create:
+A single Cortex can hold multiple graphs. You might create:
 
 - `work` — project notes, meeting summaries, technical decisions
 - `personal` — journal entries, health notes, finance snippets
@@ -27,16 +27,13 @@ Open the Graphnosis window → click **+ New Graph** → give it a name and choo
 
 Every graph is assigned one of three tiers:
 
-<table>
-<thead><tr><th>Tier</th><th>What it means</th></tr></thead>
-<tbody>
-<tr><td style="white-space:nowrap"><code>public</code></td><td>Content may be surfaced to any AI client without restriction.</td></tr>
-<tr><td style="white-space:nowrap"><code>personal</code></td><td>Content is surfaced only when the AI explicitly asks for context (no proactive injection). Token cap applies.</td></tr>
-<tr><td style="white-space:nowrap"><code>sensitive</code></td><td>Excluded from AI recall by default. Surfaced only if you explicitly turn on "share with AI" for the engram — and even then, only under a tight cap.</td></tr>
-</tbody>
-</table>
+| Tier | What it means |
+|------|--------------|
+| `public` | Content may be surfaced to any AI client without restriction. |
+| `personal` | Content is surfaced only when the AI explicitly asks for context (no proactive injection). Token cap applies. |
+| `sensitive` | Content is never surfaced to AI clients automatically. Requires manual export or explicit user action. |
 
-Tiers are a hard cap, enforced by the sidecar before any content leaves the cortex. The AI model itself never sees the tier configuration — it simply doesn't receive content above its allowed level.
+Tiers are a hard cap, enforced by the sidecar before any content leaves the Cortex. The AI model itself never sees the tier configuration — it simply doesn't receive content above its allowed level.
 
 ### Tier behavior in practice
 
@@ -44,24 +41,25 @@ Tiers are a hard cap, enforced by the sidecar before any content leaves the cort
 
 **`personal` graphs** — chunks are only returned when `recall` is called explicitly. Proactive injection is disabled. The token cap limits how much context can be returned per conversation turn. Best for personal notes, journal entries, work summaries.
 
-**`sensitive` graphs** — by default the sidecar returns zero results for `recall` queries targeting this graph; the AI is never told why, it just gets no results. If you deliberately turn on "share with AI" for a sensitive graph, recall returns at most a tight cap — 5 nodes / 500 tokens. You can always search and review these memories in the Graphnosis UI. Best for health information, financial records, anything you want to keep entirely local.
+**`sensitive` graphs** — the sidecar returns zero results for `recall` queries targeting this graph. The AI is never told why — it just gets no results. You can still search and review these memories in the Graphnosis UI. Best for health information, financial records, anything you want to keep entirely local.
 
-## How much a recall returns
+## Per-graph token caps
 
-Recall is **budgeted per call**, not by a fixed per-tier number. When an AI client calls `recall`, it requests a token budget and a node count, and Graphnosis enforces a hard ceiling on both:
+Each graph has a configurable maximum token budget per recall response. This prevents any single graph from consuming the entire context window of your AI.
 
-| Limit | Default | Hard cap |
-|---|---|---|
-| Tokens attached per recall | 2,000 | 8,000 |
-| Memory nodes attached per recall | 20 | 50 |
+Defaults:
 
-That budget is shared across every engram the recall touches — Graphnosis fills it with the most relevant memories wherever they live, so no single engram can monopolize your AI's context window.
+| Tier | Default token cap |
+|------|-----------------|
+| `public` | 4000 tokens |
+| `personal` | 2000 tokens |
+| `sensitive` | 0 (AI access blocked) |
 
-Tiers shape this further: a `public` or `personal` engram can contribute up to the full budget, while a `sensitive` engram contributes **nothing** unless you have explicitly turned on "share with AI" for it — and even then it is held to a tight **5 nodes / 500 tokens**.
+You can override these in `policy.json`.
 
 ## Configuring policy.json
 
-`policy.json` lives in the root of your cortex folder. It is not encrypted (it contains only policy rules, not content). You can edit it directly:
+`policy.json` lives in the root of your Cortex folder. It is not encrypted (it contains only policy rules, not content). You can edit it directly:
 
 ```json
 {
@@ -88,43 +86,6 @@ Changes to `policy.json` take effect immediately — no restart required. The si
 
 This is a hard ceiling across all graphs combined. Even if individual graph caps add up to more, the sidecar will truncate the total context to this limit. Default: `8000`.
 
-## Moving sources between engrams
-
-Sources aren't permanently bound to the engram they were ingested into. You can reassign a source at any time from the Sources pane — hover the row, click **Move to…**, and pick the destination.
-
-If you need a new engram as the destination, select **New Engram…** from the dropdown, type a name, and Graphnosis will create it and move the source in one step.
-
-Moving a source is instant and non-destructive. All chunks, embeddings, and cached content travel with it. The AI clients reflect the new location on the next `recall` call — no restart or re-ingest needed. The moved source is governed by the destination engram's sensitivity tier immediately after the move.
-
-**Cross-engram connections are rebuilt immediately after every move.** When a source moves, Graphnosis removes its old cross-engram links (they referenced the now-deleted node IDs in the origin engram), re-ingests the content into the destination with fresh node IDs, and immediately runs a cross-engram linking pass — without waiting for the next scheduled pass (every 6 hours). Related memories in other engrams are re-connected automatically. You don't need to trigger anything manually.
-
-Typical reasons to move a source:
-
-- You ingested a work document into `personal` by accident — move it to `work`
-- A research paper turned out to be closely related to a specific project — move it into that project's engram for tighter recall
-- You're splitting a large general-purpose engram into topic-specific ones over time
-
-## Archiving an engram
-
-Archiving hides an engram from all in-app pickers and dropdowns — sources, the engram switcher, the 3D view — without touching its data. The graph file, all nodes, embeddings, and cross-engram connections remain exactly as they were. Nothing is removed, weakened, or re-indexed.
-
-Archiving is fully reversible: click **Unarchive** and the engram reappears immediately with all its connections intact. Cross-engram links survive the archive/unarchive cycle unchanged.
-
-Only **Delete** permanently removes an engram and purges its cross-engram connections from the store.
-
 ## Which graphs does a client see?
 
-By default, all graphs in the cortex are visible to any connected MCP client, subject to their tier. If you want to expose only specific graphs to a specific AI client, you can scope the sidecar using the `GRAPHNOSIS_GRAPHS` environment variable (see [Environment Variables](/reference/environment-variables/)).
-
----
-
-## Related
-
-[AI Access Controls](/guides/ai-access-controls/) — the consent gate that protects sensitive tiers.
-
-[Federated Multi-Graphs](/reference/federated-multi-graphs/) — how recall ranges across many engrams at once.
-
-[Adding Content](/guides/adding-content/) — route incoming sources to the right engram.
-
-[Environment Variables](/reference/environment-variables/) — per-client graph scoping with `GRAPHNOSIS_GRAPHS`.
-
+By default, all graphs in the Cortex are visible to any connected MCP client, subject to their tier. If you want to expose only specific graphs to a specific AI client, you can scope the sidecar using the `GRAPHNOSIS_GRAPHS` environment variable (see [Environment Variables](/reference/environment-variables/)).
