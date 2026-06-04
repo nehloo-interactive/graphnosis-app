@@ -4174,6 +4174,8 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
         sub: payload.sub,
         expiresAt,
         expiringSoon: deps.licenseValidator?.isExpiringSoon(token) ?? false,
+        // Absent (legacy token) → treat as renewing.
+        renews: payload.renews !== false,
       };
     }
 

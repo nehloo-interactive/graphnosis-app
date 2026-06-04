@@ -20134,6 +20134,9 @@ interface LicenseStatus {
   sub?: string;
   expiresAt?: number;
   expiringSoon?: boolean;
+  /** True when the subscription auto-renews at expiresAt; false when set to
+   *  cancel at period end. Absent (legacy token) → treated as renewing. */
+  renews?: boolean;
 }
 
 async function ipcLicenseStatus(): Promise<LicenseStatus> {
@@ -20208,7 +20211,12 @@ async function refreshSettingsLicenseStatus(): Promise<void> {
   setLicenseSectionMode(true); // active subscription → show manage, hide acquire
   const expires = status.expiresAt ? new Date(status.expiresAt).toLocaleDateString() : '—';
   const feats = (status.features ?? []).join(', ');
-  const warn = status.expiringSoon
+  // "Renews" while the subscription auto-renews; "Expires" once it's set to
+  // cancel at period end (renews === false). The renewal warning only makes
+  // sense when it's actually expiring (not auto-renewing).
+  const renewing = status.renews !== false;
+  const dateLabel = renewing ? 'Renews' : 'Expires';
+  const warn = status.expiringSoon && !renewing
     ? ' <span style="color:var(--color-status-warn-gold);font-weight:600;">— expires soon</span>'
     : '';
   // Email (sub) + expiry date are PII and ALWAYS redacted while presenting —
@@ -20217,7 +20225,7 @@ async function refreshSettingsLicenseStatus(): Promise<void> {
   el.innerHTML = `
     <div style="display:flex; flex-direction:column; gap:2px;">
       <span><strong style="color:var(--ok);">${escape(status.plan ?? 'Pro')}</strong> active for <strong data-pres="surface:__licensepii__">${escape(status.sub ?? '')}</strong></span>
-      <span class="subtitle">Features: ${escape(feats)} · Expires <span data-pres="surface:__licensepii__">${escape(expires)}</span>${warn}</span>
+      <span class="subtitle">Features: ${escape(feats)} · ${dateLabel} <span data-pres="surface:__licensepii__">${escape(expires)}</span>${warn}</span>
     </div>
   `;
 }
