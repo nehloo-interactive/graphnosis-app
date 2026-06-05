@@ -372,6 +372,21 @@ export interface AtlasOptions {
 export class Atlas {
   private graph: ForceGraph3DInstance;
   private allNodes: AtlasNode[] = [];
+
+  // ── Instanced node layer (THREE.Points) — task #42 ────────────────────────
+  // One GPU draw call for all nodes, replacing the ~2N per-node THREE objects
+  // (default sphere + invisible hit sphere) that tank browsing on large graphs.
+  // STAGE A: renders ALONGSIDE the library spheres to validate position/colour/
+  // size sync; later stages disable the spheres and move picking/drag onto this.
+  private nodePoints: THREE.Points | null = null;
+  private nodePointsGeom: THREE.BufferGeometry | null = null;
+  /** node id -> buffer index, rebuilt on setNodes. */
+  private nodePointIndex = new Map<string, number>();
+  /** Off by default until Stage B/C/D land (sphere removal + picking/drag on
+   *  the Points layer). While off, the atlas renders exactly as before; the
+   *  Stage-A infrastructure is dormant. Flip true to preview the additive
+   *  Points overlay. */
+  private nodePointsEnabled = false;
   private allLinks: AtlasLink[] = [];
 
   /** Return current x/y/z for every already-positioned node. Used by
@@ -1395,6 +1410,18 @@ export class Atlas {
         }
       }
 
+      // ── Instanced Points node layer (task #42, Stage A) ─────────────────
+      // Copy sim positions + pulsation into the Points buffers every frame.
+      // Guarded: a fault in the experimental layer must never break the atlas.
+      if (this.nodePointsEnabled) {
+        try { this.syncNodePointsFrame(now); }
+        catch (e) {
+          console.error('[atlas] node-points sync failed — disabling layer:', e);
+          this.nodePointsEnabled = false;
+          this.teardownNodePointsLayer();
+        }
+      }
+
       // Skip camera oscillation if: motion disabled, TC orbit active, or
       // still within the post-orbit cooldown window.
       if (
@@ -2107,6 +2134,163 @@ export class Atlas {
     // setEdges() runs) which pulled everything into tight cluster blobs.
     void newNodeCount; // still tracked for future use; not needed for branching
     this.graph.d3ReheatSimulation();
+    // STAGE A (task #42): (re)build the instanced Points node layer alongside
+    // the library spheres. Positions are 0 here and snap into place once the
+    // sim assigns x/y/z — syncNodePointsFrame() copies them every frame.
+    if (this.nodePointsEnabled) {
+      try { this.rebuildNodePointsLayer(); }
+      catch (e) {
+        console.error('[atlas] node-points rebuild failed — disabling layer:', e);
+        this.nodePointsEnabled = false;
+        this.teardownNodePointsLayer();
+      }
+    }
+  }
+
+  // ── Instanced node layer (THREE.Points) — task #42, Stage A ───────────────
+
+  /** Base point size (world radius) mirroring the library sphere:
+   *  nodeRelSize(49.5) × ∛(nodeVal), including the selected/preview/drag boosts. */
+  private nodePointSize(n: AtlasNode): number {
+    const confidencePart = 0.6 + n.confidence * 1.2;
+    const degree = this.nodeDegree.get(n.id) ?? 0;
+    let base = confidencePart + Math.sqrt(degree) * 0.55;
+    if (n.id === this.selectedId)         base *= 2.5;
+    if (this.previewHighlightId === n.id) base *= 1.7;
+    if (this.draggingId === n.id)         base *= 1.5;
+    return 49.5 * Math.cbrt(base);
+  }
+
+  /** Parse colorForNode()'s output ("rgba(r,g,b,a)" / "rgb(...)" / hex) into
+   *  normalized RGB + alpha for the attribute buffers. */
+  private parseColorString(s: string): { r: number; g: number; b: number; a: number } {
+    const m = s.match(/rgba?\(([^)]+)\)/i);
+    if (m && m[1]) {
+      const p = m[1].split(',').map((x) => parseFloat(x.trim()));
+      return { r: (p[0] ?? 255) / 255, g: (p[1] ?? 255) / 255, b: (p[2] ?? 255) / 255, a: p[3] ?? 1 };
+    }
+    const c = new THREE.Color(s);
+    return { r: c.r, g: c.g, b: c.b, a: 1 };
+  }
+
+  /** Write per-node colour/alpha/size into the buffers (call on colour-cache
+   *  invalidation — selection, hover, legend dim, drag). Positions + pulse are
+   *  handled per-frame in syncNodePointsFrame(). */
+  private updateNodePointsAttributes(): void {
+    const geom = this.nodePointsGeom;
+    if (!geom) return;
+    const colors = (geom.getAttribute('aColor') as THREE.BufferAttribute).array as Float32Array;
+    const alpha = (geom.getAttribute('aAlpha') as THREE.BufferAttribute).array as Float32Array;
+    const size = (geom.getAttribute('aSize') as THREE.BufferAttribute).array as Float32Array;
+    for (let i = 0; i < this.allNodes.length; i++) {
+      const node = this.allNodes[i]!;
+      const col = this.parseColorString(this.colorForNode(node));
+      colors[i * 3] = col.r; colors[i * 3 + 1] = col.g; colors[i * 3 + 2] = col.b;
+      alpha[i] = col.a * 0.92; // match the spheres' global nodeOpacity(0.92)
+      size[i] = this.nodePointSize(node);
+    }
+    (geom.getAttribute('aColor') as THREE.BufferAttribute).needsUpdate = true;
+    (geom.getAttribute('aAlpha') as THREE.BufferAttribute).needsUpdate = true;
+    (geom.getAttribute('aSize') as THREE.BufferAttribute).needsUpdate = true;
+  }
+
+  private teardownNodePointsLayer(): void {
+    const scene = (this.graph as unknown as { scene?: () => THREE.Scene | undefined }).scene?.();
+    if (this.nodePoints) {
+      scene?.remove(this.nodePoints);
+      this.nodePointsGeom?.dispose();
+      (this.nodePoints.material as THREE.Material).dispose();
+    }
+    this.nodePoints = null;
+    this.nodePointsGeom = null;
+  }
+
+  private rebuildNodePointsLayer(): void {
+    this.teardownNodePointsLayer();
+    const scene = (this.graph as unknown as { scene?: () => THREE.Scene | undefined }).scene?.();
+    if (!this.nodePointsEnabled || !scene) return;
+    const n = this.allNodes.length;
+    if (n === 0) return;
+    this.nodePointIndex.clear();
+    const positions = new Float32Array(n * 3);
+    const colors = new Float32Array(n * 3);
+    const alpha = new Float32Array(n);
+    const size = new Float32Array(n);
+    const pulse = new Float32Array(n).fill(1);
+    for (let i = 0; i < n; i++) this.nodePointIndex.set(this.allNodes[i]!.id, i);
+    const geom = new THREE.BufferGeometry();
+    geom.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+    geom.setAttribute('aColor', new THREE.BufferAttribute(colors, 3));
+    geom.setAttribute('aAlpha', new THREE.BufferAttribute(alpha, 1));
+    geom.setAttribute('aSize', new THREE.BufferAttribute(size, 1));
+    geom.setAttribute('aPulse', new THREE.BufferAttribute(pulse, 1));
+    // Huge bounding sphere so the whole cloud is never frustum-culled as one.
+    geom.boundingSphere = new THREE.Sphere(new THREE.Vector3(), 1e7);
+    const mat = new THREE.ShaderMaterial({
+      uniforms: { uScale: { value: 800 } },
+      transparent: true,
+      depthWrite: false,
+      vertexShader: `
+        attribute vec3 aColor; attribute float aAlpha; attribute float aSize; attribute float aPulse;
+        uniform float uScale;
+        varying vec3 vColor; varying float vAlpha;
+        void main() {
+          vColor = aColor; vAlpha = aAlpha;
+          vec4 mv = modelViewMatrix * vec4(position, 1.0);
+          gl_PointSize = max(1.0, aSize * aPulse * uScale / max(0.001, -mv.z));
+          gl_Position = projectionMatrix * mv;
+        }`,
+      fragmentShader: `
+        precision mediump float;
+        varying vec3 vColor; varying float vAlpha;
+        void main() {
+          vec2 c = gl_PointCoord - vec2(0.5);
+          float d = dot(c, c);
+          if (d > 0.25) discard;             // circular sprite
+          float edge = smoothstep(0.25, 0.16, d);
+          gl_FragColor = vec4(vColor, vAlpha * edge);
+        }`,
+    });
+    const points = new THREE.Points(geom, mat);
+    points.frustumCulled = false;
+    points.renderOrder = 1;
+    scene.add(points);
+    this.nodePoints = points;
+    this.nodePointsGeom = geom;
+    this.updateNodePointsAttributes();
+  }
+
+  /** Per-frame: copy node positions from the sim + recompute pulsation into the
+   *  Points buffers, and keep the perspective size uniform current. */
+  private syncNodePointsFrame(now: number): void {
+    const geom = this.nodePointsGeom;
+    if (!this.nodePoints || !geom) return;
+    const posAttr = geom.getAttribute('position') as THREE.BufferAttribute;
+    const pulseAttr = geom.getAttribute('aPulse') as THREE.BufferAttribute;
+    const pos = posAttr.array as Float32Array;
+    const pulse = pulseAttr.array as Float32Array;
+    const nodes = this.graph.graphData().nodes as Array<{ id?: string; x?: number; y?: number; z?: number }>;
+    const amp = this.brainVitality / 100;
+    for (const nd of nodes) {
+      const idx = this.nodePointIndex.get(nd.id ?? '');
+      if (idx === undefined) continue;
+      pos[idx * 3] = nd.x ?? 0; pos[idx * 3 + 1] = nd.y ?? 0; pos[idx * 3 + 2] = nd.z ?? 0;
+      if (this.aliveEnabled) {
+        const phase = this.nodePulsePhase.get(nd.id ?? '') ?? 0;
+        const period = this.nodePulsePeriod.get(nd.id ?? '') ?? 3000;
+        pulse[idx] = 1 + amp * (Math.sin(phase + PI2 * now / period) + 1) / 2;
+      } else {
+        pulse[idx] = 1;
+      }
+    }
+    posAttr.needsUpdate = true;
+    pulseAttr.needsUpdate = true;
+    const cam = this.graph.camera() as THREE.PerspectiveCamera | null;
+    const mat = this.nodePoints.material as THREE.ShaderMaterial;
+    if (cam && mat.uniforms?.uScale) {
+      const h = this.opts.container.clientHeight || 1;
+      mat.uniforms.uScale.value = h / Math.tan((cam.fov * Math.PI / 180) / 2);
+    }
   }
 
   setEdges(directed: AtlasDirectedEdge[], undirected: AtlasUndirectedEdge[]): void {
