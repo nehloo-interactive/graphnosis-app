@@ -1367,12 +1367,15 @@
       main { transition: filter 0.2s ease; }
       body:has(.modal-backdrop:not(.hidden):not(.over-sidebar)) main,
       body:has(#whats-new-modal:not(.hidden)) main { filter: blur(4px); }
-      /* Confirmation dialogs that can fire while the settings modal is open
-         must paint above it. settings-modal is also z-index:100 but appears
-         later in the DOM, so same-level stacking order would bury these. */
+      /* Confirmation dialogs that can fire while another modal is open must
+         paint above it. settings-modal / recovery-modal are also z-index:100
+         but appear later in the DOM, so same-level stacking order would bury
+         these. (snapshot-offer fires over the open recovery modal on
+         "Recover selected" — it must sit in front, not behind it.) */
       #permanent-confirm-modal,
       #quarantine-confirm-modal,
-      #tier-confirm-modal {
+      #tier-confirm-modal,
+      #snapshot-offer-modal {
         z-index: 200;
       }
       .modal {
@@ -4332,6 +4335,14 @@
       }
 
       /* ── Foresight (Goals page) lanes + Home teaser ─────────────────────── */
+      /* Foresight card grid — full width, max 2 cards per row, 1 col when narrow.
+         Cards moved in from the old Brainstorming page get the .home-card class
+         at runtime (buildForesightGrid); zero their stock margins so the grid
+         gap owns the spacing. */
+      .foresight-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; width: 100%; align-items: start; margin-top: 14px; }
+      .foresight-grid > * { margin: 0 !important; }
+      .foresight-grid > .home-card { position: relative; }
+      @media (max-width: 760px) { .foresight-grid { grid-template-columns: 1fr; } }
       /* Each Foresight section sits in its own card. */
       .foresight-card { padding: 14px 16px; border: 1px solid var(--border); border-radius: 12px; margin-top: 14px; background: color-mix(in srgb, var(--bg) 96%, var(--fg) 4%); position: relative; }
       .foresight-card > .foresight-lane-label:first-child { margin-top: 0; }
@@ -7146,6 +7157,10 @@
       .connector-row-actions button:hover { background: color-mix(in oklab, var(--fg) 6%, transparent); }
       .connector-row-actions button.danger { color: var(--color-status-error); }
       .connector-row-actions button.danger:hover { background: color-mix(in oklab, var(--color-status-error) 12%, transparent); }
+      /* Armed (first-click) state of the two-click Remove confirm — filled red so
+         it's unmistakable the next click deletes. */
+      .connector-row-actions button.confirm-armed,
+      button.confirm-armed { color: #fff; background: var(--color-status-error); border-color: var(--color-status-error); }
 
       .connectors-add-row {
         display: flex;
@@ -8855,10 +8870,18 @@
         font-size: 14px;
       }
       .atlas-toolbar .filler { flex: 1; }
-      /* Large active-engram title above the 3D graph, left-aligned. The auto
+      /* Title + stats group above the 3D graph, left-aligned. The auto
          right-margin pushes the toolbar buttons to the right edge. */
+      .atlas-title-group {
+        display: flex;
+        align-items: baseline;
+        gap: 10px;
+        margin-right: auto;
+        min-width: 0;
+        max-width: 70%;
+      }
       .atlas-engram-title {
-        margin: 0 auto 0 2px;
+        margin: 0 0 0 2px;
         font-size: 24px;
         font-weight: 700;
         letter-spacing: -0.01em;
@@ -8867,7 +8890,15 @@
         white-space: nowrap;
         overflow: hidden;
         text-overflow: ellipsis;
-        max-width: 55%;
+        flex: 0 1 auto;
+      }
+      /* Node / edge / source counts beside the engram name. */
+      .atlas-engram-stats {
+        font-size: 13px;
+        color: var(--fg-dim);
+        white-space: nowrap;
+        font-variant-numeric: tabular-nums;
+        flex: 0 0 auto;
       }
       #btn-atlas-reset.node-selected {
         background: var(--accent, var(--color-brand-turquoise-bright));
@@ -9439,7 +9470,11 @@
          to edge; the reading content is centered inside .pres-scroll. */
       /* Fill the canvas height so the sticky action bar's margin-top:auto can
          push it flush to the bottom (status bar) even when content is short. */
-      .mode-pane[data-pane="presentation"] { height: 100%; }
+      /* Flex column so .pres-actions (margin-top:auto) is pushed to the bottom
+         and sits flush on the status bar even when the content list is short.
+         When the list overflows, position:sticky on .pres-actions keeps it
+         pinned to the viewport bottom while scrolling. */
+      .mode-pane[data-pane="presentation"] { height: 100%; display: flex; flex-direction: column; }
       #presentation-body { height: 100%; }
       .pres-config { display: flex; flex-direction: column; min-height: 100%; }
       .pres-scroll { max-width: 720px; width: 100%; margin: 0 auto; padding-bottom: 16px; }
@@ -9886,11 +9921,6 @@
             <button class="rail-btn" data-mode="goals" title="Foresight — predict the future from your growing memory (develop · predict · insights)">
               <span class="rail-icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="M11 7v4l2.5 1.5"/><path d="M20 20l-3.5-3.5"/></svg></span>
               <span class="rail-label">Foresight</span>
-              <span></span>
-            </button>
-            <button class="rail-btn" data-mode="brainstorm" title="Brainstorming — neural-network &amp; local-LLM exploration of your graph">
-              <span class="rail-icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18h6"/><path d="M10 22h4"/><path d="M12 2a7 7 0 0 0-4 12.7c.5.5.9 1.2.9 1.8h6.2c0-.6.4-1.3.9-1.8A7 7 0 0 0 12 2z"/></svg></span>
-              <span class="rail-label">Brainstorming</span>
               <span></span>
             </button>
             <button class="rail-btn" data-mode="search" title="Search — find any memory across your engrams">
@@ -10884,9 +10914,13 @@
                   <!-- 3D Atlas tab — unchanged from before. -->
                   <section class="g-tab-pane hidden" data-gpane="atlas">
                     <div class="atlas-toolbar" style="justify-content: flex-end;">
-                      <!-- Large active-engram title, left-aligned above the graph.
-                           margin-right:auto pushes the toolbar buttons to the right. -->
-                      <h2 id="atlas-engram-title" class="atlas-engram-title">—</h2>
+                      <!-- Large active-engram title + live stats, left-aligned above
+                           the graph. The group's margin-right:auto pushes the toolbar
+                           buttons to the right. -->
+                      <div class="atlas-title-group">
+                        <h2 id="atlas-engram-title" class="atlas-engram-title">—</h2>
+                        <span id="atlas-engram-stats" class="atlas-engram-stats" data-pres="surface:stats"></span>
+                      </div>
                       <!-- Mobile-only: toggles the colour legend (hidden by default on phones). -->
                       <button id="btn-atlas-legend" class="mobile-legend-toggle" title="Show / hide the colour legend" aria-label="Toggle legend" aria-pressed="false">
                         <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
@@ -11018,63 +11052,62 @@
                         <p class="lb-section-title">Foresight</p>
                         <p class="brain-subtitle">
                           Your goals, projected forward by your growing memory — predict what's
-                          ahead, surface risks &amp; opportunities, and see the patterns the brain found.
+                          ahead, surface risks &amp; opportunities, see the patterns the brain found,
+                          and review the non-deterministic neural-network &amp; local-LLM layers.
                         </p>
-                        <!-- Goals card (deterministic; per-goal redaction lives on each goal card) -->
-                        <div class="foresight-card">
-                          <p class="foresight-lane-label">Your goals</p>
-                          <div id="lb-goals" class="lb-block"></div>
-                          <div id="lb-goal-form" class="lb-goal-form hidden">
-                            <input id="lb-goal-context" type="text"
-                                   placeholder="What do you want to develop? (e.g. launch the mobile app)" />
-                            <input id="lb-goal-strategy" type="text"
-                                   placeholder="Strategy or approach (e.g. lean MVP)" />
-                            <input id="lb-goal-goals" type="text"
-                                   placeholder="What does success look like? (e.g. 100 users by Q3)" />
-                            <div class="lb-goal-form-actions">
-                              <button id="btn-lb-goal-cancel" class="btn-sm">Cancel</button>
-                              <button id="btn-lb-goal-develop" class="btn-sm primary">Develop &amp; save goal</button>
-                            </div>
-                          </div>
-                          <button id="btn-new-goal" class="btn-sm">+ Develop a new goal…</button>
-                        </div>
 
-                        <!-- ── Foresight lanes (LLM-grounded) — Predict + Insights.
-                             Gated on the local LLM; goals above always work. -->
-                        <div id="foresight-llm-gate" class="foresight-gate hidden">
-                          <p class="brain-subtitle" style="margin:0 0 8px;">Turn on the <strong>Local LLM</strong> to unlock Foresight — predictions, risks, and insights grounded in your memory, computed on-device.</p>
-                          <button id="btn-foresight-llm" class="btn-sm">Set up Local LLM →</button>
-                        </div>
-                        <div id="foresight-body" class="foresight-body">
-                          <!-- Predict card — title/description stay visible; only the
-                               output redacts (its own "Predict" surface toggle). -->
-                          <div class="foresight-card">
+                        <!-- Foresight card grid. The non-deterministic cards (Neural Network,
+                             Local Layer, Insights, Local LLM) are moved in here at runtime by
+                             buildForesightGrid() in main.ts, reclassed to .home-card. -->
+                        <div id="foresight-overview" class="foresight-grid">
+                          <!-- Goals card (deterministic; per-goal redaction lives on each goal card) -->
+                          <div class="foresight-card" id="fcard-goals">
+                            <p class="foresight-lane-label">Your goals</p>
+                            <div id="lb-goals" class="lb-block"></div>
+                            <div id="lb-goal-form" class="lb-goal-form hidden">
+                              <input id="lb-goal-context" type="text"
+                                     placeholder="What do you want to develop? (e.g. launch the mobile app)" />
+                              <input id="lb-goal-strategy" type="text"
+                                     placeholder="Strategy or approach (e.g. lean MVP)" />
+                              <input id="lb-goal-goals" type="text"
+                                     placeholder="What does success look like? (e.g. 100 users by Q3)" />
+                              <div class="lb-goal-form-actions">
+                                <button id="btn-lb-goal-cancel" class="btn-sm">Cancel</button>
+                                <button id="btn-lb-goal-develop" class="btn-sm primary">Develop &amp; save goal</button>
+                              </div>
+                            </div>
+                            <button id="btn-new-goal" class="btn-sm">+ Develop a new goal…</button>
+                          </div>
+
+                          <!-- Predict card — title/description stay visible; only the output
+                               redacts ("Predict" surface). LLM-gated via #foresight-llm-gate. -->
+                          <div class="foresight-card" id="fcard-predict">
                             <p class="foresight-lane-label">Predict</p>
                             <p class="brain-subtitle" style="margin:-2px 0 8px;">Before you act, see the risks &amp; opportunities your memory implies.</p>
-                            <div class="foresight-predict-row">
-                              <input id="foresight-predict-input" type="text" placeholder="What are you about to do? (e.g. launch in Romania)" />
-                              <button id="btn-foresight-predict" class="btn-sm primary">Predict</button>
+                            <div id="foresight-llm-gate" class="foresight-gate hidden">
+                              <p class="brain-subtitle" style="margin:0 0 8px;">Turn on the <strong>Local LLM</strong> to unlock predictions grounded in your memory, computed on-device.</p>
+                              <button id="btn-foresight-llm" class="btn-sm">Set up Local LLM →</button>
                             </div>
-                            <div id="foresight-predict-out" class="foresight-out" data-pres="surface:predict"></div>
+                            <div id="foresight-body" class="foresight-body">
+                              <div class="foresight-predict-row">
+                                <input id="foresight-predict-input" type="text" placeholder="What are you about to do? (e.g. launch in Romania)" />
+                                <button id="btn-foresight-predict" class="btn-sm primary">Predict</button>
+                              </div>
+                              <div id="foresight-predict-out" class="foresight-out" data-pres="surface:predict"></div>
+                            </div>
                           </div>
-                          <!-- Insights card — title/description stay visible; only the
-                               output redacts (the "Insights" surface toggle). -->
-                          <div class="foresight-card">
-                            <p class="foresight-lane-label">Insights</p>
-                            <p class="brain-subtitle" style="margin:-2px 0 8px;">Patterns &amp; gaps the brain surfaced across your memory.</p>
-                            <div id="foresight-insights" class="foresight-out" data-pres="surface:foresight"></div>
-                          </div>
-                        </div>
 
-                        <div class="lb-mcp-tools-hint">
-                          <p class="lb-mcp-tools-title">Available via AI clients (Claude, Cursor…)</p>
-                          <div class="lb-mcp-tool-row">
-                            <span class="lb-mcp-tool-name">develop</span>
-                            <span class="lb-mcp-tool-desc">Give it your context, strategy, and goal — Graphnosis reads your memories and writes a concrete strategic plan, citing what it actually knows.</span>
-                          </div>
-                          <div class="lb-mcp-tool-row">
-                            <span class="lb-mcp-tool-name">predict</span>
-                            <span class="lb-mcp-tool-desc">Before taking an action, Graphnosis checks your memory for past failures, resource constraints, blockers, and hidden opportunities related to that action.</span>
+                          <!-- AI-clients hint card -->
+                          <div class="lb-mcp-tools-hint" id="fcard-aihint">
+                            <p class="lb-mcp-tools-title">Available via AI clients (Claude, Cursor…)</p>
+                            <div class="lb-mcp-tool-row">
+                              <span class="lb-mcp-tool-name">develop</span>
+                              <span class="lb-mcp-tool-desc">Give it your context, strategy, and goal — Graphnosis reads your memories and writes a concrete strategic plan, citing what it actually knows.</span>
+                            </div>
+                            <div class="lb-mcp-tool-row">
+                              <span class="lb-mcp-tool-name">predict</span>
+                              <span class="lb-mcp-tool-desc">Before taking an action, Graphnosis checks your memory for past failures, resource constraints, blockers, and hidden opportunities related to that action.</span>
+                            </div>
                           </div>
                         </div>
                       </div>
@@ -11115,7 +11148,7 @@
                         when you approve a correction yourself.
                       </p>
 
-                      <div class="lb-section">
+                      <div class="lb-section" id="fcard-gnn">
                         <p class="lb-section-title">Graphnosis Neural Network (.GNN)</p>
                         <p class="brain-subtitle">
                           A trained neural network that predicts likely-missing
@@ -11135,7 +11168,7 @@
                         <div id="lb-neural-network" class="lb-block"></div>
                       </div>
 
-                      <div class="lb-section">
+                      <div class="lb-section" id="fcard-gll">
                         <p class="lb-section-title">Graphnosis Local Layer (.GLL)</p>
                         <p class="brain-subtitle">
                           Periodically the local LLM proposes new connections between
@@ -11183,15 +11216,15 @@
                         </div>
                       </div>
 
-                      <div class="lb-section">
+                      <div class="lb-section" id="fcard-insights">
                         <p class="lb-section-title">Insights</p>
                         <p class="brain-subtitle">
                           Patterns, gaps, and opportunities surfaced from your knowledge. Requires a local LLM.
                         </p>
-                        <div id="lb-insights" class="lb-block"></div>
+                        <div id="lb-insights" class="lb-block" data-pres="surface:foresight"></div>
                       </div>
 
-                      <div class="lb-section">
+                      <div class="lb-section" id="fcard-llm">
                         <p class="lb-section-title">Local LLM</p>
                         <p class="brain-subtitle">
                           Graphnosis' smartest features — forming new connections,
@@ -11669,7 +11702,7 @@ ollama list</code></pre>
                   <span class="settings-license-launcher-icon">🔑</span>
                   <span class="settings-license-launcher-text">
                     <strong>Graphnosis Pro license</strong>
-                    <span class="subtitle" id="settings-pane-license-status">Manage your subscription token</span>
+                    <span class="subtitle" id="settings-pane-license-status" data-pres="surface:license">Manage your subscription token</span>
                   </span>
                   <span class="settings-license-launcher-arrow">›</span>
                 </button>
@@ -12727,6 +12760,26 @@ ollama list</code></pre>
       </div>
     </div>
 
+    <!-- ── Ingest target-engram picker ───────────────────────────────────
+         Shown on drag-drop (and +Files/+Folders) so the user chooses which
+         engram the files land in instead of silently using the active one. -->
+    <div id="ingest-engram-modal" class="modal-backdrop hidden">
+      <div class="modal" style="max-width: 460px;">
+        <div class="modal-header">
+          <h2>Ingest into which engram?</h2>
+          <p class="subtitle" id="ingest-engram-sub">Choose where these files should go.</p>
+        </div>
+        <div style="padding: 0 18px 4px;">
+          <select id="ingest-engram-select" style="width:100%; padding:9px 10px; border:1px solid var(--border); border-radius:6px; font-size:15px; box-sizing:border-box;"></select>
+        </div>
+        <div class="modal-footer">
+          <span class="filler"></span>
+          <button id="btn-ingest-engram-cancel">Cancel</button>
+          <button id="btn-ingest-engram-go" class="primary">Ingest</button>
+        </div>
+      </div>
+    </div>
+
     <!-- ── Relationship-type picker modal ────────────────────────────────
          Opened from the Check-in candidate panel's "Other…" button. Shows
          the full RELATIONSHIP_LABELS catalog as a vertical list so the user
@@ -13560,7 +13613,6 @@ ollama list</code></pre>
         <button class="mobile-more-item" data-mode="sources">Sources</button>
         <button class="mobile-more-item" data-mode="activity">Activity</button>
         <button class="mobile-more-item" data-mode="goals">Foresight</button>
-        <button class="mobile-more-item" data-mode="brainstorm">Brainstorming</button>
         <button class="mobile-more-item" data-mode="get-connected">Get Connected</button>
         <button class="mobile-more-item" data-mode="presentation">Presentation Mode</button>
         <button class="mobile-more-item" data-mode="settings">Settings</button>
@@ -13580,6 +13632,9 @@ ollama list</code></pre>
       <p class="rotate-portrait-sub">Graphnosis is designed for portrait on phones.</p>
     </div>
 
-    <script type="module" src="/src/main.ts"></script>
+    <!-- boot.ts waits for the Tauri runtime, then dynamically imports main.ts
+         (see boot.ts for the full rationale — fixes the desktop dev build
+         latching into browser mode before __TAURI_INTERNALS__ is injected). -->
+    <script type="module" src="/src/boot.ts"></script>
   </body>
 </html>

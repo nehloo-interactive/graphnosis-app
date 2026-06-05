@@ -9,6 +9,8 @@
  */
 
 import { startRegistration, startAuthentication } from '@simplewebauthn/browser';
+import { getCurrentWindow as tauriGetCurrentWindow } from '@tauri-apps/api/window';
+import { getCurrentWebview as tauriGetCurrentWebview } from '@tauri-apps/api/webview';
 
 // ── Environment detection ────────────────────────────────────────────────────
 
@@ -562,17 +564,24 @@ export async function getVersion(): Promise<string> {
     ?? '—';
 }
 
-// ── Window / Webview stubs (no-ops in browser) ────────────────────────────────
+// ── Window / Webview ──────────────────────────────────────────────────────────
+// In the Tauri desktop app, return the REAL Tauri window/webview (scaleFactor,
+// setSize, onDragDropEvent, …). In a plain browser there's no native window, so
+// fall back to no-op stubs. Without this delegation, native features (window
+// sizing, file drag-drop) were dead even inside the desktop app.
 
-export const getCurrentWindow = (): Record<string, () => Promise<void>> => ({
-  setTitle: async () => {},
-  minimize:  async () => {},
-  close:     async () => {},
-  show:      async () => {},
-  hide:      async () => {},
-});
+export const getCurrentWindow = (): ReturnType<typeof tauriGetCurrentWindow> =>
+  (IS_TAURI
+    ? tauriGetCurrentWindow()
+    : ({
+        setTitle: async () => {}, minimize: async () => {}, close: async () => {},
+        show: async () => {}, hide: async () => {},
+      } as unknown as ReturnType<typeof tauriGetCurrentWindow>));
 
-export const getCurrentWebview = (): Record<string, never> => ({} as Record<string, never>);
+export const getCurrentWebview = (): ReturnType<typeof tauriGetCurrentWebview> =>
+  (IS_TAURI
+    ? tauriGetCurrentWebview()
+    : ({} as unknown as ReturnType<typeof tauriGetCurrentWebview>));
 
 // ── Notifications ─────────────────────────────────────────────────────────────
 

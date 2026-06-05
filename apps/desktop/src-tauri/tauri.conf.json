@@ -21,7 +21,8 @@
         "resizable": true,
         "visible": false,
         "hiddenTitle": true,
-        "titleBarStyle": "Overlay"
+        "titleBarStyle": "Overlay",
+        "dragDropEnabled": true
       }
     ],
     "security": {

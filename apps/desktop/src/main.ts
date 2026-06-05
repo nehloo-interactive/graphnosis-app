@@ -1242,7 +1242,7 @@ const MAX_PENDING_MS = 8 * 60 * 1000; // 8 minutes
  * socket as `graphnosis://ingest-progress` and `graphnosis://ingest-done`
  * Tauri events, which update the toast live.
  */
-async function ingestSingleFile(path: string): Promise<unknown> {
+async function ingestSingleFile(path: string, graphId?: string): Promise<unknown> {
   const fileName = path.split('/').pop() ?? path;
   const toastId = addIngestToast(`Ingesting ${fileName}…`);
   // Escape-hatch timer: if the done event is missed (e.g. events socket
@@ -1252,12 +1252,11 @@ async function ingestSingleFile(path: string): Promise<unknown> {
     if (job) {
       ingestJobToasts.delete(job[0]);
       finishIngestToast(toastId, 'success', 'Completed — check Sources for details');
-      void pushDataIntoAtlas();
-      void refreshStats();
+      requestIngestUiRefresh(ingestJobToasts.size === 0);
     }
   }, MAX_PENDING_MS);
   try {
-    const result = (await invoke('ingest_file', { graphId: atlasActiveGraph || null, path })) as {
+    const result = (await invoke('ingest_file', { graphId: graphId ?? atlasActiveGraph ?? null, path })) as {
       accepted?: boolean;
       jobId?: string;
     };
@@ -1273,6 +1272,48 @@ async function ingestSingleFile(path: string): Promise<unknown> {
     finishIngestToast(toastId, 'error', String(e));
     throw e;
   }
+}
+
+// ── Coalesced atlas/Sources refresh during ingest ──────────────────────────
+// A large folder ingest (e.g. an Obsidian vault) fires one `ingest-done` per
+// file. Rebuilding the 3D scene + legend + Sources list on EVERY file — on top
+// of the existing 3s reconcile poll — freezes and lags the UI. Coalesce them:
+// refresh at most once per INGEST_UI_REFRESH_MS, leading-edge so the first
+// update still feels instant, with a guaranteed trailing refresh so the final
+// state always lands. The 3D push is skipped entirely when the user isn't on
+// the atlas, so background ingests cost almost nothing.
+const INGEST_UI_REFRESH_MS = 1500;
+let ingestRefreshTimer: number | null = null;
+let ingestRefreshQueued = false;
+
+async function doIngestUiRefresh(): Promise<void> {
+  // Reload the active engram so new nodes actually appear, then repaint
+  // whichever surface is in front. Mirrors the 3s reconcile poll body.
+  try {
+    if (atlasActiveGraph) {
+      await loadGraphnosisData(atlasActiveGraph);
+      applyGraphnosisFilter();
+    }
+  } catch { /* locked / sidecar busy — the 3s reconcile poll will catch up */ }
+  if (mainAtlas && graphnosisActiveTab === 'atlas') pushDataIntoAtlas();
+  void refreshStats();
+}
+
+/** Throttled atlas/Sources refresh. Pass `immediate` for the final file of a
+ *  batch so the finished state shows without waiting out the window. */
+function requestIngestUiRefresh(immediate = false): void {
+  if (immediate) {
+    if (ingestRefreshTimer != null) { clearTimeout(ingestRefreshTimer); ingestRefreshTimer = null; }
+    ingestRefreshQueued = false;
+    void doIngestUiRefresh();
+    return;
+  }
+  if (ingestRefreshTimer != null) { ingestRefreshQueued = true; return; } // within window — coalesce
+  void doIngestUiRefresh();                                               // leading edge
+  ingestRefreshTimer = window.setTimeout(() => {
+    ingestRefreshTimer = null;
+    if (ingestRefreshQueued) { ingestRefreshQueued = false; requestIngestUiRefresh(); } // trailing
+  }, INGEST_UI_REFRESH_MS);
 }
 
 // Listen for progress events — update the toast's message with live node count.
@@ -1336,10 +1377,10 @@ void listen<{ jobId: string; graphId: string; fileName: string; nodesAdded: numb
         activateMode('engram');
       }
     }
-    // Trigger the atlas/sources refresh now that the graph has new data.
-    // (Still runs even when we don't jump — keeps Check-in / Sources fresh.)
-    void pushDataIntoAtlas();
-    void refreshStats();
+    // Coalesced atlas/sources refresh now that the graph has new data. During
+    // a large folder ingest this fires per file, so throttle it — the final
+    // file of the batch (size === 0) refreshes immediately for a crisp finish.
+    requestIngestUiRefresh(ingestJobToasts.size === 0);
     // Re-fit the camera after the last job in a batch so the new nodes are
     // in view. Use a longer delay than the tab-switch fit (1.2s) — large
     // graphs take a few seconds for the force layout to stabilise.
@@ -1785,7 +1826,7 @@ function renderRailGetConnected(): void {
     return b;
   };
   const openNonDeterministic = (): void => {
-    activateMode('brainstorm');
+    activateMode('goals'); // Foresight now hosts the GNN / Local-LLM layers
   };
 
   const llmOn = brainLlmReady;
@@ -2483,9 +2524,8 @@ function shortCortexLabel(p: string): string {
 type Mode =
   | 'atlas'        // Home (the checkin dashboard sub-tab of the big pane)
   | 'engram'       // 3D Engram (the atlas sub-tab)
-  | 'goals'        // Goals & strategic thinking (the brain sub-tab)
+  | 'goals'        // Foresight — goals + predict + insights + GNN/GLL/Local-LLM (the brain sub-tab)
   | 'skills'       // Skills library/trainer (a studio tool inside checkin)
-  | 'brainstorm'   // Neural-net + local-LLM exploration (nondeterministic sub-tab)
   | 'search'       // Dedicated memory-search page (checkin sub-mode, body.search-mode)
   | 'power-tools'  // Manual recall/remember/edit/GNN page (checkin sub-mode, body.powertools-mode)
   | 'sources'
@@ -2513,8 +2553,7 @@ let currentMode: Mode = 'atlas';
 const ATLAS_SUBMODES: Record<string, { gtab: GraphnosisTab; studioTool?: StudioTool }> = {
   atlas:      { gtab: 'checkin' },                    // Home
   engram:     { gtab: 'atlas' },                      // 3D Engram
-  goals:      { gtab: 'brain' },                      // Goals + consolidation
-  brainstorm: { gtab: 'nondeterministic' },           // Neural-net / Local-LLM
+  goals:      { gtab: 'brain' },                      // Foresight (goals + predict + insights + GNN/GLL/Local-LLM, merged)
   skills:        { gtab: 'checkin', studioTool: 'skills' }, // Skills studio tool
   search:        { gtab: 'checkin' },                  // Dedicated search page (body.search-mode)
   'power-tools': { gtab: 'checkin', studioTool: 'remember' }, // MemoryStudio page — defaults to Remember (body.powertools-mode)
@@ -2558,7 +2597,7 @@ function activateMode(mode: Mode): void {
   // Mobile bottom nav visual state (no-op on desktop — buttons don't exist).
   // Marks "More" active for any overflow mode (see syncMobileNav).
   syncMobileNav(mode);
-  // Pane visibility — atlas sub-modes (engram/goals/skills/brainstorm) all
+  // Pane visibility — atlas sub-modes (engram/goals/skills) all
   // resolve to the shared data-pane="atlas".
   const pane = paneForMode(mode);
   document.querySelectorAll<HTMLElement>('.mode-pane').forEach((p) => {
@@ -4324,12 +4363,37 @@ function renderPlan(plan: RecoveryPlan): void {
   </div>`;
 
   for (const [graphId, items] of byGraph) {
-    html += `<p class="recovery-section-title"><span data-pres="engram:${escape(graphId)}">Graph: ${escape(graphId)}</span></p>`;
+    const recoverableInGraph = items.filter(
+      (it) => it.status === 'recoverable' || it.status === 'recoverable-from-cache',
+    ).length;
+    // Per-engram header: a group checkbox (select/deselect this engram's
+    // recoverable items) + an "only this" shortcut that scopes recovery to a
+    // single engram in one click. Lets the user replay just one corrupted
+    // engram instead of re-ingesting every engram's sources.
+    const groupControls = recoverableInGraph > 0
+      ? `<input type="checkbox" class="recovery-group-check" data-graph-id="${escape(graphId)}" checked aria-label="Select all recoverable in ${escape(graphId)}" />`
+      : '';
+    const onlyLink = recoverableInGraph > 0
+      ? ` · <a href="#" class="recovery-only-link" data-graph-id="${escape(graphId)}">only this</a>`
+      : '';
+    // Collapsible per-engram group, default COLLAPSED. The disclosure caret +
+    // the label toggle the body; the checkbox / "only this" link do NOT (they
+    // stopPropagation) so you can select a whole engram without expanding it.
+    // The body stays in the DOM while collapsed (hidden, not removed) so its
+    // checkboxes remain part of the selection + live count.
+    html += `<div class="recovery-group" data-graph-id="${escape(graphId)}">
+      <div class="recovery-section-title recovery-group-header" data-graph-id="${escape(graphId)}" role="button" tabindex="0" aria-expanded="false" style="display:flex;align-items:center;gap:8px;cursor:pointer;">
+        <span class="recovery-caret" aria-hidden="true" style="display:inline-block;width:1em;transition:transform .12s ease;">▶</span>
+        ${groupControls}
+        <span data-pres="engram:${escape(graphId)}">Graph: ${escape(graphId)}</span>
+        <span class="subtitle" style="font-weight:400;margin-left:auto;">${items.length} item${items.length === 1 ? '' : 's'} · ${recoverableInGraph} recoverable${onlyLink}</span>
+      </div>
+      <div class="recovery-group-body" data-graph-id="${escape(graphId)}" hidden>`;
     for (const item of items) {
       const when = new Date(item.ingestedAt).toLocaleString();
       const canCheck = item.status === 'recoverable' || item.status === 'recoverable-from-cache';
       const checkbox = canCheck
-        ? `<input type="checkbox" class="recovery-check" data-source-id="${escape(item.sourceId)}" checked />`
+        ? `<input type="checkbox" class="recovery-check" data-source-id="${escape(item.sourceId)}" data-graph-id="${escape(graphId)}" checked />`
         : `<span class="glyph">${statusGlyph(item.status)}</span>`;
       // The ref carries the source/clip content (sensitive) → tag node+engram.
       html += `<div class="recovery-item ${item.status}">
@@ -4341,6 +4405,7 @@ function renderPlan(plan: RecoveryPlan): void {
         <span class="badge">${escape(statusLabel(item.status))}</span>
       </div>`;
     }
+    html += `</div></div>`; // close .recovery-group-body + .recovery-group
   }
 
   els.recoveryBody.innerHTML = html;
@@ -4348,13 +4413,99 @@ function renderPlan(plan: RecoveryPlan): void {
 
   if (plan.recoverable > 0) {
     els.btnRecoveryApply.classList.remove('hidden');
-    els.btnRecoveryApply.disabled = false;
-    els.btnRecoveryApply.textContent = `Recover selected (${plan.recoverable})`;
+    wireRecoveryControls();
+    updateRecoveryApplyCount();
   } else {
     els.btnRecoveryApply.classList.add('hidden');
   }
 
   els.recoveryFooterNote.textContent = '';
+}
+
+/** All per-source recovery checkboxes currently in the plan body. */
+function recoveryChecks(): HTMLInputElement[] {
+  return Array.from(els.recoveryBody.querySelectorAll<HTMLInputElement>('.recovery-check'));
+}
+
+/** Reflect the live checked count on the Apply button (selection is editable
+ *  per-item and per-engram, so the static plan.recoverable count would lie). */
+function updateRecoveryApplyCount(): void {
+  const n = recoveryChecks().filter((c) => c.checked).length;
+  els.btnRecoveryApply.textContent = `Recover selected (${n})`;
+  els.btnRecoveryApply.disabled = n === 0;
+}
+
+/** Keep an engram's group checkbox in sync with its per-source checkboxes
+ *  (checked / unchecked / indeterminate). */
+function syncRecoveryGroupCheckbox(graphId: string): void {
+  const group = els.recoveryBody.querySelector<HTMLInputElement>(
+    `.recovery-group-check[data-graph-id="${CSS.escape(graphId)}"]`,
+  );
+  if (!group) return;
+  const members = recoveryChecks().filter((c) => c.dataset.graphId === graphId);
+  const checked = members.filter((c) => c.checked).length;
+  group.checked = checked === members.length && members.length > 0;
+  group.indeterminate = checked > 0 && checked < members.length;
+}
+
+/** Expand or collapse one engram group's body. */
+function toggleRecoveryGroup(graphId: string, expand?: boolean): void {
+  const header = els.recoveryBody.querySelector<HTMLElement>(
+    `.recovery-group-header[data-graph-id="${CSS.escape(graphId)}"]`,
+  );
+  const body = els.recoveryBody.querySelector<HTMLElement>(
+    `.recovery-group-body[data-graph-id="${CSS.escape(graphId)}"]`,
+  );
+  if (!header || !body) return;
+  const next = expand ?? body.hidden;
+  body.hidden = !next;
+  header.setAttribute('aria-expanded', String(next));
+  const caret = header.querySelector<HTMLElement>('.recovery-caret');
+  if (caret) caret.style.transform = next ? 'rotate(90deg)' : 'rotate(0deg)';
+}
+
+/** Wire group toggles, per-item sync, and the "only this" engram shortcut. */
+function wireRecoveryControls(): void {
+  // Collapsible headers (default collapsed). Caret + label toggle; the inner
+  // checkbox / link stop propagation so they don't also flip the disclosure.
+  els.recoveryBody.querySelectorAll<HTMLElement>('.recovery-group-header').forEach((header) => {
+    const gid = header.dataset.graphId ?? '';
+    header.addEventListener('click', () => toggleRecoveryGroup(gid));
+    header.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggleRecoveryGroup(gid); }
+    });
+  });
+  els.recoveryBody.querySelectorAll<HTMLInputElement>('.recovery-group-check').forEach((gc) => {
+    gc.addEventListener('click', (e) => e.stopPropagation());
+    gc.addEventListener('change', () => {
+      const gid = gc.dataset.graphId ?? '';
+      recoveryChecks()
+        .filter((c) => c.dataset.graphId === gid)
+        .forEach((c) => { c.checked = gc.checked; });
+      gc.indeterminate = false;
+      updateRecoveryApplyCount();
+    });
+  });
+  recoveryChecks().forEach((c) => {
+    c.addEventListener('change', () => {
+      syncRecoveryGroupCheckbox(c.dataset.graphId ?? '');
+      updateRecoveryApplyCount();
+    });
+  });
+  // "only this": scope recovery to a single engram in one click.
+  els.recoveryBody.querySelectorAll<HTMLAnchorElement>('.recovery-only-link').forEach((link) => {
+    link.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const gid = link.dataset.graphId ?? '';
+      recoveryChecks().forEach((c) => { c.checked = c.dataset.graphId === gid; });
+      els.recoveryBody.querySelectorAll<HTMLInputElement>('.recovery-group-check').forEach((gc) => {
+        gc.checked = gc.dataset.graphId === gid;
+        gc.indeterminate = false;
+      });
+      updateRecoveryApplyCount();
+    });
+  });
 }
 
 function renderReport(report: RecoveryReport): void {
@@ -5014,6 +5165,9 @@ function renderSettingsGraphsList(): void {
     btn.addEventListener('click', () => {
       const graphId = btn.dataset['sgrId'] ?? '';
       const displayName = btn.dataset['name'] ?? graphId;
+      // Skill engrams carry a leading 🛠 icon in their display name. Confirm on
+      // the plain text only — the user shouldn't have to type the icon.
+      const confirmName = displayName.replace(/^(?:[\u{1F6E0}\u{1F527}]\u{FE0F}?\s*)+/u, '').trim() || displayName;
       if (!graphId) return;
 
       // Find the parent row and inject the inline confirmation form.
@@ -5034,8 +5188,8 @@ function renderSettingsGraphsList(): void {
       confirmDiv.className = 'sgr-confirm-delete';
       confirmDiv.innerHTML = `
         ${skillWarning}
-        <span class="sgr-confirm-label">Type <strong>${escape(displayName)}</strong> to delete forever:</span>
-        <input type="text" class="sgr-confirm-input" placeholder="${escape(displayName)}" autocomplete="off" />
+        <span class="sgr-confirm-label">Type <strong>${escape(confirmName)}</strong> to delete forever:</span>
+        <input type="text" class="sgr-confirm-input" placeholder="${escape(confirmName)}" autocomplete="off" />
         <button class="sgr-confirm-go" disabled>Delete forever</button>
         <button class="sgr-confirm-cancel">Cancel</button>
       `;
@@ -5050,7 +5204,7 @@ function renderSettingsGraphsList(): void {
 
       // Enable Delete button only when typed name matches exactly.
       input.addEventListener('input', () => {
-        goBtn.disabled = input.value !== displayName;
+        goBtn.disabled = input.value.trim() !== confirmName;
       });
 
       cancelBtn.addEventListener('click', () => renderSettingsGraphsList());
@@ -5348,6 +5502,10 @@ interface QuarantineItem {
   timestamp: number;
   sizeBytes: number;
   liveEngramExists: boolean;
+  /** Node count of the live engram with this id. 0 means either no live
+   *  engram OR an empty stub left behind by quarantine — in both cases the
+   *  quarantined file is NOT yet recovered and may be the only copy. */
+  liveNodeCount?: number;
 }
 
 function formatTimestamp(ts: number): string {
@@ -5378,10 +5536,24 @@ async function renderQuarantineList(): Promise<void> {
       return;
     }
     container.innerHTML = items.map((item) => {
-      const safeToDelete = item.liveEngramExists; // engram was successfully recovered
-      const safeBadge = safeToDelete
+      // "Recovered" means a live engram with this id ACTUALLY HAS CONTENT.
+      // liveEngramExists alone is not enough: after an integrity failure the
+      // loader leaves an EMPTY stub engram with the same id, so that flag is
+      // true from the moment of corruption — before "Recover from op-log" has
+      // run. Gating on node count avoids telling the user a 23 MB file is
+      // "safe to delete" while their only copy is the quarantined one.
+      const liveNodes = item.liveNodeCount ?? 0;
+      const recovered = item.liveEngramExists && liveNodes > 0;
+      const safeToDelete = recovered;
+      const safeBadge = recovered
         ? '<span style="font-size: 10px; padding: 1px 6px; border-radius: 4px; background: color-mix(in oklab, var(--ok) 18%, transparent); color: var(--ok); font-weight: 600;">recovered ✓</span>'
-        : '<span style="font-size: 10px; padding: 1px 6px; border-radius: 4px; background: color-mix(in oklab, var(--error) 18%, transparent); color: var(--error); font-weight: 600;">not yet recovered</span>';
+        : item.liveEngramExists
+          ? '<span style="font-size: 10px; padding: 1px 6px; border-radius: 4px; background: color-mix(in oklab, var(--error) 18%, transparent); color: var(--error); font-weight: 600;">live engram is empty — not recovered</span>'
+          : '<span style="font-size: 10px; padding: 1px 6px; border-radius: 4px; background: color-mix(in oklab, var(--error) 18%, transparent); color: var(--error); font-weight: 600;">not yet recovered</span>';
+      // Restore only when NO live engram occupies the id. When an empty stub
+      // is in the way, the sidecar would refuse the rename (canonical exists)
+      // and the corrupt bytes would re-quarantine on next load anyway — the
+      // right path there is "Recover from op-log", not Restore.
       const restoreBtn = !item.liveEngramExists
         ? `<button class="btn-qrestore" data-qname="${escape(item.name)}" data-qengram="${escape(item.engramId)}" style="font-size: 15px; padding: 2px 8px;">Restore</button>`
         : '';
@@ -5390,11 +5562,15 @@ async function renderQuarantineList(): Promise<void> {
           '<div style="flex: 1; min-width: 0;">' +
             `<div style="display: flex; gap: 8px; align-items: baseline;"><strong style="font-family: ui-monospace, monospace; font-size: 14px;">${escape(item.engramId)}</strong> ${safeBadge} <span class="sgr-id">${item.kind}</span></div>` +
             `<div class="subtitle" style="font-size: 15px; margin-top: 2px;">${escape(item.name)}</div>` +
-            `<div class="subtitle" style="font-size: 15px;">Quarantined ${escape(formatTimestamp(item.timestamp))} · ${formatBytes(item.sizeBytes)}</div>` +
+            `<div class="subtitle" style="font-size: 15px;">Quarantined ${escape(formatTimestamp(item.timestamp))} · ${formatBytes(item.sizeBytes)}` +
+              (item.liveEngramExists
+                ? ` · live engram: ${recovered ? `${liveNodes.toLocaleString()} node${liveNodes === 1 ? '' : 's'}` : 'empty (0 nodes)'}`
+                : '') +
+            '</div>' +
           '</div>' +
           '<div style="display: flex; gap: 6px; flex-shrink: 0;">' +
             restoreBtn +
-            `<button class="btn-qdelete" data-qname="${escape(item.name)}" data-qengram="${escape(item.engramId)}" data-qsafe="${safeToDelete ? '1' : '0'}" style="font-size: 15px; padding: 2px 8px; color: var(--error); border-color: color-mix(in oklab, var(--error) 40%, var(--border));">Delete</button>` +
+            `<button class="btn-qdelete" data-qname="${escape(item.name)}" data-qengram="${escape(item.engramId)}" data-qsafe="${safeToDelete ? '1' : '0'}" data-qliveempty="${item.liveEngramExists && !recovered ? '1' : '0'}" style="font-size: 15px; padding: 2px 8px; color: var(--error); border-color: color-mix(in oklab, var(--error) 40%, var(--border));">Delete</button>` +
           '</div>' +
         '</div>'
       );
@@ -5406,9 +5582,12 @@ async function renderQuarantineList(): Promise<void> {
         const name = btn.dataset.qname ?? '';
         const engramId = btn.dataset.qengram ?? '';
         const safe = btn.dataset.qsafe === '1';
+        const liveButEmpty = btn.dataset.qliveempty === '1';
         const warning = safe
-          ? `The engram <strong>${escape(engramId)}</strong> has already been recovered (a live copy exists). The quarantined file <code>${escape(name)}</code> is no longer needed and can be safely deleted.`
-          : `<strong>⚠ This engram has NOT been recovered yet.</strong> The quarantined file <code>${escape(name)}</code> may be the only on-disk copy of these bytes. Deleting it now means you will lose the chance to manually recover from it later — you'll have to rely on the op-log and original sources.<br><br>We strongly recommend you run <em>Recover from op-log</em> first and verify the engram comes back, then return here to delete.`;
+          ? `The engram <strong>${escape(engramId)}</strong> has already been recovered (a live copy with content exists). The quarantined file <code>${escape(name)}</code> is no longer needed and can be safely deleted.`
+          : liveButEmpty
+            ? `<strong>⚠ Looks recovered, but it is NOT.</strong> An engram named <strong>${escape(engramId)}</strong> exists, but it is <strong>empty (0 nodes)</strong> — it's the blank stub left behind when the file was quarantined, not your recovered data. The quarantined file <code>${escape(name)}</code> is very likely the <strong>only on-disk copy</strong> of these bytes.<br><br>Run <em>Recover from op-log</em> and confirm the engram comes back with its content <strong>before</strong> deleting this.`
+            : `<strong>⚠ This engram has NOT been recovered yet.</strong> The quarantined file <code>${escape(name)}</code> may be the only on-disk copy of these bytes. Deleting it now means you will lose the chance to manually recover from it later — you'll have to rely on the op-log and original sources.<br><br>We strongly recommend you run <em>Recover from op-log</em> first and verify the engram comes back, then return here to delete.`;
         showQuarantineConfirm({
           title: `Delete ${name}?`,
           subtitle: 'Permanent — the file is unlinked from disk and cannot be undone.',
@@ -5612,8 +5791,22 @@ els.btnRecover.addEventListener('click', async () => {
     const plan = (await invoke('recovery_plan')) as RecoveryPlan;
     renderPlan(plan);
   } catch (e) {
-    els.recoveryBody.innerHTML = `<p class="error">Could not read op-log: ${escape(String(e))}</p>`;
-    els.recoverySubtitle.textContent = 'Scan failed.';
+    const raw = String(e);
+    // The op-log is encrypted with the cortex key, so only the running,
+    // unlocked sidecar can scan it. A socket-connect failure means the sidecar
+    // isn't reachable yet (still unlocking, or restarting) — not a corrupt
+    // op-log. Give the user an actionable message instead of the raw error.
+    const sidecarUnreachable = /connect to sidecar|ECONNREFUSED|ENOENT.*sock|sidecar didn'?t respond/i.test(raw);
+    if (sidecarUnreachable) {
+      els.recoveryBody.innerHTML =
+        '<p class="error">The memory engine isn’t responding yet, so the op-log couldn’t be read.</p>' +
+        '<p class="subtitle">This usually means the cortex is still finishing unlock, or the engine just restarted. ' +
+        'Wait a few seconds for unlock to complete, then try again. If it keeps failing, relaunch the app.</p>';
+      els.recoverySubtitle.textContent = 'Engine not ready — retry shortly.';
+    } else {
+      els.recoveryBody.innerHTML = `<p class="error">Could not read op-log: ${escape(raw)}</p>`;
+      els.recoverySubtitle.textContent = 'Scan failed.';
+    }
   }
 });
 
@@ -5788,7 +5981,7 @@ async function notifyRecoveryDone(recovered: number, failed: number, error?: str
 // else gets surfaced as "unsupported" before we round-trip to the sidecar
 // — saves a confusing "couldn't parse" toast later in the pipeline.
 const INGEST_SUPPORTED_EXTS = new Set([
-  '.md', '.markdown', '.txt', '.html', '.htm', '.json', '.csv', '.pdf', '.docx',
+  '.md', '.markdown', '.txt', '.html', '.htm', '.json', '.csv', '.pdf', '.docx', '.xlsx', '.pptx',
 ]);
 
 function extOf(p: string): string {
@@ -5810,19 +6003,37 @@ function partitionIngestPaths(paths: string[]): { supported: string[]; rejected:
 }
 
 /** Friendly, user-facing list of what we CAN ingest. */
-const INGEST_SUPPORTED_HUMAN = 'PDF · DOCX · Markdown · TXT · HTML · JSON · CSV';
+const INGEST_SUPPORTED_HUMAN = 'PDF · DOCX · XLSX · PPTX · Markdown · TXT · HTML · JSON · CSV';
+
+/** Expand any dropped directory into its files (recursively) so dropping a
+ *  folder ingests its contents — the same fs_list_files the +Folders button
+ *  uses. A path with a known ingest extension is taken as a file (no IPC);
+ *  anything else is probed as a folder and falls back to itself if it isn't
+ *  one (partitionIngestPaths then rejects it cleanly). */
+async function expandDroppedPaths(paths: string[]): Promise<string[]> {
+  const out: string[] = [];
+  for (const p of paths) {
+    if (INGEST_SUPPORTED_EXTS.has(extOf(p))) { out.push(p); continue; } // clearly a file
+    try {
+      const res = await invoke<{ files: string[] }>('fs_list_files', { path: p, recursive: true });
+      if (res?.files?.length) { out.push(...res.files); continue; } // it was a folder
+    } catch { /* not a directory — fall through */ }
+    out.push(p); // unknown; let partitionIngestPaths decide
+  }
+  return out;
+}
 
 // Multi-file batch ingest. Used by both the Add-file button and the
 // drag-drop handler. Runs sequentially (one IPC roundtrip per file) so
 // each file's progress toast updates in order; parallel ingest would
 // race on the graph save() chokepoint and lose the per-file feedback.
-async function ingestBatch(paths: string[]): Promise<void> {
+async function ingestBatch(paths: string[], graphId?: string): Promise<void> {
   if (paths.length === 0) return;
   showError(null);
   let succeeded = 0;
   for (const p of paths) {
     try {
-      await ingestSingleFile(p);
+      await ingestSingleFile(p, graphId);
       succeeded += 1;
     } catch {
       // Toast already shows the per-file error; continue with the rest
@@ -5908,6 +6119,44 @@ function showSnapshotOffer(opts?: SnapshotOfferOptions): Promise<boolean> {
   });
 }
 
+/** Ask which (non-archived) engram to ingest into, defaulting to the active
+ *  one. Resolves the chosen graphId, or null if the user cancels. Falls back to
+ *  the active engram if the modal markup is missing. */
+function chooseIngestEngram(count: number): Promise<string | null> {
+  return new Promise((resolve) => {
+    const modal = document.getElementById('ingest-engram-modal');
+    const sel = document.getElementById('ingest-engram-select') as HTMLSelectElement | null;
+    const sub = document.getElementById('ingest-engram-sub');
+    const go = document.getElementById('btn-ingest-engram-go') as HTMLButtonElement | null;
+    const cancel = document.getElementById('btn-ingest-engram-cancel') as HTMLButtonElement | null;
+    const engrams = loadedGraphs.filter((g) => !g.metadata.archived);
+    if (!modal || !sel || !go || !cancel || engrams.length === 0) {
+      resolve(atlasActiveGraph || engrams[0]?.graphId || null);
+      return;
+    }
+    if (sub) sub.textContent = `Choose where ${count} file${count === 1 ? '' : 's'} should be ingested.`;
+    sel.innerHTML = engrams
+      .map((g) => `<option value="${escape(g.graphId)}">${escape(g.metadata.displayName ?? g.graphId)}</option>`)
+      .join('');
+    if (atlasActiveGraph && engrams.some((g) => g.graphId === atlasActiveGraph)) sel.value = atlasActiveGraph;
+    modal.classList.remove('hidden');
+    setTimeout(() => sel.focus(), 50);
+    const cleanup = (val: string | null): void => {
+      modal.classList.add('hidden');
+      go.removeEventListener('click', onGo);
+      cancel.removeEventListener('click', onCancel);
+      modal.removeEventListener('click', onBackdrop);
+      resolve(val);
+    };
+    const onGo = (): void => cleanup(sel.value || null);
+    const onCancel = (): void => cleanup(null);
+    const onBackdrop = (e: MouseEvent): void => { if (e.target === modal) cleanup(null); };
+    go.addEventListener('click', onGo);
+    cancel.addEventListener('click', onCancel);
+    modal.addEventListener('click', onBackdrop);
+  });
+}
+
 els.btnAddFile.addEventListener('click', async () => {
   showError(null);
   try {
@@ -5936,11 +6185,12 @@ els.btnAddFile.addEventListener('click', async () => {
       }
       showError(`Skipped ${rejected.length} unsupported file${rejected.length === 1 ? '' : 's'} (${names}). Supported: ${INGEST_SUPPORTED_HUMAN}.`);
     }
-    // Offer snapshot after file selection so the user knows what they're about
-    // to ingest. Skip proceeds immediately; Snapshot & Continue waits for the
-    // snapshot to finish before handing off to ingestBatch.
+    // Ask which engram these go into (defaults to the active one), then offer a
+    // snapshot. Cancelling the engram picker aborts the whole ingest.
+    const graphId = await chooseIngestEngram(supported.length);
+    if (!graphId) return;
     await showSnapshotOffer();
-    await ingestBatch(supported);
+    await ingestBatch(supported, graphId);
   } catch (e) {
     showError(`Pick failed: ${e}`);
   }
@@ -5969,51 +6219,169 @@ els.btnAddFolder.addEventListener('click', async () => {
     if (rejected.length > 0) {
       showError(`Skipping ${rejected.length} unsupported file${rejected.length === 1 ? '' : 's'}. Ingesting ${supported.length} supported file${supported.length === 1 ? '' : 's'}.`);
     }
+    const graphId = await chooseIngestEngram(supported.length);
+    if (!graphId) return;
     const plural = supported.length === 1 ? 'file' : 'files';
     await showSnapshotOffer({
       subtitle: `Found ${supported.length} supported ${plural}. Save a snapshot before ingesting?`,
     });
-    await ingestBatch(supported);
+    await ingestBatch(supported, graphId);
   } catch (e) {
     showError(`Folder pick failed: ${e}`);
   }
 });
 
+// ── Browser / mobile (Personal-Server UI) file-drop ──────────────────────────
+// In a real Tauri webview we use native onDragDropEvent (paths). In the
+// HTTP-served UI there's no native drop + no file paths, so we read file BYTES
+// via the HTML5 DnD API and upload them through ipcCall('ingest.upload') — which
+// routes over HTTP to the sidecar. Same engram (active) + snapshot-offer flow
+// as desktop. Folders aren't traversable via plain HTML5 DnD — files only here.
+
+function dragHasFiles(e: DragEvent): boolean {
+  const dt = e.dataTransfer;
+  if (!dt) return false;
+  // Safari/WebKit doesn't always put 'Files' in `types` during dragover, so be
+  // lenient: any 'Files' type, any file item, or a non-text drag payload.
+  if (Array.from(dt.types).some((t) => t === 'Files' || t === 'application/x-moz-file')) return true;
+  if (dt.items && Array.from(dt.items).some((it) => it.kind === 'file')) return true;
+  const types = Array.from(dt.types);
+  return types.length > 0 && !types.every((t) => t.startsWith('text/') || t === 'text');
+}
+
+/** Base64-encode bytes in chunks (avoids call-stack blowups on large files). */
+function bytesToBase64(bytes: Uint8Array): string {
+  let bin = '';
+  const CHUNK = 0x8000;
+  for (let i = 0; i < bytes.length; i += CHUNK) {
+    bin += String.fromCharCode(...bytes.subarray(i, i + CHUNK));
+  }
+  return btoa(bin);
+}
+
+async function handleBrowserFileDrop(files: File[]): Promise<void> {
+  const supported = files.filter((f) => INGEST_SUPPORTED_EXTS.has(extOf(f.name)));
+  const rejected = files.filter((f) => !INGEST_SUPPORTED_EXTS.has(extOf(f.name)));
+  if (rejected.length > 0) {
+    if (supported.length === 0) {
+      showError(`Can't ingest ${rejected.map((f) => f.name).join(', ')}. Supported: ${INGEST_SUPPORTED_HUMAN}.`);
+      return;
+    }
+    showError(`Skipped ${rejected.length} unsupported file${rejected.length === 1 ? '' : 's'}. Ingesting ${supported.length} supported.`);
+  }
+  if (supported.length === 0) return;
+  const graphId = await chooseIngestEngram(supported.length);
+  if (!graphId) return;
+  await showSnapshotOffer();
+  for (const f of supported) {
+    const toastId = addIngestToast(`Ingesting ${f.name}…`);
+    try {
+      const contentBase64 = bytesToBase64(new Uint8Array(await f.arrayBuffer()));
+      const res = await ipcCall<{ accepted?: boolean; jobId?: string }>('ingest.upload', { graphId, filename: f.name, contentBase64 });
+      if (res?.jobId) ingestJobToasts.set(res.jobId, { toastId, fileName: f.name });
+      else finishIngestToast(toastId, 'success', 'Completed — check Sources for details');
+    } catch (e) {
+      finishIngestToast(toastId, 'error', String(e));
+    }
+  }
+  await refreshStats();
+}
+
+/** Wire HTML5 drag-drop for the browser/mobile UI (overlay + byte upload).
+ *  Listeners run in the CAPTURE phase so a child element that stops propagation
+ *  (e.g. the mobile "rotate" overlay) can't swallow the drop. preventDefault is
+ *  what actually lets the drop fire — gate it only on in-app skill reordering. */
+function wireHtml5FileDrop(): void {
+  let depth = 0;
+  const opts: AddEventListenerOptions = { capture: true };
+  window.addEventListener('dragover', (e) => {
+    if (isSkillCardDragging || !dragHasFiles(e)) return;
+    e.preventDefault();
+    if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy';
+    els.dropZone?.classList.add('dragging');
+  }, opts);
+  window.addEventListener('dragenter', (e) => {
+    if (isSkillCardDragging || !dragHasFiles(e)) return;
+    e.preventDefault();
+    depth += 1;
+    els.dropZone?.classList.add('dragging');
+  }, opts);
+  window.addEventListener('dragleave', (e) => {
+    if (!dragHasFiles(e)) return;
+    depth = Math.max(0, depth - 1);
+    if (depth === 0) els.dropZone?.classList.remove('dragging');
+  }, opts);
+  window.addEventListener('drop', (e) => {
+    if (isSkillCardDragging) return;
+    const files = Array.from(e.dataTransfer?.files ?? []);
+    console.info('[drag-drop] HTML5 drop:', files.map((f) => f.name));
+    e.preventDefault();
+    depth = 0;
+    els.dropZone?.classList.remove('dragging');
+    if (files.length > 0) void handleBrowserFileDrop(files);
+  }, opts);
+}
+
 // Tauri window drag-drop events. Webview is the canonical event target for
 // file drops in Tauri 2 (browser's drag/drop API gives us no real file paths).
 
 void (async () => {
-  // Native file-drop is a Tauri-only API; browser DnD gives no real paths.
-  if (!isTauriRuntime()) return;
-  const webview = getCurrentWebview();
+  // Native file-drop is a Tauri-only API. We deliberately do NOT gate on
+  // isTauriRuntime() here: that check reads window.__TAURI_INTERNALS__, which
+  // can be momentarily absent when this top-level module evaluates, and a false
+  // negative would permanently skip wiring — the v1.13.x drag-drop regression
+  // (overlay never appeared on hover). Instead just attempt it; getCurrentWebview()
+  // throws in a plain browser, which the catch below handles.
+  let webview: ReturnType<typeof getCurrentWebview> | null = null;
+  try { webview = getCurrentWebview(); } catch { webview = null; }
+  // Browser / Personal-Server UI (localhost:<port>): the injected Tauri shim
+  // provides `invoke` (so ipcCall works over HTTP) but NOT the native
+  // `onDragDropEvent`. Detect that and wire HTML5 drag-drop instead, which
+  // reads file *bytes* and uploads them (browsers don't expose file paths).
+  if (!webview || typeof (webview as { onDragDropEvent?: unknown }).onDragDropEvent !== 'function') {
+    wireHtml5FileDrop();
+    console.info('[drag-drop] HTML5 file-drop wired (browser/mobile mode) ✓');
+    return;
+  }
   await webview.onDragDropEvent((event) => {
     const payload = event.payload;
+    // Diagnostic: every native drag event type. If you drag a file over the
+    // window and see NOTHING logged here, the native event isn't reaching the
+    // webview (dragDropEnabled / capability). If you see enter/over but no blue
+    // overlay, the overlay CSS/flag is the issue.
+    console.info('[drag-drop] event:', payload.type);
     if (payload.type === 'enter' || payload.type === 'over') {
       if (!isSkillCardDragging) els.dropZone.classList.add('dragging');
     } else if (payload.type === 'leave') {
       els.dropZone.classList.remove('dragging');
     } else if (payload.type === 'drop') {
       els.dropZone.classList.remove('dragging');
-      const paths = (payload as { paths: string[] }).paths ?? [];
-      // Drop a whole folder full of files at once — iterate the batch.
-      // Each file gets its own toast; sequential ingest below.
-      if (paths.length === 0) return;
-      // Filter unsupported drops before the snapshot prompt — no point
-      // asking the user to wait for a snapshot if the file we're about
-      // to "ingest" can't be parsed. Surface what was rejected so the
-      // drop didn't silently no-op.
-      const { supported, rejected } = partitionIngestPaths(paths);
-      if (rejected.length > 0) {
-        const names = rejected.map((p) => p.split('/').pop() ?? p).join(', ');
-        if (supported.length === 0) {
-          showError(`Can't ingest ${names}. Supported: ${INGEST_SUPPORTED_HUMAN}.`);
-          return;
+      const rawPaths = (payload as { paths: string[] }).paths ?? [];
+      if (rawPaths.length === 0) return;
+      // Expand dropped folders into their files (recursively) so dropping a
+      // folder behaves like the +Folders button. Async, so run in an IIFE.
+      void (async () => {
+        const paths = await expandDroppedPaths(rawPaths);
+        // Filter unsupported before the snapshot prompt — no point asking the
+        // user to wait for a snapshot if nothing's parseable. Surface rejects.
+        const { supported, rejected } = partitionIngestPaths(paths);
+        if (rejected.length > 0) {
+          const names = rejected.map((p) => p.split('/').pop() ?? p).join(', ');
+          if (supported.length === 0) {
+            showError(`Can't ingest ${names}. Supported: ${INGEST_SUPPORTED_HUMAN}.`);
+            return;
+          }
+          showError(`Skipped ${rejected.length} unsupported file${rejected.length === 1 ? '' : 's'}. Ingesting ${supported.length} supported.`);
         }
-        showError(`Skipped ${rejected.length} unsupported file${rejected.length === 1 ? '' : 's'} (${names}). Supported: ${INGEST_SUPPORTED_HUMAN}.`);
-      }
-      void showSnapshotOffer().then(() => ingestBatch(supported));
+        if (supported.length === 0) return;
+        const graphId = await chooseIngestEngram(supported.length);
+        if (!graphId) return;
+        await showSnapshotOffer();
+        await ingestBatch(supported, graphId);
+      })();
     }
   });
+  console.info('[drag-drop] native file-drop wired ✓');
 })().catch((e) => {
   // Drag-drop wiring failure is non-fatal — the Add file button still works.
   console.warn('drag-drop wiring failed:', e);
@@ -7360,6 +7728,31 @@ async function runForesightPredict(): Promise<void> {
       (r.recommendation ? `<p class="foresight-rec">${escapeHtml(r.recommendation)}</p>` : '');
     out.innerHTML = html || '<p class="home-card-empty">No prediction returned.</p>';
   } catch { out.innerHTML = '<p class="home-card-empty">Prediction unavailable — is the Local LLM on?</p>'; }
+}
+
+/** One-time DOM merge: Foresight now hosts the old Brainstorming cards. The
+ *  Goals/Predict/AI-hint cards already live in #foresight-overview; the GNN /
+ *  Local-Layer / Insights / Local-LLM cards physically sit in the (hidden)
+ *  Brainstorming g-tab-pane. Pull them all into the grid in a consistent order,
+ *  reclass to .home-card, then drop the now-empty Brainstorming pane. The cards
+ *  keep their inner IDs, so every render fn + button listener keeps working.
+ *  Idempotent — guarded by the grid's data-built flag. */
+function buildForesightGrid(): void {
+  const grid = document.getElementById('foresight-overview');
+  if (!grid || grid.dataset['built'] === '1') return;
+  const order = ['fcard-goals', 'fcard-predict', 'fcard-insights', 'fcard-llm', 'fcard-gll', 'fcard-gnn', 'fcard-aihint'];
+  for (const id of order) {
+    const el = document.getElementById(id);
+    if (!el) continue;
+    // The AI-hint card already has its own card chrome (lb-mcp-tools-hint).
+    if (id !== 'fcard-aihint') {
+      el.classList.remove('lb-section', 'foresight-card');
+      el.classList.add('home-card');
+    }
+    grid.appendChild(el); // appendChild relocates; iterating `order` sets sequence
+  }
+  document.querySelector('section[data-gpane="nondeterministic"]')?.remove();
+  grid.dataset['built'] = '1';
 }
 
 // Home "Foresight" teaser card (the 12th card — the FUTURE dimension). Top
@@ -11149,10 +11542,15 @@ function switchGraphnosisTab(tab: GraphnosisTab): void {
     populateStudioEngramSelects();
     void refreshStudioLlmBadge();
   } else if (tab === 'brain') {
+    buildForesightGrid(); // one-time: pull the merged Brainstorming cards into the grid
     neuronField.start();
     startScanTicker();
     void renderLivingBrain();
     void refreshNeedsReviewBadge();
+    // Foresight now hosts the merged non-deterministic layers (was its own
+    // Brainstorming tab): paint the GLL Pro-gate + predicted-edge list too.
+    void refreshGnnLicenseStatus();
+    void refreshGllPredictedEdges();
     // No scan kicked off on tab-open — the brain self-scans on its own:
     // the boot-grace sweep (~60s after unlock), the background intervals,
     // and the post-ingest debounced scan, plus "Scan now" for a manual run.
@@ -11222,6 +11620,21 @@ async function mountAtlasIfNeeded(): Promise<boolean> {
   return true;
 }
 
+/** Update the node / edge / source counts shown beside the engram title. */
+function updateAtlasStats(nodeCount: number, edgeCount: number): void {
+  const el = document.getElementById('atlas-engram-stats');
+  if (!el) return;
+  // Source count comes free from the already-rendered legend source list — no
+  // extra O(N) scan (matters: this runs on every atlas render).
+  const sourceCount = document.getElementById('atlas-source-list')?.childElementCount ?? 0;
+  const parts = [
+    `${nodeCount.toLocaleString()} node${nodeCount === 1 ? '' : 's'}`,
+    `${edgeCount.toLocaleString()} edge${edgeCount === 1 ? '' : 's'}`,
+  ];
+  if (sourceCount > 0) parts.push(`${sourceCount.toLocaleString()} source${sourceCount === 1 ? '' : 's'}`);
+  el.textContent = parts.join('  ·  ');
+}
+
 function pushDataIntoAtlas(): void {
   if (!mainAtlas || !atlasActiveGraph) return;
   if (atlasGalaxyMode) return; // the galaxy owns the atlas nodes/edges
@@ -11244,6 +11657,12 @@ function pushDataIntoAtlas(): void {
     mainAtlas.setSourceVisible(ref, false);
   }
   renderAtlasLegend();
+  // Stats beside the title — node count + total edges (renderAtlasLegend ran
+  // above, so the source-list count is current).
+  updateAtlasStats(
+    graphnosisAllNodes.length,
+    edges ? edges.directed.length + edges.undirected.length : 0,
+  );
   // Fetch the GNN prediction overlay for this engram and push it as the
   // atlas's dashed prediction layer. Async + fire-and-forget — the overlay
   // is non-essential, so a slow or failed IPC never blocks the data push.
@@ -16033,13 +16452,13 @@ els.statusProcess?.addEventListener('click', () => {
   activateMode('goals');
 });
 
-// Layered intelligence pills — jump straight to the Non-Deterministic Aid
-// tab where the matching toggle (Local LLM master / GNN enable) lives.
+// Layered intelligence pills — jump straight to Foresight, which now hosts the
+// Local LLM master / GNN enable toggles.
 els.statusGllPill?.addEventListener('click', () => {
-  activateMode('brainstorm');
+  activateMode('goals');
 });
 els.statusGnnPill?.addEventListener('click', () => {
-  activateMode('brainstorm');
+  activateMode('goals');
 });
 
 // ── Clipboard ambient capture ──────────────────────────────────────────────
@@ -18091,7 +18510,7 @@ function paintGcConnectorList(configs: ConnectorConfigShape[], statuses: Connect
       const id = btn.dataset['connectorId'];
       if (!id) return;
       if (action === 'pull') void handleConnectorPull(id, btn);
-      else if (action === 'remove') void handleConnectorRemove(id);
+      else if (action === 'remove') void handleConnectorRemove(id, btn);
       else if (action === 'edit') void handleConnectorEdit(id, configs);
     });
   });
@@ -18132,7 +18551,7 @@ async function refreshConnectorsList(): Promise<void> {
             const id = btn.dataset['connectorId'];
             if (!id) return;
             if (action === 'pull') void handleConnectorPull(id, btn);
-            else if (action === 'remove') void handleConnectorRemove(id);
+            else if (action === 'remove') void handleConnectorRemove(id, btn);
             else if (action === 'edit') void handleConnectorEdit(id, res.configs);
           });
         });
@@ -18246,8 +18665,29 @@ async function handleConnectorPull(id: string, btn: HTMLButtonElement): Promise<
   }
 }
 
-async function handleConnectorRemove(id: string): Promise<void> {
-  if (!confirm(`Remove connector "${id}"? Its credentials will be deleted and it'll stop pulling. Already-ingested events stay in your engram.`)) return;
+async function handleConnectorRemove(id: string, btn?: HTMLButtonElement): Promise<void> {
+  // Two-click inline confirm (no typing). First click arms the button ("Confirm
+  // remove?"); a second click within 4s removes. Auto-resets so a stray first
+  // click can't leave it armed forever.
+  if (btn) {
+    if (btn.dataset['armed'] !== '1') {
+      btn.dataset['armed'] = '1';
+      btn.dataset['orig'] = btn.textContent ?? 'Remove';
+      btn.textContent = 'Confirm remove?';
+      btn.classList.add('confirm-armed');
+      const reset = (): void => {
+        if (!btn.isConnected) return;
+        btn.dataset['armed'] = '';
+        btn.textContent = btn.dataset['orig'] ?? 'Remove';
+        btn.classList.remove('confirm-armed');
+      };
+      btn.dataset['resetTimer'] = String(window.setTimeout(reset, 4000));
+      return;
+    }
+    clearTimeout(Number(btn.dataset['resetTimer']));
+    btn.disabled = true;
+    btn.textContent = 'Removing…';
+  }
   try {
     await invoke('remove_connector', { id });
     await refreshConnectorsList();
@@ -19161,7 +19601,7 @@ document.getElementById('g-search-rerank')?.addEventListener('change', () => {
   }
 });
 document.getElementById('g-search-llm-btn')?.addEventListener('click', () => {
-  activateMode('brainstorm');
+  activateMode('goals');
 });
 
 // Permanent delegation listener for citation clicks — attached once to the
@@ -20378,8 +20818,11 @@ function refreshLicenseLauncherStatus(): void {
     } else if (!status.valid) {
       text = 'Stored token is invalid or expired — click to refresh';
     } else {
-      const expires = status.expiresAt ? new Date(status.expiresAt).toLocaleDateString() : '—';
-      text = `${status.plan ?? 'Pro'} active · expires ${expires}`;
+      const when = status.expiresAt ? new Date(status.expiresAt).toLocaleDateString() : '—';
+      // "renews" while the subscription auto-renews; "expires" once it's set to
+      // cancel at period end (renews === false). Mirrors refreshSettingsLicenseStatus.
+      const renewing = status.renews !== false;
+      text = `${status.plan ?? 'Pro'} active · ${renewing ? 'renews' : 'expires'} ${when}`;
     }
     for (const el of targets) el.textContent = text;
   })();
