@@ -14,18 +14,18 @@
     "dev:sidecar": "pnpm --filter @graphnosis-app/desktop-sidecar dev",
     "dev:desktop": "pnpm --filter @graphnosis-app/desktop tauri:dev",
     "typecheck": "pnpm -r typecheck",
-    "test:all":          "pnpm --filter @graphnosis-app/desktop-sidecar build && tsx tests/run-all.ts",
-    "test:recall":       "pnpm --filter @graphnosis-app/desktop-sidecar build && tsx tests/recall.test.ts",
-    "test:variants":     "pnpm --filter @graphnosis-app/desktop-sidecar build && tsx tests/recall-variants.test.ts",
-    "test:sources":      "pnpm --filter @graphnosis-app/desktop-sidecar build && tsx tests/sources.test.ts",
-    "test:metadata":     "pnpm --filter @graphnosis-app/desktop-sidecar build && tsx tests/metadata.test.ts",
-    "test:duplicates":   "pnpm --filter @graphnosis-app/desktop-sidecar build && tsx tests/duplicates.test.ts",
-    "test:mutations":    "pnpm --filter @graphnosis-app/desktop-sidecar build && tsx tests/mutations.test.ts",
-    "test:persistence":  "pnpm --filter @graphnosis-app/desktop-sidecar build && tsx tests/persistence.test.ts",
-    "test:concurrency":  "pnpm --filter @graphnosis-app/desktop-sidecar build && tsx tests/concurrency.test.ts",
-    "test:settings":     "pnpm --filter @graphnosis-app/desktop-sidecar build && tsx tests/settings-matrix.test.ts",
-    "test:edge":         "pnpm --filter @graphnosis-app/desktop-sidecar build && tsx tests/edge-cases.test.ts",
-    "test:llm":          "GRAPHNOSIS_OLLAMA=1 pnpm --filter @graphnosis-app/desktop-sidecar build && tsx tests/llm.test.ts"
+    "test:all": "pnpm --filter @graphnosis-app/desktop-sidecar build && tsx tests/run-all.ts",
+    "test:recall": "pnpm --filter @graphnosis-app/desktop-sidecar build && tsx tests/recall.test.ts",
+    "test:variants": "pnpm --filter @graphnosis-app/desktop-sidecar build && tsx tests/recall-variants.test.ts",
+    "test:sources": "pnpm --filter @graphnosis-app/desktop-sidecar build && tsx tests/sources.test.ts",
+    "test:metadata": "pnpm --filter @graphnosis-app/desktop-sidecar build && tsx tests/metadata.test.ts",
+    "test:duplicates": "pnpm --filter @graphnosis-app/desktop-sidecar build && tsx tests/duplicates.test.ts",
+    "test:mutations": "pnpm --filter @graphnosis-app/desktop-sidecar build && tsx tests/mutations.test.ts",
+    "test:persistence": "pnpm --filter @graphnosis-app/desktop-sidecar build && tsx tests/persistence.test.ts",
+    "test:concurrency": "pnpm --filter @graphnosis-app/desktop-sidecar build && tsx tests/concurrency.test.ts",
+    "test:settings": "pnpm --filter @graphnosis-app/desktop-sidecar build && tsx tests/settings-matrix.test.ts",
+    "test:edge": "pnpm --filter @graphnosis-app/desktop-sidecar build && tsx tests/edge-cases.test.ts",
+    "test:llm": "GRAPHNOSIS_OLLAMA=1 pnpm --filter @graphnosis-app/desktop-sidecar build && tsx tests/llm.test.ts"
   },
   "pnpm": {
     "onlyBuiltDependencies": [
@@ -50,7 +50,8 @@
       }
     },
     "patchedDependencies": {
-      "libsodium-wrappers-sumo": "patches/libsodium-wrappers-sumo.patch"
+      "libsodium-wrappers-sumo": "patches/libsodium-wrappers-sumo.patch",
+      "@nehloo/graphnosis@0.5.6": "patches/@nehloo__graphnosis@0.5.6.patch"
     }
   },
   "devDependencies": {
