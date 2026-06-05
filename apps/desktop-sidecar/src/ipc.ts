@@ -1,6 +1,7 @@
 import net from 'node:net';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
+import { markClientActivity, BACKGROUND_POLL_METHODS } from './client-activity.js';
 import { randomUUID } from 'node:crypto';
 import os from 'node:os';
 import { z } from 'zod';
@@ -372,6 +373,10 @@ function startBackgroundIngest(
 }
 
 export async function dispatch(deps: IpcDeps, method: string, params: unknown): Promise<unknown> {
+  // Mark client activity so heavy background brain passes defer to keep the UI
+  // responsive — but NOT for the app's recurring reconciliation polls, or
+  // background work would never get to run.
+  if (!BACKGROUND_POLL_METHODS.has(method)) markClientActivity();
   switch (method) {
     // ── Consent prompt resolution (in-app modal flow) ──────────────────
     case 'consent.resolvePrompt': {
@@ -949,7 +954,17 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
           if (p) resolved.target = p;
           // Resolve the node's allowlist sourceId so the Activity row can be
           // redacted per-source in Presentation Mode (precise, not fail-safe).
-          targetSourceId = deps.host.getNodeSource(ev.graphId, ev.target.id);
+          // GUARD: the op-log spans EVERY engram that ever existed — including
+          // deleted/archived/not-yet-loaded ones (gbrain-notes-*). getNodeSource
+          // does a hard must() that throws "Graph not loaded" for those, and a
+          // single throw here aborts the whole .map → activity.list fails → the
+          // Activity page times out. Only resolve for loaded graphs; swallow the
+          // rest (the row keeps its raw id, which is fine — fail-safe).
+          if (loadedSet.has(ev.graphId)) {
+            try {
+              targetSourceId = deps.host.getNodeSource(ev.graphId, ev.target.id);
+            } catch { /* soft-deleted node or unreadable graph — leave id */ }
+          }
         }
         if (ev.op === 'addEdge' || ev.op === 'deleteEdge') {
           const from = clipPrev(m.get(after['fromNodeId'] as string));

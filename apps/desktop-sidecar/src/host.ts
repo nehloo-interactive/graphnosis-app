@@ -1893,20 +1893,76 @@ export class GraphnosisHost {
     }
   }
 
-  /** Per-graph save serialization. writeFileAtomicWithBackup renames the
-   *  canonical .gai aside to .lkg then back, and verify-after-write re-reads
-   *  it; a concurrent save on the SAME graph could otherwise move the file out
-   *  from under the verify (spurious ENOENT -> false rollback that discards a
-   *  good write — observed during burst connector ingest). A promise chain per
-   *  graphId guarantees exactly one save runs at a time. */
-  private saveChain: Map<GraphId, Promise<void>> = new Map();
+  /** Per-graph save coalescing + a global concurrency cap.
+   *
+   *  PER-GRAPH (correctness + coalesce): at most ONE save runs and ONE save is
+   *  queued behind it per graphId. Extra save() calls that arrive while a save
+   *  is already queued collapse onto that queued one — saveInner re-reads the
+   *  live handle at toBuffer time, so a single trailing save captures every
+   *  intervening mutation. A burst that dirties one engram 100× in 2s thus
+   *  performs 2 saves, not 100. (The per-graph serialization is also required
+   *  for correctness: writeFileAtomicWithBackup renames the .gai aside to .lkg
+   *  and back, and a concurrent same-graph save could move the file out from
+   *  under verify-after-write — a spurious ENOENT -> false rollback that
+   *  discards a good write, observed during burst connector ingest.)
+   *
+   *  GLOBAL (memory): saveInner holds, live at once, the full toBuffer Buffer
+   *  + the full ciphertext + the write copy — 2-3× the engram size in off-heap
+   *  Buffers. Without a global cap, a brain pass or multi-engram ingest that
+   *  dirties N large engrams runs N saves concurrently → an N× `external`
+   *  spike (observed: 11 GB on a 17-engram cortex) that swaps the machine and
+   *  drives the lag + fans. A small semaphore bounds peak at ~one engram. The
+   *  work is CPU-bound on a single-threaded loop anyway, so capping concurrency
+   *  costs almost no wall-clock. */
+  private saveRunning: Map<GraphId, Promise<void>> = new Map();
+  private savePending: Map<GraphId, Promise<void>> = new Map();
+  private saveSlots = GLOBAL_SAVE_CONCURRENCY;
+  private saveSlotQueue: Array<() => void> = [];
+
+  private acquireSaveSlot(): Promise<void> {
+    if (this.saveSlots > 0) { this.saveSlots--; return Promise.resolve(); }
+    return new Promise<void>((resolve) => this.saveSlotQueue.push(resolve));
+  }
+  private releaseSaveSlot(): void {
+    const next = this.saveSlotQueue.shift();
+    if (next) next();          // hand the held slot straight to the next waiter
+    else this.saveSlots++;     // no waiter — return the slot to the pool
+  }
+
+  /** Run one saveInner under the global concurrency cap. */
+  private async runSaveCapped(graphId: GraphId): Promise<void> {
+    await this.acquireSaveSlot();
+    try { await this.saveInner(graphId); }
+    finally { this.releaseSaveSlot(); }
+  }
+
+  /** Start a save and track it as the in-flight save for this graph, clearing
+   *  the tracker on completion (only if we're still the current one). */
+  private startSave(graphId: GraphId): Promise<void> {
+    const run = this.runSaveCapped(graphId);
+    const tracked: Promise<void> = run.finally(() => {
+      if (this.saveRunning.get(graphId) === tracked) this.saveRunning.delete(graphId);
+    });
+    this.saveRunning.set(graphId, tracked);
+    return run;
+  }
 
   async save(graphId: GraphId): Promise<void> {
-    const prev = this.saveChain.get(graphId) ?? Promise.resolve();
-    const run = prev.catch(() => { /* a prior save's failure must not block the next */ })
-      .then(() => this.saveInner(graphId));
-    this.saveChain.set(graphId, run.then(() => {}, () => {}));
-    return run;
+    const running = this.saveRunning.get(graphId);
+    // Nothing in flight for this graph — start immediately.
+    if (!running) return this.startSave(graphId);
+    // A save is in flight. Coalesce onto a single trailing save: if one is
+    // already queued, every further caller shares it (one trailing save
+    // captures all mutations). Otherwise schedule the trailing save now.
+    const pending = this.savePending.get(graphId);
+    if (pending) return pending;
+    const trailing = running.catch(() => { /* prior failure must not block the next */ })
+      .then(() => {
+        this.savePending.delete(graphId);
+        return this.startSave(graphId);
+      });
+    this.savePending.set(graphId, trailing);
+    return trailing;
   }
 
   private async saveInner(graphId: GraphId): Promise<void> {
@@ -1930,7 +1986,9 @@ export class GraphnosisHost {
     // just committed while the good in-memory graph is still here. If the file
     // doesn't load back, roll the canonical file to last-known-good, log it,
     // and fail loudly — instead of letting corruption surface at the next boot.
-    const verify = await this.verifyGraphFileReadable(graphId, ct.length);
+    const verify = VERIFY_AFTER_WRITE_ENABLED
+      ? await this.verifyGraphFileReadable(graphId, ct.length)
+      : null;
     if (verify) {
       await this.appendRecoveryLog({
         event: 'verify_after_write_failed', graphId, kind: verify.kind, bytes: ct.length, error: verify.message,
@@ -5822,12 +5880,28 @@ async function writeFileAtomic(target: string, data: Buffer): Promise<void> {
  *  transient purge artifact) so the two never collide. */
 const LKG_SUFFIX = '.lkg';
 
+/** Global cap on concurrent saveInner bodies across ALL graphs. Each save
+ *  holds 2-3× its engram size in off-heap Buffers (toBuffer + ciphertext +
+ *  write copy) live at once; an uncapped burst that dirties N large engrams
+ *  ran N saves concurrently → an N× `external` spike (11 GB observed on a
+ *  17-engram cortex) that swapped the machine. 2 keeps a little overlap (one
+ *  save can encrypt while another serializes) without the N× blowup; the work
+ *  is CPU-bound on a single-threaded loop, so a low cap costs little time. */
+const GLOBAL_SAVE_CONCURRENCY = 2;
+
 /** Verify-after-write re-reads + reparses the just-written .gai. That costs a
  *  full parse, so we only do it for engrams big enough to matter — small ones
  *  parse instantly and have never hit a size-dependent serialization failure.
  *  8 MB sits comfortably below the ~17 MB checksum-threshold that bit large
  *  engrams, so anything approaching the danger zone is covered. */
 const VERIFY_AFTER_WRITE_MIN_BYTES = 8 * 1024 * 1024;
+
+/** DISABLED pending the sidecar memory-leak investigation. verify-after-write
+ *  spins up a THROWAWAY full Graphnosis instance per large-engram save (a
+ *  24 MB+ parse) via loadFromBuffer — a leading suspect for runaway RSS. The
+ *  .lkg load-time fallback + the SDK checksum fix already protect against
+ *  corruption, so this is redundant. Flip back on once the leak is ruled out. */
+const VERIFY_AFTER_WRITE_ENABLED = false;
 
 /** Per-graph throttle for verify-after-write. A burst ingest (docs ingest,
  *  connectors, op-log recovery) can fire hundreds of save()s on one engram in

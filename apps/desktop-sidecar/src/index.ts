@@ -96,4 +96,19 @@ if (role === 'embed') {
 } else {
   // Full sidecar. main.ts boots cortex lock, IPC, events, MCP, host.
   await import('./main.js');
+  // ── Memory watchdog (diagnostic — DISABLED, kept for future use) ─────────
+  // Logs RSS + heap + off-heap (Buffers / typed arrays like embeddings) every
+  // 30s so we can see WHAT grows when the sidecar's RSS balloons on a large
+  // cortex. `heapUsed` climbing → JS objects; `external`/`arrayBuffers`
+  // climbing → Buffers/embeddings. This is how we diagnosed the v1.13.3
+  // save-churn + duplicate-scan memory pressure. Uncomment to re-arm it next
+  // time the sidecar's footprint needs investigating.
+  // const mb = (b: number): number => Math.round(b / 1048576);
+  // setInterval(() => {
+  //   const m = process.memoryUsage();
+  //   console.error(
+  //     `[mem] rss=${mb(m.rss)}MB heapUsed=${mb(m.heapUsed)}/${mb(m.heapTotal)}MB ` +
+  //     `external=${mb(m.external)}MB arrayBuffers=${mb(m.arrayBuffers)}MB`,
+  //   );
+  // }, 30_000).unref();
 }
