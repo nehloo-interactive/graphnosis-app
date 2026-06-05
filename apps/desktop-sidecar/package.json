@@ -1,6 +1,6 @@
 {
   "name": "@graphnosis-app/desktop-sidecar",
-  "version": "1.13.1",
+  "version": "1.13.3",
   "private": true,
   "type": "module",
   "author": "Nehloo Interactive LLC",
