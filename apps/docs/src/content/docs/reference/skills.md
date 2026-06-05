@@ -78,9 +78,42 @@ evidence = 'skill:calls'                                 # bare reference
 evidence = 'skill:calls;capture=envOk'                   # captures return
 evidence = 'skill:calls;args=branch,depth;capture=envOk' # full form
 evidence = 'skill:calls;onFailure=true'                  # call lives in an On failure: block
+evidence = 'skill:calls;parallel=true'                   # member of an @parallel group
 ```
 
-**Same-engram only for v1.** All `@skill:` targets must live in the same Skills engram as the caller. Cross-engram orchestration is a known limitation tracked for a future release.
+### Concurrent sub-skills — `@parallel`
+
+A step can dispatch several sub-skills at once and capture each return positionally:
+
+```
+@parallel: [validate-env, smoke-tests(branch=$b)] -> [$envOk, $smoke]
+```
+
+Each member becomes its own `skill:calls` edge tagged `parallel=true`; `walk_skill_structured` surfaces them as a `parallel[]` array on the step, and `walk_skill` prints `→ INVOKES IN PARALLEL: A | B`. The executor runs the members concurrently and stores each return under its positional variable.
+
+### Loop convergence caps — `@loop: N max=M`
+
+A loop can carry a convergence guard — loop back to step *N*, **at most *M* times**:
+
+```
+@loop: 2 max=5
+```
+
+This encodes as `skill:loop;max=M` and surfaces as `maxIterations` per step (and `(max N iterations)` in the narrative walk), so an executor can stop a non-progressing loop instead of spinning. Uncapped loops behave exactly as before.
+
+### Typed inputs in `Requires:`
+
+`Requires:` accepts inline `:type` hints so an executor can validate values before invoking:
+
+```
+Requires: $branch:string, $policy:{phased|atomic}, $count:number
+```
+
+`walk_skill_structured` exposes these as `requiresTypes: {name: type}`. The legacy untyped, space-separated form still works.
+
+### Cross-engram calls
+
+A `@skill:` (or `@parallel:`) target can now live in **another Skills engram**. Because the SDK's edge model is strictly intra-graph, cross-engram resolutions are persisted in an encrypted side-table next to the cortex and merged into the walk — surfaced with a `targetGraphId` on the call. Same-engram targets are unchanged; you don't have to do anything to opt in.
 
 ## Training paths — Free vs Pro
 
@@ -124,12 +157,12 @@ The macOS and Windows desktop apps both register `.gsk` as a known file type —
 
 ## What an AI sees
 
-The MCP surface for Skills is ten tools. The two most important are:
+The MCP surface for Skills is twelve tools. The two most important are:
 
 - **`walk_skill`** — narrative SOP text for human-facing guidance (chat with the user about the procedure).
 - **`walk_skill_structured`** — JSON `SkillExecutionPlan` for the AI to actually execute the skill — `requires`, `produces`, ordered `steps` with `calls` metadata, and `failureHandlers`.
 
-The remaining eight cover the lifecycle: `get_skill`, `list_skills`, `train_skill`, `export_skill`, `delete_skill`, `skill_history`, `rollback_skill`, `skill_vitality`. See [MCP Tools — Skills (SOPs)](/reference/mcp-tools/#skills-sops) for parameters and examples.
+The remaining ten cover the lifecycle and multi-session runs: `get_skill`, `list_skills`, `train_skill`, `export_skill`, `delete_skill`, `skill_history`, `rollback_skill`, `skill_vitality`, plus `save_skill_run` / `resume_skill_run` (persist a multi-skill run's captured variables and progress, then resume it in a later session). See [MCP Tools — Skills (SOPs)](/reference/mcp-tools/#skills-sops) for parameters and examples.
 
 ## Failure-mode taxonomy
 
@@ -141,14 +174,14 @@ Every failure surfaces in the structured output as an annotation. The AI executo
 | Step exceeds scope | `constraints.outOfScope` matches user request | Refuse and explain. |
 | Sub-skill not found | `steps[i].calls.unresolvedCall: 'name'` | Surface to user; do not auto-create. |
 | Sub-skill execution fails | Caller's `failureHandlers[]` is non-empty | Invoke handler, pass captured failure. |
-| Loop won't converge | (Out of scope for v1) | Executor implements its own max-iteration guard. |
+| Loop won't converge | `steps[i].maxIterations` (from `@loop: N max=M`) | Stop after the declared cap; uncapped loops still need the executor's own guard. |
 | Branch condition ambiguous | `steps[i].branchesTo` has multiple targets | Ask user which branch. |
 
 ---
 
 ## Related
 
-[MCP Tools — Skills (SOPs)](/reference/mcp-tools/#skills-sops) — parameters and examples for all ten Skills tools.
+[MCP Tools — Skills (SOPs)](/reference/mcp-tools/#skills-sops) — parameters and examples for all twelve Skills tools.
 
 [File Formats — `.gsk`](/reference/file-formats/#gsk--graphnosis-skill-kit) — the signed wire format for exported skills.
 

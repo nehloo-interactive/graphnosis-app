@@ -5,11 +5,11 @@ sidebar:
   order: 1
 ---
 
-The Graphnosis sidecar exposes **45 tools** via the Model Context Protocol, organized into ten functional categories. Every connected MCP client — Claude Desktop, Claude Code, Cursor, and anything else that speaks MCP — sees the same 45. What a tool can actually reach is still governed by each engram's sensitivity tier and the [consent gate](/guides/ai-access-controls/#2-the-consent-gate) — by default a one-click in-app prompt for `sensitive`-tier recalls, silent for `personal` and `public`.
+The Graphnosis sidecar exposes **47 tools** via the Model Context Protocol, organized into ten functional categories. Every connected MCP client — Claude Desktop, Claude Code, Cursor, and anything else that speaks MCP — sees the same 47. What a tool can actually reach is still governed by each engram's sensitivity tier and the [consent gate](/guides/ai-access-controls/#2-the-consent-gate) — by default a one-click in-app prompt for `sensitive`-tier recalls, silent for `personal` and `public`.
 
 You can browse the full toolset inside the app too: open the **MCP Tools** button in the left sidebar (next to Settings). Each tool name opens a short explainer with example prompts you can paste straight into your AI client.
 
-## At a glance — the 45 tools
+## At a glance — the 47 tools
 
 | Category | Tools |
 |---|---|
@@ -19,11 +19,10 @@ You can browse the full toolset inside the app too: open the **MCP Tools** butto
 | **Source operations** (3) | [`find_source`](#find_source) · [`recall_source`](#recall_source) · [`transfer_source`](#transfer_source) |
 | **Engram operations** (2) | [`ingest_batch`](#ingest_batch) · [`engram_summary`](#engram_summary) |
 | **Brain maintenance** (4) | [`duplicate_pairs`](#duplicate_pairs) · [`healing_journal`](#healing_journal) · [`gnn_status`](#gnn_status) · [`confirm_data_access`](#confirm_data_access) |
-| **Skills (SOPs)** (10) | [`walk_skill`](#walk_skill) · [`walk_skill_structured`](#walk_skill_structured) · [`get_skill`](#get_skill) · [`list_skills`](#list_skills) · [`train_skill`](#train_skill) · [`export_skill`](#export_skill) · [`delete_skill`](#delete_skill) · [`skill_history`](#skill_history) · [`rollback_skill`](#rollback_skill) · [`skill_vitality`](#skill_vitality) |
+| **Skills (SOPs)** (12) | [`walk_skill`](#walk_skill) · [`walk_skill_structured`](#walk_skill_structured) · [`get_skill`](#get_skill) · [`list_skills`](#list_skills) · [`train_skill`](#train_skill) · [`export_skill`](#export_skill) · [`delete_skill`](#delete_skill) · [`skill_history`](#skill_history) · [`rollback_skill`](#rollback_skill) · [`skill_vitality`](#skill_vitality) · [`save_skill_run`](#save_skill_run) · [`resume_skill_run`](#resume_skill_run) |
 | **Approximate** (2) | [`audit_memory`](#audit_memory) · [`check_duplicate`](#check_duplicate) |
 | **Conditional** (1) | [`edit`](#edit) |
 | **Non-deterministic** (6) | [`develop`](#develop) · [`predict`](#predict) · [`insights`](#insights) · [`gnn_neighbors`](#gnn_neighbors) · [`llm_query`](#llm_query) · [`llm_distill`](#llm_distill) |
-| **Skills (SOPs)** (10) | [`list_skills`](#list_skills) · [`get_skill`](#get_skill) · [`walk_skill`](#walk_skill) · [`walk_skill_structured`](#walk_skill_structured) · [`train_skill`](#train_skill) · [`skill_vitality`](#skill_vitality) · [`skill_history`](#skill_history) · [`rollback_skill`](#rollback_skill) · [`delete_skill`](#delete_skill) · [`export_skill`](#export_skill) |
 
 ## How results are returned
 
@@ -816,11 +815,11 @@ This tool exists for environments without a GUI (sidecar running over SSH, in a 
 
 ## Skills (SOPs)
 
-Skills are the procedural memory layer of Graphnosis — Standard Operating Procedures wired into the cortex as graphs of steps, with goals, loops, branches, supporting context, and cross-skill orchestration. All ten tools below operate on the **Skills engram** that ships with every cortex.
+Skills are the procedural memory layer of Graphnosis — Standard Operating Procedures wired into the cortex as graphs of steps, with goals, loops, branches, supporting context, and cross-skill orchestration. All twelve tools below operate on the **Skills engram** that ships with every cortex.
 
 The procedural model in one paragraph: each skill is a sequence of body steps stored in source order; five evidence-tagged edge types connect them — `skill:seq` for the linear chain, `skill:loop` for "go back to step N", `skill:branch` for conditional forks, `skill:ctx` for recalled memories anchored to a specific step, and `skill:calls` for `@skill: target(args) -> $capture` cross-skill invocations. Eight goal categories live inside each skill (Success, Out of scope, On completion, Trigger, Prerequisites, On failure, Requires, Produces). See [Skills as SOPs](/reference/skills/) for the full model.
 
-All ten Skills tools are deterministic reads/writes against the same engram. The `train_skill` tool is the only one with a Pro path: by default it uses memory-augmented training (deterministic — recall is appended to the body with `_(from source)_` attribution); with the Pro license + Local LLM, the body is LLM-rewritten while keeping the same attribution markers.
+All twelve Skills tools are deterministic reads/writes against the same engram. The `train_skill` tool is the only one with a Pro path: by default it uses memory-augmented training (deterministic — recall is appended to the body with `_(from source)_` attribution); with the Pro license + Local LLM, the body is LLM-rewritten while keeping the same attribution markers.
 
 ### `walk_skill`
 
@@ -907,6 +906,22 @@ Reverts a skill to a prior snapshot. Writes a new snapshot of the rollback itsel
 - **Parameters:** `sourceId` (required).
 - **Returns:** JSON `{ overall, components: { staleness, anchorCoverage, goalCompleteness, structureResolution }, lastTrainedAt }`.
 - **Try saying:** *"How healthy is my Code review skill?"*
+
+### `save_skill_run`
+
+Persists a multi-skill orchestration's captured variables (`@skill: x -> $var`) and progress to an encrypted per-run file, so a run can be paused and resumed in a later session. Call it as you walk the steps.
+
+- **Parameters:** `capturedVars` (object) · `completedStepIndex` (number) · `skillRef` (the skill being run) · `runId` (optional — omit to start a new run, pass it back to update an existing one).
+- **Returns:** The `runId` (newly minted, or the one you passed).
+- **Try saying:** *"Save my progress on the Safe Deploy run so I can pick it up tomorrow."*
+
+### `resume_skill_run`
+
+Reloads a saved run by `runId`: its captured variables, last completed step, and the `nextStepIndex` to continue at. Pair with `walk_skill_structured` to keep going.
+
+- **Parameters:** `runId` (required).
+- **Returns:** JSON `{ capturedVars, completedStepIndex, nextStepIndex, skillRef, createdAt, updatedAt }`.
+- **Try saying:** *"Resume the Safe Deploy run I started yesterday."*
 
 ---
 
@@ -1086,7 +1101,7 @@ Exports a trained skill into a target AI tool's format. Six formats supported:
 
 ## Related
 
-[Skills as SOPs](/reference/skills/) — the procedural model behind the ten Skills tools.
+[Skills as SOPs](/reference/skills/) — the procedural model behind the twelve Skills tools.
 
 [Federated Multi-Graphs](/reference/federated-multi-graphs/) — what `recall` and `dig_deeper` actually walk.
 

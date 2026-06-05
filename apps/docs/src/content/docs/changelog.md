@@ -11,11 +11,50 @@ Conventions: **Added** = new features, **Changed** = behavior or UX shifts, **Fi
 
 ---
 
+## v1.13.1 — Presentation Mode, per-source redaction, and billing hardening
+
+<p style="margin-top:0.5rem;font-size:1.25em;opacity:0.85;">2026-06-04</p>
+
+Patch release on top of v1.13.0. The headline is **Presentation Mode** — a demo-safe redaction layer so you can show Graphnosis (talks, screenshots, screen-shares) without exposing real memories. Plus a round of billing hardening and reliability fixes.
+
+### Added
+
+- **Presentation Mode.** A new rail destination where you pre-select exactly what to reveal — per engram, source, skill, or goal, plus fixed surface toggles. On **Start**, everything else is redacted **in place** as solid ████ blocks with the layout preserved (not hidden, not blurred). **Default-deny**: anything you didn't explicitly reveal stays masked, so a missed tag fails safe. It covers the Inspector, the 3D atlas (masked at the data layer, not just visually), MemoryStudio (raw context filtered per engram; LLM synthesis is all-or-nothing), Activity, Cortex Management, Settings (consent phrases, license email/expiry), the lock screen, and more. Your selection persists, but "active" never does — the app always boots **un-masked**, so you can't get stuck; exit via the banner or **Esc** with a confirm step.
+- **Per-source redaction.** Presentation Mode can reveal or mask individual sources within an engram: revealing an engram shows all its sources unless you've checked specific ones, in which case only those reveal. Precise across Search, the Inspector, Activity, MemoryStudio, and the 3D atlas.
+- **Activity "who made it" filter.** The Activity page now filters by actor — Claude Code, the Autonomous brain, You, the App, or System — via a dropdown and per-row badges.
+- **Manage your subscription via Stripe's portal.** **Manage subscription** opens Stripe's hosted billing portal (update card, cancel, view invoices) — Graphnosis keeps no billing account of its own.
+- **"Renews" vs "Expires" on your license.** The license panel shows *Renews \<date\>* for an active subscription and *Expires \<date\>* once you've cancelled.
+- **Goal delete.** Goal cards get a confirm-gated delete button.
+
+### Changed
+
+- **License refresh moved to the sidecar.** The browser can't poll the billing endpoint (CORS), so license refresh now runs in the sidecar, carrying a per-subscription secret from your claim link.
+- **Search results scroll back to the top on each new search**, selecting an engram switches to the 3D view only when it makes sense, and Search / Sources / Activity now default to **All Engrams**.
+- **Presentation Mode clause added to the [Terms of Use](/legal/terms-of-use/)**, and the [Network activity](/guides/network-activity/) guide now discloses the Pro-licensing and billing network paths.
+
+### Fixed
+
+- **The UI no longer freezes during a bulk or connector ingest.** Ingesting a folder of many small files could lock the window mid-ingest; the sidecar now yields to the UI every few files so it stays clickable throughout.
+- **Search no longer crashes on special characters.** Queries containing `(`, `*`, or other regex metacharacters are now sanitized instead of throwing.
+- **Skill engram double-wrench icon, lock-screen white flash on launch, and window-resize-on-launch** are fixed; the window now reliably reveals (4-second fallback) and the app restarts itself cleanly after an update.
+- **Quieter terminal/log output during ingest** — the benign-noise filter now also covers stderr chatter while still surfacing real errors and warnings.
+
+### Security
+
+- **Entitlement-theft fix on the license endpoint.** The license-token poll was keyed on email alone, so anyone who knew (or guessed) a subscriber's email could pull their replayable license token — and confirm the email was a paying customer. The endpoint now requires a per-subscription secret, compares it in constant time, and otherwise returns an indistinguishable "no subscription" response — failing closed.
+- **Per-cortex settings writes are now serialized.** Concurrent writes (e.g. a connector state update racing a user change) could interleave and truncate or merge `settings.json`. Writes are now serial, each with a unique temp file before the atomic rename, so two in-flight writes can't clobber each other.
+
+### Migrations
+
+- **Pro users may need to re-claim once.** Legacy license records have no poll secret, so the hardened endpoint fails them closed — clicking your claim link again mints a fresh, secured token. Manual token paste is unaffected.
+
+---
+
 ## v1.13.0 — Personal Server: reach your cortex from any device
 
-<p style="margin-top:0.5rem;font-size:1.25em;opacity:0.85;">Unreleased</p>
+<p style="margin-top:0.5rem;font-size:1.25em;opacity:0.85;">2026-06-03</p>
 
-The headline: Graphnosis can now run as a **personal server**. The sidecar serves the full app in a **browser** — so you can reach your cortex from a phone, tablet, or another computer, on your home network or anywhere over [Tailscale](https://tailscale.com), with the cortex staying encrypted on the server. The Mac desktop app is unchanged and remains the primary experience; this is additive.
+The headline: Graphnosis can now run as a **personal server**. The sidecar serves the full app in a **browser** — so you can reach your cortex from a phone, tablet, or another computer, on your home network or anywhere over [Tailscale](https://tailscale.com), with the cortex staying encrypted on the server. The Mac desktop app is unchanged and remains the primary experience; this is additive. This release also reorganizes the desktop app around a **Home mission-control dashboard**, advances **Skills** with cross-engram and parallel orchestration, and adds an **enterprise admin-policy layer**.
 
 ### Added
 
@@ -25,14 +64,26 @@ The headline: Graphnosis can now run as a **personal server**. The sidecar serve
 - **Tailscale HTTPS, auto-detected.** Run `tailscale serve` and the app automatically switches the browser and MCP QR codes to real-certificate `https://…ts.net` URLs (which iOS requires) — no certificate setup on your side.
 - **Linux / Docker server.** Run the sidecar headless on a Linux box (systemd unit, `.env`, and a multi-arch Docker image included) for an always-on personal server.
 - **Live file connectors.** The **GBrain**, **Obsidian**, and **AI Context Files** connectors now **watch their folder** and ingest new or changed notes within seconds, instead of only on a timer. The poll interval is now configurable in **Settings → Connectors**.
+- **Home — a mission-control dashboard.** The desktop app is reorganized around a rail of first-class destinations (Home · 3D Engram · Sources · Skills + Goals · Foresight · Brainstorming · Search · Activity · Status), with the manual recall / remember / edit / dig-deeper / GNN tools collapsed into a **Manual tools** drawer ("your AI client does this for you"). Home opens on a cortex-wide overview: Trust & Vitality, Memory health, Self-healing, Recent activity, Needs-you items, Stranded memories, a *Since you last opened* digest, and an On-Premise egress ledger. Picking an engram now **scopes the current view** instead of yanking you to the 3D atlas.
+- **Foresight page.** Goals plus brain `predict` / `insights` in one place (shown when the Local LLM is enabled).
+- **Biometric unlock for personal-server browser mode.** Touch ID, Windows Hello, or a hardware security key (WebAuthn) can unlock the browser UI. It authenticates **access to the server** — minting the same session token a pasted access token would — and does **not** decrypt the cortex. Available only in a secure context (Tailscale HTTPS or `localhost`); token/QR unlock remains the always-available fallback. The desktop app keeps using native Touch ID and is unaffected.
+- **Exclude a source from recall.** A per-source toggle hides that source's nodes from AI `recall` / `dig_deeper` / node search while keeping it fully visible — and forgettable — everywhere in the app. Excluded rows are dimmed and struck-through; the flag persists with the cortex.
+- **Enterprise admin-policy layer.** IT admins can centrally disable specific **connectors** (incoming data) and **AI clients** (outgoing memory access) via environment variables or a `policy.json` next to the cortex. A disabled client's tool calls are rejected and a disabled connector won't mount; when the policy is centrally managed, a local user can't override it. For individual users the same mechanism makes them admin of their own sidecar.
+- **Skills — cross-engram `@skill:` calls.** A skill can now invoke a skill that lives in **another engram**. Resolutions are persisted in an encrypted side-table and surface in the walk, with cross-engram targets flagged by `targetGraphId`.
+- **Skills — concurrent sub-skills (`@parallel`).** `@parallel: [a, b(arg=$x)] -> [$ra, $rb]` dispatches the listed sub-skills concurrently and captures each return under its positional variable. `walk_skill_structured` surfaces a `parallel[]` set per step.
+- **Skills — loop convergence guards + typed inputs.** `@loop: N max=M` caps a loop at *M* iterations so an executor can stop a non-progressing loop, and `Requires: $branch:string, $policy:{phased|atomic}, $count:number` now parses inline argument types (exposed as `requiresTypes`) so inputs can be validated before a skill runs. Both stay backward-compatible with the untyped/uncapped forms.
+- **Skills — resumable runs.** Two new MCP tools, `save_skill_run` and `resume_skill_run`, persist a multi-skill run's captured variables and progress to an encrypted per-run file, so an orchestration can be paused and continued in a later session.
+- **Connectors — opt-in "mirror deletions."** Local-file connectors (GBrain, Obsidian, AI Context Files) can optionally remove the corresponding memories when a watched file is deleted, keeping the cortex in sync with the folder. Off by default.
 
 ### Changed
 
 - **Starter skill demos install in one language.** When you add the bundled demo skills, pick **English or Romanian** — only that set of 3 installs, not both.
+- **47 MCP tools across 10 categories.** Up from 45 — `save_skill_run` and `resume_skill_run` join the **Skills (SOPs)** group, which now has 12 tools.
 
 ### Fixed
 
 - **Large folder imports no longer lose files.** A connector pulling a folder of more than ~50 notes previously stopped after the first batch and silently skipped the rest. It now ingests the whole folder, in order, without dropping the tail.
+- **Startup crash from a missing runtime polyfill.** A dependency added for the personal-server work could crash the bundled binary on launch; the required `reflect-metadata` polyfill is now loaded so the app starts reliably.
 
 ---
 
