@@ -1893,7 +1893,23 @@ export class GraphnosisHost {
     }
   }
 
+  /** Per-graph save serialization. writeFileAtomicWithBackup renames the
+   *  canonical .gai aside to .lkg then back, and verify-after-write re-reads
+   *  it; a concurrent save on the SAME graph could otherwise move the file out
+   *  from under the verify (spurious ENOENT -> false rollback that discards a
+   *  good write — observed during burst connector ingest). A promise chain per
+   *  graphId guarantees exactly one save runs at a time. */
+  private saveChain: Map<GraphId, Promise<void>> = new Map();
+
   async save(graphId: GraphId): Promise<void> {
+    const prev = this.saveChain.get(graphId) ?? Promise.resolve();
+    const run = prev.catch(() => { /* a prior save's failure must not block the next */ })
+      .then(() => this.saveInner(graphId));
+    this.saveChain.set(graphId, run.then(() => {}, () => {}));
+    return run;
+  }
+
+  private async saveInner(graphId: GraphId): Promise<void> {
     const g = this.must(graphId);
     if (!g.dirty) return;
     await fs.mkdir(path.dirname(this.graphPath(graphId)), { recursive: true });
@@ -1914,16 +1930,27 @@ export class GraphnosisHost {
     // just committed while the good in-memory graph is still here. If the file
     // doesn't load back, roll the canonical file to last-known-good, log it,
     // and fail loudly — instead of letting corruption surface at the next boot.
-    const verifyErr = await this.verifyGraphFileReadable(graphId, ct.length);
-    if (verifyErr) {
+    const verify = await this.verifyGraphFileReadable(graphId, ct.length);
+    if (verify) {
       await this.appendRecoveryLog({
-        event: 'verify_after_write_failed', graphId, bytes: ct.length, error: verifyErr,
+        event: 'verify_after_write_failed', graphId, kind: verify.kind, bytes: ct.length, error: verify.message,
       });
-      const restored = await this.restoreLkg(this.graphPath(graphId));
-      g.dirty = true; // keep dirty so a later save retries
-      throw new Error(
-        `save verification failed for engram '${redactId(graphId)}': ${verifyErr}` +
-        (restored ? ' — rolled back to last-known-good (.lkg)' : ' — no backup available to roll back'),
+      if (verify.kind === 'parse') {
+        // Genuine integrity failure — the bytes are bad. Roll the canonical
+        // file back to last-known-good and fail loudly.
+        const restored = await this.restoreLkg(this.graphPath(graphId));
+        g.dirty = true; // keep dirty so a later save retries
+        throw new Error(
+          `save verification failed for engram '${redactId(graphId)}': ${verify.message}` +
+          (restored ? ' — rolled back to last-known-good (.lkg)' : ' — no backup available to roll back'),
+        );
+      }
+      // kind === 'read': could not re-read the file (transient / moved). Do
+      // NOT roll back — that would discard a good write. The save itself
+      // succeeded; just note it and move on.
+      console.error(
+        `[graphnosis-host] post-write verify could not re-read engram '${redactId(graphId)}' ` +
+        `(${verify.message}); keeping the write, not rolling back.`,
       );
     }
 
@@ -1967,20 +1994,32 @@ export class GraphnosisHost {
    *  cost (and only they have ever hit a size-dependent serialization fault). */
   private lastVerifyAt: Map<GraphId, number> = new Map();
 
-  private async verifyGraphFileReadable(graphId: GraphId, ctLen: number): Promise<string | null> {
+  private async verifyGraphFileReadable(
+    graphId: GraphId,
+    ctLen: number,
+  ): Promise<{ kind: 'read' | 'parse'; message: string } | null> {
     if (ctLen < VERIFY_AFTER_WRITE_MIN_BYTES) return null;
     // Throttle per graph so a burst of saves doesn't reparse the file each time.
     const now = Date.now();
     if (now - (this.lastVerifyAt.get(graphId) ?? 0) < VERIFY_MIN_INTERVAL_MS) return null;
     this.lastVerifyAt.set(graphId, now);
+    // A READ failure (e.g. ENOENT because a concurrent op moved the file) is
+    // NOT corruption — it must never trigger a rollback that discards the good
+    // write we just made. Only a PARSE failure (decrypt/checksum/HMAC) means
+    // the bytes themselves are bad.
+    let bytes: Buffer;
     try {
-      const bytes = await fs.readFile(this.graphPath(graphId));
+      bytes = await fs.readFile(this.graphPath(graphId));
+    } catch (e) {
+      return { kind: 'read', message: (e as Error).message ?? 'unreadable' };
+    }
+    try {
       const plain = await decrypt(new Uint8Array(bytes), this.key);
       // Throwaway graphId so the verify load can't clobber the live instance.
       await this.opts.adapter.loadFromBuffer(`${graphId} verify`, plain, this.key);
       return null;
     } catch (e) {
-      return (e as Error).message ?? 'unknown error';
+      return { kind: 'parse', message: (e as Error).message ?? 'unknown error' };
     }
   }
 

@@ -399,7 +399,13 @@ export class ConnectorManager {
         }
         count++;
       } catch (err) {
-        console.error(`[connector:${cfg.id}] ingest failed for ${ev.sourceRef}: ${(err as Error).message}`);
+        const msg = (err as Error).message;
+        // Re-scanning an unchanged vault re-emits every file; ingest then
+        // produces 0 new nodes ("already saved or nothing to extract") — a
+        // benign no-op, not a failure. Don't spam one error per file; only
+        // surface genuine failures.
+        if (/produced 0 nodes|already saved or nothing to extract/i.test(msg)) continue;
+        console.error(`[connector:${cfg.id}] ingest failed for ${ev.sourceRef}: ${msg}`);
       }
     }
     return count;
