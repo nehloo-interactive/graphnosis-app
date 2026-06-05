@@ -11,6 +11,34 @@ Conventions: **Added** = new features, **Changed** = behavior or UX shifts, **Fi
 
 ---
 
+## v1.13.3 — Large-cortex performance & reliability
+
+<p style="margin-top:0.5rem;font-size:1.25em;opacity:0.85;">2026-06-05</p>
+
+A reliability and performance release focused on big cortexes — many engrams, large imports, and heavy AI use at the same time. The headline is that the app stays responsive and bounded in memory even with a very large graph, plus a data-integrity fix for large engrams and two new import formats.
+
+### Added
+
+- **Excel (`.xlsx`) and PowerPoint (`.pptx`) ingest.** Spreadsheets and slide decks now import alongside the existing PDF / Office / Markdown formats.
+
+### Changed
+
+- **The 3D atlas handles very large engrams smoothly.** It now renders the most-connected nodes (up to a cap) and resamples on demand as you explore, samples dense edge categories (showing a representative slice instead of hiding them), and settles freshly-ingested nodes incrementally instead of re-exploding the whole graph each time a new source lands. Selecting a new engram clears the view and shows a loading state while the next one streams in.
+
+### Fixed
+
+- **Large engrams no longer flagged as corrupted on load.** A checksum sign bug mis-flagged big engrams (above ~17 MB) as failing integrity, sending them to quarantine. The check is fixed — affected engrams were never actually damaged and load normally again.
+- **The sidecar no longer stalls your AI client or the UI on a large cortex.** Background "brain" work (duplicate detection, connection-weaving) now yields the processor and defers while you or an AI client are actively using Graphnosis, so recalls and the window stay responsive. Saves are serialized and memory-bounded, and the duplicate scan now covers engrams in rotation rather than all at once — which on a large cortex could spike memory and bog the whole machine down.
+- **The Activity timeline no longer times out** when the history references an engram that was since deleted or isn't loaded.
+- **Drag-and-drop file ingest** works again.
+- **The "recovered ✓" badge on quarantined engrams** no longer appears before recovery has actually completed.
+
+### Security
+
+- **Every engram save now keeps a last-known-good copy and a durable recovery log.** If a write is interrupted or comes back unreadable, the app can fall back to the previous good copy instead of surfacing the failure as data loss — and the structural-only recovery log makes any such incident diagnosable after the fact.
+
+---
+
 ## v1.13.1 — Presentation Mode, per-source redaction, and billing hardening
 
 <p style="margin-top:0.5rem;font-size:1.25em;opacity:0.85;">2026-06-04</p>
