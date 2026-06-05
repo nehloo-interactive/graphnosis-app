@@ -2734,7 +2734,14 @@ export class Atlas {
     // engrams with zero real edges (e.g. a fresh 2-node engram like FORA) show
     // no nodes at all because connectedIds is empty when there are no edges.
     const REAL_EDGE_CATEGORIES: EdgeCategory[] = ['reasoning', 'structure', 'social', 'temporal', 'semantic', 'identity'];
-    const anyCategoryHidden = REAL_EDGE_CATEGORIES.some((cat) => !this.categoryVisible[cat]);
+    // Only the USER manually hiding a category triggers the "show only connected
+    // nodes" path. A category that's hidden because it's HARD-LOCKED (too dense
+    // to render) was not the user's choice — hiding the ~80% of nodes wired only
+    // by it (as happened on large graphs) is surprising. Exclude hard-locked
+    // categories so those nodes stay visible.
+    const anyCategoryHidden = REAL_EDGE_CATEGORIES.some(
+      (cat) => !this.categoryVisible[cat] && !this.isCategoryHardLocked(cat),
+    );
     if (anyCategoryHidden) {
       const connectedIds = new Set<string>();
       for (const l of candidateLinks) {
