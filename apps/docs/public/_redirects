@@ -1,16 +1,15 @@
 /privacy  /legal/privacy-policy  301
 /terms    /legal/terms-of-use    301
-# /download/mac is handled by functions/download/mac.ts (reads CURRENT_VERSION + DMG_FILENAME
-# from Cloudflare env vars). Update those env vars in the Cloudflare dashboard only after
-# tagging and pushing the release — never hardcode the version here.
-# /download/win has no Pages Function yet — static fallback until functions/download/win.ts
-# lands. Bump the version manually when a new Windows installer is published.
-/download/win  https://github.com/nehloo-interactive/graphnosis-app/releases/download/v1.12.0/Graphnosis_1.12.0_x64-setup.exe  302
-# Linux desktop builds. These 302s resolve only once the .AppImage / .deb are
-# attached to the GitHub release — which needs the deb+appimage Tauri bundle
-# targets and a Linux build job in release.yml (not yet present). Confirm the
-# exact artifact filenames Tauri produces before relying on these (Tauri tends
-# to lowercase the .deb package name, e.g. graphnosis_1.12.0_amd64.deb).
-/download/linux      https://github.com/nehloo-interactive/graphnosis-app/releases/download/v1.12.0/Graphnosis_1.12.0_amd64.AppImage  302
-/download/linux-deb  https://github.com/nehloo-interactive/graphnosis-app/releases/download/v1.12.0/Graphnosis_1.12.0_amd64.deb        302
-/download/mac  https://github.com/nehloo-interactive/graphnosis-app/releases/download/v1.13.0/Graphnosis_1.13.0_aarch64.dmg  302
+# /download/mac and /download/win are resolved at REQUEST TIME by Cloudflare
+# Pages Functions reading env vars (CURRENT_VERSION + DMG_FILENAME + WINDOWS_FILENAME)
+# that release.yml's update-cloudflare job sets on every tag — that's the live
+# path, so don't rely on hardcoding their version here. The static lines below
+# are last-resort fallbacks; keep them roughly current. Note the published
+# Windows installer is the signed MSI (build-windows uploads *.msi), not NSIS.
+/download/mac  https://github.com/nehloo-interactive/graphnosis-app/releases/download/v1.13.3/Graphnosis_1.13.3_aarch64.dmg  302
+/download/win  https://github.com/nehloo-interactive/graphnosis-app/releases/download/v1.13.3/Graphnosis_1.13.3_x64_en-US.msi  302
+# Linux desktop builds (.AppImage + .deb) are produced by the build-linux job
+# in release.yml, which copies them to these canonical names before attaching
+# them to the GitHub release (so the .deb filename casing is deterministic).
+/download/linux      https://github.com/nehloo-interactive/graphnosis-app/releases/download/v1.13.3/Graphnosis_1.13.3_amd64.AppImage  302
+/download/linux-deb  https://github.com/nehloo-interactive/graphnosis-app/releases/download/v1.13.3/Graphnosis_1.13.3_amd64.deb        302
