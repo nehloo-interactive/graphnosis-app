@@ -6,6 +6,7 @@ import { VitalityScorer, type VitalityReport } from './vitality.js';
 import { TemporalEngine } from './temporal-engine.js';
 import { GoalTracker } from './goal-tracker.js';
 import { findSimilarPairs } from './duplicate-scan.js';
+import { clientActiveWithin, CLIENT_QUIET_MS } from './client-activity.js';
 import { settings as settingsMod } from '@graphnosis-app/core';
 import { predictEdgesForEngram, edgePredictionEnabled } from './edge-prediction.js';
 import { redactId, dbg } from './log-redact.js';
@@ -364,6 +365,14 @@ const INGEST_SCAN_DEBOUNCE_MS   = 30 * 1000;        // 30 s
 // of near-duplicates) is capped by confidence — scanning every dup past
 // this point only produces more dup-spam, not more signal.
 const MAX_DUPLICATE_SCAN_NODES   = 15_000;
+// On a large cortex the duplicate scan used to sweep EVERY loaded engram in
+// one pass, holding each one's embedding working set hot at once — a 17-engram
+// stress cortex spiked the sidecar to ~16 GB and swapped the machine (lag +
+// fans). Cap how many engrams one scan cycle touches; the rest are covered on
+// later cycles. We pick the most-recently-mutated engrams first (where new
+// duplicates actually appear), so freshly-ingested content is always scanned
+// promptly. Small cortexes (≤ this many engrams) still scan everything.
+const MAX_SCAN_ENGRAMS_PER_CYCLE = 5;
 // Keep the duplicate-pair list small and useful. Each node appears in at
 // most one duplicate pair (see runDuplicateScan), so this is a hard cap
 // on distinct review cards — 60 highest-similarity pairs is plenty.
@@ -1107,9 +1116,37 @@ export class BrainEngine {
 
   // ── Private loop implementations ──────────────────────────────────────────
 
+  /** Rotating slot into the "cold" (least-recently-mutated) engrams, so that
+   *  on a large cortex every engram is eventually scanned across cycles even
+   *  though only a capped subset is touched per cycle. */
+  private duplicateScanCursor = 0;
+
+  /** Choose which engrams this duplicate-scan cycle will touch. Small cortex:
+   *  all of them (unchanged). Large cortex: the (cap-1) most-recently-mutated
+   *  engrams — where new duplicates actually land — plus ONE rotating cold
+   *  engram, so the long tail is still covered over successive cycles without
+   *  ever holding every engram's embedding working set hot at once (the OOM /
+   *  swap cause on the stress cortex). */
+  private selectDuplicateScanEngrams<T extends string>(all: T[]): T[] {
+    if (all.length <= MAX_SCAN_ENGRAMS_PER_CYCLE) return all;
+    const lastMut = this.host.getMutationCursor() as Record<string, number>;
+    const byRecency = [...all].sort((a, b) => (lastMut[b] ?? 0) - (lastMut[a] ?? 0));
+    const hot = byRecency.slice(0, MAX_SCAN_ENGRAMS_PER_CYCLE - 1);
+    const cold = byRecency.slice(MAX_SCAN_ENGRAMS_PER_CYCLE - 1);
+    const pick = cold[this.duplicateScanCursor % cold.length]!;
+    this.duplicateScanCursor = (this.duplicateScanCursor + 1) % cold.length;
+    return [...hot, pick];
+  }
+
   private async runDuplicateScan(): Promise<void> {
     // The scan is genuinely expensive now — never let two overlap.
     if (this.duplicateScanRunning) return;
+    // Backpressure: defer while AI/UI clients are actively using the sidecar, so
+    // recalls and the UI keep the single-threaded loop. Retry once they're idle.
+    if (clientActiveWithin(CLIENT_QUIET_MS)) {
+      setTimeout(() => { void this.runDuplicateScan(); }, CLIENT_QUIET_MS);
+      return;
+    }
     this.duplicateScanRunning = true;
     this.emitActivity('duplicate-scan', 'start');
     // `found` = pairs that need human judgment (→ Check-in deck).
@@ -1124,7 +1161,7 @@ export class BrainEngine {
       new Promise<void>((resolve) => setImmediate(resolve));
 
     try {
-      for (const graphId of this.host.listGraphs()) {
+      for (const graphId of this.selectDuplicateScanEngrams(this.host.listGraphs())) {
         try {
           const nodes = this.host.listNodes(graphId);
           const active = nodes
@@ -1200,7 +1237,11 @@ export class BrainEngine {
           const autoLinkCount = new Map<string, number>();
           const linkEdges: Array<{ a: string; b: string; similarity: number }> = [];
 
+          let pairIdx = 0;
           for (const pair of pairs) {
+            // Keep the UI's IPC responsive during a large near-duplicate set
+            // (a re-ingested corpus can produce tens of thousands of pairs).
+            if ((pairIdx++ & 2047) === 0) await yieldToLoop();
             const a = nodeById.get(pair.idA);
             const b = nodeById.get(pair.idB);
             if (!a || !b) continue;
@@ -1282,7 +1323,17 @@ export class BrainEngine {
             }
           }
         } catch (err) {
-          console.error(`[brain] duplicate scan error on engram[${redactId(graphId)}]:`, err);
+          // A graph can be deleted/unloaded mid-scan (user deletes an engram,
+          // or — once index eviction lands — the LRU frees a cold one) in the
+          // async gap between this loop's listNodes and its later listEdges.
+          // That surfaces as "Graph not loaded" from must(); it's a benign
+          // race, not a scan fault — skip this engram quietly and move on.
+          const msg = err instanceof Error ? err.message : String(err);
+          if (/Graph not loaded/i.test(msg)) {
+            dbg(`[brain] duplicate scan skipped engram[${redactId(graphId)}] — unloaded mid-scan`);
+          } else {
+            console.error(`[brain] duplicate scan error on engram[${redactId(graphId)}]:`, err);
+          }
         }
         await yieldToLoop();
       }
@@ -1712,6 +1763,12 @@ export class BrainEngine {
   async runEdgePrediction(): Promise<void> {
     if (!this.llm) return;
     if (!edgePredictionEnabled(this.host)) return;
+    // Backpressure: defer while clients are active (GNN prediction + LSH scan is
+    // heavy); retry once the sidecar is idle.
+    if (clientActiveWithin(CLIENT_QUIET_MS)) {
+      setTimeout(() => { void this.runEdgePrediction(); }, CLIENT_QUIET_MS);
+      return;
+    }
     // ── Pro gate: the autonomous edge-prediction loop is GNN-Exploration ──
     // territory. Unlicensed users get the deterministic recall pipeline
     // for free; the autonomous loop that writes inferred edges to the

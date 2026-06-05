@@ -1,4 +1,5 @@
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
+import { markClientActivity } from './client-activity.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 import { z } from 'zod';
@@ -2366,6 +2367,9 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
   }));
 
   server.setRequestHandler(CallToolRequestSchema, async (req) => {
+    // AI client just made a tool call — mark activity so heavy background brain
+    // passes defer and this recall/remember wins the single-threaded loop.
+    markClientActivity();
     try {
     // Admin/IT policy: reject EVERY tool call from a disabled AI client. The
     // user/IT blocks a client by name; enforced here in the sidecar (the only

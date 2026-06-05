@@ -100,7 +100,13 @@ export async function predictEdgesForEngram(
   // 2. Candidate scan via the LSH similarity helper (same one duplicate-scan
   //    uses). Restrict to the same engram by passing only this engram's
   //    embeddings — getNodeEmbeddings is already per-engram.
-  const pairs = await findSimilarPairs(embs, { minSim: SIM_MIN, maxSim: SIM_MAX });
+  const pairs = await findSimilarPairs(embs, {
+    minSim: SIM_MIN,
+    maxSim: SIM_MAX,
+    // Yield to the event loop during the LSH scan so the GNN edge-prediction
+    // pass doesn't block the UI's IPC on a large engram (matches duplicate-scan).
+    onYield: () => new Promise<void>((resolve) => setImmediate(resolve)),
+  });
   // 3. Filter pairs that already have an edge anywhere; sort by sim desc;
   //    take top MAX_CANDIDATES.
   const candidates = pairs
