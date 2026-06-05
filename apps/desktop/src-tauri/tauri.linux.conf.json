@@ -1,0 +1,12 @@
+{
+  "bundle": {
+    "targets": ["deb", "appimage"],
+    "externalBin": [
+      "binaries/graphnosis-sidecar",
+      "binaries/graphnosis-mcp-relay"
+    ],
+    "resources": [
+      "resources/libonnxruntime.so.1.21.0"
+    ]
+  }
+}
