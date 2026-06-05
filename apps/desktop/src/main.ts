@@ -1286,6 +1286,24 @@ const INGEST_UI_REFRESH_MS = 1500;
 let ingestRefreshTimer: number | null = null;
 let ingestRefreshQueued = false;
 
+/** Whether it's worth pushing fresh data into the 3D atlas right now. Defers
+ *  the live rebuild during an active ingest of a LARGE graph: every push reheats
+ *  the whole physics sim, so each new source re-settles the entire graph —
+ *  extremely laggy when ingesting a big folder/connector. The graph repaints
+ *  once when the ingest finishes (the ingest-done handler forces a final push,
+ *  by which point ingestJobToasts is empty). Small graphs update live as before. */
+function shouldPushAtlasNow(): boolean {
+  if (!mainAtlas || graphnosisActiveTab !== 'atlas') return false;
+  // Defer EVERY live atlas push while an ingest is active (regardless of graph
+  // size). Each push calls setNodes -> d3ReheatSimulation, which re-explodes
+  // the WHOLE graph — already-settled sources included — every time a new
+  // source lands. The graph repaints + settles ONCE when the ingest finishes
+  // (the ingest-done handler forces a final push, by which point
+  // ingestJobToasts is empty so this returns true).
+  if (ingestJobToasts.size > 0) return false;
+  return true;
+}
+
 async function doIngestUiRefresh(): Promise<void> {
   // Reload the active engram so new nodes actually appear, then repaint
   // whichever surface is in front. Mirrors the 3s reconcile poll body.
@@ -1295,7 +1313,16 @@ async function doIngestUiRefresh(): Promise<void> {
       applyGraphnosisFilter();
     }
   } catch { /* locked / sidecar busy — the 3s reconcile poll will catch up */ }
-  if (mainAtlas && graphnosisActiveTab === 'atlas') pushDataIntoAtlas();
+  if (mainAtlas && graphnosisActiveTab === 'atlas') {
+    const ingesting = ingestJobToasts.size > 0;
+    // Big graphs: defer the live rebuild entirely during ingest (the final push
+    // at ingest-end repaints once). Otherwise push — and during an ingest do it
+    // INCREMENTALLY (pin existing nodes so only the new source spawns + settles
+    // instead of re-exploding the whole graph).
+    if (!(ingesting && graphnosisAllNodes.length > ATLAS_NODE_CAP)) {
+      pushDataIntoAtlas(false, ingesting);
+    }
+  }
   void refreshStats();
 }
 
@@ -3338,7 +3365,11 @@ async function pollGraphMutations(): Promise<void> {
     // Re-render whichever surface is currently in front of the user.
     applyGraphnosisFilter();           // dashboard or search-results
     if (graphnosisSelectedId) renderDetailPane();
-    if (mainAtlas && graphnosisActiveTab === 'atlas') pushDataIntoAtlas();
+    // Incremental: background mutations (auto-relink, self-healing) shouldn't
+    // re-explode/re-settle the whole graph — pin existing nodes so only genuinely
+    // new nodes move. Post-ingest auto-link otherwise reheats the atlas on every
+    // 3s poll and stalls the UI.
+    if (shouldPushAtlasNow()) pushDataIntoAtlas(false, true);
     // Refresh stats UI (recap rows + forgotten footer + corrections counter).
     updateRecap();
     updateGraphnosisForgottenRow();
@@ -10221,7 +10252,11 @@ async function saveInlineEdit(): Promise<void> {
     renderDetailPane();
     void refreshStats();
     // If the Atlas is mounted, push refreshed data so labels update too.
-    if (mainAtlas && graphnosisActiveTab === 'atlas') pushDataIntoAtlas();
+    // Incremental: background mutations (auto-relink, self-healing) shouldn't
+    // re-explode/re-settle the whole graph — pin existing nodes so only genuinely
+    // new nodes move. Post-ingest auto-link otherwise reheats the atlas on every
+    // 3s poll and stalls the UI.
+    if (shouldPushAtlasNow()) pushDataIntoAtlas(false, true);
   } catch (e) {
     showError(`Edit failed: ${e}`);
     if (saveBtn) {
@@ -11621,47 +11656,109 @@ async function mountAtlasIfNeeded(): Promise<boolean> {
 }
 
 /** Update the node / edge / source counts shown beside the engram title. */
-function updateAtlasStats(nodeCount: number, edgeCount: number): void {
+function updateAtlasStats(nodeCount: number, edgeCount: number, renderedNodeCount = nodeCount): void {
   const el = document.getElementById('atlas-engram-stats');
   if (!el) return;
   // Source count comes free from the already-rendered legend source list — no
   // extra O(N) scan (matters: this runs on every atlas render).
   const sourceCount = document.getElementById('atlas-source-list')?.childElementCount ?? 0;
+  const nodeStr = renderedNodeCount >= 0 && renderedNodeCount < nodeCount
+    ? `${nodeCount.toLocaleString()} nodes · top ${renderedNodeCount.toLocaleString()} shown`
+    : `${nodeCount.toLocaleString()} node${nodeCount === 1 ? '' : 's'}`;
   const parts = [
-    `${nodeCount.toLocaleString()} node${nodeCount === 1 ? '' : 's'}`,
+    nodeStr,
     `${edgeCount.toLocaleString()} edge${edgeCount === 1 ? '' : 's'}`,
   ];
   if (sourceCount > 0) parts.push(`${sourceCount.toLocaleString()} source${sourceCount === 1 ? '' : 's'}`);
   el.textContent = parts.join('  ·  ');
 }
 
-function pushDataIntoAtlas(): void {
+// The 3d-force-graph library renderer (one sphere + edges per node, drawn on
+// the CPU side) can't interactively handle tens of thousands of nodes. Above
+// this count we render only the top-N most-connected nodes — the graph still
+// looks full, but rendering / the physics sim / every refresh stay bounded.
+// Tunable: lower = smoother, higher = fuller (and laggier).
+const ATLAS_NODE_CAP = 6000;
+
+// Fingerprint of the last data pushed, so a push with no data change (e.g. just
+// switching INTO the 3D tab) can skip the expensive setNodes/setEdges + reheat.
+// graphnosisAllNodes / the edges object are reassigned on any reload/ingest/
+// mutation, so reference identity + count is a reliable "did it change?" signal.
+let atlasLastPushedGraph: string | null = null;
+let atlasLastPushedNodesRef: unknown = null;
+let atlasLastPushedEdgesRef: unknown = null;
+let atlasLastPushedNodeCount = -1;
+let atlasLastRenderedNodeCount = -1;
+// Which degree-tier "page" of nodes the LOD cap shows. Resample steps it so the
+// user can browse beyond the top hubs into the next tiers.
+let atlasLodPage = 0;
+
+/** Step to the next LOD page (degree tier) and re-render. */
+function resampleAtlasLod(): void {
+  atlasLodPage++;
+  pushDataIntoAtlas(true); // force: page changed but the underlying data didn't
+}
+
+function pushDataIntoAtlas(force = false, incremental = false): void {
   if (!mainAtlas || !atlasActiveGraph) return;
   if (atlasGalaxyMode) return; // the galaxy owns the atlas nodes/edges
-  // Snapshot current node positions BEFORE overwriting allNodes, so existing
-  // nodes carry their settled simulation positions into the next render.
-  // Without this, every setNodes() call looked like a full re-layout.
-  const posMap = mainAtlas.getPositionMap();
-  const nodes = nodesToAtlas(graphnosisAllNodes, posMap);
-  mainAtlas.setNodes(nodes);
-  const edges = lastEdgesByGraph.get(atlasActiveGraph);
-  if (edges) {
-    const activeIds = new Set(nodes.map((n) => n.id));
-    const directed = edges.directed.filter((e) => activeIds.has(e.from) && activeIds.has(e.to));
-    const undirected = edges.undirected.filter((e) => activeIds.has(e.a) && activeIds.has(e.b));
-    mainAtlas.setEdges(directed, undirected);
-  }
-  // Re-apply disabled sources — setNodes() defaults all sources to
-  // visible, so we have to push our disable state in after each rebuild.
-  for (const ref of disabledSources.values()) {
-    mainAtlas.setSourceVisible(ref, false);
+  const edges = lastEdgesByGraph.get(atlasActiveGraph) ?? null;
+  // Skip the rebuild + reheat when the underlying data is unchanged — rebuilding
+  // a settled graph and reheating its physics on every focus of the 3D tab is
+  // the focus stall.
+  const dataUnchanged = !force &&
+    atlasLastPushedGraph === atlasActiveGraph &&
+    atlasLastPushedNodesRef === graphnosisAllNodes &&
+    atlasLastPushedEdgesRef === edges &&
+    atlasLastPushedNodeCount === graphnosisAllNodes.length;
+  if (!dataUnchanged) {
+    // Snapshot current node positions BEFORE overwriting allNodes, so existing
+    // nodes carry their settled simulation positions into the next render.
+    const posMap = mainAtlas.getPositionMap();
+    let nodes = nodesToAtlas(graphnosisAllNodes, posMap);
+    // ── Node LOD cap (degree-ranked, paged) ──────────────────────────────
+    let lodPages = 1;
+    if (nodes.length > ATLAS_NODE_CAP && edges) {
+      const deg = new Map<string, number>();
+      const bump = (id: string): void => { deg.set(id, (deg.get(id) ?? 0) + 1); };
+      for (const e of edges.directed) { bump(e.from); bump(e.to); }
+      for (const e of edges.undirected) { bump(e.a); bump(e.b); }
+      const sorted = [...nodes].sort((a, b) => (deg.get(b.id) ?? 0) - (deg.get(a.id) ?? 0));
+      lodPages = Math.ceil(sorted.length / ATLAS_NODE_CAP);
+      const page = ((atlasLodPage % lodPages) + lodPages) % lodPages; // wrap
+      nodes = sorted.slice(page * ATLAS_NODE_CAP, page * ATLAS_NODE_CAP + ATLAS_NODE_CAP);
+    } else {
+      atlasLodPage = 0;
+    }
+    atlasLastRenderedNodeCount = nodes.length;
+    // Show the Resample button only when the graph is actually capped.
+    const resampleBtn = document.getElementById('btn-atlas-resample');
+    if (resampleBtn) resampleBtn.style.display = lodPages > 1 ? '' : 'none';
+    // Incremental (ingest) push pins existing nodes so only the new source's
+    // nodes spawn + settle, instead of re-exploding the whole graph.
+    mainAtlas.setNodes(nodes, { pinExisting: incremental });
+    if (edges) {
+      const activeIds = new Set(nodes.map((n) => n.id));
+      const directed = edges.directed.filter((e) => activeIds.has(e.from) && activeIds.has(e.to));
+      const undirected = edges.undirected.filter((e) => activeIds.has(e.a) && activeIds.has(e.b));
+      mainAtlas.setEdges(directed, undirected);
+    }
+    // Re-apply disabled sources — setNodes() defaults all sources to visible.
+    for (const ref of disabledSources.values()) {
+      mainAtlas.setSourceVisible(ref, false);
+    }
+    atlasLastPushedGraph = atlasActiveGraph;
+    atlasLastPushedNodesRef = graphnosisAllNodes;
+    atlasLastPushedEdgesRef = edges;
+    atlasLastPushedNodeCount = graphnosisAllNodes.length;
   }
   renderAtlasLegend();
-  // Stats beside the title — node count + total edges (renderAtlasLegend ran
-  // above, so the source-list count is current).
+  // Stats beside the title — true totals, with a "(top N shown)" note when the
+  // LOD cap is in effect (renderAtlasLegend ran above so source count is fresh).
   updateAtlasStats(
     graphnosisAllNodes.length,
     edges ? edges.directed.length + edges.undirected.length : 0,
+    atlasLastRenderedNodeCount,
   );
   // Fetch the GNN prediction overlay for this engram and push it as the
   // atlas's dashed prediction layer. Async + fire-and-forget — the overlay
@@ -11761,7 +11858,9 @@ function renderAtlasLegend(): void {
     return `<div class="legend-row ${cls}" data-cat="${c}" ${title ? `title="${title}"` : ''}>
       <span class="legend-swatch" style="background: ${swatch};"></span>
       <span>${escape(CATEGORY_LABEL[c])}</span>
-      <span class="legend-count">${counts[c]}</span>
+      ${(mainAtlas?.isCategorySampled(c) ?? false)
+        ? `<span class="legend-count" title="Dense category — strongest 5,000 of ${counts[c].toLocaleString()} edges shown">5k / ${counts[c].toLocaleString()}</span>`
+        : `<span class="legend-count">${counts[c].toLocaleString()}</span>`}
     </div>`;
   }).join('');
   els.atlasLegendList.querySelectorAll<HTMLElement>('.legend-row').forEach((row) => {
@@ -11872,6 +11971,18 @@ els.atlasGraphPicker.addEventListener('change', () => void (async () => {
   atlasActiveGraph = els.atlasGraphPicker.value;
   persistActiveEngram(atlasActiveGraph);
   refreshActiveEngramLabel();
+  // Clear the 3D atlas + legend + stats IMMEDIATELY so the previous engram's
+  // graph and wiring don't linger while the new engram loads. (graphnosisAllNodes
+  // is reassigned by the load below, which also invalidates the push cache.)
+  graphnosisAllNodes = [];
+  if (mainAtlas) { mainAtlas.setNodes([]); mainAtlas.setEdges([], []); }
+  renderAtlasLegend();
+  updateAtlasStats(0, 0);
+  // Show the blurring loading overlay while the new engram loads, so the
+  // cleared view reads as "loading" rather than an empty graph.
+  showAtlasLoading(
+    loadedGraphs.find((g) => g.graphId === atlasActiveGraph)?.metadata.displayName ?? atlasActiveGraph,
+  );
   // From a browse context, navigate to the 3D Engram so the user lands on
   // the visualization of the engram they just picked. Both 'atlas' and
   // 'search' share the atlas mode-pane, so this just flips the inner view.
@@ -11918,6 +12029,7 @@ els.atlasGraphPicker.addEventListener('change', () => void (async () => {
   disabledSources.clear();
   if (mainAtlas) resetAtlasView();
   await refreshAtlasView();
+  hideAtlasLoading(); // new engram is loaded + pushed — drop the overlay
   // Re-render the Home dashboard's active-engram card + gauge in place when the
   // user is on Home (the picker scoped the view; it didn't navigate away).
   if (graphnosisActiveTab === 'checkin') renderHealth();
@@ -11934,6 +12046,11 @@ els.btnAtlasReset.addEventListener('click', () => {
 
 els.btnAtlasFit.addEventListener('click', () => {
   mainAtlas?.zoomToFit(700, 20);
+});
+
+document.getElementById('btn-atlas-resample')?.addEventListener('click', () => {
+  resampleAtlasLod();
+  setTimeout(() => mainAtlas?.zoomToFit(700, 20), 1200); // re-frame the new tier
 });
 
 els.btnAtlasAlive.addEventListener('click', () => {
