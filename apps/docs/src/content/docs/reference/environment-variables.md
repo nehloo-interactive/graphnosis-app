@@ -52,6 +52,18 @@ The sidecar communicates over Unix domain sockets. The app assigns these paths; 
 | `GRAPHNOSIS_RELAY_WAIT_MS` | No | built-in | Initial wait, in milliseconds, before the MCP relay first connects. |
 | `GRAPHNOSIS_RELAY_RECONNECT_MS` | No | built-in | Interval, in milliseconds, between MCP relay reconnection attempts. |
 
+## Admin policy (enterprise)
+
+Centrally disable specific connectors (incoming data) and AI clients (outgoing memory access). The effective policy is the **union** of these variables and a `policy.json` placed in the cortex folder. When the policy is marked managed, a local user can't override it from the Settings UI.
+
+| Variable | Required | Default | Description |
+|----------|----------|---------|-------------|
+| `GRAPHNOSIS_DISABLED_CONNECTORS` | No | — | Comma-separated connector kinds that must not mount (e.g. `slack,github`). A disabled connector is skipped on startup and won't start even if configured. |
+| `GRAPHNOSIS_DISABLED_CLIENTS` | No | — | Comma-separated AI client names whose MCP tool calls are rejected. Matching is case-insensitive. |
+| `GRAPHNOSIS_MANAGED_POLICY` | No | — | Set to `1` to mark the policy as centrally managed — `policy.set` from the app is rejected, so a local user can't loosen an IT-pushed policy. |
+
+For per-cortex configuration, place a `policy.json` in the cortex folder with `disabledConnectors`, `disabledClients`, and `managed` fields; it merges with the variables above.
+
 ## Internal
 
 `GRAPHNOSIS_WORKER_ROLE` is set by the sidecar on itself when it forks an embedding worker process. Do not set it manually.

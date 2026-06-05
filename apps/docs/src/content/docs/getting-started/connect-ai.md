@@ -193,9 +193,9 @@ Both are opt-in and use the same Tailscale-vs-LAN security model. The full walkt
 
 **Why Tailscale is the recommended path:** the alternative — `all-interfaces` on your LAN — works at home but breaks the moment you leave the house. Tailscale gives you an encrypted overlay network that follows you everywhere without exposing a port to the public internet. Install it once on both devices; the panel auto-detects the Tailscale IP.
 
-## The 45 MCP tools
+## The 47 MCP tools
 
-Once connected, **45 tools** are available to your AI, organized into ten categories (Core memory, Engram discovery, Structured recall, Source operations, Engram operations, Brain maintenance, Skills (SOPs), Approximate, Conditional, and Non-deterministic). The most commonly used ones:
+Once connected, **47 tools** are available to your AI, organized into ten categories (Core memory, Engram discovery, Structured recall, Source operations, Engram operations, Brain maintenance, Skills (SOPs), Approximate, Conditional, and Non-deterministic). The most commonly used ones:
 
 | Tool | What it does |
 |------|-------------|
@@ -209,7 +209,7 @@ Once connected, **45 tools** are available to your AI, organized into ten catego
 | `stats` | Return cortex statistics: total sources, chunks, graphs, embedding model info. |
 | `walk_skill` / `walk_skill_structured` | Walk a Skill (a Standard Operating Procedure) step-by-step — narrative text for human-facing guidance, JSON `SkillExecutionPlan` for AI execution. The structured form gives the AI everything it needs to run a multi-step skill: required inputs, sub-skill calls with args + capture variables, and failure handlers. |
 
-See the full [MCP Tools reference](/reference/mcp-tools/) for all 45 tools with parameter details, including the 10 Skills (SOPs) tools (`list_skills`, `walk_skill`, `walk_skill_structured`, `train_skill`, and more).
+See the full [MCP Tools reference](/reference/mcp-tools/) for all 47 tools with parameter details, including the 12 Skills (SOPs) tools (`list_skills`, `walk_skill`, `walk_skill_structured`, `train_skill`, `save_skill_run`, and more).
 
 ### Asking the AI to save into a specific engram
 
@@ -277,7 +277,7 @@ Full setup walkthroughs for each connector: **[Auto-ingest from your tools](/gui
 
 [A GRAPHNOSIS.md for Your AI](/getting-started/graphnosis-md/) — the drop-in instructions file that tells your AI client to actually use Graphnosis.
 
-[MCP Tools](/reference/mcp-tools/) — full reference for all 45 tools.
+[MCP Tools](/reference/mcp-tools/) — full reference for all 47 tools.
 
 [Memory Across AI Clients](/guides/memory-across-ai-clients/) — how the same cortex serves multiple AIs at once.
 
