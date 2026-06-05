@@ -332,6 +332,45 @@ function flattenByGraph(
   return all.sort((a, b) => b.score - a.score);
 }
 
+/** Kick off a background file ingest with progress/done events broadcast to the
+ *  events socket. Shared by the path-based `ingest.file` and the upload-based
+ *  `ingest.upload`. Returns immediately with a jobId; `afterDone` runs in a
+ *  finally (used to delete an uploaded temp file). */
+function startBackgroundIngest(
+  deps: IpcDeps,
+  graphId: string,
+  filePath: string,
+  fileName: string,
+  afterDone?: () => Promise<void> | void,
+): { accepted: boolean; jobId: string } {
+  const jobId = `ingest-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+  deps.broadcastRaw({
+    kind: 'ingest.progress', name: 'ingest.progress',
+    payload: { jobId, graphId, fileName, phase: 'parsing', nodesAdded: 0, edgesAdded: 0 },
+  });
+  void (async () => {
+    try {
+      const result = await ingestFile(deps.host, graphId, filePath, {
+        onProgress: (pagesProcessed, totalPages) => deps.broadcastRaw({ kind: 'ingest.progress', name: 'ingest.progress', payload: { jobId, graphId, fileName, phase: 'parsing', nodesAdded: 0, pagesProcessed, totalPages } }),
+        onEmbeddingStart: (pagesExtracted) => deps.broadcastRaw({ kind: 'ingest.progress', name: 'ingest.progress', payload: { jobId, graphId, fileName, phase: 'embedding', nodesAdded: 0, pagesExtracted } }),
+        onEmbeddingChunk: (chunksDone, chunksTotal, nodesTotal) => deps.broadcastRaw({ kind: 'ingest.progress', name: 'ingest.progress', payload: { jobId, graphId, fileName, phase: 'embedding', nodesAdded: nodesTotal, chunksDone, chunksTotal } }),
+        wrapIngest: (fn) => withEmbedding(fn),
+        triggeredBy: 'user:ingest',
+      });
+      const nodeCount = (result as { nodeIds?: string[] }).nodeIds?.length ?? 0;
+      deps.broadcastRaw({ kind: 'ingest.done', name: 'ingest.done', payload: { jobId, graphId, fileName, nodeIds: (result as { nodeIds?: string[] }).nodeIds ?? [], nodesAdded: nodeCount } });
+      deps.brainEngine?.notifyIngestComplete();
+    } catch (e) {
+      const message = e instanceof Error ? e.message : String(e);
+      if (!message.includes('0 bytes')) console.error(`[graphnosis-sidecar] background ingest failed for ${filePath}:`, e);
+      deps.broadcastRaw({ kind: 'ingest.done', name: 'ingest.done', payload: { jobId, graphId, fileName, error: message, nodesAdded: 0 } });
+    } finally {
+      try { await afterDone?.(); } catch { /* cleanup best-effort */ }
+    }
+  })();
+  return { accepted: true, jobId };
+}
+
 export async function dispatch(deps: IpcDeps, method: string, params: unknown): Promise<unknown> {
   switch (method) {
     // ── Consent prompt resolution (in-app modal flow) ──────────────────
@@ -1290,73 +1329,29 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
       return { ok: true };
     }
     case 'ingest.file': {
-      const { graphId, path: filePath } = z.object({ graphId: z.string(), path: z.string() }).parse(params);
-      // Fire the ingest in the background so the IPC response returns
+      // Path-based ingest (desktop / native file-drop). Runs in the background;
+      // progress + completion broadcast to the events socket so the IPC returns
       // immediately — large PDFs easily exceed any sensible socket timeout.
-      // Progress and completion are broadcast to the events socket so the
-      // frontend can update its toast without waiting for a response.
-      const jobId = `ingest-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
-      const fileName = filePath.split('/').pop() ?? filePath;
-      deps.broadcastRaw({
-        kind: 'ingest.progress',
-        name: 'ingest.progress',
-        payload: { jobId, graphId, fileName, phase: 'parsing', nodesAdded: 0, edgesAdded: 0 },
+      const { graphId, path: filePath } = z.object({ graphId: z.string(), path: z.string() }).parse(params);
+      return startBackgroundIngest(deps, graphId, filePath, filePath.split('/').pop() ?? filePath);
+    }
+    case 'ingest.upload': {
+      // Bytes-based ingest (browser / mobile drag-drop, which can't give file
+      // paths). Write the bytes to a temp file — keeping the original filename
+      // so the source ref + parse-by-extension both work — then run the normal
+      // ingest and delete the temp file when done.
+      const { graphId, filename, contentBase64 } = z.object({
+        graphId: z.string(),
+        filename: z.string(),
+        contentBase64: z.string(),
+      }).parse(params);
+      const safeName = (filename.replace(/[/\\]/g, '_').trim().slice(0, 200)) || 'upload';
+      const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'graphnosis-upload-'));
+      const tmpPath = path.join(dir, safeName);
+      await fs.writeFile(tmpPath, Buffer.from(contentBase64, 'base64'));
+      return startBackgroundIngest(deps, graphId, tmpPath, safeName, async () => {
+        await fs.rm(dir, { recursive: true, force: true });
       });
-      // Run async — do not await.
-      void (async () => {
-        try {
-          const result = await ingestFile(deps.host, graphId, filePath, {
-            onProgress: (pagesProcessed, totalPages) => {
-              deps.broadcastRaw({
-                kind: 'ingest.progress',
-                name: 'ingest.progress',
-                payload: { jobId, graphId, fileName, phase: 'parsing', nodesAdded: 0, pagesProcessed, totalPages },
-              });
-            },
-            onEmbeddingStart: (pagesExtracted) => {
-              deps.broadcastRaw({
-                kind: 'ingest.progress',
-                name: 'ingest.progress',
-                payload: { jobId, graphId, fileName, phase: 'embedding', nodesAdded: 0, pagesExtracted },
-              });
-            },
-            onEmbeddingChunk: (chunksDone, chunksTotal, nodesTotal) => {
-              deps.broadcastRaw({
-                kind: 'ingest.progress',
-                name: 'ingest.progress',
-                payload: { jobId, graphId, fileName, phase: 'embedding', nodesAdded: nodesTotal, chunksDone, chunksTotal },
-              });
-            },
-            // Serialize only the ONNX embedding step (fastembed/ort is not
-            // concurrency-safe). PDF parsing runs outside the mutex so
-            // per-page progress events fire even while another embedding
-            // op is in flight.
-            wrapIngest: (fn) => withEmbedding(fn),
-            triggeredBy: 'user:ingest',
-          });
-          const nodeCount = (result as { nodeIds?: string[] }).nodeIds?.length ?? 0;
-          deps.broadcastRaw({
-            kind: 'ingest.done',
-            name: 'ingest.done',
-            payload: { jobId, graphId, fileName, nodeIds: (result as { nodeIds?: string[] }).nodeIds ?? [], nodesAdded: nodeCount },
-          });
-          // Fresh content may have introduced duplicates — let the brain
-          // re-scan (debounced; a batch of files coalesces into one pass).
-          deps.brainEngine?.notifyIngestComplete();
-        } catch (e) {
-          const message = e instanceof Error ? e.message : String(e);
-          // Empty files (0 bytes) produce no nodes — not a real error, skip the noise.
-          if (!message.includes('0 bytes')) {
-            console.error(`[graphnosis-sidecar] background ingest failed for ${filePath}:`, e);
-          }
-          deps.broadcastRaw({
-            kind: 'ingest.done',
-            name: 'ingest.done',
-            payload: { jobId, graphId, fileName, error: message, nodesAdded: 0 },
-          });
-        }
-      })();
-      return { accepted: true, jobId };
     }
     case 'ingest.web': {
       const args = z.object({
@@ -1582,10 +1577,17 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
         timestamp: number;
         sizeBytes: number;
         /** Whether an engram with this id currently exists in the live
-         *  set — used by the UI to decide whether deleting the quarantined
-         *  file is "safe" (recovery already done) or "risky" (would
-         *  permanently lose the only copy). */
+         *  set. NOTE: this alone does NOT mean "recovered" — after an
+         *  integrity failure the loader leaves an EMPTY stub engram with the
+         *  same id, so this is true from the moment of corruption, before any
+         *  "Recover from op-log" has run. Combine with `liveNodeCount`. */
         liveEngramExists: boolean;
+        /** Node count of the live engram with this id (0 if not live, or if
+         *  the live engram is an empty stub). The UI uses `liveNodeCount > 0`
+         *  — not mere id-existence — to decide a quarantined file is safe to
+         *  delete. An empty live engram means recovery has NOT populated it
+         *  and this quarantined file may be the only copy of the bytes. */
+        liveNodeCount: number;
       }> = [];
       let entries: string[];
       try {
@@ -1596,6 +1598,19 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
         throw err;
       }
       const liveIds = new Set(deps.host.listGraphs());
+      // Count nodes per live engram once (an engram may have both a .gai and a
+      // .bundle quarantine row — don't inspect twice). 0 = empty stub, which
+      // means recovery has NOT actually populated the engram yet.
+      const nodeCounts = new Map<string, number>();
+      const liveNodeCountFor = (engramId: string): number => {
+        if (!liveIds.has(engramId)) return 0;
+        const cached = nodeCounts.get(engramId);
+        if (cached !== undefined) return cached;
+        let count = 0;
+        try { count = deps.host.listNodes(engramId).length; } catch { count = 0; }
+        nodeCounts.set(engramId, count);
+        return count;
+      };
       // Matches "<engramId>.<gai|bundle>.corrupt-<digits>"
       const re = /^(.+)\.(gai|bundle)\.corrupt-(\d+)$/;
       for (const name of entries) {
@@ -1610,7 +1625,11 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
           const stat = await fs.stat(full);
           sizeBytes = stat.size;
         } catch { /* file vanished — skip */ continue; }
-        out.push({ name, engramId, kind, timestamp, sizeBytes, liveEngramExists: liveIds.has(engramId) });
+        out.push({
+          name, engramId, kind, timestamp, sizeBytes,
+          liveEngramExists: liveIds.has(engramId),
+          liveNodeCount: liveNodeCountFor(engramId),
+        });
       }
       out.sort((a, b) => b.timestamp - a.timestamp);
       return { items: out };
