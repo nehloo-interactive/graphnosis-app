@@ -1338,6 +1338,8 @@ export class GraphnosisHost {
       `${this.legacyGraphPath(graphId)}.bak`,
       `${this.bundlePath(graphId)}.bak`,
       `${this.cachePath(graphId)}.bak`,
+      `${this.graphPath(graphId)}${LKG_SUFFIX}`,
+      `${this.bundlePath(graphId)}${LKG_SUFFIX}`,
     ];
     for (const p of candidates) {
       try { await fs.unlink(p); } catch (e) {
@@ -1672,6 +1674,14 @@ export class GraphnosisHost {
         msg.includes('checksum') || msg.includes('HMAC') ||
         msg.includes('Invalid .gai') || msg.includes('signature');
       if (looksCorrupt) {
+        // Before quarantining-to-empty, try the last-known-good sibling (.lkg):
+        // the canonical .gai may be a single bad write while the prior good
+        // generation is still on disk. On success we continue loading with the
+        // recovered handle instead of throwing.
+        const recovered = await this.tryLoadFromLkg(graphId, hmacKey, msg);
+        if (recovered) {
+          handle = recovered;
+        } else {
         const ts = Date.now();
         const quarantinedGai = `${this.graphPath(graphId)}.corrupt-${ts}`;
         const quarantinedBundle = `${this.bundlePath(graphId)}.corrupt-${ts}`;
@@ -1685,6 +1695,10 @@ export class GraphnosisHost {
         // then builds embeddings for the rebuilt/empty graph into an unrelated
         // cache. Deleting it is safe: it's derived data, always rebuildable.
         try { await fs.unlink(this.cachePath(graphId)); } catch { /* already gone */ }
+        await this.appendRecoveryLog({
+          event: 'quarantined', graphId, error: msg, sizeBytes: bytes!.length,
+          quarantinedAs: path.basename(quarantinedGai), lkgFallback: 'unavailable',
+        });
         console.error(
           `[graphnosis-host] quarantined corrupt engram '${graphId}': ` +
           `${msg}. Files moved to ${path.basename(quarantinedGai)} and ${path.basename(quarantinedBundle)}; ` +
@@ -1696,8 +1710,10 @@ export class GraphnosisHost {
         ) as NodeJS.ErrnoException;
         enoentErr.code = 'ENOENT';
         throw enoentErr;
+        }
+      } else {
+        throw e;
       }
-      throw e;
     }
     const sourceIndex = await this.loadBundle(graphId);
 
@@ -1890,7 +1906,27 @@ export class GraphnosisHost {
     // OS kill, crash). For a 20k-node engram that's 30+MB of ciphertext,
     // the write window is many seconds — wide enough that we've seen real
     // checksum-mismatch corruption in the wild (davinci-manual.gai, May 2026).
-    await writeFileAtomic(this.graphPath(graphId), Buffer.from(ct));
+    // Atomic write that also rolls the prior good .gai to .lkg, so a bad write
+    // can be rolled back here (verify below) or fallen back to at next load.
+    await writeFileAtomicWithBackup(this.graphPath(graphId), Buffer.from(ct), LKG_SUFFIX);
+
+    // Verify-after-write (large engrams only): re-read + reparse the bytes we
+    // just committed while the good in-memory graph is still here. If the file
+    // doesn't load back, roll the canonical file to last-known-good, log it,
+    // and fail loudly — instead of letting corruption surface at the next boot.
+    const verifyErr = await this.verifyGraphFileReadable(graphId, ct.length);
+    if (verifyErr) {
+      await this.appendRecoveryLog({
+        event: 'verify_after_write_failed', graphId, bytes: ct.length, error: verifyErr,
+      });
+      const restored = await this.restoreLkg(this.graphPath(graphId));
+      g.dirty = true; // keep dirty so a later save retries
+      throw new Error(
+        `save verification failed for engram '${redactId(graphId)}': ${verifyErr}` +
+        (restored ? ' — rolled back to last-known-good (.lkg)' : ' — no backup available to roll back'),
+      );
+    }
+
     // Migrate legacy: if a .aikg file from a pre-0.2.6 cortex still exists
     // alongside the new .gai we just wrote, remove it now that we've
     // successfully persisted the canonical file.
@@ -1900,7 +1936,7 @@ export class GraphnosisHost {
       this.key,
       this.salt,
     );
-    await writeFileAtomic(this.bundlePath(graphId), Buffer.from(bundleCt));
+    await writeFileAtomicWithBackup(this.bundlePath(graphId), Buffer.from(bundleCt), LKG_SUFFIX);
     await g.cache.save();
     g.dirty = false;
     // Per-graph mutation tick — bumps every successful save. Doubles
@@ -1910,6 +1946,99 @@ export class GraphnosisHost {
     const ts = Date.now();
     this.lastMutationAt.set(graphId, ts);
     this.mutationEvents.emit('mutation', { graphId, ts } satisfies MutationEvent);
+  }
+
+  // ── Integrity hardening: durable log, verify-after-write, .lkg fallback ────
+
+  /** Append a structured, STRUCTURAL-ONLY event to `<cortex>/recovery.log`
+   *  (never memory content) so corruption / recovery incidents are diagnosable
+   *  after the fact, rather than living only in ephemeral stderr. Best-effort:
+   *  a logging failure must never break the save/load it's annotating. */
+  private async appendRecoveryLog(event: Record<string, unknown>): Promise<void> {
+    try {
+      const line = JSON.stringify({ at: new Date().toISOString(), ...event }) + '\n';
+      await fs.appendFile(path.join(this.opts.cortexDir, 'recovery.log'), line, 'utf8');
+    } catch { /* diagnostics must never break the operation */ }
+  }
+
+  /** Re-read + decrypt + reparse the just-written .gai into a throwaway
+   *  instance to confirm it's loadable. Returns null on success, or the error
+   *  message. Gated by ciphertext size — only large engrams pay the reparse
+   *  cost (and only they have ever hit a size-dependent serialization fault). */
+  private lastVerifyAt: Map<GraphId, number> = new Map();
+
+  private async verifyGraphFileReadable(graphId: GraphId, ctLen: number): Promise<string | null> {
+    if (ctLen < VERIFY_AFTER_WRITE_MIN_BYTES) return null;
+    // Throttle per graph so a burst of saves doesn't reparse the file each time.
+    const now = Date.now();
+    if (now - (this.lastVerifyAt.get(graphId) ?? 0) < VERIFY_MIN_INTERVAL_MS) return null;
+    this.lastVerifyAt.set(graphId, now);
+    try {
+      const bytes = await fs.readFile(this.graphPath(graphId));
+      const plain = await decrypt(new Uint8Array(bytes), this.key);
+      // Throwaway graphId so the verify load can't clobber the live instance.
+      await this.opts.adapter.loadFromBuffer(`${graphId} verify`, plain, this.key);
+      return null;
+    } catch (e) {
+      return (e as Error).message ?? 'unknown error';
+    }
+  }
+
+  /** Restore `<target>.lkg` back over `<target>` (used when verify-after-write
+   *  fails). Returns true if a backup existed and was restored. */
+  private async restoreLkg(target: string): Promise<boolean> {
+    try {
+      await fs.rename(`${target}${LKG_SUFFIX}`, target);
+      return true;
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code !== 'ENOENT') {
+        console.error(`[graphnosis-host] could not restore ${target} from .lkg: ${(e as Error).message}`);
+      }
+      return false;
+    }
+  }
+
+  /** When the canonical .gai fails its integrity check on load, try the
+   *  last-known-good sibling (.lkg) before quarantining-to-empty. On success,
+   *  quarantines the bad .gai/.bundle pair and promotes the .lkg pair to
+   *  canonical, returning the loaded handle. Returns null if there's no usable
+   *  .lkg (caller then falls through to the existing quarantine path). */
+  private async tryLoadFromLkg(
+    graphId: GraphId,
+    hmacKey: Uint8Array,
+    badMsg: string,
+  ): Promise<GraphHandle | null> {
+    const gaiPath = this.graphPath(graphId);
+    const lkgPath = `${gaiPath}${LKG_SUFFIX}`;
+    if (!(await this.pathExists(lkgPath))) return null;
+    let handle: GraphHandle;
+    try {
+      const lkgBytes = await fs.readFile(lkgPath);
+      const lkgPlain = await decrypt(new Uint8Array(lkgBytes), this.key);
+      handle = await this.opts.adapter.loadFromBuffer(graphId, lkgPlain, hmacKey);
+    } catch (e) {
+      await this.appendRecoveryLog({
+        event: 'lkg_also_failed', graphId, badGaiError: badMsg, lkgError: (e as Error).message,
+      });
+      return null;
+    }
+    // Promote: quarantine the bad .gai/.bundle, restore the .lkg pair.
+    const ts = Date.now();
+    try { await fs.rename(gaiPath, `${gaiPath}.corrupt-${ts}`); } catch { /* may be gone */ }
+    try { await fs.rename(this.bundlePath(graphId), `${this.bundlePath(graphId)}.corrupt-${ts}`); } catch { /* may be gone */ }
+    try { await fs.rename(lkgPath, gaiPath); } catch (e) {
+      console.error(`[graphnosis-host] could not promote .lkg for '${redactId(graphId)}': ${(e as Error).message}`);
+    }
+    try { await fs.rename(`${this.bundlePath(graphId)}${LKG_SUFFIX}`, this.bundlePath(graphId)); } catch { /* bundle .lkg may not exist */ }
+    // The embedding cache belonged to the bad generation — drop it so it
+    // rebuilds for the restored graph instead of serving stale vectors.
+    try { await fs.unlink(this.cachePath(graphId)); } catch { /* already gone */ }
+    await this.appendRecoveryLog({ event: 'recovered_from_lkg', graphId, badGaiError: badMsg });
+    console.error(
+      `[graphnosis-host] engram '${redactId(graphId)}' failed integrity (${badMsg}); ` +
+      `auto-recovered from last-known-good (.lkg). Bad files quarantined as .corrupt-${ts}.`,
+    );
+    return handle;
   }
 
   /** Subscribe to graph mutations. Returns an unsubscribe function. */
@@ -5645,6 +5774,53 @@ async function writeFileAtomic(target: string, data: Buffer): Promise<void> {
     await fh.sync();
   } finally {
     await fh.close();
+  }
+  await fs.rename(tmp, target);
+}
+
+/** Suffix for the rolling last-known-good sibling of a graph/bundle file. A
+ *  separate namespace from purge's `.bak` (which startup recovery treats as a
+ *  transient purge artifact) so the two never collide. */
+const LKG_SUFFIX = '.lkg';
+
+/** Verify-after-write re-reads + reparses the just-written .gai. That costs a
+ *  full parse, so we only do it for engrams big enough to matter — small ones
+ *  parse instantly and have never hit a size-dependent serialization failure.
+ *  8 MB sits comfortably below the ~17 MB checksum-threshold that bit large
+ *  engrams, so anything approaching the danger zone is covered. */
+const VERIFY_AFTER_WRITE_MIN_BYTES = 8 * 1024 * 1024;
+
+/** Per-graph throttle for verify-after-write. A burst ingest (docs ingest,
+ *  connectors, op-log recovery) can fire hundreds of save()s on one engram in
+ *  quick succession; re-reading + reparsing a 12 MB+ file on every one of them
+ *  starves the sidecar (observed: `docs:ingest` timing out at 300s). Verifying
+ *  at most once per this interval per graph keeps the integrity spot-check
+ *  without the per-save cliff — anything missed in the window is still caught
+ *  at next load by the .lkg fallback. */
+const VERIFY_MIN_INTERVAL_MS = 20_000;
+
+/**
+ * Like writeFileAtomic, but first preserves the current good file as a
+ * last-known-good sibling (`<target>.lkg`). Sequence: write new bytes to a
+ * unique fsync'd tmp, rename the current file aside to `.lkg`, then rename tmp
+ * into place. The window where `target` is briefly absent is two back-to-back
+ * metadata renames (microseconds) — NOT the multi-second body write — and a
+ * crash there still leaves the `.lkg` for loadGraph's fallback to recover.
+ */
+async function writeFileAtomicWithBackup(target: string, data: Buffer, lkgSuffix: string): Promise<void> {
+  const tmp = `${target}.tmp-${process.pid}-${Date.now()}-${randomBytes(4).toString('hex')}`;
+  const fh = await fs.open(tmp, 'w', 0o600);
+  try {
+    await fh.writeFile(data);
+    await fh.sync();
+  } finally {
+    await fh.close();
+  }
+  // Roll the current good file to .lkg (overwrites any prior .lkg atomically).
+  try {
+    await fs.rename(target, `${target}${lkgSuffix}`);
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e; // first-ever write: nothing to back up
   }
   await fs.rename(tmp, target);
 }
