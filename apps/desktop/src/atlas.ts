@@ -225,6 +225,16 @@ const SUPPRESS_AFTER_MOVE_MS = 5_000;
 // Below this the auto-hide tier still applies (e.g. semantic > 5 K is
 // hidden by default but the user can re-enable it up to this ceiling).
 const EDGE_HARD_LOCK_THRESHOLD = 10_000;
+
+/** Render at most this many edges of any single category. Dense categories
+ *  (e.g. semantic) are SAMPLED down to this (strongest by weight) rather than
+ *  hard-hidden — the graph stays "wired" without a 50k-edge hairball or cost. */
+const EDGE_SAMPLE_CAP = 5_000;
+
+/** How long to keep existing nodes pinned after an incremental (ingest) add,
+ *  giving the new source's nodes time to settle before the whole graph is
+ *  freed again. */
+const INCREMENTAL_UNPIN_MS = 2_500;
 // How long after an empty-canvas click. Much longer — clicking empty
 // space is a deliberate "stop" gesture, the user wants stillness.
 const SUPPRESS_AFTER_CLICK_MS = 30_000;
@@ -427,6 +437,8 @@ export class Atlas {
   };
   /** Per-category edge counts, refreshed in setEdges. Used by isCategoryHardLocked(). */
   private categoryEdgeCounts = new Map<EdgeCategory, number>();
+  /** Categories whose edges were sampled down to EDGE_SAMPLE_CAP this rebuild. */
+  private sampledCategories = new Set<EdgeCategory>();
   /** Source visibility — keyed by sourceFile (or empty string for "no source"). */
   private sourceVisible = new Map<string, boolean>();
   /**
@@ -611,6 +623,8 @@ export class Atlas {
    * the elastic wobble is visible even when d3 is sleeping between reheats.
    */
   private jellyVelocities = new Map<string, { vx: number; vy: number; vz: number }>();
+  /** Pending release of incremental-add pins (see setNodes pinExisting). */
+  private incrementalUnpinTimer: ReturnType<typeof setTimeout> | null = null;
   /**
    * Per-node pulsation state for "Living Brain" size animation.
    * Each node oscillates between 1× and 2× its normal size with a random
@@ -1787,6 +1801,10 @@ export class Atlas {
 
   private nodeTipEl: HTMLDivElement | null = null;
   private nodeTipText: string | null = null;
+  /** True only while the pointer is actually over the atlas canvas — gates the
+   *  hover tooltip so moving nodes (settle/ingest) drifting under a stale
+   *  raycaster position don't flash labels when the mouse isn't on the graph. */
+  private pointerInsideCanvas = false;
 
   private initNodeTooltip(): void {
     const container = this.opts.container;
@@ -1801,7 +1819,10 @@ export class Atlas {
     // onNodeHover: set content (library fires this on raycaster hits).
     this.graph.onNodeHover((node) => {
       const n = node as AtlasNode | null;
-      if (!n) {
+      // Suppress unless the pointer is genuinely over the canvas — the library
+      // re-raycasts every frame from the last pointer position, so moving nodes
+      // would otherwise flash labels with the mouse nowhere near the graph.
+      if (!n || !this.pointerInsideCanvas) {
         this.nodeTipText = null;
         tip.style.display = 'none';
         return;
@@ -1830,7 +1851,9 @@ export class Atlas {
       tip.style.top  = `${Math.max(0, top)}px`;
     });
 
+    container.addEventListener('mouseenter', () => { this.pointerInsideCanvas = true; });
     container.addEventListener('mouseleave', () => {
+      this.pointerInsideCanvas = false;
       this.nodeTipText = null;
       if (this.nodeTipEl) this.nodeTipEl.style.display = 'none';
     });
@@ -1966,8 +1989,26 @@ export class Atlas {
     }
   }
 
-  setNodes(nodes: AtlasNode[]): void {
+  setNodes(nodes: AtlasNode[], opts?: { pinExisting?: boolean }): void {
     this.allNodes = nodes.map((n) => ({ ...n }));
+    // Clear any pending pin-release from a prior incremental add — this push
+    // re-decides what's pinned.
+    if (this.incrementalUnpinTimer !== null) {
+      clearTimeout(this.incrementalUnpinTimer);
+      this.incrementalUnpinTimer = null;
+    }
+    // Incremental ingest mode: pin nodes that already have a settled position
+    // (carried via x/y/z) so the reheat below moves ONLY the new, position-less
+    // nodes — a freshly ingested source spawns + settles in place while the
+    // rest of the already-laid-out graph stays put. Released after a settle
+    // window (below) so future layouts / drift still work.
+    if (opts?.pinExisting) {
+      for (const n of this.allNodes as Array<AtlasNode & { fx?: number | null; fy?: number | null; fz?: number | null; x?: number; y?: number; z?: number }>) {
+        if (n.x !== undefined && n.y !== undefined && n.z !== undefined) {
+          n.fx = n.x; n.fy = n.y; n.fz = n.z;
+        }
+      }
+    }
     // Layout breathing room — scales link distance, repulsion strength,
     // and collision-bubble radius by sqrt(N/20).
     //   20 nodes  → ~1.0×
@@ -2134,6 +2175,16 @@ export class Atlas {
     // setEdges() runs) which pulled everything into tight cluster blobs.
     void newNodeCount; // still tracked for future use; not needed for branching
     this.graph.d3ReheatSimulation();
+    // Incremental add: release the pins once the new source has settled, so the
+    // graph isn't permanently frozen (alive drift + future layouts work again).
+    if (opts?.pinExisting) {
+      this.incrementalUnpinTimer = setTimeout(() => {
+        this.incrementalUnpinTimer = null;
+        for (const n of this.graph.graphData().nodes as Array<{ fx?: number | null; fy?: number | null; fz?: number | null }>) {
+          n.fx = null; n.fy = null; n.fz = null;
+        }
+      }, INCREMENTAL_UNPIN_MS);
+    }
     // STAGE A (task #42): (re)build the instanced Points node layer alongside
     // the library spheres. Positions are 0 here and snap into place once the
     // sim assigns x/y/z — syncNodePointsFrame() copies them every frame.
@@ -2405,8 +2456,19 @@ export class Atlas {
     // its id so d3 re-resolves it, and drop links whose endpoints no longer
     // exist (e.g. a stale predicted overlay lingering after a graph switch).
     const validIds = new Set(this.allNodes.map((n) => n.id));
+
+    // True per-category counts from the FULL real-link set — for the legend.
+    this.categoryEdgeCounts.clear();
+    for (const l of this.realLinks) {
+      this.categoryEdgeCounts.set(l.category, (this.categoryEdgeCounts.get(l.category) ?? 0) + 1);
+    }
+
+    // Sample dense categories to EDGE_SAMPLE_CAP (strongest by weight) instead
+    // of hard-hiding them — this caps the render AND the sim/visibility cost.
+    const sampledReal = this.sampleLinksByCategory(this.realLinks);
+
     const merged: AtlasLink[] = [];
-    for (const l of [...this.realLinks, ...this.predictedLinks]) {
+    for (const l of [...sampledReal, ...this.predictedLinks]) {
       const s = typeof l.source === 'string' ? l.source : (l.source as AtlasNode).id;
       const t = typeof l.target === 'string' ? l.target : (l.target as AtlasNode).id;
       if (!validIds.has(s) || !validIds.has(t)) continue;
@@ -2416,31 +2478,30 @@ export class Atlas {
     }
     this.allLinks = merged;
     this.computeEdgeShapes();
-    this.computeNodeDegrees();
+    this.computeNodeDegrees(); // reads realLinks (full) so sizes reflect true connectivity
     this.computeSubAnchors(); // needs both allNodes + allLinks — called here
 
-    // Recompute per-category counts used by isCategoryHardLocked().
-    this.categoryEdgeCounts.clear();
-    for (const l of this.realLinks) {
-      this.categoryEdgeCounts.set(l.category, (this.categoryEdgeCounts.get(l.category) ?? 0) + 1);
-    }
-
-    // Hard-lock any category that exceeds EDGE_HARD_LOCK_THRESHOLD: force
-    // visibility off and never allow it to be re-enabled by any UI action.
-    // Below the threshold, apply per-category auto-hide rules (e.g. semantic
-    // edges hidden by default when > 5 K but below the hard-lock ceiling).
-    for (const [cat, count] of this.categoryEdgeCounts) {
-      if (count > EDGE_HARD_LOCK_THRESHOLD) {
-        this.categoryVisible[cat as EdgeCategory] = false; // enforce lock
-      } else if (cat === 'semantic' && count > 5000) {
-        // Auto-hide tier: large but below hard-lock — off by default, user can re-enable.
-        if (this.categoryVisible['semantic']) this.categoryVisible['semantic'] = false;
-      } else if (cat === 'semantic' && count <= 5000) {
-        if (!this.categoryVisible['semantic']) this.categoryVisible['semantic'] = true;
-      }
-    }
-
     this.refreshGraph();
+  }
+
+  /** Per category: keep all links if under EDGE_SAMPLE_CAP, else the strongest
+   *  EDGE_SAMPLE_CAP by weight (deterministic — stable across rebuilds, no
+   *  flicker). Records which categories were sampled for the legend note. */
+  private sampleLinksByCategory(links: AtlasLink[]): AtlasLink[] {
+    const byCat = new Map<EdgeCategory, AtlasLink[]>();
+    for (const l of links) {
+      const arr = byCat.get(l.category);
+      if (arr) arr.push(l); else byCat.set(l.category, [l]);
+    }
+    this.sampledCategories.clear();
+    const out: AtlasLink[] = [];
+    for (const [cat, arr] of byCat) {
+      if (arr.length <= EDGE_SAMPLE_CAP) { out.push(...arr); continue; }
+      const sorted = [...arr].sort((a, b) => (b.weight ?? 0) - (a.weight ?? 0));
+      for (let i = 0; i < EDGE_SAMPLE_CAP; i++) out.push(sorted[i]!);
+      this.sampledCategories.add(cat);
+    }
+    return out;
   }
 
   /**
@@ -2602,7 +2663,9 @@ export class Atlas {
    */
   private computeNodeDegrees(): void {
     this.nodeDegree.clear();
-    for (const l of this.allLinks) {
+    // Read the FULL real-link set (not the sampled working set) so node sizes
+    // reflect true connectivity even when dense categories are sampled down.
+    for (const l of this.realLinks) {
       if (l.category === 'predicted') continue; // node size reflects real connectivity only
       const sId = typeof l.source === 'string' ? l.source : (l.source as AtlasNode).id;
       const tId = typeof l.target === 'string' ? l.target : (l.target as AtlasNode).id;
@@ -2856,10 +2919,17 @@ export class Atlas {
 
   // ── Filters (UI calls these from the legend) ─────────────────────────
 
-  /** True when a category has more than EDGE_HARD_LOCK_THRESHOLD edges.
-   *  Hard-locked categories are never rendered and cannot be toggled on. */
-  isCategoryHardLocked(category: EdgeCategory): boolean {
-    return (this.categoryEdgeCounts.get(category) ?? 0) > EDGE_HARD_LOCK_THRESHOLD;
+  /** Hard-locking is deprecated — dense categories are now SAMPLED to
+   *  EDGE_SAMPLE_CAP and shown, not hidden — so nothing is hard-locked. Kept as
+   *  a stable always-false seam for the call sites that still reference it. */
+  isCategoryHardLocked(_category: EdgeCategory): boolean {
+    return false;
+  }
+
+  /** Whether a category's edges were sampled down (rendered count < true
+   *  count) — for the legend's "N shown" note. */
+  isCategorySampled(category: EdgeCategory): boolean {
+    return this.sampledCategories.has(category);
   }
 
   setCategoryVisible(category: EdgeCategory, visible: boolean): void {
@@ -2959,7 +3029,11 @@ export class Atlas {
     const out: Record<EdgeCategory, number> = {
       reasoning: 0, structure: 0, social: 0, temporal: 0, semantic: 0, identity: 0, predicted: 0,
     };
-    for (const l of this.allLinks) out[l.category] += 1;
+    // TRUE counts from realLinks (+ predicted), NOT the sampled working set
+    // (allLinks) — otherwise a sampled category reports its cap (5,000) as its
+    // total. The legend pairs this with isCategorySampled() to show "5k / N".
+    for (const l of this.realLinks) out[l.category] += 1;
+    for (const l of this.predictedLinks) out[l.category] += 1;
     return out;
   }
 
