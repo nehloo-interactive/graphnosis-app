@@ -3,6 +3,7 @@ import { fileURLToPath } from 'node:url';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import mammoth from 'mammoth';
+import { unzipSync, strFromU8 } from 'fflate';
 // jsdom + Readability are loaded lazily inside ingestWeb() so that the
 // sidecar's *startup* doesn't pull jsdom into the import graph. jsdom has
 // a runtime require() of an absolute path to its xhr-sync-worker file
@@ -45,6 +46,8 @@ const JSON_EXTS = new Set(['.json']);
 const CSV_EXTS = new Set(['.csv']);
 const PDF_EXTS = new Set(['.pdf']);
 const DOCX_EXTS = new Set(['.docx']);
+const XLSX_EXTS = new Set(['.xlsx']);
+const PPTX_EXTS = new Set(['.pptx']);
 
 export interface IngestFileOpts {
   onProgress?: (pagesProcessed: number, totalPages: number) => void;
@@ -98,12 +101,23 @@ export async function ingestFile(host: GraphnosisHost, graphId: string, filePath
     // bytes as "text", which produced 124 nodes of binary garbage before
     // this path existed.
     input = await convertDocxToMarkdownInput(filePath); // .docx parse is JS-only; wrap covers host.ingest below
-  } else if (ext === '.doc') {
-    // Legacy binary .doc (pre-2007). mammoth only handles .docx; we don't
-    // bundle a .doc parser. Fail loudly so the user knows to convert/re-save.
+  } else if (XLSX_EXTS.has(ext)) {
+    // Excel: extract cell values to CSV-ish text (one row per line) so the
+    // SDK's csv parser chunks by row. We pull text/numbers only — formulas,
+    // styling, and charts are dropped (irrelevant to recall).
+    input = { kind: 'csv', content: await xlsxToCsv(filePath), sourceRef: filePath };
+  } else if (PPTX_EXTS.has(ext)) {
+    // PowerPoint: extract slide text (every <a:t> run) as markdown, one
+    // "## Slide N" section per slide, so recall can cite individual slides.
+    input = { kind: 'markdown', content: await pptxToMarkdown(filePath), sourceRef: filePath };
+  } else if (ext === '.doc' || ext === '.xls' || ext === '.ppt') {
+    // Legacy binary Office formats (pre-2007 OLE compound files) — a different
+    // beast from the modern zip-XML .docx/.xlsx/.pptx we parse. We don't bundle
+    // an OLE parser. Fail loudly so the user knows to convert/re-save.
+    const modern = ext + 'x';
     throw new Error(
-      `Legacy .doc files aren't supported — open the file in Word/Pages/LibreOffice ` +
-      `and Save As .docx, then try again. (File: ${filePath})`,
+      `Legacy ${ext} files aren't supported — open the file in Office/Pages/Numbers/Keynote/LibreOffice ` +
+      `and Save As ${modern}, then try again. (File: ${filePath})`,
     );
   } else {
     // Best-effort: treat unknown as text.
@@ -207,6 +221,91 @@ async function convertDocxToMarkdownInput(filePath: string): Promise<AppendDocum
     );
   }
   return { kind: 'html', content: html, sourceRef: filePath };
+}
+
+// ── OOXML (xlsx / pptx) text extraction ──────────────────────────────────────
+// Both are ZIP archives of XML. We pull text only (cell values / slide runs) —
+// enough for embedding + recall. fflate is pure-JS (no native/worker paths, so
+// it's safe under bun --compile, unlike the pdf worker).
+
+/** Read a zip file into a { entryPath: bytes } map. */
+async function readZipEntries(filePath: string): Promise<Record<string, Uint8Array>> {
+  const buf = await fs.readFile(filePath);
+  return unzipSync(new Uint8Array(buf));
+}
+
+function decodeXmlEntities(s: string): string {
+  return s
+    .replace(/&lt;/g, '<').replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"').replace(/&apos;/g, "'")
+    .replace(/&#(\d+);/g, (_, n) => String.fromCodePoint(Number(n)))
+    .replace(/&amp;/g, '&'); // last, so &amp;lt; → &lt; not <
+}
+
+function csvEscape(s: string): string {
+  return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+}
+
+/** Extract every <X:t> (or <t>) text run inside an XML blob, in order. */
+function extractTextRuns(xml: string, tag: string): string[] {
+  const re = new RegExp(`<${tag}\\b[^>]*>([\\s\\S]*?)<\\/${tag}>`, 'g');
+  return [...xml.matchAll(re)].map((m) => decodeXmlEntities(m[1] ?? ''));
+}
+
+/** Excel → CSV-ish text (one row per line). Resolves shared strings; keeps
+ *  text + numbers; ignores formulas/styling. Multiple sheets are concatenated. */
+async function xlsxToCsv(filePath: string): Promise<string> {
+  const entries = await readZipEntries(filePath);
+  // Shared-string table: each <si> is one logical string (its <t> runs joined).
+  const shared: string[] = [];
+  const ss = entries['xl/sharedStrings.xml'];
+  if (ss) {
+    for (const si of strFromU8(ss).match(/<si>[\s\S]*?<\/si>/g) ?? []) {
+      shared.push(extractTextRuns(si, 't').join(''));
+    }
+  }
+  const sheetKeys = Object.keys(entries)
+    .filter((k) => /^xl\/worksheets\/sheet\d+\.xml$/.test(k))
+    .sort((a, b) => Number(a.match(/sheet(\d+)/)?.[1] ?? 0) - Number(b.match(/sheet(\d+)/)?.[1] ?? 0));
+  const lines: string[] = [];
+  for (const key of sheetKeys) {
+    const xml = strFromU8(entries[key]!);
+    for (const row of xml.match(/<row\b[^>]*>[\s\S]*?<\/row>/g) ?? []) {
+      const cells: string[] = [];
+      // <c ...>...</c> or self-closing <c .../> (empty cell)
+      for (const cm of row.matchAll(/<c\b([^>]*?)(?:\/>|>([\s\S]*?)<\/c>)/g)) {
+        const attrs = cm[1] ?? '';
+        const inner = cm[2] ?? '';
+        const t = attrs.match(/\bt="([^"]*)"/)?.[1];
+        let val = '';
+        const v = inner.match(/<v>([\s\S]*?)<\/v>/);
+        if (t === 's' && v) val = shared[Number(v[1] ?? -1)] ?? '';
+        else if (t === 'inlineStr' || t === 'str') val = extractTextRuns(inner, 't').join('');
+        else if (v) val = decodeXmlEntities(v[1] ?? '');
+        cells.push(val);
+      }
+      if (cells.some((c) => c.length > 0)) lines.push(cells.map(csvEscape).join(','));
+    }
+  }
+  const out = lines.join('\n').trim();
+  if (!out) throw new Error(`No readable text found in spreadsheet ${filePath}.`);
+  return out;
+}
+
+/** PowerPoint → markdown, one "## Slide N" section per slide (text runs only). */
+async function pptxToMarkdown(filePath: string): Promise<string> {
+  const entries = await readZipEntries(filePath);
+  const slideKeys = Object.keys(entries)
+    .filter((k) => /^ppt\/slides\/slide\d+\.xml$/.test(k))
+    .sort((a, b) => Number(a.match(/slide(\d+)/)?.[1] ?? 0) - Number(b.match(/slide(\d+)/)?.[1] ?? 0));
+  const sections: string[] = [];
+  slideKeys.forEach((key, i) => {
+    const runs = extractTextRuns(strFromU8(entries[key]!), 'a:t').filter((s) => s.trim().length > 0);
+    if (runs.length) sections.push(`## Slide ${i + 1}\n\n${runs.join('\n')}`);
+  });
+  const out = sections.join('\n\n').trim();
+  if (!out) throw new Error(`No readable text found in presentation ${filePath}.`);
+  return out;
 }
 
 export interface WebIngestInput {
