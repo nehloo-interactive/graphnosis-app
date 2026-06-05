@@ -164,7 +164,7 @@
     <div class="mb-12">
       <h2 class="text-3xl sm:text-4xl lg:text-5xl font-black text-white text-center mb-4">What AI cloud and local clients can do with Graphnosis...</h2>
       <p class="text-[#c4c6d6] text-base text-center max-w-2xl mx-auto mb-10">
-        All <span class="text-[#f0f0f5] font-semibold">45 MCP tools</span> across 10 functional categories. The deterministic + approximate sets work out of the box;
+        All <span class="text-[#f0f0f5] font-semibold">47 MCP tools</span> across 10 functional categories. The deterministic + approximate sets work out of the box;
         the conditional and non-deterministic sets use the optional local LLM (or Neural Network). Every call is visible in the audit log.
         Click any tool for parameters, return shape, and example prompts.
       </p>
@@ -260,6 +260,8 @@
             { name: 'skill_history', desc: 'Snapshot history of a skill — every training run' },
             { name: 'rollback_skill', desc: 'Revert a skill to a prior snapshot' },
             { name: 'skill_vitality', desc: '0–100 health score for one skill — staleness, anchor coverage' },
+            { name: 'save_skill_run', desc: 'Persist a multi-skill run’s captured variables + progress' },
+            { name: 'resume_skill_run', desc: 'Resume a saved skill run in a later session' },
           ],
         },
         {
