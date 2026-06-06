@@ -1,0 +1,17 @@
+{
+  "name": "@graphnosis-app/obsidian-plugin",
+  "version": "0.1.0",
+  "license": "Apache-2.0",
+  "private": true,
+  "scripts": {
+    "build": "esbuild src/main.ts --bundle --platform=browser --external:obsidian --outfile=main.js --format=cjs --sourcemap",
+    "build:prod": "esbuild src/main.ts --bundle --platform=browser --external:obsidian --outfile=main.js --format=cjs --minify",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "esbuild": "^0.24.0",
+    "obsidian": "^1.8.0",
+    "typescript": "^5.7.0"
+  }
+}

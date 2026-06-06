@@ -1,0 +1,67 @@
+.graphnosis-recall-modal .modal-content {
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  min-height: 300px;
+  max-height: 70vh;
+}
+
+.graphnosis-search-input {
+  width: 100%;
+  padding: 12px 16px;
+  font-size: 16px;
+  border: none;
+  border-bottom: 1px solid var(--background-modifier-border);
+  background: var(--background-primary);
+  color: var(--text-normal);
+  outline: none;
+  box-sizing: border-box;
+}
+
+.graphnosis-results {
+  overflow-y: auto;
+  flex: 1;
+  padding: 8px;
+}
+
+.graphnosis-card {
+  padding: 10px 12px;
+  margin-bottom: 6px;
+  border-radius: 6px;
+  background: var(--background-secondary);
+  cursor: pointer;
+  font-size: 13px;
+  color: var(--text-normal);
+  line-height: 1.5;
+}
+
+.graphnosis-card:hover {
+  background: var(--background-modifier-hover);
+}
+
+.graphnosis-card p {
+  margin: 0;
+  white-space: pre-wrap;
+}
+
+.graphnosis-loading,
+.graphnosis-empty,
+.graphnosis-error {
+  padding: 16px;
+  color: var(--text-muted);
+  font-size: 13px;
+  text-align: center;
+}
+
+.graphnosis-error {
+  color: var(--text-error);
+}
+
+/* Status bar indicator */
+.status-bar-item.graphnosis-healthy {
+  color: var(--color-green);
+}
+
+.status-bar-item.graphnosis-degraded {
+  color: var(--text-muted);
+}
