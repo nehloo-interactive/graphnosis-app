@@ -790,6 +790,14 @@ async function main(): Promise<void> {
   // re-enable Pro and the next poll resumes from where it left off.
   //
   // Errors are caught + logged but never crash the loop; one bad skill
+  // Periodic LRU eviction sweep — unloads cold idle engrams so a large
+  // multi-engram cortex doesn't keep every embedding index resident (the cause
+  // of the ~20 GB GC-stall wedges). Access-driven eviction also runs inline via
+  // host.ensureLoaded, but this timer reclaims engrams that just went idle with
+  // no new access. Cheap: clean graphs unload instantly; dirty/active ones are
+  // skipped.
+  setInterval(() => { void host.maybeEvict(); }, 30_000).unref();
+
   // does not break retraining for other skills.
   const SKILL_AUTORETRAIN_POLL_MS = 5 * 60 * 1000;
   setInterval(() => {

@@ -201,6 +201,16 @@ export class GraphnosisHost {
   private key: Uint8Array;
   private salt: Uint8Array;
   private readonly graphs = new Map<GraphId, LoadedGraph>();
+  /** LRU: last user/AI access time per engram. Background brain passes do NOT
+   *  bump this, so an engram only the brain touches can still go cold + evict.
+   *  Drives maybeEvict()'s coldest-first ordering + the idle-grace guard. */
+  private readonly lastAccessAt = new Map<GraphId, number>();
+  /** Engrams that have successfully loaded at least once this session. An
+   *  LRU-EVICTED engram stays in this set — it's still available (reloads
+   *  transparently on access), so graphsWithMetadata reports it as loaded
+   *  rather than "pending", and the UI doesn't grey/disable it in the picker.
+   *  Only a genuine delete removes it. */
+  private readonly everLoaded = new Set<GraphId>();
   /**
    * Running count of user-initiated corrections per graph. Counts ONLY
    * `editNode` and `supersede` op-log events — these come exclusively from
@@ -1201,7 +1211,10 @@ export class GraphnosisHost {
     if (!opts.includeUnloaded) return loadedRows;
     const pendingRows = Object.entries(this.settings.graphMetadata)
       .filter(([graphId]) => !loadedSet.has(graphId))
-      .map(([graphId, metadata]) => ({ graphId, metadata, loaded: false }));
+      // An LRU-evicted engram (everLoaded) is still available — report it as
+      // loaded so the picker doesn't grey/disable it. Only never-yet-loaded
+      // engrams (genuine boot-pending / failed) report loaded:false.
+      .map(([graphId, metadata]) => ({ graphId, metadata, loaded: this.everLoaded.has(graphId) }));
     return [...loadedRows, ...pendingRows];
   }
 
@@ -1312,6 +1325,65 @@ export class GraphnosisHost {
     }
   }
 
+  // ── LRU memory eviction ────────────────────────────────────────────────
+  // A large multi-engram cortex holds every loaded engram's embedding index
+  // resident (≈GBs each), so 20+ engrams pin enough RAM to trigger JSC
+  // stop-the-world GC stalls that freeze the IPC loop. These keep at most
+  // GRAPH_RESIDENT_CAP engrams in memory; the rest are unloaded (disk intact)
+  // and lazily reloaded on next access. Embedding VECTORS persist in the .gai,
+  // so a reload is a parse — never a re-embed.
+
+  /** Record user/AI access to an engram (LRU recency). Called from the IPC
+   *  entry for graphId-bearing methods — NOT from background brain passes, so
+   *  brain-only engrams can still go cold and be evicted. */
+  touchGraph(graphId: GraphId): void {
+    this.lastAccessAt.set(graphId, Date.now());
+  }
+
+  /** Ensure an engram is resident before a user/AI op touches it (reloading it
+   *  if LRU eviction unloaded it). Tolerant: a genuinely missing engram is left
+   *  for the caller's must() to report "Graph not loaded" as before. */
+  async ensureLoaded(graphId: GraphId): Promise<void> {
+    this.touchGraph(graphId);
+    if (this.graphs.has(graphId)) return;
+    try { await this.loadGraph(graphId); }
+    catch { /* engram may not exist; caller surfaces it normally */ }
+    void this.maybeEvict();
+  }
+
+  /** Unload a clean, idle engram from memory (disk untouched) so it can lazily
+   *  reload later. No-op if dirty, mid-embed-build, or already gone — we never
+   *  drop unsaved work or interrupt a cold-load. */
+  async unloadGraph(graphId: GraphId): Promise<void> {
+    const g = this.graphs.get(graphId);
+    if (!g || g.dirty || g.embeddingsBuilding) return;
+    try { await g.cache.save(); } catch { /* best-effort embedding-cache flush */ }
+    this.graphs.delete(graphId);
+    this.lastAccessAt.delete(graphId);
+    dbg(`[host] evicted engram[${redactId(graphId)}] from memory (LRU) — lazy-reloads on next access`);
+  }
+
+  /** LRU sweep: while more than GRAPH_RESIDENT_CAP engrams are resident, unload
+   *  the coldest eligible ones (clean, not embed-building, idle > GRAPH_IDLE_MS).
+   *  Run after each load + on a periodic timer (see main.ts). */
+  async maybeEvict(): Promise<void> {
+    if (this.graphs.size <= GRAPH_RESIDENT_CAP) return;
+    const now = Date.now();
+    const evictable = [...this.graphs.keys()]
+      .filter((id) => {
+        const g = this.graphs.get(id)!;
+        return !g.dirty && !g.embeddingsBuilding
+          && now - (this.lastAccessAt.get(id) ?? 0) > GRAPH_IDLE_MS;
+      })
+      .sort((a, b) => (this.lastAccessAt.get(a) ?? 0) - (this.lastAccessAt.get(b) ?? 0)); // coldest first
+    let over = this.graphs.size - GRAPH_RESIDENT_CAP;
+    for (const id of evictable) {
+      if (over <= 0) break;
+      await this.unloadGraph(id);
+      over--;
+    }
+  }
+
   /**
    * Permanently delete a graph and all its on-disk files. The graph is removed
    * from the in-memory map and from settings.graphMetadata.
@@ -1325,6 +1397,8 @@ export class GraphnosisHost {
   async deleteGraph(graphId: GraphId): Promise<void> {
     // Remove from in-memory graph map first — stops any in-flight reads.
     this.graphs.delete(graphId);
+    this.everLoaded.delete(graphId); // truly gone — no longer "available"
+    this.lastAccessAt.delete(graphId);
 
     // Delete every on-disk artifact for this graph, including the legacy
     // .aikg path (pre-0.2.6 cortexes) so it doesn't get rediscovered on
@@ -1340,6 +1414,10 @@ export class GraphnosisHost {
       `${this.cachePath(graphId)}.bak`,
       `${this.graphPath(graphId)}${LKG_SUFFIX}`,
       `${this.bundlePath(graphId)}${LKG_SUFFIX}`,
+      // Per-engram local-LLM overlay log (`<graphId>.gll`, sits alongside the
+      // .gai). Was being orphaned on delete — left behind as a ghost file even
+      // though the engram is gone.
+      path.join(path.dirname(this.graphPath(graphId)), `${graphId}.gll`),
     ];
     for (const p of candidates) {
       try { await fs.unlink(p); } catch (e) {
@@ -1618,6 +1696,7 @@ export class GraphnosisHost {
     }
     const handle = await this.opts.adapter.create(graphId);
     const cache = new EmbeddingCache({ path: this.cachePath(graphId), key: this.key, salt: this.salt });
+    this.everLoaded.add(graphId); // newly created engram is available (survives LRU evict)
     this.graphs.set(graphId, {
       handle,
       sourceIndex: new SourceIndex(),
@@ -1735,6 +1814,7 @@ export class GraphnosisHost {
     const cache = new EmbeddingCache({ path: this.cachePath(graphId), key: this.key, salt: this.salt });
     const entry: LoadedGraph = { handle, sourceIndex, cache, dirty: false, embeddingsBuilding: null };
     this.graphs.set(graphId, entry);
+    this.everLoaded.add(graphId); // mark available even after a future LRU evict
     this.correctionsCount.set(graphId, 0);
 
     // ── Background: load the embedding cache, then kick off rebuild ────────
@@ -1940,9 +2020,14 @@ export class GraphnosisHost {
    *  the tracker on completion (only if we're still the current one). */
   private startSave(graphId: GraphId): Promise<void> {
     const run = this.runSaveCapped(graphId);
-    const tracked: Promise<void> = run.finally(() => {
-      if (this.saveRunning.get(graphId) === tracked) this.saveRunning.delete(graphId);
-    });
+    // `tracked` is bookkeeping only and is never awaited; the real error reaches
+    // the caller via the returned `run`. Swallow on `tracked` so a failed save
+    // can't surface as an unhandledRejection from this un-awaited chain.
+    const tracked: Promise<void> = run
+      .catch(() => { /* surfaced to the caller via the awaited `run` */ })
+      .finally(() => {
+        if (this.saveRunning.get(graphId) === tracked) this.saveRunning.delete(graphId);
+      });
     this.saveRunning.set(graphId, tracked);
     return run;
   }
@@ -1966,8 +2051,12 @@ export class GraphnosisHost {
   }
 
   private async saveInner(graphId: GraphId): Promise<void> {
-    const g = this.must(graphId);
-    if (!g.dirty) return;
+    // Skip silently if the graph is no longer loaded — it was deleted/unloaded
+    // (e.g. the user removed the engram while a connector batch was mid-flight).
+    // There's nothing to persist, and throwing here would surface as an
+    // unhandledRejection from the un-awaited save bookkeeping promise.
+    const g = this.graphs.get(graphId);
+    if (!g || !g.dirty) return;
     await fs.mkdir(path.dirname(this.graphPath(graphId)), { recursive: true });
     const buf = await this.opts.adapter.toBuffer(g.handle, this.key);
     const ct = await encrypt(buf, this.key, this.salt);
@@ -2174,7 +2263,7 @@ export class GraphnosisHost {
     kind: SourceRecord['kind'],
     ref: string,
     input: AppendDocumentInput,
-    opts?: { addedBy?: string; triggeredBy?: string; skipAutoRelink?: boolean },
+    opts?: { addedBy?: string; triggeredBy?: string; skipAutoRelink?: boolean; skipSave?: boolean },
   ): Promise<SourceRecord> {
     const g = this.must(graphId);
     const sourceId = makeSourceId(kind, ref);
@@ -2291,7 +2380,14 @@ export class GraphnosisHost {
       console.error(`[graphnosis-host] content cache write failed for ${sourceId}: ${(e as Error).message}`);
     }
 
-    await this.save(graphId);
+    // Per-file save is a FULL-engram toBuffer+encrypt+write. In a batch ingest
+    // (connector vault, bulk import) that's O(n²) serialization on a growing
+    // engram — the dominant CPU + off-heap-Buffer churn behind the post-ingest
+    // GC stalls. Batch callers pass skipSave:true and call save(graphId) ONCE
+    // at the end of the batch instead. Durability is unaffected: the op-log
+    // already recorded this ingest above, so a crash before the batch save
+    // replays from the op-log.
+    if (!opts?.skipSave) await this.save(graphId);
     // Notify the optional file-watcher so it can start watching this
     // path for on-disk changes. No-op when no watcher is installed or
     // when the source isn't file-backed.
@@ -3061,6 +3157,14 @@ export class GraphnosisHost {
     // cross_search and compare_engrams ignore the caller's engram list and
     // run a full federated recall over every graph — the scope footer in
     // the response looked correct but the actual retrieval was not scoped.
+    // If the caller named specific engrams, make sure they're resident — LRU
+    // eviction may have unloaded them, and a scoped recall must not silently
+    // miss an engram the user explicitly asked for. (An UNSCOPED federated
+    // recall intentionally searches only the resident working set — see the
+    // LRU note in maybeEvict().)
+    if (opts?.onlyGraphIds?.length) {
+      for (const id of opts.onlyGraphIds) await this.ensureLoaded(id);
+    }
     const allGraphIds = this.listGraphs();
     const scopedGraphIds = opts?.onlyGraphIds?.length
       ? allGraphIds.filter(id => opts.onlyGraphIds!.includes(id))
@@ -5888,6 +5992,17 @@ const LKG_SUFFIX = '.lkg';
  *  save can encrypt while another serializes) without the N× blowup; the work
  *  is CPU-bound on a single-threaded loop, so a low cap costs little time. */
 const GLOBAL_SAVE_CONCURRENCY = 2;
+
+/** LRU eviction cap: keep at most this many engram graphs resident in memory.
+ *  Cold engrams beyond this are unloaded — their .gai + persisted embeddings
+ *  stay on disk and lazily reload (no re-embed) on next access. Bounds the
+ *  resting memory of a large multi-engram cortex; on a small cortex (≤ cap)
+ *  nothing is ever evicted. Tunable. */
+const GRAPH_RESIDENT_CAP = 8;
+/** Don't evict an engram accessed within this window — protects the active
+ *  engram and anything in an in-flight, multi-step workflow from being pulled
+ *  out from under the user mid-use. */
+const GRAPH_IDLE_MS = 90_000;
 
 /** Verify-after-write re-reads + reparses the just-written .gai. That costs a
  *  full parse, so we only do it for engrams big enough to matter — small ones
