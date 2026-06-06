@@ -201,7 +201,8 @@ async fn open_and_read(app: &AppHandle, socket_path: &Path) -> Result<()> {
             | "mcp.consent-lockout"
             | "mcp.recall-rate-limited"
             | "mcp.session-replay-blocked"
-            | "cortex.integrity-alert" => {
+            | "cortex.integrity-alert"
+            | "graph.delta" => {  // per-source live-ingest delta → graphnosis://graph-delta
                 // Forward the raw payload to the frontend as-is.
                 // The frontend matches on the event name to update the
                 // appropriate UI (toast for ingest, progress bar in the
