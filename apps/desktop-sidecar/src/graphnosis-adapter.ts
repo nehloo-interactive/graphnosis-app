@@ -261,6 +261,19 @@ export interface GraphnosisAdapter {
     entities?: string[];
   }>;
 
+  /** inspectNodes restricted to a set of node ids — O(ids), not O(all). For the
+   *  per-source live-ingest delta (push just the new source's nodes). */
+  getNodesByIds(handle: GraphHandle, ids: string[]): Array<{
+    id: string;
+    confidence: number;
+    validUntil?: number;
+    sourceFile: string;
+    contentPreview: string;
+    section?: string;
+    nodeType?: string;
+    entities?: string[];
+  }>;
+
   /** Return the FULL (untruncated) content of a single node. Used for
    *  skill text reassembly where the 500-char inspectNodes preview was
    *  silently truncating goals + recipes off the tail end. */

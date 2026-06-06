@@ -554,6 +554,11 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
         query: z.string(),
         k: z.number().int().positive().max(200).optional(),
       }).parse(params);
+      // A deleted (or never-loaded) engram has nothing to search. Return empty
+      // QUIETLY instead of letting must() throw "Graph not loaded" on every
+      // call — a stale client (e.g. an MCP client or the global-search cache)
+      // can hammer a just-deleted engram and flood the log + waste an embed.
+      if (!deps.host.listGraphs().includes(args.graphId)) return [];
       const hits = await withEmbedding(() => deps.host.searchNodes(args.graphId, args.query, args.k ?? 30));
       // Enrich each hit with its true allowlist sourceId so the client can
       // redact per-source precisely in Presentation Mode (the SDK's source.file
@@ -562,12 +567,19 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
     }
     case 'nodes.list': {
       const args = z.object({ graphId: z.string() }).parse(params);
+      // A node read can arrive moments after the engram was deleted/unloaded
+      // (a stale 3D view or in-flight poll still pointing at it). Return empty
+      // instead of letting must() throw "Graph not loaded" + a stack trace —
+      // benign race, not an error. (Mirrors the search.nodes guard.)
+      if (!deps.host.listGraphs().includes(args.graphId)) return [];
       const nodes = deps.host.listNodes(args.graphId);
       // Attach allowlist sourceId per node (see search.nodes note).
       return nodes.map((n) => ({ ...n, sourceId: deps.host.getNodeSource(args.graphId, n.id) }));
     }
     case 'edges.list': {
       const args = z.object({ graphId: z.string() }).parse(params);
+      // Same post-delete race guard as nodes.list — the 3D view fetches both.
+      if (!deps.host.listGraphs().includes(args.graphId)) return [];
       return deps.host.listEdges(args.graphId);
     }
     case 'node.directEdit': {
@@ -1341,15 +1353,16 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
     }
     case 'graphs.delete': {
       const args = z.object({ graphId: z.string() }).parse(params);
-      await deps.host.deleteGraph(args.graphId);
-      // Purge in-memory ghost edges from the brain engine's live caches.
-      // host.deleteGraph already cleaned the on-disk stores above.
-      deps.brainEngine?.purgeDeletedGraph(args.graphId);
-      // Remove any connector that fed this engram so it doesn't dangle and keep
-      // auto-polling into a now-deleted graph (the "Graph not loaded" spam).
+      // Stop + remove any connector feeding this engram BEFORE deleting it.
+      // Otherwise an in-flight pull keeps ingesting into the engram while we
+      // delete it — which stalled the delete (thread contention) AND re-created
+      // files (the .gll/.bundle) the instant after deleteGraph unlinked them.
       let removedConnectors: string[] = [];
       try { removedConnectors = await deps.connectorManager.removeForGraph(args.graphId); }
       catch (e) { console.error(`[graphs.delete] connector cleanup failed for '${args.graphId}': ${(e as Error).message}`); }
+      await deps.host.deleteGraph(args.graphId);
+      // Purge in-memory ghost edges from the brain engine's live caches.
+      deps.brainEngine?.purgeDeletedGraph(args.graphId);
       return { ok: true, removedConnectors };
     }
     case 'graphs.load': {
@@ -2064,6 +2077,11 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
     case 'connectors.resync': {
       const { id } = z.object({ id: z.string() }).parse(params ?? {});
       return deps.connectorManager.resync(id);
+    }
+    case 'connectors.stop': {
+      const { id } = z.object({ id: z.string() }).parse(params ?? {});
+      deps.connectorManager.stopPull(id);
+      return { ok: true };
     }
     case 'connectors.getAuthUrl': {
       const { id } = z.object({ id: z.string() }).parse(params ?? {});

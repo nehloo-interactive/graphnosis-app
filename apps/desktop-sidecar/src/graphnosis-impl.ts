@@ -437,6 +437,31 @@ export class GraphnosisImpl implements GraphnosisAdapter {
     return out;
   }
 
+  /** Like inspectNodes but for a SPECIFIC set of ids — O(ids), not O(all
+   *  nodes). Used by the per-source live-ingest delta so we can push just the
+   *  new source's nodes to the UI without re-serializing the whole graph. */
+  getNodesByIds(handle: GraphHandle, ids: string[]): ReturnType<GraphnosisImpl['inspectNodes']> {
+    const h = handle as Internal;
+    if (!h.built) return [];
+    const out: ReturnType<GraphnosisImpl['inspectNodes']> = [];
+    for (const id of ids) {
+      const n = h.instance.graph.nodes.get(id);
+      if (!n) continue;
+      const rec: ReturnType<GraphnosisImpl['inspectNodes']>[number] = {
+        id,
+        confidence: n.confidence,
+        sourceFile: n.source.file,
+        contentPreview: n.content.length > 500 ? n.content.slice(0, 497) + '…' : n.content,
+      };
+      if (n.validUntil !== undefined) rec.validUntil = n.validUntil;
+      if (n.source.section) rec.section = n.source.section;
+      if (n.type) rec.nodeType = n.type;
+      if (n.entities && n.entities.length > 0) rec.entities = n.entities;
+      out.push(rec);
+    }
+    return out;
+  }
+
   /**
    * Return the FULL untruncated content of a single node by id, or null when
    * the node doesn't exist. Used by skill retrieval (getSkill) to assemble

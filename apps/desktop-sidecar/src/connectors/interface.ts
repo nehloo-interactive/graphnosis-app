@@ -31,6 +31,9 @@ export interface ConnectorStatus {
   lastError?: string;
   eventsTotal: number;
   pulling: boolean;
+  /** User stopped this connector; auto-poll/watch pulls are gated off until a
+   *  manual pull/re-sync resumes it. Runtime-only (resets on app restart). */
+  paused?: boolean;
 }
 
 /**

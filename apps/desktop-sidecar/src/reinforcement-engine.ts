@@ -154,6 +154,12 @@ export class ReinforcementEngine {
   private reinforcementRunning = false;
   private consolidationRunning = false;
   private crossEngramRunning = false;
+  /** Rotating start offset for the cross-engram embedding pool. The pool fills
+   *  to CROSS_ENGRAM_MAX_NODES from engrams in order, so without rotation the
+   *  FIRST engrams always fill it and later ones are never cross-linked (and
+   *  every pass re-compares the same set). Advancing this each pass gives every
+   *  engram a turn — fairer links AND a bounded, varied pool. */
+  private crossEngramCursor = 0;
 
   // Session counters — surfaced in the status line and Memory Health.
   sessionReinforced = 0;
@@ -622,7 +628,13 @@ export class ReinforcementEngine {
     const pooled = new Map<string, number[]>();
     const meta = new Map<string, { graphId: string; nodeId: string }>();
     let idx = 0;
-    for (const gid of graphIds) {
+    // Rotate the engram order so the pool isn't always filled by the first few
+    // engrams (which would leave the rest permanently un-linked). Each pass
+    // starts one engram further along; over a few cycles every engram is paired.
+    const start = graphIds.length > 0 ? this.crossEngramCursor % graphIds.length : 0;
+    const ordered = [...graphIds.slice(start), ...graphIds.slice(0, start)];
+    this.crossEngramCursor = (this.crossEngramCursor + 1) % Math.max(1, graphIds.length);
+    for (const gid of ordered) {
       if (pooled.size >= CROSS_ENGRAM_MAX_NODES) break;
       for (const [nodeId, vec] of this.host.getNodeEmbeddings(gid)) {
         if (pooled.size >= CROSS_ENGRAM_MAX_NODES) break;
@@ -632,7 +644,13 @@ export class ReinforcementEngine {
       }
     }
     if (pooled.size < 2) return;
-    const pairs = await findSimilarPairs(pooled, { minSim: cfg.crossEngramMinSim, maxSim: 1.01 });
+    const pairs = await findSimilarPairs(pooled, {
+      minSim: cfg.crossEngramMinSim, maxSim: 1.01,
+      // Yield the event loop periodically during the LSH scan so an interactive
+      // engram load (list_nodes/list_edges) isn't starved by a long pass — the
+      // cause of "graph took dozens of seconds / loaded with 0 edges".
+      onYield: () => new Promise<void>((r) => setImmediate(r)),
+    });
     for (const p of pairs) {
       if (formed.length >= MAX_CROSS_ENGRAM_PER_RUN) break;
       const a = meta.get(p.idA);
