@@ -52,16 +52,19 @@ pub async fn request_with_timeout(
     timeout_dur: Duration,
 ) -> Result<Value> {
     #[cfg(unix)]
+    // NB: do NOT embed the socket path in this error — it propagates to the UI
+    // and would leak the full cortex path on screen (bad in demos/recordings).
+    // The path is constant (<cortex>/sidecar.sock); the message stays path-free.
     let stream = tokio::net::UnixStream::connect(socket_path)
         .await
-        .with_context(|| format!("connect to sidecar at {}", socket_path.display()))?;
+        .context("connect to sidecar (memory engine not reachable)")?;
     #[cfg(windows)]
     let stream = {
         let addr = socket_path.to_str()
             .ok_or_else(|| anyhow!("socket address is not valid UTF-8"))?;
         tokio::net::TcpStream::connect(addr)
             .await
-            .with_context(|| format!("connect to sidecar at {}", addr))?
+            .context("connect to sidecar (memory engine not reachable)")?
     };
 
     let (read_half, mut write_half) = tokio::io::split(stream);
