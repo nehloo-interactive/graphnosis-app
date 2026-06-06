@@ -50,8 +50,7 @@
       }
     },
     "patchedDependencies": {
-      "libsodium-wrappers-sumo": "patches/libsodium-wrappers-sumo.patch",
-      "@nehloo/graphnosis@0.5.6": "patches/@nehloo__graphnosis@0.5.6.patch"
+      "libsodium-wrappers-sumo": "patches/libsodium-wrappers-sumo.patch"
     }
   },
   "devDependencies": {
