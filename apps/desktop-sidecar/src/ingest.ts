@@ -397,7 +397,7 @@ export async function ingestClip(
   graphId: string,
   text: string,
   label: string,
-  opts?: { addedBy?: string; sourceKind?: 'clip' | 'ai-conversation' | 'skill'; triggeredBy?: string },
+  opts?: { addedBy?: string; sourceKind?: 'clip' | 'ai-conversation' | 'skill'; triggeredBy?: string; skipSave?: boolean; skipAutoRelink?: boolean },
 ) {
   const sourceKind = opts?.sourceKind ?? 'clip';
   // Prefix the source ref so Sources-list filtering + the recovery panel
@@ -433,6 +433,8 @@ export async function ingestClip(
   }, {
     ...(opts?.addedBy ? { addedBy: opts.addedBy } : {}),
     ...(opts?.triggeredBy ? { triggeredBy: opts.triggeredBy } : {}),
+    ...(opts?.skipSave ? { skipSave: true } : {}),
+    ...(opts?.skipAutoRelink ? { skipAutoRelink: true } : {}),
   });
   if (opts?.addedBy) {
     await host.gllWriter.append({

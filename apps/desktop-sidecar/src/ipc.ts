@@ -376,7 +376,16 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
   // Mark client activity so heavy background brain passes defer to keep the UI
   // responsive — but NOT for the app's recurring reconciliation polls, or
   // background work would never get to run.
-  if (!BACKGROUND_POLL_METHODS.has(method)) markClientActivity();
+  if (!BACKGROUND_POLL_METHODS.has(method)) {
+    markClientActivity();
+    // LRU lazy-reload: if this user/AI call targets a specific engram that was
+    // evicted to bound memory, bring it back BEFORE the handler runs (its sync
+    // must() callers assume the graph is resident). Background polls are skipped
+    // so they can't keep a cold engram pinned hot. ensureLoaded also records the
+    // access, so the active engram stays resident.
+    const gid = (params as Record<string, unknown> | undefined)?.['graphId'];
+    if (typeof gid === 'string' && gid) await deps.host.ensureLoaded(gid);
+  }
   switch (method) {
     // ── Consent prompt resolution (in-app modal flow) ──────────────────
     case 'consent.resolvePrompt': {
@@ -1336,7 +1345,12 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
       // Purge in-memory ghost edges from the brain engine's live caches.
       // host.deleteGraph already cleaned the on-disk stores above.
       deps.brainEngine?.purgeDeletedGraph(args.graphId);
-      return { ok: true };
+      // Remove any connector that fed this engram so it doesn't dangle and keep
+      // auto-polling into a now-deleted graph (the "Graph not loaded" spam).
+      let removedConnectors: string[] = [];
+      try { removedConnectors = await deps.connectorManager.removeForGraph(args.graphId); }
+      catch (e) { console.error(`[graphs.delete] connector cleanup failed for '${args.graphId}': ${(e as Error).message}`); }
+      return { ok: true, removedConnectors };
     }
     case 'graphs.load': {
       const { graphId } = z.object({ graphId: z.string() }).parse(params);
@@ -2046,6 +2060,10 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
     case 'connectors.triggerPull': {
       const { id } = z.object({ id: z.string() }).parse(params ?? {});
       return deps.connectorManager.triggerPull(id);
+    }
+    case 'connectors.resync': {
+      const { id } = z.object({ id: z.string() }).parse(params ?? {});
+      return deps.connectorManager.resync(id);
     }
     case 'connectors.getAuthUrl': {
       const { id } = z.object({ id: z.string() }).parse(params ?? {});

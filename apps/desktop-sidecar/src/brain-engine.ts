@@ -700,15 +700,26 @@ export class BrainEngine {
    */
   onRecall(sub: RecallResult): void {
     const activated = new Set<string>();
+    const loaded = new Set(this.host.listGraphs());
     for (const [graphId, items] of sub.byGraph) {
+      // A graph in the recall result can be unloaded by the time this observer
+      // runs (an engram still mid-ingest/creation, or — once eviction lands —
+      // freed). Its reinforcement helpers reach into host.must() and throw
+      // "Graph not loaded", which aborted the ENTIRE plasticity pass. Skip
+      // unloaded graphs and isolate per-graph failures.
+      if (!loaded.has(graphId)) continue;
       const nodeIds = items.map((i) => i.nodeId);
       if (nodeIds.length === 0) continue;
-      this.reinforcement.recordCoActivation(graphId, nodeIds);
-      void this.temporalEngine.reinforceNodes(nodeIds, graphId);
-      for (const id of nodeIds) activated.add(`${graphId}#${id}`);
+      try {
+        this.reinforcement.recordCoActivation(graphId, nodeIds);
+        void this.temporalEngine.reinforceNodes(nodeIds, graphId);
+        for (const id of nodeIds) activated.add(`${graphId}#${id}`);
+      } catch (e) {
+        dbg(`[brain] onRecall reinforce skipped engram[${redactId(graphId)}]: ${(e as Error).message}`);
+      }
     }
     this.reinforcement.noteCrossEngramRecall(activated);
-    this.reinforcement.enrichRecall(sub);
+    try { this.reinforcement.enrichRecall(sub); } catch { /* best-effort enrichment */ }
   }
 
   /** UI-facing vitality.

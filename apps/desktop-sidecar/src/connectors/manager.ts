@@ -4,6 +4,7 @@ import { watch as fsWatch, type FSWatcher } from 'node:fs';
 import type { GraphnosisHost } from '../host.js';
 import { ingestClip } from '../ingest.js';
 import { withEmbedding } from '../embedding-queue.js';
+import { markClientActivity } from '../client-activity.js';
 import type { ConnectorConfig, ConnectorSettings } from '@graphnosis-app/core';
 import type { Connector, ConnectorEvent, ConnectorStatus } from './interface.js';
 import { isConnectorKindDisabled } from '../admin-policy.js';
@@ -34,6 +35,11 @@ interface RunningConnector {
 const BASE_PULL_LIMIT = 2000;
 const MAX_PULL_LIMIT = 20000;
 const MAX_DRAIN_ITERS = 50;
+// Incremental flush cadence inside a batch: persist + release every N ingested
+// files so a large vault doesn't accumulate the whole batch in memory before a
+// single save, and so progress survives a stall/quit. Balances durability vs
+// avoiding the O(n²) per-file full-save storm.
+const CONNECTOR_SAVE_CHECKPOINT = 200;
 /** Quiet window after the last file-change event before a watcher pulls. */
 const WATCH_DEBOUNCE_MS = 1500;
 
@@ -162,6 +168,35 @@ export class ConnectorManager {
     this.running.delete(id);
     const newConfigs = this.settings.configs.filter(c => c.id !== id);
     await this.persistConfigs(newConfigs);
+  }
+
+  /** Remove every connector that feeds the given engram. Called when the engram
+   *  is deleted so no connector is left dangling, auto-polling into a graph that
+   *  no longer exists. Returns the connector ids that were removed. */
+  async removeForGraph(graphId: string): Promise<string[]> {
+    const ids = this.settings.configs.filter(c => c.graphId === graphId).map(c => c.id);
+    for (const id of ids) {
+      try { await this.remove(id); }
+      catch (e) { console.error(`[connectors] failed to remove '${id}' feeding deleted engram '${graphId}': ${(e as Error).message}`); }
+    }
+    if (ids.length > 0) console.error(`[connectors] removed ${ids.length} connector(s) feeding deleted engram '${graphId}'`);
+    return ids;
+  }
+
+  /** Re-sync from scratch: reset the pull cursor to 0 (so the next pull treats
+   *  `since` as undefined → full re-scan) and pull immediately. Already-ingested
+   *  sources dedup-skip; anything missing (e.g. files stranded behind the cursor
+   *  by an earlier failed pull) is picked up. Push-only connectors (webhook)
+   *  have nothing to re-sync. */
+  async resync(id: string): Promise<{ eventsIngested: number }> {
+    const cfg = this.settings.configs.find(c => c.id === id);
+    if (!cfg) throw new Error(`Connector '${id}' not found`);
+    const rc = this.running.get(id);
+    if (!rc) throw new Error(`Connector '${id}' is not running (disabled or not started)`);
+    if (!rc.connector.pull) throw new Error(`Connector '${id}' (${cfg.kind}) is push-only — nothing to re-sync`);
+    await this.setCursor(cfg, 0); // 0 is falsy → doPull passes since=undefined → full re-scan
+    const count = await this.doPull(cfg, rc);
+    return { eventsIngested: count };
   }
 
   /** Manually trigger a pull for a specific connector. Returns ingested event count. */
@@ -299,15 +334,44 @@ export class ConnectorManager {
     rc.pulling = true;
     let total = 0;
     try {
+      // Ensure the target engram is actually LOADED before pulling. A connector
+      // can point at an engram that exists on disk but isn't in memory (not yet
+      // lazy-loaded, evicted, or a "Create engram" that didn't finish loading).
+      // Without this, every file's ingest throws "Graph not loaded" and the
+      // whole vault fails one noisy line at a time.
+      if (!this.host.listGraphs().includes(cfg.graphId)) {
+        try {
+          await this.host.loadGraph(cfg.graphId);
+        } catch (e) {
+          console.error(`[connector:${cfg.id}] target engram '${cfg.graphId}' is unavailable (${(e as Error).message}); skipping pull until it loads.`);
+          return 0;
+        }
+        if (!this.host.listGraphs().includes(cfg.graphId)) {
+          console.error(`[connector:${cfg.id}] target engram '${cfg.graphId}' does not exist — skipping pull. Re-create the engram or remove this connector.`);
+          return 0;
+        }
+      }
       let limit = BASE_PULL_LIMIT;
       for (let iter = 0; iter < MAX_DRAIN_ITERS; iter++) {
         const since = cfg.lastPulledAt ? new Date(cfg.lastPulledAt) : undefined;
         const events = await rc.connector.pull!(since, limit);
         if (events.length === 0) break;
 
-        const count = await this.ingestEvents(cfg, events);
+        const { count, transientFailures } = await this.ingestEvents(cfg, events);
         total += count;
         rc.eventsTotal += count;
+
+        // CRITICAL: never advance the cursor over files that FAILED to ingest
+        // (e.g. a transient sidecar/graph error, or the engram momentarily
+        // unloaded). The old code set the cursor to `now` whenever a batch was
+        // under-full, regardless of success — so an all-fail run stranded the
+        // entire vault behind the cursor ("ingest stopped midway, most files
+        // missing"). Leave the cursor put and stop; the next poll retries the
+        // same window and already-ingested files dedup-skip.
+        if (transientFailures > 0) {
+          console.error(`[connector:${cfg.id}] ${transientFailures} file(s) failed this batch — leaving cursor for retry on the next poll.`);
+          break;
+        }
 
         // Feed/API connectors don't carry file mtimes — one logical pull,
         // advance the cursor to now (legacy behavior) and stop.
@@ -366,12 +430,18 @@ export class ConnectorManager {
     await this.updateConnectorState(cfg.id, { lastPulledAt });
   }
 
-  private async ingestEvents(cfg: ConnectorConfig, events: ConnectorEvent[]): Promise<number> {
-    if (events.length === 0) return 0;
+  private async ingestEvents(cfg: ConnectorConfig, events: ConnectorEvent[]): Promise<{ count: number; transientFailures: number }> {
+    if (events.length === 0) return { count: 0, transientFailures: 0 };
     const mirror = cfg.options['mirrorDeletes'] === true;
     let count = 0;
+    let transientFailures = 0;
     let sinceYield = 0;
+    let sinceCheckpoint = 0;
     for (const ev of events) {
+      // Signal activity so the brain's backpressure DEFERS its heavy passes
+      // (duplicate scan, etc.) while this connector ingest runs — otherwise the
+      // brain fights the ingest for the single thread and the ingest stalls.
+      markClientActivity();
       // Cooperative yield: with MANY SMALL files, each ingest's await often
       // resolves on the microtask queue (cached/cheap embeddings + a synchronous
       // op-log write), so the macrotask queue — where the IPC socket is serviced
@@ -385,6 +455,12 @@ export class ConnectorManager {
             addedBy: `connector:${cfg.kind}`,
             sourceKind: ev.sourceKind ?? 'clip',
             triggeredBy: `connector:${cfg.kind}`,
+            // Defer the per-file full-engram save + relink — both run ONCE at the
+            // end of this batch (below). Without this, a vault ingest fires a full
+            // toBuffer+encrypt per file (O(n²)), pegging the sidecar into the
+            // post-ingest GC stalls that dropped the IPC connection.
+            skipSave: true,
+            skipAutoRelink: true,
           }),
         );
         // Mirror mode: track file → source so we can prune on delete, and
@@ -398,17 +474,43 @@ export class ConnectorManager {
           await this.host.connectorFileMap.set(ev.sourceRef, rec.sourceId);
         }
         count++;
+        // Incremental checkpoint flush — persist + release every N files so a
+        // big batch doesn't ingest entirely in memory before a single save, and
+        // so progress is durable if the pull stalls or the app quits mid-vault.
+        if (++sinceCheckpoint >= CONNECTOR_SAVE_CHECKPOINT) {
+          sinceCheckpoint = 0;
+          try { await this.host.save(cfg.graphId); }
+          catch (e) { console.error(`[connector:${cfg.id}] checkpoint save failed: ${(e as Error).message}`); }
+        }
       } catch (err) {
         const msg = (err as Error).message;
         // Re-scanning an unchanged vault re-emits every file; ingest then
         // produces 0 new nodes ("already saved or nothing to extract") — a
         // benign no-op, not a failure. Don't spam one error per file; only
-        // surface genuine failures.
+        // surface genuine failures (and count them so doPull doesn't advance
+        // the cursor past files that didn't actually get in).
         if (/produced 0 nodes|already saved or nothing to extract/i.test(msg)) continue;
+        transientFailures++;
+        // If the target engram vanished mid-batch (deleted/unloaded under us),
+        // EVERY remaining file would fail the same way — stop now instead of
+        // logging one error per file. The cursor stays put (transientFailures>0)
+        // and the next poll's ensure-loaded handles the now-missing engram.
+        if (/Graph not loaded/i.test(msg)) {
+          console.error(`[connector:${cfg.id}] target engram '${cfg.graphId}' was removed mid-pull — stopping this batch.`);
+          break;
+        }
         console.error(`[connector:${cfg.id}] ingest failed for ${ev.sourceRef}: ${msg}`);
       }
     }
-    return count;
+    // Flush the tail since the last checkpoint, then ONE relink for the batch
+    // (the per-file save+relink were deferred — turning an O(n²) per-file save
+    // storm into O(files / CONNECTOR_SAVE_CHECKPOINT)).
+    if (sinceCheckpoint > 0) {
+      try { await this.host.save(cfg.graphId); }
+      catch (e) { console.error(`[connector:${cfg.id}] batch save failed: ${(e as Error).message}`); }
+    }
+    if (count > 0) this.host.triggerRelink(cfg.graphId);
+    return { count, transientFailures };
   }
 
   /**
