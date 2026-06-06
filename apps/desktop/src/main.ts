@@ -2604,6 +2604,11 @@ function activateMode(mode: Mode): void {
   // Power-tools drawer. This body class force-opens the drawer and hides its
   // chrome (header + manual chips + banner) so Skills reads as a clean page.
   document.body.classList.toggle('skills-studio-mode', mode === 'skills');
+  // Re-sync the trainer's ⚠️ "preview mode" note to the CURRENT save target the
+  // moment Skills opens — so an engram that's already selected in "Saving to"
+  // never shows the "won't be saved" warning on entry (it's only valid for the
+  // '__preview__' sentinel).
+  if (mode === 'skills') { syncSkillsPreviewWarning(); updateSkillsResetButton(); }
   // Search is also a checkin sub-mode: body.search-mode reveals the search bar
   // + results surface and hides the Home cards / power-tools / deck (CSS).
   document.body.classList.toggle('search-mode', mode === 'search');
@@ -3359,6 +3364,11 @@ async function pollGraphMutations(): Promise<void> {
       }
     }
     if (!activeChanged) return;
+    // Back off if this engram's load is currently failing/timing out (a huge,
+    // brain-churning engram whose list_edges can't meet the IPC deadline).
+    // Re-attempting on every mutation just re-stalls the UI and floods the
+    // console — retry at most once per cooldown window.
+    if (Date.now() - (graphLoadFailedAt.get(atlasActiveGraph) ?? 0) < LOAD_FAIL_COOLDOWN_MS) return;
     // Active engram mutated under us — reload nodes + edges. Cheap on
     // small engrams, throttled by the 3s poll cadence on bigger ones.
     await loadGraphnosisData(atlasActiveGraph);
@@ -5220,7 +5230,7 @@ function renderSettingsGraphsList(): void {
       confirmDiv.innerHTML = `
         ${skillWarning}
         <span class="sgr-confirm-label">Type <strong>${escape(confirmName)}</strong> to delete forever:</span>
-        <input type="text" class="sgr-confirm-input" placeholder="${escape(confirmName)}" autocomplete="off" />
+        <input type="text" class="sgr-confirm-input" placeholder="type the engram name to confirm" autocomplete="off" />
         <button class="sgr-confirm-go" disabled>Delete forever</button>
         <button class="sgr-confirm-cancel">Cancel</button>
       `;
@@ -5233,9 +5243,14 @@ function renderSettingsGraphsList(): void {
       // Focus input so user can start typing immediately.
       input.focus();
 
-      // Enable Delete button only when typed name matches exactly.
+      // Enable Delete once the typed name matches — trimmed + case-insensitive
+      // on BOTH sides, so a stray trailing space or capital in a re-created
+      // engram's name can't leave the user stuck unable to confirm. Still
+      // requires typing the full name (the deliberate destructive-action gate).
+      const normalize = (s: string): string => s.trim().toLowerCase();
+      const target = normalize(confirmName);
       input.addEventListener('input', () => {
-        goBtn.disabled = input.value.trim() !== confirmName;
+        goBtn.disabled = normalize(input.value) !== target;
       });
 
       cancelBtn.addEventListener('click', () => renderSettingsGraphsList());
@@ -5254,8 +5269,11 @@ function renderSettingsGraphsList(): void {
           orphanedHidden.forEach((id) => skillsHiddenSet.delete(id));
           if (orphanedHidden.length > 0) persistSkillsHidden();
 
-          await invoke('delete_graph', { graphId });
-          loadedGraphs = (await invoke('list_graphs_with_metadata', { includeUnloaded: true })) as GraphWithMetadata[];
+          // Retry on a transient sidecar-connection blip so the first confirm
+          // succeeds instead of bouncing back to the row (then working on the
+          // second try) when the sidecar is briefly busy mid-ingest.
+          await invokeRetry('delete_graph', { graphId });
+          loadedGraphs = (await invokeRetry('list_graphs_with_metadata', { includeUnloaded: true })) as GraphWithMetadata[];
           if (atlasActiveGraph === graphId) {
             atlasActiveGraph = pickAtlasGraph(); refreshActiveEngramLabel();
             // Clear stale data immediately so the 3D view doesn't freeze on
@@ -5271,7 +5289,14 @@ function renderSettingsGraphsList(): void {
           renderSettingsGraphsList();
         } catch (e) {
           showError(`Could not delete "${displayName}": ${e}`);
-          renderSettingsGraphsList();
+          // Keep the confirm row OPEN with the typed name intact so a transient
+          // failure (sidecar busy mid-ingest) doesn't force the user to re-open
+          // and re-type the engram name every time. Just re-arm so they can
+          // click "Delete forever" again — the name still matches.
+          input.disabled = false;
+          cancelBtn.disabled = false;
+          goBtn.disabled = false;
+          goBtn.textContent = 'Delete forever';
         }
       });
     });
@@ -6821,6 +6846,24 @@ async function refreshAtlasView(): Promise<void> {
   if (mainAtlas) pushDataIntoAtlas();
 }
 
+// Per-engram load-failure cooldown. On a huge, brain-churning engram,
+// `list_edges` (and sometimes `list_nodes`) can't serialize within the IPC
+// deadline; the brain mutating edges every cycle then drives
+// pollGraphMutations to re-attempt the doomed load constantly — stalling the
+// UI and flooding the console with identical timeout errors. We stamp the
+// failure time, throttle the log to once per window, and back off retries
+// (and edge re-fetches) until the window expires.
+const graphLoadFailedAt = new Map<string, number>();
+const LOAD_FAIL_COOLDOWN_MS = 60_000;
+// Edge re-fetch throttle. list_edges re-serializes EVERY edge of an engram — on
+// a large, actively-ingesting engram that's a heavy single-thread op, and doing
+// it on every 3s mutation poll starves the ingest itself. So on a SAME-engram
+// refresh we re-fetch edges at most this often; nodes still refresh every poll,
+// so new memories pop in live while the connections catch up each window. An
+// engram SWITCH always fetches fresh edges (you want the full picture on entry).
+const lastEdgesFetchAt = new Map<string, number>();
+const EDGE_REFETCH_MIN_MS = 6_000;
+
 // Fetch nodes + edges for the active engram and cache them. Also recomputes
 // `graphnosisOrphanIds` — used by both the health score and the deck queue
 // to identify memories that aren't connected to anything yet.
@@ -6843,10 +6886,36 @@ async function loadGraphnosisDataInner(graphId: string): Promise<void> {
   // stale data on a same-engram refresh blip (where keeping it is correct).
   const isSwitch = graphId !== atlasLoadedForGraph;
   try {
-    const [records, edges] = await Promise.all([
-      fetchActiveNodes(graphId),
-      fetchEdges(graphId),
-    ]);
+    // Nodes first — they're required to render anything. Edges second, and
+    // BEST-EFFORT: on a brain-bloated engram list_edges can blow past the IPC
+    // deadline while list_nodes still returns. Letting that fail the whole load
+    // blanks the view AND marks every node an orphan (no edges → nothing is
+    // connected). Instead, reuse the last-known edges for this engram and stamp
+    // the cooldown so pollGraphMutations stops re-attempting the doomed fetch on
+    // every brain mutation.
+    const records = await fetchActiveNodes(graphId);
+    let edges: { directed: AtlasDirectedEdge[]; undirected: AtlasUndirectedEdge[] };
+    const cachedEdges = lastEdgesByGraph.get(graphId);
+    const edgesAreFresh = !isSwitch && !!cachedEdges
+      && Date.now() - (lastEdgesFetchAt.get(graphId) ?? 0) < EDGE_REFETCH_MIN_MS;
+    if (edgesAreFresh) {
+      // Throttled re-fetch: reuse recent edges so a live ingest's per-poll node
+      // refresh doesn't drag the heavy list_edges call along every 3s. Nodes
+      // refresh live; edges catch up after EDGE_REFETCH_MIN_MS.
+      edges = cachedEdges!;
+    } else {
+      try {
+        edges = await fetchEdges(graphId);
+        lastEdgesFetchAt.set(graphId, Date.now());
+        graphLoadFailedAt.delete(graphId); // edges came back — clear any cooldown
+      } catch (edgeErr) {
+        if (Date.now() - (graphLoadFailedAt.get(graphId) ?? 0) > LOAD_FAIL_COOLDOWN_MS) {
+          console.warn('graphnosis edges load timed out; reusing last-known edges for this engram', edgeErr);
+        }
+        graphLoadFailedAt.set(graphId, Date.now());
+        edges = cachedEdges ?? { directed: [], undirected: [] };
+      }
+    }
     graphnosisAllNodes = records;
     // Tag each record with its source engram and mirror into the global
     // cache so search can fan out across engrams without re-querying.
@@ -6883,7 +6952,12 @@ async function loadGraphnosisDataInner(graphId: string): Promise<void> {
     // whole engram view disappeared even though the user only forgot
     // ONE node. Now: keep the previous cache so the UI stays usable;
     // the next successful poll (3 s cadence) will reconcile any drift.
-    console.error('graphnosis load failed; keeping previous in-memory data', e);
+    // Throttle: a huge engram whose list_nodes keeps timing out would otherwise
+    // log this on every brain-mutation-driven poll. Log once per cooldown.
+    if (Date.now() - (graphLoadFailedAt.get(graphId) ?? 0) > LOAD_FAIL_COOLDOWN_MS) {
+      console.error('graphnosis load failed; keeping previous in-memory data', e);
+    }
+    graphLoadFailedAt.set(graphId, Date.now());
     // On a switch there IS no valid previous data for this engram — keeping the
     // old engram's nodes would be wrong. Leave atlasLoadedForGraph pointing at
     // the old graph (so the next entry re-triggers a load) and rethrow so the
@@ -7771,15 +7845,15 @@ async function runForesightPredict(): Promise<void> {
 function buildForesightGrid(): void {
   const grid = document.getElementById('foresight-overview');
   if (!grid || grid.dataset['built'] === '1') return;
-  const order = ['fcard-goals', 'fcard-predict', 'fcard-insights', 'fcard-llm', 'fcard-gll', 'fcard-gnn', 'fcard-aihint'];
+  // The develop/predict MCP-tool hints now live inside the Goals and Predict
+  // cards (each in its own .lb-mcp-tools-hint box), so there's no standalone
+  // AI-hint card to order anymore.
+  const order = ['fcard-goals', 'fcard-predict', 'fcard-insights', 'fcard-llm', 'fcard-gll', 'fcard-gnn'];
   for (const id of order) {
     const el = document.getElementById(id);
     if (!el) continue;
-    // The AI-hint card already has its own card chrome (lb-mcp-tools-hint).
-    if (id !== 'fcard-aihint') {
-      el.classList.remove('lb-section', 'foresight-card');
-      el.classList.add('home-card');
-    }
+    el.classList.remove('lb-section', 'foresight-card');
+    el.classList.add('home-card');
     grid.appendChild(el); // appendChild relocates; iterating `order` sets sequence
   }
   document.querySelector('section[data-gpane="nondeterministic"]')?.remove();
@@ -12028,6 +12102,11 @@ els.atlasGraphPicker.addEventListener('change', () => void (async () => {
   // so the new engram's nodes are rendered at full opacity.
   disabledSources.clear();
   if (mainAtlas) resetAtlasView();
+  // Paint the cleared graph + loading overlay BEFORE kicking off the heavy
+  // per-engram load, so switching feels instant (overlay appears immediately)
+  // instead of freezing on the old graph until the new one is ready. Two rAFs
+  // guarantee a composited frame even on WebKit.
+  await new Promise<void>((r) => requestAnimationFrame(() => requestAnimationFrame(() => r())));
   await refreshAtlasView();
   hideAtlasLoading(); // new engram is loaded + pushed — drop the overlay
   // Re-render the Home dashboard's active-engram card + gauge in place when the
@@ -13772,6 +13851,28 @@ function withTimeout<T>(p: Promise<T>, ms: number, label = 'operation'): Promise
   ]);
 }
 
+// Retry a raw Tauri invoke on a TRANSIENT sidecar-connection failure. During a
+// heavy ingest the single-threaded sidecar can briefly stop servicing its IPC
+// socket (a stop-the-world GC parks the event loop), so the FIRST attempt of a
+// user action can fail to connect even though the same call a moment later
+// succeeds — the "delete the engram, it bounces back, second click works" bug.
+// Only connection-class errors are retried; real errors (not-found, validation)
+// throw immediately so we never mask a genuine failure.
+async function invokeRetry<T>(cmd: string, args?: Record<string, unknown>, tries = 3, delayMs = 600): Promise<T> {
+  let lastErr: unknown;
+  for (let attempt = 0; attempt < tries; attempt++) {
+    try {
+      return await invoke<T>(cmd, args);
+    } catch (e) {
+      lastErr = e;
+      const transient = /connect to sidecar|sidecar\.sock|ECONNREFUSED|ENOENT|connection refused|broken pipe|not connected|did not respond|timed out|was busy|sidecar.{0,12}busy/i.test(String(e));
+      if (!transient || attempt === tries - 1) throw e;
+      await new Promise((r) => setTimeout(r, delayMs * (attempt + 1))); // 600ms, 1.2s backoff
+    }
+  }
+  throw lastErr;
+}
+
 // ── Brain / Alive state ───────────────────────────────────────────────────
 
 type BrainGoal = {
@@ -15355,11 +15456,23 @@ function renderLbGoals(): void {
       const graphId = card?.dataset['goalGraph'];
       const title = card?.dataset['goalTitle'] ?? 'this goal';
       if (!sourceId || !graphId) return;
-      if (!confirm(`Delete the goal “${title}”?\n\nThis removes the goal and its tracked milestones from your cortex. It can't be undone.`)) return;
-      btn.disabled = true;
-      void ipcCall('sources.forget', { graphId, sourceId })
-        .then(() => { card?.remove(); void refreshBrainState(); })
-        .catch((e) => { btn.disabled = false; console.warn('[goals] delete failed', e); alert(`Could not delete the goal: ${e}`); });
+      // In-app confirm — window.confirm() is silently swallowed by Tauri's
+      // WKWebView, so deletes were going through without ever asking.
+      void (async () => {
+        const ok = await confirmPermanent(
+          `Delete the goal “${title}”? This removes the goal and its tracked milestones from your cortex — it can’t be undone.`,
+        );
+        if (!ok) return;
+        btn.disabled = true;
+        try {
+          await ipcCall('sources.forget', { graphId, sourceId });
+          card?.remove();
+          void refreshBrainState();
+        } catch (e) {
+          btn.disabled = false;
+          console.warn('[goals] delete failed', e);
+        }
+      })();
     });
   });
 }
@@ -18627,6 +18740,8 @@ function paintGcConnectorList(configs: ConnectorConfigShape[], statuses: Connect
       const id = btn.dataset['connectorId'];
       if (!id) return;
       if (action === 'pull') void handleConnectorPull(id, btn);
+      else if (action === 'resync') void handleConnectorResync(id, btn);
+      else if (action === 'copy-url') void handleConnectorCopyUrl(btn);
       else if (action === 'remove') void handleConnectorRemove(id, btn);
       else if (action === 'edit') void handleConnectorEdit(id, configs);
     });
@@ -18639,7 +18754,7 @@ function paintGcConnectorList(configs: ConnectorConfigShape[], statuses: Connect
 // the legacy Settings list only if that element still exists.
 async function refreshConnectorsList(): Promise<void> {
   try {
-    const res = await invoke<{ configs: ConnectorConfigShape[]; statuses: ConnectorStatus[]; pullIntervalMs?: number }>(
+    const res = await invokeRetry<{ configs: ConnectorConfigShape[]; statuses: ConnectorStatus[]; pullIntervalMs?: number }>(
       'list_connectors',
     );
     // Reflect installed connectors in the sidebar's Get-connected status list.
@@ -18668,6 +18783,8 @@ async function refreshConnectorsList(): Promise<void> {
             const id = btn.dataset['connectorId'];
             if (!id) return;
             if (action === 'pull') void handleConnectorPull(id, btn);
+            else if (action === 'resync') void handleConnectorResync(id, btn);
+            else if (action === 'copy-url') void handleConnectorCopyUrl(btn);
             else if (action === 'remove') void handleConnectorRemove(id, btn);
             else if (action === 'edit') void handleConnectorEdit(id, res.configs);
           });
@@ -18736,6 +18853,20 @@ function renderConnectorRow(cfg: ConnectorConfigShape, status?: ConnectorStatus)
     ? ` · every ${Math.round(ovr / 60_000)} min`
     : ' · default interval';
 
+  // Webhook URL (push-only connectors) — surfaced so the user can copy it from
+  // the row without opening the Edit modal. Only available once the token has
+  // been generated (i.e. the webhook has been saved at least once).
+  const webhookToken = cfg.kind === 'webhook'
+    ? ((cfg.options as Record<string, unknown> | undefined)?.['webhookToken'] as string | undefined)
+    : undefined;
+  const webhookUrl = webhookToken ? `http://localhost:3458/webhook/${cfg.id}/${webhookToken}` : '';
+
+  // Show the engram's real display name, not the internal slug. Fall back to
+  // the slug if the engram isn't loaded (e.g. it was deleted out from under the
+  // connector). The data-pres attribute keeps the slug so Presentation Mode
+  // redaction still targets the right engram.
+  const engramName = loadedGraphs.find((g) => g.graphId === cfg.graphId)?.metadata.displayName ?? cfg.graphId;
+
   return `
     <div class="connector-row" data-connector-id="${escapeHtml(cfg.id)}">
       <span class="connector-row-kind" aria-hidden="true">${glyph}</span>
@@ -18745,11 +18876,14 @@ function renderConnectorRow(cfg: ConnectorConfigShape, status?: ConnectorStatus)
           <span class="connector-row-status ${statusKind}">${escapeHtml(statusLabel)}</span>
         </div>
         <span class="connector-row-meta">
-          → engram <span data-pres="engram:${escapeHtml(cfg.graphId)}">${escapeHtml(cfg.graphId)}</span> · ${escapeHtml(lastPullStr)}${escapeHtml(intervalStr)}${escapeHtml(eventsStr)}${errorStr}
+          → engram <span data-pres="engram:${escapeHtml(cfg.graphId)}">${escapeHtml(engramName)}</span> · ${escapeHtml(lastPullStr)}${escapeHtml(intervalStr)}${escapeHtml(eventsStr)}${errorStr}
         </span>
       </div>
       <div class="connector-row-actions">
-        ${cfg.kind !== 'webhook' ? `<button data-connector-action="pull" data-connector-id="${escapeHtml(cfg.id)}">Pull now</button>` : ''}
+        ${cfg.kind === 'webhook'
+          ? (webhookUrl ? `<button data-connector-action="copy-url" data-connector-id="${escapeHtml(cfg.id)}" data-webhook-url="${escapeHtml(webhookUrl)}" title="Copy this webhook's URL to the clipboard">Copy URL</button>` : '')
+          : `<button data-connector-action="pull" data-connector-id="${escapeHtml(cfg.id)}">Pull now</button>
+        <button data-connector-action="resync" data-connector-id="${escapeHtml(cfg.id)}" title="Reset this connector's cursor and re-pull everything from scratch">Re-sync</button>`}
         <button data-connector-action="edit" data-connector-id="${escapeHtml(cfg.id)}">Edit</button>
         <button data-connector-action="remove" data-connector-id="${escapeHtml(cfg.id)}" class="danger">Remove</button>
       </div>
@@ -18769,7 +18903,7 @@ async function handleConnectorPull(id: string, btn: HTMLButtonElement): Promise<
   btn.disabled = true;
   btn.textContent = 'Pulling…';
   try {
-    const res = await invoke<{ eventsIngested: number }>('trigger_connector_pull', { id });
+    const res = await invokeRetry<{ eventsIngested: number }>('trigger_connector_pull', { id });
     const tid = addIngestToast(`Pulled ${id}`, `${res.eventsIngested} new event(s) ingested`);
     finishIngestToast(tid, 'success', `${res.eventsIngested} new event(s) ingested`);
     await refreshConnectorsList();
@@ -18806,13 +18940,49 @@ async function handleConnectorRemove(id: string, btn?: HTMLButtonElement): Promi
     btn.textContent = 'Removing…';
   }
   try {
-    await invoke('remove_connector', { id });
+    await invokeRetry('remove_connector', { id });
     await refreshConnectorsList();
     const tid = addIngestToast(`Removed connector "${id}"`, 'Credentials deleted; engram content untouched');
     finishIngestToast(tid, 'success', 'Credentials deleted; engram content untouched');
   } catch (e) {
     const tid = addIngestToast(`Couldn't remove "${id}"`, String(e));
     finishIngestToast(tid, 'error', String(e));
+  }
+}
+
+// Copy a webhook connector's URL straight from its row — no need to open Edit.
+// The URL is baked into the button's data attribute by renderConnectorRow.
+async function handleConnectorCopyUrl(btn?: HTMLButtonElement): Promise<void> {
+  const url = btn?.dataset['webhookUrl'];
+  if (!url) return;
+  try {
+    await navigator.clipboard.writeText(url);
+    if (btn) {
+      const orig = btn.textContent ?? 'Copy URL';
+      btn.textContent = 'Copied ✓';
+      setTimeout(() => { if (btn.isConnected) btn.textContent = orig; }, 1500);
+    }
+  } catch (e) {
+    const tid = addIngestToast('Copy failed', String(e));
+    finishIngestToast(tid, 'error', String(e));
+  }
+}
+
+// Re-sync a connector from scratch: reset its pull cursor + re-pull everything.
+// Use after a partial sync (e.g. files stranded behind the cursor by an earlier
+// failed pull). Already-ingested sources dedup-skip; the rest get picked up.
+async function handleConnectorResync(id: string, btn?: HTMLButtonElement): Promise<void> {
+  const orig = btn?.textContent;
+  if (btn) { btn.disabled = true; btn.textContent = 'Re-syncing…'; }
+  const tid = addIngestToast(`Re-syncing "${id}"`, 'Cursor reset — re-scanning from scratch…');
+  try {
+    const res = await ipcCall<{ eventsIngested: number }>('connectors.resync', { id });
+    finishIngestToast(tid, 'success', `${res.eventsIngested} new event(s) ingested this pass`);
+    await refreshConnectorsList();
+  } catch (e) {
+    finishIngestToast(tid, 'error', String(e));
+  } finally {
+    if (btn) { btn.disabled = false; if (orig) btn.textContent = orig; }
   }
 }
 
@@ -23530,6 +23700,7 @@ async function openSkillInTrainer(
         .replace(/^(?:#[^\n]+|\*\*[^\n]+\*\*)\n+<!--[\s\S]*?-->\n+/, '')
         .trim();
       (document.getElementById('skills-input-text') as HTMLTextAreaElement | null)!.value = cleanedText;
+      updateSkillsResetButton(); // a skill is loaded — reveal "← New skill"
       const nameInput = document.getElementById('skills-input-name') as HTMLInputElement | null;
       if (nameInput) nameInput.value = retrainName;
       const engSel = document.getElementById('skills-input-engram') as HTMLSelectElement | null;
@@ -25061,8 +25232,34 @@ function bindSkillsHandlers(): void {
   }
 }
 
+// Show/hide the "← New skill" reset affordance based on whether the trainer
+// has any work in it. Visible whenever there's skill text (typed, or a skill
+// loaded for retrain/import) so the user can always start over; hidden on the
+// pristine empty form where "New skill" would be a no-op.
+function updateSkillsResetButton(): void {
+  const back = document.getElementById('btn-skills-trainer-back');
+  const ta = document.getElementById('skills-input-text') as HTMLTextAreaElement | null;
+  if (!back || !ta) return;
+  back.classList.toggle('hidden', ta.value.trim().length === 0);
+}
+
 function _bindSkillsHandlersInner(): void {
-  document.getElementById('btn-skills-trainer-back')?.addEventListener('click', () => showSkillsComposeMode());
+  document.getElementById('btn-skills-trainer-back')?.addEventListener('click', () => {
+    void (async () => {
+      // Remind the user to save (train) their work before wiping the form. The
+      // draft is auto-saved to localStorage, but a trained/persisted skill is
+      // not — so confirm whenever there's content in the trainer.
+      const ta = document.getElementById('skills-input-text') as HTMLTextAreaElement | null;
+      const hasWork = (ta?.value.trim().length ?? 0) > 0;
+      if (hasWork) {
+        const ok = await confirmPermanent(
+          'Start a new skill? This clears the trainer form. If you haven’t trained (saved) this skill into an engram yet, do that first — resetting discards the text shown here.',
+        );
+        if (!ok) return;
+      }
+      showSkillsComposeMode();
+    })();
+  });
   document.getElementById('skills-review-vitality')?.addEventListener('click', () => void refreshSkillVitality());
   // In-review Retrain button — same flow as the list row's Retrain action,
   // but reachable from the inspector view so the user doesn't have to go
@@ -25095,6 +25292,7 @@ function _bindSkillsHandlersInner(): void {
   document.getElementById('skills-input-text')?.addEventListener('input', () => {
     onDraftInput();
     scheduleSkillsChunkPreview();
+    updateSkillsResetButton(); // reveal "← New skill" as soon as there's content
   });
   document.getElementById('skills-input-name')?.addEventListener('input', onDraftInput);
   document.getElementById('skills-input-model')?.addEventListener('change', onDraftInput);
@@ -25284,6 +25482,13 @@ function _bindSkillsHandlersInner(): void {
   // reflected immediately on first render.
   const targetSel = document.getElementById('skills-input-engram') as HTMLSelectElement | null;
   targetSel?.addEventListener('change', syncSkillsPreviewWarning);
+  // Belt-and-suspenders: a DELEGATED listener so the warning re-syncs on every
+  // change of the target select even if the direct binding above missed it
+  // (e.g. the element wasn't in the DOM yet at bind time, or was re-rendered).
+  // This guarantees "engram selected → no preview warning" regardless of timing.
+  document.addEventListener('change', (e) => {
+    if ((e.target as HTMLElement | null)?.id === 'skills-input-engram') syncSkillsPreviewWarning();
+  });
   // Initial sync — the dropdown is populated by populateSkillsEngramPickers
   // which runs later via syncEngramPicker(); a microtask defer is enough to
   // catch the first render without a polling loop.

@@ -3770,6 +3770,16 @@
       body.skills-studio-mode .studio-banner { display: none; }
       /* The Stranded-Memories trivia bar is irrelevant on the Skills page. */
       body.skills-studio-mode #trivia-drawer { display: none; }
+      /* Extend the Skills library/trainer all the way down to the status bar.
+         The fill chain already stretches the section to its container, but in
+         this mode several stacked bottom paddings/margins (app-canvas 20px,
+         power-tools-body 12px, studio-workspace 4px, the section's own
+         lb-section margin 12px) left a ~48px dead band above the status bar.
+         Zero them here only — recall and the other studio tools keep theirs. */
+      body.skills-studio-mode .app-canvas { padding-bottom: 0; }
+      body.skills-studio-mode .power-tools-body { padding-bottom: 0; }
+      body.skills-studio-mode .studio-workspace { padding-bottom: 0; }
+      body.skills-studio-mode .lb-section[data-studio-tool="skills"] { margin-bottom: 0; }
 
       /* ── Search page (body.search-mode) ─────────────────────────────────
          Search is a checkin sub-mode: reveal the search bar + results surface,
@@ -4371,6 +4381,26 @@
         color: var(--accent); font: inherit; font-size: 12px; font-weight: 600; cursor: pointer;
       }
       .home-foresight-go:hover { text-decoration: underline; }
+
+      /* ── Fun, glanceable overlay-layer cards (.GLL / .GNN) ───────────────
+         Replaces the wall-of-italics with: an emoji hero line, a tiny
+         layer-stack diagram (your locked memory vs the predictions overlay),
+         and short emoji fact-bullets. Shared by both cards. */
+      .layer-hero { font-size: 13.5px; line-height: 1.5; color: var(--fg); margin: 2px 0 12px; }
+      .layer-hero .layer-emoji { font-size: 16px; }
+      .layer-stack { border: 1px solid var(--border); border-radius: 10px; overflow: hidden; margin: 0 0 12px; }
+      .layer-stack .layer-row { display: flex; align-items: center; gap: 8px; padding: 8px 11px; font-size: 12px; line-height: 1.3; }
+      .layer-stack .layer-row code { font-family: ui-monospace, 'Cascadia Code', monospace; font-weight: 700; color: var(--fg); }
+      .layer-stack .layer-row .layer-what { color: var(--fg-dim); }
+      .layer-stack .layer-row .layer-tag { margin-left: auto; font-size: 11px; font-weight: 600; }
+      .layer-stack .layer-canon { background: color-mix(in oklab, var(--ok) 9%, transparent); }
+      .layer-stack .layer-canon .layer-tag { color: var(--ok); }
+      .layer-stack .layer-overlay { background: color-mix(in oklab, var(--accent) 10%, transparent); border-top: 1px dashed var(--border); }
+      .layer-stack .layer-overlay .layer-tag { color: var(--accent); }
+      .layer-facts { list-style: none; margin: 0; padding: 0; display: grid; gap: 7px; }
+      .layer-facts li { font-size: 12.5px; line-height: 1.4; color: var(--fg-dim); display: flex; gap: 8px; align-items: baseline; }
+      .layer-facts li .lf-emoji { flex-shrink: 0; }
+      .layer-facts li b { color: var(--fg); font-weight: 600; }
 
       /* Quiet empty/error states — cards keep their slot (stable grid order)
          instead of disappearing and reflowing the layout after data loads. */
@@ -11078,6 +11108,14 @@
                               </div>
                             </div>
                             <button id="btn-new-goal" class="btn-sm">+ Develop a new goal…</button>
+                            <!-- develop MCP tool — moved here from the shared AI-clients card -->
+                            <div class="lb-mcp-tools-hint">
+                              <p class="lb-mcp-tools-title">Available via AI clients (Claude, Cursor…)</p>
+                              <div class="lb-mcp-tool-row">
+                                <span class="lb-mcp-tool-name">develop</span>
+                                <span class="lb-mcp-tool-desc">Give it your context, strategy, and goal — Graphnosis reads your memories and writes a concrete strategic plan, citing what it actually knows.</span>
+                              </div>
+                            </div>
                           </div>
 
                           <!-- Predict card — title/description stay visible; only the output
@@ -11096,18 +11134,13 @@
                               </div>
                               <div id="foresight-predict-out" class="foresight-out" data-pres="surface:predict"></div>
                             </div>
-                          </div>
-
-                          <!-- AI-clients hint card -->
-                          <div class="lb-mcp-tools-hint" id="fcard-aihint">
-                            <p class="lb-mcp-tools-title">Available via AI clients (Claude, Cursor…)</p>
-                            <div class="lb-mcp-tool-row">
-                              <span class="lb-mcp-tool-name">develop</span>
-                              <span class="lb-mcp-tool-desc">Give it your context, strategy, and goal — Graphnosis reads your memories and writes a concrete strategic plan, citing what it actually knows.</span>
-                            </div>
-                            <div class="lb-mcp-tool-row">
-                              <span class="lb-mcp-tool-name">predict</span>
-                              <span class="lb-mcp-tool-desc">Before taking an action, Graphnosis checks your memory for past failures, resource constraints, blockers, and hidden opportunities related to that action.</span>
+                            <!-- predict MCP tool — moved here from the shared AI-clients card -->
+                            <div class="lb-mcp-tools-hint">
+                              <p class="lb-mcp-tools-title">Available via AI clients (Claude, Cursor…)</p>
+                              <div class="lb-mcp-tool-row">
+                                <span class="lb-mcp-tool-name">predict</span>
+                                <span class="lb-mcp-tool-desc">Before taking an action, Graphnosis checks your memory for past failures, resource constraints, blockers, and hidden opportunities related to that action.</span>
+                              </div>
                             </div>
                           </div>
                         </div>
@@ -11150,46 +11183,34 @@
                       </p>
 
                       <div class="lb-section" id="fcard-gnn">
-                        <p class="lb-section-title">Graphnosis Neural Network (.GNN)</p>
-                        <p class="brain-subtitle">
-                          A trained neural network that predicts likely-missing
-                          connections. Its predictions are non-deterministic and live
-                          in a separate encrypted overlay — never mixed into the
-                          deterministic graph. Off by default; a snapshot of every
-                          engram is saved before it is ever enabled.
-                          <br><br>
-                          <em>What is the <code>.gnn</code> file?</em> It's an encrypted
-                          overlay stored alongside your cortex at
-                          <code>&lt;cortex&gt;/neural-network.gnn</code>. It holds only
-                          the neural network's predicted edges between your existing
-                          memories — never your actual notes, never anything written
-                          into the canonical <code>.gai</code> engrams. Deleting the
-                          file returns your cortex to the pre-GNN state byte-for-byte.
-                        </p>
+                        <p class="lb-section-title">🧠 Graphnosis Neural Network (.GNN)</p>
+                        <p class="layer-hero"><span class="layer-emoji">🔮</span> A little neural net learns the shape of your graph and <b>guesses connections you might've missed</b> — hunches, not facts.</p>
+                        <div class="layer-stack">
+                          <div class="layer-row layer-canon">🔒&nbsp;<code>.gai</code> <span class="layer-what">your real memories</span> <span class="layer-tag">untouched</span></div>
+                          <div class="layer-row layer-overlay">🧠&nbsp;<code>.gnn</code> <span class="layer-what">predicted edges — guesses</span> <span class="layer-tag">lives here</span></div>
+                        </div>
+                        <ul class="layer-facts">
+                          <li><span class="lf-emoji">🔮</span><span><b>Predictions only</b> — never your notes, never the canonical graph.</span></li>
+                          <li><span class="lf-emoji">🔐</span><span>Its own encrypted file beside your cortex: <code>neural-network.gnn</code>.</span></li>
+                          <li><span class="lf-emoji">⏸️</span><span><b>Off by default</b> — a full snapshot is saved before it's ever enabled.</span></li>
+                          <li><span class="lf-emoji">🗑️</span><span>Delete the file → back to the exact pre-GNN state, byte-for-byte.</span></li>
+                        </ul>
                         <div id="lb-neural-network" class="lb-block"></div>
                       </div>
 
                       <div class="lb-section" id="fcard-gll">
-                        <p class="lb-section-title">Graphnosis Local Layer (.GLL)</p>
-                        <p class="brain-subtitle">
-                          Periodically the local LLM proposes new connections between
-                          memories that look semantically related. Predictions land in
-                          the <code>.gll</code> overlay — your canonical engram is never
-                          touched. Review each below: <strong>Accept</strong> promotes
-                          the prediction into the canonical graph as a real directed
-                          edge, <strong>Reject</strong> deletes it from the overlay
-                          permanently. Requires the
-                          <em>Predict edges autonomously</em> capability under Local LLM.
-                          <br><br>
-                          <em>What is the <code>.gll</code> file?</em> An encrypted
-                          overlay at <code>&lt;cortex&gt;/local-layer.gll</code> that
-                          holds the local LLM's predicted edges (and, in future
-                          iterations, synthesized assertions). Same crypto envelope as
-                          your engrams, but kept architecturally separate: the LLM
-                          cannot mutate your attested memory in <code>.gai</code>.
-                          Deleting the file returns your cortex to the pre-LLM-overlay
-                          state.
-                        </p>
+                        <p class="lb-section-title">✨ Graphnosis Local Layer (.GLL)</p>
+                        <p class="layer-hero"><span class="layer-emoji">💡</span> Your on-device LLM quietly proposes links between related memories. <b>You decide what sticks.</b></p>
+                        <div class="layer-stack">
+                          <div class="layer-row layer-canon">🔒&nbsp;<code>.gai</code> <span class="layer-what">your real memories</span> <span class="layer-tag">untouched</span></div>
+                          <div class="layer-row layer-overlay">💡&nbsp;<code>.gll</code> <span class="layer-what">LLM's proposed links</span> <span class="layer-tag">review below</span></div>
+                        </div>
+                        <ul class="layer-facts">
+                          <li><span class="lf-emoji">✅</span><span><b>Accept</b> → it becomes a real edge. &nbsp;<b>❌ Reject</b> → gone for good.</span></li>
+                          <li><span class="lf-emoji">🔐</span><span>Encrypted overlay (<code>local-layer.gll</code>) — the LLM can't touch your attested memory.</span></li>
+                          <li><span class="lf-emoji">🤖</span><span>Needs <b>Predict edges autonomously</b> under Local LLM.</span></li>
+                          <li><span class="lf-emoji">🗑️</span><span>Delete the file → back to the pre-LLM state.</span></li>
+                        </ul>
                         <!-- Pro-upgrade card: shown for free users. Mirrors the GNN card
                              above. The .gll edge-prediction loop in the brain engine is
                              gated by the gnn-exploration feature, so the card surfaces
@@ -11539,15 +11560,16 @@ ollama list</code></pre>
                 <p class="gc-section-hint">How your memory flows. Standalone means nothing leaves this machine; layer on a local LLM or neural network without giving up that posture.</p>
                 <div class="rail-get-connected-group" id="rail-gc-mode"></div>
                 <div class="rail-get-connected-group" id="rail-gc-aimode" style="margin-top:6px;"></div>
-                <!-- Mobile & Remote Access — moved here from Settings. Reach this
-                     cortex from a phone/tablet/another machine over LAN or Tailscale. -->
+              </section>
+
+              <!-- Mobile & Remote Access — its own card. Reach this cortex from a
+                   phone/tablet/another machine over LAN or Tailscale. -->
+              <section class="gc-section">
                 <div class="gc-mobile-row">
-                  <div>
-                    <div class="gc-mobile-title">📱 Mobile &amp; remote access</div>
-                    <div class="gc-section-hint" style="margin:2px 0 0;">Reach this cortex from Claude for iOS/Android or any HTTP MCP client over your LAN or Tailscale.</div>
-                  </div>
+                  <h3 class="gc-section-title" style="margin:0;">📱 Mobile &amp; remote access</h3>
                   <button id="btn-mobile-setup" class="rail-shortcut-btn">Set up…</button>
                 </div>
+                <p class="gc-section-hint" style="margin:6px 0 0;">Reach this cortex from Claude for iOS/Android or any HTTP MCP client over your LAN or Tailscale.</p>
               </section>
 
               <!-- AI clients READ from the cortex -->
