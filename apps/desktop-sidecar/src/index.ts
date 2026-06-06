@@ -103,13 +103,15 @@ if (role === 'embed') {
   // to confirm the footprint is genuinely held (a forced GC reclaimed ~0) and
   // that the off-heap figures track the brain consolidation pass. Uncomment to
   // re-arm next time the footprint needs investigating.
+  // To re-arm (logs rss/heapUsed/heapTotal/external/arrayBuffers; heapUsed = JS
+  // objects, external/arrayBuffers = Buffers/embeddings), uncomment:
   //
   // const mb = (b: number): number => Math.round(b / 1048576);
   // setInterval(() => {
   //   const m = process.memoryUsage();
   //   console.error(
-  //     `[mem] rss=${mb(m.rss)}MB external=${mb(m.external)}MB arrayBuffers=${mb(m.arrayBuffers)}MB ` +
-  //     `heapUsed=${mb(m.heapUsed)}MB`,
+  //     `[mem] rss=${mb(m.rss)}MB heapUsed=${mb(m.heapUsed)}MB heapTotal=${mb(m.heapTotal)}MB ` +
+  //     `external=${mb(m.external)}MB arrayBuffers=${mb(m.arrayBuffers)}MB`,
   //   );
-  // }, 30_000).unref();
+  // }, 10_000).unref();
 }
