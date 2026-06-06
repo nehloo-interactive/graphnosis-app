@@ -760,6 +760,12 @@ async function main(): Promise<void> {
   // Wire recall → reinforcement: every federated recall feeds the
   // co-activation accumulator so co-recalled memories strengthen.
   host.setPlasticityObserver((sub) => brainEngine.onRecall(sub));
+  // Live-ingest deltas → events socket. Each source's new nodes are pushed as it
+  // ingests (kind:'delta', forwarded by event_stream.rs to graphnosis://graph-
+  // delta) so the 3D graph grows source-by-source with no full re-fetch.
+  if (broadcastRaw) {
+    host.setGraphDeltaBroadcaster((d) => broadcastRaw({ kind: 'graph.delta', name: 'graph.delta', payload: d }));
+  }
   // Hand the host a getter for the local LLM. The host calls it lazily on
   // each recall so the master toggle and per-capability flags are evaluated
   // from current settings — toggling Ollama in the UI takes effect on the

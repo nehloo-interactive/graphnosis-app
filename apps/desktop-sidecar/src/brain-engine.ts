@@ -7,6 +7,10 @@ import { TemporalEngine } from './temporal-engine.js';
 import { GoalTracker } from './goal-tracker.js';
 import { findSimilarPairs } from './duplicate-scan.js';
 import { clientActiveWithin, CLIENT_QUIET_MS } from './client-activity.js';
+// Brain recalls/searches embed the query — they MUST go through the global
+// embedding queue or they can run concurrently with a connector ingest's embed
+// and crash the (non-reentrant) embed worker, deadlocking all embedding.
+import { withEmbedding } from './embedding-queue.js';
 import { settings as settingsMod } from '@graphnosis-app/core';
 import { predictEdgesForEngram, edgePredictionEnabled } from './edge-prediction.js';
 import { redactId, dbg } from './log-redact.js';
@@ -607,12 +611,15 @@ export class BrainEngine {
       (this.host.getSettings().brain?.reinforcement?.consolidationIntervalHours ?? 24)
       * 60 * 60 * 1000;
     this.consolidationTimer = setInterval(
-      () => { void this.reinforcement.runConsolidationPass(); },
+      // Defer while the user is navigating — a consolidation pass is CPU-heavy
+      // and would otherwise stall an interactive engram load (slow render + a
+      // timed-out list_edges showing 0 edges). Runs once they go idle.
+      () => { if (clientActiveWithin(CLIENT_QUIET_MS)) return; void this.reinforcement.runConsolidationPass(); },
       consolidationMs,
     ).unref();
 
     this.crossEngramTimer = setInterval(
-      () => { void this.reinforcement.runCrossEngramPass(); },
+      () => { if (clientActiveWithin(CLIENT_QUIET_MS)) return; void this.reinforcement.runCrossEngramPass(); },
       CROSS_ENGRAM_INTERVAL_MS,
     ).unref();
 
@@ -833,9 +840,9 @@ export class BrainEngine {
     graphIds?: string[];
   }): Promise<StrategicPlan> {
     const query = `${params.context} ${params.strategy} ${params.goals}`;
-    const recalled = await this.host.recall(query, {
+    const recalled = await withEmbedding(() => this.host.recall(query, {
       budget: { maxTokens: 3000, maxNodes: 30 },
-    });
+    }), 'brain:develop');
 
     const referencedNodeIds: string[] = [];
     for (const items of recalled.byGraph.values()) {
@@ -876,9 +883,9 @@ export class BrainEngine {
     action: string;
     graphIds?: string[];
   }): Promise<PredictionResult> {
-    const recalled = await this.host.recall(params.action, {
+    const recalled = await withEmbedding(() => this.host.recall(params.action, {
       budget: { maxTokens: 2000, maxNodes: 20 },
-    });
+    }), 'brain:predict');
 
     const referencedNodeIds: string[] = [];
     for (const items of recalled.byGraph.values()) {
@@ -1875,11 +1882,11 @@ export class BrainEngine {
         break;
       }
       try {
-        const topNodes = await this.host.searchNodes(
+        const topNodes = await withEmbedding(() => this.host.searchNodes(
           graphId,
           'important facts decisions goals plans key information',
           30,
-        );
+        ), 'brain:insight');
         if (topNodes.length < 5) {
           engramsSkippedNoData++;
           continue;

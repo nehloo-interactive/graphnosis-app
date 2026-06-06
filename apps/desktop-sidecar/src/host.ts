@@ -180,6 +180,16 @@ export interface SourceLifecycleListener {
 // GraphnosisHost = the App's single integration point for the SDK.
 // Owns encryption at rest, op-log emission, embedding cache, and the source index.
 // Every mutation funnels through here so the op-log is the durable truth.
+
+/** Per-source live-ingest delta — the new nodes a single source added, so the
+ *  UI can append them to the 3D graph as each source finishes WITHOUT a full
+ *  re-fetch (the "watch it grow source-by-source" path). */
+export interface GraphDelta {
+  graphId: GraphId;
+  sourceId: string;
+  nodes: ReturnType<GraphnosisAdapter['inspectNodes']>;
+}
+
 export class GraphnosisHost {
   // ── Mutation events ────────────────────────────────────────────────
   //
@@ -211,6 +221,14 @@ export class GraphnosisHost {
    *  rather than "pending", and the UI doesn't grey/disable it in the picker.
    *  Only a genuine delete removes it. */
   private readonly everLoaded = new Set<GraphId>();
+  /** Sink for per-source live-ingest deltas (wired by main.ts to the events
+   *  socket). Null in headless/CI — then we skip building the delta entirely. */
+  private graphDeltaBroadcaster: ((d: GraphDelta) => void) | null = null;
+
+  /** Register (or clear) the live-ingest delta sink. */
+  setGraphDeltaBroadcaster(fn: ((d: GraphDelta) => void) | null): void {
+    this.graphDeltaBroadcaster = fn;
+  }
   /**
    * Running count of user-initiated corrections per graph. Counts ONLY
    * `editNode` and `supersede` op-log events — these come exclusively from
@@ -1367,6 +1385,17 @@ export class GraphnosisHost {
    *  the coldest eligible ones (clean, not embed-building, idle > GRAPH_IDLE_MS).
    *  Run after each load + on a periodic timer (see main.ts). */
   async maybeEvict(): Promise<void> {
+    // LRU eviction is DISABLED. The SDK has no dispose()/unload() for a graph
+    // handle, so `graphs.delete()` only drops the JS reference and relies on GC
+    // to reclaim the native embedding buffers — which lags under memory
+    // pressure, so eviction doesn't reliably free RAM. Meanwhile any access
+    // (a stray search/recall) reloads the engram, so we pay constant
+    // evict→reload churn (incl. a `search.nodes` flood on just-deleted engrams)
+    // for no memory benefit, and it made live-ingest WORSE than the pre-LRU
+    // (v1.13.3) baseline where engrams simply stayed resident and stable.
+    // Re-enable only once the SDK can actually release a graph's memory (or we
+    // switch to lazy-boot so memory never balloons in the first place).
+    if (!LRU_EVICTION_ENABLED) return;
     if (this.graphs.size <= GRAPH_RESIDENT_CAP) return;
     const now = Date.now();
     const evictable = [...this.graphs.keys()]
@@ -1377,10 +1406,17 @@ export class GraphnosisHost {
       })
       .sort((a, b) => (this.lastAccessAt.get(a) ?? 0) - (this.lastAccessAt.get(b) ?? 0)); // coldest first
     let over = this.graphs.size - GRAPH_RESIDENT_CAP;
+    let evicted = 0;
     for (const id of evictable) {
       if (over <= 0) break;
       await this.unloadGraph(id);
-      over--;
+      over--; evicted++;
+    }
+    // The unloaded engrams are now dereferenced but Bun won't return their pages
+    // to the OS until GC runs. Force it once per sweep (cheap relative to the
+    // GBs reclaimed) so eviction actually drops RSS, not just the logical heap.
+    if (evicted > 0) {
+      (globalThis as { Bun?: { gc?: (force: boolean) => void } }).Bun?.gc?.(true);
     }
   }
 
@@ -2337,6 +2373,18 @@ export class GraphnosisHost {
     };
     g.sourceIndex.add(record);
     g.dirty = true;
+
+    // Live-ingest delta: push just THIS source's new nodes to any UI watching
+    // the engram, so the 3D graph shows each source appear as it finishes —
+    // O(newNodeIds), no full re-fetch. Only built when a sink is wired.
+    if (this.graphDeltaBroadcaster && result.newNodeIds.length > 0) {
+      try {
+        this.graphDeltaBroadcaster({
+          graphId, sourceId,
+          nodes: this.opts.adapter.getNodesByIds(g.handle, result.newNodeIds),
+        });
+      } catch { /* delta is best-effort; never fail the ingest over it */ }
+    }
 
     const trigAttr = opts?.triggeredBy ? { triggeredBy: opts.triggeredBy } : {};
     this.oplogWriter.emit({
@@ -5999,6 +6047,11 @@ const GLOBAL_SAVE_CONCURRENCY = 2;
  *  resting memory of a large multi-engram cortex; on a small cortex (≤ cap)
  *  nothing is ever evicted. Tunable. */
 const GRAPH_RESIDENT_CAP = 8;
+/** Master switch for LRU eviction. OFF again: re-enabling it (with a forced GC)
+ *  regressed the UI — engrams showed 0 nodes/0 edges. The eviction/reload (or
+ *  the forced GC) is corrupting the in-memory view, so it's not safe as-is.
+ *  Disk data is untouched; a relaunch with this OFF restores everything. */
+const LRU_EVICTION_ENABLED = false;
 /** Don't evict an engram accessed within this window — protects the active
  *  engram and anything in an in-flight, multi-step workflow from being pulled
  *  out from under the user mid-use. */

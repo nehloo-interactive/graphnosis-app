@@ -23,6 +23,15 @@ interface RunningConnector {
   pullTimer: ReturnType<typeof setInterval> | null;
   eventsTotal: number;
   pulling: boolean;
+  /** Last time this pull made forward progress (a file ingested, or the pull
+   *  started). The watchdog uses it to tell a slow-but-advancing ingest from a
+   *  genuinely wedged one — so it never false-fires on a legit large vault. */
+  lastProgressAt: number;
+  /** User hit "Stop": abort the in-flight drain at the next file/batch boundary. */
+  stopRequested: boolean;
+  /** User paused this connector — auto-poll/watch pulls are gated off until a
+   *  manual triggerPull/resync resumes it. Runtime-only (resets on restart). */
+  paused: boolean;
   /** Active filesystem watchers (one per watched path) for live ingest. */
   watchers: FSWatcher[];
   /** Debounce timer coalescing a burst of file-change events into one pull. */
@@ -39,7 +48,13 @@ const MAX_DRAIN_ITERS = 50;
 // files so a large vault doesn't accumulate the whole batch in memory before a
 // single save, and so progress survives a stall/quit. Balances durability vs
 // avoiding the O(n²) per-file full-save storm.
-const CONNECTOR_SAVE_CHECKPOINT = 200;
+const CONNECTOR_SAVE_CHECKPOINT = 50;
+// Watchdog: if a pull has been "in flight" with ZERO forward progress for this
+// long, it has wedged (e.g. on a crashed embed worker) and would otherwise pin
+// `pulling=true` forever, killing the connector permanently. We abandon the
+// dangling pull and let the next poll retry. Generous, and progress-gated, so a
+// legitimately slow large-vault ingest (which keeps advancing) never trips it.
+const PULL_STALL_WATCHDOG_MS = 5 * 60_000;
 /** Quiet window after the last file-change event before a watcher pulls. */
 const WATCH_DEBOUNCE_MS = 1500;
 
@@ -118,6 +133,7 @@ export class ConnectorManager {
         ...(cfg.lastError !== undefined ? { lastError: cfg.lastError } : {}),
         eventsTotal: rc?.eventsTotal ?? 0,
         pulling: rc?.pulling ?? false,
+        paused: rc?.paused ?? false,
       };
     });
     return { configs, statuses, pullIntervalMs: this.settings.pullIntervalMs };
@@ -176,11 +192,31 @@ export class ConnectorManager {
   async removeForGraph(graphId: string): Promise<string[]> {
     const ids = this.settings.configs.filter(c => c.graphId === graphId).map(c => c.id);
     for (const id of ids) {
+      this.stopPull(id); // request abort of any in-flight pull
+      // stopPull only SETS the abort flag — the in-flight pull (possibly mid
+      // embed) keeps running until it hits the next file boundary. WAIT for it
+      // to actually idle before we delete the engram, or deleteGraph runs
+      // concurrently with a live ingest → the contention/stall + re-created
+      // files we keep hitting. Bounded so a wedged embed can't hang the delete.
+      await this.waitForPullIdle(id, 5_000);
       try { await this.remove(id); }
       catch (e) { console.error(`[connectors] failed to remove '${id}' feeding deleted engram '${graphId}': ${(e as Error).message}`); }
     }
     if (ids.length > 0) console.error(`[connectors] removed ${ids.length} connector(s) feeding deleted engram '${graphId}'`);
     return ids;
+  }
+
+  /** Wait (up to timeoutMs) for a connector's in-flight pull to finish, so a
+   *  caller (e.g. engram delete) can proceed without racing a live ingest.
+   *  Returns early once idle; gives up after the timeout (a wedged embed). */
+  private async waitForPullIdle(id: string, timeoutMs: number): Promise<void> {
+    const rc = this.running.get(id);
+    if (!rc) return;
+    const deadline = Date.now() + timeoutMs;
+    while (rc.pulling && Date.now() < deadline) {
+      await new Promise<void>((r) => setTimeout(r, 100));
+    }
+    if (rc.pulling) console.error(`[connector:${id}] still pulling after ${timeoutMs}ms — proceeding with removal anyway (pull will abort on next boundary).`);
   }
 
   /** Re-sync from scratch: reset the pull cursor to 0 (so the next pull treats
@@ -194,9 +230,21 @@ export class ConnectorManager {
     const rc = this.running.get(id);
     if (!rc) throw new Error(`Connector '${id}' is not running (disabled or not started)`);
     if (!rc.connector.pull) throw new Error(`Connector '${id}' (${cfg.kind}) is push-only — nothing to re-sync`);
+    rc.paused = false; rc.stopRequested = false; // a manual re-sync resumes a stopped connector
     await this.setCursor(cfg, 0); // 0 is falsy → doPull passes since=undefined → full re-scan
     const count = await this.doPull(cfg, rc);
     return { eventsIngested: count };
+  }
+
+  /** Stop an in-progress ingest and pause this connector. The active drain
+   *  aborts at the next file/batch boundary; the poll timer + watchers stay
+   *  alive but are gated off by `paused` until a manual triggerPull/resync
+   *  resumes it. The user's escape hatch for a slow or wedged ingest. */
+  stopPull(id: string): void {
+    const rc = this.running.get(id);
+    if (!rc) return;
+    rc.paused = true;
+    rc.stopRequested = true; // abort the active drain at the next boundary
   }
 
   /** Manually trigger a pull for a specific connector. Returns ingested event count. */
@@ -206,6 +254,7 @@ export class ConnectorManager {
     const rc = this.running.get(id);
     if (!rc) throw new Error(`Connector '${id}' is not running (disabled or not started)`);
     if (!rc.connector.pull) throw new Error(`Connector '${id}' (${cfg.kind}) is push-only (no pull method)`);
+    rc.paused = false; rc.stopRequested = false; // a manual pull resumes a stopped connector
     const count = await this.doPull(cfg, rc);
     return { eventsIngested: count };
   }
@@ -255,7 +304,13 @@ export class ConnectorManager {
 
     const connector = buildConnector(cfg);
     const hasPull = typeof connector.pull === 'function';
-    const pullTimer = hasPull
+    // Manual mode: when `autoSync` is explicitly false the connector mounts but
+    // stays DORMANT — no poll timer, no file watch, no initial pull. It ingests
+    // only on an explicit Pull now / Re-sync. Lets the user set the stage (turn
+    // on Presentation Mode, select the engram) before kicking off a recorded
+    // demo of the import. Default true = ingest automatically, as before.
+    const autoSync = cfg.options['autoSync'] !== false;
+    const pullTimer = (hasPull && autoSync)
       ? setInterval(() => {
           void this.doPull(cfg, rc).catch(err => {
             console.error(`[connector:${cfg.id}] scheduled pull failed: ${(err as Error).message}`);
@@ -263,16 +318,16 @@ export class ConnectorManager {
         }, this.intervalForCfg(cfg)).unref()
       : null;
 
-    const rc: RunningConnector = { connector, pullTimer, eventsTotal: 0, pulling: false, watchers: [], watchDebounce: null };
+    const rc: RunningConnector = { connector, pullTimer, eventsTotal: 0, pulling: false, lastProgressAt: 0, stopRequested: false, paused: false, watchers: [], watchDebounce: null };
     this.running.set(cfg.id, rc);
 
     // Start filesystem watchers for live ingest (local-file connectors).
-    if (hasPull && typeof connector.watchPaths === 'function') {
+    if (hasPull && autoSync && typeof connector.watchPaths === 'function') {
       this.startWatchers(cfg, rc, connector.watchPaths());
     }
 
     // Run an immediate pull on mount so the engram is populated right away.
-    if (hasPull) {
+    if (hasPull && autoSync) {
       void this.doPull(cfg, rc).catch(err => {
         console.error(`[connector:${cfg.id}] initial pull failed: ${(err as Error).message}`);
       });
@@ -330,8 +385,25 @@ export class ConnectorManager {
    * thread, and it is single-writer by design.)
    */
   private async doPull(cfg: ConnectorConfig, rc: RunningConnector): Promise<number> {
-    if (rc.pulling) return 0; // Don't overlap pulls
+    if (rc.paused) return 0;  // user stopped this connector; auto-poll/watch pulls no-op
+    if (rc.pulling) {
+      // A pull is "in flight". If it's still making progress (or just started),
+      // don't overlap — return. But if it's been wedged with zero progress past
+      // the watchdog window, the previous pull hung (likely a crashed embed
+      // worker); abandon it so this poll can recover instead of dying forever.
+      if (Date.now() - rc.lastProgressAt < PULL_STALL_WATCHDOG_MS) return 0;
+      console.error(`[connector:${cfg.id}] pull wedged with no progress for >${Math.round(PULL_STALL_WATCHDOG_MS / 60_000)}min — abandoning the stuck pull and retrying.`);
+    }
     rc.pulling = true;
+    rc.lastProgressAt = Date.now();
+    // Heartbeat: keep the brain's heavy background passes DEFERRED for the ENTIRE
+    // pull, not just per ingested file. A slow/wedged embed opens a gap longer
+    // than CLIENT_QUIET_MS between files; without this the brain wakes mid-pull
+    // and runs its cross-engram pass — which loads EVERY engram's embeddings into
+    // an LSH pool. On a large resident cortex that memory spike tips the embed
+    // worker into swap and the pull stalls for good (observed: the wedge). The
+    // timer marks activity so clientActiveWithin() stays true across slow embeds.
+    const heartbeat = setInterval(() => markClientActivity(), 5_000);
     let total = 0;
     try {
       // Ensure the target engram is actually LOADED before pulling. A connector
@@ -353,11 +425,12 @@ export class ConnectorManager {
       }
       let limit = BASE_PULL_LIMIT;
       for (let iter = 0; iter < MAX_DRAIN_ITERS; iter++) {
+        if (rc.stopRequested) { console.error(`[connector:${cfg.id}] stopped by user — halting drain.`); break; }
         const since = cfg.lastPulledAt ? new Date(cfg.lastPulledAt) : undefined;
         const events = await rc.connector.pull!(since, limit);
         if (events.length === 0) break;
 
-        const { count, transientFailures } = await this.ingestEvents(cfg, events);
+        const { count, transientFailures } = await this.ingestEvents(cfg, events, rc);
         total += count;
         rc.eventsTotal += count;
 
@@ -420,6 +493,7 @@ export class ConnectorManager {
       await this.updateConnectorState(cfg.id, { lastError: msg });
       return total;
     } finally {
+      clearInterval(heartbeat);
       rc.pulling = false;
     }
   }
@@ -430,7 +504,7 @@ export class ConnectorManager {
     await this.updateConnectorState(cfg.id, { lastPulledAt });
   }
 
-  private async ingestEvents(cfg: ConnectorConfig, events: ConnectorEvent[]): Promise<{ count: number; transientFailures: number }> {
+  private async ingestEvents(cfg: ConnectorConfig, events: ConnectorEvent[], rc: RunningConnector): Promise<{ count: number; transientFailures: number }> {
     if (events.length === 0) return { count: 0, transientFailures: 0 };
     const mirror = cfg.options['mirrorDeletes'] === true;
     let count = 0;
@@ -438,6 +512,8 @@ export class ConnectorManager {
     let sinceYield = 0;
     let sinceCheckpoint = 0;
     for (const ev of events) {
+      // User hit Stop — flush what we've saved (the tail save below) and bail.
+      if (rc.stopRequested) break;
       // Signal activity so the brain's backpressure DEFERS its heavy passes
       // (duplicate scan, etc.) while this connector ingest runs — otherwise the
       // brain fights the ingest for the single thread and the ingest stalls.
@@ -474,6 +550,7 @@ export class ConnectorManager {
           await this.host.connectorFileMap.set(ev.sourceRef, rec.sourceId);
         }
         count++;
+        rc.lastProgressAt = Date.now(); // forward progress — keeps the watchdog from tripping
         // Incremental checkpoint flush — persist + release every N files so a
         // big batch doesn't ingest entirely in memory before a single save, and
         // so progress is durable if the pull stalls or the app quits mid-vault.
@@ -580,7 +657,7 @@ export class ConnectorManager {
 
     const events = await connector.handleWebhook(body, headers);
     if (rc) {
-      await this.ingestEvents(cfg, events);
+      await this.ingestEvents(cfg, events, rc);
       rc.eventsTotal += events.length;
     }
     return events;
