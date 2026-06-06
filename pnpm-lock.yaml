@@ -7,9 +7,6 @@ settings:
 packageExtensionsChecksum: sha256-/OPRwZbRgAfd6g7UgtS2Xr69OW74ut+6UJjUKXjgNC8=
 
 patchedDependencies:
-  '@nehloo/graphnosis@0.5.6':
-    hash: 75741c37536d784e2b29ca85840d81fc20f75f6454b41c1a7a4047bb642440ee
-    path: patches/@nehloo__graphnosis@0.5.6.patch
   libsodium-wrappers-sumo:
     hash: da53431d2a81810a70c17c15ac5454840c9f42daf0a3fab0968df8c896f11123
     path: patches/libsodium-wrappers-sumo.patch
@@ -95,8 +92,8 @@ importers:
         specifier: https://github.com/nehloo-interactive/graphnosis-secure-sync.git#v0.1.2
         version: https://codeload.github.com/nehloo-interactive/graphnosis-secure-sync/tar.gz/ed79dfc898d2782b5a6ea92102d58a3e32bba531
       '@nehloo/graphnosis':
-        specifier: ^0.5.5
-        version: 0.5.6(patch_hash=75741c37536d784e2b29ca85840d81fc20f75f6454b41c1a7a4047bb642440ee)
+        specifier: ^0.6.0
+        version: 0.6.0
       '@scure/bip39':
         specifier: ^1.4.0
         version: 1.6.0
@@ -2026,8 +2023,8 @@ packages:
     resolution: {tarball: https://codeload.github.com/nehloo-interactive/graphnosis-secure-sync/tar.gz/ed79dfc898d2782b5a6ea92102d58a3e32bba531}
     version: 0.1.2
 
-  '@nehloo/graphnosis@0.5.6':
-    resolution: {integrity: sha512-VwBQBgeV0776vuwX+3o7ctHau1x17PjT+u0pEwx5P4V/2neQUreMZ4BjTmJSz7pYLm77iu27duoBeT8/64wIzw==}
+  '@nehloo/graphnosis@0.6.0':
+    resolution: {integrity: sha512-zzM45t7TAVCGtzlcvnvDHktfZFrkIwrXr3bbzxc6o1eLONpVy4EOnI1Ij0lSl6wh9ObmFBVgGQn+mbBlTNLnuA==}
     peerDependencies:
       '@ai-sdk/openai': '>=3.0.0'
       ai: '>=6.0.0'
@@ -7391,7 +7388,7 @@ snapshots:
     dependencies:
       libsodium-wrappers-sumo: 0.7.16(patch_hash=da53431d2a81810a70c17c15ac5454840c9f42daf0a3fab0968df8c896f11123)
 
-  '@nehloo/graphnosis@0.5.6(patch_hash=75741c37536d784e2b29ca85840d81fc20f75f6454b41c1a7a4047bb642440ee)':
+  '@nehloo/graphnosis@0.6.0':
     dependencies:
       cheerio: 1.2.0
       exif-parser: 0.1.12
