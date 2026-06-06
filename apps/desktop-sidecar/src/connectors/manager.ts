@@ -48,7 +48,10 @@ const MAX_DRAIN_ITERS = 50;
 // files so a large vault doesn't accumulate the whole batch in memory before a
 // single save, and so progress survives a stall/quit. Balances durability vs
 // avoiding the O(n²) per-file full-save storm.
-const CONNECTOR_SAVE_CHECKPOINT = 50;
+// 20 (was 50): now that embcache saves are compact binary (no JSON churn), more
+// frequent checkpoints are cheap — so an interrupted sync persists progress
+// sooner (a stall at file 36 used to lose everything when the checkpoint was 50).
+const CONNECTOR_SAVE_CHECKPOINT = 20;
 // Watchdog: if a pull has been "in flight" with ZERO forward progress for this
 // long, it has wedged (e.g. on a crashed embed worker) and would otherwise pin
 // `pulling=true` forever, killing the connector permanently. We abandon the
