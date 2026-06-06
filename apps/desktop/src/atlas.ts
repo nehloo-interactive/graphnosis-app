@@ -1801,6 +1801,10 @@ export class Atlas {
 
   private nodeTipEl: HTMLDivElement | null = null;
   private nodeTipText: string | null = null;
+  /** When true, the node hover tooltip is suppressed entirely. Set during
+   *  Presentation Mode so hovering a node can't surface its raw text (which
+   *  would bypass the ████ label redaction). */
+  private hoverSuppressed = false;
   /** True only while the pointer is actually over the atlas canvas — gates the
    *  hover tooltip so moving nodes (settle/ingest) drifting under a stale
    *  raycaster position don't flash labels when the mouse isn't on the graph. */
@@ -1818,6 +1822,13 @@ export class Atlas {
 
     // onNodeHover: set content (library fires this on raycaster hits).
     this.graph.onNodeHover((node) => {
+      // Presentation Mode: a hover tip would render the node's raw text,
+      // bypassing the redaction bars. Suppress it outright while masked.
+      if (this.hoverSuppressed) {
+        this.nodeTipText = null;
+        tip.style.display = 'none';
+        return;
+      }
       const n = node as AtlasNode | null;
       // Suppress unless the pointer is genuinely over the canvas — the library
       // re-raycasts every frame from the last pointer position, so moving nodes
@@ -2960,6 +2971,16 @@ export class Atlas {
       this.pendingRefresh = false;
       this.graph.refresh();
     });
+  }
+
+  /** Suppress (or restore) the node hover tooltip. Used by Presentation Mode so
+   *  hovering a node can't leak its raw text past the redaction bars. */
+  setHoverSuppressed(suppressed: boolean): void {
+    this.hoverSuppressed = suppressed;
+    if (suppressed && this.nodeTipEl) {
+      this.nodeTipEl.style.display = 'none';
+      this.nodeTipText = null;
+    }
   }
 
   /**

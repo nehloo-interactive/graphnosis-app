@@ -787,7 +787,6 @@ const els = {
   // offline) — these describe the whole app's posture, not specific
   // integrations, so they sit above the AI clients / Data sources labels.
   railGcMode: $<HTMLDivElement>('rail-gc-mode'),
-  railGcConnectors: $<HTMLDivElement>('rail-gc-connectors'),
   railGcAimode: $<HTMLDivElement>('rail-gc-aimode'),
   standaloneModal: $<HTMLDivElement>('standalone-modal'),
   // Local & offline explainer modal — opened from the rail chip of the
@@ -985,6 +984,18 @@ function gAlert(title: string, body: string): Promise<void> {
   });
 }
 
+/** Make any error string safe to show in the UI: sidecar-connection failures
+ *  become a friendly path-free message; everything else has absolute filesystem
+ *  paths stripped. NEVER leak the cortex path (e.g. `…/sidecar.sock`) on screen —
+ *  it's a privacy leak in recordings/demos. Use this at EVERY error render site
+ *  (banner + per-pane error states), not just showError. */
+function sanitizeErrorForDisplay(msg: string): string {
+  if (/connect to sidecar|sidecar\.sock|ECONNREFUSED|ENOENT.*sock|did not respond|broken pipe|not connected/i.test(msg)) {
+    return 'Lost connection to the memory engine for a moment — it should recover on its own. If it persists, relaunch the app.';
+  }
+  return msg.replace(/\/[\w.@-]+(?:\/[\w.@-]+)+/g, '…'); // strip absolute paths
+}
+
 function showError(msg: string | null): void {
   // Target whichever banner sits inside the currently-visible view. When
   // the unlock view is showing, that's #error-unlock; otherwise #error-app.
@@ -1000,6 +1011,12 @@ function showError(msg: string | null): void {
     active.classList.add('hidden');
     return;
   }
+  // Sanitize before display. User-facing banners must never leak the cortex
+  // file path (it surfaced the full `…/sidecar.sock` path on a delete-mid-ingest
+  // wedge — bad in a recorded demo). Sidecar-connection failures get a friendly,
+  // path-free message (and they self-recover); any other message has absolute
+  // filesystem paths stripped. The dev terminal still has the full error.
+  msg = sanitizeErrorForDisplay(msg);
   // Build the banner with a dismiss button so the user can clear the
   // error without having to lock/unlock or navigate away.
   active.textContent = '';
@@ -1919,11 +1936,9 @@ function renderRailGetConnected(): void {
   // (Mobile-access chip removed from the rail; the feature is still
   // available from the menu-bar tray and from Settings → Mobile.)
 
-  // Connectors — lit when installed.
-  els.railGcConnectors.innerHTML = '';
-  for (const [kind, label] of CONNECTOR_SHORTCUTS) {
-    els.railGcConnectors.appendChild(makeChip(label, installedConnectorKinds.has(kind), () => openConnectorSetupModal(kind)));
-  }
+  // (Data-source connector chips removed — every connector now lives as a
+  // recipe card in the "Off-the-grid & local sources" list below, so the small
+  // chip row was redundant.)
 
   applyGcCollapsedState();
   refreshGetConnectedStatus();
@@ -2089,6 +2104,18 @@ const GC_RECIPES: GcRecipe[] = [
   { id: 'scripts', icon: '📋', title: 'Scripts & cron jobs', tags: 'cron script bash python automation scheduled task',
     desc: 'Any scheduled job — back up a value, scrape a local file, summarise a log — can POST its result to the Webhook.', run: () => openConnectorSetupModal('webhook') },
 
+  // ── Native cloud connectors (first-class, no bridge needed) ──
+  { id: 'rss', icon: '📡', title: 'RSS / Atom feeds', tags: 'rss atom feed blog news subscribe online',
+    desc: 'Subscribe to any RSS or Atom feed — new items ingested on a schedule.', run: () => openConnectorSetupModal('rss') },
+  { id: 'github', icon: '🐙', title: 'GitHub', tags: 'github repo issues prs pull requests releases online',
+    desc: 'Pull a repository’s issues, pull requests, and releases into your cortex.', run: () => openConnectorSetupModal('github') },
+  { id: 'slack', icon: '💬', title: 'Slack', tags: 'slack messages channels starred workspace online',
+    desc: 'Ingest starred messages or channel history from a Slack workspace.', run: () => openConnectorSetupModal('slack') },
+  { id: 'trello', icon: '🗂️', title: 'Trello', tags: 'trello boards cards lists kanban online',
+    desc: 'Pull cards from your Trello boards on a schedule.', run: () => openConnectorSetupModal('trello') },
+  { id: 'linear', icon: '📐', title: 'Linear', tags: 'linear issues tickets project tracker online',
+    desc: 'Ingest issues from your Linear workspace on a schedule.', run: () => openConnectorSetupModal('linear') },
+
   // ── Online sources via a no-code bridge (Zapier / IFTTT / Make → Webhook).
   //    Zero backend: the bridge POSTs to your local webhook. ──
   { id: 'bridge', icon: '🔗', title: 'Zapier · IFTTT · Make', badge: 'bridge', tags: 'zapier ifttt make integromat automation no-code bridge online',
@@ -2115,6 +2142,14 @@ const GC_RECIPES: GcRecipe[] = [
     desc: 'Form responses or new bookings → via native webhooks or Zapier → your webhook.', run: () => openConnectorSetupModal('webhook') },
 ];
 
+// Recipes whose data source is genuinely off-the-grid (local / zero-internet) —
+// marked with a 🛰️ satellite under their icon. The online ones (native cloud
+// connectors + Zapier/IFTTT bridges) are not.
+const OFF_GRID_RECIPE_IDS = new Set<string>([
+  'webhook', 'obsidian', 'gbrain', 'ai-context', 'files', 'smarthome',
+  'sensors', 'nas', 'localdb', 'notesapps', 'logs', 'email', 'scripts',
+]);
+
 /** Render the recipe cards into #gc-recipes, filtered by the search box. */
 function renderGcRecipes(filter = ''): void {
   const wrap = document.getElementById('gc-recipes');
@@ -2129,7 +2164,10 @@ function renderGcRecipes(filter = ''): void {
   }
   wrap.innerHTML = matches.map((r) => `
     <button class="gc-scenario" data-gc-recipe="${escape(r.id)}" type="button">
-      <span class="gc-scenario-icon" aria-hidden="true">${r.icon}</span>
+      <span class="gc-scenario-iconcol" aria-hidden="true">
+        <span class="gc-scenario-icon">${r.icon}</span>
+        ${OFF_GRID_RECIPE_IDS.has(r.id) ? `<span class="gc-scenario-offgrid" title="Off-the-grid — works with zero internet">🛰️</span>` : ''}
+      </span>
       <span class="gc-scenario-body">
         <span class="gc-scenario-name">${escape(r.title)}${r.badge ? ` <span class="gc-scenario-badge">${escape(r.badge)}</span>` : ''}</span>
         <span class="gc-scenario-desc">${escape(r.desc)}</span>
@@ -2609,6 +2647,9 @@ function activateMode(mode: Mode): void {
   // never shows the "won't be saved" warning on entry (it's only valid for the
   // '__preview__' sentinel).
   if (mode === 'skills') { syncSkillsPreviewWarning(); updateSkillsResetButton(); }
+  // Entering the 3D engram view: refresh connector state so the "Sync now"
+  // button appears if the active engram has a manual (auto-sync off) connector.
+  if (mode === 'engram' || mode === 'atlas') void refreshConnectorPullingSet();
   // Search is also a checkin sub-mode: body.search-mode reveals the search bar
   // + results surface and hides the Home cards / power-tools / deck (CSS).
   document.body.classList.toggle('search-mode', mode === 'search');
@@ -3352,6 +3393,23 @@ const lastSeenMutationAt: Map<string, number> = new Map();
 
 async function pollGraphMutations(): Promise<void> {
   if (!atlasActiveGraph) return;
+  // Keep the connector state fresh while on the 3D engram view — the "Sync now"
+  // button + pulling status — even if the user landed here without a switch
+  // (e.g. boot default, or the connector was set to manual while already here).
+  // Cheap: list_connectors carries no embeddings. (refreshConnectorPullingSet
+  // also calls updateAtlasSyncButton.)
+  if (currentMode === 'engram') void refreshConnectorPullingSet();
+  // Deferred render: this engram was mid-ingest when selected, so we held off
+  // the heavy load to let it finish. Each poll, check whether the connector is
+  // still pulling; render the moment it's done (no competing with the ingest).
+  if (deferredAtlasLoadGraph && deferredAtlasLoadGraph === atlasActiveGraph) {
+    await refreshConnectorPullingSet();
+    if (connectorPullingGraphIds.has(deferredAtlasLoadGraph)) return; // still importing — keep waiting
+    deferredAtlasLoadGraph = null;
+    await refreshAtlasView(); // ingest finished — render the full graph now
+    hideAtlasLoading();
+    return;
+  }
   try {
     const data = (await invoke('inspector_stats')) as StatsSummary;
     lastInspectorStats = data;
@@ -5017,6 +5075,11 @@ function renderSettingsGraphsList(): void {
     ? `<div class="sgr-section-header">Skills Engrams</div>${skillEngrams.map(renderRow).join('')}`
     : '';
   container.innerHTML = standardHtml + skillsHtml;
+  // This list lives in a modal OUTSIDE <main>, so the presentation reveal-sweep
+  // (scoped to <main>) and its MutationObserver never reach it — the body-global
+  // CSS default-deny would redact every engram name with nothing ever revealing
+  // the allowlisted ones. Sweep this container explicitly so revealed engrams show.
+  if (presActive()) applyPresentationMasking(container);
 
   // ── Archive / Unarchive ──────────────────────────────────────────────────
   container.querySelectorAll<HTMLButtonElement>('.btn-graph-archive').forEach((btn) => {
@@ -5285,6 +5348,11 @@ function renderSettingsGraphsList(): void {
           // Refresh the skills library so orphaned skills disappear immediately.
           await fetchSkillsLibrary();
           renderSkillsLibrary();
+          // Deleting an engram also removes the connector(s) feeding it
+          // (graphs.delete → removeForGraph). Re-pull the connector list so the
+          // Get Connected page AND its rail badge drop the now-gone source —
+          // refreshConnectorsList → renderRailGetConnected → refreshGetConnectedStatus.
+          await refreshConnectorsList();
           await refreshAtlasView();
           renderSettingsGraphsList();
         } catch (e) {
@@ -6822,6 +6890,10 @@ async function refreshAtlasView(): Promise<void> {
     return;
   }
   if (!atlasActiveGraph) return;
+  // Refresh connector state (drives the "Sync now" button) whenever the engram
+  // view renders — a reliable trigger that doesn't depend on the 3s poll having
+  // run yet, so a just-added manual connector shows Sync now without a reload.
+  void refreshConnectorPullingSet();
 
   // Always refresh the data backing the list (fast) + the Atlas data cache.
   // loadGraphnosisData now throws on a failed engram SWITCH (rather than
@@ -7672,18 +7744,20 @@ function renderHomeMemoryHealth(): void {
   if (!h) { card.style.display = ''; body.innerHTML = '<p class="home-card-empty">Memory health isn’t available right now.</p>'; return; }
   card.style.display = '';
   const pct = (f: number): string => `${Math.round(f * 100)}%`;
-  const factors: Array<[string, string]> = [
-    ['Overall', String(h.overall)],
-    ['Connectivity', pct(h.connectivity)],
-    ['Integration', pct(h.integration)],
-    ['Confidence', pct(h.confidence)],
-    ['Coherence', pct(h.coherence)],
-    ['Reinforcement', pct(h.reinforcementActivity)],
-    ['Weight spread', pct(h.weightSpread)],
+  // [label, value, tooltip] — the tooltip is a short plain-language explainer
+  // shown on hover (title attr), so each metric is self-documenting.
+  const factors: Array<[string, string, string]> = [
+    ['Overall', String(h.overall), 'Overall memory health (0–100) — a weighted blend of all the metrics here.'],
+    ['Connectivity', pct(h.connectivity), 'How densely your memories are linked — average connections per memory. Higher means a richer web.'],
+    ['Integration', pct(h.integration), 'How well your engrams connect to each other — cross-engram links plus inferred edges. Low means engrams are siloed.'],
+    ['Confidence', pct(h.confidence), 'Average confidence across your stored memories.'],
+    ['Coherence', pct(h.coherence), 'Internal consistency — how free your memory is of contradictions.'],
+    ['Reinforcement', pct(h.reinforcementActivity), 'How much recent activity strengthened or connected memories this session. 0% just means a quiet session.'],
+    ['Weight spread', pct(h.weightSpread), 'Variety in connection strengths — a healthy graph isn’t uniform; some links matter more than others.'],
   ];
   body.innerHTML =
     `<ul class="home-mhealth-grid">` +
-    factors.map(([l, v]) => `<li class="home-factor"><span class="home-factor-val">${escapeHtml(v)}</span><span class="home-factor-label">${escapeHtml(l)}</span></li>`).join('') +
+    factors.map(([l, v, tip]) => `<li class="home-factor" title="${escapeHtml(tip)}"><span class="home-factor-val">${escapeHtml(v)}</span><span class="home-factor-label">${escapeHtml(l)}</span></li>`).join('') +
     `</ul>` +
     `<p class="home-mhealth-note">${h.crossEngramConnections.toLocaleString()} cross-engram connections · ${h.inferredEdges.toLocaleString()} inferred edges</p>`;
 }
@@ -8375,11 +8449,11 @@ function mcpToolsOnboardingHtml(): string {
           <div class="g-deck-cmd-group">
             <span class="g-deck-cmd-grouplabel">Core memory</span>
             <div class="g-deck-cmd-chips">
+              <span class="g-deck-cmd-chip" data-tool="remember">remember</span>
               <span class="g-deck-cmd-chip" data-tool="recall">recall</span>
               <span class="g-deck-cmd-chip" data-tool="remind">remind</span>
               <span class="g-deck-cmd-chip" data-tool="dig_deeper">dig_deeper</span>
-              <span class="g-deck-cmd-chip" data-tool="remember">remember</span>
-              <span class="g-deck-cmd-chip" data-tool="edit">edit</span>
+              <span class="g-deck-cmd-chip" data-tool="edit">edit / correct</span>
               <span class="g-deck-cmd-chip" data-tool="forget">forget</span>
               <span class="g-deck-cmd-chip" data-tool="apply">apply</span>
               <span class="g-deck-cmd-chip" data-tool="stats">stats</span>
@@ -11736,7 +11810,12 @@ function updateAtlasStats(nodeCount: number, edgeCount: number, renderedNodeCoun
   // Source count comes free from the already-rendered legend source list — no
   // extra O(N) scan (matters: this runs on every atlas render).
   const sourceCount = document.getElementById('atlas-source-list')?.childElementCount ?? 0;
-  const nodeStr = renderedNodeCount >= 0 && renderedNodeCount < nodeCount
+  // Only surface "top N shown" when the LOD cap is genuinely limiting the
+  // render (a graph larger than ATLAS_NODE_CAP). A handful of unrenderable
+  // orphan nodes dropping out of nodesToAtlas doesn't count as "capped" — for
+  // those, show the plain total ("all shown"), per the user's request.
+  const capped = renderedNodeCount >= ATLAS_NODE_CAP && renderedNodeCount < nodeCount;
+  const nodeStr = capped
     ? `${nodeCount.toLocaleString()} nodes · top ${renderedNodeCount.toLocaleString()} shown`
     : `${nodeCount.toLocaleString()} node${nodeCount === 1 ? '' : 's'}`;
   const parts = [
@@ -12016,6 +12095,70 @@ function renderAtlasLegend(): void {
   });
 }
 
+// Engrams with a connector actively pulling into them right now (graphIds).
+// Selecting such an engram must NOT run the heavy per-engram load — that
+// competes with the ingest on the single sidecar thread and stalls it.
+let connectorPullingGraphIds = new Set<string>();
+// An engram whose render we deferred because it was mid-ingest when selected.
+// pollGraphMutations loads it once the ingest finishes.
+let deferredAtlasLoadGraph: string | null = null;
+
+/** Refresh the set of engrams with an in-flight connector pull. Cheap
+ *  (list_connectors carries no embeddings, so it returns even on a busy
+ *  sidecar). Best-effort: leaves the set untouched on a transient failure. */
+// Last list_connectors snapshot — drives the pulling set + the 3D "Sync now"
+// button (which engram has a manual connector and whether it's pulling).
+let lastConnectorList: { configs: ConnectorConfigShape[]; statuses: ConnectorStatus[] } | null = null;
+
+async function refreshConnectorPullingSet(): Promise<void> {
+  try {
+    const res = await ipcCall<{ configs: ConnectorConfigShape[]; statuses: ConnectorStatus[] }>('list_connectors');
+    lastConnectorList = res;
+    const statusById = new Map(res.statuses.map((s) => [s.id, s]));
+    connectorPullingGraphIds = new Set(
+      res.configs.filter((c) => statusById.get(c.id)?.pulling).map((c) => c.graphId),
+    );
+    updateAtlasSyncButton();
+  } catch { /* keep the last-known snapshot on a transient failure */ }
+}
+
+/** Manual (auto-sync off) connectors feeding a given engram. */
+function manualConnectorsForGraph(graphId: string): ConnectorConfigShape[] {
+  if (!lastConnectorList) return [];
+  return lastConnectorList.configs.filter(
+    (c) => c.graphId === graphId && c.enabled && (c.options as Record<string, unknown> | undefined)?.['autoSync'] === false,
+  );
+}
+// Dedupe for the one-shot "why is Sync-now hidden" diagnostic below.
+const syncNowDiagLogged = new Set<string>();
+
+/** Show "Sync now" on the 3D page when the active engram has a manual connector
+ *  (auto-sync off) — so the user can start the import on cue without leaving the
+ *  graph. Becomes "Syncing…" while a pull is in flight. */
+function updateAtlasSyncButton(): void {
+  const btn = document.getElementById('btn-atlas-sync-now') as HTMLButtonElement | null;
+  if (!btn) return;
+  const g = atlasActiveGraph;
+  const manual = g && g !== FULL_CORTEX ? manualConnectorsForGraph(g) : [];
+  if (manual.length === 0) {
+    // One-shot diagnostic: on the engram view but no manual connector matched —
+    // log WHY (active graphId vs every connector's graphId/enabled/autoSync, or
+    // a null list) so a missing Sync-now button is debuggable, not silent.
+    if (currentMode === 'engram' && g && !syncNowDiagLogged.has(g)) {
+      syncNowDiagLogged.add(g);
+      console.warn('[sync-now] hidden — activeGraph=', JSON.stringify(g), '— connectors=',
+        lastConnectorList
+          ? JSON.stringify(lastConnectorList.configs.map((c) => ({ graphId: c.graphId, enabled: c.enabled, autoSync: (c.options as Record<string, unknown> | undefined)?.['autoSync'] })))
+          : 'NULL (list_connectors not loaded yet)');
+    }
+    btn.classList.add('hidden'); return;
+  }
+  const pulling = manual.some((c) => connectorPullingGraphIds.has(c.graphId));
+  btn.classList.remove('hidden');
+  btn.disabled = pulling;
+  btn.textContent = pulling ? '⟳ Syncing…' : '⟳ Sync now';
+}
+
 els.atlasGraphPicker.addEventListener('change', () => void (async () => {
   // Full Cortex → the galaxy view (engrams as super-nodes), not a per-engram load.
   if (els.atlasGraphPicker.value === FULL_CORTEX) {
@@ -12026,12 +12169,17 @@ els.atlasGraphPicker.addEventListener('change', () => void (async () => {
     return;
   }
   atlasGalaxyMode = false;
-  // Conditional jump to the 3D Engram view. Selecting an engram from the
-  // top picker means "show me this engram" — but only yank the user to 3D
-  // from browse contexts (Home / Search). On task/config panes (Sources,
-  // Activity, Settings, Skills, etc.) the picker just scopes in place so we
-  // don't interrupt what they're doing.
-  const jumpTo3D = currentMode === 'atlas' || currentMode === 'search';
+  // Conditional jump to the 3D Engram view. Selecting an engram from the top
+  // picker means "show me this engram" → jump to 3D — UNLESS we're on a pane
+  // that uses the picker to scope its OWN content in place (Sources filters its
+  // list, Foresight/Skills/Power-tools/Presentation/Activity/Settings/Audit all
+  // scope rather than visualize), where yanking to 3D would interrupt the task.
+  // So: Home, Search, the engram view, and Get Connected jump; config/scope
+  // panes stay put.
+  const SCOPE_IN_PLACE_MODES = new Set<Mode>([
+    'sources', 'activity', 'presentation', 'settings', 'skills', 'goals', 'power-tools', 'mcp-tools', 'status',
+  ]);
+  const jumpTo3D = !SCOPE_IN_PLACE_MODES.has(currentMode);
   // Safety net: the picker also lists not-yet-loaded engrams as <option disabled>
   // for awareness during boot. Native <select> shouldn't fire `change` on a
   // disabled option, but if it ever does (custom dropdowns, keyboard nav
@@ -12043,6 +12191,7 @@ els.atlasGraphPicker.addEventListener('change', () => void (async () => {
     return;
   }
   atlasActiveGraph = els.atlasGraphPicker.value;
+  deferredAtlasLoadGraph = null; // reset; the ingest-defer block below re-sets it if needed
   persistActiveEngram(atlasActiveGraph);
   refreshActiveEngramLabel();
   // Clear the 3D atlas + legend + stats IMMEDIATELY so the previous engram's
@@ -12102,6 +12251,20 @@ els.atlasGraphPicker.addEventListener('change', () => void (async () => {
   // so the new engram's nodes are rendered at full opacity.
   disabledSources.clear();
   if (mainAtlas) resetAtlasView();
+  // If a connector is actively ingesting INTO this engram, do NOT run the heavy
+  // load (list_nodes + full list_edges) — it competes with the ingest on the
+  // single sidecar thread and stalls it (the "it stopped ingesting when I
+  // selected it" bug). Defer: show an importing overlay and let
+  // pollGraphMutations render it once the ingest finishes.
+  await refreshConnectorPullingSet();
+  if (connectorPullingGraphIds.has(atlasActiveGraph)) {
+    deferredAtlasLoadGraph = atlasActiveGraph;
+    showAtlasLoading(
+      loadedGraphs.find((g) => g.graphId === atlasActiveGraph)?.metadata.displayName ?? atlasActiveGraph,
+      'importing… the graph will render automatically when the ingest finishes',
+    );
+    return;
+  }
   // Paint the cleared graph + loading overlay BEFORE kicking off the heavy
   // per-engram load, so switching feels instant (overlay appears immediately)
   // instead of freezing on the old graph until the new one is ready. Two rAFs
@@ -12126,6 +12289,23 @@ els.btnAtlasReset.addEventListener('click', () => {
 els.btnAtlasFit.addEventListener('click', () => {
   mainAtlas?.zoomToFit(700, 20);
 });
+
+// "Sync now" — manual-mode connectors only. Triggers the pull for the active
+// engram's connector(s) right from the 3D page; the live ingest then renders via
+// pollGraphMutations. Lets the user start a recorded import on cue.
+document.getElementById('btn-atlas-sync-now')?.addEventListener('click', () => void (async () => {
+  const g = atlasActiveGraph;
+  if (!g) return;
+  const manual = manualConnectorsForGraph(g);
+  if (manual.length === 0) return;
+  const btn = document.getElementById('btn-atlas-sync-now') as HTMLButtonElement | null;
+  if (btn) { btn.disabled = true; btn.textContent = '⟳ Syncing…'; }
+  for (const c of manual) {
+    try { await ipcCall('connectors.triggerPull', { id: c.id }); }
+    catch (e) { showError(`Sync failed: ${e}`); }
+  }
+  await refreshConnectorPullingSet(); // refresh the button's pulling state
+})());
 
 document.getElementById('btn-atlas-resample')?.addEventListener('click', () => {
   resampleAtlasLod();
@@ -12418,9 +12598,15 @@ function cssColorForCategory(cat: EdgeCategory): string {
 // autonomous brain can emit tens of thousands of edge ops a day, so for a
 // specific category (Ingested/Forgotten/Edits…) we pass `ops` to the sidecar so
 // it pulls THAT type from the full op-log — no longer buried under edge spam.
-const ACTIVITY_WINDOW_START = 500;
-const ACTIVITY_WINDOW_STEP = 500;
-const ACTIVITY_WINDOW_MAX = 10000;
+// 500 felt thin. The render groups+collapses events by day→signature, so the DOM
+// is bounded by GROUP count, not event count — the only cost is the op-log fetch,
+// and the backend already pulls limit:10000 elsewhere. So we can start much higher
+// and step bigger. 2000 initial loads in well under a second and shows real depth;
+// "Load more" ramps 2000 at a time to a 20000 hard cap (a brief load at the top
+// end, on demand).
+const ACTIVITY_WINDOW_START = 2000;
+const ACTIVITY_WINDOW_STEP = 2000;
+const ACTIVITY_WINDOW_MAX = 20000;
 let activityWindow = ACTIVITY_WINDOW_START;
 let activityHasMore = false;      // fetched == window → more events may exist
 let activityLoading = false;      // guards re-entrancy + the button spinner
@@ -13390,6 +13576,31 @@ interface EventStreamConnectedPayload {
   cursor: Record<string, number>;
 }
 
+// Per-source live-ingest delta. The sidecar pushes just the NEW source's nodes
+// as each source finishes ingesting — we append them to the active engram's
+// cache and push INCREMENTALLY (existing nodes pinned → no re-heat) with NO full
+// re-fetch, so the 3D graph grows source-by-source. The 3s poll still reconciles
+// to the authoritative full set.
+interface GraphDeltaPayload { graphId: string; sourceId: string; nodes: NodeRecord[] }
+void listen<GraphDeltaPayload>('graphnosis://graph-delta', (evt) => {
+  const d = evt.payload;
+  // Only when we're watching this exact engram in 3D — and not in the
+  // deferred-import holding state (that does a full render when the import ends).
+  if (!d || d.graphId !== atlasActiveGraph || currentMode !== 'engram') return;
+  if (deferredAtlasLoadGraph === d.graphId) return;
+  const existing = new Set(graphnosisAllNodes.map((n) => n.id));
+  let added = 0;
+  for (const n of d.nodes) {
+    if (existing.has(n.id)) continue;
+    graphnosisAllNodes.push({ ...n, sourceId: d.sourceId, _graphId: d.graphId } as NodeRecord);
+    existing.add(n.id);
+    added++;
+  }
+  if (added === 0) return;
+  graphnosisGlobalNodes.set(d.graphId, graphnosisAllNodes);
+  if (shouldPushAtlasNow()) pushDataIntoAtlas(false, true); // incremental → no re-heat, no re-fetch
+});
+
 void listen<GraphMutationPayload>('graphnosis://graph-mutation', (evt) => {
   const graphId = evt.payload.graphId ?? '';
   // Skill-trainer streaming frames hitch a ride on the graph-mutation
@@ -14275,8 +14486,19 @@ function presRevealEngram(graphId: string): boolean { return presState.allow.eng
 // the engram-level cascade is OVERRIDDEN by the per-source picks: only the
 // checked sources (and their nodes) reveal; the rest redact.
 let presEngramsWithSourceSel = new Set<string>();
+// Engrams revealed at the engram level but EMPTY at presentation setup (no
+// sources yet — e.g. a fresh manual-sync engram about to be ingested live). Their
+// sources, as they ingest during the demo, must REDACT rather than cascade-
+// reveal — so the user can show the graph filling without exposing source
+// filenames. (Graph dots still render; only labels + source names mask.)
+let presEngramsRedactSources = new Set<string>();
 function recomputePresSourceScopes(): void {
   presEngramsWithSourceSel = new Set();
+  presEngramsRedactSources = new Set();
+  const engramsWithSources = new Set(presSourcesCache.map((s) => s.graphId));
+  for (const gid of presState.allow.engrams) {
+    if (!engramsWithSources.has(gid)) presEngramsRedactSources.add(gid);
+  }
   if (presState.allow.sources.size === 0) return;
   const byId = new Map(presSourcesCache.map((s) => [s.sourceId, s.graphId]));
   for (const sid of presState.allow.sources) {
@@ -14294,7 +14516,9 @@ function recomputePresSourceScopes(): void {
 function presRevealSource(sourceId: string | undefined, graphId: string | undefined): boolean {
   if (sourceId && presState.allow.sources.has(sourceId)) return true;
   if (graphId && presState.allow.engrams.has(graphId)) {
-    return !presEngramsWithSourceSel.has(graphId); // cascade only when un-narrowed
+    // Cascade only when the engram isn't narrowed by per-source picks AND wasn't
+    // empty at setup (empty-at-setup engrams redact their live-ingested sources).
+    return !presEngramsWithSourceSel.has(graphId) && !presEngramsRedactSources.has(graphId);
   }
   return false;
 }
@@ -14511,6 +14735,7 @@ function startPresentation(): void {
   attachPresObserver();
   applyPresentationMasking();
   applyPresConfigLock();
+  mainAtlas?.setHoverSuppressed(true); // no hover tips → no raw node text leaking past the bars
   presRefreshAtlas();
   showPresentationBanner();
   // Start the demo on Home so the user lands on the dashboard, not the config.
@@ -14520,6 +14745,7 @@ function stopPresentation(): void {
   if (!presState.active) return;
   presState.active = false;
   document.body.classList.remove('presentation-active');
+  mainAtlas?.setHoverSuppressed(false); // restore node hover tips
   detachPresObserver();
   document.querySelectorAll('.pres-reveal').forEach((el) => el.classList.remove('pres-reveal'));
   // Restore native tooltips / alt / aria-label stashed during masking.
@@ -14679,6 +14905,7 @@ function presSectionHead(title: string, kind: 'engram' | 'source' | 'skill' | 'g
 function renderPresentationPane(): void {
   const host = document.getElementById('presentation-body');
   if (!host) return;
+  prunePresAllowlist(); // drop reveals for engrams deleted since they were picked
   const active = presState.active;
   const count = presSelectionCount();
 
@@ -14835,9 +15062,24 @@ async function renderPresentationSkills(): Promise<void> {
     ?.addEventListener('click', () => togglePresSelectAll('skill'));
 }
 
+/** Drop allowlist entries for engrams that no longer exist (deleted since they
+ *  were revealed). Without this, every reveal-then-delete leaves a stale slug in
+ *  the saved config forever — they pile up in the consent list and config page as
+ *  raw `obsidian-notes-xxxx` ids. Persists if anything changed. */
+function prunePresAllowlist(): void {
+  if (loadedGraphs.length === 0) return; // engrams not loaded yet — don't prune blind
+  const live = new Set(loadedGraphs.map((g) => g.graphId));
+  let changed = false;
+  for (const id of [...presState.allow.engrams]) {
+    if (!live.has(id)) { presState.allow.engrams.delete(id); changed = true; }
+  }
+  if (changed) savePresentationConfig();
+}
+
 /** Build the "what will be visible" list shown in the consent modal so the user
  *  confirms against the actual items, not an abstraction. */
 function presBuildConsentSummary(): string {
+  prunePresAllowlist();
   const groups: Array<{ label: string; items: string[] }> = [];
   if (presState.allow.engrams.size) {
     groups.push({ label: 'Engrams', items: [...presState.allow.engrams].map((id) => engramName(id)) });
@@ -14903,8 +15145,17 @@ async function renderPresentationSources(): Promise<void> {
   const list = document.getElementById('pres-sources-list');
   if (!list) return;
   let data: StatsSummary | null = null;
-  try { data = (await invoke('inspector_stats')) as StatsSummary; } catch { /* leave loading */ }
+  let failed = false;
+  try { data = (await invoke('inspector_stats')) as StatsSummary; } catch { failed = true; }
   if (!list.isConnected) return; // page navigated away
+  // A failed fetch (sidecar busy — often a consolidation pass) must NOT read as
+  // "no sources ingested yet" — that's a false empty. Show loading + retry until
+  // it lands; only an actual successful-but-empty result says "none".
+  if (failed || data === null) {
+    list.innerHTML = '<p class="pres-empty">Loading sources…</p>';
+    setTimeout(() => { if (list.isConnected) void renderPresentationSources(); }, 1500);
+    return;
+  }
   // Archived engrams (and their sources) must never appear anywhere — drop
   // their sources before they reach the cache or the grouped display.
   const archivedGraphs = new Set(
@@ -15051,6 +15302,7 @@ function renderLbVitality(): void {
     return;
   }
   const v = brainVitalityReport.overall;
+  els.livingBrain.classList.remove('lb-scanning'); // score computed — stop the calculating pulse
   els.lbVitalityRing.style.setProperty('--v', String(v));
   els.lbVitalityScore.textContent = String(v);
   const [title, detail] = vitalityCopy(v);
@@ -18741,6 +18993,7 @@ function paintGcConnectorList(configs: ConnectorConfigShape[], statuses: Connect
       if (!id) return;
       if (action === 'pull') void handleConnectorPull(id, btn);
       else if (action === 'resync') void handleConnectorResync(id, btn);
+      else if (action === 'stop') void handleConnectorStop(id, btn);
       else if (action === 'copy-url') void handleConnectorCopyUrl(btn);
       else if (action === 'remove') void handleConnectorRemove(id, btn);
       else if (action === 'edit') void handleConnectorEdit(id, configs);
@@ -18759,6 +19012,16 @@ async function refreshConnectorsList(): Promise<void> {
     );
     // Reflect installed connectors in the sidebar's Get-connected status list.
     installedConnectorKinds = new Set(res.configs.map((c) => c.kind));
+    // Keep the "engrams currently being ingested" set fresh (drives the
+    // defer-load-while-ingesting behavior on the 3D Engram picker).
+    {
+      lastConnectorList = { configs: res.configs, statuses: res.statuses };
+      const statusById = new Map(res.statuses.map((s) => [s.id, s]));
+      connectorPullingGraphIds = new Set(
+        res.configs.filter((c) => statusById.get(c.id)?.pulling).map((c) => c.graphId),
+      );
+      updateAtlasSyncButton();
+    }
     renderRailGetConnected();
     // The connector list now lives on the Get Connected page (in sync with
     // every connector add/edit/remove, which all call through here).
@@ -18784,6 +19047,7 @@ async function refreshConnectorsList(): Promise<void> {
             if (!id) return;
             if (action === 'pull') void handleConnectorPull(id, btn);
             else if (action === 'resync') void handleConnectorResync(id, btn);
+            else if (action === 'stop') void handleConnectorStop(id, btn);
             else if (action === 'copy-url') void handleConnectorCopyUrl(btn);
             else if (action === 'remove') void handleConnectorRemove(id, btn);
             else if (action === 'edit') void handleConnectorEdit(id, res.configs);
@@ -18837,6 +19101,7 @@ function renderConnectorRow(cfg: ConnectorConfigShape, status?: ConnectorStatus)
   let statusKind: 'enabled' | 'disabled' | 'error' | 'pulling';
   let statusLabel: string;
   if (status?.pulling) { statusKind = 'pulling'; statusLabel = 'pulling…'; }
+  else if (status?.paused) { statusKind = 'disabled'; statusLabel = 'paused'; }
   else if (cfg.lastError) { statusKind = 'error'; statusLabel = 'error'; }
   else if (cfg.enabled) { statusKind = 'enabled'; statusLabel = 'enabled'; }
   else { statusKind = 'disabled'; statusLabel = 'disabled'; }
@@ -18847,11 +19112,15 @@ function renderConnectorRow(cfg: ConnectorConfigShape, status?: ConnectorStatus)
   const events = status?.eventsTotal ?? 0;
   const eventsStr = events > 0 ? ` · ${events} event${events === 1 ? '' : 's'} this session` : '';
   const errorStr = cfg.lastError ? ` · ${escapeHtml(cfg.lastError)}` : '';
-  // Effective check interval: per-connector override, else "default".
-  const ovr = (cfg.options as Record<string, unknown> | undefined)?.['intervalMs'];
-  const intervalStr = typeof ovr === 'number' && ovr >= 60_000
-    ? ` · every ${Math.round(ovr / 60_000)} min`
-    : ' · default interval';
+  // Effective check interval: manual mode, per-connector override, else default.
+  const optsRec = cfg.options as Record<string, unknown> | undefined;
+  const manualSync = optsRec?.['autoSync'] === false;
+  const ovr = optsRec?.['intervalMs'];
+  const intervalStr = manualSync
+    ? ' · manual — pull on demand'
+    : typeof ovr === 'number' && ovr >= 60_000
+      ? ` · every ${Math.round(ovr / 60_000)} min`
+      : ' · default interval';
 
   // Webhook URL (push-only connectors) — surfaced so the user can copy it from
   // the row without opening the Edit modal. Only available once the token has
@@ -18882,8 +19151,10 @@ function renderConnectorRow(cfg: ConnectorConfigShape, status?: ConnectorStatus)
       <div class="connector-row-actions">
         ${cfg.kind === 'webhook'
           ? (webhookUrl ? `<button data-connector-action="copy-url" data-connector-id="${escapeHtml(cfg.id)}" data-webhook-url="${escapeHtml(webhookUrl)}" title="Copy this webhook's URL to the clipboard">Copy URL</button>` : '')
-          : `<button data-connector-action="pull" data-connector-id="${escapeHtml(cfg.id)}">Pull now</button>
-        <button data-connector-action="resync" data-connector-id="${escapeHtml(cfg.id)}" title="Reset this connector's cursor and re-pull everything from scratch">Re-sync</button>`}
+          : (status?.pulling
+            ? `<button data-connector-action="stop" data-connector-id="${escapeHtml(cfg.id)}" class="danger" title="Stop ingesting now — pauses this connector until you Pull or Re-sync">⏸ Stop</button>`
+            : `<button data-connector-action="pull" data-connector-id="${escapeHtml(cfg.id)}">${status?.paused ? 'Resume' : 'Pull now'}</button>
+        <button data-connector-action="resync" data-connector-id="${escapeHtml(cfg.id)}" title="Reset this connector's cursor and re-pull everything from scratch">Re-sync</button>`)}
         <button data-connector-action="edit" data-connector-id="${escapeHtml(cfg.id)}">Edit</button>
         <button data-connector-action="remove" data-connector-id="${escapeHtml(cfg.id)}" class="danger">Remove</button>
       </div>
@@ -18986,6 +19257,21 @@ async function handleConnectorResync(id: string, btn?: HTMLButtonElement): Promi
   }
 }
 
+// Stop an in-progress ingest. The sidecar aborts the drain at the next
+// file/batch boundary and pauses the connector until the user Pulls/Re-syncs.
+async function handleConnectorStop(id: string, btn?: HTMLButtonElement): Promise<void> {
+  if (btn) { btn.disabled = true; btn.textContent = 'Stopping…'; }
+  const tid = addIngestToast(`Stopping "${id}"`, 'Halting the current ingest…');
+  try {
+    await ipcCall('connectors.stop', { id });
+    finishIngestToast(tid, 'success', 'Ingest stopped — Pull or Re-sync to resume.');
+    await refreshConnectorsList();
+  } catch (e) {
+    finishIngestToast(tid, 'error', String(e));
+    if (btn) { btn.disabled = false; btn.textContent = '⏸ Stop'; }
+  }
+}
+
 async function handleConnectorEdit(id: string, configs: ConnectorConfigShape[]): Promise<void> {
   const cfg = configs.find((c) => c.id === id);
   if (!cfg) return;
@@ -19044,6 +19330,10 @@ function openConnectorSetupModal(kind: ConnectorKind, existing?: ConnectorConfig
     if (inp && picked[0]) inp.value = picked[0];
   });
   modal.classList.remove('hidden');
+  // This modal lives OUTSIDE <main>, so the page-level Presentation masking +
+  // MutationObserver never reach it. Mask it explicitly so the Target Engram
+  // dropdown redacts engrams that aren't allowlisted for the demo.
+  if (presActive()) applyPresentationMasking(modal);
 }
 
 /**
@@ -19197,6 +19487,15 @@ function renderConnectorSetupBody(kind: ConnectorKind, existing?: ConnectorConfi
         <span>minutes</span>
       </div>
       <span class="field-hint">Leave blank to use the default interval. Local-folder connectors also sync instantly on change.</span>
+    </div>`;
+  const autoSyncOn = opts['autoSync'] !== false;
+  const autoSyncField = `
+    <div class="connector-field">
+      <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-weight:600;">
+        <input type="checkbox" id="connector-autosync" ${autoSyncOn ? 'checked' : ''} />
+        Auto-sync (ingest automatically)
+      </label>
+      <span class="field-hint">On: pulls on its schedule and on file changes. <strong>Off (manual)</strong>: the connector stays idle until you click <strong>Pull now</strong> or <strong>Re-sync</strong> — set the stage first (e.g. Presentation Mode + select the engram), then start the import on cue.</span>
     </div>`;
   // Shown at the bottom of every connector form — applies universally.
   const privacyNote = `
@@ -19414,7 +19713,7 @@ function renderConnectorSetupBody(kind: ConnectorKind, existing?: ConnectorConfi
       break;
     }
   }
-  return html + intervalField + privacyNote;
+  return html + intervalField + autoSyncField + privacyNote;
 }
 
 function populateEngramDropdown(selectId: string, selectedId?: string): void {
@@ -19527,6 +19826,8 @@ function collectConnectorFormData(kind: ConnectorKind): Partial<ConnectorConfigS
     // Blank → clear any existing override (merge persists, undefined is dropped).
     options['intervalMs'] = undefined;
   }
+  // Manual mode: unchecked → connector stays idle until Pull now / Re-sync.
+  options['autoSync'] = $m<HTMLInputElement>('connector-autosync')?.checked ?? true;
   return {
     ...(id ? { id } : {}),
     kind,

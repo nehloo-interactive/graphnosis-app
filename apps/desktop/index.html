@@ -3996,6 +3996,10 @@
       }
       .gc-scenario:active { transform: translateY(1px); }
       .gc-scenario-icon { font-size: 20px; line-height: 1.1; flex-shrink: 0; }
+      /* Icon column: the recipe glyph with an optional 🛰️ satellite marker
+         stacked UNDERNEATH it, flagging an off-the-grid (zero-internet) recipe. */
+      .gc-scenario-iconcol { display: flex; flex-direction: column; align-items: center; gap: 3px; flex-shrink: 0; }
+      .gc-scenario-offgrid { font-size: 12px; line-height: 1; opacity: 0.8; }
       .gc-scenario-body { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
       .gc-scenario-name { font-size: 14px; font-weight: 700; display: flex; align-items: center; gap: 7px; }
       .gc-scenario-badge {
@@ -5849,6 +5853,11 @@
       #living-brain.lb-scanning .lb-vitality-ring {
         animation-duration: 1.5s;
       }
+      /* While the score is still computing ('…'), pulse it so it reads as
+         actively calculating rather than stuck/blank. */
+      #living-brain.lb-scanning #lb-vitality-score {
+        animation: brain-pulse 1.2s ease-in-out infinite;
+      }
       #living-brain.lb-scanning .lb-scan-status {
         background: linear-gradient(90deg,
           var(--accent) 0%, var(--fg) 50%, var(--accent) 100%);
@@ -5923,6 +5932,7 @@
       @media (prefers-reduced-motion: reduce) {
         .lb-vitality-ring,
         #living-brain.lb-scanning .lb-vitality-ring,
+        #living-brain.lb-scanning #lb-vitality-score,
         .lb-feed-item,
         #living-brain.lb-scanning .lb-scan-status { animation: none; }
         .lb-neuron-canvas { display: none; }
@@ -6319,7 +6329,7 @@
         /* Drawer animation: the inspector column collapses/expands smoothly
            rather than snapping. WebKit (Tauri/macOS) interpolates
            grid-template-columns between same-track-count values. */
-        transition: grid-template-columns 0.28s cubic-bezier(0.4, 0, 0.2, 1), gap 0.28s ease;
+        transition: grid-template-columns 0.42s cubic-bezier(0.4, 0, 0.2, 1), gap 0.42s ease;
       }
       /* When the right-side Memory Inspector is hidden, the column animates to
          0 (drawer slides shut) and the left content expands to fill it. We keep
@@ -6331,8 +6341,11 @@
       /* The inspector stays in layout (overriding the global .hidden
          display:none) so the grid track can animate it to/from 0 width; its
          content is clipped by the 0-width track + .g-main overflow:hidden. */
-      #g-detail { min-width: 0; }
-      #g-detail.hidden { display: flex !important; }
+      /* Content fades in as the drawer opens (delayed so it appears once the
+         track has room) and fades out quickly as it closes — so the inspector
+         glides rather than popping. */
+      #g-detail { min-width: 0; opacity: 1; transition: opacity 0.32s ease 0.08s; }
+      #g-detail.hidden { display: flex !important; opacity: 0; transition: opacity 0.18s ease; }
       .g-browse {
         display: flex;
         flex-direction: column;
@@ -10958,6 +10971,7 @@
                           <circle cx="3.5" cy="6" r="1.5"/><circle cx="3.5" cy="12" r="1.5"/><circle cx="3.5" cy="18" r="1.5"/>
                         </svg>
                       </button>
+                      <button id="btn-atlas-sync-now" class="hidden" title="This engram's connector is on manual sync — pull its sources now" style="font-weight:600">⟳ Sync now</button>
                       <button id="btn-atlas-alive" title="Toggle cosmos motion — drift, breathing, and node elasticity" style="font-weight:600">🧠 Alive Engram: On</button>
                       <button id="btn-atlas-resample" title="Show the next tier of nodes (large graphs render only the most-connected at a time)" style="display:none">Resample</button>
                       <button id="btn-atlas-fit" title="Frame all visible nodes">Fit</button>
@@ -11582,8 +11596,7 @@ ollama list</code></pre>
               <!-- Data sources FEED the cortex -->
               <section class="gc-section">
                 <h3 class="gc-section-title">Data sources <span class="gc-section-tag">feed your memory</span></h3>
-                <p class="gc-section-hint">Point Graphnosis at the places your knowledge already lives — it ingests them locally and keeps them in sync. A lit chip is already connected.</p>
-                <div class="rail-get-connected-group" id="rail-gc-connectors"></div>
+                <p class="gc-section-hint">Point Graphnosis at the places your knowledge already lives — it ingests them locally and keeps them in sync. Pick a recipe below to set one up.</p>
 
                 <div class="gc-offgrid-head">
                   <span class="gc-offgrid-icon" aria-hidden="true">🛰️</span>
