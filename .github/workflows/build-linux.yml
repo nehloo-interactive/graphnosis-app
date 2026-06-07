@@ -130,6 +130,12 @@ jobs:
           cp "$CACHE/linuxdeploy-plugin-gstreamer.sh" "$CACHE/linuxdeploy-plugin-gstreamer" 2>/dev/null
           cp "$CACHE/linuxdeploy-plugin-appimage.AppImage" "$CACHE/linuxdeploy-plugin-appimage" 2>/dev/null
           chmod +x "$CACHE"/linuxdeploy* 2>/dev/null
+          echo "=== inspect the Bun externalBins ldd chokes on ==="
+          for b in graphnosis-sidecar graphnosis-mcp-relay; do
+            f="$APPDIR/usr/bin/$b"
+            echo "--- $f ---"; ls -l "$f" 2>&1; file "$f" 2>&1
+            echo "ldd output:"; ldd "$f" 2>&1; echo "ldd rc=$?"
+          done
           export PATH="$CACHE:$PATH"
           export APPIMAGE_EXTRACT_AND_RUN=1 NO_STRIP=true OUTPUT="Graphnosis_diag_amd64.AppImage"
           echo "=== replicate: linuxdeploy --appdir <AppDir> --plugin gtk --output appimage ==="
