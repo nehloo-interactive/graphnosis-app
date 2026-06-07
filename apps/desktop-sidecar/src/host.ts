@@ -1517,7 +1517,7 @@ export class GraphnosisHost {
   }
 
   /** Update settings, persist to <cortex>/settings.json, return the merged result. */
-  async setSettings(partial: Partial<settingsMod.AppSettings>): Promise<settingsMod.AppSettings> {
+  async setSettings(partial: Partial<settingsMod.AppSettings>, opts?: { userInitiated?: boolean }): Promise<settingsMod.AppSettings> {
     // Serialise through settingsWriteQueue so concurrent callers (the brain
     // engine fires background writes every few seconds) always merge from the
     // latest committed this.settings, never from a stale snapshot captured
@@ -1536,10 +1536,22 @@ export class GraphnosisHost {
       // Merge now — this.settings reflects the latest committed state.
       // Shallow merge per top-level key — keeps contentCache fully replaced if
       // the caller passes one, while leaving room for future top-level keys.
-      next = settingsMod.mergeWithDefaults({
-        ...this.settings,
-        ...partial,
-      });
+      const mergedTop = { ...this.settings, ...partial };
+      // User-owned brain toggles must survive concurrent BACKGROUND writes. The
+      // brain fires `{ brain: { ...current.brain, lastRun } }` every few seconds;
+      // if its `current` snapshot predates a user's Low-power toggle, that stale
+      // brain object would clobber the freshly-saved value (observed: turning
+      // Low-power OFF reverted to ON). Background writes (no userInitiated flag)
+      // therefore can't change lowPowerMode / clipboardCapture — those keep the
+      // committed value; only an explicit user settings save changes them.
+      if (partial.brain && !opts?.userInitiated && this.settings.brain) {
+        mergedTop.brain = {
+          ...partial.brain,
+          ...(this.settings.brain.lowPowerMode !== undefined ? { lowPowerMode: this.settings.brain.lowPowerMode } : {}),
+          ...(this.settings.brain.clipboardCapture !== undefined ? { clipboardCapture: this.settings.brain.clipboardCapture } : {}),
+        };
+      }
+      next = settingsMod.mergeWithDefaults(mergedTop);
       await this.persistSettings(next);
     } finally {
       resolveSlot(); // unblock the next queued write regardless of outcome

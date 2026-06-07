@@ -1920,7 +1920,7 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
       if (parsed.connectors?.pullIntervalMs !== undefined) {
         await deps.connectorManager.setPullInterval(parsed.connectors.pullIntervalMs);
       }
-      return deps.host.setSettings(patch);
+      return deps.host.setSettings(patch, { userInitiated: true });
     }
     case 'cortex.purgeForgotten': {
       const { graphId } = z.object({ graphId: z.string() }).parse(params);

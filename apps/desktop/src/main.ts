@@ -1571,6 +1571,7 @@ function render(status: StatusSnapshot): void {
         try {
           const s = (await invoke('get_settings')) as AppSettings;
           setClipboardCaptureEnabled(s.brain?.clipboardCapture?.enabled ?? false);
+          updateLowPowerIndicator(s.brain?.lowPowerMode === true);
           // Theme: localStorage is authoritative (applied at boot, before
           // unlock). On unlock, reconcile with sidecar — if sidecar has a
           // different value it wins (e.g. user changed theme on another
@@ -5965,6 +5966,7 @@ els.btnSettingsSave.addEventListener('click', async () => {
     // lets the graph settle + spread, which reads as "dimmed/dead". The animation
     // is a minor cost next to the brain, and the user controls it separately via
     // the "Alive Engram" toggle. So low-power keeps the graph bright + lively.
+    updateLowPowerIndicator(els.settingLowPower.checked); // reflect in the status bar
     // Orbit debug HUD: session-only toggle, not persisted to settings.
     const hudCb = els.settingsModal.querySelector<HTMLInputElement>('#debug-orbit-hud');
     if (hudCb && mainAtlas) {
@@ -16987,6 +16989,11 @@ els.brainVitality.addEventListener('click', () => {
   activateMode('atlas');
 });
 
+// Low-power status chip → open Preferences (where the toggle lives).
+document.getElementById('status-lowpower')?.addEventListener('click', () => {
+  els.btnSettings.click();
+});
+
 // Background-process line — same target as the vitality chip; the
 // Deterministic Consolidation tab is where the live feed + schedule live.
 els.statusProcess?.addEventListener('click', () => {
@@ -17013,6 +17020,13 @@ let clipCaptureEnabled = false;
 let clipPollTimer: ReturnType<typeof setInterval> | null = null;
 let lastClipContent = '';
 let clipToastShownFor = ''; // prevents re-prompting same content within a session
+
+/** Show/hide the status-bar Low-power indicator. Called on boot, on Preferences
+ *  load, and on save so the chip always reflects brain.lowPowerMode. */
+function updateLowPowerIndicator(on: boolean): void {
+  const el = document.getElementById('status-lowpower');
+  if (el) el.style.display = on ? 'inline-flex' : 'none';
+}
 
 function setClipboardCaptureEnabled(enabled: boolean): void {
   clipCaptureEnabled = enabled;
@@ -20860,8 +20874,12 @@ els.btnSettingsSave.addEventListener('click', async () => {
     const searchLlmOnly = !!llmOnlyCb?.checked;
 
     await invoke('update_settings', {
+      // Patch ONLY ai — this handler owns consent intervals + session caps.
+      // Spreading `...current` (the whole settings) re-saved a STALE `brain`
+      // object and raced the main save handler, clobbering brain.lowPowerMode
+      // (turning Low-power OFF reverted to ON). The IPC merges per top-level key,
+      // so omitting brain/ui/etc. leaves them untouched.
       settings: {
-        ...current,
         ai: {
           ...current.ai,
           consentIntervalPersonalMs: isNaN(pVal) ? -1 : pVal,
