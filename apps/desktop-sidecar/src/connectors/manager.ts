@@ -1,5 +1,5 @@
 import http from 'node:http';
-import { randomUUID } from 'node:crypto';
+import { randomUUID, createHash } from 'node:crypto';
 import { watch as fsWatch, type FSWatcher } from 'node:fs';
 import type { GraphnosisHost } from '../host.js';
 import { ingestClip } from '../ingest.js';
@@ -436,7 +436,6 @@ export class ConnectorManager {
     if (fullRescan) {
       cfg.lastPulledAt = 0; // 0 is falsy → since=undefined → full scan
       rc.lastFullScanAt = Date.now();
-      console.error(`[connector:${cfg.id}] full re-scan (${opts?.forceFull ? 'manual' : 'periodic self-heal'}) — re-checking all sources`);
     }
     rc.pulling = true;
     rc.lastProgressAt = Date.now();
@@ -556,13 +555,10 @@ export class ConnectorManager {
 
   private async ingestEvents(cfg: ConnectorConfig, events: ConnectorEvent[], rc: RunningConnector): Promise<{ count: number; transientFailures: number }> {
     if (events.length === 0) return { count: 0, transientFailures: 0 };
-    // DIAGNOSTIC: batch size — emits one ingest.progress per file below, so if
-    // this prints N>0 the progress bar should appear. Pair with the batch-done
-    // line + the per-file "ingest failed" lines to see why files go missing.
-    console.error(`[connector:${cfg.id}] ingestEvents: batch of ${events.length} file(s)`);
     const mirror = cfg.options['mirrorDeletes'] === true;
     let count = 0;
     let transientFailures = 0;
+    let skipped = 0; // unchanged files skipped (no embed) — heat-fix telemetry
     let sinceYield = 0;
     let sinceCheckpoint = 0;
     let processed = 0;
@@ -588,6 +584,23 @@ export class ConnectorManager {
           },
         });
       } catch { /* cosmetic */ }
+      // ── Skip-unchanged ────────────────────────────────────────────────────
+      // The dominant CPU/heat on a full re-scan is re-EMBEDDING files that
+      // haven't changed — the SDK embeds the whole file, finds the chunks already
+      // exist, and reports "0 nodes / already saved" (a 690%-CPU no-op across a
+      // big vault). If this file's content hash matches what we last ingested for
+      // this sourceRef, skip the embed entirely — only NEW/CHANGED files pay.
+      const contentHash = ev.sourceRef
+        ? createHash('sha1').update(ev.text).digest('hex')
+        : undefined;
+      if (ev.sourceRef && contentHash) {
+        const prevHash = await this.host.connectorFileMap.getHash(ev.sourceRef);
+        if (prevHash === contentHash) {
+          skipped++;
+          rc.lastProgressAt = Date.now(); // forward progress — keep the watchdog calm
+          continue; // unchanged → no embed, no work
+        }
+      }
       // Cooperative yield: with MANY SMALL files, each ingest's await often
       // resolves on the microtask queue (cached/cheap embeddings + a synchronous
       // op-log write), so the macrotask queue — where the IPC socket is serviced
@@ -609,15 +622,20 @@ export class ConnectorManager {
             skipAutoRelink: true,
           }),
         );
-        // Mirror mode: track file → source so we can prune on delete, and
-        // replace (not duplicate) when a file is modified and re-ingested.
+        // Mirror mode: replace (not duplicate) when a file is modified — forget
+        // the OLD source before we record the new one below.
         if (mirror && ev.sourceRef && rec?.sourceId) {
           const prev = await this.host.connectorFileMap.get(ev.sourceRef);
           if (prev && prev !== rec.sourceId) {
             try { await this.host.forgetSource(cfg.graphId, prev, { triggeredBy: 'connector:mirror-replace' }); }
             catch { /* old source already gone — fine */ }
           }
-          await this.host.connectorFileMap.set(ev.sourceRef, rec.sourceId);
+        }
+        // Record sourceId + content hash for EVERY connector (not just mirror) so
+        // the next re-scan can skip-unchanged (above). sourceId powers mirror
+        // prune/replace; the hash powers skip.
+        if (ev.sourceRef && contentHash) {
+          await this.host.connectorFileMap.set(ev.sourceRef, rec?.sourceId ?? '', contentHash);
         }
         count++;
         rc.lastProgressAt = Date.now(); // forward progress — keeps the watchdog from tripping
@@ -640,11 +658,14 @@ export class ConnectorManager {
         // surface genuine failures (and count them so doPull doesn't advance
         // the cursor past files that didn't actually get in).
         if (/produced 0 nodes|already saved or nothing to extract/i.test(msg)) {
-          // DIAGNOSTIC: which files no-op, and why. A genuinely-new file should
-          // NOT land here — if it does, either it's empty/unparseable ("0 nodes")
-          // or the dedup is wrongly treating it as already-present ("already
-          // saved"). This is how we tell why the vault stalls below its file count.
-          console.error(`[connector:${cfg.id}] no-op skip ${ev.label}: ${msg}`);
+          // Already-saved / 0-node file (e.g. content a prior session or another
+          // connector already ingested). Record its hash so the NEXT re-scan
+          // skip-unchanged path skips it BEFORE embedding — otherwise it would
+          // re-embed (only to no-op again) on every re-scan, which is the bulk of
+          // the full-rescan heat for an already-populated engram.
+          if (ev.sourceRef && contentHash) {
+            try { await this.host.connectorFileMap.set(ev.sourceRef, '', contentHash); } catch { /* best-effort */ }
+          }
           continue;
         }
         transientFailures++;
@@ -666,7 +687,11 @@ export class ConnectorManager {
       try { await this.host.save(cfg.graphId); }
       catch (e) { console.error(`[connector:${cfg.id}] batch save failed: ${(e as Error).message}`); }
     }
-    console.error(`[connector:${cfg.id}] ingestEvents done: ${count} ingested, ${transientFailures} transient-failure(s) of ${events.length}`);
+    // Only log when real work happened — a cool re-scan (all unchanged-skip /
+    // no-op) stays silent. Errors still surface via the per-file "ingest failed".
+    if (count > 0 || transientFailures > 0) {
+      console.error(`[connector:${cfg.id}] synced ${count} file(s)${skipped ? `, ${skipped} unchanged` : ''}${transientFailures ? `, ${transientFailures} failed` : ''}`);
+    }
     if (count > 0) this.host.triggerRelink(cfg.graphId);
     // Batch finished — hide the on-graph progress bar (frontend hides only once
     // ALL in-flight ingests are done, so back-to-back batches don't flicker).
