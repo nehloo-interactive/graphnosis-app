@@ -77,6 +77,22 @@ function loadEnv(): CliEnv {
  * but non-fatal — sidecar keeps starting even if one engram won't
  * decrypt, so the user can still work with their other graphs.
  */
+// Lazy-boot: don't preload every engram at startup. Only the default/active
+// engram (already resident before this call) stays loaded; the rest load on
+// first access — ensureLoaded via the IPC dispatch hook, recall's load-on-demand,
+// or the picker selecting them — and the LRU evicts idle ones to keep the
+// resident set (and RSS) bounded. graphsWithMetadata still lists EVERY engram
+// from settings.graphMetadata, so the picker shows them all. This is what keeps
+// idle memory in MB instead of holding all N engrams (~GBs) resident.
+// Load-all-resident (reverted from lazy-boot). The memory floor is Bun/JSC's
+// allocator (~5 GB, see PR oven-sh/bun#30590), NOT the engrams (~870 MB for the
+// whole cortex). So lazy-boot saved ~0.2 GB while costing correct stats, complete
+// federated recall, and a 14 GB churn spike when a recall loaded all engrams at
+// once. Loading every engram SEQUENTIALLY at boot keeps the churn peak low and
+// keeps the cortex resident, so recall/stats/MCP all work fully with no spike.
+// (Revisit lazy-boot only once we're off Bun's allocator — then it saves real RAM.)
+const LAZY_BOOT = false;
+
 async function loadAllGraphsFromDisk(
   host: GraphnosisHost,
   cortexDir: string,
@@ -114,7 +130,7 @@ async function loadAllGraphsFromDisk(
     const graphId = m[1] as string;
     if (graphId === defaultGraphId) continue; // already loaded
     if (seen.has(graphId)) continue;
-    toLoad.push(graphId);
+    if (!LAZY_BOOT) toLoad.push(graphId); // lazy-boot: don't preload; load on first access
   }
 
   const total = toLoad.length;
@@ -1047,7 +1063,7 @@ async function main(): Promise<void> {
   const connectorsCfg = host.getSettings().connectors ?? {
     configs: [], webhookPort: 3458, webhookHost: '127.0.0.1', pullIntervalMs: 15 * 60 * 1000,
   };
-  const connectorManager = new ConnectorManager(host, connectorsCfg);
+  const connectorManager = new ConnectorManager(host, connectorsCfg, broadcastRaw);
 
   // Tauri shell IPC (custom JSON-RPC, not MCP).
   const ipcSocketPath = process.env.GRAPHNOSIS_IPC_SOCKET
@@ -1143,10 +1159,23 @@ async function main(): Promise<void> {
   // sequencing predictable.
   await loadAllGraphsFromDisk(host, env.cortexDir, env.defaultGraph, broadcastRaw);
   await backfillGraphMetadata(host);
-  // Single oplog read for all engrams — far cheaper than one read per engram.
-  void host.refreshAllCorrectionsFromOplog();
-  brainEngine.start();
+  // ZERO op-log at boot. The op-log is cold storage (2M events / ~2.2 GB on a
+  // mature cortex) — reading it all here cost ~4.5 GB of resident JS heap that
+  // never came back (it was THE memory floor). Corrections are baked into each
+  // engram's .gai on applyCorrection (loadGraph does no oplog replay), so boot
+  // needs nothing from the log. The corrections COUNT + activity feed read the
+  // log on demand (Activity/Audit view) and release it afterward — see
+  // listOplogEvents' idle-release below. Compaction is triggered lazily, not here.
 
+  // Scavenge the boot-load churn so the allocator returns those pages.
+  (globalThis as { Bun?: { gc?: (force: boolean) => void } }).Bun?.gc?.(true);
+  // Start the brain + connectors at boot. (An earlier lean-boot deferred them 60 s
+  // to MEASURE the idle floor — but that broke "Sync now" in the first 60 s
+  // because the connector wasn't mounted yet, and the floor turned out to be
+  // Bun's allocator, not these passes. The brain now self-gates on
+  // isIngestActive(), so it no longer contends with a pull regardless.)
+  // Connectors mount immediately so a manual Sync-now works on cue.
+  brainEngine.start();
   await connectorManager.start();
 
   // Full graceful shutdown: flush dirty graphs, stop brain + connectors, then
@@ -1156,16 +1185,45 @@ async function main(): Promise<void> {
   const gracefulShutdown = async (): Promise<void> => {
     if (shuttingDown) return;
     shuttingDown = true;
-    brainEngine.stop();
+    // Hard backstop: a slow save/lock-release must NEVER leave us hanging — if we
+    // don't exit promptly we orphan to launchd (PPID 1) as a zombie holding the
+    // cortex lock + GBs of RAM. Force-exit after 5 s no matter what.
+    setTimeout(() => { console.error('[graphnosis-sidecar] shutdown timed out — forcing exit'); process.exit(0); }, 5000).unref();
+    try { brainEngine.stop(); } catch { /* may not have started (deferred boot) */ }
     await connectorManager.stop().catch(() => {});
     for (const graphId of host.listGraphs()) {
       try { await host.save(graphId); } catch { /* best-effort — don't block exit */ }
     }
-    await safeRelease();
+    await safeRelease().catch(() => {});
     process.exit(0);
   };
   process.on('SIGINT',  () => { void gracefulShutdown(); });
   process.on('SIGTERM', () => { void gracefulShutdown(); });
+  // Parent-death watchdog: if the desktop app (our parent) dies WITHOUT signaling
+  // us — a force-quit, a crash, a dev reload — macOS reparents us to launchd
+  // (ppid → 1). Without this we keep running as a zombie: holding the cortex
+  // lock, GBs of RAM, and piling up one orphan per relaunch. Detect the reparent
+  // and shut down cleanly.
+  const bootPpid = process.ppid;
+  setInterval(() => {
+    if (process.ppid === 1 && bootPpid !== 1) {
+      console.error('[graphnosis-sidecar] parent app exited (orphaned) — shutting down');
+      void gracefulShutdown();
+    }
+  }, 2000).unref();
+
+  // Periodic allocator scavenge — but ONLY when the footprint is actually
+  // elevated. Bun.gc(true) is a sync stop-the-world GC + bmalloc scavenge that
+  // madvise-frees freed pages back to the OS (we saw it drop RSS 14→4.4 GB). It's
+  // the right tool AFTER a heavy churn (brain pass / big ingest), but firing it
+  // unconditionally every 20 s burns CPU (and heat) for nothing while the cortex
+  // sits at its ~1 GB idle floor. So: check rss on a slow tick and only scavenge
+  // when it's high. Idle → no GC, no heat; post-churn spike → reclaimed promptly.
+  const bunGc = (globalThis as { Bun?: { gc?: (force: boolean) => void } }).Bun?.gc;
+  const GC_RSS_THRESHOLD = 3 * 1024 * 1024 * 1024; // 3 GB — above the load-all idle floor
+  if (bunGc) setInterval(() => {
+    try { if (process.memoryUsage().rss > GC_RSS_THRESHOLD) bunGc(true); } catch { /* best-effort */ }
+  }, 30_000).unref();
 
   // (Previously: a 60s timer that force-closed MCP connections idle > 15
   // min. Removed in favor of an amber-bubble idle indicator in the

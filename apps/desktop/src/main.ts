@@ -848,6 +848,7 @@ const els = {
   btnOllamaRecheck: $<HTMLButtonElement>('btn-ollama-recheck'),
   btnOpenOllamaSite: $<HTMLAnchorElement>('btn-open-ollama-site'),
   settingClipboardCapture: $<HTMLInputElement>('setting-clipboard-capture'),
+  settingLowPower: $<HTMLInputElement>('setting-low-power'),
   // Brain pane stats
   lbBrainStats: $<HTMLDivElement>('lb-brain-stats'),
   lbStatDecayNodes: $<HTMLSpanElement>('lb-stat-decay-nodes'),
@@ -1309,15 +1310,26 @@ let ingestRefreshQueued = false;
  *  extremely laggy when ingesting a big folder/connector. The graph repaints
  *  once when the ingest finishes (the ingest-done handler forces a final push,
  *  by which point ingestJobToasts is empty). Small graphs update live as before. */
+// Last time a live atlas push ran — throttles the re-heat cadence during ingest.
+let lastAtlasPushAt = 0;
+const ATLAS_LIVE_PUSH_MS = 1800; // gentle cadence: visible growth, bounded re-heat
+
 function shouldPushAtlasNow(): boolean {
   if (!mainAtlas || graphnosisActiveTab !== 'atlas') return false;
-  // Defer EVERY live atlas push while an ingest is active (regardless of graph
-  // size). Each push calls setNodes -> d3ReheatSimulation, which re-explodes
-  // the WHOLE graph — already-settled sources included — every time a new
-  // source lands. The graph repaints + settles ONCE when the ingest finishes
-  // (the ingest-done handler forces a final push, by which point
-  // ingestJobToasts is empty so this returns true).
-  if (ingestJobToasts.size > 0) return false;
+  // During an active ingest, show the graph GROW — but on a gentle cadence, not
+  // on every delta. Each push calls setNodes -> d3ReheatSimulation, which
+  // re-explodes the whole graph; firing that per-source is jarring + laggy
+  // (every-delta), while fully deferring shows nothing until the end (dull). A
+  // throttle to ~ATLAS_LIVE_PUSH_MS gives regular, compelling waves of new nodes
+  // settling in without pinning the CPU. The ingest-done handler forces a final
+  // settle (force=true bypasses this). Outside ingest, deltas are rare so the
+  // throttle is a no-op.
+  const ingesting = ingestJobToasts.size > 0 || atlasIngestActive.size > 0;
+  if (ingesting) {
+    const now = Date.now();
+    if (now - lastAtlasPushAt < ATLAS_LIVE_PUSH_MS) return false;
+    lastAtlasPushAt = now;
+  }
   return true;
 }
 
@@ -1360,10 +1372,47 @@ function requestIngestUiRefresh(immediate = false): void {
   }, INGEST_UI_REFRESH_MS);
 }
 
+// ── On-graph ingest progress bar (3D Engram page) ──────────────────────────
+// Overlaid on the atlas: "[X%] ingesting <file> to <engram>…". Filename + engram
+// redact in Presentation Mode (unless the engram is allowlisted). Driven by the
+// same ingest-progress / ingest-done events as the toast.
+const atlasIngestActive = new Set<string>();
+type AtlasIngestPayload = { jobId: string; graphId: string; fileName: string; phase: string; nodesAdded: number; pagesProcessed?: number; totalPages?: number; chunksDone?: number; chunksTotal?: number };
+function updateAtlasIngestProgress(p: AtlasIngestPayload): void {
+  const box = document.getElementById('atlas-ingest-progress');
+  const fill = document.getElementById('atlas-ingest-fill') as HTMLElement | null;
+  const label = document.getElementById('atlas-ingest-label');
+  if (!box || !fill || !label) return;
+  atlasIngestActive.add(p.jobId);
+  // Percent from whichever totals the current phase provides (chunked embedding
+  // or paged parsing); otherwise indeterminate.
+  let pct: number | null = null;
+  if (p.chunksTotal && p.chunksTotal > 0) pct = Math.min(100, Math.round(((p.chunksDone ?? 0) / p.chunksTotal) * 100));
+  else if (p.totalPages && p.totalPages > 0) pct = Math.min(100, Math.round(((p.pagesProcessed ?? 0) / p.totalPages) * 100));
+  // Redact filename + engram in Presentation Mode unless the engram is revealed.
+  const reveal = !presActive() || presRevealEngram(p.graphId);
+  const g = loadedGraphs.find((x) => x.graphId === p.graphId);
+  const engramName = reveal ? (g ? formatEngramLabel(g) : p.graphId) : '████████';
+  const raw = p.fileName || 'source';
+  const trimmed = raw.length > 32 ? raw.slice(0, 29) + '…' : raw;
+  const fileName = reveal ? trimmed : '████████';
+  label.textContent = `${pct != null ? `${pct}% ` : ''}ingesting ${fileName} to ${engramName}…`;
+  if (pct != null) { fill.classList.remove('indeterminate'); fill.style.width = `${pct}%`; }
+  else { fill.classList.add('indeterminate'); }
+  box.classList.remove('hidden');
+}
+function atlasIngestDone(jobId: string): void {
+  atlasIngestActive.delete(jobId);
+  // Only hide when no ingest is still in flight — avoids flicker between the
+  // sequential per-file done/progress events of a vault import.
+  if (atlasIngestActive.size === 0) document.getElementById('atlas-ingest-progress')?.classList.add('hidden');
+}
+
 // Listen for progress events — update the toast's message with live node count.
 void listen<{ jobId: string; graphId: string; fileName: string; phase: string; nodesAdded: number; pagesProcessed?: number; totalPages?: number; pagesExtracted?: number }>(
   'graphnosis://ingest-progress',
   (evt) => {
+    updateAtlasIngestProgress(evt.payload as AtlasIngestPayload); // on-graph bar (runs for all ingests, toast or not)
     const job = ingestJobToasts.get(evt.payload.jobId);
     if (!job) return;
     const { toastId } = job;
@@ -1395,6 +1444,23 @@ void listen<{ jobId: string; graphId: string; fileName: string; phase: string; n
 void listen<{ jobId: string; graphId: string; fileName: string; nodesAdded: number; nodeIds?: string[]; error?: string }>(
   'graphnosis://ingest-done',
   (evt) => {
+    atlasIngestDone(evt.payload.jobId); // on-graph bar (runs for all ingests, toast or not)
+    // Revert the 3D "⟳ Syncing…" button to "⟳ Sync now" the instant the pull's
+    // last batch finishes. Don't wait on a status re-poll — the busy thread (live
+    // ingest + relink) delays list_connectors, which is why the button looked
+    // stuck. Optimistically drop this engram from the pulling set + repaint NOW;
+    // then reconcile via a delayed refresh in case another batch is still queued.
+    if (evt.payload.graphId) {
+      connectorPullingGraphIds.delete(evt.payload.graphId);
+      updateAtlasSyncButton();
+      // Final settle: the live throttle may have skipped the last wave of nodes,
+      // so force one push now that the ingest is done (force=true bypasses the
+      // throttle) — the graph lands on its complete, settled state.
+      if (evt.payload.graphId === atlasActiveGraph && currentMode === 'engram' && graphnosisActiveTab === 'atlas') {
+        try { pushDataIntoAtlas(true, true); } catch { /* atlas not ready */ }
+      }
+    }
+    setTimeout(() => { void refreshConnectorPullingSet(); }, 2000);
     const job = ingestJobToasts.get(evt.payload.jobId);
     if (!job) return;
     const { toastId, fileName } = job;
@@ -1505,6 +1571,7 @@ function render(status: StatusSnapshot): void {
         try {
           const s = (await invoke('get_settings')) as AppSettings;
           setClipboardCaptureEnabled(s.brain?.clipboardCapture?.enabled ?? false);
+          updateLowPowerIndicator(s.brain?.lowPowerMode === true);
           // Theme: localStorage is authoritative (applied at boot, before
           // unlock). On unlock, reconcile with sidecar — if sidecar has a
           // different value it wins (e.g. user changed theme on another
@@ -1739,16 +1806,18 @@ function syncEngramPicker(): void {
     `<option value="${FULL_CORTEX}"${atlasActiveGraph === FULL_CORTEX ? ' selected' : ''}>🌌 Full Cortex</option>` +
     visibleGraphs
       .map((g) => {
+        // Lazy-boot: loaded:false just means "on disk, not resident" — it loads
+        // on select (ensureLoaded via the dispatch hook). So it's selectable, NOT
+        // disabled (disabling would make most engrams unpickable under lazy-boot).
         const name = escape(formatEngramLabel(g));
-        const disabled = g.loaded === false ? ' disabled' : '';
-        return `<option value="${escape(g.graphId)}"${disabled}>${name}</option>`;
+        return `<option value="${escape(g.graphId)}">${name}</option>`;
       })
       .join('');
   // Keep the search Engram filter dropdown in lockstep with loadedGraphs.
   syncSearchEngramSelect();
-  // pickAtlasGraph already filters to loaded engrams, so we don't accidentally
-  // make a pending engram the active selection.
-  if (!atlasActiveGraph || !visibleGraphs.some((g) => g.graphId === atlasActiveGraph && g.loaded !== false)) {
+  // Keep the active engram if it still EXISTS (loaded or not — lazy-boot loads it
+  // on view); only re-pick when there's no active engram or it's gone.
+  if (!atlasActiveGraph || !visibleGraphs.some((g) => g.graphId === atlasActiveGraph)) {
     atlasActiveGraph = pickAtlasGraph();
   }
   if (atlasActiveGraph) els.atlasGraphPicker.value = atlasActiveGraph;
@@ -1773,8 +1842,7 @@ function syncMobileEngramPicker(visibleGraphs: GraphWithMetadata[]): void {
   sel.innerHTML = visibleGraphs
     .map((g) => {
       const name = escape(g.metadata.displayName ?? g.graphId);
-      const disabled = g.loaded === false ? ' disabled' : '';
-      return `<option value="${escape(g.graphId)}"${disabled}>${name}</option>`;
+      return `<option value="${escape(g.graphId)}">${name}</option>`; // lazy-boot: selectable, loads on select
     })
     .join('');
   if (atlasActiveGraph) sel.value = atlasActiveGraph;
@@ -1791,8 +1859,8 @@ function syncSourcesEngramDropdown(): void {
     const opt = document.createElement('option');
     opt.value = g.graphId;
     opt.textContent = formatEngramLabel(g);
-    if (g.loaded === false) opt.disabled = true;
-    sel.appendChild(opt);
+    sel.appendChild(opt); // lazy-boot: selectable; loads on select
+
   }
   // Restore selection if the previously selected engram still exists;
   // otherwise fall back to the active engram (mirrors the top-bar picker).
@@ -2649,7 +2717,11 @@ function activateMode(mode: Mode): void {
   if (mode === 'skills') { syncSkillsPreviewWarning(); updateSkillsResetButton(); }
   // Entering the 3D engram view: refresh connector state so the "Sync now"
   // button appears if the active engram has a manual (auto-sync off) connector.
-  if (mode === 'engram' || mode === 'atlas') void refreshConnectorPullingSet();
+  // Re-check the Sync-now button on EVERY entry to the 3D Engram page: first
+  // immediately from the last-known connector list (no gap), then again after a
+  // fresh list_connectors fetch. Guarantees the button reflects the active
+  // engram's manual connector the moment the page is shown.
+  if (mode === 'engram' || mode === 'atlas') { updateAtlasSyncButton(); void refreshConnectorPullingSet(); }
   // Search is also a checkin sub-mode: body.search-mode reveals the search bar
   // + results surface and hides the Home cards / power-tools / deck (CSS).
   document.body.classList.toggle('search-mode', mode === 'search');
@@ -5403,6 +5475,7 @@ els.btnSettings.addEventListener('click', async () => {
     els.aiEmbedWorkersVal.textContent = `${savedWorkers} worker${savedWorkers === 1 ? '' : 's'}`;
     // Clipboard capture: disabled by default.
     els.settingClipboardCapture.checked = s.brain?.clipboardCapture?.enabled ?? false;
+    els.settingLowPower.checked = s.brain?.lowPowerMode ?? false;
     // Orbit debug HUD: session-only, reflects live engine state.
     const hudCb = els.settingsModal.querySelector<HTMLInputElement>('#debug-orbit-hud');
     if (hudCb) hudCb.checked = mainAtlas?.isOrbitDebugHUDVisible?.() ?? false;
@@ -5883,11 +5956,17 @@ els.btnSettingsSave.addEventListener('click', async () => {
           embedBatch: els.aiEmbedBatch.value as 'small' | 'medium' | 'large' | 'auto',
           embedWorkers: parseInt(els.aiEmbedWorkers.value, 10) || 2,
         },
-        brain: { clipboardCapture: { enabled: clipEnabled } },
+        brain: { clipboardCapture: { enabled: clipEnabled }, lowPowerMode: els.settingLowPower.checked },
       },
     });
     // Apply clipboard capture immediately so the user doesn't need to relaunch.
     setClipboardCaptureEnabled(clipEnabled);
+    // Low-power mode pauses the BRAIN only (the sidecar reads brain.lowPowerMode
+    // live). It deliberately does NOT touch the 3D animation — stopping motion
+    // lets the graph settle + spread, which reads as "dimmed/dead". The animation
+    // is a minor cost next to the brain, and the user controls it separately via
+    // the "Alive Engram" toggle. So low-power keeps the graph bright + lively.
+    updateLowPowerIndicator(els.settingLowPower.checked); // reflect in the status bar
     // Orbit debug HUD: session-only toggle, not persisted to settings.
     const hudCb = els.settingsModal.querySelector<HTMLInputElement>('#debug-orbit-hud');
     if (hudCb && mainAtlas) {
@@ -6817,11 +6896,12 @@ let lastEdgesByGraph: Map<string, { directed: AtlasDirectedEdge[]; undirected: A
 const LAST_ENGRAM_KEY = 'graphnosis:lastActiveEngram';
 
 function pickAtlasGraph(): string | null {
-  // Pending engrams (loaded === false from includeUnloaded:true) are visible in
-  // the picker for awareness but can't be the active graph until they finish
-  // loading — picking one would race against IPC and show nothing.
-  const available = loadedGraphs.filter((g) => !g.metadata.archived && g.loaded !== false);
-  // Restore last session's active engram if it's still available.
+  // Lazy-boot: include unloaded engrams (loaded:false) — they load on view, so a
+  // not-yet-resident engram is a valid active selection (the switch flow loads it
+  // and shows the loading overlay). Excluding them here would stop the last
+  // session's active engram from being restored whenever it isn't resident.
+  const available = loadedGraphs.filter((g) => !g.metadata.archived);
+  // Restore last session's active engram if it still exists.
   const saved = localStorage.getItem(LAST_ENGRAM_KEY);
   if (saved && available.some((g) => g.graphId === saved)) return saved;
   // Fall back to alphabetical first — matches what the picker displays.
@@ -12180,16 +12260,12 @@ els.atlasGraphPicker.addEventListener('change', () => void (async () => {
     'sources', 'activity', 'presentation', 'settings', 'skills', 'goals', 'power-tools', 'mcp-tools', 'status',
   ]);
   const jumpTo3D = !SCOPE_IN_PLACE_MODES.has(currentMode);
-  // Safety net: the picker also lists not-yet-loaded engrams as <option disabled>
-  // for awareness during boot. Native <select> shouldn't fire `change` on a
-  // disabled option, but if it ever does (custom dropdowns, keyboard nav
-  // edge cases), bail before we hit the sidecar with nodes.list for a graph
-  // that isn't in memory — that surfaces as "Graph not loaded" IPC errors.
-  const picked = loadedGraphs.find((g) => g.graphId === els.atlasGraphPicker.value);
-  if (picked && picked.loaded === false) {
-    els.atlasGraphPicker.value = atlasActiveGraph ?? '';
-    return;
-  }
+  // Lazy-boot: selecting a not-yet-resident engram (loaded:false) is normal —
+  // do NOT bail. The sidecar's IPC dispatch hook ensureLoaded()s the graphId on
+  // the nodes.list/edges.list calls below, so the engram loads on demand and the
+  // showAtlasLoading overlay covers the brief parse. (Previously this bailed
+  // because unloaded engrams were rare boot-transients; under lazy-boot they're
+  // the common case, so bailing would make most engrams unselectable.)
   atlasActiveGraph = els.atlasGraphPicker.value;
   deferredAtlasLoadGraph = null; // reset; the ingest-defer block below re-sets it if needed
   persistActiveEngram(atlasActiveGraph);
@@ -14004,31 +14080,16 @@ function processEngramsLoadingRefresh(allDone: boolean): void {
  *  The single tick re-schedules itself if still needed. */
 let _periodicGreyedRefreshTimer: ReturnType<typeof setTimeout> | null = null;
 function schedulePeriodicGreyedRefresh(): void {
-  if (_periodicGreyedRefreshTimer !== null) return; // already scheduled
-  const hasGreyed = loadedGraphs.some((g) => g.loaded === false);
-  if (!hasGreyed) return; // nothing to wait for
-  _periodicGreyedRefreshTimer = window.setTimeout(() => {
+  // Obsolete under lazy-boot: loaded:false is now the normal "on disk, not
+  // resident" state, not a transient "still loading at boot" — there's no
+  // background load to poll for, so this must NOT spin a 5s timer forever (it
+  // would never self-terminate now that some engram is always unloaded). The
+  // picker lists every engram regardless, and loaded-state refreshes when an
+  // engram is selected (switch flow) or evicted. No-op; clear any stray timer.
+  if (_periodicGreyedRefreshTimer !== null) {
+    clearTimeout(_periodicGreyedRefreshTimer);
     _periodicGreyedRefreshTimer = null;
-    void invoke<GraphWithMetadata[]>('list_graphs_with_metadata', { includeUnloaded: true })
-      .then((graphs) => {
-        const before = loadedGraphs.filter((g) => g.loaded === false).length;
-        loadedGraphs = graphs;
-        const after = graphs.filter((g) => g.loaded === false).length;
-        if (before !== after) {
-          // State changed since last check — sync the picker so the spinner
-          // disappears from engrams that finished loading.
-          syncEngramPicker();
-          populateStudioEngramSelects();
-        }
-        // Re-schedule if anything is still greyed; the recursive call
-        // is bounded by hasGreyed above so it self-terminates.
-        schedulePeriodicGreyedRefresh();
-      })
-      .catch(() => {
-        // Non-fatal — try again next tick.
-        schedulePeriodicGreyedRefresh();
-      });
-  }, 5000);
+  }
 }
 
 // ── Sidecar IPC helper ────────────────────────────────────────────────────
@@ -16928,6 +16989,11 @@ els.brainVitality.addEventListener('click', () => {
   activateMode('atlas');
 });
 
+// Low-power status chip → open Preferences (where the toggle lives).
+document.getElementById('status-lowpower')?.addEventListener('click', () => {
+  els.btnSettings.click();
+});
+
 // Background-process line — same target as the vitality chip; the
 // Deterministic Consolidation tab is where the live feed + schedule live.
 els.statusProcess?.addEventListener('click', () => {
@@ -16954,6 +17020,13 @@ let clipCaptureEnabled = false;
 let clipPollTimer: ReturnType<typeof setInterval> | null = null;
 let lastClipContent = '';
 let clipToastShownFor = ''; // prevents re-prompting same content within a session
+
+/** Show/hide the status-bar Low-power indicator. Called on boot, on Preferences
+ *  load, and on save so the chip always reflects brain.lowPowerMode. */
+function updateLowPowerIndicator(on: boolean): void {
+  const el = document.getElementById('status-lowpower');
+  if (el) el.style.display = on ? 'inline-flex' : 'none';
+}
 
 function setClipboardCaptureEnabled(enabled: boolean): void {
   clipCaptureEnabled = enabled;
@@ -19488,6 +19561,19 @@ function renderConnectorSetupBody(kind: ConnectorKind, existing?: ConnectorConfi
       </div>
       <span class="field-hint">Leave blank to use the default interval. Local-folder connectors also sync instantly on change.</span>
     </div>`;
+  // Self-heal full re-scan cadence (per-connector). Blank = default (30 min);
+  // 0 = off (manual re-sync only).
+  const curFullRescanMin = typeof opts['fullRescanMinutes'] === 'number'
+    ? String(opts['fullRescanMinutes'] as number) : '';
+  const fullRescanField = `
+    <div class="connector-field">
+      <label for="connector-full-rescan">Full re-scan (self-heal) every <span style="font-weight:400;color:var(--fg-dim);">(optional)</span></label>
+      <div style="display:flex;gap:6px;align-items:center;">
+        <input type="number" id="connector-full-rescan" min="0" max="10080" step="1" placeholder="default 30" value="${curFullRescanMin}" style="width:120px;" />
+        <span>minutes</span>
+      </div>
+      <span class="field-hint">Periodically re-checks every source so nothing skipped/failed in a prior run is permanently missed. Blank = 30 min. Set 0 to disable (manual re-sync only).</span>
+    </div>`;
   const autoSyncOn = opts['autoSync'] !== false;
   const autoSyncField = `
     <div class="connector-field">
@@ -19713,7 +19799,7 @@ function renderConnectorSetupBody(kind: ConnectorKind, existing?: ConnectorConfi
       break;
     }
   }
-  return html + intervalField + autoSyncField + privacyNote;
+  return html + intervalField + fullRescanField + autoSyncField + privacyNote;
 }
 
 function populateEngramDropdown(selectId: string, selectedId?: string): void {
@@ -19825,6 +19911,13 @@ function collectConnectorFormData(kind: ConnectorKind): Partial<ConnectorConfigS
   } else {
     // Blank → clear any existing override (merge persists, undefined is dropped).
     options['intervalMs'] = undefined;
+  }
+  // Self-heal full re-scan cadence: blank → default (drop override); 0 → disable.
+  const fullRescanRaw = ($m<HTMLInputElement>('connector-full-rescan')?.value || '').trim();
+  if (fullRescanRaw === '') {
+    options['fullRescanMinutes'] = undefined;
+  } else {
+    options['fullRescanMinutes'] = Math.min(10080, Math.max(0, Math.round(Number(fullRescanRaw) || 0)));
   }
   // Manual mode: unchecked → connector stays idle until Pull now / Re-sync.
   options['autoSync'] = $m<HTMLInputElement>('connector-autosync')?.checked ?? true;
@@ -20781,8 +20874,12 @@ els.btnSettingsSave.addEventListener('click', async () => {
     const searchLlmOnly = !!llmOnlyCb?.checked;
 
     await invoke('update_settings', {
+      // Patch ONLY ai — this handler owns consent intervals + session caps.
+      // Spreading `...current` (the whole settings) re-saved a STALE `brain`
+      // object and raced the main save handler, clobbering brain.lowPowerMode
+      // (turning Low-power OFF reverted to ON). The IPC merges per top-level key,
+      // so omitting brain/ui/etc. leaves them untouched.
       settings: {
-        ...current,
         ai: {
           ...current.ai,
           consentIntervalPersonalMs: isNaN(pVal) ? -1 : pVal,

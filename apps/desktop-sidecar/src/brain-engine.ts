@@ -6,7 +6,7 @@ import { VitalityScorer, type VitalityReport } from './vitality.js';
 import { TemporalEngine } from './temporal-engine.js';
 import { GoalTracker } from './goal-tracker.js';
 import { findSimilarPairs } from './duplicate-scan.js';
-import { clientActiveWithin, CLIENT_QUIET_MS } from './client-activity.js';
+import { clientActiveWithin, CLIENT_QUIET_MS, isIngestActive } from './client-activity.js';
 // Brain recalls/searches embed the query — they MUST go through the global
 // embedding queue or they can run concurrently with a connector ingest's embed
 // and crash the (non-reentrant) embed worker, deadlocking all embedding.
@@ -581,27 +581,27 @@ export class BrainEngine {
     ).unref();
 
     this.synapseTimer = setInterval(
-      () => { void this.runSynapse(); },
+      () => { if (this.brainPassesPaused()) return; void this.runSynapse(); },
       SYNAPSE_INTERVAL_MS,
     ).unref();
 
     this.insightTimer = setInterval(
-      () => { void this.runInsight(); },
+      () => { if (this.brainPassesPaused()) return; void this.runInsight(); },
       INSIGHT_INTERVAL_MS,
     ).unref();
 
     this.temporalTimer = setInterval(
-      () => { void this.runTemporalDecay(); },
+      () => { if (this.brainPassesPaused()) return; void this.runTemporalDecay(); },
       TEMPORAL_INTERVAL_MS,
     ).unref();
 
     this.goalTimer = setInterval(
-      () => { void this.runGoalCheck(); },
+      () => { if (this.brainPassesPaused()) return; void this.runGoalCheck(); },
       GOAL_CHECK_INTERVAL_MS,
     ).unref();
 
     this.reinforceTimer = setInterval(
-      () => { void this.reinforcement.runReinforcementPass(); },
+      () => { if (this.brainPassesPaused()) return; void this.reinforcement.runReinforcementPass(); },
       REINFORCE_INTERVAL_MS,
     ).unref();
 
@@ -614,12 +614,12 @@ export class BrainEngine {
       // Defer while the user is navigating — a consolidation pass is CPU-heavy
       // and would otherwise stall an interactive engram load (slow render + a
       // timed-out list_edges showing 0 edges). Runs once they go idle.
-      () => { if (clientActiveWithin(CLIENT_QUIET_MS)) return; void this.reinforcement.runConsolidationPass(); },
+      () => { if (clientActiveWithin(CLIENT_QUIET_MS) || this.brainPassesPaused()) return; void this.reinforcement.runConsolidationPass(); },
       consolidationMs,
     ).unref();
 
     this.crossEngramTimer = setInterval(
-      () => { if (clientActiveWithin(CLIENT_QUIET_MS)) return; void this.reinforcement.runCrossEngramPass(); },
+      () => { if (clientActiveWithin(CLIENT_QUIET_MS) || this.brainPassesPaused()) return; void this.reinforcement.runCrossEngramPass(); },
       CROSS_ENGRAM_INTERVAL_MS,
     ).unref();
 
@@ -631,6 +631,7 @@ export class BrainEngine {
         // we don't want the GNN to write predicted edges against a
         // half-built skill source mid-train.
         if (this.host.getSkipOverlayRecompute?.()) return;
+        if (this.brainPassesPaused()) return; // GNN edge prediction defers while any engram ingests
         void this.reinforcement.runNeuralNetwork();
       },
       GNN_INTERVAL_MS,
@@ -643,6 +644,7 @@ export class BrainEngine {
     this.edgePredictionTimer = setInterval(
       () => {
         if (this.host.getSkipOverlayRecompute?.()) return;
+        if (this.brainPassesPaused()) return; // GLL edge prediction defers while any engram ingests
         void this.runEdgePrediction();
       },
       EDGE_PREDICTION_INTERVAL_MS,
@@ -842,6 +844,7 @@ export class BrainEngine {
     const query = `${params.context} ${params.strategy} ${params.goals}`;
     const recalled = await withEmbedding(() => this.host.recall(query, {
       budget: { maxTokens: 3000, maxNodes: 30 },
+      noLoadOnDemand: true, // background pass: search resident engrams only; never pull the whole cortex in
     }), 'brain:develop');
 
     const referencedNodeIds: string[] = [];
@@ -885,6 +888,7 @@ export class BrainEngine {
   }): Promise<PredictionResult> {
     const recalled = await withEmbedding(() => this.host.recall(params.action, {
       budget: { maxTokens: 2000, maxNodes: 20 },
+      noLoadOnDemand: true, // background pass: search resident engrams only; never pull the whole cortex in
     }), 'brain:predict');
 
     const referencedNodeIds: string[] = [];
@@ -1034,7 +1038,24 @@ export class BrainEngine {
    * process, not a "scan", and re-running it on every tab open would be
    * noise. The background 24h timer still handles it.
    */
+  /** True while the user has Low-power mode on — every autonomous pass stands
+   *  down (the hard "stop heating my laptop" switch). Read live from settings so
+   *  toggling takes effect immediately, no restart. */
+  private lowPower(): boolean {
+    return this.host.getSettings().brain?.lowPowerMode === true;
+  }
+
+  /** Single gate for every background brain pass: defer while an ingest is in
+   *  flight (contention) OR while Low-power mode is on (user opt-out). */
+  private brainPassesPaused(): boolean {
+    return isIngestActive() || this.lowPower();
+  }
+
   async runFullScan(opts: { skipLlmLoops?: boolean } = {}): Promise<void> {
+    // Stand down entirely during a connector pull — the boot warmup sweep used to
+    // run right as the first pull started, the two fighting for the one thread.
+    // The periodic timers re-run the scans once the pull finishes.
+    if (this.brainPassesPaused()) return;
     if (this.scanInFlight) return;
     this.scanInFlight = true;
     this.emitBrain('__brain_start_fullscan__');
@@ -1161,7 +1182,7 @@ export class BrainEngine {
     if (this.duplicateScanRunning) return;
     // Backpressure: defer while AI/UI clients are actively using the sidecar, so
     // recalls and the UI keep the single-threaded loop. Retry once they're idle.
-    if (clientActiveWithin(CLIENT_QUIET_MS)) {
+    if (clientActiveWithin(CLIENT_QUIET_MS) || this.brainPassesPaused()) {
       setTimeout(() => { void this.runDuplicateScan(); }, CLIENT_QUIET_MS);
       return;
     }
@@ -1783,7 +1804,7 @@ export class BrainEngine {
     if (!edgePredictionEnabled(this.host)) return;
     // Backpressure: defer while clients are active (GNN prediction + LSH scan is
     // heavy); retry once the sidecar is idle.
-    if (clientActiveWithin(CLIENT_QUIET_MS)) {
+    if (clientActiveWithin(CLIENT_QUIET_MS) || this.brainPassesPaused()) {
       setTimeout(() => { void this.runEdgePrediction(); }, CLIENT_QUIET_MS);
       return;
     }

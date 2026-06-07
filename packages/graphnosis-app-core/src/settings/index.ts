@@ -770,6 +770,13 @@ export interface AppSettings {
    * as "never run"). Persisted to settings.json after each completed run.
    */
   brain?: {
+    /** Low-power mode: when true, ALL autonomous background passes (duplicate
+     *  scan, consolidation, cross-engram, synapse, insight, temporal decay,
+     *  goals, reinforcement, GNN, GLL) stand down. The graph still ingests,
+     *  recalls, and saves — only the self-improving "brain" work pauses. The
+     *  user's hard "stop heating my laptop" switch; the frontend also pauses the
+     *  3D animation when this is on. */
+    lowPowerMode?: boolean;
     /** Unix-ms timestamps of each completed background activity. */
     lastRun?: {
       duplicateScan?: number;
@@ -1313,6 +1320,10 @@ export function mergeWithDefaults(partial: Partial<AppSettings> | null | undefin
       ...(b.clipboardCapture !== undefined
         ? { clipboardCapture: { enabled: typeof b.clipboardCapture.enabled === 'boolean' ? b.clipboardCapture.enabled : false } }
         : {}),
+      // Low-power mode — same trap as clipboardCapture above: must be threaded
+      // explicitly or mergeWithDefaults silently drops it on every save, so the
+      // toggle reads OFF again after saving (and the brain keeps running hot).
+      ...(typeof b.lowPowerMode === 'boolean' ? { lowPowerMode: b.lowPowerMode } : {}),
     };
   }
 
