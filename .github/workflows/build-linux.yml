@@ -1,0 +1,148 @@
+name: Build (Linux)
+
+# Manual trigger for Linux desktop builds (.AppImage + .deb).
+# Linux-specific config is in src-tauri/tauri.linux.conf.json (auto-loaded by
+# Tauri): bundle.targets = [deb, appimage] + the linux externalBin/resources.
+#
+# Always uploads the bundles as downloadable workflow artifacts so you can test
+# a build without touching a release.
+#
+# `ref` is what to BUILD from (default main, so the build includes the latest
+# fixes). `release_tag` is which published Release to ATTACH the bundles to —
+# these are decoupled on purpose: a release tag (e.g. v1.13.4) may predate a
+# build fix that only landed on main, so we build from main but upload to the
+# tag. The bundle version comes from tauri.conf.json, so keep that in sync with
+# the release_tag (the upload step warns on a mismatch).
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: 'Branch or tag to BUILD from (default: main)'
+        required: false
+        default: 'main'
+      release_tag:
+        description: 'Release tag to ATTACH bundles to, e.g. v1.13.4 (blank = artifacts only)'
+        required: false
+        default: ''
+
+jobs:
+  build-linux:
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    steps:
+      - name: Validate inputs
+        if: ${{ inputs.release_tag != '' }}
+        run: |
+          tag="${{ github.event.inputs.release_tag }}"
+          if [[ ! "$tag" =~ ^v[0-9]+\.[0-9]+ ]]; then
+            echo "release_tag must be a version tag (e.g. v1.13.4), got: '$tag'" && exit 1
+          fi
+
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.ref }}
+
+      # Tauri v2 Linux build dependencies (webkit2gtk 4.1) + patchelf for the
+      # AppImage. Built on 22.04 (not latest) for the widest glibc compatibility
+      # of the resulting AppImage.
+      - name: Install Linux build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            build-essential curl wget file \
+            libxdo-dev libssl-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev patchelf
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v3
+        with:
+          version: 10
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install Rust (stable, x86_64-unknown-linux-gnu)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-gnu
+
+      # Required by src-tauri/build.rs, which bun-compiles the sidecar + MCP
+      # relay for the linux target during `cargo build`.
+      - name: Install Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build workspace core package
+        run: pnpm --filter @graphnosis-app/core build
+
+      - name: Build signed demo .gsk packs
+        env:
+          GSK_SIGNING_KEY_HEX: ${{ secrets.GSK_SIGNING_KEY_HEX }}
+        run: |
+          if [ -z "$GSK_SIGNING_KEY_HEX" ]; then
+            echo "ERROR: GSK_SIGNING_KEY_HEX secret is not set." && exit 1
+          fi
+          node scripts/build-gsk.mjs --sign
+
+      - name: Build sidecar
+        run: pnpm --filter @graphnosis-app/desktop-sidecar build
+
+      - name: Build (Linux deb + AppImage)
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+        run: pnpm --filter @graphnosis-app/desktop tauri:build
+
+      - name: Collect bundles under canonical names
+        id: find
+        run: |
+          SEMVER=$(node -p "require('./apps/desktop/src-tauri/tauri.conf.json').version")
+          BUNDLE="apps/desktop/src-tauri/target/release/bundle"
+          APPIMAGE=$(find "$BUNDLE" -name "*.AppImage" | head -1)
+          DEB=$(find "$BUNDLE" -name "*.deb" | head -1)
+          if [ -z "$APPIMAGE" ] || [ -z "$DEB" ]; then
+            echo "ERROR: AppImage or .deb not found under $BUNDLE"
+            find "$BUNDLE" -maxdepth 2 -type f || true
+            exit 1
+          fi
+          # Canonical, predictable names so the /download/linux* routes resolve
+          # deterministically (Tauri lowercases the .deb package name otherwise).
+          mkdir -p dist-linux
+          cp "$APPIMAGE" "dist-linux/Graphnosis_${SEMVER}_amd64.AppImage"
+          cp "$DEB"      "dist-linux/Graphnosis_${SEMVER}_amd64.deb"
+          echo "semver=$SEMVER" >> $GITHUB_OUTPUT
+          echo "appimage=dist-linux/Graphnosis_${SEMVER}_amd64.AppImage" >> $GITHUB_OUTPUT
+          echo "deb=dist-linux/Graphnosis_${SEMVER}_amd64.deb" >> $GITHUB_OUTPUT
+
+      - name: Upload bundle artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: graphnosis-linux-bundles
+          path: dist-linux/*
+          retention-days: 14
+
+      - name: Attach bundles to GitHub release
+        if: ${{ inputs.release_tag != '' }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${{ github.event.inputs.release_tag }}"
+          SEMVER="${{ steps.find.outputs.semver }}"
+          if [ "$TAG" != "v$SEMVER" ]; then
+            echo "WARNING: release_tag ($TAG) != built version (v$SEMVER)."
+            echo "Assets are named Graphnosis_${SEMVER}_amd64.* — the /download/linux route builds its URL from CURRENT_VERSION, so these must match the release the env var points at."
+          fi
+          gh release upload "$TAG" \
+            "${{ steps.find.outputs.appimage }}#Graphnosis $TAG (Linux AppImage)" \
+            "${{ steps.find.outputs.deb }}#Graphnosis $TAG (Linux .deb)" \
+            --clobber
