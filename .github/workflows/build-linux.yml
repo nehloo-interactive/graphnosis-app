@@ -55,7 +55,7 @@ jobs:
             build-essential curl wget file \
             libxdo-dev libssl-dev \
             libayatana-appindicator3-dev \
-            librsvg2-dev patchelf
+            librsvg2-dev patchelf libfuse2
 
       - name: Install pnpm
         uses: pnpm/action-setup@v3
@@ -101,6 +101,10 @@ jobs:
       - name: Build (Linux deb + AppImage)
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          # GitHub runners lack FUSE; tell linuxdeploy (and the bundled AppImage
+          # tools) to extract-and-run instead of FUSE-mounting, else AppImage
+          # bundling dies with "failed to run linuxdeploy".
+          APPIMAGE_EXTRACT_AND_RUN: 1
         run: pnpm --filter @graphnosis-app/desktop tauri:build
 
       - name: Collect bundles under canonical names
