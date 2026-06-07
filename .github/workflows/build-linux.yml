@@ -112,6 +112,28 @@ jobs:
           NO_STRIP: "true"
         run: pnpm --filter @graphnosis-app/desktop tauri:build -- --verbose
 
+      # Tauri swallows linuxdeploy's stderr behind "failed to run linuxdeploy".
+      # Find the linuxdeploy AppImage Tauri downloaded and run it ourselves to
+      # capture the REAL error + check FUSE availability. Diagnostic only.
+      - name: Diagnose linuxdeploy
+        if: always()
+        run: |
+          set +e
+          echo "=== FUSE availability ==="
+          ls -l /dev/fuse 2>&1; grep -i fuse /proc/filesystems 2>&1
+          which fusermount fusermount3 2>&1
+          dpkg -l | grep -i fuse 2>&1
+          echo "=== locate linuxdeploy + tools on disk ==="
+          find / -iname "linuxdeploy*" 2>/dev/null | head -20
+          LD=$(find / -iname "linuxdeploy-x86_64.AppImage" 2>/dev/null | head -1)
+          echo "LD=$LD"
+          if [ -z "$LD" ]; then echo "linuxdeploy not found"; exit 0; fi
+          file "$LD"; chmod +x "$LD"
+          echo "=== direct exec (FUSE path) ==="
+          "$LD" --version 2>&1 | head -30; echo "rc=$?"
+          echo "=== extract-and-run exec ==="
+          APPIMAGE_EXTRACT_AND_RUN=1 "$LD" --appimage-extract-and-run --version 2>&1 | head -30; echo "rc=$?"
+
       # .deb is REQUIRED (its absence means the build genuinely failed). AppImage
       # is OPTIONAL — uploaded if linuxdeploy succeeded, skipped with a warning
       # otherwise, so a flaky AppImage never blocks shipping the .deb.
