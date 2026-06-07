@@ -2,9 +2,9 @@
   "id": "graphnosis",
   "name": "Graphnosis",
   "version": "0.1.0",
-  "minAppVersion": "1.0.0",
+  "minAppVersion": "1.4.0",
   "description": "Private encrypted memory for your Obsidian vault, powered by Graphnosis.",
   "author": "Nehloo Interactive",
-  "authorUrl": "https://graphnosis.ai",
+  "authorUrl": "https://graphnosis.com",
   "isDesktopOnly": false
 }
