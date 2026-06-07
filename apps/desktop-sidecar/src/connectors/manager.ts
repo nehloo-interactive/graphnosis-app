@@ -4,7 +4,7 @@ import { watch as fsWatch, type FSWatcher } from 'node:fs';
 import type { GraphnosisHost } from '../host.js';
 import { ingestClip } from '../ingest.js';
 import { withEmbedding } from '../embedding-queue.js';
-import { markClientActivity } from '../client-activity.js';
+import { markClientActivity, beginIngest, endIngest } from '../client-activity.js';
 import type { ConnectorConfig, ConnectorSettings } from '@graphnosis-app/core';
 import type { Connector, ConnectorEvent, ConnectorStatus } from './interface.js';
 import { isConnectorKindDisabled } from '../admin-policy.js';
@@ -36,6 +36,13 @@ interface RunningConnector {
   watchers: FSWatcher[];
   /** Debounce timer coalescing a burst of file-change events into one pull. */
   watchDebounce: ReturnType<typeof setTimeout> | null;
+  /** Last time a FULL (cursor-ignoring) re-scan ran. The auto-poll/watch paths
+   *  are incremental for speed, but periodically promote to a full re-scan so a
+   *  file that was skipped / produced 0 nodes / crashed mid-run in a previous
+   *  pass is ALWAYS eventually re-checked — no source is permanently stranded
+   *  behind the cursor without any manual action. Init 0 → the first pull after
+   *  boot is a full self-heal sweep. */
+  lastFullScanAt: number;
 }
 
 /** Per-batch ceiling when draining a backlog. High enough that a normal vault
@@ -60,6 +67,13 @@ const CONNECTOR_SAVE_CHECKPOINT = 20;
 const PULL_STALL_WATCHDOG_MS = 5 * 60_000;
 /** Quiet window after the last file-change event before a watcher pulls. */
 const WATCH_DEBOUNCE_MS = 1500;
+// Self-heal cadence: an auto-poll/watch pull is incremental (cursor-based) for
+// speed, but is promoted to a FULL re-scan if this long has passed since the
+// last full one. Guarantees that a source skipped / 0-noded / crashed in a prior
+// pass is ALWAYS eventually re-checked WITHOUT any manual action — no file is
+// permanently stranded behind the cursor. Cheap on a warm cortex (re-scanned
+// files hit the .embcache + dedup as no-ops; only genuinely-missing ones land).
+const FULL_RESCAN_INTERVAL_MS = 30 * 60_000; // 30 min
 
 export class ConnectorManager {
   private running = new Map<string, RunningConnector>();
@@ -69,6 +83,11 @@ export class ConnectorManager {
   constructor(
     private readonly host: GraphnosisHost,
     settings: ConnectorSettings,
+    /** Emit a frontend event frame (kind → graphnosis://<kind>). Used to push
+     *  per-source ingest progress so the 3D graph shows a progress bar during a
+     *  connector pull (the drag-drop path emits these from Rust; connectors had
+     *  no equivalent, so the bar never appeared for syncs). Optional/no-op-safe. */
+    private readonly broadcast?: (frame: { kind: string; name: string; payload: unknown }) => void,
   ) {
     this.settings = settings;
   }
@@ -258,7 +277,14 @@ export class ConnectorManager {
     if (!rc) throw new Error(`Connector '${id}' is not running (disabled or not started)`);
     if (!rc.connector.pull) throw new Error(`Connector '${id}' (${cfg.kind}) is push-only (no pull method)`);
     rc.paused = false; rc.stopRequested = false; // a manual pull resumes a stopped connector
-    const count = await this.doPull(cfg, rc);
+    // Manual "Sync now" = FULL re-scan (ignore the incremental cursor). The
+    // cursor is strict-newer-than, so any file that was skipped or failed in an
+    // earlier pass (mtime now <= cursor) is never revisited by an incremental
+    // pull — that's how a vault ends up stuck at 71/95. A full re-scan re-checks
+    // every file; already-ingested ones are cheap (embeddings hit the .embcache,
+    // and the SDK no-ops identical content), only the missing ones actually land.
+    // (Auto/background pulls stay incremental — only this manual path forces full.)
+    const count = await this.doPull(cfg, rc, { forceFull: true });
     return { eventsIngested: count };
   }
 
@@ -321,7 +347,7 @@ export class ConnectorManager {
         }, this.intervalForCfg(cfg)).unref()
       : null;
 
-    const rc: RunningConnector = { connector, pullTimer, eventsTotal: 0, pulling: false, lastProgressAt: 0, stopRequested: false, paused: false, watchers: [], watchDebounce: null };
+    const rc: RunningConnector = { connector, pullTimer, eventsTotal: 0, pulling: false, lastProgressAt: 0, stopRequested: false, paused: false, watchers: [], watchDebounce: null, lastFullScanAt: 0 };
     this.running.set(cfg.id, rc);
 
     // Start filesystem watchers for live ingest (local-file connectors).
@@ -387,7 +413,7 @@ export class ConnectorManager {
    * already run in a worker thread; only the op-log/graph write is on the main
    * thread, and it is single-writer by design.)
    */
-  private async doPull(cfg: ConnectorConfig, rc: RunningConnector): Promise<number> {
+  private async doPull(cfg: ConnectorConfig, rc: RunningConnector, opts?: { forceFull?: boolean }): Promise<number> {
     if (rc.paused) return 0;  // user stopped this connector; auto-poll/watch pulls no-op
     if (rc.pulling) {
       // A pull is "in flight". If it's still making progress (or just started),
@@ -396,6 +422,21 @@ export class ConnectorManager {
       // worker); abandon it so this poll can recover instead of dying forever.
       if (Date.now() - rc.lastProgressAt < PULL_STALL_WATCHDOG_MS) return 0;
       console.error(`[connector:${cfg.id}] pull wedged with no progress for >${Math.round(PULL_STALL_WATCHDOG_MS / 60_000)}min — abandoning the stuck pull and retrying.`);
+    }
+    // Decide if THIS pull is a full re-scan. Either the caller forced it (manual
+    // "Pull now" / "Re-sync"), OR it's been long enough since the last full one
+    // that the periodic self-heal sweep is due (so auto-poll/watch eventually
+    // re-check every file with no manual action). A full re-scan resets the
+    // cursor ONCE here so the batch loop re-scans from time 0 and paginates
+    // forward normally (resetting inside the loop would re-pull batch 1 forever);
+    // the loop re-advances the cursor to the newest mtime by the end, so the next
+    // incremental pull resumes from there.
+    const fullRescan = (opts?.forceFull ?? false)
+      || (Date.now() - rc.lastFullScanAt > this.fullRescanIntervalMs(cfg));
+    if (fullRescan) {
+      cfg.lastPulledAt = 0; // 0 is falsy → since=undefined → full scan
+      rc.lastFullScanAt = Date.now();
+      console.error(`[connector:${cfg.id}] full re-scan (${opts?.forceFull ? 'manual' : 'periodic self-heal'}) — re-checking all sources`);
     }
     rc.pulling = true;
     rc.lastProgressAt = Date.now();
@@ -407,6 +448,11 @@ export class ConnectorManager {
     // worker into swap and the pull stalls for good (observed: the wedge). The
     // timer marks activity so clientActiveWithin() stays true across slow embeds.
     const heartbeat = setInterval(() => markClientActivity(), 5_000);
+    // Explicit ingest gate (belt-and-suspenders to the heartbeat above): every
+    // background pass checks isIngestActive()/isGraphIngesting() and stands down
+    // for the WHOLE pull, regardless of heartbeat timing. Paired with endIngest()
+    // in the finally so it's always released, even on error.
+    beginIngest(cfg.graphId);
     let total = 0;
     try {
       // Ensure the target engram is actually LOADED before pulling. A connector
@@ -497,6 +543,7 @@ export class ConnectorManager {
       return total;
     } finally {
       clearInterval(heartbeat);
+      endIngest(cfg.graphId); // release the background-pass gate (always, even on error)
       rc.pulling = false;
     }
   }
@@ -509,11 +556,16 @@ export class ConnectorManager {
 
   private async ingestEvents(cfg: ConnectorConfig, events: ConnectorEvent[], rc: RunningConnector): Promise<{ count: number; transientFailures: number }> {
     if (events.length === 0) return { count: 0, transientFailures: 0 };
+    // DIAGNOSTIC: batch size — emits one ingest.progress per file below, so if
+    // this prints N>0 the progress bar should appear. Pair with the batch-done
+    // line + the per-file "ingest failed" lines to see why files go missing.
+    console.error(`[connector:${cfg.id}] ingestEvents: batch of ${events.length} file(s)`);
     const mirror = cfg.options['mirrorDeletes'] === true;
     let count = 0;
     let transientFailures = 0;
     let sinceYield = 0;
     let sinceCheckpoint = 0;
+    let processed = 0;
     for (const ev of events) {
       // User hit Stop — flush what we've saved (the tail save below) and bail.
       if (rc.stopRequested) break;
@@ -521,6 +573,21 @@ export class ConnectorManager {
       // (duplicate scan, etc.) while this connector ingest runs — otherwise the
       // brain fights the ingest for the single thread and the ingest stalls.
       markClientActivity();
+      // On-graph progress bar: announce the file as we START it. (Emitting only
+      // AFTER a file completes meant a multi-minute big file, or a re-scan that
+      // no-ops every already-ingested file, showed NOTHING.) processed/total so
+      // the bar appears immediately and tracks the current file. Best-effort.
+      processed++;
+      try {
+        this.broadcast?.({
+          kind: 'ingest.progress', name: 'ingest.progress',
+          payload: {
+            jobId: `connector:${cfg.id}`, graphId: cfg.graphId,
+            fileName: ev.label ?? ev.sourceRef ?? 'source', phase: 'embedding',
+            chunksDone: processed, chunksTotal: events.length,
+          },
+        });
+      } catch { /* cosmetic */ }
       // Cooperative yield: with MANY SMALL files, each ingest's await often
       // resolves on the microtask queue (cached/cheap embeddings + a synchronous
       // op-log write), so the macrotask queue — where the IPC socket is serviced
@@ -554,6 +621,9 @@ export class ConnectorManager {
         }
         count++;
         rc.lastProgressAt = Date.now(); // forward progress — keeps the watchdog from tripping
+        // (Per-file progress is broadcast at the TOP of the loop, before ingest,
+        // so it appears immediately for big/no-op files. Dotted kind required:
+        // the Rust forwarder allowlists dotted kinds + rewrites '.'→'-'.)
         // Incremental checkpoint flush — persist + release every N files so a
         // big batch doesn't ingest entirely in memory before a single save, and
         // so progress is durable if the pull stalls or the app quits mid-vault.
@@ -569,7 +639,14 @@ export class ConnectorManager {
         // benign no-op, not a failure. Don't spam one error per file; only
         // surface genuine failures (and count them so doPull doesn't advance
         // the cursor past files that didn't actually get in).
-        if (/produced 0 nodes|already saved or nothing to extract/i.test(msg)) continue;
+        if (/produced 0 nodes|already saved or nothing to extract/i.test(msg)) {
+          // DIAGNOSTIC: which files no-op, and why. A genuinely-new file should
+          // NOT land here — if it does, either it's empty/unparseable ("0 nodes")
+          // or the dedup is wrongly treating it as already-present ("already
+          // saved"). This is how we tell why the vault stalls below its file count.
+          console.error(`[connector:${cfg.id}] no-op skip ${ev.label}: ${msg}`);
+          continue;
+        }
         transientFailures++;
         // If the target engram vanished mid-batch (deleted/unloaded under us),
         // EVERY remaining file would fail the same way — stop now instead of
@@ -589,7 +666,16 @@ export class ConnectorManager {
       try { await this.host.save(cfg.graphId); }
       catch (e) { console.error(`[connector:${cfg.id}] batch save failed: ${(e as Error).message}`); }
     }
+    console.error(`[connector:${cfg.id}] ingestEvents done: ${count} ingested, ${transientFailures} transient-failure(s) of ${events.length}`);
     if (count > 0) this.host.triggerRelink(cfg.graphId);
+    // Batch finished — hide the on-graph progress bar (frontend hides only once
+    // ALL in-flight ingests are done, so back-to-back batches don't flicker).
+    try {
+      this.broadcast?.({
+        kind: 'ingest.done', name: 'ingest.done', // dotted → graphnosis://ingest-done
+        payload: { jobId: `connector:${cfg.id}`, graphId: cfg.graphId, fileName: '', nodesAdded: count },
+      });
+    } catch { /* cosmetic */ }
     return { count, transientFailures };
   }
 
@@ -726,6 +812,15 @@ export class ConnectorManager {
     const v = cfg.options?.['intervalMs'];
     if (typeof v === 'number' && v >= 60_000) return Math.floor(v);
     return this.settings.pullIntervalMs;
+  }
+
+  /** Per-connector self-heal cadence (minutes between periodic full re-scans).
+   *  Unset → the FULL_RESCAN_INTERVAL_MS default (30 min). 0 (or negative) →
+   *  disabled: no automatic full re-scan, only manual "Pull now"/"Re-sync". */
+  private fullRescanIntervalMs(cfg: { options?: Record<string, unknown> }): number {
+    const v = cfg.options?.['fullRescanMinutes'];
+    if (typeof v === 'number') return v <= 0 ? Infinity : Math.floor(v) * 60_000;
+    return FULL_RESCAN_INTERVAL_MS;
   }
 
   async setPullInterval(ms: number): Promise<number> {
