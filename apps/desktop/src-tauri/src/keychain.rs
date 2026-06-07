@@ -97,11 +97,16 @@ mod kc {
     }
 }
 
-// ── file-cache path (macOS dev builds without `keychain` feature) ─────────────
-// Also compiled on macOS+keychain for the migration helper above.
-// `store` is only called in the non-keychain path, so suppress the warning
-// when the module is included solely for migration reads.
-#[cfg(target_os = "macos")]
+// ── file-cache path (any non-Windows build without the `keychain` feature) ────
+// This is generic unix code (0600-permission file via PermissionsExt), so it
+// compiles on macOS AND Linux — both reach it through the fallback `kc` module
+// below. It's also compiled on macOS+keychain for the migration helper above.
+// Gated to non-Windows because Windows always uses the keyring path and never
+// references this module; gating it to `macos` only is what previously broke
+// the Linux build (E0432: the Linux fallback `kc` imports `super::file_cache`).
+// `store` is only called in the non-keychain path, so suppress the dead-code
+// warning when the module is included solely for migration reads.
+#[cfg(not(target_os = "windows"))]
 #[allow(dead_code)]
 mod file_cache {
     use super::account_for;
