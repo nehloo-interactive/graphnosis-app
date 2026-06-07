@@ -4225,17 +4225,6 @@
       .home-ghampus-tagline {
         text-align: right; font-style: italic; font-weight: 600;
         font-size: 12.5px; line-height: 1.35; color: var(--fg-dim);
-        max-width: 190px;
-      }
-      /* When the window is narrow (not full-screen), the absolutely-positioned
-         Ghampus tagline overlaps the Trust/Vitality stats ("Standing alone").
-         Hide the tagline first; if it gets really tight, drop the mascot too so
-         it never collides with the numbers. */
-      @media (max-width: 1180px) {
-        .home-ghampus-tagline { display: none; }
-      }
-      @media (max-width: 920px) {
-        .home-ghampus { display: none; }
       }
       .home-engram-card {
         flex: 0 1 240px; margin-bottom: 0;
@@ -11952,6 +11941,10 @@ ollama list</code></pre>
             <!-- App version pill, sits left of Vitality. Populated in main.ts
                  from __APP_VERSION__ (vite-injected at build from package.json). -->
             <span id="status-version" class="status-version" title="About Graphnosis" data-pres="surface:appVersion" style="font-size:12px; opacity:0.6; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; transition: opacity 100ms;" onmouseenter="this.style.opacity='1';this.style.textDecoration='underline'" onmouseleave="this.style.opacity='0.6';this.style.textDecoration='none'"></span>
+            <!-- Low-power mode indicator. Hidden when off; shows when the user
+                 enables Low-power in Preferences (brain background work paused).
+                 Click opens Preferences so they can toggle it back. -->
+            <span id="status-lowpower" class="status-lowpower" style="display:none; font-size:12px; cursor:pointer; align-items:center; gap:4px; color:var(--accent, var(--color-status-info));" title="Low-power mode is ON — autonomous brain work is paused to save CPU. Click to open Preferences.">⏻ Low-power</span>
             <span id="brain-vitality" style="display:none; font-size:12px; opacity:0.7; cursor:pointer;" title="Open Home — Trust &amp; Vitality" data-pres="surface:vitality">🧠 Vitality –</span>
             <!-- GAP — Graphnosis Autonomous Praxis. Hidden when idle; pulses
                  green while the Skills trainer is running. Click jumps to the
