@@ -462,6 +462,33 @@ export class GraphnosisImpl implements GraphnosisAdapter {
     return out;
   }
 
+  /** Release the SDK graph's in-memory structures (node/edge Maps + tfidf/
+   *  embedding indexes) so the host can EVICT an idle engram and actually return
+   *  the memory to the OS. After dispose() the handle is dead — the host drops it
+   *  and reloads from disk on next access. Best-effort: a handle built by an
+   *  older SDK without dispose() is left to plain GC. */
+  dispose(handle: GraphHandle): void {
+    const h = handle as Internal;
+    const inst = h.instance as Graphnosis & { dispose?: () => void };
+    try { inst.dispose?.(); } catch { /* best-effort — never throw from eviction */ }
+    h.built = false;
+  }
+
+  /** Count nodes created at/after `sinceMs` (epoch ms). Used by vitality's
+   *  recency term so it reads REAL recent activity from the in-memory graph
+   *  (node.createdAt) instead of the op-log — accurate, cheap, survives restart. */
+  countRecentNodes(handle: GraphHandle, sinceMs: number): number {
+    const h = handle as Internal;
+    if (!h.built) return 0;
+    let n = 0;
+    for (const node of h.instance.graph.nodes.values()) {
+      // createdAt is epoch ms; guard against an older seconds-based value.
+      const t = node.createdAt < 1e12 ? node.createdAt * 1000 : node.createdAt;
+      if (t >= sinceMs) n++;
+    }
+    return n;
+  }
+
   /**
    * Return the FULL untruncated content of a single node by id, or null when
    * the node doesn't exist. Used by skill retrieval (getSkill) to assemble

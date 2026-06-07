@@ -1376,6 +1376,10 @@ export class GraphnosisHost {
     const g = this.graphs.get(graphId);
     if (!g || g.dirty || g.embeddingsBuilding) return;
     try { await g.cache.save(); } catch { /* best-effort embedding-cache flush */ }
+    // Release the SDK graph's in-memory structures (SDK >=0.6.0 dispose()) BEFORE
+    // dropping the reference, so GC can actually reclaim — a plain graphs.delete()
+    // freed almost nothing because internal Maps/indexes stayed referenced.
+    try { this.opts.adapter.dispose(g.handle); } catch { /* best-effort */ }
     this.graphs.delete(graphId);
     this.lastAccessAt.delete(graphId);
     dbg(`[host] evicted engram[${redactId(graphId)}] from memory (LRU) — lazy-reloads on next access`);
@@ -3008,7 +3012,7 @@ export class GraphnosisHost {
     this.llmGetter = fn;
   }
 
-  async recall(query: string, opts?: { budget?: SubgraphBudget; onlyGraphIds?: string[]; exceptGraphIds?: string[]; perGraphAnchorMax?: number; skipEnrichment?: boolean }): Promise<federation.FederatedSubgraph> {
+  async recall(query: string, opts?: { budget?: SubgraphBudget; onlyGraphIds?: string[]; exceptGraphIds?: string[]; perGraphAnchorMax?: number; skipEnrichment?: boolean; noLoadOnDemand?: boolean }): Promise<federation.FederatedSubgraph> {
     // ── Recall enrichment (non-mutating) ─────────────────────────────────
     // When the user has llmEnabled + llmCapabilities.recallEnrichment on AND
     // Ollama is reachable, ask the LLM to rewrite the raw user query into a
@@ -3037,6 +3041,25 @@ export class GraphnosisHost {
           console.error(`[host] recall enrichment failed, using raw query: ${(e as Error).message}`);
         }
       }
+    }
+    // Lazy-boot: not all engrams are resident. Ensure the search set is loaded
+    // BEFORE we snapshot active nodes + federate — otherwise recall silently
+    // searches only whatever happened to be loaded (a correctness bug for an AI
+    // client recalling across the cortex). A scoped recall loads just its targets;
+    // a federated recall loads every engram (they evict via the LRU once idle).
+    // (Follow-up: a streaming federated recall — load→search→dispose per engram —
+    //  would also bound recall's peak memory; this loads all at once for now.)
+    // noLoadOnDemand: background callers (the brain's develop/insight/predict
+    // recalls) set this so they search only ENGRAMS ALREADY RESIDENT — they must
+    // NOT pull the whole cortex into memory on a timer (that pins every engram
+    // resident and defeats eviction → the "stuck in GBs"). Explicit user/MCP
+    // recalls leave it unset and load their search set for full-cortex correctness.
+    if (!opts?.noLoadOnDemand) {
+      const recallSet = (opts?.onlyGraphIds?.length
+        ? opts.onlyGraphIds
+        : Object.keys(this.settings.graphMetadata)
+      ).filter((id) => !opts?.exceptGraphIds?.includes(id));
+      for (const id of recallSet) await this.ensureLoaded(id);
     }
     // Snapshot active-node IDs per graph BEFORE the federated query runs.
     // We use these to filter SDK results so soft-deleted (forgotten) nodes
@@ -4963,6 +4986,20 @@ export class GraphnosisHost {
    * Cached briefly inside readAllEvents (none currently); recomputed on
    * each call. For massive op-logs (>100k events) we'd add windowing.
    */
+  /** Per-engram recent-activity signal for vitality — count of nodes created in
+   *  the last 7 days, read from the IN-MEMORY graph (node.createdAt), NOT the
+   *  op-log. Keeps the op-log cold (memory) AND survives restart (derived from
+   *  the persisted graph, so vitality no longer drops on every relaunch). */
+  recentOpsByGraph(): Record<string, number> {
+    const cutoff = Date.now() - 7 * 24 * 60 * 60 * 1000;
+    const out: Record<string, number> = {};
+    for (const graphId of this.listGraphs()) {
+      const g = this.graphs.get(graphId);
+      if (g) { try { out[graphId] = this.opts.adapter.countRecentNodes(g.handle, cutoff); } catch { out[graphId] = 0; } }
+    }
+    return out;
+  }
+
   async listOplogEvents(): Promise<Awaited<ReturnType<typeof oplog.readAllEvents>>> {
     // ── Cache hit ──────────────────────────────────────────────────────────
     // Serve the cache INDEFINITELY as long as no op has been written since it
@@ -6042,16 +6079,20 @@ const LKG_SUFFIX = '.lkg';
 const GLOBAL_SAVE_CONCURRENCY = 2;
 
 /** LRU eviction cap: keep at most this many engram graphs resident in memory.
- *  Cold engrams beyond this are unloaded — their .gai + persisted embeddings
- *  stay on disk and lazily reload (no re-embed) on next access. Bounds the
- *  resting memory of a large multi-engram cortex; on a small cortex (≤ cap)
- *  nothing is ever evicted. Tunable. */
-const GRAPH_RESIDENT_CAP = 8;
-/** Master switch for LRU eviction. OFF again: re-enabling it (with a forced GC)
- *  regressed the UI — engrams showed 0 nodes/0 edges. The eviction/reload (or
- *  the forced GC) is corrupting the in-memory view, so it's not safe as-is.
- *  Disk data is untouched; a relaunch with this OFF restores everything. */
-const LRU_EVICTION_ENABLED = false;
+ *  Set high so a normal cortex keeps EVERY engram resident (correct stats,
+ *  complete federated recall, no on-demand churn spike) — the memory floor is
+ *  Bun/JSC's allocator, not the engrams (~870 MB for a whole cortex), so there's
+ *  no point evicting them. Eviction stays as a safety valve only for a
+ *  pathologically large cortex (> this many engrams). Cold engrams beyond the cap
+ *  unload (disk intact) and lazily reload on access. Tunable. */
+const GRAPH_RESIDENT_CAP = 64;
+/** Master switch for LRU eviction. ON: the SDK now exposes dispose() (>=0.6.0),
+ *  so unloadGraph clears the graph's structures and GC reclaims them — the
+ *  earlier re-enable failed because there was no dispose() AND a forced GC was in
+ *  play (UI showed 0 nodes/0 edges). With lazy-boot only ~1 engram is resident at
+ *  idle (≤ cap → no eviction); eviction only fires after many engrams load (e.g.
+ *  a federated recall), trimming the coldest idle ones. Disk data is untouched. */
+const LRU_EVICTION_ENABLED = true;
 /** Don't evict an engram accessed within this window — protects the active
  *  engram and anything in an in-flight, multi-step workflow from being pulled
  *  out from under the user mid-use. */
