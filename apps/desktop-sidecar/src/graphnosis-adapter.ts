@@ -274,6 +274,14 @@ export interface GraphnosisAdapter {
     entities?: string[];
   }>;
 
+  /** Release a graph's in-memory structures so the host can evict it and free
+   *  the memory. After dispose() the handle must be dropped + reloaded on use. */
+  dispose(handle: GraphHandle): void;
+
+  /** Count nodes created at/after `sinceMs` (epoch ms) — vitality's recency
+   *  signal, read from the in-memory graph (not the op-log). */
+  countRecentNodes(handle: GraphHandle, sinceMs: number): number;
+
   /** Return the FULL (untruncated) content of a single node. Used for
    *  skill text reassembly where the 500-char inspectNodes preview was
    *  silently truncating goals + recipes off the tail end. */
