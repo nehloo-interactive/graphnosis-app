@@ -2,18 +2,21 @@
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 [![Graphnosis App](https://img.shields.io/badge/Graphnosis-App-4f46e5)](https://graphnosis.ai)
 [![SDK](https://img.shields.io/npm/v/%40nehloo%2Fgraphnosis?label=%40nehloo%2Fgraphnosis)](https://www.npmjs.com/package/@nehloo/graphnosis)
-[![Docs](https://img.shields.io/badge/Docs-graphnosis.ai%2Fdocs-4f46e5)](https://graphnosis.ai/docs)
+[![Docs](https://img.shields.io/badge/Docs-docs.graphnosis.com-4f46e5)](https://docs.graphnosis.com)
 
 # Graphnosis for Obsidian
 
 Private encrypted memory for your Obsidian vault, powered by [Graphnosis](https://graphnosis.ai).
 
-- **Recall** — search your Graphnosis memory from the command palette and insert results directly into any note
-- **Remember** — save the current note (or selected text) to your encrypted cortex with a single command
-- **Vault sync** — automatically push modified `.md` files to memory on save; catches up any files changed while Obsidian was closed
-- **Status bar** — a live cortex health indicator so you always know the bridge is up
-
-Everything stays on your device. Graphnosis encrypts your memory at rest; nothing leaves your machine.
+- **Recall** — semantic search across your entire cortex from the command palette; click any result to insert it at the cursor
+- **Remember** — save the current note to your encrypted cortex with a single command
+- **Vault sync** — automatically push modified `.md` files to memory on save
+- **Catch-up sync** — on every launch, the plugin picks up notes edited outside Obsidian (Terminal, Cursor, cloud sync) and pushes them without any action from you
+- **Engram routing** — direct vault notes into a specific memory graph (engram) to keep topics cleanly separated
+- **Token-budget control** — tune recall depth per query from 100 to 8,000 tokens in Settings
+- **Insert at cursor** — recall results drop straight into your note; falls back to clipboard if no editor is open
+- **Status bar** — live cortex vitality score so you always know the bridge is up
+- **Local-only** — talks to the Graphnosis sidecar on `localhost`; AES-256-GCM encryption at rest; nothing leaves your machine
 
 ---
 
