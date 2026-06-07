@@ -11,6 +11,32 @@ Conventions: **Added** = new features, **Changed** = behavior or UX shifts, **Fi
 
 ---
 
+## v1.13.4 — Low-power mode, cooler ingests, smoother graph
+
+<p style="margin-top:0.5rem;font-size:1.25em;opacity:0.85;">2026-06-07</p>
+
+A performance and reliability release focused on heat, battery, and import correctness on a busy machine — so Graphnosis stays cool and bounded even with many connectors, a large cortex, and a local LLM running alongside.
+
+### Added
+
+- **Low-power mode.** A toggle in **Settings** that pauses the autonomous "brain" — duplicate detection, connection-weaving, neural-network and local-LLM passes — to cut CPU and save battery. Your graph still ingests, recalls, and saves normally; only the background self-improvement stops. A **⏻ Low-power** chip in the status bar shows when it's on (click it to jump to Preferences). The 3D animation is separate — use the **Alive Engram** toggle on the graph to pause that.
+- **Self-healing connector sync.** A connector can no longer permanently miss a file. **Pull now** / **Re-sync** do a full re-scan; auto-sync connectors also promote to a full re-scan periodically (default every 30 min, configurable per connector via **Full re-scan** in the connector's Edit form — set 0 to disable). So a file that was skipped or failed in an earlier run is always eventually re-checked, with no manual action.
+- **On-graph ingest progress.** During a connector sync the 3D view shows a `[X%] ingesting <file> to <engram>…` bar (redacted in Presentation Mode).
+
+### Changed
+
+- **Re-scans skip unchanged files.** A full re-scan used to re-embed every file just to discover it hadn't changed — which on an already-ingested vault could peg the CPU and spin up the fans. The connector now records each file's content hash and **skips the embedding entirely when a file is unchanged**, so repeat syncs and the periodic self-heal sweep are nearly free and stay cool.
+- **Dramatically lower idle memory on a large cortex.** A multi-engram cortex that previously sat at several GB (and spiked higher) now idles close to ~1 GB — small enough to run beside a ~28 GB local model on a 32 GB machine. Achieved by not reading the cold operation log at boot, scavenging freed memory back to the OS, and standing the brain's heavy passes down while any engram is ingesting.
+- **The 3D graph grows smoothly during ingest.** New nodes ease into the existing layout instead of re-exploding the whole graph on every update, and the animation automatically pauses when the window is in the background.
+
+### Fixed
+
+- **The "⟳ Syncing…" button reverts to "⟳ Sync now"** the moment an ingest finishes, instead of appearing stuck.
+- **Dragging the 3D graph rotates it again.** A stuck Cmd/Ctrl state could leave a plain drag pinning nodes; the graph now re-asserts drag-to-rotate on every render (hold Cmd/Ctrl to move and pin a node).
+- **Vitality no longer drops after a restart** on a large cortex — recent-activity is now counted from the memories themselves rather than a log read that was removed.
+
+---
+
 ## v1.13.3 — Large-cortex performance & reliability
 
 <p style="margin-top:0.5rem;font-size:1.25em;opacity:0.85;">2026-06-05</p>

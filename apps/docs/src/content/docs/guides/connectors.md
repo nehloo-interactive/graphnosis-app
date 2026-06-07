@@ -34,6 +34,20 @@ Every connector follows the same pattern:
 
 **Folder pickers.** The Obsidian and GBrain connector modals include a **Browse…** button next to their folder path fields. Click it to open a native folder picker instead of typing a path by hand.
 
+## Syncing & re-scans
+
+**Three ways a connector pulls:**
+
+- **Pull now** — a full re-scan of the source on demand. Use it after adding files when you want them ingested immediately.
+- **Re-sync** — resets the connector's cursor and re-checks everything from scratch.
+- **Automatic** — auto-sync connectors pull on the schedule (incremental and fast), and **periodically promote to a full re-scan** so nothing is ever permanently missed.
+
+**Self-healing.** An incremental pull only looks at what changed since the last sync — so a file that was skipped or failed mid-run would never be revisited by incremental pulls alone. To prevent that, auto-sync connectors run a **full re-scan on a cadence**: default every 30 minutes, set per connector in its **Edit** form under **Full re-scan (self-heal) every … minutes** (leave blank for the 30-minute default; set **0** to disable and rely on manual *Pull now* / *Re-sync*). A connector therefore always *eventually* ingests every source, regardless of what failed before.
+
+**Re-scans don't redo work.** A full re-scan does **not** re-process unchanged files. Graphnosis records each file's content hash and **skips the embedding work entirely when the content hasn't changed** — so repeat syncs of an already-ingested folder, and the periodic self-heal sweep, do almost no work and won't heat your machine. Only new or modified files are embedded.
+
+**On-graph progress.** While a connector syncs, the 3D view shows a `[X%] ingesting <file> to <engram>…` bar so you can watch what's landing (redacted in Presentation Mode). When the pull finishes, the button returns from **⟳ Syncing…** to **⟳ Sync now**.
+
 ## RSS / Atom feeds — the simplest connector
 
 **What it pulls:** new entries from any RSS or Atom feed URL(s) you provide. Deduplicates by entry `guid` (or `link` as fallback), so re-pulls of already-seen entries are no-ops.
