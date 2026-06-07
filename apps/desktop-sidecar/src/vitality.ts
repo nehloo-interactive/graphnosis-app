@@ -58,19 +58,12 @@ export class VitalityScorer {
     // Cortex-wide trust accumulators (across every engram).
     let tActive = 0, tConfSum = 0, tHighConf = 0, tConnected = 0;
 
-    // Read recent op-log events once, group by graphId.
-    const cutoff = Date.now() - 7 * 24 * 60 * 60 * 1000;
-    const recentOpsByGraph: Record<string, number> = {};
-    try {
-      const events = await this.host.listOplogEvents();
-      for (const ev of events) {
-        if (ev.ts >= cutoff) {
-          recentOpsByGraph[ev.graphId] = (recentOpsByGraph[ev.graphId] ?? 0) + 1;
-        }
-      }
-    } catch {
-      // op-log unreadable — treat as zero activity
-    }
+    // Per-engram op count from the maintained counter — NOT a full op-log scan.
+    // Reading the whole op-log here (2M events) was the ~4.5 GB memory floor that
+    // pinned the Home dashboard into GBs. The activity term saturates at 40 ops,
+    // so this since-boot count is an accurate "recently active?" signal. (Counter
+    // resets on restart; active engrams re-saturate within 40 ops.)
+    const recentOpsByGraph = this.host.recentOpsByGraph();
 
     // Unresolved duplicate pairs are a cortex-wide count, so the coherence
     // term is the same for every engram.

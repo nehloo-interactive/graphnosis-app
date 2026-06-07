@@ -1813,6 +1813,7 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
           clipboardCapture: z.object({
             enabled: z.boolean(),
           }).optional(),
+          lowPowerMode: z.boolean().optional(),
         }).optional(),
         connectors: z.object({
           // Poll interval (ms) for all connectors. 60s floor. Owned by the
@@ -1906,6 +1907,11 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
           ...(parsed.brain.clipboardCapture !== undefined
             ? { clipboardCapture: parsed.brain.clipboardCapture }
             : {}),
+          // Low-power toggle — must be threaded here too, or this handler drops
+          // the incoming value (same trap as clipboardCapture above).
+          ...(parsed.brain.lowPowerMode !== undefined
+            ? { lowPowerMode: parsed.brain.lowPowerMode }
+            : {}),
         };
       }
       // Connector poll interval is owned by the ConnectorManager (it persists
@@ -1914,7 +1920,7 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
       if (parsed.connectors?.pullIntervalMs !== undefined) {
         await deps.connectorManager.setPullInterval(parsed.connectors.pullIntervalMs);
       }
-      return deps.host.setSettings(patch);
+      return deps.host.setSettings(patch, { userInitiated: true });
     }
     case 'cortex.purgeForgotten': {
       const { graphId } = z.object({ graphId: z.string() }).parse(params);

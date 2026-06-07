@@ -39,3 +39,33 @@ export const BACKGROUND_POLL_METHODS = new Set<string>([
 /** How long after a client request to treat the sidecar as "busy serving
  *  clients" — heavy background passes defer within this window. */
 export const CLIENT_QUIET_MS = 8_000;
+
+// ── Ingest gate ─────────────────────────────────────────────────────────────
+// ANY active ingest (connector pull, drag-drop file, MCP ingest_batch) hammers
+// the single thread + the embed workers. If ANY background pass — autonomous
+// brain (duplicate scan, consolidation, cross-engram, synapse, insight, temporal
+// decay, goals, reinforcement), the GNN (neural-network edge prediction), or the
+// GLL overlay — runs concurrently, it competes for the one thread and starves
+// the ingest's embed IPC → the ingest crawls and the UI/MCP times out ("lost
+// connection"). So ALL background work stands down while ANY ingest is in flight
+// and the periodic timers re-run it once the cortex goes cool. This is an
+// explicit count (not the timing-fragile clientActiveWithin heartbeat), kept per
+// engram so we know WHICH engrams are hot, plus a total for the global gate.
+const ingestCountByGraph = new Map<string, number>();
+let ingestTotal = 0;
+export function beginIngest(graphId?: string): void {
+  ingestTotal++;
+  if (graphId) ingestCountByGraph.set(graphId, (ingestCountByGraph.get(graphId) ?? 0) + 1);
+}
+export function endIngest(graphId?: string): void {
+  if (ingestTotal > 0) ingestTotal--;
+  if (graphId) {
+    const n = (ingestCountByGraph.get(graphId) ?? 0) - 1;
+    if (n > 0) ingestCountByGraph.set(graphId, n); else ingestCountByGraph.delete(graphId);
+  }
+}
+/** True while ONE OR MORE engrams are actively ingesting — every background pass
+ *  defers on this (single thread: any concurrent work slows the ingest). */
+export function isIngestActive(): boolean { return ingestTotal > 0; }
+/** True while THIS engram is actively ingesting — for per-engram pass skips. */
+export function isGraphIngesting(graphId: string): boolean { return (ingestCountByGraph.get(graphId) ?? 0) > 0; }

@@ -21,11 +21,12 @@
 
 let _chain: Promise<void> = Promise.resolve();
 
-/** A single embed op should finish in well under this. If one is still running
- *  past it, the embed worker has almost certainly wedged/crashed — and because
- *  every embed is serialized through `_chain`, a wedged op blocks ALL embedding
- *  (ingest AND recall) behind it. Surface it loudly so a silent stall becomes a
- *  labeled one. */
+/** A single QUEUED op (e.g. one ingestClip) can legitimately run for MINUTES — a
+ *  full book or a huge CHANGELOG is thousands of chunk-embeds in one op. So we do
+ *  NOT abort at this level (that would falsely kill a large-but-healthy ingest).
+ *  We only WARN, for diagnostics. Real wedge detection lives PER-EMBED in
+ *  local-embed.ts: one CHUNK embed taking >30s is the true "wedged worker" signal
+ *  (a healthy chunk is sub-second), and that's where we kill+respawn the worker. */
 const EMBED_STALL_WARN_MS = 30_000;
 
 /**
@@ -41,14 +42,14 @@ export function withEmbedding<T>(fn: () => Promise<T>, label?: string): Promise<
   // whether fn resolves or rejects — errors are NOT swallowed, they're
   // returned to the caller via the result promise.
   const result = _chain.then(() => {
-    // Stall watchdog: if this op outruns EMBED_STALL_WARN_MS it's almost
-    // certainly a wedged/crashed embed worker (the worker's own libc++abi
-    // abort never reaches this terminal). Logging it turns a silent freeze
-    // into a diagnosable one and names what's blocking the queue.
+    // Diagnostic warn only — a single queued op (one ingestClip) may legitimately
+    // run for minutes (a whole book). The actual wedge recovery is per-embed in
+    // local-embed.ts, which kills+respawns the worker for a single hung CHUNK
+    // without aborting a large-but-healthy ingest.
     const warn = setTimeout(() => {
       console.error(
         `[embed] ${label ?? 'operation'} still running after ${Math.round(EMBED_STALL_WARN_MS / 1000)}s — ` +
-        `likely a wedged embed worker. This blocks ALL embedding (ingest + recall) behind it.`,
+        `a large file (book/changelog) can legitimately take minutes; per-chunk wedge recovery is in local-embed.`,
       );
     }, EMBED_STALL_WARN_MS);
     return Promise.resolve(fn()).finally(() => clearTimeout(warn));
