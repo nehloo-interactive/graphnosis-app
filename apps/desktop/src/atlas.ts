@@ -689,6 +689,10 @@ export class Atlas {
   /** Keyboard listeners that swap the left mouse button's action between rotate (default) and pan (Ctrl/Cmd held). Stored so dispose() can remove them. */
   private onModKeyDown: ((e: KeyboardEvent) => void) | null = null;
   private onModKeyUp: ((e: KeyboardEvent) => void) | null = null;
+  /** True while Cmd/Ctrl is held — the ONLY state in which node-drag is on.
+   *  refreshGraph() re-asserts enableNodeDrag(this.modKeyHeld) so a stuck key
+   *  state can never leave plain-drag pinning nodes. */
+  private modKeyHeld = false;
   private resizeObs: ResizeObserver | null = null;
 
   constructor(private readonly opts: AtlasOptions) {
@@ -1126,6 +1130,7 @@ export class Atlas {
         // Released: left-drag reverts to rotate, node-drag off.
         this.onModKeyDown = (e: KeyboardEvent) => {
           if (e.key === 'Control' || e.key === 'Meta') {
+            this.modKeyHeld = true;
             g.enableNodeDrag(true);
             // Switch left button from rotate (0) to pan (2) so dragging
             // on empty space translates the camera instead of spinning.
@@ -1135,6 +1140,7 @@ export class Atlas {
         };
         this.onModKeyUp = (e: KeyboardEvent) => {
           if (e.key === 'Control' || e.key === 'Meta') {
+            this.modKeyHeld = false;
             g.enableNodeDrag(false);
             if (mb) mb.LEFT = 0; // restore left → rotate
             this.opts.container.style.cursor = '';
@@ -1146,6 +1152,7 @@ export class Atlas {
         // is holding Cmd/Ctrl, reset to the default (no node-drag) so they
         // don't come back to find dragging unexpectedly pinning nodes.
         window.addEventListener('blur', () => {
+          this.modKeyHeld = false;
           g.enableNodeDrag(false);
           if (mb) mb.LEFT = 0;
           this.opts.container.style.cursor = '';
@@ -2001,7 +2008,29 @@ export class Atlas {
   }
 
   setNodes(nodes: AtlasNode[], opts?: { pinExisting?: boolean }): void {
-    this.allNodes = nodes.map((n) => ({ ...n }));
+    // #43 — incremental node-adds. The incoming records carry no live x/y/z, so
+    // cloning them all (`{...n}`) dropped every existing node's settled position
+    // AND its THREE mesh identity — forcing a full O(N) re-layout + mesh rebuild
+    // on every push (the re-explode/flicker during an ingest). Instead, REUSE the
+    // live graph node object for any id already present: keep its position +
+    // velocity + mesh, refresh only its data fields. Genuinely-new nodes get a
+    // fresh object (no position → the reheat settles just those in). With
+    // pinExisting below, the reused nodes are then pinned and stay put.
+    type PositionedNode = AtlasNode & {
+      x?: number; y?: number; z?: number; vx?: number; vy?: number; vz?: number;
+      fx?: number | null; fy?: number | null; fz?: number | null;
+    };
+    const liveById = new Map<string, PositionedNode>(
+      (this.graph.graphData().nodes as PositionedNode[]).map((n) => [n.id, n]),
+    );
+    this.allNodes = nodes.map((n) => {
+      const live = liveById.get(n.id);
+      if (!live) return { ...n };
+      const { x, y, z, vx, vy, vz, fx, fy, fz } = live; // preserve sim state
+      Object.assign(live, n);                            // refresh data fields
+      Object.assign(live, { x, y, z, vx, vy, vz, fx, fy, fz });
+      return live;
+    });
     // Clear any pending pin-release from a prior incremental add — this push
     // re-decides what's pinned.
     if (this.incrementalUnpinTimer !== null) {
@@ -2849,6 +2878,11 @@ export class Atlas {
   private refreshGraph(): void {
     this.computeVisibility();
     this.graph.graphData({ nodes: this.allNodes, links: this.allLinks });
+    // Re-assert node-drag after every re-render: it must be OFF (drag = rotate)
+    // unless Cmd/Ctrl is actively held. This self-corrects a stuck mod-key state
+    // (e.g. keyup missed after a Cmd+R / app-switch left node-drag on) so a plain
+    // drag never starts pinning nodes after an ingest re-render.
+    if (!this.opts.compact) this.graph.enableNodeDrag(this.modKeyHeld);
   }
 
   /** Frame the camera so the full cloud fits in view.
