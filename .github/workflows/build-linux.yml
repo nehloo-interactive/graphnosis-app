@@ -112,27 +112,29 @@ jobs:
           NO_STRIP: "true"
         run: pnpm --filter @graphnosis-app/desktop tauri:build -- --verbose
 
-      # Tauri swallows linuxdeploy's stderr behind "failed to run linuxdeploy".
-      # Find the linuxdeploy AppImage Tauri downloaded and run it ourselves to
-      # capture the REAL error + check FUSE availability. Diagnostic only.
-      - name: Diagnose linuxdeploy
+      # linuxdeploy itself runs fine (FUSE OK, exec OK) — the failure is during
+      # the real bundling (gtk plugin / appimage output), whose stderr Tauri
+      # discards. The AppDir survives the failed build, so replicate Tauri's
+      # exact invocation on it to capture the real error. Diagnostic only.
+      - name: Diagnose linuxdeploy (real bundling)
         if: always()
         run: |
           set +e
-          echo "=== FUSE availability ==="
-          ls -l /dev/fuse 2>&1; grep -i fuse /proc/filesystems 2>&1
-          which fusermount fusermount3 2>&1
-          dpkg -l | grep -i fuse 2>&1
-          echo "=== locate linuxdeploy + tools on disk ==="
-          find / -iname "linuxdeploy*" 2>/dev/null | head -20
-          LD=$(find / -iname "linuxdeploy-x86_64.AppImage" 2>/dev/null | head -1)
-          echo "LD=$LD"
-          if [ -z "$LD" ]; then echo "linuxdeploy not found"; exit 0; fi
-          file "$LD"; chmod +x "$LD"
-          echo "=== direct exec (FUSE path) ==="
-          "$LD" --version 2>&1 | head -30; echo "rc=$?"
-          echo "=== extract-and-run exec ==="
-          APPIMAGE_EXTRACT_AND_RUN=1 "$LD" --appimage-extract-and-run --version 2>&1 | head -30; echo "rc=$?"
+          CACHE="$HOME/.cache/tauri"
+          APPDIR=$(find apps/desktop/src-tauri/target/release/bundle/appimage -maxdepth 1 -name "*.AppDir" | head -1)
+          echo "APPDIR=$APPDIR"
+          ls -la "$CACHE" 2>&1
+          [ -z "$APPDIR" ] && { echo "no AppDir on disk"; exit 0; }
+          # Expose the plugins under the names linuxdeploy expects on PATH.
+          cp "$CACHE/linuxdeploy-plugin-gtk.sh" "$CACHE/linuxdeploy-plugin-gtk" 2>/dev/null
+          cp "$CACHE/linuxdeploy-plugin-gstreamer.sh" "$CACHE/linuxdeploy-plugin-gstreamer" 2>/dev/null
+          cp "$CACHE/linuxdeploy-plugin-appimage.AppImage" "$CACHE/linuxdeploy-plugin-appimage" 2>/dev/null
+          chmod +x "$CACHE"/linuxdeploy* 2>/dev/null
+          export PATH="$CACHE:$PATH"
+          export APPIMAGE_EXTRACT_AND_RUN=1 NO_STRIP=true OUTPUT="Graphnosis_diag_amd64.AppImage"
+          echo "=== replicate: linuxdeploy --appdir <AppDir> --plugin gtk --output appimage ==="
+          "$CACHE/linuxdeploy-x86_64.AppImage" --appdir "$APPDIR" --plugin gtk --output appimage 2>&1 | tail -100
+          echo "rc=${PIPESTATUS[0]}"
 
       # .deb is REQUIRED (its absence means the build genuinely failed). AppImage
       # is OPTIONAL — uploaded if linuxdeploy succeeded, skipped with a warning
