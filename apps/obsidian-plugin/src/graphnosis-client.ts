@@ -32,8 +32,9 @@ export class GraphnosisClient {
         content?: Array<{ type: string; text?: string }>;
       } | undefined;
       const text = result?.content?.find(c => c.type === 'text')?.text ?? '';
-      const match = text.match(/\b(\d{1,3})\b/);
-      return match ? parseInt(match[1], 10) : null;
+      // Response is JSON: { overall: 0-100, byGraph: {...}, computedAt: N }
+      const parsed = JSON.parse(text.split('\n---')[0].trim()) as { overall?: number };
+      return typeof parsed.overall === 'number' ? parsed.overall : null;
     } catch {
       return null;
     }
@@ -51,7 +52,9 @@ export class GraphnosisClient {
         content?: Array<{ type: string; text?: string }>;
       } | undefined;
       const text = result?.content?.find(c => c.type === 'text')?.text ?? '';
-      return text.split('\n').map(l => l.trim()).filter(Boolean);
+      // Response is a JSON array: [{ graphId, displayName, tier, archived, ... }]
+      const rows = JSON.parse(text) as Array<{ graphId: string; archived?: boolean }>;
+      return rows.filter(r => !r.archived).map(r => r.graphId);
     } catch {
       return [];
     }
