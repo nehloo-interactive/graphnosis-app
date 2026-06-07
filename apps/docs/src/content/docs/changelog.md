@@ -22,6 +22,7 @@ A performance and reliability release focused on heat, battery, and import corre
 - **Low-power mode.** A toggle in **Settings** that pauses the autonomous "brain" — duplicate detection, connection-weaving, neural-network and local-LLM passes — to cut CPU and save battery. Your graph still ingests, recalls, and saves normally; only the background self-improvement stops. A **⏻ Low-power** chip in the status bar shows when it's on (click it to jump to Preferences). The 3D animation is separate — use the **Alive Engram** toggle on the graph to pause that.
 - **Self-healing connector sync.** A connector can no longer permanently miss a file. **Pull now** / **Re-sync** do a full re-scan; auto-sync connectors also promote to a full re-scan periodically (default every 30 min, configurable per connector via **Full re-scan** in the connector's Edit form — set 0 to disable). So a file that was skipped or failed in an earlier run is always eventually re-checked, with no manual action.
 - **On-graph ingest progress.** During a connector sync the 3D view shows a `[X%] ingesting <file> to <engram>…` bar (redacted in Presentation Mode).
+- **Linux builds.** Graphnosis is now available for Linux as an `.AppImage` (runs on any distro) and a `.deb` (Debian / Ubuntu), alongside the existing macOS and Windows installers.
 
 ### Changed
 

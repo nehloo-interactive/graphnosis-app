@@ -1,15 +1,14 @@
 /privacy  /legal/privacy-policy  301
 /terms    /legal/terms-of-use    301
-# /download/mac and /download/win are resolved at REQUEST TIME by Cloudflare
-# Pages Functions reading env vars (CURRENT_VERSION + DMG_FILENAME + WINDOWS_FILENAME)
-# that release.yml's update-cloudflare job sets on every tag — that's the live
-# path, so don't rely on hardcoding their version here. The static lines below
-# are last-resort fallbacks; keep them roughly current. Note the published
-# Windows installer is the signed MSI (build-windows uploads *.msi), not NSIS.
-/download/mac  https://github.com/nehloo-interactive/graphnosis-app/releases/download/v1.13.3/Graphnosis_1.13.3_aarch64.dmg  302
-/download/win  https://github.com/nehloo-interactive/graphnosis-app/releases/download/v1.13.3/Graphnosis_1.13.3_x64_en-US.msi  302
-# Linux desktop builds (.AppImage + .deb) are produced by the build-linux job
-# in release.yml, which copies them to these canonical names before attaching
-# them to the GitHub release (so the .deb filename casing is deterministic).
-/download/linux      https://github.com/nehloo-interactive/graphnosis-app/releases/download/v1.13.3/Graphnosis_1.13.3_amd64.AppImage  302
-/download/linux-deb  https://github.com/nehloo-interactive/graphnosis-app/releases/download/v1.13.3/Graphnosis_1.13.3_amd64.deb        302
+# /download/<platform> is OWNED by the Pages Function at
+# functions/download/[platform].ts — edit THAT to change download targets.
+# Cloudflare runs Functions before _redirects and bypasses _redirects for any
+# route a Function matches, so the lines below are LAST-RESORT FALLBACKS only
+# (used if the Function is ever removed). All four auto-track the latest tag in
+# the Function via CURRENT_VERSION (mac/win also via DMG_FILENAME /
+# WINDOWS_FILENAME); keep these fallbacks roughly current. Linux artifacts are
+# attached per-release by the build-linux workflow (workflow_dispatch).
+/download/win        https://github.com/nehloo-interactive/graphnosis-app/releases/download/v1.13.4/Graphnosis_1.13.4_x64_en-US.msi   302
+/download/linux      https://github.com/nehloo-interactive/graphnosis-app/releases/download/v1.13.4/Graphnosis_1.13.4_amd64.AppImage  302
+/download/linux-deb  https://github.com/nehloo-interactive/graphnosis-app/releases/download/v1.13.4/Graphnosis_1.13.4_amd64.deb        302
+/download/mac  https://github.com/nehloo-interactive/graphnosis-app/releases/download/v1.13.4/Graphnosis_1.13.4_aarch64.dmg  302
