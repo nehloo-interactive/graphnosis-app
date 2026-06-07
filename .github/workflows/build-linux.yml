@@ -98,35 +98,49 @@ jobs:
       - name: Build sidecar
         run: pnpm --filter @graphnosis-app/desktop-sidecar build
 
+      # Tauri builds the .deb first (reliable), then the AppImage (linuxdeploy is
+      # flaky on FUSE-less CI). continue-on-error lets the job proceed with the
+      # .deb already on disk if the AppImage step dies; the Collect step below is
+      # the real gate (it fails if no .deb exists). --verbose surfaces
+      # linuxdeploy's stderr, which Tauri otherwise swallows behind "failed to
+      # run linuxdeploy".
       - name: Build (Linux deb + AppImage)
+        continue-on-error: true
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          # GitHub runners lack FUSE; tell linuxdeploy (and the bundled AppImage
-          # tools) to extract-and-run instead of FUSE-mounting, else AppImage
-          # bundling dies with "failed to run linuxdeploy".
           APPIMAGE_EXTRACT_AND_RUN: 1
-        run: pnpm --filter @graphnosis-app/desktop tauri:build
+          NO_STRIP: "true"
+        run: pnpm --filter @graphnosis-app/desktop tauri:build -- --verbose
 
+      # .deb is REQUIRED (its absence means the build genuinely failed). AppImage
+      # is OPTIONAL — uploaded if linuxdeploy succeeded, skipped with a warning
+      # otherwise, so a flaky AppImage never blocks shipping the .deb.
       - name: Collect bundles under canonical names
         id: find
         run: |
           SEMVER=$(node -p "require('./apps/desktop/src-tauri/tauri.conf.json').version")
           BUNDLE="apps/desktop/src-tauri/target/release/bundle"
-          APPIMAGE=$(find "$BUNDLE" -name "*.AppImage" | head -1)
           DEB=$(find "$BUNDLE" -name "*.deb" | head -1)
-          if [ -z "$APPIMAGE" ] || [ -z "$DEB" ]; then
-            echo "ERROR: AppImage or .deb not found under $BUNDLE"
+          APPIMAGE=$(find "$BUNDLE" -name "*.AppImage" | head -1)
+          if [ -z "$DEB" ]; then
+            echo "ERROR: .deb not found under $BUNDLE — the build genuinely failed."
             find "$BUNDLE" -maxdepth 2 -type f || true
             exit 1
           fi
           # Canonical, predictable names so the /download/linux* routes resolve
           # deterministically (Tauri lowercases the .deb package name otherwise).
           mkdir -p dist-linux
-          cp "$APPIMAGE" "dist-linux/Graphnosis_${SEMVER}_amd64.AppImage"
-          cp "$DEB"      "dist-linux/Graphnosis_${SEMVER}_amd64.deb"
+          cp "$DEB" "dist-linux/Graphnosis_${SEMVER}_amd64.deb"
           echo "semver=$SEMVER" >> $GITHUB_OUTPUT
-          echo "appimage=dist-linux/Graphnosis_${SEMVER}_amd64.AppImage" >> $GITHUB_OUTPUT
           echo "deb=dist-linux/Graphnosis_${SEMVER}_amd64.deb" >> $GITHUB_OUTPUT
+          if [ -n "$APPIMAGE" ]; then
+            cp "$APPIMAGE" "dist-linux/Graphnosis_${SEMVER}_amd64.AppImage"
+            echo "appimage=dist-linux/Graphnosis_${SEMVER}_amd64.AppImage" >> $GITHUB_OUTPUT
+            echo "AppImage built ✓"
+          else
+            echo "appimage=" >> $GITHUB_OUTPUT
+            echo "::warning::AppImage NOT built (linuxdeploy failed) — uploading .deb only."
+          fi
 
       - name: Upload bundle artifacts
         uses: actions/upload-artifact@v4
@@ -146,7 +160,8 @@ jobs:
             echo "WARNING: release_tag ($TAG) != built version (v$SEMVER)."
             echo "Assets are named Graphnosis_${SEMVER}_amd64.* — the /download/linux route builds its URL from CURRENT_VERSION, so these must match the release the env var points at."
           fi
-          gh release upload "$TAG" \
-            "${{ steps.find.outputs.appimage }}#Graphnosis $TAG (Linux AppImage)" \
-            "${{ steps.find.outputs.deb }}#Graphnosis $TAG (Linux .deb)" \
-            --clobber
+          FILES=( "${{ steps.find.outputs.deb }}#Graphnosis $TAG (Linux .deb)" )
+          if [ -n "${{ steps.find.outputs.appimage }}" ]; then
+            FILES+=( "${{ steps.find.outputs.appimage }}#Graphnosis $TAG (Linux AppImage)" )
+          fi
+          gh release upload "$TAG" "${FILES[@]}" --clobber
