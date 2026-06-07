@@ -9,15 +9,17 @@
  * visitor always clicks.
  *
  * The download targets are the /download/{mac,win,linux,linux-deb} redirect
- * routes in public/_redirects, which 302 to the GitHub Releases artifacts
- * for the current version. The /download/mac route is additionally served
- * by functions/download/mac.ts (env-var version routing) without changing
- * the visible URL here.
+ * routes, all resolved by the Pages Function at functions/download/[platform].ts
+ * (NOT public/_redirects — Cloudflare runs Functions first and bypasses
+ * _redirects for matched routes). mac + win 302 to the GitHub Releases artifact
+ * for the CURRENT release automatically, via the CURRENT_VERSION / DMG_FILENAME /
+ * WINDOWS_FILENAME env vars the release workflow sets on every tag.
  *
- * NOTE: the Linux routes resolve only once Linux artifacts (.AppImage /
- * .deb) are actually attached to the GitHub release — that requires adding
- * the deb+appimage Tauri bundle targets and a Linux build job to the
- * release workflow. Until then the cards/guide render but the links 404.
+ * NOTE: Linux .AppImage + .deb are attached to a release by the build-linux
+ * workflow (workflow_dispatch, upload_to_release=true) — they're not part of the
+ * default release.yml run. A release with no Linux bundle yet 404s on
+ * /download/linux until that backfill runs. The install-snippet semver below
+ * tracks the app version from tauri.conf.json.
  */
 import Layout from '../layouts/Layout.astro';
 import Nav from '../components/Nav.astro';
