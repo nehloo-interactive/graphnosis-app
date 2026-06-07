@@ -101,6 +101,16 @@ Graphnosis runs these passes on a schedule so they never compete with what you'r
 
 The first sweep waits about 60 seconds after you unlock. A duplicate scan also runs a short while after you ingest a file. The **Scan now** button forces a full pass any time, and the current schedule is always shown at the bottom of the tab.
 
+These passes also **stand down automatically while you're importing** — whenever a connector or drag-drop ingest is in flight, the brain pauses so the import gets the machine to itself, then resumes once the cortex is quiet.
+
+## Low-power mode
+
+Every pass above runs in the background, on your machine, and costs CPU. On a busy laptop — many engrams, a large cortex, a local model running alongside — that can mean heat and battery drain. **Low-power mode** (a toggle in **Settings**) pauses *all* of it: duplicate detection, connection weaving, reinforcement, consolidation, cross-engram linking, goals, and the neural-network / local-LLM passes.
+
+Your graph still **ingests, recalls, and saves** normally — only the self-improving background work stops. A **⏻ Low-power** chip appears in the status bar while it's on (click it to open Preferences). Turn it on when the app runs hot or you're on battery; turn it off to let the brain resume catching up — the periodic timers pick the passes back up automatically.
+
+The 3D **animation** is a separate cost, controlled by the **Alive Engram** toggle on the graph (it also pauses automatically whenever the window is in the background).
+
 ## Standalone vs. a local LLM
 
 Everything **deterministic** above works with **no AI model installed** — this is the default, **Standalone** mode: Memory health, the duplicate scan and auto-merge, connection weaving, connection reinforcement, cross-engram linking, consolidation, and goal deadline tracking.
