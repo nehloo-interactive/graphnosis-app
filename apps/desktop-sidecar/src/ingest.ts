@@ -15,6 +15,7 @@ import { unzipSync, strFromU8 } from 'fflate';
 // a URL to ingest.
 import type { GraphnosisHost } from './host.js';
 import type { AppendDocumentInput } from './graphnosis-adapter.js';
+import { beginIngest, endIngest } from './client-activity.js';
 
 const pdfWorkerScriptPath = fileURLToPath(new URL('./pdf-parse-worker.js', import.meta.url));
 
@@ -393,6 +394,25 @@ const SHORT_CLIP_THRESHOLD = 500;
 const HAS_MARKDOWN_HEADER = /^\s*#{1,6}\s/m;
 
 export async function ingestClip(
+  host: GraphnosisHost,
+  graphId: string,
+  text: string,
+  label: string,
+  opts?: { addedBy?: string; sourceKind?: 'clip' | 'ai-conversation' | 'skill'; triggeredBy?: string; skipSave?: boolean; skipAutoRelink?: boolean },
+) {
+  // Gate background passes (brain / GNN / GLL) for the duration of THIS ingest —
+  // covers drag-drop + MCP ingest_batch + single-file connector ingests. (A
+  // connector PULL additionally gates the whole pull window in doPull, including
+  // between-file save/relink gaps.) Always released in finally, even on throw.
+  beginIngest(graphId);
+  try {
+    return await ingestClipImpl(host, graphId, text, label, opts);
+  } finally {
+    endIngest(graphId);
+  }
+}
+
+async function ingestClipImpl(
   host: GraphnosisHost,
   graphId: string,
   text: string,

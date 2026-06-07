@@ -287,6 +287,15 @@ function dispatchEmbed(preferredSlot: number, text: string): Promise<number[]> {
   }
   const liveChild = child;
   return new Promise<number[]>((resolve, reject) => {
+    // NOTE: deliberately NO per-embed kill-timeout here. An earlier attempt
+    // SIGKILLed a worker if one chunk didn't return in 30s — but on a busy
+    // single-threaded sidecar (huge resident graph + ingest sync work), the
+    // main process simply can't READ the worker's IPC response in time, so a
+    // HEALTHY worker looked "wedged". Killing it (and reloading the model on
+    // respawn) added more main-thread work → a destructive loop that failed
+    // EVERY file. The real fix is keeping the main thread responsive during
+    // ingest, not killing workers. Genuine crashes are still handled by the
+    // child 'exit' handler (respawn + reject in-flight).
     pending.set(id, { resolve, reject, workerIdx: idx });
     liveChild.send({ id, text }, (err) => {
       if (err) {
