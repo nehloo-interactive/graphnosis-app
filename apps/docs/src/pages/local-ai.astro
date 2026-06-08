@@ -1,0 +1,478 @@
+---
+import Layout from '../layouts/Layout.astro';
+import Nav from '../components/Nav.astro';
+import Footer from '../components/Footer.astro';
+---
+
+<Layout
+  title="Graphnosis — Local AI on Any GPU"
+  description="Pair Graphnosis with Ollama to unlock the full Foresight feature tier on any GPU — AMD ROCm, Apple Silicon, Intel Arc, NVIDIA CUDA, or Jetson Orin. Semantic enrichment, insights, predictions, neural inference, and autonomous skill training. Zero cloud required."
+>
+  <Nav />
+
+  <main class="min-h-screen">
+
+    <!-- ── Hero ──────────────────────────────────────────────── -->
+    <section class="relative py-20 px-4 sm:px-6 overflow-hidden">
+      <div class="absolute top-0 left-1/4 w-96 h-96 bg-[#67e8f9]/5 rounded-full blur-3xl pointer-events-none"></div>
+      <div class="absolute bottom-0 right-1/4 w-96 h-96 bg-[#a78bfa]/5 rounded-full blur-3xl pointer-events-none"></div>
+      <div class="absolute top-1/3 right-0 w-72 h-72 bg-[#4ade80]/3 rounded-full blur-3xl pointer-events-none"></div>
+
+      <div class="max-w-3xl mx-auto text-center relative z-10">
+        <div class="inline-flex items-center gap-2 px-4 py-1.5 rounded-full border border-[#2a2a3d] bg-[#1c1c27] text-sm font-mono text-[#c4c6d6] mb-6">
+          <span class="text-[#67e8f9]">⚡</span>
+          <span>AMD &nbsp;·&nbsp; Apple Silicon &nbsp;·&nbsp; Intel Arc &nbsp;·&nbsp; NVIDIA</span>
+        </div>
+        <h1 class="text-4xl sm:text-5xl lg:text-6xl font-black text-white leading-[1.1] mb-5">
+          Local AI +<br />Graphnosis job memory.<br />
+          <span class="bg-clip-text text-transparent" style="background-image: linear-gradient(90deg, #67e8f9 0%, #a78bfa 100%);">
+            Any GPU. Zero Cloud.
+          </span>
+        </h1>
+        <p class="text-lg text-[#c4c6d6] max-w-2xl mx-auto leading-relaxed">
+          Pair Graphnosis with Ollama to unlock the full Foresight tier —
+          semantic memory enrichment, insights, distillation, foresight predictions, neural
+          inference, and autonomous skill &amp; goals training — on whatever hardware you already own.
+        </p>
+      </div>
+    </section>
+
+    <!-- ── What you unlock ───────────────────────────────────── -->
+    <section class="pb-16 px-4 sm:px-6">
+      <div class="max-w-5xl mx-auto">
+        <div class="text-center mb-10">
+          <p class="text-xs font-mono font-semibold text-[#67e8f9] tracking-widest uppercase mb-2">Local LLM via Ollama</p>
+          <h2 class="text-3xl sm:text-4xl font-black text-white">What local AI unlocks</h2>
+          <p class="text-[#9a9db8] mt-3 max-w-xl mx-auto text-sm leading-relaxed">
+            Graphnosis works fully offline without a GPU. Add Ollama on any supported GPU
+            and the Foresight tier activates — all computed locally, nothing leaves the device.
+          </p>
+        </div>
+
+        <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-5">
+
+          <div class="bg-[#1c1c27] border border-[#2a2a3d] rounded-xl p-6 flex flex-col gap-3">
+            <div class="w-10 h-10 rounded-lg bg-[#67e8f9]/10 flex items-center justify-center">
+              <svg class="w-5 h-5 text-[#67e8f9]" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" aria-hidden="true">
+                <path stroke-linecap="round" stroke-linejoin="round" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/>
+              </svg>
+            </div>
+            <div>
+              <h3 class="font-bold text-white text-base mb-1">Semantic Recall Enrichment</h3>
+              <p class="text-sm text-[#9a9db8] leading-relaxed">Your recall queries are rewritten and expanded by the local LLM at search time — surfacing memories your original phrasing would have missed.</p>
+            </div>
+          </div>
+
+          <div class="bg-[#1c1c27] border border-[#2a2a3d] rounded-xl p-6 flex flex-col gap-3">
+            <div class="w-10 h-10 rounded-lg bg-[#a78bfa]/10 flex items-center justify-center">
+              <svg class="w-5 h-5 text-[#a78bfa]" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" aria-hidden="true">
+                <path stroke-linecap="round" stroke-linejoin="round" d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z"/>
+              </svg>
+            </div>
+            <div>
+              <h3 class="font-bold text-white text-base mb-1">Insights &amp; Patterns</h3>
+              <p class="text-sm text-[#9a9db8] leading-relaxed">Background analysis of your memory graph surfaces patterns, gaps, and opportunities — the hippocampus working while you focus on other things.</p>
+            </div>
+          </div>
+
+          <div class="bg-[#1c1c27] border border-[#2a2a3d] rounded-xl p-6 flex flex-col gap-3">
+            <div class="w-10 h-10 rounded-lg bg-[#67e8f9]/10 flex items-center justify-center">
+              <svg class="w-5 h-5 text-[#67e8f9]" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" aria-hidden="true">
+                <path stroke-linecap="round" stroke-linejoin="round" d="M4 7v10c0 2.21 3.582 4 8 4s8-1.79 8-4V7M4 7c0 2.21 3.582 4 8 4s8-1.79 8-4M4 7c0-2.21 3.582-4 8-4s8 1.79 8 4"/>
+              </svg>
+            </div>
+            <div>
+              <h3 class="font-bold text-white text-base mb-1">Knowledge Distillation</h3>
+              <p class="text-sm text-[#9a9db8] leading-relaxed">Feed raw text — meeting notes, documents, web pages — and the local LLM extracts discrete facts and routes them into your knowledge graph automatically.</p>
+            </div>
+          </div>
+
+          <div class="bg-[#1c1c27] border border-[#2a2a3d] rounded-xl p-6 flex flex-col gap-3">
+            <div class="w-10 h-10 rounded-lg bg-[#a78bfa]/10 flex items-center justify-center">
+              <svg class="w-5 h-5 text-[#a78bfa]" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" aria-hidden="true">
+                <path stroke-linecap="round" stroke-linejoin="round" d="M13 7h8m0 0v8m0-8l-8 8-4-4-6 6"/>
+              </svg>
+            </div>
+            <div>
+              <h3 class="font-bold text-white text-base mb-1">Foresight Predictions</h3>
+              <p class="text-sm text-[#9a9db8] leading-relaxed">Before you act, Graphnosis surfaces risks and opportunities grounded in your actual memory — not generic LLM advice, but predictions anchored to your history.</p>
+            </div>
+          </div>
+
+          <div class="bg-[#1c1c27] border border-[#2a2a3d] rounded-xl p-6 flex flex-col gap-3">
+            <div class="w-10 h-10 rounded-lg bg-[#67e8f9]/10 flex items-center justify-center">
+              <svg class="w-5 h-5 text-[#67e8f9]" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" aria-hidden="true">
+                <path stroke-linecap="round" stroke-linejoin="round" d="M14 10l-2 1m0 0l-2-1m2 1v2.5M20 7l-2 1m2-1l-2-1m2 1v2.5M14 4l-2-1-2 1M4 7l2-1M4 7l2 1M4 7v2.5M12 21l-2-1m2 1l2-1m-2 1v-2.5M6 18l-2-1v-2.5M18 18l2-1v-2.5"/>
+              </svg>
+            </div>
+            <div>
+              <h3 class="font-bold text-white text-base mb-1">Neural Edge Prediction</h3>
+              <p class="text-sm text-[#9a9db8] leading-relaxed">A local Graphnosis Neural Network runs in the background proposing connections between memory nodes — relationships your graph doesn't explicitly record yet.</p>
+            </div>
+          </div>
+
+          <div class="bg-[#1c1c27] border border-[#2a2a3d] rounded-xl p-6 flex flex-col gap-3">
+            <div class="w-10 h-10 rounded-lg bg-[#a78bfa]/10 flex items-center justify-center">
+              <svg class="w-5 h-5 text-[#a78bfa]" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" aria-hidden="true">
+                <path stroke-linecap="round" stroke-linejoin="round" d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.747 0 3.332.477 4.5 1.253v13C19.832 18.477 18.247 18 16.5 18c-1.746 0-3.332.477-4.5 1.253"/>
+              </svg>
+            </div>
+            <div>
+              <h3 class="font-bold text-white text-base mb-1">
+                Skill Auto-Training
+                <span class="text-xs font-mono text-[#a78bfa] ml-1.5 align-middle">Pro</span>
+              </h3>
+              <p class="text-sm text-[#9a9db8] leading-relaxed">The local LLM rewrites and refines your Skills &amp; SOPs in place — improving structure and clarity while preserving source attribution. All on-device.</p>
+            </div>
+          </div>
+
+        </div>
+      </div>
+    </section>
+
+    <!-- ── Hardware tracks ───────────────────────────────────── -->
+    <section class="pb-16 px-4 sm:px-6">
+      <div class="max-w-5xl mx-auto">
+        <div class="text-center mb-10">
+          <p class="text-xs font-mono font-semibold text-[#67e8f9] tracking-widest uppercase mb-2">Setup Guide</p>
+          <h2 class="text-3xl sm:text-4xl font-black text-white">Pick your hardware</h2>
+          <p class="text-[#9a9db8] mt-3 max-w-xl mx-auto text-sm">Same Graphnosis, same Ollama, same Foresight features — the only difference is which driver stack you need.</p>
+        </div>
+
+        <div class="flex flex-col gap-6">
+
+          <!-- AMD ROCm -->
+          <article id="amd" class="bg-[#1c1c27] border border-[#2a2a3d] rounded-2xl p-7 scroll-mt-24">
+            <div class="flex flex-col sm:flex-row sm:items-start gap-5 mb-6">
+              <div class="shrink-0 w-14 h-14 rounded-xl bg-white/[0.06] flex items-center justify-center" aria-hidden="true">
+                <svg class="w-8 h-8 text-[#f97316]" fill="none" stroke="currentColor" stroke-width="1.75" viewBox="0 0 24 24">
+                  <rect x="2" y="7" width="20" height="10" rx="2"/>
+                  <path stroke-linecap="round" d="M6 7V5M10 7V5M14 7V5M18 7V5M6 17v2M10 17v2M14 17v2M18 17v2"/>
+                  <path stroke-linecap="round" d="M5 12h2M10 12h4M17 12h2"/>
+                </svg>
+              </div>
+              <div>
+                <p class="text-xs font-mono font-semibold text-[#f97316] tracking-widest uppercase mb-1">AMD · ROCm</p>
+                <h2 class="text-2xl font-black text-white">AMD GPU</h2>
+                <p class="text-sm text-[#9a9db8] mt-1">RX 6000 series &nbsp;·&nbsp; RX 7000 series &nbsp;·&nbsp; Radeon Pro &nbsp;·&nbsp; Linux</p>
+              </div>
+            </div>
+            <div class="grid grid-cols-1 lg:grid-cols-2 gap-8">
+              <ol class="flex flex-col gap-3.5">
+                <li class="flex items-start gap-3 text-sm text-[#b0b3c6]">
+                  <span class="shrink-0 w-5 h-5 rounded-full bg-[#f97316]/15 text-[#f97316] text-xs font-bold flex items-center justify-center mt-0.5">1</span>
+                  <span><a href="/download/linux-deb" class="text-[#f97316] hover:underline font-semibold">Download Graphnosis</a> for Linux (<code class="font-mono text-xs">.AppImage</code> or <code class="font-mono text-xs">.deb</code>)</span>
+                </li>
+                <li class="flex items-start gap-3 text-sm text-[#b0b3c6]">
+                  <span class="shrink-0 w-5 h-5 rounded-full bg-[#f97316]/15 text-[#f97316] text-xs font-bold flex items-center justify-center mt-0.5">2</span>
+                  <span>Install <strong class="text-white">ROCm drivers</strong> for your card. AMD's official guide: <a href="https://rocm.docs.amd.com/en/latest/deploy/linux/quick_start.html" class="text-[#f97316] hover:underline font-semibold">ROCm Quick Start</a></span>
+                </li>
+                <li class="flex items-start gap-3 text-sm text-[#b0b3c6]">
+                  <span class="shrink-0 w-5 h-5 rounded-full bg-[#f97316]/15 text-[#f97316] text-xs font-bold flex items-center justify-center mt-0.5">3</span>
+                  <span>
+                    Install <a href="https://ollama.com/download" class="text-[#f97316] hover:underline font-semibold">Ollama</a> — it picks up ROCm automatically, then pull a model:
+                    <code class="block mt-1.5 text-[#f97316] font-mono text-xs bg-[#0d0d14] border border-[#2a2a3d] px-3 py-1.5 rounded-lg">ollama pull llama3.2</code>
+                  </span>
+                </li>
+                <li class="flex items-start gap-3 text-sm text-[#b0b3c6]">
+                  <span class="shrink-0 w-5 h-5 rounded-full bg-[#f97316]/15 text-[#f97316] text-xs font-bold flex items-center justify-center mt-0.5">4</span>
+                  <span>In Graphnosis → <strong class="text-white">Settings → Foresight</strong> → enable Local LLM → select your model</span>
+                </li>
+              </ol>
+              <div class="bg-[#13131a] border border-[#2a2a3d] rounded-xl p-5 text-sm text-[#9a9db8] leading-relaxed flex flex-col gap-3">
+                <p class="text-xs font-mono font-semibold text-[#f97316] tracking-widest uppercase">Notes</p>
+                <p>ROCm support is Linux-only. Windows ROCm is experimental and not recommended for production use.</p>
+                <p>Supported cards: RX 6600 and later, RX 7600 and later, Radeon Pro W6000/W7000 series. Older GCN cards are unsupported by Ollama.</p>
+                <p>If <code class="text-[#9a9db8] font-mono text-xs">ollama run llama3.2</code> falls back to CPU, verify ROCm is recognised with <code class="text-[#9a9db8] font-mono text-xs">rocminfo | grep -i agent</code>.</p>
+              </div>
+            </div>
+          </article>
+
+          <!-- Apple Silicon -->
+          <article id="apple-silicon" class="bg-[#1c1c27] border border-[#2a2a3d] rounded-2xl p-7 scroll-mt-24">
+            <div class="flex flex-col sm:flex-row sm:items-start gap-5 mb-6">
+              <div class="shrink-0 w-14 h-14 rounded-xl bg-white/[0.06] flex items-center justify-center" aria-hidden="true">
+                <svg class="w-8 h-8 text-white" fill="currentColor" viewBox="0 0 24 24">
+                  <path d="M14.94 5.19A4.38 4.38 0 0 0 16 2a4.44 4.44 0 0 0-3 1.52 4.17 4.17 0 0 0-1 3.09 3.69 3.69 0 0 0 2.94-1.42zm2.52 7.44a4.51 4.51 0 0 1 2.16-3.81 4.66 4.66 0 0 0-3.66-2c-1.56-.16-3 .91-3.83.91s-2-.89-3.3-.87a4.92 4.92 0 0 0-4.14 2.53C2.91 12.87 4.24 17.88 6 20.47c.8 1.21 1.8 2.58 3.12 2.53s1.75-.82 3.28-.82 2 .82 3.3.79 2.22-1.24 3.06-2.45a11 11 0 0 0 1.38-2.85 4.41 4.41 0 0 1-2.68-4.04z"/>
+                </svg>
+              </div>
+              <div>
+                <p class="text-xs font-mono font-semibold text-[#67e8f9] tracking-widest uppercase mb-1">Apple · Metal</p>
+                <h2 class="text-2xl font-black text-white">Apple Silicon</h2>
+                <p class="text-sm text-[#9a9db8] mt-1">M1 &nbsp;·&nbsp; M2 &nbsp;·&nbsp; M3 &nbsp;·&nbsp; M4 &nbsp;·&nbsp; All variants (Pro / Max / Ultra) &nbsp;·&nbsp; macOS 13+</p>
+              </div>
+            </div>
+            <div class="grid grid-cols-1 lg:grid-cols-2 gap-8">
+              <ol class="flex flex-col gap-3.5">
+                <li class="flex items-start gap-3 text-sm text-[#b0b3c6]">
+                  <span class="shrink-0 w-5 h-5 rounded-full bg-[#67e8f9]/15 text-[#67e8f9] text-xs font-bold flex items-center justify-center mt-0.5">1</span>
+                  <span><a href="/download/mac" class="text-[#67e8f9] hover:underline font-semibold">Download Graphnosis</a> for macOS (Apple Silicon native)</span>
+                </li>
+                <li class="flex items-start gap-3 text-sm text-[#b0b3c6]">
+                  <span class="shrink-0 w-5 h-5 rounded-full bg-[#67e8f9]/15 text-[#67e8f9] text-xs font-bold flex items-center justify-center mt-0.5">2</span>
+                  <span>Install <a href="https://ollama.com/download" class="text-[#67e8f9] hover:underline font-semibold">Ollama for macOS</a> — no extra drivers needed. It uses Metal automatically via llama.cpp.</span>
+                </li>
+                <li class="flex items-start gap-3 text-sm text-[#b0b3c6]">
+                  <span class="shrink-0 w-5 h-5 rounded-full bg-[#67e8f9]/15 text-[#67e8f9] text-xs font-bold flex items-center justify-center mt-0.5">3</span>
+                  <span>
+                    Pull a model sized for your RAM:
+                    <code class="block mt-1.5 text-[#67e8f9] font-mono text-xs bg-[#0d0d14] border border-[#2a2a3d] px-3 py-1.5 rounded-lg"># M1/M2 8 GB → 3B; M2 Pro+ or 16 GB+ → 8B
+ollama pull llama3.2        # 3B, fits any M-chip Mac
+ollama pull llama3.1:8b     # 8B, recommended for 16 GB+</code>
+                  </span>
+                </li>
+                <li class="flex items-start gap-3 text-sm text-[#b0b3c6]">
+                  <span class="shrink-0 w-5 h-5 rounded-full bg-[#67e8f9]/15 text-[#67e8f9] text-xs font-bold flex items-center justify-center mt-0.5">4</span>
+                  <span>In Graphnosis → <strong class="text-white">Settings → Foresight</strong> → enable Local LLM → select your model</span>
+                </li>
+              </ol>
+              <div class="bg-[#13131a] border border-[#2a2a3d] rounded-xl p-5 text-sm text-[#9a9db8] leading-relaxed flex flex-col gap-3">
+                <p class="text-xs font-mono font-semibold text-[#67e8f9] tracking-widest uppercase">Notes</p>
+                <p>Ollama uses the unified memory architecture — the GPU and CPU share the same memory pool, so 8 GB Macs can comfortably run a 3B model. 16 GB opens up 8B; 32 GB+ handles 13B models well.</p>
+                <p>No ROCm, no CUDA, no driver install required. Ollama ships its own Metal backend.</p>
+                <p>Intel Mac? CPU-only inference still works — just slower. An Apple Silicon Mac or an external GPU is recommended for the full Foresight experience.</p>
+              </div>
+            </div>
+          </article>
+
+          <!-- Intel Arc -->
+          <article id="intel-arc" class="bg-[#1c1c27] border border-[#2a2a3d] rounded-2xl p-7 scroll-mt-24">
+            <div class="flex flex-col sm:flex-row sm:items-start gap-5 mb-6">
+              <div class="shrink-0 w-14 h-14 rounded-xl bg-white/[0.06] flex items-center justify-center" aria-hidden="true">
+                <svg class="w-8 h-8 text-[#60a5fa]" fill="none" stroke="currentColor" stroke-width="1.75" viewBox="0 0 24 24">
+                  <rect x="2" y="7" width="20" height="10" rx="2"/>
+                  <path stroke-linecap="round" d="M6 7V5M10 7V5M14 7V5M18 7V5M6 17v2M10 17v2M14 17v2M18 17v2"/>
+                  <path stroke-linecap="round" d="M8 12h8"/>
+                </svg>
+              </div>
+              <div>
+                <p class="text-xs font-mono font-semibold text-[#60a5fa] tracking-widest uppercase mb-1">Intel · oneAPI</p>
+                <h2 class="text-2xl font-black text-white">Intel Arc</h2>
+                <p class="text-sm text-[#9a9db8] mt-1">Arc A-series &nbsp;·&nbsp; Arc B-series &nbsp;·&nbsp; Windows &amp; Linux &nbsp;·&nbsp; Support growing</p>
+              </div>
+            </div>
+            <div class="grid grid-cols-1 lg:grid-cols-2 gap-8">
+              <ol class="flex flex-col gap-3.5">
+                <li class="flex items-start gap-3 text-sm text-[#b0b3c6]">
+                  <span class="shrink-0 w-5 h-5 rounded-full bg-[#60a5fa]/15 text-[#60a5fa] text-xs font-bold flex items-center justify-center mt-0.5">1</span>
+                  <span><a href="/download" class="text-[#60a5fa] hover:underline font-semibold">Download Graphnosis</a> for Windows or Linux</span>
+                </li>
+                <li class="flex items-start gap-3 text-sm text-[#b0b3c6]">
+                  <span class="shrink-0 w-5 h-5 rounded-full bg-[#60a5fa]/15 text-[#60a5fa] text-xs font-bold flex items-center justify-center mt-0.5">2</span>
+                  <span>Update your Arc drivers to the latest version from <a href="https://www.intel.com/content/www/us/en/download-center/home.html" class="text-[#60a5fa] hover:underline font-semibold">Intel's download centre</a></span>
+                </li>
+                <li class="flex items-start gap-3 text-sm text-[#b0b3c6]">
+                  <span class="shrink-0 w-5 h-5 rounded-full bg-[#60a5fa]/15 text-[#60a5fa] text-xs font-bold flex items-center justify-center mt-0.5">3</span>
+                  <span>
+                    Install <a href="https://ollama.com/download" class="text-[#60a5fa] hover:underline font-semibold">Ollama</a> and pull a compact model (Arc VRAM is limited):
+                    <code class="block mt-1.5 text-[#60a5fa] font-mono text-xs bg-[#0d0d14] border border-[#2a2a3d] px-3 py-1.5 rounded-lg">ollama pull llama3.2:3b</code>
+                  </span>
+                </li>
+                <li class="flex items-start gap-3 text-sm text-[#b0b3c6]">
+                  <span class="shrink-0 w-5 h-5 rounded-full bg-[#60a5fa]/15 text-[#60a5fa] text-xs font-bold flex items-center justify-center mt-0.5">4</span>
+                  <span>In Graphnosis → <strong class="text-white">Settings → Foresight</strong> → enable Local LLM → select your model</span>
+                </li>
+              </ol>
+              <div class="bg-[#13131a] border border-[#2a2a3d] rounded-xl p-5 text-sm text-[#9a9db8] leading-relaxed flex flex-col gap-3">
+                <p class="text-xs font-mono font-semibold text-[#60a5fa] tracking-widest uppercase">Notes</p>
+                <p>Intel Arc support in Ollama is actively maturing. Acceleration uses Intel's oneAPI / SYCL backend — expect occasional model compatibility gaps with very large quantisations.</p>
+                <p>Recommended: Arc A770 (16 GB) or Arc B580 for best results. Smaller cards (A380, A310) will fall back to CPU for larger models.</p>
+                <p>Linux performance is generally ahead of Windows for Arc — if you have a choice, prefer Linux.</p>
+              </div>
+            </div>
+          </article>
+
+          <!-- NVIDIA GPU -->
+          <article id="nvidia" class="bg-[#1c1c27] border border-[#2a2a3d] rounded-2xl p-7 scroll-mt-24">
+            <div class="flex flex-col sm:flex-row sm:items-start gap-5 mb-6">
+              <div class="shrink-0 w-14 h-14 rounded-xl bg-white/[0.06] flex items-center justify-center" aria-hidden="true">
+                <svg class="w-8 h-8 text-[#67e8f9]" fill="none" stroke="currentColor" stroke-width="1.75" viewBox="0 0 24 24">
+                  <rect x="2" y="7" width="20" height="10" rx="2"/>
+                  <path stroke-linecap="round" d="M6 7V5M10 7V5M14 7V5M18 7V5M6 17v2M10 17v2M14 17v2M18 17v2"/>
+                  <path stroke-linecap="round" d="M5 12h2M10 12h4M17 12h2"/>
+                </svg>
+              </div>
+              <div>
+                <p class="text-xs font-mono font-semibold text-[#67e8f9] tracking-widest uppercase mb-1">NVIDIA · CUDA</p>
+                <h2 class="text-2xl font-black text-white">NVIDIA GPU</h2>
+                <p class="text-sm text-[#9a9db8] mt-1">RTX &nbsp;·&nbsp; GTX &nbsp;·&nbsp; Quadro / RTX Pro &nbsp;·&nbsp; Any CUDA-capable card &nbsp;·&nbsp; Windows &amp; Linux</p>
+              </div>
+            </div>
+            <div class="grid grid-cols-1 lg:grid-cols-2 gap-8">
+              <ol class="flex flex-col gap-3.5">
+                <li class="flex items-start gap-3 text-sm text-[#b0b3c6]">
+                  <span class="shrink-0 w-5 h-5 rounded-full bg-[#67e8f9]/15 text-[#67e8f9] text-xs font-bold flex items-center justify-center mt-0.5">1</span>
+                  <span><a href="/download" class="text-[#67e8f9] hover:underline font-semibold">Download Graphnosis</a> for Windows or Linux</span>
+                </li>
+                <li class="flex items-start gap-3 text-sm text-[#b0b3c6]">
+                  <span class="shrink-0 w-5 h-5 rounded-full bg-[#67e8f9]/15 text-[#67e8f9] text-xs font-bold flex items-center justify-center mt-0.5">2</span>
+                  <span>Install <a href="https://ollama.com/download" class="text-[#67e8f9] hover:underline font-semibold">Ollama</a> — it auto-detects your NVIDIA GPU via CUDA. No extra configuration needed.</span>
+                </li>
+                <li class="flex items-start gap-3 text-sm text-[#b0b3c6]">
+                  <span class="shrink-0 w-5 h-5 rounded-full bg-[#67e8f9]/15 text-[#67e8f9] text-xs font-bold flex items-center justify-center mt-0.5">3</span>
+                  <span>
+                    Pull a model matched to your VRAM:
+                    <code class="block mt-1.5 text-[#67e8f9] font-mono text-xs bg-[#0d0d14] border border-[#2a2a3d] px-3 py-1.5 rounded-lg"># 8 GB VRAM → 8B; 16 GB+ → 13B or 32B
+ollama pull llama3.2        # 3B, any card
+ollama pull llama3.1:8b     # 8B, RTX 3070+</code>
+                  </span>
+                </li>
+                <li class="flex items-start gap-3 text-sm text-[#b0b3c6]">
+                  <span class="shrink-0 w-5 h-5 rounded-full bg-[#67e8f9]/15 text-[#67e8f9] text-xs font-bold flex items-center justify-center mt-0.5">4</span>
+                  <span>In Graphnosis → <strong class="text-white">Settings → Foresight</strong> → enable Local LLM → select your model</span>
+                </li>
+              </ol>
+              <div class="bg-[#13131a] border border-[#2a2a3d] rounded-xl p-5 text-sm text-[#9a9db8] leading-relaxed flex flex-col gap-3">
+                <p class="text-xs font-mono font-semibold text-[#67e8f9] tracking-widest uppercase">Notes</p>
+                <p>CUDA is the most mature and widely tested Ollama backend. Any Kepler-architecture card or newer works; Ampere (RTX 30xx) and Ada Lovelace (RTX 40xx) deliver the best performance per watt.</p>
+                <p>VRAM is the limiting factor — the model must fit. 4-bit quantised 8B models need ~5 GB; 13B needs ~8–9 GB. Ollama offloads excess layers to CPU RAM automatically, at a speed penalty.</p>
+              </div>
+            </div>
+          </article>
+
+          <!-- NVIDIA Jetson Orin -->
+          <article id="jetson" class="bg-[#1c1c27] border border-[#2a2a3d] rounded-2xl p-7 scroll-mt-24">
+            <div class="flex flex-col sm:flex-row sm:items-start gap-5 mb-6">
+              <div class="shrink-0 w-14 h-14 rounded-xl bg-white/[0.06] flex items-center justify-center" aria-hidden="true">
+                <svg class="w-8 h-8 text-[#a78bfa]" fill="none" stroke="currentColor" stroke-width="1.75" viewBox="0 0 24 24">
+                  <rect x="3" y="3" width="18" height="18" rx="2"/>
+                  <path stroke-linecap="round" d="M9 3v18M15 3v18M3 9h18M3 15h18"/>
+                </svg>
+              </div>
+              <div>
+                <p class="text-xs font-mono font-semibold text-[#a78bfa] tracking-widest uppercase mb-1">NVIDIA · Jetson · Edge</p>
+                <h2 class="text-2xl font-black text-white">NVIDIA Jetson Orin</h2>
+                <p class="text-sm text-[#9a9db8] mt-1">Nano Super &nbsp;·&nbsp; NX &nbsp;·&nbsp; AGX &nbsp;·&nbsp; JetPack 6 &nbsp;·&nbsp; Ubuntu 22.04</p>
+              </div>
+            </div>
+            <div class="grid grid-cols-1 lg:grid-cols-2 gap-8">
+              <ol class="flex flex-col gap-3.5">
+                <li class="flex items-start gap-3 text-sm text-[#b0b3c6]">
+                  <span class="shrink-0 w-5 h-5 rounded-full bg-[#a78bfa]/15 text-[#a78bfa] text-xs font-bold flex items-center justify-center mt-0.5">1</span>
+                  <span>Flash <strong class="text-white">JetPack 6.x</strong> from NVIDIA — ships with Ubuntu 22.04, CUDA, and cuDNN pre-installed</span>
+                </li>
+                <li class="flex items-start gap-3 text-sm text-[#b0b3c6]">
+                  <span class="shrink-0 w-5 h-5 rounded-full bg-[#a78bfa]/15 text-[#a78bfa] text-xs font-bold flex items-center justify-center mt-0.5">2</span>
+                  <span>Install Graphnosis — <a href="/download/linux-deb" class="text-[#a78bfa] hover:underline font-semibold">download the Ubuntu <code class="font-mono text-xs">.deb</code></a> and install with <code class="text-[#a78bfa] font-mono text-xs">sudo apt install ./Graphnosis_*_amd64.deb</code></span>
+                </li>
+                <li class="flex items-start gap-3 text-sm text-[#b0b3c6]">
+                  <span class="shrink-0 w-5 h-5 rounded-full bg-[#a78bfa]/15 text-[#a78bfa] text-xs font-bold flex items-center justify-center mt-0.5">3</span>
+                  <span>
+                    Install Ollama — detects Jetson GPU automatically:
+                    <code class="block mt-1.5 text-[#a78bfa] font-mono text-xs bg-[#0d0d14] border border-[#2a2a3d] px-3 py-1.5 rounded-lg">curl -fsSL https://ollama.com/install.sh | sh</code>
+                  </span>
+                </li>
+                <li class="flex items-start gap-3 text-sm text-[#b0b3c6]">
+                  <span class="shrink-0 w-5 h-5 rounded-full bg-[#a78bfa]/15 text-[#a78bfa] text-xs font-bold flex items-center justify-center mt-0.5">4</span>
+                  <span>
+                    Pull a compact model (Nano Super has 8 GB unified; AGX has 64 GB):
+                    <code class="block mt-1.5 text-[#a78bfa] font-mono text-xs bg-[#0d0d14] border border-[#2a2a3d] px-3 py-1.5 rounded-lg">ollama pull llama3.2:3b   # Nano Super
+ollama pull llama3.1:8b   # Orin NX / AGX</code>
+                  </span>
+                </li>
+                <li class="flex items-start gap-3 text-sm text-[#b0b3c6]">
+                  <span class="shrink-0 w-5 h-5 rounded-full bg-[#a78bfa]/15 text-[#a78bfa] text-xs font-bold flex items-center justify-center mt-0.5">5</span>
+                  <span>In Graphnosis → <strong class="text-white">Settings → Foresight</strong> → enable Local LLM → select your model</span>
+                </li>
+              </ol>
+              <div class="bg-[#13131a] border border-[#2a2a3d] rounded-xl p-5 text-sm text-[#9a9db8] leading-relaxed flex flex-col gap-3">
+                <p class="text-xs font-mono font-semibold text-[#a78bfa] tracking-widest uppercase">Notes</p>
+                <p>Jetson Orin uses unified memory — GPU and CPU share the same pool. The Nano Super's 8 GB comfortably runs a 3B model; the AGX Orin 64 GB handles 13B+ models.</p>
+                <p>Ideal for air-gapped, edge, or robotics deployments where cloud connectivity is unavailable or prohibited. Graphnosis + Ollama on Jetson delivers a complete, network-isolated AI assistant stack.</p>
+              </div>
+            </div>
+          </article>
+
+        </div>
+      </div>
+    </section>
+
+    <!-- ── Use cases ──────────────────────────────────────────── -->
+    <section class="pb-16 px-4 sm:px-6">
+      <div class="max-w-5xl mx-auto">
+        <div class="text-center mb-10">
+          <p class="text-xs font-mono font-semibold text-[#67e8f9] tracking-widest uppercase mb-2">Who it's for</p>
+          <h2 class="text-3xl sm:text-4xl font-black text-white">Use cases by vertical</h2>
+        </div>
+
+        <div class="grid grid-cols-1 sm:grid-cols-2 gap-5">
+
+          <div class="bg-[#1c1c27] border border-[#2a2a3d] rounded-xl p-6">
+            <div class="text-2xl mb-3" aria-hidden="true">🤖</div>
+            <h3 class="font-bold text-white text-base mb-2">Robotics &amp; Autonomous Systems</h3>
+            <p class="text-sm text-[#9a9db8] leading-relaxed">A Jetson-powered robot maintains persistent memory of its environment, tasks, and operator instructions across power cycles — no cloud, no latency, no data leak. Graphnosis is the memory layer; Ollama on Jetson is the reasoning engine.</p>
+          </div>
+
+          <div class="bg-[#1c1c27] border border-[#2a2a3d] rounded-xl p-6">
+            <div class="text-2xl mb-3" aria-hidden="true">🏥</div>
+            <h3 class="font-bold text-white text-base mb-2">Healthcare Edge AI</h3>
+            <p class="text-sm text-[#9a9db8] leading-relaxed">Clinical AI tools running on-device in hospitals or ambulances remember patient context, workflow history, and care protocols session-to-session — with all data encrypted locally. Private by architecture, not by policy.</p>
+          </div>
+
+          <div class="bg-[#1c1c27] border border-[#2a2a3d] rounded-xl p-6">
+            <div class="text-2xl mb-3" aria-hidden="true">🛡️</div>
+            <h3 class="font-bold text-white text-base mb-2">Defense &amp; Public Sector</h3>
+            <p class="text-sm text-[#9a9db8] leading-relaxed">Field AI systems that cannot touch the internet. Graphnosis + Ollama on any air-gapped GPU delivers a complete, network-isolated AI assistant stack — persistent memory, local reasoning, zero dependency on any external service.</p>
+          </div>
+
+          <div class="bg-[#1c1c27] border border-[#2a2a3d] rounded-xl p-6">
+            <div class="text-2xl mb-3" aria-hidden="true">🏭</div>
+            <h3 class="font-bold text-white text-base mb-2">Industrial &amp; Manufacturing</h3>
+            <p class="text-sm text-[#9a9db8] leading-relaxed">Factory-floor AI assistants on edge hardware remember machine history, maintenance logs, and operator SOPs — with insights that surface anomalies before they become failures. No cloud connectivity required on the plant floor.</p>
+          </div>
+
+          <div class="bg-[#1c1c27] border border-[#2a2a3d] rounded-xl p-6">
+            <div class="text-2xl mb-3" aria-hidden="true">🌾</div>
+            <h3 class="font-bold text-white text-base mb-2">Agriculture &amp; Remote Operations</h3>
+            <p class="text-sm text-[#9a9db8] leading-relaxed">Autonomous farm equipment, drones, and remote monitoring systems operate where connectivity is absent or unreliable. Graphnosis provides persistent local memory for AI agents that must work independently of any network.</p>
+          </div>
+
+          <div class="bg-[#1c1c27] border border-[#2a2a3d] rounded-xl p-6">
+            <div class="text-2xl mb-3" aria-hidden="true">💼</div>
+            <h3 class="font-bold text-white text-base mb-2">Privacy-Conscious Professionals</h3>
+            <p class="text-sm text-[#9a9db8] leading-relaxed">Lawyers, doctors, and financial advisors get the full Graphnosis Foresight tier — semantic search, insights, distillation, and autonomous skill &amp; goals training — on their own workstation GPU, with a compliance guarantee: data never leaves their machine.</p>
+          </div>
+
+        </div>
+      </div>
+    </section>
+
+    <!-- ── CTA ────────────────────────────────────────────────── -->
+    <section class="pb-24 px-4 sm:px-6">
+      <div class="max-w-3xl mx-auto text-center">
+        <h2 class="text-3xl font-black text-white mb-4">Ready to build?</h2>
+        <p class="text-[#9a9db8] mb-8 max-w-lg mx-auto">
+          Download Graphnosis, set up Ollama on your GPU of choice, and your AI gets a private memory it keeps forever —
+          on your hardware, under your control.
+        </p>
+        <div class="flex flex-col sm:flex-row gap-4 justify-center">
+          <a
+            href="/download"
+            class="inline-flex items-center justify-center gap-2 px-6 py-3 rounded-full bg-[#67e8f9] hover:bg-[#4dd6e8] text-[#13131a] font-bold text-base transition-colors"
+          >
+            <svg class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24" aria-hidden="true">
+              <path stroke-linecap="round" stroke-linejoin="round" d="M4 16v2a2 2 0 002 2h12a2 2 0 002-2v-2M7 10l5 5 5-5M12 15V3"/>
+            </svg>
+            Download Graphnosis
+          </a>
+          <a
+            href="https://ollama.com/download"
+            class="inline-flex items-center justify-center gap-2 px-6 py-3 rounded-full bg-[#2a2a3d] hover:bg-[#3a3a52] text-[#f0f0f5] font-bold text-base transition-colors"
+          >
+            Get Ollama
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24" aria-hidden="true">
+              <path stroke-linecap="round" stroke-linejoin="round" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14"/>
+            </svg>
+          </a>
+        </div>
+        <p class="text-xs text-[#555570] mt-12 max-w-lg mx-auto leading-relaxed">
+          Graphnosis is not affiliated with or endorsed by NVIDIA Corporation, AMD Inc., Apple Inc., or Intel Corporation.
+          All trademarks are the property of their respective owners.
+        </p>
+      </div>
+    </section>
+
+  </main>
+
+  <Footer />
+</Layout>

@@ -54,9 +54,9 @@ One nuance for `recall` and `remind`: when overlay engines are enabled, their re
 
 In the desktop app, the first three tabs — **Check-in**, **3D Engram**, and **Deterministic Consolidation** — are entirely deterministic. The fourth tab is where you opt into everything else.
 
-## The "Non-Deterministic Aid" tab
+## The "Foresight" tab
 
-The **Non-Deterministic Aid** tab is the one place you deliberately step outside the deterministic core. It holds two opt-in, **off-by-default** layers:
+The **Foresight** tab is the one place you deliberately step outside the deterministic core. It holds two opt-in, **off-by-default** layers:
 
 ### Graphnosis Neural Network (.GNN)
 

@@ -40,7 +40,9 @@ export interface BillingEnv {
  */
 export function getEnv(locals: App.Locals): BillingEnv {
   const runtime = (locals as { runtime?: { env?: BillingEnv } }).runtime;
-  return (runtime?.env ?? {}) as BillingEnv;
+  // In local `astro dev` there is no Cloudflare runtime, so fall back to
+  // Vite's import.meta.env which reads the .env file.
+  return (runtime?.env ?? import.meta.env) as BillingEnv;
 }
 
 /** Require a string value; throw a clear error when missing. */
