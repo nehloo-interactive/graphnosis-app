@@ -21,7 +21,7 @@
 //! Recall integration: when `host.recall()` runs, overlay nodes and edges
 //! get merged into the rich subgraph result with explicit "[gll]" badges so
 //! the AI client can distinguish attested vs inferred content. The user can
-//! turn the overlay off entirely (in Non-Deterministic Aid) and recall reverts
+//! turn the overlay off entirely (in Foresight) and recall reverts
 //! to the canonical `.gai` view byte-for-byte.
 //!
 //! Reversible: deleting `local-layer.gll` returns the cortex to its

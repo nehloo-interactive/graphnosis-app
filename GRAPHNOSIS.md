@@ -255,7 +255,7 @@ What you do with the inferred layer:
   user confirms the inference, save the user's confirmation as a new
   attested memory.
 - **`forget` doesn't touch overlays.** It operates on `.gai` node IDs
-  only. Overlay content is wiped via the Non-Deterministic Aid controls.
+  only. Overlay content is wiped via the Foresight controls.
 
 ### `dig_deeper`-specific shape
 
