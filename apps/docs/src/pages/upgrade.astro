@@ -28,6 +28,9 @@
 
 export const prerender = false;
 
+import Nav from '../components/Nav.astro';
+import '../styles/global.css';
+
 const url = new URL(Astro.request.url);
 const prefilledEmail = url.searchParams.get('email') ?? '';
 
@@ -58,21 +61,138 @@ const checkoutHref = prefilledEmail
         font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
         background: var(--bg);
         color: var(--fg);
-        max-width: 760px;
-        margin: 6vh auto;
-        padding: 0 24px 8vh;
+        margin: 0;
+        padding: 0;
         line-height: 1.6;
       }
-      .eyebrow {
-        text-transform: uppercase;
-        letter-spacing: 0.15em;
+      .page-content {
+        max-width: 760px;
+        margin: 0 auto;
+        padding: 0 24px 8vh;
+      }
+      /* ── Hero ── */
+      .hero {
+        text-align: center;
+        padding: 80px 0 64px;
+        position: relative;
+      }
+      .hero::before {
+        content: '';
+        position: absolute;
+        top: 0; left: 50%;
+        transform: translateX(-50%);
+        width: 640px; height: 320px;
+        background: radial-gradient(ellipse at center, rgba(27,182,115,0.09) 0%, transparent 68%);
+        pointer-events: none;
+      }
+      .eyebrow-pill {
+        display: inline-flex;
+        align-items: center;
+        gap: 7px;
+        padding: 5px 16px;
+        border: 1px solid rgba(27,182,115,0.45);
+        border-radius: 100px;
         font-size: 11px;
         font-weight: 700;
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
         color: var(--accent);
-        margin: 0 0 12px;
+        margin-bottom: 22px;
       }
-      h1 { font-size: 38px; line-height: 1.15; margin: 0 0 14px; }
-      .lead { font-size: 17px; color: var(--fg-dim); margin: 0 0 32px; max-width: 60ch; }
+      .eyebrow-pill::before {
+        content: '';
+        width: 6px; height: 6px;
+        border-radius: 50%;
+        background: var(--accent);
+        flex-shrink: 0;
+      }
+      h1 {
+        font-size: 54px;
+        line-height: 1.1;
+        margin: 0 0 20px;
+        font-weight: 800;
+        letter-spacing: -0.025em;
+      }
+      @media (max-width: 600px) { h1 { font-size: 38px; } }
+      .lead {
+        font-size: 18px;
+        color: var(--fg-dim);
+        margin: 0 auto 36px;
+        max-width: 58ch;
+        line-height: 1.65;
+      }
+      /* ── Enterprise CTA ── */
+      .enterprise-cta {
+        margin: 52px 0 48px;
+        padding: 32px 32px 28px;
+        background: linear-gradient(135deg, #121d16 0%, #18211c 100%);
+        border: 1px solid rgba(27,182,115,0.3);
+        border-radius: 16px;
+        position: relative;
+        overflow: hidden;
+      }
+      .enterprise-cta::after {
+        content: '';
+        position: absolute;
+        top: -80px; right: -80px;
+        width: 240px; height: 240px;
+        background: radial-gradient(circle, rgba(27,182,115,0.06) 0%, transparent 70%);
+        pointer-events: none;
+      }
+      .enterprise-eyebrow {
+        font-size: 11px;
+        font-weight: 700;
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+        color: var(--accent);
+        margin: 0 0 10px;
+      }
+      .enterprise-h2 {
+        font-size: 24px;
+        font-weight: 800;
+        line-height: 1.25;
+        margin: 0 0 12px;
+        color: var(--fg);
+      }
+      .enterprise-desc {
+        font-size: 15px;
+        color: var(--fg-dim);
+        margin: 0 0 22px;
+        max-width: 56ch;
+        line-height: 1.6;
+      }
+      .enterprise-features {
+        list-style: none;
+        padding: 0;
+        margin: 0 0 26px;
+        display: grid;
+        gap: 9px;
+      }
+      .enterprise-features li {
+        font-size: 14px;
+        color: var(--fg-dim);
+        padding-left: 22px;
+        position: relative;
+      }
+      .enterprise-features li::before {
+        content: '✓';
+        position: absolute;
+        left: 0;
+        color: var(--accent);
+        font-weight: 700;
+      }
+      .enterprise-btn {
+        display: inline-block;
+        padding: 12px 22px;
+        border: 1px solid var(--accent);
+        border-radius: 8px;
+        color: var(--accent);
+        text-decoration: none;
+        font-weight: 600;
+        font-size: 15px;
+        transition: background 0.15s, color 0.15s;
+      }
+      .enterprise-btn:hover { background: var(--accent); color: #fff; }
       .price-card {
         display: flex;
         flex-direction: column;
@@ -157,14 +277,18 @@ const checkoutHref = prefilledEmail
     </style>
   </head>
   <body>
-    <p class="eyebrow">Graphnosis Pro</p>
-    <h1>Your memory, supercharged.</h1>
-    <p class="lead">
-      Graphnosis Pro turns your local cortex into an autonomous, self-improving
-      memory layer. Skill training, neural-graph exploration, autonomous
-      retraining — all running on your own machine, all on top of the same
-      encrypted memory you already own.
-    </p>
+    <Nav />
+    <div class="page-content">
+    <div class="hero">
+      <span class="eyebrow-pill">Graphnosis Pro</span>
+      <h1>Your memory,<br>supercharged.</h1>
+      <p class="lead">
+        Graphnosis Pro unlocks the advanced features of MemoryStudio — Foresight,
+        skill training, neural-graph exploration, and autonomous retraining.
+        All running on your own machine, on top of the same encrypted memory
+        you already own.
+      </p>
+    </div>
 
     <div class="price-card">
       <div class="price-row">
@@ -180,6 +304,14 @@ const checkoutHref = prefilledEmail
 
     <h2>What unlocks</h2>
     <ul class="features">
+      <li>
+        <div class="feature-title">🗂️ MemoryStudio Advanced</div>
+        <div class="feature-desc">
+          The full MemoryStudio workspace — Skills trainer, GNN graph explorer,
+          Foresight panel, and autonomous retraining dashboard. Pro gates lift
+          on every advanced tab; free features stay exactly as they are.
+        </div>
+      </li>
       <li>
         <div class="feature-title">🛠️ Graphnosis Autonomous Praxis (Skills)</div>
         <div class="feature-desc">
@@ -298,11 +430,34 @@ const checkoutHref = prefilledEmail
       <details>
         <summary>Do you offer team / enterprise plans?</summary>
         <p>
-          Coming. Shared engrams, role-permissioned recall, audit-logged
-          access, compliance retention. If you're at a company that wants
-          early access, reach out at <a href="mailto:support@graphnosis.com">support@graphnosis.com</a>.
+          Yes — see the Enterprise &amp; Regulated Deployments section below.
+          Shared engrams, role-permissioned recall, audit-logged access, and
+          compliance retention are on the roadmap. Reach out at
+          <a href="mailto:enterprise@graphnosis.com">enterprise@graphnosis.com</a>
+          for early access or custom requirements.
         </p>
       </details>
+    </div>
+
+    <div class="enterprise-cta">
+      <p class="enterprise-eyebrow">Enterprise &amp; Regulated Deployments</p>
+      <h2 class="enterprise-h2">Built for environments where data doesn't leave the building.</h2>
+      <p class="enterprise-desc">
+        Legal, healthcare, defense, fintech, public sector — industries where
+        memory governance matters as much as memory recall. Graphnosis is
+        local-first by design; enterprise deployment takes that further.
+      </p>
+      <ul class="enterprise-features">
+        <li>Audit-logged recall &amp; ingestion — every memory access on record</li>
+        <li>Role-permissioned cortex access — who sees what, enforced locally</li>
+        <li>Shared team engrams with per-user attribution tracking</li>
+        <li>Air-gapped &amp; fully offline deployment — no telemetry, no license phone-home</li>
+        <li>Compliance retention controls — legal hold, HIPAA, SOC 2 alignment</li>
+        <li>Custom onboarding, deployment support, and SLA</li>
+      </ul>
+      <a class="enterprise-btn" href="mailto:enterprise@graphnosis.com">
+        Contact for enterprise access →
+      </a>
     </div>
 
     <p class="footer-note">
@@ -312,5 +467,6 @@ const checkoutHref = prefilledEmail
       <br />
       Questions? Email <a href="mailto:support@graphnosis.com">support@graphnosis.com</a>.
     </p>
+    </div> <!-- /.page-content -->
   </body>
 </html>

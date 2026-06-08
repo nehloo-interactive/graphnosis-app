@@ -36,16 +36,12 @@ try {
   version = conf.version ? `v${conf.version}` : '';
 } catch { /* docs site built standalone — skip the pill */ }
 
-// Bare semver (no leading "v") for artifact filenames in the Linux install
-// snippets — Tauri names its bundles Graphnosis_<semver>_amd64.AppImage etc.
-// Falls back to a literal placeholder so the snippets still read sensibly
-// if the version couldn't be resolved at build time.
-const semver = version ? version.replace(/^v/, '') : '1.x.y';
+
 ---
 
 <Layout
   title="Download Graphnosis — macOS, Windows & Linux"
-  description="Download the free Graphnosis app for macOS, Windows, or Linux (AppImage & Ubuntu/Debian .deb). Local, encrypted, deterministic memory for your AI — zero servers, zero data leaves your machine."
+  description="Download Graphnosis for macOS, Windows, or Linux (AppImage & Ubuntu/Debian .deb). Local, encrypted, deterministic memory for your AI — deterministic recall free, Pro unlocks Foresight local AI insights &amp; predictions."
 >
   <Nav />
 
@@ -66,8 +62,8 @@ const semver = version ? version.replace(/^v/, '') : '1.x.y';
           Download Graphnosis
         </h1>
         <p class="text-lg text-[#c4c6d6] max-w-2xl mx-auto leading-relaxed">
-          Free, local-first memory for your AI. Encrypted at rest, runs entirely on your device,
-          works offline. Pick your operating system.
+          Local-first memory for your AI — encrypted at rest, runs entirely on your device,
+          works offline. Deterministic core free · Pro unlocks Foresight.
         </p>
         <p
           id="download-detect-note"
@@ -167,7 +163,7 @@ const semver = version ? version.replace(/^v/, '') : '1.x.y';
             </svg>
           </div>
           <div>
-            <h2 class="text-2xl font-black text-white mb-1">Linux</h2>
+            <h2 class="text-2xl font-black text-white mb-1">Linux / Ubuntu</h2>
             <p class="text-sm text-[#9a9db8]">x86_64 · Ubuntu, Debian, Fedora, Arch</p>
           </div>
           <ul class="flex flex-col gap-2 text-sm text-[#b0b3c6] flex-1">
@@ -193,8 +189,6 @@ const semver = version ? version.replace(/^v/, '') : '1.x.y';
             </a>
           </div>
           <p class="text-center text-[11px] text-[#71717a] leading-none">
-            <a href="#linux-install" class="text-[#9a9db8] hover:text-[#c4c6d6] transition-colors underline decoration-[#71717a]/50">Install guide</a>
-            &nbsp;·&nbsp;
             <a href="/legal/terms-of-use" class="text-[#9a9db8] hover:text-[#c4c6d6] transition-colors underline decoration-[#71717a]/50">Terms</a>
             &nbsp;·&nbsp;
             <a href="/legal/privacy-policy" class="text-[#9a9db8] hover:text-[#c4c6d6] transition-colors underline decoration-[#71717a]/50">Privacy</a>
@@ -204,56 +198,90 @@ const semver = version ? version.replace(/^v/, '') : '1.x.y';
       </div>
     </section>
 
-    <!-- Linux install guide -->
-    <section id="linux-install" class="pb-16 px-4 sm:px-6 scroll-mt-24">
-      <div class="max-w-3xl mx-auto">
-        <h2 class="text-2xl sm:text-3xl font-black text-white mb-2">Installing on Linux</h2>
-        <p class="text-[#c4c6d6] mb-8 leading-relaxed">
-          Graphnosis ships two Linux builds for <code class="text-[#a78bfa] font-mono">x86_64</code>.
-          The <strong class="text-white">AppImage</strong> runs on any distribution with no install step;
-          the <strong class="text-white">.deb</strong> integrates with Debian / Ubuntu (app-menu entry and
-          <code class="text-[#a78bfa] font-mono">apt</code> updates). Both bundle the same encrypted,
-          offline-first sidecar.
+    <!-- Local AI cards -->
+    <section class="pb-16 px-4 sm:px-6">
+      <div class="max-w-5xl mx-auto">
+        <div class="flex items-center gap-4 mb-8">
+          <div class="flex-1 h-px bg-[#2a2a3d]"></div>
+          <div class="flex items-center gap-2 px-4 py-1.5 rounded-full border border-[#2a2a3d] bg-[#1c1c27]">
+            <span class="text-[#67e8f9] text-sm">⚡</span>
+            <span class="text-xs font-mono font-semibold text-[#9a9db8] tracking-widest uppercase">Foresight — Add local AI</span>
+          </div>
+          <div class="flex-1 h-px bg-[#2a2a3d]"></div>
+        </div>
+        <p class="text-center text-sm text-[#9a9db8] mb-8 max-w-xl mx-auto">
+          Pair Graphnosis with Ollama on your GPU to unlock the full Foresight tier — semantic enrichment, insights, predictions, neural inference, and autonomous skill &amp; goals training. Zero cloud required.
         </p>
 
-        <!-- AppImage -->
-        <div class="bg-[#1c1c27] border border-[#2a2a3d] rounded-2xl p-6 mb-6">
-          <h3 class="text-lg font-bold text-white mb-1 flex items-center gap-2">
-            <code class="text-[#a78bfa] font-mono text-base">.AppImage</code>
-            <span class="text-sm font-normal text-[#9a9db8]">— any distribution</span>
-          </h3>
-          <p class="text-sm text-[#b0b3c6] mb-4 leading-relaxed">
-            Download, mark it executable, and run it — no root, no install. On Ubuntu 22.04+ you may
-            need FUSE: <code class="text-[#a78bfa] font-mono">sudo apt install libfuse2</code>.
-          </p>
-          <pre class="install-snippet"><code># Make it executable and launch
-chmod +x Graphnosis_{semver}_amd64.AppImage
-./Graphnosis_{semver}_amd64.AppImage</code></pre>
+        <div class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-4">
+
+          <!-- AMD -->
+          <a href="/local-ai#amd" class="group bg-[#1c1c27] border border-[#2a2a3d] rounded-xl p-5 flex flex-col items-center text-center gap-3 hover:border-[#f97316]/40 hover:-translate-y-0.5 hover:shadow-lg hover:shadow-[#f97316]/10 transition-all no-underline">
+            <div class="w-11 h-11 rounded-xl bg-[#f97316]/10 flex items-center justify-center" aria-hidden="true">
+              <svg class="w-6 h-6 text-[#f97316]" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" viewBox="0 0 24 24">
+                <rect x="2" y="7" width="20" height="10" rx="2"/><path d="M6 7V5M10 7V5M14 7V5M18 7V5M6 17v2M10 17v2M14 17v2M18 17v2"/><path d="M5 12h2M10 12h4M17 12h2"/>
+              </svg>
+            </div>
+            <span class="text-sm font-bold text-[#f0f0f5]">AMD GPU</span>
+            <span class="text-xs text-[#71717a] leading-snug">ROCm · RX 6000/7000 · Linux</span>
+            <span class="text-xs font-semibold text-[#f97316] group-hover:underline mt-auto">Setup guide →</span>
+          </a>
+
+          <!-- Apple Silicon -->
+          <a href="/local-ai#apple-silicon" class="group bg-[#1c1c27] border border-[#2a2a3d] rounded-xl p-5 flex flex-col items-center text-center gap-3 hover:border-white/20 hover:-translate-y-0.5 hover:shadow-lg hover:shadow-white/5 transition-all no-underline">
+            <div class="w-11 h-11 rounded-xl bg-white/[0.06] flex items-center justify-center" aria-hidden="true">
+              <svg class="w-6 h-6 text-white" fill="currentColor" viewBox="0 0 24 24">
+                <path d="M14.94 5.19A4.38 4.38 0 0 0 16 2a4.44 4.44 0 0 0-3 1.52 4.17 4.17 0 0 0-1 3.09 3.69 3.69 0 0 0 2.94-1.42zm2.52 7.44a4.51 4.51 0 0 1 2.16-3.81 4.66 4.66 0 0 0-3.66-2c-1.56-.16-3 .91-3.83.91s-2-.89-3.3-.87a4.92 4.92 0 0 0-4.14 2.53C2.91 12.87 4.24 17.88 6 20.47c.8 1.21 1.8 2.58 3.12 2.53s1.75-.82 3.28-.82 2 .82 3.3.79 2.22-1.24 3.06-2.45a11 11 0 0 0 1.38-2.85 4.41 4.41 0 0 1-2.68-4.04z"/>
+              </svg>
+            </div>
+            <span class="text-sm font-bold text-[#f0f0f5]">Apple Silicon</span>
+            <span class="text-xs text-[#71717a] leading-snug">Metal · M1 / M2 / M3 / M4</span>
+            <span class="text-xs font-semibold text-[#c4c6d6] group-hover:underline mt-auto">Setup guide →</span>
+          </a>
+
+          <!-- Intel Arc -->
+          <a href="/local-ai#intel-arc" class="group bg-[#1c1c27] border border-[#2a2a3d] rounded-xl p-5 flex flex-col items-center text-center gap-3 hover:border-[#60a5fa]/40 hover:-translate-y-0.5 hover:shadow-lg hover:shadow-[#60a5fa]/10 transition-all no-underline">
+            <div class="w-11 h-11 rounded-xl bg-[#60a5fa]/10 flex items-center justify-center" aria-hidden="true">
+              <svg class="w-6 h-6 text-[#60a5fa]" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" viewBox="0 0 24 24">
+                <rect x="2" y="7" width="20" height="10" rx="2"/><path d="M6 7V5M10 7V5M14 7V5M18 7V5M6 17v2M10 17v2M14 17v2M18 17v2"/><path d="M8 12h8"/>
+              </svg>
+            </div>
+            <span class="text-sm font-bold text-[#f0f0f5]">Intel Arc</span>
+            <span class="text-xs text-[#71717a] leading-snug">oneAPI · Arc A/B-series</span>
+            <span class="text-xs font-semibold text-[#60a5fa] group-hover:underline mt-auto">Setup guide →</span>
+          </a>
+
+          <!-- NVIDIA GPU -->
+          <a href="/local-ai#nvidia" class="group bg-[#1c1c27] border border-[#2a2a3d] rounded-xl p-5 flex flex-col items-center text-center gap-3 hover:border-[#67e8f9]/40 hover:-translate-y-0.5 hover:shadow-lg hover:shadow-[#67e8f9]/10 transition-all no-underline">
+            <div class="w-11 h-11 rounded-xl bg-[#67e8f9]/10 flex items-center justify-center" aria-hidden="true">
+              <svg class="w-6 h-6 text-[#67e8f9]" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" viewBox="0 0 24 24">
+                <rect x="2" y="7" width="20" height="10" rx="2"/><path d="M6 7V5M10 7V5M14 7V5M18 7V5M6 17v2M10 17v2M14 17v2M18 17v2"/><path d="M5 12h2M10 12h4M17 12h2"/>
+              </svg>
+            </div>
+            <span class="text-sm font-bold text-[#f0f0f5]">NVIDIA GPU</span>
+            <span class="text-xs text-[#71717a] leading-snug">CUDA · RTX / GTX</span>
+            <span class="text-xs font-semibold text-[#67e8f9] group-hover:underline mt-auto">Setup guide →</span>
+          </a>
+
+          <!-- Jetson Orin -->
+          <a href="/local-ai#jetson" class="group bg-[#1c1c27] border border-[#2a2a3d] rounded-xl p-5 flex flex-col items-center text-center gap-3 hover:border-[#a78bfa]/40 hover:-translate-y-0.5 hover:shadow-lg hover:shadow-[#a78bfa]/10 transition-all no-underline col-span-2 sm:col-span-1">
+            <div class="w-11 h-11 rounded-xl bg-[#a78bfa]/10 flex items-center justify-center" aria-hidden="true">
+              <svg class="w-6 h-6 text-[#a78bfa]" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" viewBox="0 0 24 24">
+                <rect x="3" y="3" width="18" height="18" rx="2"/><path d="M9 3v18M15 3v18M3 9h18M3 15h18"/>
+              </svg>
+            </div>
+            <span class="text-sm font-bold text-[#f0f0f5]">Jetson Orin</span>
+            <span class="text-xs text-[#71717a] leading-snug">CUDA · JetPack 6 · Edge</span>
+            <span class="text-xs font-semibold text-[#a78bfa] group-hover:underline mt-auto">Setup guide →</span>
+          </a>
+
         </div>
 
-        <!-- Ubuntu / Debian .deb -->
-        <div class="bg-[#1c1c27] border border-[#2a2a3d] rounded-2xl p-6">
-          <h3 class="text-lg font-bold text-white mb-1 flex items-center gap-2">
-            <code class="text-[#a78bfa] font-mono text-base">.deb</code>
-            <span class="text-sm font-normal text-[#9a9db8]">— Ubuntu / Debian</span>
-          </h3>
-          <p class="text-sm text-[#b0b3c6] mb-4 leading-relaxed">
-            Installs to <code class="text-[#a78bfa] font-mono">/usr/bin</code> with a desktop entry.
-            Using <code class="text-[#a78bfa] font-mono">apt</code> pulls in any missing dependencies
-            automatically.
-          </p>
-          <pre class="install-snippet"><code># Recommended — resolves dependencies
-sudo apt install ./Graphnosis_{semver}_amd64.deb
-
-# Or with dpkg, then fix any missing deps
-sudo dpkg -i Graphnosis_{semver}_amd64.deb
-sudo apt-get install -f</code></pre>
-          <p class="text-xs text-[#71717a] mt-4 leading-relaxed">
-            Launch from your app menu, or run <code class="text-[#9a9db8] font-mono">graphnosis</code>
-            from a terminal. Update later with <code class="text-[#9a9db8] font-mono">sudo apt install ./Graphnosis_…_amd64.deb</code>
-            or by reinstalling a newer <code class="text-[#9a9db8] font-mono">.deb</code>.
-          </p>
-        </div>
+        <p class="text-center text-sm text-[#9a9db8] mt-6">
+          Foresight features require
+          <a href="/upgrade" class="text-[#1bb673] hover:text-white font-semibold transition-colors">Graphnosis Pro</a>
+          — skill training, GNN exploration &amp; autonomous retraining included.
+        </p>
       </div>
     </section>
 
@@ -265,11 +293,11 @@ sudo apt-get install -f</code></pre>
           <a href="https://github.com/nehloo-interactive/graphnosis-app" class="text-[#9a9db8] hover:text-[#c4c6d6] transition-colors underline decoration-[#71717a]/50">
             View on GitHub
           </a>
-          &middot; Free forever &middot; No account required
+          &middot; Deterministic recall free &middot; Pro for Foresight &middot; No account required
         </p>
         <p class="text-sm text-[#71717a] mt-3">
           Running a personal server? See the
-          <a href="https://docs.graphnosis.com/getting-started/mobile/" class="text-[#9a9db8] hover:text-[#c4c6d6] transition-colors underline decoration-[#71717a]/50">
+          <a href="https://graphnosis.com/getting-started/mobile/" class="text-[#9a9db8] hover:text-[#c4c6d6] transition-colors underline decoration-[#71717a]/50">
             self-host &amp; phone guide &rarr;
           </a>
         </p>
@@ -290,28 +318,7 @@ sudo apt-get install -f</code></pre>
     transform: translateY(-2px);
   }
 
-  /* Copy-paste install snippets in the Linux guide. Monospace, scrollable
-     on narrow viewports, with a subtle border so they read as terminal
-     blocks rather than body text. */
-  .install-snippet {
-    margin: 0;
-    padding: 14px 16px;
-    border-radius: 10px;
-    background: #13131a;
-    border: 1px solid #2a2a3d;
-    overflow-x: auto;
-    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-    font-size: 13px;
-    line-height: 1.6;
-    color: #e4e4ef;
-    white-space: pre;
-  }
-  .install-snippet code {
-    font-family: inherit;
-    color: inherit;
-    background: none;
-    padding: 0;
-  }
+
 </style>
 
 <script is:inline>
