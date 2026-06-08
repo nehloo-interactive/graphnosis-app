@@ -1,9 +1,11 @@
 ---
-import { readFileSync } from 'node:fs';
-import { resolve } from 'node:path';
-
+// Dynamic import keeps node:fs out of the Workers SSR bundle — the static
+// prerender path resolves the import fine; Workers silently catches and
+// falls back to an empty version string.
 let version = '';
 try {
+  const { readFileSync } = await import('node:fs');
+  const { resolve } = await import('node:path');
   const conf = JSON.parse(readFileSync(resolve('../../apps/desktop/src-tauri/tauri.conf.json'), 'utf8'));
   version = conf.version ? `v${conf.version}` : '';
 } catch {}
