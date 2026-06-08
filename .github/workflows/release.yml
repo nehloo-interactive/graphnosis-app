@@ -371,6 +371,23 @@ jobs:
       - name: Build sidecar
         run: pnpm --filter @graphnosis-app/desktop-sidecar build
 
+      # linuxdeploy runs ldd on every usr/bin ELF and dies if ldd fails. Our Bun
+      # --compile sidecars (graphnosis-sidecar/-mcp-relay) are self-contained and
+      # ldd can't trace them (exits 1) — they link only standard glibc, so they
+      # need no dep bundling. Shim ldd to report "no deps" when the real ldd
+      # fails, while passing normal binaries (the app → GTK/WebKit) through.
+      - name: Install ldd shim for self-contained sidecars
+        run: |
+          mkdir -p "$HOME/.local/bin-shim"
+          cat > "$HOME/.local/bin-shim/ldd" <<'SH'
+          #!/usr/bin/env bash
+          out=$(/usr/bin/ldd "$@" 2>&1); rc=$?
+          if [ $rc -ne 0 ]; then exit 0; fi
+          printf '%s\n' "$out"
+          SH
+          chmod +x "$HOME/.local/bin-shim/ldd"
+          echo "$HOME/.local/bin-shim" >> "$GITHUB_PATH"
+
       # tauri.linux.conf.json selects the deb + appimage bundle targets and the
       # linux externalBin/resources (auto-merged by Tauri on the linux host).
       - name: Build (Linux deb + AppImage)

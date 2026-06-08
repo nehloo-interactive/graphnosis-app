@@ -98,6 +98,27 @@ jobs:
       - name: Build sidecar
         run: pnpm --filter @graphnosis-app/desktop-sidecar build
 
+      # linuxdeploy runs `ldd` on every ELF in the AppDir's usr/bin to bundle its
+      # shared libs, and treats an ldd failure as fatal ("Failed to run ldd:
+      # exited with code 1"). Our externalBin sidecars (graphnosis-sidecar,
+      # graphnosis-mcp-relay) are Bun --compile self-contained binaries: ldd
+      # can't trace them (it execs them in trace mode; they exit 1). They link
+      # only standard glibc, so they need NO dependency bundling. This shim makes
+      # ldd report "no deps" (exit 0) for binaries the real ldd can't trace,
+      # while passing normal binaries (the main app → GTK/WebKit) straight
+      # through. Prepended to PATH via GITHUB_PATH so linuxdeploy picks it up.
+      - name: Install ldd shim for self-contained sidecars
+        run: |
+          mkdir -p "$HOME/.local/bin-shim"
+          cat > "$HOME/.local/bin-shim/ldd" <<'SH'
+          #!/usr/bin/env bash
+          out=$(/usr/bin/ldd "$@" 2>&1); rc=$?
+          if [ $rc -ne 0 ]; then exit 0; fi
+          printf '%s\n' "$out"
+          SH
+          chmod +x "$HOME/.local/bin-shim/ldd"
+          echo "$HOME/.local/bin-shim" >> "$GITHUB_PATH"
+
       # Tauri builds the .deb first (reliable), then the AppImage (linuxdeploy is
       # flaky on FUSE-less CI). continue-on-error lets the job proceed with the
       # .deb already on disk if the AppImage step dies; the Collect step below is
@@ -110,37 +131,7 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           APPIMAGE_EXTRACT_AND_RUN: 1
           NO_STRIP: "true"
-        run: pnpm --filter @graphnosis-app/desktop tauri:build -- --verbose
-
-      # linuxdeploy itself runs fine (FUSE OK, exec OK) — the failure is during
-      # the real bundling (gtk plugin / appimage output), whose stderr Tauri
-      # discards. The AppDir survives the failed build, so replicate Tauri's
-      # exact invocation on it to capture the real error. Diagnostic only.
-      - name: Diagnose linuxdeploy (real bundling)
-        if: always()
-        run: |
-          set +e
-          CACHE="$HOME/.cache/tauri"
-          APPDIR=$(find apps/desktop/src-tauri/target/release/bundle/appimage -maxdepth 1 -name "*.AppDir" | head -1)
-          echo "APPDIR=$APPDIR"
-          ls -la "$CACHE" 2>&1
-          [ -z "$APPDIR" ] && { echo "no AppDir on disk"; exit 0; }
-          # Expose the plugins under the names linuxdeploy expects on PATH.
-          cp "$CACHE/linuxdeploy-plugin-gtk.sh" "$CACHE/linuxdeploy-plugin-gtk" 2>/dev/null
-          cp "$CACHE/linuxdeploy-plugin-gstreamer.sh" "$CACHE/linuxdeploy-plugin-gstreamer" 2>/dev/null
-          cp "$CACHE/linuxdeploy-plugin-appimage.AppImage" "$CACHE/linuxdeploy-plugin-appimage" 2>/dev/null
-          chmod +x "$CACHE"/linuxdeploy* 2>/dev/null
-          echo "=== inspect the Bun externalBins ldd chokes on ==="
-          for b in graphnosis-sidecar graphnosis-mcp-relay; do
-            f="$APPDIR/usr/bin/$b"
-            echo "--- $f ---"; ls -l "$f" 2>&1; file "$f" 2>&1
-            echo "ldd output:"; ldd "$f" 2>&1; echo "ldd rc=$?"
-          done
-          export PATH="$CACHE:$PATH"
-          export APPIMAGE_EXTRACT_AND_RUN=1 NO_STRIP=true OUTPUT="Graphnosis_diag_amd64.AppImage"
-          echo "=== replicate: linuxdeploy --appdir <AppDir> --plugin gtk --output appimage ==="
-          "$CACHE/linuxdeploy-x86_64.AppImage" --appdir "$APPDIR" --plugin gtk --output appimage 2>&1 | tail -100
-          echo "rc=${PIPESTATUS[0]}"
+        run: pnpm --filter @graphnosis-app/desktop tauri:build
 
       # .deb is REQUIRED (its absence means the build genuinely failed). AppImage
       # is OPTIONAL — uploaded if linuxdeploy succeeded, skipped with a warning
