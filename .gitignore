@@ -94,3 +94,5 @@ apps/desktop-sidecar/src/default-skill-packs.ts
 # key / build-gsk.mjs that produce real bundled bytes.
 apps/desktop-sidecar/src/skill-demos.generated.ts
 
+mcpb/server/
+graphnosis.mcpb

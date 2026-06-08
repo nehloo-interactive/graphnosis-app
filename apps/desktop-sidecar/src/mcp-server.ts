@@ -1590,6 +1590,10 @@ export function createMcpServer(deps: McpDeps): Server {
           },
           required: ['query'],
         },
+        annotations: {
+          title: 'Search memory',
+          readOnlyHint: true,
+        },
       },
       {
         name: 'remind',
@@ -1616,6 +1620,10 @@ export function createMcpServer(deps: McpDeps): Server {
           },
           required: ['query'],
         },
+        annotations: {
+          title: 'Recall memory',
+          readOnlyHint: true,
+        },
       },
       {
         name: 'dig_deeper',
@@ -1630,6 +1638,10 @@ export function createMcpServer(deps: McpDeps): Server {
             except_engrams: { type: 'array', items: { type: 'string' }, description: 'Optional: exclude these engrams.' },
           },
           required: ['query'],
+        },
+        annotations: {
+          title: 'Deep memory search',
+          readOnlyHint: true,
         },
       },
       {
@@ -1662,6 +1674,11 @@ export function createMcpServer(deps: McpDeps): Server {
           },
           required: ['text'],
         },
+        annotations: {
+          title: 'Save to memory',
+          readOnlyHint: false,
+          destructiveHint: false,
+        },
       },
       {
         name: 'edit',
@@ -1677,6 +1694,11 @@ export function createMcpServer(deps: McpDeps): Server {
           },
           required: ['correction'],
         },
+        annotations: {
+          title: 'Correct memory',
+          readOnlyHint: false,
+          destructiveHint: true,
+        },
       },
       {
         name: 'apply',
@@ -1688,6 +1710,11 @@ export function createMcpServer(deps: McpDeps): Server {
             diffId: { type: 'string' },
           },
           required: ['graphId', 'diffId'],
+        },
+        annotations: {
+          title: 'Apply correction',
+          readOnlyHint: false,
+          destructiveHint: true,
         },
       },
       {
@@ -1724,6 +1751,11 @@ export function createMcpServer(deps: McpDeps): Server {
           },
           required: ['graphId'],
         },
+        annotations: {
+          title: 'Delete from memory',
+          readOnlyHint: false,
+          destructiveHint: true,
+        },
       },
       {
         name: 'stats',
@@ -1733,6 +1765,10 @@ export function createMcpServer(deps: McpDeps): Server {
           properties: {
             includeNodes: { type: 'boolean', description: 'Include up to 20 node previews. Default false.' },
           },
+        },
+        annotations: {
+          title: 'Memory stats',
+          readOnlyHint: true,
         },
       },
       {
@@ -1771,6 +1807,11 @@ export function createMcpServer(deps: McpDeps): Server {
           },
           required: ['context', 'strategy', 'goals'],
         },
+        annotations: {
+          title: 'Strategic planning',
+          readOnlyHint: false,
+          destructiveHint: false,
+        },
       },
       {
         name: 'predict',
@@ -1794,6 +1835,10 @@ export function createMcpServer(deps: McpDeps): Server {
           },
           required: ['action'],
         },
+        annotations: {
+          title: 'Risk analysis',
+          readOnlyHint: true,
+        },
       },
       {
         name: 'insights',
@@ -1810,6 +1855,10 @@ export function createMcpServer(deps: McpDeps): Server {
             },
           },
         },
+        annotations: {
+          title: 'Background insights',
+          readOnlyHint: true,
+        },
       },
       {
         name: 'vitality',
@@ -1821,12 +1870,20 @@ export function createMcpServer(deps: McpDeps): Server {
           type: 'object',
           properties: {},
         },
+        annotations: {
+          title: 'Graph health',
+          readOnlyHint: true,
+        },
       },
       // ── Navigation & routing ──────────────────────────────────────────────
       {
         name: 'list_engrams',
         description: 'DETERMINISM — Deterministic: a direct read of graph metadata; no LLM, no randomness.\n\nList all engrams (knowledge-graph collections) in the user\'s cortex — names, sensitivity tiers, source counts, and archive state. Call this when the user asks "what engrams do I have?", "show me my collections", or when you need to pick a target_engram for remember but don\'t know what exists. Returns a JSON array.',
         inputSchema: { type: 'object', properties: {} },
+        annotations: {
+          title: 'List engrams',
+          readOnlyHint: true,
+        },
       },
       {
         name: 'suggest_engram',
@@ -1838,6 +1895,10 @@ export function createMcpServer(deps: McpDeps): Server {
             top_k: { type: 'number', description: 'How many suggestions to return. Default 3, max 5.' },
           },
           required: ['text'],
+        },
+        annotations: {
+          title: 'Suggest engram',
+          readOnlyHint: true,
         },
       },
       {
@@ -1851,6 +1912,10 @@ export function createMcpServer(deps: McpDeps): Server {
           },
           required: ['engram'],
         },
+        annotations: {
+          title: 'Browse engram',
+          readOnlyHint: true,
+        },
       },
       {
         name: 'recent',
@@ -1862,6 +1927,10 @@ export function createMcpServer(deps: McpDeps): Server {
             limit: { type: 'number', description: 'Number of sources to return. Default 10, max 50.' },
           },
         },
+        annotations: {
+          title: 'Recent sources',
+          readOnlyHint: true,
+        },
       },
       {
         name: 'get_engram_schema',
@@ -1872,6 +1941,10 @@ export function createMcpServer(deps: McpDeps): Server {
             engram: { type: 'string', description: 'Engram slug or display name (fuzzy-matched).' },
           },
           required: ['engram'],
+        },
+        annotations: {
+          title: 'Engram metadata',
+          readOnlyHint: true,
         },
       },
       // ── Advanced recall ───────────────────────────────────────────────────
@@ -1889,6 +1962,10 @@ export function createMcpServer(deps: McpDeps): Server {
           },
           required: ['query'],
         },
+        annotations: {
+          title: 'Structured search',
+          readOnlyHint: true,
+        },
       },
       {
         name: 'recall_with_citations',
@@ -1904,6 +1981,10 @@ export function createMcpServer(deps: McpDeps): Server {
           },
           required: ['query'],
         },
+        annotations: {
+          title: 'Search with citations',
+          readOnlyHint: true,
+        },
       },
       {
         name: 'compare_engrams',
@@ -1918,6 +1999,10 @@ export function createMcpServer(deps: McpDeps): Server {
           },
           required: ['query', 'engram_a', 'engram_b'],
         },
+        annotations: {
+          title: 'Compare engrams',
+          readOnlyHint: true,
+        },
       },
       {
         name: 'cross_search',
@@ -1930,6 +2015,10 @@ export function createMcpServer(deps: McpDeps): Server {
             maxNodes: { type: 'number', description: 'Total max nodes to return. Default 20.' },
           },
           required: ['query', 'engrams'],
+        },
+        annotations: {
+          title: 'Cross-engram search',
+          readOnlyHint: true,
         },
       },
       // ── Source management ─────────────────────────────────────────────────
@@ -1945,6 +2034,10 @@ export function createMcpServer(deps: McpDeps): Server {
             limit: { type: 'number', description: 'Max results. Default 10.' },
           },
         },
+        annotations: {
+          title: 'Find source',
+          readOnlyHint: true,
+        },
       },
       {
         name: 'recall_source',
@@ -1956,6 +2049,10 @@ export function createMcpServer(deps: McpDeps): Server {
             engram: { type: 'string', description: 'Optional: scope the search to one engram (slug or display name). Speeds up lookup on large cortexes.' },
           },
           required: ['sourceId'],
+        },
+        annotations: {
+          title: 'Full source content',
+          readOnlyHint: true,
         },
       },
       {
@@ -1969,6 +2066,11 @@ export function createMcpServer(deps: McpDeps): Server {
             to_engram: { type: 'string', description: 'Destination engram (slug or display name).' },
           },
           required: ['sourceId', 'from_engram', 'to_engram'],
+        },
+        annotations: {
+          title: 'Move source',
+          readOnlyHint: false,
+          destructiveHint: false,
         },
       },
       {
@@ -1994,6 +2096,11 @@ export function createMcpServer(deps: McpDeps): Server {
           },
           required: ['items'],
         },
+        annotations: {
+          title: 'Batch save',
+          readOnlyHint: false,
+          destructiveHint: false,
+        },
       },
       // ── Memory health ─────────────────────────────────────────────────────
       {
@@ -2007,6 +2114,10 @@ export function createMcpServer(deps: McpDeps): Server {
           },
           required: ['engram'],
         },
+        annotations: {
+          title: 'Engram summary',
+          readOnlyHint: true,
+        },
       },
       {
         name: 'audit_memory',
@@ -2017,6 +2128,10 @@ export function createMcpServer(deps: McpDeps): Server {
             engrams: { type: 'array', items: { type: 'string' }, description: 'Optional: restrict audit to these engrams (slugs or names). Default: all non-archived, non-sensitive engrams.' },
             threshold: { type: 'number', description: 'Similarity threshold 0.5–1.0. Default 0.85. Lower = more matches, more noise.' },
           },
+        },
+        annotations: {
+          title: 'Duplicate audit',
+          readOnlyHint: true,
         },
       },
       {
@@ -2031,6 +2146,10 @@ export function createMcpServer(deps: McpDeps): Server {
           },
           required: ['text'],
         },
+        annotations: {
+          title: 'Pre-save duplicate check',
+          readOnlyHint: true,
+        },
       },
       {
         name: 'duplicate_pairs',
@@ -2040,6 +2159,10 @@ export function createMcpServer(deps: McpDeps): Server {
           properties: {
             limit: { type: 'number', description: 'Max pairs to return. Default 20.' },
           },
+        },
+        annotations: {
+          title: 'Duplicate pairs',
+          readOnlyHint: true,
         },
       },
       {
@@ -2051,12 +2174,20 @@ export function createMcpServer(deps: McpDeps): Server {
             limit: { type: 'number', description: 'Max records to return. Default 20.' },
           },
         },
+        annotations: {
+          title: 'Self-healing log',
+          readOnlyHint: true,
+        },
       },
       // ── On-demand LLM & GNN ───────────────────────────────────────────────
       {
         name: 'gnn_status',
         description: 'DETERMINISM — Deterministic: reads Neural Network state; no LLM.\n\nCheck whether the Graphnosis Neural Network is enabled, how many predicted edges it has computed, and when it last ran. Use before calling gnn_neighbors to confirm the GNN has data, or when the user asks "is the neural network running?". Requires the brain engine to be running.',
         inputSchema: { type: 'object', properties: {} },
+        annotations: {
+          title: 'Neural network status',
+          readOnlyHint: true,
+        },
       },
       {
         name: 'gnn_neighbors',
@@ -2069,6 +2200,10 @@ export function createMcpServer(deps: McpDeps): Server {
             limit: { type: 'number', description: 'Max neighbors to return. Default 10.' },
           },
           required: ['query'],
+        },
+        annotations: {
+          title: 'Neural network neighbors',
+          readOnlyHint: true,
         },
       },
       {
@@ -2083,6 +2218,10 @@ export function createMcpServer(deps: McpDeps): Server {
           },
           required: ['question'],
         },
+        annotations: {
+          title: 'Local AI query',
+          readOnlyHint: true,
+        },
       },
       {
         name: 'llm_distill',
@@ -2094,6 +2233,10 @@ export function createMcpServer(deps: McpDeps): Server {
             target_engram: { type: 'string', description: 'Optional: suggested engram for the extracted facts (included in the output).' },
           },
           required: ['text'],
+        },
+        annotations: {
+          title: 'Extract facts',
+          readOnlyHint: true,
         },
       },
       {
@@ -2116,6 +2259,11 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
             },
           },
           required: ['phrase', 'tier'],
+        },
+        annotations: {
+          title: 'Confirm data access',
+          readOnlyHint: false,
+          destructiveHint: false,
         },
       },
       // ── Skill training (monthly subscription) ───────────────────────────────
@@ -2184,6 +2332,11 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
           },
           required: ['skill'],
         },
+        annotations: {
+          title: 'Train skill',
+          readOnlyHint: false,
+          destructiveHint: false,
+        },
       },
       {
         name: 'skill_vitality',
@@ -2212,6 +2365,10 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
             },
           },
           required: ['source_id'],
+        },
+        annotations: {
+          title: 'Skill freshness',
+          readOnlyHint: true,
         },
       },
       {
@@ -2248,6 +2405,10 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
           },
           required: ['skill_text', 'format'],
         },
+        annotations: {
+          title: 'Export skill',
+          readOnlyHint: true,
+        },
       },
         {
           name: 'list_skills',
@@ -2257,6 +2418,10 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
             properties: {
               engram: { type: 'string', description: 'Engram slug to scope the listing (e.g. "skills"). Omit to list skills across all engrams.' },
             },
+          },
+          annotations: {
+            title: 'List skills',
+            readOnlyHint: true,
           },
         },
         {
@@ -2271,6 +2436,10 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
             },
             required: ['graphId', 'sourceId'],
           },
+          annotations: {
+            title: 'Explain skill',
+            readOnlyHint: true,
+          },
         },
         {
           name: 'walk_skill_structured',
@@ -2283,6 +2452,10 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
               recursive: { type: 'boolean', description: 'When true, inline sub-skill steps for any step that invokes another skill. Default false.' },
             },
             required: ['graphId', 'sourceId'],
+          },
+          annotations: {
+            title: 'Execute skill plan',
+            readOnlyHint: true,
           },
         },
         {
@@ -2300,6 +2473,11 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
             },
             required: ['skillGraphId', 'skillSourceId', 'capturedVars', 'completedStepIndex'],
           },
+          annotations: {
+            title: 'Save skill run',
+            readOnlyHint: false,
+            destructiveHint: false,
+          },
         },
         {
           name: 'resume_skill_run',
@@ -2310,6 +2488,10 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
               runId: { type: 'string', description: 'The runId returned by save_skill_run.' },
             },
             required: ['runId'],
+          },
+          annotations: {
+            title: 'Resume skill run',
+            readOnlyHint: true,
           },
         },
         {
@@ -2323,6 +2505,10 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
             },
             required: ['graphId', 'sourceId'],
           },
+          annotations: {
+            title: 'Get skill',
+            readOnlyHint: true,
+          },
         },
         {
           name: 'skill_history',
@@ -2334,6 +2520,10 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
               sourceId: { type: 'string', description: 'sourceId of any version of the skill — the full history for that skill name is returned.' },
             },
             required: ['graphId', 'sourceId'],
+          },
+          annotations: {
+            title: 'Skill history',
+            readOnlyHint: true,
           },
         },
         {
@@ -2348,6 +2538,11 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
             },
             required: ['graphId', 'sourceId', 'snapshotId'],
           },
+          annotations: {
+            title: 'Rollback skill',
+            readOnlyHint: false,
+            destructiveHint: true,
+          },
         },
         {
           name: 'delete_skill',
@@ -2360,6 +2555,11 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
               all_versions: { type: 'boolean', description: 'If true, delete all versions of this skill (same base name). Default false.' },
             },
             required: ['graphId', 'sourceId'],
+          },
+          annotations: {
+            title: 'Delete skill',
+            readOnlyHint: false,
+            destructiveHint: true,
           },
         },
 

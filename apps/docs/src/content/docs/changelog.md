@@ -11,6 +11,22 @@ Conventions: **Added** = new features, **Changed** = behavior or UX shifts, **Fi
 
 ---
 
+## v1.13.5 — Foresight, Your Cortex, and Claude Desktop extension
+
+<p style="margin-top:0.5rem;font-size:1.25em;opacity:0.85;">2026-06-08</p>
+
+### Added
+
+- **Graphnosis is now available as a Claude Desktop extension.** Install it from the Anthropic Connectors Directory to connect your local cortex to Claude Desktop with three config fields — cortex folder, passphrase, and default engram. No new setup required if you already have Graphnosis installed.
+- **MCP tool annotations.** All 47 MCP tools now carry `title`, `readOnlyHint`, and `destructiveHint` metadata, so AI clients that support tool annotations display cleaner, safer tool lists.
+
+### Changed
+
+- **"Non-Deterministic Aid" is now "Foresight."** The tab, all tooltips, error messages, and in-app references have been updated throughout the app. Same capabilities — GLL overlay, GNN predictions, local LLM — cleaner name.
+- **"Overview" is now "Your Cortex."** The main rail button label now reflects what it actually is: your personal memory home.
+
+---
+
 ## v1.13.4 — Low-power mode, cooler ingests, smoother graph
 
 <p style="margin-top:0.5rem;font-size:1.25em;opacity:0.85;">2026-06-07</p>

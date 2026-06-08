@@ -1,6 +1,6 @@
 {
   "name": "graphnosis-app",
-  "version": "1.13.4",
+  "version": "1.13.5",
   "private": true,
   "description": "Personal second-memory desktop app powered by Graphnosis. Local-first, encrypted, multi-graph, attaches relevant subgraph context to any MCP-aware AI.",
   "author": "Nehloo Interactive LLC",
@@ -25,7 +25,9 @@
     "test:concurrency": "pnpm --filter @graphnosis-app/desktop-sidecar build && tsx tests/concurrency.test.ts",
     "test:settings": "pnpm --filter @graphnosis-app/desktop-sidecar build && tsx tests/settings-matrix.test.ts",
     "test:edge": "pnpm --filter @graphnosis-app/desktop-sidecar build && tsx tests/edge-cases.test.ts",
-    "test:llm": "GRAPHNOSIS_OLLAMA=1 pnpm --filter @graphnosis-app/desktop-sidecar build && tsx tests/llm.test.ts"
+    "test:llm": "GRAPHNOSIS_OLLAMA=1 pnpm --filter @graphnosis-app/desktop-sidecar build && tsx tests/llm.test.ts",
+    "mcpb:build": "pnpm --filter @graphnosis-app/desktop-sidecar build && node apps/desktop-sidecar/scripts/mcpb-build.mjs",
+    "mcpb:pack": "cd mcpb && mcpb pack . ../graphnosis.mcpb && echo Done: graphnosis.mcpb"
   },
   "pnpm": {
     "onlyBuiltDependencies": [
@@ -35,7 +37,7 @@
       "onnxruntime-node",
       "wtf_wikipedia"
     ],
-    "_comment_overrides": "All overrides removed (May 2026). Previously: secure-sync pinned to a local working copy until v0.1.2 shipped with the static-import libsodium fix; @nehloo/graphnosis pinned to a local working copy while serializeSubgraph export + log-redact were pre-release in v0.5.3. Both deps are now consumed from their tagged npm releases — see apps/desktop-sidecar/package.json. Keep this empty `overrides` block so future maintainers see the trail; pnpm tolerates empty objects fine.",
+    "_comment_overrides": "All overrides removed (May 2026). Previously: secure-sync pinned to a local working copy until v0.1.2 shipped with the static-import libsodium fix; @nehloo/graphnosis pinned to a local working copy while serializeSubgraph export + log-redact were pre-release in v0.5.3. Both deps are now consumed from their tagged npm releases \u2014 see apps/desktop-sidecar/package.json. Keep this empty `overrides` block so future maintainers see the trail; pnpm tolerates empty objects fine.",
     "overrides": {},
     "_comment_packageExtensions": "libsodium-wrappers-sumo@0.7.16 ships a broken ESM entry (relative import to ./libsodium-sumo.mjs that the package doesn't include in its files array). Force its `.` export to point to the CJS file in ALL conditions so bundlers (Bun --compile, Vite, etc.) never pick the broken .mjs. Without this, `bun build --compile` of the sidecar fails with 'Could not resolve ./libsodium-sumo.mjs'.",
     "packageExtensions": {

@@ -26,7 +26,7 @@ The underlying engine, [`@nehloo/graphnosis`](https://github.com/nehloo/Graphnos
    - **AI conversation notes** via "remember this" inside Claude / Cursor / Claude Code
 3. Anytime you talk to an MCP-aware AI, a relevant federated subgraph from your memory gets attached, within a tight token budget. The AI answers as if it knew you.
 4. You correct it in natural language (*"the trip was September, not August"*). A bundled local LLM produces a structured diff, you confirm, the graph updates — privately, on-device.
-5. Optionally, you enable **Non-Deterministic Aid**: five independently-toggleable LLM capabilities (recall enrichment, correction parsing, distillation, insights, edge prediction) each opt-in, each running entirely on your machine via Ollama.
+5. Optionally, you enable **Foresight**: five independently-toggleable LLM capabilities (recall enrichment, correction parsing, distillation, insights, edge prediction) each opt-in, each running entirely on your machine via Ollama.
 
 The full `.gai` files never reach the AI. The AI only ever sees the scoped subgraph relevant to the current prompt — and that subgraph is hard-capped by per-graph **sensitivity tiers** (`public` / `personal` / `sensitive`) that the AI cannot override.
 
@@ -320,6 +320,19 @@ After saving, restart Claude Desktop. The MCP server appears as **Graphnosis** i
 - **AI exposure**: only the federated subgraph chosen for the current prompt, capped by sensitivity tier per graph. Full `.gai` never leaves the device. Every `recall` returns an audit footer showing per-graph attribution.
 - **Local LLM**: corrections run on a bundled small model (default Llama 3.2 3B via Ollama). Never call out to a remote AI for graph mutations.
 - **Op-log syncing**: append-only encrypted event log per device. Drive/iCloud syncs the log directory, not the `.gai` file, so concurrent edits across devices converge without lost data. (Reducer ready in [`packages/graphnosis-app-core/src/oplog`](packages/graphnosis-app-core/src/oplog/index.ts); materializer pass on load pending.)
+
+---
+
+## Privacy
+
+Graphnosis is designed so that your memory never leaves your device:
+
+- **No cloud sync of memory content.** Your `.gai` graph files are encrypted at rest and never uploaded to Graphnosis — we have no servers. When an AI client recalls a memory, that content travels through the AI client's normal inference path and is subject to its privacy policy. The only other network traffic is connector syncs (RSS, GitHub, etc.) that you explicitly configure, plus optional iCloud/Drive sync of the *encrypted* op-log.
+- **AI clients read only what you allow.** Each `recall` returns a scoped subgraph capped by the sensitivity tier of each engram. Sensitive engrams require explicit in-app consent before any AI client can read them.
+- **Passphrase stays on-device.** After first unlock, the passphrase is stored in the OS keychain. It is never logged, never sent over the wire, and never visible to any AI client.
+- **No telemetry.** The app and the MCP server collect no usage data.
+
+Full details: [graphnosis.com/legal/privacy-policy](https://graphnosis.com/legal/privacy-policy)
 
 ---
 
