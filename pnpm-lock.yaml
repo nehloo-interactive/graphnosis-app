@@ -140,6 +140,9 @@ importers:
       '@types/proper-lockfile':
         specifier: ^4.1.4
         version: 4.1.4
+      esbuild:
+        specifier: ^0.24.2
+        version: 0.24.2
       ts-node:
         specifier: ^10.9.0
         version: 10.9.2(@types/node@20.19.41)(typescript@5.9.3)

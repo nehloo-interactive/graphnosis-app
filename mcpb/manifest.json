@@ -1,0 +1,83 @@
+{
+  "$schema": "https://raw.githubusercontent.com/anthropics/anthropic-quickstarts/refs/heads/main/mcpb-manifest-v0.4.schema.json",
+  "manifest_version": "0.4",
+  "name": "graphnosis",
+  "display_name": "Graphnosis",
+  "version": "1.13.5",
+  "description": "Your local, encrypted personal knowledge graph — recalled by any AI client.",
+  "long_description": "Graphnosis is a privacy-first personal memory system that runs entirely on your device. It stores your notes, decisions, projects, files, and conversations in a local encrypted graph, then makes that knowledge available to any AI client via MCP — so your AI always has context about your life and work. Your graph files stay on your device — Graphnosis has no servers. Recalled content passes through your AI client and is subject to its privacy policy.\n\nEvery memory is encrypted at rest with a passphrase you control. Recall is deterministic and auditable. Sensitive memories are gated behind an in-app consent modal before any AI client can read them.\n\nThe 47 MCP tools cover the full memory lifecycle: save a note, recall by semantic search, correct a stored fact, explore your knowledge graph, train reusable SOPs (skills + goals), and run multi-step procedures grounded in your personal context.",
+  "author": {
+    "name": "Nehloo Interactive LLC",
+    "url": "https://graphnosis.com"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/nehloo-interactive/graphnosis-app"
+  },
+  "homepage": "https://graphnosis.com",
+  "documentation": "https://graphnosis.com/docs",
+  "support": "https://graphnosis.com/docs/getting-started/overview",
+  "icon": "icon.png",
+  "keywords": [
+    "memory",
+    "knowledge graph",
+    "personal ai",
+    "privacy",
+    "notes",
+    "recall",
+    "skills",
+    "local"
+  ],
+  "license": "FSL-1.1-Apache-2.0",
+  "compatibility": {
+    "platforms": ["darwin", "win32", "linux"],
+    "runtimes": {
+      "node": ">=18"
+    }
+  },
+  "server": {
+    "type": "node",
+    "entry_point": "server/index.js",
+    "mcp_config": {
+      "command": "node",
+      "args": ["${__dirname}/server/index.js"],
+      "env": {
+        "GRAPHNOSIS_CORTEX": "${user_config.cortex_path}",
+        "GRAPHNOSIS_PASSPHRASE": "${user_config.passphrase}",
+        "GRAPHNOSIS_DEFAULT_GRAPH": "${user_config.default_engram}",
+        "GRAPHNOSIS_EMBED_DISABLE": "1"
+      }
+    }
+  },
+  "screenshots": [
+    "screenshots/graphnosis-mcpb-2.png",
+    "screenshots/graphnosis-mcpb-3.png",
+    "screenshots/graphnosis-mcpb-4.png"
+  ],
+  "tools_generated": true,
+  "privacy_policies": [
+    "https://graphnosis.com/legal/privacy-policy"
+  ],
+  "user_config": {
+    "cortex_path": {
+      "type": "directory",
+      "title": "Cortex folder",
+      "description": "The folder where your Graphnosis cortex is stored. Open the Graphnosis app → Folder path is displayed on the status bar.",
+      "required": true
+    },
+    "passphrase": {
+      "type": "string",
+      "title": "Cortex passphrase",
+      "description": "The passphrase you set when you created your cortex. Graphnosis derives an Argon2id encryption key from it — the passphrase itself is never stored by Graphnosis. Stored securely by Claude Desktop; never logged or sent over the wire.",
+      "required": true,
+      "sensitive": true
+    },
+    "default_engram": {
+      "type": "string",
+      "title": "Default engram",
+      "description": "The engram new memories are saved into when no topic is specified. Leave blank to use 'personal'.",
+      "required": false,
+      "default": "personal"
+    }
+  }
+}
