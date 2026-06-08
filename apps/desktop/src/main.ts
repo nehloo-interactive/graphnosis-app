@@ -2675,7 +2675,7 @@ let currentMode: Mode = 'atlas';
 
 // ── Rail-driven inner navigation ──────────────────────────────────────────
 // The four former in-pane tabs (MemoryStudio / 3D Engram / Deterministic
-// Consolidation / Non-Deterministic Aid) are now first-class rail
+// Consolidation / Foresight) are now first-class rail
 // destinations. They still share ONE mode-pane (data-pane="atlas") plus its
 // header (search/health) and the Inspector (#g-detail) — so rather than
 // physically re-parent the DOM, each of these "sub-modes" shows that pane and
@@ -16293,7 +16293,7 @@ function renderLlmEnableBlock(reachable: boolean, hasModels: boolean, enabled: b
  *   - GLL pill ⇒ master Local LLM toggle is on
  *   - GNN pill ⇒ Graphnosis Neural Network is on
  *
- * Both pills are click-through to the Non-Deterministic Aid tab where the
+ * Both pills are click-through to the Foresight tab where the
  * relevant toggle lives. Cheap function — called from refreshLlmStatus AND
  * refreshBrainState so the pills react to either kind of state change.
  */
@@ -20229,14 +20229,14 @@ function syncSearchLlmCheckboxes(): void {
   } else {
     if (synthBtn) {
       synthBtn.disabled = true;
-      synthBtn.title = 'Ollama is not running or has no model. Start Ollama and click Recheck in Non-Deterministic Aid.';
+      synthBtn.title = 'Ollama is not running or has no model. Start Ollama and click Recheck in Foresight.';
     }
     if (rerank) {
       rerank.disabled = true;
       rerank.checked = false;
     }
     searchLlmRerankEnabled = false;
-    const reason = 'Ollama is not running or has no model. Start Ollama and click Recheck in Non-Deterministic Aid.';
+    const reason = 'Ollama is not running or has no model. Start Ollama and click Recheck in Foresight.';
     if (rerankWrap) {
       rerankWrap.title = reason;
       rerankWrap.classList.add('rerank-disabled');
@@ -27013,7 +27013,7 @@ function showStudioExternalLlmWarning(externalRemotes: string[]): void {
  *    to read the verification wizard or switch back to a local backend. */
 function updateLoopbackBadge(baseUrl: string): void {
   // Multiple badges share the same .studio-llm-loopback class — one in
-  // MemoryStudio's LLM panel header, one in Non-Deterministic Aid's Local
+  // MemoryStudio's LLM panel header, one in Foresight's Local
   // LLM card. Update all of them on every refresh so they stay in sync.
   const badges = document.querySelectorAll<HTMLElement>('.studio-llm-loopback');
   if (badges.length === 0) return;
@@ -27062,7 +27062,7 @@ function updateLoopbackBadge(baseUrl: string): void {
 
 // Delegated click handler for ANY .studio-llm-loopback chip — opens the
 // explainer modal. Works for both the MemoryStudio badge and the
-// Non-Deterministic Aid one without needing per-element wiring.
+// Foresight one without needing per-element wiring.
 document.addEventListener('click', (e) => {
   const el = (e.target as HTMLElement | null)?.closest<HTMLElement>('.studio-llm-loopback');
   if (!el) return;
@@ -27994,7 +27994,7 @@ async function runStudioGnn(): Promise<void> {
 
     if (list) {
       if (result.neighbors.length === 0) {
-        list.innerHTML = '<p class="brain-subtitle">No predicted neighbors found for this query. Try enabling GNN Exploration in Non-Deterministic Aid.</p>';
+        list.innerHTML = '<p class="brain-subtitle">No predicted neighbors found for this query. Try enabling GNN Exploration in Foresight.</p>';
       } else {
         list.innerHTML = result.neighbors.map((n) =>
           `<div class="studio-gnn-item">

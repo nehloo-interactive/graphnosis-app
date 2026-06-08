@@ -2507,7 +2507,7 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
 
     case 'gll:listPredictedEdges': {
       // List every GLL-predicted edge across the cortex, newest first.
-      // Used by the Non-Deterministic Aid → predicted edges review surface.
+      // Used by the Foresight → predicted edges review surface.
       const overlay = await deps.host.loadGllOverlay();
       const edges = overlay.edges
         .slice()
@@ -3164,7 +3164,7 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
         limit: z.coerce.number().int().positive().max(20).optional(),
       }).parse(params ?? {});
       if (!deps.brainEngine) {
-        return { neighbors: [], error: 'GNN not enabled. Enable it in Non-Deterministic Aid → Neural Network.' };
+        return { neighbors: [], error: 'GNN not enabled. Enable it in Foresight → Neural Network.' };
       }
       const limit = args.limit ?? 10;
       let graphIds = deps.host.listGraphs();

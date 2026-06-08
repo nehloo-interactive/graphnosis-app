@@ -608,7 +608,7 @@ export class SkillTrainer {
         hasMemories
           ? 'Local LLM is not enabled. Relevant memories have been appended as a ' +
             '"Personal Context" block. Enable the Local LLM in Graphnosis ' +
-            '(Non-Deterministic Aid → Local LLM) for full skill rewriting with change attribution.'
+            '(Foresight → Local LLM) for full skill rewriting with change attribution.'
           : undefined;
     } else {
       // No memories found — return original unchanged

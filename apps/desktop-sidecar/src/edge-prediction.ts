@@ -3,7 +3,7 @@
 //! Periodically asks the local LLM: "are these two memories meaningfully
 //! related?" Writes confirmed relationships into the `.gll` overlay as
 //! `GllPredictedEdge` entries — never into the canonical `.gai` engram.
-//! The user reviews predictions in the Non-Deterministic Aid tab and can
+//! The user reviews predictions in the Foresight tab and can
 //! Accept (promote to `.gai` via a correction add) or Reject (delete from
 //! overlay).
 //!
