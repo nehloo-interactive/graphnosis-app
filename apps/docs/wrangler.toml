@@ -35,9 +35,6 @@ preview_id = "8413c7145d31490686bcc3c2ba4942bf"
 
 [vars]
 PUBLIC_BILLING_BASE_URL = "https://graphnosis.com"
-# STRIPE_PORTAL_LOGIN_URL (the billing.stripe.com/p/login/… Customer Portal URL
-# that /account redirects to), RESEND_FROM_ADDRESS, and
-# STRIPE_PRICE_MONTHLY_SUBSCRIPTION are managed in the Cloudflare dashboard (one
-# place per environment). Do NOT set them here — a value in [vars] is
-# authoritative on `wrangler deploy` and would overwrite the dashboard value
-# (e.g. clobbering the real portal URL with a placeholder).
+STRIPE_PORTAL_LOGIN_URL = "https://billing.stripe.com/p/login/00w9AT0sHa54aNfdqu5kk00"
+RESEND_FROM_ADDRESS = "billing@graphnosis.com"
+STRIPE_PRICE_MONTHLY_SUBSCRIPTION = "price_1TcQzkFrQc19Wx0IpxGlrnUM"
