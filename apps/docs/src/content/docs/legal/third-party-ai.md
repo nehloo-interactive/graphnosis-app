@@ -76,7 +76,7 @@ See [Graphs & Sensitivity Tiers](/guides/graphs-and-tiers) for setup instruction
 - Your encryption key or passphrase
 - Any data to Nehloo Interactive's servers (we have none)
 - Telemetry, usage analytics, or error reports
-- Anything from a `sensitive`-tier graph
+- Anything from a `sensitive`-tier graph without your consent
 - Any content from a conversation where `recall` was not called
 
 ---
