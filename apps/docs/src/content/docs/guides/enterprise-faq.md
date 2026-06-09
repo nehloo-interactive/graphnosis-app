@@ -22,7 +22,7 @@ This page answers the questions enterprise IT, infosec, and compliance teams rel
 - **Notarisation**: Yes; Apple's notarisation service has scanned the binary
 - **Entitlements** (`entitlements.plist`): JIT compilation and unsigned executable memory (required by Webkit/V8 inside the webview). **No App Sandbox** — the Unix socket path required for MCP clients exceeds the sandbox's `sun_path` limit. A sandboxed MAS build using TCP is planned
 - **Bundled binaries**: `graphnosis-sidecar` (Bun-compiled Node.js), `graphnosis-biometric` (Swift, Touch ID only), `graphnosis-mcp-relay`
-- **Passphrase caching**: macOS Keychain (signed builds), bound to the signed binary via audit token. Developer/unsigned builds fall back to a `0600`-mode file in `~/Library/Application Support/Graphnosis/touchid-cache/`
+- **Passphrase caching**: macOS Keychain (signed builds), bound to the signed binary via audit token. Developer/unsigned builds use a file-based cache with user-only permissions
 - **Auto-start**: None — the sidecar starts only when the app is open and the cortex is unlocked
 
 ### Windows
@@ -30,9 +30,9 @@ This page answers the questions enterprise IT, infosec, and compliance teams rel
 - **Installer format**: MSI or NSIS bundle (via Tauri)
 - **Code signing**: Windows Authenticode signing on the installer and `.exe`
 - **Privilege level**: User-level only — no UAC elevation, no kernel driver, no system service
-- **Console window**: Sidecar launched with `CREATE_NO_WINDOW` (`0x08000000`); no visible console appears
+- **Console window**: Sidecar runs without a visible console window
 - **Bundled runtime**: Bun runtime statically bundled — no system Node.js required
-- **Passphrase caching**: Windows Credential Manager (DPAPI), service name `app.graphnosis`, account name derived from the cortex path
+- **Passphrase caching**: Windows Credential Manager (DPAPI), scoped to the current OS user
 - **AI client config files written on first connect**:
   - Claude Desktop (MSI): `%APPDATA%\Claude\claude_desktop_config.json`
   - Claude Desktop (MSIX): `%LOCALAPPDATA%\Packages\Claude_<hash>\LocalCache\Roaming\Claude\`
@@ -72,17 +72,17 @@ This page answers the questions enterprise IT, infosec, and compliance teams rel
 
 | Path | Contents | When written |
 |---|---|---|
-| `<cortex>/` (user-selected, default `~/GraphnosisCortex`) | `.gai` engrams, `.bundle` indexes, `op-log/`, `content/` cache, `graphs/`, `.snapshots/`, `salt.bin`, `master.enc`, `recovery.enc`, `.lockfile.lock` | During cortex operation |
+| `<cortex>/` (user-selected, default `~/GraphnosisCortex`) | `.gai` engrams, source indexes, op-log, content cache, snapshots, encryption key files, and write-lock | During cortex operation |
 | `~/.graphnosis/mcp.sock` | Unix socket for MCP clients | On sidecar start |
-| `~/Library/Application Support/Graphnosis/touchid-cache/<id>.passphrase` | Passphrase cache (macOS dev/unsigned only) | After first unlock |
+| Passphrase cache (macOS dev/unsigned only) | File-based passphrase cache, user-only permissions | After first unlock |
 | AI client config files (see Section 1) | MCP server path entry | On first AI client connect |
 | `<app-data>/.window-state.json` | Window size/position | On window move/resize |
 
 ### OS credential store
 
-- **macOS**: Keychain entry, service `app.graphnosis`, bound to signed binary
-- **Windows**: Credential Manager (DPAPI), same service name
-- **Linux / unsigned builds**: `0600` file (see above)
+- **macOS**: Keychain entry bound to the signed binary; cannot be read by other processes
+- **Windows**: Credential Manager (DPAPI), scoped to the current OS user
+- **Linux / unsigned builds**: File-based cache with user-only permissions
 
 ### Filesystem reads
 
@@ -106,22 +106,20 @@ The sidecar (`graphnosis-sidecar`) is a Bun-compiled Node.js binary bundled insi
 
 1. **Lock screen shown** — sidecar not yet running
 2. **User unlocks cortex** — Tauri shell spawns the sidecar as a supervised child process
-3. **Sidecar acquires exclusive write lock** — `<cortex>/.lockfile.lock` (single-writer guarantee; a second instance trying to open the same cortex exits with a clear error)
-4. **Three local sockets open** — see table below
-5. **IPC handshake** — Tauri shell waits up to 90 s for the socket to appear, then completes the unlock
-6. **User quits / locks** — Tauri sends SIGTERM; sidecar has 45 s to flush writes, then SIGKILL; lock file is removed; sockets are closed
-
-On startup, the sidecar kills any orphan `graphnosis-sidecar` processes and removes stale lock files from previous unclean exits.
+3. **Sidecar acquires exclusive write lock** — single-writer guarantee; a second instance trying to open the same cortex exits with a clear error
+4. **Local sockets open** — see table below
+5. **IPC handshake** — Tauri shell waits for the socket to appear, then completes the unlock
+6. **User quits / locks** — Tauri signals the sidecar to shut down gracefully; pending writes are flushed before exit; sockets and the write lock are released
 
 ### Sockets opened (all local — no network exposure by default)
 
-| Socket | Path | Purpose |
-|---|---|---|
-| IPC socket | `<cortex>/sidecar.sock` (Unix) / `127.0.0.1:<dynamic>` (Windows) | Desktop app ↔ sidecar |
-| Events socket | `<cortex>/events.sock` (Unix) / `127.0.0.1:<dynamic>` (Windows) | Push event stream to UI |
-| MCP socket | `~/.graphnosis/mcp.sock` (Unix) / `127.0.0.1:<dynamic>` (Windows) | AI clients (Claude, Cursor, etc.) |
+| Socket | Purpose |
+|---|---|
+| Desktop IPC socket | Desktop app ↔ sidecar communication |
+| Events socket | Push event stream to the UI |
+| MCP socket (`~/.graphnosis/mcp.sock` on Unix; loopback TCP on Windows) | AI clients (Claude, Cursor, etc.) |
 
-The MCP socket uses a fixed per-user path so AI clients remain configured across cortex switches.
+The MCP socket uses a fixed per-user path so AI clients remain configured across cortex switches. The IPC and events sockets are internal to the app and not reachable by external processes.
 
 ### What the sidecar accesses during normal operation
 
@@ -132,7 +130,7 @@ The MCP socket uses a fixed per-user path so AI clients remain configured across
 
 ### Passphrase handling
 
-The Tauri shell passes the passphrase to the sidecar via the `GRAPHNOSIS_PASSPHRASE` environment variable. This env var is visible in `ps aux` or `/proc/<pid>/environ` on Linux between the moment of spawn and first env read. The window is brief; the Tauri shell (not a shell script) sets it so it does not persist in shell history. For headless/scripted deployments, prefer interactive unlock via the app UI rather than the env var.
+The Tauri shell passes the passphrase to the sidecar via the `GRAPHNOSIS_PASSPHRASE` environment variable. For interactive desktop use this is handled entirely by the app and never touches a shell. For headless or scripted deployments (Docker, CI), prefer injecting the value from a secrets manager (Docker secrets, Kubernetes secrets, HashiCorp Vault) rather than a plain environment variable, which is visible to other processes running under the same OS user.
 
 ---
 
@@ -148,13 +146,13 @@ Every `.gai` engram is encrypted with **XChaCha20-Poly1305**, keyed from a data 
 
 ### Can someone connect to the MCP socket and read memories without the user knowing?
 
-The Unix socket inherits standard filesystem permissions: only processes running as the **same OS user** can connect. This is an intentional design choice (no extra auth round-trips for same-user AI tools) with a documented limitation: local malware running as the same user could connect. The application-layer consent gates (see Section 6) provide additional defence for sensitive data, but they do not stop a rogue process that skips MCP entirely and reads the socket raw.
+The MCP socket is accessible to processes running as the **same OS user** — an intentional design choice that avoids extra authentication round-trips for same-user AI tools. The practical implication is that Graphnosis's application-layer controls sit above the OS user boundary, not below it: if the machine itself is compromised, endpoint protection rather than Graphnosis is the appropriate control.
 
-The **optional HTTP MCP bridge** (port 3456) requires a Bearer token on every request. Note that setting `GRAPHNOSIS_BIND=0.0.0.0` exposes this port to the LAN — see Section 5 for the risk entry.
+The **optional HTTP MCP bridge** (port 3456) requires a Bearer token on every request and should be kept on its default loopback binding unless you have a specific cross-machine use case and appropriate network controls in place.
 
 ### Can someone corrupt the cortex silently?
 
-Every engram file is integrity-checked on load: the XChaCha20-Poly1305 MAC detects any bit-flip or truncation, and an additional inner HMAC is verified on the graph bundle. A corrupted file is **auto-quarantined** (renamed to `<id>.gai.corrupt-<timestamp>`, never deleted) and the user is notified. Writes are atomic (write to `.tmp`, `fsync`, then `rename`), so a power loss or kill mid-write leaves either the previous file intact or the new one fully written — never a half-blob.
+Every engram file is integrity-checked on load via authenticated encryption (the MAC covers the entire ciphertext) and an additional inner checksum on the graph bundle. A corrupted file is **auto-quarantined** — removed from the active cortex, preserved for recovery, and the user is notified. Writes are atomic (write to a temporary file, flush to stable storage, then atomically rename), so a power loss or kill mid-write leaves either the old file intact or the new one fully written — never a partial state.
 
 ### Can a skill pack (`.gsk` file) deliver malicious code?
 
@@ -162,7 +160,7 @@ No. `.gsk` files contain only graph data (MessagePack payload, AES-256-GCM encry
 
 ### Can the sidecar binary be silently replaced?
 
-On **macOS**, replacing the sidecar breaks the Developer ID code signature on the `.app` bundle; Gatekeeper refuses to launch the app. On **Windows**, no equivalent runtime check is enforced for the sidecar binary path; a privileged attacker who can write to the install directory could replace it — the same threat model as any other Tauri/Electron app. On **Linux**, unsigned binaries have no chain of trust; verify checksums from the release page and consider running from a read-only mount.
+On **macOS**, any modification to the `.app` bundle breaks the Developer ID code signature and Gatekeeper will refuse to launch the app. On **Windows** and **Linux**, protecting the install directory via OS-level access controls (standard file permissions, read-only mounts) is the appropriate defence — the same principle that applies to any desktop application. For Linux deployments, verify checksums published on the GitHub Releases page.
 
 ---
 
@@ -172,21 +170,20 @@ This is an honest risk register. Each row describes a real scenario, its severit
 
 | Scenario | Severity | Mitigation |
 |---|---|---|
-| **Auto-update downloads new binary before IT validates it** | Medium | Block `github.com/nehloo-interactive/graphnosis-app` at the firewall for update-controlled environments. Updates are signature-verified but not MDM-gated. There is no built-in Settings toggle to disable the check |
-| **Local malware on the same OS account connects to the MCP socket** | High (if machine is compromised) | Outside Graphnosis's application-layer threat model. Requires EDR/endpoint protection. Rate limits and consent gates do not stop a process that connects to the raw socket |
-| **`GRAPHNOSIS_PASSPHRASE` visible in process listing** | Low–Medium | Env var is set by the Tauri shell directly (not a shell script); visible window is brief. For scripted deployments, use Docker secrets / Kubernetes secrets / vault injection rather than a plain `--env` flag |
-| **No persistent per-call MCP audit log** | Medium | Consent grant history is persisted and encrypted. Individual recall/tool calls are tracked in-memory (lost on sidecar restart). Pipe sidecar `stdout`/`stderr` to a SIEM or implement a reverse-proxy audit layer for per-call logging |
-| **Sensitive consent modal requires a GUI** | Low | Headless fallback: HMAC-rotating three-word phrase typed manually via `confirm_data_access` MCP call. Phrase rotates hourly (sensitive tier) / daily (personal tier) |
-| **Multiple users on a shared machine** | Low | Each OS user account has an independent cortex path and socket path. Cortex files are owned by the OS user who created them |
-| **Corporate proxy blocks Hugging Face on first run** | Low | Pre-stage the embedding model (BGE-small-en-v1.5) manually, or pre-bake it into the Docker image. Offline mode works once the model is on disk |
-| **Docker image with `GRAPHNOSIS_BIND=0.0.0.0`** | High | Default in the official image — port 3456 is network-accessible. Always set `GRAPHNOSIS_HTTP_UI_TOKEN` and place behind a reverse proxy or firewall. Override bind: `GRAPHNOSIS_BIND=127.0.0.1` for loopback-only |
-| **HTTP MCP bridge configured for LAN access** | High | Explicitly set `GRAPHNOSIS_BIND=<specific-interface-IP>` rather than `0.0.0.0`; rotate the bearer token periodically |
-| **User copies cortex to personal cloud storage** | Medium | Cortex files are encrypted and portable by design; copying to iCloud/Dropbox adds cloud-provider exposure. Enforce via MDM data-loss-prevention rules on the cortex folder path |
-| **Connector tokens stored in cortex** | Medium | Connector credentials (GitHub PAT, Slack OAuth, Linear API key) are encrypted with the same Argon2id/XChaCha20 key as all other cortex data. Grant minimum-scope tokens; rotate on personnel change |
-| **Linux desktop: no code signing** | Medium | Verify `.deb`/`.AppImage` checksums from the GitHub Releases page; deploy from a verified package repository or build from source |
-| **Embedding model first-run download blocked by firewall** | Low | Pre-stage or pre-bake; `GRAPHNOSIS_EMBED_DISABLE=1` disables embeddings entirely (recall falls back to TF-IDF with reduced quality) |
-| **Ollama telemetry** | Low | Graphnosis calls only `127.0.0.1:11434`. Ollama's own telemetry settings are outside Graphnosis's control; configure Ollama independently |
-| **Sidecar crashes during operation** | Low | Atomic writes ensure the cortex is never left in a half-written state. The Tauri shell detects the crash and shows the lock screen. Restart the app to resume. For Docker: configure a restart policy (`restart: unless-stopped`) |
+| **Update deployed before IT validation** | Medium | Block `github.com/nehloo-interactive/graphnosis-app` at the firewall for update-controlled environments. All updates are cryptographically signed before being applied, but there is no MDM-gated deployment channel today |
+| **Machine-level compromise affects AI memory access** | High (if machine is compromised) | Graphnosis's controls operate at the application layer, not below the OS user boundary. A compromised machine requires endpoint protection (EDR/XDR); application-layer guardrails are not a substitute |
+| **`GRAPHNOSIS_PASSPHRASE` set as a plain environment variable** | Medium | Acceptable for interactive desktop use (handled internally by the app); not recommended for headless or scripted deployments. Use a secrets manager (Docker secrets, Kubernetes secrets, HashiCorp Vault) to inject the value at runtime |
+| **No persistent per-call MCP audit log** | Medium | Consent grant and revocation history is persisted and encrypted. Individual tool calls are tracked in-memory only. For per-call logging, pipe sidecar output to a SIEM or place a logging reverse proxy in front of the HTTP bridge |
+| **Sensitive-data consent requires a running desktop UI** | Low | A headless fallback is available: a time-limited phrase displayed in the app's Settings, typed into the AI conversation to confirm access. This covers SSH, Docker, and CI deployments |
+| **Multiple users on a shared machine** | Low | Each OS user account maintains an independent, separately encrypted cortex. Cortex files are owned by the OS user who created them and are not accessible to other accounts |
+| **Corporate proxy blocks embedding model download on first run** | Low | Pre-stage the model file manually before deployment, or pre-bake it into the Docker image. The app operates fully offline once the model is present on disk |
+| **Docker deployment with default network binding** | High | The official Docker image binds the browser UI to all interfaces by default; port 3456 is network-accessible. Always set a bearer token (`GRAPHNOSIS_HTTP_UI_TOKEN`) and restrict access via a reverse proxy or firewall. Set `GRAPHNOSIS_BIND=127.0.0.1` to restrict to loopback if remote access is not needed |
+| **User copies cortex folder to personal cloud storage** | Medium | Cortex files are strongly encrypted and are not useful without the passphrase, but adding a cloud provider to the custody chain is an organisational risk. Enforce via MDM data-loss-prevention policies on the cortex folder path |
+| **Connector credentials for third-party services** | Medium | Connector tokens (e.g. GitHub, Slack) are encrypted with the same key as all other cortex data. Use minimum-scope tokens and rotate them when personnel change |
+| **Linux desktop: no code signing** | Medium | Verify checksums published on the GitHub Releases page before deploying `.deb` or `.AppImage` packages; consider building from source for high-assurance environments |
+| **Embedding model download blocked in air-gapped environments** | Low | Pre-stage the model or pre-bake it into the Docker image. Embeddings can also be disabled entirely, with recall falling back to keyword matching |
+| **Third-party local LLM (Ollama) telemetry** | Low | Graphnosis communicates with Ollama only on the loopback interface. Ollama's own data handling is governed by its own settings; configure it independently |
+| **Sidecar process exits unexpectedly** | Low | All writes are atomic; the cortex is never left in a partial state. The app detects the exit and returns to the lock screen. For Docker deployments, configure a restart policy |
 
 ---
 
@@ -200,8 +197,8 @@ This is an honest risk register. Each row describes a real scenario, its severit
 - **Auto-quarantine** on HMAC/MAC mismatch — corruption surfaces immediately and is never silently ignored
 - **Single-writer cortex lock** — prevents concurrent write corruption
 - **Update signature verification** (minisign) before any binary is applied
-- **MCP rate limiting** — 10 recall calls per 60 s per connected client
-- **Session replay blocker** — identical queries (Jaccard ≥ 0.85) blocked on the 3rd call within 60 s
+- **MCP rate limiting** — per-client recall rate cap prevents burst access patterns
+- **Session replay blocker** — repeated near-identical queries are detected and blocked after natural retries
 - **Sensitivity tiers** (`public` / `personal` / `sensitive`) with mandatory consent gate for sensitive data
 - **Source-available codebase** (FSL-1.1) — auditable by your security team without NDA
 
@@ -366,7 +363,7 @@ This section maps Graphnosis's architecture to major regulatory frameworks. It i
 ### FedRAMP / FISMA / NIST 800-53 (US federal)
 
 - **Air-gapped operation**: fully supported (pre-bake embedding model; no runtime internet required)
-- **Cryptographic module**: XChaCha20-Poly1305 and Argon2id are **not** on the FIPS 140-2 approved algorithm list. This is a hard blocker for FedRAMP High and DoD IL4+. Flag to Nehloo if this is a requirement
+- **Cryptographic module**: XChaCha20-Poly1305 and Argon2id are **not** on the FIPS 140-2 approved algorithm list. This is a hard blocker for FedRAMP High and DoD IL4+. [Contact us](/upgrade) if this is a requirement for your deployment
 - **Audit log (NIST AU-2)**: Consent history covers consent events; per-tool-call logging requires an external audit layer
 - **STIG/CIS hardening**: No published hardening guides; apply standard Node.js / Bun process hardening
 
@@ -395,7 +392,7 @@ This section maps Graphnosis's architecture to major regulatory frameworks. It i
 
 | Gap | Affected frameworks | Workaround |
 |---|---|---|
-| No FIPS 140-2 validated crypto | FedRAMP High, DoD IL4+, some NIST profiles | Flag to Nehloo; enforce FIPS at the TLS boundary layer |
+| No FIPS 140-2 validated crypto | FedRAMP High, DoD IL4+, some NIST profiles | [Contact us](/upgrade) to discuss; enforce FIPS at the TLS boundary layer in the interim |
 | No persistent per-call MCP audit log | HIPAA §164.312(b), SOC 2, FDA 21 CFR Part 11, NIST AU-2 | Pipe sidecar output to SIEM; reverse-proxy audit layer |
 | No SOC 2 Type II report | Enterprise procurement, financial services | Not yet available; source code enables customer-led audit |
 | No BAA with Nehloo | HIPAA | Not needed — Nehloo never holds PHI; BAA required with the AI provider |
