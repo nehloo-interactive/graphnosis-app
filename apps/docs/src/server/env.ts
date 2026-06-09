@@ -31,6 +31,10 @@ export interface BillingEnv {
    *  here so billing identity lives entirely with Stripe — Graphnosis serves
    *  no account page of its own. */
   STRIPE_PORTAL_LOGIN_URL?: string;
+  // Download redirect vars — set by release.yml's update-cloudflare jobs
+  CURRENT_VERSION?: string;    // e.g. "v1.13.6"
+  DMG_FILENAME?: string;       // e.g. "Graphnosis_1.13.6_aarch64.dmg"
+  WINDOWS_FILENAME?: string;   // e.g. "Graphnosis_1.13.6_x64_en-US.msi"
   // KV namespace binding
   BILLING_KV?: KVNamespace;
 }
