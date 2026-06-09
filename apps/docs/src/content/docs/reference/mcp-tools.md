@@ -18,11 +18,13 @@ You can browse the full toolset inside the app too: open the **MCP Tools** butto
 | **Structured recall** (4) | [`recall_structured`](#recall_structured) · [`recall_with_citations`](#recall_with_citations) · [`compare_engrams`](#compare_engrams) · [`cross_search`](#cross_search) |
 | **Source operations** (3) | [`find_source`](#find_source) · [`recall_source`](#recall_source) · [`transfer_source`](#transfer_source) |
 | **Engram operations** (2) | [`ingest_batch`](#ingest_batch) · [`engram_summary`](#engram_summary) |
-| **Brain maintenance** (4) | [`duplicate_pairs`](#duplicate_pairs) · [`healing_journal`](#healing_journal) · [`gnn_status`](#gnn_status) · [`confirm_data_access`](#confirm_data_access) |
-| **Skills (SOPs)** (12) | [`walk_skill`](#walk_skill) · [`walk_skill_structured`](#walk_skill_structured) · [`get_skill`](#get_skill) · [`list_skills`](#list_skills) · [`train_skill`](#train_skill) · [`export_skill`](#export_skill) · [`delete_skill`](#delete_skill) · [`skill_history`](#skill_history) · [`rollback_skill`](#rollback_skill) · [`skill_vitality`](#skill_vitality) · [`save_skill_run`](#save_skill_run) · [`resume_skill_run`](#resume_skill_run) |
-| **Approximate** (2) | [`audit_memory`](#audit_memory) · [`check_duplicate`](#check_duplicate) |
+| **Brain maintenance** (4) | [`duplicate_pairs`](#duplicate_pairs) ★ · [`healing_journal`](#healing_journal) · [`gnn_status`](#gnn_status) ★ · [`confirm_data_access`](#confirm_data_access) |
+| **Skills (SOPs)** (12) | [`walk_skill`](#walk_skill) · [`walk_skill_structured`](#walk_skill_structured) · [`get_skill`](#get_skill) · [`list_skills`](#list_skills) · [`delete_skill`](#delete_skill) · [`train_skill`](#train_skill) ★ · [`export_skill`](#export_skill) ★ · [`rollback_skill`](#rollback_skill) ★ · [`skill_history`](#skill_history) ★ · [`skill_vitality`](#skill_vitality) ★ · [`save_skill_run`](#save_skill_run) ★ · [`resume_skill_run`](#resume_skill_run) ★ |
+| **Approximate** (2) | [`audit_memory`](#audit_memory) ★ · [`check_duplicate`](#check_duplicate) |
 | **Conditional** (1) | [`edit`](#edit) |
-| **Non-deterministic** (6) | [`develop`](#develop) · [`predict`](#predict) · [`insights`](#insights) · [`gnn_neighbors`](#gnn_neighbors) · [`llm_query`](#llm_query) · [`llm_distill`](#llm_distill) |
+| **Foresight** (6) | [`develop`](#develop) ★ · [`predict`](#predict) ★ · [`insights`](#insights) ★ · [`gnn_neighbors`](#gnn_neighbors) ★ · [`llm_query`](#llm_query) ★ · [`llm_distill`](#llm_distill) ★ |
+
+★ = requires a [Graphnosis Pro subscription](https://graphnosis.com/upgrade). Returns a license error on the free plan.
 
 ## How results are returned
 
@@ -534,7 +536,9 @@ With `includeNodes: true`, each engram object also carries a `nodes` array of up
 
 ---
 
-## `develop`
+## `develop` *(Pro)*
+
+**Requires Graphnosis Pro.** Returns a license error on the free plan. [Upgrade →](https://graphnosis.com/upgrade)
 
 **Determinism: mixed.** Recall is deterministic and auditable; a local LLM then synthesises the plan, so the wording varies between runs. With no local LLM running it degrades to a deterministic raw-context dump.
 
@@ -563,7 +567,9 @@ When the Local LLM is not enabled, `develop` instead returns the raw recalled me
 
 ---
 
-## `predict`
+## `predict` *(Pro)*
+
+**Requires Graphnosis Pro.** Returns a license error on the free plan. [Upgrade →](https://graphnosis.com/upgrade)
 
 **Determinism: mixed.** Recall is deterministic and auditable; a local LLM then synthesises the risk/opportunity assessment, so the wording varies between runs. With no local LLM running it degrades to the raw recalled context.
 
@@ -589,7 +595,9 @@ When the Local LLM is not enabled, `predict` instead returns the raw recalled me
 
 ---
 
-## `insights`
+## `insights` *(Pro)*
+
+**Requires Graphnosis Pro.** Returns a license error on the free plan. [Upgrade →](https://graphnosis.com/upgrade)
 
 **Determinism: non-deterministic.** Insights are produced by a background local-LLM loop; this tool only retrieves what was already computed — it does not trigger a new scan.
 
@@ -785,7 +793,9 @@ A readable snapshot of an engram — node count, source count, and a sample of n
 
 Read-only windows into the autonomous brain engine that runs in the background while the app is open.
 
-### `duplicate_pairs`
+### `duplicate_pairs` *(Pro)*
+
+**Requires Graphnosis Pro.** [Upgrade →](https://graphnosis.com/upgrade)
 
 Near-duplicate node pairs the brain engine has already flagged for review — high-confidence matches from the background scan, not ad-hoc searches. Resolve with `edit` (merge) or `forget(nodeIds=[nodeId])` (remove one side). Requires the brain engine to be running.
 
@@ -797,7 +807,9 @@ Audit log of autonomous corrections the brain engine applied in the background �
 
 - **Try saying:** *"Show me autonomous corrections from the last week."*
 
-### `gnn_status`
+### `gnn_status` *(Pro)*
+
+**Requires Graphnosis Pro.** [Upgrade →](https://graphnosis.com/upgrade)
 
 Reports whether the Graphnosis Neural Network is enabled, how many predicted edges it has computed, and when it last ran. Use before `gnn_neighbors` to confirm the GNN has data.
 
@@ -819,7 +831,7 @@ Skills are the procedural memory layer of Graphnosis — Standard Operating Proc
 
 The procedural model in one paragraph: each skill is a sequence of body steps stored in source order; five evidence-tagged edge types connect them — `skill:seq` for the linear chain, `skill:loop` for "go back to step N", `skill:branch` for conditional forks, `skill:ctx` for recalled memories anchored to a specific step, and `skill:calls` for `@skill: target(args) -> $capture` cross-skill invocations. Eight goal categories live inside each skill (Success, Out of scope, On completion, Trigger, Prerequisites, On failure, Requires, Produces). See [Skills as SOPs](/reference/skills/) for the full model.
 
-All twelve Skills tools are deterministic reads/writes against the same engram. The `train_skill` tool is the only one with a Pro path: by default it uses memory-augmented training (deterministic — recall is appended to the body with `_(from source)_` attribution); with the Pro license + Local LLM, the body is LLM-rewritten while keeping the same attribution markers.
+All twelve Skills tools are deterministic reads/writes against the same engram. **Five tools are free** — `walk_skill`, `walk_skill_structured`, `get_skill`, `list_skills`, `delete_skill` — so imported `.gsk` packs are fully usable without a Pro license. **Seven tools require Pro** (`train_skill`, `export_skill`, `rollback_skill`, `skill_history`, `skill_vitality`, `save_skill_run`, `resume_skill_run`) — they return a license error on the free plan. `train_skill` additionally has a Pro LLM path: by default it uses memory-augmented training (deterministic); with Pro + Local LLM, the body is LLM-rewritten while keeping `_(from source)_` attribution markers.
 
 ### `walk_skill`
 
@@ -857,7 +869,9 @@ Lists every skill in the Skills engram with metadata: source id, name, last-trai
 - **Returns:** JSON array.
 - **Try saying:** *"What skills do I have?"*
 
-### `train_skill`
+### `train_skill` *(Pro)*
+
+**Requires Graphnosis Pro.** [Upgrade →](https://graphnosis.com/upgrade)
 
 **Determinism: conditional.** Deterministic memory-augmented body by default; LLM-rewritten body with the Pro license + Local LLM.
 
@@ -867,7 +881,9 @@ Trains or retrains a skill — anchors fresh recall to body steps, wires the fiv
 - **Returns:** JSON `{ sourceId, mode, snapshotId, edges: { seq, loop, branch, ctx, calls } }`.
 - **Try saying:** *"Retrain the Code review skill against my latest notes."*
 
-### `export_skill`
+### `export_skill` *(Pro)*
+
+**Requires Graphnosis Pro.** [Upgrade →](https://graphnosis.com/upgrade)
 
 Exports a signed `.gsk` pack for sharing or backup. `.gsk` is the Graphnosis Skill Kit wire format: AES-256-GCM encrypted JSON body with an Ed25519 signature over the manifest. See [File formats](/reference/file-formats/#gsk--graphnosis-skill-kit).
 
@@ -883,7 +899,9 @@ Removes a skill and its trained output from the Skills engram via the op-log. So
 - **Returns:** Plain text confirming the delete.
 - **Try saying:** *"Delete the draft skill I was experimenting with."*
 
-### `skill_history`
+### `skill_history` *(Pro)*
+
+**Requires Graphnosis Pro.** [Upgrade →](https://graphnosis.com/upgrade)
 
 Snapshot history of a skill — every training run, with timestamp, mode (deterministic vs LLM), and a diff summary against the previous snapshot.
 
@@ -891,7 +909,9 @@ Snapshot history of a skill — every training run, with timestamp, mode (determ
 - **Returns:** JSON array of snapshot objects.
 - **Try saying:** *"Show me the training history of the Code review skill."*
 
-### `rollback_skill`
+### `rollback_skill` *(Pro)*
+
+**Requires Graphnosis Pro.** [Upgrade →](https://graphnosis.com/upgrade)
 
 Reverts a skill to a prior snapshot. Writes a new snapshot of the rollback itself so the lineage is preserved — nothing is destroyed.
 
@@ -899,7 +919,9 @@ Reverts a skill to a prior snapshot. Writes a new snapshot of the rollback itsel
 - **Returns:** Plain text confirming the rollback + the new snapshot id.
 - **Try saying:** *"Roll the Production deployment skill back to yesterday's version."*
 
-### `skill_vitality`
+### `skill_vitality` *(Pro)*
+
+**Requires Graphnosis Pro.** [Upgrade →](https://graphnosis.com/upgrade)
 
 0–100 health score for one skill — blends staleness (time since last retrain), anchor coverage (how many body steps have supporting context), goal completeness (how many of the 8 categories are filled), and loop/branch resolution rate.
 
@@ -907,7 +929,9 @@ Reverts a skill to a prior snapshot. Writes a new snapshot of the rollback itsel
 - **Returns:** JSON `{ overall, components: { staleness, anchorCoverage, goalCompleteness, structureResolution }, lastTrainedAt }`.
 - **Try saying:** *"How healthy is my Code review skill?"*
 
-### `save_skill_run`
+### `save_skill_run` *(Pro)*
+
+**Requires Graphnosis Pro.** [Upgrade →](https://graphnosis.com/upgrade)
 
 Persists a multi-skill orchestration's captured variables (`@skill: x -> $var`) and progress to an encrypted per-run file, so a run can be paused and resumed in a later session. Call it as you walk the steps.
 
@@ -915,7 +939,9 @@ Persists a multi-skill orchestration's captured variables (`@skill: x -> $var`) 
 - **Returns:** The `runId` (newly minted, or the one you passed).
 - **Try saying:** *"Save my progress on the Safe Deploy run so I can pick it up tomorrow."*
 
-### `resume_skill_run`
+### `resume_skill_run` *(Pro)*
+
+**Requires Graphnosis Pro.** [Upgrade →](https://graphnosis.com/upgrade)
 
 Reloads a saved run by `runId`: its captured variables, last completed step, and the `nextStepIndex` to continue at. Pair with `walk_skill_structured` to keep going.
 
@@ -929,7 +955,9 @@ Reloads a saved run by `runId`: its captured variables, last completed step, and
 
 Vector-similarity scans across the cortex — deterministic given the embedding state, no LLM involved.
 
-### `audit_memory`
+### `audit_memory` *(Pro)*
+
+**Requires Graphnosis Pro.** [Upgrade →](https://graphnosis.com/upgrade)
 
 Detects near-duplicate content across engrams by sampling top nodes from each engram and cross-searching them in all others above a similarity threshold. Approximate — samples rather than exhaustively comparing every pair. Useful before a merge or for periodic memory hygiene.
 
@@ -944,25 +972,33 @@ Before `remember`, checks whether very similar content already exists in one eng
 
 ---
 
-## Non-deterministic — Local LLM tools
+## Foresight — Local LLM + GNN tools
 
-The remaining synthesis tools require the optional [Local LLM](/getting-started/connect-ai/) (Ollama). All computation stays on device — nothing leaves the machine. Each degrades gracefully when the LLM is off (raw context dump with a note explaining how to enable synthesis).
+**Requires Graphnosis Pro.** These tools return a license error on the free plan. [Upgrade →](https://graphnosis.com/upgrade)
 
-### `gnn_neighbors`
+The Foresight tools require the optional [Local LLM](/getting-started/connect-ai/) (Ollama) or Neural Network. All computation stays on device — nothing leaves the machine. Each degrades gracefully when the LLM is off (raw context dump with a note explaining how to enable synthesis).
+
+### `gnn_neighbors` *(Pro)*
+
+**Requires Graphnosis Pro.** [Upgrade →](https://graphnosis.com/upgrade)
 
 Returns nodes the Neural Network predicts are related to a query — structural connections that lexical/embedding recall didn't surface. Each result includes the GNN edge-probability score.
 
 - **Parameters:** `query` · `top_k` (default 10).
 - **Try saying:** *"What else might be related to my notes on graph databases?"*
 
-### `llm_query`
+### `llm_query` *(Pro)*
+
+**Requires Graphnosis Pro.** [Upgrade →](https://graphnosis.com/upgrade)
 
 Recalls relevant memory then uses the local LLM to synthesise a direct answer from that recalled context — entirely locally. Use when the user wants an AI-synthesised answer grounded in their own memory, not just raw recalled nodes.
 
 - **Parameters:** `query` · `maxNodes` (optional).
 - **Try saying:** *"Use the local model to answer: what's the current state of my migration plan?"*
 
-### `llm_distill`
+### `llm_distill` *(Pro)*
+
+**Requires Graphnosis Pro.** [Upgrade →](https://graphnosis.com/upgrade)
 
 Pass arbitrary text to the local LLM and ask it to extract discrete, self-contained facts worth remembering. Returns a JSON array of `{text, label}` objects ready to pass to `ingest_batch` or `remember`.
 
@@ -975,7 +1011,7 @@ Pass arbitrary text to the local LLM and ask it to extract discrete, self-contai
 
 Skills are Standard Operating Procedures the user has authored or imported. Each skill is a sequence of paragraph nodes wired together by directed edges (sequence, loops, branches, sub-skill calls, goals, context). Skill packs distribute as `.gsk` files (signed by Graphnosis for official packs, unsigned for community packs).
 
-Some of these tools are **Pro-gated** (`train_skill`, `export_skill` in the `.gsk` format) — they require an active Graphnosis Pro subscription. Read-only tools (everything else in this category) are free.
+**7 tools require Pro** — `train_skill`, `export_skill`, `rollback_skill`, `skill_history`, `skill_vitality`, `save_skill_run`, `resume_skill_run`. Read-only tools (`walk_skill`, `walk_skill_structured`, `get_skill`, `list_skills`, `delete_skill`) are free so imported `.gsk` packs work without a subscription.
 
 ### `list_skills`
 
