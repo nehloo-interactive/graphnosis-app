@@ -11,6 +11,25 @@ Conventions: **Added** = new features, **Changed** = behavior or UX shifts, **Fi
 
 ---
 
+## v1.13.6 — Pricing tiers, Pro tool gating, and upgrade page
+
+<p style="margin-top:0.5rem;font-size:1.25em;opacity:0.85;">2026-06-09</p>
+
+### Added
+
+- **Free, Pro, and Teams pricing tiers.** Graphnosis now has a public upgrade page at `/upgrade` showing all tiers side by side. Free stays free forever — all 31 core MCP tools, unlimited sources, up to 3 user engrams. Pro ($10/mo or $99/yr) unlocks 16 advanced tools plus unlimited engrams and unclamped connector cadence. Teams ($25/mo or $249/yr per person) adds team-collaboration features as they ship.
+- **Annual billing.** Pro and Teams can now be purchased annually — $99/yr for Pro and $249/yr for Teams (both save two months vs. monthly). The upgrade page has a monthly/annual toggle.
+- **Upgrade link in the nav and footer.** A persistent Upgrade link appears in the top navigation bar and footer of graphnosis.com.
+
+### Changed
+
+- **16 Pro tools are now gated** behind a Pro or Teams license. Previously ungated tools that required a local LLM — `develop`, `predict`, `insights`, `llm_query`, `llm_distill` — now return a clear license error instead of "Local LLM unavailable" on the free plan. Same for `gnn_status`, `audit_memory`, and `duplicate_pairs`. Skills-authoring tools (`train_skill`, `export_skill`, `rollback_skill`, `skill_history`, `skill_vitality`, `save_skill_run`, `resume_skill_run`) were already gated; now consistently enforced.
+- **Free plan: 3 user engram limit.** Free-plan users can create up to 3 engrams. The two built-in system engrams (`graphnosis-docs`, `graphnosis-skill-demos`) don't count toward the limit. Attempting to create a 4th engram returns a structured `ENGRAM_LIMIT_REACHED` error with an upgrade prompt in the app.
+- **Free plan: connector cadence floor.** On the free plan, network connector pull intervals are clamped to a minimum of 24 hours. Watch-based connectors (Obsidian, GBrain, AI Context Files) are unaffected — they use filesystem watchers. Pro removes the floor entirely.
+- **MCP tool documentation updated.** The MCP Tools reference page now marks all 16 Pro tools with a ★ indicator, lists the correct free (5) vs. Pro (7) skill-authoring tool split, and renames the "Non-deterministic" section to "Foresight."
+
+---
+
 ## v1.13.5 — Foresight, Your Cortex, and Claude Desktop extension
 
 <p style="margin-top:0.5rem;font-size:1.25em;opacity:0.85;">2026-06-08</p>
