@@ -2988,6 +2988,16 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
         return { content: [{ type: 'text', text: JSON.stringify({ graphs: summary }, null, 2) + notice }] };
       }
       case 'develop': {
+        {
+          const licenseToken = await deps.host.getLicenseToken();
+          const licensed = deps.licenseValidator?.hasFeature(licenseToken, 'foresight') ?? false;
+          if (!licensed) {
+            return mcpError(
+              'The develop tool requires a Graphnosis Pro subscription (Foresight). ' +
+              'Subscribe at https://graphnosis.com/upgrade.',
+            );
+          }
+        }
         refuseIfLlmRestrictedToSearch('develop');
         const args = z.object({
           context: z.string().min(1),
@@ -3018,6 +3028,16 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
         };
       }
       case 'predict': {
+        {
+          const licenseToken = await deps.host.getLicenseToken();
+          const licensed = deps.licenseValidator?.hasFeature(licenseToken, 'foresight') ?? false;
+          if (!licensed) {
+            return mcpError(
+              'The predict tool requires a Graphnosis Pro subscription (Foresight). ' +
+              'Subscribe at https://graphnosis.com/upgrade.',
+            );
+          }
+        }
         refuseIfLlmRestrictedToSearch('predict');
         const args = z.object({
           action: z.string().min(1),
@@ -3052,6 +3072,16 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
         return { content: [{ type: 'text', text }] };
       }
       case 'insights': {
+        {
+          const licenseToken = await deps.host.getLicenseToken();
+          const licensed = deps.licenseValidator?.hasFeature(licenseToken, 'foresight') ?? false;
+          if (!licensed) {
+            return mcpError(
+              'The insights tool requires a Graphnosis Pro subscription (Foresight). ' +
+              'Subscribe at https://graphnosis.com/upgrade.',
+            );
+          }
+        }
         refuseIfLlmRestrictedToSearch('insights');
         const { dismissed } = z.object({ dismissed: z.boolean().optional() }).parse(req.params.arguments ?? {});
         if (!deps.brainEngine) {
@@ -3550,6 +3580,16 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
         }] };
       }
       case 'audit_memory': {
+        {
+          const licenseToken = await deps.host.getLicenseToken();
+          const licensed = deps.licenseValidator?.hasFeature(licenseToken, 'foresight') ?? false;
+          if (!licensed) {
+            return mcpError(
+              'audit_memory requires a Graphnosis Pro subscription. ' +
+              'Subscribe at https://graphnosis.com/upgrade.',
+            );
+          }
+        }
         const args = AuditMemoryInput.parse(req.params.arguments ?? {});
         const threshold = args.threshold ?? 0.85;
         let graphIds = deps.host.listGraphs().filter(id => {
@@ -3624,6 +3664,16 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
         if (!deps.brainEngine) {
           return mcpError('Brain engine is not available. Open the Graphnosis app to enable it.');
         }
+        {
+          const licenseToken = await deps.host.getLicenseToken();
+          const licensed = deps.licenseValidator?.hasFeature(licenseToken, 'foresight') ?? false;
+          if (!licensed) {
+            return mcpError(
+              'duplicate_pairs requires a Graphnosis Pro subscription. ' +
+              'Subscribe at https://graphnosis.com/upgrade.',
+            );
+          }
+        }
         const args = DuplicatePairsInput.parse(req.params.arguments ?? {});
         const pairs = deps.brainEngine.getDuplicatePairs().slice(0, args.limit ?? 20);
         if (!pairs.length) {
@@ -3657,6 +3707,16 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
       case 'gnn_status': {
         if (!deps.brainEngine) {
           return mcpError('Brain engine is not available. Open the Graphnosis app to enable it.');
+        }
+        {
+          const licenseToken = await deps.host.getLicenseToken();
+          const licensed = deps.licenseValidator?.hasFeature(licenseToken, 'gnn-exploration') ?? false;
+          if (!licensed) {
+            return mcpError(
+              'GNN status requires a Graphnosis Pro subscription. ' +
+              'Subscribe at https://graphnosis.com/upgrade to unlock the Graphnosis Neural Network.',
+            );
+          }
         }
         const status = deps.brainEngine.getNeuralNetworkStatus();
         return { content: [{ type: 'text', text: JSON.stringify(status, null, 2) }] };
@@ -3728,6 +3788,17 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
         }] };
       }
       case 'llm_query': {
+        {
+          const licenseToken = await deps.host.getLicenseToken();
+          const licensed = deps.licenseValidator?.hasFeature(licenseToken, 'foresight') ?? false;
+          if (!licensed) {
+            return mcpError(
+              'llm_query requires a Graphnosis Pro subscription (Foresight). ' +
+              'Use the free recall tool for deterministic memory search. ' +
+              'Subscribe at https://graphnosis.com/upgrade.',
+            );
+          }
+        }
         refuseIfLlmRestrictedToSearch('llm_query');
         if (!deps.brainEngine) {
           return mcpError('Brain engine is not available. Use recall instead.');
@@ -3761,6 +3832,16 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
       case 'llm_distill': {
         if (!deps.brainEngine) {
           return mcpError('Brain engine is not available.');
+        }
+        {
+          const licenseToken = await deps.host.getLicenseToken();
+          const licensed = deps.licenseValidator?.hasFeature(licenseToken, 'foresight') ?? false;
+          if (!licensed) {
+            return mcpError(
+              'llm_distill requires a Graphnosis Pro subscription (Foresight). ' +
+              'Subscribe at https://graphnosis.com/upgrade.',
+            );
+          }
         }
         const args = LlmDistillInput.parse(req.params.arguments ?? {});
         const engramHint = args.target_engram
