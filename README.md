@@ -1,4 +1,4 @@
-# Graphnosis™
+# Graphnosis
 
 > Private second memory for any AI. Local-first, encrypted, multi-graph.
 > Attaches a relevant subgraph from your own memory to every prompt you send
