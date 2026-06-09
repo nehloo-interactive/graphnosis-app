@@ -44,6 +44,8 @@ Every connector follows the same pattern:
 
 **Self-healing.** An incremental pull only looks at what changed since the last sync — so a file that was skipped or failed mid-run would never be revisited by incremental pulls alone. To prevent that, auto-sync connectors run a **full re-scan on a cadence**: default every 30 minutes, set per connector in its **Edit** form under **Full re-scan (self-heal) every … minutes** (leave blank for the 30-minute default; set **0** to disable and rely on manual *Pull now* / *Re-sync*). A connector therefore always *eventually* ingests every source, regardless of what failed before.
 
+**Free plan cadence floor.** On the free plan, the automatic pull interval is clamped to a minimum of **24 hours** regardless of what you configure. If you set a connector to pull every 30 minutes, it will actually pull once a day on free. [Graphnosis Pro](https://graphnosis.com/upgrade) removes this floor — any interval is honoured. Watch-based connectors (Obsidian, GBrain, AI Context Files) use filesystem watchers and are not affected by the cadence floor.
+
 **Re-scans don't redo work.** A full re-scan does **not** re-process unchanged files. Graphnosis records each file's content hash and **skips the embedding work entirely when the content hasn't changed** — so repeat syncs of an already-ingested folder, and the periodic self-heal sweep, do almost no work and won't heat your machine. Only new or modified files are embedded.
 
 **On-graph progress.** While a connector syncs, the 3D view shows a `[X%] ingesting <file> to <engram>…` bar so you can watch what's landing (redacted in Presentation Mode). When the pull finishes, the button returns from **⟳ Syncing…** to **⟳ Sync now**.
