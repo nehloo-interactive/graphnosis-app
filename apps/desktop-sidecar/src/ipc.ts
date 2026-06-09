@@ -493,6 +493,19 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
         ]),
         displayName: z.string().min(1),
       }).parse(params);
+      {
+        // Free tier: max 3 user engrams. System engrams (docs, skill-demos)
+        // don't count — they're auto-created by the app, not by the user.
+        const licenseToken = await deps.host.getLicenseToken();
+        const hasPaidPlan = (deps.licenseValidator?.verifyToken(licenseToken ?? '') ?? null) !== null;
+        if (!hasPaidPlan) {
+          const SYSTEM_ENGRAMS = new Set([DOCS_ENGRAM_ID, SKILL_DEMOS_ENGRAM_ID]);
+          const userEngrams = deps.host.listGraphs().filter(id => !SYSTEM_ENGRAMS.has(id));
+          if (userEngrams.length >= 3) {
+            return { error: { code: 'ENGRAM_LIMIT_REACHED', message: 'Free plan is limited to 3 engrams. Upgrade to Pro for unlimited engrams.', limit: 3, upgradeUrl: 'https://graphnosis.com/upgrade' } };
+          }
+        }
+      }
       await deps.host.createGraph(args.graphId);
       await deps.host.setGraphMetadata(args.graphId, {
         template: args.template,
@@ -528,6 +541,16 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
       // sidecar startup.
       const existed = deps.host.listGraphs().includes(args.graphId);
       if (!existed) {
+        // Free tier engram limit — same gate as graphs.createWithTemplate.
+        const licenseToken = await deps.host.getLicenseToken();
+        const hasPaidPlan = (deps.licenseValidator?.verifyToken(licenseToken ?? '') ?? null) !== null;
+        if (!hasPaidPlan) {
+          const SYSTEM_ENGRAMS = new Set([DOCS_ENGRAM_ID, SKILL_DEMOS_ENGRAM_ID]);
+          const userEngrams = deps.host.listGraphs().filter(id => !SYSTEM_ENGRAMS.has(id));
+          if (userEngrams.length >= 3) {
+            return { error: { code: 'ENGRAM_LIMIT_REACHED', message: 'Free plan is limited to 3 engrams. Upgrade to Pro for unlimited engrams.', limit: 3, upgradeUrl: 'https://graphnosis.com/upgrade' } };
+          }
+        }
         await deps.host.createGraph(args.graphId);
         await deps.host.setGraphMetadata(args.graphId, {
           template: args.template,
@@ -1918,7 +1941,15 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
       // the connectors blob and swaps live timers). Apply it through the
       // manager instead of the generic patch so the two don't race.
       if (parsed.connectors?.pullIntervalMs !== undefined) {
-        await deps.connectorManager.setPullInterval(parsed.connectors.pullIntervalMs);
+        let intervalMs = parsed.connectors.pullIntervalMs;
+        // Free tier: enforce a daily-minimum floor on polling connectors.
+        // Watch-based connectors (filesystem watchers) are unaffected — they
+        // fire on changes, not on a timer. This gate only applies to the
+        // global backstop poll interval used by RSS, GitHub, Slack, etc.
+        const licenseToken = await deps.host.getLicenseToken();
+        const hasCadence = deps.licenseValidator?.hasFeature(licenseToken, 'connector-cadence') ?? false;
+        if (!hasCadence) intervalMs = Math.max(86_400_000, intervalMs);
+        await deps.connectorManager.setPullInterval(intervalMs);
       }
       return deps.host.setSettings(patch, { userInitiated: true });
     }

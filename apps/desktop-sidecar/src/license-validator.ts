@@ -81,20 +81,21 @@ export interface LicensePayload {
 
 /**
  * Gated feature keys. A token must list the feature by this exact string to
- * grant access. Add entries here as new gated features ship.
- */
-/**
- * Gated feature keys. A token must list the feature by this exact string to
- * grant access. Today the Nehloo signing service mints both keys together
+ * grant access. Today the Nehloo signing service mints all Pro keys together
  * for any Pro subscriber, so users don't see different tiers — but keeping
- * the keys distinct in the validator lets us deploy a "GNN-only" or
- * "Skill-only" plan without changing client code.
+ * the keys distinct in the validator lets us deploy partial plans without
+ * changing client code.
  *
  *   skill-training       — full Autonomous Praxis pipeline + .gsk export
  *   gnn-exploration      — Graphnosis Neural Network: MCP `gnn_neighbors`,
- *                          MemoryStudio chip, autonomous edge-prediction loop
+ *                          `gnn_status`, MemoryStudio chip, edge-prediction loop
+ *   foresight            — local-LLM tools: `develop`, `predict`, `insights`,
+ *                          `llm_query`, `llm_distill`, `audit_memory`,
+ *                          `duplicate_pairs`
+ *   connector-cadence    — unlocks sub-daily connector pull intervals (Pro/Teams)
+ *   teams                — Teams-tier features (shared engrams, future gates)
  */
-export type LicenseFeature = 'skill-training' | 'gnn-exploration';
+export type LicenseFeature = 'skill-training' | 'gnn-exploration' | 'foresight' | 'connector-cadence' | 'teams';
 
 // ── LicenseValidator ──────────────────────────────────────────────────────────
 
