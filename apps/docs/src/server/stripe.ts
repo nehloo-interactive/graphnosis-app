@@ -29,7 +29,19 @@ export function getWebhookSecret(env: BillingEnv): string {
 }
 
 export function getMonthlySubscriptionPriceId(env: BillingEnv): string {
-  return requireEnv(env, 'STRIPE_PRICE_MONTHLY_SUBSCRIPTION', 'price_REPLACE_ME');
+  return requireEnv(env, 'STRIPE_PRICE_PRO_MONTHLY', 'price_REPLACE_ME');
+}
+
+export function getProAnnualPriceId(env: BillingEnv): string {
+  return requireEnv(env, 'STRIPE_PRICE_PRO_ANNUAL', 'price_REPLACE_ME');
+}
+
+export function getTeamsMonthlyPriceId(env: BillingEnv): string {
+  return requireEnv(env, 'STRIPE_PRICE_TEAMS_MONTHLY', 'price_REPLACE_ME');
+}
+
+export function getTeamsAnnualPriceId(env: BillingEnv): string {
+  return requireEnv(env, 'STRIPE_PRICE_TEAMS_ANNUAL', 'price_REPLACE_ME');
 }
 
 export function getBillingBaseUrl(env: BillingEnv): string {

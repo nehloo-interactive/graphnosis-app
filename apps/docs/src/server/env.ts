@@ -20,7 +20,10 @@ export interface BillingEnv {
   LICENSE_SIGNING_SECRET_KEY_HEX?: string;
   RESEND_API_KEY?: string;
   // Plain text
-  STRIPE_PRICE_MONTHLY_SUBSCRIPTION?: string;
+  STRIPE_PRICE_PRO_MONTHLY?: string;
+  STRIPE_PRICE_PRO_ANNUAL?: string;
+  STRIPE_PRICE_TEAMS_MONTHLY?: string;
+  STRIPE_PRICE_TEAMS_ANNUAL?: string;
   RESEND_FROM_ADDRESS?: string;
   PUBLIC_BILLING_BASE_URL?: string;
   /** Stripe-hosted Customer Portal login URL (billing.stripe.com/p/login/…).
