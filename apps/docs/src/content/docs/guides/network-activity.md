@@ -213,3 +213,5 @@ See [Verify It Yourself](/guides/verify-it-yourself/) for a walkthrough of how t
 
 [Using Graphnosis with AI Clients](/legal/third-party-ai/) — what the AI provider sees on the other side.
 
+[Enterprise IT FAQ](/guides/enterprise-faq/) — security, installation, tamper resistance, OT integration, and compliance mapping for IT teams.
+
