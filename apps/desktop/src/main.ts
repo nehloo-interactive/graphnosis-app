@@ -6700,7 +6700,15 @@ els.btnGwCreate.addEventListener('click', async () => {
   els.btnGwCreate.textContent = 'Creating…';
   els.gwNote.textContent = 'Creating…';
   try {
-    await invoke('create_graph_with_template', { graphId, template: gwSelected, displayName });
+    const createResult = await invoke<{ error?: { code: string; upgradeUrl?: string } }>('create_graph_with_template', { graphId, template: gwSelected, displayName });
+    if (createResult?.error?.code === 'ENGRAM_LIMIT_REACHED') {
+      els.gwNote.innerHTML = 'Free plan is limited to 3 engrams. <a href="#" style="color:var(--accent)">Upgrade to Pro →</a>';
+      els.gwNote.querySelector('a')?.addEventListener('click', (ev) => {
+        ev.preventDefault();
+        void invoke('plugin:opener|open_url', { url: 'https://graphnosis.com/upgrade' });
+      });
+      return;
+    }
     els.graphWizardModal.classList.add('hidden');
     await fetchGraphsMetadata();
     await refreshStats();
@@ -8583,12 +8591,11 @@ function mcpToolsOnboardingHtml(): string {
               <span class="g-deck-cmd-chip" data-tool="confirm_data_access">confirm_data_access</span>
             </div>
           </div>
-          <!-- Skills (Autonomous Praxis). The read tools — list / get /
-               history / vitality — stay free so anyone can see what's
-               there. train_skill and export_skill carry the skill-training
-               Pro gate; the sidecar refuses them without a Pro license.
-               delete / rollback are write actions a user owns; they stay
-               unpaywalled so users can always remove their own data. -->
+          <!-- Skills (Autonomous Praxis). Read-only tools — list / get /
+               walk / walk_structured / delete — are free so .gsk packs work
+               without a Pro license. Authoring tools (train, export, rollback,
+               history, vitality, save_run, resume_run) all carry the
+               skill-training Pro gate. -->
           <div class="g-deck-cmd-group">
             <span class="g-deck-cmd-grouplabel">Skills (Autonomous Praxis)</span>
             <div class="g-deck-cmd-chips">
@@ -8596,34 +8603,36 @@ function mcpToolsOnboardingHtml(): string {
               <span class="g-deck-cmd-chip" data-tool="get_skill">get_skill</span>
               <span class="g-deck-cmd-chip" data-tool="walk_skill">walk_skill</span>
               <span class="g-deck-cmd-chip" data-tool="walk_skill_structured">walk_skill_structured</span>
-              <span class="g-deck-cmd-chip" data-tool="skill_history">skill_history</span>
-              <span class="g-deck-cmd-chip" data-tool="skill_vitality">skill_vitality</span>
+              <span class="g-deck-cmd-chip" data-tool="delete_skill">delete_skill</span>
               <span class="g-deck-cmd-chip" data-tool="train_skill" data-pro="1">train_skill</span>
               <span class="g-deck-cmd-chip" data-tool="export_skill" data-pro="1">export_skill</span>
-              <span class="g-deck-cmd-chip" data-tool="delete_skill">delete_skill</span>
-              <span class="g-deck-cmd-chip" data-tool="rollback_skill">rollback_skill</span>
+              <span class="g-deck-cmd-chip" data-tool="rollback_skill" data-pro="1">rollback_skill</span>
+              <span class="g-deck-cmd-chip" data-tool="skill_history" data-pro="1">skill_history</span>
+              <span class="g-deck-cmd-chip" data-tool="skill_vitality" data-pro="1">skill_vitality</span>
+              <span class="g-deck-cmd-chip" data-tool="save_skill_run" data-pro="1">save_skill_run</span>
+              <span class="g-deck-cmd-chip" data-tool="resume_skill_run" data-pro="1">resume_skill_run</span>
             </div>
           </div>
           <div class="g-deck-cmd-group">
             <span class="g-deck-cmd-grouplabel">Approximate (similarity)</span>
             <div class="g-deck-cmd-chips">
-              <span class="g-deck-cmd-chip" data-tool="audit_memory">audit_memory</span>
               <span class="g-deck-cmd-chip" data-tool="check_duplicate">check_duplicate</span>
+              <span class="g-deck-cmd-chip" data-tool="audit_memory" data-pro="1">audit_memory</span>
             </div>
           </div>
           <div class="g-deck-cmd-group">
-            <span class="g-deck-cmd-grouplabel">Non-deterministic (Local LLM)</span>
+            <span class="g-deck-cmd-grouplabel">Foresight (Local LLM + GNN)</span>
             <div class="g-deck-cmd-chips">
-              <span class="g-deck-cmd-chip" data-tool="develop">develop</span>
-              <span class="g-deck-cmd-chip" data-tool="predict">predict</span>
-              <span class="g-deck-cmd-chip" data-tool="insights">insights</span>
+              <span class="g-deck-cmd-chip" data-tool="develop" data-pro="1">develop</span>
+              <span class="g-deck-cmd-chip" data-tool="predict" data-pro="1">predict</span>
+              <span class="g-deck-cmd-chip" data-tool="insights" data-pro="1">insights</span>
               <span class="g-deck-cmd-chip" data-tool="gnn_neighbors" data-pro="1">gnn_neighbors</span>
-              <span class="g-deck-cmd-chip" data-tool="llm_query">llm_query</span>
-              <span class="g-deck-cmd-chip" data-tool="llm_distill">llm_distill</span>
+              <span class="g-deck-cmd-chip" data-tool="llm_query" data-pro="1">llm_query</span>
+              <span class="g-deck-cmd-chip" data-tool="llm_distill" data-pro="1">llm_distill</span>
             </div>
           </div>
         </div>
-        <p class="g-deck-cmd-note">45 tools total. Deterministic and approximate tools work without any AI model. Conditional and non-deterministic tools use the optional Local LLM (or Neural Network); enabling them never changes how the deterministic tools behave. Tools marked <strong style="display:inline-block; padding:0 5px; font-size:9px; font-weight:800; letter-spacing:0.05em; border-radius:3px; background:var(--color-status-warn-gold, #b8860b); color:#000; vertical-align: 1px;">PRO</strong> require a <a href="https://graphnosis.com/upgrade" target="_blank">Graphnosis Pro subscription</a>.</p>
+        <p class="g-deck-cmd-note">47 tools total. Deterministic and approximate tools work without any AI model. Foresight tools use the optional Local LLM (or Neural Network); enabling them never changes how the deterministic tools behave. Tools marked <strong style="display:inline-block; padding:0 5px; font-size:9px; font-weight:800; letter-spacing:0.05em; border-radius:3px; background:var(--color-status-warn-gold, #b8860b); color:#000; vertical-align: 1px;">PRO</strong> require a <a href="https://graphnosis.com/upgrade" target="_blank">Graphnosis Pro subscription</a>.</p>
       </div>
     </div>`;
 }
@@ -17603,7 +17612,7 @@ document.getElementById('engram-suggest-primary')?.addEventListener('click', () 
     : p.suggestedName;
   void (async () => {
     try {
-      await invoke('accept_engram_suggestion', {
+      const suggResult = await invoke<{ error?: { code: string } }>('accept_engram_suggestion', {
         graphId,
         template: p.template ?? 'personal',
         displayName,
@@ -17611,6 +17620,16 @@ document.getElementById('engram-suggest-primary')?.addEventListener('click', () 
         label: p.label ?? 'Conversation note',
         sourceKind: p.sourceKind ?? 'ai-conversation',
       });
+      if (suggResult?.error?.code === 'ENGRAM_LIMIT_REACHED') {
+        const banner = document.getElementById('engram-suggestion-banner');
+        if (banner) {
+          const noteEl = banner.querySelector('.suggestion-note, .note, p') as HTMLElement | null;
+          if (noteEl) noteEl.textContent = 'Free plan: 3 engram limit reached.';
+        }
+        void invoke('plugin:opener|open_url', { url: 'https://graphnosis.com/upgrade' });
+        if (btn) btn.disabled = false;
+        return;
+      }
       hideEngramSuggestion();
       // Refresh the top-bar engram dropdown + stats so a freshly-created
       // engram shows up immediately (pollGraphMutations alone only repaints
@@ -19959,7 +19978,13 @@ function collectConnectorFormData(kind: ConnectorKind): Partial<ConnectorConfigS
         if (!displayName) { alert('Enter a name for the new engram.'); if (btn) { btn.disabled = false; btn.textContent = 'Save'; } return; }
         const newGraphId = displayName.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') +
           '-' + Math.random().toString(36).slice(-4);
-        await invoke('create_graph_with_template', { graphId: newGraphId, template: 'personal', displayName });
+        const connCreateResult = await invoke<{ error?: { code: string } }>('create_graph_with_template', { graphId: newGraphId, template: 'personal', displayName });
+        if (connCreateResult?.error?.code === 'ENGRAM_LIMIT_REACHED') {
+          alert('Free plan: 3 engram limit reached. Upgrade to Pro at graphnosis.com/upgrade to create more engrams.');
+          void invoke('plugin:opener|open_url', { url: 'https://graphnosis.com/upgrade' });
+          if (btn) { btn.disabled = false; btn.textContent = 'Save'; }
+          return;
+        }
         loadedGraphs = await invoke<GraphWithMetadata[]>('list_graphs_with_metadata', { includeUnloaded: true });
         syncEngramPicker();
         config.graphId = newGraphId;
@@ -21775,7 +21800,7 @@ document.getElementById('whats-new-modal')?.addEventListener('click', (e) => {
 // ── Paywall buttons ─────────────────────────────────────────────────────────
 
 document.getElementById('btn-studio-upgrade')?.addEventListener('click', () => {
-  void invoke('open_url', { url: 'https://graphnosis.com/pricing' });
+  void invoke('open_url', { url: 'https://graphnosis.com/upgrade' });
 });
 document.getElementById('btn-studio-paywall-close')?.addEventListener('click', () => {
   // Collapse the Studio section back — user will open it again when ready.
@@ -22511,7 +22536,12 @@ async function createSkillsEngramQuiet(displayName: string): Promise<string | nu
   const collision = loadedGraphs.some((g) => g.graphId === baseSlug);
   const graphId = collision ? `${baseSlug}-${Date.now().toString(36).slice(-5)}` : baseSlug;
   try {
-    await invoke('create_graph_with_template', { graphId, template: 'skill', displayName: trimmed });
+    const skillCreateResult = await invoke<{ error?: { code: string } }>('create_graph_with_template', { graphId, template: 'skill', displayName: trimmed });
+    if (skillCreateResult?.error?.code === 'ENGRAM_LIMIT_REACHED') {
+      showSkillsToast('Free plan: 3 engram limit reached. Upgrade at graphnosis.com/upgrade', 'error');
+      void invoke('plugin:opener|open_url', { url: 'https://graphnosis.com/upgrade' });
+      return null;
+    }
     loadedGraphs = (await invoke('list_graphs_with_metadata', { includeUnloaded: true })) as GraphWithMetadata[];
     syncEngramPicker();
     const targetSel = document.getElementById('skills-input-engram') as HTMLSelectElement | null;
