@@ -176,16 +176,20 @@ jobs:
           if gh release view "$VERSION" > /dev/null 2>&1; then
             gh release upload "$VERSION" \
               "$DMG_PATH#Graphnosis ${VERSION} (macOS Apple Silicon)" \
-              "$TAR_PATH#Graphnosis ${VERSION} — Auto-Update bundle" \
               "latest.json" \
               --clobber
+            gh release upload "$VERSION" \
+              "$TAR_PATH#Graphnosis ${VERSION} — Auto-Update bundle" \
+              --clobber || echo "::warning::Auto-update bundle upload failed — DMG and latest.json are present; re-upload the .app.tar.gz manually if needed."
           else
             gh release create "$VERSION" \
               "$DMG_PATH#Graphnosis ${VERSION} (macOS Apple Silicon)" \
-              "$TAR_PATH#Graphnosis ${VERSION} — Auto-Update bundle" \
               "latest.json" \
               --title "Graphnosis ${VERSION}" \
               --generate-notes
+            gh release upload "$VERSION" \
+              "$TAR_PATH#Graphnosis ${VERSION} — Auto-Update bundle" \
+              --clobber || echo "::warning::Auto-update bundle upload failed — re-upload the .app.tar.gz manually if needed."
           fi
 
       - name: Clean up keychain
