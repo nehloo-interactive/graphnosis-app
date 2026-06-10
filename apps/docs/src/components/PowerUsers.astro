@@ -164,7 +164,7 @@
     <div class="mb-12">
       <h2 class="text-3xl sm:text-4xl lg:text-5xl font-black text-white text-center mb-4">What AI cloud and local clients can do with Graphnosis...</h2>
       <p class="text-[#c4c6d6] text-base text-center max-w-2xl mx-auto mb-10">
-        All <span class="text-[#f0f0f5] font-semibold">47 MCP tools</span> across 10 functional categories. The deterministic + approximate sets work out of the box;
+        The <span class="text-[#f0f0f5] font-semibold">full MCP toolset</span> across 10 functional categories. The deterministic + approximate sets work out of the box;
         the conditional and non-deterministic sets use the optional local LLM (or Neural Network). Every call is visible in the audit log.
         Click any tool for parameters, return shape, and example prompts.
       </p>
@@ -239,6 +239,7 @@
           desc: 'Read-only views into the autonomous brain engine + consent gate.',
           tools: [
             { name: 'duplicate_pairs', desc: 'Near-duplicate pairs the brain flagged for review' },
+            { name: 'contradiction_pairs', desc: 'Conflicting memories the reflection scan flagged — resolve, don’t accumulate' },
             { name: 'healing_journal', desc: 'Audit log of autonomous corrections the brain made' },
             { name: 'gnn_status', desc: 'Neural Network state + predicted-edge count' },
             { name: 'confirm_data_access', desc: 'Headless-fallback consent for sensitive engrams' },

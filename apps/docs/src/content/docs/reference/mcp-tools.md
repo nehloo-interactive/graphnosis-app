@@ -5,11 +5,11 @@ sidebar:
   order: 1
 ---
 
-The Graphnosis sidecar exposes **47 tools** via the Model Context Protocol, organized into ten functional categories. Every connected MCP client — Claude Desktop, Claude Code, Cursor, and anything else that speaks MCP — sees the same 47. What a tool can actually reach is still governed by each engram's sensitivity tier and the [consent gate](/guides/ai-access-controls/#2-the-consent-gate) — by default a one-click in-app prompt for `sensitive`-tier recalls, silent for `personal` and `public`.
+The Graphnosis sidecar exposes its tools via the Model Context Protocol, organized into ten functional categories. Every connected MCP client — Claude Desktop, Claude Code, Cursor, and anything else that speaks MCP — sees the same toolset. What a tool can actually reach is still governed by each engram's sensitivity tier and the [consent gate](/guides/ai-access-controls/#2-the-consent-gate) — by default a one-click in-app prompt for `sensitive`-tier recalls, silent for `personal` and `public`.
 
 You can browse the full toolset inside the app too: open the **MCP Tools** button in the left sidebar (next to Settings). Each tool name opens a short explainer with example prompts you can paste straight into your AI client.
 
-## At a glance — the 47 tools
+## At a glance — the tools by category
 
 | Category | Tools |
 |---|---|
@@ -18,7 +18,7 @@ You can browse the full toolset inside the app too: open the **MCP Tools** butto
 | **Structured recall** (4) | [`recall_structured`](#recall_structured) · [`recall_with_citations`](#recall_with_citations) · [`compare_engrams`](#compare_engrams) · [`cross_search`](#cross_search) |
 | **Source operations** (3) | [`find_source`](#find_source) · [`recall_source`](#recall_source) · [`transfer_source`](#transfer_source) |
 | **Engram operations** (2) | [`ingest_batch`](#ingest_batch) · [`engram_summary`](#engram_summary) |
-| **Brain maintenance** (4) | [`duplicate_pairs`](#duplicate_pairs) ★ · [`healing_journal`](#healing_journal) · [`gnn_status`](#gnn_status) ★ · [`confirm_data_access`](#confirm_data_access) |
+| **Brain maintenance** (5) | [`duplicate_pairs`](#duplicate_pairs) ★ · [`contradiction_pairs`](#contradiction_pairs) ★ · [`healing_journal`](#healing_journal) · [`gnn_status`](#gnn_status) ★ · [`confirm_data_access`](#confirm_data_access) |
 | **Skills (SOPs)** (12) | [`walk_skill`](#walk_skill) · [`walk_skill_structured`](#walk_skill_structured) · [`get_skill`](#get_skill) · [`list_skills`](#list_skills) · [`delete_skill`](#delete_skill) · [`train_skill`](#train_skill) ★ · [`export_skill`](#export_skill) ★ · [`rollback_skill`](#rollback_skill) ★ · [`skill_history`](#skill_history) ★ · [`skill_vitality`](#skill_vitality) ★ · [`save_skill_run`](#save_skill_run) ★ · [`resume_skill_run`](#resume_skill_run) ★ |
 | **Approximate** (2) | [`audit_memory`](#audit_memory) ★ · [`check_duplicate`](#check_duplicate) |
 | **Conditional** (1) | [`edit`](#edit) |
@@ -800,6 +800,16 @@ Read-only windows into the autonomous brain engine that runs in the background w
 Near-duplicate node pairs the brain engine has already flagged for review — high-confidence matches from the background scan, not ad-hoc searches. Resolve with `edit` (merge) or `forget(nodeIds=[nodeId])` (remove one side). Requires the brain engine to be running.
 
 - **Try saying:** *"What does my brain think is duplicated?"*
+
+### `contradiction_pairs` *(Pro)*
+
+**Requires Graphnosis Pro.** [Upgrade →](https://graphnosis.com/upgrade)
+
+Contradicting memory pairs the periodic reflection scan has flagged — two memories that share the same entities but assert conflicting content (e.g. one says a project ships in March, another says it was cancelled). The mirror image of `duplicate_pairs`: those are near-*identical*, these are near-*opposite*. The scan runs in the background every few hours and only queues high-confidence conflicts, so the list stays short and meaningful.
+
+Resolve by superseding the outdated side via `edit` — the supersede keeps the old memory recoverable while the current one wins recall. Never resolve a contradiction by adding a third note. If both sides are genuinely true (context-dependent), dismiss the pair in the app's **Needs you** review.
+
+- **Try saying:** *"Is anything in my memory contradictory?"*
 
 ### `healing_journal`
 

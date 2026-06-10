@@ -4,8 +4,8 @@ v1.13.0
 
 This project uses **Graphnosis** as its long-term memory: a local, encrypted
 store the user owns, reached through MCP. Treat it as the source of truth for
-anything that should outlive this conversation. There are **47 MCP tools across
-10 groups** — pick by intent; the tool name shapes the audit footer.
+anything that should outlive this conversation. The MCP tools are organized
+into **10 groups** — pick by intent; the tool name shapes the audit footer.
 
 ## The two non-negotiable habits
 
@@ -72,7 +72,7 @@ user to open **Settings → AI → Consent Phrases**, wait for them to type it,
 call `confirm_data_access({phrase, tier})` with exactly what they typed, then
 retry. If they type SKIP, do not retry and do not invent the phrase.
 
-## The 47 tools — pick by intent
+## The tools — pick by intent
 
 ### Core memory (8)
 - `recall` — semantic search; ready-to-read context block. **Escalation
@@ -164,6 +164,18 @@ Requires, Produces).
 Cross-skill orchestration syntax inside a step:
 `@skill: target-name(arg=value, arg=$priorVar) -> $captureName`. Bare form
 `@skill: target-name` also works (no args, no capture).
+
+### Brain maintenance (5) — read-only windows into the background brain
+- `duplicate_pairs` — near-IDENTICAL node pairs the background scan queued for
+  review. Resolve via `edit` (merge) or `forget`.
+- `contradiction_pairs` — near-OPPOSITE pairs: memories sharing entities but
+  asserting conflicting content, flagged by the periodic reflection scan.
+  Resolve by superseding the outdated side via `edit` — NEVER by adding a
+  third note. If both are true (context-dependent), tell the user to dismiss
+  the pair in the app's Needs-you review.
+- `healing_journal` — audit log of autonomous merges the brain applied.
+- `gnn_status` — Neural Network status (enabled, edge count, last run).
+- `confirm_data_access` — headless consent fallback (see the consent section).
 
 ### Approximate (2) — similarity scans, no LLM
 - `audit_memory` — near-duplicate detection across engrams.
