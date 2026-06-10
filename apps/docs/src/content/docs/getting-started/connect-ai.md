@@ -132,9 +132,15 @@ After installing, open VS Code Settings, search `graphnosis`, and paste your bea
 
 Get your token from the Graphnosis app: **Settings → Mobile & Remote Access → "Set up mobile access…" → Step 2 → Copy token**.
 
-### Option B — `.vscode/mcp.json`
+### Option B — VS Code MCP config
 
-Create or edit `.vscode/mcp.json` in your project root with the snippet the wizard generates:
+Create or edit the VS Code user MCP config with the snippet the wizard generates:
+
+| Platform | Path |
+|----------|------|
+| macOS | `~/Library/Application Support/Code/User/mcp.json` |
+| Windows | `%APPDATA%\Code\User\mcp.json` |
+| Linux | `~/.config/Code/User/mcp.json` |
 
 ```json
 {

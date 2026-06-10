@@ -18718,7 +18718,19 @@ function renderHttpUiBlock(preferredIp: string): void {
 }
 
 function mobileCopyBtn(btn: HTMLButtonElement, text: string): void {
-  void navigator.clipboard.writeText(text).then(() => {
+  void (async () => {
+    try {
+      await navigator.clipboard.writeText(text);
+    } catch {
+      const ta = document.createElement('textarea');
+      ta.value = text;
+      ta.style.position = 'fixed';
+      ta.style.opacity = '0';
+      document.body.appendChild(ta);
+      ta.select();
+      try { document.execCommand('copy'); } catch { /* ignore */ }
+      document.body.removeChild(ta);
+    }
     const orig = btn.textContent;
     btn.textContent = 'Copied!';
     btn.classList.add('copied');
@@ -18726,7 +18738,7 @@ function mobileCopyBtn(btn: HTMLButtonElement, text: string): void {
       btn.textContent = orig;
       btn.classList.remove('copied');
     }, 1800);
-  });
+  })();
 }
 
 async function openMobileWizard(): Promise<void> {
@@ -18885,7 +18897,7 @@ async function openMobileWizard(): Promise<void> {
     mobileCopyBtn(btn, text);
   });
 
-  // VS Code config copy button — copies the full .vscode/mcp.json snippet.
+  // VS Code config copy button — copies the full mcp.json snippet.
   document.getElementById('btn-copy-vscode-config')?.addEventListener('click', (e) => {
     const btn = e.currentTarget as HTMLButtonElement;
     const text = document.getElementById('mobile-vscode-config')?.textContent ?? '';
@@ -18950,7 +18962,7 @@ async function openCopilotModal(): Promise<void> {
     document.getElementById('copilot-setup-modal')?.classList.add('hidden');
   });
   document.getElementById('btn-copilot-open-extension')?.addEventListener('click', () => {
-    void invoke('plugin:opener|open_url', {
+    void invoke('open_external_url', {
       url: 'vscode:extension/nehloo-interactive.graphnosis',
     });
   });
