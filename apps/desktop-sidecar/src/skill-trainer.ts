@@ -520,6 +520,12 @@ export class SkillTrainer {
      *  can watch the rewrite arrive in real time. Memory-augmented mode
      *  doesn't stream — it's a deterministic local synthesis. */
     onChunk?: (chunk: string) => void;
+    /** Per-operation status callback. Fires once at the start of each phase of
+     *  the training run with a short, generic, NON-sensitive label (no skill
+     *  name, engram name, or memory content) so the caller can surface it in
+     *  the UI status bar. The skill name, if the UI chooses to show it, is the
+     *  caller's responsibility to add and to redact in Presentation Mode. */
+    onStatus?: (label: string) => void;
   }): Promise<TrainSkillResult> {
     const {
       skill,
@@ -531,6 +537,7 @@ export class SkillTrainer {
       addedBy,
       recallBreadth: inputBreadth,
       onChunk,
+      onStatus,
     } = input;
 
     // Phase 3b — wrap the whole training run in the overlay-recompute guard
@@ -541,6 +548,7 @@ export class SkillTrainer {
     this.host.setSkipOverlayRecompute(true);
     try {
     // ── Phase 1: Build skill context (deterministic recall) ───────────────────
+    onStatus?.('Gathering relevant memories…');
     const effectiveBreadth = inputBreadth ?? 50;
     const context = await this.buildSkillContext(skill, graphId, focusGraphIds, effectiveBreadth, input.goals);
     const topNodes = context.influentialNodes.slice(0, 10);
@@ -568,6 +576,7 @@ export class SkillTrainer {
       // wired an onChunk callback AND the underlying LLM supports streaming,
       // we pipe each token through onChunk so the UI can render a live
       // progressive diff. Otherwise fall back to the single-shot complete().
+      onStatus?.('Personalizing with the local LLM…');
       try {
         const raw = await this.llmCompleteWithTimeout(
           {
@@ -599,6 +608,7 @@ export class SkillTrainer {
       // No LLM — append memories as context paragraphs (saved as separate
       // 'recalled-memory' chunks below; the joined `trained` string is just
       // the preview the caller renders).
+      onStatus?.('Synthesizing from your memories…');
       recalledParagraphs = buildMemoryAugmented(context.subgraph);
       trained = recalledParagraphs.length > 0
         ? `${skill}\n\n${recalledParagraphs.join('\n\n')}`
@@ -642,6 +652,7 @@ export class SkillTrainer {
     // the atlas. The new model collapses to one source per skill.
     let skillId: string | undefined;
     if (save) {
+      onStatus?.('Saving the trained skill…');
       const dateStr = new Date().toISOString().slice(0, 10);
       const label = skillName
         ? `${skillName} (trained ${dateStr})`
@@ -991,6 +1002,15 @@ export class SkillTrainer {
     const header = FORMAT_HEADERS[format];
     const wrapper = FORMAT_WRAPPERS[format];
 
+    // Claude Code skills want YAML frontmatter (name + description) at byte 0,
+    // where `description` is the Trigger goal. This is the AI-facing export path
+    // (the MCP `export_skill` tool routes here), so emit frontmatter instead of
+    // the comment header to produce a drop-in `.claude/skills` file.
+    if (format === 'claude-md') {
+      const fm = buildClaudeMdFrontmatter(extractSkillTitle(cleaned), extractTriggerBlock(cleaned));
+      if (fm) return `${fm}\n\n${cleaned}`;
+    }
+
     const withHeader = header ? `${header}\n\n${cleaned}` : cleaned;
     return wrapper ? wrapper(cleaned) : withHeader;
   }
@@ -1032,7 +1052,10 @@ export class SkillTrainer {
     const body = formatTrainedOutputAsMarkdown(chunks, format);
     const header = FORMAT_HEADERS[format];
     const wrapper = FORMAT_WRAPPERS[format];
-    const withHeader = header ? `${header}\n\n${body}` : body;
+    // A claude-md body already leads with its own YAML frontmatter, which must
+    // sit at byte 0 — never prepend the comment header in front of it.
+    const startsWithFrontmatter = body.startsWith('---\n');
+    const withHeader = header && !startsWithFrontmatter ? `${header}\n\n${body}` : body;
     return wrapper ? wrapper(body) : withHeader;
   }
 
@@ -3000,6 +3023,11 @@ export function classifyChunkRole(content: string, index: number, classified: nu
   if (/^Success:\s/i.test(trimmed)) return 'goal-success';
   if (/^Out of scope:\s/i.test(trimmed)) return 'goal-scope';
   if (/^On completion:\s/i.test(trimmed)) return 'goal-done';
+  if (/^Trigger:\s/i.test(trimmed)) return 'goal-trigger';
+  if (/^Prerequisites:\s/i.test(trimmed)) return 'goal-prereq';
+  if (/^On failure:\s/i.test(trimmed)) return 'goal-failure';
+  if (/^Requires:\s/i.test(trimmed)) return 'goal-requires';
+  if (/^Produces:\s/i.test(trimmed)) return 'goal-produces';
   // Recipe shape: first line is "name: trigger", subsequent lines start "— ".
   const lines = trimmed.split('\n');
   if (lines.length >= 2 && lines[1]!.startsWith('— ')) return 'recipe';
@@ -3032,6 +3060,8 @@ export function formatTrainedOutputAsMarkdown(chunks: string[], format: ExportFo
   const recipeLines: string[] = [];
   const goalLines: string[] = [];
   const memoryLines: string[] = [];
+  let titleText = '';
+  let triggerText = '';
   let classifiedCount = 0;
   for (let i = 0; i < chunks.length; i++) {
     const chunk = chunks[i]!;
@@ -3041,6 +3071,7 @@ export function formatTrainedOutputAsMarkdown(chunks: string[], format: ExportFo
     const text = chunk.trim();
     switch (role) {
       case 'title':
+        if (!titleText) titleText = text;
         titleLines.push(`# ${text}`);
         break;
       case 'body':
@@ -3058,6 +3089,24 @@ export function formatTrainedOutputAsMarkdown(chunks: string[], format: ExportFo
       case 'goal-done':
         goalLines.push(`- ⊙ **On completion:** ${text.replace(/^On completion:\s*/i, '')}`);
         break;
+      case 'goal-trigger': {
+        const t = text.replace(/^Trigger:\s*/i, '');
+        if (!triggerText) triggerText = t;
+        goalLines.push(`- ⚡ **Trigger:** ${t}`);
+        break;
+      }
+      case 'goal-prereq':
+        goalLines.push(`- ◆ **Prerequisites:** ${text.replace(/^Prerequisites:\s*/i, '')}`);
+        break;
+      case 'goal-failure':
+        goalLines.push(`- ⛑ **On failure:** ${text.replace(/^On failure:\s*/i, '')}`);
+        break;
+      case 'goal-requires':
+        goalLines.push(`- ▸ **Requires:** ${text.replace(/^Requires:\s*/i, '')}`);
+        break;
+      case 'goal-produces':
+        goalLines.push(`- ▹ **Produces:** ${text.replace(/^Produces:\s*/i, '')}`);
+        break;
       case 'recalled-memory':
         memoryLines.push(text);
         break;
@@ -3066,12 +3115,88 @@ export function formatTrainedOutputAsMarkdown(chunks: string[], format: ExportFo
     }
   }
   const parts: string[] = [];
+  // Claude Code skills read a YAML frontmatter block (`name` + `description`) at
+  // byte 0; `description` is the "when to use this skill" routing signal — which
+  // is exactly the Trigger goal. Emitting it makes a claude-md export a drop-in
+  // `.claude/skills` file. Only for claude-md; the other text formats don't use
+  // frontmatter.
+  if (format === 'claude-md') {
+    const fm = buildClaudeMdFrontmatter(titleText, triggerText);
+    if (fm) parts.push(fm);
+  }
   if (titleLines.length) parts.push(titleLines.join('\n'));
   if (bodyLines.length) parts.push(bodyLines.join('\n\n'));
   if (memoryLines.length) parts.push(memoryLines.join('\n\n'));
   if (recipeLines.length) parts.push(`## Recall Recipes\n\n${recipeLines.join('\n\n')}`);
   if (goalLines.length) parts.push(`## Goals\n\n${goalLines.join('\n')}`);
   return parts.join('\n\n');
+}
+
+// ── Claude Code skill frontmatter helpers ──────────────────────────────────
+//
+// Shared by both export paths (exportSkill raw-text + exportSkillFromSource
+// chunk) so an `export_skill('claude-md')` produces a drop-in Claude Code
+// skill regardless of which path runs.
+
+/** Slug for a Claude Code skill `name:` field — the title segment before an
+ *  em/en/hyphen separator, lowercased, non-alphanumerics → single hyphens. */
+function slugifySkillTitle(title: string): string {
+  const head = title.split(/\s+[—–-]\s+/)[0] ?? title;
+  return head.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 64);
+}
+
+/** Collapse a Trigger goal to a single-line description and drop the trailing
+ *  `[dispatch-safe: …]` routing tag (that's for skill-dispatch, not humans). */
+function triggerToDescription(trigger: string): string {
+  return trigger
+    .replace(/\[dispatch-safe:[^\]]*\]/gi, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+/** First non-comment, non-goal line of a raw trained-text blob = the title. */
+function extractSkillTitle(text: string): string {
+  for (const ln of text.split('\n')) {
+    const t = ln.trim();
+    if (!t || t.startsWith('<!--') || GOAL_NODE_RE.test(t)) continue;
+    return t.replace(/^#+\s*/, '');
+  }
+  return '';
+}
+
+/** The Trigger goal block (the `Trigger:` line plus indented continuation
+ *  lines) pulled from a raw trained-text blob, as a single line. */
+function extractTriggerBlock(text: string): string {
+  const lines = text.split('\n');
+  const out: string[] = [];
+  let inTrigger = false;
+  for (const ln of lines) {
+    if (/^Trigger:\s/i.test(ln)) {
+      inTrigger = true;
+      out.push(ln.replace(/^Trigger:\s*/i, '').trim());
+      continue;
+    }
+    if (inTrigger) {
+      // Continuation = indented, non-empty, and not the start of another goal.
+      if (/^\s+\S/.test(ln) && !GOAL_NODE_RE.test(ln.trim())) {
+        out.push(ln.trim());
+        continue;
+      }
+      break;
+    }
+  }
+  return out.join(' ').trim();
+}
+
+/** Build a Claude Code skill YAML frontmatter block from a title + Trigger
+ *  goal text, or null when either is missing. The description is emitted as a
+ *  JSON-stringified scalar — valid YAML double-quoting that escapes the quotes,
+ *  colons, and pipes that Trigger phrases routinely contain. */
+function buildClaudeMdFrontmatter(title: string, triggerGoal: string): string | null {
+  const name = slugifySkillTitle(title);
+  const description = triggerToDescription(triggerGoal);
+  if (!name || !description) return null;
+  return `---\nname: ${name}\ndescription: ${JSON.stringify(description)}\n---`;
 }
 
 /** Remove the metadata HTML comment block the trainer prepends on save.
