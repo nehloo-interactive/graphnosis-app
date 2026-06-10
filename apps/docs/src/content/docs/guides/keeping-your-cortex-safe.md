@@ -209,3 +209,5 @@ Do those three things and the doomsday scenario stops being plausible.
 
 [Verify It Yourself](/guides/verify-it-yourself/) — confirm the safety claims by hand.
 
+[Enterprise IT FAQ](/guides/enterprise-faq/) — encryption, tamper resistance, and compliance mapping for IT and infosec teams.
+
