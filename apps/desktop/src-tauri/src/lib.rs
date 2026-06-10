@@ -2154,6 +2154,25 @@ async fn get_vscode_connection_info(state: State<'_, AppState>) -> Result<serde_
 }
 
 #[tauri::command]
+async fn rotate_vscode_token(state: State<'_, AppState>) -> Result<serde_json::Value, String> {
+    let socket_path = {
+        let inner = state.inner.lock().await;
+        match inner.sidecar.as_ref() {
+            Some(h) => h.socket_path.clone(),
+            None => return Err("cortex is locked".to_string()),
+        }
+    };
+    ipc_client::request_with_timeout(
+        &socket_path,
+        "vscode.rotateToken",
+        serde_json::Value::Null,
+        std::time::Duration::from_secs(5),
+    )
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 fn get_vscode_mcp_config_path() -> Result<String, String> {
     let home = dirs::home_dir().ok_or_else(|| "cannot determine home directory".to_string())?;
     #[cfg(target_os = "macos")]
@@ -3271,6 +3290,7 @@ pub fn run() {
             update_settings,
             get_mobile_connection_info,
             get_vscode_connection_info,
+            rotate_vscode_token,
             get_vscode_mcp_config_path,
             list_connectors,
             install_connector,

@@ -11,6 +11,21 @@ Conventions: **Added** = new features, **Changed** = behavior or UX shifts, **Fi
 
 ---
 
+## v1.14.9 — VS Code bearer token mismatch fix & token rotation
+
+<p style="margin-top:0.5rem;font-size:1.25em;opacity:0.85;">2026-06-10</p>
+
+### Fixed
+
+- **Bearer token shown in the Copilot setup modal now always matches the token the server accepts.** The VS Code local bridge was capturing the token as a static string at sidecar startup. If settings were updated after startup (or if the mobile HTTP bridge was bound to the same port), the running server and the modal could disagree on the token, causing every manual curl / CLI connection to return 401 even with the "correct" token. The bridge now reads the token live from settings on every request (a getter, matching the pattern used by the mobile bridge), so the modal and the server always agree.
+- **`gh copilot` CLI bearer token auth is case-insensitive.** Per RFC 6750 the `Bearer` scheme prefix is case-insensitive. The auth check now strips the prefix case-insensitively and trims whitespace before comparing, which also handles any trailing space introduced by copy-paste.
+
+### Added
+
+- **Rotate Token button in the Copilot setup modal.** Generates a new bearer token, saves it, and updates the modal display in one click. VS Code Chat reconnects automatically via OAuth on its next request. A hint reminds you to update `~/.copilot/settings.json` for Copilot CLI.
+
+---
+
 ## v1.14.8 — OAuth device grant for CLI MCP clients
 
 <p style="margin-top:0.5rem;font-size:1.25em;opacity:0.85;">2026-06-10</p>
