@@ -539,9 +539,14 @@ const emailParam = prefilledEmail ? `&email=${encodeURIComponent(prefilledEmail)
           Legal, healthcare, defense, fintech, public sector. Air-gapped deployment,
           compliance controls, SSO, and SLA — scoped to your requirements. Let's talk.
         </p>
-        <a class="enterprise-btn" href="mailto:enterprise@graphnosis.com">
-          Contact for enterprise access →
-        </a>
+        <div style="display:flex; align-items:center; gap:20px; flex-wrap:wrap;">
+          <a class="enterprise-btn" href="mailto:enterprise@graphnosis.com">
+            Contact for enterprise access →
+          </a>
+          <a href="/guides/enterprise-faq/" style="font-size:14px; color:var(--fg-dim); text-decoration:underline; text-underline-offset:2px;">
+            Read the Enterprise IT FAQ →
+          </a>
+        </div>
       </div>
 
       <div class="faq">
@@ -625,11 +630,18 @@ const emailParam = prefilledEmail ? `&email=${encodeURIComponent(prefilledEmail)
         <details>
           <summary>Do you offer enterprise plans?</summary>
           <p>
-            Yes — see the Enterprise &amp; Regulated Deployments section above.
+            Yes — see the Enterprise &amp; Regulated Deployments section above,
+            and our <a href="/guides/enterprise-faq/">Enterprise IT FAQ</a> for
+            security, deployment, and compliance details.
             Compliance Mode, RBAC, SSO, HIPAA BAA, and air-gapped deployment are
             on the roadmap. Reach out at
             <a href="mailto:enterprise@graphnosis.com">enterprise@graphnosis.com</a>
             for early access or custom requirements.
+          </p>
+          <p>
+            For a detailed technical reference covering installation, security, data handling,
+            and compliance mapping (GDPR, HIPAA, FedRAMP, IEC 62443), see the
+            <a href="/guides/enterprise-faq/">Enterprise IT FAQ</a>.
           </p>
         </details>
       </div>

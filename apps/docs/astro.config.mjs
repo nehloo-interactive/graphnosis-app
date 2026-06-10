@@ -69,6 +69,7 @@ export default defineConfig({
             { label: 'Recovery', slug: 'guides/recovery' },
             { label: 'What Leaves Your Device', slug: 'guides/network-activity' },
             { label: 'Verify It Yourself', slug: 'guides/verify-it-yourself' },
+            { label: 'Enterprise IT FAQ', slug: 'guides/enterprise-faq' },
           ],
         },
         {

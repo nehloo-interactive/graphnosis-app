@@ -266,3 +266,5 @@ The honest line: Graphnosis stops **untrusted** clients from reading your memori
 
 [Privacy Policy](/legal/privacy-policy/) — the user-facing data-handling promises.
 
+[Enterprise IT FAQ](/guides/enterprise-faq/) — how the consent layers map to HIPAA, GDPR, and other regulatory requirements.
+
