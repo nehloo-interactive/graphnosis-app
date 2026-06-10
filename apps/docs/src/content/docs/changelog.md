@@ -11,6 +11,19 @@ Conventions: **Added** = new features, **Changed** = behavior or UX shifts, **Fi
 
 ---
 
+## v1.14.4 — VS Code bearer token fix & MCP config open
+
+<p style="margin-top:0.5rem;font-size:1.25em;opacity:0.85;">2026-06-10</p>
+
+Two fixes to the VS Code / Copilot Chat setup modal.
+
+### Fixed
+
+- **Bearer token now shows correctly.** The setup modal was reading from the mobile HTTP bridge token (empty unless mobile access is enabled) instead of the VS Code local bridge token (auto-generated on first app start, always present). The modal now reads from the correct source, so the token field is populated as soon as the cortex is unlocked.
+- **"Install MCP Server" button opens the VS Code MCP config file.** The button (previously "Install Extension", previously pointing at the VS Code Marketplace) now opens the platform-specific VS Code MCP config file directly in VS Code (`~/Library/Application Support/Code/User/mcp.json` on macOS, `%APPDATA%\Code\User\mcp.json` on Windows, `~/.config/Code/User/mcp.json` on Linux), so you can paste the JSON snippet from Option B without navigating there manually.
+
+---
+
 ## v1.14.3 — VS Code setup & copy fixes
 
 <p style="margin-top:0.5rem;font-size:1.25em;opacity:0.85;">2026-06-10</p>

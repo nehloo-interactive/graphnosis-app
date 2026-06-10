@@ -2134,6 +2134,40 @@ async fn get_mobile_connection_info(state: State<'_, AppState>) -> Result<serde_
         .map_err(|e| e.to_string())
 }
 
+#[tauri::command]
+async fn get_vscode_connection_info(state: State<'_, AppState>) -> Result<serde_json::Value, String> {
+    let socket_path = {
+        let inner = state.inner.lock().await;
+        match inner.sidecar.as_ref() {
+            Some(h) => h.socket_path.clone(),
+            None => return Err("cortex is locked".to_string()),
+        }
+    };
+    ipc_client::request_with_timeout(
+        &socket_path,
+        "vscode.getConnectionInfo",
+        serde_json::Value::Null,
+        std::time::Duration::from_secs(5),
+    )
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn get_vscode_mcp_config_path() -> Result<String, String> {
+    let home = dirs::home_dir().ok_or_else(|| "cannot determine home directory".to_string())?;
+    #[cfg(target_os = "macos")]
+    let path = home.join("Library/Application Support/Code/User/mcp.json");
+    #[cfg(target_os = "windows")]
+    let path = std::env::var("APPDATA")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|_| home.join("AppData/Roaming"))
+        .join("Code/User/mcp.json");
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    let path = home.join(".config/Code/User/mcp.json");
+    Ok(path.to_string_lossy().to_string())
+}
+
 // ── Service connector commands ──────────────────────────────────────────────
 //
 // Five thin pass-throughs to the sidecar's connectors.* IPC. All take the
@@ -3236,6 +3270,8 @@ pub fn run() {
             get_settings,
             update_settings,
             get_mobile_connection_info,
+            get_vscode_connection_info,
+            get_vscode_mcp_config_path,
             list_connectors,
             install_connector,
             remove_connector,
