@@ -11,6 +11,24 @@ Conventions: **Added** = new features, **Changed** = behavior or UX shifts, **Fi
 
 ---
 
+## v1.14.1 — Contradiction detection & sharper skill exports
+
+<p style="margin-top:0.5rem;font-size:1.25em;opacity:0.85;">2026-06-10</p>
+
+A focused follow-up to v1.14.0. Your memory now notices when two things you've saved disagree, trained skills export as ready-to-use Claude Code skills, and IT teams get a dedicated FAQ.
+
+### Added
+
+- **Contradiction detection.** Graphnosis now spots memories that conflict — two notes about the same thing that say opposite things — and surfaces them in the Home **Needs you** review, where you keep the current one and retire the outdated one. Your AI client gets a matching `contradiction_pairs` tool to review and resolve them too. It runs quietly in the background and only surfaces high-confidence conflicts, so the list stays short and worth your attention.
+- **Drop-in Claude Code skills.** Exporting a trained skill as Markdown now produces a ready-to-use Claude Code skill — with proper `name` / `description` frontmatter (the "when to use this" line your AI reads) and the full set of goals — so a skill you train in Graphnosis drops straight into a `.claude/skills` folder.
+- **Enterprise IT FAQ.** A new documentation page answering the security, installation, tamper-resistance, industrial/OT-integration, and compliance-mapping questions IT and infosec teams ask before approving Graphnosis.
+
+### Changed
+
+- **Batch saves report conflicts too.** Saving several notes at once now reports any contradictions it detects, the same way single saves already did.
+
+---
+
 ## v1.14.0 — Security & privacy hardening
 
 <p style="margin-top:0.5rem;font-size:1.25em;opacity:0.85;">2026-06-09</p>
