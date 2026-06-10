@@ -11,6 +11,16 @@ Conventions: **Added** = new features, **Changed** = behavior or UX shifts, **Fi
 
 ---
 
+## v1.14.8 — OAuth device grant for CLI MCP clients
+
+<p style="margin-top:0.5rem;font-size:1.25em;opacity:0.85;">2026-06-10</p>
+
+### Fixed
+
+- **`gh copilot` CLI (and other CLI MCP clients) can now connect.** Browser-based MCP clients (VS Code) use Authorization Code + PKCE to complete the OAuth flow. CLI clients cannot open a browser or receive a redirect, so they were getting stuck and returning 401. The local HTTP bridge now also implements the OAuth Device Authorization Grant (RFC 8628): the CLI requests a device code, the server auto-approves it immediately (no user interaction — it's localhost), and the CLI receives the static bearer token on its first poll. Multiple clients (VS Code Chat + any CLI) can maintain concurrent MCP sessions independently.
+
+---
+
 ## v1.14.7 — Implement OAuth for VS Code MCP connection
 
 <p style="margin-top:0.5rem;font-size:1.25em;opacity:0.85;">2026-06-10</p>
