@@ -1,6 +1,6 @@
 {
   "name": "graphnosis-app",
-  "version": "1.14.1",
+  "version": "1.14.2",
   "private": true,
   "description": "Personal second-memory desktop app powered by Graphnosis. Local-first, encrypted, multi-graph, attaches relevant subgraph context to any MCP-aware AI.",
   "author": "Nehloo Interactive LLC",

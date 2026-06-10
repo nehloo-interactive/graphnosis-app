@@ -11,6 +11,19 @@ Conventions: **Added** = new features, **Changed** = behavior or UX shifts, **Fi
 
 ---
 
+## v1.14.2 — VS Code & Copilot Chat setup fixes
+
+<p style="margin-top:0.5rem;font-size:1.25em;opacity:0.85;">2026-06-10</p>
+
+Two small but visible fixes to the VS Code / Copilot Chat setup modal.
+
+### Fixed
+
+- **`.vscode/mcp.json` snippet always shows valid JSON.** The config field in Option B previously showed a prose message ("Unlock the cortex first…") when the cortex was locked, making it impossible to see the snippet structure. It now always renders the full JSON block; when locked, the `Authorization` header shows `Bearer <your-bearer-token>` as a placeholder so you can preview and copy the format. The real token drops in automatically once you unlock.
+- **"Install extension" button now opens VS Code directly.** The button was linking to a Marketplace browser URL that returned a 404. It now uses the `vscode:extension/nehloo-interactive.graphnosis` deep-link scheme, which hands off to VS Code and opens the extension's installation page without going through a browser.
+
+---
+
 ## v1.14.1 — Contradiction detection & sharper skill exports
 
 <p style="margin-top:0.5rem;font-size:1.25em;opacity:0.85;">2026-06-10</p>
