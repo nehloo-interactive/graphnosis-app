@@ -177,7 +177,7 @@ The embedding model (ONNX, ~90 MB) and any optional local LLM for corrections ru
 
 [Skills as SOPs](/reference/skills/) — the procedural-memory layer for executable Standard Operating Procedures.
 
-[MCP Tools](/reference/mcp-tools/) — the 47 tools any connected AI client sees.
+[MCP Tools](/reference/mcp-tools/) — the toolset any connected AI client sees.
 
 [The Story of Ghampus](/reference/ghampus/) — why a seahorse, and what he stands for.
 
