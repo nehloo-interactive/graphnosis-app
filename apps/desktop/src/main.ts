@@ -18929,8 +18929,8 @@ async function openMobileWizard(): Promise<void> {
 async function openCopilotModal(): Promise<void> {
   const modal = document.getElementById('copilot-setup-modal');
   if (!modal) return;
-  let info: MobileConnectionInfo | null = null;
-  try { info = (await invoke('get_mobile_connection_info')) as MobileConnectionInfo; }
+  let info: { port: number; token: string } | null = null;
+  try { info = (await invoke('get_vscode_connection_info')) as { port: number; token: string }; }
   catch { /* still open the modal; snippet shows a hint */ }
   const port = info?.port ?? 3457;
   const token = info?.token ?? '';
@@ -18965,10 +18965,13 @@ async function openCopilotModal(): Promise<void> {
   document.getElementById('btn-copilot-close')?.addEventListener('click', () => {
     document.getElementById('copilot-setup-modal')?.classList.add('hidden');
   });
-  document.getElementById('btn-copilot-open-extension')?.addEventListener('click', () => {
-    void invoke('open_external_url', {
-      url: 'vscode:extension/nehloo-interactive.graphnosis',
-    });
+  document.getElementById('btn-copilot-install-mcp')?.addEventListener('click', () => {
+    void (async () => {
+      try {
+        const p = (await invoke('get_vscode_mcp_config_path')) as string;
+        await invoke('open_external_url', { url: `vscode://file/${p}` });
+      } catch { /* ignore */ }
+    })();
   });
   document.getElementById('btn-copilot-show-token')?.addEventListener('click', () => {
     const input = document.getElementById('copilot-token-input') as HTMLInputElement | null;

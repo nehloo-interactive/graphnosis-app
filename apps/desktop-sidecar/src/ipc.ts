@@ -2195,6 +2195,13 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
         },
       };
     }
+    case 'vscode.getConnectionInfo': {
+      const settings = deps.host.getSettings();
+      return {
+        port: settings.vscode?.localBridgePort ?? 3457,
+        token: settings.vscode?.localBridgeToken ?? '',
+      };
+    }
 
     // ── Alive Brain IPC ──────────────────────────────────────────────────────
 
