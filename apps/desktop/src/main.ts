@@ -18949,6 +18949,15 @@ async function openCopilotModal(): Promise<void> {
       null, 2,
     );
   }
+  const tokenInput = document.getElementById('copilot-token-input') as HTMLInputElement | null;
+  const showBtn = document.getElementById('btn-copilot-show-token') as HTMLButtonElement | null;
+  const copyTokenBtn = document.getElementById('btn-copilot-copy-token') as HTMLButtonElement | null;
+  if (tokenInput) {
+    tokenInput.value = token;
+    tokenInput.type = 'password';
+  }
+  if (showBtn) { showBtn.textContent = 'Show'; showBtn.disabled = !token; }
+  if (copyTokenBtn) { copyTokenBtn.disabled = !token; }
   (modal as HTMLElement).dataset['token'] = token;
   modal.classList.remove('hidden');
 }
@@ -18966,8 +18975,15 @@ async function openCopilotModal(): Promise<void> {
       url: 'vscode:extension/nehloo-interactive.graphnosis',
     });
   });
+  document.getElementById('btn-copilot-show-token')?.addEventListener('click', () => {
+    const input = document.getElementById('copilot-token-input') as HTMLInputElement | null;
+    const btn = document.getElementById('btn-copilot-show-token') as HTMLButtonElement | null;
+    if (!input || !btn) return;
+    if (input.type === 'password') { input.type = 'text'; btn.textContent = 'Hide'; }
+    else { input.type = 'password'; btn.textContent = 'Show'; }
+  });
   document.getElementById('btn-copilot-copy-token')?.addEventListener('click', (e) => {
-    const token = document.getElementById('copilot-setup-modal')?.dataset['token'] ?? '';
+    const token = (document.getElementById('copilot-token-input') as HTMLInputElement | null)?.value ?? '';
     if (token) mobileCopyBtn(e.currentTarget as HTMLButtonElement, token);
   });
   document.getElementById('btn-copilot-copy-config')?.addEventListener('click', (e) => {

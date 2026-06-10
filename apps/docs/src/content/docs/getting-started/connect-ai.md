@@ -138,9 +138,9 @@ Create or edit the VS Code user MCP config with the snippet the wizard generates
 
 | Platform | Path |
 |----------|------|
-| macOS | `~/Library/Application Support/Code/User/mcp.json` |
-| Windows | `%APPDATA%\Code\User\mcp.json` |
-| Linux | `~/.config/Code/User/mcp.json` |
+| macOS | `/Users/[username]/Library/Application Support/Code/User/mcp.json` |
+| Windows | `C:\Users\[username]\AppData\Roaming\Code\User\mcp.json` |
+| Linux | `/home/[username]/.config/Code/User/mcp.json` |
 
 ```json
 {
