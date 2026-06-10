@@ -18951,13 +18951,8 @@ async function openCopilotModal(): Promise<void> {
   }
   const tokenInput = document.getElementById('copilot-token-input') as HTMLInputElement | null;
   const showBtn = document.getElementById('btn-copilot-show-token') as HTMLButtonElement | null;
-  const copyTokenBtn = document.getElementById('btn-copilot-copy-token') as HTMLButtonElement | null;
-  if (tokenInput) {
-    tokenInput.value = token;
-    tokenInput.type = 'password';
-  }
-  if (showBtn) { showBtn.textContent = 'Show'; showBtn.disabled = !token; }
-  if (copyTokenBtn) { copyTokenBtn.disabled = !token; }
+  if (tokenInput) { tokenInput.value = token; tokenInput.type = 'password'; }
+  if (showBtn) { showBtn.textContent = 'Show'; }
   (modal as HTMLElement).dataset['token'] = token;
   modal.classList.remove('hidden');
 }
