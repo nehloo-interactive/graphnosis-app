@@ -2,6 +2,7 @@ import http from 'node:http';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
+import { constantTimeEqual } from './crypto-compare.js';
 import {
   generateRegistrationOptions,
   verifyRegistrationResponse,
@@ -84,6 +85,23 @@ function setCorsHeaders(res: http.ServerResponse, origin: string): void {
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Authorization, Content-Type');
   res.setHeader('Vary', 'Origin');
+}
+
+/**
+ * Origin allowlist (#20): only reflect Access-Control-Allow-Origin for localhost
+ * and the exact configured bind host — never an arbitrary reflected Origin. The
+ * web UI is served by this same server, so legitimate use is same-origin (which
+ * browsers don't gate on CORS anyway); this blocks cross-origin sites from being
+ * granted CORS access. (No cookies are used — auth is a Bearer token — so this is
+ * defense-in-depth.)
+ */
+function isAllowedOrigin(origin: string, host: string, port: number): boolean {
+  let u: URL;
+  try { u = new URL(origin); } catch { return false; }
+  const h = u.hostname;
+  if (h === 'localhost' || h === '127.0.0.1' || h === '::1') return true;
+  if (host !== '0.0.0.0' && h === host && (u.port || '') === String(port)) return true;
+  return false;
 }
 
 async function readJsonBody(req: http.IncomingMessage): Promise<unknown> {
@@ -230,7 +248,7 @@ export async function startHttpUiServer(opts: HttpUiOptions): Promise<http.Serve
     const urlPath = req.url?.split('?')[0] ?? '/';
 
     const origin = req.headers['origin'] as string | undefined;
-    if (origin) setCorsHeaders(res, origin);
+    if (origin && isAllowedOrigin(origin, opts.host, opts.port)) setCorsHeaders(res, origin);
 
     if (req.method === 'OPTIONS') { res.writeHead(204); res.end(); return; }
 
@@ -244,7 +262,7 @@ export async function startHttpUiServer(opts: HttpUiOptions): Promise<http.Serve
         return;
       }
       const submitted = (body as { token?: string }).token ?? '';
-      if (submitted !== opts.token) {
+      if (!constantTimeEqual(submitted, opts.token)) {
         res.writeHead(401, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: 'Invalid token' }));
         return;

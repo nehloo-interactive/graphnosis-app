@@ -3,7 +3,7 @@
   "manifest_version": "0.4",
   "name": "graphnosis",
   "display_name": "Graphnosis",
-  "version": "1.13.5",
+  "version": "1.14.0",
   "description": "Your local, encrypted personal knowledge graph — recalled by any AI client.",
   "long_description": "Graphnosis is a privacy-first personal memory system that runs entirely on your device. It stores your notes, decisions, projects, files, and conversations in a local encrypted graph, then makes that knowledge available to any AI client via MCP — so your AI always has context about your life and work. Your graph files stay on your device — Graphnosis has no servers. Recalled content passes through your AI client and is subject to its privacy policy.\n\nEvery memory is encrypted at rest with a passphrase you control. Recall is deterministic and auditable. Sensitive memories are gated behind an in-app consent modal before any AI client can read them.\n\nThe 47 MCP tools cover the full memory lifecycle: save a note, recall by semantic search, correct a stored fact, explore your knowledge graph, train reusable SOPs (skills + goals), and run multi-step procedures grounded in your personal context.",
   "author": {

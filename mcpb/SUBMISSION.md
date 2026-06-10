@@ -155,7 +155,7 @@ memory, knowledge-graph, privacy, local-ai, notes, recall, productivity, persona
 ### Install the connector
 
 1. In Claude Desktop: **Settings → Extensions → Install from file**
-2. Select `graphnosis-1.13.5.mcpb`
+2. Select `graphnosis-1.14.0.mcpb`
 3. Fill in the prompted fields:
    - **Cortex folder**: path from step 2 above (e.g. `/Users/you/Documents/GraphnosisTest`)
    - **Cortex passphrase**: `test-passphrase-123`

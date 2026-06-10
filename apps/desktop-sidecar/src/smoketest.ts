@@ -212,14 +212,42 @@ ferry to Naxos. The food in Mykonos was overrated.`;
     tokensUsed: maxed.tokensUsed,
     secretsAudit,
   });
-  if (!secretsAudit) throw new Error('FAIL: secrets graph missing from audit trail');
-  if (secretsAudit.nodesIncluded > 5) {
-    throw new Error(`FAIL: sensitive-tier cap not enforced — got ${secretsAudit.nodesIncluded} nodes (max 5)`);
+  // Sensitive-tier federation backstop (security finding #11). The smoke policy
+  // (above) deliberately decouples tier from the share flag — secrets is
+  // tier:'sensitive' AND shareWithAi:true, the unsafe combination an env-supplied
+  // policy could produce. A federated (unscoped) recall must NEVER surface a
+  // sensitive engram regardless of that flag, so secrets must contribute zero
+  // nodes (and is absent from the shareable audit trail entirely).
+  if (secretsAudit && secretsAudit.nodesIncluded > 0) {
+    throw new Error(
+      `FAIL: sensitive engram leaked into a federated recall — ${secretsAudit.nodesIncluded} nodes. ` +
+      `The tier backstop must exclude sensitive engrams from federation even when shareWithAi is true.`,
+    );
   }
-  if (secretsAudit.tokensIncluded > 500) {
-    throw new Error(`FAIL: sensitive-tier token cap not enforced — got ${secretsAudit.tokensIncluded} tokens (max 500)`);
+  log('sensitive-tier-excluded.ok', { includedFromSecrets: secretsAudit?.nodesIncluded ?? 0 });
+
+  // ── Explicit + consented sensitive recall DOES return data, clamped to cap ──
+  // The flip side of the backstop: when the user explicitly names a sensitive
+  // engram and consent has passed, the recall must return its data (the docs'
+  // "you'll receive results once you click Allow"), bounded by the tier cap
+  // (≤5 nodes / ≤500 tokens). `consentedGraphIds` is what the MCP layer passes
+  // after checkConsentOrThrow approves an explicitly-named engram.
+  const consented = await host.recall('What is the codeword?', {
+    budget: { maxTokens: 8000, maxNodes: 50 },
+    onlyGraphIds: ['secrets'],
+    consentedGraphIds: ['secrets'],
+  });
+  const consentedAudit = consented.audit.find(a => a.graphId === 'secrets');
+  if (!consentedAudit || consentedAudit.nodesIncluded === 0) {
+    throw new Error('FAIL: a consented, explicitly-named sensitive engram returned no data');
   }
-  log('sensitive-tier-cap.ok', { nodes: secretsAudit.nodesIncluded, tokens: secretsAudit.tokensIncluded });
+  if (consentedAudit.nodesIncluded > 5) {
+    throw new Error(`FAIL: sensitive-tier node cap not enforced — got ${consentedAudit.nodesIncluded} (max 5)`);
+  }
+  if (consentedAudit.tokensIncluded > 500) {
+    throw new Error(`FAIL: sensitive-tier token cap not enforced — got ${consentedAudit.tokensIncluded} (max 500)`);
+  }
+  log('sensitive-consented-recall.ok', { nodes: consentedAudit.nodesIncluded, tokens: consentedAudit.tokensIncluded });
 
   // --- bundled docs --------------------------------------------------------
   // The Graphnosis docs ship inside the app — scripts/generate-docs-content.mjs

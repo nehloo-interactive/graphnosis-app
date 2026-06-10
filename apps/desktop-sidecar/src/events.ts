@@ -74,7 +74,9 @@ export interface EventsHandle {
 
 export async function startEvents(deps: EventsDeps): Promise<EventsHandle> {
   if (!isTcpAddress(deps.socketPath)) {
-    await fs.mkdir(path.dirname(deps.socketPath), { recursive: true });
+    // 0o700 dir: event frames carry memory-mutation content; keep the socket
+    // directory owner-only.
+    await fs.mkdir(path.dirname(deps.socketPath), { recursive: true, mode: 0o700 });
     await fs.rm(deps.socketPath, { force: true });
   }
 
@@ -195,6 +197,12 @@ export async function startEvents(deps: EventsDeps): Promise<EventsHandle> {
   return new Promise((resolve, reject) => {
     server.once('error', reject);
     const onListening = () => {
+      // Restrict the Unix socket to the owner (listen() uses the umask).
+      if (!isTcpAddress(deps.socketPath)) {
+        fs.chmod(deps.socketPath, 0o600).catch((err) => {
+          console.error(`[graphnosis-sidecar] could not chmod events socket: ${(err as Error).message}`);
+        });
+      }
       console.error(`[graphnosis-sidecar] events socket listening on ${deps.socketPath}`);
       resolve({ server, broadcastRaw, subscribe });
     };

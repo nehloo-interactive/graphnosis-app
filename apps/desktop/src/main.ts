@@ -4376,7 +4376,16 @@ function renderMarkdownLite(md: string): string {
   const inline = (s: string): string => esc(s)
     .replace(/`([^`]+)`/g, '<code>$1</code>')
     .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
-    .replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" data-extlink="$2">$1</a>');
+    // Link rendering. `esc` already escaped &<> in the URL; additionally neutralize
+    // quotes (attribute context) and allow only safe schemes, so a malicious URL
+    // can't break out of href or smuggle a javascript:/file: scheme. This renderer
+    // is fed trusted bundled docs today; these are defense-in-depth guards for any
+    // future reuse on untrusted markdown. Quantifier is bounded (no O(n²) backtrack).
+    .replace(/\[([^\]]+)\]\(([^)\s]{1,2048})\)/g, (_m: string, text: string, url: string) => {
+      const safeUrl = /^(https?:\/\/|mailto:|#)/i.test(url) ? url : '#';
+      const attrUrl = safeUrl.replace(/"/g, '&quot;');
+      return `<a href="${attrUrl}" data-extlink="${attrUrl}">${text}</a>`;
+    });
   const out: string[] = [];
   let inList = false;
   const closeList = (): void => { if (inList) { out.push('</ul>'); inList = false; } };
@@ -13728,6 +13737,9 @@ type ConsentPromptPayload = {
   promptId: string;
   clientName: string;
   tiers: Array<'personal' | 'sensitive'>;
+  /** The specific engram(s) access is requested for (per-engram consent). When
+   *  present the modal names them so the user authorises exactly these. */
+  engrams?: Array<{ graphId: string; name: string; tier: 'personal' | 'sensitive' }>;
   suggestedDurations: Array<{ tier: string; durationMs: number }>;
   privacyUrl: string | null;
 };
@@ -13777,11 +13789,22 @@ void listen<ConsentPromptPayload>('graphnosis://consent-prompt', (evt) => {
   const tiersEl = document.getElementById('consent-prompt-tiers');
   const privEl = document.getElementById('consent-prompt-privacy') as HTMLAnchorElement | null;
   if (titleEl) titleEl.textContent = `${p.clientName} wants to read your memories`;
-  if (subEl) subEl.textContent = `Access requested: ${p.tiers.join(' + ')} tier${p.tiers.length === 1 ? '' : 's'}`;
+  const engrams = p.engrams ?? [];
+  if (subEl) {
+    // Name the specific engram(s) so the user authorises exactly these, not the
+    // whole tier (per-engram consent). Fall back to tiers for older payloads.
+    subEl.textContent = engrams.length
+      ? `Access requested to ${engrams.length === 1 ? 'engram' : 'engrams'}: ${engrams.map((e) => e.name).join(', ')}`
+      : `Access requested: ${p.tiers.join(' + ')} tier${p.tiers.length === 1 ? '' : 's'}`;
+  }
   if (tiersEl) {
-    tiersEl.innerHTML = p.tiers.map((t) =>
-      `<span class="consent-tier-pill${t === 'sensitive' ? ' sensitive' : ''}">${t === 'sensitive' ? '⚠ ' : ''}${t.toUpperCase()} tier</span>`,
-    ).join('');
+    tiersEl.innerHTML = engrams.length
+      ? engrams.map((e) =>
+          `<span class="consent-tier-pill${e.tier === 'sensitive' ? ' sensitive' : ''}">${e.tier === 'sensitive' ? '⚠ ' : ''}${escape(e.name)} <em>(${e.tier})</em></span>`,
+        ).join('')
+      : p.tiers.map((t) =>
+          `<span class="consent-tier-pill${t === 'sensitive' ? ' sensitive' : ''}">${t === 'sensitive' ? '⚠ ' : ''}${t.toUpperCase()} tier</span>`,
+        ).join('');
   }
   if (privEl) {
     if (p.privacyUrl) {

@@ -50,6 +50,18 @@ const DOCX_EXTS = new Set(['.docx']);
 const XLSX_EXTS = new Set(['.xlsx']);
 const PPTX_EXTS = new Set(['.pptx']);
 
+// Hard ceiling on the size of a single file we will read into memory to ingest.
+// Without this, a multi-GB file (accidental or crafted) is slurped whole into a
+// Buffer/string and OOM-kills the sidecar. 256 MiB comfortably covers real
+// documents (even large PDFs) while bounding the worst case; text/CSV/JSON read
+// as UTF-8 strings are additionally bounded by V8's max string length below this.
+const MAX_INGEST_BYTES = 256 * 1024 * 1024;
+
+// Hard cap on PDF pages extracted. A crafted PDF advertising a huge page count
+// would otherwise loop unbounded, pinning a CPU and stalling ingest. Mirrors the
+// SDK parser's DEFAULT_MAX_PAGES; covers essentially all real documents.
+const MAX_PDF_PAGES = 2000;
+
 export interface IngestFileOpts {
   onProgress?: (pagesProcessed: number, totalPages: number) => void;
   /** Called immediately before the embedding phase begins — once all pages
@@ -79,6 +91,12 @@ export async function ingestFile(host: GraphnosisHost, graphId: string, filePath
   const ext = path.extname(filePath).toLowerCase();
   const stat = await fs.stat(filePath);
   if (!stat.isFile()) throw new Error(`Not a file: ${filePath}`);
+  if (stat.size > MAX_INGEST_BYTES) {
+    throw new Error(
+      `File too large to ingest: ${filePath} is ${(stat.size / 1024 / 1024).toFixed(1)} MiB, ` +
+      `limit is ${MAX_INGEST_BYTES / 1024 / 1024} MiB. Split it into smaller files.`,
+    );
+  }
 
   const wrap = opts.wrapIngest ?? (<T>(fn: () => Promise<T>) => fn());
 
@@ -488,9 +506,10 @@ async function parsePdfInline(
   const buf = await fs.readFile(filePath);
   const pdf = await getDocumentProxy(new Uint8Array(buf));
   const totalPages = pdf.numPages;
+  const pagesToExtract = Math.min(totalPages, MAX_PDF_PAGES);
   const pageTexts: string[] = [];
-  for (let start = 1; start <= totalPages; start += BATCH_SIZE) {
-    const end = Math.min(start + BATCH_SIZE - 1, totalPages);
+  for (let start = 1; start <= pagesToExtract; start += BATCH_SIZE) {
+    const end = Math.min(start + BATCH_SIZE - 1, pagesToExtract);
     const batch = await Promise.all(
       Array.from({ length: end - start + 1 }, async (_, i) => {
         const page = await pdf.getPage(start + i);
@@ -499,7 +518,10 @@ async function parsePdfInline(
       }),
     );
     pageTexts.push(...batch);
-    onProgress?.(end, totalPages);
+    onProgress?.(end, pagesToExtract);
+  }
+  if (totalPages > pagesToExtract) {
+    pageTexts.push(`[Note: This PDF has ${totalPages} pages. Only the first ${pagesToExtract} were ingested.]`);
   }
   return pageTexts;
 }

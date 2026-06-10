@@ -382,7 +382,8 @@ async function backfillGraphMetadata(host: GraphnosisHost): Promise<void> {
 }
 
 async function acquireCortexLock(cortexDir: string): Promise<() => Promise<void>> {
-  await fs.mkdir(cortexDir, { recursive: true });
+  // 0o700: this is the user's memory store root — keep other local users out.
+  await fs.mkdir(cortexDir, { recursive: true, mode: 0o700 });
   // proper-lockfile locks a target file, not a directory; use a sentinel.
   const lockTarget = path.join(cortexDir, '.lockfile');
   // Ensure the sentinel exists so proper-lockfile has something to lock.

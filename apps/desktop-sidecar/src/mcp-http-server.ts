@@ -1,5 +1,6 @@
 import http from 'node:http';
 import { randomUUID } from 'node:crypto';
+import { constantTimeEqual } from './crypto-compare.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { createMcpServer, type McpDeps } from './mcp-server.js';
 import { mcpRegistry } from './mcp-registry.js';
@@ -117,7 +118,7 @@ export async function startHttpMcpServer(opts: HttpBridgeOptions): Promise<http.
     // ── Auth ─────────────────────────────────────────────────────────────────
     const authHeader = (req.headers['authorization'] as string | undefined) ?? '';
     const expectedToken = typeof opts.token === 'function' ? opts.token() : opts.token;
-    if (!expectedToken || authHeader !== `Bearer ${expectedToken}`) {
+    if (!expectedToken || !constantTimeEqual(authHeader, `Bearer ${expectedToken}`)) {
       rejectUnauthorized(res);
       return;
     }

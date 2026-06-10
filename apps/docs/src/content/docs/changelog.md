@@ -11,6 +11,35 @@ Conventions: **Added** = new features, **Changed** = behavior or UX shifts, **Fi
 
 ---
 
+## v1.14.0 — Security & privacy hardening
+
+<p style="margin-top:0.5rem;font-size:1.25em;opacity:0.85;">2026-06-09</p>
+
+A release focused on strengthening how your data is protected — at rest, while syncing between your devices, and when an AI client asks to read it. Most changes are invisible: your memories, recall, and skills work exactly as before. A couple of items need a quick action from you (below). We recommend everyone update.
+
+### Strengthened
+
+- **Sync integrity.** The op-log your devices sync is now cryptographically signed per device and sequence-verified, adding strong protection for synced and backed-up data. (New format; your existing op-log history is still read.)
+- **Per-engram consent.** Access approvals are now scoped to the specific engram an AI client requests — each sensitive engram is authorised individually, and the consent prompt names it.
+- **Encryption of bridge tokens at rest.** The mobile, browser, and VS Code bridge tokens are now encrypted within your settings.
+- **Tighter on-disk isolation.** Your cortex folder, settings, caches, op-log, and the app's local sockets are now created with owner-only permissions.
+- **Sensitive engrams and recall.** Sensitive engrams are kept out of broad "search everything" recall — they're returned only when you explicitly name and approve them, and then only up to the sensitive-tier cap.
+- **Imported-file and stored-data handling.** More robust, bounded parsing of imported files with size limits, stronger integrity verification of encrypted memory files, constant-time checks on secrets, safer link handling, and refreshed parsing dependencies.
+
+### Fixed
+
+- **Recovery-phrase reliability.** Recovery-phrase backups are now reliably restorable. **Action:** if you created a recovery phrase before v1.14.0, please generate a new one (Settings → Security) — an earlier phrase may not restore your cortex.
+- **Sensitive recall returns results.** Explicitly recalling an approved sensitive engram now returns content (capped to the sensitive tier); it could previously come back empty.
+
+### Migrations & actions
+
+- **Recovery phrase:** regenerate it (see above).
+- **Bridge tokens:** re-encrypted automatically on first save after upgrade. As a precaution, you may rotate them in Settings afterward.
+- **Consent approvals:** existing approvals are requested once more as consent moves to per-engram scope.
+- **Op-log:** the new signed format is written going forward; your existing history is read as before.
+
+---
+
 ## v1.13.6 — Pricing tiers, Pro tool gating, and upgrade page
 
 <p style="margin-top:0.5rem;font-size:1.25em;opacity:0.85;">2026-06-09</p>

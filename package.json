@@ -1,6 +1,6 @@
 {
   "name": "graphnosis-app",
-  "version": "1.13.5",
+  "version": "1.14.0",
   "private": true,
   "description": "Personal second-memory desktop app powered by Graphnosis. Local-first, encrypted, multi-graph, attaches relevant subgraph context to any MCP-aware AI.",
   "author": "Nehloo Interactive LLC",
@@ -37,8 +37,10 @@
       "onnxruntime-node",
       "wtf_wikipedia"
     ],
-    "_comment_overrides": "All overrides removed (May 2026). Previously: secure-sync pinned to a local working copy until v0.1.2 shipped with the static-import libsodium fix; @nehloo/graphnosis pinned to a local working copy while serializeSubgraph export + log-redact were pre-release in v0.5.3. Both deps are now consumed from their tagged npm releases \u2014 see apps/desktop-sidecar/package.json. Keep this empty `overrides` block so future maintainers see the trail; pnpm tolerates empty objects fine.",
-    "overrides": {},
+    "_comment_overrides": "fastembed@2.1.0 pins tar ^6.2.0, which has NO patched release for the node-tar path-traversal / arbitrary-file-write advisories (GHSA-9ppj-qmqm-q256 and chain) — they are fixed only in tar >=7.5.11. We scope the bump to fastembed's own tar (other deps keep theirs) and pair it with the fastembed patch below, which rewrites fastembed's tar default-import usage (tar 7 removed the default export) so model extraction keeps working. Earlier history: secure-sync / @nehloo/graphnosis were once pinned to local working copies; both now come from tagged releases — see apps/desktop-sidecar/package.json.",
+    "overrides": {
+      "fastembed>tar": ">=7.5.16"
+    },
     "_comment_packageExtensions": "libsodium-wrappers-sumo@0.7.16 ships a broken ESM entry (relative import to ./libsodium-sumo.mjs that the package doesn't include in its files array). Force its `.` export to point to the CJS file in ALL conditions so bundlers (Bun --compile, Vite, etc.) never pick the broken .mjs. Without this, `bun build --compile` of the sidecar fails with 'Could not resolve ./libsodium-sumo.mjs'.",
     "packageExtensions": {
       "libsodium-wrappers-sumo": {
@@ -52,7 +54,8 @@
       }
     },
     "patchedDependencies": {
-      "libsodium-wrappers-sumo": "patches/libsodium-wrappers-sumo.patch"
+      "libsodium-wrappers-sumo": "patches/libsodium-wrappers-sumo.patch",
+      "fastembed@2.1.0": "patches/fastembed@2.1.0.patch"
     }
   },
   "devDependencies": {
