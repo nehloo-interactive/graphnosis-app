@@ -133,6 +133,16 @@ export async function startHttpMcpServer(opts: HttpBridgeOptions): Promise<http.
   // Auto-approved on creation since this is a loopback server.
   const pendingDeviceCodes = new Map<string, PendingDeviceCode>();
 
+  // Ring buffer of the last 50 OAuth/auth events for the /oauth/debug endpoint.
+  // Accessible without authentication so issues can be diagnosed from a terminal
+  // even on a production build where stderr isn't visible.
+  const debugLog: Array<{ ts: string; msg: string }> = [];
+  function oauthLog(msg: string): void {
+    console.error(`[graphnosis-http-bridge] ${msg}`);
+    if (debugLog.length >= 50) debugLog.shift();
+    debugLog.push({ ts: new Date().toISOString(), msg });
+  }
+
   // Prune stale sessions and codes periodically.
   const pruneInterval = setInterval(() => {
     const now = Date.now();
@@ -166,9 +176,22 @@ export async function startHttpMcpServer(opts: HttpBridgeOptions): Promise<http.
       return;
     }
 
+    const ua = (req.headers['user-agent'] as string | undefined) ?? '';
+
+    // ── OAuth: debug log endpoint — no auth required, loopback-only ───────────
+    // Returns the last 50 OAuth/auth events as JSON. Useful for diagnosing
+    // client auth failures in production builds where stderr is not visible.
+    // Usage: curl http://127.0.0.1:3457/oauth/debug
+    if (urlPath === '/oauth/debug' && req.method === 'GET') {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ events: debugLog }, null, 2));
+      return;
+    }
+
     // ── OAuth: protected resource metadata (RFC 9728) ─────────────────────────
     // Points VS Code to the OAuth authorization server on the same host.
     if (urlPath === '/.well-known/oauth-protected-resource') {
+      oauthLog(`oauth discovery: protected-resource (ua: ${ua})`);
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ resource: base, authorization_servers: [base] }));
       return;
@@ -176,6 +199,7 @@ export async function startHttpMcpServer(opts: HttpBridgeOptions): Promise<http.
 
     // ── OAuth: authorization server metadata (RFC 8414) ───────────────────────
     if (urlPath === '/.well-known/oauth-authorization-server') {
+      oauthLog(`oauth discovery: authorization-server metadata (ua: ${ua})`);
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({
         issuer: base,
@@ -197,12 +221,14 @@ export async function startHttpMcpServer(opts: HttpBridgeOptions): Promise<http.
     // ── OAuth: dynamic client registration (RFC 7591) ────────────────────────
     // VS Code registers a client before starting the authorization flow.
     if (urlPath === '/oauth/register' && req.method === 'POST') {
+      const clientId = randomUUID();
+      oauthLog(`oauth register: issued client_id ${clientId.slice(0, 8)}… (ua: ${ua})`);
       res.writeHead(201, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({
-        client_id: randomUUID(),
+        client_id: clientId,
         client_id_issued_at: Math.floor(Date.now() / 1000),
         token_endpoint_auth_method: 'none',
-        grant_types: ['authorization_code'],
+        grant_types: ['authorization_code', 'urn:ietf:params:oauth:grant-type:device_code'],
         response_types: ['code'],
       }));
       return;
@@ -214,15 +240,30 @@ export async function startHttpMcpServer(opts: HttpBridgeOptions): Promise<http.
     // its token on the first poll without any user interaction.
     if (urlPath === '/oauth/device/code' && req.method === 'POST') {
       const deviceCode = randomUUID();
+      const userCode = 'GRAPHNOSIS';
+      const verifyUri = `${base}/oauth/activate`;
       pendingDeviceCodes.set(deviceCode, { expiresAt: Date.now() + 5 * 60 * 1000 });
+      oauthLog(`oauth device/code: issued device_code ${deviceCode.slice(0, 8)}… (ua: ${ua})`);
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({
         device_code: deviceCode,
-        user_code: 'GRAPHNOSIS',
-        verification_uri: `${base}/oauth/activate`,
+        user_code: userCode,
+        verification_uri: verifyUri,
+        // verification_uri_complete is optional per RFC 8628 but required by some CLI clients
+        verification_uri_complete: `${verifyUri}?user_code=${userCode}`,
         expires_in: 300,
         interval: 1,
       }));
+      return;
+    }
+
+    // ── OAuth: device activation page (RFC 8628 §3.3) ────────────────────────
+    // Stub page shown when the user visits the verification_uri. Since this is
+    // a loopback server that auto-approves, no real user action is needed — but
+    // some CLI clients open this URL in a browser as confirmation.
+    if (urlPath === '/oauth/activate') {
+      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+      res.end('<!DOCTYPE html><html><body style="font-family:sans-serif;padding:2em"><h2>Graphnosis MCP</h2><p>Authorization approved. You may close this tab and return to your terminal.</p></body></html>');
       return;
     }
 
@@ -234,12 +275,14 @@ export async function startHttpMcpServer(opts: HttpBridgeOptions): Promise<http.
       const redirectUri = params.get('redirect_uri');
       const state = params.get('state');
       if (!redirectUri || params.get('response_type') !== 'code') {
+        oauthLog(`oauth authorize: bad request — missing redirect_uri or response_type (ua: ${ua})`);
         res.writeHead(400);
         res.end('Bad Request');
         return;
       }
       const code = randomUUID();
       pendingCodes.set(code, { expiresAt: Date.now() + 5 * 60 * 1000, redirectUri });
+      oauthLog(`oauth authorize: redirecting to ${redirectUri.split('?')[0]}… (ua: ${ua})`);
       const callback = new URL(redirectUri);
       callback.searchParams.set('code', code);
       if (state) callback.searchParams.set('state', state);
@@ -249,17 +292,19 @@ export async function startHttpMcpServer(opts: HttpBridgeOptions): Promise<http.
     }
 
     // ── OAuth: token endpoint ─────────────────────────────────────────────────
-    // Exchanges an authorization code for the static bearer token.
+    // Exchanges an authorization code or device code for the bearer token.
     if (urlPath === '/oauth/token' && req.method === 'POST') {
       let body: URLSearchParams;
       try {
         body = new URLSearchParams(await readTextBody(req));
       } catch {
+        oauthLog(`oauth token: invalid request body (ua: ${ua})`);
         res.writeHead(400, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: 'invalid_request' }));
         return;
       }
       const grantType = body.get('grant_type');
+      oauthLog(`oauth token: grant_type=${grantType} (ua: ${ua})`);
 
       // Device Authorization Grant (RFC 8628) — for CLI clients.
       if (grantType === 'urn:ietf:params:oauth:grant-type:device_code') {
@@ -267,18 +312,21 @@ export async function startHttpMcpServer(opts: HttpBridgeOptions): Promise<http.
         const pending = pendingDeviceCodes.get(deviceCode);
         if (!pending || pending.expiresAt < Date.now()) {
           pendingDeviceCodes.delete(deviceCode);
+          oauthLog(`oauth token: device_code not found or expired (ua: ${ua})`);
           res.writeHead(400, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({ error: 'expired_token' }));
           return;
         }
         pendingDeviceCodes.delete(deviceCode);
         const token = typeof opts.token === 'function' ? opts.token() : opts.token;
+        oauthLog(`oauth token: device grant success, token=${token.slice(0, 4)}… (ua: ${ua})`);
         res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
         res.end(JSON.stringify({ access_token: token, token_type: 'bearer', expires_in: 86400 }));
         return;
       }
 
       if (grantType !== 'authorization_code') {
+        oauthLog(`oauth token: unsupported grant_type=${grantType} (ua: ${ua})`);
         res.writeHead(400, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: 'unsupported_grant_type' }));
         return;
@@ -287,6 +335,7 @@ export async function startHttpMcpServer(opts: HttpBridgeOptions): Promise<http.
       const pending = pendingCodes.get(code);
       if (!pending || pending.expiresAt < Date.now()) {
         pendingCodes.delete(code);
+        oauthLog(`oauth token: auth_code not found or expired (ua: ${ua})`);
         res.writeHead(400, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: 'invalid_grant' }));
         return;
@@ -294,12 +343,14 @@ export async function startHttpMcpServer(opts: HttpBridgeOptions): Promise<http.
       const redirectUri = body.get('redirect_uri');
       if (redirectUri && pending.redirectUri !== redirectUri) {
         pendingCodes.delete(code);
+        oauthLog(`oauth token: redirect_uri mismatch (ua: ${ua})`);
         res.writeHead(400, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: 'invalid_grant' }));
         return;
       }
       pendingCodes.delete(code);
       const token = typeof opts.token === 'function' ? opts.token() : opts.token;
+      oauthLog(`oauth token: auth_code grant success, token=${token.slice(0, 4)}… (ua: ${ua})`);
       res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
       res.end(JSON.stringify({ access_token: token, token_type: 'bearer', expires_in: 86400 }));
       return;
@@ -308,7 +359,12 @@ export async function startHttpMcpServer(opts: HttpBridgeOptions): Promise<http.
     // ── Auth ─────────────────────────────────────────────────────────────────
     const authHeader = (req.headers['authorization'] as string | undefined) ?? '';
     const expectedToken = typeof opts.token === 'function' ? opts.token() : opts.token;
-    if (!expectedToken || !constantTimeEqual(authHeader, `Bearer ${expectedToken}`)) {
+    // Bearer scheme is case-insensitive per RFC 6750; strip prefix and trim.
+    const sentToken = authHeader.toLowerCase().startsWith('bearer ')
+      ? authHeader.slice(7).trim()
+      : '';
+    if (!expectedToken || !sentToken || !constantTimeEqual(sentToken, expectedToken)) {
+      oauthLog(`auth rejected — ${!expectedToken ? 'no expected token' : !sentToken ? 'no bearer in request' : 'token mismatch'} ${req.method} ${urlPath} (ua: ${ua})`);
       rejectUnauthorized(res);
       return;
     }
@@ -399,7 +455,7 @@ export async function startHttpMcpServer(opts: HttpBridgeOptions): Promise<http.
       sessionIdGenerator: () => randomUUID(),
       onsessioninitialized: (sid) => {
         sessions.set(sid, { transport, connId, lastActivityAt: Date.now() });
-        console.error(`[graphnosis-http-bridge] new session ${sid} (conn ${connId})`);
+        oauthLog(`new session ${sid} (conn ${connId})`);
       },
     });
 
@@ -418,7 +474,7 @@ export async function startHttpMcpServer(opts: HttpBridgeOptions): Promise<http.
   let serverStarted = false;
   server.on('error', (err) => {
     if (serverStarted) {
-      console.error(`[graphnosis-http-bridge] server error: ${err.message}`);
+      oauthLog(`server error: ${err.message}`);
     }
   });
 

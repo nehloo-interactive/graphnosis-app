@@ -13533,7 +13533,12 @@ ollama list</code></pre>
                 readonly placeholder="Unlock the cortex to reveal token" />
               <button class="copy-btn" id="btn-copilot-show-token">Show</button>
               <button class="copy-btn" id="btn-copilot-copy-token">Copy</button>
+              <button class="copy-btn" id="btn-copilot-rotate-token" title="Generate a new bearer token">Rotate</button>
             </div>
+            <p class="subtitle" id="copilot-rotate-hint" style="display:none; margin: 6px 0 0; font-size: 12px; color: var(--fg-warning, #e8a000);">
+              Token rotated. VS Code Chat reconnects via OAuth automatically.
+              Update <code>~/.copilot/mcp-config.json</code> for Copilot CLI.
+            </p>
           </div>
           <!-- Option B: mcp.json -->
           <div class="vscode-option" style="margin-top: 10px;">
@@ -13553,7 +13558,21 @@ ollama list</code></pre>
               <button class="copy-btn" id="btn-copilot-copy-config">Copy</button>
             </div>
           </div>
-        </div>
+          <!-- Option C: gh copilot CLI -->
+          <div class="vscode-option" style="margin-top: 10px;">
+            <div class="vscode-option-header">
+              <span class="vscode-option-label">Option C — GitHub Copilot CLI</span>
+            </div>
+            <p class="subtitle" style="margin: 4px 0 6px;">
+              For <code>gh copilot</code> CLI. Save this snippet to <code>~/.copilot/mcp-config.json</code>
+              (note: different file and key than VS Code).
+            </p>
+            <div class="copy-row">
+              <span class="copy-field" id="copilot-cli-config"
+                style="font-family: monospace; font-size: 13px; max-height: 120px; overflow: auto; white-space: pre;"></span>
+              <button class="copy-btn" id="btn-copilot-copy-cli-config">Copy</button>
+            </div>
+          </div>
         <div class="modal-footer">
           <span class="filler"></span>
           <button id="btn-copilot-close">Close</button>

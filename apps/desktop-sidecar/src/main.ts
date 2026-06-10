@@ -1042,7 +1042,7 @@ async function main(): Promise<void> {
           deps: mcpDeps,
           port: localPort,
           host: '127.0.0.1',
-          token: localToken,
+          token: () => host.getSettings().vscode?.localBridgeToken ?? '',
           allowedOrigins: [],
         });
         process.on('SIGINT', () => localHttpServer.close());

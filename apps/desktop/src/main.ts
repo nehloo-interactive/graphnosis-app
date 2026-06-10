@@ -18926,6 +18926,19 @@ async function openMobileWizard(): Promise<void> {
 }
 
 // ── VS Code / Copilot Chat setup (own modal) ──────────────────────────────────
+function buildCopilotSnippets(port: number, token: string): { vscode: string; cli: string } {
+  const bearerValue = `Bearer ${token || '<your-bearer-token>'}`;
+  const vscode = JSON.stringify(
+    { servers: { graphnosis: { type: 'http', url: `http://127.0.0.1:${port}/mcp`, headers: { Authorization: bearerValue } } } },
+    null, 2,
+  );
+  const cli = JSON.stringify(
+    { mcpServers: { graphnosis: { type: 'http', url: `http://127.0.0.1:${port}/mcp`, headers: { Authorization: bearerValue } } } },
+    null, 2,
+  );
+  return { vscode, cli };
+}
+
 async function openCopilotModal(): Promise<void> {
   const modal = document.getElementById('copilot-setup-modal');
   if (!modal) return;
@@ -18934,21 +18947,11 @@ async function openCopilotModal(): Promise<void> {
   catch { /* still open the modal; snippet shows a hint */ }
   const port = info?.port ?? 3457;
   const token = info?.token ?? '';
+  const { vscode, cli } = buildCopilotSnippets(port, token);
   const cfgEl = document.getElementById('copilot-vscode-config');
-  if (cfgEl) {
-    cfgEl.textContent = JSON.stringify(
-      {
-        servers: {
-          graphnosis: {
-            type: 'http',
-            url: `http://127.0.0.1:${port}/mcp`,
-            headers: { Authorization: `Bearer ${token || '<your-bearer-token>'}` },
-          },
-        },
-      },
-      null, 2,
-    );
-  }
+  if (cfgEl) cfgEl.textContent = vscode;
+  const cliCfgEl = document.getElementById('copilot-cli-config');
+  if (cliCfgEl) cliCfgEl.textContent = cli;
   const tokenInput = document.getElementById('copilot-token-input') as HTMLInputElement | null;
   const showBtn = document.getElementById('btn-copilot-show-token') as HTMLButtonElement | null;
   if (tokenInput) { tokenInput.value = token; tokenInput.type = 'password'; }
@@ -18987,6 +18990,33 @@ async function openCopilotModal(): Promise<void> {
   document.getElementById('btn-copilot-copy-config')?.addEventListener('click', (e) => {
     const text = document.getElementById('copilot-vscode-config')?.textContent ?? '';
     if (text) mobileCopyBtn(e.currentTarget as HTMLButtonElement, text);
+  });
+  document.getElementById('btn-copilot-copy-cli-config')?.addEventListener('click', (e) => {
+    const text = document.getElementById('copilot-cli-config')?.textContent ?? '';
+    if (text) mobileCopyBtn(e.currentTarget as HTMLButtonElement, text);
+  });
+  document.getElementById('btn-copilot-rotate-token')?.addEventListener('click', () => {
+    void (async () => {
+      const btn = document.getElementById('btn-copilot-rotate-token') as HTMLButtonElement | null;
+      const hint = document.getElementById('copilot-rotate-hint') as HTMLElement | null;
+      if (btn) btn.disabled = true;
+      try {
+        const info = (await invoke('rotate_vscode_token')) as { port: number; token: string };
+        const tokenInput = document.getElementById('copilot-token-input') as HTMLInputElement | null;
+        if (tokenInput) { tokenInput.value = info.token; tokenInput.type = 'password'; }
+        const showBtn = document.getElementById('btn-copilot-show-token') as HTMLButtonElement | null;
+        if (showBtn) showBtn.textContent = 'Show';
+        const { vscode, cli } = buildCopilotSnippets(info.port, info.token);
+        const cfgEl = document.getElementById('copilot-vscode-config');
+        if (cfgEl) cfgEl.textContent = vscode;
+        const cliCfgEl = document.getElementById('copilot-cli-config');
+        if (cliCfgEl) cliCfgEl.textContent = cli;
+        if (hint) hint.style.display = '';
+        const modal = document.getElementById('copilot-setup-modal');
+        if (modal) (modal as HTMLElement).dataset['token'] = info.token;
+      } catch { /* ignore */ }
+      finally { if (btn) btn.disabled = false; }
+    })();
   });
 
   // Revoke & Regenerate — generates a fresh UUID, saves it via update_settings,

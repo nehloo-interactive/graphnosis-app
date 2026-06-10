@@ -2202,6 +2202,20 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
         token: settings.vscode?.localBridgeToken ?? '',
       };
     }
+    case 'vscode.rotateToken': {
+      const settings = deps.host.getSettings();
+      const newToken = randomUUID();
+      await deps.host.setSettings({
+        vscode: {
+          localBridgeToken: newToken,
+          localBridgePort: settings.vscode?.localBridgePort ?? 3457,
+        },
+      });
+      return {
+        port: settings.vscode?.localBridgePort ?? 3457,
+        token: newToken,
+      };
+    }
 
     // ── Alive Brain IPC ──────────────────────────────────────────────────────
 
