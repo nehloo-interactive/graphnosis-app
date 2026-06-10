@@ -22,6 +22,11 @@ interface Session {
   lastActivityAt: number;
 }
 
+interface PendingCode {
+  expiresAt: number;
+  redirectUri: string;
+}
+
 // Sessions idle for more than 2 hours are pruned to prevent memory leaks
 // from abandoned mobile connections (app backgrounded, network change, etc.).
 const SESSION_TTL_MS = 2 * 60 * 60 * 1000;
@@ -48,6 +53,16 @@ async function readJsonBody(req: http.IncomingMessage): Promise<unknown> {
       try { resolve(JSON.parse(buf)); }
       catch (e) { reject(e); }
     });
+    req.on('error', reject);
+  });
+}
+
+async function readTextBody(req: http.IncomingMessage): Promise<string> {
+  return new Promise<string>((resolve, reject) => {
+    let buf = '';
+    req.setEncoding('utf8');
+    req.on('data', (chunk: string) => { buf += chunk; });
+    req.on('end', () => resolve(buf));
     req.on('error', reject);
   });
 }
@@ -81,17 +96,22 @@ function pollForClientInfo(connId: string, mcpServer: McpServer): void {
 /**
  * Start the optional HTTP/SSE MCP bridge.
  *
- * Exposes the same 6 MCP tools (recall, remember, correct, apply, forget,
- * stats) over a single HTTP endpoint so mobile AI clients — and any
- * MCP-capable HTTP client — can connect without a Unix socket.
+ * Exposes the Graphnosis MCP tools over a single HTTP endpoint so VS Code
+ * Copilot Chat, mobile AI clients, and any MCP-capable HTTP client can
+ * connect without a Unix socket.
  *
  * Transport: MCP Streamable HTTP (2025-03-26 spec). Clients POST JSON-RPC
  * to /mcp; the server streams responses back as SSE when the client
  * sends `Accept: text/event-stream`. Sessions are keyed by the
  * `Mcp-Session-Id` header the server sets on the first response.
  *
- * Auth: every request must carry `Authorization: Bearer <token>`. The token
- * is a UUID auto-generated on first enable and stored in settings.json.
+ * Auth: MCP Authorization spec (OAuth 2.0 Authorization Code + PKCE).
+ * VS Code's MCP HTTP client always initiates OAuth discovery before using
+ * any configured static headers, so we implement a minimal OAuth server
+ * that auto-approves the authorization request (no user click — the
+ * browser tab opens and immediately redirects back) and returns the static
+ * bearer token as the access_token. After the one-time OAuth handshake,
+ * every request carries the correct bearer token.
  *
  * Binds to 127.0.0.1 by default — only reachable locally or over an
  * authenticated VPN (e.g. Tailscale). The user explicitly sets host to
@@ -100,43 +120,135 @@ function pollForClientInfo(connId: string, mcpServer: McpServer): void {
 export async function startHttpMcpServer(opts: HttpBridgeOptions): Promise<http.Server> {
   const sessions = new Map<string, Session>();
 
-  // Prune stale sessions periodically. Unref'd so this interval doesn't
-  // prevent clean process exit.
+  // Short-lived authorization codes for the OAuth Authorization Code flow.
+  // Each entry is created by GET /oauth/authorize and consumed by POST /oauth/token.
+  const pendingCodes = new Map<string, PendingCode>();
+
+  // Prune stale sessions and codes periodically.
   const pruneInterval = setInterval(() => {
-    const cutoff = Date.now() - SESSION_TTL_MS;
+    const now = Date.now();
+    const sessionCutoff = now - SESSION_TTL_MS;
     for (const [sid, s] of sessions) {
-      if (s.lastActivityAt < cutoff) {
+      if (s.lastActivityAt < sessionCutoff) {
         void s.transport.close().catch(() => { /* best-effort */ });
         sessions.delete(sid);
         mcpRegistry.unregister(s.connId);
         console.error(`[graphnosis-http-bridge] pruned idle session ${sid}`);
       }
     }
+    for (const [code, pending] of pendingCodes) {
+      if (pending.expiresAt < now) pendingCodes.delete(code);
+    }
   }, 10 * 60 * 1000).unref();
 
   const server = http.createServer(async (req, res) => {
     const urlPath = req.url?.split('?')[0] ?? '';
+    const base = `http://${req.headers['host'] ?? `127.0.0.1:${opts.port}`}`;
 
-    // ── Pre-auth: OAuth discovery + CORS preflight ────────────────────────────
-    // VS Code's MCP client probes /.well-known/oauth-authorization-server before
-    // applying configured headers. A 401 on that probe triggers its OAuth UI.
-    // Return 404 here (no auth required) so VS Code knows there is no OAuth
-    // server and falls through to using its configured static bearer headers.
-    if (urlPath === '/.well-known/oauth-authorization-server' ||
-        urlPath === '/.well-known/openid-configuration' ||
-        urlPath === '/.well-known/oauth-protected-resource') {
-      res.writeHead(404);
-      res.end('Not Found');
-      return;
-    }
-
-    // OPTIONS preflight must bypass auth so browsers and VS Code can probe CORS
-    // without credentials.
+    // ── OPTIONS preflight — must bypass auth ─────────────────────────────────
     if (req.method === 'OPTIONS') {
       const preflightOrigin = req.headers['origin'] as string | undefined;
       if (preflightOrigin) setCorsHeaders(res, preflightOrigin);
       res.writeHead(204);
       res.end();
+      return;
+    }
+
+    // ── OAuth: protected resource metadata (RFC 9728) ─────────────────────────
+    // Points VS Code to the OAuth authorization server on the same host.
+    if (urlPath === '/.well-known/oauth-protected-resource') {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ resource: base, authorization_servers: [base] }));
+      return;
+    }
+
+    // ── OAuth: authorization server metadata (RFC 8414) ───────────────────────
+    if (urlPath === '/.well-known/oauth-authorization-server') {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        issuer: base,
+        authorization_endpoint: `${base}/oauth/authorize`,
+        token_endpoint: `${base}/oauth/token`,
+        registration_endpoint: `${base}/oauth/register`,
+        response_types_supported: ['code'],
+        grant_types_supported: ['authorization_code'],
+        code_challenge_methods_supported: ['S256', 'plain'],
+        token_endpoint_auth_methods_supported: ['none'],
+      }));
+      return;
+    }
+
+    // ── OAuth: dynamic client registration (RFC 7591) ────────────────────────
+    // VS Code registers a client before starting the authorization flow.
+    if (urlPath === '/oauth/register' && req.method === 'POST') {
+      res.writeHead(201, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        client_id: randomUUID(),
+        client_id_issued_at: Math.floor(Date.now() / 1000),
+        token_endpoint_auth_method: 'none',
+        grant_types: ['authorization_code'],
+        response_types: ['code'],
+      }));
+      return;
+    }
+
+    // ── OAuth: authorization endpoint ─────────────────────────────────────────
+    // Auto-approves for localhost: generates an auth code and immediately
+    // redirects back to VS Code's loopback callback server. No user click needed.
+    if (urlPath === '/oauth/authorize' && req.method === 'GET') {
+      const params = new URLSearchParams(req.url?.split('?')[1] ?? '');
+      const redirectUri = params.get('redirect_uri');
+      const state = params.get('state');
+      if (!redirectUri || params.get('response_type') !== 'code') {
+        res.writeHead(400);
+        res.end('Bad Request');
+        return;
+      }
+      const code = randomUUID();
+      pendingCodes.set(code, { expiresAt: Date.now() + 5 * 60 * 1000, redirectUri });
+      const callback = new URL(redirectUri);
+      callback.searchParams.set('code', code);
+      if (state) callback.searchParams.set('state', state);
+      res.writeHead(302, { Location: callback.toString() });
+      res.end();
+      return;
+    }
+
+    // ── OAuth: token endpoint ─────────────────────────────────────────────────
+    // Exchanges an authorization code for the static bearer token.
+    if (urlPath === '/oauth/token' && req.method === 'POST') {
+      let body: URLSearchParams;
+      try {
+        body = new URLSearchParams(await readTextBody(req));
+      } catch {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'invalid_request' }));
+        return;
+      }
+      if (body.get('grant_type') !== 'authorization_code') {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'unsupported_grant_type' }));
+        return;
+      }
+      const code = body.get('code') ?? '';
+      const pending = pendingCodes.get(code);
+      if (!pending || pending.expiresAt < Date.now()) {
+        pendingCodes.delete(code);
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'invalid_grant' }));
+        return;
+      }
+      const redirectUri = body.get('redirect_uri');
+      if (redirectUri && pending.redirectUri !== redirectUri) {
+        pendingCodes.delete(code);
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'invalid_grant' }));
+        return;
+      }
+      pendingCodes.delete(code);
+      const token = typeof opts.token === 'function' ? opts.token() : opts.token;
+      res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+      res.end(JSON.stringify({ access_token: token, token_type: 'bearer', expires_in: 86400 }));
       return;
     }
 
@@ -149,8 +261,6 @@ export async function startHttpMcpServer(opts: HttpBridgeOptions): Promise<http.
     }
 
     // ── CORS ──────────────────────────────────────────────────────────────────
-    // Only applies when an Origin header is present (browser / PWA callers).
-    // Native mobile apps don't send Origin so they pass through unconditionally.
     const origin = req.headers['origin'] as string | undefined;
     if (origin) {
       if (opts.allowedOrigins.length > 0 && !opts.allowedOrigins.includes(origin)) {
@@ -229,8 +339,6 @@ export async function startHttpMcpServer(opts: HttpBridgeOptions): Promise<http.
     }
 
     // ── New session ────────────────────────────────────────────────────────────
-    // Kicker: closing the transport triggers its `onclose` below, which
-    // unregisters the connection. Used by the idle sweep + UI × button.
     let transport: StreamableHTTPServerTransport;
     const connId = mcpRegistry.register('http', () => void transport?.close());
 
@@ -249,21 +357,11 @@ export async function startHttpMcpServer(opts: HttpBridgeOptions): Promise<http.
     };
 
     const mcpServer = createMcpServer(opts.deps);
-    // Cast: StreamableHTTPServerTransport.onclose is typed as optional, but
-    // the Transport interface mcpServer.connect() expects requires a
-    // non-undefined callback. We assigned it above (line ~220) so it's safe.
-    // exactOptionalPropertyTypes catches the structural mismatch but the
-    // runtime contract is fine.
     await mcpServer.connect(transport as unknown as Parameters<typeof mcpServer.connect>[0]);
     pollForClientInfo(connId, mcpServer);
     await transport.handleRequest(req, res, body);
   });
 
-  // Runtime error handler (fires AFTER the server has started, e.g., on
-  // keep-alive socket errors). Startup errors (EADDRINUSE etc.) are handled
-  // by the one-time `reject` listener in the Promise below — to avoid the
-  // same event being logged twice, suppress errors that arrive before the
-  // server has bound successfully.
   let serverStarted = false;
   server.on('error', (err) => {
     if (serverStarted) {

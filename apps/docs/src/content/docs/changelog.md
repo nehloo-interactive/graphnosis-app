@@ -11,6 +11,16 @@ Conventions: **Added** = new features, **Changed** = behavior or UX shifts, **Fi
 
 ---
 
+## v1.14.7 — Implement OAuth for VS Code MCP connection
+
+<p style="margin-top:0.5rem;font-size:1.25em;opacity:0.85;">2026-06-10</p>
+
+### Fixed
+
+- **VS Code now connects via MCP without an OAuth error.** VS Code's MCP HTTP client follows the MCP Authorization spec and always initiates an OAuth 2.0 flow before using any configured static headers — there is no way to bypass this with a `headers` entry in `mcp.json`. The Graphnosis local HTTP bridge now implements a minimal OAuth 2.0 Authorization Code + PKCE server. The authorization request is auto-approved for localhost (VS Code opens a browser tab that immediately redirects back with an auth code — no user click needed), and the token endpoint returns the existing static bearer token as the OAuth access token. After the one-time handshake, every request carries the correct token. The OAuth endpoints (`/.well-known/oauth-protected-resource`, `/.well-known/oauth-authorization-server`, `/oauth/register`, `/oauth/authorize`, `/oauth/token`) are all served without prior authentication.
+
+---
+
 ## v1.14.6 — Further VS Code OAuth suppression
 
 <p style="margin-top:0.5rem;font-size:1.25em;opacity:0.85;">2026-06-10</p>
