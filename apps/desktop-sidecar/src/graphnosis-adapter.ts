@@ -71,6 +71,17 @@ export interface AppendDocumentResult {
   contradictions: unknown[];
 }
 
+/** A contradiction the SDK's reflection engine detected between two nodes —
+ *  high shared-entity overlap but low content similarity plus a conflict signal.
+ *  Returned by `reflectGraph` and (incrementally) inside `AppendDocumentResult`. */
+export interface ContradictionResult {
+  nodeA: string;
+  nodeB: string;
+  sharedEntities: string[];
+  description: string;
+  detectedAt: number;
+}
+
 export interface QueryResult {
   nodeId: string;
   score: number;
@@ -145,6 +156,12 @@ export interface GraphnosisAdapter {
    *  `opts.chunkSize` tunes how aggressively the doc is split into nodes;
    *  defaults to the SDK's 'balanced' preset when omitted. */
   appendDocument(handle: GraphHandle, input: AppendDocumentInput, opts?: AppendDocumentOptions): Promise<AppendDocumentResult>;
+
+  /** Run the SDK reflection engine over the WHOLE built graph and return the
+   *  contradictions it detects (it also writes `contradicts` edges into the
+   *  graph as a side effect). Returns [] if the graph isn't built or has no
+   *  TF-IDF index. Used by the brain engine's periodic contradiction scan. */
+  reflectGraph(handle: GraphHandle): ContradictionResult[];
 
   query(handle: GraphHandle, query: string, k: number): Promise<QueryResult[]>;
 

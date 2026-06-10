@@ -898,6 +898,15 @@ interface BrainDuplicatePair {
   id: string; graphId: string; nodeA: string; nodeB: string;
   snippetA: string; snippetB: string; similarity: number; detectedAt: number;
 }
+// A CONTRADICTING memory pair the periodic reflection scan flagged — two
+// memories that share entities but assert conflicting content. Surfaced in
+// Home's "Needs you" lane; resolved by superseding the outdated side via
+// `edit` (ask the AI), or dismissed when both are genuinely true.
+interface BrainContradictionPair {
+  id: string; graphId: string; nodeA: string; nodeB: string;
+  snippetA: string; snippetB: string;
+  sharedEntities: string[]; description: string; detectedAt: number;
+}
 // One autonomous-heal event from the healing journal — rendered in the
 // Autonomous Brain "Self-healing" log. The llm* fields are filled in
 // later by the (future) local-LLM second-opinion pass.
@@ -2479,6 +2488,11 @@ const TOOL_INFO: Record<string, { determinism: string; body: string; examples: s
     determinism: 'Deterministic',
     body: 'Returns near-duplicate node pairs the brain engine has already flagged for review — high-confidence matches from the background scan. Resolve with correct (merge) or forget.',
     examples: ['What does my brain think is duplicated?', 'Show me the pending duplicate pairs for review.'],
+  },
+  contradiction_pairs: {
+    determinism: 'Deterministic',
+    body: 'Returns CONTRADICTING memory pairs the periodic reflection scan has flagged — two memories that share entities but assert conflicting content. The opposite of duplicate_pairs: near-opposite, not near-identical. Resolve by superseding the outdated side via edit — never by adding a third note.',
+    examples: ['Is anything in my memory contradictory?', 'Show me memories that conflict with each other.'],
   },
   healing_journal: {
     determinism: 'Deterministic',
@@ -7432,7 +7446,7 @@ const HOME_HELP: Record<string, string> = {
   'Connections': 'Which AI clients are reading your memory right now, and which data sources are feeding it.',
   'Memory health': 'Retrieval-quality signals: how many memories are decaying (losing trust over time), when the next decay happens, and how densely they\'re linked (synapses).',
   'Self-healing': 'Duplicate memories the autonomous brain merged on its own — no action needed from you.',
-  'Needs you': 'Items waiting on your decision: duplicate pairs to merge and AI-proposed corrections to confirm or reject.',
+  'Needs you': 'Items waiting on your decision: duplicate pairs to merge, contradicting memories to reconcile, and AI-proposed corrections to confirm or reject.',
   'Stranded memories': 'Memories with no links to anything else — orphans worth connecting so recall and dig-deeper can reach them.',
   'Since you last opened': 'A digest of what changed in your cortex since your previous session.',
   'Foresight': 'Your goals projected forward — predictions, risks, and opportunities the brain surfaces from your memory (needs the local LLM).',
@@ -7571,10 +7585,11 @@ async function refreshHomeDigest(): Promise<void> {
 }
 
 // ── Home: "Needs you" lane ────────────────────────────────────────────────
-// What's waiting on the user: pending corrections, duplicate pairs, stranded
-// memories. (Conflicts will join once #22's precision work lands — surfacing
-// noisy false-positive conflicts would undercut the trust story.) Each row
-// opens the review deck, the unified surface where these are resolved.
+// What's waiting on the user: pending corrections, duplicate pairs,
+// contradicting memories. Contradictions come from the periodic reflection
+// scan (precision-gated in the SDK: shared entities + conflicting content +
+// a negation signal), so the lane only surfaces high-confidence conflicts.
+// Each row opens the review surface where it's resolved.
 async function refreshHomeNeeds(): Promise<void> {
   const card = document.getElementById('home-needs');
   const body = document.getElementById('home-needs-body');
@@ -7586,13 +7601,19 @@ async function refreshHomeNeeds(): Promise<void> {
     const pairs = await ipcCallTimeout<unknown[]>('brain:getDuplicatePairs', {});
     duplicates = Array.isArray(pairs) ? pairs.length : 0;
   } catch { /* leave 0 */ }
+  let contradictions = 0;
+  try {
+    const pairs = await ipcCallTimeout<unknown[]>('brain:getContradictionPairs', {});
+    contradictions = Array.isArray(pairs) ? pairs.length : 0;
+  } catch { /* leave 0 */ }
 
   // Stranded memories have their own dedicated card (refreshHomeStranded); keep
-  // this lane to corrections + duplicates so we don't double-surface them.
-  type NeedRow = { n: number; label: string; tip: string; kind: 'corrections' | 'duplicates' };
+  // this lane to corrections + duplicates + contradictions so we don't double-surface.
+  type NeedRow = { n: number; label: string; tip: string; kind: 'corrections' | 'duplicates' | 'contradictions' };
   const rows: NeedRow[] = [];
   if (corrections > 0) rows.push({ n: corrections, label: corrections === 1 ? 'pending correction' : 'pending corrections', tip: 'AI-proposed edits awaiting your approval', kind: 'corrections' });
   if (duplicates > 0) rows.push({ n: duplicates, label: duplicates === 1 ? 'duplicate pair' : 'duplicate pairs', tip: 'near-identical memories to merge or keep', kind: 'duplicates' });
+  if (contradictions > 0) rows.push({ n: contradictions, label: contradictions === 1 ? 'contradiction' : 'contradictions', tip: 'memories that conflict — keep the current one, retire the outdated one', kind: 'contradictions' });
 
   if (rows.length === 0) {
     card.style.display = '';
@@ -7608,9 +7629,11 @@ async function refreshHomeNeeds(): Promise<void> {
   card.style.display = '';
   body.querySelectorAll<HTMLButtonElement>('.home-need-row').forEach((el) => {
     el.addEventListener('click', () => {
-      // Duplicate pairs → the merge overlay (Keep both / Merge); pending
-      // corrections → the review deck (where AI diffs sit at the top).
+      // Duplicate pairs → the merge overlay (Keep both / Merge); contradictions
+      // → the contradictions review overlay; pending corrections → the review
+      // deck (where AI diffs sit at the top).
       if (el.dataset['needKind'] === 'duplicates') void renderNeedsReview();
+      else if (el.dataset['needKind'] === 'contradictions') void renderContradictionsReview();
       else openTrivia();
     });
   });
@@ -8595,6 +8618,7 @@ function mcpToolsOnboardingHtml(): string {
             <span class="g-deck-cmd-grouplabel">Brain maintenance</span>
             <div class="g-deck-cmd-chips">
               <span class="g-deck-cmd-chip" data-tool="duplicate_pairs">duplicate_pairs</span>
+              <span class="g-deck-cmd-chip" data-tool="contradiction_pairs">contradiction_pairs</span>
               <span class="g-deck-cmd-chip" data-tool="healing_journal">healing_journal</span>
               <span class="g-deck-cmd-chip" data-tool="gnn_status">gnn_status</span>
               <span class="g-deck-cmd-chip" data-tool="confirm_data_access">confirm_data_access</span>
@@ -11731,6 +11755,13 @@ function resetAtlasView(): void {
 function switchGraphnosisTab(tab: GraphnosisTab): void {
   const prevTab = graphnosisActiveTab;
   graphnosisActiveTab = tab;
+  // Returning to MemoryStudio (where the live training diff lives) while a train
+  // is streaming: repaint the diff once the pane is visible. renderLiveDiff skips
+  // work while hidden, so this catches it up. Deferred a frame so the tab's DOM
+  // is shown first (otherwise offsetParent is still null and it'd no-op).
+  if (tab === 'checkin' && activeTrainStreamId) {
+    requestAnimationFrame(() => renderLiveDiff());
+  }
   // Pause the Autonomous Brain pane's animations whenever we leave it; the
   // brain branch below re-enables them. Cheap to call unconditionally.
   neuronField.stop();
@@ -13663,6 +13694,10 @@ interface GraphMutationPayload {
   /** Optional partial training-output chunk. Set when graphId matches the
    *  `__skill_train_chunk__<streamId>` pattern broadcast by skill:train. */
   chunk?: string;
+  /** Optional per-operation status label. Set on `__skill_train_status__`
+   *  frames — a short, generic, non-sensitive description of the current
+   *  training step for the status bar. */
+  label?: string;
 }
 
 interface EventStreamConnectedPayload {
@@ -14241,6 +14276,13 @@ let brainStatus: {
 // Phases (e.g. 'fullscan', 'duplicate-scan') with a live start-frame but
 // no done-frame yet. Non-empty ⇒ the pane shows its "scanning" state.
 const brainActivePhases = new Set<string>();
+// Current skill-training operation label for the status bar (per-operation
+// status set from __skill_train_status__ frames). Null when no train is
+// running. Takes priority over brain phases in renderStatusProcess since it's
+// a user-initiated foreground action. The label is intentionally generic (no
+// skill/engram name or memory content), and #status-process-text carries
+// data-pres="surface:statusProcess" so it also redacts in Presentation Mode.
+let skillTrainStatusLabel: string | null = null;
 // 1s ticker for the countdown line; runs only while the brain pane is shown.
 let scanTickerTimer: ReturnType<typeof setInterval> | null = null;
 // Whether a local LLM is reachable with a model installed. Drives the
@@ -14341,6 +14383,16 @@ function renderStatusProcess(): void {
   const wrap = els.statusProcess;
   const text = els.statusProcessText;
   if (!wrap || !text) return;
+  // Skill training is a user-initiated foreground operation — show its
+  // per-operation status with top priority over background brain phases.
+  // (Presentation Mode redaction is handled by the element's data-pres tag.)
+  if (skillTrainStatusLabel !== null) {
+    wrap.style.display = 'flex';
+    text.textContent = skillTrainStatusLabel;
+    const dot = wrap.querySelector<HTMLElement>('.status-process-dot');
+    if (dot) dot.style.background = PHASE_TONE_COLOR.llm;
+    return;
+  }
   if (brainActivePhases.size === 0) {
     wrap.style.display = 'none';
     return;
@@ -15685,6 +15737,79 @@ async function renderNeedsReview(): Promise<void> {
       try { await ipcCall('brain:resolveDuplicatePair', { id, action }); } catch { /* ignore */ }
       // Re-render after the collapse animation finishes.
       window.setTimeout(() => { void renderNeedsReview(); }, card ? 560 : 0);
+    });
+  });
+}
+
+/** Open the contradictions review overlay (reuses the needs-review overlay
+ *  shell). Each card shows the two conflicting memories with their shared
+ *  entities. Resolution is asymmetric to duplicates: the user either dismisses
+ *  the pair (both genuinely true / context-dependent) or asks their AI to
+ *  supersede the outdated side via `edit` — we deliberately do NOT offer a
+ *  one-click "delete one side" here, because picking the loser is a judgment
+ *  call the correction flow (diff + approval) is built for. */
+async function renderContradictionsReview(): Promise<void> {
+  const host = els.gNeedsReview;
+  const overlay = els.needsReviewOverlay;
+  if (!host || !overlay) return;
+  host.innerHTML = '<p class="lb-empty" style="display:flex;align-items:center;gap:8px;"><span class="boot-status-dot" style="width:8px;height:8px;flex-shrink:0;"></span>Loading contradictions…</p>';
+  overlay.classList.remove('hidden');
+  let pairs: BrainContradictionPair[];
+  try {
+    pairs = await ipcCall<BrainContradictionPair[]>('brain:getContradictionPairs', {});
+  } catch {
+    overlay.classList.add('hidden');
+    return;
+  }
+  if (pairs.length === 0) {
+    overlay.classList.add('hidden');
+    void refreshHomeNeeds();
+    return;
+  }
+  els.needsReviewOverlayTitle.textContent =
+    `Contradicting memories — ${pairs.length} pair${pairs.length === 1 ? '' : 's'}`;
+  host.innerHTML = pairs.map((c) => `
+    <div class="lb-dup-card">
+      <div class="lb-dup-card-pair">
+        <div class="lb-snippet"><span class="lb-snippet-tag">A</span>${escape(clampText(c.snippetA, 160))}</div>
+        <div class="lb-snippet"><span class="lb-snippet-tag">B</span>${escape(clampText(c.snippetB, 160))}</div>
+      </div>
+      <div class="lb-dup-card-foot">
+        <span style="display:flex; align-items:center; gap:8px; min-width:0;">
+          <span class="lb-engram-chip" title="Engram">${escape(engramName(c.graphId))}</span>
+          <span class="brain-subtitle" title="Entities both memories mention">${escape((c.sharedEntities ?? []).slice(0, 3).join(', '))}</span>
+        </span>
+        <span class="g-nr-actions">
+          <button class="btn-sm" data-cr-action="dismiss" data-cr-id="${escape(c.id)}"
+            title="Both are true (or context-dependent) — keep both, stop flagging this pair.">Both are true</button>
+          <button class="btn-sm primary" data-cr-action="resolve" data-cr-id="${escape(c.id)}"
+            title="Open Power Tools to supersede the outdated side via a reviewed edit.">Resolve with an edit →</button>
+        </span>
+      </div>
+    </div>`).join('');
+  overlay.classList.remove('hidden');
+  els.needsReviewCount.textContent = String(pairs.length);
+  host.querySelectorAll<HTMLButtonElement>('[data-cr-action]').forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      const id = btn.dataset['crId'];
+      const action = btn.dataset['crAction'];
+      if (!id || !action) return;
+      if (action === 'dismiss') {
+        const card = btn.closest<HTMLElement>('.lb-dup-card');
+        if (card) {
+          card.style.maxHeight = `${card.scrollHeight}px`;
+          card.classList.add('lb-healing');
+          requestAnimationFrame(() => { card.style.maxHeight = '0px'; });
+        }
+        try { await ipcCall('brain:dismissContradictionPair', { id }); } catch { /* ignore */ }
+        window.setTimeout(() => { void renderContradictionsReview(); }, card ? 560 : 0);
+      } else {
+        // Route to Power Tools (manual edit / correction flow) with the
+        // overlay closed — the user supersedes the outdated side there, or
+        // asks their AI client to do it via the `edit` MCP tool.
+        overlay.classList.add('hidden');
+        activateMode('power-tools');
+      }
     });
   });
 }
@@ -24445,7 +24570,10 @@ let activeTrainStreamId: string | null = null;
 let activeTrainBuffer = '';
 let activeTrainBaseline = '';
 let trainDiffRerenderTimer: ReturnType<typeof setTimeout> | null = null;
-const TRAIN_DIFF_RERENDER_MS = 200;
+// Debounce for the live-diff rerender during streaming. Each rerender recomputes
+// a full O(n×m) line-diff and replaces the panel's innerHTML — main-thread work.
+// Kept comfortably above one frame so a fast token stream can't pin the thread.
+const TRAIN_DIFF_RERENDER_MS = 350;
 
 function startLiveTrainStream(streamId: string, baselineText: string): void {
   activeTrainStreamId = streamId;
@@ -24476,6 +24604,17 @@ function handleSkillTrainFrame(graphId: string, payload: GraphMutationPayload): 
     }
     return;
   }
+  if (graphId.startsWith('__skill_train_status__')) {
+    // Per-operation status text for the global status bar (#status-process).
+    // Generic label only — no skill name / memory content — and the element's
+    // data-pres tag redacts it in Presentation Mode.
+    const label = payload.label;
+    if (typeof label === 'string' && label) {
+      skillTrainStatusLabel = label;
+      renderStatusProcess();
+    }
+    return;
+  }
   if (graphId.startsWith('__skill_train_chunk__')) {
     const streamId = graphId.slice('__skill_train_chunk__'.length);
     if (streamId !== activeTrainStreamId) return; // stale frame from a prior call
@@ -24499,6 +24638,10 @@ function handleSkillTrainFrame(graphId: string, payload: GraphMutationPayload): 
     // The final IPC response will repaint with the canonical result.
     // We just need to stop the live-stream loop.
     endLiveTrainStream();
+    // Clear the status-bar training line so background brain phases (if any)
+    // reclaim it, or it hides.
+    skillTrainStatusLabel = null;
+    renderStatusProcess();
     return;
   }
 }
@@ -24527,15 +24670,26 @@ function renderLiveDiff(): void {
   const diffEl = document.getElementById('skills-review-diff-output');
   const metaEl = document.getElementById('skills-review-diff-meta');
   if (!diffEl) return;
+  // Skip the expensive line-diff + repaint when the panel isn't visible — e.g.
+  // the user switched to the 3D Engram tab to watch the graph fill with memories
+  // live. Running the O(n×m) LCS on the main thread while the diff is hidden
+  // would starve the atlas's render loop (freeze + scatter) for no visible
+  // benefit. It repaints when the tab is shown again (see the g-tab handler),
+  // and the final trained result repaints on completion regardless.
+  if (diffEl.offsetParent === null) return;
   const { html, hunkCount, addedLines, removedLines } = renderLineDiff(activeTrainBaseline, activeTrainBuffer);
   diffEl.classList.add('no-animate'); // streaming = no per-hunk reveal animation; movement comes from new lines arriving
   diffEl.innerHTML = html;
   if (metaEl) metaEl.textContent = `Live — +${addedLines} added · −${removedLines} removed · ${hunkCount} block(s) so far (${activeTrainBuffer.length} chars).`;
   // Auto-scroll the last hunk into view so the user is always looking
-  // at the latest change rather than the static early ones.
+  // at the latest change rather than the static early ones. Instant (not
+  // smooth) during streaming — a smooth scroll restarts an easing animation on
+  // every rerender (~3×/sec), piling continuous main-thread work on top of the
+  // diff recompute. The final, settled diff can animate; the live stream
+  // shouldn't.
   const hunks = diffEl.querySelectorAll<HTMLElement>('.skills-diff-hunk');
   const last = hunks[hunks.length - 1];
-  if (last) last.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  if (last) last.scrollIntoView({ behavior: 'auto', block: 'nearest' });
 }
 
 function showTrainingBanner(): void {
@@ -24782,6 +24936,13 @@ async function runSkillTraining(): Promise<void> {
     if (status) status.textContent = '';
     hideTrainingBanner();
     setTrainingCancelHandler(null);
+    // Safety net: clear the status-bar training line in case the sidecar's
+    // `done` frame never arrived (e.g. trainSkill threw, so the IPC handler
+    // skipped the done broadcast).
+    if (skillTrainStatusLabel !== null) {
+      skillTrainStatusLabel = null;
+      renderStatusProcess();
+    }
   }
 }
 
@@ -24817,6 +24978,11 @@ async function runSkillsFallbackTraining(opts: { silent?: boolean } = {}): Promi
   const btn = document.getElementById('btn-skills-fallback') as HTMLButtonElement | null;
   const trainBtn = document.getElementById('btn-skills-train') as HTMLButtonElement | null;
   if (status && !opts.silent) status.textContent = 'Building context (ungated)…';
+  // Global status-bar line, same per-operation labels as the Pro path so the
+  // free (memory-augmented) flow shows progress too. Generic text; the element
+  // redacts in Presentation Mode.
+  skillTrainStatusLabel = 'Gathering relevant memories…';
+  renderStatusProcess();
   if (btn) btn.disabled = true;
   if (trainBtn && opts.silent) trainBtn.disabled = true;
   // Standalone-invocation case (user clicked "Train without LLM" directly):
@@ -24864,6 +25030,8 @@ async function runSkillsFallbackTraining(opts: { silent?: boolean } = {}): Promi
       return !skillLower.includes(probe);
     });
 
+    skillTrainStatusLabel = 'Synthesizing from your memories…';
+    renderStatusProcess();
     // Each node on its own blank-line-separated paragraph so the diff
     // algorithm treats each as a separate hunk — the user sees individual
     // change blocks they can act on, not one giant +53 green blob.
@@ -24880,6 +25048,8 @@ async function runSkillsFallbackTraining(opts: { silent?: boolean } = {}): Promi
     // persist memory-augmented results via the ungated skill:saveFallback IPC.
     let savedSkillId: string | undefined;
     if (params.save) {
+      skillTrainStatusLabel = 'Saving the trained skill…';
+      renderStatusProcess();
       try {
         const saved = await ipcCall<{ ok: boolean; skillId?: string }>('skill:saveFallback', {
           graphId: params.graphId,
@@ -24924,6 +25094,12 @@ async function runSkillsFallbackTraining(opts: { silent?: boolean } = {}): Promi
     if (trainBtn) trainBtn.disabled = false;
     if (status) status.textContent = '';
     if (!opts.silent) hideTrainingBanner();
+    // Clear the status-bar training line (covers success, error, and the
+    // silent fallback invoked from the Pro path).
+    if (skillTrainStatusLabel !== null) {
+      skillTrainStatusLabel = null;
+      renderStatusProcess();
+    }
   }
 }
 

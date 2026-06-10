@@ -62,10 +62,35 @@ The timeline is tight. Past projects slipped by about two months each.`;
   });
   log('seed-ingest', { nodes: host.listNodes('personal').length });
 
+  // ── Contradiction detection (reflectGraph reuse) ─────────────────────────
+  // Ingest two entity-sharing, opposite-claim notes, then run the SDK
+  // reflection engine through the host facade. Hard assert: the wiring runs
+  // and returns an array (host → adapter → g.reflect()). Soft signal: whether
+  // the detector actually fired on a realistic contradiction (efficacy depends
+  // on the SDK's tight thresholds — logged, not asserted, so a miss documents
+  // the hit-rate rather than failing the build).
+  await host.ingest('personal', 'clip', 'contra:a', {
+    kind: 'markdown',
+    content: 'Stela Munteanu lives in Cluj-Napoca and works as a researcher at the university there. She has been based in Cluj for the last decade.',
+    sourceRef: 'contra:a',
+  });
+  await host.ingest('personal', 'clip', 'contra:b', {
+    kind: 'markdown',
+    content: 'Stela Munteanu does not live in Cluj-Napoca; she never worked at the university. She has always been based in Bucharest at a startup.',
+    sourceRef: 'contra:b',
+  });
+  const contradictions = host.reflectGraph('personal');
+  assert(Array.isArray(contradictions), 'reflectGraph must return an array (host→adapter→reflect wiring)');
+  assert(host.reflectGraph('no-such-graph').length === 0, 'reflectGraph on unknown graph must return []');
+  log('reflect-graph', { detected: contradictions.length, fired: contradictions.length > 0 });
+
   // Construct the brain with NO LLM and a frame-capturing broadcast.
   const frames: RawFrame[] = [];
   const broadcast = (f: RawFrame): void => { frames.push(f); };
   const brain = new BrainEngine(host, null, broadcast);
+
+  // Contradiction review queue getter is wired (empty until a scan runs).
+  assert(Array.isArray(brain.getContradictionPairs()), 'getContradictionPairs must return an array');
 
   // 1 — VitalityScorer returns a 0-100 score. computeVitality() always
   // computes (unlike the UI-facing getVitalityReport(), which withholds a

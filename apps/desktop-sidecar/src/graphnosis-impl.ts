@@ -25,6 +25,7 @@ import type {
   AppendDocumentInput,
   AppendDocumentOptions,
   AppendDocumentResult,
+  ContradictionResult,
   BuildEmbeddingsAdapterOpts,
   QueryResult,
   RichQueryResult,
@@ -195,12 +196,22 @@ export class GraphnosisImpl implements GraphnosisAdapter {
         //     insert with the real text; we never end up with both a
         //     phantom node AND a "couldn't save" failure.
         const inputText = typeof input.content === 'string' ? input.content.trim() : '';
-        const canRewrite = keep.length === 0 && drop.length === 1 && inputText.length > 0;
+        // appendText always produces TWO artifact nodes with content = sourceRef:
+        // one `document` chunk and one `section` chunk, both with identical content.
+        // The original drop.length === 1 condition therefore never fired. Using >= 1
+        // catches the real case (drop.length === 2) and any future SDK variations.
+        const canRewrite = keep.length === 0 && drop.length >= 1 && inputText.length > 0;
 
         if (canRewrite) {
           const id = drop[0]!;
           try {
             h.instance.edit(id, inputText, 'SDK appendText artifact rewritten to real content');
+            // Delete any extra artifact nodes beyond the one we rewrote.
+            // appendText produces document + section (same sourceRef content),
+            // so there are typically 2 entries in drop; keep only the rewritten one.
+            for (const extraId of drop.slice(1)) {
+              try { h.instance.deleteNode(extraId, 'SDK appendText duplicate sourceRef-header artifact'); } catch { /* ignore */ }
+            }
             // The node id stays the same after `edit`; the caller's
             // source.nodeIds gets the live id pointing at the real text.
             newNodeIds = [id];
@@ -209,7 +220,9 @@ export class GraphnosisImpl implements GraphnosisAdapter {
             // through to the delete path; the caller will throw the
             // pre-filter "no node ids" error. Strictly not worse than
             // the world before this fix.
-            try { h.instance.deleteNode(id, 'SDK appendText sourceRef-header artifact'); } catch { /* ignore */ }
+            for (const id of drop) {
+              try { h.instance.deleteNode(id, 'SDK appendText sourceRef-header artifact'); } catch { /* ignore */ }
+            }
             newNodeIds = [];
           }
         } else {
@@ -235,6 +248,31 @@ export class GraphnosisImpl implements GraphnosisAdapter {
     }
 
     return { newNodeIds, newNodes: result.newNodes, contradictions: result.contradictions };
+  }
+
+  /** Full-graph contradiction detection via the SDK's reflection engine.
+   *  Reused by the brain engine's periodic contradiction scan — no
+   *  reimplementation of the entity/TF-IDF logic. Gracefully returns [] when
+   *  the graph isn't built or lacks a TF-IDF index (reflect would no-op). */
+  reflectGraph(handle: GraphHandle): ContradictionResult[] {
+    const h = handle as Internal;
+    if (!h.built) return [];
+    // reflect() reads this.graph.tfidfIndex; if absent, detectContradictions
+    // short-circuits to [] — guard so we never throw on an unbuilt index.
+    const g = h.instance as unknown as { graph?: { tfidfIndex?: unknown }; reflect?: () => { contradictions?: Array<{ nodeA: string; nodeB: string; sharedEntities?: string[]; description?: string; detectedAt?: number }> } };
+    if (!g.graph?.tfidfIndex || typeof g.reflect !== 'function') return [];
+    try {
+      const result = g.reflect();
+      return (result.contradictions ?? []).map((c) => ({
+        nodeA: c.nodeA,
+        nodeB: c.nodeB,
+        sharedEntities: c.sharedEntities ?? [],
+        description: c.description ?? 'Potential contradiction',
+        detectedAt: c.detectedAt ?? Date.now(),
+      }));
+    } catch {
+      return [];
+    }
   }
 
   async query(handle: GraphHandle, query: string, k: number): Promise<QueryResult[]> {

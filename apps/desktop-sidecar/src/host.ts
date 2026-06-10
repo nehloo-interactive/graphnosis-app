@@ -1166,6 +1166,18 @@ export class GraphnosisHost {
   }
 
   /**
+   * Run the SDK reflection engine over one built engram and return the
+   * contradictions it detects (high shared-entity overlap + low content
+   * similarity + a conflict signal). Used by BrainEngine's periodic
+   * contradiction scan. Returns [] for an unknown or unbuilt graph.
+   */
+  reflectGraph(graphId: GraphId): import('./graphnosis-adapter.js').ContradictionResult[] {
+    const g = this.graphs.get(graphId);
+    if (!g) return [];
+    return this.opts.adapter.reflectGraph(g.handle);
+  }
+
+  /**
    * Slightly increase the confidence of a node that was recalled and acted on.
    * This is the reinforcement half of temporal decay — nodes the user finds
    * useful strengthen; nodes that go unrecalled for a long time weaken.
@@ -3771,16 +3783,9 @@ export class GraphnosisHost {
     if (result.newNodeIds.length === 0) {
       throw new Error(`insertNodeAt: SDK returned no node ids for content of ${content.length} chars`);
     }
-    if (result.newNodeIds.length > 1) {
-      // SDK chose to split — accept all chunks; the user sees N cards instead
-      // of 1, and we splice them in sequence at the requested position.
-      // Debug-only — this fires for every node insert that gets chunked,
-      // which is constant during normal skill train/import.
-      dbg(
-        `[host] insertNodeAt: content split into ${result.newNodeIds.length} nodes ` +
-        `(content ${content.length} chars). Cards will appear as separate entries.`,
-      );
-    }
+    // When result.newNodeIds.length > 1 the SDK split the content into N cards;
+    // we splice them all in sequence at the requested position below. (No log —
+    // splitting is normal and fired constantly during skill train/import.)
 
     // Splice the new nodeIds into the source at `position`.
     for (let i = 0; i < result.newNodeIds.length; i++) {
