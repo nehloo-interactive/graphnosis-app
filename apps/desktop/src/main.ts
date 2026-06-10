@@ -18924,12 +18924,18 @@ async function openCopilotModal(): Promise<void> {
   const token = info?.token ?? '';
   const cfgEl = document.getElementById('copilot-vscode-config');
   if (cfgEl) {
-    cfgEl.textContent = token
-      ? JSON.stringify(
-          { servers: { graphnosis: { type: 'http', url: `http://127.0.0.1:${port}/mcp`, headers: { Authorization: `Bearer ${token}` } } } },
-          null, 2,
-        )
-      : 'Unlock the cortex first — the bearer token is generated on unlock.';
+    cfgEl.textContent = JSON.stringify(
+      {
+        servers: {
+          graphnosis: {
+            type: 'http',
+            url: `http://127.0.0.1:${port}/mcp`,
+            headers: { Authorization: `Bearer ${token || '<your-bearer-token>'}` },
+          },
+        },
+      },
+      null, 2,
+    );
   }
   (modal as HTMLElement).dataset['token'] = token;
   modal.classList.remove('hidden');
@@ -18945,7 +18951,7 @@ async function openCopilotModal(): Promise<void> {
   });
   document.getElementById('btn-copilot-open-extension')?.addEventListener('click', () => {
     void invoke('plugin:opener|open_url', {
-      url: 'https://marketplace.visualstudio.com/items?itemName=nehloo-interactive.graphnosis',
+      url: 'vscode:extension/nehloo-interactive.graphnosis',
     });
   });
   document.getElementById('btn-copilot-copy-token')?.addEventListener('click', (e) => {
