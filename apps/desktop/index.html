@@ -13524,13 +13524,17 @@ ollama list</code></pre>
               Copilot calls <code>recall</code> automatically on relevant prompts — no <code>@</code> prefix needed.
               Also adds the <code>@graphnosis</code> participant and a "Save to memory" status bar shortcut.
             </p>
-            <div style="display: flex; gap: 8px; flex-wrap: wrap;">
-              <button class="copy-btn primary" id="btn-copilot-open-extension">Install extension</button>
-              <button class="copy-btn" id="btn-copilot-copy-token">Copy token</button>
-            </div>
-            <p class="subtitle" style="margin: 6px 0 0; font-size: 13px;">
-              After installing: open VS Code Settings → search <code>graphnosis</code> → paste the token into <strong>Bearer Token</strong>.
+            <button class="copy-btn primary" id="btn-copilot-open-extension">Install extension</button>
+            <p class="subtitle" style="margin: 10px 0 4px; font-size: 13px;">
+              After installing, open VS Code Settings → search <code>graphnosis</code> → paste your bearer token into <strong>Bearer Token</strong>:
             </p>
+            <div class="copy-row">
+              <input type="password" id="copilot-token-input" class="copy-field"
+                style="font-family: monospace; font-size: 13px; flex: 1; min-width: 0; background: var(--bg-secondary, var(--bg)); border: 1px solid var(--border); border-radius: 4px; padding: 4px 8px; color: var(--fg);"
+                readonly placeholder="Unlock the cortex to reveal token" />
+              <button class="copy-btn" id="btn-copilot-show-token" disabled>Show</button>
+              <button class="copy-btn" id="btn-copilot-copy-token" disabled>Copy</button>
+            </div>
           </div>
           <!-- Option B: mcp.json -->
           <div class="vscode-option" style="margin-top: 10px;">
@@ -13540,9 +13544,9 @@ ollama list</code></pre>
             <p class="subtitle" style="margin: 4px 0 6px;">
               Adds Graphnosis as an MCP server for manual tool use. Save the snippet below to your VS Code
               user MCP config, then use tools explicitly in Copilot Chat.<br>
-              <span style="user-select:all;">macOS: <code>~/Library/Application Support/Code/User/mcp.json</code></span><br>
-              <span style="user-select:all;">Windows: <code>%APPDATA%\Code\User\mcp.json</code></span><br>
-              <span style="user-select:all;">Linux: <code>~/.config/Code/User/mcp.json</code></span>
+              <span style="user-select:all;">macOS: <code>/Users/[username]/Library/Application Support/Code/User/mcp.json</code></span><br>
+              <span style="user-select:all;">Windows: <code>C:\Users\[username]\AppData\Roaming\Code\User\mcp.json</code></span><br>
+              <span style="user-select:all;">Linux: <code>/home/[username]/.config/Code/User/mcp.json</code></span>
             </p>
             <div class="copy-row">
               <span class="copy-field" id="copilot-vscode-config"
