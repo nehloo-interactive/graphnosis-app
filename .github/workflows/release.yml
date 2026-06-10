@@ -4,6 +4,13 @@ on:
   push:
     tags:
       - 'v*'
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag to build (e.g. v1.14.2)'
+        required: true
 
 jobs:
   build-mac:
@@ -17,6 +24,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
 
       - name: Install pnpm
         uses: pnpm/action-setup@v3
@@ -104,7 +113,11 @@ jobs:
       - name: Derive version and DMG filename
         id: meta
         run: |
-          VERSION=${GITHUB_REF_NAME}
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            VERSION="${{ github.event.inputs.tag }}"
+          else
+            VERSION="${GITHUB_REF_NAME}"
+          fi
           SEMVER=${VERSION#v}
           echo "version=$VERSION" >> $GITHUB_OUTPUT
           echo "semver=$SEMVER" >> $GITHUB_OUTPUT
@@ -144,7 +157,7 @@ jobs:
 
           echo "tar_path=${TAR_DEST}" >> $GITHUB_OUTPUT
 
-      - name: Create GitHub release
+      - name: Create or update GitHub release
         id: release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -160,12 +173,20 @@ jobs:
           echo "Found DMG: $DMG_PATH"
           echo "dmg_filename=$(basename "$DMG_PATH")" >> $GITHUB_OUTPUT
 
-          gh release create "$VERSION" \
-            "$DMG_PATH#Graphnosis ${VERSION} (macOS Apple Silicon)" \
-            "$TAR_PATH#Graphnosis ${VERSION} — Auto-Update bundle" \
-            "latest.json" \
-            --title "Graphnosis ${VERSION}" \
-            --generate-notes
+          if gh release view "$VERSION" > /dev/null 2>&1; then
+            gh release upload "$VERSION" \
+              "$DMG_PATH#Graphnosis ${VERSION} (macOS Apple Silicon)" \
+              "$TAR_PATH#Graphnosis ${VERSION} — Auto-Update bundle" \
+              "latest.json" \
+              --clobber
+          else
+            gh release create "$VERSION" \
+              "$DMG_PATH#Graphnosis ${VERSION} (macOS Apple Silicon)" \
+              "$TAR_PATH#Graphnosis ${VERSION} — Auto-Update bundle" \
+              "latest.json" \
+              --title "Graphnosis ${VERSION}" \
+              --generate-notes
+          fi
 
       - name: Clean up keychain
         if: always()
@@ -182,6 +203,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
 
       - name: Install pnpm
         uses: pnpm/action-setup@v3
@@ -314,6 +337,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
 
       # Tauri v2 Linux build dependencies (webkit2gtk 4.1) + patchelf for the
       # AppImage. Built on 22.04 (not latest) for the widest glibc compatibility
