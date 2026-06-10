@@ -2369,7 +2369,8 @@ async fn open_external_url(app: AppHandle, url: String) -> Result<(), String> {
     let lower = url.trim().to_ascii_lowercase();
     let allowed = lower.starts_with("https://")
         || lower.starts_with("http://")
-        || lower.starts_with("mailto:");
+        || lower.starts_with("mailto:")
+        || lower.starts_with("vscode:");
     if !allowed {
         return Err("refusing to open url: only http(s) and mailto are allowed".to_string());
     }
