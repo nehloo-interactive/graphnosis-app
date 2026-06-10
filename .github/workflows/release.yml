@@ -173,24 +173,24 @@ jobs:
           echo "Found DMG: $DMG_PATH"
           echo "dmg_filename=$(basename "$DMG_PATH")" >> $GITHUB_OUTPUT
 
-          if gh release view "$VERSION" > /dev/null 2>&1; then
+          if CREATE_OUT=$(gh release create "$VERSION" \
+              "$DMG_PATH#Graphnosis ${VERSION} (macOS Apple Silicon)" \
+              "latest.json" \
+              --title "Graphnosis ${VERSION}" \
+              --generate-notes 2>&1); then
+            echo "Release created."
+          elif echo "$CREATE_OUT" | grep -qi "already exists"; then
+            echo "Release already exists — uploading artifacts."
             gh release upload "$VERSION" \
               "$DMG_PATH#Graphnosis ${VERSION} (macOS Apple Silicon)" \
               "latest.json" \
               --clobber
-            gh release upload "$VERSION" \
-              "$TAR_PATH#Graphnosis ${VERSION} — Auto-Update bundle" \
-              --clobber || echo "::warning::Auto-update bundle upload failed — DMG and latest.json are present; re-upload the .app.tar.gz manually if needed."
           else
-            gh release create "$VERSION" \
-              "$DMG_PATH#Graphnosis ${VERSION} (macOS Apple Silicon)" \
-              "latest.json" \
-              --title "Graphnosis ${VERSION}" \
-              --generate-notes
-            gh release upload "$VERSION" \
-              "$TAR_PATH#Graphnosis ${VERSION} — Auto-Update bundle" \
-              --clobber || echo "::warning::Auto-update bundle upload failed — re-upload the .app.tar.gz manually if needed."
+            echo "$CREATE_OUT" >&2 && exit 1
           fi
+          gh release upload "$VERSION" \
+            "$TAR_PATH#Graphnosis ${VERSION} — Auto-Update bundle" \
+            --clobber || echo "::warning::Auto-update bundle upload failed — re-upload the .app.tar.gz manually if needed."
 
       - name: Clean up keychain
         if: always()
