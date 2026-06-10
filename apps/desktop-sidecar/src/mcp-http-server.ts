@@ -115,6 +115,30 @@ export async function startHttpMcpServer(opts: HttpBridgeOptions): Promise<http.
   }, 10 * 60 * 1000).unref();
 
   const server = http.createServer(async (req, res) => {
+    const urlPath = req.url?.split('?')[0] ?? '';
+
+    // ── Pre-auth: OAuth discovery + CORS preflight ────────────────────────────
+    // VS Code's MCP client probes /.well-known/oauth-authorization-server before
+    // applying configured headers. A 401 on that probe triggers its OAuth UI.
+    // Return 404 here (no auth required) so VS Code knows there is no OAuth
+    // server and falls through to using its configured static bearer headers.
+    if (urlPath === '/.well-known/oauth-authorization-server' ||
+        urlPath === '/.well-known/openid-configuration') {
+      res.writeHead(404);
+      res.end('Not Found');
+      return;
+    }
+
+    // OPTIONS preflight must bypass auth so browsers and VS Code can probe CORS
+    // without credentials.
+    if (req.method === 'OPTIONS') {
+      const preflightOrigin = req.headers['origin'] as string | undefined;
+      if (preflightOrigin) setCorsHeaders(res, preflightOrigin);
+      res.writeHead(204);
+      res.end();
+      return;
+    }
+
     // ── Auth ─────────────────────────────────────────────────────────────────
     const authHeader = (req.headers['authorization'] as string | undefined) ?? '';
     const expectedToken = typeof opts.token === 'function' ? opts.token() : opts.token;
@@ -136,14 +160,7 @@ export async function startHttpMcpServer(opts: HttpBridgeOptions): Promise<http.
       setCorsHeaders(res, origin);
     }
 
-    if (req.method === 'OPTIONS') {
-      res.writeHead(204);
-      res.end();
-      return;
-    }
-
     // ── Route ─────────────────────────────────────────────────────────────────
-    const urlPath = req.url?.split('?')[0];
     if (urlPath !== '/mcp' && urlPath !== '/') {
       res.writeHead(404);
       res.end('Not Found');

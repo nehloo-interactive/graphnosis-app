@@ -11,6 +11,17 @@ Conventions: **Added** = new features, **Changed** = behavior or UX shifts, **Fi
 
 ---
 
+## v1.14.5 — Fix VS Code MCP OAuth redirect loop
+
+<p style="margin-top:0.5rem;font-size:1.25em;opacity:0.85;">2026-06-10</p>
+
+### Fixed
+
+- **VS Code no longer triggers an OAuth flow when connecting.** Recent VS Code versions probe `/.well-known/oauth-authorization-server` before applying configured bearer headers. Because that probe arrived without auth, the local MCP bridge returned 401 + `WWW-Authenticate: Bearer`, which VS Code interpreted as "OAuth required" and opened its OAuth UI instead of using the static token. The server now responds 404 to both `/.well-known/oauth-authorization-server` and `/.well-known/openid-configuration` before any auth check, signalling that no OAuth server is present. VS Code falls through to its configured `Authorization: Bearer` header and connects normally.
+- **CORS preflight (OPTIONS) no longer requires auth.** OPTIONS requests are now handled before the auth gate, which also unblocks browser-based MCP clients that send a preflight before adding credentials.
+
+---
+
 ## v1.14.4 — VS Code bearer token fix & MCP config open
 
 <p style="margin-top:0.5rem;font-size:1.25em;opacity:0.85;">2026-06-10</p>
