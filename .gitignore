@@ -15,6 +15,11 @@ sandbox/
 .env.*
 !.env.example
 
+# Per-project personal overrides + the generated Graphnosis skills routing hook
+# (dispatch-export-sync writes the skill-dispatch table here). Local only —
+# the personal skill library never enters a commit; only the tracked CLAUDE.md ships.
+CLAUDE.local.md
+
 
 # App user data (must never be committed)
 *.gai
