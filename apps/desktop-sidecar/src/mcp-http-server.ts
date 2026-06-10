@@ -27,6 +27,10 @@ interface PendingCode {
   redirectUri: string;
 }
 
+interface PendingDeviceCode {
+  expiresAt: number;
+}
+
 // Sessions idle for more than 2 hours are pruned to prevent memory leaks
 // from abandoned mobile connections (app backgrounded, network change, etc.).
 const SESSION_TTL_MS = 2 * 60 * 60 * 1000;
@@ -124,6 +128,11 @@ export async function startHttpMcpServer(opts: HttpBridgeOptions): Promise<http.
   // Each entry is created by GET /oauth/authorize and consumed by POST /oauth/token.
   const pendingCodes = new Map<string, PendingCode>();
 
+  // Short-lived device codes for the OAuth Device Authorization Grant (RFC 8628).
+  // Used by CLI clients (gh copilot, etc.) that cannot complete a browser redirect.
+  // Auto-approved on creation since this is a loopback server.
+  const pendingDeviceCodes = new Map<string, PendingDeviceCode>();
+
   // Prune stale sessions and codes periodically.
   const pruneInterval = setInterval(() => {
     const now = Date.now();
@@ -138,6 +147,9 @@ export async function startHttpMcpServer(opts: HttpBridgeOptions): Promise<http.
     }
     for (const [code, pending] of pendingCodes) {
       if (pending.expiresAt < now) pendingCodes.delete(code);
+    }
+    for (const [code, pending] of pendingDeviceCodes) {
+      if (pending.expiresAt < now) pendingDeviceCodes.delete(code);
     }
   }, 10 * 60 * 1000).unref();
 
@@ -170,8 +182,12 @@ export async function startHttpMcpServer(opts: HttpBridgeOptions): Promise<http.
         authorization_endpoint: `${base}/oauth/authorize`,
         token_endpoint: `${base}/oauth/token`,
         registration_endpoint: `${base}/oauth/register`,
+        device_authorization_endpoint: `${base}/oauth/device/code`,
         response_types_supported: ['code'],
-        grant_types_supported: ['authorization_code'],
+        grant_types_supported: [
+          'authorization_code',
+          'urn:ietf:params:oauth:grant-type:device_code',
+        ],
         code_challenge_methods_supported: ['S256', 'plain'],
         token_endpoint_auth_methods_supported: ['none'],
       }));
@@ -188,6 +204,24 @@ export async function startHttpMcpServer(opts: HttpBridgeOptions): Promise<http.
         token_endpoint_auth_method: 'none',
         grant_types: ['authorization_code'],
         response_types: ['code'],
+      }));
+      return;
+    }
+
+    // ── OAuth: device authorization endpoint (RFC 8628) ──────────────────────
+    // For CLI clients (gh copilot, etc.) that cannot open a browser redirect.
+    // Auto-approves immediately since this is a loopback server — the CLI gets
+    // its token on the first poll without any user interaction.
+    if (urlPath === '/oauth/device/code' && req.method === 'POST') {
+      const deviceCode = randomUUID();
+      pendingDeviceCodes.set(deviceCode, { expiresAt: Date.now() + 5 * 60 * 1000 });
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        device_code: deviceCode,
+        user_code: 'GRAPHNOSIS',
+        verification_uri: `${base}/oauth/activate`,
+        expires_in: 300,
+        interval: 1,
       }));
       return;
     }
@@ -225,7 +259,26 @@ export async function startHttpMcpServer(opts: HttpBridgeOptions): Promise<http.
         res.end(JSON.stringify({ error: 'invalid_request' }));
         return;
       }
-      if (body.get('grant_type') !== 'authorization_code') {
+      const grantType = body.get('grant_type');
+
+      // Device Authorization Grant (RFC 8628) — for CLI clients.
+      if (grantType === 'urn:ietf:params:oauth:grant-type:device_code') {
+        const deviceCode = body.get('device_code') ?? '';
+        const pending = pendingDeviceCodes.get(deviceCode);
+        if (!pending || pending.expiresAt < Date.now()) {
+          pendingDeviceCodes.delete(deviceCode);
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'expired_token' }));
+          return;
+        }
+        pendingDeviceCodes.delete(deviceCode);
+        const token = typeof opts.token === 'function' ? opts.token() : opts.token;
+        res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+        res.end(JSON.stringify({ access_token: token, token_type: 'bearer', expires_in: 86400 }));
+        return;
+      }
+
+      if (grantType !== 'authorization_code') {
         res.writeHead(400, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: 'unsupported_grant_type' }));
         return;
