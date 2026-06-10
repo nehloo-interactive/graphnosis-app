@@ -2216,6 +2216,17 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
       return deps.brainEngine.getDuplicatePairs();
     }
 
+    case 'brain:getContradictionPairs': {
+      if (!deps.brainEngine) return [];
+      return deps.brainEngine.getContradictionPairs();
+    }
+
+    case 'brain:dismissContradictionPair': {
+      const { id } = z.object({ id: z.string() }).parse(params);
+      deps.brainEngine?.dismissContradictionPair(id);
+      return { ok: true };
+    }
+
     case 'brain:getHealingJournal': {
       if (!deps.brainEngine) return [];
       return deps.brainEngine.getHealingJournal();
@@ -3398,6 +3409,21 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
           },
         });
       };
+      // Per-operation status text for the desktop status bar. The label is
+      // generic and carries no sensitive data (no skill/engram name, no memory
+      // content), so it's safe to broadcast and safe in Presentation Mode; the
+      // desktop adds the skill name itself and redacts that locally.
+      const onStatus = (label: string): void => {
+        deps.broadcastRaw({
+          kind: 'event',
+          name: 'graph.mutation',
+          payload: {
+            graphId: `__skill_train_status__${streamId}`,
+            ts: Date.now(),
+            label,
+          },
+        });
+      };
       const result = await deps.skillTrainer.trainSkill({
         skill: args.skill,
         graphId: args.graphId,
@@ -3414,6 +3440,7 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
         ...(args.goals !== undefined ? { goals: args.goals as import('./gsk-format.js').SkillGoals } : {}),
         ...(args.useLlmRewrite !== undefined ? { useLlmRewrite: args.useLlmRewrite } : {}),
         onChunk,
+        onStatus,
       });
       // Final "done" frame — the desktop uses this to finalize the diff
       // view and clean up any in-flight state.

@@ -61,6 +61,21 @@ export interface DuplicatePair {
   detectedAt: number;
 }
 
+/** A contradiction the periodic scan surfaced for review — two nodes that
+ *  share entities but assert conflicting content. Mirrors DuplicatePair so the
+ *  Check-in deck and the `contradiction_pairs` MCP tool render it the same way. */
+export interface ContradictionPair {
+  id: string;
+  graphId: string;
+  nodeA: string;
+  nodeB: string;
+  snippetA: string;
+  snippetB: string;
+  sharedEntities: string[];
+  description: string;
+  detectedAt: number;
+}
+
 export interface Insight {
   id: string;
   graphId: string;
@@ -349,6 +364,7 @@ Rules:
 // ── BrainEngine ──────────────────────────────────────────────────────────────
 
 const DUPLICATE_SCAN_INTERVAL_MS = 20 * 60 * 1000;   // 20 min
+const CONTRADICTION_SCAN_INTERVAL_MS = 6 * 60 * 60 * 1000; // 6h — heavier, less urgent than dup scan
 const SYNAPSE_INTERVAL_MS       = 45 * 60 * 1000;   // 45 min
 const INSIGHT_INTERVAL_MS       =  6 * 60 * 60 * 1000; // 6 h (healthy cadence)
 const INSIGHT_RETRY_AFTER_FAILURE_MS = 60 * 60 * 1000; // 1 h (transient-failure retry)
@@ -442,6 +458,13 @@ export class BrainEngine {
   // partial-overlap pairs the brain could NOT safely auto-heal. Surfaced
   // in the Check-in deck, not the Autonomous Brain tab.
   private duplicatePairs: DuplicatePair[] = [];
+  // The contradiction review queue — pairs the SDK reflection engine flagged as
+  // conflicting (shared entities, low content similarity). Surfaced via the
+  // contradiction_pairs MCP tool and the Check-in deck.
+  private contradictionPairs: ContradictionPair[] = [];
+  private contradictionScanTimer: NodeJS.Timeout | null = null;
+  private contradictionScanRunning = false;
+  private contradictionScanCursor = 0;
   private insights: Insight[] = [];
   /** Flips true once loadInsights() resolves so runInsight() knows the
    *  in-memory list is ready to merge into (not overwrite). */
@@ -580,6 +603,11 @@ export class BrainEngine {
       DUPLICATE_SCAN_INTERVAL_MS,
     ).unref();
 
+    this.contradictionScanTimer = setInterval(
+      () => { void this.runContradictionScan(); },
+      CONTRADICTION_SCAN_INTERVAL_MS,
+    ).unref();
+
     this.synapseTimer = setInterval(
       () => { if (this.brainPassesPaused()) return; void this.runSynapse(); },
       SYNAPSE_INTERVAL_MS,
@@ -667,10 +695,11 @@ export class BrainEngine {
     this.warmupTimer = null;
     if (this.ingestScanTimer) clearTimeout(this.ingestScanTimer);
     this.ingestScanTimer = null;
-    for (const t of [this.duplicateScanTimer, this.synapseTimer, this.insightTimer, this.temporalTimer, this.goalTimer, this.reinforceTimer, this.consolidationTimer, this.crossEngramTimer, this.gnnTimer, this.edgePredictionTimer]) {
+    for (const t of [this.duplicateScanTimer, this.contradictionScanTimer, this.synapseTimer, this.insightTimer, this.temporalTimer, this.goalTimer, this.reinforceTimer, this.consolidationTimer, this.crossEngramTimer, this.gnnTimer, this.edgePredictionTimer]) {
       if (t) clearInterval(t);
     }
     this.duplicateScanTimer = null;
+    this.contradictionScanTimer = null;
     this.synapseTimer = null;
     this.insightTimer = null;
     this.edgePredictionTimer = null;
@@ -768,6 +797,99 @@ export class BrainEngine {
 
   getDuplicatePairs(): DuplicatePair[] {
     return this.duplicatePairs;
+  }
+
+  getContradictionPairs(): ContradictionPair[] {
+    return this.contradictionPairs;
+  }
+
+  dismissContradictionPair(id: string): void {
+    this.contradictionPairs = this.contradictionPairs.filter(c => c.id !== id);
+  }
+
+  /**
+   * Periodic full-cortex contradiction scan. Reuses the SDK reflection engine
+   * (host.reflectGraph → g.reflect()) — no reimplementation of the entity/
+   * TF-IDF logic. Round-robins a bounded slice of engrams per run because
+   * reflect() is full-graph and CPU-bearing; the 6h interval + client
+   * backpressure keep it off the hot path. Surfaces NEW conflicting pairs into
+   * the contradiction review queue (read by the contradiction_pairs MCP tool).
+   */
+  private async runContradictionScan(): Promise<void> {
+    if (this.contradictionScanRunning) return;
+    if (clientActiveWithin(CLIENT_QUIET_MS) || this.brainPassesPaused()) {
+      setTimeout(() => { void this.runContradictionScan(); }, CLIENT_QUIET_MS).unref();
+      return;
+    }
+    this.contradictionScanRunning = true;
+    this.emitActivity('contradiction-scan', 'start');
+    const now = Date.now();
+    const yieldToLoop = (): Promise<void> => new Promise<void>((resolve) => setImmediate(resolve));
+    try {
+      const graphs = this.host.listGraphs();
+      if (graphs.length === 0) return;
+      // Round-robin a bounded slice per run so a large cortex never reflects
+      // every engram in one pass.
+      const SLICE = 3;
+      const start = this.contradictionScanCursor % graphs.length;
+      const slice: string[] = [];
+      for (let i = 0; i < Math.min(SLICE, graphs.length); i++) {
+        slice.push(graphs[(start + i) % graphs.length]!);
+      }
+      this.contradictionScanCursor = (start + SLICE) % graphs.length;
+
+      const keyOf = (gid: string, x: string, y: string): string =>
+        x < y ? `${gid}|${x}|${y}` : `${gid}|${y}|${x}`;
+      const known = new Set(this.contradictionPairs.map(c => keyOf(c.graphId, c.nodeA, c.nodeB)));
+      const found: ContradictionPair[] = [];
+
+      for (const graphId of slice) {
+        try {
+          const results = this.host.reflectGraph(graphId);
+          if (results.length) {
+            const nodeById = new Map(this.host.listNodes(graphId).map(n => [n.id, n]));
+            for (const c of results) {
+              const key = keyOf(graphId, c.nodeA, c.nodeB);
+              if (known.has(key)) continue;
+              const a = nodeById.get(c.nodeA);
+              const b = nodeById.get(c.nodeB);
+              // Skip if either node was since superseded / soft-deleted.
+              if (!a || !b) continue;
+              if (a.confidence <= 0.2 || b.confidence <= 0.2) continue;
+              if ((a.validUntil !== undefined && a.validUntil <= now) ||
+                  (b.validUntil !== undefined && b.validUntil <= now)) continue;
+              known.add(key);
+              found.push({
+                id: randomUUID(),
+                graphId,
+                nodeA: c.nodeA,
+                nodeB: c.nodeB,
+                snippetA: cleanSnippet(a.contentPreview).slice(0, 140),
+                snippetB: cleanSnippet(b.contentPreview).slice(0, 140),
+                sharedEntities: c.sharedEntities,
+                description: c.description,
+                detectedAt: now,
+              });
+            }
+          }
+        } catch (e) {
+          // One engram failing must not abort the batch.
+          console.error(`[brain] contradiction scan failed for ${redactId(graphId)}: ${(e as Error).message}`);
+        }
+        await yieldToLoop();
+      }
+
+      if (found.length) {
+        this.contradictionPairs.push(...found);
+        // Bound the queue — newest wins.
+        if (this.contradictionPairs.length > 200) {
+          this.contradictionPairs = this.contradictionPairs.slice(-200);
+        }
+      }
+    } finally {
+      this.contradictionScanRunning = false;
+      this.emitActivity('contradiction-scan', 'done');
+    }
   }
 
   /** The autonomous-healing audit log — every safe auto-merge the brain

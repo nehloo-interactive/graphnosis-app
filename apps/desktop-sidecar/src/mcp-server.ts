@@ -297,6 +297,9 @@ const GetEngramSchemaInput = z.object({
 const DuplicatePairsInput = z.object({
   limit: z.coerce.number().int().positive().max(50).optional(),
 });
+const ContradictionPairsInput = z.object({
+  limit: z.coerce.number().int().positive().max(50).optional(),
+});
 const HealingJournalInput = z.object({
   limit: z.coerce.number().int().positive().max(50).optional(),
 });
@@ -2196,6 +2199,20 @@ export function createMcpServer(deps: McpDeps): Server {
         },
       },
       {
+        name: 'contradiction_pairs',
+        description: 'DETERMINISM — Deterministic: reads the brain engine\'s already-computed queue; no LLM.\n\nReturn CONTRADICTING node pairs the brain engine\'s periodic reflection scan has flagged — two memories that share entities but assert conflicting content (e.g. "X lives in Cluj" vs "X lives in Bucharest"). Distinct from duplicate_pairs (those are near-IDENTICAL; these are near-OPPOSITE). Use in a memory-hygiene or consistency-audit workflow, or when the user asks "is anything in my memory contradictory?". To resolve: call edit to supersede the outdated side — never add a third conflicting note. Requires the brain engine running (Graphnosis app open).',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            limit: { type: 'number', description: 'Max pairs to return. Default 20.' },
+          },
+        },
+        annotations: {
+          title: 'Contradiction pairs',
+          readOnlyHint: true,
+        },
+      },
+      {
         name: 'healing_journal',
         description: 'DETERMINISM — Deterministic: reads a fixed audit log; no LLM.\n\nReturn the audit log of autonomous corrections the brain engine applied in the background — merges, confidence adjustments, and edge repairs the system made without explicit user prompting. Use when the user asks "what has my brain fixed on its own?" or to verify that a scheduled consolidation ran. Requires the brain engine to be running.',
         inputSchema: {
@@ -3595,6 +3612,7 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
         const args = IngestBatchInput.parse(req.params.arguments ?? {});
         const mcpClientName = mcpRegistry.getMostRecentClientName();
         const results: Array<{ index: number; status: 'ok' | 'error'; detail: string }> = [];
+        const totalContradictions: unknown[] = [];
         for (const [i, item] of args.items.entries()) {
           try {
             const knownGraphs = deps.host.listGraphs();
@@ -3617,14 +3635,30 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
                 triggeredBy: 'mcp:remember',
               })
             );
-            results.push({ index: i, status: 'ok', detail: `Saved as ${(rec as any).sourceId} in ${graphId}` });
+            const nContra = (rec as any).contradictions?.length ?? 0;
+            results.push({
+              index: i,
+              status: 'ok',
+              detail: `Saved as ${(rec as any).sourceId} in ${graphId}`
+                + (nContra > 0 ? ` ⚠️ ${nContra} contradiction(s) with existing memory` : ''),
+            });
+            if (nContra > 0) totalContradictions.push(...(rec as any).contradictions);
           } catch (err) {
             results.push({ index: i, status: 'error', detail: (err as Error).message });
           }
         }
         const ok = results.filter(r => r.status === 'ok').length;
-        const summary = `Ingested ${ok} of ${args.items.length} item(s).\n\n` +
+        let summary = `Ingested ${ok} of ${args.items.length} item(s).\n\n` +
           results.map(r => `[${r.index}] ${r.status}: ${r.detail}`).join('\n');
+        // Surface contradictions the SDK detected on ingest — previously this
+        // batch path computed them but silently dropped them (only `remember`
+        // surfaced them). Now consistent with `remember`.
+        if (totalContradictions.length > 0) {
+          summary += `\n\n⚠️ Detected ${totalContradictions.length} contradiction(s) with existing memory across this batch. `
+            + `Review and resolve via \`edit\` (supersede the outdated side) — do NOT add a third conflicting note. `
+            + `Run \`contradiction_pairs\` to see the full review queue.\n`
+            + `Contradictions: ${JSON.stringify(totalContradictions)}`;
+        }
         return { content: [{ type: 'text', text: summary }] };
       }
       // ── Memory health ─────────────────────────────────────────────────────
@@ -3751,6 +3785,39 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
         return { content: [{ type: 'text', text:
           `${pairs.length} duplicate pair(s) awaiting review:\n\n${rows}\n\n` +
           `To resolve: call edit to merge, or forget(nodeIds=[nodeId]) to remove one side.`
+        }] };
+      }
+      case 'contradiction_pairs': {
+        if (!deps.brainEngine) {
+          return mcpError('Brain engine is not available. Open the Graphnosis app to enable it.');
+        }
+        {
+          const licenseToken = await deps.host.getLicenseToken();
+          const licensed = deps.licenseValidator?.hasFeature(licenseToken, 'foresight') ?? false;
+          if (!licensed) {
+            return mcpError(
+              'contradiction_pairs requires a Graphnosis Pro subscription. ' +
+              'Subscribe at https://graphnosis.com/upgrade.',
+            );
+          }
+        }
+        const args = ContradictionPairsInput.parse(req.params.arguments ?? {});
+        const getter = (deps.brainEngine as any).getContradictionPairs?.bind(deps.brainEngine);
+        const pairs = (getter ? getter() : []).slice(0, args.limit ?? 20);
+        if (!pairs.length) {
+          return { content: [{ type: 'text', text: 'No contradictions queued for review. (The reflection scan runs every 6h and on a built cortex; if you just ingested, give it a pass.)' }] };
+        }
+        const rows = pairs.map((p: any) =>
+          `• [${p.id}] ${p.description ?? 'Potential contradiction'} (${p.graphId})\n` +
+          `  A [${p.nodeA}]: "${(p.snippetA ?? '').toString().slice(0, 100)}"\n` +
+          `  B [${p.nodeB}]: "${(p.snippetB ?? '').toString().slice(0, 100)}"\n` +
+          `  shared: ${(p.sharedEntities ?? []).join(', ')}`
+        ).join('\n\n');
+        return { content: [{ type: 'text', text:
+          `${pairs.length} contradiction(s) awaiting review:\n\n${rows}\n\n` +
+          `To resolve: call edit to supersede the OUTDATED side (newer attested wins) — ` +
+          `do NOT add a third conflicting note. If both are still true, they may be context-dependent; ` +
+          `surface to the user to adjudicate.`
         }] };
       }
       case 'healing_journal': {

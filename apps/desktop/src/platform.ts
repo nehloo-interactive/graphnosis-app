@@ -191,6 +191,8 @@ const CMD: Record<string, string> = {
   brain_get_vitality:          'brain:getVitality',
   brain_get_insights:          'brain:getInsights',
   brain_get_duplicate_pairs:   'brain:getDuplicatePairs',
+  brain_get_contradiction_pairs: 'brain:getContradictionPairs',
+  brain_dismiss_contradiction: 'brain:dismissContradictionPair',
   brain_dismiss_insight:       'brain:dismissInsight',
   brain_dismiss_duplicate:     'brain:dismissDuplicatePair',
   brain_resolve_duplicate:     'brain:resolveDuplicatePair',
