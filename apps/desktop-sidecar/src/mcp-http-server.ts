@@ -27,7 +27,7 @@ interface Session {
 const SESSION_TTL_MS = 2 * 60 * 60 * 1000;
 
 function rejectUnauthorized(res: http.ServerResponse): void {
-  res.writeHead(401, { 'WWW-Authenticate': 'Bearer realm="graphnosis"' });
+  res.writeHead(401);
   res.end('Unauthorized');
 }
 
@@ -123,7 +123,8 @@ export async function startHttpMcpServer(opts: HttpBridgeOptions): Promise<http.
     // Return 404 here (no auth required) so VS Code knows there is no OAuth
     // server and falls through to using its configured static bearer headers.
     if (urlPath === '/.well-known/oauth-authorization-server' ||
-        urlPath === '/.well-known/openid-configuration') {
+        urlPath === '/.well-known/openid-configuration' ||
+        urlPath === '/.well-known/oauth-protected-resource') {
       res.writeHead(404);
       res.end('Not Found');
       return;
