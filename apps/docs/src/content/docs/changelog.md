@@ -11,6 +11,16 @@ Conventions: **Added** = new features, **Changed** = behavior or UX shifts, **Fi
 
 ---
 
+## v1.14.6 — Further VS Code OAuth suppression
+
+<p style="margin-top:0.5rem;font-size:1.25em;opacity:0.85;">2026-06-10</p>
+
+### Fixed
+
+- **VS Code OAuth flow no longer triggers (follow-up to v1.14.5).** Two additional changes: (1) `/.well-known/oauth-protected-resource` (RFC 9728) is now handled before the auth gate alongside the other discovery endpoints — VS Code checks this before `oauth-authorization-server`. (2) The 401 response no longer includes a `WWW-Authenticate: Bearer` header — that header is the specific signal VS Code's MCP client uses to start its OAuth UI, and removing it causes VS Code to treat the failure as a plain auth error and fall through to using the static bearer headers configured in `mcp.json`.
+
+---
+
 ## v1.14.5 — Fix VS Code MCP OAuth redirect loop
 
 <p style="margin-top:0.5rem;font-size:1.25em;opacity:0.85;">2026-06-10</p>
