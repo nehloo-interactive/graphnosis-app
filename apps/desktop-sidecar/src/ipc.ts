@@ -248,7 +248,9 @@ async function detectTailscaleServe(uiPort: number, mcpPort: number): Promise<Ta
 
 export async function startIpc(deps: IpcDeps): Promise<net.Server> {
   if (!isTcpAddress(deps.socketPath)) {
-    await fs.mkdir(path.dirname(deps.socketPath), { recursive: true });
+    // 0o700 dir: the IPC socket dispatches privileged methods (passphrase
+    // change, purge, node edit/delete). Keep the directory owner-only.
+    await fs.mkdir(path.dirname(deps.socketPath), { recursive: true, mode: 0o700 });
     await fs.rm(deps.socketPath, { force: true });
   }
 
@@ -310,7 +312,13 @@ export async function startIpc(deps: IpcDeps): Promise<net.Server> {
       const port = parseInt(deps.socketPath.slice(colonIdx + 1), 10);
       server.listen(port, host, () => resolve(server));
     } else {
-      server.listen(deps.socketPath, () => resolve(server));
+      server.listen(deps.socketPath, () => {
+        // Restrict the Unix socket to the owner (listen() uses the umask).
+        fs.chmod(deps.socketPath, 0o600).catch((err) => {
+          console.error(`[graphnosis-sidecar] could not chmod IPC socket: ${(err as Error).message}`);
+        });
+        resolve(server);
+      });
     }
   });
 }

@@ -78,7 +78,9 @@ export class EmbeddingCache {
       out.set(new Uint8Array(v.buffer, v.byteOffset, v.byteLength), off); off += v.length * 4; // bulk (LE, local)
     }
     const ct = await encrypt(new Uint8Array(out), this.opts.key, this.opts.salt);
-    await fs.writeFile(this.opts.path, Buffer.from(ct));
+    // 0o600: the embedding cache is encrypted, but restrict it anyway so other
+    // local users can't copy it for offline analysis.
+    await fs.writeFile(this.opts.path, Buffer.from(ct), { mode: 0o600 });
     this.dirty = false;
   }
 

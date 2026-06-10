@@ -21,10 +21,22 @@ export type ConsentChoice =
   | { action: 'deny' }                        // user clicked Deny
   | { action: 'timeout' };                    // no frontend responded in time
 
+/** A single engram the AI is asking to read, with its tier and display name. */
+export interface ConsentEngram {
+  graphId: string;
+  name: string;
+  tier: 'personal' | 'sensitive';
+}
+
 export interface PendingPrompt {
   promptId: string;
   clientName: string;
+  /** Tiers involved — derived from `engrams`, kept for back-compat with the
+   *  existing modal/dedup code. */
   tiers: Array<'personal' | 'sensitive'>;
+  /** The specific engrams whose access is being requested (per-engram consent,
+   *  #14). `confirm_data_access` scopes the grant to exactly these. */
+  engrams: ConsentEngram[];
   createdAt: number;
 }
 
@@ -44,11 +56,12 @@ const pending = new Map<string, PromptSlot>();
  */
 export function registerPrompt(
   clientName: string,
-  tiers: Array<'personal' | 'sensitive'>,
+  engrams: ConsentEngram[],
   timeoutMs = 60_000,
 ): { meta: PendingPrompt; choice: Promise<ConsentChoice> } {
   const promptId = `cp_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
-  const meta: PendingPrompt = { promptId, clientName, tiers, createdAt: Date.now() };
+  const tiers = [...new Set(engrams.map((e) => e.tier))];
+  const meta: PendingPrompt = { promptId, clientName, tiers, engrams, createdAt: Date.now() };
   const choice = new Promise<ConsentChoice>((resolve) => {
     const timer = setTimeout(() => {
       if (pending.delete(promptId)) resolve({ action: 'timeout' });
@@ -79,4 +92,23 @@ export function resolvePrompt(promptId: string, choice: ConsentChoice): boolean 
 /** Used by `consent.listPendingPrompts` for the frontend to re-sync after a reconnect. */
 export function listPendingPrompts(): PendingPrompt[] {
   return [...pending.values()].map((s) => s.meta);
+}
+
+// ── Last-gated request tracking (per-engram consent, #14) ────────────────────
+// The headless phrase flow (`confirm_data_access`) only receives `phrase` +
+// `tier` — not which engram triggered the gate. We remember the engram ids the
+// consent gate last blocked for each (client, tier) so the grant can be scoped
+// to exactly those, instead of unlocking every engram of the tier.
+const lastGated = new Map<string, { graphIds: string[]; at: number }>();
+const GATED_TTL_MS = 10 * 60_000;
+
+export function recordGatedRequest(clientName: string, tier: string, graphIds: string[]): void {
+  if (graphIds.length === 0) return;
+  lastGated.set(`${clientName}:${tier}`, { graphIds: [...graphIds], at: Date.now() });
+}
+
+export function getGatedRequest(clientName: string, tier: string): string[] {
+  const e = lastGated.get(`${clientName}:${tier}`);
+  if (!e || Date.now() - e.at > GATED_TTL_MS) return [];
+  return e.graphIds;
 }

@@ -22,16 +22,21 @@ const { filePath } = workerData as { filePath: string };
 // per tick here because the main thread never blocks.
 const BATCH_SIZE = 50;
 
+// Hard cap on pages extracted — a crafted PDF can't make the worker loop
+// unbounded. Mirrors the inline path's MAX_PDF_PAGES and the SDK's default.
+const MAX_PDF_PAGES = 2000;
+
 async function run(): Promise<void> {
   const { getDocumentProxy } = await import('unpdf');
   const buf = await fs.readFile(filePath);
   const pdf = await getDocumentProxy(new Uint8Array(buf));
   const totalPages = pdf.numPages;
+  const pagesToExtract = Math.min(totalPages, MAX_PDF_PAGES);
 
   const pageTexts: string[] = [];
 
-  for (let start = 1; start <= totalPages; start += BATCH_SIZE) {
-    const end = Math.min(start + BATCH_SIZE - 1, totalPages);
+  for (let start = 1; start <= pagesToExtract; start += BATCH_SIZE) {
+    const end = Math.min(start + BATCH_SIZE - 1, pagesToExtract);
     const batch = await Promise.all(
       Array.from({ length: end - start + 1 }, async (_, i) => {
         const page = await pdf.getPage(start + i);
@@ -51,6 +56,10 @@ async function run(): Promise<void> {
     );
     pageTexts.push(...batch);
     parentPort!.postMessage({ type: 'progress', pagesProcessed: end, totalPages });
+  }
+
+  if (totalPages > pagesToExtract) {
+    pageTexts.push(`[Note: This PDF has ${totalPages} pages. Only the first ${pagesToExtract} were ingested.]`);
   }
 
   parentPort!.postMessage({ type: 'done', pageTexts });

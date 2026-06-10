@@ -19,6 +19,7 @@ import { SkillCallLinkStore } from './skill-call-links.js';
 import { SkillRunStore } from './skill-runs.js';
 import { WebAuthnCredentialStore } from './webauthn-store.js';
 import { ConnectorFileMapStore } from './connectors/file-map-store.js';
+import { DeviceIdentity } from './device-identity.js';
 
 const { deriveKey, encrypt, decrypt } = crypto;
 const { OpLogWriter } = oplog;
@@ -324,14 +325,23 @@ export class GraphnosisHost {
     private readonly opts: HostOptions,
     derived: crypto.DerivedKey,
     settings: settingsMod.AppSettings,
+    private readonly deviceIdentity: DeviceIdentity,
   ) {
     this.key = derived.key;
     this.salt = derived.salt;
+    // Surface any peer-key tamper alerts found while reconciling the synced
+    // device registry (a changed public key for a previously-pinned device).
+    for (const alert of deviceIdentity.peerKeyAlerts) {
+      console.error(`[graphnosis-host] op-log integrity: ${alert.detail}`);
+    }
     this.oplogWriter = new OpLogWriter({
       dir: path.join(opts.cortexDir, 'oplog'),
-      deviceId: opts.deviceId,
+      deviceId: deviceIdentity.deviceId,
       key: this.key,
       salt: this.salt,
+      signSecretKey: deviceIdentity.signSecretKey,
+      initialSeq: deviceIdentity.initialSeq,
+      persistSeq: deviceIdentity.persistSeq,
     });
     // Intercept every emit to advance the write-seq, so listOplogEvents() knows
     // the cached read is stale ONLY after an actual write — not on a timer.
@@ -569,8 +579,16 @@ export class GraphnosisHost {
     // settings to the host. On-disk credentialsEnc → in-memory credentials.
     // Legacy plaintext-credentials configs (pre-v0.6.1) pass through
     // unchanged and get re-saved encrypted on the next setSettings() call.
-    const decryptedSettings = await decryptConnectorCredentialsInSettings(settings, dataKey);
-    const host = new GraphnosisHost(opts, derived, decryptedSettings);
+    const withCreds = await decryptConnectorCredentialsInSettings(settings, dataKey);
+    // Decrypt the network bridge bearer tokens (mobile / HTTP-UI / VS Code) the
+    // same way: on-disk `*Enc` → in-memory plaintext. Legacy plaintext tokens
+    // pass through and re-encrypt on the next persistSettings() call.
+    const decryptedSettings = await decryptBridgeTokensInSettings(withCreds, dataKey);
+    // Load (or create on first unlock) this install's stable device identity:
+    // a persisted deviceId, an Ed25519 keypair (secret encrypted under dataKey),
+    // the op-log sequence counter, and the TOFU registry of peer device keys.
+    const deviceIdentity = await DeviceIdentity.loadOrCreate(opts.cortexDir, dataKey);
+    const host = new GraphnosisHost(opts, derived, decryptedSettings, deviceIdentity);
     return recoveryPhrase ? { host, recoveryPhrase } : { host };
   }
 
@@ -1578,7 +1596,8 @@ export class GraphnosisHost {
    * the in-memory plaintext credentials by accident.
    */
   private async persistSettings(next: settingsMod.AppSettings): Promise<void> {
-    const onDiskNext = await encryptConnectorCredentialsInSettings(next, this.key);
+    const withEncCreds = await encryptConnectorCredentialsInSettings(next, this.key);
+    const onDiskNext = await encryptBridgeTokensInSettings(withEncCreds, this.key);
     await settingsMod.saveSettings(this.opts.cortexDir, onDiskNext);
     this.settings = next;
   }
@@ -3024,7 +3043,7 @@ export class GraphnosisHost {
     this.llmGetter = fn;
   }
 
-  async recall(query: string, opts?: { budget?: SubgraphBudget; onlyGraphIds?: string[]; exceptGraphIds?: string[]; perGraphAnchorMax?: number; skipEnrichment?: boolean; noLoadOnDemand?: boolean }): Promise<federation.FederatedSubgraph> {
+  async recall(query: string, opts?: { budget?: SubgraphBudget; onlyGraphIds?: string[]; exceptGraphIds?: string[]; perGraphAnchorMax?: number; skipEnrichment?: boolean; noLoadOnDemand?: boolean; consentedGraphIds?: string[] }): Promise<federation.FederatedSubgraph> {
     // ── Recall enrichment (non-mutating) ─────────────────────────────────
     // When the user has llmEnabled + llmCapabilities.recallEnrichment on AND
     // Ollama is reachable, ask the LLM to rewrite the raw user query into a
@@ -3254,7 +3273,11 @@ export class GraphnosisHost {
       : opts?.exceptGraphIds?.length
         ? allGraphIds.filter(id => !opts.exceptGraphIds!.includes(id))
         : allGraphIds;
-    const sub = await federatedQuery(runner, scopedGraphIds, effectiveQuery, this.policyCfg, opts?.budget);
+    // `consentedGraphIds` lets explicitly-named, consent-approved engrams (incl.
+    // sensitive) bypass the shareability filter so a consented sensitive recall
+    // actually returns data — still clamped by the per-tier budget cap. Proactive
+    // recall passes nothing, so sensitive stays excluded by default.
+    const sub = await federatedQuery(runner, scopedGraphIds, effectiveQuery, this.policyCfg, opts?.budget, opts?.consentedGraphIds);
     try {
       this.plasticityObserver?.(sub);
     } catch (err) {
@@ -3382,7 +3405,7 @@ export class GraphnosisHost {
    * thin or when the user's question is document-targeted rather than
    * fact-targeted.
    */
-  async digDeeper(query: string, opts?: { budget?: SubgraphBudget; onlyGraphIds?: string[]; exceptGraphIds?: string[]; skipEnrichment?: boolean }): Promise<federation.FederatedSubgraph & {
+  async digDeeper(query: string, opts?: { budget?: SubgraphBudget; onlyGraphIds?: string[]; exceptGraphIds?: string[]; skipEnrichment?: boolean; consentedGraphIds?: string[] }): Promise<federation.FederatedSubgraph & {
     digDeeperProvenance: {
       contentMatch: { nodes: number; avgScore: number };
       sourceFilenameExpansion: { nodes: number; sources: string[] };
@@ -4508,7 +4531,7 @@ export class GraphnosisHost {
     if (events.length < COMPACTION_THRESHOLD) return;
 
     const oplogDir = path.join(this.opts.cortexDir, 'oplog');
-    const oplogFile = path.join(oplogDir, `${this.opts.deviceId}.oplog`);
+    const oplogFile = path.join(oplogDir, `${this.deviceIdentity.deviceId}.oplog`);
     const compactingFile = oplogFile + '.compacting';
     const cutoff = Date.now() - COMPACTION_MAX_AGE_MS;
 
@@ -4567,12 +4590,16 @@ export class GraphnosisHost {
 
       for (let i = 0; i < keepEvents.length; i += CHUNK_SIZE) {
         const batch = keepEvents.slice(i, i + CHUNK_SIZE);
-        const line = batch.map((e) => JSON.stringify(e)).join('\n') + '\n';
-        const ct = await encrypt(new TextEncoder().encode(line), this.key, this.salt);
-        // Replicate the oplog binary format: 4-byte LE uint32 length + ciphertext.
-        const lenBuf = Buffer.alloc(4);
-        lenBuf.writeUInt32LE(ct.length, 0);
-        await fs.appendFile(compactingFile, Buffer.concat([lenBuf, Buffer.from(ct)]));
+        // Write signed v2 chunks (re-signed by this device's key). The file magic
+        // goes once, at the start. Pruned events leave seq gaps, which the reader
+        // reports as benign — this is the device rewriting its own history.
+        const chunk = await oplog.encodeSignedChunk(
+          this.deviceIdentity.deviceId, batch, this.key, this.salt, this.deviceIdentity.signSecretKey,
+        );
+        const payload = i === 0
+          ? Buffer.concat([Buffer.from(oplog.OPLOG_V2_MAGIC), Buffer.from(chunk)])
+          : Buffer.from(chunk);
+        await fs.appendFile(compactingFile, payload, { mode: 0o600 });
       }
 
       // ── Delta-append: capture events emitted during our write ───────────
@@ -5012,6 +5039,18 @@ export class GraphnosisHost {
     return out;
   }
 
+  /** Shared options for every op-log read: verify each device's signature
+   *  against its TOFU-pinned public key and surface integrity problems loudly
+   *  (drop/replay/reorder/forgery) rather than silently skipping them. */
+  private oplogReadOptions(): oplog.ReadOpLogOptions {
+    return {
+      getDevicePubKey: (deviceId) => this.deviceIdentity.getPubKey(deviceId),
+      onIntegrityIssue: (i) => {
+        console.error(`[graphnosis-host] op-log integrity (${i.kind})${i.deviceId ? ` device=${redactId(i.deviceId)}` : ''} in ${i.file}: ${i.detail}`);
+      },
+    };
+  }
+
   async listOplogEvents(): Promise<Awaited<ReturnType<typeof oplog.readAllEvents>>> {
     // ── Cache hit ──────────────────────────────────────────────────────────
     // Serve the cache INDEFINITELY as long as no op has been written since it
@@ -5042,6 +5081,7 @@ export class GraphnosisHost {
     this._oplogReadPromise = oplog.readAllEvents(
       path.join(this.opts.cortexDir, 'oplog'),
       this.key,
+      this.oplogReadOptions(),
     ).then((events) => {
       // Only write to the cache if invalidateOplogCache() hasn't been called
       // since this read started. If the generation advanced, a write event
@@ -5210,7 +5250,7 @@ export class GraphnosisHost {
   // unless they happened to be saved as files.
 
   async planRecovery(): Promise<RecoveryPlan> {
-    const events = await oplog.readAllEvents(path.join(this.opts.cortexDir, 'oplog'), this.key);
+    const events = await oplog.readAllEvents(path.join(this.opts.cortexDir, 'oplog'), this.key, this.oplogReadOptions());
     // Walk in chronological order; ingestSource adds, forgetSource removes.
     const live = new Map<string, RecoveryPlanItem>();
     for (const ev of events) {
@@ -6254,4 +6294,101 @@ async function decryptConnectorCredentialsInSettings(
     ...settings,
     connectors: { ...conn, configs: newConfigs },
   };
+}
+
+// ── Network bridge token encryption ─────────────────────────────────────────
+//
+// The mobile bridge, browser HTTP-UI, and VS Code local bridge each hold a
+// bearer token in settings.json. Those tokens grant network access to the
+// cortex's MCP tool surface, so they MUST NOT sit plaintext on disk (a backup,
+// iCloud/Drive sync, or another local user could lift them). We encrypt each
+// with the cortex data key into a sibling `*Enc` field, exactly like connector
+// credentials: in-memory plaintext (read post-unlock when the bridges start),
+// on-disk ciphertext. Migration is automatic — a legacy plaintext token with no
+// `*Enc` is encrypted and the plaintext blanked on the next persistSettings().
+
+/** Encrypt a token string to base64 XChaCha20-Poly1305 under the data key. The
+ *  random salt acts as a unique IV (the dataKey is passed directly, not a
+ *  passphrase). */
+async function encryptTokenField(plaintext: string, dataKey: Uint8Array): Promise<string> {
+  const salt = randomBytes(16);
+  const blob = await crypto.encrypt(new TextEncoder().encode(plaintext), dataKey, salt);
+  return Buffer.from(blob).toString('base64');
+}
+
+async function decryptTokenField(enc: string, dataKey: Uint8Array): Promise<string> {
+  const blob = new Uint8Array(Buffer.from(enc, 'base64'));
+  return new TextDecoder().decode(await crypto.decrypt(blob, dataKey));
+}
+
+/** Encrypt the three bridge bearer tokens into their `*Enc` fields and blank the
+ *  plaintext on disk. Returns the on-disk shape. Empty tokens are left as-is. */
+async function encryptBridgeTokensInSettings(
+  settings: settingsMod.AppSettings,
+  dataKey: Uint8Array,
+): Promise<settingsMod.AppSettings> {
+  let out = settings;
+
+  const hb = out.mobile?.httpBridge;
+  if (hb?.token) {
+    const tokenEnc = await encryptTokenField(hb.token, dataKey);
+    out = { ...out, mobile: { ...out.mobile!, httpBridge: { ...hb, token: '', tokenEnc } } };
+  }
+
+  const hu = out.mobile?.httpUi;
+  if (hu?.token) {
+    const tokenEnc = await encryptTokenField(hu.token, dataKey);
+    out = { ...out, mobile: { ...out.mobile!, httpUi: { ...hu, token: '', tokenEnc } } };
+  }
+
+  const vs = out.vscode;
+  if (vs?.localBridgeToken) {
+    const localBridgeTokenEnc = await encryptTokenField(vs.localBridgeToken, dataKey);
+    out = { ...out, vscode: { ...vs, localBridgeToken: '', localBridgeTokenEnc } };
+  }
+
+  return out;
+}
+
+/** Decrypt the three bridge `*Enc` fields back into their plaintext token
+ *  fields and drop the ciphertext from the in-memory struct. A decrypt failure
+ *  is non-fatal: blank the token (the bridge shows as unconfigured / re-pair)
+ *  rather than blocking cortex unlock. */
+async function decryptBridgeTokensInSettings(
+  settings: settingsMod.AppSettings,
+  dataKey: Uint8Array,
+): Promise<settingsMod.AppSettings> {
+  let out = settings;
+
+  const recover = async (enc: string, label: string): Promise<string> => {
+    try {
+      return await decryptTokenField(enc, dataKey);
+    } catch (e) {
+      console.error(`[graphnosis-host] ${label} token decryption failed: ${(e as Error).message}`);
+      return '';
+    }
+  };
+
+  const hb = out.mobile?.httpBridge;
+  if (hb?.tokenEnc) {
+    const token = await recover(hb.tokenEnc, 'mobile bridge');
+    const { tokenEnc: _drop, ...rest } = hb;
+    out = { ...out, mobile: { ...out.mobile!, httpBridge: { ...rest, token } } };
+  }
+
+  const hu = out.mobile?.httpUi;
+  if (hu?.tokenEnc) {
+    const token = await recover(hu.tokenEnc, 'HTTP-UI');
+    const { tokenEnc: _drop, ...rest } = hu;
+    out = { ...out, mobile: { ...out.mobile!, httpUi: { ...rest, token } } };
+  }
+
+  const vs = out.vscode;
+  if (vs?.localBridgeTokenEnc) {
+    const localBridgeToken = await recover(vs.localBridgeTokenEnc, 'VS Code bridge');
+    const { localBridgeTokenEnc: _drop, ...rest } = vs;
+    out = { ...out, vscode: { ...rest, localBridgeToken } };
+  }
+
+  return out;
 }

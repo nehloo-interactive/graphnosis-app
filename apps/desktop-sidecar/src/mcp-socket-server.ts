@@ -47,7 +47,10 @@ export async function startSocketMcpServer(opts: {
 }): Promise<net.Server> {
   // Make sure the parent directory exists, then clean any stale socket file
   // from a prior unclean shutdown so `listen()` doesn't EADDRINUSE.
-  await fs.mkdir(path.dirname(opts.socketPath), { recursive: true });
+  // 0o700 dir: this socket exposes the full 47-tool MCP surface (recall,
+  // remember, edit, forget, …). With no per-connection auth, filesystem perms
+  // are the access control — keep other local users from reaching the path.
+  await fs.mkdir(path.dirname(opts.socketPath), { recursive: true, mode: 0o700 });
   await fs.rm(opts.socketPath, { force: true });
 
   const server = net.createServer((socket) => {
@@ -104,6 +107,12 @@ export async function startSocketMcpServer(opts: {
   return new Promise((resolve, reject) => {
     server.once('error', reject);
     server.listen(opts.socketPath, () => {
+      // Restrict the socket itself to the owner: the listen() call creates it
+      // with the process umask, which may be world-readable/writable. Without
+      // this, any local process could connect and drive the full tool surface.
+      fs.chmod(opts.socketPath, 0o600).catch((err) => {
+        console.error(`[graphnosis-sidecar] could not chmod MCP socket: ${err.message}`);
+      });
       console.error(`[graphnosis-sidecar] MCP socket listening on ${opts.socketPath}`);
       resolve(server);
     });

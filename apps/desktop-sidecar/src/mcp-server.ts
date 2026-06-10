@@ -13,7 +13,8 @@ import { mcpRegistry } from './mcp-registry.js';
 import type { BrainEngine } from './brain-engine.js';
 import { createHmac, randomUUID } from 'node:crypto';
 import { recordConsent, revokeConsent, policyGrantMs, type ClientPolicy, type ConsentPolicyChoice } from '@graphnosis-app/core/settings';
-import { registerPrompt as registerConsentPrompt, listPendingPrompts } from './consent-prompts.js';
+import { registerPrompt as registerConsentPrompt, listPendingPrompts, recordGatedRequest, getGatedRequest, type ConsentEngram } from './consent-prompts.js';
+import { constantTimeEqual } from './crypto-compare.js';
 import type { ConsentRecord } from '@graphnosis-app/core/settings';
 import { SkillTrainer, type ExportFormat } from './skill-trainer.js';
 import { LicenseValidator } from './license-validator.js';
@@ -870,7 +871,7 @@ function generateConsentPhrase(hmacKey: string, tier: 'personal' | 'sensitive'):
 function validateConsentPhrase(hmacKey: string, tier: 'personal' | 'sensitive', input: string): boolean {
   const normalized = input.trim().toLowerCase();
   if (!normalized) return false;
-  if (normalized === generateConsentPhrase(hmacKey, tier)) return true;
+  if (constantTimeEqual(normalized, generateConsentPhrase(hmacKey, tier))) return true;
   // Grace period: also accept previous window to handle boundary clock skew.
   const windowMs = tier === 'sensitive' ? SENSITIVE_WINDOW_MS : PERSONAL_WINDOW_MS;
   const prevSlot = Math.floor((Date.now() - 60_000) / windowMs);
@@ -883,7 +884,7 @@ function validateConsentPhrase(hmacKey: string, tier: 'personal' | 'sensitive', 
     const prev = [digest[0]! % n, digest[1]! % n, digest[2]! % n]
       .map((i) => CONSENT_WORD_LIST[i])
       .join(' ');
-    if (normalized === prev) return true;
+    if (constantTimeEqual(normalized, prev)) return true;
   }
   return false;
 }
@@ -898,6 +899,7 @@ function checkConsentValid(
   clientName: string,
   tier: 'personal' | 'sensitive',
   effectiveIntervalMs: number,
+  graphId?: string,
 ): boolean {
   if (!consents?.length) return false;
   const now = Date.now();
@@ -905,6 +907,11 @@ function checkConsentValid(
     (r) =>
       r.clientName === clientName &&
       r.tier === tier &&
+      // Per-engram scoping (#14): when a specific engram is being checked, only
+      // a grant for THAT engram counts. A legacy tier-wide record (no graphId)
+      // never matches a specific engram, so it no longer unlocks every engram
+      // of the tier — the user is re-prompted once per engram.
+      (graphId === undefined || r.graphId === graphId) &&
       r.withdrawnAt === undefined &&
       r.expiresAt > now &&
       (effectiveIntervalMs === -1 || r.grantedAt + effectiveIntervalMs > now),
@@ -1301,6 +1308,10 @@ export function createMcpServer(deps: McpDeps): Server {
     // consent, decide between "prompt the user" (explicit recall) and
     // "auto-exclude" (federated recall).
     const tierIntervals = new Map<'personal' | 'sensitive', number>();
+    // Per-engram gating (#14): the specific engrams of each tier that lack a
+    // CURRENT per-engram consent. Grants are scoped to exactly these, so
+    // approving one sensitive engram never unlocks the others.
+    const gatedGraphIdsByTier = new Map<'personal' | 'sensitive', string[]>();
     const autoExceptGraphIds: string[] = [];
     for (const graphId of graphIds) {
       const meta = deps.host.getGraphMetadata(graphId);
@@ -1324,26 +1335,30 @@ export function createMcpServer(deps: McpDeps): Server {
       }
       tierIntervals.set(t, current);
 
-      // Federated recall (no explicit engram list) + gated tier + no
-      // current consent → silently exclude this engram from the recall
-      // and don't add its tier to the prompt set. The recall still runs
-      // (over the un-gated tiers) and returns whatever it finds.
-      if (!isExplicit && !checkConsentValid(consents, clientName, t, current)) {
-        autoExceptGraphIds.push(graphId);
+      // Per-engram consent check. A legacy tier-wide grant (no graphId) no
+      // longer covers this engram, so it's re-gated.
+      if (!checkConsentValid(consents, clientName, t, current, graphId)) {
+        const arr = gatedGraphIdsByTier.get(t) ?? [];
+        arr.push(graphId);
+        gatedGraphIdsByTier.set(t, arr);
+        // Federated recall (no explicit engram list) → silently exclude this
+        // un-consented engram from the recall rather than prompting.
+        if (!isExplicit) autoExceptGraphIds.push(graphId);
       }
     }
 
     if (tierIntervals.size === 0) return { consentFooter: '', autoExceptGraphIds }; // all public
 
+    // Tiers that need a prompt: explicit recall + at least one gated engram of
+    // that tier lacking per-engram consent. Remember the gated engram ids so
+    // both the modal-Allow path and the headless confirm_data_access flow can
+    // scope the grant to exactly these engrams.
     const missingTiers: Array<'personal' | 'sensitive'> = [];
-    for (const [tier, effectiveIntervalMs] of tierIntervals) {
-      if (!checkConsentValid(consents, clientName, tier, effectiveIntervalMs)) {
-        // If we already decided to auto-exclude every engram of this
-        // tier (federated recall path), don't escalate to a prompt.
-        // Otherwise (explicit recall) the prompt is the right outcome.
-        if (!isExplicit) continue;
-        missingTiers.push(tier);
-      }
+    for (const [tier, gatedIds] of gatedGraphIdsByTier) {
+      if (gatedIds.length === 0) continue;
+      recordGatedRequest(clientName, tier, gatedIds);
+      if (!isExplicit) continue; // federated → auto-excluded above, no prompt
+      missingTiers.push(tier);
     }
 
     // First-connect detection: only meaningful when the consent flow
@@ -1414,7 +1429,10 @@ export function createMcpServer(deps: McpDeps): Server {
         const recipientName = clientName.startsWith('claude') ? 'Anthropic Inc.' : clientName;
         for (const { tier, choice } of autoAllow) {
           const windowMs = policyGrantMs(choice) ?? -1;
-          nextConsents = recordConsent(nextConsents, clientName, tier, windowMs, recipientName, 'US', '2025-05');
+          // Scope the auto-grant to the specific engrams that were gated.
+          for (const gid of gatedGraphIdsByTier.get(tier) ?? []) {
+            nextConsents = recordConsent(nextConsents, clientName, tier, windowMs, recipientName, 'US', '2025-05', gid);
+          }
         }
         await deps.host.setSettings({ ai: { ...settings.ai, dataAccessConsents: nextConsents } });
         // Remove auto-allowed tiers from missingTiers so the prompt below
@@ -1459,8 +1477,18 @@ export function createMcpServer(deps: McpDeps): Server {
           && p.tiers.every((t) => tierSet.has(t)),
       );
 
+      // Build the per-engram list (graphId + display name + tier) the modal
+      // will show and the grant will be scoped to (#14).
+      const promptEngrams: ConsentEngram[] = [];
+      for (const tier of missingTiers) {
+        for (const gid of gatedGraphIdsByTier.get(tier) ?? []) {
+          const m = deps.host.getGraphMetadata(gid);
+          promptEngrams.push({ graphId: gid, name: (m as { displayName?: string } | undefined)?.displayName ?? gid, tier });
+        }
+      }
+
       if (!alreadyPending) {
-        const { meta, choice } = registerConsentPrompt(clientName, missingTiers);
+        const { meta, choice } = registerConsentPrompt(clientName, promptEngrams);
         deps.broadcastRaw({
           kind: 'consent-prompt',
           name: 'consent-prompt',
@@ -1468,21 +1496,23 @@ export function createMcpServer(deps: McpDeps): Server {
             promptId: meta.promptId,
             clientName,
             tiers: missingTiers,
+            engrams: promptEngrams,
             suggestedDurations,
             privacyUrl: PROVIDER_PRIVACY_URLS[clientName] ?? null,
           },
         });
 
         // Record consent in the background when the user clicks Allow —
-        // detached from this MCP call so we can return immediately.
+        // detached from this MCP call so we can return immediately. Scoped to
+        // exactly the engrams that were gated, not the whole tier.
         void choice.then(async (result) => {
           if (result.action !== 'allow') return;
           const current = deps.host.getSettings();
           let nextConsents = current.ai.dataAccessConsents ?? [];
           const recipientName = clientName.startsWith('claude') ? 'Anthropic Inc.' : clientName;
           const windowMs = result.durationMs >= Number.MAX_SAFE_INTEGER - 1 ? -1 : result.durationMs;
-          for (const tier of missingTiers) {
-            nextConsents = recordConsent(nextConsents, clientName, tier, windowMs, recipientName, 'US', '2025-05');
+          for (const e of promptEngrams) {
+            nextConsents = recordConsent(nextConsents, clientName, e.tier, windowMs, recipientName, 'US', '2025-05', e.graphId);
           }
           await deps.host.setSettings({ ai: { ...current.ai, dataAccessConsents: nextConsents } });
         }).catch((e: unknown) => {
@@ -2612,6 +2642,12 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
           budget,
           ...(only?.resolved.length ? { onlyGraphIds: only.resolved } : {}),
           ...(mergedExcept.length ? { exceptGraphIds: mergedExcept } : {}),
+          // The engrams in `only` are explicitly named AND have passed the
+          // consent gate above (checkConsentOrThrow throws otherwise), so they
+          // may bypass the shareability filter — a consented sensitive engram
+          // returns data, clamped to its tier cap. Proactive recall (no `only`)
+          // passes nothing here, so sensitive stays excluded.
+          ...(only?.resolved.length ? { consentedGraphIds: only.resolved } : {}),
         }));
         const scopeWarnings = [...(only?.warnings ?? []), ...(except?.warnings ?? [])];
         // Structured audit line for the desktop inspector. PRIVACY: the
@@ -2685,6 +2721,7 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
           budget,
           ...(only?.resolved.length ? { onlyGraphIds: only.resolved } : {}),
           ...(mergedExcept.length ? { exceptGraphIds: mergedExcept } : {}),
+          ...(only?.resolved.length ? { consentedGraphIds: only.resolved } : {}),
         }));
         const scopeWarnings = [...(only?.warnings ?? []), ...(except?.warnings ?? [])];
         // Structured log line for power-user debugging — single line per
@@ -3318,8 +3355,8 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
         const { consentFooter: ceFooter } = await checkConsentOrThrow([resA.graphId, resB.graphId]);
         const budget = { maxNodes: args.maxNodes ?? 10, maxTokens: 4000 };
         const [subA, subB] = await Promise.all([
-          withEmbedding(() => deps.host.recall(args.query, { budget, onlyGraphIds: [resA.graphId] })),
-          withEmbedding(() => deps.host.recall(args.query, { budget, onlyGraphIds: [resB.graphId] })),
+          withEmbedding(() => deps.host.recall(args.query, { budget, onlyGraphIds: [resA.graphId], consentedGraphIds: [resA.graphId] })),
+          withEmbedding(() => deps.host.recall(args.query, { budget, onlyGraphIds: [resB.graphId], consentedGraphIds: [resB.graphId] })),
         ]);
         const metaA = deps.host.getGraphMetadata(resA.graphId);
         const metaB = deps.host.getGraphMetadata(resB.graphId);
@@ -3349,7 +3386,7 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
         enforceReplayBlocker(args.query);
         const { consentFooter: csFooter } = await checkConsentOrThrow(resolved);
         const budget = { maxNodes: args.maxNodes ?? 20, maxTokens: 4000 };
-        const sub = await withEmbedding(() => deps.host.recall(args.query, { budget, onlyGraphIds: resolved }));
+        const sub = await withEmbedding(() => deps.host.recall(args.query, { budget, onlyGraphIds: resolved, consentedGraphIds: resolved }));
         enforceSessionBudget(sub.tokensUsed, sub.nodesIncluded);
         const csContributing = sub.audit.filter(a => a.nodesIncluded > 0).length;
         const csHeadsUp = anomalyHeadsUp({
@@ -3516,6 +3553,33 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
         if ('error' in resFrom) return resFrom.error;
         const resTo = requireEngram(deps.host, args.to_engram);
         if ('error' in resTo) return resTo.error;
+
+        // Consent gate: moving a source is access to (and relocation of) its
+        // content. Treat both endpoints as explicitly named so any gated tier
+        // among them (sensitive always; personal under extra-precaution mode)
+        // surfaces a consent prompt before the move runs — matching every other
+        // source/recall tool.
+        const { consentFooter: xferFooter } = await checkConsentOrThrow([resFrom.graphId, resTo.graphId]);
+
+        // Refuse tier-lowering moves. Relocating a source from a more-protected
+        // engram to a less-protected one permanently strips its consent gate: a
+        // later recall_source from the destination would see the lower tier and
+        // never prompt. That is a clean bypass of the sensitive tier ("laundering").
+        // Lowering sensitivity is a deliberate user action — route it through the
+        // in-app Sources page (the trusted path), not an agent tool call.
+        const tierRank = (graphId: string): number => {
+          const t = (deps.host.getGraphMetadata(graphId) as { sensitivityTier?: string } | undefined)?.sensitivityTier;
+          return t === 'sensitive' ? 2 : t === 'personal' ? 1 : 0;
+        };
+        if (tierRank(resTo.graphId) < tierRank(resFrom.graphId)) {
+          return mcpError(
+            `Refusing to move source ${args.sourceId} from a more-protected engram ` +
+            `("${args.from_engram}") to a less-protected one ("${args.to_engram}"): this would ` +
+            `strip its consent protection. If you intend to lower its sensitivity, do it from the ` +
+            `app's Sources page.`,
+          );
+        }
+
         const { newRecord, forgottenNodeIds } = await deps.host.moveSource(resFrom.graphId, args.sourceId, resTo.graphId);
         // Sync in-memory cross-engram cache and rebuild links for the moved nodes.
         if (forgottenNodeIds.length > 0) {
@@ -3524,7 +3588,7 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
         deps.brainEngine?.runCrossEngramNow();
         const metaTo = deps.host.getGraphMetadata(resTo.graphId);
         return { content: [{ type: 'text', text:
-          `Moved source ${args.sourceId} to ${metaTo?.displayName ?? resTo.graphId}. New sourceId: ${newRecord.sourceId}`
+          `Moved source ${args.sourceId} to ${metaTo?.displayName ?? resTo.graphId}. New sourceId: ${newRecord.sourceId}` + xferFooter
         }] };
       }
       case 'ingest_batch': {
@@ -3814,6 +3878,7 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
             budget: { maxTokens: args.maxTokens ?? 2000, maxNodes: 20 },
             ...(only?.resolved.length ? { onlyGraphIds: only.resolved } : {}),
             ...(lqAutoExcept.length ? { exceptGraphIds: lqAutoExcept } : {}),
+            ...(only?.resolved.length ? { consentedGraphIds: only.resolved } : {}),
           }));
           enforceSessionBudget(sub.tokensUsed, sub.nodesIncluded);
           return { content: [{ type: 'text', text:
@@ -3878,9 +3943,13 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
         return { content: [{ type: 'text', text: display }] };
       }
       case 'confirm_data_access': {
-        const { phrase, tier } = z.object({
+        const { phrase, tier, engrams } = z.object({
           phrase: z.string(),
           tier: z.enum(['personal', 'sensitive']),
+          // Optional fallback: the engram(s) this grant should apply to. Normally
+          // the server already knows them from the recall that triggered the gate
+          // (getGatedRequest); this is for explicit/headless callers.
+          engrams: z.array(z.string()).optional(),
         }).parse(req.params.arguments ?? {});
 
         const clientName = mcpRegistry.getMostRecentClientName() ?? 'unknown-client';
@@ -3951,15 +4020,32 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
         }
 
         const recipientName = clientName.startsWith('claude') ? 'Anthropic Inc.' : clientName;
-        const updatedConsents = recordConsent(
-          settings.ai.dataAccessConsents,
-          clientName,
-          tier,
-          windowMs,
-          recipientName,
-          'US',
-          '2025-05',
-        );
+        // Scope the grant to the specific engram(s) this consent is for (#14):
+        // prefer the engrams the agent named, else the engrams the gate last
+        // blocked for this (client, tier). A grant with no graphId does NOT
+        // satisfy the per-engram check, so the fallback fails closed (re-prompt)
+        // rather than unlocking the whole tier.
+        let grantGraphIds: string[] = [];
+        if (engrams?.length) {
+          for (const name of engrams) {
+            const r = resolveTargetEngram(deps.host, name);
+            if (r.kind === 'exact') grantGraphIds.push(r.graphId);
+          }
+        }
+        if (grantGraphIds.length === 0) grantGraphIds = getGatedRequest(clientName, tier);
+
+        let updatedConsents: ConsentRecord[] = settings.ai.dataAccessConsents ?? [];
+        if (grantGraphIds.length > 0) {
+          for (const gid of grantGraphIds) {
+            updatedConsents = recordConsent(updatedConsents, clientName, tier, windowMs, recipientName, 'US', '2025-05', gid);
+          }
+        } else {
+          // No engram context — record a tier-level audit entry, but it won't
+          // satisfy the per-engram check, so the agent will be re-prompted with
+          // the engram named. Surface this so it doesn't look like a silent grant.
+          console.error(`[consent] confirm_data_access for ${clientName}/${tier}: no engram context — recording unscoped (will re-prompt).`);
+          updatedConsents = recordConsent(updatedConsents, clientName, tier, windowMs, recipientName, 'US', '2025-05');
+        }
         await deps.host.setSettings({ ai: { ...settings.ai, dataAccessConsents: updatedConsents } });
 
         if (deps.broadcastRaw) {

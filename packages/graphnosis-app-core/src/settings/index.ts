@@ -159,6 +159,14 @@ export interface ConsentRecord {
   /** Data tier that was authorised. */
   tier: 'personal' | 'sensitive';
   /**
+   * The specific engram (graph) this grant authorises. Consent is scoped
+   * per-engram: granting access to one sensitive engram does NOT unlock the
+   * others. Absent on legacy (pre-scoping) records, which the graphId-aware
+   * checks treat as non-matching — so an old tier-wide grant no longer applies
+   * and the user is re-prompted once per engram. The audit trail keeps them.
+   */
+  graphId?: string;
+  /**
    * ms duration used at grant time.
    * -1 = permanent, 0 = single-use, positive = interval.
    */
@@ -553,8 +561,19 @@ export interface HttpBridgeSettings {
    * Bearer token mobile clients must present in Authorization headers.
    * Auto-generated (UUID v4) on first enable via the App's Settings UI.
    * Shown once in the UI; user copies it into their mobile MCP client config.
+   *
+   * In-memory: populated (decrypted on cortex unlock). On-disk: blanked — the
+   * encrypted form lives in `tokenEnc`. The host's settings I/O boundary
+   * encrypts → `tokenEnc` on save and decrypts → `token` on load. Legacy
+   * plaintext tokens (pre-token-encryption) pass through and re-encrypt on the
+   * next save.
    */
   token: string;
+  /**
+   * Encrypted form of `token`. Base64 XChaCha20-Poly1305 ciphertext under the
+   * cortex data key. Present on disk; absent in memory. See `token`.
+   */
+  tokenEnc?: string;
   /**
    * Browser origins allowed to call the bridge (for future browser extensions / PWAs).
    * Empty array = no browser origin is allowed (direct HTTP clients like mobile apps
@@ -584,8 +603,16 @@ export interface HttpUiSettings {
    * Static token a browser exchanges (POST /api/unlock) for a session bearer
    * token. Auto-generated (UUID v4) on first enable. Shown once in Settings +
    * encoded into the pairing QR code.
+   *
+   * In-memory: populated; on-disk: blanked, encrypted form in `tokenEnc`
+   * (see the host settings I/O boundary). Legacy plaintext re-encrypts on save.
    */
   token: string;
+  /**
+   * Encrypted form of `token`. Base64 XChaCha20-Poly1305 ciphertext under the
+   * cortex data key. Present on disk; absent in memory.
+   */
+  tokenEnc?: string;
 }
 
 /**
@@ -655,8 +682,17 @@ export interface VsCodeBridgeSettings {
    * (VS Code Copilot extension). Separate from the mobile bridge token.
    * Generated on first sidecar start and stored here so the VS Code
    * extension can reconnect across restarts without re-configuration.
+   *
+   * In-memory: populated; on-disk: blanked, encrypted form in
+   * `localBridgeTokenEnc` (see the host settings I/O boundary). Legacy
+   * plaintext re-encrypts on the next save.
    */
   localBridgeToken: string;
+  /**
+   * Encrypted form of `localBridgeToken`. Base64 XChaCha20-Poly1305 ciphertext
+   * under the cortex data key. Present on disk; absent in memory.
+   */
+  localBridgeTokenEnc?: string;
   /** Port the local bridge binds on. Default 3457. */
   localBridgePort: number;
 }
@@ -986,14 +1022,17 @@ export async function saveSettings(cortexDir: string, settings: AppSettings): Pr
 }
 
 async function saveSettingsInner(cortexDir: string, settings: AppSettings): Promise<void> {
-  await fs.mkdir(cortexDir, { recursive: true });
+  // 0o700: the cortex directory holds the user's memory store. Restrict it so
+  // other local users can't traverse in. (Applies on creation.)
+  await fs.mkdir(cortexDir, { recursive: true, mode: 0o700 });
   // Write atomically: write to a unique tmp, then rename. The unique suffix is
   // defense-in-depth against any out-of-process writer; serialization above is
-  // what actually removes the in-process race.
+  // what actually removes the in-process race. 0o600 on the tmp carries through
+  // the rename so settings.json (which holds bridge tokens) isn't world-readable.
   const target = settingsPath(cortexDir);
   const tmp = `${target}.${process.pid}.${++_saveSeq}.tmp`;
   try {
-    await fs.writeFile(tmp, JSON.stringify(settings, null, 2));
+    await fs.writeFile(tmp, JSON.stringify(settings, null, 2), { mode: 0o600 });
     await fs.rename(tmp, target);
   } catch (e) {
     // Best-effort cleanup so an interrupted write doesn't leave an orphan tmp.
@@ -1191,6 +1230,9 @@ export function mergeWithDefaults(partial: Partial<AppSettings> | null | undefin
           ? Math.floor(hb.port) : 3457,
         host: typeof hb.host === 'string' && hb.host.length > 0 ? hb.host : '127.0.0.1',
         token: typeof hb.token === 'string' ? hb.token : '',
+        // Preserve the encrypted-at-rest token so the host can decrypt it on
+        // load; dropping it here would lose the token on every load.
+        ...(typeof hb.tokenEnc === 'string' ? { tokenEnc: hb.tokenEnc } : {}),
         allowedOrigins: Array.isArray(hb.allowedOrigins)
           ? (hb.allowedOrigins as unknown[]).filter((o): o is string => typeof o === 'string')
           : [],
@@ -1206,6 +1248,7 @@ export function mergeWithDefaults(partial: Partial<AppSettings> | null | undefin
           ? Math.floor(hu.port) : 3456,
         host: typeof hu.host === 'string' && hu.host.length > 0 ? hu.host : '127.0.0.1',
         token: typeof hu.token === 'string' ? hu.token : '',
+        ...(typeof hu.tokenEnc === 'string' ? { tokenEnc: hu.tokenEnc } : {}),
       };
     }
   }
@@ -1231,6 +1274,8 @@ export function mergeWithDefaults(partial: Partial<AppSettings> | null | undefin
     const v = partial.vscode;
     vscode = {
       localBridgeToken: typeof v.localBridgeToken === 'string' ? v.localBridgeToken : '',
+      ...(typeof (v as { localBridgeTokenEnc?: unknown }).localBridgeTokenEnc === 'string'
+        ? { localBridgeTokenEnc: (v as { localBridgeTokenEnc: string }).localBridgeTokenEnc } : {}),
       localBridgePort: typeof v.localBridgePort === 'number' && v.localBridgePort > 0 && v.localBridgePort < 65536
         ? Math.floor(v.localBridgePort) : 3457,
     };
@@ -1449,13 +1494,17 @@ function isConsentRecord(v: unknown): v is ConsentRecord {
 // ── Layer 4 Consent helpers ───────────────────────────────────────────────────
 
 /**
- * Returns true if the given client+tier combination has a current, non-expired,
- * non-withdrawn consent record.
+ * Returns true if the given client+tier+engram combination has a current,
+ * non-expired, non-withdrawn consent record. Consent is scoped per-engram:
+ * when `graphId` is given, only a record for THAT engram counts (a legacy
+ * record with no graphId never matches, forcing a re-prompt). Omitting
+ * `graphId` preserves the old tier-wide check for callers that don't scope.
  */
 export function hasValidConsent(
   consents: ConsentRecord[] | undefined,
   clientName: string,
   tier: 'personal' | 'sensitive',
+  graphId?: string,
 ): boolean {
   if (!consents) return false;
   const now = Date.now();
@@ -1463,6 +1512,7 @@ export function hasValidConsent(
     (r) =>
       r.clientName === clientName &&
       r.tier === tier &&
+      (graphId === undefined || r.graphId === graphId) &&
       r.withdrawnAt === undefined &&
       r.expiresAt > now,
   );
@@ -1481,6 +1531,7 @@ export function recordConsent(
   recipientName: string,
   recipientCountry: string,
   consentVersion: string,
+  graphId?: string,
 ): ConsentRecord[] {
   const now = Date.now();
   const expiresAt = windowMs === -1
@@ -1489,10 +1540,13 @@ export function recordConsent(
       ? now  // single-use: expires immediately after grant
       : now + windowMs;
 
-  // Soft-expire any prior active record for this client+tier pair so only
-  // one active consent per client+tier exists at a time.
+  // Soft-expire any prior active record for this client+tier+engram so only
+  // one active consent per (client, tier, engram) exists at a time. When this
+  // grant is engram-scoped (graphId set), it must NOT disturb grants for other
+  // engrams; a legacy tier-wide grant (no graphId) is superseded too.
   const softExpired = (existing ?? []).map((r) =>
     r.clientName === clientName && r.tier === tier && r.withdrawnAt === undefined
+      && (graphId === undefined || r.graphId === graphId || r.graphId === undefined)
       ? { ...r, withdrawnAt: now }
       : r,
   );
@@ -1511,6 +1565,7 @@ export function recordConsent(
     expiresAt,
     clientName,
     tier,
+    ...(graphId !== undefined ? { graphId } : {}),
     windowMs,
     purpose: 'AI-assisted memory retrieval',
     recipientName,
@@ -1530,26 +1585,34 @@ export function revokeConsent(
   existing: ConsentRecord[] | undefined,
   clientName?: string,
   tier?: 'personal' | 'sensitive',
+  graphId?: string,
 ): ConsentRecord[] {
   const now = Date.now();
   return (existing ?? []).map((r) => {
     if (r.withdrawnAt !== undefined) return r;
     const matchClient = clientName === undefined || r.clientName === clientName;
     const matchTier = tier === undefined || r.tier === tier;
-    return matchClient && matchTier ? { ...r, withdrawnAt: now } : r;
+    const matchGraph = graphId === undefined || r.graphId === graphId;
+    return matchClient && matchTier && matchGraph ? { ...r, withdrawnAt: now } : r;
   });
 }
 
 function generateUuid(): string {
-  // crypto.randomUUID is available in Node 14.17+ and all modern browsers.
+  // crypto.randomUUID is available in Node 14.17+ and secure-context browsers.
   if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
     return crypto.randomUUID();
   }
-  // Fallback: random hex — good enough for a local audit trail.
-  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
-    const r = (Math.random() * 16) | 0;
-    return (c === 'x' ? r : (r & 0x3) | 0x8).toString(16);
-  });
+  // CSPRNG fallback for environments lacking randomUUID (e.g. a non-secure-
+  // context browser) — `getRandomValues` is still available there. NEVER use
+  // Math.random for an identifier in a security-sensitive audit trail (#21).
+  if (typeof crypto !== 'undefined' && typeof crypto.getRandomValues === 'function') {
+    const b = crypto.getRandomValues(new Uint8Array(16));
+    b[6] = (b[6]! & 0x0f) | 0x40; // version 4
+    b[8] = (b[8]! & 0x3f) | 0x80; // RFC 4122 variant
+    const h = Array.from(b, (x) => x.toString(16).padStart(2, '0')).join('');
+    return `${h.slice(0, 8)}-${h.slice(8, 12)}-${h.slice(12, 16)}-${h.slice(16, 20)}-${h.slice(20)}`;
+  }
+  throw new Error('No cryptographically secure RNG available for UUID generation');
 }
 
 /**

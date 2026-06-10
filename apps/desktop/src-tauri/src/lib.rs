@@ -2311,8 +2311,15 @@ async fn recovery_apply(
 #[tauri::command]
 async fn reveal_file_in_finder(path: String) -> Result<(), String> {
     // `open -R <path>` selects the file inside Finder (reveals it in its
-    // containing folder).  Works for any absolute path; falls back to just
-    // opening the parent directory when the file has been moved.
+    // containing folder). Validate the argument is a real on-disk path (not a
+    // URL/scheme) and refuse application bundles, so a crafted argument reaching
+    // this command can't ask the OS to act on anything but a plain file.
+    if !std::path::Path::new(&path).exists() {
+        return Err("refusing to reveal: path does not exist".to_string());
+    }
+    if path.to_ascii_lowercase().ends_with(".app") {
+        return Err("refusing to reveal an application bundle".to_string());
+    }
     std::process::Command::new("open")
         .arg("-R")
         .arg(&path)
@@ -2356,6 +2363,16 @@ async fn show_window(app: AppHandle) -> Result<(), String> {
 #[tauri::command]
 async fn open_external_url(app: AppHandle, url: String) -> Result<(), String> {
     use tauri_plugin_opener::OpenerExt;
+    // Scheme allowlist: only web + mail. Without this, a crafted url (file://,
+    // a custom app scheme, etc.) reaching this command could ask the OS to
+    // launch an arbitrary handler.
+    let lower = url.trim().to_ascii_lowercase();
+    let allowed = lower.starts_with("https://")
+        || lower.starts_with("http://")
+        || lower.starts_with("mailto:");
+    if !allowed {
+        return Err("refusing to open url: only http(s) and mailto are allowed".to_string());
+    }
     app.opener()
         .open_url(&url, None::<&str>)
         .map_err(|e| format!("could not open url: {e}"))
