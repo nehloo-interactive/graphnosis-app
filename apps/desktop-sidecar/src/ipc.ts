@@ -3928,7 +3928,9 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
   // skill-snapshots/, no atlas pollution from accumulated retrain sources.
   //
   // Helpers used below are statically imported at the top of this file:
-  //   - baseSkillName(label): strips "(trained YYYY-MM-DD)" suffix
+  //   - baseSkillName(label): strips the `skill:<ts>:` ref prefix and the
+  //     "(trained YYYY-MM-DD)" suffix, so a freshly-built label and an
+  //     existing source ref normalize to the same base name
   //   - SkillSnapshotStore.idFromTs: builds the snapshot filename stem
   const baseName = baseSkillName(label);
 

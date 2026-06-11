@@ -11,6 +11,18 @@ Conventions: **Added** = new features, **Changed** = behavior or UX shifts, **Fi
 
 ---
 
+## v1.14.11 — Fix window-close CPU spike & skill-retrain duplicates
+
+<p style="margin-top:0.5rem;font-size:1.25em;opacity:0.85;">2026-06-11</p>
+
+### Fixed
+
+- **Closing the window no longer pins the CPU at hundreds of percent.** On macOS the "Synapse is running" notification (and the update / engram-suggestion notifications) used a blocking "wait for click" path that spun a busy run loop on its own thread, burning a full CPU core per notification until clicked. On a Mac that hasn't granted notification permission — most often a fresh install — the click never arrives, so the threads spun forever and accumulated one per window-close, driving the app past 700% CPU and spinning up the fans. All of these notifications are now non-blocking, so closing the window is free.
+- **The spurious "Choose Application — where is use_default?" dialog on window close is gone.** It came from the same blocking-notification path (the underlying library tried to "open" a placeholder URL handler named `use_default`, which macOS couldn't resolve). Removing that path removes the dialog.
+- **Re-training a skill now updates it in place instead of creating a duplicate.** The MCP `train_skill` tool matches an existing skill by name to rewrite it, but a normalization bug meant the match never succeeded — so every retrain silently created a second copy of the skill and left the old one behind. Retraining now correctly supersedes the previous version (and records a history snapshot you can roll back to).
+
+---
+
 ## v1.14.10 — Fix token rotation being silently reverted
 
 <p style="margin-top:0.5rem;font-size:1.25em;opacity:0.85;">2026-06-11</p>

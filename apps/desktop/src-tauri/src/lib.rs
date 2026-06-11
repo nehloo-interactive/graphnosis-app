@@ -1268,17 +1268,18 @@ async fn accept_engram_suggestion(
         .map_err(|e| e.to_string())
 }
 
-/// Post a system notification for an engram-create-suggested event that
-/// includes an **Accept** action button (macOS only).
+/// Post a non-blocking system notification for an engram-create-suggested
+/// event, on every platform.
 ///
-/// On macOS the notification uses `mac-notification-sys` with
-/// `MainButton::SingleAction("Accept")` so the user can approve the new
-/// engram without opening the App. When they click Accept the Rust thread
-/// emits `graphnosis://engram-notification-accepted`; the frontend listener
-/// calls `accept_engram_suggestion` with the same payload.
-///
-/// On Windows / Linux there are no action buttons — a plain informational
-/// notification is sent instead (user must open the App to act).
+/// This is a background nudge only — the actionable Accept lives in the
+/// in-app banner (`graphnosis://engram-create-suggested`, wired in main.ts).
+/// We previously rendered an "Accept" action button on macOS via
+/// `mac-notification-sys`'s `wait_for_click(true)`, but that blocks a thread
+/// in a busy NSRunLoop pump that spins a CPU core until clicked — and spins
+/// forever when notification permission isn't granted (e.g. a fresh install),
+/// since the run-loop mode then has no input source and returns instantly.
+/// A plain notification is sent on all platforms; the user opens the App and
+/// acts on the in-app banner.
 #[tauri::command]
 async fn show_engram_action_notification(
     app: AppHandle,
@@ -1300,50 +1301,21 @@ async fn show_engram_action_notification(
         who, suggested_name
     );
 
-    #[cfg(target_os = "macos")]
+    // Background OS nudge only — the actionable Accept lives in the in-app
+    // banner (graphnosis://engram-create-suggested, wired in main.ts). We used
+    // to render an "Accept" action button on macOS via
+    // mac-notification-sys's `wait_for_click(true)`, but that call blocks a
+    // spawned thread in a busy NSRunLoop pump (`while keepRunning { runMode:
+    // beforeDate: }`). When the run-loop mode has no live input source — which
+    // is the case on a Mac that hasn't granted notification permission, e.g. a
+    // fresh install — `runMode:` returns instantly every iteration and the
+    // thread spins a full CPU core forever (one core per pending notification).
+    // A plain, non-blocking notification costs nothing; the user opens the app
+    // and acts on the in-app banner, exactly as on Windows/Linux. The extra
+    // payload fields are retained on the command signature for the in-app
+    // emit path and intentionally unused here.
+    let _ = (&graph_id, &template, &display_name, &text, &label, &source_kind);
     {
-        let app_clone = app.clone();
-        let body_owned = notification_body.clone();
-        std::thread::spawn(move || {
-            let result = mac_notification_sys::Notification::new()
-                .title("Graphnosis — confirmation needed")
-                .message(&body_owned)
-                .main_button(mac_notification_sys::MainButton::SingleAction("Accept"))
-                .wait_for_click(true)
-                .send();
-            match result {
-                Ok(mac_notification_sys::NotificationResponse::ActionButton(_)) => {
-                    // User clicked Accept — emit event; the frontend calls
-                    // accept_engram_suggestion with the stored payload.
-                    let payload = serde_json::json!({
-                        "graphId": graph_id,
-                        "template": template,
-                        "displayName": display_name,
-                        "text": text,
-                        "label": label,
-                        "sourceKind": source_kind,
-                    });
-                    let _ = app_clone.emit(
-                        "graphnosis://engram-notification-accepted",
-                        payload,
-                    );
-                }
-                Ok(mac_notification_sys::NotificationResponse::Click) => {
-                    // Notification body click — bring the window up so the
-                    // in-app banner is visible.
-                    if let Some(win) = app_clone.get_webview_window("main") {
-                        let _ = win.show();
-                        let _ = win.set_focus();
-                    }
-                }
-                _ => {}
-            }
-        });
-    }
-    #[cfg(not(target_os = "macos"))]
-    {
-        // No action buttons on Windows / Linux — plain notification; user
-        // opens the App to act on the in-app banner.
         use tauri_plugin_notification::NotificationExt;
         let _ = app
             .notification()
@@ -2930,35 +2902,14 @@ async fn run_update_check(app: AppHandle) -> anyhow::Result<Option<String>> {
         tray::refresh_status(&app, &snapshot);
     }
 
-    // Notify the user even when the window is hidden.
-    // On macOS: use mac-notification-sys directly with wait_for_click so
-    // clicking the banner re-opens the panel to show the in-app update modal.
-    #[cfg(target_os = "macos")]
-    {
-        let app_clone = app.clone();
-        let version_str = version.clone();
-        std::thread::spawn(move || {
-            let result = mac_notification_sys::Notification::new()
-                .title("Graphnosis Update Available")
-                .message(&format!(
-                    "Graphnosis {} is ready to install. Click to open and install.",
-                    version_str
-                ))
-                .wait_for_click(true)
-                .send();
-            if let Ok(mac_notification_sys::NotificationResponse::Click) = result {
-                if let Some(win) = app_clone.get_webview_window("main") {
-                    let _ = win.show();
-                    let _ = win.set_focus();
-                }
-                // Re-emit so the in-app modal appears even if the window was
-                // hidden when the first emit fired (the event would have been
-                // delivered to a hidden webview and the listener missed it).
-                let _ = app_clone.emit("graphnosis://update-available", version_str.clone());
-            }
-        });
-    }
-    #[cfg(not(target_os = "macos"))]
+    // Notify the user even when the window is hidden. Non-blocking on every
+    // platform: we previously used mac-notification-sys's
+    // `wait_for_click(true)` on macOS to re-open the panel on click, but that
+    // blocks a spawned thread in a busy NSRunLoop pump that spins a CPU core
+    // until clicked — and never resolves (so spins forever) when notification
+    // permission isn't granted. The unconditional `update-available` emit
+    // below already drives the in-app modal once the window is visible, so the
+    // click-to-reopen affordance isn't worth a pegged core.
     {
         use tauri_plugin_notification::NotificationExt;
         let _ = app
@@ -3419,10 +3370,13 @@ pub fn run() {
         .on_window_event(|window, event| {
             // Close button hides the MAIN window rather than quitting the app —
             // we're a menu-bar resident; quit is via the tray "Quit" item.
-            // Secondary windows (About, etc.) are allowed to close normally —
-            // intercepting their CloseRequested fires the "Synapse is running"
-            // notification spuriously and produces a macOS "Choose Application"
-            // dialog from mac_notification_sys's use_default URL handler.
+            // Secondary windows (About, etc.) are allowed to close normally: the
+            // "Synapse is running" notification below is meant for the main
+            // window only, so firing it when an About panel closes is spurious.
+            // (Historically this was worse — the old mac-notification-sys path
+            // popped a macOS "Choose Application: where is use_default?" dialog
+            // on close. That crate is gone now; the notification below uses the
+            // non-blocking tauri-plugin-notification, which has no URL handler.)
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 if window.label() != "main" {
                     // Let the window close and destroy itself naturally.
@@ -3432,26 +3386,15 @@ pub fn run() {
                 api.prevent_close();
                 // Let the user know the app is still alive so AI clients,
                 // agents, and connectors keep working without the window open.
-                // On macOS: send via mac-notification-sys with wait_for_click so
-                // clicking the notification banner re-opens the panel immediately.
-                #[cfg(target_os = "macos")]
-                {
-                    let app_clone = window.app_handle().clone();
-                    std::thread::spawn(move || {
-                        let result = mac_notification_sys::Notification::new()
-                            .title("Graphnosis Synapse is running")
-                            .message("Your AI clients, agents, and connectors stay active. Click to reopen.")
-                            .wait_for_click(true)
-                            .send();
-                        if let Ok(mac_notification_sys::NotificationResponse::Click) = result {
-                            if let Some(win) = app_clone.get_webview_window("main") {
-                                let _ = win.show();
-                                let _ = win.set_focus();
-                            }
-                        }
-                    });
-                }
-                #[cfg(not(target_os = "macos"))]
+                // Non-blocking on every platform. This banner fires on EVERY
+                // window close (close == hide for a menu-bar app), so the old
+                // macOS `wait_for_click(true)` path was the worst offender:
+                // each close spawned a thread that busy-spun an NSRunLoop pump
+                // waiting for a click, and on a Mac without notification
+                // permission the click never arrived — so the threads spun a
+                // CPU core each, accumulating one per close and never dying.
+                // The menu-bar tray icon already provides "reopen anytime", so
+                // the click-to-reopen affordance isn't worth that cost.
                 {
                     use tauri_plugin_notification::NotificationExt;
                     let _ = window
