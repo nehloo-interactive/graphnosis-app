@@ -11,6 +11,20 @@ Conventions: **Added** = new features, **Changed** = behavior or UX shifts, **Fi
 
 ---
 
+## v1.14.12 — Cleaner skill training & opt-in LLM rewrite
+
+<p style="margin-top:0.5rem;font-size:1.25em;opacity:0.85;">2026-06-11</p>
+
+### Changed
+
+- **Training a skill keeps your procedure clean.** When you trained or retrained a skill, Graphnosis used to staple whatever a broad memory search surfaced onto the skill — including unrelated notes — and some of them ended up mixed in as if they were steps in your procedure. Training now folds in a memory only when it's genuinely relevant to that skill, keeps anything it does add as clearly-separated context (never as a step), and otherwise saves the skill exactly as you wrote it.
+
+### Added
+
+- **AI assistants can opt into local-LLM skill rewriting.** Assistants that train skills through Graphnosis's MCP tools can now request the local-LLM rewrite path (the same option the in-app training form already offered) instead of the default memory-augmented one. It runs entirely on your machine and stays off by default.
+
+---
+
 ## v1.14.11 — Fix window-close CPU spike & skill-retrain duplicates
 
 <p style="margin-top:0.5rem;font-size:1.25em;opacity:0.85;">2026-06-11</p>
