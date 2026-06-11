@@ -20,16 +20,18 @@ These Terms of Use ("Terms") are a legal agreement between you ("you," "User") a
 
 ### 2.1 Grant of license
 
-Subject to these Terms, Nehloo Interactive grants you a limited, non-exclusive, non-transferable, revocable license to use the Software for your personal, non-commercial purposes, strictly in accordance with these Terms and the Software's license file.
+Subject to these Terms, Nehloo Interactive grants you a limited, non-exclusive, non-transferable, revocable license to use the Software — individually or within your organization, including for commercial and business purposes — strictly in accordance with these Terms and the Software's license file.
 
 ### 2.2 Source license
 
-Graphnosis is released under the **Functional Source License, Version 1.1 (FSL-1.1-Apache-2.0)**. Under this license:
+Graphnosis ([nehloo-interactive/graphnosis-app](https://github.com/nehloo-interactive/graphnosis-app)) is released under the **Functional Source License, Version 1.1 (FSL-1.1-Apache-2.0)**. Under this license:
 - You may read, audit, fork, modify, and self-host the source code.
 - You may **not** offer Graphnosis (or a substantially similar product derived from it) as a commercial hosted or managed service during the two-year exclusivity window following each release.
 - Each release converts automatically to Apache 2.0 two years after its release date.
 
-The embedded `@nehloo/graphnosis` SDK is separately licensed under Apache 2.0 and is not subject to the above restriction.
+The embedded [@nehloo/graphnosis](https://github.com/nehloo/Graphnosis) SDK is separately licensed under Apache 2.0 and is not subject to the above restriction.
+
+The [nehloo-interactive/graphnosis-secure-sync](https://github.com/nehloo-interactive/graphnosis-secure-sync) library is released under the same FSL-1.1-Apache-2.0 terms as the main application and carries the same two-year exclusivity window.
 
 ### 2.3 Restrictions
 
