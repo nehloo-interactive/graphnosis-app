@@ -2203,17 +2203,19 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
       };
     }
     case 'vscode.rotateToken': {
-      const settings = deps.host.getSettings();
+      const before = deps.host.getSettings();
       const newToken = randomUUID();
       await deps.host.setSettings({
         vscode: {
           localBridgeToken: newToken,
-          localBridgePort: settings.vscode?.localBridgePort ?? 3457,
+          localBridgePort: before.vscode?.localBridgePort ?? 3457,
         },
       });
+      // Re-read after commit so the modal reflects the actual persisted value.
+      const after = deps.host.getSettings();
       return {
-        port: settings.vscode?.localBridgePort ?? 3457,
-        token: newToken,
+        port: after.vscode?.localBridgePort ?? 3457,
+        token: after.vscode?.localBridgeToken ?? newToken,
       };
     }
 

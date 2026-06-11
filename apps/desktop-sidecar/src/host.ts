@@ -1221,14 +1221,16 @@ export class GraphnosisHost {
   }
 
   async setGraphMetadata(graphId: GraphId, metadata: settingsMod.GraphMetadata): Promise<void> {
-    const next = {
-      ...this.settings,
+    // Route through setSettings so this write is serialised with concurrent
+    // writes via settingsWriteQueue. A direct persistSettings() call bypasses
+    // the queue and can race with setSettings() — the loser reads a stale
+    // this.settings snapshot and overwrites fields the winner just committed.
+    await this.setSettings({
       graphMetadata: {
         ...this.settings.graphMetadata,
         [graphId]: metadata,
       },
-    };
-    await this.persistSettings(next);
+    });
   }
 
   /**
@@ -1499,9 +1501,9 @@ export class GraphnosisHost {
     }
 
     // Strip metadata from settings so the graph can't reappear on next boot.
+    // Route through setSettings (same serialisation fix as setGraphMetadata).
     const { [graphId]: _removed, ...rest } = this.settings.graphMetadata;
-    const next = { ...this.settings, graphMetadata: rest };
-    await this.persistSettings(next);
+    await this.setSettings({ graphMetadata: rest });
 
     // Purge stale cross-engram connections that referenced this graph.
     try {

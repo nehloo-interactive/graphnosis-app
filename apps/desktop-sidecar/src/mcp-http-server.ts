@@ -183,8 +183,12 @@ export async function startHttpMcpServer(opts: HttpBridgeOptions): Promise<http.
     // client auth failures in production builds where stderr is not visible.
     // Usage: curl http://127.0.0.1:3457/oauth/debug
     if (urlPath === '/oauth/debug' && req.method === 'GET') {
+      const liveToken = typeof opts.token === 'function' ? opts.token() : opts.token;
+      const peek = (s: string) => s.length > 8
+        ? `${s.slice(0, 4)}…${s.slice(-4)} (len=${s.length})`
+        : `(len=${s.length})`;
       res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ events: debugLog }, null, 2));
+      res.end(JSON.stringify({ expectedToken: peek(liveToken), events: debugLog }, null, 2));
       return;
     }
 
