@@ -309,8 +309,12 @@ function buildMemoryAugmented(memoriesPrompt: string): string[] {
     : memoriesPrompt.trim();
   if (!cleanMemories) return [];
   // Split on blank-line boundaries — every recalled paragraph becomes its
-  // own chunk. Filter empties; preserve original phrasing.
-  return cleanMemories.split(/\n{2,}/).map((p) => p.trim()).filter(Boolean);
+  // own chunk. Filter empties; preserve original phrasing. Tag each with the
+  // attribution marker the structured parser (RECALLED_MARKER_RE) uses to
+  // recognise context nodes, so memory-augmented recalls are never
+  // mis-classified as procedure steps.
+  return cleanMemories.split(/\n{2,}/).map((p) => p.trim()).filter(Boolean)
+    .map((p) => `${p}\n_(from cortex recall)_`);
 }
 
 // ── Breadth helpers ───────────────────────────────────────────────────────────
@@ -555,6 +559,17 @@ export class SkillTrainer {
 
     // ── Phase 2: Personalize ──────────────────────────────────────────────────
     const hasMemories = context.nodeCount > 0;
+    // Relevance gate (default-clean): only fold recalled memories into a skill
+    // when at least one is genuinely on-topic — goal-aligned, or scoring at or
+    // above the relevance floor. A procedural SOP whose cortex holds no matching
+    // notes recalls only tangential, low-score nodes; gating them out keeps the
+    // skill pure authored text instead of polluting it with unrelated memory
+    // nodes. Applies to both the LLM-rewrite and memory-augmented paths, so the
+    // LLM never gets junk context to confabulate around either.
+    const RELEVANCE_FLOOR = 0.78;
+    const hasRelevantMemories = hasMemories && context.influentialNodes.some(
+      (n) => n.goalAlignment !== undefined || n.score >= RELEVANCE_FLOOR,
+    );
     let trained: string;
     let diffNotes: string | undefined;
     let mode: TrainingMode;
@@ -571,7 +586,7 @@ export class SkillTrainer {
     const wantsLlmRewrite = input.useLlmRewrite === true;
     const llmReady = wantsLlmRewrite && this.llm !== null && await this.pingLlm();
 
-    if (llmReady && hasMemories) {
+    if (llmReady && hasRelevantMemories) {
       // LLM path — full rewrite with memory attribution. When the caller
       // wired an onChunk callback AND the underlying LLM supports streaming,
       // we pipe each token through onChunk so the UI can render a live
@@ -604,7 +619,7 @@ export class SkillTrainer {
           `Local LLM was available but timed out (${(err as Error).message}). ` +
           `Fell back to memory-augmented mode — relevant memories are appended below the skill.`;
       }
-    } else if (!llmReady && hasMemories) {
+    } else if (!llmReady && hasRelevantMemories) {
       // No LLM — append memories as context paragraphs (saved as separate
       // 'recalled-memory' chunks below; the joined `trained` string is just
       // the preview the caller renders).
@@ -819,31 +834,16 @@ export class SkillTrainer {
         await insertAtEnd(s.text, s.role);
       }
 
-      // ── Phase 2: position-aware placement of recalled-memory paragraphs ───
+      // ── Phase 2: append recalled-memory paragraphs as trailing context ───
+      // Recalled memories are NEVER interleaved into the numbered procedure —
+      // they land after the body (and goals) as marked 'recalled-memory' nodes
+      // so they can't be mis-read as steps. Combined with the upstream
+      // relevance gate (only genuinely on-topic memories reach this point) and
+      // the attribution marker added in buildMemoryAugmented, this keeps
+      // procedural SOPs structurally clean while still surfacing the context.
       if (mode === 'memory-augmented' && recalledParagraphs.length > 0) {
-        const candidates: PlacementCandidate[] = recalledParagraphs.map((text, i) => ({
-          text,
-          layer: topNodes[i]?.layer ?? 'semantic',
-        }));
-
-        const placements = await placeRecalledNodes(candidates, bodyParagraphs, this.llm);
-
-        // Insert inline placements in REVERSE position order to preserve indices.
-        // Source prefix before body: metadata(1) + title(1) = 2 fixed nodes.
-        const PREFIX = 2;
-        const inline = placements
-          .filter((p) => p.position !== 'context')
-          .sort((a, b) => (b.position as number) - (a.position as number));
-        for (const p of inline) {
-          const sourcePos = (p.position as number) + PREFIX;
-          await this.host.insertNodeAt(graphId, skillId, sourcePos, p.text, {
-            skipRelink: true, role: 'recalled-memory', triggeredBy: 'mcp:train_skill',
-          });
-        }
-
-        // Context-section nodes go after all body/inline recalled nodes.
-        for (const p of placements.filter((q) => q.position === 'context')) {
-          await insertAtEnd(p.text, 'recalled-memory');
+        for (const text of recalledParagraphs) {
+          await insertAtEnd(text, 'recalled-memory');
         }
       }
 

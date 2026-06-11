@@ -2376,6 +2376,10 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
               maximum: 100,
               description: '0 = Broad (max context, up to 50 nodes from all engrams). 100 = Exact (strict semantic match, ~12 nodes). Omit to use auto-tuned value (starts at 50, self-adjusts after each training run based on cited/fetched ratio).',
             },
+            use_llm_rewrite: {
+              type: 'boolean',
+              description: 'Opt into the LLM-rewrite path (clean goal/step structure, change attribution) instead of the default memory-augmented path (memories appended as a Personal Context block). Requires the Local LLM to be enabled (Foresight → Local LLM); falls back to memory-augmented if the LLM is unavailable or times out. Default false.',
+            },
           },
           required: ['skill'],
         },
@@ -4149,6 +4153,9 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
           model_target: z.enum(['generic', 'claude', 'cursor', 'openai', 'copilot']).optional(),
           save: z.boolean().optional(),
           recall_breadth: z.number().int().min(0).max(100).optional(),
+          // Accept boolean or "true"/"false" string — some MCP clients stringify
+          // booleans for params absent from their cached tool schema.
+          use_llm_rewrite: z.union([z.boolean(), z.enum(['true', 'false'])]).optional(),
         });
         const args = TrainSkillInput.parse(req.params.arguments ?? {});
 
@@ -4236,6 +4243,7 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
           ...(args.save !== undefined ? { save: args.save } : {}),
           ...(clientName !== undefined ? { addedBy: clientName } : {}),
           ...(args.recall_breadth !== undefined ? { recallBreadth: args.recall_breadth } : {}),
+          ...(args.use_llm_rewrite !== undefined ? { useLlmRewrite: args.use_llm_rewrite === true || args.use_llm_rewrite === 'true' } : {}),
         };
         const result = await deps.skillTrainer.trainSkill(trainInput);
 
