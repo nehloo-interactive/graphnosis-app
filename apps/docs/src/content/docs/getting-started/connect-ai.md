@@ -118,19 +118,11 @@ Reload the Cursor window. Graphnosis tools will appear in the MCP tools panel.
 
 ## GitHub Copilot (VS Code)
 
-Graphnosis integrates with Copilot Chat via two paths. The in-app wizard (**Settings → Mobile & Remote Access → "Set up mobile access…"** → Step 2) shows both options and generates your config automatically.
+Graphnosis integrates with Copilot Chat via three paths. The in-app wizard (**Settings → Configure Copilot…** or the AI clients panel) shows all three options and generates your config with the bearer token pre-filled.
 
-### Option A — VS Code extension (recommended)
+### Option A — In-app MCP install (recommended)
 
-Install the **Graphnosis** extension from the VS Code Marketplace (`nehloo-interactive.graphnosis`). Once installed it:
-
-- Registers `graphnosis_recall` and `graphnosis_remember` as **LM tools** (VS Code 1.97+) so Copilot calls recall autonomously on relevant queries — no `@` prefix needed
-- Adds the `@graphnosis` **chat participant** for explicit queries (`@graphnosis what did I decide about auth?`) on VS Code 1.96+
-- Shows a **"Save to memory"** status bar shortcut after large Copilot code insertions, so you can capture architectural decisions back into your cortex with one click
-
-After installing, open VS Code Settings, search `graphnosis`, and paste your bearer token into **Bearer Token**. The extension connects to Graphnosis' always-on local bridge (`127.0.0.1:3457`) — no mobile access setup required.
-
-Get your token from the Graphnosis app: **Settings → Mobile & Remote Access → "Set up mobile access…" → Step 2 → Copy token**.
+Open the Graphnosis app and go to the VS Code — Copilot Chat setup (AI clients panel or **Settings → Configure Copilot…**). Click **Install MCP Server** — this opens your VS Code user MCP config file directly in VS Code so you know exactly where to paste. Copy your bearer token from the same panel, then paste the JSON snippet from Option B (pre-filled with your token) into the file.
 
 ### Option B — VS Code MCP config
 
@@ -156,9 +148,29 @@ Create or edit the VS Code user MCP config with the snippet the wizard generates
 }
 ```
 
-This registers Graphnosis as an MCP server for manual tool use. Copilot will call `recall` and `remember` when you explicitly ask it to — it won't inject context automatically the way the extension does.
+This registers Graphnosis as an MCP server for manual tool use. Copilot will call `recall` and `remember` when you explicitly ask it to.
 
 The wizard's **Copy** button produces the exact JSON with your token pre-filled.
+
+### Option C — GitHub Copilot CLI
+
+For the `gh copilot` CLI (`gh copilot suggest`, `gh copilot explain`, etc.). This uses a **different file and a different top-level key** than the VS Code config above — save the snippet to `~/.copilot/mcp-config.json`:
+
+```json
+{
+  "mcpServers": {
+    "graphnosis": {
+      "type": "http",
+      "url": "http://127.0.0.1:3457/mcp",
+      "headers": {
+        "Authorization": "Bearer <your-token>"
+      }
+    }
+  }
+}
+```
+
+The app's wizard generates this snippet with your token pre-filled — use the **Copy** button in the Option C panel. If you rotate your token later, update this file alongside your VS Code MCP config.
 
 ## Other MCP-native clients
 
