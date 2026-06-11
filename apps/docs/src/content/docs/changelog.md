@@ -11,6 +11,17 @@ Conventions: **Added** = new features, **Changed** = behavior or UX shifts, **Fi
 
 ---
 
+## v1.14.10 — Fix token rotation being silently reverted
+
+<p style="margin-top:0.5rem;font-size:1.25em;opacity:0.85;">2026-06-11</p>
+
+### Fixed
+
+- **Rotating the VS Code bearer token now takes effect immediately and persists across restarts.** A race condition between `setGraphMetadata` / `deleteGraph` and `setSettings` meant that any engram metadata write (name change, sensitivity tier, etc.) occurring while the rotation was saving could silently overwrite both the in-memory token and the encrypted token on disk with the pre-rotation value. The modal would show the new token (returned directly by the IPC before the overwrite landed), but every subsequent request — including after a restart — was validated against the old token. Fixed by routing all three settings-write paths through the same `settingsWriteQueue` serialisation gate.
+- **Rotate button now reflects the token that was actually committed.** Previously the IPC handler returned the UUID it generated before confirming the value survived the write. It now re-reads from `getSettings()` after the commit, so the modal always shows exactly what the server accepts.
+
+---
+
 ## v1.14.9 — VS Code bearer token mismatch fix & token rotation
 
 <p style="margin-top:0.5rem;font-size:1.25em;opacity:0.85;">2026-06-10</p>
