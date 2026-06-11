@@ -2925,8 +2925,30 @@ export function walkSkillToJson(
 
 // ── Skill-management helpers ──────────────────────────────────────────────────
 
+/**
+ * Normalize a skill label OR a full source ref down to its stable base name,
+ * so the in-place retrain matcher can compare a freshly-built label against
+ * existing sources regardless of which shape they carry.
+ *
+ * Inputs this must collapse to the SAME base name:
+ *   - "session-start (trained 2026-06-11)"            (a freshly-built label)
+ *   - "skill:1781082401696:session-start (trained …)"  (a first-train source ref)
+ *   - "skill:1781148773662:session-start"              (a ref after an in-place
+ *                                                       retrain renamed it via
+ *                                                       `skill:${ts}:${baseName}`)
+ *
+ * Source refs are stored as `{kind}:{ts}:{label}`, so we must strip the
+ * `skill:<digits>:` prefix as well as the trailing `(trained YYYY-MM-DD)`
+ * stamp. The previous version stripped only the suffix — which left the
+ * `skill:<ts>:` prefix on every ref, so `baseSkillName(ref) === baseName`
+ * was NEVER true and every retrain silently created a duplicate source
+ * instead of rewriting in place.
+ */
 export function baseSkillName(label: string): string {
-  return label.replace(/\s*\(trained \d{4}-\d{2}-\d{2}\)\s*$/u, '').trim();
+  return label
+    .replace(/^skill:\d+:/u, '')
+    .replace(/\s*\(trained \d{4}-\d{2}-\d{2}\)\s*$/u, '')
+    .trim();
 }
 
 interface ParsedSkillMeta { trainedAt?: string; mode?: string; recallBreadth?: number; }
