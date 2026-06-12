@@ -11,6 +11,25 @@ Conventions: **Added** = new features, **Changed** = behavior or UX shifts, **Fi
 
 ---
 
+## v1.15.0 — Memory-trained Skills + choose which tools your AI sees
+
+<p style="margin-top:0.5rem;font-size:1.25em;opacity:0.85;">2026-06-11</p>
+
+### Added
+
+- **Memory-trained Skills** (formerly "Skills w/ Goals"). The library now groups your skills under expandable engram headers, adds a name + engram filter, and shows friendly names. Every skill gets a **version history with one-click rollback**, so a retrain is never a one-way door.
+- **Choose which MCP tools your AI clients can use** — a Pro/Teams/Enterprise control in **Settings → MCP Tools**. Toggle any tool on or off, use per-group toggles, or apply an **Expose all / Recall-only / Remember-only** preset. It's enforced inside Graphnosis, so a disabled tool can't be seen or called by any AI client — handy if you want a read-only or save-only surface.
+
+### Fixed
+
+- **Closing the window no longer leaves the whole app blurry** with no dialog to dismiss.
+- **No more false "lost connection to the memory engine" banner** during brief busy moments like skill training — it now only appears if the connection is genuinely down.
+- **The Trained Output editor reads top-down** — the skill's goals as a contract block, then the numbered steps — instead of a jumbled order.
+- **3D graph:** Reset now also clears any legend filtering; Full Cortex lists your engrams by name; sweeping the cursor across the legend no longer freezes the view; and sources show friendly names.
+- **Renaming an engram in Cortex Management works**, and Forgotten memories moved to the bottom of that screen.
+
+---
+
 ## v1.14.12 — Cleaner skill training & opt-in LLM rewrite
 
 <p style="margin-top:0.5rem;font-size:1.25em;opacity:0.85;">2026-06-11</p>
