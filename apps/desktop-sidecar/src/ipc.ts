@@ -444,6 +444,37 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
       return deps.host.getSettings().ai.clientPolicies ?? {};
     }
 
+    // ── MCP tool-exposure allowlist (Pro/Teams/Enterprise) ─────────────
+    case 'ai.setDisabledTools': {
+      const args = z.object({ tools: z.array(z.string()) }).parse(params ?? {});
+      // Editing the exposure allowlist is a Pro/Teams/Enterprise feature.
+      // Accept the dedicated `mcp-tool-control` key OR — since the signing
+      // service mints ALL Pro keys together for any Pro subscriber (see
+      // license-validator.ts) — `skill-training` as the universal "is Pro+"
+      // signal. This means current subscribers work immediately without the
+      // issuer re-minting tokens; once issuance grants `mcp-tool-control`, that
+      // path lights up too. Server-side enforcement in mcp-server.ts honors any
+      // EXISTING denylist regardless of tier — only WRITES are gated here, so a
+      // downgrade never silently re-exposes a tool.
+      const licenseToken = await deps.host.getLicenseToken();
+      const isProSubscriber =
+        (deps.licenseValidator?.hasFeature(licenseToken, 'mcp-tool-control') ?? false) ||
+        (deps.licenseValidator?.hasFeature(licenseToken, 'skill-training') ?? false);
+      if (!isProSubscriber) {
+        return {
+          ok: false,
+          upgrade_required: true,
+          message: 'Choosing which MCP tools are exposed to AI clients is a Pro/Teams/Enterprise feature.',
+        };
+      }
+      const current = deps.host.getSettings();
+      await deps.host.setSettings({ ai: { ...current.ai, disabledMcpTools: args.tools } });
+      return { ok: true };
+    }
+    case 'ai.getDisabledTools': {
+      return deps.host.getSettings().ai.disabledMcpTools ?? [];
+    }
+
     // ── MCP connection lifecycle ───────────────────────────────────────
     case 'mcp.disconnect': {
       // Frontend × button: force-close one MCP connection. The relay
@@ -1894,6 +1925,10 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
           // dataAccessConsents — NEVER written via generic settings patch.
           // Only writable via dedicated ai.revokeConsents and confirm_data_access MCP tool.
           ...(currentAi.dataAccessConsents !== undefined ? { dataAccessConsents: currentAi.dataAccessConsents } : {}),
+          // disabledMcpTools — written ONLY via the dedicated, Pro-gated
+          // ai.setDisabledTools IPC. Preserve here so an unrelated settings
+          // patch (which rebuilds `ai` field-by-field) can't silently drop it.
+          ...(currentAi.disabledMcpTools !== undefined ? { disabledMcpTools: currentAi.disabledMcpTools } : {}),
         };
       }
       if (parsed.mobile) {

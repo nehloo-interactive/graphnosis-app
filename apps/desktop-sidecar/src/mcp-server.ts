@@ -1022,6 +1022,25 @@ export function createMcpServer(deps: McpDeps): Server {
   // useful when the user wants their AI client's own memory features
   // to lead and Graphnosis to be one option among many.
   const useAsDefaultMemory = deps.host.getSettings().ai.useAsDefaultMemory;
+
+  // ── User tool-exposure allowlist (Pro/Teams/Enterprise feature) ───────────
+  // The user can DISABLE specific MCP tools so AI clients can't see or call
+  // them (Settings → MCP Tools). Enforced server-side in TWO places below —
+  // tools/list (filtered out) and tools/call (rejected) — because the UI can
+  // never be the security boundary. Read LIVE per request (never captured in a
+  // closure) so a change takes effect immediately, the way useAsDefaultMemory
+  // and the consent settings already are. Stored as a DENYLIST: default empty =
+  // everything on, so existing users and newly-added tools are unaffected.
+  //
+  // NO tool is force-on: the user may disable ANY tool — including recall — to
+  // build, e.g., a "Remember-only" surface (AI clients can save but not read).
+  // This never bricks Graphnosis: the app's own UI uses direct IPC, not MCP, so
+  // disabling tools only narrows what AI clients can do, and "Expose all"
+  // restores everything. (Disabling confirm_data_access drops only the HEADLESS
+  // consent fallback; the in-app consent modal is unaffected.)
+  const disabledToolSet = (): Set<string> =>
+    new Set(deps.host.getSettings().ai.disabledMcpTools ?? []);
+
   const server = new Server(
     { name: 'graphnosis', version: '0.0.1' },
     {
@@ -1596,7 +1615,10 @@ export function createMcpServer(deps: McpDeps): Server {
     }
   }
 
-  server.setRequestHandler(ListToolsRequestSchema, async () => ({
+  server.setRequestHandler(ListToolsRequestSchema, async () => {
+    // Hide user-disabled tools from the list AI clients see. Live read.
+    const disabled = disabledToolSet();
+    return {
     tools: [
       {
         name: 'recall',
@@ -2614,8 +2636,9 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
           },
         },
 
-    ],
-  }));
+    ].filter((t) => !disabled.has(t.name)),
+    };
+  });
 
   server.setRequestHandler(CallToolRequestSchema, async (req) => {
     // AI client just made a tool call — mark activity so heavy background brain
@@ -2629,6 +2652,15 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
     if (isClientDisabled(policyClient)) {
       return {
         content: [{ type: 'text', text: `⛔ Access blocked. The AI client "${policyClient}" has been disabled by policy. Contact your administrator to re-enable it.` }],
+        isError: true,
+      };
+    }
+    // User tool-exposure allowlist: reject calls to a disabled tool. Runs BEFORE
+    // the switch (and before any per-tool Pro-tier gate) and re-reads live, so a
+    // client with a stale/cached schema still can't invoke a disabled tool.
+    if (disabledToolSet().has(req.params.name)) {
+      return {
+        content: [{ type: 'text', text: `⛔ The tool "${req.params.name}" has been disabled in Graphnosis (Settings → MCP Tools). Ask the user to re-enable it if you need it.` }],
         isError: true,
       };
     }

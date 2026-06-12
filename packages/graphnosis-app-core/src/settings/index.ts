@@ -446,6 +446,19 @@ export interface AiSettings {
    * in-app click anyway.
    */
   extraPrecautionMode?: boolean;
+  /**
+   * Tool names the user has DISABLED for AI clients (Settings → MCP Tools).
+   * Default: absent/empty = every tool exposed. Stored as a DENYLIST so newly
+   * added tools (and existing users on upgrade) are enabled by default — no
+   * migration, no silent breakage. Enforced SERVER-SIDE in mcp-server.ts at
+   * both tools/list (filtered out) and tools/call (rejected); the UI never
+   * enforces. A small always-on set (recall, remind, confirm_data_access,
+   * stats, list_engrams) is ignored even if present here. Editing this is a
+   * Pro/Teams/Enterprise feature, gated on the `mcp-tool-control` license
+   * feature at the IPC setter — but enforcement honors whatever is stored,
+   * so a downgrade never silently re-exposes a tool the user disabled.
+   */
+  disabledMcpTools?: string[];
 }
 
 export type ConsentPolicyChoice =
@@ -1201,6 +1214,14 @@ export function mergeWithDefaults(partial: Partial<AppSettings> | null | undefin
       )
     : undefined;
 
+  // Denylist of MCP tool names the user disabled. Keep only non-empty strings;
+  // absent → undefined (everything exposed). De-duped.
+  const disabledMcpTools = Array.isArray(ai.disabledMcpTools)
+    ? Array.from(new Set(
+        (ai.disabledMcpTools as unknown[]).filter((t): t is string => typeof t === 'string' && t.length > 0),
+      ))
+    : undefined;
+
   // Suppress unused warning for MAX_CONSENT_INTERVAL_MS (used inside clampConsentInterval).
   void MAX_CONSENT_INTERVAL_MS;
 
@@ -1397,6 +1418,7 @@ export function mergeWithDefaults(partial: Partial<AppSettings> | null | undefin
       ...(dataAccessConsents !== undefined ? { dataAccessConsents } : {}),
       ...(clientTypes !== undefined ? { clientTypes } : {}),
       ...(clientPolicies !== undefined ? { clientPolicies } : {}),
+      ...(disabledMcpTools !== undefined ? { disabledMcpTools } : {}),
       ...(typeof ai.extraPrecautionMode === 'boolean' ? { extraPrecautionMode: ai.extraPrecautionMode } : {}),
     },
     graphMetadata,

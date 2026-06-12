@@ -94,8 +94,10 @@ export interface LicensePayload {
  *                          `duplicate_pairs`
  *   connector-cadence    — unlocks sub-daily connector pull intervals (Pro/Teams)
  *   teams                — Teams-tier features (shared engrams, future gates)
+ *   mcp-tool-control     — user-configurable MCP tool exposure allowlist
+ *                          (Settings → MCP Tools). Granted to Pro/Teams/Enterprise.
  */
-export type LicenseFeature = 'skill-training' | 'gnn-exploration' | 'foresight' | 'connector-cadence' | 'teams';
+export type LicenseFeature = 'skill-training' | 'gnn-exploration' | 'foresight' | 'connector-cadence' | 'teams' | 'mcp-tool-control';
 
 // ── LicenseValidator ──────────────────────────────────────────────────────────
 

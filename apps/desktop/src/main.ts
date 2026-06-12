@@ -2610,6 +2610,16 @@ const TOOL_INFO: Record<string, { determinism: string; body: string; examples: s
     body: 'Reverts a skill to one of its previous versions. The current version is soft-deleted and the target version is promoted to current. Use skill_history first to find the sourceId of the version you want to roll back to.',
     examples: ['Roll back my code-review skill to last week\'s version — yesterday\'s retrain went sideways.', 'Restore the original onboarding skill — the LLM rewrite drifted.'],
   },
+  save_skill_run: {
+    determinism: 'Deterministic',
+    body: 'Persists the progress of a multi-skill run — the captured variables and which step you reached — so a long procedure can be resumed in a later session instead of restarting. Returns a runId; omit it to start a new run, or pass it back to update an existing one. The AI calls this as it walks a skill.',
+    examples: ['Save where we got to in the release-checklist skill so we can finish tomorrow.', 'Checkpoint this run — we\'re paused waiting on the CI build.'],
+  },
+  resume_skill_run: {
+    determinism: 'Deterministic',
+    body: 'Reloads a saved skill run by its runId — the captured variables, the last completed step, and the next step to continue from — so a multi-step procedure picks up exactly where it left off across sessions.',
+    examples: ['Resume the release-checklist run from yesterday.', 'Continue the onboarding procedure we paused last week.'],
+  },
 };
 
 /** Open the tool-explainer modal for a given MCP tool. */
@@ -2843,6 +2853,8 @@ function activateMode(mode: Mode): void {
     if (host && host.childElementCount === 0) {
       host.innerHTML = mcpToolsOnboardingHtml();
       wireMcpToolsOnboarding(host);
+    } else if (host) {
+      void syncMcpToolToggles(host); // refresh exposure toggles on re-entry
     }
     // Scroll to top on each entry — the tool list is long and a returning
     // user should always start from the top.
@@ -8673,12 +8685,148 @@ function mcpToolsOnboardingHtml(): string {
 /** Wire the ingest button + tool chips inside a container that holds the
  *  onboarding markup. Safe to call multiple times on the same container —
  *  re-rendering the HTML wipes the previous listeners. */
+// No tool is forced on — a subscribed user may disable ANY tool (including
+// recall, e.g. for a "Remember-only" surface). Mirrors the sidecar, which has
+// no always-on set. Kept as an empty set so the toggle-wiring lock checks
+// simply never fire.
+const MCP_ALWAYS_ON_TOOLS = new Set<string>();
+
+// Pull the current denylist from the rendered checkboxes and persist it. The
+// SETTER is Pro/Teams/Enterprise-gated server-side; on a gate it returns
+// upgrade_required, so we surface the upsell and revert to server truth. The
+// UI is never the security boundary — the sidecar filters tools/list + rejects
+// tools/call regardless.
+async function persistMcpToolDenylist(container: HTMLElement): Promise<void> {
+  const disabled = Array.from(container.querySelectorAll<HTMLInputElement>('.mcp-tool-toggle'))
+    .filter((cb) => !cb.checked && !MCP_ALWAYS_ON_TOOLS.has(cb.dataset['tool'] ?? ''))
+    .map((cb) => cb.dataset['tool'] ?? '')
+    .filter(Boolean);
+  try {
+    const res = await ipcCall<{ ok?: boolean; upgrade_required?: boolean; message?: string }>(
+      'ai.setDisabledTools', { tools: disabled },
+    );
+    if (res?.upgrade_required) {
+      showMcpToolUpgradeNote(container, res.message ?? 'Customizing tool exposure is a Pro/Teams/Enterprise feature.');
+      await syncMcpToolToggles(container); // revert to what the server actually stored
+    } else {
+      hideMcpToolUpgradeNote(container);
+    }
+  } catch (e) {
+    console.warn('[mcp-tools] setDisabledTools failed:', e);
+    await syncMcpToolToggles(container);
+  }
+}
+
+// Set checkbox state from the server's stored denylist (the source of truth).
+async function syncMcpToolToggles(container: HTMLElement): Promise<void> {
+  let disabled: string[] = [];
+  try { disabled = (await ipcCall<string[]>('ai.getDisabledTools', {})) ?? []; } catch { /* default: all on */ }
+  const set = new Set(disabled);
+  container.querySelectorAll<HTMLInputElement>('.mcp-tool-toggle').forEach((cb) => {
+    const tool = cb.dataset['tool'] ?? '';
+    cb.checked = MCP_ALWAYS_ON_TOOLS.has(tool) ? true : !set.has(tool);
+  });
+}
+
+function showMcpToolUpgradeNote(container: HTMLElement, msg: string): void {
+  let note = container.querySelector<HTMLElement>('.mcp-tools-upgrade-note');
+  if (!note) {
+    note = document.createElement('div');
+    note.className = 'mcp-tools-upgrade-note';
+    container.querySelector('.g-deck-onboarding-bottom')?.prepend(note);
+  }
+  note.textContent = `🔒 ${msg}`;
+  note.style.display = '';
+}
+function hideMcpToolUpgradeNote(container: HTMLElement): void {
+  const note = container.querySelector<HTMLElement>('.mcp-tools-upgrade-note');
+  if (note) note.style.display = 'none';
+}
+
 function wireMcpToolsOnboarding(container: HTMLElement): void {
   container.querySelector<HTMLButtonElement>('[data-mcp-onboarding-ingest]')
     ?.addEventListener('click', () => els.btnAddFile.click());
-  container.querySelectorAll<HTMLElement>('.g-deck-cmd-chip').forEach((chip) => {
-    chip.addEventListener('click', () => openToolInfoModal(chip.dataset['tool'] ?? ''));
+
+  const chips = Array.from(container.querySelectorAll<HTMLElement>('.g-deck-cmd-chip[data-tool]'));
+  for (const chip of chips) {
+    const tool = chip.dataset['tool'] ?? '';
+    // Inject an exposure toggle (idempotent — skip if already wired).
+    if (!chip.querySelector('.mcp-tool-toggle')) {
+      const cb = document.createElement('input');
+      cb.type = 'checkbox';
+      cb.className = 'mcp-tool-toggle';
+      cb.checked = true;
+      cb.dataset['tool'] = tool;
+      cb.setAttribute('aria-label', `Expose "${tool}" to AI clients`);
+      if (MCP_ALWAYS_ON_TOOLS.has(tool)) {
+        cb.disabled = true;
+        cb.title = 'Always on — required for Graphnosis to function';
+        chip.classList.add('mcp-tool-always-on');
+      }
+      cb.addEventListener('click', (e) => e.stopPropagation()); // toggling must not open the info modal
+      cb.addEventListener('change', () => { void persistMcpToolDenylist(container); });
+      chip.prepend(cb);
+    }
+    // Clicking the chip text still opens its determinism/info modal.
+    chip.addEventListener('click', () => openToolInfoModal(tool));
+  }
+
+  // Per-group "toggle all" on each group label.
+  container.querySelectorAll<HTMLElement>('.g-deck-cmd-group').forEach((group) => {
+    const labelEl = group.querySelector<HTMLElement>('.g-deck-cmd-grouplabel');
+    if (!labelEl || labelEl.querySelector('.mcp-group-toggle')) return;
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'mcp-group-toggle';
+    btn.textContent = 'toggle all';
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const groupCbs = Array.from(group.querySelectorAll<HTMLInputElement>('.mcp-tool-toggle:not(:disabled)'));
+      const anyOn = groupCbs.some((c) => c.checked);
+      groupCbs.forEach((c) => { c.checked = !anyOn; });
+      void persistMcpToolDenylist(container);
+    });
+    labelEl.appendChild(btn);
   });
+
+  // ── Phase 3: quick presets ──────────────────────────────────────────────
+  if (!container.querySelector('.mcp-tools-presets')) {
+    const bottom = container.querySelector('.g-deck-onboarding-bottom');
+    const bar = document.createElement('div');
+    bar.className = 'mcp-tools-presets';
+    bar.innerHTML = '<span class="mcp-tools-presets-label">Quick presets:</span>';
+    const mkPreset = (label: string, title: string, apply: () => void): HTMLButtonElement => {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'mcp-preset-btn';
+      b.textContent = label;
+      b.title = title;
+      b.addEventListener('click', () => { apply(); void persistMcpToolDenylist(container); });
+      return b;
+    };
+    const toggles = (): HTMLInputElement[] =>
+      Array.from(container.querySelectorAll<HTMLInputElement>('.mcp-tool-toggle:not(:disabled)'));
+    // Read surface — AI clients can read/search memory but not change it.
+    const RECALL_TOOLS = new Set([
+      'recall', 'remind', 'dig_deeper', 'recall_structured', 'recall_with_citations',
+      'recall_source', 'find_source', 'list_engrams', 'browse_engram', 'recent',
+      'get_engram_schema', 'suggest_engram', 'compare_engrams', 'cross_search',
+      'stats', 'vitality', 'engram_summary',
+    ]);
+    // Write surface — AI clients can save/correct memory but not read it back.
+    const REMEMBER_TOOLS = new Set(['remember', 'ingest_batch', 'edit', 'apply']);
+    const applyPreset = (keep: Set<string>): void =>
+      toggles().forEach((c) => { c.checked = keep.has(c.dataset['tool'] ?? ''); });
+    bar.appendChild(mkPreset('Expose all', 'Make every tool available to AI clients',
+      () => toggles().forEach((c) => { c.checked = true; })));
+    bar.appendChild(mkPreset('Recall-only', 'AI clients can read/search your memory but not change it',
+      () => applyPreset(RECALL_TOOLS)));
+    bar.appendChild(mkPreset('Remember-only', 'AI clients can save to your memory but not read it back',
+      () => applyPreset(REMEMBER_TOOLS)));
+    bottom?.prepend(bar);
+  }
+
+  void syncMcpToolToggles(container);
 }
 
 function renderDeck(): void {
