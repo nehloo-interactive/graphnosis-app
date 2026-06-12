@@ -11,6 +11,23 @@ Conventions: **Added** = new features, **Changed** = behavior or UX shifts, **Fi
 
 ---
 
+## v1.15.1 — Smoother skill-pack imports
+
+<p style="margin-top:0.5rem;font-size:1.25em;opacity:0.85;">2026-06-12</p>
+
+### Fixed
+
+- **Importing a skill pack (.gsk) now updates the Skills library immediately** — the new engram and its skills appear right after import, instead of only after switching tabs and back.
+- **A progress notification stays up for the whole import**, so a large pack ingesting no longer looks like nothing is happening — it shows what's importing and where, then reports the result.
+- **The import dialog scrolls** when a pack contains many skills — the destination picker and the Import button stay reachable no matter how long the list.
+- **"New skill" now clears the trainer form** — the previously open skill's text and name no longer linger when you start a fresh one.
+
+### Internal
+
+- More reliable Windows release builds — Rust build caching cuts the cold compile from ~50 minutes to a few, plus per-job build timeouts so a stuck build fails fast.
+
+---
+
 ## v1.15.0 — Memory-trained Skills + choose which tools your AI sees
 
 <p style="margin-top:0.5rem;font-size:1.25em;opacity:0.85;">2026-06-11</p>
