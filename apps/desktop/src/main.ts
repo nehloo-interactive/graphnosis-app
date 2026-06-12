@@ -999,12 +999,39 @@ function gAlert(title: string, body: string): Promise<void> {
  *  paths stripped. NEVER leak the cortex path (e.g. `…/sidecar.sock`) on screen —
  *  it's a privacy leak in recordings/demos. Use this at EVERY error render site
  *  (banner + per-pane error states), not just showError. */
+const MEMORY_ENGINE_TRANSIENT_MSG = 'Lost connection to the memory engine for a moment — it should recover on its own. If it persists, relaunch the app.';
 function sanitizeErrorForDisplay(msg: string): string {
   if (/connect to sidecar|sidecar\.sock|ECONNREFUSED|ENOENT.*sock|did not respond|broken pipe|not connected/i.test(msg)) {
-    return 'Lost connection to the memory engine for a moment — it should recover on its own. If it persists, relaunch the app.';
+    return MEMORY_ENGINE_TRANSIENT_MSG;
   }
   return msg.replace(/\/[\w.@-]+(?:\/[\w.@-]+)+/g, '…'); // strip absolute paths
 }
+
+// Debounce the self-healing "lost connection" banner. The sidecar is single-
+// threaded: a heavy operation (skill training, TF-IDF rebuild, a big embedding
+// pass) parks its event loop for a few seconds, during which the frontend's 3 s
+// background pollers race against it and time out — surfacing this message even
+// though nothing is actually wrong (it self-recovers the moment the loop frees).
+// Showing a red "lost connection" banner during a SUCCESSFUL operation is a
+// false alarm. So we only show it once the connection has been failing
+// CONTINUOUSLY for a sustained window (longer than any normal event-loop park);
+// a genuine outage still surfaces, transient parks no longer do. Any non-
+// connection error, or a cleared banner, resets the streak immediately.
+const CONN_ERR_SUSTAINED_MS = 10_000; // must fail this long before we alarm
+const CONN_ERR_IDLE_RESET_MS = 8_000; // a quiet gap this long = recovered → reset
+let connErrStreakStart = 0;
+let connErrLastAt = 0;
+function connErrorSustained(): boolean {
+  const now = Date.now();
+  // First failure, or the streak went quiet long enough to count as recovered:
+  // start a fresh streak.
+  if (connErrStreakStart === 0 || now - connErrLastAt > CONN_ERR_IDLE_RESET_MS) {
+    connErrStreakStart = now;
+  }
+  connErrLastAt = now;
+  return now - connErrStreakStart >= CONN_ERR_SUSTAINED_MS;
+}
+function resetConnErrorStreak(): void { connErrStreakStart = 0; connErrLastAt = 0; }
 
 function showError(msg: string | null): void {
   // Target whichever banner sits inside the currently-visible view. When
@@ -1017,6 +1044,7 @@ function showError(msg: string | null): void {
   inactive.textContent = '';
   inactive.classList.add('hidden');
   if (!msg) {
+    resetConnErrorStreak();
     active.textContent = '';
     active.classList.add('hidden');
     return;
@@ -1027,6 +1055,14 @@ function showError(msg: string | null): void {
   // path-free message (and they self-recover); any other message has absolute
   // filesystem paths stripped. The dev terminal still has the full error.
   msg = sanitizeErrorForDisplay(msg);
+  // Self-healing connection blips: suppress until the failure is sustained, so a
+  // busy-sidecar park (e.g. skill training) doesn't flash a false "lost
+  // connection" banner. Any other error resets the streak and shows immediately.
+  if (msg === MEMORY_ENGINE_TRANSIENT_MSG) {
+    if (!connErrorSustained()) return;
+  } else {
+    resetConnErrorStreak();
+  }
   // Build the banner with a dismiss button so the user can clear the
   // error without having to lock/unlock or navigate away.
   active.textContent = '';
@@ -5241,10 +5277,17 @@ function renderSettingsGraphsList(): void {
     span.style.cursor = 'pointer';
     span.addEventListener('click', () => {
       const graphId = span.dataset['sgrId'] ?? '';
-      const current = span.textContent ?? '';
+      // Edit the RAW display name, not the presentation label. formatEngramLabel()
+      // prefixes skill-template engrams with a 🛠️ icon, so span.textContent is
+      // e.g. "🛠️ Graphnosis Skills". Pre-filling that meant the user was editing
+      // INTO the decorated string — baking the wrench into the stored displayName
+      // and making the rename round-trip misbehave on skill engrams. We pre-fill
+      // the clean name and re-decorate only on render.
+      const gRow = loadedGraphs.find((x) => x.graphId === graphId);
+      const currentRaw = gRow?.metadata.displayName ?? graphId;
       const input = document.createElement('input');
       input.type = 'text';
-      input.value = current;
+      input.value = currentRaw;
       input.className = 'sgr-rename-input';
       span.replaceWith(input);
       input.focus();
@@ -5252,13 +5295,12 @@ function renderSettingsGraphsList(): void {
 
       const commit = async () => {
         const newName = input.value.trim();
-        if (!newName || newName === current) { input.replaceWith(span); return; }
+        if (!newName || newName === currentRaw) { input.replaceWith(span); return; }
         input.disabled = true;
         try {
           await invoke('rename_graph', { graphId, displayName: newName });
-          const g = loadedGraphs.find((x) => x.graphId === graphId);
-          if (g) g.metadata.displayName = newName;
-          span.textContent = newName;
+          if (gRow) { gRow.metadata.displayName = newName; span.textContent = formatEngramLabel(gRow); }
+          else span.textContent = newName;
         } catch (e) {
           showError(`Could not rename: ${e}`);
         } finally {
@@ -22205,6 +22247,43 @@ document.getElementById('chk-whats-new-dismiss')?.addEventListener('change', (e)
 document.getElementById('whats-new-modal')?.addEventListener('click', (e) => {
   if (e.target === e.currentTarget) hideWhatsNewModal();
 });
+
+// ── Modal-blur driver ────────────────────────────────────────────────────────
+// The main-content blur shown behind any open modal/overlay used to be driven
+// purely by a CSS `body:has(.modal-backdrop:not(.hidden):not(.over-sidebar))
+// main { filter: blur }` selector. WebKit's :has() style invalidation can go
+// stale when a modal is toggled during heavy DOM churn — in particular the
+// whats-new overlay that auto-opens during the unlock view-swap on a fresh
+// install — leaving `main` permanently blurred with NO visible dialog to
+// dismiss (filter:blur doesn't capture pointer events, so the app stays fully
+// clickable but blurry). We instead toggle an explicit `has-modal-blur` class
+// on <body>, recomputed from ACTUAL rendered visibility. This is immune to
+// :has() staleness AND to any modal that hides itself via inline style instead
+// of the `.hidden` class. All modal-backdrops + the whats-new overlay are
+// static, direct children of <body>, so a per-element observer is cheap and
+// fires only on their own class/style changes (no app-wide mutation churn).
+const modalBlurEls = document.querySelectorAll<HTMLElement>('.modal-backdrop, #whats-new-modal');
+function syncModalBlur(): void {
+  const anyOpen = Array.from(modalBlurEls).some((el) => {
+    // .over-sidebar modals are scoped to a sidebar section — they never blur
+    // the whole view (mirrors the old :not(.over-sidebar) in the selector).
+    if (el.classList.contains('over-sidebar')) return false;
+    const s = getComputedStyle(el);
+    if (s.display === 'none' || s.visibility === 'hidden') return false;
+    // Require ACTUAL rendered size. A modal can be display:flex yet lay out at
+    // 0×0 (e.g. a position:fixed; inset:0 overlay collapsed by a broken
+    // containing block) — invisible to the user, no card, click-through. Blurring
+    // `main` for such a phantom modal produced exactly the "whole app is blurry
+    // but clickable with no dialog to close" bug. Only blur for a modal that is
+    // genuinely occupying space on screen.
+    const r = el.getBoundingClientRect();
+    return r.width > 0 && r.height > 0;
+  });
+  document.body.classList.toggle('has-modal-blur', anyOpen);
+}
+const modalBlurObserver = new MutationObserver(syncModalBlur);
+modalBlurEls.forEach((el) => modalBlurObserver.observe(el, { attributes: true, attributeFilter: ['class', 'style'] }));
+syncModalBlur();
 
 // ── Paywall buttons ─────────────────────────────────────────────────────────
 

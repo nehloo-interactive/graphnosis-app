@@ -1388,10 +1388,19 @@
       }
       /* Blur the main content whenever a full-screen modal or the studio intro
          overlay is visible. Excludes .over-sidebar modals (position:absolute,
-         scoped to a sidebar section — no need to blur the whole view). */
+         scoped to a sidebar section — no need to blur the whole view).
+
+         Driven by an explicit body class (set by syncModalBlur() in main.ts),
+         NOT a `body:has(.modal-backdrop:not(.hidden)) main` selector. WebKit's
+         :has() style invalidation could go stale when a modal was toggled
+         during heavy DOM churn — notably the whats-new overlay that auto-opens
+         during the unlock view-swap on a fresh install — leaving `main` blurred
+         with NO visible dialog to dismiss. (filter:blur doesn't capture pointer
+         events, so the app stayed fully clickable but permanently blurry.) The
+         JS path recomputes from actual rendered visibility, so it can't get
+         stuck. */
       main { transition: filter 0.2s ease; }
-      body:has(.modal-backdrop:not(.hidden):not(.over-sidebar)) main,
-      body:has(#whats-new-modal:not(.hidden)) main { filter: blur(4px); }
+      body.has-modal-blur main { filter: blur(4px); }
       /* Confirmation dialogs that can fire while another modal is open must
          paint above it. settings-modal / recovery-modal are also z-index:100
          but appear later in the DOM, so same-level stacking order would bury
@@ -13027,28 +13036,7 @@ ollama list</code></pre>
           <p class="subtitle">Archive or delete engrams, and clean up quarantined files. Destructive actions require you to type a confirmation phrase.</p>
         </div>
         <div class="modal-body">
-          <!-- Forgotten memories: soft-deleted nodes still on disk.
-               "Purge now" physically rebuilds the engram from the surviving
-               live sources to release space and remove the audit trail.
-               Slow on big engrams; aborts safely if any source can't be
-               re-read. Lives at the top of Cortex Management because it's
-               the most common destructive op (regular forget cycles
-               accumulate soft-deletes faster than corruption or graph
-               restructuring).                                            -->
-          <p class="panel-title" style="margin-top: 0;">Forgotten memories</p>
-          <p class="subtitle" style="font-size: 15px; margin: -4px 0 10px;">
-            Memories you've forgotten are <em>soft-deleted</em>: hidden from recall
-            but still on disk in case you need to undo. <strong>Purge now</strong>
-            rebuilds the engram from its remaining live sources to physically
-            remove them. Slow on big engrams; aborts safely if any source can't
-            be re-read.
-          </p>
-          <div id="g-recap-forgotten" class="g-recap-forgotten hidden"></div>
-          <p id="cm-no-forgotten" class="subtitle" style="font-size: 15px;">
-            Nothing forgotten right now — your engrams are clean.
-          </p>
-
-          <p class="panel-title" style="margin-top: 24px;">Engrams in this cortex</p>
+          <p class="panel-title" style="margin-top: 0;">Engrams in this cortex</p>
           <p class="subtitle" style="font-size: 15px; margin: -4px 0 10px;">
             Archive an engram to hide it from the picker without touching its data.
             Delete permanently removes all memories, sources, and embeddings — this cannot be undone.
@@ -13083,6 +13071,26 @@ ollama list</code></pre>
           <div id="settings-quarantine-list" style="display: flex; flex-direction: column; gap: 6px;">
             <p class="subtitle" style="font-size: 15px;">Loading…</p>
           </div>
+
+          <!-- Forgotten memories: soft-deleted nodes still on disk. Moved to the
+               BOTTOM of Cortex Management (was at the top) per UX preference —
+               engram archive/delete/tier is the primary surface; purge is a
+               cleanup afterthought. "Purge now" rebuilds the engram from its
+               surviving live sources to release space and remove the audit
+               trail; slow on big engrams, aborts safely if a source can't be
+               re-read. -->
+          <p class="panel-title" style="margin-top: 24px;">Forgotten memories</p>
+          <p class="subtitle" style="font-size: 15px; margin: -4px 0 10px;">
+            Memories you've forgotten are <em>soft-deleted</em>: hidden from recall
+            but still on disk in case you need to undo. <strong>Purge now</strong>
+            rebuilds the engram from its remaining live sources to physically
+            remove them. Slow on big engrams; aborts safely if any source can't
+            be re-read.
+          </p>
+          <div id="g-recap-forgotten" class="g-recap-forgotten hidden"></div>
+          <p id="cm-no-forgotten" class="subtitle" style="font-size: 15px;">
+            Nothing forgotten right now — your engrams are clean.
+          </p>
         </div>
         <div class="modal-footer">
           <span class="filler"></span>
@@ -13666,6 +13674,7 @@ ollama list</code></pre>
               <button class="copy-btn" id="btn-copilot-copy-cli-config">Copy</button>
             </div>
           </div>
+        </div>
         <div class="modal-footer">
           <span class="filler"></span>
           <button id="btn-copilot-close">Close</button>
