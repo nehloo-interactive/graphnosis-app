@@ -11,6 +11,24 @@ Conventions: **Added** = new features, **Changed** = behavior or UX shifts, **Fi
 
 ---
 
+## v1.15.2 — Group subscriptions, Teams & Enterprise, domain seat activation
+
+<p style="margin-top:0.5rem;font-size:1.25em;opacity:0.85;">2026-06-12</p>
+
+### Added
+
+- **Teams & Enterprise subscriptions** — Stripe Checkout now supports `teams-monthly`, `teams-annual`, `enterprise-monthly`, and `enterprise-annual` plans with a `?seats=N` quantity parameter. Purchasing a Teams or Enterprise plan automatically creates a group record that the account owner can manage.
+- **Domain allowlist activation** — Organisations can now grant a Pro/Teams seat to anyone at a given domain (e.g. everyone `@company.com`) up to a configured seat cap. Members activate by entering their work email in **Settings → License → Refresh from server**.
+- **Email OTP for domain seats** — To confirm inbox ownership before issuing a domain seat, the app now prompts for a 6-digit code sent to the work address. Entering the code in the new **Verify your work email** section of the License panel completes activation. Codes expire in 10 minutes; up to 5 attempts per code; a Resend button is available.
+- **Enterprise plan tier** — Enterprise tokens carry the `enterprise` feature flag in addition to all Teams features, ready to gate SSO, audit-API access, and compliance features as they ship.
+- **Admin provisioning API** — A new set of `Authorization: Bearer` protected endpoints lets you comp seats, create groups, manage members, set domain allowlists, issue voucher codes, and view the audit log without touching the Stripe dashboard. See the [Teams & Enterprise guide](/teams) for usage examples.
+
+### Security
+
+- Domain seat tokens are only issued after the work email is verified via OTP — prevents anyone who merely knows a colleague's address from claiming their seat.
+
+---
+
 ## v1.15.1 — Smoother skill-pack imports
 
 <p style="margin-top:0.5rem;font-size:1.25em;opacity:0.85;">2026-06-12</p>
