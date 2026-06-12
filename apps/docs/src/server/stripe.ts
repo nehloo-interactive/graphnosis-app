@@ -44,6 +44,14 @@ export function getTeamsAnnualPriceId(env: BillingEnv): string {
   return requireEnv(env, 'STRIPE_PRICE_TEAMS_ANNUAL', 'price_REPLACE_ME');
 }
 
+export function getEnterpriseMonthlyPriceId(env: BillingEnv): string {
+  return requireEnv(env, 'STRIPE_PRICE_ENTERPRISE_MONTHLY', 'price_REPLACE_ME');
+}
+
+export function getEnterpriseAnnualPriceId(env: BillingEnv): string {
+  return requireEnv(env, 'STRIPE_PRICE_ENTERPRISE_ANNUAL', 'price_REPLACE_ME');
+}
+
 export function getBillingBaseUrl(env: BillingEnv): string {
   return requireEnv(env, 'PUBLIC_BILLING_BASE_URL').replace(/\/$/, '');
 }

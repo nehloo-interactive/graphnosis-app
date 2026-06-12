@@ -5,13 +5,15 @@
  * Supports Pro (monthly/annual) and Teams (monthly/annual) plans.
  *
  * Query params:
- *   ?plan=monthly        Pro monthly (default — backward compatible)
- *   ?plan=annual         Pro annual
- *   ?plan=teams-monthly  Teams monthly
- *   ?plan=teams-annual   Teams annual
- *   ?email=foo@bar.com   Optional pre-fill for the Checkout form.
- *   ?seats=N             Seat quantity for teams plans (default: 1).
- *   ?coupon=SLUG         Pre-apply a discount coupon by slug (configured via STRIPE_COUPONS env var).
+ *   ?plan=monthly              Pro monthly (default — backward compatible)
+ *   ?plan=annual               Pro annual
+ *   ?plan=teams-monthly        Teams monthly
+ *   ?plan=teams-annual         Teams annual
+ *   ?plan=enterprise-monthly   Enterprise monthly
+ *   ?plan=enterprise-annual    Enterprise annual
+ *   ?email=foo@bar.com         Optional pre-fill for the Checkout form.
+ *   ?seats=N                   Seat quantity for teams/enterprise plans (default: 1).
+ *   ?coupon=SLUG               Pre-apply a discount coupon by slug (configured via STRIPE_COUPONS env var).
  */
 
 import type { APIRoute } from 'astro';
@@ -21,15 +23,19 @@ import {
   getProAnnualPriceId,
   getTeamsMonthlyPriceId,
   getTeamsAnnualPriceId,
+  getEnterpriseMonthlyPriceId,
+  getEnterpriseAnnualPriceId,
   getBillingBaseUrl,
 } from '../../server/stripe.js';
 import { getEnv } from '../../server/env.js';
 
 const PLAN_CONFIGS = {
-  'monthly':       { tier: 'pro',   billing: 'monthly', features: 'skill-training,gnn-exploration,foresight,connector-cadence' },
-  'annual':        { tier: 'pro',   billing: 'annual',  features: 'skill-training,gnn-exploration,foresight,connector-cadence' },
-  'teams-monthly': { tier: 'teams', billing: 'monthly', features: 'skill-training,gnn-exploration,foresight,connector-cadence,teams' },
-  'teams-annual':  { tier: 'teams', billing: 'annual',  features: 'skill-training,gnn-exploration,foresight,connector-cadence,teams' },
+  'monthly':              { tier: 'pro',        billing: 'monthly', features: 'skill-training,gnn-exploration,foresight,connector-cadence,mcp-tool-control' },
+  'annual':               { tier: 'pro',        billing: 'annual',  features: 'skill-training,gnn-exploration,foresight,connector-cadence,mcp-tool-control' },
+  'teams-monthly':        { tier: 'teams',      billing: 'monthly', features: 'skill-training,gnn-exploration,foresight,connector-cadence,teams,mcp-tool-control' },
+  'teams-annual':         { tier: 'teams',      billing: 'annual',  features: 'skill-training,gnn-exploration,foresight,connector-cadence,teams,mcp-tool-control' },
+  'enterprise-monthly':   { tier: 'enterprise', billing: 'monthly', features: 'skill-training,gnn-exploration,foresight,connector-cadence,teams,enterprise,mcp-tool-control' },
+  'enterprise-annual':    { tier: 'enterprise', billing: 'annual',  features: 'skill-training,gnn-exploration,foresight,connector-cadence,teams,enterprise,mcp-tool-control' },
 } as const;
 
 type PlanKey = keyof typeof PLAN_CONFIGS;
@@ -46,17 +52,19 @@ export const GET: APIRoute = async ({ url, locals }) => {
     const plan: PlanKey = (planParam in PLAN_CONFIGS) ? planParam as PlanKey : 'monthly';
     const config = PLAN_CONFIGS[plan];
 
-    const priceId = plan === 'monthly'       ? getMonthlySubscriptionPriceId(env)
-                  : plan === 'annual'         ? getProAnnualPriceId(env)
-                  : plan === 'teams-monthly'  ? getTeamsMonthlyPriceId(env)
-                  :                            getTeamsAnnualPriceId(env);
+    const priceId = plan === 'monthly'             ? getMonthlySubscriptionPriceId(env)
+                  : plan === 'annual'               ? getProAnnualPriceId(env)
+                  : plan === 'teams-monthly'        ? getTeamsMonthlyPriceId(env)
+                  : plan === 'teams-annual'         ? getTeamsAnnualPriceId(env)
+                  : plan === 'enterprise-monthly'   ? getEnterpriseMonthlyPriceId(env)
+                  :                                  getEnterpriseAnnualPriceId(env);
 
     const email = url.searchParams.get('email') ?? undefined;
 
-    // Seat quantity: only applied to teams plans; clamped to [1, 500].
-    const isTeamsPlan = config.tier === 'teams';
+    // Seat quantity: applies to teams and enterprise plans; clamped to [1, 500].
+    const isGroupPlan = config.tier === 'teams' || config.tier === 'enterprise';
     const seatsParam  = parseInt(url.searchParams.get('seats') ?? '1', 10);
-    const seats       = isTeamsPlan ? Math.max(1, Math.min(500, Number.isFinite(seatsParam) ? seatsParam : 1)) : 1;
+    const seats       = isGroupPlan ? Math.max(1, Math.min(500, Number.isFinite(seatsParam) ? seatsParam : 1)) : 1;
 
     // Pre-applied coupon: STRIPE_COUPONS env var holds "SLUG=id,SLUG2=id2" pairs.
     const couponSlug = url.searchParams.get('coupon')?.toUpperCase().trim();
@@ -79,7 +87,7 @@ export const GET: APIRoute = async ({ url, locals }) => {
         metadata: {
           features: config.features,
           plan: `${config.tier}-${config.billing}`,
-          ...(isTeamsPlan ? { seats: String(seats) } : {}),
+          ...(isGroupPlan ? { seats: String(seats) } : {}),
         },
       },
       // Allow customers to enter their own promo codes at checkout.

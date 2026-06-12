@@ -27,6 +27,8 @@ export interface BillingEnv {
   STRIPE_PRICE_PRO_ANNUAL?: string;
   STRIPE_PRICE_TEAMS_MONTHLY?: string;
   STRIPE_PRICE_TEAMS_ANNUAL?: string;
+  STRIPE_PRICE_ENTERPRISE_MONTHLY?: string;
+  STRIPE_PRICE_ENTERPRISE_ANNUAL?: string;
   RESEND_FROM_ADDRESS?: string;
   PUBLIC_BILLING_BASE_URL?: string;
   /** Stripe-hosted Customer Portal login URL (billing.stripe.com/p/login/…).
