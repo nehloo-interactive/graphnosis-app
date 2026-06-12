@@ -15,6 +15,7 @@ on:
 jobs:
   build-mac:
     runs-on: macos-latest
+    timeout-minutes: 60
     permissions:
       contents: write
     outputs:
@@ -42,6 +43,11 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: aarch64-apple-darwin
+
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: apps/desktop/src-tauri
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
@@ -198,6 +204,7 @@ jobs:
 
   build-windows:
     runs-on: windows-2022
+    timeout-minutes: 90
     needs: build-mac
     permissions:
       contents: write
@@ -225,6 +232,11 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: x86_64-pc-windows-msvc
+
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: apps/desktop/src-tauri
 
       - name: Install Bun
         uses: oven-sh/setup-bun@v2
@@ -335,6 +347,7 @@ jobs:
 
   build-linux:
     runs-on: ubuntu-22.04
+    timeout-minutes: 60
     needs: build-mac
     permissions:
       contents: write
@@ -372,6 +385,11 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: x86_64-unknown-linux-gnu
+
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: apps/desktop/src-tauri
 
       # Required by src-tauri/build.rs, which bun-compiles the sidecar + MCP
       # relay for the linux target during `cargo build` (maps
