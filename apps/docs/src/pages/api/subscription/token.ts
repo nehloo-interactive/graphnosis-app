@@ -127,7 +127,7 @@ export const GET: APIRoute = async ({ url, locals }) => {
 
         // Auto-mint a token for this domain member
         const ttlDays = effectiveTtlDays(domainRec.ttlDays);
-        const token   = await mintLicenseToken(env, email, domainRec.features, ttlDays, domainRec.plan, false);
+        const token   = await mintLicenseToken(env, email, domainRec.features ?? [], ttlDays, domainRec.plan, false);
         const expSecs = decodeExp(token);
         const pollSecret = randomSecret();
         rec = { token, exp: expSecs, updatedAt: Date.now(), plan: domainRec.plan, pollSecret };
@@ -200,7 +200,7 @@ export const GET: APIRoute = async ({ url, locals }) => {
       }
       await deleteOtp(kv, email);
       const ttlDays2 = effectiveTtlDays(domainRec2.ttlDays);
-      const token2   = await mintLicenseToken(env, email, domainRec2.features, ttlDays2, domainRec2.plan, false);
+      const token2   = await mintLicenseToken(env, email, domainRec2.features ?? [], ttlDays2, domainRec2.plan, false);
       const expSecs2 = decodeExp(token2);
       const pollSecret2 = randomSecret();
       rec = { token: token2, exp: expSecs2, updatedAt: Date.now(), plan: domainRec2.plan, pollSecret: pollSecret2 };

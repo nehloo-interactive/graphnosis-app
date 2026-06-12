@@ -11,6 +11,19 @@ Conventions: **Added** = new features, **Changed** = behavior or UX shifts, **Fi
 
 ---
 
+## v1.15.6 — Domain seat OTP: scroll-into-view + token validation hardening
+
+<p style="margin-top:0.5rem;font-size:1.25em;opacity:0.85;">2026-06-12</p>
+
+### Fixed
+
+- **OTP verification box now scrolls into view automatically** — after clicking "Activate / Refresh" on a domain-allowlist email, the "Verify your work email" section with the 6-digit code input now scrolls into view inside the modal instead of staying below the visible area.
+- **Domain seat tokens with no feature list no longer fail validation** — tokens minted for domain allowlist users are now accepted even if the `features` field is absent (defensive fallback to empty array). Added the same safeguard server-side when minting.
+- **"Resend code" button now uses the domain email you typed**, not the email from any stored subscription — prevents the same email-routing bug fixed in v1.15.5.
+- **OTP verification errors are now specific** — the app shows a distinct message when the token format or signature check fails (rather than "Invalid code"), and logs diagnostic detail to the sidecar console for support investigation.
+
+---
+
 ## v1.15.5 — Domain seat OTP flow fix
 
 <p style="margin-top:0.5rem;font-size:1.25em;opacity:0.85;">2026-06-12</p>

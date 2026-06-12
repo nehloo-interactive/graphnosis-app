@@ -171,8 +171,9 @@ export class LicenseValidator {
       // Reject expired tokens. exp is Unix seconds; Date.now() is milliseconds.
       if (typeof payload.exp !== 'number' || payload.exp < Date.now() / 1000) return null;
 
-      // Sanity-check required fields.
-      if (!Array.isArray(payload.features)) return null;
+      // features may be absent in legacy tokens — default to empty array rather than
+      // rejecting a legitimately signed token just because the field was omitted.
+      if (!Array.isArray(payload.features)) payload.features = [];
 
       return payload;
     } catch {
