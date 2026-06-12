@@ -87,3 +87,32 @@ export async function getToken(kv: KVNamespace, email: string): Promise<TokenRec
 export async function deleteToken(kv: KVNamespace, email: string): Promise<void> {
   await kv.delete(`token:${email.toLowerCase()}`);
 }
+
+// ── OTP records ───────────────────────────────────────────────────────────────
+// Short-lived (10 min). Used by the domain-allowlist auto-mint path to verify
+// that the user actually owns the email address before issuing a seat token.
+
+export interface OtpRecord {
+  code: string;       // 6-digit string
+  expiresAt: number;  // Unix ms
+  attempts: number;   // incremented on each wrong guess
+}
+
+export const OTP_TTL_SECONDS  = 10 * 60;  // 10 min
+export const OTP_MAX_ATTEMPTS = 5;
+
+export async function putOtp(kv: KVNamespace, email: string, rec: OtpRecord): Promise<void> {
+  await kv.put(`otp:${email.toLowerCase()}`, JSON.stringify(rec), {
+    expirationTtl: OTP_TTL_SECONDS,
+  });
+}
+
+export async function getOtp(kv: KVNamespace, email: string): Promise<OtpRecord | null> {
+  const raw = await kv.get(`otp:${email.toLowerCase()}`);
+  if (!raw) return null;
+  try { return JSON.parse(raw) as OtpRecord; } catch { return null; }
+}
+
+export async function deleteOtp(kv: KVNamespace, email: string): Promise<void> {
+  await kv.delete(`otp:${email.toLowerCase()}`);
+}

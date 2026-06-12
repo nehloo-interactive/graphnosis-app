@@ -21779,9 +21779,9 @@ async function getBillingEmail(): Promise<string | null> {
   return cached && cached.includes('@') ? cached : null;
 }
 
-async function pollLicenseTokenFromServer(): Promise<void> {
+async function pollLicenseTokenFromServer(): Promise<{ ok: boolean; reason?: string; plan?: string } | null> {
   const email = await getBillingEmail();
-  if (!email) return;
+  if (!email) return null;
   try {
     // Done in the sidecar (Node) — a browser fetch to graphnosis.com is blocked
     // by CORS in BOTH dev (localhost:5173) and the installed app (tauri://…),
@@ -21794,11 +21794,13 @@ async function pollLicenseTokenFromServer(): Promise<void> {
     if (result?.ok) {
       console.log('[license] refreshed from server', result.plan);
       void refreshSettingsLicenseStatus();
-    } else if (result?.reason && result.reason !== 'no_token') {
+    } else if (result?.reason && result.reason !== 'no_token' && result.reason !== 'otp_required') {
       console.warn('[license] server poll:', result.reason);
     }
+    return result ?? null;
   } catch (e) {
     console.warn('[license] poll failed', e);
+    return null;
   }
 }
 
@@ -21913,7 +21915,16 @@ function bindSettingsLicensePanel(): void {
     refreshBtn.disabled = true;
     if (feedback) feedback.textContent = 'Asking the billing server…';
     try {
-      await pollLicenseTokenFromServer();
+      const result = await pollLicenseTokenFromServer();
+      if (result?.reason === 'otp_required') {
+        const otpSection = document.getElementById('license-otp-section');
+        const otpEmailDisplay = document.getElementById('license-otp-email-display');
+        if (otpEmailDisplay) otpEmailDisplay.textContent = email;
+        otpSection?.classList.remove('hidden');
+        document.getElementById('settings-license-otp')?.focus();
+        if (feedback) feedback.textContent = 'Check your inbox for a 6-digit code.';
+        return;
+      }
       const status = await ipcLicenseStatus();
       if (feedback) {
         feedback.textContent = status.valid
@@ -21922,6 +21933,74 @@ function bindSettingsLicensePanel(): void {
       }
     } finally {
       refreshBtn.disabled = false;
+    }
+  });
+
+  // ── OTP verification handlers ──────────────────────────────────────────────
+  const otpInput     = document.getElementById('settings-license-otp') as HTMLInputElement | null;
+  const otpSubmitBtn = document.getElementById('btn-settings-license-otp-submit') as HTMLButtonElement | null;
+  const otpResendBtn = document.getElementById('btn-settings-license-otp-resend') as HTMLButtonElement | null;
+  const otpFeedback  = document.getElementById('settings-license-otp-feedback');
+
+  otpInput?.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') otpSubmitBtn?.click();
+  });
+
+  otpSubmitBtn?.addEventListener('click', async () => {
+    const code = otpInput?.value.trim() ?? '';
+    if (!/^\d{6}$/.test(code)) {
+      if (otpFeedback) otpFeedback.textContent = 'Enter the 6-digit code from the email.';
+      return;
+    }
+    const email = (emailInput?.value ?? '').trim() || (await getBillingEmail()) || '';
+    if (!email) return;
+    otpSubmitBtn.disabled = true;
+    if (otpFeedback) otpFeedback.textContent = 'Verifying…';
+    try {
+      const result = await ipcCall<{ ok: boolean; reason?: string; attemptsLeft?: number; plan?: string; pollSecret?: string }>(
+        'license:verifyOtp', { email, code, baseUrl: BILLING_BASE_URL },
+      );
+      if (result?.ok) {
+        if (result.pollSecret) localStorage.setItem(BILLING_POLL_KEY, result.pollSecret);
+        document.getElementById('license-otp-section')?.classList.add('hidden');
+        if (otpInput) otpInput.value = '';
+        if (feedback) feedback.textContent = `Activated — ${result.plan ?? 'Pro'} seat claimed.`;
+        await refreshSettingsLicenseStatus();
+      } else if (result?.reason === 'otp_expired') {
+        if (otpFeedback) otpFeedback.textContent = 'Code expired — click Resend to get a new one.';
+      } else if ((result?.attemptsLeft ?? 1) <= 0) {
+        if (otpFeedback) otpFeedback.textContent = 'Too many wrong attempts — click Resend for a new code.';
+      } else {
+        const left = result?.attemptsLeft;
+        if (otpFeedback) otpFeedback.textContent = left !== undefined
+          ? `Wrong code — ${left} attempt${left === 1 ? '' : 's'} left.`
+          : 'Invalid code. Try again.';
+      }
+    } catch (e) {
+      console.warn('[license] otp verify failed', e);
+      if (otpFeedback) otpFeedback.textContent = 'Verification failed. Try again.';
+    } finally {
+      otpSubmitBtn.disabled = false;
+    }
+  });
+
+  otpResendBtn?.addEventListener('click', async () => {
+    const email = (emailInput?.value ?? '').trim() || (await getBillingEmail()) || '';
+    if (!email) return;
+    otpResendBtn.disabled = true;
+    if (otpFeedback) otpFeedback.textContent = 'Sending…';
+    try {
+      const result = await ipcCall<{ ok: boolean; reason?: string }>(
+        'license:pollServer', { email, baseUrl: BILLING_BASE_URL },
+      );
+      if (result?.reason === 'otp_required') {
+        if (otpFeedback) otpFeedback.textContent = 'New code sent. Check your inbox.';
+        if (otpInput) otpInput.value = '';
+      }
+    } catch (e) {
+      if (otpFeedback) otpFeedback.textContent = 'Failed to resend. Try again.';
+    } finally {
+      otpResendBtn.disabled = false;
     }
   });
 
