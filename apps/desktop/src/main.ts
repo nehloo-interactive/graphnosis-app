@@ -21738,6 +21738,7 @@ const BILLING_BASE_URL: string = (() => {
 })();
 
 const BILLING_EMAIL_KEY = 'billing:email';
+const BILLING_DOMAIN_EMAIL_KEY = 'billing:domainEmail';
 // Per-subscription poll secret, delivered once via the claim deep link. The
 // by-email token poll requires it server-side, so a bare email can't pull a
 // subscriber's token.
@@ -21893,14 +21894,23 @@ function bindSettingsLicensePanel(): void {
   });
 
   const emailInput = document.getElementById('settings-license-email') as HTMLInputElement | null;
+  const domainEmailInput = document.getElementById('settings-license-domain-email') as HTMLInputElement | null;
+  const domainActivateBtn = document.getElementById('btn-settings-license-domain-activate') as HTMLButtonElement | null;
+  const domainFeedback = document.getElementById('settings-license-domain-feedback');
 
-  // Persist the email to localStorage whenever the user edits the field so
-  // the next cortex-unlock poll picks it up automatically.
+  // Persist Stripe email to localStorage on blur.
   emailInput?.addEventListener('blur', () => {
     const v = emailInput.value.trim();
     if (v) localStorage.setItem(BILLING_EMAIL_KEY, v);
   });
 
+  // Persist domain/work email to localStorage on blur.
+  domainEmailInput?.addEventListener('blur', () => {
+    const v = domainEmailInput.value.trim();
+    if (v) localStorage.setItem(BILLING_DOMAIN_EMAIL_KEY, v);
+  });
+
+  // ── Stripe / Pro refresh path ──────────────────────────────────────────────
   refreshBtn?.addEventListener('click', async () => {
     const email = (emailInput?.value ?? '').trim()
       || (await getBillingEmail())
@@ -21917,13 +21927,8 @@ function bindSettingsLicensePanel(): void {
     try {
       const result = await pollLicenseTokenFromServer(email);
       if (result?.reason === 'otp_required') {
-        const otpSection = document.getElementById('license-otp-section');
-        const otpEmailDisplay = document.getElementById('license-otp-email-display');
-        if (otpEmailDisplay) otpEmailDisplay.textContent = email;
-        otpSection?.classList.remove('hidden');
-        otpSection?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
-        document.getElementById('settings-license-otp')?.focus();
-        if (feedback) feedback.textContent = 'Check your inbox for a 6-digit code.';
+        // Stripe emails shouldn't normally need OTP — likely a domain/work email was entered here.
+        if (feedback) feedback.textContent = 'This looks like a domain seat — enter your work email in the "Teams / Enterprise" section below.';
         return;
       }
       if (result?.reason === 'http_429') {
@@ -21942,14 +21947,63 @@ function bindSettingsLicensePanel(): void {
       if (feedback) {
         feedback.textContent = status.valid
           ? `Refreshed — ${status.plan ?? 'Pro'} active.`
-          : 'No subscription found for that email.';
+          : `No subscription found for ${email}.`;
       }
     } finally {
       refreshBtn.disabled = false;
     }
   });
 
-  // ── OTP verification handlers ──────────────────────────────────────────────
+  // ── Domain / work-email activation path ───────────────────────────────────
+  domainActivateBtn?.addEventListener('click', async () => {
+    const email = (domainEmailInput?.value ?? '').trim();
+    if (!email) {
+      domainEmailInput?.focus();
+      if (domainFeedback) domainFeedback.textContent = 'Enter your work email address.';
+      return;
+    }
+    localStorage.setItem(BILLING_DOMAIN_EMAIL_KEY, email);
+    domainActivateBtn.disabled = true;
+    if (domainFeedback) domainFeedback.textContent = 'Sending verification code…';
+    try {
+      // Explicitly omit the poll key — always drive through the domain OTP path.
+      const result = await ipcCall<{ ok: boolean; reason?: string; plan?: string }>(
+        'license:pollServer', { email, baseUrl: BILLING_BASE_URL },
+      );
+      if (result?.reason === 'otp_required') {
+        const otpSection = document.getElementById('license-otp-section');
+        const otpEmailDisplay = document.getElementById('license-otp-email-display');
+        if (otpEmailDisplay) otpEmailDisplay.textContent = email;
+        otpSection?.classList.remove('hidden');
+        otpSection?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+        document.getElementById('settings-license-otp')?.focus();
+        if (domainFeedback) domainFeedback.textContent = 'Check your inbox for a 6-digit code.';
+        return;
+      }
+      if (result?.reason === 'http_402') {
+        if (domainFeedback) domainFeedback.textContent = 'Seat limit reached for this domain. Contact your administrator.';
+        return;
+      }
+      if (result?.reason === 'http_410') {
+        if (domainFeedback) domainFeedback.textContent = 'This address has been revoked. Contact your administrator.';
+        return;
+      }
+      if (result?.reason?.startsWith('http_')) {
+        if (domainFeedback) domainFeedback.textContent = `Server error (${result.reason}). Try again shortly.`;
+        return;
+      }
+      const status = await ipcLicenseStatus();
+      if (domainFeedback) {
+        domainFeedback.textContent = status.valid
+          ? `Activated — ${status.plan ?? 'Pro'} seat active.`
+          : `No domain seat found for ${email}. Check the address or contact your administrator.`;
+      }
+    } finally {
+      domainActivateBtn.disabled = false;
+    }
+  });
+
+  // ── OTP verification handlers (domain path only) ───────────────────────────
   const otpInput     = document.getElementById('settings-license-otp') as HTMLInputElement | null;
   const otpSubmitBtn = document.getElementById('btn-settings-license-otp-submit') as HTMLButtonElement | null;
   const otpResendBtn = document.getElementById('btn-settings-license-otp-resend') as HTMLButtonElement | null;
@@ -21965,19 +22019,22 @@ function bindSettingsLicensePanel(): void {
       if (otpFeedback) otpFeedback.textContent = 'Enter the 6-digit code from the email.';
       return;
     }
-    const email = (emailInput?.value ?? '').trim() || (await getBillingEmail()) || '';
+    // OTP is always for the domain/work email — never the Stripe email.
+    const email = (domainEmailInput?.value ?? '').trim();
     if (!email) return;
     otpSubmitBtn.disabled = true;
     if (otpFeedback) otpFeedback.textContent = 'Verifying…';
     try {
-      const result = await ipcCall<{ ok: boolean; reason?: string; attemptsLeft?: number; plan?: string; pollSecret?: string }>(
+      const result = await ipcCall<{ ok: boolean; reason?: string; attemptsLeft?: number; plan?: string; sub?: string; pollSecret?: string }>(
         'license:verifyOtp', { email, code, baseUrl: BILLING_BASE_URL },
       );
       if (result?.ok) {
         if (result.pollSecret) localStorage.setItem(BILLING_POLL_KEY, result.pollSecret);
+        // After domain activation the work email becomes the primary billing identity.
+        if (result.sub) localStorage.setItem(BILLING_EMAIL_KEY, result.sub);
         document.getElementById('license-otp-section')?.classList.add('hidden');
         if (otpInput) otpInput.value = '';
-        if (feedback) feedback.textContent = `Activated — ${result.plan ?? 'Pro'} seat claimed.`;
+        if (domainFeedback) domainFeedback.textContent = `Activated — ${result.plan ?? 'Pro'} seat claimed.`;
         await refreshSettingsLicenseStatus();
       } else if (result?.reason === 'otp_expired') {
         if (otpFeedback) otpFeedback.textContent = 'Code expired — click Resend to get a new one.';
@@ -22000,9 +22057,8 @@ function bindSettingsLicensePanel(): void {
   });
 
   otpResendBtn?.addEventListener('click', async () => {
-    // Use the explicitly typed email only — falling back to getBillingEmail() would send
-    // the Stripe billing email to the server instead of the domain email being activated.
-    const email = (emailInput?.value ?? '').trim();
+    // OTP is always for the domain/work email.
+    const email = (domainEmailInput?.value ?? '').trim();
     if (!email) return;
     otpResendBtn.disabled = true;
     if (otpFeedback) otpFeedback.textContent = 'Sending…';
@@ -25807,6 +25863,10 @@ function openLicenseModal(): void {
     const emailInput = document.getElementById('settings-license-email') as HTMLInputElement | null;
     if (emailInput && !emailInput.value) {
       emailInput.value = localStorage.getItem(BILLING_EMAIL_KEY) ?? '';
+    }
+    const domainEmailInput = document.getElementById('settings-license-domain-email') as HTMLInputElement | null;
+    if (domainEmailInput && !domainEmailInput.value) {
+      domainEmailInput.value = localStorage.getItem(BILLING_DOMAIN_EMAIL_KEY) ?? '';
     }
   }, 30);
 }
