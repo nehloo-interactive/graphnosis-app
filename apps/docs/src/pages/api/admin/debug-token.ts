@@ -104,8 +104,28 @@ export const GET: APIRoute = async ({ url, request, locals }) => {
     });
   }
 
+  // Decode the stored token payload (base64url → JSON) without verifying the
+  // signature — safe to include in an admin-only diagnostic response.
+  const rawToken: string = (tokenRec as unknown as { token: string }).token ?? '';
+  const tokenFormat: Record<string, unknown> = {
+    length: rawToken.length,
+    dotCount: (rawToken.match(/\./g) ?? []).length,
+    firstChars: rawToken.slice(0, 40),
+    regexOk: /^[A-Za-z0-9_\-]+\.[A-Za-z0-9_\-]+$/.test(rawToken.trim()),
+  };
+  try {
+    const dotIdx = rawToken.lastIndexOf('.');
+    const payloadB64 = rawToken.slice(0, dotIdx);
+    const b64 = payloadB64.replace(/-/g, '+').replace(/_/g, '/');
+    const padded = b64 + '='.repeat((4 - b64.length % 4) % 4);
+    tokenFormat.decodedPayload = JSON.parse(atob(padded));
+  } catch (e) {
+    tokenFormat.decodeError = String(e);
+  }
+
   return json({
     ...trace,
+    tokenFormat,
     step: 'poll_secret_gate',
     result: 'Token exists with pollSecret — would return 200 only if correct key provided, else 204',
   });
