@@ -25795,6 +25795,12 @@ function openLicenseModal(): void {
 function closeLicenseModal(): void {
   const modal = document.getElementById('license-modal');
   if (modal) modal.classList.add('hidden');
+  // Reset OTP section so it doesn't linger on next open.
+  document.getElementById('license-otp-section')?.classList.add('hidden');
+  const otpInput = document.getElementById('settings-license-otp') as HTMLInputElement | null;
+  if (otpInput) otpInput.value = '';
+  const otpFeedback = document.getElementById('settings-license-otp-feedback');
+  if (otpFeedback) otpFeedback.textContent = '';
 }
 
 // ── "Go home" affordances → MemoryStudio ───────────────────────────────────
