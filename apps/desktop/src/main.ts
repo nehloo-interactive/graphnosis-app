@@ -21779,8 +21779,8 @@ async function getBillingEmail(): Promise<string | null> {
   return cached && cached.includes('@') ? cached : null;
 }
 
-async function pollLicenseTokenFromServer(): Promise<{ ok: boolean; reason?: string; plan?: string } | null> {
-  const email = await getBillingEmail();
+async function pollLicenseTokenFromServer(explicitEmail?: string): Promise<{ ok: boolean; reason?: string; plan?: string } | null> {
+  const email = explicitEmail ?? await getBillingEmail();
   if (!email) return null;
   try {
     // Done in the sidecar (Node) — a browser fetch to graphnosis.com is blocked
@@ -21915,7 +21915,7 @@ function bindSettingsLicensePanel(): void {
     refreshBtn.disabled = true;
     if (feedback) feedback.textContent = 'Asking the billing server…';
     try {
-      const result = await pollLicenseTokenFromServer();
+      const result = await pollLicenseTokenFromServer(email);
       if (result?.reason === 'otp_required') {
         const otpSection = document.getElementById('license-otp-section');
         const otpEmailDisplay = document.getElementById('license-otp-email-display');
