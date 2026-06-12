@@ -4385,11 +4385,18 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
       } catch (e) {
         return { ok: false, reason: `fetch_failed: ${(e as Error).message}` };
       }
-      if (!token) return { ok: false, reason: 'no_token' };
+      if (!token) { console.error('[license:pollServer] server returned 200 but no token field'); return { ok: false, reason: 'no_token' }; }
       const trimmed = token.trim();
-      if (!/^[A-Za-z0-9_\-]+\.[A-Za-z0-9_\-]+$/.test(trimmed)) return { ok: false, reason: 'malformed' };
+      const dotCount = (trimmed.match(/\./g) ?? []).length;
+      if (!/^[A-Za-z0-9_\-]+\.[A-Za-z0-9_\-]+$/.test(trimmed)) {
+        console.error('[license:pollServer] token format invalid — len:', trimmed.length, 'dots:', dotCount, 'start:', trimmed.slice(0, 30));
+        return { ok: false, reason: 'malformed' };
+      }
       const payload = deps.licenseValidator?.verifyToken(trimmed) ?? null;
-      if (!payload) return { ok: false, reason: 'invalid_or_expired' };
+      if (!payload) {
+        console.error('[license:pollServer] verifyToken returned null — len:', trimmed.length, 'dots:', dotCount);
+        return { ok: false, reason: 'invalid_or_expired' };
+      }
       await deps.host.setLicenseToken(trimmed);
       return { ok: true, plan: payload.plan, features: payload.features, sub: payload.sub, expiresAt: payload.exp * 1000 };
     }
