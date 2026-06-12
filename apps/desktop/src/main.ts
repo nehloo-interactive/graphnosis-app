@@ -21925,11 +21925,23 @@ function bindSettingsLicensePanel(): void {
         if (feedback) feedback.textContent = 'Check your inbox for a 6-digit code.';
         return;
       }
+      if (result?.reason === 'http_429') {
+        if (feedback) feedback.textContent = 'Too many requests — wait a moment and try again.';
+        return;
+      }
+      if (result?.reason === 'http_410') {
+        if (feedback) feedback.textContent = 'This address has been revoked. Contact your administrator.';
+        return;
+      }
+      if (result?.reason?.startsWith('http_')) {
+        if (feedback) feedback.textContent = `Server error (${result.reason}). Try again shortly.`;
+        return;
+      }
       const status = await ipcLicenseStatus();
       if (feedback) {
         feedback.textContent = status.valid
           ? `Refreshed — ${status.plan ?? 'Pro'} active.`
-          : 'No token found for that email.';
+          : 'No subscription found for that email.';
       }
     } finally {
       refreshBtn.disabled = false;
