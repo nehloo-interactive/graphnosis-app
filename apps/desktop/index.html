@@ -4663,6 +4663,9 @@
       .skills-library-header {
         display: flex; align-items: center; gap: 8px;
         padding: 10px 12px; border-bottom: 1px solid var(--border);
+        /* Sticky stack: header (top) → filters → current engram group header.
+           .skills-library is the scroll container (overflow-y:auto). */
+        position: sticky; top: 0; z-index: 4; background: var(--bg-elev);
       }
       .skills-library-title { font-weight: 600; font-size: 13px; }
       .skills-library-count {
@@ -4682,6 +4685,53 @@
         padding: 6px 10px; border-top: 1px solid var(--border);
         text-align: right;
       }
+
+      /* ── Filter row (name search + engram dropdown) ─────────────────────── */
+      .skills-library-filters {
+        display: flex; align-items: center; gap: 6px;
+        padding: 8px 12px; border-bottom: 1px solid var(--border);
+        /* top = measured header height (set by updateSkillsStickyOffsets); the
+           fallback only applies for the first paint before JS measures. */
+        position: sticky; top: var(--lib-header-h, 44px); z-index: 3; background: var(--bg-elev);
+      }
+      .skills-library-filter-input {
+        flex: 1; min-width: 0; font-size: 12px;
+        padding: 4px 8px; border-radius: 6px;
+        border: 1px solid var(--border); background: var(--bg); color: var(--fg);
+      }
+      .skills-library-filter-input::placeholder { color: var(--fg-dim); }
+      .skills-library-engram-select { font-size: 11px; padding: 3px 6px; max-width: 46%; }
+
+      /* ── Engram grouping layer (one expandable section per skill engram) ─── */
+      .skill-engram-group { border-radius: 6px; }
+      .skill-engram-group + .skill-engram-group { margin-top: 6px; }
+      .skill-engram-group-toggle {
+        display: flex; align-items: center; gap: 8px; width: 100%;
+        padding: 6px 8px; cursor: pointer; text-align: left;
+        /* Opaque (layered on bg-elev, not transparent) so scrolled rows don't
+           bleed through while it's stuck. Sticks just below header + filters. */
+        background: color-mix(in oklab, var(--fg) 5%, var(--bg-elev));
+        border: 1px solid var(--border); border-radius: 6px;
+        color: var(--fg); font-size: 12px; font-weight: 600;
+        /* top = measured header + filters height (set by updateSkillsStickyOffsets). */
+        position: sticky; top: var(--lib-sticky-h, 88px); z-index: 2;
+      }
+      .skill-engram-group-toggle:hover { background: color-mix(in oklab, var(--fg) 9%, var(--bg-elev)); }
+      .skill-engram-group-arrow {
+        display: inline-block; transition: transform 120ms ease;
+        color: var(--fg-dim); font-size: 10px;
+      }
+      .skill-engram-group.expanded > .skill-engram-group-toggle .skill-engram-group-arrow { transform: rotate(90deg); }
+      .skill-engram-group-name {
+        flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+      }
+      .skill-engram-group-count {
+        font-size: 11px; color: var(--fg-dim); font-weight: 500;
+        background: color-mix(in oklab, var(--ok) 14%, transparent);
+        padding: 1px 7px; border-radius: 10px;
+      }
+      .skill-engram-group-children { display: none; padding: 6px 0 2px 6px; }
+      .skill-engram-group.expanded > .skill-engram-group-children { display: block; }
 
       /* ── Skill group (parent + collapsible trained children) ─────────────── */
       .skill-group { border-radius: 6px; overflow: hidden; }
@@ -10049,9 +10099,9 @@
               <span class="rail-label">Sources</span>
               <span></span>
             </button>
-            <button class="rail-btn" data-mode="skills" title="Skills w/ Goals — train and run your stored procedures (SOPs)">
+            <button class="rail-btn" data-mode="skills" title="Memory-trained Skills — train and run your stored procedures (SOPs)">
               <span class="rail-icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 10L12 5 2 10l10 5 10-5z"/><path d="M6 12v5c0 1 2.7 3 6 3s6-2 6-3v-5"/></svg></span>
-              <span class="rail-label">Skills w/ Goals</span>
+              <span class="rail-label">Memory-trained Skills</span>
               <span></span>
             </button>
             <button class="rail-btn" data-mode="goals" title="Foresight — predict the future from your growing memory (develop · predict · insights)">
@@ -10465,7 +10515,7 @@
                             <!-- LEFT: Library of trained skills -->
                             <aside class="skills-library">
                               <div class="skills-library-header">
-                                <span class="skills-library-title">Your Skills w/ Goals</span>
+                                <span class="skills-library-title">Memory-trained Skills</span>
                                 <span id="skills-library-count" class="skills-library-count">—</span>
                                 <select id="skills-library-sort" class="studio-select skills-library-sort">
                                   <option value="recent">Most recent</option>
@@ -10473,6 +10523,13 @@
                                   <option value="name">Name A→Z</option>
                                 </select>
                                 <button id="btn-skills-library-refresh" class="btn-ghost btn-sm" title="Recompute vitality for visible skills">↻</button>
+                              </div>
+                              <div class="skills-library-filters">
+                                <input id="skills-library-filter" class="skills-library-filter-input" type="search"
+                                       placeholder="Filter by name…" aria-label="Filter skills by name" autocomplete="off" spellcheck="false" />
+                                <select id="skills-library-engram-filter" class="studio-select skills-library-engram-select" aria-label="Filter by engram">
+                                  <option value="all">All engrams</option>
+                                </select>
                               </div>
                               <div id="skills-library-list" class="skills-library-list">
                                 <p class="subtitle skills-library-empty">Loading…</p>
