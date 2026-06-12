@@ -11,6 +11,16 @@ Conventions: **Added** = new features, **Changed** = behavior or UX shifts, **Fi
 
 ---
 
+## v1.15.5 — Domain seat OTP flow fix
+
+<p style="margin-top:0.5rem;font-size:1.25em;opacity:0.85;">2026-06-12</p>
+
+### Fixed
+
+- **Domain seat activation now correctly triggers the OTP email** — "Activate / Refresh" was sending the email from any previously stored license token instead of the email address just typed in the field. Users with an old token from a different address would always see "No subscription found" even for a valid domain. The entered address is now used directly.
+
+---
+
 ## v1.15.4 — Domain seat activation fixes & better license error messages
 
 <p style="margin-top:0.5rem;font-size:1.25em;opacity:0.85;">2026-06-12</p>
