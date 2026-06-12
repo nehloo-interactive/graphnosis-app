@@ -11,6 +11,20 @@ Conventions: **Added** = new features, **Changed** = behavior or UX shifts, **Fi
 
 ---
 
+## v1.15.3 — License panel polish
+
+<p style="margin-top:0.5rem;font-size:1.25em;opacity:0.85;">2026-06-12</p>
+
+### Changed
+
+- **Settings menu item renamed to "Graphnosis Premium Plans"** — reflects that Pro, Teams, and Enterprise are all managed from the same panel.
+- **License panel updated throughout** — heading, subtitle, and subscribe section now mention all three plan tiers instead of Pro only.
+- **"Activate or refresh your license" section** replaces the old "Refresh from billing server" label. The description now explains all three paths: Stripe receipt email (Pro), team invitation email (Teams), or work address (Enterprise domain seat). The email field and button labels are clearer about what to enter and what happens next.
+- **Email and token fields are now full-width** — the email input and the paste-token textarea both fill the modal width for easier typing and pasting.
+- **OTP verification section fixed** — the "Verify your work email" section no longer appears pre-emptively when the panel opens; it only surfaces after the server confirms a domain seat is available and a code has been sent.
+
+---
+
 ## v1.15.2 — Group subscriptions, Teams & Enterprise, domain seat activation
 
 <p style="margin-top:0.5rem;font-size:1.25em;opacity:0.85;">2026-06-12</p>
