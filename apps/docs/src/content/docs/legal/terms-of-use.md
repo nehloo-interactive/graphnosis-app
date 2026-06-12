@@ -47,11 +47,11 @@ Graphnosis™, the Graphnosis logo, and "Nehloo Interactive" are trademarks of N
 
 ---
 
-## 3. Early access and alpha status
+## 3. Data integrity and backups
 
-**Graphnosis is currently in private alpha.** The Software is provided for evaluation purposes. Features may change, be removed, or behave unexpectedly. Data formats may change between versions in ways that require migration or cause data loss.
+Graphnosis is actively developed. Updates may occasionally change internal data formats in ways that require a migration step. Nehloo Interactive applies automatic migrations where possible; in rare cases a migration may not be fully reversible.
 
-**You are strongly advised to maintain independent backups of any content you ingest into Graphnosis.** Do not rely on Graphnosis as your sole copy of important data.
+**Maintain independent backups of your cortex folder.** Do not rely on Graphnosis as your sole copy of important data.
 
 ---
 
