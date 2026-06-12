@@ -68,9 +68,13 @@ export const GET: APIRoute = async ({ url, locals }) => {
   if (!rec) {
     const domain     = email.split('@')[1] ?? '';
     const domainRec  = domain ? await getDomain(kv, domain) : null;
+    if (!domainRec) {
+      console.log('[billing token] no domain record for', domain, '— returning 204');
+    }
     if (domainRec) {
       const group = await getGroup(kv, domainRec.groupId);
       if (!group) {
+        console.warn('[billing token] domain record exists but group missing — groupId:', domainRec.groupId);
         // Domain record exists but group was deleted — skip auto-mint
       } else if (group.members.length >= group.seatCount) {
         return new Response(

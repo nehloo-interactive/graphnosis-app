@@ -11,6 +11,17 @@ Conventions: **Added** = new features, **Changed** = behavior or UX shifts, **Fi
 
 ---
 
+## v1.15.4 — Domain seat activation fixes & better license error messages
+
+<p style="margin-top:0.5rem;font-size:1.25em;opacity:0.85;">2026-06-12</p>
+
+### Fixed
+
+- **"Activate / Refresh" now shows the real reason when activation fails** — rate limiting shows "Too many requests — wait a moment and try again", revoked addresses show a clear message, and server errors report the HTTP status instead of the generic "No token found."
+- **Domain seat OTP flow no longer silently drops** — the server now logs the domain lookup result on every token poll so failures are visible in the worker tail.
+
+---
+
 ## v1.15.3 — License panel polish
 
 <p style="margin-top:0.5rem;font-size:1.25em;opacity:0.85;">2026-06-12</p>
