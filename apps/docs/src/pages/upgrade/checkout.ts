@@ -10,6 +10,8 @@
  *   ?plan=teams-monthly  Teams monthly
  *   ?plan=teams-annual   Teams annual
  *   ?email=foo@bar.com   Optional pre-fill for the Checkout form.
+ *   ?seats=N             Seat quantity for teams plans (default: 1).
+ *   ?coupon=SLUG         Pre-apply a discount coupon by slug (configured via STRIPE_COUPONS env var).
  */
 
 import type { APIRoute } from 'astro';
@@ -51,19 +53,37 @@ export const GET: APIRoute = async ({ url, locals }) => {
 
     const email = url.searchParams.get('email') ?? undefined;
 
+    // Seat quantity: only applied to teams plans; clamped to [1, 500].
+    const isTeamsPlan = config.tier === 'teams';
+    const seatsParam  = parseInt(url.searchParams.get('seats') ?? '1', 10);
+    const seats       = isTeamsPlan ? Math.max(1, Math.min(500, Number.isFinite(seatsParam) ? seatsParam : 1)) : 1;
+
+    // Pre-applied coupon: STRIPE_COUPONS env var holds "SLUG=id,SLUG2=id2" pairs.
+    const couponSlug = url.searchParams.get('coupon')?.toUpperCase().trim();
+    let discounts: { coupon: string }[] | undefined;
+    if (couponSlug && env.STRIPE_COUPONS) {
+      const couponMap = parseCouponMap(env.STRIPE_COUPONS);
+      const couponId  = couponMap[couponSlug];
+      if (couponId) discounts = [{ coupon: couponId }];
+    }
+
     const session = await stripe.checkout.sessions.create({
       mode: 'subscription',
       payment_method_types: ['card'],
-      line_items: [{ price: priceId, quantity: 1 }],
+      line_items: [{ price: priceId, quantity: seats }],
       ...(email ? { customer_email: email } : {}),
+      ...(discounts ? { discounts } : {}),
       success_url: `${baseUrl}/upgrade/success?session_id={CHECKOUT_SESSION_ID}`,
       cancel_url:  `${baseUrl}/upgrade/cancelled`,
       subscription_data: {
         metadata: {
           features: config.features,
           plan: `${config.tier}-${config.billing}`,
+          ...(isTeamsPlan ? { seats: String(seats) } : {}),
         },
       },
+      // Allow customers to enter their own promo codes at checkout.
+      allow_promotion_codes: !discounts,
       // Tax collection is off for now — Graphnosis is treated as a cloud
       // service (not "prewritten software taken into possession"), so
       // Indiana DOR likely doesn't require a sales tax permit for it, and
@@ -88,3 +108,16 @@ export const GET: APIRoute = async ({ url, locals }) => {
     );
   }
 };
+
+/** Parse "SLUG=id,SLUG2=id2" into { SLUG: "id", SLUG2: "id2" }. */
+function parseCouponMap(raw: string): Record<string, string> {
+  const map: Record<string, string> = {};
+  for (const pair of raw.split(',')) {
+    const eq = pair.indexOf('=');
+    if (eq === -1) continue;
+    const slug = pair.slice(0, eq).trim().toUpperCase();
+    const id   = pair.slice(eq + 1).trim();
+    if (slug && id) map[slug] = id;
+  }
+  return map;
+}

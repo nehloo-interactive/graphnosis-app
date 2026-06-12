@@ -96,8 +96,9 @@ export interface LicensePayload {
  *   teams                — Teams-tier features (shared engrams, future gates)
  *   mcp-tool-control     — user-configurable MCP tool exposure allowlist
  *                          (Settings → MCP Tools). Granted to Pro/Teams/Enterprise.
+ *   beta                 — Early-access / in-progress features for select users
  */
-export type LicenseFeature = 'skill-training' | 'gnn-exploration' | 'foresight' | 'connector-cadence' | 'teams' | 'mcp-tool-control';
+export type LicenseFeature = 'skill-training' | 'gnn-exploration' | 'foresight' | 'connector-cadence' | 'teams' | 'mcp-tool-control' | 'beta';
 
 // ── LicenseValidator ──────────────────────────────────────────────────────────
 

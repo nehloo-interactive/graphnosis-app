@@ -28,6 +28,10 @@ import { getStripe, getWebhookSecret } from '../../../server/stripe.js';
 import { mintLicenseToken, type LicensePayload } from '../../../server/sign.js';
 import { putToken, getToken, deleteToken, type TokenRecord } from '../../../server/kv.js';
 import { getEnv, requireEnv, requireKv } from '../../../server/env.js';
+import {
+  getGroupBySubscription, putGroup, putGroupSubscriptionIndex,
+  randomHex, writeAudit, type GroupRecord,
+} from '../../../server/groups.js';
 
 export const prerender = false;
 
@@ -175,6 +179,44 @@ async function mintAndPersist(
   };
   await putToken(kv, email, record);
   console.log('[billing webhook] token persisted for', email);
+
+  // ── Teams plan: create or update the GroupRecord ──────────────────────────
+  if (plan.startsWith('teams') && sub) {
+    const seatCount = sub.items?.data[0]?.quantity ?? 1;
+    const subId     = sub.id;
+    const existing  = await getGroupBySubscription(kv, subId);
+    if (existing) {
+      // Seat count may have changed (upgrade/downgrade) — update it, but
+      // don't clobber the member list (admin manages members separately).
+      if (existing.seatCount !== seatCount) {
+        existing.seatCount = seatCount;
+        existing.updatedAt = Date.now();
+        await putGroup(kv, existing);
+        console.log('[billing webhook] updated group seatCount to', seatCount, 'for', subId);
+      }
+    } else {
+      const groupId = crypto.randomUUID();
+      const group: GroupRecord = {
+        id: groupId,
+        ownerEmail: email,
+        plan,
+        features,
+        seatCount,
+        members: [{ email }],
+        subscriptionId: subId,
+        adminSecret: randomHex(24),
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+        ttlDays: 35,
+      };
+      await putGroup(kv, group);
+      await putGroupSubscriptionIndex(kv, subId, groupId);
+      await writeAudit(kv, { ts: Date.now(), action: 'group-create', email, groupId,
+        adminNote: `stripe sub=${subId} seatCount=${seatCount}` });
+      console.log('[billing webhook] created group', groupId, 'for', email, 'seats:', seatCount);
+      console.log('[billing webhook] team management URL: /api/groups/' + groupId + '?secret=' + group.adminSecret);
+    }
+  }
 }
 
 /** 32-byte URL-safe random secret (Web Crypto — Worker-safe). */
