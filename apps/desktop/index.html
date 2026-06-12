@@ -11903,7 +11903,7 @@ ollama list</code></pre>
                 <button id="btn-pane-open-license" class="settings-license-launcher-btn" type="button">
                   <span class="settings-license-launcher-icon">🔑</span>
                   <span class="settings-license-launcher-text">
-                    <strong>Graphnosis Pro license</strong>
+                    <strong>Graphnosis Premium Plans</strong>
                     <span class="subtitle" id="settings-pane-license-status" data-pres="surface:license">Manage your subscription token</span>
                   </span>
                   <span class="settings-license-launcher-arrow">›</span>
@@ -12865,11 +12865,11 @@ ollama list</code></pre>
     <div id="license-modal" class="modal-backdrop hidden">
       <div class="modal">
         <div class="modal-header">
-          <h2>Graphnosis Pro license</h2>
+          <h2>Graphnosis Premium Plans</h2>
           <p class="subtitle">
-            Your Pro subscription unlocks Skill training, GNN Exploration, and other paid features.
-            Tokens normally arrive automatically via the magic link we email after checkout, or via
-            the status poll on cortex unlock. Use this panel as a fallback when neither path works.
+            Pro, Teams, and Enterprise subscriptions unlock Skill training, GNN Exploration, and other
+            paid features. Your license token arrives automatically via the magic link we email after
+            checkout, or via the status poll on cortex unlock. Use this panel as a fallback when neither path works.
           </p>
         </div>
         <div class="modal-body">
@@ -12879,13 +12879,13 @@ ollama list</code></pre>
                the CTA in the GNN upgrade card so the path to subscription
                is identical wherever it surfaces. -->
           <div class="settings-section no-top-border license-acquire">
-            <p class="settings-section-label">Subscribe to Pro</p>
+            <p class="settings-section-label">Subscribe</p>
             <p class="subtitle" style="margin-bottom: 10px;">
-              No token yet? Start a Graphnosis Pro subscription — we'll
+              No token yet? Choose a Pro, Teams, or Enterprise plan — we'll
               email you a magic link that activates this app automatically.
             </p>
             <div class="row" style="gap:8px;">
-              <button class="primary" data-pro-upgrade-btn>Upgrade to Pro</button>
+              <button class="primary" data-pro-upgrade-btn>View plans</button>
               <span class="subtitle">opens graphnosis.com/upgrade</span>
             </div>
           </div>
@@ -12894,11 +12894,11 @@ ollama list</code></pre>
             <div id="settings-license-status" class="row" style="margin-bottom: 8px;"></div>
           </div>
           <div class="settings-section license-acquire">
-            <p class="settings-section-label">Refresh from billing server</p>
+            <p class="settings-section-label">Activate or refresh your license</p>
             <p class="subtitle" style="margin-bottom: 10px;">
-              Enter the email on your Stripe receipt. We'll fetch your current token from
-              <code>graphnosis.com</code> and activate it here — useful after a reinstall
-              or if the magic-link email never arrived.
+              Enter your email address below and click Refresh — use the email on your
+              Stripe receipt (Pro), your team invitation (Teams), or your work address
+              (Enterprise domain seat). We'll verify it and activate your license here.
             </p>
             <div class="row" style="margin-bottom: 8px;">
               <label style="display:flex; flex-direction:column; gap:4px; flex:1;">
@@ -12907,12 +12907,12 @@ ollama list</code></pre>
                        autocomplete="email"
                        spellcheck="false"
                        autocapitalize="off"
-                       placeholder="you@example.com"
-                       style="font-size: 13px;" />
+                       placeholder="you@example.com or you@company.com"
+                       style="font-size: 13px; width: 100%;" />
               </label>
             </div>
             <div class="row" style="gap:8px;">
-              <button id="btn-settings-license-refresh" class="primary">Refresh from server</button>
+              <button id="btn-settings-license-refresh" class="primary">Activate / Refresh</button>
               <span id="settings-license-feedback" class="subtitle"></span>
             </div>
           </div>
@@ -12954,7 +12954,7 @@ ollama list</code></pre>
                           rows="4"
                           spellcheck="false"
                           autocapitalize="off"
-                          style="font-family: ui-monospace, monospace; font-size: 11px; word-break: break-all;"
+                          style="font-family: ui-monospace, monospace; font-size: 11px; word-break: break-all; width: 100%;"
                           placeholder="Paste the token from the Stripe success email"></textarea>
               </label>
             </div>
