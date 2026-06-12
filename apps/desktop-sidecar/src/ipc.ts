@@ -4381,8 +4381,14 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
           console.error('[license:pollServer] 204 no token for email:', args.email, '— domain:', args.email.split('@')[1] ?? '(none)');
           return { ok: false, reason: 'no_token' };
         }
-        if (res.status === 202) return { ok: false, reason: 'otp_required' };
-        if (!res.ok) return { ok: false, reason: `http_${res.status}` };
+        if (res.status === 202) {
+          console.error('[license:pollServer] 202 otp_required for email:', args.email);
+          return { ok: false, reason: 'otp_required' };
+        }
+        if (!res.ok) {
+          console.error('[license:pollServer] HTTP', res.status, 'for email:', args.email);
+          return { ok: false, reason: `http_${res.status}` };
+        }
         const data = (await res.json()) as { token?: string };
         token = data.token;
       } catch (e) {
