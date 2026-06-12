@@ -1,4 +1,5 @@
 import net from 'node:net';
+import https from 'node:https';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { markClientActivity, BACKGROUND_POLL_METHODS } from './client-activity.js';
@@ -379,6 +380,92 @@ function startBackgroundIngest(
     }
   })();
   return { accepted: true, jobId };
+}
+
+// Read CA certs from the OS trust store so corporate SSL-inspection proxies
+// (whose root CA is trusted by the OS but not Node's bundled CA list) work.
+// macOS: reads from system keychain via `security` CLI.
+// Windows: delegates to win-ca which reads the Windows Certificate Store.
+// Linux: reads the distro's system PEM bundle file.
+async function getSystemCAs(): Promise<string[]> {
+  if (process.platform === 'darwin') {
+    try {
+      const { execFile } = await import('node:child_process');
+      const { promisify } = await import('node:util');
+      const run = promisify(execFile);
+      const keychains = [
+        '/Library/Keychains/SystemRootCertificates.keychain',
+        '/Library/Keychains/System.keychain',
+      ];
+      const results = await Promise.allSettled(
+        keychains.map((kc) => run('security', ['find-certificate', '-a', '-p', kc])),
+      );
+      const pem: string[] = [];
+      const re = /-----BEGIN CERTIFICATE-----[\s\S]*?-----END CERTIFICATE-----/g;
+      for (const r of results) {
+        if (r.status === 'fulfilled') {
+          let m: RegExpExecArray | null;
+          while ((m = re.exec(r.value.stdout)) !== null) pem.push(m[0]);
+        }
+      }
+      return pem;
+    } catch {
+      return [];
+    }
+  }
+  if (process.platform === 'win32') {
+    try {
+      const winCa = await import('win-ca');
+      const certs: string[] = [];
+      winCa.inject('+');
+      winCa.each((cert: Buffer) => {
+        const b64 = cert.toString('base64').match(/.{1,64}/g)?.join('\n') ?? '';
+        if (b64) certs.push(`-----BEGIN CERTIFICATE-----\n${b64}\n-----END CERTIFICATE-----`);
+      });
+      return certs;
+    } catch {
+      return [];
+    }
+  }
+  if (process.platform === 'linux') {
+    const candidates = [
+      '/etc/ssl/certs/ca-certificates.crt',            // Debian / Ubuntu
+      '/etc/pki/tls/certs/ca-bundle.crt',              // RHEL / CentOS / Fedora
+      '/etc/ssl/ca-bundle.pem',                        // OpenSUSE
+      '/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem', // RHEL alternative
+    ];
+    for (const p of candidates) {
+      try {
+        const pem = await (await import('node:fs')).promises.readFile(p, 'utf8');
+        const certs: string[] = [];
+        const re = /-----BEGIN CERTIFICATE-----[\s\S]*?-----END CERTIFICATE-----/g;
+        let m: RegExpExecArray | null;
+        while ((m = re.exec(pem)) !== null) certs.push(m[0]);
+        if (certs.length > 0) return certs;
+      } catch { /* try next */ }
+    }
+    return [];
+  }
+  return [];
+}
+
+// node:https wrapper that injects system CAs so corporate SSL-inspection
+// proxies work. Returns { status, body }. Rejects on network/timeout error.
+async function httpsGetLicense(url: string, timeoutMs = 15_000): Promise<{ status: number; body: string }> {
+  const systemCAs = await getSystemCAs();
+  const agent = systemCAs.length > 0
+    ? new https.Agent({ ca: [...systemCAs, ...https.globalAgent.options.ca as string[] ?? []] })
+    : undefined;
+  return new Promise((resolve, reject) => {
+    const req = https.get(url, { agent }, (res) => {
+      let body = '';
+      res.setEncoding('utf8');
+      res.on('data', (chunk: string) => { body += chunk; });
+      res.on('end', () => resolve({ status: res.statusCode ?? 0, body }));
+    });
+    req.setTimeout(timeoutMs, () => { req.destroy(new Error('timeout')); });
+    req.on('error', reject);
+  });
 }
 
 export async function dispatch(deps: IpcDeps, method: string, params: unknown): Promise<unknown> {
@@ -4364,8 +4451,9 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
       // blocked by CORS — both in dev (origin http://localhost:5173) AND in the
       // installed app (origin tauri://localhost) — because graphnosis.com only
       // allows its own web origin. Doing the request HERE (Node, no CORS) works
-      // in every build. On success the token is validated + persisted just like
-      // license:setToken.
+      // in every build. Uses node:https (not fetch) so it inherits the system
+      // CA trust store — required on corporate networks with SSL inspection proxies.
+      // On success the token is validated + persisted just like license:setToken.
       const args = z.object({
         email: z.string().min(3),
         key: z.string().optional(),
@@ -4376,23 +4464,26 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
       const url = `${base}/api/subscription/token?email=${encodeURIComponent(args.email)}${keyParam}`;
       let token: string | undefined;
       try {
-        const res = await fetch(url, { method: 'GET' });
-        if (res.status === 204) {
+        const { status, body } = await httpsGetLicense(url);
+        if (status === 204) {
           console.error('[license:pollServer] 204 no token for email:', args.email, '— domain:', args.email.split('@')[1] ?? '(none)');
           return { ok: false, reason: 'no_token' };
         }
-        if (res.status === 202) {
+        if (status === 202) {
           console.error('[license:pollServer] 202 otp_required for email:', args.email);
           return { ok: false, reason: 'otp_required' };
         }
-        if (!res.ok) {
-          console.error('[license:pollServer] HTTP', res.status, 'for email:', args.email);
-          return { ok: false, reason: `http_${res.status}` };
+        if (status < 200 || status >= 300) {
+          console.error('[license:pollServer] HTTP', status, 'for email:', args.email);
+          return { ok: false, reason: `http_${status}` };
         }
-        const data = (await res.json()) as { token?: string };
+        const data = JSON.parse(body) as { token?: string };
         token = data.token;
       } catch (e) {
-        return { ok: false, reason: `fetch_failed: ${(e as Error).message}` };
+        const msg = (e as Error).message ?? '';
+        const blocked = /socket.*closed|connection.*reset|ECONNRESET|ECONNREFUSED|network.*changed|timeout/i.test(msg);
+        console.error('[license:pollServer] https error:', msg);
+        return { ok: false, reason: blocked ? 'network_blocked' : `fetch_failed: ${msg}` };
       }
       if (!token) { console.error('[license:pollServer] server returned 200 but no token field'); return { ok: false, reason: 'no_token' }; }
       const trimmed = token.trim();
@@ -4423,17 +4514,20 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
       let token: string | undefined;
       let pollSecret: string | undefined;
       try {
-        const res = await fetch(otpUrl, { method: 'GET' });
-        if (res.status === 401) {
-          const data = (await res.json()) as { error?: string; attemptsLeft?: number };
+        const { status, body } = await httpsGetLicense(otpUrl);
+        if (status === 401) {
+          const data = JSON.parse(body) as { error?: string; attemptsLeft?: number };
           return { ok: false, reason: data.error ?? 'otp_invalid', attemptsLeft: data.attemptsLeft };
         }
-        if (!res.ok) return { ok: false, reason: `http_${res.status}` };
-        const data = (await res.json()) as { token?: string; pollSecret?: string };
+        if (status < 200 || status >= 300) return { ok: false, reason: `http_${status}` };
+        const data = JSON.parse(body) as { token?: string; pollSecret?: string };
         token = data.token;
         pollSecret = data.pollSecret;
       } catch (e) {
-        return { ok: false, reason: `fetch_failed: ${(e as Error).message}` };
+        const msg = (e as Error).message ?? '';
+        const blocked = /socket.*closed|connection.*reset|ECONNRESET|ECONNREFUSED|network.*changed|timeout/i.test(msg);
+        console.error('[license:verifyOtp] https error:', msg);
+        return { ok: false, reason: blocked ? 'network_blocked' : `fetch_failed: ${msg}` };
       }
       if (!token) { console.error('[license:verifyOtp] server returned 200 but no token field'); return { ok: false, reason: 'no_token' }; }
       const trimmed = token.trim();

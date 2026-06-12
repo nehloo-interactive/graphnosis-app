@@ -22019,6 +22019,14 @@ function bindSettingsLicensePanel(): void {
         if (domainFeedback) domainFeedback.textContent = 'This address has been revoked. Contact your administrator.';
         return;
       }
+      if (result?.reason === 'network_blocked') {
+        if (domainFeedback) domainFeedback.textContent = 'Could not reach the license server — your network or firewall may be blocking the connection. Try on a different network, or contact your IT team.';
+        return;
+      }
+      if (result?.reason?.startsWith('fetch_failed')) {
+        if (domainFeedback) domainFeedback.textContent = 'Network error reaching the license server. Check your connection and try again.';
+        return;
+      }
       if (result?.reason?.startsWith('http_')) {
         if (domainFeedback) domainFeedback.textContent = `Server error (${result.reason}). Try again shortly.`;
         return;
@@ -22068,6 +22076,10 @@ function bindSettingsLicensePanel(): void {
         if (otpInput) otpInput.value = '';
         if (domainFeedback) domainFeedback.textContent = `Activated — ${humanizePlanName(result.plan ?? 'Pro')} seat claimed.`;
         await refreshSettingsLicenseStatus();
+      } else if (result?.reason === 'network_blocked') {
+        if (otpFeedback) otpFeedback.textContent = 'Could not reach the license server — your network or firewall may be blocking the connection. Try on a different network.';
+      } else if (result?.reason?.startsWith('fetch_failed')) {
+        if (otpFeedback) otpFeedback.textContent = 'Network error. Check your connection and try again.';
       } else if (result?.reason === 'otp_expired') {
         if (otpFeedback) otpFeedback.textContent = 'Code expired — click Resend to get a new one.';
       } else if (result?.reason === 'malformed' || result?.reason === 'invalid_or_expired') {
