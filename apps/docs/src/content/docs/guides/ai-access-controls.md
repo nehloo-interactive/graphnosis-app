@@ -7,7 +7,7 @@ sidebar:
 
 Graphnosis is **local encrypted memory, indexed for deterministic recall — auditable**. The "auditable" part is enforced by a layered access-control system that sits between your AI client and your cortex. This page explains each layer, what threat it addresses, and where to configure it.
 
-## The five layers, summarised
+## The six layers, summarised
 
 | # | Layer | What it stops | Default |
 |---|------|---------------|---------|
@@ -16,8 +16,9 @@ Graphnosis is **local encrypted memory, indexed for deterministic recall — aud
 | 3 | **Recall rate limit** | Burst attacks (many distinct queries in a short window) | 10 recalls per 60 s per client |
 | 4 | **Session replay blocker** | Systematic memory scraping via repeated near-identical queries | Jaccard ≥ 0.85, blocks the 3rd identical query within a 60-sec window (first two = natural retries) |
 | 5 | **Optional session caps** | Cumulative volume per conversation | Off by default — power users opt in |
+| 6 | **Tool exposure allowlist** | AI clients from calling tools you never meant to expose | All tools on; customizable on Pro/Teams/Enterprise |
 
-Layers compose. A query has to pass every relevant layer before any memory data is returned.
+Layers compose. A query has to pass every relevant layer before any memory data is returned. Layer 6 sits *outside* the others: it decides whether a tool exists for the client to call at all.
 
 > **What's new in v0.10 (later in the cycle):** the consent gate moved from forced phrase-typing to a **one-click in-app prompt** for sensitive-tier access, with **`personal` tier silent by default** (your decision to install Graphnosis + add it to your AI client's config already counts as informed consent for personal data). Phrase typing is preserved as a headless fallback for SSH/CI sessions. Power users who want the old behaviour can flip **"Extra precaution mode"** in Settings → AI to gate `personal` recalls behind the same prompt. See [Layer 2](#2-the-consent-gate) below for the full flow.
 
@@ -190,6 +191,24 @@ Three opt-in caps in **Settings → AI → Optional session caps**. All off by d
 When any enabled cap is exceeded, the sidecar refuses further recall calls until the AI starts a new conversation (which resets the session). The Graphnosis app shows an "AI memory export blocked" toast.
 
 These caps target the residual risk from a *trusted-but-misbehaving* AI client (one that already has consent). In that scenario, the consent gate has already done its job; the caps are belt-and-suspenders.
+
+---
+
+## 6. Tool exposure allowlist (Pro/Teams/Enterprise)
+
+The outermost gate. Every layer above governs what a *recall* returns; this one governs whether a tool even exists for the client to invoke.
+
+In **Settings → MCP Tools**, each Graphnosis tool has an on/off toggle. Disable a tool and it vanishes from the list AI clients see *and* any call to it is rejected — both enforced in the sidecar, so a client with a cached schema still can't reach a disabled tool. The default is everything-on; nothing changes unless you opt in.
+
+Why you'd narrow it:
+
+- **Recall-only** — expose the read and search tools, disable the write ones (`remember`, `edit`, `forget`, …). AI clients can consult your memory but never change it.
+- **Remember-only** — expose only the save tools (`remember`, `ingest_batch`, …) and disable recall. A client can capture into your cortex but can't read it back.
+- **Drop tools you don't use** — e.g. the local-LLM or neural-network tools, or anything you'd rather not hand an AI client.
+
+One-click **presets** (Expose all · Recall-only · Remember-only) and per-group toggles make it quick. No tool is forced on — you can disable any of them, including `recall`. This never breaks the Graphnosis app itself: the app talks to the sidecar directly, not over MCP, so disabling tools only narrows what *AI clients* can do, and **Expose all** restores everything. (Disabling `confirm_data_access` removes only the headless consent fallback used in SSH/CI sessions — the in-app consent prompt is unaffected.)
+
+Choosing your tool surface is a **Pro/Teams/Enterprise** feature. An existing selection is always honored regardless of plan, so downgrading never silently re-exposes a tool you turned off.
 
 ---
 
