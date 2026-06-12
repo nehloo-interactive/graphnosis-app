@@ -12916,7 +12916,7 @@ ollama list</code></pre>
             </div>
           </div>
           <!-- ── Teams / Enterprise — domain seat ──────────────────── -->
-          <div class="settings-section license-acquire">
+          <div class="settings-section">
             <p class="settings-section-label">Teams / Enterprise — domain seat</p>
             <p class="subtitle" style="margin-bottom: 8px;">
               Enter your work email address. We'll send a 6-digit code to verify it
@@ -12997,6 +12997,17 @@ ollama list</code></pre>
             <div class="row" style="gap:8px;">
               <button id="btn-license-manage" class="primary">Manage or cancel subscription</button>
               <span class="subtitle">opens Stripe's billing portal</span>
+            </div>
+          </div>
+          <!-- Reset — always visible; clears stored token + cached emails -->
+          <div class="settings-section" style="border-top: 1px solid var(--border); padding-top: 12px; margin-top: 4px;">
+            <p class="settings-section-label">Reset verification</p>
+            <p class="subtitle" style="margin-bottom: 10px;">
+              If activation isn't working, reset to clear the stored email and license
+              token from this device and start fresh.
+            </p>
+            <div class="row" style="gap:8px;">
+              <button id="btn-license-reset" style="background:none;border:1px solid var(--border);color:var(--fg-muted);font-size:12px;padding:4px 10px;border-radius:6px;cursor:pointer;">Reset and start over</button>
             </div>
           </div>
         </div>

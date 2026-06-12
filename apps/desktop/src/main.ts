@@ -21771,6 +21771,12 @@ async function ipcLicenseSetToken(token: string): Promise<{
   return ipcCall('license:setToken', { token });
 }
 
+async function ipcLicenseClear(): Promise<void> {
+  try { await ipcCall('license:clear', {}); } catch { /* ignore — local cleanup still runs */ }
+  localStorage.removeItem(BILLING_EMAIL_KEY);
+  localStorage.removeItem(BILLING_DOMAIN_EMAIL_KEY);
+}
+
 /** Best-known email for billing — the token's `sub` first, then the cached
  *  value the user typed into the Refresh prompt (if any). */
 async function getBillingEmail(): Promise<string | null> {
@@ -21805,6 +21811,21 @@ async function pollLicenseTokenFromServer(explicitEmail?: string): Promise<{ ok:
   }
 }
 
+/** Disable "Activate work email" when the input matches the currently active sub. */
+function syncDomainActivateBtn(): void {
+  const btn = document.getElementById('btn-settings-license-domain-activate') as HTMLButtonElement | null;
+  const input = document.getElementById('settings-license-domain-email') as HTMLInputElement | null;
+  if (!btn || !input) return;
+  const activeSub = (document.getElementById('license-modal') as HTMLElement | null)?.dataset.activeSub ?? '';
+  btn.disabled = !!activeSub && input.value.trim().toLowerCase() === activeSub.toLowerCase();
+}
+
+/** Turn a raw plan slug into a human-readable label.
+ *  e.g. "enterprise-annual" → "Enterprise Annual", "pro" → "Pro" */
+function humanizePlanName(plan: string): string {
+  return plan.split(/[-_]/).map((w) => w.charAt(0).toUpperCase() + w.slice(1)).join(' ');
+}
+
 /** When subscribed, hide the "get a license" sections (Subscribe / Refresh /
  *  Paste) and show "Manage subscription"; otherwise the reverse. */
 function setLicenseSectionMode(subscribed: boolean): void {
@@ -21820,15 +21841,23 @@ async function refreshSettingsLicenseStatus(): Promise<void> {
   const status = await ipcLicenseStatus();
   if (!status.present) {
     el.innerHTML = '<span class="subtitle">No license stored. Paste a token below or refresh.</span>';
+    (document.getElementById('license-modal') as HTMLElement | null)?.removeAttribute('data-active-sub');
+    syncDomainActivateBtn();
     setLicenseSectionMode(false);
     return;
   }
   if (!status.valid) {
     el.innerHTML = '<span class="subtitle" style="color:var(--error);">Stored token is invalid or expired.</span>';
+    (document.getElementById('license-modal') as HTMLElement | null)?.removeAttribute('data-active-sub');
+    syncDomainActivateBtn();
     setLicenseSectionMode(false);
     return;
   }
   setLicenseSectionMode(true); // active subscription → show manage, hide acquire
+  // Store the active sub email so the domain-activate button can compare against it.
+  const modal = document.getElementById('license-modal');
+  if (modal) modal.dataset.activeSub = status.sub ?? '';
+  syncDomainActivateBtn();
   const expires = status.expiresAt ? new Date(status.expiresAt).toLocaleDateString() : '—';
   const feats = (status.features ?? []).join(', ');
   // "Renews" while the subscription auto-renews; "Expires" once it's set to
@@ -21844,7 +21873,7 @@ async function refreshSettingsLicenseStatus(): Promise<void> {
   // reveal them on a shared screen. Plan + features stay visible.
   el.innerHTML = `
     <div style="display:flex; flex-direction:column; gap:2px;">
-      <span><strong style="color:var(--ok);">${escape(status.plan ?? 'Pro')}</strong> active for <strong data-pres="surface:__licensepii__">${escape(status.sub ?? '')}</strong></span>
+      <span><strong style="color:var(--ok);">${escape(humanizePlanName(status.plan ?? 'Pro'))}</strong> active for <strong data-pres="surface:__licensepii__">${escape(status.sub ?? '')}</strong></span>
       <span class="subtitle">Features: ${escape(feats)} · ${dateLabel} <span data-pres="surface:__licensepii__">${escape(expires)}</span>${warn}</span>
     </div>
   `;
@@ -21874,7 +21903,7 @@ function bindSettingsLicensePanel(): void {
     try {
       const result = await ipcLicenseSetToken(token);
       if (result.ok) {
-        if (feedback) feedback.textContent = `Saved — ${result.plan ?? 'Pro'} active.`;
+        if (feedback) feedback.textContent = `Saved — ${humanizePlanName(result.plan ?? 'Pro')} active.`;
         if (input) input.value = '';
         if (result.sub) {
           localStorage.setItem(BILLING_EMAIL_KEY, result.sub);
@@ -21904,11 +21933,12 @@ function bindSettingsLicensePanel(): void {
     if (v) localStorage.setItem(BILLING_EMAIL_KEY, v);
   });
 
-  // Persist domain/work email to localStorage on blur.
+  // Persist domain/work email to localStorage on blur; sync button state on every keystroke.
   domainEmailInput?.addEventListener('blur', () => {
     const v = domainEmailInput.value.trim();
     if (v) localStorage.setItem(BILLING_DOMAIN_EMAIL_KEY, v);
   });
+  domainEmailInput?.addEventListener('input', () => syncDomainActivateBtn());
 
   // ── Stripe / Pro refresh path ──────────────────────────────────────────────
   refreshBtn?.addEventListener('click', async () => {
@@ -21946,7 +21976,7 @@ function bindSettingsLicensePanel(): void {
       const status = await ipcLicenseStatus();
       if (feedback) {
         feedback.textContent = status.valid
-          ? `Refreshed — ${status.plan ?? 'Pro'} active.`
+          ? `Refreshed — ${humanizePlanName(status.plan ?? 'Pro')} active.`
           : `No subscription found for ${email}.`;
       }
     } finally {
@@ -21996,7 +22026,7 @@ function bindSettingsLicensePanel(): void {
       const status = await ipcLicenseStatus();
       if (domainFeedback) {
         domainFeedback.textContent = status.valid
-          ? `Activated — ${status.plan ?? 'Pro'} seat active.`
+          ? `Activated — ${humanizePlanName(status.plan ?? 'Pro')} seat active.`
           : `No domain seat found for ${email} [${result?.reason ?? 'null'}] — check the address or contact your administrator.`;
       }
     } catch (e) {
@@ -22036,7 +22066,7 @@ function bindSettingsLicensePanel(): void {
         if (result.sub) localStorage.setItem(BILLING_EMAIL_KEY, result.sub);
         document.getElementById('license-otp-section')?.classList.add('hidden');
         if (otpInput) otpInput.value = '';
-        if (domainFeedback) domainFeedback.textContent = `Activated — ${result.plan ?? 'Pro'} seat claimed.`;
+        if (domainFeedback) domainFeedback.textContent = `Activated — ${humanizePlanName(result.plan ?? 'Pro')} seat claimed.`;
         await refreshSettingsLicenseStatus();
       } else if (result?.reason === 'otp_expired') {
         if (otpFeedback) otpFeedback.textContent = 'Code expired — click Resend to get a new one.';
@@ -22079,6 +22109,25 @@ function bindSettingsLicensePanel(): void {
     } finally {
       otpResendBtn.disabled = false;
     }
+  });
+
+  // ── Reset button — clears stored token + cached emails ────────────────
+  document.getElementById('btn-license-reset')?.addEventListener('click', async () => {
+    const btn = document.getElementById('btn-license-reset') as HTMLButtonElement | null;
+    if (btn) btn.disabled = true;
+    await ipcLicenseClear();
+    // Clear input fields
+    if (emailInput) emailInput.value = '';
+    if (domainEmailInput) domainEmailInput.value = '';
+    if (otpInput) otpInput.value = '';
+    document.getElementById('license-otp-section')?.classList.add('hidden');
+    // Reset feedback text
+    const feedbacks = document.querySelectorAll<HTMLElement>(
+      '#license-modal .subtitle[id$="-feedback"]',
+    );
+    feedbacks.forEach((el) => { el.textContent = ''; });
+    await refreshSettingsLicenseStatus();
+    if (btn) btn.disabled = false;
   });
 
   // Show current status when the License modal opens (cheap; runs each
@@ -22139,7 +22188,7 @@ function refreshLicenseLauncherStatus(): void {
       // "renews" while the subscription auto-renews; "expires" once it's set to
       // cancel at period end (renews === false). Mirrors refreshSettingsLicenseStatus.
       const renewing = status.renews !== false;
-      text = `${status.plan ?? 'Pro'} active · ${renewing ? 'renews' : 'expires'} ${when}`;
+      text = `${humanizePlanName(status.plan ?? 'Pro')} active · ${renewing ? 'renews' : 'expires'} ${when}`;
     }
     for (const el of targets) el.textContent = text;
   })();
@@ -22177,7 +22226,7 @@ async function applyDeepLinkUrls(urls: string[]): Promise<void> {
         if (result.ok) {
           if (result.sub) localStorage.setItem(BILLING_EMAIL_KEY, result.sub);
           await refreshSettingsLicenseStatus();
-          showSkillsToast(`Graphnosis ${result.plan ?? 'Pro'} unlocked — welcome!`, 'success');
+          showSkillsToast(`Graphnosis ${humanizePlanName(result.plan ?? 'Pro')} unlocked — welcome!`, 'success');
         } else {
           console.warn('[license] deep-link token rejected:', result.reason);
           showSkillsToast(`License token rejected: ${result.reason ?? 'invalid'}`, 'error');
