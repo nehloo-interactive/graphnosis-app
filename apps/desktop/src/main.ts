@@ -23569,7 +23569,7 @@ async function paintTrainedOutputSourceDriven(
   skillId: string,
   graphId: string,
 ): Promise<void> {
-  type ListNodesResult = { ok: boolean; nodes: Array<{ id: string; content: string }> };
+  type ListNodesResult = { ok: boolean; nodes: Array<{ id: string; content: string; role?: string }> };
   let result: ListNodesResult | null = null;
   try {
     result = await invoke<ListNodesResult>('source_list_nodes', { graphId, sourceId: skillId });
@@ -23582,9 +23582,11 @@ async function paintTrainedOutputSourceDriven(
     return;
   }
   // Hide metadata chunks (HTML comments) — they're an internal audit artefact.
-  const visible = result.nodes.filter((n) => !n.content.trim().startsWith('<!--'));
+  // Prefer the server-provided canonical role; fall back to the prefix test.
+  const visible = result.nodes.filter((n) => (n.role ?? '') !== 'metadata' && !n.content.trim().startsWith('<!--'));
 
   // Detect goal nodes to inject a "Goals" section header before the first one.
+  // Fallback regex for older sidecars that don't return a role.
   const GOAL_RE = /^(?:Success:|Out of scope:|On completion:|Trigger:|Prerequisites:|On failure:|Requires:|Produces:)/i;
   let goalHeaderInjected = false;
 
@@ -23594,7 +23596,7 @@ async function paintTrainedOutputSourceDriven(
   let goalN = 0;
   for (let i = 0; i < visible.length; i++) {
     const node = visible[i]!;
-    const isGoal = GOAL_RE.test(node.content.trim());
+    const isGoal = node.role ? node.role.startsWith('goal-') : GOAL_RE.test(node.content.trim());
     if (!goalHeaderInjected && isGoal) {
       goalHeaderInjected = true;
       parts.push(`<div class="skills-output-section-header">Goals</div>`);

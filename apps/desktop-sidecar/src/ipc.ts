@@ -25,6 +25,7 @@ import {
   walkSkillSequence,
   formatSkillForRecall,
   baseSkillName,
+  classifyChunkRole,
 } from './skill-trainer.js';
 import { SkillSnapshotStore } from './skill-snapshots.js';
 import type { CorrectionDiff } from './correction.js';
@@ -835,13 +836,24 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
         liveIds.add(n.id);
         if (liveIds.size === wantedIds.size) break;
       }
-      const nodes = rec.nodeIds
-        .filter((id) => liveIds.has(id))
-        .map((id) => ({
-          id,
-          content: deps.host.getFullNodeContent(args.graphId, id) ?? '',
-        }))
-        .filter((n) => n.content);
+      // Attach the canonical chunk role (title / metadata / goal-* / recipe /
+      // recalled-memory / body) so the Trained Output editor can group goal
+      // sections under a meta header and number only the body steps — instead
+      // of guessing by a weaker prefix test. Roles are derived heuristically
+      // from content + position (we don't persist them), exactly as the export
+      // formatter does, so classifiedCount counts non-metadata chunks in order.
+      let chunkIndex = 0;
+      let classifiedCount = 0;
+      const nodes: Array<{ id: string; content: string; role: string }> = [];
+      for (const id of rec.nodeIds) {
+        if (!liveIds.has(id)) continue;
+        const content = deps.host.getFullNodeContent(args.graphId, id) ?? '';
+        if (!content) continue;
+        const role = classifyChunkRole(content, chunkIndex, classifiedCount);
+        if (role !== 'metadata') classifiedCount++;
+        nodes.push({ id, content, role });
+        chunkIndex++;
+      }
       return { ok: true, nodes };
     }
 

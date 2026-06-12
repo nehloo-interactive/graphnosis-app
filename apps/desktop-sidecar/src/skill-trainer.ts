@@ -693,7 +693,53 @@ export class SkillTrainer {
       // ── Ingest metadata comment + title + body paragraphs ─────────────────
       // Recalled-memory paragraphs are handled separately below (Phase 2:
       // position-aware placement into the SOP sequence).
-      const bodySections = bodyParagraphs.map((p) => ({ role: 'body', text: p }));
+      //
+      // Goal-category paragraphs authored INLINE in the skill text (e.g. a
+      // "Trigger: …" or "Success: …" line) are pulled out of the body so they
+      // join the structured goal block as a top meta-header — otherwise they
+      // stay scattered among the numbered steps and the Trained Output editor
+      // shows a jumbled 1,2,a,3,b… gutter. Position is presentational: walk_skill
+      // and export both extract goals by category, so regrouping is safe.
+      const goalRoleForLine = (line: string): string | null => {
+        const t = line.trim();
+        if (/^Success:\s/i.test(t)) return 'goal-success';
+        if (/^Out of scope:\s/i.test(t)) return 'goal-scope';
+        if (/^On completion:\s/i.test(t)) return 'goal-done';
+        if (/^Trigger:\s/i.test(t)) return 'goal-trigger';
+        if (/^Prerequisites:\s/i.test(t)) return 'goal-prereq';
+        if (/^On failure:\s/i.test(t)) return 'goal-failure';
+        if (/^Requires:\s/i.test(t)) return 'goal-requires';
+        if (/^Produces:\s/i.test(t)) return 'goal-produces';
+        return null;
+      };
+      // Split each paragraph at goal-LINE boundaries — not just whole-paragraph
+      // — so goal lines mashed INTO a step paragraph (no blank line separating
+      // them, e.g. a step followed by "Produces: …\nSuccess: …") still separate
+      // out into their own goal chunks. Each goal-prefixed line becomes its own
+      // goal chunk; runs of consecutive non-goal lines stay grouped as one body
+      // chunk. A line that continues a goal onto a second physical line stays
+      // with the body run after it, which is acceptable — these skills author
+      // each goal on a single line.
+      const bodySections: Array<{ role: string; text: string }> = [];
+      const inlineGoalSections: Array<{ role: string; text: string }> = [];
+      for (const p of bodyParagraphs) {
+        let bodyRun: string[] = [];
+        const flushBodyRun = (): void => {
+          const text = bodyRun.join('\n').trim();
+          if (text) bodySections.push({ role: 'body', text });
+          bodyRun = [];
+        };
+        for (const line of p.split('\n')) {
+          const goalRole = goalRoleForLine(line);
+          if (goalRole) {
+            flushBodyRun();
+            inlineGoalSections.push({ role: goalRole, text: line.trim() });
+          } else {
+            bodyRun.push(line);
+          }
+        }
+        flushBodyRun();
+      }
       // All 8 goal categories. Must mirror the .gsk import path. Earlier
       // versions only emitted the original 3 (Success / Out of scope / On
       // completion), silently dropping Trigger / Prerequisites / On failure /
@@ -830,26 +876,35 @@ export class SkillTrainer {
         await insertAtEnd(metadataComment, 'metadata');
       }
       await insertAtEnd(label, 'title');
+
+      // Goals form a contract meta-header at the TOP — right after the title,
+      // before the numbered steps — matching how walk_skill narrates a skill
+      // (CONSTRAINTS first, then PROCEDURE) and giving the Trained Output editor
+      // a clean "title → Goals (a,b,c) → Steps (1,2,3)" gutter. Inline-authored
+      // goal lines (pulled from the body above) join the structured goal fields.
+      for (const s of inlineGoalSections) {
+        await insertAtEnd(s.text, s.role);
+      }
+      for (const s of goalSections) {
+        await insertAtEnd(s.text, s.role);
+      }
+
+      // Body steps — the numbered procedure.
       for (const s of bodySections) {
         await insertAtEnd(s.text, s.role);
       }
 
       // ── Phase 2: append recalled-memory paragraphs as trailing context ───
       // Recalled memories are NEVER interleaved into the numbered procedure —
-      // they land after the body (and goals) as marked 'recalled-memory' nodes
-      // so they can't be mis-read as steps. Combined with the upstream
-      // relevance gate (only genuinely on-topic memories reach this point) and
-      // the attribution marker added in buildMemoryAugmented, this keeps
-      // procedural SOPs structurally clean while still surfacing the context.
+      // they land after the body as marked 'recalled-memory' nodes so they
+      // can't be mis-read as steps. Combined with the upstream relevance gate
+      // (only genuinely on-topic memories reach this point) and the attribution
+      // marker added in buildMemoryAugmented, this keeps procedural SOPs
+      // structurally clean while still surfacing the context.
       if (mode === 'memory-augmented' && recalledParagraphs.length > 0) {
         for (const text of recalledParagraphs) {
           await insertAtEnd(text, 'recalled-memory');
         }
-      }
-
-      // Goals always land at the very end.
-      for (const s of goalSections) {
-        await insertAtEnd(s.text, s.role);
       }
 
       this.host.triggerRelink(graphId);
