@@ -19,8 +19,13 @@
  */
 
 import type { APIRoute } from 'astro';
-import { getToken } from '../../../server/kv.js';
+import { getToken, putToken, type TokenRecord } from '../../../server/kv.js';
 import { getEnv, requireKv } from '../../../server/env.js';
+import {
+  getDomain, getGroup, putGroup, putMember, isRevoked, writeAudit,
+  effectiveTtlDays, type GroupMember,
+} from '../../../server/groups.js';
+import { mintLicenseToken } from '../../../server/sign.js';
 
 export const prerender = false;
 
@@ -46,11 +51,67 @@ export const GET: APIRoute = async ({ url, locals }) => {
   lastPolledAt.set(email, now);
 
   const env = getEnv(locals);
-  const kv = requireKv(env, 'BILLING_KV');
-  const rec = await getToken(kv, email);
+  const kv  = requireKv(env, 'BILLING_KV');
+
+  // ── Revocation check: revoked addresses always get 410 ─────────────────────
+  if (await isRevoked(kv, email)) {
+    return new Response(JSON.stringify({ error: 'revoked' }), {
+      status: 410,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }
+
+  let rec = await getToken(kv, email);
+
+  // ── Domain allowlist: auto-mint for matching domain if no token exists ──────
+  if (!rec) {
+    const domain     = email.split('@')[1] ?? '';
+    const domainRec  = domain ? await getDomain(kv, domain) : null;
+    if (domainRec) {
+      const group = await getGroup(kv, domainRec.groupId);
+      if (!group) {
+        // Domain record exists but group was deleted — skip auto-mint
+      } else if (group.members.length >= group.seatCount) {
+        return new Response(
+          JSON.stringify({ error: 'seat_limit_reached', seatCount: group.seatCount }),
+          { status: 402, headers: { 'Content-Type': 'application/json' } },
+        );
+      } else {
+        // Auto-mint a token for this domain member
+        const ttlDays = effectiveTtlDays(domainRec.ttlDays);
+        const token   = await mintLicenseToken(env, email, domainRec.features, ttlDays, domainRec.plan, false);
+        const expSecs = decodeExp(token);
+        const pollSecret = randomSecret();
+        rec = { token, exp: expSecs, updatedAt: Date.now(), plan: domainRec.plan, pollSecret };
+        await putToken(kv, email, rec);
+
+        // Add to group member list
+        const member: GroupMember = { email, activatedAt: Date.now() };
+        group.members.push(member);
+        group.updatedAt = Date.now();
+        await putGroup(kv, group);
+        await putMember(kv, email, { groupId: group.id });
+
+        await writeAudit(kv, {
+          ts: Date.now(), action: 'domain-auto', email,
+          groupId: group.id, adminNote: `domain=${domain}`,
+        });
+        console.log('[billing token] domain-auto minted for', email, 'domain:', domain);
+
+        // Return immediately — no poll-secret check needed for a freshly minted token
+        return new Response(
+          JSON.stringify({ token: rec.token, exp: rec.exp, plan: rec.plan, updatedAt: rec.updatedAt, pollSecret }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } },
+        );
+      }
+    }
+  }
+
   if (!rec) {
     return new Response(null, { status: 204 });
   }
+
+  // ── Poll-secret gate ─────────────────────────────────────────────────────────
   // Require the poll secret. Missing/mismatched key, or a legacy record with no
   // secret, all return 204 — never reveal the token to an unauthenticated
   // caller, and never confirm the email is a customer. Constant-time-ish compare.
@@ -71,4 +132,23 @@ function timingSafeEqual(a: string, b: string): boolean {
   let diff = 0;
   for (let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
   return diff === 0;
+}
+
+function decodeExp(token: string): number {
+  const dot = token.lastIndexOf('.');
+  if (dot === -1) return 0;
+  const b64 = token.slice(0, dot).replace(/-/g, '+').replace(/_/g, '/');
+  const padded = b64 + '='.repeat((4 - b64.length % 4) % 4);
+  try {
+    const obj = JSON.parse(atob(padded)) as { exp?: number };
+    return typeof obj.exp === 'number' ? obj.exp : 0;
+  } catch { return 0; }
+}
+
+function randomSecret(): string {
+  const bytes = new Uint8Array(24);
+  crypto.getRandomValues(bytes);
+  let s = '';
+  for (const b of bytes) s += b.toString(16).padStart(2, '0');
+  return s;
 }

@@ -19,6 +19,7 @@
 import type { APIRoute } from 'astro';
 import { takeClaim, getToken } from '../server/kv.js';
 import { getEnv, requireKv } from '../server/env.js';
+import { getMember, getGroup, putGroup } from '../server/groups.js';
 
 export const prerender = false;
 
@@ -45,6 +46,22 @@ export const GET: APIRoute = async ({ url, request, locals }) => {
       { status: 425, headers: { 'Content-Type': 'text/plain; charset=utf-8' } },
     );
   }
+
+  // Mark the member as activated in the group record (best-effort).
+  try {
+    const memberRec = await getMember(kv, claim.email);
+    if (memberRec) {
+      const group = await getGroup(kv, memberRec.groupId);
+      if (group) {
+        const member = group.members.find(m => m.email === claim.email);
+        if (member && !member.activatedAt) {
+          member.activatedAt = Date.now();
+          group.updatedAt = Date.now();
+          await putGroup(kv, group);
+        }
+      }
+    }
+  } catch { /* best-effort — don't fail the claim */ }
 
   const accept = request.headers.get('accept') ?? '';
   const wantsRedirect = accept.includes('text/html');

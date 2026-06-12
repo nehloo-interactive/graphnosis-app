@@ -19,6 +19,9 @@ export interface BillingEnv {
   STRIPE_WEBHOOK_SECRET?: string;
   LICENSE_SIGNING_SECRET_KEY_HEX?: string;
   RESEND_API_KEY?: string;
+  /** Admin API key for protected /api/admin/* endpoints.
+   *  Set as a Cloudflare Secret; use `Authorization: Bearer <key>` to authenticate. */
+  ADMIN_API_KEY?: string;
   // Plain text
   STRIPE_PRICE_PRO_MONTHLY?: string;
   STRIPE_PRICE_PRO_ANNUAL?: string;
@@ -31,6 +34,9 @@ export interface BillingEnv {
    *  here so billing identity lives entirely with Stripe — Graphnosis serves
    *  no account page of its own. */
   STRIPE_PORTAL_LOGIN_URL?: string;
+  /** Comma-separated Stripe coupon slugs mapped to IDs, e.g.
+   *  "PARTNER50=coupon_abc,LAUNCH=coupon_xyz". Used by /upgrade/checkout?coupon=SLUG. */
+  STRIPE_COUPONS?: string;
   // Download redirect vars — set by release.yml's update-cloudflare jobs
   CURRENT_VERSION?: string;    // e.g. "v1.13.6"
   DMG_FILENAME?: string;       // e.g. "Graphnosis_1.13.6_aarch64.dmg"
