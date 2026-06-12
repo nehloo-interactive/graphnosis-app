@@ -180,8 +180,8 @@ async function mintAndPersist(
   await putToken(kv, email, record);
   console.log('[billing webhook] token persisted for', email);
 
-  // ── Teams plan: create or update the GroupRecord ──────────────────────────
-  if (plan.startsWith('teams') && sub) {
+  // ── Teams / Enterprise plan: create or update the GroupRecord ───────────
+  if ((plan.startsWith('teams') || plan.startsWith('enterprise')) && sub) {
     const seatCount = sub.items?.data[0]?.quantity ?? 1;
     const subId     = sub.id;
     const existing  = await getGroupBySubscription(kv, subId);
