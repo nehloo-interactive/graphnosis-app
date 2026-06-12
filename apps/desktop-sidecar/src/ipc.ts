@@ -4377,7 +4377,10 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
       let token: string | undefined;
       try {
         const res = await fetch(url, { method: 'GET' });
-        if (res.status === 204) return { ok: false, reason: 'no_token' };
+        if (res.status === 204) {
+          console.error('[license:pollServer] 204 no token for email:', args.email, '— domain:', args.email.split('@')[1] ?? '(none)');
+          return { ok: false, reason: 'no_token' };
+        }
         if (res.status === 202) return { ok: false, reason: 'otp_required' };
         if (!res.ok) return { ok: false, reason: `http_${res.status}` };
         const data = (await res.json()) as { token?: string };
