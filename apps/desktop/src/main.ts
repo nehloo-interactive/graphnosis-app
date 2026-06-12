@@ -21921,6 +21921,7 @@ function bindSettingsLicensePanel(): void {
         const otpEmailDisplay = document.getElementById('license-otp-email-display');
         if (otpEmailDisplay) otpEmailDisplay.textContent = email;
         otpSection?.classList.remove('hidden');
+        otpSection?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
         document.getElementById('settings-license-otp')?.focus();
         if (feedback) feedback.textContent = 'Check your inbox for a 6-digit code.';
         return;
@@ -21980,6 +21981,8 @@ function bindSettingsLicensePanel(): void {
         await refreshSettingsLicenseStatus();
       } else if (result?.reason === 'otp_expired') {
         if (otpFeedback) otpFeedback.textContent = 'Code expired — click Resend to get a new one.';
+      } else if (result?.reason === 'malformed' || result?.reason === 'invalid_or_expired') {
+        if (otpFeedback) otpFeedback.textContent = 'Token could not be verified — check console for details. Contact support.';
       } else if ((result?.attemptsLeft ?? 1) <= 0) {
         if (otpFeedback) otpFeedback.textContent = 'Too many wrong attempts — click Resend for a new code.';
       } else {
@@ -21997,7 +22000,9 @@ function bindSettingsLicensePanel(): void {
   });
 
   otpResendBtn?.addEventListener('click', async () => {
-    const email = (emailInput?.value ?? '').trim() || (await getBillingEmail()) || '';
+    // Use the explicitly typed email only — falling back to getBillingEmail() would send
+    // the Stripe billing email to the server instead of the domain email being activated.
+    const email = (emailInput?.value ?? '').trim();
     if (!email) return;
     otpResendBtn.disabled = true;
     if (otpFeedback) otpFeedback.textContent = 'Sending…';
@@ -22008,6 +22013,8 @@ function bindSettingsLicensePanel(): void {
       if (result?.reason === 'otp_required') {
         if (otpFeedback) otpFeedback.textContent = 'New code sent. Check your inbox.';
         if (otpInput) otpInput.value = '';
+      } else {
+        if (otpFeedback) otpFeedback.textContent = `Could not resend (${result?.reason ?? 'unknown'}).`;
       }
     } catch (e) {
       if (otpFeedback) otpFeedback.textContent = 'Failed to resend. Try again.';
