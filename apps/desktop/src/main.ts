@@ -21970,6 +21970,7 @@ function bindSettingsLicensePanel(): void {
       const result = await ipcCall<{ ok: boolean; reason?: string; plan?: string }>(
         'license:pollServer', { email, baseUrl: BILLING_BASE_URL },
       );
+      console.error('[domain-activate] result:', JSON.stringify(result));
       if (result?.reason === 'otp_required') {
         const otpSection = document.getElementById('license-otp-section');
         const otpEmailDisplay = document.getElementById('license-otp-email-display');
@@ -21996,10 +21997,11 @@ function bindSettingsLicensePanel(): void {
       if (domainFeedback) {
         domainFeedback.textContent = status.valid
           ? `Activated — ${status.plan ?? 'Pro'} seat active.`
-          : `No domain seat found for ${email}. Check the address or contact your administrator.`;
+          : `No domain seat found for ${email} [${result?.reason ?? 'null'}] — check the address or contact your administrator.`;
       }
-    } finally {
-      domainActivateBtn.disabled = false;
+    } catch (e) {
+      console.error('[domain-activate] ipcCall threw:', e);
+      if (domainFeedback) domainFeedback.textContent = `Activation failed: ${(e as Error).message ?? String(e)}`;
     }
   });
 
