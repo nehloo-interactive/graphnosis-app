@@ -1,11 +1,11 @@
 ---
-title: Skills as SOPs
-description: How Graphnosis represents Skills as Standard Operating Procedures — the graph model, the eight goal categories, the snapshot history, the .gsk wire format, and the Free vs Pro training paths.
+title: Memory-trained Skills
+description: How Graphnosis represents Memory-trained Skills as Standard Operating Procedures (SOPs) — the graph model, the eight goal categories, the snapshot history, the .gsk wire format, and the Free vs Pro training paths.
 sidebar:
   order: 2
 ---
 
-A **Skill** in Graphnosis is a Standard Operating Procedure (SOP) — a step-by-step instruction set the user has written, anchored to their cortex, and made callable by any MCP client. Skills live in their own **Skills engram** that ships with every cortex on first unlock.
+A **Skill** in Graphnosis is a Standard Operating Procedure (SOP) — a step-by-step instruction set, anchored to your cortex and made callable by any MCP client. They're called **Memory-trained Skills** because the training pass compiles the relevant memories from your engrams into the skill body: each one is grounded in what you actually know and decided, not a generic template. Skills live in their own **Skills engram** that ships with every cortex on first unlock.
 
 This page is the reference for the procedural-memory model: the graph shape, the eight goal categories, how retraining writes snapshots into a side-table history, the `.gsk` wire format, and the two training paths (Free deterministic vs. Pro LLM-assisted). The companion AI-facing surface is in the [MCP Tools reference — Skills (SOPs)](/reference/mcp-tools/#skills-sops).
 

@@ -22718,6 +22718,10 @@ const skillsVitalityCache = new Map<string, { value: SkillVitality; fetchedAt: n
 let skillsLibrary: SkillListEntry[] = [];
 let skillsLibrarySort: 'recent' | 'vitality' | 'name' = 'recent';
 let skillsShowHidden = false;
+// Skills-library filters (item: filter box + engram dropdown). Display-only —
+// they never touch the underlying skill data, just what the library renders.
+let skillsFilterText = '';
+let skillsFilterEngram = 'all'; // 'all' or a graphId
 let skillsActiveSourceId: string | null = null;
 // The result currently in review mode (either a fresh training run, or an
 // opened library row hydrated via skill:get).
@@ -23084,6 +23088,30 @@ function skillBaseName(label: string): string {
     .trim() || skillDisplayName(label);
 }
 
+// Display-only humanize: "runtime-diagnosis" → "Runtime Diagnosis". The dash
+// slug stays the canonical identifier (sourceId/label, cross-skill @skill:
+// references, routing) — this ONLY changes what the user reads in the library.
+// Names that already contain spaces (e.g. imported .gsk packs with friendly
+// titles) are left as-authored apart from trimming.
+function humanizeSkillName(label: string): string {
+  const base = skillBaseName(label);
+  if (/\s/.test(base)) return base;
+  return base
+    .replace(/[-_]+/g, ' ')
+    .replace(/\b\w/g, (c) => c.toUpperCase())
+    .trim() || base;
+}
+
+// Friendly engram name for a graphId — the engram's own display name (with the
+// 🛠️ skill-engram decoration via formatEngramLabel), falling back to the name
+// carried on a skill entry, then the raw slug.
+function engramDisplayName(graphId: string): string {
+  const g = loadedGraphs.find((x) => x.graphId === graphId);
+  if (g) return formatEngramLabel(g);
+  const entry = skillsLibrary.find((s) => s.graphId === graphId);
+  return entry?.engramName || graphId;
+}
+
 /**
  * Determine what kind of skill entry this is based on its label.
  * - 'imported'  → came from a .gsk pack (has "(imported YYYY-MM-DD)")
@@ -23174,6 +23202,12 @@ function buildSkillTree(library: SkillListEntry[], sortMode: 'recent' | 'vitalit
  */
 const skillGroupsExpanded = new Set<string>();
 
+// User-set expand state for the top-level ENGRAM grouping layer, keyed by
+// graphId → expanded?. Absent means "use the default" (collapsed, except a
+// single-engram cortex which defaults open). An active filter force-expands
+// every matching group regardless, so filtering always reveals its hits.
+const skillEngramGroupState = new Map<string, boolean>();
+
 function filteredSortedLibrary(): SkillListEntry[] {
   // Drop skills whose backing engram is no longer loaded — prevents stale
   // IPC calls to a deleted graph ("Graph not loaded: X" errors).
@@ -23188,6 +23222,21 @@ function filteredSortedLibrary(): SkillListEntry[] {
   let list = skillsLibrary.filter((s) => visibleGraphIds.has(s.graphId));
   if (!skillsShowHidden) {
     list = list.filter((s) => !skillsHiddenSet.has(s.sourceId));
+  }
+  // Engram dropdown filter.
+  if (skillsFilterEngram !== 'all') {
+    list = list.filter((s) => s.graphId === skillsFilterEngram);
+  }
+  // Free-text filter — matches the friendly name, the raw slug, the training
+  // mode (a rough "status"), and the engram name, so "name, status etc." all work.
+  const q = skillsFilterText.trim().toLowerCase();
+  if (q) {
+    list = list.filter((s) =>
+      humanizeSkillName(s.label).toLowerCase().includes(q) ||
+      skillDisplayName(s.label).toLowerCase().includes(q) ||
+      (s.mode ?? '').toLowerCase().includes(q) ||
+      engramDisplayName(s.graphId).toLowerCase().includes(q),
+    );
   }
   if (skillsLibrarySort === 'recent') {
     list.sort((a, b) => {
@@ -23207,7 +23256,47 @@ function filteredSortedLibrary(): SkillListEntry[] {
   return list;
 }
 
+// Keep the engram-filter dropdown in sync with the engrams that actually hold
+// skills. Preserves the current selection; reverts to "All engrams" if the
+// selected engram is gone (deleted / archived).
+function syncSkillsEngramFilterOptions(): void {
+  const sel = document.getElementById('skills-library-engram-filter') as HTMLSelectElement | null;
+  if (!sel) return;
+  const gids = [...new Set(skillsLibrary.map((s) => s.graphId))]
+    .filter((gid) => loadedGraphs.some((g) => g.graphId === gid && !g.metadata.archived))
+    .sort((a, b) => engramDisplayName(a).localeCompare(engramDisplayName(b)));
+  if (skillsFilterEngram !== 'all' && !gids.includes(skillsFilterEngram)) {
+    skillsFilterEngram = 'all';
+  }
+  sel.innerHTML = ['<option value="all">All engrams</option>']
+    .concat(gids.map((gid) => `<option value="${escapeHtml(gid)}">${escapeHtml(engramDisplayName(gid))}</option>`))
+    .join('');
+  sel.value = skillsFilterEngram;
+}
+
+// Measure the (variable-height) library header + filter row and publish their
+// heights as CSS vars so the sticky filter row + engram group headers sit
+// exactly below, never under, the rows above. Hardcoded px broke when the
+// header was taller than the guess (the filter row slid under it on scroll).
+function updateSkillsStickyOffsets(): void {
+  const lib = document.querySelector<HTMLElement>('.skills-library');
+  const header = document.querySelector<HTMLElement>('.skills-library-header');
+  const filters = document.querySelector<HTMLElement>('.skills-library-filters');
+  if (!lib || !header) return;
+  const h1 = header.offsetHeight;
+  const h2 = filters?.offsetHeight ?? 0;
+  lib.style.setProperty('--lib-header-h', `${h1}px`);
+  lib.style.setProperty('--lib-sticky-h', `${h1 + h2}px`);
+}
+let _skillsStickyResizeBound = false;
+
 function renderSkillsLibrary(): void {
+  syncSkillsEngramFilterOptions();
+  updateSkillsStickyOffsets();
+  if (!_skillsStickyResizeBound) {
+    _skillsStickyResizeBound = true;
+    window.addEventListener('resize', updateSkillsStickyOffsets);
+  }
   const list = filteredSortedLibrary();
   const countEl = document.getElementById('skills-library-count');
   const listEl = document.getElementById('skills-library-list');
@@ -23227,9 +23316,38 @@ function renderSkillsLibrary(): void {
     return;
   }
 
-  // Render the recursive skill tree.
+  // Group the lineage trees by their backing ENGRAM → one expandable section
+  // per engram, instead of a single long flat list.
   const roots = buildSkillTree(list, skillsLibrarySort);
-  listEl.innerHTML = roots.map((n) => renderSkillTreeNode(n)).join('');
+  const groups = new Map<string, SkillTreeNode[]>();
+  for (const r of roots) {
+    let arr = groups.get(r.entry.graphId);
+    if (!arr) { arr = []; groups.set(r.entry.graphId, arr); }
+    arr.push(r);
+  }
+  const groupEntries = [...groups.entries()]
+    .sort((a, b) => engramDisplayName(a[0]).localeCompare(engramDisplayName(b[0])));
+  const onlyOneGroup = groupEntries.length <= 1;
+  const filterActive = skillsFilterText.trim() !== '' || skillsFilterEngram !== 'all';
+  const countNodes = (nodes: SkillTreeNode[]): number =>
+    nodes.reduce((n, node) => n + 1 + countNodes(node.children), 0);
+
+  listEl.innerHTML = groupEntries.map(([gid, rootsInGroup]) => {
+    // A filter force-expands every group it matches. Otherwise: user state if
+    // set, else default (open only when there's a single engram).
+    const userState = skillEngramGroupState.get(gid);
+    const expanded = filterActive ? true : (userState !== undefined ? userState : onlyOneGroup);
+    const count = countNodes(rootsInGroup);
+    const childrenHtml = rootsInGroup.map((n) => renderSkillTreeNode(n)).join('');
+    return `<div class="skill-engram-group${expanded ? ' expanded' : ''}" data-engram-id="${escape(gid)}">
+      <button class="skill-engram-group-toggle" aria-expanded="${expanded}">
+        <span class="skill-engram-group-arrow">▶</span>
+        <span class="skill-engram-group-name" data-pres="engram:${escape(gid)}">${escape(engramDisplayName(gid))}</span>
+        <span class="skill-engram-group-count">${count}</span>
+      </button>
+      <div class="skill-engram-group-children">${childrenHtml}</div>
+    </div>`;
+  }).join('');
 
   // ── Single delegated listener for the entire list ────────────────────────
   // Handles all depth levels without re-binding on every render.
@@ -23240,6 +23358,20 @@ function renderSkillsLibrary(): void {
     listEl.dataset['listenerBound'] = '1';
   listEl.addEventListener('click', (e) => {
     const target = e.target as HTMLElement;
+
+    // Engram group header — expand/collapse the whole engram section.
+    const engramToggle = target.closest<HTMLButtonElement>('.skill-engram-group-toggle');
+    if (engramToggle) {
+      const groupEl = engramToggle.closest<HTMLElement>('.skill-engram-group');
+      const gid = groupEl?.dataset['engramId'] ?? '';
+      if (!groupEl || !gid) return;
+      const nowExpanded = !groupEl.classList.contains('expanded');
+      groupEl.classList.toggle('expanded', nowExpanded);
+      skillEngramGroupState.set(gid, nowExpanded);
+      engramToggle.setAttribute('aria-expanded', String(nowExpanded));
+      e.stopPropagation();
+      return;
+    }
 
     // Arrow toggle — only element that expands/collapses.
     const toggle = target.closest<HTMLButtonElement>('.skill-group-toggle');
@@ -26274,6 +26406,14 @@ function _bindSkillsHandlersInner(): void {
   });
   document.getElementById('skills-library-sort')?.addEventListener('change', (e) => {
     skillsLibrarySort = (e.target as HTMLSelectElement).value as typeof skillsLibrarySort;
+    renderSkillsLibrary();
+  });
+  document.getElementById('skills-library-filter')?.addEventListener('input', (e) => {
+    skillsFilterText = (e.target as HTMLInputElement).value;
+    renderSkillsLibrary();
+  });
+  document.getElementById('skills-library-engram-filter')?.addEventListener('change', (e) => {
+    skillsFilterEngram = (e.target as HTMLSelectElement).value;
     renderSkillsLibrary();
   });
   document.getElementById('btn-skills-library-refresh')?.addEventListener('click', () => {
