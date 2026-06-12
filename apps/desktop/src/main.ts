@@ -12247,13 +12247,28 @@ async function refreshAtlasPredictedEdges(): Promise<void> {
  * `.source-name` handles it; the full string lives in the row's
  * `title` attribute for hover.
  */
+// Display-only humanize for source labels in the 3D legend: turn a slug into a
+// friendly name ("runtime-diagnosis" → "Runtime Diagnosis", "book-notes.md" →
+// "Book Notes"). Leaves prose (anything with a space) and AI-conversation/clip
+// markers untouched, and strips a trained/imported skill suffix + file
+// extension first. The slug stays the canonical identifier; this is presentation.
+function humanizeSourceLabel(s: string): string {
+  let v = s.trim();
+  if (!v) return s;
+  if (/^AI[·:]/.test(v)) return v; // clip / AI-conversation marker — already friendly
+  v = v.replace(/\s*\((?:trained|imported) \d{4}-\d{2}-\d{2}\)\s*$/i, '').trim();
+  v = v.replace(/\.(md|markdown|txt|pdf|json|jsonl|csv|html?|docx?|rtf)$/i, '');
+  if (/\s/.test(v)) return v; // multi-word prose — leave as authored
+  return v.replace(/[-_]+/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase()).trim() || s.trim();
+}
+
 function formatLegendLabel(raw: string | undefined | null): string {
   if (!raw) return '(no source)';
   // skill:<ts>:<label>  →  <label>   — trained skill sources stored by ingestClip
   if (raw.startsWith('skill:')) {
     const rest = raw.slice('skill:'.length);
     const secondColon = rest.indexOf(':');
-    return secondColon !== -1 ? rest.slice(secondColon + 1) : rest;
+    return humanizeSourceLabel(secondColon !== -1 ? rest.slice(secondColon + 1) : rest);
   }
   // ai-conversation:<id>:<topic>  →  AI: <topic>
   // ai-conversation:<id>          →  AI: <id>     (fallback when label missing)
@@ -12266,9 +12281,34 @@ function formatLegendLabel(raw: string | undefined | null): string {
   if (raw.startsWith('clip:')) {
     const rest = raw.slice('clip:'.length);
     const secondColon = rest.indexOf(':');
-    return secondColon !== -1 ? rest.slice(secondColon + 1) : rest;
+    return humanizeSourceLabel(secondColon !== -1 ? rest.slice(secondColon + 1) : rest);
   }
-  return raw;
+  // Bare key — a filename or a plain source slug (also the labelForSourceKey
+  // output for non-clip/file sources). Humanize so the legend reads friendly.
+  return humanizeSourceLabel(raw);
+}
+
+// Legend hover-preview debounce. Each legend hover calls mainAtlas.hoverCategory/
+// hoverSource → clears every color cache → graph.refresh(), which re-runs the
+// per-node and per-link visual accessors and rebuilds Three.js materials for the
+// WHOLE graph synchronously on the main thread. On a large engram that's a
+// multi-hundred-ms stall — so firing it the instant the cursor touched a row
+// made the app freeze when the user merely swept the mouse ACROSS the legend
+// (each row's mouseenter fired a fresh full refresh). We now only commit the
+// preview after the cursor RESTS on a row briefly, and clear instantly on leave
+// so a quick pass-through triggers no graph work at all.
+const LEGEND_HOVER_DELAY_MS = 160;
+let legendHoverTimer: ReturnType<typeof setTimeout> | null = null;
+function clearLegendHoverTimer(): void {
+  if (legendHoverTimer) { clearTimeout(legendHoverTimer); legendHoverTimer = null; }
+}
+function legendHoverEnter(apply: () => void): void {
+  clearLegendHoverTimer();
+  legendHoverTimer = setTimeout(() => { legendHoverTimer = null; apply(); }, LEGEND_HOVER_DELAY_MS);
+}
+function legendHoverLeave(clear: () => void): void {
+  clearLegendHoverTimer();
+  clear(); // clearing the preview is cheap-on-noop and must feel instant
 }
 
 function renderAtlasLegend(): void {
@@ -12296,9 +12336,10 @@ function renderAtlasLegend(): void {
   els.atlasLegendList.querySelectorAll<HTMLElement>('.legend-row').forEach((row) => {
     const cat = row.dataset['cat'] as EdgeCategory | undefined;
     if (!cat || (mainAtlas?.isCategoryHardLocked(cat) ?? false)) return; // locked rows get no events
-    row.addEventListener('mouseenter', () => mainAtlas?.hoverCategory(cat));
-    row.addEventListener('mouseleave', () => mainAtlas?.hoverCategory(null));
+    row.addEventListener('mouseenter', () => legendHoverEnter(() => mainAtlas?.hoverCategory(cat)));
+    row.addEventListener('mouseleave', () => legendHoverLeave(() => mainAtlas?.hoverCategory(null)));
     row.addEventListener('click', (e) => {
+      clearLegendHoverTimer();
       mainAtlas?.hoverCategory(null); // clear preview on click-commit
       if (!mainAtlas) return;
       // Cmd/Ctrl-click (or any tap on mobile): additive toggle (multi-select).
@@ -12323,6 +12364,13 @@ function renderAtlasLegend(): void {
   });
 
   // Sources — same row pattern but with a dot swatch (matches node color).
+  // In the Full Cortex galaxy each "source" is an engram super-node
+  // (sourceFile = graphId), so the section becomes "Engrams" and labels
+  // resolve to the engram display name instead of a source slug.
+  const sourceTitleEl = document.getElementById('atlas-source-legend-title');
+  if (sourceTitleEl) sourceTitleEl.textContent = atlasGalaxyMode ? 'Engrams' : 'Sources';
+  const sourceSubEl = document.getElementById('atlas-source-legend-subtitle');
+  if (sourceSubEl) sourceSubEl.textContent = atlasGalaxyMode ? 'engrams in your cortex' : 'where these memories came from';
   const sources = mainAtlas.sourcesWithCounts();
   els.atlasSourceList.innerHTML = sources.map((s) => {
     const swatch = `#${s.color.toString(16).padStart(6, '0')}`;
@@ -12333,7 +12381,7 @@ function renderAtlasLegend(): void {
     // "collaboration" or "book-notes.md". Collapse to "AI: <topic>" so
     // the legend reads like a list of things, not internal source refs.
     // The full original label stays in the title attribute for hover.
-    const pretty = formatLegendLabel(s.label);
+    const pretty = atlasGalaxyMode ? engramDisplayName(s.key) : formatLegendLabel(s.label);
     return `<div class="legend-row ${cls}" data-source-key="${escape(s.key)}" title="${escape(s.label || s.key || '(no source)')}">
       <span class="legend-swatch-dot" style="background: ${swatch};"></span>
       <span class="source-name" data-pres="engram:${escape(atlasActiveGraph ?? '')}">${escape(pretty)}</span>
@@ -12341,12 +12389,13 @@ function renderAtlasLegend(): void {
     </div>`;
   }).join('');
   els.atlasSourceList.querySelectorAll<HTMLElement>('.legend-row').forEach((row) => {
-    row.addEventListener('mouseenter', () => {
+    row.addEventListener('mouseenter', () => legendHoverEnter(() => {
       const key = row.dataset['sourceKey'];
       if (key !== undefined) mainAtlas?.hoverSource(key);
-    });
-    row.addEventListener('mouseleave', () => mainAtlas?.hoverSource(null));
+    }));
+    row.addEventListener('mouseleave', () => legendHoverLeave(() => mainAtlas?.hoverSource(null)));
     row.addEventListener('click', (e) => {
+      clearLegendHoverTimer();
       mainAtlas?.hoverSource(null); // clear preview on click-commit
       const key = row.dataset['sourceKey'];
       if (key === undefined || !mainAtlas) return;
@@ -12556,7 +12605,9 @@ els.atlasGraphPicker.addEventListener('change', () => void (async () => {
 
 els.btnAtlasReset.addEventListener('click', () => {
   mainAtlas?.resetEmphasis();
+  mainAtlas?.resetLegendFilters(); // clear category/source legend selections too
   selectGraphnosisNode(null);
+  renderAtlasLegend(); // reflect the all-visible state in the legend UI
 });
 
 els.btnAtlasFit.addEventListener('click', () => {
