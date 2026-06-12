@@ -23284,6 +23284,10 @@ function renderSkillsLibrary(): void {
         void openSkillInTrainer(sid, gid, { retrain: true });
       } else if (action === 'export') {
         void openSkillInTrainer(sid, gid, { scrollToExport: true });
+      } else if (action === 'history') {
+        void toggleSkillHistory(actionBtn, sid, gid);
+      } else if (action === 'rollback') {
+        void rollbackSkillVersion(sid, gid, actionBtn.dataset['snapshotId'] ?? '');
       }
       e.stopPropagation();
       return;
@@ -23383,10 +23387,13 @@ function renderSkillRow(s: SkillListEntry, hasChildren = false, groupExpanded = 
     ? `<button class="skill-row-action btn-ghost" data-action="unhide" data-source-id="${escape(s.sourceId)}" data-graph-id="${escape(s.graphId)}" title="Restore to library">Restore</button>`
     : `<button class="skill-row-action btn-ghost" data-action="retrain" data-source-id="${escape(s.sourceId)}" data-graph-id="${escape(s.graphId)}" title="Re-train this skill">Retrain</button>
        <button class="skill-row-action btn-ghost" data-action="export" data-source-id="${escape(s.sourceId)}" data-graph-id="${escape(s.graphId)}" title="Export this skill">Export</button>
+       <button class="skill-row-action btn-ghost" data-action="history" data-source-id="${escape(s.sourceId)}" data-graph-id="${escape(s.graphId)}" aria-expanded="false" title="Show version history (retrains + rollback)">History ▸</button>
        <button class="skill-row-action btn-ghost" data-action="forget" data-source-id="${escape(s.sourceId)}" data-graph-id="${escape(s.graphId)}" title="Hide from library">Hide</button>`;
 
-  // Show the BASE name (no date suffixes) as the title — kind/mode chips carry the context.
-  const displayName = skillBaseName(s.label) || skillDisplayName(s.label) || 'Untitled skill';
+  // Show the friendly, humanized BASE name (no date suffixes, dashes → spaces,
+  // Title Case) as the visible title — kind/mode chips carry the context. The
+  // raw slug stays in the tooltip as the canonical identifier for power users.
+  const displayName = humanizeSkillName(s.label) || skillDisplayName(s.label) || 'Untitled skill';
 
   return `
     <div class="skill-row${activeClass}" data-source-id="${escape(s.sourceId)}" data-graph-id="${escape(s.graphId)}">
@@ -23409,8 +23416,77 @@ function renderSkillRow(s: SkillListEntry, hasChildren = false, groupExpanded = 
         <span>${escape(formatRelativeTime(trainedAtTs))}</span>
         ${s.nodeCount ? `<span>· ${s.nodeCount} nodes</span>` : ''}
       </div>
+      <div class="skill-history-panel hidden" data-history-for="${escape(s.sourceId)}"></div>
     </div>
   `;
+}
+
+interface SkillVersionEntry {
+  sourceId: string;
+  snapshotId: string;
+  label: string;
+  ingestedAt: number;
+  nodeCount: number;
+  isCurrent: boolean;
+  trainedAt?: string;
+  mode?: string;
+}
+
+// Toggle a skill's "Version history" panel, lazy-loading its snapshot chain.
+// Retrain history lives in the snapshot side-table (since in-place retrain),
+// so it's fetched on demand rather than carried in the library list.
+async function toggleSkillHistory(btn: HTMLElement, sourceId: string, graphId: string): Promise<void> {
+  const row = btn.closest('.skill-row');
+  const panel = row?.querySelector<HTMLElement>('.skill-history-panel');
+  if (!panel) return;
+  const opening = panel.classList.contains('hidden');
+  btn.setAttribute('aria-expanded', String(opening));
+  btn.textContent = opening ? 'History ▾' : 'History ▸';
+  if (!opening) { panel.classList.add('hidden'); return; }
+  panel.classList.remove('hidden');
+  panel.innerHTML = '<div class="skill-history-empty">Loading version history…</div>';
+  try {
+    const res = await ipcCall<{ ok: boolean; versions: SkillVersionEntry[] }>('skill:history', { graphId, sourceId });
+    panel.innerHTML = renderSkillHistory(res?.versions ?? [], graphId, sourceId);
+  } catch (e) {
+    console.warn('[skills] history load failed:', e);
+    panel.innerHTML = '<div class="skill-history-empty">Couldn\'t load version history.</div>';
+  }
+}
+
+function renderSkillHistory(versions: SkillVersionEntry[], graphId: string, sourceId: string): string {
+  if (versions.length <= 1) {
+    return '<div class="skill-history-empty">No earlier versions yet — this skill hasn\'t been retrained.</div>';
+  }
+  const items = versions.map((v) => {
+    const when = formatRelativeTime(parseTrainedAt(v.trainedAt) ?? v.ingestedAt);
+    const tag = v.isCurrent ? '<span class="skill-history-current">current</span>' : '';
+    const restore = v.isCurrent
+      ? ''
+      : `<button class="skill-row-action btn-ghost skill-history-restore" data-action="rollback" data-source-id="${escape(sourceId)}" data-graph-id="${escape(graphId)}" data-snapshot-id="${escape(v.snapshotId)}" title="Restore this version as current">Restore</button>`;
+    return `<li class="skill-history-item">
+      <span class="skill-history-when">${escape(when)}</span>
+      ${v.mode ? `<span class="skill-history-mode">${escape(v.mode)}</span>` : ''}
+      <span class="skill-history-nodes">${v.nodeCount} nodes</span>
+      ${tag}${restore}
+    </li>`;
+  }).join('');
+  return `<ul class="skill-history-list">${items}</ul>`;
+}
+
+async function rollbackSkillVersion(sourceId: string, graphId: string, snapshotId: string): Promise<void> {
+  if (!window.confirm('Restore this earlier version as the current skill?\n\nThe current version is saved as a snapshot first, so this is reversible.')) return;
+  try {
+    await ipcCall('skill:rollback', { graphId, sourceId, snapshotId });
+    await fetchSkillsLibrary();
+    skillsVitalityCache.delete(sourceId);
+    renderSkillsLibrary();
+    // If this skill is open in the trainer, reload it to show the restored text.
+    if (skillsActiveSourceId === sourceId) void openSkillInTrainer(sourceId, graphId);
+  } catch (e) {
+    console.warn('[skills] rollback failed:', e);
+    showError(`Could not restore version: ${e instanceof Error ? e.message : String(e)}`);
+  }
 }
 
 function showSkillsComposeMode(): void {
