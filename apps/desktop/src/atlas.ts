@@ -2993,6 +2993,26 @@ export class Atlas {
     this.computeVisibility();
     this.graph.refresh();
   }
+
+  /** Reset every legend selection — all edge categories and all sources back
+   *  to visible, and clear any hover preview. Backs the toolbar Reset button
+   *  so "Reset" clears legend filtering, not just node-selection emphasis.
+   *  Visibility-only: node positions are preserved (no reheat). */
+  resetLegendFilters(): void {
+    (Object.keys(this.categoryVisible) as EdgeCategory[]).forEach((c) => {
+      if (!this.isCategoryHardLocked(c)) this.categoryVisible[c] = true;
+    });
+    for (const key of this.sourceVisible.keys()) this.sourceVisible.set(key, true);
+    this.previewLegendCategory = null;
+    this.previewLegendSource = null;
+    this.previewCatNodeIds.clear();
+    this.nodeColorCache.clear();
+    this.linkColorCache.clear();
+    this.particleColorCache.clear();
+    this.particleCountCache.clear();
+    this.computeVisibility();
+    this.graph.refresh();
+  }
   /**
    * Schedule a single `graph.refresh()` on the next animation frame.
    * Multiple calls within the same frame collapse into one repaint —
