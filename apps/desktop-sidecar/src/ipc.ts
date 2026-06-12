@@ -4378,6 +4378,7 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
       try {
         const res = await fetch(url, { method: 'GET' });
         if (res.status === 204) return { ok: false, reason: 'no_token' };
+        if (res.status === 202) return { ok: false, reason: 'otp_required' };
         if (!res.ok) return { ok: false, reason: `http_${res.status}` };
         const data = (await res.json()) as { token?: string };
         token = data.token;
@@ -4391,6 +4392,40 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
       if (!payload) return { ok: false, reason: 'invalid_or_expired' };
       await deps.host.setLicenseToken(trimmed);
       return { ok: true, plan: payload.plan, features: payload.features, sub: payload.sub, expiresAt: payload.exp * 1000 };
+    }
+
+    case 'license:verifyOtp': {
+      const args = z.object({
+        email: z.string().min(3),
+        code: z.string().length(6),
+        key: z.string().optional(),
+        baseUrl: z.string().optional(),
+      }).parse(params ?? {});
+      const base = (args.baseUrl ?? 'https://graphnosis.com').replace(/\/$/, '');
+      const keyParam = args.key ? `&key=${encodeURIComponent(args.key)}` : '';
+      const otpUrl = `${base}/api/subscription/token?email=${encodeURIComponent(args.email)}&otp=${encodeURIComponent(args.code)}${keyParam}`;
+      let token: string | undefined;
+      let pollSecret: string | undefined;
+      try {
+        const res = await fetch(otpUrl, { method: 'GET' });
+        if (res.status === 401) {
+          const data = (await res.json()) as { error?: string; attemptsLeft?: number };
+          return { ok: false, reason: data.error ?? 'otp_invalid', attemptsLeft: data.attemptsLeft };
+        }
+        if (!res.ok) return { ok: false, reason: `http_${res.status}` };
+        const data = (await res.json()) as { token?: string; pollSecret?: string };
+        token = data.token;
+        pollSecret = data.pollSecret;
+      } catch (e) {
+        return { ok: false, reason: `fetch_failed: ${(e as Error).message}` };
+      }
+      if (!token) return { ok: false, reason: 'no_token' };
+      const trimmed = token.trim();
+      if (!/^[A-Za-z0-9_\-]+\.[A-Za-z0-9_\-]+$/.test(trimmed)) return { ok: false, reason: 'malformed' };
+      const payload = deps.licenseValidator?.verifyToken(trimmed) ?? null;
+      if (!payload) return { ok: false, reason: 'invalid_or_expired' };
+      await deps.host.setLicenseToken(trimmed);
+      return { ok: true, plan: payload.plan, features: payload.features, sub: payload.sub, expiresAt: payload.exp * 1000, pollSecret };
     }
 
     case 'license:status': {

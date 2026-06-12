@@ -128,6 +128,40 @@ export async function sendTeamInvite(env: BillingEnv, params: TeamInviteParams):
   }
 }
 
+export interface OtpEmailParams {
+  to: string;
+  code: string;
+}
+
+export async function sendOtpEmail(env: BillingEnv, params: OtpEmailParams): Promise<void> {
+  const apiKey = env.RESEND_API_KEY;
+  const from = env.RESEND_FROM_ADDRESS;
+  if (!apiKey || apiKey === 're_REPLACE_ME' || !from) {
+    console.warn('[billing] Resend not configured — OTP code logged below.');
+    console.warn(`[billing] OTP To: ${params.to}  Code: ${params.code}`);
+    return;
+  }
+
+  const html = `
+    <p style="font-family:-apple-system,sans-serif;color:#1a1a1a;">Hi,</p>
+    <p style="font-family:-apple-system,sans-serif;color:#1a1a1a;">Your Graphnosis verification code is:</p>
+    <p style="font-size:42px;font-weight:700;letter-spacing:10px;font-family:ui-monospace,monospace;color:#1a1a1a;margin:24px 0;">${escape(params.code)}</p>
+    <p style="font-family:-apple-system,sans-serif;color:#888;font-size:13px;">Enter this in the Graphnosis app to activate your seat. The code expires in 10 minutes.</p>
+    <p style="font-family:-apple-system,sans-serif;color:#888;font-size:12px;">If you didn't request this, you can safely ignore it.</p>
+    <p style="font-family:-apple-system,sans-serif;color:#888;font-size:12px;">— The Graphnosis team</p>
+  `;
+
+  const res = await fetch('https://api.resend.com/emails', {
+    method: 'POST',
+    headers: { 'Authorization': `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ from, to: params.to, subject: `${params.code} — your Graphnosis code`, html }),
+  });
+  if (!res.ok) {
+    const body = await res.text().catch(() => '');
+    throw new Error(`Resend OTP send failed: ${res.status} ${body}`);
+  }
+}
+
 function escape(s: string): string {
   return s.replace(/[&<>"']/g, (c) => ({
     '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',

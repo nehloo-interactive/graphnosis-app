@@ -19,13 +19,14 @@
  */
 
 import type { APIRoute } from 'astro';
-import { getToken, putToken, type TokenRecord } from '../../../server/kv.js';
+import { getToken, putToken, putOtp, getOtp, deleteOtp, OTP_MAX_ATTEMPTS, OTP_TTL_SECONDS, type TokenRecord } from '../../../server/kv.js';
 import { getEnv, requireKv } from '../../../server/env.js';
 import {
   getDomain, getGroup, putGroup, putMember, isRevoked, writeAudit,
   effectiveTtlDays, type GroupMember,
 } from '../../../server/groups.js';
 import { mintLicenseToken } from '../../../server/sign.js';
+import { sendOtpEmail } from '../../../server/email.js';
 
 export const prerender = false;
 
@@ -77,6 +78,48 @@ export const GET: APIRoute = async ({ url, locals }) => {
           { status: 402, headers: { 'Content-Type': 'application/json' } },
         );
       } else {
+        // ── OTP gate: verify email ownership before issuing a domain seat ──────
+        const otpParam = url.searchParams.get('otp')?.trim();
+
+        if (!otpParam) {
+          // No OTP provided — generate one, send it, ask the user to verify.
+          const code = String(crypto.getRandomValues(new Uint32Array(1))[0] % 1_000_000).padStart(6, '0');
+          await putOtp(kv, email, { code, expiresAt: Date.now() + OTP_TTL_SECONDS * 1000, attempts: 0 });
+          await sendOtpEmail(env, { to: email, code });
+          console.log('[billing token] OTP sent for domain auto-mint', email, 'domain:', domain);
+          return new Response(
+            JSON.stringify({ status: 'otp_required' }),
+            { status: 202, headers: { 'Content-Type': 'application/json' } },
+          );
+        }
+
+        // OTP provided — verify it before minting.
+        const otpRec = await getOtp(kv, email);
+        if (!otpRec || Date.now() > otpRec.expiresAt) {
+          await deleteOtp(kv, email);
+          return new Response(
+            JSON.stringify({ error: 'otp_expired' }),
+            { status: 401, headers: { 'Content-Type': 'application/json' } },
+          );
+        }
+        if (!timingSafeEqual(otpParam, otpRec.code)) {
+          otpRec.attempts += 1;
+          if (otpRec.attempts >= OTP_MAX_ATTEMPTS) {
+            await deleteOtp(kv, email);
+            return new Response(
+              JSON.stringify({ error: 'otp_invalid', attemptsLeft: 0 }),
+              { status: 401, headers: { 'Content-Type': 'application/json' } },
+            );
+          }
+          await putOtp(kv, email, otpRec);
+          return new Response(
+            JSON.stringify({ error: 'otp_invalid', attemptsLeft: OTP_MAX_ATTEMPTS - otpRec.attempts }),
+            { status: 401, headers: { 'Content-Type': 'application/json' } },
+          );
+        }
+        // Valid — clear the OTP and fall through to mint.
+        await deleteOtp(kv, email);
+
         // Auto-mint a token for this domain member
         const ttlDays = effectiveTtlDays(domainRec.ttlDays);
         const token   = await mintLicenseToken(env, email, domainRec.features, ttlDays, domainRec.plan, false);
@@ -94,7 +137,7 @@ export const GET: APIRoute = async ({ url, locals }) => {
 
         await writeAudit(kv, {
           ts: Date.now(), action: 'domain-auto', email,
-          groupId: group.id, adminNote: `domain=${domain}`,
+          groupId: group.id, adminNote: `domain=${domain} otp-verified`,
         });
         console.log('[billing token] domain-auto minted for', email, 'domain:', domain);
 

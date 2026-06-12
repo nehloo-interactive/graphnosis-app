@@ -12916,6 +12916,31 @@ ollama list</code></pre>
               <span id="settings-license-feedback" class="subtitle"></span>
             </div>
           </div>
+          <!-- OTP verification — shown only when the billing server returns
+               otp_required (domain-allowlist users who haven't verified yet). -->
+          <div id="license-otp-section" class="settings-section license-acquire hidden">
+            <p class="settings-section-label">Verify your work email</p>
+            <p class="subtitle" style="margin-bottom: 10px;">
+              We sent a 6-digit code to <strong id="license-otp-email-display"></strong>.
+              Enter it below to activate your domain seat.
+            </p>
+            <div class="row" style="margin-bottom: 8px;">
+              <input id="settings-license-otp"
+                     type="text"
+                     inputmode="numeric"
+                     pattern="[0-9]{6}"
+                     maxlength="6"
+                     autocomplete="one-time-code"
+                     spellcheck="false"
+                     placeholder="000000"
+                     style="font-size:20px;letter-spacing:8px;font-family:ui-monospace,monospace;text-align:center;width:140px;" />
+            </div>
+            <div class="row" style="gap:8px;align-items:center;">
+              <button id="btn-settings-license-otp-submit" class="primary">Verify</button>
+              <button id="btn-settings-license-otp-resend" style="font-size:12px;background:none;border:none;color:var(--link);cursor:pointer;padding:0;">Resend code</button>
+              <span id="settings-license-otp-feedback" class="subtitle"></span>
+            </div>
+          </div>
           <div class="settings-section license-acquire">
             <p class="settings-section-label">Paste a license token</p>
             <p class="subtitle" style="margin-bottom: 10px;">
