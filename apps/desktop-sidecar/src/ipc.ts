@@ -3588,6 +3588,33 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
       return deps.skillTrainer.getSkill(args.graphId, args.sourceId);
     }
 
+    case 'skill:history': {
+      // Version history for a skill: the current live version plus every prior
+      // in-place-retrain snapshot (newest first). Powers the "Version history"
+      // expander in the library — retrain history moved from sibling sources to
+      // the snapshot side-table when in-place retrain shipped.
+      const args = z.object({
+        graphId: z.string().min(1),
+        sourceId: z.string().min(1),
+      }).parse(params ?? {});
+      if (!deps.skillTrainer) return { ok: false, versions: [] };
+      const versions = await deps.skillTrainer.getSkillHistory(args.graphId, args.sourceId);
+      return { ok: true, versions };
+    }
+
+    case 'skill:rollback': {
+      // Restore a prior snapshot as the current version (itself recorded as a
+      // new snapshot, so the rollback is reversible).
+      const args = z.object({
+        graphId: z.string().min(1),
+        sourceId: z.string().min(1),
+        snapshotId: z.string().min(1),
+      }).parse(params ?? {});
+      if (!deps.skillTrainer) return { ok: false };
+      const result = await deps.skillTrainer.rollbackSkill(args.graphId, args.sourceId, args.snapshotId);
+      return { ok: true, result };
+    }
+
     case 'skill:listNotifications': {
       // Returns sourceIds that have an unacknowledged auto-retrain notification.
       // Used by the library renderer to surface a 🆕 dot on rows.
