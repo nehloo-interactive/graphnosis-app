@@ -23538,7 +23538,7 @@ function renderSkillsLibrary(): void {
         if (!ok) return;
         skillsHiddenSet.add(sid);
         persistSkillsHidden();
-        if (skillsActiveSourceId === sid) { skillsActiveSourceId = null; showSkillsComposeMode(); }
+        if (skillsActiveSourceId === sid) { skillsActiveSourceId = null; showSkillsComposeMode(); resetSkillsComposeForm(); }
         renderSkillsLibrary();
       } else if (action === 'unhide') {
         skillsHiddenSet.delete(sid); persistSkillsHidden(); renderSkillsLibrary();
@@ -23749,6 +23749,25 @@ async function rollbackSkillVersion(sourceId: string, graphId: string, snapshotI
     console.warn('[skills] rollback failed:', e);
     showError(`Could not restore version: ${e instanceof Error ? e.message : String(e)}`);
   }
+}
+
+/** Wipe the compose form back to a blank slate — used by genuinely-fresh
+ *  entry points ("← New skill", deleting the open skill). NOT called from the
+ *  retrain path, which switches to compose mode and then repopulates the form
+ *  with the trained text. Clears content fields (text + name) and the saved
+ *  draft; leaves config prefs (target engram, model, recall breadth) intact. */
+function resetSkillsComposeForm(): void {
+  const ta = document.getElementById('skills-input-text') as HTMLTextAreaElement | null;
+  const nameEl = document.getElementById('skills-input-name') as HTMLInputElement | null;
+  if (ta) {
+    ta.value = '';
+    ta.classList.remove('has-overflow', 'expanded');
+    ta.style.height = '';
+  }
+  if (nameEl) nameEl.value = '';
+  clearSkillsDraft();
+  renderSkillsChunkPreview();
+  updateSkillsResetButton();
 }
 
 function showSkillsComposeMode(): void {
@@ -26225,6 +26244,15 @@ async function runGskImport(): Promise<void> {
   }
 
   // ── Import ───────────────────────────────────────────────────────────
+  // A multi-skill pack takes several seconds to ingest (one source + several
+  // node inserts per skill, plus relink). Hold a persistent progress toast up
+  // for the whole duration — ingest AND the library refresh — so the user
+  // isn't left wondering whether anything is happening before the new engram
+  // appears.
+  const destLabel = choice.existingGraphId
+    ? (loadedGraphs.find((g) => g.graphId === choice.existingGraphId)?.metadata.displayName ?? choice.existingGraphId)
+    : (choice.newEngramName ?? peek.pack?.displayName ?? 'new engram');
+  const importToastId = addIngestToast('Importing memory-trained skills…', `to "${destLabel}"`);
   try {
     const result = await ipcCall<SkillImportResult>('skill:importGsk', {
       graphId,
@@ -26233,7 +26261,7 @@ async function runGskImport(): Promise<void> {
     });
     if (!result?.ok) {
       const why = result?.message ?? result?.reason ?? 'Unknown error';
-      showSkillsToast(`Import failed: ${why}`, 'error');
+      finishIngestToast(importToastId, 'error', `Import failed: ${why}`);
       return;
     }
     const n = result.imported?.length ?? 0;
@@ -26241,25 +26269,47 @@ async function runGskImport(): Promise<void> {
     const verifiedTag = result.verified ? ' (verified official pack)' : (result.pack?.kind === 'community' ? ' (community pack)' : '');
     const skippedTag = skipped > 0 ? ` · ${skipped} skipped (empty)` : '';
     scrollSkillsPaneToTop();
-    showSkillsToast(
-      `Imported ${n} skill${n === 1 ? '' : 's'} from "${result.pack?.displayName ?? 'pack'}" into "${result.engramName ?? graphId}"${verifiedTag}${skippedTag}`,
-      'success',
-    );
+    // The destination engram may have been freshly created (Tauri side) and
+    // not yet pulled into the sidecar's loaded-graph set, so the no-arg
+    // skill:list enumeration (graphs.list) can miss it — leaving the library
+    // stuck on its prior contents even though the import succeeded. Load the
+    // graph into the sidecar first, refresh the engram pickers/group state,
+    // then re-list.
+    const intoGraph = result.graphId ?? graphId;
+    if (intoGraph) await ipcCall('graphs.load', { graphId: intoGraph }).catch(() => {});
     await fetchSkillsLibrary();
+    // Belt-and-suspenders: if the freshly imported engram still isn't in the
+    // enumerated list, fetch it explicitly (listSources by graphId, which
+    // doesn't depend on graph enumeration) and merge so the user sees the new
+    // skills immediately rather than after a page revisit.
+    if (intoGraph && !skillsLibrary.some((s) => s.graphId === intoGraph)) {
+      try {
+        const justImported = (await ipcCall<SkillListEntry[]>('skill:list', { graphId: intoGraph })) ?? [];
+        const seen = new Set(skillsLibrary.map((s) => s.sourceId));
+        skillsLibrary = [...skillsLibrary, ...justImported.filter((s) => !seen.has(s.sourceId))];
+      } catch (e) {
+        console.warn('[skills] per-graph skill:list fallback failed', e);
+      }
+    }
+    populateSkillsEngramPickers();
     renderSkillsLibrary();
+    finishIngestToast(
+      importToastId,
+      'success',
+      `Imported ${n} skill${n === 1 ? '' : 's'} into "${result.engramName ?? graphId}"${verifiedTag}${skippedTag}`,
+    );
     void warmVitalityCache();
     // Open the freshly imported skill immediately so the user lands on it
     // instead of having to hunt for it in the library. With a multi-skill
     // pack we surface the first; the rest are one click away in the list.
     const first = result.imported?.[0];
-    const intoGraph = result.graphId ?? graphId;
     if (first?.sourceId && intoGraph) {
       void openSkillInTrainer(first.sourceId, intoGraph);
     }
   } catch (e) {
     console.warn('[skills] importGsk failed', e);
     const msg = e instanceof Error ? e.message : String(e);
-    showSkillsToast(`Import failed: ${msg}`, 'error');
+    finishIngestToast(importToastId, 'error', `Import failed: ${msg}`);
   }
 }
 
@@ -26319,11 +26369,12 @@ function chooseSkillImportDestination(
       document.body.appendChild(overlay);
     }
     overlay.innerHTML = `
-      <div class="modal" role="dialog" aria-labelledby="gts-import-title" style="max-width:560px;">
-        <div style="display:flex;align-items:center;justify-content:space-between;padding:14px 18px 8px;">
+      <div class="modal" role="dialog" aria-labelledby="gts-import-title" style="max-width:560px;max-height:85vh;display:flex;flex-direction:column;">
+        <div style="display:flex;align-items:center;justify-content:space-between;padding:14px 18px 8px;flex:0 0 auto;">
           <h3 id="gts-import-title" style="margin:0;font-size:15px;">Import skill pack</h3>
           <button type="button" class="modal-close" id="gts-import-close" aria-label="Close" style="background:none;border:none;font-size:18px;color:var(--fg-dim);cursor:pointer;">✕</button>
         </div>
+        <div style="overflow-y:auto;flex:1 1 auto;min-height:0;">
         <div style="padding:0 18px 6px;">
           <div style="font-size:15px;font-weight:600;margin-bottom:2px;">${escapeHtml(pack.displayName)}</div>
           <div style="font-size:12px;color:var(--fg-dim);margin-bottom:8px;">
@@ -26346,7 +26397,8 @@ function chooseSkillImportDestination(
           </label>
           ${existing.length > 0 ? `<div style="max-height:280px;overflow-y:auto;margin-top:4px;">${existingOptions}</div>` : ''}
         </div>
-        <div style="display:flex;gap:8px;justify-content:flex-end;padding:0 18px 14px;">
+        </div>
+        <div style="display:flex;gap:8px;justify-content:flex-end;padding:12px 18px 14px;flex:0 0 auto;border-top:1px solid var(--border-dim);">
           <button type="button" id="gts-import-cancel" class="btn-ghost btn-sm">Cancel</button>
           <button type="button" id="gts-import-confirm" class="primary btn-sm">Import →</button>
         </div>
@@ -26435,6 +26487,7 @@ function _bindSkillsHandlersInner(): void {
         if (!ok) return;
       }
       showSkillsComposeMode();
+      resetSkillsComposeForm();
     })();
   });
   document.getElementById('skills-review-vitality')?.addEventListener('click', () => void refreshSkillVitality());
