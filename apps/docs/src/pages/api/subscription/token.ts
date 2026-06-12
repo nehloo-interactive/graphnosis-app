@@ -162,8 +162,55 @@ export const GET: APIRoute = async ({ url, locals }) => {
   // Require the poll secret. Missing/mismatched key, or a legacy record with no
   // secret, all return 204 — never reveal the token to an unauthenticated
   // caller, and never confirm the email is a customer. Constant-time-ish compare.
+  //
+  // Exception: if the email belongs to a domain-allowlist user and the poll
+  // secret is missing/wrong (stale token minted before secret gating), fall
+  // back to OTP re-auth so the user can self-heal without admin intervention.
   const key = url.searchParams.get('key') ?? '';
   if (!rec.pollSecret || !timingSafeEqual(key, rec.pollSecret)) {
+    const domain2 = email.split('@')[1] ?? '';
+    const domainRec2 = domain2 ? await getDomain(kv, domain2) : null;
+    if (domainRec2) {
+      const otpParam2 = url.searchParams.get('otp')?.trim();
+      if (!otpParam2) {
+        const code = String(crypto.getRandomValues(new Uint32Array(1))[0] % 1_000_000).padStart(6, '0');
+        await putOtp(kv, email, { code, expiresAt: Date.now() + OTP_TTL_SECONDS * 1000, attempts: 0 });
+        await sendOtpEmail(env, { to: email, code });
+        console.log('[billing token] OTP re-auth for stale domain token', email, 'domain:', domain2);
+        return new Response(
+          JSON.stringify({ status: 'otp_required' }),
+          { status: 202, headers: { 'Content-Type': 'application/json' } },
+        );
+      }
+      // OTP provided — verify and re-mint with a fresh poll secret
+      const otpRec2 = await getOtp(kv, email);
+      if (!otpRec2 || Date.now() > otpRec2.expiresAt) {
+        await deleteOtp(kv, email);
+        return new Response(JSON.stringify({ error: 'otp_expired' }), { status: 401, headers: { 'Content-Type': 'application/json' } });
+      }
+      if (!timingSafeEqual(otpParam2, otpRec2.code)) {
+        otpRec2.attempts += 1;
+        if (otpRec2.attempts >= OTP_MAX_ATTEMPTS) {
+          await deleteOtp(kv, email);
+          return new Response(JSON.stringify({ error: 'otp_invalid', attemptsLeft: 0 }), { status: 401, headers: { 'Content-Type': 'application/json' } });
+        }
+        await putOtp(kv, email, otpRec2);
+        return new Response(JSON.stringify({ error: 'otp_invalid', attemptsLeft: OTP_MAX_ATTEMPTS - otpRec2.attempts }), { status: 401, headers: { 'Content-Type': 'application/json' } });
+      }
+      await deleteOtp(kv, email);
+      const ttlDays2 = effectiveTtlDays(domainRec2.ttlDays);
+      const token2   = await mintLicenseToken(env, email, domainRec2.features, ttlDays2, domainRec2.plan, false);
+      const expSecs2 = decodeExp(token2);
+      const pollSecret2 = randomSecret();
+      rec = { token: token2, exp: expSecs2, updatedAt: Date.now(), plan: domainRec2.plan, pollSecret: pollSecret2 };
+      await putToken(kv, email, rec);
+      await writeAudit(kv, { ts: Date.now(), action: 'domain-auto', email, adminNote: `domain=${domain2} otp-reauth` });
+      console.log('[billing token] domain token refreshed via OTP re-auth for', email);
+      return new Response(
+        JSON.stringify({ token: rec.token, exp: rec.exp, plan: rec.plan, updatedAt: rec.updatedAt, pollSecret: pollSecret2 }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+      );
+    }
     return new Response(null, { status: 204 });
   }
   return new Response(
