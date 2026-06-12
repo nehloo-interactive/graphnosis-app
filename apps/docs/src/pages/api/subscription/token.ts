@@ -41,6 +41,7 @@ export const GET: APIRoute = async ({ url, locals }) => {
       headers: { 'Content-Type': 'application/json' },
     });
   }
+  console.log('[billing token] GET email:', email, 'domain:', email.split('@')[1] ?? '');
   const now = Date.now();
   const prev = lastPolledAt.get(email) ?? 0;
   if (now - prev < MIN_INTERVAL_MS) {
