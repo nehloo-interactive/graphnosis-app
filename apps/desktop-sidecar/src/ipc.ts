@@ -4478,6 +4478,17 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
       };
     }
 
+    case 'license:clear': {
+      // Wipe the stored license token from disk. The frontend also clears
+      // the cached billing emails from localStorage. Used by the "Reset"
+      // button in Settings → Premium Plans so the user can start fresh.
+      const current = await deps.host.getSettings();
+      const patch = { ...current };
+      delete patch.licenseEnc;
+      await deps.host.setSettings(patch);
+      return { ok: true };
+    }
+
     case 'skill:checkLicenseExpiry': {
       // Returns expiry info for the renewal reminder banner.
       // Non-null only when a valid token is present and expiring soon.
