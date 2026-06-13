@@ -17,6 +17,7 @@
 import Layout from '../layouts/Layout.astro';
 import Nav from '../components/Nav.astro';
 import Footer from '../components/Footer.astro';
+import PersonaBar from '../components/PersonaBar.astro';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 
@@ -88,6 +89,10 @@ try {
         </div>
       </div>
     </section>
+
+    <div class="py-6 flex justify-center">
+      <PersonaBar compact />
+    </div>
 
     <!-- ═══════════════════════════════════════════
          A SKILL IS NOT JUST A SYSTEM PROMPT
