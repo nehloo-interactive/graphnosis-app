@@ -27,6 +27,8 @@ jobs:
     permissions:
       contents: write
       id-token: write
+    outputs:
+      msi: ${{ steps.find.outputs.name }}
 
     steps:
       - name: Validate inputs
@@ -193,13 +195,19 @@ jobs:
     needs: build-windows
     if: ${{ inputs.upload_to_release }}
     steps:
-      - name: Update WINDOWS_FILENAME in Cloudflare Pages
+      # Sets all four download-redirect vars so this backfill workflow is
+      # fully self-contained — CURRENT_VERSION + DMG_FILENAME + WINDOWS_FILENAME
+      # are all kept consistent in one PATCH, matching what release.yml does.
+      - name: Update Cloudflare env vars (version + DMG + Windows MSI)
         env:
           CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
           CF_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
           CF_PROJECT_NAME: ${{ secrets.CF_PROJECT_NAME }}
           MSI_NAME: ${{ needs.build-windows.outputs.msi }}
         run: |
+          VERSION="${{ github.event.inputs.ref }}"
+          SEMVER="${VERSION#v}"
+          DMG="Graphnosis_${SEMVER}_aarch64.dmg"
           curl -s -X PATCH \
             "https://api.cloudflare.com/client/v4/accounts/$CF_ACCOUNT_ID/pages/projects/$CF_PROJECT_NAME" \
             -H "Authorization: Bearer $CF_API_TOKEN" \
@@ -208,6 +216,9 @@ jobs:
               \"deployment_configs\": {
                 \"production\": {
                   \"env_vars\": {
+                    \"CURRENT_VERSION\": { \"value\": \"$VERSION\" },
+                    \"DMG_FILENAME\": { \"value\": \"$DMG\" },
+                    \"PUBLIC_RELEASED_VERSION\": { \"value\": \"$VERSION\" },
                     \"WINDOWS_FILENAME\": { \"value\": \"$MSI_NAME\" }
                   }
                 }
