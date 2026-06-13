@@ -116,6 +116,8 @@ function sanitizeForIpc(value: unknown): unknown {
 export interface IpcDeps {
   host: GraphnosisHost;
   socketPath: string;
+  /** Absolute path to the cortex directory. Used for GEZ signing-key storage. */
+  cortexDir?: string;
   /** Same Map shared with the MCP server — proposed corrections waiting for user approval. */
   pendingDiffs: Map<string, { graphId: string; diff: CorrectionDiff; createdAt: number }>;
   /** Closes + reopens the MCP socket listener — used by the "Reconnect" button in the inspector. */
@@ -468,6 +470,28 @@ async function httpsGetLicense(url: string, timeoutMs = 15_000): Promise<{ statu
   });
 }
 
+/** Returns the highest-tier valid license token across the personal slot
+ *  (licenseEnc via host.getLicenseToken) and the domain seat slot
+ *  (domainSeatLicenseToken stored directly in settings).
+ *  Tier rank: enterprise (4) > teams (3) > skill-training/Pro (2) > other (1). */
+async function getEffectiveLicenseToken(deps: IpcDeps): Promise<string | null> {
+  const primary = await deps.host.getLicenseToken();
+  const settings = deps.host.getSettings();
+  const domain = settings.domainSeatLicenseToken ?? null;
+  if (!domain) return primary;
+  if (!primary) return domain;
+  const tier = (token: string): number => {
+    const payload = deps.licenseValidator?.verifyToken(token);
+    if (!payload) return 0;
+    const f = payload.features;
+    if (f.includes('enterprise')) return 4;
+    if (f.includes('teams')) return 3;
+    if (f.includes('skill-training')) return 2;
+    return 1;
+  };
+  return tier(domain) >= tier(primary) ? domain : primary;
+}
+
 export async function dispatch(deps: IpcDeps, method: string, params: unknown): Promise<unknown> {
   // Mark client activity so heavy background brain passes defer to keep the UI
   // responsive — but NOT for the app's recurring reconciliation polls, or
@@ -544,7 +568,7 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
       // path lights up too. Server-side enforcement in mcp-server.ts honors any
       // EXISTING denylist regardless of tier — only WRITES are gated here, so a
       // downgrade never silently re-exposes a tool.
-      const licenseToken = await deps.host.getLicenseToken();
+      const licenseToken = await getEffectiveLicenseToken(deps);
       const isProSubscriber =
         (deps.licenseValidator?.hasFeature(licenseToken, 'mcp-tool-control') ?? false) ||
         (deps.licenseValidator?.hasFeature(licenseToken, 'skill-training') ?? false);
@@ -623,7 +647,7 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
       {
         // Free tier: max 3 user engrams. System engrams (docs, skill-demos)
         // don't count — they're auto-created by the app, not by the user.
-        const licenseToken = await deps.host.getLicenseToken();
+        const licenseToken = await getEffectiveLicenseToken(deps);
         const hasPaidPlan = (deps.licenseValidator?.verifyToken(licenseToken ?? '') ?? null) !== null;
         if (!hasPaidPlan) {
           const SYSTEM_ENGRAMS = new Set([DOCS_ENGRAM_ID, SKILL_DEMOS_ENGRAM_ID]);
@@ -669,7 +693,7 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
       const existed = deps.host.listGraphs().includes(args.graphId);
       if (!existed) {
         // Free tier engram limit — same gate as graphs.createWithTemplate.
-        const licenseToken = await deps.host.getLicenseToken();
+        const licenseToken = await getEffectiveLicenseToken(deps);
         const hasPaidPlan = (deps.licenseValidator?.verifyToken(licenseToken ?? '') ?? null) !== null;
         if (!hasPaidPlan) {
           const SYSTEM_ENGRAMS = new Set([DOCS_ENGRAM_ID, SKILL_DEMOS_ENGRAM_ID]);
@@ -2088,7 +2112,7 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
         // Watch-based connectors (filesystem watchers) are unaffected — they
         // fire on changes, not on a timer. This gate only applies to the
         // global backstop poll interval used by RSS, GitHub, Slack, etc.
-        const licenseToken = await deps.host.getLicenseToken();
+        const licenseToken = await getEffectiveLicenseToken(deps);
         const hasCadence = deps.licenseValidator?.hasFeature(licenseToken, 'connector-cadence') ?? false;
         if (!hasCadence) intervalMs = Math.max(86_400_000, intervalMs);
         await deps.connectorManager.setPullInterval(intervalMs);
@@ -3354,7 +3378,7 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
       // structured upgrade-required response so the chip handler can
       // pop the existing license card instead of guessing at the error.
       {
-        const licenseToken = await deps.host.getLicenseToken();
+        const licenseToken = await getEffectiveLicenseToken(deps);
         const licensed = deps.licenseValidator?.hasFeature(licenseToken, 'gnn-exploration') ?? false;
         if (!licensed) {
           return {
@@ -3533,7 +3557,7 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
         useLlmRewrite: z.boolean().optional(),
       }).parse(params ?? {});
       if (!deps.skillTrainer) return null;
-      const licenseToken = await deps.host.getLicenseToken();
+      const licenseToken = await getEffectiveLicenseToken(deps);
       const licensed = deps.licenseValidator?.hasFeature(licenseToken, 'skill-training') ?? false;
       if (!licensed) {
         return {
@@ -3631,7 +3655,7 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
       // (claude-md, cursorrules, raw, etc.) remain unrestricted so free
       // users can still ship skills into their own AI tools.
       if (args.format === 'gsk') {
-        const licenseToken = await deps.host.getLicenseToken();
+        const licenseToken = await getEffectiveLicenseToken(deps);
         const licensed = deps.licenseValidator?.hasFeature(licenseToken, 'skill-training') ?? false;
         if (!licensed) {
           return {
@@ -3745,7 +3769,7 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
       // so accepting one without a license shouldn't be possible, but
       // we re-check defensively.
       const args = z.object({ sourceId: z.string().min(1) }).parse(params ?? {});
-      const licenseToken = await deps.host.getLicenseToken();
+      const licenseToken = await getEffectiveLicenseToken(deps);
       const licensed = deps.licenseValidator?.hasFeature(licenseToken, 'skill-training') ?? false;
       if (!licensed) {
         return { ok: false, reason: 'upgrade_required' };
@@ -3827,7 +3851,7 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
         config: ConfigSchema,
       }).parse(params ?? {});
 
-      const licenseToken = await deps.host.getLicenseToken();
+      const licenseToken = await getEffectiveLicenseToken(deps);
       const licensed = deps.licenseValidator?.hasFeature(licenseToken, 'skill-training') ?? false;
       if (!licensed) {
         return {
@@ -4466,15 +4490,12 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
       try {
         const { status, body } = await httpsGetLicense(url);
         if (status === 204) {
-          console.error('[license:pollServer] 204 no token for email:', args.email, '— domain:', args.email.split('@')[1] ?? '(none)');
           return { ok: false, reason: 'no_token' };
         }
         if (status === 202) {
-          console.error('[license:pollServer] 202 otp_required for email:', args.email);
           return { ok: false, reason: 'otp_required' };
         }
         if (status < 200 || status >= 300) {
-          console.error('[license:pollServer] HTTP', status, 'for email:', args.email);
           return { ok: false, reason: `http_${status}` };
         }
         const data = JSON.parse(body) as { token?: string };
@@ -4489,7 +4510,6 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
       const trimmed = token.trim();
       const dotCount = (trimmed.match(/\./g) ?? []).length;
       if (!/^[A-Za-z0-9_\-]+\.[A-Za-z0-9_\-]+$/.test(trimmed)) {
-        console.error('[license:pollServer] token format invalid — len:', trimmed.length, 'dots:', dotCount, 'start:', trimmed.slice(0, 30));
         return { ok: false, reason: 'malformed' };
       }
       const payload = deps.licenseValidator?.verifyToken(trimmed) ?? null;
@@ -4507,6 +4527,7 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
         code: z.string().length(6),
         key: z.string().optional(),
         baseUrl: z.string().optional(),
+        target: z.enum(['primary', 'domain']).optional(),
       }).parse(params ?? {});
       const base = (args.baseUrl ?? 'https://graphnosis.com').replace(/\/$/, '');
       const keyParam = args.key ? `&key=${encodeURIComponent(args.key)}` : '';
@@ -4541,7 +4562,15 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
         console.error('[license:verifyOtp] verifyToken returned null — len:', trimmed.length, 'dots:', dotCount);
         return { ok: false, reason: 'invalid_or_expired' };
       }
-      await deps.host.setLicenseToken(trimmed);
+      if (args.target === 'primary') {
+        // Stripe recovery — store in the primary encrypted slot.
+        await deps.host.setLicenseToken(trimmed);
+      } else {
+        // Domain seat activation — store in the domain slot so a personal Pro
+        // subscription in the primary slot is not overwritten.
+        const currentSettings = deps.host.getSettings();
+        await deps.host.setSettings({ ...currentSettings, domainSeatLicenseToken: trimmed });
+      }
       return { ok: true, plan: payload.plan, features: payload.features, sub: payload.sub, expiresAt: payload.exp * 1000, pollSecret };
     }
 
@@ -4549,44 +4578,74 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
       // Read-only summary of the currently-stored license. Used by the
       // Skills tab's "your subscription" chip and Settings → License panel
       // to render plan / expiry / features without re-decoding the token
-      // on the frontend.
-      const token = await deps.host.getLicenseToken();
-      if (!token) {
-        return { present: false };
-      }
-      const payload = deps.licenseValidator?.verifyToken(token) ?? null;
-      if (!payload) {
-        return { present: true, valid: false };
-      }
-      const expiresAt = payload.exp * 1000;
+      // on the frontend. Returns both the effective (best-tier) token's flat
+      // fields for backward compat, and a `tokens` array with one entry per
+      // active slot (personal + domain seat) so the UI can show both.
+      const primaryToken = await deps.host.getLicenseToken();
+      const settings = deps.host.getSettings();
+      const domainToken = settings.domainSeatLicenseToken ?? null;
+      const toEntry = (raw: string, source: 'personal' | 'domain') => {
+        const p = deps.licenseValidator?.verifyToken(raw) ?? null;
+        if (!p) return null;
+        return {
+          source,
+          plan: p.plan,
+          features: p.features,
+          sub: p.sub,
+          expiresAt: p.exp * 1000,
+          expiringSoon: deps.licenseValidator?.isExpiringSoon(raw) ?? false,
+          renews: p.renews !== false,
+        };
+      };
+      const entries = [
+        primaryToken ? toEntry(primaryToken, 'personal') : null,
+        domainToken ? toEntry(domainToken, 'domain') : null,
+      ].filter((e): e is NonNullable<ReturnType<typeof toEntry>> => e !== null);
+      if (entries.length === 0) return { present: false };
+      // Effective token = highest-tier entry (for flat backward-compat fields).
+      const best = entries.reduce((a, b) => {
+        const tierOf = (e: typeof a) => {
+          if (e.features.includes('enterprise')) return 4;
+          if (e.features.includes('teams')) return 3;
+          if (e.features.includes('skill-training')) return 2;
+          return 1;
+        };
+        return tierOf(b) > tierOf(a) ? b : a;
+      });
       return {
         present: true,
         valid: true,
-        plan: payload.plan,
-        features: payload.features,
-        sub: payload.sub,
-        expiresAt,
-        expiringSoon: deps.licenseValidator?.isExpiringSoon(token) ?? false,
-        // Absent (legacy token) → treat as renewing.
-        renews: payload.renews !== false,
+        plan: best.plan,
+        features: best.features,
+        sub: best.sub,
+        expiresAt: best.expiresAt,
+        expiringSoon: best.expiringSoon,
+        renews: best.renews,
+        tokens: entries,
       };
     }
 
     case 'license:clear': {
-      // Wipe the stored license token from disk. The frontend also clears
-      // the cached billing emails from localStorage. Used by the "Reset"
-      // button in Settings → Premium Plans so the user can start fresh.
-      const current = await deps.host.getSettings();
-      const patch = { ...current };
-      delete patch.licenseEnc;
-      await deps.host.setSettings(patch);
+      // Wipe both license slots from disk. The frontend also clears cached
+      // billing emails from localStorage. Non-destructive on Stripe or OTP —
+      // the user returns to Free tier locally until they reconnect.
+      //
+      // Pass explicit undefined for both fields. setSettings does a shallow
+      // merge ({ ...this.settings, ...partial }), so a deleted key in a copy
+      // of this.settings would not shadow the live value — the old licenseEnc
+      // would survive. Spreading { licenseEnc: undefined } DOES override it,
+      // and mergeWithDefaults's typeof-string guard then omits both fields.
+      await deps.host.setSettings({
+        licenseEnc: undefined as unknown as string,
+        domainSeatLicenseToken: undefined,
+      });
       return { ok: true };
     }
 
     case 'skill:checkLicenseExpiry': {
       // Returns expiry info for the renewal reminder banner.
       // Non-null only when a valid token is present and expiring soon.
-      const licenseToken = await deps.host.getLicenseToken();
+      const licenseToken = await getEffectiveLicenseToken(deps);
       if (!licenseToken || !deps.licenseValidator) return null;
       const expiringSoon = deps.licenseValidator.isExpiringSoon(licenseToken);
       const payload = deps.licenseValidator.verifyToken(licenseToken);
@@ -4596,6 +4655,271 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
         validUntil: payload.exp * 1000,
         plan: payload.plan,
       };
+    }
+
+    // ── Sharing token management ──────────────────────────────────────────────
+
+    case 'sharing:list': {
+      // Returns all active sharing tokens. Token IDs (the bearer values) are
+      // included so the UI can display them for copy-paste. The tokens are
+      // stored encrypted at rest inside the cortex; this IPC call is only
+      // reachable after the cortex is unlocked.
+      const settings = deps.host.getSettings();
+      const tokens = settings.sharing?.tokens ?? [];
+      const now = Date.now();
+      return tokens.map((t) => ({
+        id: t.id,
+        name: t.name,
+        role: t.scope.role,
+        engrams: t.scope.engrams,
+        createdAt: t.createdAt,
+        expiresAt: t.expiresAt ?? null,
+        expired: t.expiresAt !== undefined && t.expiresAt < now,
+      }));
+    }
+
+    case 'sharing:create': {
+      // Create a new scoped sharing token. Gated behind Pro+ (skill-training
+      // is the universal Pro+ feature flag). Teams and Enterprise also qualify.
+      // Generates a random UUID as the bearer token value; stored in settings
+      // and returned once for copy-paste.
+      const args = z.object({
+        name: z.string().min(1).max(80),
+        role: z.enum(['viewer', 'editor']),
+        engrams: z.union([z.array(z.string().min(1)), z.literal('*')]),
+        expiresAt: z.number().optional(), // Unix ms; absent = never
+      }).parse(params ?? {});
+
+      // ── License gate ───────────────────────────────────────────────────────
+      const licenseToken = await getEffectiveLicenseToken(deps);
+      const licensePayload = deps.licenseValidator?.verifyToken(licenseToken ?? '') ?? null;
+      const hasTeams = licensePayload?.features.includes('skill-training')
+        || licensePayload?.features.includes('teams')
+        || licensePayload?.features.includes('enterprise');
+      if (!hasTeams) {
+        return {
+          ok: false,
+          reason: 'not_licensed',
+          message: 'Engram sharing requires a Pro, Teams, or Enterprise plan. Upgrade at graphnosis.com.',
+        };
+      }
+
+      // ── Seat count enforcement ─────────────────────────────────────────────
+      const current = deps.host.getSettings();
+      const existing = current.sharing?.tokens ?? [];
+      const now = Date.now();
+      const activeCount = existing.filter((t) => t.expiresAt === undefined || t.expiresAt >= now).length;
+      const seatCap = licensePayload?.seats ?? null; // null = unlimited (legacy tokens)
+      if (seatCap !== null && activeCount >= seatCap) {
+        return {
+          ok: false,
+          reason: 'seat_limit',
+          message: `Seat limit reached (${seatCap} seat${seatCap === 1 ? '' : 's'}). Revoke an existing token to free a seat.`,
+          seats: seatCap,
+          activeCount,
+        };
+      }
+
+      const newToken = {
+        id: randomUUID(),
+        name: args.name,
+        scope: {
+          engrams: args.engrams as string[] | '*',
+          role: args.role as import('@graphnosis-app/core/settings').SharingRole,
+        },
+        createdAt: now,
+        ...(args.expiresAt !== undefined ? { expiresAt: args.expiresAt } : {}),
+      };
+
+      await deps.host.setSettings({
+        ...current,
+        sharing: { tokens: [...existing, newToken] },
+      });
+
+      return {
+        ok: true,
+        id: newToken.id,
+        name: newToken.name,
+        role: newToken.scope.role,
+        engrams: newToken.scope.engrams,
+        createdAt: newToken.createdAt,
+        expiresAt: (newToken as { expiresAt?: number }).expiresAt ?? null,
+      };
+    }
+
+    case 'sharing:planInfo': {
+      // Returns seat cap + active count so the UI can show seat usage.
+      const licenseToken = await getEffectiveLicenseToken(deps);
+      const payload = deps.licenseValidator?.verifyToken(licenseToken ?? '') ?? null;
+      const hasTeams = payload?.features.includes('skill-training')
+        || payload?.features.includes('teams')
+        || payload?.features.includes('enterprise');
+      const seatCap = payload?.seats ?? null;
+      const settings = deps.host.getSettings();
+      const tokens = settings.sharing?.tokens ?? [];
+      const now = Date.now();
+      const activeCount = tokens.filter((t) => t.expiresAt === undefined || t.expiresAt >= now).length;
+      const hasEnterprise = payload?.features.includes('enterprise') ?? false;
+      return {
+        licensed: !!hasTeams,
+        enterprise: hasEnterprise,
+        plan: payload?.plan ?? null,
+        seats: seatCap,        // null = unlimited
+        activeCount,
+      };
+    }
+
+    case 'sharing:sessions': {
+      // Returns active MCP sessions grouped by sharing token ID.
+      // Used by the Team Admin panel to show per-token active connections.
+      const byToken = mcpRegistry.listByToken();
+      const result: Record<string, { connectedAt: number; lastActivityAt: number; clientName?: string }[]> = {};
+      for (const [tokenId, conns] of byToken.entries()) {
+        if (tokenId === null) continue; // owner sessions — not attributed to a sharing token
+        result[tokenId] = conns.map((c) => ({
+          connectedAt: c.connectedAt,
+          lastActivityAt: c.lastActivityAt,
+          ...(c.clientName ? { clientName: c.clientName } : {}),
+        }));
+      }
+      return result;
+    }
+
+    case 'sharing:revoke': {
+      // Remove a sharing token by ID. Active sessions using this token are
+      // not forcibly closed (they stay open until they time out or disconnect)
+      // but new sessions with this token are rejected immediately.
+      const args = z.object({ id: z.string().min(1) }).parse(params ?? {});
+      const current = deps.host.getSettings();
+      const before = current.sharing?.tokens ?? [];
+      const after = before.filter((t) => t.id !== args.id);
+      if (after.length === before.length) return { ok: false, reason: 'not_found' };
+      await deps.host.setSettings({
+        ...current,
+        sharing: { tokens: after },
+      });
+      return { ok: true };
+    }
+
+    case 'engram.export': {
+      // Export an engram to a base64-encoded .gez pack.
+      // Gated behind Pro (sharing feature).
+      const args = z.object({
+        engramId: z.string().min(1),
+        sign: z.boolean().optional(),
+      }).parse(params ?? {});
+
+      if (!deps.host.listGraphs().includes(args.engramId)) {
+        return { ok: false, reason: 'not_found', message: `Engram "${args.engramId}" not found.` };
+      }
+
+      const licenseToken = await getEffectiveLicenseToken(deps);
+      const licensed = deps.licenseValidator?.hasFeature(licenseToken, 'teams') ?? false;
+      if (!licensed) {
+        return {
+          ok: false, reason: 'not_licensed',
+          message: 'Engram Pack export requires a Graphnosis Pro subscription. Visit https://graphnosis.com/upgrade',
+        };
+      }
+
+      const { exportEngram, getOrCreateGezSigningKeyHex } = await import('./engram-pack.js');
+      const shouldSign = args.sign !== false;
+      let signingKeyHex: string | undefined;
+      if (shouldSign && deps.cortexDir) {
+        try { signingKeyHex = await getOrCreateGezSigningKeyHex(deps.cortexDir); } catch { /* unsigned */ }
+      }
+
+      const meta = deps.host.getGraphMetadata(args.engramId) ?? {};
+      const exportOpts: import('./engram-pack.js').ExportEngramOptions = {
+        exportedBy: (meta as any).displayName ?? args.engramId,
+      };
+      if (signingKeyHex !== undefined) exportOpts.signingKeyHex = signingKeyHex;
+      const result = await exportEngram(deps.host, args.engramId, exportOpts);
+
+      return {
+        ok: true,
+        packBase64: result.pack.toString('base64'),
+        sourceCount: result.sourceCount,
+        signed: result.signed,
+        engramDisplayName: (meta as any).displayName ?? args.engramId,
+      };
+    }
+
+    case 'engram.import': {
+      // Import a .gez pack into the local cortex.
+      const args = z.object({
+        packBase64: z.string().min(1),
+        targetEngramId: z.string().optional(),
+        skipExisting: z.boolean().optional(),
+      }).parse(params ?? {});
+
+      const licenseToken = await getEffectiveLicenseToken(deps);
+      const licensed = deps.licenseValidator?.hasFeature(licenseToken, 'teams') ?? false;
+      if (!licensed) {
+        return {
+          ok: false, reason: 'not_licensed',
+          message: 'Engram Pack import requires a Graphnosis Pro subscription. Visit https://graphnosis.com/upgrade',
+        };
+      }
+
+      let packBuffer: Buffer;
+      try {
+        packBuffer = Buffer.from(args.packBase64, 'base64');
+      } catch {
+        return { ok: false, reason: 'invalid_pack', message: 'Invalid base64 data.' };
+      }
+
+      const { importEngram } = await import('./engram-pack.js');
+      const importOpts: import('./engram-pack.js').ImportEngramOptions = {
+        skipExisting: args.skipExisting !== false,
+        withEmbedding: (fn) => withEmbedding(fn),
+      };
+      if (args.targetEngramId !== undefined) importOpts.targetEngramId = args.targetEngramId;
+      const { result, payload } = await importEngram(deps.host, packBuffer, importOpts);
+
+      return {
+        ok: true,
+        result,
+        sourceEngramId: payload.engramId,
+        sourceEngramName: payload.engramDisplayName,
+        exportedBy: payload.exportedBy,
+        exportedAt: payload.exportedAt,
+      };
+    }
+
+    case 'engram.exportSigningKey': {
+      // Returns the base64-encoded public key of this cortex's GEZ signing key.
+      // Used by the UI to show the "verify this pack came from me" fingerprint.
+      if (!deps.cortexDir) return { ok: false, reason: 'no_cortex_dir' };
+      const { getOrCreateGezSigningKeyHex } = await import('./engram-pack.js');
+      const keyHex = await getOrCreateGezSigningKeyHex(deps.cortexDir);
+      const sodium = await import('libsodium-wrappers-sumo');
+      await sodium.default.ready;
+      const sk = Buffer.from(keyHex, 'hex');
+      const pubKey = sk.subarray(32);
+      return { ok: true, publicKeyB64: pubKey.toString('base64') };
+    }
+
+    case 'audit.export': {
+      // Returns op-log events for SIEM/audit export. Enterprise-gated.
+      // Query params (all optional): since (Unix ms), until (Unix ms), engram (graphId).
+      const licenseToken = await getEffectiveLicenseToken(deps);
+      const hasEnterprise = deps.licenseValidator?.hasFeature(licenseToken, 'enterprise') ?? false;
+      if (!hasEnterprise) {
+        return { ok: false, reason: 'not_licensed', message: 'Audit log export requires an Enterprise license.' };
+      }
+      const a = z.object({
+        since: z.number().optional(),
+        until: z.number().optional(),
+        engram: z.string().optional(),
+      }).parse(params ?? {});
+
+      let events = await deps.host.listOplogEvents();
+      if (a.since !== undefined) events = events.filter((ev) => ev.ts >= a.since!);
+      if (a.until !== undefined) events = events.filter((ev) => ev.ts <= a.until!);
+      if (a.engram !== undefined) events = events.filter((ev) => ev.graphId === a.engram);
+      events = events.slice().sort((x, y) => x.ts - y.ts);
+      return { ok: true, count: events.length, events };
     }
 
     default:

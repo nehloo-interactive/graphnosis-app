@@ -4104,6 +4104,7 @@ els.sourcesEngramSelect.addEventListener('change', () => {
   } else {
     void refreshStats().then(() => applySourcesFilter());
   }
+  syncGezExportButton();
 });
 
 // ── Reingest (Sources view header) ───────────────────────────────────────────
@@ -19166,6 +19167,564 @@ async function openMobileWizard(): Promise<void> {
   });
 }
 
+// ── Engram Sharing modal ───────────────────────────────────────────────────────
+
+interface SharingTokenInfo {
+  id: string;
+  name: string;
+  role: 'viewer' | 'editor';
+  engrams: string[] | '*';
+  createdAt: number;
+  expiresAt: number | null;
+  expired: boolean;
+}
+
+interface SharingPlanInfo {
+  licensed: boolean;
+  enterprise?: boolean;
+  plan: string | null;
+  seats: number | null;   // null = unlimited
+  activeCount: number;
+}
+
+interface SharingCreateResult {
+  ok: boolean;
+  id?: string;
+  name?: string;
+  role?: string;
+  engrams?: string[] | '*';
+  createdAt?: number;
+  expiresAt?: number | null;
+  reason?: string;
+  message?: string;
+  seats?: number;
+  activeCount?: number;
+}
+
+interface SharingSessionEntry {
+  connectedAt: number;
+  lastActivityAt: number;
+  clientName?: string;
+}
+
+async function refreshSharingTokenSummary(): Promise<void> {
+  const summary = document.getElementById('sharing-token-summary');
+  if (!summary) return;
+  try {
+    const plan = await invoke<SharingPlanInfo>('sharing:planInfo', {});
+    if (!plan.licensed) {
+      summary.textContent = 'Requires Pro, Teams, or Enterprise plan.';
+      summary.style.color = 'var(--fg-muted)';
+      return;
+    }
+    const seatStr = plan.seats !== null
+      ? `${plan.activeCount} / ${plan.seats} seat${plan.seats === 1 ? '' : 's'} used`
+      : `${plan.activeCount} active token${plan.activeCount === 1 ? '' : 's'}`;
+    summary.textContent = seatStr;
+    summary.style.color = '';
+  } catch { summary.textContent = ''; }
+}
+
+function renderSharingTokenList(
+  tokens: SharingTokenInfo[],
+  sessions: Record<string, SharingSessionEntry[]>,
+  plan: SharingPlanInfo,
+): void {
+  const list = document.getElementById('sharing-token-list');
+  const empty = document.getElementById('sharing-no-tokens');
+  const seatBar = document.getElementById('sharing-seat-bar');
+  if (!list || !empty) return;
+
+  // Seat usage bar
+  if (seatBar) {
+    if (plan.seats !== null) {
+      const pct = Math.min(100, Math.round((plan.activeCount / plan.seats) * 100));
+      const color = pct >= 100 ? 'var(--error)' : pct >= 80 ? 'var(--warn, orange)' : 'var(--accent)';
+      seatBar.innerHTML = `
+        <div style="display:flex;justify-content:space-between;font-size:12px;color:var(--fg-muted);margin-bottom:4px;">
+          <span>Seats used</span>
+          <span>${plan.activeCount} / ${plan.seats}</span>
+        </div>
+        <div style="height:4px;border-radius:2px;background:var(--bg-raised);overflow:hidden;">
+          <div style="height:100%;width:${pct}%;background:${color};transition:width 300ms;"></div>
+        </div>`;
+      seatBar.style.display = '';
+    } else {
+      seatBar.style.display = 'none';
+    }
+  }
+
+  list.innerHTML = '';
+  const active = tokens.filter((t) => !t.expired);
+  empty.style.display = active.length === 0 ? '' : 'none';
+
+  for (const t of active) {
+    const engramLabel = t.engrams === '*' ? 'all engrams' : `${(t.engrams as string[]).length} engram${(t.engrams as string[]).length === 1 ? '' : 's'}`;
+    const expiryLabel = t.expiresAt ? `expires ${new Date(t.expiresAt).toLocaleDateString()}` : 'never expires';
+    const activeSessions = sessions[t.id] ?? [];
+    const sessionLabel = activeSessions.length > 0
+      ? `${activeSessions.length} active session${activeSessions.length === 1 ? '' : 's'}`
+      : 'no active sessions';
+    const row = document.createElement('div');
+    row.style.cssText = 'display:flex;align-items:center;justify-content:space-between;gap:8px;padding:8px 10px;background:var(--bg-raised);border-radius:6px;';
+    row.innerHTML = `
+      <div style="flex:1;min-width:0;">
+        <div style="font-size:14px;font-weight:600;">${escape(t.name)}</div>
+        <div style="font-size:12px;color:var(--fg-muted);">${t.role} · ${engramLabel} · ${expiryLabel}</div>
+        <div style="font-size:11px;color:var(--fg-muted);margin-top:2px;">${sessionLabel}</div>
+      </div>
+      <button class="sharing-revoke-btn" data-id="${escape(t.id)}" title="Revoke token" style="flex-shrink:0;">Revoke</button>
+    `;
+    list.appendChild(row);
+  }
+  list.querySelectorAll<HTMLButtonElement>('.sharing-revoke-btn').forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      const id = btn.dataset['id'];
+      if (!id) return;
+      if (!await gConfirm('Revoke token?', 'Collaborators using this token will lose access on their next request. This cannot be undone.')) return;
+      await invoke('sharing:revoke', { id });
+      void openSharingModal();
+      void refreshSharingTokenSummary();
+    });
+  });
+}
+
+async function openSharingModal(): Promise<void> {
+  const modal = document.getElementById('sharing-modal');
+  if (!modal) return;
+  modal.classList.remove('hidden');
+
+  // Fetch plan info, token list, and active sessions in parallel.
+  const [plan, tokens, sessions] = await Promise.all([
+    invoke<SharingPlanInfo>('sharing:planInfo', {}).catch(() => ({ licensed: false, plan: null, seats: null, activeCount: 0 })),
+    invoke<SharingTokenInfo[]>('sharing:list', {}).catch(() => [] as SharingTokenInfo[]),
+    invoke<Record<string, SharingSessionEntry[]>>('sharing:sessions', {}).catch(() => ({})),
+  ]);
+
+  // Show/hide the create form based on license. Show current plan when licensed.
+  const createDetails = document.getElementById('sharing-create-details');
+  const unlicensedNotice = document.getElementById('sharing-unlicensed-notice');
+  const planBadge = document.getElementById('sharing-plan-badge');
+  if (createDetails) createDetails.style.display = plan.licensed ? '' : 'none';
+  if (unlicensedNotice) {
+    unlicensedNotice.style.display = plan.licensed ? 'none' : '';
+    unlicensedNotice.textContent = 'Engram sharing requires a Pro, Teams, or Enterprise plan.';
+  }
+  if (planBadge) {
+    if (plan.licensed && plan.plan) {
+      planBadge.innerHTML = `Plan: <strong>${escape(humanizePlanName(plan.plan))}</strong>`;
+      planBadge.style.display = '';
+    } else {
+      planBadge.style.display = 'none';
+    }
+  }
+
+  // Seat cap: disable create if at limit.
+  const createBtn = document.getElementById('btn-sharing-create') as HTMLButtonElement | null;
+  if (createBtn && plan.seats !== null) {
+    createBtn.disabled = plan.activeCount >= plan.seats;
+    createBtn.title = plan.activeCount >= plan.seats
+      ? `Seat limit reached (${plan.seats}). Revoke a token to free a seat.`
+      : '';
+  }
+
+  // Populate engram picker.
+  const picker = document.getElementById('sharing-engram-picker');
+  if (picker) {
+    try {
+      const graphs = await invoke<GraphWithMetadata[]>('list_graphs_with_metadata', { includeUnloaded: false });
+      const visible = graphs.filter((g) => !g.metadata.archived);
+      picker.innerHTML = '';
+      for (const g of visible) {
+        const label = document.createElement('label');
+        label.style.cssText = 'display:flex;align-items:center;gap:4px;font-size:13px;cursor:pointer;';
+        label.innerHTML = `<input type="checkbox" value="${escape(g.graphId)}" /> ${escape(g.metadata.displayName ?? g.graphId)}`;
+        picker.appendChild(label);
+      }
+    } catch { /* sidecar not ready */ }
+  }
+
+  // Enterprise-only: show audit log export section.
+  const auditSection = document.getElementById('sharing-audit-section');
+  if (auditSection) {
+    auditSection.style.display = plan.enterprise ? '' : 'none';
+  }
+
+  renderSharingTokenList(tokens, sessions, plan);
+}
+
+{
+  document.getElementById('btn-sharing-manage')?.addEventListener('click', () => { void openSharingModal(); });
+
+  document.getElementById('btn-sharing-close')?.addEventListener('click', () => {
+    document.getElementById('sharing-modal')?.classList.add('hidden');
+  });
+
+  document.getElementById('btn-sharing-audit-export')?.addEventListener('click', async () => {
+    const btn = document.getElementById('btn-sharing-audit-export') as HTMLButtonElement | null;
+    if (btn) btn.disabled = true;
+    try {
+      const result = await invoke<{ ok: boolean; count?: number; events?: unknown[]; reason?: string; message?: string }>('audit.export', {});
+      if (!result.ok) {
+        void gAlert('Audit export failed', result.message ?? result.reason ?? 'Unknown error');
+        return;
+      }
+      const events = (result.events ?? []) as Array<Record<string, unknown>>;
+      const csvEsc = (v: unknown) => `"${String(v ?? '').replace(/"/g, '""')}"`;
+      const rows = [
+        ['id', 'ts', 'isoDate', 'op', 'graphId', 'targetKind', 'targetId', 'deviceId', 'triggeredBy'].map(csvEsc).join(','),
+        ...events.map((ev) => [
+          ev['id'] ?? '', ev['ts'] ?? '',
+          ev['ts'] ? new Date(ev['ts'] as number).toISOString() : '',
+          ev['op'] ?? '',
+          ev['graphId'] ?? '',
+          (ev['target'] as Record<string, unknown> | undefined)?.['kind'] ?? '',
+          (ev['target'] as Record<string, unknown> | undefined)?.['id'] ?? '',
+          ev['deviceId'] ?? '',
+          ev['triggeredBy'] ?? '',
+        ].map(csvEsc).join(',')),
+      ].join('\r\n');
+      const blob = new Blob([rows], { type: 'text/csv' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `graphnosis-audit-${new Date().toISOString().slice(0, 10)}.csv`;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch (e) {
+      void gAlert('Audit export error', (e as Error).message ?? String(e));
+    } finally {
+      if (btn) btn.disabled = false;
+    }
+  });
+
+  document.getElementById('sharing-new-engrams-mode')?.addEventListener('change', (e) => {
+    const picker = document.getElementById('sharing-engram-picker');
+    if (picker) picker.style.display = (e.target as HTMLSelectElement).value === 'select' ? 'flex' : 'none';
+  });
+
+  document.getElementById('btn-sharing-create')?.addEventListener('click', async () => {
+    const nameEl = document.getElementById('sharing-new-name') as HTMLInputElement | null;
+    const roleEl = document.getElementById('sharing-new-role') as HTMLSelectElement | null;
+    const engramsModeEl = document.getElementById('sharing-new-engrams-mode') as HTMLSelectElement | null;
+    const expiryEl = document.getElementById('sharing-new-expiry') as HTMLSelectElement | null;
+    const btn = document.getElementById('btn-sharing-create') as HTMLButtonElement | null;
+    if (!nameEl || !roleEl || !engramsModeEl || !expiryEl || !btn) return;
+
+    const name = nameEl.value.trim();
+    if (!name) { void gAlert('Name required', 'Enter a name for this token.'); return; }
+
+    let engrams: string[] | '*' = '*';
+    if (engramsModeEl.value === 'select') {
+      const checked = Array.from(document.querySelectorAll<HTMLInputElement>('#sharing-engram-picker input:checked')).map((i) => i.value);
+      if (!checked.length) { void gAlert('No engrams selected', 'Select at least one engram, or choose "All engrams".'); return; }
+      engrams = checked;
+    }
+
+    let expiresAt: number | undefined;
+    const expVal = expiryEl.value;
+    if (expVal !== 'never') {
+      const ms: Record<string, number> = { '7d': 7, '30d': 30, '90d': 90, '1y': 365 };
+      expiresAt = Date.now() + (ms[expVal] ?? 30) * 24 * 60 * 60 * 1000;
+    }
+
+    btn.disabled = true;
+    try {
+      const result = await invoke<SharingCreateResult>('sharing:create', {
+        name,
+        role: roleEl.value as 'viewer' | 'editor',
+        engrams,
+        ...(expiresAt !== undefined ? { expiresAt } : {}),
+      });
+
+      if (!result.ok) {
+        void gAlert(
+          result.reason === 'not_licensed' ? 'Pro plan required' : 'Seat limit reached',
+          result.message ?? 'Unable to create token.',
+        );
+        return;
+      }
+
+      // Close create form, show reveal modal.
+      const details = document.getElementById('sharing-create-details') as HTMLDetailsElement | null;
+      if (details) details.open = false;
+      nameEl.value = '';
+
+      // Show reveal modal with the one-time token.
+      const revealModal = document.getElementById('sharing-reveal-modal');
+      const revealValue = document.getElementById('sharing-reveal-value');
+      const revealUrl = document.getElementById('sharing-reveal-url');
+      if (revealModal && revealValue && result.id) {
+        revealValue.textContent = result.id;
+        const port = mobileConnInfo?.port ?? 3457;
+        const host = mobileConnInfo?.host === '0.0.0.0' ? (mobileConnInfo?.localIps?.[0] ?? '127.0.0.1') : '127.0.0.1';
+        if (revealUrl) revealUrl.textContent = `http://${host}:${port}/mcp`;
+        revealModal.classList.remove('hidden');
+      }
+
+      void openSharingModal();
+      void refreshSharingTokenSummary();
+    } finally { btn.disabled = false; }
+  });
+
+  document.getElementById('btn-sharing-reveal-copy')?.addEventListener('click', () => {
+    const val = document.getElementById('sharing-reveal-value')?.textContent ?? '';
+    if (val) void navigator.clipboard.writeText(val);
+    const btn = document.getElementById('btn-sharing-reveal-copy') as HTMLButtonElement | null;
+    if (btn) { btn.textContent = 'Copied!'; setTimeout(() => { btn.textContent = 'Copy'; }, 2000); }
+  });
+
+  document.getElementById('btn-sharing-reveal-close')?.addEventListener('click', () => {
+    document.getElementById('sharing-reveal-modal')?.classList.add('hidden');
+  });
+}
+
+// ── Engram Pack (.gez) export / import ───────────────────────────────────────
+
+interface GezExportResult {
+  ok: boolean;
+  reason?: string;
+  message?: string;
+  packBase64?: string;
+  sourceCount?: number;
+  signed?: boolean;
+  engramDisplayName?: string;
+}
+
+interface GezImportOutcome {
+  sourceId: string;
+  ref: string;
+  status: 'imported' | 'skipped' | 'failed';
+  newSourceId?: string;
+  error?: string;
+}
+
+interface GezImportResult {
+  imported: number;
+  skipped: number;
+  failed: number;
+  outcomes: GezImportOutcome[];
+  signatureVerified: boolean;
+  unsigned: boolean;
+}
+
+interface GezImportResponse {
+  ok: boolean;
+  reason?: string;
+  message?: string;
+  result?: GezImportResult;
+  sourceEngramName?: string;
+  exportedBy?: string;
+  exportedAt?: number;
+}
+
+function openGezExportModal(engramId: string): void {
+  const modal = document.getElementById('gez-export-modal');
+  if (!modal) return;
+  const g = loadedGraphs.find((x) => x.graphId === engramId);
+  const name = g?.metadata?.displayName ?? engramId;
+  const subtitle = document.getElementById('gez-export-subtitle');
+  const info = document.getElementById('gez-export-info');
+  if (subtitle) subtitle.textContent = `Export "${name}" as encrypted .gez pack`;
+  if (info) info.innerHTML = `Exports all sources in <strong>${name}</strong> — full text content, encrypted and optionally signed. The pack can be imported by any Graphnosis cortex.`;
+  modal.classList.remove('hidden');
+
+  const goBtn = document.getElementById('btn-gez-export-go') as HTMLButtonElement | null;
+  if (!goBtn) return;
+
+  // Clone to remove old listeners
+  const fresh = goBtn.cloneNode(true) as HTMLButtonElement;
+  goBtn.replaceWith(fresh);
+
+  fresh.addEventListener('click', async () => {
+    const sign = (document.getElementById('gez-export-sign') as HTMLInputElement | null)?.checked !== false;
+    fresh.disabled = true;
+    fresh.textContent = 'Exporting…';
+    try {
+      const result = await invoke<GezExportResult>('engram.export', { engramId, sign });
+      if (!result.ok) {
+        await gAlert('Export failed', result.message ?? result.reason ?? 'Unknown error');
+        return;
+      }
+      // Save via Tauri native dialog
+      const slug = name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+      const defaultName = `${slug || engramId}.gez`;
+      try {
+        const saved = await invoke<boolean>('save_skill_file', {
+          defaultName,
+          filterName: 'Graphnosis Engram Pack',
+          filterExt: 'gez',
+          content: '',
+          binaryB64: result.packBase64,
+        });
+        if (saved) {
+          modal.classList.add('hidden');
+          await gAlert('Pack saved', `Exported ${result.sourceCount} source(s). ${result.signed ? 'Pack is signed.' : 'Pack is unsigned.'}`);
+        }
+      } catch {
+        // Fallback: trigger browser download
+        const bytes = Uint8Array.from(atob(result.packBase64!), (c) => c.charCodeAt(0));
+        const blob = new Blob([bytes], { type: 'application/octet-stream' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url; a.download = defaultName; a.click();
+        URL.revokeObjectURL(url);
+        modal.classList.add('hidden');
+      }
+    } catch (e) {
+      await gAlert('Export failed', (e as Error).message);
+    } finally {
+      fresh.disabled = false;
+      fresh.textContent = 'Export & save…';
+    }
+  });
+}
+
+function openGezImportModal(): void {
+  const modal = document.getElementById('gez-import-modal');
+  if (!modal) return;
+  modal.classList.remove('hidden');
+
+  // Reset state
+  const filename = document.getElementById('gez-import-filename');
+  const result = document.getElementById('gez-import-result');
+  const goBtn = document.getElementById('btn-gez-import-go') as HTMLButtonElement | null;
+  const fileInput = document.getElementById('gez-import-file-input') as HTMLInputElement | null;
+  const targetRow = document.getElementById('gez-import-target-row');
+  const targetSelect = document.getElementById('gez-import-target-select') as HTMLSelectElement | null;
+
+  if (filename) { filename.textContent = ''; filename.style.display = 'none'; }
+  if (result) { result.textContent = ''; result.style.display = 'none'; }
+  if (goBtn) goBtn.disabled = true;
+  if (fileInput) fileInput.value = '';
+
+  // Populate target engram picker
+  if (targetSelect) {
+    targetSelect.innerHTML = '<option value="">(use pack\'s original engram)</option>';
+    for (const g of loadedGraphs) {
+      if (!g.metadata?.archived) {
+        const opt = document.createElement('option');
+        opt.value = g.graphId;
+        opt.textContent = g.metadata?.displayName ?? g.graphId;
+        targetSelect.appendChild(opt);
+      }
+    }
+  }
+  if (targetRow) targetRow.style.display = '';
+
+  let packBase64: string | null = null;
+
+  const processFile = (file: File): void => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const ab = reader.result as ArrayBuffer;
+      const bytes = new Uint8Array(ab);
+      packBase64 = btoa(String.fromCharCode(...bytes));
+      if (filename) { filename.textContent = file.name; filename.style.display = ''; }
+      if (goBtn) goBtn.disabled = false;
+    };
+    reader.readAsArrayBuffer(file);
+  };
+
+  const dropZone = document.getElementById('gez-import-drop-zone');
+  if (dropZone) {
+    const fresh = dropZone.cloneNode(true) as HTMLElement;
+    dropZone.replaceWith(fresh);
+    fresh.addEventListener('click', () => fileInput?.click());
+    fresh.addEventListener('keydown', (e: KeyboardEvent) => { if (e.key === 'Enter' || e.key === ' ') fileInput?.click(); });
+    fresh.addEventListener('dragover', (e: DragEvent) => { e.preventDefault(); fresh.style.borderColor = 'var(--accent)'; });
+    fresh.addEventListener('dragleave', () => { fresh.style.borderColor = ''; });
+    fresh.addEventListener('drop', (e: DragEvent) => {
+      e.preventDefault(); fresh.style.borderColor = '';
+      const f = e.dataTransfer?.files?.[0];
+      if (f?.name.endsWith('.gez')) processFile(f);
+    });
+  }
+
+  if (fileInput) {
+    const fresh = fileInput.cloneNode(true) as HTMLInputElement;
+    fileInput.replaceWith(fresh);
+    fresh.addEventListener('change', () => { const f = fresh.files?.[0]; if (f) processFile(f); });
+  }
+
+  if (goBtn) {
+    const fresh = goBtn.cloneNode(true) as HTMLButtonElement;
+    goBtn.replaceWith(fresh);
+    fresh.disabled = true;
+    fresh.addEventListener('click', async () => {
+      if (!packBase64) return;
+      fresh.disabled = true;
+      fresh.textContent = 'Importing…';
+      const targetEngramId = targetSelect?.value || undefined;
+      const skipExisting = (document.getElementById('gez-import-skip-existing') as HTMLInputElement | null)?.checked !== false;
+      try {
+        const params: Record<string, unknown> = { packBase64, skipExisting };
+        if (targetEngramId) params.targetEngramId = targetEngramId;
+        const res = await invoke<GezImportResponse>('engram.import', params);
+        const resultDiv = document.getElementById('gez-import-result');
+        if (!res.ok) {
+          if (resultDiv) {
+            resultDiv.style.display = '';
+            resultDiv.style.color = 'var(--error)';
+            resultDiv.textContent = res.message ?? res.reason ?? 'Import failed.';
+          }
+          return;
+        }
+        const r = res.result!;
+        const sigLine = r.unsigned ? 'unsigned' : r.signatureVerified ? '✅ signed & verified' : '⚠️ signature invalid';
+        const html =
+          `<strong>Imported from:</strong> ${res.sourceEngramName ?? '?'} (by ${res.exportedBy ?? '?'})<br>` +
+          `<strong>Signature:</strong> ${sigLine}<br><br>` +
+          `✅ ${r.imported} imported &nbsp;·&nbsp; ⏭ ${r.skipped} skipped &nbsp;·&nbsp; ❌ ${r.failed} failed`;
+        if (resultDiv) {
+          resultDiv.style.display = '';
+          resultDiv.style.color = '';
+          resultDiv.innerHTML = html;
+        }
+        fresh.textContent = 'Done';
+        // Refresh sources list
+        void refreshSourcesList();
+      } catch (e) {
+        const resultDiv = document.getElementById('gez-import-result');
+        if (resultDiv) { resultDiv.style.display = ''; resultDiv.style.color = 'var(--error)'; resultDiv.textContent = (e as Error).message; }
+        fresh.disabled = false;
+        fresh.textContent = 'Import →';
+      }
+    });
+  }
+}
+
+// Sync export pack button visibility with selected engram in Sources view.
+function syncGezExportButton(): void {
+  const btn = document.getElementById('btn-engram-export-pack') as HTMLButtonElement | null;
+  if (!btn) return;
+  btn.style.display = sourcesEngramFilter ? '' : 'none';
+}
+
+{
+  // Wire up import pack button
+  document.getElementById('btn-engram-import-pack')?.addEventListener('click', openGezImportModal);
+  document.getElementById('btn-engram-export-pack')?.addEventListener('click', () => {
+    if (sourcesEngramFilter) openGezExportModal(sourcesEngramFilter);
+  });
+  document.getElementById('btn-gez-export-cancel')?.addEventListener('click', () => {
+    document.getElementById('gez-export-modal')?.classList.add('hidden');
+  });
+  document.getElementById('btn-gez-import-cancel')?.addEventListener('click', () => {
+    document.getElementById('gez-import-modal')?.classList.add('hidden');
+  });
+}
+
+// Refresh sharing summary when the Get Connected page becomes visible.
+{
+  const gcPane = document.querySelector('[data-pane="get-connected"]');
+  if (gcPane) {
+    new MutationObserver(() => {
+      if (!gcPane.classList.contains('hidden')) void refreshSharingTokenSummary();
+    }).observe(gcPane, { attributes: true, attributeFilter: ['class'] });
+  }
+}
+
 // ── VS Code / Copilot Chat setup (own modal) ──────────────────────────────────
 function buildCopilotSnippets(port: number, token: string): { vscode: string; cli: string } {
   const bearerValue = `Bearer ${token || '<your-bearer-token>'}`;
@@ -21739,10 +22298,23 @@ const BILLING_BASE_URL: string = (() => {
 
 const BILLING_EMAIL_KEY = 'billing:email';
 const BILLING_DOMAIN_EMAIL_KEY = 'billing:domainEmail';
-// Per-subscription poll secret, delivered once via the claim deep link. The
-// by-email token poll requires it server-side, so a bare email can't pull a
-// subscriber's token.
+// Poll secret for the personal Stripe subscription — delivered via the claim
+// deep link. Required by the server-side email poll endpoint.
 const BILLING_POLL_KEY = 'billing:pollKey';
+// Poll secret for the domain seat subscription — returned by verifyOtp.
+// Kept separate so it never clobbers the Stripe pollSecret: both slots can
+// be active simultaneously when the user has a personal sub + a domain seat.
+const BILLING_DOMAIN_POLL_KEY = 'billing:domainPollKey';
+
+interface LicenseTokenEntry {
+  source: 'personal' | 'domain';
+  plan: string;
+  features: string[];
+  sub: string;
+  expiresAt: number;
+  expiringSoon: boolean;
+  renews: boolean;
+}
 
 interface LicenseStatus {
   present: boolean;
@@ -21755,6 +22327,8 @@ interface LicenseStatus {
   /** True when the subscription auto-renews at expiresAt; false when set to
    *  cancel at period end. Absent (legacy token) → treated as renewing. */
   renews?: boolean;
+  /** All active license slots — personal subscription and/or domain seat. */
+  tokens?: LicenseTokenEntry[];
 }
 
 async function ipcLicenseStatus(): Promise<LicenseStatus> {
@@ -21775,6 +22349,8 @@ async function ipcLicenseClear(): Promise<void> {
   try { await ipcCall('license:clear', {}); } catch { /* ignore — local cleanup still runs */ }
   localStorage.removeItem(BILLING_EMAIL_KEY);
   localStorage.removeItem(BILLING_DOMAIN_EMAIL_KEY);
+  localStorage.removeItem(BILLING_POLL_KEY);
+  localStorage.removeItem(BILLING_DOMAIN_POLL_KEY);
 }
 
 /** Best-known email for billing — the token's `sub` first, then the cached
@@ -21789,6 +22365,11 @@ async function getBillingEmail(): Promise<string | null> {
 async function pollLicenseTokenFromServer(explicitEmail?: string): Promise<{ ok: boolean; reason?: string; plan?: string } | null> {
   const email = explicitEmail ?? await getBillingEmail();
   if (!email) return null;
+  // Domain seat emails require OTP — polling them hits the billing server and
+  // triggers a new verification email on every call. Skip silently if the
+  // resolved email matches the stored domain address.
+  const domainEmail = localStorage.getItem(BILLING_DOMAIN_EMAIL_KEY) ?? '';
+  if (!explicitEmail && domainEmail && email.toLowerCase() === domainEmail.toLowerCase()) return null;
   try {
     // Done in the sidecar (Node) — a browser fetch to graphnosis.com is blocked
     // by CORS in BOTH dev (localhost:5173) and the installed app (tauri://…),
@@ -21858,28 +22439,41 @@ async function refreshSettingsLicenseStatus(): Promise<void> {
   const modal = document.getElementById('license-modal');
   if (modal) modal.dataset.activeSub = status.sub ?? '';
   syncDomainActivateBtn();
-  const expires = status.expiresAt ? new Date(status.expiresAt).toLocaleDateString() : '—';
-  const feats = (status.features ?? []).join(', ');
-  // "Renews" while the subscription auto-renews; "Expires" once it's set to
-  // cancel at period end (renews === false). The renewal warning only makes
-  // sense when it's actually expiring (not auto-renewing).
-  const renewing = status.renews !== false;
-  const dateLabel = renewing ? 'Renews' : 'Expires';
-  const warn = status.expiringSoon && !renewing
-    ? ' <span style="color:var(--color-status-warn-gold);font-weight:600;">— expires soon</span>'
-    : '';
-  // Email (sub) + expiry date are PII and ALWAYS redacted while presenting —
-  // the `__licensepii__` sentinel has no surface toggle, so there's no way to
-  // reveal them on a shared screen. Plan + features stay visible.
-  el.innerHTML = `
-    <div style="display:flex; flex-direction:column; gap:2px;">
-      <span><strong style="color:var(--ok);">${escape(humanizePlanName(status.plan ?? 'Pro'))}</strong> active for <strong data-pres="surface:__licensepii__">${escape(status.sub ?? '')}</strong></span>
-      <span class="subtitle">Features: ${escape(feats)} · ${dateLabel} <span data-pres="surface:__licensepii__">${escape(expires)}</span>${warn}</span>
-    </div>
-  `;
+
+  // Build a row per active token (personal subscription + domain seat can coexist).
+  const tokens = status.tokens && status.tokens.length > 0
+    ? status.tokens
+    : [{ source: 'personal' as const, plan: status.plan ?? '', features: status.features ?? [], sub: status.sub ?? '', expiresAt: status.expiresAt ?? 0, expiringSoon: status.expiringSoon ?? false, renews: status.renews !== false }];
+
+  const rowsHtml = tokens.map((t, i) => {
+    const expires = t.expiresAt ? new Date(t.expiresAt).toLocaleDateString() : '—';
+    const feats = t.features.join(', ');
+    const renewing = t.renews !== false;
+    const dateLabel = renewing ? 'Renews' : 'Expires';
+    const warn = t.expiringSoon && !renewing
+      ? ' <span style="color:var(--color-status-warn-gold);font-weight:600;">— expires soon</span>'
+      : '';
+    const sourceLabel = tokens.length > 1
+      ? `<span style="font-size:11px;color:var(--fg-muted);margin-left:6px;">(${t.source === 'domain' ? 'domain seat' : 'personal'})</span>`
+      : '';
+    const divider = i > 0 ? 'border-top:1px solid var(--border);margin-top:6px;padding-top:6px;' : '';
+    // Email + expiry are PII — always redacted in Presentation Mode.
+    return `
+      <div style="display:flex; flex-direction:column; gap:2px;${divider}">
+        <span><strong style="color:var(--ok);">${escape(humanizePlanName(t.plan || 'Pro'))}</strong>${sourceLabel} active for <strong data-pres="surface:__licensepii__">${escape(t.sub)}</strong></span>
+        <span class="subtitle">Features: ${escape(feats)} · ${dateLabel} <span data-pres="surface:__licensepii__">${escape(expires)}</span>${warn}</span>
+      </div>`;
+  }).join('');
+
+  el.innerHTML = `<div style="display:flex; flex-direction:column; gap:0;">${rowsHtml}</div>`;
 }
 
 function bindSettingsLicensePanel(): void {
+  // Tracks whether the OTP section was triggered by the Stripe recovery path
+  // (vs. the domain seat path). Determines which slot to write the token into
+  // and which localStorage key to use for the poll secret.
+  let stripeOtpPending = false;
+
   const applyBtn = document.getElementById('btn-settings-license-apply') as HTMLButtonElement | null;
   const refreshBtn = document.getElementById('btn-settings-license-refresh') as HTMLButtonElement | null;
   const input = document.getElementById('settings-license-input') as HTMLTextAreaElement | null;
@@ -21957,8 +22551,15 @@ function bindSettingsLicensePanel(): void {
     try {
       const result = await pollLicenseTokenFromServer(email);
       if (result?.reason === 'otp_required') {
-        // Stripe emails shouldn't normally need OTP — likely a domain/work email was entered here.
-        if (feedback) feedback.textContent = 'This looks like a domain seat — enter your work email in the "Teams / Enterprise" section below.';
+        // Server triggered OTP re-auth for Stripe recovery (stale/missing poll secret).
+        stripeOtpPending = true;
+        const otpSection = document.getElementById('license-otp-section');
+        const otpEmailDisplay = document.getElementById('license-otp-email-display');
+        if (otpEmailDisplay) otpEmailDisplay.textContent = email;
+        otpSection?.classList.remove('hidden');
+        otpSection?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+        document.getElementById('settings-license-otp')?.focus();
+        if (feedback) feedback.textContent = 'Check your inbox for a 6-digit recovery code.';
         return;
       }
       if (result?.reason === 'http_429') {
@@ -21971,6 +22572,39 @@ function bindSettingsLicensePanel(): void {
       }
       if (result?.reason?.startsWith('http_')) {
         if (feedback) feedback.textContent = `Server error (${result.reason}). Try again shortly.`;
+        return;
+      }
+      if (result?.reason === 'network_blocked' || result?.reason?.startsWith('fetch_failed')) {
+        if (feedback) feedback.textContent = 'Could not reach the billing server — check your connection and try again.';
+        return;
+      }
+      if (result?.reason === 'no_token') {
+        // 204 from billing server. If a poll key was present, it was stale or
+        // belonged to a different subscription (domain-seat key clobbered the
+        // Stripe key). Clear it and retry without — for Stripe personal
+        // subscriptions the server should return the token on a bare email lookup.
+        const hadStaleKey = !!localStorage.getItem(BILLING_POLL_KEY);
+        if (hadStaleKey) {
+          localStorage.removeItem(BILLING_POLL_KEY);
+          if (feedback) feedback.textContent = 'Retrying…';
+          const retry = await pollLicenseTokenFromServer(email);
+          if (retry?.ok) {
+            const retryStatus = await ipcLicenseStatus();
+            if (feedback) feedback.textContent = retryStatus.valid
+              ? `Refreshed — ${humanizePlanName(retryStatus.plan ?? 'Pro')} active.`
+              : `No subscription found for ${email}.`;
+            return;
+          }
+          // Retry also failed — fall through to the "check email" message.
+          result = retry;
+        }
+        if (feedback) {
+          feedback.innerHTML = 'No subscription found. Email <a href="mailto:support@graphnosis.com">support@graphnosis.com</a> to recover your license.';
+        }
+        return;
+      }
+      if (result && !result.ok) {
+        if (feedback) feedback.textContent = `Activation failed — ${result.reason ?? 'unknown'}`;
         return;
       }
       const status = await ipcLicenseStatus();
@@ -22000,7 +22634,6 @@ function bindSettingsLicensePanel(): void {
       const result = await ipcCall<{ ok: boolean; reason?: string; plan?: string }>(
         'license:pollServer', { email, baseUrl: BILLING_BASE_URL },
       );
-      console.error('[domain-activate] result:', JSON.stringify(result));
       if (result?.reason === 'otp_required') {
         const otpSection = document.getElementById('license-otp-section');
         const otpEmailDisplay = document.getElementById('license-otp-email-display');
@@ -22059,22 +22692,37 @@ function bindSettingsLicensePanel(): void {
       if (otpFeedback) otpFeedback.textContent = 'Enter the 6-digit code from the email.';
       return;
     }
-    // OTP is always for the domain/work email — never the Stripe email.
-    const email = (domainEmailInput?.value ?? '').trim();
+    const email = stripeOtpPending
+      ? ((emailInput?.value ?? '').trim() || localStorage.getItem(BILLING_EMAIL_KEY) || '')
+      : (domainEmailInput?.value ?? '').trim();
     if (!email) return;
+    const otpTarget = stripeOtpPending ? 'primary' : 'domain';
     otpSubmitBtn.disabled = true;
     if (otpFeedback) otpFeedback.textContent = 'Verifying…';
     try {
       const result = await ipcCall<{ ok: boolean; reason?: string; attemptsLeft?: number; plan?: string; sub?: string; pollSecret?: string }>(
-        'license:verifyOtp', { email, code, baseUrl: BILLING_BASE_URL },
+        'license:verifyOtp', { email, code, baseUrl: BILLING_BASE_URL, target: otpTarget },
       );
       if (result?.ok) {
-        if (result.pollSecret) localStorage.setItem(BILLING_POLL_KEY, result.pollSecret);
-        // After domain activation the work email becomes the primary billing identity.
-        if (result.sub) localStorage.setItem(BILLING_EMAIL_KEY, result.sub);
-        document.getElementById('license-otp-section')?.classList.add('hidden');
-        if (otpInput) otpInput.value = '';
-        if (domainFeedback) domainFeedback.textContent = `Activated — ${humanizePlanName(result.plan ?? 'Pro')} seat claimed.`;
+        if (stripeOtpPending) {
+          // Stripe recovery: token stored in primary slot by sidecar; persist poll secret + email.
+          if (result.pollSecret) localStorage.setItem(BILLING_POLL_KEY, result.pollSecret);
+          if (result.sub) localStorage.setItem(BILLING_EMAIL_KEY, result.sub);
+          stripeOtpPending = false;
+          document.getElementById('license-otp-section')?.classList.add('hidden');
+          if (otpInput) otpInput.value = '';
+          if (feedback) feedback.textContent = `Restored — ${humanizePlanName(result.plan ?? 'Pro')} active.`;
+        } else {
+          if (result.pollSecret) localStorage.setItem(BILLING_DOMAIN_POLL_KEY, result.pollSecret);
+          // Domain seat email is stored in the domain slot only — NOT in BILLING_EMAIL_KEY.
+          // Writing it there would cause the background Stripe poll to hit the billing
+          // server with an OTP-required domain address on every unlock, sending a new
+          // verification email each time.
+          if (result.sub) localStorage.setItem(BILLING_DOMAIN_EMAIL_KEY, result.sub);
+          document.getElementById('license-otp-section')?.classList.add('hidden');
+          if (otpInput) otpInput.value = '';
+          if (domainFeedback) domainFeedback.textContent = `Activated — ${humanizePlanName(result.plan ?? 'Pro')} seat claimed.`;
+        }
         await refreshSettingsLicenseStatus();
       } else if (result?.reason === 'network_blocked') {
         if (otpFeedback) otpFeedback.textContent = 'Could not reach the license server — your network or firewall may be blocking the connection. Try on a different network.';
@@ -22101,8 +22749,9 @@ function bindSettingsLicensePanel(): void {
   });
 
   otpResendBtn?.addEventListener('click', async () => {
-    // OTP is always for the domain/work email.
-    const email = (domainEmailInput?.value ?? '').trim();
+    const email = stripeOtpPending
+      ? ((emailInput?.value ?? '').trim() || localStorage.getItem(BILLING_EMAIL_KEY) || '')
+      : (domainEmailInput?.value ?? '').trim();
     if (!email) return;
     otpResendBtn.disabled = true;
     if (otpFeedback) otpFeedback.textContent = 'Sending…';

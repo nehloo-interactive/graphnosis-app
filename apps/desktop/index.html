@@ -11650,6 +11650,8 @@ ollama list</code></pre>
                   <option value="">All engrams</option>
                 </select>
                 <button id="sources-reingest-all-btn" class="btn-sm" title="Re-chunk and re-embed every source in all engrams using current settings">Reingest all</button>
+                <button id="btn-engram-import-pack" class="btn-sm" title="Import a .gez Engram Pack from a colleague or backup">Import pack…</button>
+                <button id="btn-engram-export-pack" class="btn-sm" style="display:none;" title="Export the selected engram as a .gez Engram Pack">Export pack…</button>
               </div>
               <div id="sources-list"><p class="subtitle">Loading…</p></div>
             </section>
@@ -11750,6 +11752,16 @@ ollama list</code></pre>
                   <button id="btn-mobile-setup" class="rail-shortcut-btn">Set up…</button>
                 </div>
                 <p class="gc-section-hint" style="margin:6px 0 0;">Reach this cortex from Claude for iOS/Android or any HTTP MCP client over your LAN or Tailscale.</p>
+              </section>
+
+              <!-- Engram Sharing — scoped tokens for collaborators (Pro) -->
+              <section class="gc-section" id="gc-section-sharing">
+                <div class="gc-mobile-row">
+                  <h3 class="gc-section-title" style="margin:0;">🔗 Engram sharing <span id="sharing-pro-badge" class="pro-badge" style="display:none;">Pro</span></h3>
+                  <button id="btn-sharing-manage" class="rail-shortcut-btn">Manage…</button>
+                </div>
+                <p class="gc-section-hint" style="margin:6px 0 0;" id="sharing-hint">Share specific engrams with collaborators via scoped tokens. Requires Mobile &amp; Remote Access to be enabled.</p>
+                <div id="sharing-token-summary" style="margin-top:8px; font-size:13px; color:var(--fg-muted);"></div>
               </section>
 
               <!-- AI clients READ from the cortex -->
@@ -13003,8 +13015,9 @@ ollama list</code></pre>
           <div class="settings-section" style="border-top: 1px solid var(--border); padding-top: 12px; margin-top: 4px;">
             <p class="settings-section-label">Reset verification</p>
             <p class="subtitle" style="margin-bottom: 10px;">
-              If activation isn't working, reset to clear the stored email and license
-              token from this device and start fresh.
+              Clears the stored license token(s) and email from this device only —
+              non-destructive on Stripe or your OTP. You'll be on Free tier until
+              you reconnect your subscription(s).
             </p>
             <div class="row" style="gap:8px;">
               <button id="btn-license-reset" style="background:none;border:1px solid var(--border);color:var(--fg-muted);font-size:12px;padding:4px 10px;border-radius:6px;cursor:pointer;">Reset and start over</button>
@@ -13261,6 +13274,146 @@ ollama list</code></pre>
           <span class="filler" id="recovery-footer-note"></span>
           <button id="btn-recovery-close">Close</button>
           <button id="btn-recovery-apply" class="primary hidden">Recover selected</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Sharing token manager modal -->
+    <div id="sharing-modal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="sharing-modal-title">
+      <div class="modal" style="max-width:560px;">
+        <div class="modal-header">
+          <h2 id="sharing-modal-title">Engram Sharing</h2>
+          <p class="subtitle">Create scoped tokens so collaborators can access specific engrams via your MCP server. Requires Mobile &amp; Remote Access.</p>
+          <p id="sharing-plan-badge" style="display:none;margin:6px 0 0;font-size:12px;color:var(--fg-muted);"></p>
+        </div>
+        <div class="modal-body" id="sharing-modal-body" style="min-height:120px;">
+          <!-- Seat usage bar (Teams/Enterprise only) -->
+          <div id="sharing-seat-bar" style="margin-bottom:12px;display:none;"></div>
+          <!-- Shown when not on Teams/Enterprise plan -->
+          <p id="sharing-unlicensed-notice" class="subtitle" style="display:none;padding:10px;background:var(--bg-raised);border-radius:6px;margin-bottom:10px;"></p>
+          <!-- Token list rendered dynamically -->
+          <div id="sharing-token-list" style="display:flex;flex-direction:column;gap:8px;"></div>
+          <p id="sharing-no-tokens" class="subtitle" style="display:none;margin:16px 0;">No sharing tokens yet. Create one below.</p>
+        </div>
+        <div class="modal-footer" style="flex-direction:column;align-items:stretch;gap:12px;">
+          <!-- Create new token form -->
+          <details id="sharing-create-details" style="cursor:pointer;">
+            <summary style="font-size:14px;font-weight:600;cursor:pointer;user-select:none;">+ Create new token</summary>
+            <div style="margin-top:12px;display:flex;flex-direction:column;gap:10px;">
+              <label style="font-size:13px;">
+                Token name
+                <input id="sharing-new-name" type="text" placeholder="e.g. Alice – Project X" style="display:block;width:100%;margin-top:4px;" />
+              </label>
+              <label style="font-size:13px;">
+                Role
+                <select id="sharing-new-role" style="display:block;width:100%;margin-top:4px;">
+                  <option value="viewer">Viewer — read-only</option>
+                  <option value="editor">Editor — can remember &amp; edit</option>
+                </select>
+              </label>
+              <label style="font-size:13px;">
+                Engrams
+                <select id="sharing-new-engrams-mode" style="display:block;width:100%;margin-top:4px;">
+                  <option value="all">All engrams</option>
+                  <option value="select">Specific engrams…</option>
+                </select>
+              </label>
+              <div id="sharing-engram-picker" style="display:none;flex-wrap:wrap;gap:6px;" aria-label="Select engrams"></div>
+              <label style="font-size:13px;">
+                Expires
+                <select id="sharing-new-expiry" style="display:block;width:100%;margin-top:4px;">
+                  <option value="never">Never</option>
+                  <option value="7d">7 days</option>
+                  <option value="30d">30 days</option>
+                  <option value="90d">90 days</option>
+                  <option value="1y">1 year</option>
+                </select>
+              </label>
+              <div style="display:flex;gap:8px;justify-content:flex-end;">
+                <button id="btn-sharing-create" class="primary">Create token</button>
+              </div>
+            </div>
+          </details>
+          <!-- Enterprise-only: audit log download -->
+          <div id="sharing-audit-section" style="display:none;margin-top:16px;padding-top:12px;border-top:1px solid var(--border);">
+            <p class="settings-section-label" style="margin:0 0 8px;">Audit log export</p>
+            <p class="subtitle" style="margin:0 0 10px;font-size:12px;">Download the full op-log as CSV for SIEM ingestion or compliance review.</p>
+            <button id="btn-sharing-audit-export">Download audit log (.csv)</button>
+          </div>
+          <div style="display:flex;justify-content:flex-end;">
+            <button id="btn-sharing-close">Close</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Sharing token reveal modal — shown once after token creation -->
+    <div id="sharing-reveal-modal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="sharing-reveal-title">
+      <div class="modal" style="max-width:480px;">
+        <div class="modal-header">
+          <h2 id="sharing-reveal-title">Token created</h2>
+          <p class="subtitle">Copy this token now — it will not be shown again.</p>
+        </div>
+        <div class="modal-body">
+          <div style="display:flex;align-items:center;gap:8px;">
+            <code id="sharing-reveal-value" style="flex:1;font-size:12px;word-break:break-all;padding:8px;background:var(--bg-raised);border-radius:6px;user-select:all;"></code>
+            <button id="btn-sharing-reveal-copy" title="Copy to clipboard">Copy</button>
+          </div>
+          <p style="margin-top:10px;font-size:13px;color:var(--fg-muted);">Share this token along with your MCP server URL (<code id="sharing-reveal-url"></code>). Collaborators add it to their MCP client config.</p>
+        </div>
+        <div class="modal-footer">
+          <button id="btn-sharing-reveal-close" class="primary">Done</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Engram Pack export modal -->
+    <div id="gez-export-modal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="gez-export-title">
+      <div class="modal" style="max-width:500px;">
+        <div class="modal-header">
+          <h2 id="gez-export-title">Export Engram Pack</h2>
+          <p class="subtitle" id="gez-export-subtitle">Encrypted .gez pack for air-gapped sharing</p>
+        </div>
+        <div class="modal-body">
+          <div id="gez-export-info" style="margin-bottom:12px;font-size:13px;color:var(--fg-muted);line-height:1.5;"></div>
+          <label style="display:flex;align-items:center;gap:8px;font-size:13px;cursor:pointer;">
+            <input type="checkbox" id="gez-export-sign" checked />
+            Sign pack with this cortex's Ed25519 key (recipients can verify authorship)
+          </label>
+        </div>
+        <div class="modal-footer">
+          <button id="btn-gez-export-cancel" class="btn-ghost">Cancel</button>
+          <button id="btn-gez-export-go" class="primary">Export &amp; save…</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Engram Pack import modal -->
+    <div id="gez-import-modal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="gez-import-title">
+      <div class="modal" style="max-width:520px;">
+        <div class="modal-header">
+          <h2 id="gez-import-title">Import Engram Pack</h2>
+          <p class="subtitle">Import a .gez pack from a colleague or backup</p>
+        </div>
+        <div class="modal-body" style="display:flex;flex-direction:column;gap:14px;">
+          <div id="gez-import-drop-zone" style="border:2px dashed var(--border);border-radius:8px;padding:28px;text-align:center;cursor:pointer;transition:border-color 0.15s;" tabindex="0" role="button" aria-label="Drop a .gez file here or click to browse">
+            <p style="margin:0;font-size:14px;color:var(--fg-dim);">Drop a <strong>.gez</strong> file here or <span style="color:var(--accent);cursor:pointer;text-decoration:underline;">click to browse</span></p>
+            <p id="gez-import-filename" style="margin:8px 0 0;font-size:12px;color:var(--fg-muted);display:none;"></p>
+          </div>
+          <input type="file" id="gez-import-file-input" accept=".gez" style="display:none;" />
+          <div id="gez-import-target-row" style="display:none;">
+            <label style="font-size:13px;display:block;margin-bottom:4px;">Target engram <span style="color:var(--fg-muted);font-size:12px;">(defaults to the pack's original engram)</span></label>
+            <select id="gez-import-target-select" style="width:100%;max-width:320px;"></select>
+          </div>
+          <label style="display:flex;align-items:center;gap:8px;font-size:13px;cursor:pointer;">
+            <input type="checkbox" id="gez-import-skip-existing" checked />
+            Skip sources already in the target engram
+          </label>
+          <div id="gez-import-result" style="display:none;font-size:13px;padding:10px 12px;border-radius:6px;background:var(--bg-raised);line-height:1.6;"></div>
+        </div>
+        <div class="modal-footer">
+          <button id="btn-gez-import-cancel" class="btn-ghost">Cancel</button>
+          <button id="btn-gez-import-go" class="primary" disabled>Import →</button>
         </div>
       </div>
     </div>
