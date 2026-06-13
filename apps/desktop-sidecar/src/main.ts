@@ -835,13 +835,18 @@ async function main(): Promise<void> {
         // Sum active node count once per poll instead of per-skill — every
         // 'cortex-growth' trigger reads this snapshot. Doesn't include
         // archived engrams (growth there shouldn't fire retraining).
-        const totalActiveNodes = host.listGraphs().reduce((sum, gid) => {
+        const loadedGraphs = host.listGraphs();
+        const loadedGraphSet = new Set(loadedGraphs);
+        const totalActiveNodes = loadedGraphs.reduce((sum, gid) => {
           const meta = host.getGraphMetadata(gid);
           if (meta?.archived) return sum;
           return sum + host.listNodes(gid).length;
         }, 0);
         for (const [sourceId, cfg] of Object.entries(map)) {
           if (!cfg.enabled) continue;
+          // Skip engrams that aren't currently loaded — getSkill would throw
+          // and abort the entire poll cycle, starving all remaining entries.
+          if (!loadedGraphSet.has(cfg.graphId)) continue;
           // Evaluate the trigger. Each one returns true when retraining
           // should fire on this poll. The 'hybrid' trigger fires if ANY
           // of its component triggers fires — gives the user the most
@@ -960,6 +965,7 @@ async function main(): Promise<void> {
 
   const mcpDeps = {
     host,
+    cortexDir: env.cortexDir,
     // The local LLM is opt-in — `correct` and any other LLM-backed MCP tool
     // sees null until the user enables it, even when Ollama is reachable.
     // Capability-aware getter: returns the LLM only when (a) master switch on
@@ -1008,6 +1014,7 @@ async function main(): Promise<void> {
         host: httpBridgeCfg.host,
         token: () => host.getSettings().mobile?.httpBridge?.token ?? '',
         allowedOrigins: httpBridgeCfg.allowedOrigins,
+        sharingTokens: () => host.getSettings().sharing?.tokens ?? [],
       });
       process.on('SIGINT', () => httpServer.close());
       process.on('SIGTERM', () => httpServer.close());
@@ -1071,6 +1078,7 @@ async function main(): Promise<void> {
     ?? path.join(env.cortexDir, 'sidecar.sock');
   const ipcDeps = {
     host,
+    cortexDir: env.cortexDir,
     socketPath: ipcSocketPath,
     pendingDiffs,
     restartMcpListener,

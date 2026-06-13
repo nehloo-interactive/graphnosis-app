@@ -5,6 +5,7 @@ import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/
 import { createMcpServer, type McpDeps } from './mcp-server.js';
 import { mcpRegistry } from './mcp-registry.js';
 import type { Server as McpServer } from '@modelcontextprotocol/sdk/server/index.js';
+import type { SharingToken, SharingScope } from '@graphnosis-app/core/settings';
 
 export interface HttpBridgeOptions {
   deps: McpDeps;
@@ -14,6 +15,12 @@ export interface HttpBridgeOptions {
    *  restarting the server — the auth check calls it on every request. */
   token: string | (() => string);
   allowedOrigins: string[];
+  /**
+   * Live getter for active sharing tokens. Called on every new session so
+   * revoking or adding tokens takes effect immediately without restarting
+   * the server. Absent = no sharing tokens (only the master token accepted).
+   */
+  sharingTokens?: () => SharingToken[];
 }
 
 interface Session {
@@ -362,15 +369,37 @@ export async function startHttpMcpServer(opts: HttpBridgeOptions): Promise<http.
 
     // ── Auth ─────────────────────────────────────────────────────────────────
     const authHeader = (req.headers['authorization'] as string | undefined) ?? '';
-    const expectedToken = typeof opts.token === 'function' ? opts.token() : opts.token;
+    const masterToken = typeof opts.token === 'function' ? opts.token() : opts.token;
     // Bearer scheme is case-insensitive per RFC 6750; strip prefix and trim.
     const sentToken = authHeader.toLowerCase().startsWith('bearer ')
       ? authHeader.slice(7).trim()
       : '';
-    if (!expectedToken || !sentToken || !constantTimeEqual(sentToken, expectedToken)) {
-      oauthLog(`auth rejected — ${!expectedToken ? 'no expected token' : !sentToken ? 'no bearer in request' : 'token mismatch'} ${req.method} ${urlPath} (ua: ${ua})`);
+    if (!sentToken) {
+      oauthLog(`auth rejected — no bearer in request ${req.method} ${urlPath} (ua: ${ua})`);
       rejectUnauthorized(res);
       return;
+    }
+    // Identify whether this is the master token (owner, no scope restriction)
+    // or a sharing token (scoped to specific engrams + role).
+    let matchedSharingScope: SharingScope | null = null;
+    let matchedSharingTokenId: string | null = null;
+    if (masterToken && constantTimeEqual(sentToken, masterToken)) {
+      // Owner access — no scope restriction.
+    } else {
+      const sharingTokens = opts.sharingTokens?.() ?? [];
+      const now = Date.now();
+      const matched = sharingTokens.find((st) => {
+        if (st.expiresAt !== undefined && st.expiresAt < now) return false;
+        return constantTimeEqual(sentToken, st.id);
+      });
+      if (!matched) {
+        oauthLog(`auth rejected — token mismatch ${req.method} ${urlPath} (ua: ${ua})`);
+        rejectUnauthorized(res);
+        return;
+      }
+      matchedSharingScope = matched.scope;
+      matchedSharingTokenId = matched.id;
+      oauthLog(`auth OK — sharing token "${matched.name}" (role: ${matched.scope.role}) ${req.method} ${urlPath}`);
     }
 
     // ── CORS ──────────────────────────────────────────────────────────────────
@@ -382,6 +411,144 @@ export async function startHttpMcpServer(opts: HttpBridgeOptions): Promise<http.
         return;
       }
       setCorsHeaders(res, origin);
+    }
+
+    // ── Admin: audit log export — enterprise only, master token only ──────────
+    // GET /admin/audit[?from=<ms>&to=<ms>&engram=<id>&format=json|csv]
+    // For SIEM ingestion; returns op-log events as JSON (default) or CSV.
+    if (urlPath === '/admin/audit' && req.method === 'GET') {
+      if (matchedSharingScope !== null) { rejectUnauthorized(res); return; }
+      const licenseToken = await opts.deps.host.getLicenseToken();
+      if (!(opts.deps.licenseValidator?.hasFeature(licenseToken, 'enterprise') ?? false)) {
+        res.writeHead(403, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'enterprise_required', message: 'Audit log export requires an Enterprise license.' }));
+        return;
+      }
+      const qs = new URL(`http://x${req.url ?? ''}`).searchParams;
+      const from = qs.has('from') ? Number(qs.get('from')) : undefined;
+      const to = qs.has('to') ? Number(qs.get('to')) : undefined;
+      const engramFilter = qs.get('engram') ?? undefined;
+      const format = qs.get('format') === 'csv' ? 'csv' : 'json';
+
+      let events = await opts.deps.host.listOplogEvents();
+      if (from !== undefined) events = events.filter((ev) => ev.ts >= from);
+      if (to !== undefined) events = events.filter((ev) => ev.ts <= to);
+      if (engramFilter !== undefined) events = events.filter((ev) => ev.graphId === engramFilter);
+      events = events.slice().sort((a, b) => a.ts - b.ts);
+
+      if (format === 'csv') {
+        const csvEsc = (v: unknown) => `"${String(v ?? '').replace(/"/g, '""')}"`;
+        const rows = [
+          ['id', 'ts', 'isoDate', 'op', 'graphId', 'targetKind', 'targetId', 'deviceId', 'triggeredBy'].map(csvEsc).join(','),
+          ...events.map((ev) => [
+            ev.id ?? '',
+            ev.ts,
+            new Date(ev.ts).toISOString(),
+            ev.op,
+            ev.graphId ?? '',
+            ev.target?.kind ?? '',
+            ev.target?.id ?? '',
+            ev.deviceId ?? '',
+            (ev as unknown as Record<string, unknown>)['triggeredBy'] ?? '',
+          ].map(csvEsc).join(',')),
+        ].join('\r\n');
+        res.writeHead(200, {
+          'Content-Type': 'text/csv',
+          'Content-Disposition': 'attachment; filename="graphnosis-audit.csv"',
+        });
+        res.end(rows);
+        return;
+      }
+
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ count: events.length, events }));
+      return;
+    }
+
+    // ── Admin: SSO token provisioning — enterprise only, master token only ────
+    // POST /admin/provision
+    // Body: { name, role: "viewer"|"editor", engrams: string[]|"*", expiresAt?: ms }
+    // Creates a scoped sharing token for MDM/onboarding distribution.
+    if (urlPath === '/admin/provision' && req.method === 'POST') {
+      if (matchedSharingScope !== null) { rejectUnauthorized(res); return; }
+      const licenseToken = await opts.deps.host.getLicenseToken();
+      if (!(opts.deps.licenseValidator?.hasFeature(licenseToken, 'enterprise') ?? false)) {
+        res.writeHead(403, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'enterprise_required', message: 'SSO token provisioning requires an Enterprise license.' }));
+        return;
+      }
+
+      let body: unknown;
+      try { body = await readJsonBody(req); }
+      catch {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'invalid_json' }));
+        return;
+      }
+      const parsed = body as Record<string, unknown>;
+      const name = typeof parsed['name'] === 'string' && parsed['name'].length > 0 ? parsed['name'] : null;
+      const role = parsed['role'] === 'viewer' || parsed['role'] === 'editor' ? parsed['role'] : null;
+      const rawEngrams = parsed['engrams'];
+      const engrams: string[] | '*' | null = rawEngrams === '*'
+        ? '*'
+        : (Array.isArray(rawEngrams) && rawEngrams.every((e) => typeof e === 'string'))
+          ? (rawEngrams as string[])
+          : null;
+
+      if (!name || !role || !engrams) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({
+          error: 'invalid_params',
+          message: 'Required: name (string), role ("viewer"|"editor"), engrams (string[]|"*")',
+        }));
+        return;
+      }
+
+      const expiresAt = typeof parsed['expiresAt'] === 'number' ? parsed['expiresAt'] : undefined;
+      const now = Date.now();
+
+      // Seat cap enforcement (mirrors sharing:create in ipc.ts)
+      const licensePayload = opts.deps.licenseValidator?.verifyToken(licenseToken ?? '') ?? null;
+      const current = opts.deps.host.getSettings();
+      const existing = current.sharing?.tokens ?? [];
+      const activeCount = existing.filter((t) => t.expiresAt === undefined || t.expiresAt >= now).length;
+      const seatCap = licensePayload?.seats ?? null;
+      if (seatCap !== null && activeCount >= seatCap) {
+        res.writeHead(409, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({
+          error: 'seat_limit',
+          message: `Seat limit reached (${seatCap} seat${seatCap === 1 ? '' : 's'}). Revoke a token to free a seat.`,
+          seats: seatCap,
+          activeCount,
+        }));
+        return;
+      }
+
+      const newTokenId = randomUUID();
+      const newToken: import('@graphnosis-app/core/settings').SharingToken = {
+        id: newTokenId,
+        name,
+        scope: { engrams, role: role as import('@graphnosis-app/core/settings').SharingRole },
+        createdAt: now,
+      };
+      if (expiresAt !== undefined) newToken.expiresAt = expiresAt;
+
+      await opts.deps.host.setSettings({
+        ...current,
+        sharing: { tokens: [...existing, newToken] },
+      });
+
+      res.writeHead(201, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        ok: true,
+        id: newToken.id,
+        name: newToken.name,
+        role: newToken.scope.role,
+        engrams: newToken.scope.engrams,
+        createdAt: newToken.createdAt,
+        expiresAt: expiresAt ?? null,
+      }));
+      return;
     }
 
     // ── Route ─────────────────────────────────────────────────────────────────
@@ -459,6 +626,10 @@ export async function startHttpMcpServer(opts: HttpBridgeOptions): Promise<http.
       sessionIdGenerator: () => randomUUID(),
       onsessioninitialized: (sid) => {
         sessions.set(sid, { transport, connId, lastActivityAt: Date.now() });
+        // Tag the registry entry so Team Admin can count sessions per token.
+        if (matchedSharingTokenId) {
+          mcpRegistry.setConnectionMeta(connId, { sharingTokenId: matchedSharingTokenId });
+        }
         oauthLog(`new session ${sid} (conn ${connId})`);
       },
     });
@@ -469,7 +640,10 @@ export async function startHttpMcpServer(opts: HttpBridgeOptions): Promise<http.
       mcpRegistry.unregister(connId);
     };
 
-    const mcpServer = createMcpServer(opts.deps);
+    const sessionDeps: McpDeps = matchedSharingScope
+      ? { ...opts.deps, sharingScope: matchedSharingScope }
+      : opts.deps;
+    const mcpServer = createMcpServer(sessionDeps);
     await mcpServer.connect(transport as unknown as Parameters<typeof mcpServer.connect>[0]);
     pollForClientInfo(connId, mcpServer);
     await transport.handleRequest(req, res, body);
