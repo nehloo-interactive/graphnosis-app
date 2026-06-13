@@ -8,7 +8,7 @@
 # the Function via CURRENT_VERSION (mac/win also via DMG_FILENAME /
 # WINDOWS_FILENAME); keep these fallbacks roughly current. Linux artifacts are
 # attached per-release by the build-linux workflow (workflow_dispatch).
-/download/win        https://github.com/nehloo-interactive/graphnosis-app/releases/download/v1.13.6/Graphnosis_1.13.6_x64_en-US.msi   302
-/download/linux      https://github.com/nehloo-interactive/graphnosis-app/releases/download/v1.13.6/Graphnosis_1.13.6_amd64.AppImage  302
-/download/linux-deb  https://github.com/nehloo-interactive/graphnosis-app/releases/download/v1.13.6/Graphnosis_1.13.6_amd64.deb        302
-/download/mac  https://github.com/nehloo-interactive/graphnosis-app/releases/download/v1.16.0/Graphnosis_1.16.0_aarch64.dmg  302
+/download/win        https://github.com/nehloo-interactive/graphnosis-app/releases/download/v1.16.0/Graphnosis_1.16.0_x64_en-US.msi   302
+/download/linux      https://github.com/nehloo-interactive/graphnosis-app/releases/download/v1.16.0/Graphnosis_1.16.0_amd64.AppImage  302
+/download/linux-deb  https://github.com/nehloo-interactive/graphnosis-app/releases/download/v1.16.0/Graphnosis_1.16.0_amd64.deb        302
+/download/mac        https://github.com/nehloo-interactive/graphnosis-app/releases/download/v1.16.0/Graphnosis_1.16.0_aarch64.dmg      302
