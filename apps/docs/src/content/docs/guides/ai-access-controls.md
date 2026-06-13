@@ -287,3 +287,12 @@ The honest line: Graphnosis stops **untrusted** clients from reading your memori
 
 [Enterprise IT FAQ](/guides/enterprise-faq/) — how the consent layers map to HIPAA, GDPR, and other regulatory requirements.
 
+
+---
+
+## Explore by use case
+
+→ [**Team**](/for/team) — editor / viewer scoped tokens per engram, Team Admin panel  
+→ [**Business**](/for/business) — department-level isolation, stakeholder read-only access  
+→ [**Regulated**](/for/regulated) — audit trail via `/admin/audit`, role-based access for compliance  
+→ [**Enterprise**](/for/enterprise) — SSO token provisioning via `/admin/provision`

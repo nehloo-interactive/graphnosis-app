@@ -1,0 +1,40 @@
+---
+import Default from '@astrojs/starlight/components/Sidebar.astro';
+---
+
+<Default {...Astro.props}><slot /></Default>
+
+<div class="sidebar-nehloo-note">
+  <p>Graphnosis is a product of<br /><strong>Nehloo Interactive LLC</strong></p>
+  <p>
+    <a href="mailto:support@graphnosis.com">support@graphnosis.com</a><br />
+    <a href="mailto:enterprise@graphnosis.com">enterprise@graphnosis.com</a>
+  </p>
+</div>
+
+<style>
+  .sidebar-nehloo-note {
+    padding: 1rem 1.25rem 1.5rem;
+    border-top: 1px solid var(--sl-color-gray-6);
+    margin-top: auto;
+    font-size: var(--sl-text-xs);
+    color: var(--sl-color-gray-3);
+    line-height: 1.6;
+  }
+  .sidebar-nehloo-note strong {
+    color: var(--sl-color-gray-2);
+  }
+  .sidebar-nehloo-note p {
+    margin: 0 0 0.5rem;
+  }
+  .sidebar-nehloo-note p:last-child {
+    margin-bottom: 0;
+  }
+  .sidebar-nehloo-note a {
+    color: var(--sl-color-gray-3);
+    text-decoration: none;
+  }
+  .sidebar-nehloo-note a:hover {
+    color: var(--sl-color-white);
+  }
+</style>

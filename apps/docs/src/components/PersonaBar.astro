@@ -1,0 +1,39 @@
+---
+interface Props {
+  active?: 'personal' | 'team' | 'business' | 'regulated' | 'enterprise' | 'air-gapped';
+  compact?: boolean;
+}
+
+const { active, compact = false } = Astro.props;
+
+const personas = [
+  { id: 'personal',   label: 'Personal',   href: '/for/personal'   },
+  { id: 'team',       label: 'Team',        href: '/for/team'       },
+  { id: 'business',   label: 'Business',    href: '/for/business'   },
+  { id: 'regulated',  label: 'Regulated',   href: '/for/regulated'  },
+  { id: 'enterprise', label: 'Enterprise',  href: '/for/enterprise' },
+  { id: 'air-gapped', label: 'Air-gapped',  href: '/for/air-gapped' },
+] as const;
+---
+
+<nav class="flex flex-wrap justify-center gap-3 mb-10" aria-label="Choose your use case">
+  {personas.map((p) => (
+    <a
+      href={p.href}
+      class:list={[
+        compact
+          ? 'inline-block px-4 py-1.5 rounded-full text-sm font-semibold transition-colors duration-150'
+          : 'inline-block px-6 py-2.5 rounded-full text-sm sm:text-base lg:text-lg font-semibold transition-colors duration-150',
+        p.id === active
+          ? 'text-white border border-transparent'
+          : 'text-[#c4c6d6] border border-[#2a2a3d] hover:border-[#67e8f9]/40 hover:text-white',
+      ]}
+      style={p.id === active
+        ? 'background: linear-gradient(#13131a, #13131a) padding-box, linear-gradient(135deg, #67e8f9, #a78bfa) border-box; border: 1px solid transparent;'
+        : ''}
+      aria-current={p.id === active ? 'page' : undefined}
+    >
+      {p.label}
+    </a>
+  ))}
+</nav>

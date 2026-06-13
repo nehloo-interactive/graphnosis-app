@@ -1,0 +1,57 @@
+---
+import Layout from '../../layouts/Layout.astro';
+import Nav from '../../components/Nav.astro';
+import PersonaPage from '../../components/PersonaPage.astro';
+import Footer from '../../components/Footer.astro';
+---
+
+<Layout
+  title="Graphnosis for Enterprise — on-premise AI memory with SSO, audit logs & org-scale deployment"
+  description="How Graphnosis works for large organizations: SSO token provisioning, audit log export, per-engram scoping at org scale, and on-premise deployment for IT and security teams."
+>
+  <Nav />
+  <main>
+    <PersonaPage
+      active="enterprise"
+      headline="Org-scale AI memory, on your infrastructure"
+      categories="CIOs · IT admins · security teams · large distributed orgs · multi-department deployments"
+      tagline="Graphnosis Enterprise gives IT and security teams the controls they need: SSO-provisioned tokens, a full audit trail, per-engram access scoping, and on-premise deployment that puts your team in complete control."
+      useCases={[
+        {
+          title: 'SSO & MDM onboarding',
+          body: 'Provision scoped sharing tokens via <code class="text-[#67e8f9]">/admin/provision</code> and distribute through your MDM or onboarding pipeline. Each user gets the right engram access with no manual key exchange.',
+        },
+        {
+          title: 'Audit & compliance',
+          body: 'The full op-log is exportable as JSON or CSV via <code class="text-[#67e8f9]">/admin/audit</code> — filterable by engram, time range, and operation type. Feed it directly to your SIEM.',
+        },
+        {
+          title: 'Per-engram access at org scale',
+          body: 'Hundreds of engrams across dozens of teams, each with independently scoped viewer and editor tokens. The Team Admin panel shows active sessions per token in real time.',
+        },
+        {
+          title: 'On-premise deployment',
+          body: 'No cloud dependency. Runs on your own servers, your VPN, or an air-gapped enclave. Nothing leaves your infrastructure.',
+        },
+      ]}
+      differentiators={[
+        `<code class="text-[#67e8f9]">/admin/provision</code> creates scoped sharing tokens programmatically — integrate with your IdP, MDM, or onboarding scripts.`,
+        `Audit log at <code class="text-[#67e8f9]">/admin/audit</code> exports JSON/CSV op-log events for SIEM ingestion and SOC evidence.`,
+        'Volume licensing and dedicated support — contact us to scope a deployment for your org.',
+      ]}
+      sharedEngrams={`At enterprise scale, <code class="text-[#67e8f9]">/admin/provision</code> is the integration point: POST a name, role, engram list, and optional expiry to create a scoped bearer token ready for MDM distribution. The Team Admin panel gives live per-token session counts. Cross-org handoffs use encrypted <code class="text-[#67e8f9]">.gez</code> packs — a signed engram snapshot that travels offline and verifies on import.`}
+      proHighlight={`Start with Pro or Teams for self-serve adoption before org-wide rollout. Enterprise procurement adds volume licensing, dedicated onboarding, SLA support, and direct access to the admin provisioning API. Talk to us — we'll scope it with you.`}
+      links={[
+        { label: 'Getting Started',          href: '/getting-started/overview' },
+        { label: 'Enterprise IT FAQ',        href: '/guides/enterprise-faq' },
+        { label: 'AI Access Controls',       href: '/guides/ai-access-controls' },
+        { label: 'What Leaves Your Device',  href: '/guides/network-activity' },
+        { label: 'Job Memory Kits',          href: '/job-memory-kits' },
+        { label: 'Memory-trained Skills',    href: '/skills-goals-trainer' },
+        { label: 'Upgrade / Pricing',        href: '/upgrade' },
+      ]}
+      cta={{ label: 'Contact us for Enterprise', href: 'mailto:enterprise@graphnosis.com' }}
+    />
+  </main>
+  <Footer />
+</Layout>

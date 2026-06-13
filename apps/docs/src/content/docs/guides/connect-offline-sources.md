@@ -413,3 +413,10 @@ to read a recall — and that's gated by the [consent system](/guides/ai-access-
 
 [MCP Tools](/reference/mcp-tools/) — what AI clients actually call once the cortex is populated.
 
+
+---
+
+## Explore by use case
+
+→ [**Air-gapped**](/for/air-gapped) — SCADA/OT historians, Modbus/OPC-UA feeds, no internet required  
+→ [**Personal**](/for/personal) — local files, home automation, offline research

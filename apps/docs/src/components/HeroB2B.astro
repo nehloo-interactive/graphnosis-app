@@ -2,6 +2,7 @@
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import HeroDiagram from './HeroDiagram.astro';
+import PersonaBar from './PersonaBar.astro';
 
 let version = '';
 try {
@@ -46,10 +47,12 @@ try {
       </h1>
     </div>
 
-    <p class="text-xl sm:text-2xl font-bold text-center mb-12 max-w-3xl mx-auto bg-clip-text text-transparent" style="background-image: linear-gradient(135deg, #67e8f9 0%, #a78bfa 100%);">
+    <p class="text-xl sm:text-2xl font-bold text-center mb-8 max-w-3xl mx-auto bg-clip-text text-transparent" style="background-image: linear-gradient(135deg, #67e8f9 0%, #a78bfa 100%);">
       Graphnosis is the job memory multi-layer that just remembers —<br />
       on-premise, private, encrypted, deterministic, indexed with $0.
     </p>
+
+    <PersonaBar />
 
     <!-- Rotating flow diagram — B2B variant -->
     <div class="w-full max-w-7xl mx-auto px-4 sm:px-6 mb-2">

@@ -137,7 +137,11 @@ Starting in Graphnosis **v0.10**, before any AI client can retrieve memories fro
 
 You can revoke all AI consents at any time from Settings → AI. Revocation is immediate; consent records remain in your audit history with a `withdrawnAt` timestamp.
 
-### 5.5 International data transfers (made by you, not by Nehloo)
+### 5.5 Engram Sharing (Pro and above)
+
+Starting in Graphnosis **v1.16.0**, Pro, Teams, and Enterprise users can generate **scoped sharing tokens** (Settings → Sharing) to give collaborators read or write access to specific engrams via the HTTP MCP server. When you create a sharing token, you choose which engrams are accessible and the role (viewer or editor). Collaborators connect using the token and your sidecar's URL — no data transits Nehloo's servers; the connection is direct between the collaborator's AI client and your sidecar. You can revoke any token at any time from Settings → Sharing; revocation is immediate.
+
+### 5.6 International data transfers (made by you, not by Nehloo)
 
 Nehloo Interactive does not transfer your data anywhere. When you authorize an AI client (by clicking Allow on the in-app consent prompt, or in headless setups by typing the consent phrase), your data travels directly from your device to the AI provider's servers — a transfer made by you, using your own AI account and credentials, outside Nehloo's infrastructure.
 

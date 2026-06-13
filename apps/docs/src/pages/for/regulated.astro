@@ -1,0 +1,58 @@
+---
+import Layout from '../../layouts/Layout.astro';
+import Nav from '../../components/Nav.astro';
+import PersonaPage from '../../components/PersonaPage.astro';
+import Footer from '../../components/Footer.astro';
+---
+
+<Layout
+  title="Graphnosis for Regulated Industries — HIPAA, SOC 2, GDPR-ready local AI memory"
+  description="How Graphnosis works for healthcare, legal, financial services, and public sector: audit trails, role-based access, SIEM-ready op-log export, and data that never leaves your premises."
+>
+  <Nav />
+  <main>
+    <PersonaPage
+      active="regulated"
+      headline="Compliant AI memory that stays on your premises"
+      categories="healthcare providers · law firms · financial services · insurers · public sector · pharma"
+      tagline="Graphnosis gives regulated organizations deterministic, auditable AI memory with no cloud dependency — built for environments where data residency, access control, and audit trails are non-negotiable."
+      useCases={[
+        {
+          title: 'Healthcare & clinical',
+          body: 'Clinical notes, care protocols, and patient context stay on your infrastructure. AI clients recall the right protocol without PHI leaving the building. HIPAA-compatible deployment.',
+        },
+        {
+          title: 'Legal & professional services',
+          body: 'Matter files, case law, client history, and internal memos stored in isolated engrams. Viewer tokens for associates; editor access only for responsible attorneys.',
+        },
+        {
+          title: 'Financial services & insurance',
+          body: 'Regulatory guidance, product knowledge, and client engagement history recalled deterministically. Op-log export feeds your SIEM for SOC 2 / ISO 27001 evidence.',
+        },
+        {
+          title: 'Public sector & government',
+          body: 'On-premise deployment, no third-party cloud, air-gappable for sensitive environments. Meets data residency requirements by design.',
+        },
+      ]}
+      differentiators={[
+        `Op-log export at <code class="text-[#67e8f9]">/admin/audit</code> — full JSON or CSV event stream for SIEM ingestion, filterable by engram and time range.`,
+        'Viewer role = read-only access for audit reviewers; editor role = approved contributors only. Scoped per engram, not per cortex.',
+        'Data never leaves your premises: no cloud relay, no re-upload, no vendor access to your content.',
+      ]}
+      sharedEngrams={`Role-based engram access is the compliance control plane: viewer tokens give auditors and read-only systems access without any write risk; editor tokens are issued only to approved contributors. The op-log at <code class="text-[#67e8f9]">/admin/audit</code> exports a full JSON or CSV event stream of every read and write operation — ready to ingest into your SIEM or include in SOC 2 / ISO 27001 evidence packages.`}
+      proHighlight={`Pro and Business tiers add the full audit infrastructure, role-based sharing tokens, and priority support. Enterprise adds SSO token provisioning and volume licensing for org-wide deployment — see the Enterprise page for details.`}
+      links={[
+        { label: 'Getting Started',          href: '/getting-started/overview' },
+        { label: 'Job Memory Kits',          href: '/job-memory-kits' },
+        { label: 'What Leaves Your Device',  href: '/guides/network-activity' },
+        { label: 'AI Access Controls',       href: '/guides/ai-access-controls' },
+        { label: 'Graphs & Sensitivity Tiers', href: '/guides/graphs-and-tiers' },
+        { label: 'Enterprise IT FAQ',        href: '/guides/enterprise-faq' },
+        { label: 'Local AI (offline LLM)',   href: '/local-ai' },
+        { label: 'Upgrade',                  href: '/upgrade' },
+      ]}
+      cta={{ label: 'Talk to us about your compliance requirements', href: 'mailto:enterprise@graphnosis.com' }}
+    />
+  </main>
+  <Footer />
+</Layout>

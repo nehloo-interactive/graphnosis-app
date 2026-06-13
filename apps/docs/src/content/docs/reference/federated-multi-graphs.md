@@ -121,3 +121,11 @@ Everything from the **Federation** heading down — multi-engram parallel recall
 
 [Graphs & Sensitivity Tiers](/guides/graphs-and-tiers/) — how engram tiers interact with federation.
 
+
+---
+
+## Explore by use case
+
+→ [**Team**](/for/team) — per-project engrams with scoped collaborator access  
+→ [**Business**](/for/business) — department-level engram isolation  
+→ [**Enterprise**](/for/enterprise) — org-scale engram scoping with SSO provisioning

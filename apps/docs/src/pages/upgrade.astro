@@ -13,6 +13,7 @@ export const prerender = false;
 
 import Nav from '../components/Nav.astro';
 import Footer from '../components/Footer.astro';
+import PersonaBar from '../components/PersonaBar.astro';
 import '../styles/global.css';
 
 const url = new URL(Astro.request.url);
@@ -419,13 +420,16 @@ const emailParam = prefilledEmail ? `&email=${encodeURIComponent(prefilledEmail)
     <div class="page-content">
 
       <div class="hero">
-        <span class="eyebrow-pill">Pricing</span>
+        <span class="eyebrow-pill">Upgrade</span>
         <h1>Memory that stays yours.</h1>
         <p class="lead">
           Every plan runs entirely on your machine. No data leaves your device.
           The license token is the only thing that touches the network.
         </p>
       </div>
+
+      <!-- Persona bar -->
+      <PersonaBar compact />
 
       <!-- Billing toggle -->
       <div class="billing-toggle">
@@ -477,7 +481,7 @@ const emailParam = prefilledEmail ? `&email=${encodeURIComponent(prefilledEmail)
             <li><strong>GNN</strong> — neural-network edge predictions, graph exploration overlay</li>
             <li>audit_memory + duplicate_pairs</li>
             <li><strong>MCP tool control</strong> — choose which tools AI clients can call (Recall-only, Remember-only, or custom)</li>
-            <li class="dim">Multi-device sync <span class="coming-badge">soon</span></li>
+            <li class="dim">Multi-device sync — full offline-capable cortex replication across your own devices <span class="coming-badge">soon</span></li>
           </ul>
         </div>
 
@@ -496,12 +500,13 @@ const emailParam = prefilledEmail ? `&email=${encodeURIComponent(prefilledEmail)
           </a>
           <ul class="tier-features">
             <li>Everything in Pro</li>
-            <li>Shared engrams <span class="coming-badge">soon</span></li>
+            <li><strong>Shared engrams</strong> — scoped bearer tokens (viewer / editor) per engram; teammates connect their own AI client with zero access outside their scope</li>
+            <li><strong>Team Admin panel</strong> — live per-token active session counts</li>
+            <li><strong>Engram packs</strong> — export / import signed, encrypted <code>.gez</code> bundles for offline or cross-team sharing</li>
             <li>Time-travel recall — graph state at any past date <span class="coming-badge">soon</span></li>
             <li>Spaced repetition / resurface scheduler <span class="coming-badge">soon</span></li>
             <li>Custom MCP tool composer <span class="coming-badge">soon</span></li>
             <li>Outgoing webhook triggers <span class="coming-badge">soon</span></li>
-            <li>Advanced export — signed bundle, Obsidian vault, CSV <span class="coming-badge">soon</span></li>
           </ul>
         </div>
 
@@ -520,7 +525,9 @@ const emailParam = prefilledEmail ? `&email=${encodeURIComponent(prefilledEmail)
           <ul class="tier-features">
             <li>Everything in Teams</li>
             <li>Air-gapped / on-premises deployment</li>
-            <li>Compliance controls, SSO, RBAC</li>
+            <li><strong>SSO token provisioning</strong> — <code>/admin/provision</code> for MDM / onboarding pipelines</li>
+            <li><strong>Audit log export</strong> — <code>/admin/audit</code> JSON &amp; CSV op-log for SIEM ingestion</li>
+            <li>Compliance controls, RBAC, role-scoped engrams</li>
             <li>HIPAA BAA, GDPR DPA, SOC 2</li>
             <li>Dedicated onboarding + SLA</li>
           </ul>
@@ -618,11 +625,10 @@ const emailParam = prefilledEmail ? `&email=${encodeURIComponent(prefilledEmail)
         <details>
           <summary>What is Teams early access?</summary>
           <p>
-            Teams is in active development. Early access gives you a Teams license
-            at the $25/mo rate (or $249/yr) as Pro-equivalent features while the
-            Teams-specific features (shared engrams, time-travel recall, spaced
-            repetition, outgoing webhooks, advanced exports) ship. Early access
-            customers are the first to try each feature. Email
+            Teams early access includes shared engrams (scoped bearer tokens with viewer / editor roles per engram),
+            the Team Admin panel, and signed encrypted engram packs (<code>.gez</code>) for offline sharing — all shipping now.
+            Additional Teams features (time-travel recall, spaced repetition, outgoing webhooks) continue to roll out.
+            Early access customers are the first to try each one. Email
             <a href="mailto:enterprise@graphnosis.com">enterprise@graphnosis.com</a>
             to get on the list.
           </p>
