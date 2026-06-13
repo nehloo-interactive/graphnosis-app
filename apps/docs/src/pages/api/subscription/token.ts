@@ -212,7 +212,45 @@ export const GET: APIRoute = async ({ url, locals }) => {
         { status: 200, headers: { 'Content-Type': 'application/json' } },
       );
     }
-    return new Response(null, { status: 204 });
+
+    // Stripe personal subscriber — poll secret missing or stale (e.g. after Reset).
+    // Verify email ownership via OTP, then restore the stored token with a fresh poll secret.
+    // This self-heals without admin intervention: the stored token IS the subscription proof.
+    const otpParam3 = url.searchParams.get('otp')?.trim();
+    if (!otpParam3) {
+      const code = String(crypto.getRandomValues(new Uint32Array(1))[0] % 1_000_000).padStart(6, '0');
+      await putOtp(kv, email, { code, expiresAt: Date.now() + OTP_TTL_SECONDS * 1000, attempts: 0 });
+      await sendOtpEmail(env, { to: email, code });
+      console.log('[billing token] OTP re-auth for Stripe subscriber', email);
+      return new Response(
+        JSON.stringify({ status: 'otp_required' }),
+        { status: 202, headers: { 'Content-Type': 'application/json' } },
+      );
+    }
+    const otpRec3 = await getOtp(kv, email);
+    if (!otpRec3 || Date.now() > otpRec3.expiresAt) {
+      await deleteOtp(kv, email);
+      return new Response(JSON.stringify({ error: 'otp_expired' }), { status: 401, headers: { 'Content-Type': 'application/json' } });
+    }
+    if (!timingSafeEqual(otpParam3, otpRec3.code)) {
+      otpRec3.attempts += 1;
+      if (otpRec3.attempts >= OTP_MAX_ATTEMPTS) {
+        await deleteOtp(kv, email);
+        return new Response(JSON.stringify({ error: 'otp_invalid', attemptsLeft: 0 }), { status: 401, headers: { 'Content-Type': 'application/json' } });
+      }
+      await putOtp(kv, email, otpRec3);
+      return new Response(JSON.stringify({ error: 'otp_invalid', attemptsLeft: OTP_MAX_ATTEMPTS - otpRec3.attempts }), { status: 401, headers: { 'Content-Type': 'application/json' } });
+    }
+    await deleteOtp(kv, email);
+    const pollSecret3 = randomSecret();
+    rec = { ...rec, pollSecret: pollSecret3, updatedAt: Date.now() };
+    await putToken(kv, email, rec);
+    await writeAudit(kv, { ts: Date.now(), action: 'stripe-otp-reauth', email, adminNote: 'stale poll secret recovered via OTP' });
+    console.log('[billing token] Stripe token restored via OTP re-auth for', email);
+    return new Response(
+      JSON.stringify({ token: rec.token, exp: rec.exp, plan: rec.plan, updatedAt: rec.updatedAt, pollSecret: pollSecret3 }),
+      { status: 200, headers: { 'Content-Type': 'application/json' } },
+    );
   }
   return new Response(
     JSON.stringify({ token: rec.token, exp: rec.exp, plan: rec.plan, updatedAt: rec.updatedAt }),
