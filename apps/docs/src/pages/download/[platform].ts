@@ -24,7 +24,9 @@ export const prerender = false;
 const RELEASES =
   'https://github.com/nehloo-interactive/graphnosis-app/releases/download';
 
-const FALLBACK_VERSION = 'v1.13.6';
+// Keep in sync with tauri.conf.json version. Only used if CURRENT_VERSION is
+// absent from Cloudflare env vars (should never happen after a successful release).
+const FALLBACK_VERSION = 'v1.16.0';
 
 export const GET: APIRoute = ({ params, locals, request }) => {
   const env = getEnv(locals);
