@@ -4637,7 +4637,7 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
       // and mergeWithDefaults's typeof-string guard then omits both fields.
       await deps.host.setSettings({
         licenseEnc: undefined as unknown as string,
-        domainSeatLicenseToken: undefined,
+        domainSeatLicenseToken: undefined as unknown as string,
       });
       return { ok: true };
     }
