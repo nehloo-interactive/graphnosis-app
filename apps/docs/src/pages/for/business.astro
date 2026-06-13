@@ -1,0 +1,57 @@
+---
+import Layout from '../../layouts/Layout.astro';
+import Nav from '../../components/Nav.astro';
+import PersonaPage from '../../components/PersonaPage.astro';
+import Footer from '../../components/Footer.astro';
+---
+
+<Layout
+  title="Graphnosis for Business — department-level job memory with CRM, ERP & runbook integration"
+  description="How Graphnosis works for business teams: department memory, CRM and ERP integration, cross-tool runbooks, and scoped access for contributors and stakeholders."
+>
+  <Nav />
+  <main>
+    <PersonaPage
+      active="business"
+      headline="Job memory across your entire operation"
+      categories="ops teams · sales · customer success · HR · knowledge-work departments · SMBs"
+      tagline="Graphnosis gives every department a private, encrypted memory layer — fed by your existing tools and recalled by AI without leaving your infrastructure."
+      useCases={[
+        {
+          title: 'CRM & ERP memory',
+          body: 'Ingest customer history, deal notes, and renewal signals from Salesforce, HubSpot, or your ERP. Your AI knows the account context before the call starts.',
+        },
+        {
+          title: 'Runbooks & SOPs',
+          body: 'Operations and customer success teams store runbooks as memory-trained Skills. AI clients follow the right procedure without asking you to paste it every time.',
+        },
+        {
+          title: 'Department knowledge bases',
+          body: 'Finance, HR, legal, and product each maintain their own engram. Contributors write; stakeholders read. Access is scoped per person, per engram.',
+        },
+        {
+          title: 'Cross-department handoffs',
+          body: 'Export a scoped engram as an encrypted pack and hand it to another department or an external partner — no full cortex access required.',
+        },
+      ]}
+      differentiators={[
+        'Department-level engram isolation — finance doesn\'t see product, sales doesn\'t see HR.',
+        'Editor tokens for contributors, viewer tokens for stakeholders and read-only AI integrations.',
+        'No per-query LLM cost: recall is deterministic and indexed with $0.',
+      ]}
+      sharedEngrams={`Viewer tokens let stakeholders and read-only AI integrations access a department engram without write access. Editor tokens go to approved contributors. Cross-department handoffs use encrypted <code class="text-[#67e8f9]">.gez</code> packs — a full engram snapshot shared without exposing the rest of the cortex.`}
+      proHighlight={`Business tier adds the full Job Memory Kits library, memory-trained Skills & SOPs for department onboarding, the Memory Studio graph view, and priority support. The fastest way to get a department's collective knowledge into AI reach.`}
+      links={[
+        { label: 'Getting Started',         href: '/getting-started/overview' },
+        { label: 'Job Memory Kits',         href: '/job-memory-kits' },
+        { label: 'Memory-trained Skills',   href: '/skills-goals-trainer' },
+        { label: 'Memory Studio',           href: '/memory-studio' },
+        { label: 'AI Access Controls',      href: '/guides/ai-access-controls' },
+        { label: 'Federated Multi-Graphs',  href: '/reference/federated-multi-graphs' },
+        { label: 'Upgrade',                 href: '/upgrade' },
+      ]}
+      cta={{ label: 'Get started for Business', href: '/upgrade' }}
+    />
+  </main>
+  <Footer />
+</Layout>

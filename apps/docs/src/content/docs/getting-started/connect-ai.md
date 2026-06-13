@@ -303,3 +303,10 @@ Full setup walkthroughs for each connector: **[Auto-ingest from your tools](/gui
 
 [Connect from Your Phone](/getting-started/mobile/) — the same cortex from iOS or Android.
 
+
+---
+
+## Explore by use case
+
+→ [**Personal**](/for/personal) — one cortex shared across Claude, Copilot, Cursor, and any MCP client  
+→ [**Team**](/for/team) — teammates each connect their own AI client to shared engrams via scoped tokens

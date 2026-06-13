@@ -215,3 +215,11 @@ See [Verify It Yourself](/guides/verify-it-yourself/) for a walkthrough of how t
 
 [Enterprise IT FAQ](/guides/enterprise-faq/) — security, installation, tamper resistance, OT integration, and compliance mapping for IT teams.
 
+
+---
+
+## Explore by use case
+
+→ [**Regulated**](/for/regulated) — data residency, SIEM-ready audit log, role-based access  
+→ [**Air-gapped**](/for/air-gapped) — zero outbound traffic, `.gez` offline transfer  
+→ [**Enterprise**](/for/enterprise) — on-premise deployment with full network control

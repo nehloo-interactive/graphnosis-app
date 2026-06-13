@@ -181,3 +181,16 @@ The embedding model (ONNX, ~90 MB) and any optional local LLM for corrections ru
 
 [The Story of Ghampus](/reference/ghampus/) — why a seahorse, and what he stands for.
 
+
+---
+
+## Explore by use case
+
+Not sure which features apply to you? These pages map Graphnosis to your specific context:
+
+→ [**Personal**](/for/personal) — researchers, writers, developers, home tinkerers  
+→ [**Team**](/for/team) — shared job memory for dev squads, consultants, agencies  
+→ [**Business**](/for/business) — department memory, CRM/ERP integration, runbooks  
+→ [**Regulated**](/for/regulated) — healthcare, legal, finance, public sector  
+→ [**Enterprise**](/for/enterprise) — SSO, audit logs, on-premise deployment  
+→ [**Air-gapped**](/for/air-gapped) — offline-only, defense, OT, classified environments

@@ -1,0 +1,58 @@
+---
+import Layout from '../../layouts/Layout.astro';
+import Nav from '../../components/Nav.astro';
+import PersonaPage from '../../components/PersonaPage.astro';
+import Footer from '../../components/Footer.astro';
+---
+
+<Layout
+  title="Graphnosis for Personal Use — local encrypted memory for researchers, writers & developers"
+  description="How Graphnosis works for solo users: AI client memory, offline-first personal projects, home automation, research, and writing."
+>
+  <Nav />
+  <main>
+    <PersonaPage
+      active="personal"
+      headline="Memory for the curious mind"
+      categories="researchers · writers · developers · students · home tinkerers · lifelong learners"
+      tagline="Graphnosis keeps a local, encrypted, deterministic memory accessible by every AI client you use — and for any personal project that needs reliable recall without a cloud subscription."
+      useCases={[
+        {
+          title: 'AI client memory',
+          body: 'Claude, Copilot, Cursor, and any MCP-compatible AI client share one consistent memory. No more re-explaining context every session.',
+        },
+        {
+          title: 'Research & writing',
+          body: 'Ingest papers, notes, drafts, and clippings. Ask your AI to recall what you said about a topic three months ago — and get an exact answer.',
+        },
+        {
+          title: 'Home automation & personal agents',
+          body: 'Local agents on Home Assistant, n8n, or custom scripts read and write memory without leaving your network.',
+        },
+        {
+          title: 'Offline-first projects',
+          body: 'Everything works without internet. Your memories are encrypted at rest on your own machine and indexed with $0 in LLM calls.',
+        },
+      ]}
+      differentiators={[
+        'One cortex, every AI client — no per-app memory silos.',
+        'Deterministic recall with no hallucination risk: results are indexed, not inferred.',
+        'Works fully offline — no API keys, no re-uploads, no cloud account required to start.',
+      ]}
+      sharedEngrams={`Export any engram as a signed, encrypted <code class="text-[#67e8f9]">.gez</code> pack to share a research collection with a trusted collaborator, or to move memories between your own machines — no network relay needed.`}
+      proHighlight={`Pro unlocks Memory Studio for visual graph inspection, memory-trained Skills & SOPs, unlimited engrams, and priority support. A meaningful upgrade for power users who rely on Graphnosis daily.`}
+      links={[
+        { label: 'Getting Started',        href: '/getting-started/overview' },
+        { label: 'Connect Your AI',        href: '/getting-started/connect-ai' },
+        { label: 'Memory Across AI Clients', href: '/guides/memory-across-ai-clients' },
+        { label: 'Memory Studio',          href: '/memory-studio' },
+        { label: 'Job Memory Kits',        href: '/job-memory-kits' },
+        { label: 'Memory-trained Skills',  href: '/skills-goals-trainer' },
+        { label: 'Local AI (offline LLM)', href: '/local-ai' },
+        { label: 'Download',               href: '/download' },
+      ]}
+      cta={{ label: 'Download Graphnosis free', href: '/download' }}
+    />
+  </main>
+  <Footer />
+</Layout>

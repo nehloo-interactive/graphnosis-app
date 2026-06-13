@@ -1,6 +1,6 @@
 ---
 title: File Formats
-description: Internal file formats used by Graphnosis — encrypted archives, op-log structure, and model cache.
+description: Internal file formats used by Graphnosis — encrypted archives, engram packs, op-log structure, and model cache.
 sidebar:
   order: 3
 ---
@@ -82,6 +82,71 @@ Every `.gsk` is signed with an Ed25519 keypair before it is written. The signatu
 
 :::note
 You can decrypt your own `.gsk` files programmatically with `@nehloo/graphnosis` and your cortex passphrase. The format is open and auditable. The signature does not lock you in — it lets you verify provenance.
+:::
+
+## `.gez` — Graphnosis Engram Zero (air-gapped sharing pack)
+
+A `.gez` file is a portable, signed, encrypted snapshot of one engram — its nodes, edges, sources, and op-log tail. Designed for offline transfer: USB, secure file share, email, or any approved media. No network, no sidecar, no infrastructure required on either side.
+
+The name "Zero" signals the intent: zero network, zero infrastructure, zero trust assumed.
+
+### Structure
+
+A `.gez` file mirrors the `.gsk` wire format:
+
+```
+[4 bytes]  Magic: 0x47 0x45 0x5A 0x01  ("GEZ\x01")
+[4 bytes]  Manifest length (little-endian uint32)
+[N bytes]  JSON manifest (UTF-8, see below)
+[64 bytes] Ed25519 signature over (manifest || encrypted payload)
+[M bytes]  Encrypted payload (AES-256-GCM)
+```
+
+The JSON manifest contains:
+
+```json
+{
+  "version": 1,
+  "kind": "engram-pack",
+  "engramId": "project-x",
+  "displayName": "Project X",
+  "nodeCount": 412,
+  "exportedAt": "2026-06-13T10:00:00Z",
+  "publisher": "nehloo-interactive"
+}
+```
+
+The encrypted payload is a MessagePack-serialized object containing all nodes, edges, source records, and the engram's op-log tail for the export window. The AES key is derived at export time; the recipient uses the same derivation path on import.
+
+### Export and import
+
+Via MCP tools:
+
+```
+export_engram { engramId, outputPath }
+import_engram { filePath }
+```
+
+Via CLI:
+
+```bash
+graphnosis engram export --engram project-x --out project-x.gez
+graphnosis engram import project-x.gez
+```
+
+On import: signature verified → payload decrypted → nodes merged into the recipient's cortex. Conflict resolution is last-write-wins on matching node IDs; new nodes coexist. The import UI surfaces a per-node conflict summary when overlaps are found.
+
+### When to use `.gez` vs. sharing tokens
+
+| Scenario | Use |
+|----------|-----|
+| Ongoing collaboration, both parties online | [Sharing tokens](/guides/engram-sharing/) |
+| One-time snapshot, offline transfer, air-gapped environment | `.gez` pack |
+| Distributing a curated knowledge base to many recipients | `.gez` pack |
+| Consultant sharing a project archive with a client | `.gez` pack |
+
+:::note
+`.gez` is a snapshot — it doesn't sync back. Changes the recipient makes in their cortex after import stay in their cortex. For bidirectional collaboration use sharing tokens instead.
 :::
 
 ## `.gnn` — Neural Network Prediction Overlay
@@ -215,6 +280,8 @@ Every `.gai`, `.bundle`, and `master.enc` write goes through an atomic write hel
 [Federated Multi-Graphs](/reference/federated-multi-graphs/) — what lives inside a `.gai`, conceptually.
 
 [Skills as SOPs](/reference/skills/) — the procedural model exported via `.gsk` packs.
+
+[Engram Sharing](/guides/engram-sharing/) — how to use `.gez` packs for air-gapped or one-way sharing.
 
 [Indelibility & Determinism](/guides/indelibility-and-determinism/) — why the op-log and atomic writes matter.
 

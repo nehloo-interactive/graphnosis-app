@@ -151,3 +151,10 @@ You can always rename via the Settings → Engrams panel later. And if your AI c
 
 [Graphs & Sensitivity Tiers](/guides/graphs-and-tiers/) — keep work, personal, and sensitive material separate.
 
+
+---
+
+## Explore by use case
+
+→ [**Personal**](/for/personal) — one cortex, every AI client, no silos  
+→ [**Team**](/for/team) — shared job memory with scoped access per teammate

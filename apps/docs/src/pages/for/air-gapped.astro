@@ -1,0 +1,59 @@
+---
+import Layout from '../../layouts/Layout.astro';
+import Nav from '../../components/Nav.astro';
+import PersonaPage from '../../components/PersonaPage.astro';
+import Footer from '../../components/Footer.astro';
+---
+
+<Layout
+  title="Graphnosis for Air-Gapped Environments — offline AI memory for defense, OT & classified facilities"
+  description="How Graphnosis works in air-gapped environments: zero internet dependency, local LLM via Ollama, SCADA and OT integration, encrypted GEZ packs for offline memory transfer, Jetson and edge hardware support."
+>
+  <Nav />
+  <main>
+    <PersonaPage
+      active="air-gapped"
+      headline="AI memory with zero network dependency"
+      categories="defense contractors · manufacturing OT teams · classified-facility IT · offline research labs · critical infrastructure operators"
+      tagline="Graphnosis was built offline-first. In air-gapped environments, every feature — ingestion, recall, Skills, sharing — operates without an internet connection, an API key, or a cloud account."
+      useCases={[
+        {
+          title: 'Defense & classified facilities',
+          body: 'Deploy on isolated networks or SCIF-adjacent infrastructure. No outbound traffic, no cloud dependency. Memory sharing via signed encrypted packs — no network relay ever.',
+        },
+        {
+          title: 'Manufacturing & OT',
+          body: 'Ingest SCADA historian data, OPC-UA feeds, runbooks, and maintenance logs. AI clients on the plant floor recall the right procedure without crossing the IT/OT boundary.',
+        },
+        {
+          title: 'Offline research labs',
+          body: 'Index papers, datasets, experimental notes, and protocols on an isolated research network. Local LLM (Ollama) powers semantic recall without external inference calls.',
+        },
+        {
+          title: 'Edge & embedded hardware',
+          body: 'Runs on Apple Silicon, NVIDIA Jetson, AMD, and Intel Arc. Low-overhead indexing designed for resource-constrained environments.',
+        },
+      ]}
+      differentiators={[
+        'Fully offline: indexing, recall, and Skills all work with $0 in LLM calls and zero network dependency.',
+        'Local LLM via Ollama: semantic recall and distillation on-device, no external inference API.',
+        'SCADA, OPC-UA, Modbus TCP, MQTT, and LoRaWAN data sources supported — no IT/OT boundary crossing.',
+      ]}
+      sharedEngrams={`<strong class="text-white">GEZ — Graphnosis Engram Zero</strong> (<code class="text-[#67e8f9]">.gez</code>) is the offline memory-transfer format built into Graphnosis. The name reflects its design principle: <em>zero network dependency</em> — the file is the entire transfer mechanism.<br /><br />A <code class="text-[#67e8f9]">.gez</code> pack is a self-contained encrypted bundle of one engram: every source, every memory node, ready to carry on a USB drive or push through a one-way data diode. It is AES-256-GCM encrypted and optionally signed with the sender's cortex Ed25519 key, so the recipient can verify authorship and integrity before importing — with no handshake, no cloud relay, no trust in the transport medium. <code class="text-[#67e8f9]">export_engram</code> creates the pack; <code class="text-[#67e8f9]">import_engram</code> ingests it on the other side, skipping sources that already exist. Signature verification happens offline against a public key the sender shares out-of-band.`}
+      proHighlight={`Pro and Teams tiers add memory-trained Skills for SOPs and runbooks, Job Memory Kits for fast deployment, and the Memory Studio graph view — all of which work fully offline. Contact us for volume licensing and procurement support.`}
+      links={[
+        { label: 'Getting Started',               href: '/getting-started/overview' },
+        { label: 'Local AI setup (Ollama)',        href: '/local-ai' },
+        { label: 'Connect Offline Sources',        href: '/guides/connect-offline-sources' },
+        { label: 'What Leaves Your Device',        href: '/guides/network-activity' },
+        { label: 'File Formats (.gez, .gai)',      href: '/reference/file-formats' },
+        { label: 'Job Memory Kits',                href: '/job-memory-kits' },
+        { label: 'Memory-trained Skills',          href: '/skills-goals-trainer' },
+        { label: 'Enterprise IT FAQ',              href: '/guides/enterprise-faq' },
+        { label: 'Download',                       href: '/download' },
+      ]}
+      cta={{ label: 'Download Graphnosis', href: '/download' }}
+    />
+  </main>
+  <Footer />
+</Layout>

@@ -1,0 +1,142 @@
+---
+title: Engram Sharing
+description: Share specific engrams with collaborators using scoped tokens — without handing over your whole cortex or running any cloud sync.
+sidebar:
+  order: 9
+---
+
+Engram sharing lets you give a collaborator — a teammate, a client, a co-author — access to specific engrams in your cortex, with the role you choose, via your MCP server. Their AI client queries your sidecar directly; no data ever transits a Graphnosis server.
+
+**Requires:** Pro, Teams, or Enterprise plan · [Mobile & Remote Access](/getting-started/mobile/) enabled
+
+---
+
+## How it works
+
+The mechanism is simple: you generate a **scoped token** that names exactly which engrams it can see and whether the holder can only read (viewer) or also write (editor). The collaborator adds one line to their MCP config — your sidecar URL plus the token. From that point, their AI client can recall, remember, and otherwise work with those engrams as if they were local.
+
+Their AI client never sees your other engrams. The token enforces the scope at the sidecar layer — not just in the UI, but at the recall and write levels. A viewer token silently returns empty results for engrams it doesn't cover and rejects `remember`, `forget`, and `edit` calls outright.
+
+---
+
+## Setup
+
+### 1. Enable Mobile & Remote Access
+
+Sharing requires your HTTP MCP server to be reachable. If you haven't already:
+
+1. Open **Settings → Mobile & Remote Access**
+2. Enable **Remote Access** and note your sidecar URL (shown in the panel)
+3. If sharing outside your local network: set up Tailscale or expose the port via a reverse proxy
+
+The collaborator will use that URL as the MCP endpoint.
+
+### 2. Create a sharing token
+
+1. Open **Settings → Sharing**
+2. Click **Create token**
+3. Fill in:
+   - **Name** — what you'll call it (shown in your token list; the collaborator doesn't see it)
+   - **Role** — `viewer` (recall only) or `editor` (recall + write)
+   - **Engrams** — pick specific engrams, or choose **All engrams** to include everything
+   - **Expires** — optional; leave blank for no expiry
+4. Click **Create**
+
+The token is shown exactly once. Copy it — it won't be shown again.
+
+### 3. Share the token and URL with your collaborator
+
+Send them:
+- Your sidecar URL (e.g. `http://your-machine.ts.net:PORT/mcp`)
+- The token string
+
+They add it to their MCP config:
+
+```json
+{
+  "mcpServers": {
+    "nelu-shared": {
+      "url": "http://your-machine.ts.net:PORT/mcp",
+      "headers": {
+        "Authorization": "Bearer <token>"
+      }
+    }
+  }
+}
+```
+
+Their AI client will now see a second set of engrams alongside their own cortex — the ones you scoped to that token.
+
+---
+
+## What collaborators can and can't do
+
+| Action | Viewer | Editor |
+|--------|--------|--------|
+| `recall`, `remind`, `dig_deeper` | ✅ | ✅ |
+| `remember`, `edit`, `forget` | ✗ | ✅ |
+| `ingest_batch` | ✗ | ✅ |
+| Access engrams not in the token scope | ✗ | ✗ |
+| Access your sensitive-tier engrams without your consent gate | ✗ | ✗ |
+
+The consent gate still applies to sensitive-tier engrams even for editor tokens — the collaborator's writes and recalls on sensitive engrams fire the same in-app approval prompt you'd see for any AI client. If you want a shared engram to flow without prompts, keep it at `personal` or `public` tier.
+
+Writes through an editor token are attributed in the op-log with the token name, so you can always see what a collaborator added.
+
+---
+
+## Managing tokens
+
+**Settings → Sharing** shows all your tokens with their name, role, engram scope, creation date, and expiry. You can revoke any token from there — revocation is immediate. The collaborator's next MCP call will receive a 401.
+
+There's no way to retrieve a token value after creation. If a token is lost, revoke it and create a new one.
+
+---
+
+## Seat limits
+
+| Plan | Sharing tokens |
+|------|---------------|
+| Pro | Up to 3 active tokens |
+| Teams | Up to 25 active tokens |
+| Enterprise | Unlimited |
+
+Expired tokens don't count toward the limit. Revoke an active token to free a seat.
+
+---
+
+## Air-gapped sharing: Engram Packs (`.gez`)
+
+If your collaborator can't reach your sidecar — different network, air-gapped environment, or you just want a one-time snapshot — you can export an engram as a signed encrypted `.gez` pack and hand it over any way you like (USB, secure file transfer, email).
+
+`.gez` (Graphnosis Engram Zero) uses the same AES-256-GCM + Ed25519 format as `.gsk` skill packs. On import, the signature is verified, nodes are merged into the recipient's cortex, and any conflicts are flagged for review.
+
+Export and import are available via the MCP tools `export_engram` and `import_engram`, or the CLI:
+
+```bash
+graphnosis engram export --engram project-x --out project-x.gez
+graphnosis engram import project-x.gez
+```
+
+---
+
+## Security model
+
+A few things worth knowing:
+
+- **Tokens are bearer credentials.** Anyone who holds the token can use it. Treat them like API keys — don't paste them into public repos or shared docs.
+- **No Graphnosis server is involved.** The connection is between the collaborator's AI client and your sidecar. Graphnosis doesn't route, log, or see the traffic.
+- **Your other engrams are invisible.** Scope enforcement is server-side — the collaborator's AI client never learns that your other engrams exist.
+- **Sensitive-tier consent still applies.** The consent gate is not bypassed by sharing tokens. If you gate an engram as `sensitive`, recalls against it from shared tokens will still fire the in-app prompt on your machine.
+
+---
+
+## Related
+
+[Mobile & Remote Access](/getting-started/mobile/) — required prerequisite; covers network setup, Tailscale, and port forwarding.
+
+[AI Access Controls](/guides/ai-access-controls/) — the full consent and rate-limiting stack that applies to shared connections.
+
+[Graphs & Sensitivity Tiers](/guides/graphs-and-tiers/) — set the right tier before sharing an engram.
+
+[File Formats](/reference/file-formats/) — `.gez` pack format spec.

@@ -10,6 +10,9 @@ export default defineConfig({
   // on the Cloudflare Worker; every Starlight docs page stays statically
   // generated and is served directly by Pages.
   output: 'static',
+  redirects: {
+    '/consumer': '/',
+  },
   // Cloudflare Pages / Workers adapter. `imageService: 'compile'` keeps
   // Sharp out of the worker bundle (the docs pages that use it are
   // prerendered at build time, so the runtime never needs it).
@@ -31,6 +34,7 @@ export default defineConfig({
       customCss: ['./src/styles/custom.css'],
       components: {
         Footer: './src/components/StarlightFooter.astro',
+        Sidebar: './src/components/StarlightSidebar.astro',
         // Wraps the default SocialIcons (the GitHub mark in the top
         // header) with a "Download vX.Y.Z" pill rendered to its LEFT.
         // Version is read from apps/desktop/src-tauri/tauri.conf.json
@@ -64,6 +68,7 @@ export default defineConfig({
             { label: 'Deterministic Consolidation', slug: 'guides/deterministic-consolidation' },
             { label: 'Graphs & Sensitivity Tiers', slug: 'guides/graphs-and-tiers' },
             { label: 'AI Access Controls', slug: 'guides/ai-access-controls' },
+            { label: 'Engram Sharing', slug: 'guides/engram-sharing' },
             { label: 'Boot & Engram Loading', slug: 'guides/boot-and-engram-loading' },
             { label: 'Keeping Your Cortex Safe', slug: 'guides/keeping-your-cortex-safe' },
             { label: 'Recovery', slug: 'guides/recovery' },

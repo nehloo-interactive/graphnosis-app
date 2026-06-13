@@ -422,3 +422,11 @@ Graphnosis is actively working on the items below. Updates are announced in the 
 [File Formats](/reference/file-formats/) — the on-disk layout of `.gai`, `.gsk`, and related files.
 
 [Using Graphnosis with AI Clients](/legal/third-party-ai/) — what the AI provider sees once a recall is allowed.
+
+---
+
+## Explore by use case
+
+→ [**Enterprise**](/for/enterprise) — SSO provisioning, audit log export, org-scale deployment  
+→ [**Regulated**](/for/regulated) — HIPAA, SOC 2, GDPR, ISO 27001 — compliance-first deployments  
+→ [**Air-gapped**](/for/air-gapped) — zero internet dependency, SCADA/OT, classified environments
