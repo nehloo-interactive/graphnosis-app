@@ -2,6 +2,7 @@
 import Layout from '../layouts/Layout.astro';
 import Nav from '../components/Nav.astro';
 import Footer from '../components/Footer.astro';
+import PersonaBar from '../components/PersonaBar.astro';
 
 const categories = [
   { id: 'all',          label: 'All packs' },
@@ -1651,6 +1652,10 @@ const complianceGroups: ComplianceGroup[] = [
         </div>
       </div>
     </section>
+
+    <div class="py-6 flex justify-center">
+      <PersonaBar compact />
+    </div>
 
     <!-- Filter bar (static — floating dropdown takes over on scroll) -->
     <section id="filter-bar" class="px-4 sm:px-6 pb-8 bg-[#13131a]/95 border-b border-[#2a2a3d]">
