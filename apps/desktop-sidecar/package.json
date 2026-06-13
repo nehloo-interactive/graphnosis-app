@@ -1,6 +1,6 @@
 {
   "name": "@graphnosis-app/desktop-sidecar",
-  "version": "1.15.11",
+  "version": "1.16.0",
   "private": true,
   "type": "module",
   "author": "Nehloo Interactive LLC",
@@ -8,7 +8,8 @@
   "main": "./dist/index.js",
   "bin": {
     "graphnosis-sidecar": "./dist/index.js",
-    "graphnosis-mcp-relay": "./dist/mcp-relay.js"
+    "graphnosis-mcp-relay": "./dist/mcp-relay.js",
+    "graphnosis-engram": "./dist/engram-cli.js"
   },
   "scripts": {
     "build": "node scripts/generate-docs-content.mjs && node scripts/generate-skill-demos-content.mjs && tsc -p tsconfig.json",

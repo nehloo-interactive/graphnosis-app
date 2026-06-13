@@ -77,6 +77,12 @@ export interface LicensePayload {
    *  set to cancel at period end. Drives the "Renews" vs "Expires" label.
    *  Optional for backward-compat with tokens minted before this field. */
   renews?: boolean;
+  /**
+   * Maximum number of sharing tokens (seats) for Teams / Enterprise plans.
+   * Absent on individual plans and on legacy tokens (treat as unlimited).
+   * The sidecar enforces this limit in `sharing:create`.
+   */
+  seats?: number;
 }
 
 /**

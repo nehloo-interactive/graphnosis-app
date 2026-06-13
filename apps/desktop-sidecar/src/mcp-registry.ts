@@ -32,6 +32,11 @@ export interface McpConnection {
   sessionNodesServed: number;
   /** Number of distinct engrams accessed this session (enumeration signal). */
   uniqueEngramsAccessed: number;
+  /**
+   * ID of the sharing token (SharingToken.id) that authenticated this session.
+   * Absent for the owner's own sessions (master token or stdio/socket).
+   */
+  sharingTokenId?: string;
 }
 
 class McpRegistry {
@@ -136,6 +141,32 @@ class McpRegistry {
       if (!best || c.lastActivityAt > best.lastActivityAt) best = c;
     }
     return best?.id;
+  }
+
+  /**
+   * Attach metadata to a connection after the MCP session is initialised.
+   * Currently used to tag the sharing token ID for Team Admin accounting.
+   */
+  setConnectionMeta(id: string, meta: { sharingTokenId?: string }): void {
+    const c = this.connections.get(id);
+    if (!c) return;
+    if (meta.sharingTokenId !== undefined) c.sharingTokenId = meta.sharingTokenId;
+  }
+
+  /**
+   * Returns a map of sharingTokenId → list of active connections for that token.
+   * Connections authenticated via the master token are grouped under the key `null`.
+   * Used by the Team Admin panel to show per-token active session counts.
+   */
+  listByToken(): Map<string | null, McpConnection[]> {
+    const out = new Map<string | null, McpConnection[]>();
+    for (const c of this.connections.values()) {
+      const key = c.sharingTokenId ?? null;
+      const arr = out.get(key) ?? [];
+      arr.push(c);
+      out.set(key, arr);
+    }
+    return out;
   }
 
   /** Record tokens and nodes served; returns updated session totals. */

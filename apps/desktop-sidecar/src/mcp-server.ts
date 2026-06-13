@@ -12,7 +12,7 @@ import { withEmbedding } from './embedding-queue.js';
 import { mcpRegistry } from './mcp-registry.js';
 import type { BrainEngine } from './brain-engine.js';
 import { createHmac, randomUUID } from 'node:crypto';
-import { recordConsent, revokeConsent, policyGrantMs, type ClientPolicy, type ConsentPolicyChoice } from '@graphnosis-app/core/settings';
+import { recordConsent, revokeConsent, policyGrantMs, type ClientPolicy, type ConsentPolicyChoice, type SharingScope } from '@graphnosis-app/core/settings';
 import { registerPrompt as registerConsentPrompt, listPendingPrompts, recordGatedRequest, getGatedRequest, type ConsentEngram } from './consent-prompts.js';
 import { constantTimeEqual } from './crypto-compare.js';
 import type { ConsentRecord } from '@graphnosis-app/core/settings';
@@ -609,6 +609,14 @@ class ConsentRequiredError extends Error {
   }
 }
 
+/** Thrown by assertWriteAllowed() when a viewer-role sharing token attempts a write. */
+class ScopeViolationError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'ScopeViolationError';
+  }
+}
+
 function resolveEngramList(
   host: GraphnosisHost,
   names: string[],
@@ -716,6 +724,26 @@ export type LlmCapability =
   | 'insights'
   | 'edgePrediction';
 
+/** Returns the highest-tier valid license token across the personal slot
+ *  and the domain seat slot. Mirrors the same helper in ipc.ts. */
+async function getEffectiveLicenseToken(deps: McpDeps): Promise<string | null> {
+  const primary = await getEffectiveLicenseToken(deps);
+  const settings = deps.host.getSettings();
+  const domain = settings.domainSeatLicenseToken ?? null;
+  if (!domain) return primary;
+  if (!primary) return domain;
+  const tier = (token: string): number => {
+    const payload = deps.licenseValidator?.verifyToken(token);
+    if (!payload) return 0;
+    const f = payload.features;
+    if (f.includes('enterprise')) return 4;
+    if (f.includes('teams')) return 3;
+    if (f.includes('skill-training')) return 2;
+    return 1;
+  };
+  return tier(domain) >= tier(primary) ? domain : primary;
+}
+
 export interface McpDeps {
   host: GraphnosisHost;
   llm: (capability: LlmCapability) => LocalLlm | null;
@@ -747,6 +775,16 @@ export interface McpDeps {
    * as "unlicensed" (same as `hasFeature` returning false).
    */
   licenseValidator?: LicenseValidator | null;
+  /**
+   * Sharing scope for this MCP session. Present when the session was opened
+   * with a scoped sharing token (not the owner's master token). Enforces:
+   *   - engram filter: only the listed engrams are visible
+   *   - role gate: 'viewer' tokens reject remember/forget/edit calls
+   * Absent (undefined) means the owner connected — no restrictions.
+   */
+  sharingScope?: SharingScope | null;
+  /** Absolute path to the cortex directory. Used for GEZ signing-key storage. */
+  cortexDir?: string;
 }
 
 /**
@@ -2483,6 +2521,65 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
           readOnlyHint: true,
         },
       },
+      {
+        name: 'export_engram',
+        description:
+          'DETERMINISM — Deterministic: reads all sources from one engram, returns an encrypted `.gez` pack (base64-encoded).\n\n' +
+          'Export an entire engram as a signed, encrypted Graphnosis Engram Zero (`.gez`) pack for air-gapped sharing.\n\n' +
+          'The pack contains the full text of every source in the engram, encrypted with AES-256-GCM and optionally ' +
+          'signed with the cortex\'s Ed25519 key so recipients can verify authenticity. Personal memories stay in ' +
+          'the pack — only share with trusted recipients or within your organization.\n\n' +
+          'WHEN TO CALL:\n' +
+          '• "Export my project engram to share with a colleague"\n' +
+          '• "Create an air-gapped pack for the team"\n' +
+          '• "Pack my research engram for offline transfer"',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            engram: {
+              type: 'string',
+              description: 'Engram ID or display name to export.',
+            },
+            sign: {
+              type: 'boolean',
+              description: 'Sign the pack with this cortex\'s Ed25519 key (default: true). Recipients can verify authorship offline.',
+            },
+          },
+          required: ['engram'],
+        },
+        annotations: { title: 'Export engram pack' },
+      },
+      {
+        name: 'import_engram',
+        description:
+          'DETERMINISM — Deterministic: decrypts and re-ingests sources from a `.gez` pack.\n\n' +
+          'Import a `.gez` Graphnosis Engram Zero pack into this cortex. Each source in the pack is ' +
+          're-ingested into the target engram. Existing sources (matched by sourceId) are skipped by default.\n\n' +
+          'Returns a per-source outcome report and whether the pack\'s signature verified.\n\n' +
+          'WHEN TO CALL:\n' +
+          '• "Import this engram pack a colleague sent me"\n' +
+          '• "Load the .gez file into my research engram"\n' +
+          '• "Merge this pack into my project engram"',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            pack_base64: {
+              type: 'string',
+              description: 'Base64-encoded `.gez` pack bytes (as returned by export_engram).',
+            },
+            target_engram: {
+              type: 'string',
+              description: 'Target engram ID or display name. Defaults to the pack\'s original engram ID. Created if it doesn\'t exist.',
+            },
+            skip_existing: {
+              type: 'boolean',
+              description: 'Skip sources whose sourceId already exists in the target engram (default: true). Set false to re-ingest and overwrite.',
+            },
+          },
+          required: ['pack_base64'],
+        },
+        annotations: { title: 'Import engram pack' },
+      },
         {
           name: 'list_skills',
           description: 'List all trained skills stored in the user\'s Skills engram(s). Returns sourceId, label, engram name, training date, mode, recallBreadth, and active node count for each skill. Use this before get_skill, skill_history, rollback_skill, or delete_skill to discover available skills and their sourceIds. Optionally scope to a specific engram slug.',
@@ -2640,6 +2737,47 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
     };
   });
 
+  // ── Sharing scope helpers ─────────────────────────────────────────────────
+  // These are called from tool handlers when deps.sharingScope is present.
+  // Both no-op when there is no scope (owner session).
+
+  /**
+   * Merge the session's engram scope into tool input's `only_engrams`.
+   * If scope.engrams is an array, the result is the intersection of the
+   * AI-requested list and the allowed set (or the allowed set when none was
+   * requested). If scope.engrams is '*', no-op. When scope applies, the
+   * returned object replaces only_engrams and drops except_engrams (the
+   * allow-list supersedes the deny-list).
+   */
+  function applyEngramScope(input: {
+    only_engrams?: string[] | undefined;
+    except_engrams?: string[] | undefined;
+  }): { only_engrams?: string[]; except_engrams?: string[] } {
+    const scope = deps.sharingScope;
+    if (!scope || scope.engrams === '*') return input as { only_engrams?: string[]; except_engrams?: string[] };
+    const allowed = scope.engrams as string[];
+    const requested = input.only_engrams ?? [];
+    const intersected = requested.length > 0
+      ? requested.filter((e) => allowed.includes(e))
+      : [...allowed];
+    // Return only only_engrams — scope supersedes except_engrams.
+    const result: { only_engrams?: string[] } = { only_engrams: intersected };
+    return result;
+  }
+
+  /**
+   * Throw an MCP error if the session role is 'viewer'. Called before any
+   * write tool (remember, forget, edit, apply, ingest_batch, etc.).
+   */
+  function assertWriteAllowed(): void {
+    const scope = deps.sharingScope;
+    if (scope && scope.role === 'viewer') {
+      throw new ScopeViolationError(
+        '⛔ This token is read-only (viewer role). Contact the cortex owner to request editor access.',
+      );
+    }
+  }
+
   server.setRequestHandler(CallToolRequestSchema, async (req) => {
     // AI client just made a tool call — mark activity so heavy background brain
     // passes defer and this recall/remember wins the single-threaded loop.
@@ -2674,7 +2812,8 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
         // X"). The audit line tags which name was used so we can see in
         // logs how often each phrasing fires.
         const toolName = req.params.name;
-        const args = RecallInput.parse(req.params.arguments ?? {});
+        const rawArgs = RecallInput.parse(req.params.arguments ?? {});
+        const args = { ...rawArgs, ...applyEngramScope(rawArgs) };
         const budget = {
           maxTokens: args.maxTokens ?? 2000,
           maxNodes: args.maxNodes ?? 20,
@@ -2758,7 +2897,8 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
         // Multi-strategy retrieval. Same input shape as recall + only/except
         // engrams + a higher default token budget (3000 vs recall's 2000)
         // because the pipeline naturally returns more.
-        const args = RecallInput.parse(req.params.arguments ?? {});
+        const rawDdArgs = RecallInput.parse(req.params.arguments ?? {});
+        const args = { ...rawDdArgs, ...applyEngramScope(rawDdArgs) };
         const budget = {
           maxTokens: args.maxTokens ?? 3000,
           maxNodes: args.maxNodes ?? 20,
@@ -2821,6 +2961,7 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
         return { content: [{ type: 'text', text: sub.prompt + auditFooter + ddHeadsUp + pendingEngramNotice(deps.host) + consentFooter }] };
       }
       case 'remember': {
+        assertWriteAllowed();
         const args = RememberInput.parse(req.params.arguments ?? {});
 
         // ── Resolve target engram ────────────────────────────────────
@@ -2950,6 +3091,7 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
       // 'correct' kept as a backward-compatible alias — AI clients that have
       // the old tool name in their conversation history continue to work.
       case 'correct': {
+        assertWriteAllowed();
         const args = CorrectInput.parse(req.params.arguments ?? {});
         // Auto-switch. deps.llm() returns the Local LLM only when the user has
         // enabled it for this cortex. The Neural Network, when enabled, supplies
@@ -3000,6 +3142,7 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
         };
       }
       case 'apply': {
+        assertWriteAllowed();
         const args = ApplyInput.parse(req.params.arguments ?? {});
         const pending = deps.pendingDiffs.get(args.diffId);
         if (!pending) throw new Error(`No pending diff ${args.diffId}. The user must confirm in the app first.`);
@@ -3017,6 +3160,7 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
         return { content: [{ type: 'text', text: 'Applied.' }] };
       }
       case 'forget': {
+        assertWriteAllowed();
         const args = ForgetInput.parse(req.params.arguments ?? {});
         // Coalesce the two accepted shapes into one normalized list. `items`
         // wins when both are present (it's the safer payload — has previews).
@@ -3079,7 +3223,7 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
       }
       case 'develop': {
         {
-          const licenseToken = await deps.host.getLicenseToken();
+          const licenseToken = await getEffectiveLicenseToken(deps);
           const licensed = deps.licenseValidator?.hasFeature(licenseToken, 'foresight') ?? false;
           if (!licensed) {
             return mcpError(
@@ -3119,7 +3263,7 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
       }
       case 'predict': {
         {
-          const licenseToken = await deps.host.getLicenseToken();
+          const licenseToken = await getEffectiveLicenseToken(deps);
           const licensed = deps.licenseValidator?.hasFeature(licenseToken, 'foresight') ?? false;
           if (!licensed) {
             return mcpError(
@@ -3163,7 +3307,7 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
       }
       case 'insights': {
         {
-          const licenseToken = await deps.host.getLicenseToken();
+          const licenseToken = await getEffectiveLicenseToken(deps);
           const licensed = deps.licenseValidator?.hasFeature(licenseToken, 'foresight') ?? false;
           if (!licensed) {
             return mcpError(
@@ -3296,7 +3440,8 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
       }
       // ── Advanced recall ───────────────────────────────────────────────────
       case 'recall_structured': {
-        const args = RecallStructuredInput.parse(req.params.arguments ?? {});
+        const rawRsArgs = RecallStructuredInput.parse(req.params.arguments ?? {});
+        const args = { ...rawRsArgs, ...applyEngramScope(rawRsArgs) };
         const only = args.only_engrams?.length ? resolveEngramList(deps.host, args.only_engrams) : null;
         const except = (!only && args.except_engrams?.length) ? resolveEngramList(deps.host, args.except_engrams) : null;
         enforceRecallRateLimit();
@@ -3355,7 +3500,8 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
         return { content: [{ type: 'text', text: JSON.stringify(rsResult, null, 2) + rsFooter }] };
       }
       case 'recall_with_citations': {
-        const args = RecallWithCitationsInput.parse(req.params.arguments ?? {});
+        const rawRwcArgs = RecallWithCitationsInput.parse(req.params.arguments ?? {});
+        const args = { ...rawRwcArgs, ...applyEngramScope(rawRwcArgs) };
         const only = args.only_engrams?.length ? resolveEngramList(deps.host, args.only_engrams) : null;
         const except = (!only && args.except_engrams?.length) ? resolveEngramList(deps.host, args.except_engrams) : null;
         enforceRecallRateLimit();
@@ -3430,7 +3576,15 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
         }] };
       }
       case 'cross_search': {
-        const args = CrossSearchInput.parse(req.params.arguments ?? {});
+        const rawCsArgs = CrossSearchInput.parse(req.params.arguments ?? {});
+        // Apply scope: intersect requested engrams with allowed set.
+        const scopedCsEngrams = (() => {
+          const scope = deps.sharingScope;
+          if (!scope || scope.engrams === '*') return rawCsArgs.engrams;
+          const allowed = scope.engrams as string[];
+          return rawCsArgs.engrams.filter((e) => allowed.includes(e));
+        })();
+        const args = { ...rawCsArgs, engrams: scopedCsEngrams };
         const { resolved, warnings } = resolveEngramList(deps.host, args.engrams);
         if (!resolved.length) {
           return mcpError(`No engrams matched. Warnings: ${warnings.join(' ')}`);
@@ -3601,6 +3755,7 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
         return { content: [{ type: 'text', text: totalText + rsrcFooter }] };
       }
       case 'transfer_source': {
+        assertWriteAllowed();
         const args = TransferSourceInput.parse(req.params.arguments ?? {});
         const resFrom = requireEngram(deps.host, args.from_engram);
         if ('error' in resFrom) return resFrom.error;
@@ -3645,6 +3800,7 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
         }] };
       }
       case 'ingest_batch': {
+        assertWriteAllowed();
         const args = IngestBatchInput.parse(req.params.arguments ?? {});
         const mcpClientName = mcpRegistry.getMostRecentClientName();
         const results: Array<{ index: number; status: 'ok' | 'error'; detail: string }> = [];
@@ -3715,7 +3871,7 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
       }
       case 'audit_memory': {
         {
-          const licenseToken = await deps.host.getLicenseToken();
+          const licenseToken = await getEffectiveLicenseToken(deps);
           const licensed = deps.licenseValidator?.hasFeature(licenseToken, 'foresight') ?? false;
           if (!licensed) {
             return mcpError(
@@ -3799,7 +3955,7 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
           return mcpError('Brain engine is not available. Open the Graphnosis app to enable it.');
         }
         {
-          const licenseToken = await deps.host.getLicenseToken();
+          const licenseToken = await getEffectiveLicenseToken(deps);
           const licensed = deps.licenseValidator?.hasFeature(licenseToken, 'foresight') ?? false;
           if (!licensed) {
             return mcpError(
@@ -3828,7 +3984,7 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
           return mcpError('Brain engine is not available. Open the Graphnosis app to enable it.');
         }
         {
-          const licenseToken = await deps.host.getLicenseToken();
+          const licenseToken = await getEffectiveLicenseToken(deps);
           const licensed = deps.licenseValidator?.hasFeature(licenseToken, 'foresight') ?? false;
           if (!licensed) {
             return mcpError(
@@ -3876,7 +4032,7 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
           return mcpError('Brain engine is not available. Open the Graphnosis app to enable it.');
         }
         {
-          const licenseToken = await deps.host.getLicenseToken();
+          const licenseToken = await getEffectiveLicenseToken(deps);
           const licensed = deps.licenseValidator?.hasFeature(licenseToken, 'gnn-exploration') ?? false;
           if (!licensed) {
             return mcpError(
@@ -3899,7 +4055,7 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
         // local-deterministic path stays free; GNN-derived predictions
         // require an active skill-training/gnn-exploration license.
         {
-          const licenseToken = await deps.host.getLicenseToken();
+          const licenseToken = await getEffectiveLicenseToken(deps);
           const licensed = deps.licenseValidator?.hasFeature(licenseToken, 'gnn-exploration') ?? false;
           if (!licensed) {
             return mcpError(
@@ -3956,7 +4112,7 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
       }
       case 'llm_query': {
         {
-          const licenseToken = await deps.host.getLicenseToken();
+          const licenseToken = await getEffectiveLicenseToken(deps);
           const licensed = deps.licenseValidator?.hasFeature(licenseToken, 'foresight') ?? false;
           if (!licensed) {
             return mcpError(
@@ -4002,7 +4158,7 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
           return mcpError('Brain engine is not available.');
         }
         {
-          const licenseToken = await deps.host.getLicenseToken();
+          const licenseToken = await getEffectiveLicenseToken(deps);
           const licensed = deps.licenseValidator?.hasFeature(licenseToken, 'foresight') ?? false;
           if (!licensed) {
             return mcpError(
@@ -4177,6 +4333,7 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
       }
       // ── Skill training ────────────────────────────────────────────────────
       case 'train_skill': {
+        assertWriteAllowed();
         const TrainSkillInput = z.object({
           skill: z.string().min(1),
           skill_name: z.string().optional(),
@@ -4246,7 +4403,7 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
         // Free users can still store and export raw skills (Skills engram is
         // always available); they just cannot run the training pipeline.
         {
-          const licenseToken = await deps.host.getLicenseToken();
+          const licenseToken = await getEffectiveLicenseToken(deps);
           const licensed = deps.licenseValidator?.hasFeature(licenseToken, 'skill-training') ?? false;
           if (!licensed) {
             return {
@@ -4373,7 +4530,7 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
         // directly, bypassing the desktop UI; without a server-side
         // check the gate would be advisory only.
         if (args.format === 'gsk') {
-          const licenseToken = await deps.host.getLicenseToken();
+          const licenseToken = await getEffectiveLicenseToken(deps);
           const licensed = deps.licenseValidator?.hasFeature(licenseToken, 'skill-training') ?? false;
           if (!licensed) {
             return mcpError(
@@ -4416,6 +4573,142 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
               'the memories that caused it stay local._',
           }],
         };
+      }
+
+      case 'export_engram': {
+        const args = z.object({
+          engram: z.string().min(1),
+          sign: z.boolean().optional(),
+        }).parse(req.params.arguments ?? {});
+
+        const { requireEngram: _req } = { requireEngram };
+        const res = requireEngram(deps.host, args.engram);
+        if ('error' in res) return res.error;
+        const { graphId } = res;
+
+        // Respect sharing scope — only owner sessions may export
+        if (deps.sharingScope) {
+          return mcpError('⛔ Engram export is only available to the cortex owner. Shared (scoped-token) sessions cannot export.');
+        }
+
+        // Gate behind Pro+ (sharing feature)
+        const licenseToken = await getEffectiveLicenseToken(deps);
+        const licensed = deps.licenseValidator?.hasFeature(licenseToken, 'teams') ?? false;
+        if (!licensed) {
+          return mcpError(
+            'Engram Pack export requires a Graphnosis Pro subscription. ' +
+            'Subscribe at https://graphnosis.com/upgrade',
+          );
+        }
+
+        const { exportEngram, getOrCreateGezSigningKeyHex } = await import('./engram-pack.js');
+        const shouldSign = args.sign !== false;
+        let signingKeyHex: string | undefined;
+        if (shouldSign && deps.cortexDir) {
+          try {
+            signingKeyHex = await getOrCreateGezSigningKeyHex(deps.cortexDir);
+          } catch { /* signing key unavailable — proceed unsigned */ }
+        }
+
+        const engramMeta = deps.host.getGraphMetadata(graphId) ?? {};
+        const exportOpts: import('./engram-pack.js').ExportEngramOptions = {
+          exportedBy: (engramMeta as any).displayName ?? graphId,
+        };
+        if (signingKeyHex !== undefined) exportOpts.signingKeyHex = signingKeyHex;
+        const result = await exportEngram(deps.host, graphId, exportOpts);
+
+        return {
+          content: [{
+            type: 'text',
+            text:
+              `## Engram Pack (.gez)\n\n` +
+              `**Engram:** ${(engramMeta as any).displayName ?? graphId}\n` +
+              `**Sources:** ${result.sourceCount}\n` +
+              `**Signed:** ${result.signed ? 'Yes (Ed25519)' : 'No (unsigned)'}\n` +
+              `**Encoding:** base64 — save as \`.gez\` after decoding\n\n` +
+              '```\n' + result.pack.toString('base64') + '\n```\n\n' +
+              '_This pack contains the full text of every source in the engram. ' +
+              'Only share with trusted recipients. ' +
+              'Import with `import_engram` or `graphnosis engram import`._',
+          }],
+        };
+      }
+
+      case 'import_engram': {
+        const args = z.object({
+          pack_base64: z.string().min(1),
+          target_engram: z.string().optional(),
+          skip_existing: z.boolean().optional(),
+        }).parse(req.params.arguments ?? {});
+
+        // Reject scoped (sharing) sessions
+        if (deps.sharingScope) {
+          return mcpError('⛔ Engram import is only available to the cortex owner.');
+        }
+
+        // Pro gate
+        const licenseToken = await getEffectiveLicenseToken(deps);
+        const licensed = deps.licenseValidator?.hasFeature(licenseToken, 'teams') ?? false;
+        if (!licensed) {
+          return mcpError(
+            'Engram Pack import requires a Graphnosis Pro subscription. ' +
+            'Subscribe at https://graphnosis.com/upgrade',
+          );
+        }
+
+        let packBuffer: Buffer;
+        try {
+          packBuffer = Buffer.from(args.pack_base64, 'base64');
+        } catch {
+          return mcpError('Invalid base64 data in pack_base64.');
+        }
+
+        // Resolve optional target engram
+        let targetEngramId: string | undefined;
+        if (args.target_engram) {
+          const res = requireEngram(deps.host, args.target_engram);
+          if ('error' in res) {
+            // Not found — use the string as a new engram ID
+            targetEngramId = args.target_engram;
+          } else {
+            targetEngramId = res.graphId;
+          }
+        }
+
+        const { importEngram } = await import('./engram-pack.js');
+        const importOpts: import('./engram-pack.js').ImportEngramOptions = {
+          skipExisting: args.skip_existing !== false,
+          withEmbedding: (fn) => withEmbedding(fn),
+        };
+        if (targetEngramId !== undefined) importOpts.targetEngramId = targetEngramId;
+        const { result, payload } = await importEngram(deps.host, packBuffer, importOpts);
+
+        const sigLine = result.unsigned
+          ? 'unsigned pack'
+          : result.signatureVerified ? '✅ signature verified' : '⚠️ signature invalid';
+
+        const lines = [
+          `## Import complete`,
+          ``,
+          `**Source engram:** ${payload.engramDisplayName} (${payload.engramId})`,
+          `**Exported by:** ${payload.exportedBy} on ${new Date(payload.exportedAt).toISOString().split('T')[0]}`,
+          `**Signature:** ${sigLine}`,
+          ``,
+          `| Outcome | Count |`,
+          `|---|---|`,
+          `| Imported | ${result.imported} |`,
+          `| Skipped (already existed) | ${result.skipped} |`,
+          `| Failed | ${result.failed} |`,
+        ];
+
+        if (result.failed > 0) {
+          lines.push('', '**Failures:**');
+          for (const o of result.outcomes.filter((o) => o.status === 'failed')) {
+            lines.push(`- \`${o.ref}\`: ${o.error}`);
+          }
+        }
+
+        return { content: [{ type: 'text', text: lines.join('\n') }] };
       }
 
       case 'list_skills': {
@@ -4566,6 +4859,7 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
       }
 
       case 'rollback_skill': {
+        assertWriteAllowed();
         // Args migrated: the legacy `targetSourceId` field actually identified
         // the OLD source to keep (under the now-removed per-retrain-source
         // model). With history living in snapshot files, callers pass the
@@ -4583,6 +4877,7 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
       }
 
       case 'delete_skill': {
+        assertWriteAllowed();
         const args = z.object({
           graphId: z.string().min(1),
           sourceId: z.string().min(1),
@@ -4605,6 +4900,7 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
       // JSON-RPC -32603 that clients render as "Tool execution failed",
       // hiding the actual consent instructions the user needs.
       if (e instanceof ConsentRequiredError) return mcpError(e.message);
+      if (e instanceof ScopeViolationError) return mcpError(e.message);
       throw e;
     }
   });
