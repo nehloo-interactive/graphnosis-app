@@ -7,7 +7,7 @@ sidebar:
 
 Engram sharing lets you give a collaborator — a teammate, a client, a co-author — access to specific engrams in your cortex, with the role you choose, via your MCP server. Their AI client queries your sidecar directly; no data ever transits a Graphnosis server.
 
-**Requires:** Pro, Teams, or Enterprise plan · [Mobile & Remote Access](/getting-started/mobile/) enabled
+**Requires:** [Mobile & Remote Access](/getting-started/mobile/) enabled
 
 ---
 
@@ -93,15 +93,16 @@ There's no way to retrieve a token value after creation. If a token is lost, rev
 
 ---
 
-## Seat limits
+## Token limits
 
 | Plan | Sharing tokens |
 |------|---------------|
-| Pro | Up to 3 active tokens |
-| Teams | Up to 25 active tokens |
+| Free | 1 active token |
+| Pro | Unlimited |
+| Teams | Unlimited |
 | Enterprise | Unlimited |
 
-Expired tokens don't count toward the limit. Revoke an active token to free a seat.
+Expired tokens don't count toward the limit.
 
 ---
 
