@@ -3831,6 +3831,124 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
       const args = z.object({ windowDays: z.number().int().positive().max(365).optional() }).parse(params ?? {});
       return summariseSavings(deps.host.getCortexDir(), args.windowDays ?? 30);
     }
+    case 'agent:walkSkill': {
+      // Execute a planned skill walk step-by-step against the chosen
+      // models. Ollama dispatches for real; paid providers report a
+      // clear "needs configuration" error per step. Each step writes a
+      // routing-savings entry as it lands; the walk's final result
+      // carries the per-step outputs + captures for the UI to render.
+      const { walkSkillPlan } = await import('./agent-walker.js');
+      const { planSkillWalk, deriveStepsFromText } = await import('./model-router.js');
+      const args = z.object({
+        sourceId: z.string().min(1),
+        graphId: z.string().min(1),
+        initialCaptures: z.record(z.string(), z.string()).optional(),
+      }).parse(params ?? {});
+
+      // Re-derive the steps + plan inline so callers don't have to ship
+      // both. Mirrors the agent:planSkillWalk path.
+      const { walkSkillSequence, walkSkillToJson } = await import('./skill-trainer.js');
+      const walked = walkSkillSequence(deps.host, args.graphId, args.sourceId, { recursive: false });
+      if (walked.steps.length === 0) return { ok: false, reason: 'empty-skill' };
+      const meta = deps.host.getGraphMetadata(args.graphId);
+      const src = deps.host.getSourceRecord(args.graphId, args.sourceId);
+      const title = walked.steps[0]?.text ?? src?.ref ?? args.sourceId;
+      const skillPlan = walkSkillToJson(walked, {
+        sourceId: args.sourceId,
+        title,
+        ...(meta?.displayName ? { engramName: meta.displayName } : {}),
+      });
+      const rawSteps = skillPlan.steps.map((s) => ({ index: s.index, text: s.text }));
+
+      const settings = deps.host.getSettings();
+      const enabledProviders = Object.entries(settings.models?.providers ?? { ollama: { enabled: true } })
+        .filter(([, s]) => s?.enabled === true)
+        .map(([id]) => id as Parameters<typeof planSkillWalk>[1]['enabledProviders'][number]);
+      const subscriptionPoolUsage: Record<string, { poolSpentUsd: number; flexSpentUsd: number }> = {};
+      for (const [pid, ps] of Object.entries(settings.models?.providers ?? {})) {
+        if (ps?.poolSpentUsd !== undefined || ps?.flexSpentUsd !== undefined) {
+          subscriptionPoolUsage[pid] = { poolSpentUsd: ps.poolSpentUsd ?? 0, flexSpentUsd: ps.flexSpentUsd ?? 0 };
+        }
+      }
+      const planSteps = deriveStepsFromText(rawSteps);
+      const plan = planSkillWalk(planSteps, {
+        strategy: settings.models?.strategy ?? 'adaptive',
+        enabledProviders,
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        subscriptionPoolUsage: subscriptionPoolUsage as any,
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        customRates: (settings.models?.customRates as any) ?? [],
+      });
+      if (!plan.feasible) {
+        return { ok: false, reason: 'plan-infeasible', missingCapabilities: plan.missingCapabilities };
+      }
+
+      const result = await walkSkillPlan({ host: deps.host }, {
+        sourceId: args.sourceId,
+        steps: rawSteps,
+        plan,
+        ...(args.initialCaptures ? { initialCaptures: args.initialCaptures } : {}),
+      });
+      return { ok: true, plan, result };
+    }
+    case 'savings:recordRecallOnly': {
+      // Called by the MCP recall handler when a recall succeeded and
+      // returned context to the AI client. The counterfactual is "the
+      // AI would have spent these tokens at baseline rates"; we record
+      // the saving so the dashboard reflects it.
+      const { recordRecallOnlySavings } = await import('./savings-tracker.js');
+      const args = z.object({
+        inputTokensSaved: z.number().int().nonnegative(),
+        outputTokensSaved: z.number().int().nonnegative().optional(),
+        source: z.string().optional(),
+      }).parse(params ?? {});
+      await recordRecallOnlySavings(deps.host.getCortexDir(), {
+        inputTokensSaved: args.inputTokensSaved,
+        outputTokensSaved: args.outputTokensSaved ?? 0,
+        ...(args.source !== undefined ? { source: args.source } : {}),
+      });
+      return { ok: true };
+    }
+    case 'mcp:activitySummary': {
+      // Aggregates the existing agent-audit + MCP source-attribution
+      // streams into a per-client / per-tool rollup. Drives the
+      // "AI activity" panel on the Activity page. No gate.
+      const cortexDir = deps.host.getCortexDir();
+      const { readRecentAuditEntries } = await import('./agent-audit.js');
+      const auditEntries = await readRecentAuditEntries(cortexDir, 500);
+      // MCP-client activity is derivable from SourceRecord.addedBy on
+      // recent ingests + sharing-session metadata.
+      const sinceMs = Date.now() - 30 * 24 * 60 * 60 * 1000;
+      const byClient: Record<string, { events: number; lastSeenMs: number }> = {};
+      const byTool: Record<string, { events: number; lastSeenMs: number }> = {};
+      const skillWalks: Array<{ sourceId: string; whenMs: number }> = [];
+      for (const engramId of deps.host.listGraphs()) {
+        for (const s of deps.host.listSources(engramId)) {
+          if (s.ingestedAt < sinceMs) continue;
+          if (s.addedBy && s.addedBy !== 'ghampus') {
+            const entry = byClient[s.addedBy] ?? { events: 0, lastSeenMs: 0 };
+            entry.events += 1;
+            entry.lastSeenMs = Math.max(entry.lastSeenMs, s.ingestedAt);
+            byClient[s.addedBy] = entry;
+          }
+        }
+      }
+      for (const a of auditEntries) {
+        const entry = byTool[a.tool] ?? { events: 0, lastSeenMs: 0 };
+        entry.events += 1;
+        entry.lastSeenMs = Math.max(entry.lastSeenMs, a.startedAt);
+        byTool[a.tool] = entry;
+        if (a.tool === 'recall' && typeof a.args.source === 'string' && a.args.source.startsWith('skill:')) {
+          skillWalks.push({ sourceId: a.args.source, whenMs: a.startedAt });
+        }
+      }
+      return {
+        windowDays: 30,
+        byClient: Object.entries(byClient).map(([client, agg]) => ({ client, ...agg })),
+        byTool: Object.entries(byTool).map(([tool, agg]) => ({ tool, ...agg })),
+        skillWalks: skillWalks.slice(0, 20),
+      };
+    }
 
     case 'correction.apply': {
       // Apply a pending correction diff by its diffId (used by MemoryStudio's

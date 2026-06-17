@@ -2891,6 +2891,20 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
           query: args.query,
           tool: toolName,
         }) ?? '';
+        // Savings tracking: a successful recall returned context to the
+        // AI client *without* the client having to fire its own LLM call
+        // to produce that context. The counterfactual cost is the
+        // baseline rate applied to the same token volume. Fire-and-
+        // forget — failure here mustn't break the recall path.
+        if (sub.nodesIncluded > 0) {
+          import('./savings-tracker.js').then(({ recordRecallOnlySavings }) => {
+            void recordRecallOnlySavings(deps.host.getCortexDir(), {
+              inputTokensSaved: sub.tokensUsed,
+              outputTokensSaved: 0,
+              source: `mcp:${toolName}`,
+            }).catch(() => { /* non-fatal */ });
+          }).catch(() => { /* dynamic import failed — skip silently */ });
+        }
         return { content: [{ type: 'text', text: sub.prompt + auditFooter + headsUp + pendingEngramNotice(deps.host) + consentFooter }] };
       }
       case 'dig_deeper': {

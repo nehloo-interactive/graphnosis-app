@@ -11768,6 +11768,32 @@ ollama list</code></pre>
                 <h2>Activity</h2>
                 <p class="brain-subtitle">your episodic timeline — every memory event, in order</p>
               </header>
+
+              <!-- ── AI activity rollup — counts of MCP work per external
+                   client (Claude Desktop, Cursor, Copilot, etc.) and per
+                   Ghampus tool over the last 30 days. Answers "what have
+                   my AI clients actually been doing with my cortex." -->
+              <div class="panel" id="activity-ai-rollup-panel" style="margin-bottom: 14px;">
+                <div style="display: flex; align-items: baseline; gap: 10px;">
+                  <p class="panel-title" style="margin: 0;">AI activity</p>
+                  <span class="subtitle" style="font-size: 12px;">last 30 days · across all engrams</span>
+                </div>
+                <div id="activity-ai-rollup-empty" class="subtitle" style="margin-top: 8px; font-size: 13px;">No AI client or Ghampus activity yet. Connect a client (Claude Desktop, Cursor, GitHub Copilot) or chat with Ghampus and stats appear here.</div>
+                <div id="activity-ai-rollup-body" style="display: none; margin-top: 10px; display: grid; grid-template-columns: 1fr 1fr; gap: 14px;">
+                  <div>
+                    <p style="margin: 0 0 6px; font-size: 11px; text-transform: uppercase; letter-spacing: .05em; opacity: .7;">AI clients</p>
+                    <ul id="activity-ai-clients-list" style="list-style: none; padding: 0; margin: 0; font-size: 13px;"></ul>
+                  </div>
+                  <div>
+                    <p style="margin: 0 0 6px; font-size: 11px; text-transform: uppercase; letter-spacing: .05em; opacity: .7;">Tools called by Ghampus</p>
+                    <ul id="activity-ai-tools-list" style="list-style: none; padding: 0; margin: 0; font-size: 13px;"></ul>
+                  </div>
+                </div>
+                <div id="activity-ai-skills-block" style="display: none; margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--border, rgba(0,0,0,.08));">
+                  <p style="margin: 0 0 6px; font-size: 11px; text-transform: uppercase; letter-spacing: .05em; opacity: .7;">Recent skill walks</p>
+                  <ul id="activity-ai-skills-list" style="list-style: none; padding: 0; margin: 0; font-size: 13px;"></ul>
+                </div>
+              </div>
               <div class="activity-toolbar">
                 <div class="activity-controls-row">
                   <input id="activity-search" type="search" class="activity-search" placeholder="Filter events — file name, engram, reason…" autocomplete="off" />
@@ -12053,6 +12079,51 @@ ollama list</code></pre>
                   </label>
                 </div>
               </div>
+
+              <!-- ── Models — capability-based routing for Ghampus + the
+                   skill walker. Provider toggles + routing strategy +
+                   monthly budget. Custom rate editor (enterprise
+                   negotiated pricing) is a later iteration. -->
+              <div class="panel" id="settings-panel-models">
+                <p class="panel-title">Models</p>
+                <p class="subtitle" style="font-size: 15px; margin: -4px 0 10px;">
+                  Configure which LLMs Ghampus and the Autonomous Skill Trainer can use. Skills are recipes — they declare capabilities; the right model is picked per step.
+                </p>
+
+                <div style="margin-bottom: 14px;">
+                  <p style="margin: 0 0 6px; font-size: 12px; text-transform: uppercase; letter-spacing: .05em; opacity: .7;">Routing strategy</p>
+                  <div style="display: flex; flex-direction: column; gap: 6px;">
+                    <label style="display: flex; align-items: center; gap: 8px; font-size: 14px;">
+                      <input type="radio" name="models-strategy" value="adaptive">
+                      <span><strong>Adaptive</strong> — cheapest model that meets each step's needs (recommended)</span>
+                    </label>
+                    <label style="display: flex; align-items: center; gap: 8px; font-size: 14px;">
+                      <input type="radio" name="models-strategy" value="local-only">
+                      <span><strong>Local-only</strong> — never use a paid API. Walks requiring capabilities you don't have locally will warn.</span>
+                    </label>
+                    <label style="display: flex; align-items: center; gap: 8px; font-size: 14px;">
+                      <input type="radio" name="models-strategy" value="always-best">
+                      <span><strong>Always best</strong> — strongest model available for every step. Higher cost.</span>
+                    </label>
+                  </div>
+                </div>
+
+                <div style="margin-bottom: 14px;">
+                  <p style="margin: 0 0 6px; font-size: 12px; text-transform: uppercase; letter-spacing: .05em; opacity: .7;">Monthly budget cap (USD)</p>
+                  <div style="display: flex; gap: 8px; align-items: center;">
+                    <input type="number" id="models-budget-input" min="0" step="1" placeholder="No cap" style="width: 120px; padding: 6px 10px; border: 1px solid var(--border, #ccc); border-radius: 6px; background: transparent; color: inherit;">
+                    <button id="btn-models-save-budget" class="g-btn" type="button">Save</button>
+                    <span id="models-budget-spent" class="subtitle" style="font-size: 12px;">—</span>
+                  </div>
+                </div>
+
+                <div>
+                  <p style="margin: 0 0 8px; font-size: 12px; text-transform: uppercase; letter-spacing: .05em; opacity: .7;">Providers</p>
+                  <p id="models-catalog-version" class="subtitle" style="font-size: 11px; margin-bottom: 8px;">Catalog version: —</p>
+                  <ul id="models-provider-list" style="list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 8px;"></ul>
+                </div>
+              </div>
+
               <!-- AI Client Integration panel removed from Settings — the AI
                    client chips on the Get Connected page configure each client.
                    Mobile & Remote Access moved to Get Connected → App posture. -->
