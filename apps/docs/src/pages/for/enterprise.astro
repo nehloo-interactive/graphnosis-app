@@ -18,6 +18,10 @@ import Footer from '../../components/Footer.astro';
       tagline="Graphnosis Enterprise gives IT and security teams the controls they need: SSO-provisioned tokens, a full audit trail, per-engram access scoping, and on-premise deployment that puts your team in complete control."
       useCases={[
         {
+          title: 'Ghampus — your AI. Already on it. At org scale.',
+          body: 'New in v1.17.0. Watches your org\'s memory grow. Walks the playbooks your teams trained. Checks in. Reports back. Local and encrypted. IT admins can disable providers organization-wide for compliance, pin negotiated rates per-provider or per-model that individual users cannot override, and lock sensitive engrams to local-only routing. AI Credits / Bedrock / Azure / Copilot pricing is first-class — track real spend against real budgets, not premium-call quotas. Every seat gets access; the enterprise tier adds the discipline.',
+        },
+        {
           title: 'SSO & MDM onboarding',
           body: 'Provision scoped sharing tokens via <code class="text-[#67e8f9]">/admin/provision</code> and distribute through your MDM or onboarding pipeline. Each user gets the right engram access with no manual key exchange.',
         },
@@ -42,6 +46,7 @@ import Footer from '../../components/Footer.astro';
       sharedEngrams={`At enterprise scale, <code class="text-[#67e8f9]">/admin/provision</code> is the integration point: POST a name, role, engram list, and optional expiry to create a scoped bearer token ready for MDM distribution. The Team Admin panel gives live per-token session counts. Cross-org handoffs use encrypted <code class="text-[#67e8f9]">.gez</code> packs — a signed engram snapshot that travels offline and verifies on import.`}
       proHighlight={`Start with Pro or Teams for self-serve adoption before org-wide rollout. Enterprise procurement adds volume licensing, dedicated onboarding, SLA support, and direct access to the admin provisioning API. Talk to us — we'll scope it with you.`}
       links={[
+        { label: 'Ghampus',                  href: '/ghampus' },
         { label: 'Getting Started',          href: '/getting-started/overview' },
         { label: 'Enterprise IT FAQ',        href: '/guides/enterprise-faq' },
         { label: 'AI Access Controls',       href: '/guides/ai-access-controls' },

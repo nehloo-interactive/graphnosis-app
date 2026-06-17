@@ -11,6 +11,80 @@ Conventions: **Added** = new features, **Changed** = behavior or UX shifts, **Fi
 
 ---
 
+## v1.17.0 — Ghampus: Your AI. Already on it.
+
+<p style="margin-top:0.5rem;font-size:1.25em;opacity:0.85;">2026-06-17</p>
+
+> Watches your memory grow. Walks your playbook. Checks in. Reports back. Local and encrypted.
+
+The biggest release since Memory-Trained Skills. Three connected pillars: **Ghampus**, a local AI agent that does for your second brain what your hippocampus does for your first — taps into your facts, walks the SOPs your team already trained, decides what to attend to from everything that arrived overnight; **per-step model routing** so each step of a skill picks the cheapest model that meets its needs; and **file attachments** that link local files (images, PDFs, OneNote, anything) to your memories without ingesting their content. Plus a **savings tracker** that measures what your memory layer earns you back against a baseline paid model, and a **sharing-gate fix** that finally unblocks Pro and Enterprise OTP users who couldn't create shares.
+
+Also rolled in here: the polish commits between v1.16.0 and v1.17.0 — the `token` → `share` rename in user-facing strings, Free-tier sharing (1 share included), persona landing pages, and a couple of Windows download-link fixes.
+
+### Added — Ghampus, the in-app local agent
+
+- **New top rail entry: Ghampus.** First button in the left rail, default landing for new users — but you can pin any other view as your default landing via Settings → Preferences. Free, Pro, Teams, and Enterprise users all have access to the surface; per-tool license enforcement matches what your external MCP clients already see (foresight tools are Pro, etc.). Sensible empty state on day one — Ghampus works over the bundled `graphnosis-docs` engram so even an empty cortex has something to ground its first session in.
+- **Picking up where we left off.** Recent memories Ghampus saved in prior sessions appear at the top of the tab, giving the session feeling without a "New chat / Past chats" sidebar to manage.
+- **While you were away.** Inbound activity feed: connectors that ingested overnight, AI client conversation saves, shared-engram editor writes, direct ingests. Sensitive-engram items show "[preview hidden]" inline so the feed respects the existing tier-redaction story.
+- **Skills I can walk for you.** Lists the trained-skill library so Ghampus can suggest a relevant SOP the moment it matches what you're working on. Free users walk skills they already have; Pro adds auto-training proposals when patterns repeat.
+- **Linked files.** Attach a local file path (image, PDF, doc, spreadsheet, video, OneNote URI — anything) to your memories without ingesting the file content. Files stay on disk; Graphnosis stores only the path + light metadata. Click to open the original in its native app. Two attach paths in the panel: native file picker and a "Path…" entry for shared drives and `onenote:`-style URIs.
+- **Linked files: content hash + repair.** Every reachable file ≤ 256 MB gets a SHA-256 content hash at attach time. When the file moves, the "Find new location…" button hashes the candidate and confirms it matches before re-pointing the record — so a repaired link points at the actual same file, not a similarly-named one.
+- **Kill switch.** Stop Ghampus from doing any work via the tray menu or the in-tab button. Audit log records the stop / resume; tool calls during a kill return a clean error instead of silent failure.
+- **Audit log.** Every Ghampus tool call (and every denial) is recorded to `<cortex>/agent-audit.jsonl` and surfaces in the Ghampus audit view. Encrypted at rest with the rest of the cortex.
+
+### Added — Model routing, budgets, and Settings → Models
+
+- **Capability-based routing.** Skills declare what each step needs — `reasoning`, `summarization`, `structured-output`, `cited`, `code`, `vision`, etc. The router picks the cheapest available model that meets the constraints under your chosen strategy. Skills become portable across model setups: write one skill, ship it on any hardware.
+- **Three strategies.** *Adaptive* (cheapest model that meets the step's needs — recommended), *Local-only* (never use a paid API; warns if a skill needs a capability your local models don't have), *Always best* (strongest model available for every step; higher cost, fastest path to quality).
+- **Provider catalog.** Ollama, MLX, vLLM (local); Anthropic Claude, OpenAI, Google Gemini, Bedrock, Azure OpenAI, GitHub Copilot, Groq, Fireworks, Together (paid). Twenty-plus known models with capability claims, per-1M-token pricing, average latency, and context window. Catalog versioned (`2026-06-15`) so you can tell when numbers go stale.
+- **GitHub Copilot integrated correctly.** Reflects GitHub's June 2026 move to AI Credits billing — Free, Pro $10, Pro+ $39, Max $100, Business $19, Enterprise $39 — with each plan's included credit pool, flex overage, and the actual per-token underlying rates. Cost preview shows "$0.0021 of pool · 14% used" while you're inside the credits, switches to flex or overage labels when the pool's gone.
+- **Custom rate overrides.** Enterprise-negotiated pricing per-provider or per-model. AI-credit pool conversions. An admin-enforced flag lets IT admins pin organization-wide rates that individual users can't edit.
+- **Monthly budget cap + burndown forecast.** Set a USD cap. The cost preview before every paid walk shows step-by-step model selection + estimated cost; approving once "remembers this plan" so recurring walks skip the preview while routing keeps succeeding. Dashboard projects when you'll hit your cap at current pace and surfaces the single cheapest swap to stay under.
+- **Privacy-aware routing.** Steps that touch `sensitive`-tier engrams are hard-locked to local-only models. The router refuses to even consider a remote provider for these steps regardless of strategy. No tokens of sensitive content ever cross an API boundary.
+- **Settings → Models panel.** Provider toggles (with admin-lock badges for IT-managed entries), routing strategy radio, monthly budget input, per-provider model count + last-4-chars of stored key + credit pool state.
+
+### Added — Walker + AI client visibility
+
+- **Skill walker, Ollama-first.** Drives a planned walk step-by-step against the chosen models, with variable substitution flowing captures forward. Per-step failures are recorded rather than halting the walk, so you can re-run individual steps. Ollama dispatches for real today; paid providers report a clear "needs configuration" message that the UI surfaces with a "connect a key" prompt.
+- **What Graphnosis saves you.** New panel inside Ghampus. Every successful MCP `recall` records a recall-only savings event (counterfactual: "that prompt would have cost $X at baseline rates"); every walker step records a routing-savings event when the picked model is cheaper than the baseline. 30-day aggregate with per-event-kind breakdown surfaces the dollar value of having a memory layer at all.
+- **AI activity rollup.** New panel on the Activity page. Per-client tally of what Claude Desktop / Cursor / Copilot / etc. did with your cortex in the last 30 days. Per-tool tally of what Ghampus called. Recent skill-walk attributions. Answers the question "what have my AI clients actually been doing with my memory" without scrolling the raw event timeline.
+
+### Added — Vision pipeline for attached images
+
+- **(A) Describe.** Click `🔍 Describe` on an attached image; Ghampus runs a local vision model (Llama 3.2 Vision via Ollama) to produce a text description, then ingests it as a normal source linked to the image. Works on every plan with a vision-capable local model installed.
+- **(B) Structured extraction.** Click `✨ Extract` on a diagram or flowchart; the vision model produces a JSON `{nodes:[...], edges:[...]}` extraction that becomes graph memories with the existing entity-linking pass automatically wiring extracted entities to your other engrams. Pro-gated; proposed nodes/edges go through the same correction-flow review as any AI-proposed write.
+- **(C) Annotation surface.** Click `✏️ Annotate` to mark up an image manually — draw boxes over regions, type labels, connect boxes with arrows. Saved annotations become graph nodes + edges. Best for high-stakes inputs (architectural diagrams, compliance flows) where extraction errors are unacceptable.
+
+### Added — Sharing polish on top of v1.16.0
+
+- **Free plan now ships with 1 active share included.** v1.16.0 capped sharing to paid plans entirely; this lifts that cap so a Free user can hand one engram to a friend. Pro, Teams, and Enterprise stay at unlimited.
+- **"Share" replaces "Token" in every user-facing string.** Settings UI, modal copy, the share-creation flow, the audit messages all read "share" now. Internal type names (`SharingToken`, IPC method names, bearer token in HTTP headers) are unchanged — only what users read.
+
+### Changed
+
+- **Free, Pro, Teams, and Enterprise plans now ship sharing.** Free: 1 active share. Paid plans: unlimited. The token-vs-share rename in user-facing strings happened in this line too — internal types still use the historical `SharingToken` name; everything the user reads says "share".
+- **Ghampus is the default landing tab for new cortexes.** Existing users keep landing on whichever view they had selected last. Override in Settings → Preferences.
+- **MCP server's `recall` and `dig_deeper` now record savings events** automatically. Visible in the Ghampus "What Graphnosis saves you" panel; no action required.
+- **`agent:status` IPC returns plan tier** (`'free' | 'pro' | 'teams' | 'enterprise'`) instead of a boolean licensed flag. Drives the upsell language without paywalling the surface itself.
+
+### Fixed
+
+- **Pro and domain-seat Enterprise users can now create unlimited shares.** The sharing gate was checking `features.includes('skill-training' | 'teams' | 'enterprise')` — but v1.15.6 had updated the validator to accept domain-seat tokens with no explicit features, and the gate was never updated to match. Pro users whose token didn't carry the `skill-training` feature and Enterprise OTP users whose token carried no features at all both fell through and were treated as Free, capped at 1 share with "Free plan includes 1 share. Upgrade to Pro for unlimited shares." The fix recognises any verified license token (personal or domain-seat) as paid.
+- **`.gez` Engram Pack export and import gate also fixed.** Both endpoints checked the `'teams'` feature but the error message said "requires Pro" — now both use the same paid-plan helper and the message correctly reads "Pro, Teams, or Enterprise subscription".
+- **Windows download link no longer serves the v1.13.6 binary.** Stale `_redirects` fallbacks were pointing at the previous-previous version for `/download/windows`. Now all platform fallbacks point at the current installer.
+
+### Security
+
+- **Sensitive engrams hard-block remote model routing.** Steps that touch a sensitive engram refuse to send a single token to any non-local provider, regardless of routing strategy. Enforced in the planner; audited per call.
+- **Attachment scope filter.** Defensive: even before sharing-tokened sessions can list attachments, the `collectAttachments` function refuses to return out-of-scope paths so a future code path can't accidentally leak them.
+
+### Migrations
+
+- **Older cortexes opening v1.17.0** get sensible defaults for the new `agent` block (kill switch ON, no license bit), `models` block (Ollama enabled, Adaptive strategy, no budget), and `attachments` store (empty manifest at `<cortex>/attachments.json` on first attach). No reingest, no rebuild — the panels just start empty and populate as you use them.
+- **`graphnosis-docs` engram is silently synced** on first boot for new cortexes — no decline prompt, no consent step. The docs are bundled at build time, never fetched from a network, and the engram is yours to delete or archive if you don't want it.
+
+---
+
 ## v1.15.6 — Domain seat OTP: scroll-into-view + token validation hardening
 
 <p style="margin-top:0.5rem;font-size:1.25em;opacity:0.85;">2026-06-12</p>
