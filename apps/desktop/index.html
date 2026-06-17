@@ -11635,23 +11635,19 @@ ollama list</code></pre>
             <!-- ── GHAMPUS (local agent) ────────────────────────────────────────
                  Top-level rail destination — first entry in the rail and the
                  default landing tab for new users (overridable via
-                 settings.ui.defaultLandingMode). The paywall card surfaces when
-                 the license JWT lacks ghampus/teams/enterprise; below the
-                 paywall the Free tier still gets the welcome screen so the
-                 first contact is never a dead end. -->
+                 settings.ui.defaultLandingMode). No paywall: Ghampus is open
+                 to every plan. The tier chip + contextual hints render per
+                 user plan, and per-tool license checks (foresight,
+                 skill-training, etc.) happen inside each tool handler —
+                 mirroring how external MCP clients are gated today. -->
             <section class="mode-pane hidden" data-pane="ghampus">
               <div id="ghampus-section" class="studio-section">
-                <div id="ghampus-paywall" class="studio-paywall">
+                <div id="ghampus-shell">
                   <div class="studio-paywall-card">
-                    <h2>Ghampus</h2>
-                    <p class="subtitle">Your local-first AI agent. Lives inside Graphnosis, recalls and writes through the same trust gates as your external clients, runs entirely on this machine.</p>
-                    <p class="subtitle" style="margin-top: 12px;">Ghampus requires the <strong>Teams</strong> or <strong>Enterprise</strong> plan.</p>
-                    <a class="studio-paywall-cta" href="https://graphnosis.app/pricing" target="_blank" rel="noopener">See pricing</a>
-                  </div>
-                </div>
-                <div id="ghampus-shell" class="hidden">
-                  <div class="studio-paywall-card">
-                    <h2>Ghampus</h2>
+                    <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 6px;">
+                      <h2 style="margin: 0;">Ghampus</h2>
+                      <span id="ghampus-plan-chip" style="font-size: 11px; background: var(--accent-soft, rgba(99,102,241,.18)); color: var(--accent, #6366f1); padding: 2px 8px; border-radius: 10px; font-weight: 500;">—</span>
+                    </div>
                     <p id="ghampus-state-line" class="subtitle">Chat surface coming online in the next release.</p>
                     <div style="margin-top: 16px; display: flex; gap: 8px; flex-wrap: wrap;">
                       <button id="btn-ghampus-kill" class="g-btn" type="button">Stop all agent activity</button>
@@ -11659,15 +11655,32 @@ ollama list</code></pre>
                     </div>
                     <p id="ghampus-kill-banner" class="subtitle hidden" style="margin-top: 12px; color: var(--g-warn, #c47);">Ghampus is stopped. No tool calls or watcher activity will fire until you resume.</p>
 
-                    <!-- Picking up where we left off — recent ghampus-saved memories.
-                         Backed by agent:recentSaves; renders as empty until the agent
-                         starts saving things. The "session feeling without sessions"
-                         affordance: lists actual memory nodes, clicking opens them
-                         in MemoryStudio. -->
+                    <!-- While you were away — inbound activity (connectors, AI
+                         clients, sharing-token writes, direct ingest). Empty
+                         on first boot; populates as sources arrive. Excludes
+                         Ghampus's own saves — those live in the panel below. -->
+                    <div id="ghampus-notifications-panel" style="margin-top: 20px; padding-top: 16px; border-top: 1px solid var(--g-border, rgba(255,255,255,.1));">
+                      <h3 style="margin: 0 0 8px;">While you were away</h3>
+                      <p id="ghampus-notifications-summary" class="subtitle" style="margin: 0 0 8px;">—</p>
+                      <ul id="ghampus-notifications-list" style="list-style: none; padding: 0; margin: 0;"></ul>
+                    </div>
+
+                    <!-- Picking up where we left off — memories Ghampus saved
+                         during chat conversations (addedBy === 'ghampus'). -->
                     <div id="ghampus-recent-saves-panel" style="margin-top: 20px; padding-top: 16px; border-top: 1px solid var(--g-border, rgba(255,255,255,.1));">
                       <h3 style="margin: 0 0 8px;">Picking up where we left off</h3>
                       <p id="ghampus-recent-saves-summary" class="subtitle" style="margin: 0 0 8px;">—</p>
                       <ul id="ghampus-recent-saves-list" style="list-style: none; padding: 0; margin: 0;"></ul>
+                    </div>
+
+                    <!-- Skills awareness — the user's trained-skill library.
+                         Surfaces what's available so Ghampus can discover
+                         them mid-conversation; clicking opens the skill in
+                         the Skills page for manual inspection. -->
+                    <div id="ghampus-skills-panel" style="margin-top: 20px; padding-top: 16px; border-top: 1px solid var(--g-border, rgba(255,255,255,.1));">
+                      <h3 style="margin: 0 0 8px;">Skills I can walk for you</h3>
+                      <p id="ghampus-skills-summary" class="subtitle" style="margin: 0 0 8px;">—</p>
+                      <ul id="ghampus-skills-list" style="list-style: none; padding: 0; margin: 0;"></ul>
                     </div>
 
                     <div id="ghampus-sharing-panel" style="margin-top: 20px; padding-top: 16px; border-top: 1px solid var(--g-border, rgba(255,255,255,.1));">

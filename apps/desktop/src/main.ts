@@ -2872,7 +2872,9 @@ function activateMode(mode: Mode): void {
   //  switchGraphnosisTab handles their refresh lifecycle.)
   if (mode === 'ghampus') {
     void refreshGhampusState();
+    void refreshGhampusNotifications();
     void refreshGhampusRecentSaves();
+    void refreshGhampusSkills();
     void refreshGhampusSharingPanel();
   }
   if (mode === 'activity') void refreshActivityView();
@@ -22983,26 +22985,119 @@ function updateStudioVisibility(): void {
 
 // ── Ghampus (local agent) ───────────────────────────────────────────────
 let ghampusEnabled = true;
-let ghampusLicensed = false;
+let ghampusPlan: 'free' | 'pro' | 'teams' | 'enterprise' = 'free';
 
 function updateGhampusVisibility(): void {
-  const paywall = document.getElementById('ghampus-paywall');
-  const shell = document.getElementById('ghampus-shell');
-  if (!paywall || !shell) return;
-  paywall.classList.toggle('hidden', ghampusLicensed);
-  shell.classList.toggle('hidden', !ghampusLicensed);
+  // Ghampus is open to every plan now; visibility only flips the kill
+  // switch banner and buttons. The plan chip surfaces tier so the UI
+  // can render contextual upsells without paywalling the surface.
   document.getElementById('btn-ghampus-kill')?.classList.toggle('hidden', !ghampusEnabled);
   document.getElementById('btn-ghampus-resume')?.classList.toggle('hidden', ghampusEnabled);
   document.getElementById('ghampus-kill-banner')?.classList.toggle('hidden', ghampusEnabled);
+  const chip = document.getElementById('ghampus-plan-chip');
+  if (chip) chip.textContent = ghampusPlan.charAt(0).toUpperCase() + ghampusPlan.slice(1);
 }
 
 async function refreshGhampusState(): Promise<void> {
   try {
-    const s = await ipcCall<{ enabled: boolean; licensed: boolean }>('agent:status', {});
+    const s = await ipcCall<{ enabled: boolean; plan: 'free' | 'pro' | 'teams' | 'enterprise' }>('agent:status', {});
     ghampusEnabled = s.enabled;
-    ghampusLicensed = s.licensed;
+    ghampusPlan = s.plan;
     updateGhampusVisibility();
   } catch { /* non-fatal — keep last known state */ }
+}
+
+// localStorage tracks when the user last visited the Ghampus tab so the
+// notifications panel can filter "what's new since then". A 7-day fallback
+// applies on first visit so brand-new users see SOMETHING populated.
+const GHAMPUS_LAST_VISITED_KEY = 'graphnosis.ghampusLastVisitedAt';
+
+const NOTIF_ORIGIN_ICONS: Record<string, string> = {
+  connector: '🔌',
+  'ai-client': '💬',
+  sharing: '🤝',
+  direct: '📁',
+  other: '·',
+};
+
+async function refreshGhampusNotifications(): Promise<void> {
+  try {
+    const lastVisited = Number(localStorage.getItem(GHAMPUS_LAST_VISITED_KEY)) || (Date.now() - 7 * 24 * 60 * 60 * 1000);
+    const res = await ipcCall<{
+      notifications: Array<{
+        id: string;
+        engramId: string;
+        tier: 'public' | 'personal' | 'sensitive';
+        sourceId: string;
+        originKind: keyof typeof NOTIF_ORIGIN_ICONS;
+        origin: string;
+        label: string;
+        ingestedAtMs: number;
+      }>;
+      totalAvailable: number;
+    }>('agent:listNotifications', { sinceMs: lastVisited, limit: 12 });
+
+    const sum = document.getElementById('ghampus-notifications-summary');
+    const ul = document.getElementById('ghampus-notifications-list');
+    if (sum) {
+      sum.textContent = res.notifications.length === 0
+        ? 'Nothing new since your last visit. Connect a data source or AI client and activity will appear here.'
+        : `${res.notifications.length} item${res.notifications.length === 1 ? '' : 's'} arrived since your last visit · batched by source`;
+    }
+    if (ul) {
+      const now = Date.now();
+      ul.innerHTML = res.notifications.map((n) => {
+        const ageMs = now - n.ingestedAtMs;
+        const when = ageMs < 60_000 ? 'just now'
+          : ageMs < 3_600_000 ? `${Math.floor(ageMs / 60_000)} min ago`
+          : ageMs < 86_400_000 ? `${Math.floor(ageMs / 3_600_000)}h ago`
+          : `${Math.floor(ageMs / 86_400_000)}d ago`;
+        const icon = NOTIF_ORIGIN_ICONS[n.originKind] ?? '·';
+        const previewLine = n.tier === 'sensitive'
+          ? '<span class="subtitle" style="font-style: italic; font-size: 11px;">[preview hidden · sensitive engram]</span>'
+          : `<span class="subtitle" style="font-size: 11px;">${escapeHtml(n.label)}</span>`;
+        return `<li style="padding: 8px 0; border-bottom: 1px solid var(--g-border, rgba(255,255,255,.05));">
+          <div style="display: flex; gap: 8px; align-items: baseline;">
+            <span>${icon}</span>
+            <strong style="font-size: 13px;">${escapeHtml(n.origin)}</strong>
+            <code style="font-size: 11px; opacity: .7;">${escapeHtml(n.engramId)}</code>
+            <span class="subtitle" style="margin-left: auto; font-size: 11px;">${when}</span>
+          </div>
+          <div style="margin: 4px 0 0 24px;">${previewLine}</div>
+        </li>`;
+      }).join('');
+    }
+  } catch { /* non-fatal */ }
+  // Record the visit AFTER the read so the next refresh shows what arrives
+  // between now and the next visit, not what's already on screen.
+  localStorage.setItem(GHAMPUS_LAST_VISITED_KEY, String(Date.now()));
+}
+
+async function refreshGhampusSkills(): Promise<void> {
+  try {
+    const res = await ipcCall<{ skills: Array<{ sourceId: string; engramId: string; label: string; nodeCount: number; origin: 'local' | 'pack'; trainedAt?: string; recallBreadth?: number }> }>('agent:listSkills', {});
+    const sum = document.getElementById('ghampus-skills-summary');
+    const ul = document.getElementById('ghampus-skills-list');
+    if (sum) {
+      const total = res.skills.length;
+      sum.textContent = total === 0
+        ? `No skills in your library yet. ${ghampusPlan === 'free' ? 'On Pro, Ghampus can train new skills from your conversations.' : 'Train one from the Skills page, or let Ghampus harvest patterns as you chat.'}`
+        : `${total} skill${total === 1 ? '' : 's'} ready to walk · I'll suggest them when they fit what you're asking`;
+    }
+    if (ul) {
+      ul.innerHTML = res.skills.slice(0, 6).map((s) => {
+        const provenance = s.origin === 'pack' ? '<span class="subtitle" style="font-size: 11px;">· imported pack</span>' : '';
+        const trained = s.trainedAt ? `trained ${new Date(s.trainedAt).toLocaleDateString()}` : 'imported';
+        return `<li style="padding: 6px 0; display: flex; gap: 8px; align-items: baseline;">
+          <span>🎓</span>
+          <strong style="font-size: 13px;">${escapeHtml(s.label)}</strong>
+          ${provenance}
+          <code style="font-size: 11px; opacity: .7;">${escapeHtml(s.engramId)}</code>
+          <span class="subtitle" style="margin-left: auto; font-size: 11px;">${trained}</span>
+        </li>`;
+      }).join('');
+    }
+  } catch { /* non-fatal */ }
 }
 
 async function refreshGhampusRecentSaves(): Promise<void> {
