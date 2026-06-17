@@ -221,14 +221,30 @@ async function runRecall(deps: AgentToolDeps, args: RecallToolArgs): Promise<Rec
   };
 }
 
+/**
+ * Defensive: even though `collectAttachments` is called only from
+ * Ghampus today (which runs as the cortex owner with full access), the
+ * `scopeAllowed` parameter is a hard filter so the function refuses to
+ * return attachments from engrams outside the caller's scope. When the
+ * MCP recall handler (used by sharing-tokened collaborators) eventually
+ * surfaces attachment metadata, this gate is already in place.
+ *
+ * `null` for `scopeAllowed` means "no scope restriction" — caller is the
+ * cortex owner. An explicit array restricts results to those graph ids.
+ */
 async function collectAttachments(
   cortexDir: string,
   graphIds: string[],
+  scopeAllowed: string[] | null = null,
 ): Promise<RecallToolResult['attachments']> {
   if (graphIds.length === 0) return [];
+  const inScope = scopeAllowed === null
+    ? graphIds
+    : graphIds.filter((g) => scopeAllowed.includes(g));
+  if (inScope.length === 0) return [];
   const { listAttachments } = await import('./attachments-store.js');
   const all: RecallToolResult['attachments'] = [];
-  for (const graphId of graphIds) {
+  for (const graphId of inScope) {
     const rows = await listAttachments(cortexDir, { graphId });
     for (const r of rows) {
       all.push({

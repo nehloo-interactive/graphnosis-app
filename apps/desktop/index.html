@@ -11726,6 +11726,31 @@ ollama list</code></pre>
                       <ul id="ghampus-attachments-list" style="list-style: none; padding: 0; margin: 0;"></ul>
                     </div>
 
+                    <!-- Manual visual annotation modal (V1 scaffolding).
+                         User clicks "✏️ Annotate" on an image attachment;
+                         this overlay opens with the image as background +
+                         a canvas overlay for drawing boxes and labels.
+                         Save commits them as graph nodes through the
+                         existing engram. Arrows + multi-node selection
+                         come in a follow-up iteration. -->
+                    <div id="annotation-modal" class="hidden" style="position: fixed; inset: 0; background: rgba(0,0,0,.85); z-index: 1000; display: flex; flex-direction: column; padding: 20px;">
+                      <div style="display: flex; align-items: center; gap: 12px; margin-bottom: 12px;">
+                        <h2 style="margin: 0; color: white; font-size: 18px;">Annotate image</h2>
+                        <p style="margin: 0; color: rgba(255,255,255,.6); font-size: 13px;">Click on the image to add a labeled box. Each box becomes a graph node when you save.</p>
+                        <div style="margin-left: auto; display: flex; gap: 8px;">
+                          <button id="btn-annotation-clear" class="g-btn" type="button" style="background: rgba(255,255,255,.1); color: white; border: 1px solid rgba(255,255,255,.2);">Clear</button>
+                          <button id="btn-annotation-save" class="g-btn" type="button" style="background: var(--accent, #6366f1); color: white;">Save annotations</button>
+                          <button id="btn-annotation-close" class="g-btn" type="button" style="background: rgba(255,255,255,.1); color: white; border: 1px solid rgba(255,255,255,.2);">Close</button>
+                        </div>
+                      </div>
+                      <div id="annotation-canvas-wrap" style="flex: 1; position: relative; overflow: auto; background: rgba(0,0,0,.4); border-radius: 8px; display: flex; align-items: center; justify-content: center;">
+                        <div id="annotation-canvas-inner" style="position: relative; max-width: 100%; max-height: 100%;">
+                          <img id="annotation-image" style="max-width: 100%; max-height: 100%; display: block; pointer-events: none;" />
+                          <div id="annotation-overlay" style="position: absolute; inset: 0; cursor: crosshair;"></div>
+                        </div>
+                      </div>
+                    </div>
+
                     <div id="ghampus-sharing-panel" style="margin-top: 20px; padding-top: 16px; border-top: 1px solid var(--g-border, rgba(255,255,255,.1));">
                       <h3 style="margin: 0 0 8px;">Active shares</h3>
                       <p id="ghampus-sharing-summary" class="subtitle">—</p>
