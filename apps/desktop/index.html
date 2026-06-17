@@ -11658,6 +11658,18 @@ ollama list</code></pre>
                       <button id="btn-ghampus-resume" class="g-btn hidden" type="button">Resume Ghampus</button>
                     </div>
                     <p id="ghampus-kill-banner" class="subtitle hidden" style="margin-top: 12px; color: var(--g-warn, #c47);">Ghampus is stopped. No tool calls or watcher activity will fire until you resume.</p>
+
+                    <!-- Picking up where we left off — recent ghampus-saved memories.
+                         Backed by agent:recentSaves; renders as empty until the agent
+                         starts saving things. The "session feeling without sessions"
+                         affordance: lists actual memory nodes, clicking opens them
+                         in MemoryStudio. -->
+                    <div id="ghampus-recent-saves-panel" style="margin-top: 20px; padding-top: 16px; border-top: 1px solid var(--g-border, rgba(255,255,255,.1));">
+                      <h3 style="margin: 0 0 8px;">Picking up where we left off</h3>
+                      <p id="ghampus-recent-saves-summary" class="subtitle" style="margin: 0 0 8px;">—</p>
+                      <ul id="ghampus-recent-saves-list" style="list-style: none; padding: 0; margin: 0;"></ul>
+                    </div>
+
                     <div id="ghampus-sharing-panel" style="margin-top: 20px; padding-top: 16px; border-top: 1px solid var(--g-border, rgba(255,255,255,.1));">
                       <h3 style="margin: 0 0 8px;">Active shares</h3>
                       <p id="ghampus-sharing-summary" class="subtitle">—</p>

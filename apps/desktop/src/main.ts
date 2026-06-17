@@ -2872,6 +2872,7 @@ function activateMode(mode: Mode): void {
   //  switchGraphnosisTab handles their refresh lifecycle.)
   if (mode === 'ghampus') {
     void refreshGhampusState();
+    void refreshGhampusRecentSaves();
     void refreshGhampusSharingPanel();
   }
   if (mode === 'activity') void refreshActivityView();
@@ -23002,6 +23003,35 @@ async function refreshGhampusState(): Promise<void> {
     ghampusLicensed = s.licensed;
     updateGhampusVisibility();
   } catch { /* non-fatal — keep last known state */ }
+}
+
+async function refreshGhampusRecentSaves(): Promise<void> {
+  try {
+    const { saves } = await ipcCall<{ saves: Array<{ sourceId: string; engramId: string; label: string; addedAtMs: number }> }>('agent:recentSaves', { limit: 8 });
+    const sum = document.getElementById('ghampus-recent-saves-summary');
+    const ul = document.getElementById('ghampus-recent-saves-list');
+    if (sum) {
+      sum.textContent = saves.length === 0
+        ? 'Nothing saved through chats yet. As you chat with Ghampus and approve "save to engram" prompts, the results appear here.'
+        : `${saves.length} memor${saves.length === 1 ? 'y' : 'ies'} saved during chats · last 7 days`;
+    }
+    if (ul) {
+      const now = Date.now();
+      ul.innerHTML = saves.map((s) => {
+        const ageMs = now - s.addedAtMs;
+        const when = ageMs < 60_000 ? 'just now'
+          : ageMs < 3_600_000 ? `${Math.floor(ageMs / 60_000)} min ago`
+          : ageMs < 86_400_000 ? `${Math.floor(ageMs / 3_600_000)}h ago`
+          : `${Math.floor(ageMs / 86_400_000)}d ago`;
+        return `<li style="padding: 6px 0; display: flex; gap: 8px; align-items: baseline;">
+          <span style="color: var(--accent, #6366f1);">●</span>
+          <span style="flex: 1;">${escapeHtml(s.label)}</span>
+          <code style="font-size: 11px; opacity: .7;">${escapeHtml(s.engramId)}</code>
+          <span class="subtitle" style="font-size: 11px;">${when}</span>
+        </li>`;
+      }).join('');
+    }
+  } catch { /* non-fatal */ }
 }
 
 async function refreshGhampusSharingPanel(): Promise<void> {

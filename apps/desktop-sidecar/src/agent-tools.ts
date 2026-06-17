@@ -64,6 +64,40 @@ export interface ListEngramsToolResult {
   }>;
 }
 
+export interface RememberToolArgs {
+  /** Target engram. Required — Ghampus always knows which engram. */
+  engramId: string;
+  /** The content to save. Plain markdown / text. */
+  content: string;
+  /** Optional human-readable label shown in the recent-saves panel. */
+  label?: string;
+}
+
+export interface RememberToolResult {
+  /** Source id created for this save. */
+  sourceId: string;
+  /** Engram id the save landed in. */
+  engramId: string;
+  /** Number of nodes the SDK produced from this content. */
+  nodeCount: number;
+}
+
+export interface RecentSavesArgs {
+  /** Maximum number of memories to return. Defaults to 10. */
+  limit?: number | undefined;
+  /** Only include saves newer than this Unix ms. Default: 7 days ago. */
+  sinceMs?: number | undefined;
+}
+
+export interface RecentSavesResult {
+  saves: Array<{
+    sourceId: string;
+    engramId: string;
+    label: string;
+    addedAtMs: number;
+  }>;
+}
+
 export class AgentToolNotImplementedError extends Error {
   constructor(tool: AgentToolName) {
     super(`Tool '${tool}' is declared but not yet implemented in Phase 3.`);
@@ -89,6 +123,7 @@ export async function invokeAgentTool(
     case 'list_engrams':
       return runListEngrams(deps);
     case 'remember':
+      return runRemember(deps, args as unknown as RememberToolArgs);
     case 'edit':
     case 'forget':
       throw new AgentToolNotImplementedError(tool);
@@ -176,4 +211,77 @@ function runListEngrams(deps: AgentToolDeps): ListEngramsToolResult {
       loaded,
     })),
   };
+}
+
+/**
+ * Save a memory to an engram via Ghampus. Tagged with `addedBy: 'ghampus'`
+ * so `listRecentSaves` can surface it in the "Picking up where we left
+ * off" panel — the user feels session continuity without us actually
+ * maintaining a session sidebar.
+ *
+ * Each save gets a fresh sourceRef (`ghampus:<random>`) so re-saves of
+ * the same content land as separate sources rather than triggering the
+ * SDK's dedupe short-circuit.
+ */
+async function runRemember(deps: AgentToolDeps, args: RememberToolArgs): Promise<RememberToolResult> {
+  if (typeof args.engramId !== 'string' || args.engramId.trim().length === 0) {
+    throw new Error('remember requires `engramId`.');
+  }
+  if (typeof args.content !== 'string' || args.content.trim().length === 0) {
+    throw new Error('remember requires non-empty `content`.');
+  }
+  const ref = args.label
+    ? `ghampus:${args.label.slice(0, 60).replace(/[^\w\s-]/g, '').trim()}-${Date.now().toString(36)}`
+    : `ghampus:${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+  // `ai-conversation` is the closest existing SourceRecord.kind for a
+  // memory captured during an interactive turn. Ghampus saves are tagged
+  // `addedBy: 'ghampus'` so listRecentSaves can filter without scanning
+  // every source's content.
+  const result = await deps.host.ingest(
+    args.engramId,
+    'ai-conversation',
+    ref,
+    { kind: 'markdown', content: args.content, sourceRef: ref },
+    { addedBy: 'ghampus' },
+  );
+  return {
+    sourceId: result.sourceId,
+    engramId: args.engramId,
+    nodeCount: result.nodeIds.length,
+  };
+}
+
+/**
+ * Return the most recent memories saved through Ghampus (across all
+ * engrams). Drives the "Picking up where we left off" panel.
+ *
+ * Implemented by scanning each engram's source index for sources whose
+ * `addedBy` field is `'ghampus'`, then sorting by createdAt. Cheap even
+ * for large cortexes — the SourceIndex is in memory and the predicate
+ * filters early.
+ */
+export function listRecentSaves(deps: AgentToolDeps, args: RecentSavesArgs): RecentSavesResult {
+  const limit = typeof args.limit === 'number' && args.limit > 0 ? Math.min(50, Math.floor(args.limit)) : 10;
+  const sinceMs = typeof args.sinceMs === 'number' ? args.sinceMs : Date.now() - 7 * 24 * 60 * 60 * 1000;
+  const all: Array<{ sourceId: string; engramId: string; label: string; addedAtMs: number }> = [];
+  for (const engramId of deps.host.listGraphs()) {
+    const sources = deps.host.listSources(engramId);
+    for (const s of sources) {
+      if (s.addedBy !== 'ghampus') continue;
+      if (s.ingestedAt < sinceMs) continue;
+      // The ref carries the human-readable label fragment after the
+      // `ghampus:` prefix and before the trailing timestamp. Strip both
+      // ends for a clean display string.
+      const refBody = s.ref.startsWith('ghampus:') ? s.ref.slice('ghampus:'.length) : s.ref;
+      const label = refBody.replace(/-[a-z0-9]+$/i, '').replace(/-/g, ' ').trim() || s.sourceId;
+      all.push({
+        sourceId: s.sourceId,
+        engramId,
+        label,
+        addedAtMs: s.ingestedAt,
+      });
+    }
+  }
+  all.sort((a, b) => b.addedAtMs - a.addedAtMs);
+  return { saves: all.slice(0, limit) };
 }
