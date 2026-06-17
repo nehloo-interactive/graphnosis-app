@@ -333,11 +333,35 @@ function assertStudioEnabled(_deps: IpcDeps): void {
 }
 
 /**
+ * True when the user has ANY paid plan in flight — personal subscription,
+ * Teams seat, Enterprise seat, or a domain-seat token granted via OTP.
+ *
+ * Why this exists: v1.15.6 fixed domain-seat token validation to accept
+ * tokens with an empty `features` array (some OTP-minted tokens carry
+ * no explicit features, the seat itself is the entitlement). Code that
+ * gates only on `features.includes(...)` will reject those tokens and
+ * treat the user as Free even though they're on an enterprise allowlist.
+ *
+ * Treat the presence of either a verified personal token OR a verified
+ * domain-seat token as paid. Free users have no verified token at all.
+ */
+async function hasAnyPaidPlan(deps: IpcDeps): Promise<boolean> {
+  const primary = await deps.host.getLicenseToken();
+  if (primary && deps.licenseValidator?.verifyToken(primary)) return true;
+  const settings = deps.host.getSettings();
+  const domain = settings.domainSeatLicenseToken ?? null;
+  if (domain && deps.licenseValidator?.verifyToken(domain)) return true;
+  return false;
+}
+
+/**
  * Resolve the user's plan tier — `'free' | 'pro' | 'teams' | 'enterprise'`
  * — from the license JWT. The Ghampus surface is open to every tier; this
  * is just so the chat UI can render contextual upsells ("on Pro this would
  * auto-distill") and so per-tool handlers can gate features that map to
- * paid LicenseFeatures.
+ * paid LicenseFeatures. Domain-seat tokens without explicit features are
+ * treated as Enterprise — they're by definition org-managed allowlist
+ * entitlements.
  */
 async function resolveAgentPlan(deps: IpcDeps): Promise<'free' | 'pro' | 'teams' | 'enterprise'> {
   const token = await getEffectiveLicenseToken(deps);
@@ -348,6 +372,12 @@ async function resolveAgentPlan(deps: IpcDeps): Promise<'free' | 'pro' | 'teams'
   for (const f of ['skill-training', 'foresight', 'gnn-exploration', 'mcp-tool-control'] as const) {
     if (deps.licenseValidator?.hasFeature(token, f)) return 'pro';
   }
+  // Domain-seat token present but with no explicit features → org-managed,
+  // treat as Enterprise. Caught after the feature scans so explicit Pro/
+  // Teams tokens take precedence if both are configured.
+  const settings = deps.host.getSettings();
+  const domain = settings.domainSeatLicenseToken ?? null;
+  if (domain && deps.licenseValidator?.verifyToken(domain)) return 'enterprise';
   return 'free';
 }
 
@@ -5145,12 +5175,11 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
       }).parse(params ?? {});
 
       // ── Token limit enforcement ────────────────────────────────────────────
-      // Free: 1 token. Pro / Teams / Enterprise: unlimited (null).
-      const licenseToken = await getEffectiveLicenseToken(deps);
-      const licensePayload = deps.licenseValidator?.verifyToken(licenseToken ?? '') ?? null;
-      const hasPaidPlan = licensePayload?.features.includes('skill-training')
-        || licensePayload?.features.includes('teams')
-        || licensePayload?.features.includes('enterprise');
+      // Free: 1 token. Any paid plan (Pro / Teams / Enterprise / domain-
+      // seat OTP allowance): unlimited. `hasAnyPaidPlan` accepts
+      // domain-seat tokens with no explicit features so OTP-minted
+      // enterprise users aren't capped at 1 share.
+      const hasPaidPlan = await hasAnyPaidPlan(deps);
       const current = deps.host.getSettings();
       const existing = current.sharing?.tokens ?? [];
       const now = Date.now();
@@ -5195,20 +5224,25 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
 
     case 'sharing:planInfo': {
       // Returns seat cap + active count so the UI can show seat usage.
-      // Free: 1 token. Pro / Teams / Enterprise: unlimited (null).
+      // Free: 1 token. Any paid plan (Pro/Teams/Enterprise/domain-seat
+      // OTP): unlimited (seats=null). hasAnyPaidPlan accepts
+      // domain-seat tokens regardless of their feature list.
       const licenseToken = await getEffectiveLicenseToken(deps);
       const payload = deps.licenseValidator?.verifyToken(licenseToken ?? '') ?? null;
-      const hasPaidPlan = payload?.features.includes('skill-training')
-        || payload?.features.includes('teams')
-        || payload?.features.includes('enterprise');
+      const hasPaidPlan = await hasAnyPaidPlan(deps);
       const settings = deps.host.getSettings();
       const tokens = settings.sharing?.tokens ?? [];
       const now = Date.now();
       const activeCount = tokens.filter((t) => t.expiresAt === undefined || t.expiresAt >= now).length;
-      const hasEnterprise = payload?.features.includes('enterprise') ?? false;
+      // Enterprise badge: explicit feature OR a domain-seat token (org-
+      // managed allowlist is by definition enterprise tier).
+      const hasExplicitEnterprise = payload?.features.includes('enterprise') ?? false;
+      const hasDomainSeat = (settings.domainSeatLicenseToken ?? null) !== null
+        && deps.licenseValidator?.verifyToken(settings.domainSeatLicenseToken ?? '') !== null
+        && deps.licenseValidator?.verifyToken(settings.domainSeatLicenseToken ?? '') !== undefined;
       return {
         licensed: true,
-        enterprise: hasEnterprise,
+        enterprise: hasExplicitEnterprise || hasDomainSeat,
         plan: payload?.plan ?? null,
         seats: hasPaidPlan ? null : 1,
         activeCount,
@@ -5259,12 +5293,15 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
         return { ok: false, reason: 'not_found', message: `Engram "${args.engramId}" not found.` };
       }
 
-      const licenseToken = await getEffectiveLicenseToken(deps);
-      const licensed = deps.licenseValidator?.hasFeature(licenseToken, 'teams') ?? false;
-      if (!licensed) {
+      // Engram Pack export is a paid-plan feature, but the historical
+      // gate only checked the 'teams' feature flag — that locked out
+      // Pro users AND Enterprise OTP domain-seat users (whose tokens
+      // can have no explicit features). hasAnyPaidPlan accepts every
+      // paid path so the error message and the gate finally agree.
+      if (!(await hasAnyPaidPlan(deps))) {
         return {
           ok: false, reason: 'not_licensed',
-          message: 'Engram Pack export requires a Graphnosis Pro subscription. Visit https://graphnosis.com/upgrade',
+          message: 'Engram Pack export requires a Graphnosis Pro, Teams, or Enterprise subscription. Visit https://graphnosis.com/upgrade',
         };
       }
 
@@ -5299,12 +5336,11 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
         skipExisting: z.boolean().optional(),
       }).parse(params ?? {});
 
-      const licenseToken = await getEffectiveLicenseToken(deps);
-      const licensed = deps.licenseValidator?.hasFeature(licenseToken, 'teams') ?? false;
-      if (!licensed) {
+      // Same gate fix as export — see hasAnyPaidPlan comment above.
+      if (!(await hasAnyPaidPlan(deps))) {
         return {
           ok: false, reason: 'not_licensed',
-          message: 'Engram Pack import requires a Graphnosis Pro subscription. Visit https://graphnosis.com/upgrade',
+          message: 'Engram Pack import requires a Graphnosis Pro, Teams, or Enterprise subscription. Visit https://graphnosis.com/upgrade',
         };
       }
 
