@@ -4705,7 +4705,7 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
         return {
           ok: false,
           reason: 'seat_limit',
-          message: 'Free plan includes 1 sharing token. Upgrade to Pro for unlimited tokens.',
+          message: 'Free plan includes 1 share. Upgrade to Pro for unlimited shares.',
           seats: seatCap,
           activeCount,
         };

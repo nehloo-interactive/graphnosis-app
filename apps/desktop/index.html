@@ -11754,13 +11754,13 @@ ollama list</code></pre>
                 <p class="gc-section-hint" style="margin:6px 0 0;">Reach this cortex from Claude for iOS/Android or any HTTP MCP client over your LAN or Tailscale.</p>
               </section>
 
-              <!-- Engram Sharing — scoped tokens for collaborators (Pro) -->
+              <!-- Engram Sharing — shares for collaborators -->
               <section class="gc-section" id="gc-section-sharing">
                 <div class="gc-mobile-row">
                   <h3 class="gc-section-title" style="margin:0;">🔗 Engram sharing <span id="sharing-pro-badge" class="pro-badge" style="display:none;">Pro</span></h3>
                   <button id="btn-sharing-manage" class="rail-shortcut-btn">Manage…</button>
                 </div>
-                <p class="gc-section-hint" style="margin:6px 0 0;" id="sharing-hint">Share specific engrams with collaborators via scoped tokens. Requires Mobile &amp; Remote Access to be enabled.</p>
+                <p class="gc-section-hint" style="margin:6px 0 0;" id="sharing-hint">Share specific engrams with collaborators. Requires Mobile &amp; Remote Access to be enabled.</p>
                 <div id="sharing-token-summary" style="margin-top:8px; font-size:13px; color:var(--fg-muted);"></div>
               </section>
 
@@ -13278,12 +13278,12 @@ ollama list</code></pre>
       </div>
     </div>
 
-    <!-- Sharing token manager modal -->
+    <!-- Engram Sharing manager modal -->
     <div id="sharing-modal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="sharing-modal-title">
       <div class="modal" style="max-width:560px;">
         <div class="modal-header">
           <h2 id="sharing-modal-title">Engram Sharing</h2>
-          <p class="subtitle">Create scoped tokens so collaborators can access specific engrams via your MCP server. Requires Mobile &amp; Remote Access.</p>
+          <p class="subtitle">Create shares so collaborators can access specific engrams via your MCP server. Requires Mobile &amp; Remote Access.</p>
           <p id="sharing-plan-badge" style="display:none;margin:6px 0 0;font-size:12px;color:var(--fg-muted);"></p>
         </div>
         <div class="modal-body" id="sharing-modal-body" style="min-height:120px;">
@@ -13291,17 +13291,17 @@ ollama list</code></pre>
           <div id="sharing-seat-bar" style="margin-bottom:12px;display:none;"></div>
           <!-- Shown when not on Teams/Enterprise plan -->
           <p id="sharing-unlicensed-notice" class="subtitle" style="display:none;padding:10px;background:var(--bg-raised);border-radius:6px;margin-bottom:10px;"></p>
-          <!-- Token list rendered dynamically -->
+          <!-- Share list rendered dynamically -->
           <div id="sharing-token-list" style="display:flex;flex-direction:column;gap:8px;"></div>
-          <p id="sharing-no-tokens" class="subtitle" style="display:none;margin:16px 0;">No sharing tokens yet. Create one below.</p>
+          <p id="sharing-no-tokens" class="subtitle" style="display:none;margin:16px 0;">No shares yet. Create one below.</p>
         </div>
         <div class="modal-footer" style="flex-direction:column;align-items:stretch;gap:12px;">
-          <!-- Create new token form -->
+          <!-- Create new share form -->
           <details id="sharing-create-details" style="cursor:pointer;">
-            <summary style="font-size:14px;font-weight:600;cursor:pointer;user-select:none;">+ Create new token</summary>
+            <summary style="font-size:14px;font-weight:600;cursor:pointer;user-select:none;">+ Create new share</summary>
             <div style="margin-top:12px;display:flex;flex-direction:column;gap:10px;">
               <label style="font-size:13px;">
-                Token name
+                Share name
                 <input id="sharing-new-name" type="text" placeholder="e.g. Alice – Project X" style="display:block;width:100%;margin-top:4px;" />
               </label>
               <label style="font-size:13px;">
@@ -13330,7 +13330,7 @@ ollama list</code></pre>
                 </select>
               </label>
               <div style="display:flex;gap:8px;justify-content:flex-end;">
-                <button id="btn-sharing-create" class="primary">Create token</button>
+                <button id="btn-sharing-create" class="primary">Create share</button>
               </div>
             </div>
           </details>
@@ -13347,19 +13347,19 @@ ollama list</code></pre>
       </div>
     </div>
 
-    <!-- Sharing token reveal modal — shown once after token creation -->
+    <!-- Share reveal modal — shown once after share creation -->
     <div id="sharing-reveal-modal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="sharing-reveal-title">
       <div class="modal" style="max-width:480px;">
         <div class="modal-header">
-          <h2 id="sharing-reveal-title">Token created</h2>
-          <p class="subtitle">Copy this token now — it will not be shown again.</p>
+          <h2 id="sharing-reveal-title">Share created</h2>
+          <p class="subtitle">Copy this share now — it will not be shown again.</p>
         </div>
         <div class="modal-body">
           <div style="display:flex;align-items:center;gap:8px;">
             <code id="sharing-reveal-value" style="flex:1;font-size:12px;word-break:break-all;padding:8px;background:var(--bg-raised);border-radius:6px;user-select:all;"></code>
             <button id="btn-sharing-reveal-copy" title="Copy to clipboard">Copy</button>
           </div>
-          <p style="margin-top:10px;font-size:13px;color:var(--fg-muted);">Share this token along with your MCP server URL (<code id="sharing-reveal-url"></code>). Collaborators add it to their MCP client config.</p>
+          <p style="margin-top:10px;font-size:13px;color:var(--fg-muted);">Send this share to your collaborator along with your MCP server URL (<code id="sharing-reveal-url"></code>). They add it to their MCP client config.</p>
         </div>
         <div class="modal-footer">
           <button id="btn-sharing-reveal-close" class="primary">Done</button>
