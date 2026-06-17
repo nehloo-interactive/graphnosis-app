@@ -48,6 +48,25 @@ export interface RecallToolResult {
    * badge. Empty array when no shared engram contributed.
    */
   sharingProvenance: Array<{ engramId: string; shareName: string; role: string }>;
+  /**
+   * Attached files associated with the contributing engrams. The recall
+   * prompt itself doesn't include attachment content (these are just
+   * pointers), but the chat surface renders them as "Linked files" cards
+   * so the user can open the source artifacts in their native apps.
+   * Each entry mirrors `AttachmentRecord` from `attachments-store.ts`.
+   */
+  attachments: Array<{
+    id: string;
+    path: string;
+    kind: string;
+    label: string;
+    note?: string;
+    graphId: string;
+    sourceId?: string;
+    nodeIds?: string[];
+    lastVerifiedOk: boolean;
+    sizeBytes?: number;
+  }>;
 }
 
 export interface StatsToolResult {
@@ -186,13 +205,48 @@ async function runRecall(deps: AgentToolDeps, args: RecallToolArgs): Promise<Rec
   // surfaces the provenance so the chat surface can badge facts that
   // are visible to collaborators. Expired tokens are skipped.
   const sharingProvenance = collectSharingProvenance(deps.host, contributing);
+  // Surface attached files for contributing engrams so the chat can
+  // render "Linked files" cards. The recall prompt itself stays text-
+  // only — attachments are out-of-band references that augment the UI.
+  // Failures here are non-fatal; an attachment-store read error falls
+  // back to an empty list so the recall path still succeeds.
+  const attachments = await collectAttachments(deps.host.getCortexDir(), contributing).catch(() => []);
   return {
     prompt: sub.prompt,
     nodesIncluded: sub.nodesIncluded,
     tokensUsed: sub.tokensUsed,
     engramsContributing: contributing,
     sharingProvenance,
+    attachments,
   };
+}
+
+async function collectAttachments(
+  cortexDir: string,
+  graphIds: string[],
+): Promise<RecallToolResult['attachments']> {
+  if (graphIds.length === 0) return [];
+  const { listAttachments } = await import('./attachments-store.js');
+  const all: RecallToolResult['attachments'] = [];
+  for (const graphId of graphIds) {
+    const rows = await listAttachments(cortexDir, { graphId });
+    for (const r of rows) {
+      all.push({
+        id: r.id,
+        path: r.path,
+        kind: r.kind,
+        label: r.label,
+        ...(r.note !== undefined ? { note: r.note } : {}),
+        graphId: r.graphId,
+        ...(r.sourceId !== undefined ? { sourceId: r.sourceId } : {}),
+        ...(r.nodeIds !== undefined ? { nodeIds: r.nodeIds } : {}),
+        lastVerifiedOk: r.lastVerifiedOk,
+        ...(r.sizeBytes !== undefined ? { sizeBytes: r.sizeBytes } : {}),
+      });
+    }
+  }
+  // Cap to a reasonable count to keep recall responses bounded.
+  return all.slice(0, 50);
 }
 
 function collectSharingProvenance(
