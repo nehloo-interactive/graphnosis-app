@@ -3646,6 +3646,192 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
       return invokeAgentTool({ host: deps.host, skillTrainer: deps.skillTrainer ?? null }, 'list_skills', args);
     }
 
+    // ── Models registry + routing ───────────────────────────────────────
+    case 'models:catalog': {
+      // Returns the static catalog (providers + known models) plus the
+      // user's current per-provider state. Drives the Settings → Models
+      // page entirely. No gate — visible on every plan.
+      const { KNOWN_PROVIDERS, KNOWN_MODELS, KNOWN_MODELS_VERSION } = await import('./model-registry.js');
+      const settings = deps.host.getSettings();
+      const providerStates = settings.models?.providers ?? {};
+      return {
+        catalogVersion: KNOWN_MODELS_VERSION,
+        providers: KNOWN_PROVIDERS.map((p) => ({
+          ...p,
+          enabled: providerStates[p.id]?.enabled === true,
+          hasKey: providerStates[p.id]?.hasKey === true,
+          keyTail: providerStates[p.id]?.keyTail,
+          adminLocked: providerStates[p.id]?.adminLocked === true,
+          poolSpentUsd: providerStates[p.id]?.poolSpentUsd ?? 0,
+          flexSpentUsd: providerStates[p.id]?.flexSpentUsd ?? 0,
+        })),
+        models: KNOWN_MODELS,
+        strategy: settings.models?.strategy ?? 'adaptive',
+        monthlyBudgetUsd: settings.models?.monthlyBudgetUsd ?? null,
+        spentThisCycleUsd: settings.models?.spentThisCycleUsd ?? 0,
+        customRates: settings.models?.customRates ?? [],
+      };
+    }
+    case 'models:setStrategy': {
+      const { strategy } = z.object({
+        strategy: z.enum(['adaptive', 'local-only', 'always-best']),
+      }).parse(params ?? {});
+      const current = deps.host.getSettings();
+      await deps.host.setSettings({
+        ...current,
+        models: { ...(current.models ?? { providers: {}, strategy: 'adaptive' }), strategy },
+      });
+      return { ok: true };
+    }
+    case 'models:setProviderEnabled': {
+      const { providerId, enabled } = z.object({
+        providerId: z.string().min(1),
+        enabled: z.boolean(),
+      }).parse(params ?? {});
+      const current = deps.host.getSettings();
+      const models = current.models ?? { providers: {}, strategy: 'adaptive' as const };
+      const providerState = models.providers[providerId] ?? { enabled: false };
+      // Admin-locked providers cannot be toggled by users.
+      if (providerState.adminLocked) {
+        return { ok: false, reason: 'admin-locked', message: 'This provider is locked by your organization admin.' };
+      }
+      await deps.host.setSettings({
+        ...current,
+        models: {
+          ...models,
+          providers: { ...models.providers, [providerId]: { ...providerState, enabled } },
+        },
+      });
+      return { ok: true };
+    }
+    case 'models:setBudget': {
+      const { monthlyBudgetUsd } = z.object({
+        // null / 0 / undefined all mean "no cap" — caller can clear the budget by sending null.
+        monthlyBudgetUsd: z.number().nullable().optional(),
+      }).parse(params ?? {});
+      const current = deps.host.getSettings();
+      const models = current.models ?? { providers: {}, strategy: 'adaptive' as const };
+      const next = { ...models };
+      if (monthlyBudgetUsd && monthlyBudgetUsd > 0) {
+        next.monthlyBudgetUsd = monthlyBudgetUsd;
+      } else {
+        delete next.monthlyBudgetUsd;
+      }
+      await deps.host.setSettings({ ...current, models: next });
+      return { ok: true };
+    }
+    case 'models:setCustomRate': {
+      // Add or update an override. Admin-enforced overrides cannot be
+      // changed by users — only the admin policy fetcher writes those.
+      const args = z.object({
+        modelId: z.string().optional(),
+        providerId: z.string().optional(),
+        pricing: z.unknown(),
+        note: z.string().optional(),
+      }).parse(params ?? {});
+      const current = deps.host.getSettings();
+      const models = current.models ?? { providers: {}, strategy: 'adaptive' as const };
+      const existing = models.customRates ?? [];
+      const idx = existing.findIndex((o) =>
+        (args.modelId && o.modelId === args.modelId) ||
+        (!args.modelId && args.providerId && o.providerId === args.providerId && !o.modelId)
+      );
+      if (idx >= 0 && existing[idx]?.adminEnforced) {
+        return { ok: false, reason: 'admin-locked', message: 'This rate is enforced by your organization admin.' };
+      }
+      const entry = {
+        ...(args.modelId !== undefined ? { modelId: args.modelId } : {}),
+        ...(args.providerId !== undefined ? { providerId: args.providerId } : {}),
+        pricing: args.pricing,
+        ...(args.note !== undefined ? { note: args.note } : {}),
+      };
+      const nextRates = idx >= 0 ? [...existing.slice(0, idx), entry, ...existing.slice(idx + 1)] : [...existing, entry];
+      await deps.host.setSettings({ ...current, models: { ...models, customRates: nextRates } });
+      return { ok: true };
+    }
+    case 'agent:planSkillWalk': {
+      // Compute the routing + cost plan for a skill walk. Pure read —
+      // no walk happens here, the user approves the plan and the walk
+      // ships once the LLM turn loop lands. Reads strategy + provider
+      // state + custom rates + pool state from settings.
+      const { planSkillWalk, deriveStepsFromText } = await import('./model-router.js');
+      const args = z.object({
+        sourceId: z.string().optional(),
+        steps: z.array(z.object({
+          index: z.number().int(),
+          text: z.string(),
+        })).optional(),
+        engramTierByStep: z.record(z.string(), z.enum(['public', 'personal', 'sensitive'])).optional(),
+      }).parse(params ?? {});
+
+      // Two input modes: caller passes pre-formed steps, OR a sourceId
+      // (+ graphId) we resolve into a SkillExecutionPlan via the
+      // skill-trainer walker. The mocked-up cost preview path uses the
+      // first; real skill walks use the second.
+      let rawSteps: Array<{ index: number; text: string }>;
+      const sourceArgs = z.object({ graphId: z.string().optional() }).safeParse(params ?? {});
+      if (args.steps && args.steps.length > 0) {
+        rawSteps = args.steps;
+      } else if (args.sourceId && sourceArgs.success && sourceArgs.data.graphId) {
+        const { walkSkillSequence, walkSkillToJson } = await import('./skill-trainer.js');
+        const walked = walkSkillSequence(deps.host, sourceArgs.data.graphId, args.sourceId, { recursive: false });
+        if (walked.steps.length === 0) return { ok: false, reason: 'empty-skill' };
+        const meta = deps.host.getGraphMetadata(sourceArgs.data.graphId);
+        const src = deps.host.getSourceRecord(sourceArgs.data.graphId, args.sourceId);
+        const title = walked.steps[0]?.text ?? src?.ref ?? args.sourceId;
+        const plan = walkSkillToJson(walked, {
+          sourceId: args.sourceId,
+          title,
+          ...(meta?.displayName ? { engramName: meta.displayName } : {}),
+        });
+        rawSteps = plan.steps.map((s) => ({ index: s.index, text: s.text }));
+      } else {
+        return { ok: false, reason: 'no-input' };
+      }
+
+      const settings = deps.host.getSettings();
+      const enabledProviders = Object.entries(settings.models?.providers ?? { ollama: { enabled: true } })
+        .filter(([, s]) => s?.enabled === true)
+        .map(([id]) => id as Parameters<typeof planSkillWalk>[1]['enabledProviders'][number]);
+
+      const subscriptionPoolUsage: Record<string, { poolSpentUsd: number; flexSpentUsd: number }> = {};
+      for (const [pid, ps] of Object.entries(settings.models?.providers ?? {})) {
+        if (ps?.poolSpentUsd !== undefined || ps?.flexSpentUsd !== undefined) {
+          subscriptionPoolUsage[pid] = {
+            poolSpentUsd: ps.poolSpentUsd ?? 0,
+            flexSpentUsd: ps.flexSpentUsd ?? 0,
+          };
+        }
+      }
+
+      // The engramTierByStep input lets the caller mark which steps
+      // touch which engrams so the planner can apply privacy locks.
+      const tierMap: Record<number, 'public' | 'personal' | 'sensitive'> = {};
+      for (const [k, v] of Object.entries(args.engramTierByStep ?? {})) {
+        const n = Number(k);
+        if (Number.isFinite(n)) tierMap[n] = v;
+      }
+
+      const planSteps = deriveStepsFromText(rawSteps, tierMap);
+      const plan = planSkillWalk(planSteps, {
+        strategy: settings.models?.strategy ?? 'adaptive',
+        enabledProviders,
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        subscriptionPoolUsage: subscriptionPoolUsage as any,
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        customRates: (settings.models?.customRates as any) ?? [],
+      });
+      return { ok: true, plan };
+    }
+    case 'savings:summary': {
+      // Aggregate the savings log into the Ghampus / Settings dashboard
+      // numbers. Defaults to a 30-day window so the panel speaks in
+      // monthly terms.
+      const { summariseSavings } = await import('./savings-tracker.js');
+      const args = z.object({ windowDays: z.number().int().positive().max(365).optional() }).parse(params ?? {});
+      return summariseSavings(deps.host.getCortexDir(), args.windowDays ?? 30);
+    }
+
     case 'correction.apply': {
       // Apply a pending correction diff by its diffId (used by MemoryStudio's
       // Edit panel after the user reviews and approves the proposed changes).

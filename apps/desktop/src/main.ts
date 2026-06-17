@@ -2873,6 +2873,7 @@ function activateMode(mode: Mode): void {
   if (mode === 'ghampus') {
     void refreshGhampusState();
     void refreshGhampusNotifications();
+    void refreshGhampusSavings();
     void refreshGhampusRecentSaves();
     void refreshGhampusSkills();
     void refreshGhampusSharingPanel();
@@ -23019,6 +23020,37 @@ const NOTIF_ORIGIN_ICONS: Record<string, string> = {
   direct: '📁',
   other: '·',
 };
+
+async function refreshGhampusSavings(): Promise<void> {
+  try {
+    const res = await ipcCall<{
+      windowDays: number;
+      totalEvents: number;
+      totalSavedUsd: number;
+      byKind: {
+        'recall-only': { events: number; savedUsd: number };
+        routing: { events: number; savedUsd: number };
+        walk: { events: number; savedUsd: number };
+      };
+      reportLine: string;
+    }>('savings:summary', { windowDays: 30 });
+    const sum = document.getElementById('ghampus-savings-summary');
+    const breakdown = document.getElementById('ghampus-savings-breakdown');
+    const total = document.getElementById('ghampus-savings-total');
+    const recall = document.getElementById('ghampus-savings-recall');
+    const routing = document.getElementById('ghampus-savings-routing');
+    if (sum) sum.textContent = res.reportLine;
+    if (breakdown) {
+      const hasData = res.totalEvents > 0;
+      breakdown.style.display = hasData ? '' : 'none';
+      if (hasData) {
+        if (total) total.textContent = `$${res.totalSavedUsd.toFixed(2)}`;
+        if (recall) recall.textContent = `${res.byKind['recall-only'].events} event${res.byKind['recall-only'].events === 1 ? '' : 's'}`;
+        if (routing) routing.textContent = `${res.byKind.routing.events} event${res.byKind.routing.events === 1 ? '' : 's'}`;
+      }
+    }
+  } catch { /* non-fatal */ }
+}
 
 async function refreshGhampusNotifications(): Promise<void> {
   try {

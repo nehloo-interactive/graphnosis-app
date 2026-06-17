@@ -11665,6 +11665,33 @@ ollama list</code></pre>
                       <ul id="ghampus-notifications-list" style="list-style: none; padding: 0; margin: 0;"></ul>
                     </div>
 
+                    <!-- Savings dashboard — measures what your memory layer
+                         saves you vs sending every prompt to a baseline paid
+                         model. Drives the "Graphnosis pays for itself"
+                         narrative. Empty on first boot; populates after the
+                         first walk or recall-only answer. -->
+                    <div id="ghampus-savings-panel" style="margin-top: 20px; padding-top: 16px; border-top: 1px solid var(--g-border, rgba(255,255,255,.1));">
+                      <h3 style="margin: 0 0 8px;">What Graphnosis saves you</h3>
+                      <p id="ghampus-savings-summary" class="subtitle" style="margin: 0 0 8px;">—</p>
+                      <div id="ghampus-savings-breakdown" style="display: none; margin-top: 10px; padding: 12px 14px; background: rgba(16, 185, 129, .06); border: 1px solid rgba(16, 185, 129, .25); border-radius: 8px;">
+                        <div style="display: flex; gap: 18px; font-size: 13px;">
+                          <div>
+                            <div style="font-size: 11px; opacity: .7;">vs paid baseline</div>
+                            <div id="ghampus-savings-total" style="font-size: 17px; font-weight: 600; color: #10b981;">$0.00</div>
+                          </div>
+                          <div>
+                            <div style="font-size: 11px; opacity: .7;">recall-only answers</div>
+                            <div id="ghampus-savings-recall" style="font-size: 13px;">0 events</div>
+                          </div>
+                          <div>
+                            <div style="font-size: 11px; opacity: .7;">routing wins</div>
+                            <div id="ghampus-savings-routing" style="font-size: 13px;">0 events</div>
+                          </div>
+                          <div style="margin-left: auto; font-size: 11px; opacity: .7;">window: 30 days</div>
+                        </div>
+                      </div>
+                    </div>
+
                     <!-- Picking up where we left off — memories Ghampus saved
                          during chat conversations (addedBy === 'ghampus'). -->
                     <div id="ghampus-recent-saves-panel" style="margin-top: 20px; padding-top: 16px; border-top: 1px solid var(--g-border, rgba(255,255,255,.1));">
