@@ -10186,6 +10186,7 @@
                     <button class="g-tab" data-gtab="atlas">3D Engram</button>
                     <button class="g-tab" data-gtab="brain">Deterministic Consolidation</button>
                     <button class="g-tab" data-gtab="nondeterministic">Foresight</button>
+                    <button class="g-tab" data-gtab="ghampus">Ghampus</button>
                   </div>
 
                   <!-- CHECK-IN DASHBOARD (default) -->
@@ -11599,6 +11600,45 @@ ollama list</code></pre>
                             in the <strong>Local LLM</strong> card above — the status turns
                             green and the model appears in the <strong>Active model</strong> list.
                           </p>
+                        </div>
+                      </div>
+                    </div>
+                  </section>
+
+                  <!-- ── GHAMPUS (local agent — Teams / Enterprise) ───────────────── -->
+                  <section class="g-tab-pane hidden" data-gpane="ghampus">
+                    <div id="ghampus-section" class="studio-section">
+                      <!-- Paywall — visible until the license JWT carries
+                           `ghampus`, `teams`, or `enterprise`. The Ghampus tab
+                           itself is always visible so users can discover the
+                           feature; clicking shows the upgrade card. -->
+                      <div id="ghampus-paywall" class="studio-paywall">
+                        <div class="studio-paywall-card">
+                          <h2>Ghampus</h2>
+                          <p class="subtitle">Your local-first AI agent. Lives inside Graphnosis, recalls and writes through the same trust gates as your external clients, runs entirely on this machine.</p>
+                          <p class="subtitle" style="margin-top: 12px;">Ghampus requires the <strong>Teams</strong> or <strong>Enterprise</strong> plan.</p>
+                          <a class="studio-paywall-cta" href="https://graphnosis.app/pricing" target="_blank" rel="noopener">See pricing</a>
+                        </div>
+                      </div>
+                      <!-- Shell once licensed. Phase 3 mounts conversation + tool cards here. -->
+                      <div id="ghampus-shell" class="hidden">
+                        <div class="studio-paywall-card">
+                          <h2>Ghampus</h2>
+                          <p id="ghampus-state-line" class="subtitle">Chat surface coming online in the next release.</p>
+                          <div style="margin-top: 16px; display: flex; gap: 8px; flex-wrap: wrap;">
+                            <button id="btn-ghampus-kill" class="g-btn" type="button">Stop all agent activity</button>
+                            <button id="btn-ghampus-resume" class="g-btn hidden" type="button">Resume Ghampus</button>
+                          </div>
+                          <p id="ghampus-kill-banner" class="subtitle hidden" style="margin-top: 12px; color: var(--g-warn, #c47);">Ghampus is stopped. No tool calls or watcher activity will fire until you resume.</p>
+                          <!-- ── Sharing-integration slice (Phase 4) ──────────────────
+                               Surfaces the user's outbound share state right inside
+                               Ghampus so the agent surface is also the audit surface.
+                               Populated by refreshGhampusSharingPanel(). -->
+                          <div id="ghampus-sharing-panel" style="margin-top: 20px; padding-top: 16px; border-top: 1px solid var(--g-border, rgba(255,255,255,.1));">
+                            <h3 style="margin: 0 0 8px;">Active shares</h3>
+                            <p id="ghampus-sharing-summary" class="subtitle">—</p>
+                            <ul id="ghampus-sharing-list" style="list-style: none; padding: 0; margin: 8px 0 0;"></ul>
+                          </div>
                         </div>
                       </div>
                     </div>

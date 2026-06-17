@@ -104,9 +104,12 @@ export interface LicensePayload {
  *                          compliance features when built. Superset of teams.
  *   mcp-tool-control     — user-configurable MCP tool exposure allowlist
  *                          (Settings → MCP Tools). Granted to Pro/Teams/Enterprise.
+ *   ghampus              — in-app local agent surface. Granted to Teams/Enterprise.
+ *                          Tokens minted for Teams/Enterprise plans include this
+ *                          feature automatically; older Pro tokens do not.
  *   beta                 — Early-access / in-progress features for select users
  */
-export type LicenseFeature = 'skill-training' | 'gnn-exploration' | 'foresight' | 'connector-cadence' | 'teams' | 'enterprise' | 'mcp-tool-control' | 'beta';
+export type LicenseFeature = 'skill-training' | 'gnn-exploration' | 'foresight' | 'connector-cadence' | 'teams' | 'enterprise' | 'mcp-tool-control' | 'ghampus' | 'beta';
 
 // ── LicenseValidator ──────────────────────────────────────────────────────────
 

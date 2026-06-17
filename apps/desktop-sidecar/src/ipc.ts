@@ -332,6 +332,37 @@ function assertStudioEnabled(_deps: IpcDeps): void {
   // bypassed — gate off during development
 }
 
+/**
+ * Throws a user-facing error when Ghampus cannot run. Two distinct codes so
+ * the chat UI can distinguish "user flipped the kill switch" from "license
+ * gate":
+ *   - `GHAMPUS_KILLED`  — settings.agent.enabled === false.
+ *   - `GHAMPUS_GATED`   — license JWT does not include `ghampus`, `teams`,
+ *                         or `enterprise`. Teams/Enterprise tokens are
+ *                         accepted as supersets so domain-seat users on
+ *                         older tokens (minted before the explicit
+ *                         `ghampus` feature shipped) keep working.
+ */
+async function assertGhampusEnabled(deps: IpcDeps): Promise<void> {
+  if (deps.host.getSettings().agent?.enabled === false) {
+    throw new Error(
+      'GHAMPUS_KILLED: Ghampus is disabled by the user kill switch. ' +
+      'Re-enable from the menu-bar tray or the Ghampus tab.',
+    );
+  }
+  const token = await getEffectiveLicenseToken(deps);
+  const hasGhampus =
+    (deps.licenseValidator?.hasFeature(token, 'ghampus') ?? false) ||
+    (deps.licenseValidator?.hasFeature(token, 'teams') ?? false) ||
+    (deps.licenseValidator?.hasFeature(token, 'enterprise') ?? false);
+  if (!hasGhampus) {
+    throw new Error(
+      'GHAMPUS_GATED: Ghampus requires the Teams or Enterprise plan. ' +
+      'Upgrade at https://graphnosis.app/pricing',
+    );
+  }
+}
+
 /** Flatten a byGraph Map into a score-sorted candidate array for the threshold slider. */
 function flattenByGraph(
   byGraph: Map<string, Array<{ nodeId: string; score: number; text: string; type?: string }>>,
@@ -3493,6 +3524,102 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       await deps.host.setSettings({ ai: { ...current.ai, studioEnabled: enabled } as any });
       return { ok: true };
+    }
+
+    // ── Ghampus (local agent) ────────────────────────────────────────────
+    case 'agent:status': {
+      // Snapshot for the Chat tab to render the right surface (paywall vs
+      // shell vs kill-switch banner). No gate — readable in every state.
+      const settings = deps.host.getSettings();
+      const token = await getEffectiveLicenseToken(deps);
+      const licensed =
+        (deps.licenseValidator?.hasFeature(token, 'ghampus') ?? false) ||
+        (deps.licenseValidator?.hasFeature(token, 'teams') ?? false) ||
+        (deps.licenseValidator?.hasFeature(token, 'enterprise') ?? false);
+      return {
+        enabled: settings.agent?.enabled !== false,
+        licensed,
+      };
+    }
+    case 'agent:setEnabled': {
+      // User-controlled kill switch. Always permitted — no gate — so the
+      // user can always disable Ghampus regardless of license state.
+      const { enabled } = z.object({ enabled: z.boolean() }).parse(params ?? {});
+      const current = deps.host.getSettings();
+      await deps.host.setSettings({ ...current, agent: { enabled } });
+      return { ok: true };
+    }
+    case 'agent:runTool': {
+      // Run one Ghampus tool call through the full pipeline:
+      // policy gate → tool handler → audit log → return result. Each step
+      // can fail; failures are also audited so the inspector shows a
+      // complete record of what was attempted.
+      const { invokeAgentTool, AgentToolNotImplementedError } = await import('./agent-tools.js');
+      const { assertCanInvokeTool, AgentPolicyError } = await import('./agent-policy.js');
+      const { appendAuditEntry } = await import('./agent-audit.js');
+      const args = z.object({
+        tool: z.enum(['recall', 'stats', 'list_engrams', 'remember', 'edit', 'forget']),
+        args: z.record(z.string(), z.unknown()).optional(),
+        conversationId: z.string().optional(),
+      }).parse(params ?? {});
+      const startedAt = Date.now();
+      const cortexDir = deps.host.getCortexDir();
+      const toolArgs = args.args ?? {};
+      try {
+        await assertCanInvokeTool(
+          { host: deps.host, licenseValidator: deps.licenseValidator ?? undefined },
+          args.tool,
+        );
+      } catch (err) {
+        if (err instanceof AgentPolicyError) {
+          await appendAuditEntry(cortexDir, {
+            tool: args.tool,
+            args: toolArgs,
+            result: null,
+            error: err.message,
+            startedAt,
+            durationMs: Date.now() - startedAt,
+            ...(args.conversationId !== undefined ? { conversationId: args.conversationId } : {}),
+            policyDenied: true,
+            policyReason: err.reason,
+          });
+        }
+        throw err;
+      }
+      try {
+        const result = await invokeAgentTool(deps, args.tool, toolArgs);
+        await appendAuditEntry(cortexDir, {
+          tool: args.tool,
+          args: toolArgs,
+          result,
+          startedAt,
+          durationMs: Date.now() - startedAt,
+          ...(args.conversationId !== undefined ? { conversationId: args.conversationId } : {}),
+        });
+        return { ok: true, result };
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        await appendAuditEntry(cortexDir, {
+          tool: args.tool,
+          args: toolArgs,
+          result: null,
+          error: message,
+          startedAt,
+          durationMs: Date.now() - startedAt,
+          ...(args.conversationId !== undefined ? { conversationId: args.conversationId } : {}),
+        });
+        if (err instanceof AgentToolNotImplementedError) {
+          // Surface as a user-facing message rather than crash the IPC.
+          return { ok: false, error: message };
+        }
+        throw err;
+      }
+    }
+    case 'agent:listAuditEntries': {
+      const { readRecentAuditEntries } = await import('./agent-audit.js');
+      const { limit } = z.object({ limit: z.number().int().positive().max(500).optional() }).parse(params ?? {});
+      const entries = await readRecentAuditEntries(deps.host.getCortexDir(), limit ?? 50);
+      return { entries };
     }
 
     case 'correction.apply': {

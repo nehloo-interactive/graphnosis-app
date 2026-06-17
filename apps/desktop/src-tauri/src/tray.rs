@@ -149,11 +149,21 @@ fn build_menu(app: &AppHandle, status: &StatusSnapshot, update_version: Option<&
         launch_at_login,
         None::<&str>,
     )?;
+    // Ghampus quick-access. Real kill switch lives inside the Chat tab —
+    // tray entry is navigation only. Greyed out while the cortex is locked.
+    let ghampus_item = MenuItem::with_id(
+        app,
+        "ghampus",
+        "Open Ghampus",
+        status.unlocked,
+        None::<&str>,
+    )?;
     let quit_item = MenuItem::with_id(app, "quit", "Quit Graphnosis", true, Some("CmdOrCtrl+Q"))?;
     let sep1 = PredefinedMenuItem::separator(app)?;
     let sep2 = PredefinedMenuItem::separator(app)?;
     let sep3 = PredefinedMenuItem::separator(app)?;
     let sep4 = PredefinedMenuItem::separator(app)?;
+    let sep5 = PredefinedMenuItem::separator(app)?;
 
     Menu::with_items(
         app,
@@ -164,6 +174,8 @@ fn build_menu(app: &AppHandle, status: &StatusSnapshot, update_version: Option<&
             &open_folder_item,
             &lock_item,
             &sep2,
+            &ghampus_item,
+            &sep5,
             &launch_item,
             &sep3,
             &update_item,
@@ -180,6 +192,13 @@ fn on_menu_event(app: &AppHandle, id: &str) {
                 let _ = win.show();
                 let _ = win.set_focus();
             }
+        }
+        "ghampus" => {
+            if let Some(win) = app.get_webview_window("main") {
+                let _ = win.show();
+                let _ = win.set_focus();
+            }
+            let _ = app.emit("graphnosis://open-tab", "ghampus");
         }
         "open_folder" => {
             let app_clone = app.clone();
