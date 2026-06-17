@@ -3621,6 +3621,18 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
       const entries = await readRecentAuditEntries(deps.host.getCortexDir(), limit ?? 50);
       return { entries };
     }
+    case 'agent:recentSaves': {
+      // Drives the "Picking up where we left off" panel on the Ghampus
+      // tab. Read-only; doesn't pass through the policy gate because the
+      // panel needs to render even when Ghampus is killed (so the user
+      // can see what was saved last session before resuming).
+      const { listRecentSaves } = await import('./agent-tools.js');
+      const args = z.object({
+        limit: z.number().int().positive().max(50).optional(),
+        sinceMs: z.number().int().positive().optional(),
+      }).parse(params ?? {});
+      return listRecentSaves(deps, args);
+    }
 
     case 'correction.apply': {
       // Apply a pending correction diff by its diffId (used by MemoryStudio's
