@@ -13,6 +13,7 @@ export type AgentToolName =
   | 'recall'
   | 'stats'
   | 'list_engrams'
+  | 'list_skills'
   | 'remember'
   | 'edit'
   | 'forget';

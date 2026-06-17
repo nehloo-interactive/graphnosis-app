@@ -333,34 +333,22 @@ function assertStudioEnabled(_deps: IpcDeps): void {
 }
 
 /**
- * Throws a user-facing error when Ghampus cannot run. Two distinct codes so
- * the chat UI can distinguish "user flipped the kill switch" from "license
- * gate":
- *   - `GHAMPUS_KILLED`  — settings.agent.enabled === false.
- *   - `GHAMPUS_GATED`   — license JWT does not include `ghampus`, `teams`,
- *                         or `enterprise`. Teams/Enterprise tokens are
- *                         accepted as supersets so domain-seat users on
- *                         older tokens (minted before the explicit
- *                         `ghampus` feature shipped) keep working.
+ * Resolve the user's plan tier — `'free' | 'pro' | 'teams' | 'enterprise'`
+ * — from the license JWT. The Ghampus surface is open to every tier; this
+ * is just so the chat UI can render contextual upsells ("on Pro this would
+ * auto-distill") and so per-tool handlers can gate features that map to
+ * paid LicenseFeatures.
  */
-async function assertGhampusEnabled(deps: IpcDeps): Promise<void> {
-  if (deps.host.getSettings().agent?.enabled === false) {
-    throw new Error(
-      'GHAMPUS_KILLED: Ghampus is disabled by the user kill switch. ' +
-      'Re-enable from the menu-bar tray or the Ghampus tab.',
-    );
-  }
+async function resolveAgentPlan(deps: IpcDeps): Promise<'free' | 'pro' | 'teams' | 'enterprise'> {
   const token = await getEffectiveLicenseToken(deps);
-  const hasGhampus =
-    (deps.licenseValidator?.hasFeature(token, 'ghampus') ?? false) ||
-    (deps.licenseValidator?.hasFeature(token, 'teams') ?? false) ||
-    (deps.licenseValidator?.hasFeature(token, 'enterprise') ?? false);
-  if (!hasGhampus) {
-    throw new Error(
-      'GHAMPUS_GATED: Ghampus requires the Teams or Enterprise plan. ' +
-      'Upgrade at https://graphnosis.app/pricing',
-    );
+  if (deps.licenseValidator?.hasFeature(token, 'enterprise')) return 'enterprise';
+  if (deps.licenseValidator?.hasFeature(token, 'teams')) return 'teams';
+  // Any of the Pro feature markers — skill-training, foresight,
+  // gnn-exploration, mcp-tool-control — means a paid Pro plan.
+  for (const f of ['skill-training', 'foresight', 'gnn-exploration', 'mcp-tool-control'] as const) {
+    if (deps.licenseValidator?.hasFeature(token, f)) return 'pro';
   }
+  return 'free';
 }
 
 /** Flatten a byGraph Map into a score-sorted candidate array for the threshold slider. */
@@ -3528,17 +3516,15 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
 
     // ── Ghampus (local agent) ────────────────────────────────────────────
     case 'agent:status': {
-      // Snapshot for the Chat tab to render the right surface (paywall vs
-      // shell vs kill-switch banner). No gate — readable in every state.
+      // Snapshot for the Chat tab to render the right surface (kill-switch
+      // banner, contextual upsells based on tier). No gate — readable in
+      // every state. Ghampus itself is open to every plan; the `plan`
+      // field drives the upgrade language not access.
       const settings = deps.host.getSettings();
-      const token = await getEffectiveLicenseToken(deps);
-      const licensed =
-        (deps.licenseValidator?.hasFeature(token, 'ghampus') ?? false) ||
-        (deps.licenseValidator?.hasFeature(token, 'teams') ?? false) ||
-        (deps.licenseValidator?.hasFeature(token, 'enterprise') ?? false);
+      const plan = await resolveAgentPlan(deps);
       return {
         enabled: settings.agent?.enabled !== false,
-        licensed,
+        plan,
       };
     }
     case 'agent:setEnabled': {
@@ -3558,7 +3544,7 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
       const { assertCanInvokeTool, AgentPolicyError } = await import('./agent-policy.js');
       const { appendAuditEntry } = await import('./agent-audit.js');
       const args = z.object({
-        tool: z.enum(['recall', 'stats', 'list_engrams', 'remember', 'edit', 'forget']),
+        tool: z.enum(['recall', 'stats', 'list_engrams', 'list_skills', 'remember', 'edit', 'forget']),
         args: z.record(z.string(), z.unknown()).optional(),
         conversationId: z.string().optional(),
       }).parse(params ?? {});
@@ -3566,7 +3552,7 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
       const cortexDir = deps.host.getCortexDir();
       const toolArgs = args.args ?? {};
       try {
-        await assertCanInvokeTool(
+        assertCanInvokeTool(
           { host: deps.host, licenseValidator: deps.licenseValidator ?? undefined },
           args.tool,
         );
@@ -3587,7 +3573,11 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
         throw err;
       }
       try {
-        const result = await invokeAgentTool(deps, args.tool, toolArgs);
+        const result = await invokeAgentTool(
+          { host: deps.host, skillTrainer: deps.skillTrainer ?? null },
+          args.tool,
+          toolArgs,
+        );
         await appendAuditEntry(cortexDir, {
           tool: args.tool,
           args: toolArgs,
@@ -3631,7 +3621,29 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
         limit: z.number().int().positive().max(50).optional(),
         sinceMs: z.number().int().positive().optional(),
       }).parse(params ?? {});
-      return listRecentSaves(deps, args);
+      return listRecentSaves({ host: deps.host }, args);
+    }
+    case 'agent:listNotifications': {
+      // Drives the "While you were away" panel — inbound activity from
+      // connectors, AI clients, sharing-token writes, direct ingest.
+      // Excludes Ghampus's own saves (those live in agent:recentSaves so
+      // the two surfaces are clean). No policy gate — visibility is the
+      // whole point.
+      const { listNotifications } = await import('./agent-notifications.js');
+      const args = z.object({
+        limit: z.number().int().positive().max(50).optional(),
+        sinceMs: z.number().int().positive().optional(),
+      }).parse(params ?? {});
+      return listNotifications({ host: deps.host }, args);
+    }
+    case 'agent:listSkills': {
+      // Surfaces the cortex's trained-skill library so the Ghampus tab
+      // can render a skills awareness panel (matching what the Free tier
+      // can already do via the MCP `list_skills` tool — Ghampus just
+      // makes them discoverable in conversation).
+      const { invokeAgentTool } = await import('./agent-tools.js');
+      const args = z.object({ engramId: z.string().optional() }).parse(params ?? {});
+      return invokeAgentTool({ host: deps.host, skillTrainer: deps.skillTrainer ?? null }, 'list_skills', args);
     }
 
     case 'correction.apply': {

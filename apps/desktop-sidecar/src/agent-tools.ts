@@ -13,10 +13,17 @@
 // to land first so the user reviews diffs before they commit.
 
 import type { GraphnosisHost } from './host.js';
+import type { SkillTrainer } from './skill-trainer.js';
 import type { AgentToolName } from './agent-types.js';
 
 export interface AgentToolDeps {
   host: GraphnosisHost;
+  /**
+   * Optional — when absent, `list_skills` returns an empty array rather
+   * than throwing. Lets the agent surface degrade gracefully on cortexes
+   * where the trainer isn't initialised (e.g. during cold-start tests).
+   */
+  skillTrainer?: SkillTrainer | null;
 }
 
 export interface RecallToolArgs {
@@ -61,6 +68,26 @@ export interface ListEngramsToolResult {
     template?: string;
     archived: boolean;
     loaded: boolean;
+  }>;
+}
+
+export interface ListSkillsToolArgs {
+  /** Optional engram filter. When omitted, returns skills from every engram. */
+  engramId?: string | undefined;
+}
+
+export interface ListSkillsToolResult {
+  skills: Array<{
+    sourceId: string;
+    engramId: string;
+    label: string;
+    nodeCount: number;
+    /** Source kind that produced the skill — 'locally-trained' vs 'imported-from-pack'. */
+    origin: 'local' | 'pack';
+    /** ISO string when last trained, when available. */
+    trainedAt?: string;
+    /** Recall breadth 0-100 — drives the runtime recall budget for the skill. */
+    recallBreadth?: number;
   }>;
 }
 
@@ -122,6 +149,8 @@ export async function invokeAgentTool(
       return runStats(deps);
     case 'list_engrams':
       return runListEngrams(deps);
+    case 'list_skills':
+      return runListSkills(deps, args as unknown as ListSkillsToolArgs);
     case 'remember':
       return runRemember(deps, args as unknown as RememberToolArgs);
     case 'edit':
@@ -195,6 +224,25 @@ function runStats(deps: AgentToolDeps): StatsToolResult {
       activeNodes: g.activeNodes,
       softDeletedNodes: g.softDeletedNodes,
       sources: g.sources,
+    })),
+  };
+}
+
+function runListSkills(deps: AgentToolDeps, args: ListSkillsToolArgs): ListSkillsToolResult {
+  if (!deps.skillTrainer) return { skills: [] };
+  const raw = deps.skillTrainer.listSkills(args.engramId);
+  return {
+    skills: raw.map((s) => ({
+      sourceId: s.sourceId,
+      engramId: s.graphId,
+      label: s.label,
+      nodeCount: s.nodeCount,
+      // The trainer marks pack-imported skills with a provenance entry;
+      // everything else is locally-trained (including bundled demo packs
+      // ingested via ingest_pack on first boot).
+      origin: s.provenance ? 'pack' : 'local',
+      ...(s.trainedAt !== undefined ? { trainedAt: s.trainedAt } : {}),
+      ...(s.recallBreadth !== undefined ? { recallBreadth: s.recallBreadth } : {}),
     })),
   };
 }
