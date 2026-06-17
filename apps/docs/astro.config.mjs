@@ -60,6 +60,8 @@ export default defineConfig({
           label: 'Guides',
           items: [
             { label: 'Memory Across AI Clients', slug: 'guides/memory-across-ai-clients' },
+            { label: 'MCP Tools', slug: 'reference/mcp-tools' },
+            { label: 'Skills as SOPs', slug: 'reference/skills' },
             { label: 'Auto-ingest from Your Tools', slug: 'guides/connectors' },
             { label: 'Connect Offline Sources', slug: 'guides/connect-offline-sources' },
             { label: 'Adding Content', slug: 'guides/adding-content' },
@@ -80,8 +82,6 @@ export default defineConfig({
         {
           label: 'Reference',
           items: [
-            { label: 'MCP Tools', slug: 'reference/mcp-tools' },
-            { label: 'Skills as SOPs', slug: 'reference/skills' },
             { label: 'Federated Multi-Graphs', slug: 'reference/federated-multi-graphs' },
             { label: 'File Formats', slug: 'reference/file-formats' },
             { label: 'The Story of Ghampus', slug: 'reference/ghampus' },
