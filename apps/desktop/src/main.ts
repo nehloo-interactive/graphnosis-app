@@ -151,6 +151,7 @@ interface AppSettings {
   ui: {
     inspectorDetail: InspectorDetail;
     theme?: UiTheme;
+    defaultLandingMode?: string;
   };
   ai: {
     /** When ON, the sidecar's MCP `initialize` response includes a high-
@@ -340,7 +341,7 @@ let loadedGraphs: GraphWithMetadata[] = [];
 // the Check-in tab shows a triage dashboard by default and a results list
 // when there's an active search. The Atlas tab renders the 3D viz on the
 // shared selection state below.
-type GraphnosisTab = 'checkin' | 'atlas' | 'brain' | 'nondeterministic' | 'ghampus';
+type GraphnosisTab = 'checkin' | 'atlas' | 'brain' | 'nondeterministic';
 let graphnosisActiveTab: GraphnosisTab = 'checkin';
 
 // ── MemoryStudio state ──────────────────────────────────────────────────────
@@ -1630,6 +1631,13 @@ function render(status: StatusSnapshot): void {
             applyTheme(sidecartheme);
           }
           wireThemeToggle();
+          // Default landing mode: same reconcile pattern as theme. If the
+          // sidecar carries a different value than localStorage, mirror it
+          // so the next boot lands on the right pane synchronously.
+          const sidecarLanding = s.ui?.defaultLandingMode;
+          if (sidecarLanding && sidecarLanding !== localStorage.getItem(LANDING_MODE_STORAGE_KEY)) {
+            localStorage.setItem(LANDING_MODE_STORAGE_KEY, sidecarLanding);
+          }
         } catch { /* non-fatal */ }
       })();
       activateMode(currentMode);
@@ -2718,6 +2726,7 @@ function shortCortexLabel(p: string): string {
 // ── View router ────────────────────────────────────────────────────────
 
 type Mode =
+  | 'ghampus'      // Local AI agent — top rail entry, default landing for new users
   | 'atlas'        // Home (the checkin dashboard sub-tab of the big pane)
   | 'engram'       // 3D Engram (the atlas sub-tab)
   | 'goals'        // Foresight — goals + predict + insights + GNN/GLL/Local-LLM (the brain sub-tab)
@@ -2734,7 +2743,21 @@ type Mode =
 // Home (mode='atlas') is the default landing pane post-unlock. The internal
 // symbol stays 'atlas' for backwards compatibility with the existing DOM
 // data-pane attributes and the ~20 activateMode('atlas') call-sites.
-let currentMode: Mode = 'atlas';
+//
+// Default landing mode resolution:
+//   - localStorage caches the user's preference so boot is synchronous
+//     (the sidecar settings load happens async after unlock, too late to
+//      pick the initial pane).
+//   - On settings load, the sidecar value wins and is written back to
+//     localStorage so the next boot is correct.
+//   - Brand-new cortexes with no preference → 'ghampus' (the friendly
+//     chat surface; safe for users who don't yet know what a "cortex" is).
+const LANDING_MODE_STORAGE_KEY = 'graphnosis.landingMode';
+const VALID_LANDING_MODES: Mode[] = ['ghampus', 'atlas', 'engram', 'goals', 'skills', 'sources', 'activity', 'get-connected', 'power-tools', 'mcp-tools'];
+function resolveLandingMode(raw: string | null | undefined): Mode {
+  return raw && (VALID_LANDING_MODES as string[]).includes(raw) ? (raw as Mode) : 'ghampus';
+}
+let currentMode: Mode = resolveLandingMode(localStorage.getItem(LANDING_MODE_STORAGE_KEY));
 
 // ── Rail-driven inner navigation ──────────────────────────────────────────
 // The four former in-pane tabs (MemoryStudio / 3D Engram / Deterministic
@@ -2847,6 +2870,10 @@ function activateMode(mode: Mode): void {
   }
   // (mode === 'atlas' and the other atlas sub-modes returned early above —
   //  switchGraphnosisTab handles their refresh lifecycle.)
+  if (mode === 'ghampus') {
+    void refreshGhampusState();
+    void refreshGhampusSharingPanel();
+  }
   if (mode === 'activity') void refreshActivityView();
   if (mode === 'presentation') {
     renderPresentationPane();
@@ -12069,9 +12096,6 @@ function switchGraphnosisTab(tab: GraphnosisTab): void {
     // card immediately on entry for free users (matching the MemoryStudio
     // GNN Exploration chip behaviour).
     void refreshGnnLicenseStatus();
-  } else if (tab === 'ghampus') {
-    void refreshGhampusState();
-    void refreshGhampusSharingPanel();
   }
 }
 
@@ -13615,12 +13639,11 @@ globalThis.atlasPerfApply = (): void => {
 // Tray-driven status updates push us into the right view in real time.
 void listen<StatusSnapshot>('graphnosis://status', (evt) => render(evt.payload));
 
-// Tray "Open Ghampus" emits the target tab id as the payload.
+// Tray "Open Ghampus" emits the target mode id as the payload.
+// The tray only ever emits 'ghampus' today, but we accept any Mode so
+// future tray entries (e.g. "Open Memory Studio") can reuse the channel.
 void listen<string>('graphnosis://open-tab', (evt) => {
-  const tab = evt.payload as GraphnosisTab;
-  if (tab === 'checkin' || tab === 'atlas' || tab === 'brain' || tab === 'nondeterministic' || tab === 'ghampus') {
-    switchGraphnosisTab(tab);
-  }
+  activateMode(evt.payload as Mode);
 });
 
 // Sidecar startup progress — shown in the lock screen while the cortex loads.
