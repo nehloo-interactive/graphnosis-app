@@ -2334,6 +2334,46 @@ async fn recovery_apply(
 }
 
 #[tauri::command]
+async fn pick_attachment_file(app: AppHandle) -> Result<Option<String>, String> {
+    // Picker for the "attach a file" flow in Ghampus. No format filter —
+    // any file the user wants to associate with a memory is fair game
+    // (images, PDFs, docs, code, archives, OneNote exports, etc.). The
+    // file content is never read by Graphnosis; only the path is stored.
+    let picked = app
+        .dialog()
+        .file()
+        .set_title("Pick a file to attach to your memory")
+        .blocking_pick_file();
+    Ok(picked
+        .and_then(|f| f.into_path().ok())
+        .map(|p| p.to_string_lossy().into_owned()))
+}
+
+#[tauri::command]
+async fn open_attachment_in_default_app(path: String) -> Result<(), String> {
+    // Used by the file-attachment UI in Ghampus / Sources to launch the
+    // file in whatever the OS's default handler is for that extension.
+    // Validation mirrors `reveal_file_in_finder` — refuse non-existent
+    // paths and refuse `.app` bundles (so a crafted argument can't ask
+    // the OS to launch an arbitrary application).
+    if !std::path::Path::new(&path).exists() {
+        return Err("refusing to open: path does not exist".to_string());
+    }
+    if path.to_ascii_lowercase().ends_with(".app") {
+        return Err("refusing to open an application bundle".to_string());
+    }
+    // `open <path>` on macOS hands the file to its default handler.
+    // On Linux this would be `xdg-open`; on Windows, `start ""`. We
+    // currently ship for macOS only; cross-platform extensions can
+    // branch here when needed.
+    std::process::Command::new("open")
+        .arg(&path)
+        .spawn()
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
 async fn reveal_file_in_finder(path: String) -> Result<(), String> {
     // `open -R <path>` selects the file inside Finder (reveals it in its
     // containing folder). Validate the argument is a real on-disk path (not a
@@ -3251,6 +3291,8 @@ pub fn run() {
             configure_mcp_client,
             open_cortex_in_finder,
             reveal_file_in_finder,
+            open_attachment_in_default_app,
+            pick_attachment_file,
             show_window,
             open_about_window,
             open_external_url,

@@ -11710,6 +11710,22 @@ ollama list</code></pre>
                       <ul id="ghampus-skills-list" style="list-style: none; padding: 0; margin: 0;"></ul>
                     </div>
 
+                    <!-- Linked files — local file paths attached to memories
+                         without ingesting their content. Files stay on disk
+                         (or shared drives, network paths, OneNote URIs); we
+                         just remember WHERE they are so recall can surface
+                         them and the user can open the original in its
+                         native app. -->
+                    <div id="ghampus-attachments-panel" style="margin-top: 20px; padding-top: 16px; border-top: 1px solid var(--g-border, rgba(255,255,255,.1));">
+                      <div style="display: flex; align-items: baseline; gap: 8px; margin-bottom: 8px;">
+                        <h3 style="margin: 0;">Linked files</h3>
+                        <button id="btn-ghampus-attach-file" class="g-btn" type="button" style="font-size: 12px; padding: 3px 10px; margin-left: auto;">+ Attach a file</button>
+                        <button id="btn-ghampus-attach-path" class="g-btn" type="button" style="font-size: 12px; padding: 3px 10px;">+ Path…</button>
+                      </div>
+                      <p id="ghampus-attachments-summary" class="subtitle" style="margin: 0 0 8px;">—</p>
+                      <ul id="ghampus-attachments-list" style="list-style: none; padding: 0; margin: 0;"></ul>
+                    </div>
+
                     <div id="ghampus-sharing-panel" style="margin-top: 20px; padding-top: 16px; border-top: 1px solid var(--g-border, rgba(255,255,255,.1));">
                       <h3 style="margin: 0 0 8px;">Active shares</h3>
                       <p id="ghampus-sharing-summary" class="subtitle">—</p>

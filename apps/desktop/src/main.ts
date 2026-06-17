@@ -2876,6 +2876,7 @@ function activateMode(mode: Mode): void {
     void refreshGhampusSavings();
     void refreshGhampusRecentSaves();
     void refreshGhampusSkills();
+    void refreshGhampusAttachments();
     void refreshGhampusSharingPanel();
   }
   if (mode === 'activity') { void refreshActivityView(); void refreshAiActivityRollup(); }
@@ -23162,6 +23163,130 @@ async function refreshAiActivityRollup(): Promise<void> {
     }
   } catch { /* non-fatal */ }
 }
+
+// ── Attachments — Linked files panel ──────────────────────────────────
+interface AttachmentRow {
+  id: string;
+  path: string;
+  kind: string;
+  label: string;
+  note?: string;
+  graphId: string;
+  sourceId?: string;
+  nodeIds?: string[];
+  lastVerifiedOk: boolean;
+  sizeBytes?: number;
+  addedAt?: number;
+}
+
+const ATTACHMENT_KIND_ICONS: Record<string, string> = {
+  image: '🖼',
+  pdf: '📕',
+  doc: '📄',
+  spreadsheet: '📊',
+  video: '🎬',
+  audio: '🎵',
+  archive: '🗜',
+  code: '⌨︎',
+  onenote: '📓',
+  other: '📎',
+};
+
+async function refreshGhampusAttachments(): Promise<void> {
+  try {
+    const res = await ipcCall<{ attachments: AttachmentRow[] }>('attachments:list', {});
+    const sum = document.getElementById('ghampus-attachments-summary');
+    const ul = document.getElementById('ghampus-attachments-list');
+    if (sum) {
+      sum.textContent = res.attachments.length === 0
+        ? "Attach a local file — image, PDF, doc, OneNote, anything — and I'll surface it next time you recall something related. The file stays where it is."
+        : `${res.attachments.length} file${res.attachments.length === 1 ? '' : 's'} linked to memories · click any to open · stays on disk`;
+    }
+    if (ul) {
+      ul.innerHTML = res.attachments.slice(0, 12).map((a) => {
+        const icon = ATTACHMENT_KIND_ICONS[a.kind] ?? '📎';
+        const stale = a.lastVerifiedOk ? '' : '<span class="subtitle" style="font-size: 10px; color: var(--g-warn, #c47); padding: 1px 5px; border: 1px solid var(--g-warn, #c47); border-radius: 3px;">not on this device</span>';
+        const size = a.sizeBytes ? formatAttachmentBytes(a.sizeBytes) : '';
+        return `<li style="padding: 6px 0; display: flex; gap: 8px; align-items: baseline;">
+          <span>${icon}</span>
+          <strong style="font-size: 13px; cursor: pointer;" data-attach-open="${escapeHtml(a.path)}" title="Open in default app">${escapeHtml(a.label)}</strong>
+          <code style="font-size: 11px; opacity: .6;">${escapeHtml(a.graphId)}</code>
+          ${stale}
+          <span class="subtitle" style="font-size: 11px;">${size}</span>
+          <button class="g-btn" type="button" data-attach-detach="${escapeHtml(a.id)}" style="font-size: 10px; padding: 1px 6px; opacity: .6;">remove</button>
+        </li>`;
+      }).join('');
+      ul.querySelectorAll<HTMLElement>('[data-attach-open]').forEach((el) => {
+        el.onclick = () => {
+          const p = el.dataset['attachOpen']!;
+          void invoke('open_attachment_in_default_app', { path: p }).catch((err) => {
+            void gAlert('Could not open file', String(err));
+          });
+        };
+      });
+      ul.querySelectorAll<HTMLButtonElement>('[data-attach-detach]').forEach((b) => {
+        b.onclick = () => {
+          void (async () => {
+            const id = b.dataset['attachDetach']!;
+            if (!await gConfirm('Remove linked file?', 'The file stays on disk — Graphnosis just stops tracking it.')) return;
+            await ipcCall('attachments:detach', { id });
+            void refreshGhampusAttachments();
+          })();
+        };
+      });
+    }
+  } catch { /* non-fatal */ }
+}
+
+function formatAttachmentBytes(n: number): string {
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(0)} KB`;
+  if (n < 1024 * 1024 * 1024) return `${(n / 1024 / 1024).toFixed(1)} MB`;
+  return `${(n / 1024 / 1024 / 1024).toFixed(2)} GB`;
+}
+
+function wireGhampusAttachButtons(): void {
+  document.getElementById('btn-ghampus-attach-file')?.addEventListener('click', () => {
+    void (async () => {
+      try {
+        const picked = await invoke<string | null>('pick_attachment_file', {});
+        if (!picked) return;
+        // Attach to the currently active engram. Full UX: a modal with
+        // engram dropdown + note field. V1 keeps it one-click for speed.
+        const graphId = atlasActiveGraph && atlasActiveGraph !== FULL_CORTEX ? atlasActiveGraph : (loadedGraphs[0]?.graphId ?? '');
+        if (!graphId) {
+          void gAlert('No engram selected', 'Pick an active engram from the header dropdown first, then attach.');
+          return;
+        }
+        await ipcCall('attachments:attach', { path: picked, graphId });
+        void refreshGhampusAttachments();
+      } catch (err) {
+        void gAlert('Attach failed', String(err));
+      }
+    })();
+  });
+  document.getElementById('btn-ghampus-attach-path')?.addEventListener('click', () => {
+    void (async () => {
+      // Path entry — for shared-drive paths, OneNote URIs, anything the
+      // file picker won't reach directly. No validation here; the store
+      // records whether the path resolves on the current machine.
+      const p = window.prompt('Path or URI to attach (shared drive, OneNote URI, etc.)');
+      if (!p || !p.trim()) return;
+      const graphId = atlasActiveGraph && atlasActiveGraph !== FULL_CORTEX ? atlasActiveGraph : (loadedGraphs[0]?.graphId ?? '');
+      if (!graphId) {
+        void gAlert('No engram selected', 'Pick an active engram from the header dropdown first, then attach.');
+        return;
+      }
+      try {
+        await ipcCall('attachments:attach', { path: p.trim(), graphId });
+        void refreshGhampusAttachments();
+      } catch (err) {
+        void gAlert('Attach failed', String(err));
+      }
+    })();
+  });
+}
+wireGhampusAttachButtons();
 
 async function refreshGhampusSavings(): Promise<void> {
   try {

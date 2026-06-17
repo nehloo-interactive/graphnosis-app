@@ -3939,6 +3939,80 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
       });
       return { ok: true };
     }
+
+    // ── File attachments — references to local files associated with
+    //    notes / memories. The files stay where they are; we store only
+    //    the path + metadata.
+    case 'attachments:attach': {
+      const { addAttachment } = await import('./attachments-store.js');
+      const args = z.object({
+        path: z.string().min(1),
+        graphId: z.string().min(1),
+        kind: z.enum(['image', 'pdf', 'doc', 'spreadsheet', 'video', 'audio', 'archive', 'code', 'onenote', 'other']).optional(),
+        label: z.string().optional(),
+        note: z.string().optional(),
+        sourceId: z.string().optional(),
+        nodeIds: z.array(z.string()).optional(),
+      }).parse(params ?? {});
+      const rec = await addAttachment(deps.host.getCortexDir(), {
+        path: args.path,
+        graphId: args.graphId,
+        ...(args.kind !== undefined ? { kind: args.kind } : {}),
+        ...(args.label !== undefined ? { label: args.label } : {}),
+        ...(args.note !== undefined ? { note: args.note } : {}),
+        ...(args.sourceId !== undefined ? { sourceId: args.sourceId } : {}),
+        ...(args.nodeIds !== undefined ? { nodeIds: args.nodeIds } : {}),
+      });
+      return { ok: true, attachment: rec };
+    }
+    case 'attachments:list': {
+      const { listAttachments } = await import('./attachments-store.js');
+      const args = z.object({
+        graphId: z.string().optional(),
+        sourceId: z.string().optional(),
+        nodeIds: z.array(z.string()).optional(),
+      }).parse(params ?? {});
+      const filter: { graphId?: string; sourceId?: string; nodeIds?: string[] } = {};
+      if (args.graphId !== undefined) filter.graphId = args.graphId;
+      if (args.sourceId !== undefined) filter.sourceId = args.sourceId;
+      if (args.nodeIds !== undefined) filter.nodeIds = args.nodeIds;
+      const attachments = await listAttachments(deps.host.getCortexDir(), filter);
+      return { attachments };
+    }
+    case 'attachments:update': {
+      const { updateAttachment } = await import('./attachments-store.js');
+      const args = z.object({
+        id: z.string().min(1),
+        label: z.string().optional(),
+        note: z.string().optional(),
+        nodeIds: z.array(z.string()).optional(),
+        sourceId: z.string().optional(),
+        kind: z.enum(['image', 'pdf', 'doc', 'spreadsheet', 'video', 'audio', 'archive', 'code', 'onenote', 'other']).optional(),
+      }).parse(params ?? {});
+      // eslint-disable-next-line @typescript-eslint/no-unused-vars
+      const { id, ...patchRaw } = args;
+      const patch: Parameters<typeof updateAttachment>[2] = {};
+      if (patchRaw.label !== undefined) patch.label = patchRaw.label;
+      if (patchRaw.note !== undefined) patch.note = patchRaw.note;
+      if (patchRaw.nodeIds !== undefined) patch.nodeIds = patchRaw.nodeIds;
+      if (patchRaw.sourceId !== undefined) patch.sourceId = patchRaw.sourceId;
+      if (patchRaw.kind !== undefined) patch.kind = patchRaw.kind;
+      const updated = await updateAttachment(deps.host.getCortexDir(), id, patch);
+      return updated ? { ok: true, attachment: updated } : { ok: false, reason: 'not_found' };
+    }
+    case 'attachments:verify': {
+      const { verifyAttachment } = await import('./attachments-store.js');
+      const args = z.object({ id: z.string().min(1) }).parse(params ?? {});
+      const v = await verifyAttachment(deps.host.getCortexDir(), args.id);
+      return v ? { ok: true, attachment: v } : { ok: false, reason: 'not_found' };
+    }
+    case 'attachments:detach': {
+      const { removeAttachment } = await import('./attachments-store.js');
+      const args = z.object({ id: z.string().min(1) }).parse(params ?? {});
+      const ok = await removeAttachment(deps.host.getCortexDir(), args.id);
+      return ok ? { ok: true } : { ok: false, reason: 'not_found' };
+    }
+
     case 'mcp:activitySummary': {
       // Aggregates the existing agent-audit + MCP source-attribution
       // streams into a per-client / per-tool rollup. Drives the
