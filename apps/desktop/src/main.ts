@@ -19213,8 +19213,8 @@ async function refreshSharingTokenSummary(): Promise<void> {
   try {
     const plan = await invoke<SharingPlanInfo>('sharing:planInfo', {});
     const seatStr = plan.seats !== null
-      ? `${plan.activeCount} / ${plan.seats} token used`
-      : `${plan.activeCount} active token${plan.activeCount === 1 ? '' : 's'}`;
+      ? `${plan.activeCount} / ${plan.seats} share used`
+      : `${plan.activeCount} active share${plan.activeCount === 1 ? '' : 's'}`;
     summary.textContent = seatStr;
     summary.style.color = '';
   } catch { summary.textContent = ''; }
@@ -19268,7 +19268,7 @@ function renderSharingTokenList(
         <div style="font-size:12px;color:var(--fg-muted);">${t.role} · ${engramLabel} · ${expiryLabel}</div>
         <div style="font-size:11px;color:var(--fg-muted);margin-top:2px;">${sessionLabel}</div>
       </div>
-      <button class="sharing-revoke-btn" data-id="${escape(t.id)}" title="Revoke token" style="flex-shrink:0;">Revoke</button>
+      <button class="sharing-revoke-btn" data-id="${escape(t.id)}" title="Revoke share" style="flex-shrink:0;">Revoke</button>
     `;
     list.appendChild(row);
   }
@@ -19276,7 +19276,7 @@ function renderSharingTokenList(
     btn.addEventListener('click', async () => {
       const id = btn.dataset['id'];
       if (!id) return;
-      if (!await gConfirm('Revoke token?', 'Collaborators using this token will lose access on their next request. This cannot be undone.')) return;
+      if (!await gConfirm('Revoke share?', 'Collaborators using this share will lose access on their next request. This cannot be undone.')) return;
       await invoke('sharing:revoke', { id });
       void openSharingModal();
       void refreshSharingTokenSummary();
@@ -19316,7 +19316,7 @@ async function openSharingModal(): Promise<void> {
   if (createBtn && plan.seats !== null) {
     createBtn.disabled = plan.activeCount >= plan.seats;
     createBtn.title = plan.activeCount >= plan.seats
-      ? `Seat limit reached (${plan.seats}). Revoke a token to free a seat.`
+      ? `Revoke your existing share to create a new one.`
       : '';
   }
 
@@ -19432,7 +19432,7 @@ async function openSharingModal(): Promise<void> {
       if (!result.ok) {
         void gAlert(
           'Token limit reached',
-          result.message ?? 'Unable to create token.',
+          result.message ?? 'Unable to create share.',
         );
         return;
       }

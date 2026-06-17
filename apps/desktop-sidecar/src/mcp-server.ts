@@ -2773,7 +2773,7 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
     const scope = deps.sharingScope;
     if (scope && scope.role === 'viewer') {
       throw new ScopeViolationError(
-        '⛔ This token is read-only (viewer role). Contact the cortex owner to request editor access.',
+        '⛔ This share is read-only (viewer role). Contact the cortex owner to request editor access.',
       );
     }
   }
@@ -4588,7 +4588,7 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
 
         // Respect sharing scope — only owner sessions may export
         if (deps.sharingScope) {
-          return mcpError('⛔ Engram export is only available to the cortex owner. Shared (scoped-token) sessions cannot export.');
+          return mcpError('⛔ Engram export is only available to the cortex owner. Sessions connected via a share cannot export.');
         }
 
         // Gate behind Pro+ (sharing feature)
