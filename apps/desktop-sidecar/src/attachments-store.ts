@@ -16,9 +16,14 @@
 
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
-import { randomUUID } from 'node:crypto';
+import { randomUUID, createHash } from 'node:crypto';
 
 const ATTACHMENTS_FILE = 'attachments.json';
+
+/** Max file size we'll hash inline. Larger files get a size-stamp only —
+ *  reading a 4GB video twice (once on attach, once on repair) is painful
+ *  and the hash isn't proportionally more useful. Tunable. */
+const MAX_HASH_BYTES = 256 * 1024 * 1024; // 256 MB
 
 /**
  * One attachment record. Lightweight — just enough to display a card,
@@ -92,6 +97,13 @@ export async function addAttachment(cortexDir: string, input: AttachInput): Prom
   const stat = await safeStat(input.path);
   const kind = input.kind ?? inferKindFromPath(input.path);
   const label = input.label?.trim() || path.basename(input.path) || input.path;
+  // Compute the content hash inline if the file's reachable + reasonably
+  // sized — the hash is the durable identifier that lets the repair flow
+  // re-link the attachment after a move. Falls back to size-only for
+  // huge files so we don't take a 5-second pause on 4 GB videos.
+  const contentHash = stat && stat.size <= MAX_HASH_BYTES
+    ? await hashFile(input.path).catch(() => undefined)
+    : undefined;
   const record: AttachmentRecord = {
     id: randomUUID(),
     path: input.path,
@@ -105,6 +117,7 @@ export async function addAttachment(cortexDir: string, input: AttachInput): Prom
     lastVerifiedAt: Date.now(),
     lastVerifiedOk: stat !== null,
     ...(stat ? { sizeBytes: stat.size } : {}),
+    ...(contentHash ? { contentHash } : {}),
   };
   await writeAll(cortexDir, [...existing, record]);
   return record;
@@ -160,6 +173,60 @@ export async function verifyAttachment(cortexDir: string, id: string): Promise<A
   return updated;
 }
 
+/**
+ * Re-point an attachment to a new file path — the user found where their
+ * file moved to. Verifies the candidate path before committing:
+ *   - If we stored a contentHash at attach time and the new file's hash
+ *     matches, the repair is unambiguously correct and persisted.
+ *   - If the hashes don't match, returns `{ ok: false, reason:
+ *     'hash_mismatch' }` so the UI can warn ("this looks like a
+ *     different file — repair anyway?").
+ *   - If we have no stored hash (very large files, or attachments made
+ *     before the hash field was populated), we trust the user — the
+ *     new path becomes authoritative.
+ */
+export async function repairAttachmentPath(
+  cortexDir: string,
+  id: string,
+  newPath: string,
+  options: { force?: boolean } = {},
+): Promise<
+  | { ok: true; attachment: AttachmentRecord }
+  | { ok: false; reason: 'not_found' | 'unreachable' | 'hash_mismatch'; storedHash?: string; candidateHash?: string }
+> {
+  const all = await readAll(cortexDir);
+  const idx = all.findIndex((a) => a.id === id);
+  if (idx < 0) return { ok: false, reason: 'not_found' };
+  const current = all[idx]!;
+  const stat = await safeStat(newPath);
+  if (!stat) return { ok: false, reason: 'unreachable' };
+  let candidateHash: string | undefined;
+  if (current.contentHash && stat.size <= MAX_HASH_BYTES) {
+    candidateHash = await hashFile(newPath).catch(() => undefined);
+    if (!options.force && candidateHash && candidateHash !== current.contentHash) {
+      return {
+        ok: false,
+        reason: 'hash_mismatch',
+        storedHash: current.contentHash,
+        candidateHash,
+      };
+    }
+  }
+  // If the user forces past a hash mismatch, the new file's hash becomes
+  // the authoritative record so future repairs match against it.
+  const updated: AttachmentRecord = {
+    ...current,
+    path: newPath,
+    lastVerifiedAt: Date.now(),
+    lastVerifiedOk: true,
+    sizeBytes: stat.size,
+    ...(candidateHash ? { contentHash: candidateHash } : current.contentHash ? { contentHash: current.contentHash } : {}),
+  };
+  all[idx] = updated;
+  await writeAll(cortexDir, all);
+  return { ok: true, attachment: updated };
+}
+
 export async function removeAttachment(cortexDir: string, id: string): Promise<boolean> {
   const all = await readAll(cortexDir);
   const next = all.filter((a) => a.id !== id);
@@ -199,6 +266,11 @@ async function writeAll(cortexDir: string, records: AttachmentRecord[]): Promise
   const tmp = `${target}.tmp`;
   await fs.writeFile(tmp, JSON.stringify(records, null, 2), 'utf8');
   await fs.rename(tmp, target);
+}
+
+async function hashFile(p: string): Promise<string> {
+  const buf = await fs.readFile(p);
+  return createHash('sha256').update(buf).digest('hex');
 }
 
 async function safeStat(p: string): Promise<{ size: number } | null> {

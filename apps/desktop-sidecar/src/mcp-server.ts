@@ -1979,6 +1979,20 @@ export function createMcpServer(deps: McpDeps): Server {
         },
       },
       {
+        name: 'list_attachments',
+        description: 'DETERMINISM — Deterministic: a direct read of the attachment manifest; no LLM.\n\nList file attachments the user has linked to one or more engrams. Returns path, kind, label, and the engram each attachment belongs to. The file content is NEVER returned — only the path + light metadata. Useful when the user asks "what files do I have linked to <topic>" or when you want to surface "the original PDF" alongside recalled facts.\n\nIMPORTANT: When called from a sharing-tokened session, results are filtered to engrams in scope of the token; out-of-scope attachments are silently omitted. Paths on the owner\'s machine are NOT resolvable on the recipient\'s machine — surface them to the user as "lives on <owner>\'s machine" references, not as openable files.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            graphId: { type: 'string', description: 'Optional engram slug filter. When omitted, returns attachments from every in-scope engram.' },
+          },
+        },
+        annotations: {
+          title: 'List attachments',
+          readOnlyHint: true,
+        },
+      },
+      {
         name: 'suggest_engram',
         description: 'DETERMINISM — Deterministic: token-based similarity; no LLM.\n\nRecommend the best engram(s) to route a new note into, based on lexical similarity between the note text and engram names. Call this before remember when you\'re unsure which engram fits — saves a round trip through the banner flow. Returns a ranked short-list with match scores.',
         inputSchema: {
@@ -3376,6 +3390,66 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
         }));
         const notice = pendingEngramNotice(deps.host);
         return { content: [{ type: 'text', text: JSON.stringify(rows, null, 2) + notice }] };
+      }
+      case 'list_attachments': {
+        // File attachments — metadata only, never content. When called
+        // from a sharing-tokened session, results are scope-filtered so
+        // collaborators only see attachments from engrams they can
+        // already recall from. Paths stay on the owner's machine and
+        // we badge that explicitly in the response so AI clients know
+        // not to try and `open` them.
+        const args = z.object({ graphId: z.string().optional() }).parse(req.params.arguments ?? {});
+        const scope = deps.sharingScope;
+        let allowedGraphIds: string[] | null = null;
+        if (scope && scope.engrams !== '*') {
+          allowedGraphIds = scope.engrams as string[];
+        }
+        if (args.graphId) {
+          const resolved = resolveEngramList(deps.host, [args.graphId]);
+          if (resolved.warnings.length > 0) {
+            return mcpError(`Engram "${args.graphId}" not found.`);
+          }
+          // Honor scope: refuse to list if the requested engram isn't
+          // in the caller's sharing scope.
+          if (allowedGraphIds && !allowedGraphIds.includes(resolved.resolved[0]!)) {
+            return mcpError(`Engram "${args.graphId}" is outside your sharing scope.`);
+          }
+          allowedGraphIds = resolved.resolved;
+        }
+        const { listAttachments } = await import('./attachments-store.js');
+        const cortexDir = deps.host.getCortexDir();
+        const targets = allowedGraphIds ?? deps.host.listGraphs();
+        const rows: Array<{
+          path: string;
+          kind: string;
+          label: string;
+          graphId: string;
+          sourceId?: string;
+          sizeBytes?: number;
+          ownerSideOnly: true;
+        }> = [];
+        for (const graphId of targets) {
+          const recs = await listAttachments(cortexDir, { graphId });
+          for (const r of recs) {
+            rows.push({
+              path: r.path,
+              kind: r.kind,
+              label: r.label,
+              graphId: r.graphId,
+              ...(r.sourceId !== undefined ? { sourceId: r.sourceId } : {}),
+              ...(r.sizeBytes !== undefined ? { sizeBytes: r.sizeBytes } : {}),
+              ownerSideOnly: true,
+            });
+          }
+        }
+        // Footer note tells AI clients (especially collaborators on a
+        // sharing token) that the paths are references to the owner's
+        // local file system — not openable, not transferable, just
+        // "this artifact exists alongside the recalled facts."
+        const note = scope
+          ? '\n\n_Note: paths reference files on the engram owner\'s machine. They will not resolve on your system. Surface them to the user as "the owner has these files linked" references._'
+          : '';
+        return { content: [{ type: 'text', text: JSON.stringify(rows, null, 2) + note }] };
       }
       case 'suggest_engram': {
         const args = SuggestEngramInput.parse(req.params.arguments ?? {});

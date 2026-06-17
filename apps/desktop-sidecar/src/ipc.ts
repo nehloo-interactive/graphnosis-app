@@ -4012,6 +4012,145 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
       const ok = await removeAttachment(deps.host.getCortexDir(), args.id);
       return ok ? { ok: true } : { ok: false, reason: 'not_found' };
     }
+    case 'attachments:describeImage': {
+      // (A) Free-form vision description of an attached image. Uses the
+      // local vision model (llama3.2-vision by default). When
+      // `ingestAsSource: true`, the description is piped into the
+      // existing host.ingest() pipeline as a Markdown source, with the
+      // image's file path cited at the top — recall results then
+      // surface the image alongside the textual description.
+      const { describeAttachmentImage, describeResultToMarkdown } = await import('./vision-pipeline.js');
+      const args = z.object({
+        attachmentId: z.string().min(1),
+        modelTag: z.string().optional(),
+        promptHint: z.string().optional(),
+        ingestAsSource: z.boolean().optional(),
+      }).parse(params ?? {});
+      const result = await describeAttachmentImage({ host: deps.host }, {
+        attachmentId: args.attachmentId,
+        ...(args.modelTag !== undefined ? { modelTag: args.modelTag } : {}),
+        ...(args.promptHint !== undefined ? { promptHint: args.promptHint } : {}),
+      });
+      if (result.ok && args.ingestAsSource) {
+        const { listAttachments } = await import('./attachments-store.js');
+        const all = await listAttachments(deps.host.getCortexDir(), {});
+        const att = all.find((a) => a.id === args.attachmentId);
+        if (att) {
+          const ref = `vision:${att.id}-${Date.now().toString(36)}`;
+          await deps.host.ingest(
+            att.graphId,
+            'ai-conversation',
+            ref,
+            {
+              kind: 'markdown',
+              content: describeResultToMarkdown(att.path, result),
+              sourceRef: ref,
+            },
+            { addedBy: 'ghampus-vision' },
+          ).catch(() => { /* non-fatal — describe still returns */ });
+        }
+      }
+      return result;
+    }
+    case 'attachments:extractStructure': {
+      // (B) Structured `{nodes, edges}` extraction from a diagram /
+      // flowchart / whiteboard image. Pro-gated: uses more tokens than
+      // describe and produces graph mutations the user must approve.
+      // The handler returns the parsed structure; committing it to the
+      // engram is the correction-flow integration's job (deferred to
+      // the UI surface that wraps the propose-then-approve loop).
+      if (!(await hasAnyPaidPlan(deps))) {
+        return {
+          ok: false,
+          reason: 'not_licensed',
+          message: 'Structured visual extraction is a Pro feature. Free users can still describe images via attachments:describeImage.',
+        };
+      }
+      const { extractStructureFromImage } = await import('./vision-pipeline.js');
+      const args = z.object({
+        attachmentId: z.string().min(1),
+        modelTag: z.string().optional(),
+      }).parse(params ?? {});
+      return await extractStructureFromImage({ host: deps.host }, {
+        attachmentId: args.attachmentId,
+        ...(args.modelTag !== undefined ? { modelTag: args.modelTag } : {}),
+      });
+    }
+    case 'attachments:commitExtraction': {
+      // The user approved an extracted `{nodes, edges}` payload — write
+      // it to the engram as a structured source. Each extracted node
+      // becomes a chunk in the source body; edges live as Markdown
+      // arrows between nodes so the entity-linker auto-wires them to
+      // existing memories about the same labels.
+      if (!(await hasAnyPaidPlan(deps))) {
+        return { ok: false, reason: 'not_licensed' };
+      }
+      const args = z.object({
+        attachmentId: z.string().min(1),
+        nodes: z.array(z.object({
+          id: z.string(),
+          label: z.string(),
+          category: z.string().optional(),
+          note: z.string().optional(),
+        })),
+        edges: z.array(z.object({
+          from: z.string(),
+          to: z.string(),
+          label: z.string().optional(),
+          directed: z.boolean().optional(),
+        })),
+      }).parse(params ?? {});
+      const { listAttachments } = await import('./attachments-store.js');
+      const all = await listAttachments(deps.host.getCortexDir(), {});
+      const att = all.find((a) => a.id === args.attachmentId);
+      if (!att) return { ok: false, reason: 'attachment_not_found' };
+      const lines: string[] = [];
+      lines.push(`> Structured extraction from \`${att.label}\` (${att.path})`);
+      lines.push('');
+      lines.push('## Entities');
+      for (const n of args.nodes) {
+        const cat = n.category ? ` _(${n.category})_` : '';
+        const note = n.note ? ` — ${n.note}` : '';
+        lines.push(`- **${n.label}**${cat}${note}`);
+      }
+      if (args.edges.length > 0) {
+        lines.push('');
+        lines.push('## Relationships');
+        const byId = new Map(args.nodes.map((n) => [n.id, n.label]));
+        for (const e of args.edges) {
+          const from = byId.get(e.from) ?? e.from;
+          const to = byId.get(e.to) ?? e.to;
+          const arrow = e.directed === false ? '↔' : '→';
+          const label = e.label ? ` (${e.label})` : '';
+          lines.push(`- ${from} ${arrow} ${to}${label}`);
+        }
+      }
+      const ref = `vision-extract:${att.id}-${Date.now().toString(36)}`;
+      const result = await deps.host.ingest(
+        att.graphId,
+        'ai-conversation',
+        ref,
+        { kind: 'markdown', content: lines.join('\n'), sourceRef: ref },
+        { addedBy: 'ghampus-vision' },
+      );
+      return { ok: true, sourceId: result.sourceId, nodeCount: result.nodeIds.length };
+    }
+    case 'attachments:repair': {
+      // User found where their file moved to — re-point the attachment.
+      // If we stored a contentHash at attach time and the new file hashes
+      // differently, refuse unless `force: true` (the UI surfaces a
+      // "looks like a different file" confirm and re-calls with force).
+      const { repairAttachmentPath } = await import('./attachments-store.js');
+      const args = z.object({
+        id: z.string().min(1),
+        newPath: z.string().min(1),
+        force: z.boolean().optional(),
+      }).parse(params ?? {});
+      const res = await repairAttachmentPath(deps.host.getCortexDir(), args.id, args.newPath, {
+        force: args.force === true,
+      });
+      return res;
+    }
 
     case 'mcp:activitySummary': {
       // Aggregates the existing agent-audit + MCP source-attribution

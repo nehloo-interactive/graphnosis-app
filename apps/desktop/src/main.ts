@@ -23207,15 +23207,122 @@ async function refreshGhampusAttachments(): Promise<void> {
         const icon = ATTACHMENT_KIND_ICONS[a.kind] ?? '📎';
         const stale = a.lastVerifiedOk ? '' : '<span class="subtitle" style="font-size: 10px; color: var(--g-warn, #c47); padding: 1px 5px; border: 1px solid var(--g-warn, #c47); border-radius: 3px;">not on this device</span>';
         const size = a.sizeBytes ? formatAttachmentBytes(a.sizeBytes) : '';
-        return `<li style="padding: 6px 0; display: flex; gap: 8px; align-items: baseline;">
+        // Broken attachments get a "Find new location…" repair button —
+        // the user picks the moved file; if we stored a content hash, we
+        // verify the new file matches before re-pointing.
+        const repairBtn = a.lastVerifiedOk
+          ? ''
+          : `<button class="g-btn" type="button" data-attach-repair="${escapeHtml(a.id)}" style="font-size: 10px; padding: 1px 6px;">Find new location…</button>`;
+        // Vision actions for image attachments: (A) Describe is open to
+        // everyone; (B) Extract entities + relationships is Pro; (C)
+        // Annotate opens the manual canvas surface.
+        const visionBtns = a.kind === 'image' && a.lastVerifiedOk
+          ? `<button class="g-btn" type="button" data-attach-describe="${escapeHtml(a.id)}" style="font-size: 10px; padding: 1px 6px;" title="Generate a text description via vision model (A)">🔍 Describe</button>
+             <button class="g-btn" type="button" data-attach-extract="${escapeHtml(a.id)}" style="font-size: 10px; padding: 1px 6px;" title="Extract entities + relationships as graph structure (B · Pro)">✨ Extract</button>
+             <button class="g-btn" type="button" data-attach-annotate="${escapeHtml(a.id)}" style="font-size: 10px; padding: 1px 6px;" title="Manually annotate boxes + arrows (C)">✏️ Annotate</button>`
+          : '';
+        return `<li style="padding: 6px 0; display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap;">
           <span>${icon}</span>
-          <strong style="font-size: 13px; cursor: pointer;" data-attach-open="${escapeHtml(a.path)}" title="Open in default app">${escapeHtml(a.label)}</strong>
+          <strong style="font-size: 13px; cursor: pointer;" data-attach-open="${escapeHtml(a.path)}" title="${a.lastVerifiedOk ? 'Open in default app' : 'File not found — pick its new location'}">${escapeHtml(a.label)}</strong>
           <code style="font-size: 11px; opacity: .6;">${escapeHtml(a.graphId)}</code>
           ${stale}
           <span class="subtitle" style="font-size: 11px;">${size}</span>
+          ${repairBtn}
+          ${visionBtns}
           <button class="g-btn" type="button" data-attach-detach="${escapeHtml(a.id)}" style="font-size: 10px; padding: 1px 6px; opacity: .6;">remove</button>
         </li>`;
       }).join('');
+      ul.querySelectorAll<HTMLButtonElement>('[data-attach-describe]').forEach((b) => {
+        b.onclick = () => {
+          void (async () => {
+            const id = b.dataset['attachDescribe']!;
+            b.textContent = '⏳ Describing…';
+            b.disabled = true;
+            try {
+              const result = await ipcCall<{ ok: boolean; description?: string; reason?: string; error?: string }>('attachments:describeImage', { attachmentId: id, ingestAsSource: true });
+              if (!result.ok) {
+                void gAlert('Vision describe failed', `${result.reason ?? 'unknown'} — ${result.error ?? 'is Ollama running with llama3.2-vision installed?'}`);
+                return;
+              }
+              void gAlert('Saved as memory', `Description ingested into the engram. First lines: "${(result.description ?? '').slice(0, 200)}…"`);
+              void refreshGhampusAttachments();
+            } finally {
+              b.disabled = false;
+              b.textContent = '🔍 Describe';
+            }
+          })();
+        };
+      });
+      ul.querySelectorAll<HTMLButtonElement>('[data-attach-extract]').forEach((b) => {
+        b.onclick = () => {
+          void (async () => {
+            const id = b.dataset['attachExtract']!;
+            b.textContent = '⏳ Extracting…';
+            b.disabled = true;
+            try {
+              const result = await ipcCall<{ ok: boolean; nodes?: Array<{ id: string; label: string; category?: string; note?: string }>; edges?: Array<{ from: string; to: string; label?: string; directed?: boolean }>; reason?: string; error?: string; message?: string }>('attachments:extractStructure', { attachmentId: id });
+              if (!result.ok) {
+                void gAlert('Extraction failed', result.message ?? result.error ?? result.reason ?? 'unknown');
+                return;
+              }
+              const nodes = result.nodes ?? [];
+              const edges = result.edges ?? [];
+              if (nodes.length === 0) {
+                void gAlert('Nothing to extract', 'The model didn\'t find any boxes or labeled elements in this image.');
+                return;
+              }
+              const preview = `${nodes.length} entit${nodes.length === 1 ? 'y' : 'ies'}, ${edges.length} relationship${edges.length === 1 ? '' : 's'}.\n\nEntities:\n${nodes.slice(0, 6).map((n) => `  • ${n.label}${n.category ? ` (${n.category})` : ''}`).join('\n')}${nodes.length > 6 ? `\n  …and ${nodes.length - 6} more` : ''}\n\nSave them to the engram as a new structured memory?`;
+              const ok = await gConfirm('Vision extracted a diagram', preview);
+              if (!ok) return;
+              const commit = await ipcCall<{ ok: boolean; sourceId?: string; reason?: string }>('attachments:commitExtraction', {
+                attachmentId: id,
+                nodes,
+                edges,
+              });
+              if (!commit.ok) {
+                void gAlert('Commit failed', commit.reason ?? 'unknown');
+                return;
+              }
+              void gAlert('Saved', `Extracted graph structure committed as a new source in the engram.`);
+              void refreshGhampusAttachments();
+            } finally {
+              b.disabled = false;
+              b.textContent = '✨ Extract';
+            }
+          })();
+        };
+      });
+      ul.querySelectorAll<HTMLButtonElement>('[data-attach-annotate]').forEach((b) => {
+        b.onclick = () => {
+          void (async () => {
+            const id = b.dataset['attachAnnotate']!;
+            void openAnnotationModal(id);
+          })();
+        };
+      });
+      ul.querySelectorAll<HTMLButtonElement>('[data-attach-repair]').forEach((b) => {
+        b.onclick = () => {
+          void (async () => {
+            const id = b.dataset['attachRepair']!;
+            const newPath = await invoke<string | null>('pick_attachment_file', {}).catch(() => null);
+            if (!newPath) return;
+            let result = await ipcCall<{ ok: boolean; reason?: string; storedHash?: string; candidateHash?: string }>('attachments:repair', { id, newPath });
+            if (!result.ok && result.reason === 'hash_mismatch') {
+              const cont = await gConfirm(
+                'That file looks different',
+                'The file at this path doesn\'t match the content fingerprint Graphnosis recorded when you first attached. It might be a different file, an edited copy, or a similarly-named one. Re-point the attachment anyway?',
+              );
+              if (!cont) return;
+              result = await ipcCall<{ ok: boolean; reason?: string }>('attachments:repair', { id, newPath, force: true });
+            }
+            if (!result.ok) {
+              void gAlert('Repair failed', result.reason ?? 'Unknown error');
+              return;
+            }
+            void refreshGhampusAttachments();
+          })();
+        };
+      });
       ul.querySelectorAll<HTMLElement>('[data-attach-open]').forEach((el) => {
         el.onclick = () => {
           const p = el.dataset['attachOpen']!;
@@ -23237,6 +23344,127 @@ async function refreshGhampusAttachments(): Promise<void> {
     }
   } catch { /* non-fatal */ }
 }
+
+// ── Manual annotation modal (Phase C, V1 scaffolding) ──────────────────
+//
+// Click on the image to drop a labeled box. Each click prompts for a
+// label. Save commits the boxes to the engram as a new structured
+// source — each box becomes a node, the engram entity-link pass auto-
+// connects them to existing memories about the same labels.
+//
+// V1 scope deliberately limited to: image background, click-to-add box
+// with label, save. No arrows, no resize, no drag, no multi-select. The
+// data structure is forward-compatible — adding edges (V2) just extends
+// the same payload shape and ships through the same commit IPC.
+
+interface AnnotationBox {
+  id: string;
+  /** Normalized 0-1 position within the image (top-left of box). */
+  x: number;
+  y: number;
+  /** Normalized width/height. V1 uses a fixed visual size for clarity. */
+  w: number;
+  h: number;
+  label: string;
+}
+
+let annotationState: { attachmentId: string; boxes: AnnotationBox[] } | null = null;
+
+async function openAnnotationModal(attachmentId: string): Promise<void> {
+  const res = await ipcCall<{ attachments: AttachmentRow[] }>('attachments:list', {}).catch(() => ({ attachments: [] as AttachmentRow[] }));
+  const att = res.attachments.find((a) => a.id === attachmentId);
+  if (!att) { void gAlert('Attachment not found', ''); return; }
+  if (!att.lastVerifiedOk) { void gAlert('File not on this device', 'Repair the attachment first.'); return; }
+
+  const modal = document.getElementById('annotation-modal');
+  const img = document.getElementById('annotation-image') as HTMLImageElement | null;
+  const overlay = document.getElementById('annotation-overlay');
+  if (!modal || !img || !overlay) return;
+
+  annotationState = { attachmentId, boxes: [] };
+  // We load the image via a file:// URL — Tauri's webview allows this on
+  // explicit user action. For paths that aren't accessible (network
+  // shares, etc.) the image just fails to load and the modal stays empty.
+  img.src = `file://${att.path}`;
+  overlay.innerHTML = '';
+
+  // Click to add a box at the click position.
+  overlay.onclick = (e) => {
+    const rect = overlay.getBoundingClientRect();
+    const x = (e.clientX - rect.left) / rect.width;
+    const y = (e.clientY - rect.top) / rect.height;
+    const label = window.prompt('Label for this box:')?.trim();
+    if (!label) return;
+    const box: AnnotationBox = {
+      id: `b${annotationState!.boxes.length + 1}`,
+      x: Math.max(0, x - 0.06),
+      y: Math.max(0, y - 0.02),
+      w: 0.12,
+      h: 0.04,
+      label,
+    };
+    annotationState!.boxes.push(box);
+    renderAnnotationBoxes(overlay);
+  };
+
+  modal.classList.remove('hidden');
+}
+
+function renderAnnotationBoxes(overlay: HTMLElement): void {
+  overlay.innerHTML = '';
+  if (!annotationState) return;
+  for (const b of annotationState.boxes) {
+    const el = document.createElement('div');
+    el.style.cssText = `position: absolute; left: ${(b.x * 100).toFixed(2)}%; top: ${(b.y * 100).toFixed(2)}%; width: ${(b.w * 100).toFixed(2)}%; height: ${(b.h * 100).toFixed(2)}%; border: 2px solid var(--accent, #6366f1); background: rgba(99, 102, 241, .15); border-radius: 4px; display: flex; align-items: center; justify-content: center; pointer-events: none;`;
+    const label = document.createElement('span');
+    label.textContent = b.label;
+    label.style.cssText = 'background: var(--accent, #6366f1); color: white; padding: 2px 8px; border-radius: 3px; font-size: 12px; font-weight: 500; white-space: nowrap;';
+    el.appendChild(label);
+    overlay.appendChild(el);
+  }
+}
+
+function wireAnnotationModalControls(): void {
+  document.getElementById('btn-annotation-close')?.addEventListener('click', () => {
+    document.getElementById('annotation-modal')?.classList.add('hidden');
+    annotationState = null;
+  });
+  document.getElementById('btn-annotation-clear')?.addEventListener('click', () => {
+    if (!annotationState) return;
+    annotationState.boxes = [];
+    const overlay = document.getElementById('annotation-overlay');
+    if (overlay) renderAnnotationBoxes(overlay);
+  });
+  document.getElementById('btn-annotation-save')?.addEventListener('click', () => {
+    void (async () => {
+      if (!annotationState || annotationState.boxes.length === 0) {
+        void gAlert('Nothing to save', 'Click on the image to add at least one labeled box.');
+        return;
+      }
+      // Commit through the same extraction-commit IPC the vision flow
+      // uses — annotated boxes become nodes, no edges yet (V2).
+      const nodes = annotationState.boxes.map((b) => ({
+        id: b.id,
+        label: b.label,
+        category: 'other' as const,
+      }));
+      const result = await ipcCall<{ ok: boolean; reason?: string }>('attachments:commitExtraction', {
+        attachmentId: annotationState.attachmentId,
+        nodes,
+        edges: [],
+      });
+      if (!result.ok) {
+        void gAlert('Commit failed', result.reason ?? 'unknown');
+        return;
+      }
+      void gAlert('Saved', `${annotationState.boxes.length} annotated node${annotationState.boxes.length === 1 ? '' : 's'} committed.`);
+      document.getElementById('annotation-modal')?.classList.add('hidden');
+      annotationState = null;
+      void refreshGhampusAttachments();
+    })();
+  });
+}
+wireAnnotationModalControls();
 
 function formatAttachmentBytes(n: number): string {
   if (n < 1024) return `${n} B`;
