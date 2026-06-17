@@ -133,6 +133,15 @@ export interface UiSettings {
    * Preferences.
    */
   theme: UiTheme;
+  /**
+   * Which top-level rail mode the app lands on after unlock. Stored as the
+   * string id of a Mode (e.g. 'ghampus', 'atlas', 'engram'). Absent → the
+   * frontend uses 'ghampus' as the default (the new-user-friendly chat
+   * surface). Settable from Settings → Preferences. Power users who live in
+   * the atlas or sources views can pin those instead so the app doesn't
+   * route through Ghampus on every unlock.
+   */
+  defaultLandingMode?: string;
 }
 
 // ── Layer 4 Consent ───────────────────────────────────────────────────────────
@@ -1165,6 +1174,12 @@ export function mergeWithDefaults(partial: Partial<AppSettings> | null | undefin
     ui.theme === 'light' || ui.theme === 'dark' || ui.theme === 'auto'
       ? ui.theme
       : DEFAULT_SETTINGS.ui.theme;
+  // Free-form string — we don't validate against the Mode union here
+  // because that union lives in the frontend. Bad values are tolerated by
+  // the frontend (falls back to 'ghampus' if the mode doesn't exist).
+  const defaultLandingMode = typeof ui.defaultLandingMode === 'string' && ui.defaultLandingMode.length > 0
+    ? ui.defaultLandingMode
+    : undefined;
 
   // AI routing: default ON for older cortexes that didn't have this field —
   // matches the behavior they were already getting (the SERVER_INSTRUCTIONS
@@ -1472,7 +1487,7 @@ export function mergeWithDefaults(partial: Partial<AppSettings> | null | undefin
     contentCache: { mode, maxBytesPerSource },
     forget: { mode: forgetMode },
     mcpRelay: { initialWaitMs, reconnectMs },
-    ui: { inspectorDetail, theme },
+    ui: { inspectorDetail, theme, ...(defaultLandingMode !== undefined ? { defaultLandingMode } : {}) },
     ai: {
       useAsDefaultMemory, autoRelinkMaxNodes, autoReingestOnFileChange,
       reingestQuietMs, chunkSize, embedBatch, llmEnabled,

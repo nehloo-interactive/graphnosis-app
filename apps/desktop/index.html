@@ -10074,7 +10074,16 @@
                 </svg>
               </button>
             </div>
-            <button class="rail-btn active" data-mode="atlas" title="Your Cortex — your memory at a glance: search, check-in deck, health, live AI-client status">
+            <!-- Ghampus — the local AI agent. First rail entry so it's the
+                 default landing for new users (overridable via
+                 settings.ui.defaultLandingMode). Gated to Teams/Enterprise
+                 on entry; the pane itself shows the upgrade card for free
+                 plans, or the chat shell once licensed. -->
+            <button class="rail-btn active" data-mode="ghampus" title="Ghampus — your local AI agent: chat over your memory, drop .gez packs to import, watch outbound shares">
+              <span class="rail-icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2a4 4 0 0 1 4 4v2h2a3 3 0 0 1 3 3v8a3 3 0 0 1-3 3H6a3 3 0 0 1-3-3v-8a3 3 0 0 1 3-3h2V6a4 4 0 0 1 4-4Z"/><path d="M9 14h.01M15 14h.01"/></svg></span>
+              <span class="rail-label">Ghampus</span>
+            </button>
+            <button class="rail-btn" data-mode="atlas" title="Your Cortex — your memory at a glance: search, check-in deck, health, live AI-client status">
               <span class="rail-icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 9.5L12 3l9 6.5"/><path d="M5 9v11a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V9"/><path d="M9 21v-7h6v7"/></svg></span>
               <span class="rail-label">Your Cortex</span>
               <!-- Trailing cluster (right-aligned): pending-corrections badge +
@@ -10186,7 +10195,6 @@
                     <button class="g-tab" data-gtab="atlas">3D Engram</button>
                     <button class="g-tab" data-gtab="brain">Deterministic Consolidation</button>
                     <button class="g-tab" data-gtab="nondeterministic">Foresight</button>
-                    <button class="g-tab" data-gtab="ghampus">Ghampus</button>
                   </div>
 
                   <!-- CHECK-IN DASHBOARD (default) -->
@@ -11605,44 +11613,6 @@ ollama list</code></pre>
                     </div>
                   </section>
 
-                  <!-- ── GHAMPUS (local agent — Teams / Enterprise) ───────────────── -->
-                  <section class="g-tab-pane hidden" data-gpane="ghampus">
-                    <div id="ghampus-section" class="studio-section">
-                      <!-- Paywall — visible until the license JWT carries
-                           `ghampus`, `teams`, or `enterprise`. The Ghampus tab
-                           itself is always visible so users can discover the
-                           feature; clicking shows the upgrade card. -->
-                      <div id="ghampus-paywall" class="studio-paywall">
-                        <div class="studio-paywall-card">
-                          <h2>Ghampus</h2>
-                          <p class="subtitle">Your local-first AI agent. Lives inside Graphnosis, recalls and writes through the same trust gates as your external clients, runs entirely on this machine.</p>
-                          <p class="subtitle" style="margin-top: 12px;">Ghampus requires the <strong>Teams</strong> or <strong>Enterprise</strong> plan.</p>
-                          <a class="studio-paywall-cta" href="https://graphnosis.app/pricing" target="_blank" rel="noopener">See pricing</a>
-                        </div>
-                      </div>
-                      <!-- Shell once licensed. Phase 3 mounts conversation + tool cards here. -->
-                      <div id="ghampus-shell" class="hidden">
-                        <div class="studio-paywall-card">
-                          <h2>Ghampus</h2>
-                          <p id="ghampus-state-line" class="subtitle">Chat surface coming online in the next release.</p>
-                          <div style="margin-top: 16px; display: flex; gap: 8px; flex-wrap: wrap;">
-                            <button id="btn-ghampus-kill" class="g-btn" type="button">Stop all agent activity</button>
-                            <button id="btn-ghampus-resume" class="g-btn hidden" type="button">Resume Ghampus</button>
-                          </div>
-                          <p id="ghampus-kill-banner" class="subtitle hidden" style="margin-top: 12px; color: var(--g-warn, #c47);">Ghampus is stopped. No tool calls or watcher activity will fire until you resume.</p>
-                          <!-- ── Sharing-integration slice (Phase 4) ──────────────────
-                               Surfaces the user's outbound share state right inside
-                               Ghampus so the agent surface is also the audit surface.
-                               Populated by refreshGhampusSharingPanel(). -->
-                          <div id="ghampus-sharing-panel" style="margin-top: 20px; padding-top: 16px; border-top: 1px solid var(--g-border, rgba(255,255,255,.1));">
-                            <h3 style="margin: 0 0 8px;">Active shares</h3>
-                            <p id="ghampus-sharing-summary" class="subtitle">—</p>
-                            <ul id="ghampus-sharing-list" style="list-style: none; padding: 0; margin: 8px 0 0;"></ul>
-                          </div>
-                        </div>
-                      </div>
-                    </div>
-                  </section>
                 </div>
 
                 <!-- Detail pane: persistent right-side inspector -->
@@ -11659,6 +11629,42 @@ ollama list</code></pre>
                   </div>
                   <div class="g-detail-body hidden" id="g-detail-body"></div>
                 </aside>
+              </div>
+            </section>
+
+            <!-- ── GHAMPUS (local agent) ────────────────────────────────────────
+                 Top-level rail destination — first entry in the rail and the
+                 default landing tab for new users (overridable via
+                 settings.ui.defaultLandingMode). The paywall card surfaces when
+                 the license JWT lacks ghampus/teams/enterprise; below the
+                 paywall the Free tier still gets the welcome screen so the
+                 first contact is never a dead end. -->
+            <section class="mode-pane hidden" data-pane="ghampus">
+              <div id="ghampus-section" class="studio-section">
+                <div id="ghampus-paywall" class="studio-paywall">
+                  <div class="studio-paywall-card">
+                    <h2>Ghampus</h2>
+                    <p class="subtitle">Your local-first AI agent. Lives inside Graphnosis, recalls and writes through the same trust gates as your external clients, runs entirely on this machine.</p>
+                    <p class="subtitle" style="margin-top: 12px;">Ghampus requires the <strong>Teams</strong> or <strong>Enterprise</strong> plan.</p>
+                    <a class="studio-paywall-cta" href="https://graphnosis.app/pricing" target="_blank" rel="noopener">See pricing</a>
+                  </div>
+                </div>
+                <div id="ghampus-shell" class="hidden">
+                  <div class="studio-paywall-card">
+                    <h2>Ghampus</h2>
+                    <p id="ghampus-state-line" class="subtitle">Chat surface coming online in the next release.</p>
+                    <div style="margin-top: 16px; display: flex; gap: 8px; flex-wrap: wrap;">
+                      <button id="btn-ghampus-kill" class="g-btn" type="button">Stop all agent activity</button>
+                      <button id="btn-ghampus-resume" class="g-btn hidden" type="button">Resume Ghampus</button>
+                    </div>
+                    <p id="ghampus-kill-banner" class="subtitle hidden" style="margin-top: 12px; color: var(--g-warn, #c47);">Ghampus is stopped. No tool calls or watcher activity will fire until you resume.</p>
+                    <div id="ghampus-sharing-panel" style="margin-top: 20px; padding-top: 16px; border-top: 1px solid var(--g-border, rgba(255,255,255,.1));">
+                      <h3 style="margin: 0 0 8px;">Active shares</h3>
+                      <p id="ghampus-sharing-summary" class="subtitle">—</p>
+                      <ul id="ghampus-sharing-list" style="list-style: none; padding: 0; margin: 8px 0 0;"></ul>
+                    </div>
+                  </div>
+                </div>
               </div>
             </section>
 
