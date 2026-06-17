@@ -2878,7 +2878,7 @@ function activateMode(mode: Mode): void {
     void refreshGhampusSkills();
     void refreshGhampusSharingPanel();
   }
-  if (mode === 'activity') void refreshActivityView();
+  if (mode === 'activity') { void refreshActivityView(); void refreshAiActivityRollup(); }
   if (mode === 'presentation') {
     renderPresentationPane();
     document.querySelector<HTMLElement>('.app-canvas')?.scrollTo({ top: 0 });
@@ -2907,6 +2907,7 @@ function activateMode(mode: Mode): void {
     // panels in sync with whatever happened elsewhere (recovery from
     // op-log, new ingest, startup-time quarantine, etc.).
     renderSettingsTab();
+    void refreshModelsPanel();
     // Refresh the license launcher's status line on the pane (Free /
     // Pro active · expires X). Calls the same helper the Settings modal
     // uses; both DOM targets are updated in one pass.
@@ -23020,6 +23021,147 @@ const NOTIF_ORIGIN_ICONS: Record<string, string> = {
   direct: '📁',
   other: '·',
 };
+
+// ── Settings → Models panel ────────────────────────────────────────────
+interface ProviderRow {
+  id: string;
+  displayName: string;
+  tagline: string;
+  local: boolean;
+  builtIn: boolean;
+  homepage: string;
+  enabled: boolean;
+  hasKey?: boolean;
+  keyTail?: string;
+  adminLocked?: boolean;
+  poolSpentUsd?: number;
+}
+
+interface ModelsCatalogResponse {
+  catalogVersion: string;
+  providers: ProviderRow[];
+  models: Array<{ id: string; provider: string; displayName: string; capabilities: string[] }>;
+  strategy: 'adaptive' | 'local-only' | 'always-best';
+  monthlyBudgetUsd: number | null;
+  spentThisCycleUsd: number;
+}
+
+async function refreshModelsPanel(): Promise<void> {
+  try {
+    const data = await ipcCall<ModelsCatalogResponse>('models:catalog', {});
+    // Strategy radios
+    document.querySelectorAll<HTMLInputElement>('input[name="models-strategy"]').forEach((r) => {
+      r.checked = r.value === data.strategy;
+      r.onchange = () => {
+        if (r.checked) void ipcCall('models:setStrategy', { strategy: r.value });
+      };
+    });
+    // Budget input
+    const budgetInput = document.getElementById('models-budget-input') as HTMLInputElement | null;
+    if (budgetInput) budgetInput.value = data.monthlyBudgetUsd != null ? String(data.monthlyBudgetUsd) : '';
+    const spentLabel = document.getElementById('models-budget-spent');
+    if (spentLabel) {
+      spentLabel.textContent = data.monthlyBudgetUsd
+        ? `spent: $${data.spentThisCycleUsd.toFixed(2)} of $${data.monthlyBudgetUsd.toFixed(2)} this cycle`
+        : `spent: $${data.spentThisCycleUsd.toFixed(2)} this cycle · no cap`;
+    }
+    const saveBtn = document.getElementById('btn-models-save-budget');
+    if (saveBtn) {
+      saveBtn.onclick = () => {
+        void (async () => {
+          const v = budgetInput?.value.trim();
+          const n = v ? Number(v) : null;
+          await ipcCall('models:setBudget', { monthlyBudgetUsd: n });
+          void refreshModelsPanel();
+        })();
+      };
+    }
+    // Catalog version
+    const ver = document.getElementById('models-catalog-version');
+    if (ver) ver.textContent = `Catalog version: ${data.catalogVersion} · ${data.models.length} models known`;
+    // Provider list
+    const list = document.getElementById('models-provider-list');
+    if (list) {
+      list.innerHTML = data.providers.map((p) => {
+        const lockBadge = p.adminLocked ? '<span style="font-size: 11px; background: #fee2e2; color: #991b1b; padding: 1px 6px; border-radius: 8px; margin-left: 6px;">🔒 admin</span>' : '';
+        const localBadge = p.local ? '<span style="font-size: 11px; background: #d1fae5; color: #065f46; padding: 1px 6px; border-radius: 8px; margin-left: 6px;">local · free</span>' : '';
+        const keyChip = p.hasKey ? `<span class="subtitle" style="font-size: 11px;">key ···${escapeHtml(p.keyTail ?? '')}</span>` : '';
+        const modelCount = data.models.filter((m) => m.provider === p.id).length;
+        return `<li style="display: flex; align-items: baseline; gap: 10px; padding: 10px 0; border-bottom: 1px solid var(--border, rgba(0,0,0,.06));">
+          <label style="display: flex; align-items: center; gap: 8px; flex: 1; cursor: ${p.adminLocked ? 'not-allowed' : 'pointer'};">
+            <input type="checkbox" ${p.enabled ? 'checked' : ''} ${p.adminLocked ? 'disabled' : ''} data-provider-toggle="${escapeHtml(p.id)}">
+            <span><strong>${escapeHtml(p.displayName)}</strong>${lockBadge}${localBadge}</span>
+          </label>
+          <span class="subtitle" style="font-size: 12px;">${escapeHtml(p.tagline)}</span>
+          <span class="subtitle" style="font-size: 11px;">${modelCount} model${modelCount === 1 ? '' : 's'}</span>
+          ${keyChip}
+        </li>`;
+      }).join('');
+      list.querySelectorAll<HTMLInputElement>('input[data-provider-toggle]').forEach((cb) => {
+        cb.onchange = () => {
+          const providerId = cb.dataset['providerToggle']!;
+          void (async () => {
+            await ipcCall('models:setProviderEnabled', { providerId, enabled: cb.checked });
+            void refreshModelsPanel();
+          })();
+        };
+      });
+    }
+  } catch { /* non-fatal */ }
+}
+
+// ── Activity → AI activity rollup ──────────────────────────────────────
+async function refreshAiActivityRollup(): Promise<void> {
+  try {
+    const data = await ipcCall<{
+      windowDays: number;
+      byClient: Array<{ client: string; events: number; lastSeenMs: number }>;
+      byTool: Array<{ tool: string; events: number; lastSeenMs: number }>;
+      skillWalks: Array<{ sourceId: string; whenMs: number }>;
+    }>('mcp:activitySummary', {});
+    const empty = document.getElementById('activity-ai-rollup-empty');
+    const body = document.getElementById('activity-ai-rollup-body');
+    const skillsBlock = document.getElementById('activity-ai-skills-block');
+    const hasAny = data.byClient.length > 0 || data.byTool.length > 0;
+    if (empty) empty.style.display = hasAny ? 'none' : '';
+    if (body) body.style.display = hasAny ? 'grid' : 'none';
+
+    const clientList = document.getElementById('activity-ai-clients-list');
+    if (clientList) {
+      const top = [...data.byClient].sort((a, b) => b.events - a.events).slice(0, 8);
+      clientList.innerHTML = top.length === 0
+        ? '<li class="subtitle" style="font-size: 12px;">No external client activity in the window.</li>'
+        : top.map((c) => `<li style="padding: 4px 0; display: flex; gap: 6px;">
+          <span>${escapeHtml(c.client)}</span>
+          <span class="subtitle" style="font-size: 12px; margin-left: auto;">${c.events} call${c.events === 1 ? '' : 's'}</span>
+        </li>`).join('');
+    }
+    const toolList = document.getElementById('activity-ai-tools-list');
+    if (toolList) {
+      const top = [...data.byTool].sort((a, b) => b.events - a.events).slice(0, 8);
+      toolList.innerHTML = top.length === 0
+        ? '<li class="subtitle" style="font-size: 12px;">No Ghampus tool calls in the window.</li>'
+        : top.map((t) => `<li style="padding: 4px 0; display: flex; gap: 6px;">
+          <code style="font-size: 12px;">${escapeHtml(t.tool)}</code>
+          <span class="subtitle" style="font-size: 12px; margin-left: auto;">${t.events} call${t.events === 1 ? '' : 's'}</span>
+        </li>`).join('');
+    }
+    if (skillsBlock) {
+      skillsBlock.style.display = data.skillWalks.length > 0 ? '' : 'none';
+      const skillsList = document.getElementById('activity-ai-skills-list');
+      if (skillsList) {
+        const now = Date.now();
+        skillsList.innerHTML = data.skillWalks.slice(0, 5).map((w) => {
+          const ago = Math.floor((now - w.whenMs) / 3600000);
+          return `<li style="padding: 4px 0;">
+            <code style="font-size: 12px;">${escapeHtml(w.sourceId)}</code>
+            <span class="subtitle" style="font-size: 12px; margin-left: 8px;">${ago}h ago</span>
+          </li>`;
+        }).join('');
+      }
+    }
+  } catch { /* non-fatal */ }
+}
 
 async function refreshGhampusSavings(): Promise<void> {
   try {
