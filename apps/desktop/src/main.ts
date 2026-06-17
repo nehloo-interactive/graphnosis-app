@@ -19212,13 +19212,8 @@ async function refreshSharingTokenSummary(): Promise<void> {
   if (!summary) return;
   try {
     const plan = await invoke<SharingPlanInfo>('sharing:planInfo', {});
-    if (!plan.licensed) {
-      summary.textContent = 'Requires Pro, Teams, or Enterprise plan.';
-      summary.style.color = 'var(--fg-muted)';
-      return;
-    }
     const seatStr = plan.seats !== null
-      ? `${plan.activeCount} / ${plan.seats} seat${plan.seats === 1 ? '' : 's'} used`
+      ? `${plan.activeCount} / ${plan.seats} token used`
       : `${plan.activeCount} active token${plan.activeCount === 1 ? '' : 's'}`;
     summary.textContent = seatStr;
     summary.style.color = '';
@@ -19305,11 +19300,8 @@ async function openSharingModal(): Promise<void> {
   const createDetails = document.getElementById('sharing-create-details');
   const unlicensedNotice = document.getElementById('sharing-unlicensed-notice');
   const planBadge = document.getElementById('sharing-plan-badge');
-  if (createDetails) createDetails.style.display = plan.licensed ? '' : 'none';
-  if (unlicensedNotice) {
-    unlicensedNotice.style.display = plan.licensed ? 'none' : '';
-    unlicensedNotice.textContent = 'Engram sharing requires a Pro, Teams, or Enterprise plan.';
-  }
+  if (createDetails) createDetails.style.display = '';
+  if (unlicensedNotice) unlicensedNotice.style.display = 'none';
   if (planBadge) {
     if (plan.licensed && plan.plan) {
       planBadge.innerHTML = `Plan: <strong>${escape(humanizePlanName(plan.plan))}</strong>`;
@@ -19439,7 +19431,7 @@ async function openSharingModal(): Promise<void> {
 
       if (!result.ok) {
         void gAlert(
-          result.reason === 'not_licensed' ? 'Pro plan required' : 'Seat limit reached',
+          'Token limit reached',
           result.message ?? 'Unable to create token.',
         );
         return;

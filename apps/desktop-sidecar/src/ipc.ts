@@ -4679,10 +4679,9 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
     }
 
     case 'sharing:create': {
-      // Create a new scoped sharing token. Gated behind Pro+ (skill-training
-      // is the universal Pro+ feature flag). Teams and Enterprise also qualify.
-      // Generates a random UUID as the bearer token value; stored in settings
-      // and returned once for copy-paste.
+      // Create a new scoped sharing token. Free users are limited to 1 active
+      // token; Pro / Teams / Enterprise are unlimited. Generates a random UUID
+      // as the bearer token value; stored in settings and returned once for copy-paste.
       const args = z.object({
         name: z.string().min(1).max(80),
         role: z.enum(['viewer', 'editor']),
@@ -4690,31 +4689,23 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
         expiresAt: z.number().optional(), // Unix ms; absent = never
       }).parse(params ?? {});
 
-      // ── License gate ───────────────────────────────────────────────────────
+      // ── Token limit enforcement ────────────────────────────────────────────
+      // Free: 1 token. Pro / Teams / Enterprise: unlimited (null).
       const licenseToken = await getEffectiveLicenseToken(deps);
       const licensePayload = deps.licenseValidator?.verifyToken(licenseToken ?? '') ?? null;
-      const hasTeams = licensePayload?.features.includes('skill-training')
+      const hasPaidPlan = licensePayload?.features.includes('skill-training')
         || licensePayload?.features.includes('teams')
         || licensePayload?.features.includes('enterprise');
-      if (!hasTeams) {
-        return {
-          ok: false,
-          reason: 'not_licensed',
-          message: 'Engram sharing requires a Pro, Teams, or Enterprise plan. Upgrade at graphnosis.com.',
-        };
-      }
-
-      // ── Seat count enforcement ─────────────────────────────────────────────
       const current = deps.host.getSettings();
       const existing = current.sharing?.tokens ?? [];
       const now = Date.now();
       const activeCount = existing.filter((t) => t.expiresAt === undefined || t.expiresAt >= now).length;
-      const seatCap = licensePayload?.seats ?? null; // null = unlimited (legacy tokens)
+      const seatCap = hasPaidPlan ? null : 1; // null = unlimited
       if (seatCap !== null && activeCount >= seatCap) {
         return {
           ok: false,
           reason: 'seat_limit',
-          message: `Seat limit reached (${seatCap} seat${seatCap === 1 ? '' : 's'}). Revoke an existing token to free a seat.`,
+          message: 'Free plan includes 1 sharing token. Upgrade to Pro for unlimited tokens.',
           seats: seatCap,
           activeCount,
         };
@@ -4749,22 +4740,22 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
 
     case 'sharing:planInfo': {
       // Returns seat cap + active count so the UI can show seat usage.
+      // Free: 1 token. Pro / Teams / Enterprise: unlimited (null).
       const licenseToken = await getEffectiveLicenseToken(deps);
       const payload = deps.licenseValidator?.verifyToken(licenseToken ?? '') ?? null;
-      const hasTeams = payload?.features.includes('skill-training')
+      const hasPaidPlan = payload?.features.includes('skill-training')
         || payload?.features.includes('teams')
         || payload?.features.includes('enterprise');
-      const seatCap = payload?.seats ?? null;
       const settings = deps.host.getSettings();
       const tokens = settings.sharing?.tokens ?? [];
       const now = Date.now();
       const activeCount = tokens.filter((t) => t.expiresAt === undefined || t.expiresAt >= now).length;
       const hasEnterprise = payload?.features.includes('enterprise') ?? false;
       return {
-        licensed: !!hasTeams,
+        licensed: true,
         enterprise: hasEnterprise,
         plan: payload?.plan ?? null,
-        seats: seatCap,        // null = unlimited
+        seats: hasPaidPlan ? null : 1,
         activeCount,
       };
     }
