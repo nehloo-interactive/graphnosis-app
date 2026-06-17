@@ -975,12 +975,85 @@ export interface AppSettings {
    * flipping their own paid-feature unlock from settings.json.
    */
   agent?: AgentSettings;
+
+  /**
+   * Models registry + routing config. Drives Settings → Models and the
+   * Ghampus cost-preview path. Absent on older cortexes; the sidecar
+   * fills in defaults (Ollama on, Adaptive strategy, no budget) on
+   * first load.
+   */
+  models?: ModelsSettings;
 }
 
 /** Ghampus runtime settings. Phase 1 scope: just the kill switch. */
 export interface AgentSettings {
   /** User-controlled kill switch. Default true. Flipped from the tray menu or the Ghampus tab. */
   enabled: boolean;
+}
+
+/**
+ * Models + routing settings. Drives the Settings → Models page and the
+ * skill-walk cost preview. Absent on older cortexes — the sidecar fills
+ * sensible defaults: Ollama enabled, Adaptive strategy, no budget.
+ */
+export interface ModelsSettings {
+  /** Routing strategy — Adaptive (default) / Local-only / Always best. */
+  strategy: 'adaptive' | 'local-only' | 'always-best';
+  /** Per-provider enable + credential state, keyed by ModelProviderId. */
+  providers: Record<string, ModelProviderState>;
+  /**
+   * Custom rate overrides — enterprise-negotiated pricing, AI-credit pool
+   * conversions, etc. See `model-registry.CustomRateOverride` for shape.
+   * Admin-enforced entries are also stored here with `adminEnforced: true`.
+   */
+  customRates?: Array<{
+    modelId?: string;
+    providerId?: string;
+    pricing: unknown; // typed as ModelPricing in the sidecar
+    note?: string;
+    adminEnforced?: boolean;
+  }>;
+  /**
+   * Monthly budget cap in USD. When set, walks that would exceed it
+   * show a warning + cheapest-swap suggestion. Absent = no cap.
+   */
+  monthlyBudgetUsd?: number;
+  /** Spent so far this cycle (USD). Reset by the budget engine at cycle boundary. */
+  spentThisCycleUsd?: number;
+  /** Unix ms when the current billing cycle started. */
+  cycleStartMs?: number;
+  /**
+   * Counterfactual baseline model for savings tracking. Defaults to
+   * Claude Sonnet 4.6 if absent. Power users with different reference
+   * points (e.g. "I would have used GPT-4o") can override here so the
+   * savings dashboard speaks their world.
+   */
+  savingsBaseline?: {
+    modelDisplayName: string;
+    inputUsdPer1M: number;
+    outputUsdPer1M: number;
+  };
+}
+
+export interface ModelProviderState {
+  /** Whether the user has this provider on. Disabled providers never get routed to. */
+  enabled: boolean;
+  /** True when the provider needs a credential and one is configured. */
+  hasKey?: boolean;
+  /**
+   * Last 4 chars of the API key — for display only. Full key is stored
+   * in OS keychain (not in settings.json).
+   */
+  keyTail?: string;
+  /** True when the provider is forced off by an IT admin policy. UI shows a lock. */
+  adminLocked?: boolean;
+  /**
+   * Per-cycle pool spent for subscription-pool providers (Copilot).
+   * Reset by the budget engine at cycle boundary. The cycle anchor is
+   * `ModelsSettings.cycleStartMs`.
+   */
+  poolSpentUsd?: number;
+  flexSpentUsd?: number;
 }
 
 /**
@@ -1483,6 +1556,44 @@ export function mergeWithDefaults(partial: Partial<AppSettings> | null | undefin
     agent = { enabled: typeof a.enabled === 'boolean' ? a.enabled : true };
   }
 
+  let models: ModelsSettings | undefined;
+  if (partial?.models && typeof partial.models === 'object') {
+    const m = partial.models;
+    const strategy: ModelsSettings['strategy'] =
+      m.strategy === 'local-only' || m.strategy === 'always-best' ? m.strategy : 'adaptive';
+    const providers: Record<string, ModelProviderState> = {};
+    if (m.providers && typeof m.providers === 'object') {
+      for (const [pid, raw] of Object.entries(m.providers)) {
+        if (!raw || typeof raw !== 'object') continue;
+        const r = raw as ModelProviderState;
+        providers[pid] = {
+          enabled: typeof r.enabled === 'boolean' ? r.enabled : false,
+          ...(typeof r.hasKey === 'boolean' ? { hasKey: r.hasKey } : {}),
+          ...(typeof r.keyTail === 'string' ? { keyTail: r.keyTail } : {}),
+          ...(typeof r.adminLocked === 'boolean' ? { adminLocked: r.adminLocked } : {}),
+          ...(typeof r.poolSpentUsd === 'number' ? { poolSpentUsd: r.poolSpentUsd } : {}),
+          ...(typeof r.flexSpentUsd === 'number' ? { flexSpentUsd: r.flexSpentUsd } : {}),
+        };
+      }
+    }
+    // Ollama is on by default — surface for the planner's adaptive routing.
+    if (!('ollama' in providers)) providers['ollama'] = { enabled: true };
+    models = {
+      strategy,
+      providers,
+      ...(Array.isArray(m.customRates) ? { customRates: m.customRates } : {}),
+      ...(typeof m.monthlyBudgetUsd === 'number' && m.monthlyBudgetUsd >= 0 ? { monthlyBudgetUsd: m.monthlyBudgetUsd } : {}),
+      ...(typeof m.spentThisCycleUsd === 'number' ? { spentThisCycleUsd: m.spentThisCycleUsd } : {}),
+      ...(typeof m.cycleStartMs === 'number' ? { cycleStartMs: m.cycleStartMs } : {}),
+      ...(m.savingsBaseline && typeof m.savingsBaseline === 'object'
+          && typeof m.savingsBaseline.modelDisplayName === 'string'
+          && typeof m.savingsBaseline.inputUsdPer1M === 'number'
+          && typeof m.savingsBaseline.outputUsdPer1M === 'number'
+        ? { savingsBaseline: m.savingsBaseline }
+        : {}),
+    };
+  }
+
   return {
     contentCache: { mode, maxBytesPerSource },
     forget: { mode: forgetMode },
@@ -1533,6 +1644,7 @@ export function mergeWithDefaults(partial: Partial<AppSettings> | null | undefin
     ...(skillDemosEngram !== undefined ? { skillDemosEngram } : {}),
     ...(brain !== undefined ? { brain } : {}),
     ...(agent !== undefined ? { agent } : {}),
+    ...(models !== undefined ? { models } : {}),
   };
 }
 
