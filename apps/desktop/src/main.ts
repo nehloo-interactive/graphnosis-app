@@ -203,6 +203,9 @@ interface AppSettings {
       clipDecayMultiplier?: number;
     };
   };
+  agent?: {
+    enabled?: boolean;
+  };
 }
 
 // Keep in sync with MIN/MAX_RELAY_* in app-core. The UI clamps at these
@@ -337,7 +340,7 @@ let loadedGraphs: GraphWithMetadata[] = [];
 // the Check-in tab shows a triage dashboard by default and a results list
 // when there's an active search. The Atlas tab renders the 3D viz on the
 // shared selection state below.
-type GraphnosisTab = 'checkin' | 'atlas' | 'brain' | 'nondeterministic';
+type GraphnosisTab = 'checkin' | 'atlas' | 'brain' | 'nondeterministic' | 'ghampus';
 let graphnosisActiveTab: GraphnosisTab = 'checkin';
 
 // ── MemoryStudio state ──────────────────────────────────────────────────────
@@ -12066,6 +12069,9 @@ function switchGraphnosisTab(tab: GraphnosisTab): void {
     // card immediately on entry for free users (matching the MemoryStudio
     // GNN Exploration chip behaviour).
     void refreshGnnLicenseStatus();
+  } else if (tab === 'ghampus') {
+    void refreshGhampusState();
+    void refreshGhampusSharingPanel();
   }
 }
 
@@ -13608,6 +13614,14 @@ globalThis.atlasPerfApply = (): void => {
 
 // Tray-driven status updates push us into the right view in real time.
 void listen<StatusSnapshot>('graphnosis://status', (evt) => render(evt.payload));
+
+// Tray "Open Ghampus" emits the target tab id as the payload.
+void listen<string>('graphnosis://open-tab', (evt) => {
+  const tab = evt.payload as GraphnosisTab;
+  if (tab === 'checkin' || tab === 'atlas' || tab === 'brain' || tab === 'nondeterministic' || tab === 'ghampus') {
+    switchGraphnosisTab(tab);
+  }
+});
 
 // Sidecar startup progress — shown in the lock screen while the cortex loads.
 // Each event carries a step name and a human-readable detail string.
@@ -22942,6 +22956,77 @@ function updateStudioVisibility(): void {
     workspace?.classList.add('hidden');
   }
 }
+
+// ── Ghampus (local agent) ───────────────────────────────────────────────
+let ghampusEnabled = true;
+let ghampusLicensed = false;
+
+function updateGhampusVisibility(): void {
+  const paywall = document.getElementById('ghampus-paywall');
+  const shell = document.getElementById('ghampus-shell');
+  if (!paywall || !shell) return;
+  paywall.classList.toggle('hidden', ghampusLicensed);
+  shell.classList.toggle('hidden', !ghampusLicensed);
+  document.getElementById('btn-ghampus-kill')?.classList.toggle('hidden', !ghampusEnabled);
+  document.getElementById('btn-ghampus-resume')?.classList.toggle('hidden', ghampusEnabled);
+  document.getElementById('ghampus-kill-banner')?.classList.toggle('hidden', ghampusEnabled);
+}
+
+async function refreshGhampusState(): Promise<void> {
+  try {
+    const s = await ipcCall<{ enabled: boolean; licensed: boolean }>('agent:status', {});
+    ghampusEnabled = s.enabled;
+    ghampusLicensed = s.licensed;
+    updateGhampusVisibility();
+  } catch { /* non-fatal — keep last known state */ }
+}
+
+async function refreshGhampusSharingPanel(): Promise<void> {
+  try {
+    const info = await ipcCall<{ seats: number | null; activeCount: number; plan: string | null }>('sharing:planInfo', {});
+    const list = await ipcCall<Array<{ id: string; name: string; role: string; expiresAt: number | null; createdAt: number }>>('sharing:list', {});
+    const summary = document.getElementById('ghampus-sharing-summary');
+    const ul = document.getElementById('ghampus-sharing-list');
+    if (summary) {
+      const cap = info.seats === null ? 'unlimited' : String(info.seats);
+      summary.textContent = `${info.activeCount} active share${info.activeCount === 1 ? '' : 's'} (cap: ${cap}).`;
+    }
+    if (ul) {
+      const now = Date.now();
+      const WARN_MS = 72 * 60 * 60 * 1000;
+      ul.innerHTML = list.map((t) => {
+        const expiringSoon = t.expiresAt !== null && t.expiresAt - now < WARN_MS && t.expiresAt - now > 0;
+        const expired = t.expiresAt !== null && t.expiresAt <= now;
+        const expiryNote = expired
+          ? '<span style="color: var(--g-warn, #c47);">expired</span>'
+          : expiringSoon
+            ? `<span style="color: var(--g-warn, #c47);">expires soon</span>`
+            : t.expiresAt === null ? 'no expiry' : new Date(t.expiresAt).toLocaleDateString();
+        return `<li style="padding: 6px 0; display: flex; gap: 8px; align-items: baseline;">
+          <strong>${escapeHtml(t.name)}</strong>
+          <span class="subtitle">${escapeHtml(t.role)}</span>
+          <span class="subtitle" style="margin-left: auto;">${expiryNote}</span>
+        </li>`;
+      }).join('') || '<li class="subtitle">No shares yet.</li>';
+    }
+  } catch { /* non-fatal */ }
+}
+
+function wireGhampusControls(): void {
+  document.getElementById('btn-ghampus-kill')?.addEventListener('click', () => {
+    void (async () => {
+      await ipcCall('agent:setEnabled', { enabled: false });
+      await refreshGhampusState();
+    })();
+  });
+  document.getElementById('btn-ghampus-resume')?.addEventListener('click', () => {
+    void (async () => {
+      await ipcCall('agent:setEnabled', { enabled: true });
+      await refreshGhampusState();
+    })();
+  });
+}
+wireGhampusControls();
 
 async function refreshStudioLlmBadge(): Promise<void> {
   try {

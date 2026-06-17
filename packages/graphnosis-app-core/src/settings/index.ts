@@ -955,6 +955,23 @@ export interface AppSettings {
       computedAt: number;
     };
   };
+
+  /**
+   * Ghampus — the in-app local agent surface. Absent on older cortexes; the
+   * sidecar fills in defaults at next load.
+   *
+   * Single user-controlled bit: `enabled` is the kill switch (default true).
+   * License gating uses the JWT `'ghampus'` feature via `LicenseValidator`;
+   * there is no settings-level license bit — that prevents the user from
+   * flipping their own paid-feature unlock from settings.json.
+   */
+  agent?: AgentSettings;
+}
+
+/** Ghampus runtime settings. Phase 1 scope: just the kill switch. */
+export interface AgentSettings {
+  /** User-controlled kill switch. Default true. Flipped from the tray menu or the Ghampus tab. */
+  enabled: boolean;
 }
 
 /**
@@ -1445,6 +1462,12 @@ export function mergeWithDefaults(partial: Partial<AppSettings> | null | undefin
     };
   }
 
+  let agent: AgentSettings | undefined;
+  if (partial?.agent && typeof partial.agent === 'object') {
+    const a = partial.agent;
+    agent = { enabled: typeof a.enabled === 'boolean' ? a.enabled : true };
+  }
+
   return {
     contentCache: { mode, maxBytesPerSource },
     forget: { mode: forgetMode },
@@ -1494,6 +1517,7 @@ export function mergeWithDefaults(partial: Partial<AppSettings> | null | undefin
     ...(docsEngram !== undefined ? { docsEngram } : {}),
     ...(skillDemosEngram !== undefined ? { skillDemosEngram } : {}),
     ...(brain !== undefined ? { brain } : {}),
+    ...(agent !== undefined ? { agent } : {}),
   };
 }
 
