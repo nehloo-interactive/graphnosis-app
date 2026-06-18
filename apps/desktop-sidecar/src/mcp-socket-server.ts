@@ -83,7 +83,7 @@ export async function startSocketMcpServer(opts: {
       });
     }
 
-    const mcpServer = createMcpServer(opts.deps);
+    const { server: mcpServer } = createMcpServer(opts.deps);
 
     void mcpServer.connect(transport).then(() => {
       // After the SDK processes `initialize`, it stores the client's reported

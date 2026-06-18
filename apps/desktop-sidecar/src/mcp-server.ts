@@ -787,6 +787,17 @@ export interface McpDeps {
   cortexDir?: string;
 }
 
+/** Single MCP tool result — matches the MCP SDK CallToolResult shape. */
+export type McpToolResult = { content: Array<{ type: string; text: string }>; isError?: boolean };
+
+/**
+ * Callable dispatcher for all 47+ MCP tool handlers.
+ * Returned alongside the Server from createMcpServer so Ghampus and other
+ * internal callers can reuse the exact same implementations without going
+ * through the network transport or duplicating logic.
+ */
+export type McpCallTool = (name: string, args: Record<string, unknown>) => Promise<McpToolResult>;
+
 /**
  * Build a fresh MCP `Server` instance with all of Graphnosis' tools wired up.
  * The returned server is **unconnected** — caller decides which transport to
@@ -1053,7 +1064,7 @@ NEVER supply the phrase yourself. NEVER call confirm_data_access before the user
 
 If the user types SKIP, acknowledge and do NOT retry the recall. No data will be returned for that turn.`;
 
-export function createMcpServer(deps: McpDeps): Server {
+export function createMcpServer(deps: McpDeps): { server: Server; callTool: McpCallTool } {
   // Read the toggle live each time a fresh MCP server is built (per
   // session, per relay). When OFF, we leave `instructions` undefined so
   // the AI sees the tools but gets no system-prompt-level routing —
@@ -2792,31 +2803,14 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
     }
   }
 
-  server.setRequestHandler(CallToolRequestSchema, async (req) => {
-    // AI client just made a tool call — mark activity so heavy background brain
-    // passes defer and this recall/remember wins the single-threaded loop.
-    markClientActivity();
+  // Extracted tool dispatcher — all 47+ tool handlers live here.
+  // Both the MCP setRequestHandler (external AI clients) and Ghampus
+  // (internal chat path) call this function so each tool is implemented
+  // exactly once. The MCP wrapper adds policy checks; Ghampus skips them
+  // (it runs as the owner with no client-disable or tool-allowlist gates).
+  async function dispatchTool(name: string, rawInput: Record<string, unknown>): Promise<McpToolResult> {
     try {
-    // Admin/IT policy: reject EVERY tool call from a disabled AI client. The
-    // user/IT blocks a client by name; enforced here in the sidecar (the only
-    // place a client can't route around).
-    const policyClient = mcpRegistry.getMostRecentClientName() ?? 'unknown-client';
-    if (isClientDisabled(policyClient)) {
-      return {
-        content: [{ type: 'text', text: `⛔ Access blocked. The AI client "${policyClient}" has been disabled by policy. Contact your administrator to re-enable it.` }],
-        isError: true,
-      };
-    }
-    // User tool-exposure allowlist: reject calls to a disabled tool. Runs BEFORE
-    // the switch (and before any per-tool Pro-tier gate) and re-reads live, so a
-    // client with a stale/cached schema still can't invoke a disabled tool.
-    if (disabledToolSet().has(req.params.name)) {
-      return {
-        content: [{ type: 'text', text: `⛔ The tool "${req.params.name}" has been disabled in Graphnosis (Settings → MCP Tools). Ask the user to re-enable it if you need it.` }],
-        isError: true,
-      };
-    }
-    switch (req.params.name) {
+    switch (name) {
       case 'recall':
       case 'remind': {
         // `remind` is an alias for `recall` — same input schema, same
@@ -2825,8 +2819,8 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
         // "what do I know about X"; "remind" matches "remind me about
         // X"). The audit line tags which name was used so we can see in
         // logs how often each phrasing fires.
-        const toolName = req.params.name;
-        const rawArgs = RecallInput.parse(req.params.arguments ?? {});
+        const toolName = name;
+        const rawArgs = RecallInput.parse(rawInput);
         const args = { ...rawArgs, ...applyEngramScope(rawArgs) };
         const budget = {
           maxTokens: args.maxTokens ?? 2000,
@@ -2925,7 +2919,7 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
         // Multi-strategy retrieval. Same input shape as recall + only/except
         // engrams + a higher default token budget (3000 vs recall's 2000)
         // because the pipeline naturally returns more.
-        const rawDdArgs = RecallInput.parse(req.params.arguments ?? {});
+        const rawDdArgs = RecallInput.parse(rawInput);
         const args = { ...rawDdArgs, ...applyEngramScope(rawDdArgs) };
         const budget = {
           maxTokens: args.maxTokens ?? 3000,
@@ -2990,7 +2984,7 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
       }
       case 'remember': {
         assertWriteAllowed();
-        const args = RememberInput.parse(req.params.arguments ?? {});
+        const args = RememberInput.parse(rawInput);
 
         // ── Resolve target engram ────────────────────────────────────
         //
@@ -3120,7 +3114,7 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
       // the old tool name in their conversation history continue to work.
       case 'correct': {
         assertWriteAllowed();
-        const args = CorrectInput.parse(req.params.arguments ?? {});
+        const args = CorrectInput.parse(rawInput);
         // Auto-switch. deps.llm() returns the Local LLM only when the user has
         // enabled it for this cortex. The Neural Network, when enabled, supplies
         // a GNN candidate expander. `correct` works in every combination and
@@ -3171,7 +3165,7 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
       }
       case 'apply': {
         assertWriteAllowed();
-        const args = ApplyInput.parse(req.params.arguments ?? {});
+        const args = ApplyInput.parse(rawInput);
         const pending = deps.pendingDiffs.get(args.diffId);
         if (!pending) throw new Error(`No pending diff ${args.diffId}. The user must confirm in the app first.`);
         const correctedBy = mcpRegistry.getMostRecentClientName();
@@ -3189,7 +3183,7 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
       }
       case 'forget': {
         assertWriteAllowed();
-        const args = ForgetInput.parse(req.params.arguments ?? {});
+        const args = ForgetInput.parse(rawInput);
         // Coalesce the two accepted shapes into one normalized list. `items`
         // wins when both are present (it's the safer payload — has previews).
         const usedItemsShape = (args.items?.length ?? 0) > 0;
@@ -3236,7 +3230,7 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
         return { content: [{ type: 'text', text: lines.join('\n') }] };
       }
       case 'stats': {
-        const { includeNodes } = z.object({ includeNodes: z.coerce.boolean().optional() }).parse(req.params.arguments ?? {});
+        const { includeNodes } = z.object({ includeNodes: z.coerce.boolean().optional() }).parse(rawInput);
         const s = deps.host.stats();
         const summary = s.graphs.map(g => ({
           graphId: g.graphId,
@@ -3267,7 +3261,7 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
           goals: z.string().min(1),
           graphIds: z.array(z.string()).optional(),
           saveAsGoal: z.boolean().optional(),
-        }).parse(req.params.arguments ?? {});
+        }).parse(rawInput);
         if (!deps.brainEngine) {
           return { content: [{ type: 'text', text: 'Brain engine is not running. Open the Graphnosis app to enable it.' }] };
         }
@@ -3304,7 +3298,7 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
         const args = z.object({
           action: z.string().min(1),
           graphIds: z.array(z.string()).optional(),
-        }).parse(req.params.arguments ?? {});
+        }).parse(rawInput);
         if (!deps.brainEngine) {
           return { content: [{ type: 'text', text: 'Brain engine is not running. Open the Graphnosis app to enable it.' }] };
         }
@@ -3345,7 +3339,7 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
           }
         }
         refuseIfLlmRestrictedToSearch('insights');
-        const { dismissed } = z.object({ dismissed: z.boolean().optional() }).parse(req.params.arguments ?? {});
+        const { dismissed } = z.object({ dismissed: z.boolean().optional() }).parse(rawInput);
         if (!deps.brainEngine) {
           return { content: [{ type: 'text', text: JSON.stringify([]) }] };
         }
@@ -3398,7 +3392,7 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
         // already recall from. Paths stay on the owner's machine and
         // we badge that explicitly in the response so AI clients know
         // not to try and `open` them.
-        const args = z.object({ graphId: z.string().optional() }).parse(req.params.arguments ?? {});
+        const args = z.object({ graphId: z.string().optional() }).parse(rawInput);
         const scope = deps.sharingScope;
         let allowedGraphIds: string[] | null = null;
         if (scope && scope.engrams !== '*') {
@@ -3452,7 +3446,7 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
         return { content: [{ type: 'text', text: JSON.stringify(rows, null, 2) + note }] };
       }
       case 'suggest_engram': {
-        const args = SuggestEngramInput.parse(req.params.arguments ?? {});
+        const args = SuggestEngramInput.parse(rawInput);
         const topK = args.top_k ?? 3;
         const textTokens = tokenize(args.text);
         const candidates = deps.host.graphsWithMetadata()
@@ -3475,7 +3469,7 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
         }] };
       }
       case 'browse_engram': {
-        const args = BrowseEngramInput.parse(req.params.arguments ?? {});
+        const args = BrowseEngramInput.parse(rawInput);
         const res = requireEngram(deps.host, args.engram);
         if ('error' in res) return res.error;
         enforceSessionBudget(0, 0, res.graphId);
@@ -3491,7 +3485,7 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
         }] };
       }
       case 'recent': {
-        const args = RecentInput.parse(req.params.arguments ?? {});
+        const args = RecentInput.parse(rawInput);
         let graphIdFilter: string | undefined;
         if (args.engram) {
           const res = requireEngram(deps.host, args.engram);
@@ -3513,7 +3507,7 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
         }] };
       }
       case 'get_engram_schema': {
-        const args = GetEngramSchemaInput.parse(req.params.arguments ?? {});
+        const args = GetEngramSchemaInput.parse(rawInput);
         const res = requireEngram(deps.host, args.engram);
         if ('error' in res) return res.error;
         const meta = deps.host.getGraphMetadata(res.graphId);
@@ -3528,7 +3522,7 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
       }
       // ── Advanced recall ───────────────────────────────────────────────────
       case 'recall_structured': {
-        const rawRsArgs = RecallStructuredInput.parse(req.params.arguments ?? {});
+        const rawRsArgs = RecallStructuredInput.parse(rawInput);
         const args = { ...rawRsArgs, ...applyEngramScope(rawRsArgs) };
         const only = args.only_engrams?.length ? resolveEngramList(deps.host, args.only_engrams) : null;
         const except = (!only && args.except_engrams?.length) ? resolveEngramList(deps.host, args.except_engrams) : null;
@@ -3588,7 +3582,7 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
         return { content: [{ type: 'text', text: JSON.stringify(rsResult, null, 2) + rsFooter }] };
       }
       case 'recall_with_citations': {
-        const rawRwcArgs = RecallWithCitationsInput.parse(req.params.arguments ?? {});
+        const rawRwcArgs = RecallWithCitationsInput.parse(rawInput);
         const args = { ...rawRwcArgs, ...applyEngramScope(rawRwcArgs) };
         const only = args.only_engrams?.length ? resolveEngramList(deps.host, args.only_engrams) : null;
         const except = (!only && args.except_engrams?.length) ? resolveEngramList(deps.host, args.except_engrams) : null;
@@ -3632,7 +3626,7 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
         return { content: [{ type: 'text', text: rwcBody + rwcHeadsUp + rwcFooter }] };
       }
       case 'compare_engrams': {
-        const args = CompareEngramsInput.parse(req.params.arguments ?? {});
+        const args = CompareEngramsInput.parse(rawInput);
         const resA = requireEngram(deps.host, args.engram_a);
         if ('error' in resA) return resA.error;
         const resB = requireEngram(deps.host, args.engram_b);
@@ -3664,7 +3658,7 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
         }] };
       }
       case 'cross_search': {
-        const rawCsArgs = CrossSearchInput.parse(req.params.arguments ?? {});
+        const rawCsArgs = CrossSearchInput.parse(rawInput);
         // Apply scope: intersect requested engrams with allowed set.
         const scopedCsEngrams = (() => {
           const scope = deps.sharingScope;
@@ -3703,7 +3697,7 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
       }
       // ── Source management ─────────────────────────────────────────────────
       case 'find_source': {
-        const args = FindSourceInput.parse(req.params.arguments ?? {});
+        const args = FindSourceInput.parse(rawInput);
         let graphIdFilter: string | undefined;
         if (args.engram) {
           const res = requireEngram(deps.host, args.engram);
@@ -3756,7 +3750,7 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
         return { content: [{ type: 'text', text: `Found ${matches.length} source(s):\n\n${rows}` }] };
       }
       case 'recall_source': {
-        const args = RecallSourceInput.parse(req.params.arguments ?? {});
+        const args = RecallSourceInput.parse(rawInput);
         let graphIdFilter: string | undefined;
         if (args.engram) {
           const res = requireEngram(deps.host, args.engram);
@@ -3844,7 +3838,7 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
       }
       case 'transfer_source': {
         assertWriteAllowed();
-        const args = TransferSourceInput.parse(req.params.arguments ?? {});
+        const args = TransferSourceInput.parse(rawInput);
         const resFrom = requireEngram(deps.host, args.from_engram);
         if ('error' in resFrom) return resFrom.error;
         const resTo = requireEngram(deps.host, args.to_engram);
@@ -3889,7 +3883,7 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
       }
       case 'ingest_batch': {
         assertWriteAllowed();
-        const args = IngestBatchInput.parse(req.params.arguments ?? {});
+        const args = IngestBatchInput.parse(rawInput);
         const mcpClientName = mcpRegistry.getMostRecentClientName();
         const results: Array<{ index: number; status: 'ok' | 'error'; detail: string }> = [];
         const totalContradictions: unknown[] = [];
@@ -3943,7 +3937,7 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
       }
       // ── Memory health ─────────────────────────────────────────────────────
       case 'engram_summary': {
-        const args = EngramSummaryInput.parse(req.params.arguments ?? {});
+        const args = EngramSummaryInput.parse(rawInput);
         const res = requireEngram(deps.host, args.engram);
         if ('error' in res) return res.error;
         const meta = deps.host.getGraphMetadata(res.graphId);
@@ -3968,7 +3962,7 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
             );
           }
         }
-        const args = AuditMemoryInput.parse(req.params.arguments ?? {});
+        const args = AuditMemoryInput.parse(rawInput);
         const threshold = args.threshold ?? 0.85;
         let graphIds = deps.host.listGraphs().filter(id => {
           const m = deps.host.getGraphMetadata(id);
@@ -4014,7 +4008,7 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
       }
       case 'check_duplicate': {
 
-        const args = CheckDuplicateInput.parse(req.params.arguments ?? {});
+        const args = CheckDuplicateInput.parse(rawInput);
         const threshold = args.threshold ?? 0.85;
         let graphIds = deps.host.listGraphs();
         if (args.engram) {
@@ -4052,7 +4046,7 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
             );
           }
         }
-        const args = DuplicatePairsInput.parse(req.params.arguments ?? {});
+        const args = DuplicatePairsInput.parse(rawInput);
         const pairs = deps.brainEngine.getDuplicatePairs().slice(0, args.limit ?? 20);
         if (!pairs.length) {
           return { content: [{ type: 'text', text: 'No duplicate pairs queued for review.' }] };
@@ -4081,7 +4075,7 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
             );
           }
         }
-        const args = ContradictionPairsInput.parse(req.params.arguments ?? {});
+        const args = ContradictionPairsInput.parse(rawInput);
         const getter = (deps.brainEngine as any).getContradictionPairs?.bind(deps.brainEngine);
         const pairs = (getter ? getter() : []).slice(0, args.limit ?? 20);
         if (!pairs.length) {
@@ -4104,7 +4098,7 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
         if (!deps.brainEngine) {
           return mcpError('Brain engine is not available. Open the Graphnosis app to enable it.');
         }
-        const args = HealingJournalInput.parse(req.params.arguments ?? {});
+        const args = HealingJournalInput.parse(rawInput);
         const journal = deps.brainEngine.getHealingJournal().slice(0, args.limit ?? 20);
         if (!journal.length) {
           return { content: [{ type: 'text', text: 'No autonomous heals recorded yet.' }] };
@@ -4153,7 +4147,7 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
             );
           }
         }
-        const args = GnnNeighborsInput.parse(req.params.arguments ?? {});
+        const args = GnnNeighborsInput.parse(rawInput);
         let graphIds = deps.host.listGraphs();
         if (args.engram) {
           const res = requireEngram(deps.host, args.engram);
@@ -4214,7 +4208,7 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
         if (!deps.brainEngine) {
           return mcpError('Brain engine is not available. Use recall instead.');
         }
-        const args = LlmQueryInput.parse(req.params.arguments ?? {});
+        const args = LlmQueryInput.parse(rawInput);
         const only = args.only_engrams?.length ? resolveEngramList(deps.host, args.only_engrams) : null;
         enforceRecallRateLimit();
         enforceReplayBlocker(args.question);
@@ -4255,7 +4249,7 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
             );
           }
         }
-        const args = LlmDistillInput.parse(req.params.arguments ?? {});
+        const args = LlmDistillInput.parse(rawInput);
         const engramHint = args.target_engram
           ? (() => {
               const r = resolveTargetEngram(deps.host, args.target_engram);
@@ -4297,7 +4291,7 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
           // the server already knows them from the recall that triggered the gate
           // (getGatedRequest); this is for explicit/headless callers.
           engrams: z.array(z.string()).optional(),
-        }).parse(req.params.arguments ?? {});
+        }).parse(rawInput);
 
         const clientName = mcpRegistry.getMostRecentClientName() ?? 'unknown-client';
 
@@ -4434,7 +4428,7 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
           // booleans for params absent from their cached tool schema.
           use_llm_rewrite: z.union([z.boolean(), z.enum(['true', 'false'])]).optional(),
         });
-        const args = TrainSkillInput.parse(req.params.arguments ?? {});
+        const args = TrainSkillInput.parse(rawInput);
 
         // Resolve the Skills engram (where trained skills are stored)
         const engramName = args.target_engram ?? 'Skills';
@@ -4560,7 +4554,7 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
           source_id: z.string().min(1),
           target_engram: z.string().optional(),
         });
-        const args = SkillVitalityInput.parse(req.params.arguments ?? {});
+        const args = SkillVitalityInput.parse(rawInput);
 
         const engramName = args.target_engram ?? 'Skills';
         const engramRes = requireEngram(deps.host, engramName);
@@ -4604,7 +4598,7 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
           skill_text: z.string().min(1),
           format: z.enum(['claude-md', 'cursorrules', 'system-prompt', 'openai', 'raw', 'gsk']),
         });
-        const args = ExportSkillInput.parse(req.params.arguments ?? {});
+        const args = ExportSkillInput.parse(rawInput);
 
         if (!deps.skillTrainer) {
           return mcpError(
@@ -4667,7 +4661,7 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
         const args = z.object({
           engram: z.string().min(1),
           sign: z.boolean().optional(),
-        }).parse(req.params.arguments ?? {});
+        }).parse(rawInput);
 
         const { requireEngram: _req } = { requireEngram };
         const res = requireEngram(deps.host, args.engram);
@@ -4727,7 +4721,7 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
           pack_base64: z.string().min(1),
           target_engram: z.string().optional(),
           skip_existing: z.boolean().optional(),
-        }).parse(req.params.arguments ?? {});
+        }).parse(rawInput);
 
         // Reject scoped (sharing) sessions
         if (deps.sharingScope) {
@@ -4802,7 +4796,7 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
       case 'list_skills': {
         const args = z.object({
           engram: z.string().optional(),
-        }).parse(req.params.arguments ?? {});
+        }).parse(rawInput);
         if (!deps.skillTrainer) return mcpError('Skill trainer not available.');
         let graphId: string | undefined;
         if (args.engram) {
@@ -4828,7 +4822,7 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
           graphId:   z.string().min(1),
           sourceId:  z.string().min(1),
           recursive: z.boolean().optional().default(false),
-        }).parse(req.params.arguments ?? {});
+        }).parse(rawInput);
         const resEngramW = requireEngram(deps.host, args.graphId);
         if ('error' in resEngramW) return resEngramW.error;
         const { walkSkillSequence: walkFn, formatSkillForRecall: formatFn } =
@@ -4848,7 +4842,7 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
           graphId:   z.string().min(1),
           sourceId:  z.string().min(1),
           recursive: z.boolean().optional().default(false),
-        }).parse(req.params.arguments ?? {});
+        }).parse(rawInput);
         const resEngramS = requireEngram(deps.host, args.graphId);
         if ('error' in resEngramS) return resEngramS.error;
         const { walkSkillSequence: walkFn2, walkSkillToJson } =
@@ -4878,7 +4872,7 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
           planTitle:          z.string().optional(),
           capturedVars:       z.record(z.string(), z.unknown()),
           completedStepIndex: z.number().int().nonnegative(),
-        }).parse(req.params.arguments ?? {});
+        }).parse(rawInput);
         const now = Date.now();
         const runId = args.runId ?? randomUUID();
         const existing = args.runId ? await deps.host.skillRuns.read(args.runId) : null;
@@ -4896,7 +4890,7 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
       }
 
       case 'resume_skill_run': {
-        const args = z.object({ runId: z.string().min(1) }).parse(req.params.arguments ?? {});
+        const args = z.object({ runId: z.string().min(1) }).parse(rawInput);
         const rec = await deps.host.skillRuns.read(args.runId);
         if (!rec) return mcpError(`No saved skill-run with runId "${args.runId}". It may have completed (and been deleted) or never been saved.`);
         return { content: [{ type: 'text', text: JSON.stringify({
@@ -4914,7 +4908,7 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
         const args = z.object({
           graphId: z.string().min(1),
           sourceId: z.string().min(1),
-        }).parse(req.params.arguments ?? {});
+        }).parse(rawInput);
         if (!deps.skillTrainer) return mcpError('Skill trainer not available.');
         const resEngram = requireEngram(deps.host, args.graphId);
         if ('error' in resEngram) return resEngram.error;
@@ -4932,7 +4926,7 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
         const args = z.object({
           graphId: z.string().min(1),
           sourceId: z.string().min(1),
-        }).parse(req.params.arguments ?? {});
+        }).parse(rawInput);
         if (!deps.skillTrainer) return mcpError('Skill trainer not available.');
         const resEngram = requireEngram(deps.host, args.graphId);
         if ('error' in resEngram) return resEngram.error;
@@ -4956,7 +4950,7 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
           graphId: z.string().min(1),
           sourceId: z.string().min(1),
           snapshotId: z.string().min(1),
-        }).parse(req.params.arguments ?? {});
+        }).parse(rawInput);
         if (!deps.skillTrainer) return mcpError('Skill trainer not available.');
         const resEngram = requireEngram(deps.host, args.graphId);
         if ('error' in resEngram) return resEngram.error;
@@ -4970,7 +4964,7 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
           graphId: z.string().min(1),
           sourceId: z.string().min(1),
           all_versions: z.boolean().optional(),
-        }).parse(req.params.arguments ?? {});
+        }).parse(rawInput);
         if (!deps.skillTrainer) return mcpError('Skill trainer not available.');
         const resEngram = requireEngram(deps.host, args.graphId);
         if ('error' in resEngram) return resEngram.error;
@@ -4980,7 +4974,7 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
       }
 
       default:
-        throw new Error(`Unknown tool: ${req.params.name}`);
+        throw new Error(`Unknown tool: ${name}`);
     }
     } catch (e) {
       // Consent gate: surface the full notice text as a normal tool result
@@ -4991,9 +4985,35 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
       if (e instanceof ScopeViolationError) return mcpError(e.message);
       throw e;
     }
+  }
+
+  server.setRequestHandler(CallToolRequestSchema, async (req) => {
+    // AI client just made a tool call — mark activity so heavy background brain
+    // passes defer and this recall/remember wins the single-threaded loop.
+    markClientActivity();
+    // Admin/IT policy: reject EVERY tool call from a disabled AI client. The
+    // user/IT blocks a client by name; enforced here in the sidecar (the only
+    // place a client can't route around).
+    const policyClient = mcpRegistry.getMostRecentClientName() ?? 'unknown-client';
+    if (isClientDisabled(policyClient)) {
+      return {
+        content: [{ type: 'text', text: `⛔ Access blocked. The AI client "${policyClient}" has been disabled by policy. Contact your administrator to re-enable it.` }],
+        isError: true,
+      };
+    }
+    // User tool-exposure allowlist: reject calls to a disabled tool. Runs BEFORE
+    // the switch (and before any per-tool Pro-tier gate) and re-reads live, so a
+    // client with a stale/cached schema still can't invoke a disabled tool.
+    if (disabledToolSet().has(req.params.name)) {
+      return {
+        content: [{ type: 'text', text: `⛔ The tool "${req.params.name}" has been disabled in Graphnosis (Settings → MCP Tools). Ask the user to re-enable it if you need it.` }],
+        isError: true,
+      };
+    }
+    return dispatchTool(req.params.name, (req.params.arguments ?? {}) as Record<string, unknown>);
   });
 
-  return server;
+  return { server, callTool: dispatchTool };
 }
 
 /**
@@ -5004,7 +5024,7 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
 export async function startStdioMcpServer(deps: McpDeps): Promise<void> {
   // mcpRegistry is now imported statically at the top of the file so the
   // tool handlers can use it too (attribution of MCP-driven ingests).
-  const server = createMcpServer(deps);
+  const { server } = createMcpServer(deps);
   const transport = new StdioServerTransport();
   await server.connect(transport);
 

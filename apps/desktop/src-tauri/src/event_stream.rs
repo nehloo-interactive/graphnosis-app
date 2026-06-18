@@ -202,6 +202,9 @@ async fn open_and_read(app: &AppHandle, socket_path: &Path) -> Result<()> {
             | "mcp.recall-rate-limited"
             | "mcp.session-replay-blocked"
             | "cortex.integrity-alert"
+            | "ghampus.message"
+            | "ghampus.thinking"
+            | "ghampus.card"
             | "graph.delta" => {  // per-source live-ingest delta → graphnosis://graph-delta
                 // Forward the raw payload to the frontend as-is.
                 // The frontend matches on the event name to update the

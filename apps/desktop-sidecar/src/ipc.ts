@@ -34,7 +34,7 @@ import { oplog } from '@nehloo-interactive/graphnosis-secure-sync';
 import { withEmbedding } from './embedding-queue.js';
 import type { ConnectorManager } from './connectors/manager.js';
 import { getAdminPolicy, setAdminPolicy } from './admin-policy.js';
-import { getConsentPhraseForTier } from './mcp-server.js';
+import { getConsentPhraseForTier, type McpCallTool } from './mcp-server.js';
 import { revokeConsent } from '@graphnosis-app/core/settings';
 
 // Local IPC between Tauri shell and Node sidecar. Newline-delimited JSON over a
@@ -65,6 +65,22 @@ const SKILL_DEMOS_ENGRAM_ID = 'graphnosis-skill-demos';
 // `.abort()` on these; the host loops poll between engrams and bail.
 let currentEmbeddingSwitchAbort: AbortController | null = null;
 let currentReingestAbort: AbortController | null = null;
+
+// Ghampus clarification state — persists across IPC calls (module scope).
+// Set when Ghampus can't confidently classify a message and asks the user
+// to confirm. Cleared when the user replies or sends an unrelated message.
+let ghampusPendingClarification: {
+  originalText: string;   // the user's ambiguous message
+  content: string;        // extracted save content
+  engramHint: string | null;
+} | null = null;
+
+// Set when a save is blocked because the target engram doesn't exist yet.
+// Cleared when the engram is created (auto-saves) or user sends a new unrelated message.
+let ghampusPendingEngram: {
+  content: string;        // the content to save once the engram is created
+  engramHint: string;     // the name the user intended (slug-normalised on use)
+} | null = null;
 
 /**
  * Walk an arbitrary IPC result and replace characters that produce invalid
@@ -138,6 +154,14 @@ export interface IpcDeps {
   skillTrainer?: import('./skill-trainer.js').SkillTrainer | null;
   /** License validator — Ed25519 subscription gate for skill training and GSK packs. */
   licenseValidator?: import('./license-validator.js').LicenseValidator | null;
+  /** Proactive watcher — surfaces skill-match cards into the Ghampus chat thread. */
+  proactiveWatcher?: import('./proactive-watcher.js').ProactiveWatcher | null;
+  /**
+   * Unified MCP tool dispatcher — routes to the exact same handler as external
+   * AI clients for all 47+ tools. Used by Ghampus so no tool logic is duplicated.
+   * Absent only in contexts where no MCP server was built (e.g. some unit tests).
+   */
+  callMcpTool?: McpCallTool;
 }
 
 /** Returns true when socketPath is a TCP address like "127.0.0.1:PORT". */
@@ -3674,6 +3698,991 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
       const { invokeAgentTool } = await import('./agent-tools.js');
       const args = z.object({ engramId: z.string().optional() }).parse(params ?? {});
       return invokeAgentTool({ host: deps.host, skillTrainer: deps.skillTrainer ?? null }, 'list_skills', args);
+    }
+
+    // ── Ghampus chat surface ──────────────────────────────────────────────
+    case 'ghampus:history': {
+      // Returns the persisted conversation thread from the cortex directory.
+      try {
+        const { readFile } = await import('node:fs/promises');
+        const cortexDir = deps.cortexDir ?? deps.host.getCortexDir?.() ?? '';
+        if (!cortexDir) return { messages: [] };
+        const histPath = `${cortexDir}/ghampus-history.jsonl`;
+        const raw = await readFile(histPath, 'utf8').catch(() => '');
+        const messages = raw.trim().split('\n').filter(Boolean).map((line) => {
+          try { return JSON.parse(line) as unknown; }
+          catch { return null; }
+        }).filter(Boolean);
+        // Return last 100 messages to avoid huge payloads.
+        return { messages: messages.slice(-100) };
+      } catch {
+        return { messages: [] };
+      }
+    }
+
+    case 'ghampus:inbox:list': {
+      const watcher = deps.proactiveWatcher;
+      return { cards: watcher ? watcher.listCards() : [] };
+    }
+
+    case 'ghampus:inbox:dismiss': {
+      const { id } = z.object({ id: z.string() }).parse(params ?? {});
+      deps.proactiveWatcher?.dismissCard(id);
+      return { ok: true };
+    }
+
+    case 'ghampus:inbox:snooze': {
+      const { id } = z.object({ id: z.string() }).parse(params ?? {});
+      deps.proactiveWatcher?.snoozeCard(id);
+      return { ok: true };
+    }
+
+    case 'ghampus:inbox:run': {
+      // Mark the card as running, then emit it as a chat message so the
+      // thread shows the "skill walk started" card. Real walk execution
+      // is via ghampus:walkPlan + ghampus:confirmWalk (user-triggered).
+      const { id } = z.object({ id: z.string() }).parse(params ?? {});
+      const watcher = deps.proactiveWatcher;
+      if (watcher) {
+        watcher.markRunning(id);
+        const card = watcher.listCards().find((c) => c.id === id);
+        if (card) {
+          deps.broadcastRaw({
+            kind: 'ghampus.message',
+            name: 'ghampus.message',
+            payload: {
+              kind: 'ghampus',
+              text: `Starting skill: **${card.skillLabel}**\n\n${card.why}`,
+              ts: Date.now(),
+            },
+          });
+        }
+      }
+      return { ok: true };
+    }
+    case 'ghampus:send': {
+      // Recall memory context, call local LLM, emit response as a
+      // 'ghampus.message' event (forwarded to frontend as
+      // 'graphnosis://ghampus-message' by event_stream.rs).
+      const { text } = z.object({ text: z.string() }).parse(params ?? {});
+
+      // Persist the user message immediately.
+      const cortexDirForHistory = deps.cortexDir ?? deps.host.getCortexDir?.() ?? '';
+      const histPath = cortexDirForHistory ? `${cortexDirForHistory}/ghampus-history.jsonl` : '';
+      const userMsg: Record<string, unknown> = { kind: 'user', text, ts: Date.now() };
+      if (histPath) {
+        const { appendFile } = await import('node:fs/promises');
+        await appendFile(histPath, JSON.stringify(userMsg) + '\n').catch(() => {});
+      }
+
+      const llm = deps.llm?.() ?? null;
+      if (!llm) {
+        const noLlmMsg = {
+          kind: 'ghampus',
+          text: 'Local LLM is not available. Enable Ollama in **Settings → Models**.',
+          ts: Date.now(),
+        };
+        if (histPath) {
+          const { appendFile } = await import('node:fs/promises');
+          await appendFile(histPath, JSON.stringify(noLlmMsg) + '\n').catch(() => {});
+        }
+        deps.broadcastRaw({
+          kind: 'ghampus.message',
+          name: 'ghampus.message',
+          payload: noLlmMsg,
+        });
+        return { ok: true };
+      }
+      // Fire-and-forget so IPC returns immediately; response arrives via event.
+      void (async () => {
+        // Signal "thinking" immediately so the UI can show a spinner.
+        deps.broadcastRaw({
+          kind: 'ghampus.thinking',
+          name: 'ghampus.thinking',
+          payload: { thinking: true, ts: Date.now() },
+        });
+        try {
+          const { listRecentSaves } = await import('./agent-tools.js');
+
+          // Universal MCP tool adapter — all tool calls route through the exact same
+          // handlers as external AI clients. No tool logic is duplicated here.
+          const ghampusTool = async (name: string, toolArgs: Record<string, unknown> = {}): Promise<unknown> => {
+            if (!deps.callMcpTool) throw new Error(`[ghampus] callMcpTool not wired — cannot call ${name}`);
+            const result = await deps.callMcpTool(name, toolArgs);
+            if (result.isError) throw new Error(result.content[0]?.text ?? `MCP ${name} error`);
+            const rawText = result.content[0]?.text ?? '';
+            // Normalize MCP text output to the structured shapes Ghampus expects.
+            switch (name) {
+              case 'list_engrams': {
+                // MCP returns JSON.stringify(rows) + optional notice suffix.
+                // Slice to last ] to safely strip any trailing non-JSON text.
+                try {
+                  const jsonText = rawText.slice(0, rawText.lastIndexOf(']') + 1).trim();
+                  const rows = JSON.parse(jsonText);
+                  return { engrams: Array.isArray(rows) ? rows : [] };
+                } catch { return { engrams: [] }; }
+              }
+              case 'list_skills': {
+                // MCP returns formatted markdown text, not JSON.
+                if (!rawText || rawText.startsWith('No trained')) return { skills: [] };
+                const skills: Array<{ label: string; trainedAt?: string }> = [];
+                const blocks = rawText.split('\n\n').filter((b: string) => b.startsWith('**'));
+                for (const block of blocks) {
+                  const lines = block.split('\n');
+                  const label = lines[0]?.replace(/^\*\*|\*\*$/g, '') ?? '';
+                  const trainedAt = lines.find((l: string) => l.includes('Trained:'))?.match(/Trained:\s+(\S+)/)?.[1];
+                  if (label) skills.push({ label, ...(trainedAt ? { trainedAt } : {}) });
+                }
+                return { skills };
+              }
+              case 'stats': {
+                // MCP returns JSON + optional notice — find last } to safely strip suffix.
+                try {
+                  const jsonText = rawText.slice(0, rawText.lastIndexOf('}') + 1).trim();
+                  return JSON.parse(jsonText);
+                } catch { return {}; }
+              }
+              case 'recall':
+              case 'remind':
+              case 'dig_deeper':
+              case 'recall_with_citations':
+                // Return in the shape Ghampus expects (prompt = raw knowledge subgraph text).
+                return { prompt: rawText, nodesIncluded: (rawText.match(/\[[\w-]+\|/g) ?? []).length, tokensUsed: 0, engramsContributing: [], sharingProvenance: [], attachments: [] };
+              case 'recent': {
+                // MCP: "Recent — scope (N total):\n\n• ISO-date  [kind]  ref  (EngramLabel)"
+                const lines = rawText.split('\n').filter((l: string) => l.startsWith('•'));
+                const sources = lines.map((l: string) => {
+                  const m = l.match(/^•\s+(\S+)\s+\[[^\]]+\]\s+(\S+)\s+\(([^)]+)\)/);
+                  // m[1]=date  m[2]=ref  m[3]=engram display name
+                  return m ? { ingestedAt: m[1], label: m[2], engramName: m[3] } : null;
+                }).filter(Boolean);
+                return { sources };
+              }
+              case 'find_source': {
+                // MCP: "Found N source(s):\n\n• [kind] ref  |  (EngramLabel)  |  date  |  id: sourceId"
+                const lines = rawText.split('\n').filter((l: string) => l.startsWith('•'));
+                const sources = lines.map((l: string) => {
+                  const parts = l.replace(/^•\s+/, '').split('|').map((s: string) => s.trim());
+                  const label = parts[0]?.replace(/^\[[^\]]+\]\s+/, '') ?? '';
+                  const engramName = (parts[1] ?? '').replace(/^\(|\)$/g, '').trim();
+                  const sourceId = (parts[3] ?? '').replace(/^id:\s*/, '').trim();
+                  return label ? { label, engramName, sourceId } : null;
+                }).filter(Boolean);
+                return { sources };
+              }
+              case 'remember':
+                return { ok: true };
+              default:
+                return { rawText };
+            }
+          };
+          const q = text.toLowerCase();
+
+          // ── Intent detection ──────────────────────────────────────────────
+          const wantsRecent    = /recent|latest|last|new|today|added|ingested|saved recently/i.test(text);
+          const wantsSkills    = /skill|procedure|sop|workflow|how (do|to|should)|step.by.step|walk/i.test(text);
+          const wantsStats     = /stat|count|how many|total|size|storage|node|health|vitality/i.test(text);
+          const wantsSource    = /source|file|document|attachment|pdf|url|link|ref/i.test(text);
+          const wantsCitations = /where did|which source|cite|citation|proof|evidence/i.test(text);
+
+          // Exhaustive-listing intent: the user wants ALL matches, not a summary.
+          // Use a much higher node cap and skip the LLM's natural summarizing tendency.
+          const wantsExhaustive = /\b(list all|show all|find all|give me all|what are all|all (my |the )?(nodes?|todos?|tasks?|items?|entries)|every|enumerate)\b/i.test(text);
+
+          // RecallInput schema caps maxNodes at 50 — stay within that bound.
+          const recallMaxNodes  = wantsExhaustive ? 50 : 20;
+          const recallMaxTokens = wantsExhaustive ? 8000 : 2000;
+
+          // ── Helper: emit a Ghampus response and persist it ───────────────────
+          // Defined early so slash-command handlers can use it before the LLM path.
+          const emitGhampusMsg = async (responseText: string) => {
+            const responseMsg = { kind: 'ghampus', text: responseText, ts: Date.now() };
+            if (histPath) {
+              const { appendFile } = await import('node:fs/promises');
+              await appendFile(histPath, JSON.stringify(responseMsg) + '\n').catch(() => {});
+            }
+            deps.broadcastRaw({ kind: 'ghampus.message', name: 'ghampus.message', payload: responseMsg });
+          };
+
+          // ── Pending clarification resolution ─────────────────────────────
+          // If the previous turn was uncertain, we asked the user to confirm.
+          // A simple yes/no/save/recall here resolves the deferred action.
+          // Anything else clears the pending state and processes normally.
+          if (ghampusPendingClarification) {
+            const pending = ghampusPendingClarification;
+            const t = text.trim().toLowerCase().replace(/[!.]+$/, '');
+            const confirmsSave   = /^(yes|save( it)?|do it|store( it)?|keep( it)?|confirm|ok|okay|sure|yep|yeah|si|oui|ja|да|s[íi]|罗|sí)$/i.test(t);
+            const confirmsRecall = /^(no|recall|search|look( it)? up|find( it)?|don'?t save|nope|nah|cancel|skip|non|nein|нет|否)$/i.test(t);
+            if (confirmsSave) {
+              ghampusPendingClarification = null;
+              const engListForSave2 = await ghampusTool('list_engrams', {}) as { engrams?: Array<{ graphId: string; displayName: string; tier: string }> };
+              const allEngrams2 = engListForSave2.engrams ?? [];
+              const matched2 = allEngrams2.find((e) => e.tier === 'personal') ?? allEngrams2[0] ?? null;
+              if (!matched2) { await emitGhampusMsg('No engrams to save to yet. Create one with `/create [name]`.'); return { ok: true }; }
+              const LLM_PH = new Set(['ENGRAM_NAME_OR_NULL', 'TEXT_TO_SAVE', 'ENGRAM_NAME', 'NULL', 'null', '']);
+              const hint2 = pending.engramHint && !LLM_PH.has(pending.engramHint) ? pending.engramHint.toLowerCase() : null;
+              const target2 = hint2
+                ? allEngrams2.find((e) => e.graphId === hint2 || e.graphId.includes(hint2.replace(/[^a-z0-9]+/g, '-')) || e.displayName.toLowerCase().includes(hint2)) ?? matched2
+                : matched2;
+              try {
+                await ghampusTool('remember', { graphId: target2.graphId, text: pending.content, label: pending.content.slice(0, 80) });
+                await emitGhampusMsg(`Saved to **${target2.displayName}**.`);
+              } catch (e) { await emitGhampusMsg(`Couldn't save: ${e instanceof Error ? e.message : String(e)}`); }
+              return { ok: true };
+            }
+            if (confirmsRecall) {
+              ghampusPendingClarification = null;
+              const recallResult = await ghampusTool('recall', { query: pending.originalText, maxNodes: 20 }).catch(() => null) as { prompt?: string } | null;
+              const answer = recallResult?.prompt
+                ? await llm.complete({ system: 'You are Ghampus. Answer concisely using the memory context below.', user: `Context:\n${recallResult.prompt}\n\nQuestion: ${pending.originalText}` }).catch(() => null)
+                : null;
+              await emitGhampusMsg(answer ?? recallResult?.prompt ?? "I couldn't find anything on that. Try rephrasing.");
+              return { ok: true };
+            }
+            // Not a simple yes/no — drop pending state and classify the new message fresh.
+            ghampusPendingClarification = null;
+            // Also drop any deferred engram-create save when user abandons the flow.
+            if (!/create|engram|creat|make\s+engram|new\s+engram/i.test(text)) {
+              ghampusPendingEngram = null;
+            }
+          }
+
+          // ── Slash-command dispatch (bypasses intent classifier entirely) ─────
+          if (text.startsWith('/')) {
+            const [rawCmd = '', ...rawArgParts] = text.slice(1).trim().split(/\s+/);
+            const cmd = rawCmd.toLowerCase();
+            const argsStr = rawArgParts.join(' ').trim();
+
+            switch (cmd) {
+              case 'help': {
+                await emitGhampusMsg(
+                  '**Ghampus slash commands:**\n\n' +
+                  '- `/save [content] [@engram]` — save a memory to your cortex\n' +
+                  '- `/create [engram name]` — create a new engram\n' +
+                  '- `/engrams` — list all your engrams\n' +
+                  '- `/skills` — list all your skills\n' +
+                  '- `/forget` — manage / delete memories (opens Memory Studio)\n' +
+                  '- `/help` — show this list\n\n' +
+                  'You can also just chat naturally — Ghampus understands plain language for all of these.',
+                );
+                return { ok: true };
+              }
+
+              case 'engrams': {
+                const res = await ghampusTool('list_engrams', {}) as { engrams?: Array<{ graphId: string; displayName: string; tier: string; loaded: boolean }> };
+                const list = res.engrams ?? [];
+                if (!list.length) {
+                  await emitGhampusMsg('No engrams found. Create one with `/create [name]`.');
+                } else {
+                  const lines = list.map((e) =>
+                    `- **${e.displayName}** \`${e.graphId}\` (${e.tier}${e.loaded ? '' : ', not loaded'})`
+                  ).join('\n');
+                  await emitGhampusMsg(`**Your engrams (${list.length}):**\n\n${lines}`);
+                }
+                return { ok: true };
+              }
+
+              case 'skills': {
+                const res = await ghampusTool('list_skills', {}) as { skills?: Array<{ label: string; trainedAt?: string; vitality?: number }> };
+                const skills = res.skills ?? [];
+                if (!skills.length) {
+                  await emitGhampusMsg('No skills found. Train one in the Skills page.');
+                } else {
+                  const lines = skills.map((s) => {
+                    const label = s.label.replace(/^skill:\d+:/, '').replace(/-/g, ' ');
+                    const v = s.vitality != null ? ` · vitality ${s.vitality}` : '';
+                    return `- **${label}**${v}`;
+                  }).join('\n');
+                  await emitGhampusMsg(`**Your skills (${skills.length}):**\n\n${lines}`);
+                }
+                return { ok: true };
+              }
+
+              case 'forget': {
+                await emitGhampusMsg(
+                  'To delete or edit memories, go to **Memory Studio** and find the node or source you want to remove.\n\n' +
+                  'I can also search for something specific first — just ask: "find my notes about X".',
+                );
+                return { ok: true };
+              }
+
+              case 'save': {
+                if (!argsStr) {
+                  await emitGhampusMsg('Usage: `/save [content] [@engram]`\n\nExample: `/save I need to fix Ghampus @coding`');
+                  return { ok: true };
+                }
+                // Parse optional @engram at the end
+                const atMatch = argsStr.match(/\s@([\w-]+)$/);
+                const engramSlug = atMatch?.[1]?.toLowerCase() ?? null;
+                const saveContent = atMatch ? argsStr.slice(0, argsStr.lastIndexOf(atMatch[0])).trim() : argsStr;
+                const engListSave = await ghampusTool('list_engrams', {}) as { engrams?: Array<{ graphId: string; displayName: string; tier: string }> };
+                const allEngrams = engListSave.engrams ?? [];
+                let matched = allEngrams.find((e) => e.tier === 'personal') ?? allEngrams[0] ?? null;
+                if (engramSlug) {
+                  const explicit = allEngrams.find((e) => e.graphId === engramSlug || e.graphId.includes(engramSlug) || e.displayName.toLowerCase().includes(engramSlug));
+                  if (!explicit) {
+                    const names = allEngrams.map((e) => `\`@${e.graphId}\``).join(', ');
+                    await emitGhampusMsg(`No engram matching \`@${engramSlug}\`. Available: ${names || 'none'}.`);
+                    return { ok: true };
+                  }
+                  matched = explicit;
+                }
+                if (!matched) {
+                  await emitGhampusMsg('No engrams yet. Create one with `/create [name]`.');
+                  return { ok: true };
+                }
+                try {
+                  await ghampusTool('remember', { graphId: matched.graphId, text: saveContent, label: saveContent.slice(0, 80) });
+                  await emitGhampusMsg(`Saved to **${matched.displayName}**.`);
+                } catch (e) {
+                  await emitGhampusMsg(`Couldn't save: ${e instanceof Error ? e.message : String(e)}`);
+                }
+                return { ok: true };
+              }
+
+              case 'create': {
+                if (!argsStr) {
+                  await emitGhampusMsg('Usage: `/create [engram name]`\n\nExample: `/create Work Notes`');
+                  return { ok: true };
+                }
+                const graphId = argsStr.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+                const engListCreate = await ghampusTool('list_engrams', {}) as { engrams?: Array<{ graphId: string; displayName: string }> };
+                const existing = engListCreate.engrams?.find((e) => e.graphId === graphId || e.displayName.toLowerCase() === argsStr.toLowerCase());
+                if (existing) {
+                  await emitGhampusMsg(`**${existing.displayName}** already exists. Want to save something to it?`);
+                  return { ok: true };
+                }
+                try {
+                  await deps.host.createGraph(graphId);
+                  const pendingSlashCreate = ghampusPendingEngram;
+                  const pendingSlugSc = pendingSlashCreate?.engramHint.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+                  if (pendingSlashCreate && (pendingSlugSc === graphId || pendingSlashCreate.engramHint.toLowerCase().includes(argsStr.toLowerCase()) || argsStr.toLowerCase().includes(pendingSlashCreate.engramHint.toLowerCase()))) {
+                    ghampusPendingEngram = null;
+                    await ghampusTool('remember', { graphId, text: pendingSlashCreate.content, label: pendingSlashCreate.content.slice(0, 80) });
+                    await emitGhampusMsg(`Created engram **${argsStr}** and saved your note: "${pendingSlashCreate.content.slice(0, 120)}${pendingSlashCreate.content.length > 120 ? '…' : ''}"`);
+                  } else {
+                    await emitGhampusMsg(`Created engram **${argsStr}** (\`${graphId}\`). Use \`/save [content] @${graphId}\` to add memories.`);
+                  }
+                } catch (e) {
+                  await emitGhampusMsg(`Couldn't create: ${e instanceof Error ? e.message : String(e)}`);
+                }
+                return { ok: true };
+              }
+
+              default: {
+                // Unknown slash command — let the user know and list valid ones.
+                await emitGhampusMsg(
+                  `Unknown command \`/${cmd}\`. Try:\n` +
+                  '`/save` `/create` `/engrams` `/skills` `/forget` `/help`',
+                );
+                return { ok: true };
+              }
+            }
+          }
+
+          // ── Intent classification: LLM with keyword fallback ────────────────
+          // Step 1 — lightweight keyword scoring (no LLM, instant).
+          // Catches obvious patterns even if the LLM call fails.
+          type GhampusIntent =
+            | { action: 'remember'; content: string; engram: string | null }
+            | { action: 'create_engram'; name: string }
+            | { action: 'ui_only'; reason: string }
+            | { action: 'recall' };
+
+          function keywordIntent(msg: string): GhampusIntent | null {
+            const m = msg.trim();
+            // Score write verbs using character-level similarity to handle typos.
+            // A word scores as a write-verb if ≥60% of its chars overlap with the target.
+            const firstWord = (m.split(/\s+/)[0] ?? '').toLowerCase();
+            const verbScores: Record<string, string[]> = {
+              remember: ['remember', 'remeber', 'remmber', 'remmeber', 'remmbr', 'remb', 'recuerda', 'noter', 'запомни', 'merkt'],
+              save:     ['save', 'sav', 'saev', 'store', 'stor', 'keep', 'kep', 'note', 'jot', 'add', 'salva', 'speichern', 'zapisz'],
+              create:   ['create', 'creat', 'crete', 'make', 'mak', 'new', 'add', 'build', 'créer', 'erstell', 'crea'],
+              delete:   ['delete', 'delet', 'remove', 'remov', 'drop', 'erase', 'del'],
+            };
+            const isVerb = (target: keyof typeof verbScores) =>
+              verbScores[target].some((v) => {
+                if (firstWord === v) return true;
+                if (Math.abs(firstWord.length - v.length) > 3) return false;
+                let common = 0;
+                for (const c of firstWord) if (v.includes(c)) common++;
+                return common / Math.max(firstWord.length, v.length) >= 0.6;
+              });
+
+            const lower = m.toLowerCase();
+            const hasEngramWord = /\bengram\b/.test(lower);
+
+            if (isVerb('create') && hasEngramWord) {
+              const nameM = m.match(/(?:engram\s+)?(?:called|named|:)?\s*["']?([^"'\n]{1,60})["']?\s*$/i);
+              const name = nameM?.[1]?.trim() ?? '';
+              if (name && !/^engram$/i.test(name)) return { action: 'create_engram', name };
+            }
+            if (isVerb('delete') && hasEngramWord) {
+              return { action: 'ui_only', reason: 'engram deletion requires Memory Studio' };
+            }
+            if (isVerb('remember') || isVerb('save')) {
+              // Try "verb in/to [engram] that/: [content]" (word order A)
+              const mA = m.replace(/^\S+\s+/, '').match(
+                /^(?:in|to|into)\s+(?:(?:my|the)\s+)?["']?([^"',\n]{1,50?})["']?\s*(?:engram\s+)?(?:that|:|–|-|,)?\s+(.+)$/i,
+              );
+              if (mA?.[2]?.trim()) return { action: 'remember', content: mA[2].trim(), engram: mA[1].trim() };
+              // Try "verb [content] in/to [engram]" (word order B)
+              const mB = m.replace(/^\S+\s+/, '').match(
+                /^(?:that\s+)?(.+?)\s+(?:to|in|into)\s+(?:(?:my|the)\s+)?["']?([^"',\n]{1,50})["']?\s*(?:engram)?$/i,
+              );
+              if (mB?.[1]?.trim()) return { action: 'remember', content: mB[1].trim(), engram: mB[2]?.trim() ?? null };
+              // Bare: "verb [content]" with no target
+              const bare = m.replace(/^\S+\s+(?:that\s+)?/, '').trim();
+              if (bare.length >= 3) return { action: 'remember', content: bare, engram: null };
+            }
+            return null;
+          }
+
+          // Step 1b — question pre-classifier: runs before keyword scorer.
+          // Catches context-following questions ("what about X?", "how about Y?",
+          // single-entity follow-ups, anything question-shaped with no save verb).
+          // If it fires, we skip the LLM entirely — no ambiguity.
+          function questionIntent(msg: string): GhampusIntent | null {
+            const m = msg.trim();
+            const lower = m.toLowerCase();
+            // Never classify as recall if there's an explicit save verb present.
+            const hasSaveVerb = /\b(remember|remmber|remeber|save|sav|store|keep|note|jot|noter|salva|guardar|speichern|записать)\b/i.test(lower);
+            if (hasSaveVerb) return null;
+            // "remember when/the time/that night" → recall (not save)
+            if (/^remember\s+(when|the\s+time|that\s+night|that\s+day|how|why|who|where)/i.test(m)) return { action: 'recall' };
+            // "do you remember / don't you remember / can you recall" → recall
+            if (/^(do you|don't you|dont you|can you|could you)\s+(remember|recall|find|tell|show)/i.test(m)) return { action: 'recall' };
+            // Explicit question-phrase prefixes — collapse ~30 patterns into one regex:
+            //   "what about / how about / tell me about / anything on / anything about /
+            //    what's X / what is X / what are X / what do/did / how do/did / who is /
+            //    where is / when did / show me / find / look up / search / do i have /
+            //    is there / are there / give me / list / any info on"
+            if (/^(what about|how about|tell me about|anything (on|about|for|in)|what'?s\b|what (is|are|do|did|can|could|was|were|have)\b|how (do|did|is|are|many|much|come)\b|who (is|are|was|were|did|has|have)\b|where (is|are|was|were|did)\b|when (did|was|were|is|are|do|does)\b|why (did|is|are|was|were|do|does)\b|which\b|show me|find (me |out |the )?|look up|search (for |the )?|do i (have|know|remember|own|need)\b|is there\b|are there\b|give me\b|list (my |the |all )?|any info|can i\b|could i\b|would\b|should\b|how to\b)/i.test(lower)) {
+              return { action: 'recall' };
+            }
+            // Short message (≤5 words) ending in "?" with no save verb → recall
+            if (m.endsWith('?') && m.split(/\s+/).length <= 5) return { action: 'recall' };
+            // Any message ending in "?" with no save verb and no colon (colons suggest "note: ...")
+            if (m.endsWith('?') && !m.includes(':')) return { action: 'recall' };
+            return null;
+          }
+
+          // Step 2 — LLM classification (typo-proof, multilingual, nuanced).
+          // Keyword result or question pre-classifier takes priority; LLM only
+          // runs if neither fires. Constrained to echo the exact engram name the
+          // user wrote — no substitution, no fuzzy-matching.
+          const keywordResult = questionIntent(text) ?? keywordIntent(text);
+          let intent: GhampusIntent = keywordResult ?? { action: 'recall' };
+          let llmConfidence: number | null = null;
+
+          try {
+            // Load the last 3 turns from history to give the LLM conversation context.
+            // This lets it understand "what about X?" after a recall response.
+            let recentContext = '';
+            if (histPath) {
+              try {
+                const { readFile } = await import('node:fs/promises');
+                const raw = await readFile(histPath, 'utf8').catch(() => '');
+                const turns = raw.trim().split('\n').filter(Boolean).slice(-7)
+                  .map((line) => { try { return JSON.parse(line) as { kind: string; text: string }; } catch { return null; } })
+                  .filter((t): t is { kind: string; text: string } => !!t && !!t.text);
+                // Exclude the current message (last entry) from context
+                const contextTurns = turns.slice(0, -1).slice(-6);
+                if (contextTurns.length > 0) {
+                  recentContext = '\n\nConversation history (most recent last):\n' +
+                    contextTurns.map((t) => `${t.kind === 'user' ? 'User' : 'Ghampus'}: ${t.text.slice(0, 300)}`).join('\n');
+                }
+              } catch { /* non-fatal */ }
+            }
+
+            const engListForIntent = await ghampusTool('list_engrams', {}) as { engrams?: Array<{ graphId: string; displayName: string }> };
+            const engramList = (engListForIntent.engrams ?? []).map((e) => `${e.graphId}="${e.displayName}"`).join(', ');
+
+            const classifySystem =
+              'Intent classifier for Graphnosis (personal knowledge graph). ' +
+              'Output ONLY a single JSON object — no prose, no code fences, no explanation.\n' +
+              'Always include a "confidence" field (0.0–1.0) — how certain you are about the action.\n\n' +
+              'Schemas:\n' +
+              '{"action":"remember","content":"TEXT_TO_SAVE","engram":"ENGRAM_NAME_OR_NULL","confidence":0.95}\n' +
+              '{"action":"create_engram","name":"ENGRAM_NAME","confidence":0.9}\n' +
+              '{"action":"ui_only","reason":"engram deletion requires UI"|"rename requires UI"|"merge requires UI","confidence":0.9}\n' +
+              '{"action":"recall","confidence":0.85}\n\n' +
+              'Rules — apply even with heavy spelling errors or any language:\n' +
+              '• Save verbs → action=remember: remember/save/store/note/add/keep/jot/noter/salva/guardar/speichern/записать + all typos (remmber, remeber, sav, stor…)\n' +
+              '• create/make/new/creat/créer/erstell + engram → action=create_engram\n' +
+              '• delete/remove/rename/merge + engram → action=ui_only\n' +
+              '• QUESTION RULE: Any message shaped as a question (starts with what/who/when/where/how/why/which/tell me/show me/find/is there/do I/any, or ends with ?) → action=recall, even if it mentions a known engram name.\n' +
+              '• CONTEXT RULE: If history shows a recall exchange immediately before, a short follow-up ("what about X", "and Y?", "how about Z") continues the recall — do NOT classify as remember.\n' +
+              '• Any other message → action=recall\n\n' +
+              'Confidence guidance:\n' +
+              '• Explicit save verb present → confidence ≥ 0.9\n' +
+              '• Clear question word present → confidence ≥ 0.9\n' +
+              '• No clear verb, ambiguous noun/phrase → confidence ≤ 0.6\n' +
+              '• Short message with no verb and no question mark → confidence ≤ 0.5\n' +
+              '• Single entity name (no verb, no ?) → confidence 0.4\n\n' +
+              'Engram extraction (for action=remember — only when a genuine save verb is present):\n' +
+              '• "verb in/to/into X that Y"  → content=Y  engram=X\n' +
+              '• "verb Y in/to/into X"        → content=Y  engram=X\n' +
+              '• "verb Y" with no target      → content=Y  engram=null\n' +
+              '• If content is unclear (user wrote "save this" with no text) → action=recall\n' +
+              `• Known engrams (reference only): ${engramList || 'none'}\n` +
+              '• CRITICAL: engram = the EXACT word/phrase the user wrote. Do NOT substitute, rephrase, or fuzzy-match to a known engram. "test" → engram="test", not "graphnosis-it-architecture".\n' +
+              '• content must not be empty for action=remember. If you cannot extract content, use action=recall instead.' +
+              recentContext;
+
+            const classifyRaw = await llm.complete({
+              system: classifySystem,
+              user: text,
+              jsonSchema: { type: 'object', properties: { action: { type: 'string' }, confidence: { type: 'number' } }, required: ['action'] },
+            });
+            console.log('[ghampus:classify] raw:', classifyRaw.slice(0, 200));
+            // Use greedy match to capture the outermost JSON object (handles nested values).
+            const jsonMatch = classifyRaw.match(/\{[\s\S]*\}/);
+            if (jsonMatch) {
+              const parsed = JSON.parse(jsonMatch[0]) as GhampusIntent & { confidence?: number };
+              if (['remember', 'create_engram', 'ui_only', 'recall'].includes(parsed.action)) {
+                intent = parsed;
+                llmConfidence = typeof parsed.confidence === 'number' ? parsed.confidence : null;
+                console.log('[ghampus:classify] intent:', JSON.stringify(intent), 'confidence:', llmConfidence);
+              }
+            }
+          } catch (err) {
+            // LLM classification failed — stick with keyword result or recall.
+            console.warn('[ghampus:classify] failed, using keyword fallback:', err instanceof Error ? err.message : String(err));
+          }
+
+          // ── Dispatch write actions ────────────────────────────────────────────
+          if (intent.action === 'remember') {
+            const { content: saveContent, engram: rawEngramHint } = intent as Extract<GhampusIntent, { action: 'remember' }>;
+            // Guard: LLM returned action=remember but no content (prompt rule violation).
+            if (!saveContent?.trim()) {
+              await emitGhampusMsg("What would you like me to save? Just tell me the content and I'll take care of it.");
+              return { ok: true };
+            }
+            // Sanitize placeholder strings the LLM may echo literally from the prompt template.
+            const LLM_PLACEHOLDERS = new Set(['ENGRAM_NAME_OR_NULL', 'TEXT_TO_SAVE', 'ENGRAM_NAME', 'NULL', 'null', '']);
+            const engramHint = rawEngramHint && !LLM_PLACEHOLDERS.has(rawEngramHint) ? rawEngramHint : null;
+
+            // ── Uncertainty gate ─────────────────────────────────────────────
+            // If the keyword pre-classifier didn't fire (no explicit save verb
+            // detected) AND the LLM confidence is below 0.75, ask before saving.
+            // This prevents misclassifying questions, entity lookups, or
+            // context-following messages as save actions.
+            const isLowConfidence = !keywordResult && (llmConfidence === null || llmConfidence < 0.75);
+            if (isLowConfidence) {
+              const preview = saveContent.length > 80 ? saveContent.slice(0, 77) + '…' : saveContent;
+              ghampusPendingClarification = { originalText: text, content: saveContent, engramHint };
+              await emitGhampusMsg(
+                `Did you want to **save** "${preview}" or **look something up**?\n\n` +
+                `Reply **save** to store it${engramHint ? ` in ${engramHint}` : ''}, or **recall** to search your memory instead.`,
+              );
+              return { ok: true };
+            }
+
+            const engListForSave = await ghampusTool('list_engrams', {}) as { engrams?: Array<{ graphId: string; displayName: string; tier: string }> };
+            const allEngrams = engListForSave.engrams ?? [];
+
+            // Match engram: exact graphId, slugified hint vs graphId, or displayName substring.
+            // Normalizing both sides to slug form (spaces→hyphens) catches LLM returning
+            // "Book Notes" when the graphId is "book-notes".
+            let matched = allEngrams.find((e) => e.tier === 'personal') ?? allEngrams[0] ?? null;
+            if (engramHint) {
+              const hint = engramHint.toLowerCase();
+              const hintSlug = hint.replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+              const explicit = allEngrams.find(
+                (e) =>
+                  e.graphId === hint ||
+                  e.graphId === hintSlug ||
+                  e.graphId.replace(/-/g, ' ').includes(hint) ||
+                  e.displayName.toLowerCase().includes(hint),
+              );
+              if (!explicit) {
+                // Engram doesn't exist — stash the save and ask the user to confirm creation.
+                ghampusPendingEngram = { content: saveContent, engramHint };
+                const suggestions = allEngrams.slice(0, 5).map((e) => `\`${e.graphId}\``).join(', ');
+                await emitGhampusMsg(
+                  `There's no engram named **"${engramHint}"** yet.\n\n` +
+                  `Say **"create engram ${engramHint}"** to create it — I'll save your note there automatically.\n\n` +
+                  (suggestions ? `Available engrams: ${suggestions}.` : ''),
+                );
+                return { ok: true };
+              }
+              matched = explicit;
+            }
+
+            if (!matched) {
+              await emitGhampusMsg('No engrams to save to yet. Ask me to create one, or go to **Memory Studio → + New Engram**.');
+              return { ok: true };
+            }
+            try {
+              await ghampusTool('remember', {
+                graphId: matched.graphId,
+                text: saveContent,
+                label: saveContent.slice(0, 80),
+              });
+              await emitGhampusMsg(`Saved to **${matched.displayName}**.`);
+            } catch (e) {
+              await emitGhampusMsg(`Couldn't save: ${e instanceof Error ? e.message : String(e)}`);
+            }
+            return { ok: true };
+          }
+
+          if (intent.action === 'create_engram') {
+            const { name: rawName } = intent as Extract<GhampusIntent, { action: 'create_engram' }>;
+            const graphId = rawName.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+            if (!graphId) {
+              await emitGhampusMsg(`Couldn't turn "${rawName}" into a valid engram ID. Try a simpler name.`);
+              return { ok: true };
+            }
+            const engListCheck = await ghampusTool('list_engrams', {}) as { engrams?: Array<{ graphId: string; displayName: string }> };
+            const existing = engListCheck.engrams?.find((e) => e.graphId === graphId || e.displayName.toLowerCase() === rawName.toLowerCase());
+            if (existing) {
+              await emitGhampusMsg(`**${existing.displayName}** already exists. Want to save something to it?`);
+              return { ok: true };
+            }
+            try {
+              await deps.host.createGraph(graphId);
+              // Auto-save the deferred note if the user was blocked on this engram.
+              const pending = ghampusPendingEngram;
+              const pendingSlug = pending?.engramHint.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+              if (pending && (pendingSlug === graphId || pending.engramHint.toLowerCase().includes(rawName.toLowerCase()) || rawName.toLowerCase().includes(pending.engramHint.toLowerCase()))) {
+                ghampusPendingEngram = null;
+                await ghampusTool('remember', { graphId, text: pending.content, label: pending.content.slice(0, 80) });
+                await emitGhampusMsg(`Created engram **${rawName}** and saved your note: "${pending.content.slice(0, 120)}${pending.content.length > 120 ? '…' : ''}"`);
+              } else {
+                await emitGhampusMsg(`Created engram **${rawName}** (\`${graphId}\`). It's empty — want to save something to it?`);
+              }
+            } catch (e) {
+              await emitGhampusMsg(`Couldn't create the engram: ${e instanceof Error ? e.message : String(e)}`);
+            }
+            return { ok: true };
+          }
+
+          if (intent.action === 'ui_only') {
+            const { reason } = intent as Extract<GhampusIntent, { action: 'ui_only' }>;
+            await emitGhampusMsg(
+              `That requires the **Memory Studio** UI — I can't do it from here (${reason}). ` +
+              'I can create engrams and save memories for you though.',
+            );
+            return { ok: true };
+          }
+
+          // intent.action === 'recall' — fall through to the full recall + LLM path below.
+
+          // ── Phase 1: recall + base tools ─────────────────────────────────
+          const [recallResult, engramsResult, skillsResult] = await Promise.allSettled([
+            ghampusTool('recall', { query: text, maxNodes: recallMaxNodes, maxTokens: recallMaxTokens }),
+            ghampusTool('list_engrams', {}),
+            wantsSkills || !wantsRecent
+              ? ghampusTool('list_skills', {})
+              : Promise.resolve(null),
+          ]);
+
+          // Extract recall node count to decide whether to escalate.
+          const recallValue = recallResult.status === 'fulfilled' ? recallResult.value as Record<string, unknown> : null;
+          const recallPromptRaw = (recallValue?.prompt as string | undefined) ?? '';
+          // Count nodes by scanning for the node-line pattern [shortId|…]
+          const recallNodeCount = (recallPromptRaw.match(/\[[\w]+\|/g) ?? []).length;
+
+          const phase2: Array<Promise<unknown>> = [];
+          const phase2Labels: string[] = [];
+
+          // Escalation policy (per GRAPHNOSIS.md): recall < 3 nodes → dig_deeper.
+          // Also force dig_deeper on exhaustive queries so we get cross-engram expansion.
+          if (recallNodeCount < 3 || wantsExhaustive) {
+            const digMaxNodes  = wantsExhaustive ? 50 : 30; // RecallInput schema caps at 50
+            const digMaxTokens = wantsExhaustive ? 12000 : 3000;
+            phase2.push(ghampusTool('dig_deeper', { query: text, maxNodes: digMaxNodes, maxTokens: digMaxTokens }));
+            phase2Labels.push('dig_deeper');
+          }
+          if (wantsStats) {
+            phase2.push(ghampusTool('stats', {}));
+            phase2Labels.push('stats');
+          }
+          if (wantsRecent) {
+            phase2.push(ghampusTool('recent', { limit: 10 }));
+            phase2Labels.push('recent');
+          }
+          if (wantsCitations && recallNodeCount > 0) {
+            phase2.push(ghampusTool('recall_with_citations', { query: text, maxNodes: 10, maxTokens: 1500 }));
+            phase2Labels.push('recall_with_citations');
+          }
+          if (wantsSource) {
+            // Extract potential source keywords from the query.
+            const srcKeyword = text.replace(/source|file|document|attachment|pdf|url|link|ref|show me|find|get/gi, '').trim().slice(0, 80);
+            if (srcKeyword.length > 2) {
+              phase2.push(ghampusTool('find_source', { content: srcKeyword }));
+              phase2Labels.push('find_source');
+            }
+          }
+
+          const phase2Results = phase2.length > 0
+            ? await Promise.allSettled(phase2)
+            : [];
+
+          // ── Pre-process recall context ────────────────────────────────────
+          // The raw recall prompt contains internal graph format:
+          //   [n2|fact|0.79|src:skill:1781244988966:Task Todo Management] content…
+          // The LLM must never see or repeat those IDs. Strip them down to
+          // the readable content + a clean source attribution.
+          function cleanRecallPrompt(raw: string): string {
+            return raw
+              // Node lines: [shortId|type|score|src:sourceRef] → "• content (from Source Name)"
+              .replace(
+                /\[[\w-]+\|[\w-]+\|[\d.]+\|src:([^\]]+)\]\s*/g,
+                (_m: string, srcRef: string) => {
+                  // Strip timestamps from skill refs: "skill:1781244988966:Task Todo Mgmt" → "Task Todo Mgmt"
+                  const label = srcRef
+                    .replace(/^skill:\d+:/, '')
+                    .replace(/^[^:]+:[^:]+:/, '') // generic "kind:id:label" → "label"
+                    .replace(/-/g, ' ')
+                    .trim();
+                  return label ? `[from ${label}] ` : '';
+                },
+              )
+              // Edge lines: "n1 -[edgeType:weight]-> n2" → remove entirely
+              .replace(/^[\w-]+ [~-]\[[\w:.-]+\][~>-]+ [\w-]+.*$/gm, '')
+              // Residual pipe-separated node records: "n3|fact|0.76|src:..." anywhere in text
+              .replace(/\b[a-z]\w*\|[\w:.|-]+/g, '')
+              // Leftover short node IDs standing alone (n1, n2, etc.)
+              .replace(/\bn\d+\b/g, '')
+              // "src:" prefixes that sneak through in prose
+              .replace(/src:[\w:/.-]+/g, '')
+              // Collapse 3+ blank lines to 2
+              .replace(/\n{3,}/g, '\n\n')
+              .trim();
+          }
+
+          // ── Build context sections ────────────────────────────────────────
+          const engrams = engramsResult.status === 'fulfilled'
+            ? (engramsResult.value as { engrams: Array<{ graphId: string; displayName: string; tier: string; loaded: boolean }> }).engrams ?? []
+            : [];
+          const skillsValue = skillsResult.status === 'fulfilled' ? skillsResult.value : null;
+          const skills = skillsValue
+            ? (skillsValue as { skills: Array<{ label: string; trainedAt?: string }> }).skills ?? []
+            : [];
+          const recentSaves = listRecentSaves({ host: deps.host }, { limit: 5 }).saves;
+
+          const sections: string[] = [];
+
+          if (engrams.length > 0) {
+            sections.push(
+              '## Your engrams\n' +
+              engrams.map((e) => `- ${e.displayName} (${e.tier}${e.loaded ? '' : ', not loaded'})`).join('\n'),
+            );
+          }
+          if (skills.length > 0) {
+            sections.push(
+              '## Your skills\n' +
+              skills.map((s) => {
+                const label = s.label.replace(/^skill:\d+:/, '');
+                return `- ${label}${s.trainedAt ? ` (trained ${new Date(s.trainedAt).toLocaleDateString()})` : ''}`;
+              }).join('\n'),
+            );
+          }
+          if (recentSaves.length > 0 && wantsRecent) {
+            sections.push(
+              '## Recently saved\n' +
+              recentSaves.map((s) => `- ${s.label} (${s.engramId})`).join('\n'),
+            );
+          }
+
+          // Primary recall — cleaned.
+          const citationsResult = phase2Results[phase2Labels.indexOf('recall_with_citations')];
+          const citationsText = citationsResult?.status === 'fulfilled'
+            ? (citationsResult.value as { prompt?: string })?.prompt ?? '' : '';
+          const primaryRecallRaw = citationsText || recallPromptRaw;
+          const primaryRecall = cleanRecallPrompt(primaryRecallRaw);
+          if (primaryRecall) {
+            sections.push('## What I found in your cortex\n' + primaryRecall.slice(0, 3000));
+          }
+
+          // dig_deeper — only add if it surfaced something beyond phase-1.
+          const deeperIdx = phase2Labels.indexOf('dig_deeper');
+          if (deeperIdx >= 0 && phase2Results[deeperIdx]?.status === 'fulfilled') {
+            const deeperRaw = (phase2Results[deeperIdx].value as { prompt?: string })?.prompt ?? '';
+            const deeper = cleanRecallPrompt(deeperRaw);
+            if (deeper && deeper !== primaryRecall) {
+              sections.push('## Additional context (deeper search)\n' + deeper.slice(0, 2000));
+            }
+          }
+
+          // recent sources.
+          const recentIdx = phase2Labels.indexOf('recent');
+          if (recentIdx >= 0 && phase2Results[recentIdx]?.status === 'fulfilled') {
+            const recentData = phase2Results[recentIdx].value as { sources?: Array<{ label: string; engramId: string; ingestedAt: string }> };
+            if (recentData?.sources?.length) {
+              sections.push(
+                '## Recently added to cortex\n' +
+                recentData.sources.map((s) => `- "${s.label}" (in ${s.engramId}, added ${s.ingestedAt})`).join('\n'),
+              );
+            }
+          }
+
+          // stats — summarize key fields rather than dumping raw JSON.
+          const statsIdx = phase2Labels.indexOf('stats');
+          if (statsIdx >= 0 && phase2Results[statsIdx]?.status === 'fulfilled') {
+            const sd = phase2Results[statsIdx].value as Record<string, unknown>;
+            const lines: string[] = [];
+            if (typeof sd.totalNodes === 'number') lines.push(`- Total memory nodes: ${sd.totalNodes}`);
+            if (typeof sd.totalSources === 'number') lines.push(`- Total sources: ${sd.totalSources}`);
+            if (typeof sd.vitality === 'number') lines.push(`- Cortex vitality: ${sd.vitality}/100`);
+            if (lines.length) sections.push('## Cortex stats\n' + lines.join('\n'));
+          }
+
+          // find_source results.
+          const srcIdx = phase2Labels.indexOf('find_source');
+          if (srcIdx >= 0 && phase2Results[srcIdx]?.status === 'fulfilled') {
+            const srcData = phase2Results[srcIdx].value as { sources?: Array<{ label: string; engramId: string }> };
+            if (srcData?.sources?.length) {
+              sections.push(
+                '## Matching sources\n' +
+                srcData.sources.slice(0, 8).map((s) => `- "${s.label}" (in ${s.engramId})`).join('\n'),
+              );
+            }
+          }
+
+          const contextBlock = sections.length > 0
+            ? `\n\n<cortex_data>\n${sections.join('\n\n')}\n</cortex_data>`
+            : '';
+
+          // ── System prompt with explicit output guardrails ─────────────────
+          const system = `You are Ghampus — the AI built into Graphnosis, the user's personal knowledge graph. You're sharp, warm, and direct. You know their cortex deeply and you guide them through it like a knowledgeable friend, not a search engine.
+
+Your job: help the user navigate, understand, and act on their memories, skills, and engrams. That means answering questions, surfacing patterns they haven't noticed, suggesting next steps, and walking them through their saved procedures (skills) when asked.
+
+You have access to what's in their cortex via <cortex_data> below. Use it as your primary source of truth — but don't be robotic about it. Interpret, connect, and synthesize what you find. If something is missing from the cortex, say so naturally and suggest what they could save to fill the gap.
+
+TONE:
+- Conversational and direct. Cut filler words. Get to the point fast.
+- Use "you" and "your" freely — you know this person and their data.
+- When you find something relevant, lead with it: "Here's what I found:" or "You have 12 items tagged todo:" not "Based on the cortex data, I was able to locate..."
+- It's OK to ask a follow-up question if the answer would be much better with one more detail.
+- When the user seems stuck or doesn't know what to ask, offer a concrete suggestion: "You might also want to check your skill for X" or "Want me to list all your engrams?"
+
+OUTPUT RULES — non-negotiable:
+1. NEVER output node IDs, short IDs, pipe-separated records, or raw source refs. Specifically: never output n1, n2, n3, anything matching [n2|fact|…], src:skill:…, skill:1781…, clip:…, |fact|, |0.79|, or any text containing pipe characters (|) from the raw graph format. Translate everything to plain English.
+2. Do NOT echo or paraphrase the user's question.
+3. When listing items, use clean bullet points or numbered lists — never database-style records.
+4. If the data is truly empty, say so in one sentence and suggest what to save next.
+5. Use **bold** for key terms and markdown lists for structure. Keep it readable.
+6. Source attribution: natural and human-readable only — "(from your Milestones engram)" not "(src:abc123)".
+7. You can reference skill names by their human label (e.g. "your Task Todo Management skill") — never by their raw ID.${wantsExhaustive ? `
+8. EXHAUSTIVE MODE: The user asked for ALL items. List every single one found in <cortex_data> — no summarizing, no "here are some examples". If there are 80 items, show all 80. Completeness is required here.` : ''}${contextBlock}`;
+
+          // user is the bare message — no "User:" prefix to avoid echo
+          const userMsg = text;
+
+          // ── Call LLM, then sanitize + optionally retry ────────────────────
+          // Patterns that indicate the LLM leaked internal format in its reply.
+          const leakPatterns = [
+            /\bn\d+\b/,            // node short IDs: n1, n2, n3
+            /\|fact\|/,            // node type segment
+            /\|\d+\.\d+\|/,        // score segment
+            /src:[\w:/.-]{6,}/,    // raw source refs
+            /skill:\d{10,}/,       // skill timestamp IDs
+            /clip:[a-f0-9]{16,}/,  // clip source IDs
+          ];
+
+          function hasLeakedIDs(t: string): boolean {
+            return leakPatterns.some((re) => re.test(t));
+          }
+
+          function sanitizeResponse(t: string): string {
+            return t
+              // Full bracketed node records: [n3|fact|0.76|src:...] content
+              .replace(/\[[\w-]+\|[\w-]+\|[\d.]+\|[^\]]+\]\s*/g, '')
+              // Bare pipe-separated node records: n3|fact|0.76|src:... (no brackets)
+              .replace(/\b[a-z]\w*\|[\w:.|-]+/g, '')
+              // Edge lines: n1 -[edgeType]-> n2
+              .replace(/\b[\w-]+ [~-]\[[\w:.-]+\][~>-]+ [\w-]+\b/g, '')
+              .replace(/\bsrc:[\w:/.-]+/g, '')
+              .replace(/\bskill:\d+:[^\s,)]+/g, (m) => m.replace(/^skill:\d+:/, ''))
+              .replace(/\bclip:[a-f0-9]+\b/g, '')
+              .replace(/\bn\d+\b/g, '')
+              .replace(/\|fact\|[\d.]+\|/g, '')
+              .replace(/\n{3,}/g, '\n\n')
+              .trim();
+          }
+
+          async function callLlm(systemPrompt: string, userPrompt: string): Promise<string> {
+            let out = '';
+            if (llm.completeStream) {
+              await llm.completeStream({ system: systemPrompt, user: userPrompt }, (chunk) => { out += chunk; });
+            } else {
+              out = await llm.complete({ system: systemPrompt, user: userPrompt });
+            }
+            return out;
+          }
+
+          let responseText = await callLlm(system, userMsg);
+
+          // Retry once if the response contains leaked internal IDs.
+          if (hasLeakedIDs(responseText)) {
+            const retrySystem = system +
+              '\n\nIMPORTANT: Your previous response contained raw database IDs like "n2", "|fact|", "src:skill:…". ' +
+              'Rewrite your answer in plain English only. No IDs, no pipe characters, no source references.';
+            responseText = await callLlm(retrySystem, userMsg);
+          }
+
+          // Final sanitization pass — scrub anything that still slipped through.
+          responseText = sanitizeResponse(responseText);
+
+          const responseMsg = { kind: 'ghampus', text: responseText, ts: Date.now() };
+          if (histPath) {
+            const { appendFile } = await import('node:fs/promises');
+            await appendFile(histPath, JSON.stringify(responseMsg) + '\n').catch(() => {});
+          }
+          deps.broadcastRaw({
+            kind: 'ghampus.message',
+            name: 'ghampus.message',
+            payload: responseMsg,
+          });
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          const errMsg = { kind: 'ghampus', text: `Error: ${msg}`, ts: Date.now() };
+          if (histPath) {
+            const { appendFile } = await import('node:fs/promises');
+            await appendFile(histPath, JSON.stringify(errMsg) + '\n').catch(() => {});
+          }
+          deps.broadcastRaw({
+            kind: 'ghampus.message',
+            name: 'ghampus.message',
+            payload: errMsg,
+          });
+        }
+      })();
+      return { ok: true };
+    }
+    case 'ghampus:walkPlan': {
+      // Returns estimated cost + model routing for a skill walk before
+      // committing. Attempts to resolve the skill label from the Skills engram;
+      // falls back to a slug derived from the sourceId.
+      const { sourceId } = z.object({ sourceId: z.string() }).parse(params ?? {});
+      let label = sourceId.replace(/^skill:\d+:/, '').replace(/-/g, ' ')
+        .replace(/\b\w/g, (c) => c.toUpperCase());
+      try {
+        const skillResult = await deps.callMcpTool?.('get_skill', { sourceId }) as { label?: string; title?: string } | null;
+        if (skillResult?.label) label = skillResult.label;
+        else if (skillResult?.title) label = skillResult.title;
+      } catch { /* best-effort */ }
+      return {
+        sourceId,
+        label,
+        steps: [],
+        totalCost: 0,
+        privacySafe: true,
+        routing: 'adaptive',
+        learningHint: undefined,
+      };
+    }
+    case 'ghampus:confirmWalk': {
+      z.object({ sourceId: z.string(), routing: z.string() }).parse(params ?? {});
+      return { ok: true };
+    }
+    case 'ghampus:refineResponse': {
+      z.object({ sourceId: z.string(), action: z.enum(['update', 'edit', 'skip']) }).parse(params ?? {});
+      return { ok: true };
     }
 
     // ── Models registry + routing ───────────────────────────────────────
