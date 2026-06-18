@@ -143,7 +143,6 @@ const SKILL_DESCRIPTIONS: Record<string, { what: string; benefit: string }> = {
   'ux-decision':            { what: 'frames a UI design decision with options, tradeoffs, and a recommendation', benefit: 'makes opinionated design calls faster, with a clear rationale' },
   'performance-regression': { what: 'profiles the affected path, compares against baseline, and suggests where to look', benefit: 'pinpoints slowdowns before they land in production' },
   'changelog-management':   { what: 'collects commits since the last release and drafts a readable changelog', benefit: 'saves you writing the changelog by hand' },
-  'cortex-gardening':       { what: 'finds duplicate nodes, resolves contradictions, and trims stale memories in your cortex', benefit: 'keeps your memory sharp and recall results clean' },
   'content-creation':       { what: 'outlines, drafts, and refines a piece of content using your stored notes and voice', benefit: 'turns cortex notes into a polished draft' },
   'feature-impact':         { what: 'maps the new feature against existing memory, flags conflicts, and estimates blast radius', benefit: 'finds surprises before you write the first line of code' },
   'enterprise-gtm':         { what: 'builds a go-to-market plan for an enterprise tier: positioning, objections, sales motion', benefit: 'gives you a structured GTM brief you can hand to the team' },
