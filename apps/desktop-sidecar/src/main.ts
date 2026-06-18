@@ -20,7 +20,7 @@ import { mcpRegistry } from './mcp-registry.js';
 import { startHttpMcpServer } from './mcp-http-server.js';
 import { ConnectorManager } from './connectors/manager.js';
 import { initAdminPolicy } from './admin-policy.js';
-import { LLM_CATALOG, makeLlm } from './local-llm.js';
+import { LLM_CATALOG, DynamicOllamaLlm } from './local-llm.js';
 import { workerEmbed, workerEmbedBackground, terminateEmbedWorker, LOCAL_EMBED_ID, LOCAL_EMBED_DIM, switchEmbedModel, currentEmbedModel, setWorkerCount } from './local-embed.js';
 import type { LocalLlm } from './correction.js';
 import type { CorrectionDiff } from './correction.js';
@@ -716,15 +716,16 @@ async function main(): Promise<void> {
   process.on('SIGINT', () => fileWatcher.dispose());
   process.on('SIGTERM', () => fileWatcher.dispose());
 
-  let llm: LocalLlm | null = null;
-  const choice = LLM_CATALOG.find(c => c.id === env.llmId) ?? LLM_CATALOG.find(c => c.recommended);
-  if (choice) {
-    try {
-      llm = makeLlm(choice);
-    } catch (e) {
-      console.error(`[graphnosis-sidecar] Local LLM (${choice.id}) unavailable: ${(e as Error).message}`);
-    }
-  }
+  // Determine catalog-default model tag (used when settings.ai.llmModel is unset).
+  const defaultCatalogEntry = LLM_CATALOG.find(c => c.id === env.llmId) ?? LLM_CATALOG.find(c => c.recommended);
+  const defaultModelTag = defaultCatalogEntry?.model ?? 'llama3.2:3b-instruct-q4_K_M';
+
+  // Dynamic proxy: resolves settings.ai.llmModel at each call so "Apply" in
+  // Settings → Local LLM takes effect without restarting the sidecar.
+  // Falls back to the catalog default when no model has been explicitly configured.
+  const llm: LocalLlm = new DynamicOllamaLlm(
+    () => host.getSettings().ai?.llmModel ?? defaultModelTag,
+  );
 
   const pendingDiffs = new Map<string, { graphId: string; diff: CorrectionDiff; createdAt: number }>();
 
