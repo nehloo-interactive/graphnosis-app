@@ -643,7 +643,7 @@ export async function startHttpMcpServer(opts: HttpBridgeOptions): Promise<http.
     const sessionDeps: McpDeps = matchedSharingScope
       ? { ...opts.deps, sharingScope: matchedSharingScope }
       : opts.deps;
-    const mcpServer = createMcpServer(sessionDeps);
+    const { server: mcpServer } = createMcpServer(sessionDeps);
     await mcpServer.connect(transport as unknown as Parameters<typeof mcpServer.connect>[0]);
     pollForClientInfo(connId, mcpServer);
     await transport.handleRequest(req, res, body);

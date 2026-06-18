@@ -4101,7 +4101,7 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
               delete:   ['delete', 'delet', 'remove', 'remov', 'drop', 'erase', 'del'],
             };
             const isVerb = (target: keyof typeof verbScores) =>
-              verbScores[target].some((v) => {
+              (verbScores[target] ?? []).some((v) => {
                 if (firstWord === v) return true;
                 if (Math.abs(firstWord.length - v.length) > 3) return false;
                 let common = 0;
@@ -4125,7 +4125,7 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
               const mA = m.replace(/^\S+\s+/, '').match(
                 /^(?:in|to|into)\s+(?:(?:my|the)\s+)?["']?([^"',\n]{1,50?})["']?\s*(?:engram\s+)?(?:that|:|–|-|,)?\s+(.+)$/i,
               );
-              if (mA?.[2]?.trim()) return { action: 'remember', content: mA[2].trim(), engram: mA[1].trim() };
+              if (mA?.[2]?.trim()) return { action: 'remember', content: mA[2].trim(), engram: mA![1]!.trim() };
               // Try "verb [content] in/to [engram]" (word order B)
               const mB = m.replace(/^\S+\s+/, '').match(
                 /^(?:that\s+)?(.+?)\s+(?:to|in|into)\s+(?:(?:my|the)\s+)?["']?([^"',\n]{1,50})["']?\s*(?:engram)?$/i,
@@ -4607,10 +4607,12 @@ OUTPUT RULES — non-negotiable:
 
           async function callLlm(systemPrompt: string, userPrompt: string): Promise<string> {
             let out = '';
-            if (llm.completeStream) {
-              await llm.completeStream({ system: systemPrompt, user: userPrompt }, (chunk) => { out += chunk; });
+            // llm is non-null here — guarded by the early-return above; TS can't
+            // narrow across the async closure boundary so we assert.
+            if (llm!.completeStream) {
+              await llm!.completeStream({ system: systemPrompt, user: userPrompt }, (chunk) => { out += chunk; });
             } else {
-              out = await llm.complete({ system: systemPrompt, user: userPrompt });
+              out = await llm!.complete({ system: systemPrompt, user: userPrompt });
             }
             return out;
           }
