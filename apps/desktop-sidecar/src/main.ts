@@ -14,7 +14,7 @@ import { startIpc } from './ipc.js';
 import { dbg } from './log-redact.js';
 import { startEvents } from './events.js';
 import { startHttpUiServer } from './http-ui-server.js';
-import { startStdioMcpServer } from './mcp-server.js';
+import { startStdioMcpServer, createMcpServer } from './mcp-server.js';
 import { startSocketMcpServer } from './mcp-socket-server.js';
 import { mcpRegistry } from './mcp-registry.js';
 import { startHttpMcpServer } from './mcp-http-server.js';
@@ -27,6 +27,7 @@ import type { CorrectionDiff } from './correction.js';
 import type { BroadcastRawFn } from './events.js';
 import { FileWatcher } from './file-watcher.js';
 import { BrainEngine } from './brain-engine.js';
+import { ProactiveWatcher } from './proactive-watcher.js';
 import { SkillTrainer } from './skill-trainer.js';
 import { LicenseValidator } from './license-validator.js';
 
@@ -1076,6 +1077,15 @@ async function main(): Promise<void> {
   // Tauri shell IPC (custom JSON-RPC, not MCP).
   const ipcSocketPath = process.env.GRAPHNOSIS_IPC_SOCKET
     ?? path.join(env.cortexDir, 'sidecar.sock');
+  const proactiveWatcher = new ProactiveWatcher({ host, skillTrainer: skillTrainer ?? null, broadcastRaw });
+  proactiveWatcher.start();
+  // Build a dispatcher bound to mcpDeps so Ghampus can call any of the 47+
+  // MCP tool handlers without going through the network transport. The Server
+  // returned here is not connected to any transport — it's just a side effect
+  // of how createMcpServer works. The socket listener below creates its own
+  // Server per connection for external AI clients.
+  const { callTool: callMcpTool } = createMcpServer(mcpDeps);
+
   const ipcDeps = {
     host,
     cortexDir: env.cortexDir,
@@ -1091,6 +1101,8 @@ async function main(): Promise<void> {
     llm: () => llm,
     skillTrainer,
     licenseValidator,
+    proactiveWatcher,
+    callMcpTool,
   };
   await startIpc(ipcDeps);
   console.error(`[graphnosis-sidecar] IPC listening on ${ipcSocketPath}`);
