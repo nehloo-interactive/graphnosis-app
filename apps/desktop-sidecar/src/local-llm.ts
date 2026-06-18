@@ -229,3 +229,43 @@ export function makeLlm(choice: LlmChoice): LocalLlm {
   if (choice.runtime === 'ollama') return new OllamaLlm(choice.label, choice.model);
   throw new Error(`Runtime not yet implemented: ${choice.runtime}`);
 }
+
+/**
+ * A dynamic Ollama proxy that resolves the model tag at call time via
+ * `getModelTag()`. Pass a getter that reads `settings.ai.llmModel` so
+ * that changing the active model in Settings → Local LLM takes effect
+ * immediately without a sidecar restart.
+ *
+ * This is the correct production instance for the sidecar — the static
+ * `OllamaLlm` / `makeLlm` path is only used in tests and one-shot scripts.
+ */
+export class DynamicOllamaLlm implements LocalLlm {
+  constructor(
+    private readonly getModelTag: () => string,
+    private readonly baseUrl = 'http://127.0.0.1:11434',
+  ) {}
+
+  get name(): string {
+    return `Ollama/${this.getModelTag()}`;
+  }
+
+  private client(): OllamaLlm {
+    const tag = this.getModelTag();
+    return new OllamaLlm(`Ollama/${tag}`, tag, this.baseUrl);
+  }
+
+  complete(input: { system: string; user: string; jsonSchema?: unknown }): Promise<string> {
+    return this.client().complete(input);
+  }
+
+  completeStream(
+    input: { system: string; user: string; jsonSchema?: unknown },
+    onChunk: (chunk: string) => void,
+  ): Promise<string> {
+    return this.client().completeStream(input, onChunk);
+  }
+
+  async ping(): Promise<boolean> {
+    return this.client().ping();
+  }
+}

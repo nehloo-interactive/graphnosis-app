@@ -117,7 +117,7 @@ export async function walkSkillPlan(deps: WalkerDeps, input: WalkerInput): Promi
     const prompt = composePrompt(step, captures);
     const startedAt = Date.now();
     try {
-      const output = await dispatchModelCall(model.provider, model.modelTag, prompt);
+      const output = await dispatchModelCall(model.provider, model.modelTag, prompt, deps);
       const elapsedMs = Date.now() - startedAt;
       totalElapsedMs += elapsedMs;
       const capturedAs = step.captureAs
@@ -203,10 +203,14 @@ function composePrompt(step: WalkerStepInput, captures: Record<string, string>):
  * the walker records the failure and continues. When the rest of the
  * adapters ship, this switch grows.
  */
-async function dispatchModelCall(provider: string, modelTag: string, prompt: string): Promise<string> {
+async function dispatchModelCall(provider: string, modelTag: string, prompt: string, deps: WalkerDeps): Promise<string> {
   if (provider === 'ollama') {
-    // Reuse the existing OllamaLlm client. Uses default localhost:11434.
-    const client = new OllamaLlm(`ollama:${modelTag}`, modelTag);
+    // Prefer the user's explicitly-configured active model (settings.ai.llmModel)
+    // over the registry's model tag. The registry may reference a catalog model
+    // (e.g. llama3.2:3b-instruct-q4_K_M) that isn't installed on this machine;
+    // the settings model reflects what the user actually has pulled.
+    const activeModel = deps.host.getSettings().ai?.llmModel ?? modelTag;
+    const client = new OllamaLlm(`ollama:${activeModel}`, activeModel);
     return client.complete({
       system: 'You are Ghampus, a local AI agent working with the user\'s memory. Answer the step concisely and concretely.',
       user: prompt,
