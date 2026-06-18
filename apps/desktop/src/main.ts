@@ -1614,6 +1614,7 @@ function render(status: StatusSnapshot): void {
       void refreshConnectorsList();
       startMcpPolling();
       void refreshBrainState();
+      scheduleHomePrefetch(); // warm home-card cache in background after boot
       void refreshLlmStatus().then(() => void loadSearchLlmPreferences().then(syncSearchLlmCheckboxes));
       void loadStudioSubscriptionState().then(() => showWhatsNewModal());
       void (async () => {
@@ -1709,6 +1710,7 @@ function render(status: StatusSnapshot): void {
     // the moment the user re-locks — the bug fixed alongside the
     // duplicate-id rewrite above.
     showError(null);
+    homePrefetchDone = false; // allow re-prefetch on next unlock
     stopMcpPolling();
     setClipboardCaptureEnabled(false); // stop polling on lock
     // Re-enable the unlock button — it may have been left disabled from the
@@ -2750,12 +2752,12 @@ type Mode =
 //      pick the initial pane).
 //   - On settings load, the sidecar value wins and is written back to
 //     localStorage so the next boot is correct.
-//   - Brand-new cortexes with no preference → 'ghampus' (the friendly
-//     chat surface; safe for users who don't yet know what a "cortex" is).
+//   - Brand-new cortexes with no preference → 'atlas' (Your Cortex is the
+//     primary surface; Ghampus is the AI assistant, not the landing page).
 const LANDING_MODE_STORAGE_KEY = 'graphnosis.landingMode';
 const VALID_LANDING_MODES: Mode[] = ['ghampus', 'atlas', 'engram', 'goals', 'skills', 'sources', 'activity', 'get-connected', 'power-tools', 'mcp-tools'];
 function resolveLandingMode(raw: string | null | undefined): Mode {
-  return raw && (VALID_LANDING_MODES as string[]).includes(raw) ? (raw as Mode) : 'ghampus';
+  return raw && (VALID_LANDING_MODES as string[]).includes(raw) ? (raw as Mode) : 'atlas';
 }
 let currentMode: Mode = resolveLandingMode(localStorage.getItem(LANDING_MODE_STORAGE_KEY));
 
@@ -2872,6 +2874,8 @@ function activateMode(mode: Mode): void {
   //  switchGraphnosisTab handles their refresh lifecycle.)
   if (mode === 'ghampus') {
     void refreshGhampusState();
+    void refreshGhampusHeader();
+    void refreshGhampusThread();
     void refreshGhampusNotifications();
     void refreshGhampusSavings();
     void refreshGhampusRecentSaves();
@@ -3690,8 +3694,12 @@ async function refreshStats(): Promise<void> {
         // "via Claude" attribution badge for sources added through an MCP
         // client (remember/correct tools). User-added sources (drag-drop,
         // paste, file picker) have no `addedBy` and get no badge.
-        const addedByBadge = s.addedBy
-          ? `<span class="source-added-by" title="Added by ${escape(s.addedBy)} via MCP">via ${escape(s.addedBy)}</span>`
+        const addedByRaw = s.addedBy ?? '';
+        const addedByDisplay = addedByRaw === 'ghampus' || addedByRaw.startsWith('local-agent-mode-')
+          ? 'Ghampus'
+          : addedByRaw;
+        const addedByBadge = addedByDisplay
+          ? `<span class="source-added-by" title="Added by ${escape(addedByDisplay)}">via ${escape(addedByDisplay)}</span>`
           : '';
         // Move-to button: only show when there are other non-archived engrams.
         const moveTargets = loadedGraphs.filter((g) => g.graphId !== s.graphId && !g.metadata.archived);
@@ -7594,9 +7602,13 @@ function renderHomeEngramBars(): void {
       return `<div class="home-bar-row home-bar-row-empty">${nameSpan}` +
         `<span class="home-bar-track"></span><span class="home-bar-val">empty</span></div>`;
     }
-    const tone = r.score >= 85 ? 'ok' : r.score >= 70 ? 'accent' : r.score >= 50 ? 'warn' : 'error';
+    const COLOR_DARK  = r.score >= 85 ? '#4ade80' : r.score >= 70 ? '#6ab3c8' : r.score >= 50 ? '#d9a445' : '#f87171';
+    const COLOR_LIGHT = r.score >= 85 ? '#15803d' : r.score >= 70 ? '#0891b2' : r.score >= 50 ? '#d9a445' : '#b91c1c';
+    // Use CSS custom properties so WebKit on macOS applies them even when
+    // the element is injected via innerHTML (avoids class-rule + CSP edge cases).
+    const style = `--bar-w:${r.score}%;--bar-color-dark:${COLOR_DARK};--bar-color-light:${COLOR_LIGHT}`;
     return `<div class="home-bar-row">${nameSpan}` +
-      `<span class="home-bar-track"><span class="home-bar-fill ${tone}" style="width:${r.score}%"></span></span>` +
+      `<span class="home-bar-track"><span class="home-bar-fill" style="${style}"></span></span>` +
       `<span class="home-bar-val">${r.score}</span></div>`;
   };
   const more = rows.length > CAP
@@ -7894,6 +7906,45 @@ function showHomeSkeletons(): void {
     bars.style.display = '';
     bars.innerHTML = `<div class="home-bars-title">Per engram</div>${SKEL}${SKEL}${SKEL}`;
   }
+}
+
+// ── Home background prefetch ─────────────────────────────────────────────────
+// Runs once after unlock (after a short delay) regardless of which pane is
+// active. Populates the module-level cache variables used by the home render
+// functions, so that when the user DOES navigate to "Your Cortex" the data
+// renders immediately from cache with no skeleton flicker.
+// Deliberately avoids concurrent sidecar calls — it waits between each fetch
+// so it doesn't compete with engram-switching or 3D graph loads. No UI writes
+// happen here; the render functions are left to the normal `scheduleHomeDataLoad`
+// path when the user actually opens the page.
+let homePrefetchDone = false;
+function scheduleHomePrefetch(): void {
+  if (homePrefetchDone) return;
+  // Wait until primary boot tasks (engram load, brain state, LLM probe) have
+  // had a head start. 4 s is enough for those to complete on typical hardware
+  // without imposing a perceptible delay on sidecar responsiveness.
+  setTimeout(async () => {
+    try {
+      // Each await yields the event loop to the sidecar between calls.
+      const hj = await ipcCallTimeout('brain:getHealingJournal', {}, 10_000).catch(() => null);
+      if (hj) brainHealingJournal = (hj as BrainHealingRecord[]) ?? brainHealingJournal;
+
+      const mh = await ipcCallTimeout('brain:getMemoryHealth', {}, 15_000).catch(() => null);
+      if (mh) brainMemoryHealth = mh as typeof brainMemoryHealth;
+
+      homePrefetchDone = true;
+
+      // If the user is already on the home page, refresh the cards that just got
+      // populated so they appear without waiting for another navigation.
+      if (graphnosisActiveTab === 'checkin' &&
+          !document.body.classList.contains('search-mode') &&
+          !document.body.classList.contains('skills-studio-mode') &&
+          !document.body.classList.contains('powertools-mode')) {
+        renderHomeSelfHealing();
+        renderHomeMemoryHealth();
+      }
+    } catch { /* non-fatal — the normal scheduleHomeDataLoad path is the fallback */ }
+  }, 4000);
 }
 
 // Heavy Home data loads, run ONE AT A TIME with a yield between each, and
@@ -18242,6 +18293,89 @@ void listen<{ uniqueEngramsAccessed: number; tokensServed: number; nodesServed: 
   },
 );
 
+// ── Ghampus chat response events ─────────────────────────────────────────
+// Fired by the sidecar after processing a ghampus:send IPC (LLM response,
+// error message, or proactive starter). Appended to the thread in real time.
+void listen<GhampusChatMessage>(
+  'graphnosis://ghampus-message',
+  (ev) => {
+    if (!ev.payload) return;
+    clearThinkingBubble();
+    clearSkillRunning();
+    const pane = document.querySelector<HTMLElement>('.mode-pane[data-pane="ghampus"]');
+    if (pane && !pane.classList.contains('hidden')) {
+      appendToThread(ev.payload);
+    } else {
+      ghampusThreadMessages.push(ev.payload);
+    }
+  },
+);
+
+// Fired immediately when the sidecar starts processing — show a thinking indicator.
+void listen<{ thinking: boolean; ts: number }>(
+  'graphnosis://ghampus-thinking',
+  () => { showThinkingBubble(); },
+);
+
+// Proactive watcher — cards arrive from the sidecar and go into the idle queue.
+// The queue dequeues one card at a time after the user has been idle for
+// IDLE_BEFORE_FIRST_MS, then waits BETWEEN_CARDS_MS before the next one.
+void listen<{
+  id: string; createdAt: number; signalType: string; signalLabel: string;
+  skillSourceId: string; skillGraphId: string; skillLabel: string; why: string; status: string;
+}>(
+  'graphnosis://ghampus-card',
+  (ev) => {
+    if (!ev.payload) return;
+    proactiveCardQueue.push(ev.payload);
+    startProactiveQueueTimer();
+  },
+);
+
+// Track user activity in the Ghampus input so idle detection resets on each keystroke.
+document.getElementById('ghampus-input')?.addEventListener('keydown', trackGhampusActivity);
+document.getElementById('btn-ghampus-send')?.addEventListener('click', trackGhampusActivity);
+
+let _thinkingClearTimer: ReturnType<typeof setTimeout> | null = null;
+
+function showThinkingBubble(): void {
+  setGhampusRunning(true);
+  // Cancel any pending deferred clear from a previous fast response.
+  if (_thinkingClearTimer) { clearTimeout(_thinkingClearTimer); _thinkingClearTimer = null; }
+
+  if (document.getElementById('ghampus-thinking')) return; // already showing
+
+  const thread = document.getElementById('ghampus-thread');
+  if (!thread) return;
+
+  document.getElementById('ghampus-thread-empty')?.remove();
+
+  const entry = document.createElement('div');
+  entry.id = 'ghampus-thinking';
+  entry.className = 'ghampus-thread-entry';
+  entry.innerHTML = `<div class="ghampus-thinking-bubble">
+    <div class="chat-msg-avatar">
+      <img src="/graphnosis-logo-transparent-bg.png" alt="Ghampus" />
+    </div>
+    <div class="ghampus-thinking-dots">
+      <span></span><span></span><span></span>
+    </div>
+  </div>`;
+  thread.appendChild(entry);
+  thread.scrollTop = thread.scrollHeight;
+}
+
+function clearThinkingBubble(): void {
+  // Keep the bubble visible for at least 400 ms so a fast LLM response
+  // doesn't make it flash imperceptibly.
+  if (_thinkingClearTimer) return;
+  _thinkingClearTimer = setTimeout(() => {
+    document.getElementById('ghampus-thinking')?.remove();
+    _thinkingClearTimer = null;
+    setGhampusRunning(false);
+  }, 400);
+}
+
 // ── First-run guided tour ─────────────────────────────────────────────────
 //
 // Shows once (keyed on localStorage flag 'graphnosis_tour_done').
@@ -22340,6 +22474,11 @@ const BILLING_POLL_KEY = 'billing:pollKey';
 // Kept separate so it never clobbers the Stripe pollSecret: both slots can
 // be active simultaneously when the user has a personal sub + a domain seat.
 const BILLING_DOMAIN_POLL_KEY = 'billing:domainPollKey';
+// Timestamp of the last successful background poll. Throttles the silent
+// unlock-time poll to once per 24 hours so the server never sends a
+// spurious OTP email on every cortex unlock.
+const BILLING_LAST_POLL_TS_KEY = 'billing:lastPollTs';
+const BILLING_POLL_THROTTLE_MS = 24 * 60 * 60 * 1000; // 24 h
 
 interface LicenseTokenEntry {
   source: 'personal' | 'domain';
@@ -22386,6 +22525,7 @@ async function ipcLicenseClear(): Promise<void> {
   localStorage.removeItem(BILLING_DOMAIN_EMAIL_KEY);
   localStorage.removeItem(BILLING_POLL_KEY);
   localStorage.removeItem(BILLING_DOMAIN_POLL_KEY);
+  localStorage.removeItem(BILLING_LAST_POLL_TS_KEY);
 }
 
 /** Best-known email for billing — the token's `sub` first, then the cached
@@ -22405,6 +22545,14 @@ async function pollLicenseTokenFromServer(explicitEmail?: string): Promise<{ ok:
   // resolved email matches the stored domain address.
   const domainEmail = localStorage.getItem(BILLING_DOMAIN_EMAIL_KEY) ?? '';
   if (!explicitEmail && domainEmail && email.toLowerCase() === domainEmail.toLowerCase()) return null;
+  // Background (non-explicit) polls are throttled to once per 24 hours.
+  // Without this gate, every cortex unlock hits the billing server and
+  // the server sends a fresh OTP email whenever the poll secret is absent
+  // or stale — even for users who already have a valid local license.
+  if (!explicitEmail) {
+    const lastPoll = Number(localStorage.getItem(BILLING_LAST_POLL_TS_KEY) ?? 0);
+    if (Date.now() - lastPoll < BILLING_POLL_THROTTLE_MS) return null;
+  }
   try {
     // Done in the sidecar (Node) — a browser fetch to graphnosis.com is blocked
     // by CORS in BOTH dev (localhost:5173) and the installed app (tauri://…),
@@ -22416,6 +22564,7 @@ async function pollLicenseTokenFromServer(explicitEmail?: string): Promise<{ ok:
     );
     if (result?.ok) {
       console.log('[license] refreshed from server', result.plan);
+      localStorage.setItem(BILLING_LAST_POLL_TS_KEY, String(Date.now()));
       void refreshSettingsLicenseStatus();
     } else if (result?.reason && result.reason !== 'no_token' && result.reason !== 'otp_required') {
       console.warn('[license] server poll:', result.reason);
@@ -22631,7 +22780,6 @@ function bindSettingsLicensePanel(): void {
             return;
           }
           // Retry also failed — fall through to the "check email" message.
-          result = retry;
         }
         if (feedback) {
           feedback.innerHTML = 'No subscription found. Email <a href="mailto:support@graphnosis.com">support@graphnosis.com</a> to recover your license.';
@@ -22989,12 +23137,18 @@ function updateStudioVisibility(): void {
 // ── Ghampus (local agent) ───────────────────────────────────────────────
 let ghampusEnabled = true;
 let ghampusPlan: 'free' | 'pro' | 'teams' | 'enterprise' = 'free';
+let ghampusRunning = false;  // true while a skill walk or message is in flight
+
+function setGhampusRunning(running: boolean): void {
+  ghampusRunning = running;
+  // "Stop all" only shows while something is actually in flight.
+  document.getElementById('btn-ghampus-kill')
+    ?.classList.toggle('hidden', !ghampusRunning || !ghampusEnabled);
+}
 
 function updateGhampusVisibility(): void {
-  // Ghampus is open to every plan now; visibility only flips the kill
-  // switch banner and buttons. The plan chip surfaces tier so the UI
-  // can render contextual upsells without paywalling the surface.
-  document.getElementById('btn-ghampus-kill')?.classList.toggle('hidden', !ghampusEnabled);
+  document.getElementById('btn-ghampus-kill')
+    ?.classList.toggle('hidden', !ghampusRunning || !ghampusEnabled);
   document.getElementById('btn-ghampus-resume')?.classList.toggle('hidden', ghampusEnabled);
   document.getElementById('ghampus-kill-banner')?.classList.toggle('hidden', ghampusEnabled);
   const chip = document.getElementById('ghampus-plan-chip');
@@ -23195,13 +23349,12 @@ const ATTACHMENT_KIND_ICONS: Record<string, string> = {
 async function refreshGhampusAttachments(): Promise<void> {
   try {
     const res = await ipcCall<{ attachments: AttachmentRow[] }>('attachments:list', {});
-    const sum = document.getElementById('ghampus-attachments-summary');
-    const ul = document.getElementById('ghampus-attachments-list');
-    if (sum) {
-      sum.textContent = res.attachments.length === 0
-        ? "Attach a local file — image, PDF, doc, OneNote, anything — and I'll surface it next time you recall something related. The file stays where it is."
-        : `${res.attachments.length} file${res.attachments.length === 1 ? '' : 's'} linked to memories · click any to open · stays on disk`;
+    const badge = document.getElementById('ghampus-files-pill-badge');
+    if (badge) {
+      if (res.attachments.length > 0) { badge.textContent = String(res.attachments.length); badge.classList.remove('hidden'); }
+      else { badge.classList.add('hidden'); }
     }
+    const ul = document.getElementById('ghampus-attachments-list');
     if (ul) {
       ul.innerHTML = res.attachments.slice(0, 12).map((a) => {
         const icon = ATTACHMENT_KIND_ICONS[a.kind] ?? '📎';
@@ -23498,11 +23651,14 @@ function wireGhampusAttachButtons(): void {
       // Path entry — for shared-drive paths, OneNote URIs, anything the
       // file picker won't reach directly. No validation here; the store
       // records whether the path resolves on the current machine.
-      const p = window.prompt('Path or URI to attach (shared drive, OneNote URI, etc.)');
+      const p = window.prompt('Path or URI to attach\n\nExamples:\n  /Users/you/docs/report.pdf\n  //server/share/file.docx\n  onenote:https://...\n  smb://...');
       if (!p || !p.trim()) return;
-      const graphId = atlasActiveGraph && atlasActiveGraph !== FULL_CORTEX ? atlasActiveGraph : (loadedGraphs[0]?.graphId ?? '');
+      // Prefer the atlas active engram; fall back to the first loaded personal/public engram.
+      const graphId = (atlasActiveGraph && atlasActiveGraph !== FULL_CORTEX)
+        ? atlasActiveGraph
+        : (loadedGraphs.find((g) => !g.graphId.startsWith('__'))?.graphId ?? loadedGraphs[0]?.graphId ?? '');
       if (!graphId) {
-        void gAlert('No engram selected', 'Pick an active engram from the header dropdown first, then attach.');
+        void gAlert('No engram found', 'Open Your Cortex, select an engram, then try attaching again.');
         return;
       }
       try {
@@ -23529,21 +23685,12 @@ async function refreshGhampusSavings(): Promise<void> {
       };
       reportLine: string;
     }>('savings:summary', { windowDays: 30 });
-    const sum = document.getElementById('ghampus-savings-summary');
-    const breakdown = document.getElementById('ghampus-savings-breakdown');
     const total = document.getElementById('ghampus-savings-total');
     const recall = document.getElementById('ghampus-savings-recall');
     const routing = document.getElementById('ghampus-savings-routing');
-    if (sum) sum.textContent = res.reportLine;
-    if (breakdown) {
-      const hasData = res.totalEvents > 0;
-      breakdown.style.display = hasData ? '' : 'none';
-      if (hasData) {
-        if (total) total.textContent = `$${res.totalSavedUsd.toFixed(2)}`;
-        if (recall) recall.textContent = `${res.byKind['recall-only'].events} event${res.byKind['recall-only'].events === 1 ? '' : 's'}`;
-        if (routing) routing.textContent = `${res.byKind.routing.events} event${res.byKind.routing.events === 1 ? '' : 's'}`;
-      }
-    }
+    if (total) total.textContent = `$${res.totalSavedUsd.toFixed(2)}`;
+    if (recall) recall.textContent = String(res.byKind['recall-only'].events);
+    if (routing) routing.textContent = String(res.byKind.routing.events);
   } catch { /* non-fatal */ }
 }
 
@@ -23564,13 +23711,12 @@ async function refreshGhampusNotifications(): Promise<void> {
       totalAvailable: number;
     }>('agent:listNotifications', { sinceMs: lastVisited, limit: 12 });
 
-    const sum = document.getElementById('ghampus-notifications-summary');
-    const ul = document.getElementById('ghampus-notifications-list');
-    if (sum) {
-      sum.textContent = res.notifications.length === 0
-        ? 'Nothing new since your last visit. Connect a data source or AI client and activity will appear here.'
-        : `${res.notifications.length} item${res.notifications.length === 1 ? '' : 's'} arrived since your last visit · batched by source`;
+    const badge = document.getElementById('ghampus-notif-pill-badge');
+    if (badge) {
+      if (res.notifications.length > 0) { badge.textContent = String(res.notifications.length); badge.classList.remove('hidden'); }
+      else { badge.classList.add('hidden'); }
     }
+    const ul = document.getElementById('ghampus-notifications-list');
     if (ul) {
       const now = Date.now();
       ul.innerHTML = res.notifications.map((n) => {
@@ -23603,26 +23749,45 @@ async function refreshGhampusNotifications(): Promise<void> {
 async function refreshGhampusSkills(): Promise<void> {
   try {
     const res = await ipcCall<{ skills: Array<{ sourceId: string; engramId: string; label: string; nodeCount: number; origin: 'local' | 'pack'; trainedAt?: string; recallBreadth?: number }> }>('agent:listSkills', {});
-    const sum = document.getElementById('ghampus-skills-summary');
     const ul = document.getElementById('ghampus-skills-list');
-    if (sum) {
-      const total = res.skills.length;
-      sum.textContent = total === 0
-        ? `No skills in your library yet. ${ghampusPlan === 'free' ? 'On Pro, Ghampus can train new skills from your conversations.' : 'Train one from the Skills page, or let Ghampus harvest patterns as you chat.'}`
-        : `${total} skill${total === 1 ? '' : 's'} ready to walk · I'll suggest them when they fit what you're asking`;
+    const badge = document.getElementById('ghampus-skills-pill-badge');
+    if (badge) {
+      if (res.skills.length > 0) {
+        badge.textContent = String(res.skills.length);
+        badge.classList.remove('hidden');
+      } else {
+        badge.classList.add('hidden');
+      }
     }
     if (ul) {
-      ul.innerHTML = res.skills.slice(0, 6).map((s) => {
-        const provenance = s.origin === 'pack' ? '<span class="subtitle" style="font-size: 11px;">· imported pack</span>' : '';
-        const trained = s.trainedAt ? `trained ${new Date(s.trainedAt).toLocaleDateString()}` : 'imported';
-        return `<li style="padding: 6px 0; display: flex; gap: 8px; align-items: baseline;">
-          <span>🎓</span>
-          <strong style="font-size: 13px;">${escapeHtml(s.label)}</strong>
-          ${provenance}
-          <code style="font-size: 11px; opacity: .7;">${escapeHtml(s.engramId)}</code>
-          <span class="subtitle" style="margin-left: auto; font-size: 11px;">${trained}</span>
-        </li>`;
-      }).join('');
+      if (res.skills.length === 0) {
+        ul.innerHTML = '<li class="ghampus-panel-empty">No skills in your library yet.</li>';
+      } else {
+        ul.innerHTML = res.skills.map((s) => {
+          const displayLabel = s.label.replace(/^skill:\d+:/, '');
+          const trained = s.trainedAt ? new Date(s.trainedAt).toLocaleDateString() : 'imported';
+          const vitality = s.recallBreadth ?? 80;
+          // strokeDashoffset = circumference * (1 - vitality/100), circumference ≈ 72 (r=11.5)
+          const offset = (72 * (1 - vitality / 100)).toFixed(1);
+          const color = vitality >= 70 ? '#10b981' : vitality >= 40 ? '#f59e0b' : '#ef4444';
+          return `<li>
+            <div class="ghampus-skill-row">
+              <svg class="ghampus-skill-vitality" viewBox="0 0 28 28">
+                <circle class="track" cx="14" cy="14" r="11.5"/>
+                <circle class="fill" cx="14" cy="14" r="11.5"
+                  stroke="${color}"
+                  stroke-dashoffset="${offset}"/>
+              </svg>
+              <div class="ghampus-skill-info">
+                <div class="ghampus-skill-name">${escapeHtml(displayLabel)}</div>
+                <div class="ghampus-skill-meta">${trained}${s.origin === 'pack' ? ' · pack' : ''}</div>
+              </div>
+              <button class="ghampus-skill-run" type="button"
+                      data-skill-source="${escapeHtml(s.sourceId)}">Run ▸</button>
+            </div>
+          </li>`;
+        }).join('');
+      }
     }
   } catch { /* non-fatal */ }
 }
@@ -23630,28 +23795,30 @@ async function refreshGhampusSkills(): Promise<void> {
 async function refreshGhampusRecentSaves(): Promise<void> {
   try {
     const { saves } = await ipcCall<{ saves: Array<{ sourceId: string; engramId: string; label: string; addedAtMs: number }> }>('agent:recentSaves', { limit: 8 });
-    const sum = document.getElementById('ghampus-recent-saves-summary');
-    const ul = document.getElementById('ghampus-recent-saves-list');
-    if (sum) {
-      sum.textContent = saves.length === 0
-        ? 'Nothing saved through chats yet. As you chat with Ghampus and approve "save to engram" prompts, the results appear here.'
-        : `${saves.length} memor${saves.length === 1 ? 'y' : 'ies'} saved during chats · last 7 days`;
+    const badge = document.getElementById('ghampus-saves-pill-badge');
+    if (badge) {
+      if (saves.length > 0) { badge.textContent = String(saves.length); badge.classList.remove('hidden'); }
+      else { badge.classList.add('hidden'); }
     }
+    const ul = document.getElementById('ghampus-recent-saves-list');
     if (ul) {
-      const now = Date.now();
-      ul.innerHTML = saves.map((s) => {
-        const ageMs = now - s.addedAtMs;
-        const when = ageMs < 60_000 ? 'just now'
-          : ageMs < 3_600_000 ? `${Math.floor(ageMs / 60_000)} min ago`
-          : ageMs < 86_400_000 ? `${Math.floor(ageMs / 3_600_000)}h ago`
-          : `${Math.floor(ageMs / 86_400_000)}d ago`;
-        return `<li style="padding: 6px 0; display: flex; gap: 8px; align-items: baseline;">
-          <span style="color: var(--accent, #6366f1);">●</span>
-          <span style="flex: 1;">${escapeHtml(s.label)}</span>
-          <code style="font-size: 11px; opacity: .7;">${escapeHtml(s.engramId)}</code>
-          <span class="subtitle" style="font-size: 11px;">${when}</span>
-        </li>`;
-      }).join('');
+      if (saves.length === 0) {
+        ul.innerHTML = '<li class="ghampus-panel-empty">Nothing saved through chats yet.</li>';
+      } else {
+        const now = Date.now();
+        ul.innerHTML = saves.map((s) => {
+          const ageMs = now - s.addedAtMs;
+          const when = ageMs < 60_000 ? 'just now'
+            : ageMs < 3_600_000 ? `${Math.floor(ageMs / 60_000)} min ago`
+            : ageMs < 86_400_000 ? `${Math.floor(ageMs / 3_600_000)}h ago`
+            : `${Math.floor(ageMs / 86_400_000)}d ago`;
+          return `<li><div class="ghampus-panel-item">
+            <span class="ghampus-panel-item-label">${escapeHtml(s.label)}</span>
+            <span class="ghampus-panel-item-meta">${escapeHtml(s.engramId)}</span>
+            <span class="ghampus-panel-item-meta">${when}</span>
+          </div></li>`;
+        }).join('');
+      }
     }
   } catch { /* non-fatal */ }
 }
@@ -23660,11 +23827,11 @@ async function refreshGhampusSharingPanel(): Promise<void> {
   try {
     const info = await ipcCall<{ seats: number | null; activeCount: number; plan: string | null }>('sharing:planInfo', {});
     const list = await ipcCall<Array<{ id: string; name: string; role: string; expiresAt: number | null; createdAt: number }>>('sharing:list', {});
-    const summary = document.getElementById('ghampus-sharing-summary');
     const ul = document.getElementById('ghampus-sharing-list');
-    if (summary) {
-      const cap = info.seats === null ? 'unlimited' : String(info.seats);
-      summary.textContent = `${info.activeCount} active share${info.activeCount === 1 ? '' : 's'} (cap: ${cap}).`;
+    const badge = document.getElementById('ghampus-shares-pill-badge');
+    if (badge) {
+      if (info.activeCount > 0) { badge.textContent = String(info.activeCount); badge.classList.remove('hidden'); }
+      else { badge.classList.add('hidden'); }
     }
     if (ul) {
       const now = Date.now();
@@ -23677,15 +23844,907 @@ async function refreshGhampusSharingPanel(): Promise<void> {
           : expiringSoon
             ? `<span style="color: var(--g-warn, #c47);">expires soon</span>`
             : t.expiresAt === null ? 'no expiry' : new Date(t.expiresAt).toLocaleDateString();
-        return `<li style="padding: 6px 0; display: flex; gap: 8px; align-items: baseline;">
-          <strong>${escapeHtml(t.name)}</strong>
-          <span class="subtitle">${escapeHtml(t.role)}</span>
-          <span class="subtitle" style="margin-left: auto;">${expiryNote}</span>
-        </li>`;
-      }).join('') || '<li class="subtitle">No shares yet.</li>';
+        return `<li><div class="ghampus-panel-item">
+          <span class="ghampus-panel-item-label">${escapeHtml(t.name)}</span>
+          <span class="ghampus-panel-item-meta">${escapeHtml(t.role)}</span>
+          <span class="ghampus-panel-item-meta">${expiryNote}</span>
+        </div></li>`;
+      }).join('') || '<li class="ghampus-panel-empty">No active shares.</li>';
     }
   } catch { /* non-fatal */ }
 }
+
+// ── Ghampus chat surface ──────────────────────────────────────────────────
+
+type GhampusChatMessage =
+  | { kind: 'user'; text: string; ts: number }
+  | { kind: 'ghampus'; text: string; ts: number }
+  | { kind: 'skill-match'; skill: SkillMatchPayload; ts: number }
+  | { kind: 'walk-plan'; plan: WalkPlan; ts: number }
+  | { kind: 'walk-progress'; steps: WalkStep[]; ts: number }
+  | { kind: 'refine-proposal'; proposal: RefineProposal; ts: number }
+  | { kind: 'tier-strip'; context: TierContext; ts: number }
+  | { kind: 'proactive-card'; card: ProactiveCardPayload; ts: number };
+
+interface ProactiveCardPayload {
+  id: string; createdAt: number; signalType: string; signalLabel: string;
+  skillSourceId: string; skillGraphId: string; skillLabel: string; why: string; status: string;
+}
+
+interface SkillMatchPayload {
+  sourceId: string; label: string; steps: number; subSkills: number;
+  lastRunAgo: string; vitality: number; description: string;
+}
+interface WalkPlan {
+  sourceId: string; label: string; steps: WalkPlanStep[];
+  totalCost: number; privacySafe: boolean; routing: 'adaptive' | 'local-only' | 'always-best';
+  learningHint?: string;
+}
+interface WalkPlanStep {
+  label: string; needs: string[]; model: string; isLocal: boolean; cost: number;
+}
+interface WalkStep { label: string; status: 'pending' | 'running' | 'done' | 'error'; }
+interface RefineProposal {
+  sourceId: string; observation: string; proposedStepCode: string;
+  captureVars: string[]; footnote: string;
+}
+interface TierContext { pro: string; free: string; teams: string; }
+
+function fmtRelTime(ts: number): string {
+  const diffS = Math.floor((Date.now() - ts) / 1000);
+  if (diffS < 60)  return 'just now';
+  if (diffS < 3600) return `${Math.floor(diffS / 60)}m ago`;
+  if (diffS < 86400) return `${Math.floor(diffS / 3600)}h ago`;
+  if (diffS < 7 * 86400) return `${Math.floor(diffS / 86400)}d ago`;
+  return new Date(ts).toLocaleDateString([], { month: 'short', day: 'numeric' });
+}
+
+function fmtAbsTime(ts: number): string {
+  return new Date(ts).toLocaleString([], {
+    weekday: 'short', month: 'short', day: 'numeric',
+    hour: '2-digit', minute: '2-digit',
+  });
+}
+
+function fmtTime(ts: number): string {
+  return `<time datetime="${new Date(ts).toISOString()}" title="${escapeHtml(fmtAbsTime(ts))}">${fmtRelTime(ts)}</time>`;
+}
+
+const COPY_ICON = `<svg width="13" height="13" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" style="flex-shrink:0">
+  <rect x="5" y="5" width="9" height="9" rx="1.5" stroke="currentColor" stroke-width="1.4"/>
+  <path d="M11 5V3.5A1.5 1.5 0 0 0 9.5 2H3.5A1.5 1.5 0 0 0 2 3.5V9.5A1.5 1.5 0 0 0 3.5 11H5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
+</svg>`;
+
+function copyBtn(plainText: string): string {
+  return `<button class="chat-msg-copy" data-copy="${escapeHtml(plainText)}" title="Copy">${COPY_ICON}</button>`;
+}
+
+function renderChatMessage(msg: GhampusChatMessage): string {
+  switch (msg.kind) {
+    case 'user':
+      return `<div class="chat-msg user">
+        <div class="chat-msg-wrap">
+          <div class="chat-msg-bubble">${escapeHtml(msg.text)}</div>
+          <div class="chat-msg-meta">
+            <div class="chat-msg-time">${fmtTime(msg.ts)}</div>
+            ${copyBtn(msg.text)}
+          </div>
+        </div>
+      </div>`;
+    case 'ghampus':
+      return `<div class="chat-msg ghampus">
+        <div class="chat-msg-avatar">
+          <img src="/graphnosis-logo-transparent-bg.png" alt="" />
+        </div>
+        <div class="chat-msg-wrap">
+          <div class="chat-msg-bubble chat-msg-bubble--markdown">${renderMarkdownLite(msg.text)}</div>
+          <div class="chat-msg-meta">
+            <div class="chat-msg-time">${fmtTime(msg.ts)}</div>
+            ${copyBtn(msg.text)}
+          </div>
+        </div>
+      </div>`;
+    case 'skill-match':
+      return renderSkillMatchCard(msg.skill, msg.ts);
+    case 'walk-plan':
+      return renderWalkPlanCard(msg.plan);
+    case 'walk-progress':
+      return renderWalkProgress(msg.steps);
+    case 'refine-proposal':
+      return renderRefineCard(msg.proposal);
+    case 'tier-strip':
+      return renderTierStrip(msg.context);
+    case 'proactive-card':
+      return renderProactiveCard(msg.card);
+    default:
+      return '';
+  }
+}
+
+function renderSkillMatchCard(skill: SkillMatchPayload, ts: number): string {
+  const subChip = skill.subSkills > 0
+    ? `<span class="skill-meta-chip">${skill.subSkills} sub-skill${skill.subSkills > 1 ? 's' : ''}</span>` : '';
+  return `<div class="skill-match-card" data-skill-source="${escapeHtml(skill.sourceId)}">
+    <div class="skill-match-card-header">
+      <span style="font-size: 16px;">🎓</span>
+      <span class="skill-match-card-name">${escapeHtml(skill.label)}</span>
+    </div>
+    <div class="skill-match-chips">
+      <span class="skill-meta-chip">${skill.steps} steps</span>
+      ${subChip}
+      <span class="skill-meta-chip">last run ${escapeHtml(skill.lastRunAgo)}</span>
+      <span class="skill-meta-chip">vitality ${skill.vitality}</span>
+    </div>
+    <p class="skill-match-desc">${escapeHtml(skill.description)}</p>
+    <div class="skill-match-actions">
+      <button class="g-btn primary btn-skill-run" style="font-size: 12px; padding: 4px 12px;"
+              data-source-id="${escapeHtml(skill.sourceId)}">Run it?</button>
+      <button class="g-btn btn-skill-dismiss" style="font-size: 12px; padding: 4px 10px;"
+              data-source-id="${escapeHtml(skill.sourceId)}">Not now</button>
+    </div>
+  </div>`;
+}
+
+function renderProactiveCard(card: ProactiveCardPayload): string {
+  const signalIcon = card.signalType === 'time-based' ? '⏰' : card.signalType === 'recent-ingest' ? '📥' : '🔍';
+  const skillName = card.skillLabel.replace(/-/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
+  const whyHtml = escapeHtml(card.why).replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+  return `<div class="chat-msg ghampus">
+    <div class="chat-msg-avatar">
+      <img src="/graphnosis-logo-transparent-bg.png" alt="Ghampus" />
+    </div>
+    <div class="chat-msg-wrap">
+      <div class="proactive-card" data-card-id="${escapeHtml(card.id)}" data-skill-source="${escapeHtml(card.skillSourceId)}">
+        <div class="proactive-card-header">
+          <div class="proactive-card-signal">${signalIcon} ${escapeHtml(card.signalLabel)}</div>
+          <span class="proactive-card-label">Suggested action</span>
+        </div>
+        <p class="proactive-card-why">${whyHtml}</p>
+        <div class="proactive-card-actions">
+          <button class="g-btn primary proactive-card-run" data-card-id="${escapeHtml(card.id)}"
+                  data-source-id="${escapeHtml(card.skillSourceId)}">Run ${escapeHtml(skillName)} ▸</button>
+          <div class="proactive-snooze-wrap">
+            <button class="g-btn proactive-card-snooze" data-card-id="${escapeHtml(card.id)}">Remind me later ▾</button>
+            <div class="proactive-snooze-menu hidden">
+              <button class="proactive-snooze-opt" data-mins="15">In 15 minutes</button>
+              <button class="proactive-snooze-opt" data-mins="30">In 30 minutes</button>
+              <button class="proactive-snooze-opt" data-mins="60">In 1 hour</button>
+              <button class="proactive-snooze-opt" data-mins="480">This evening</button>
+              <button class="proactive-snooze-opt" data-mins="1440">Tomorrow</button>
+            </div>
+          </div>
+          <button class="g-btn proactive-card-dismiss" data-card-id="${escapeHtml(card.id)}">Dismiss</button>
+        </div>
+      </div>
+      <div class="chat-msg-meta">
+        <div class="chat-msg-time">${fmtTime(card.createdAt)}</div>
+      </div>
+    </div>
+  </div>`;
+}
+
+// ── Proactive card queue with idle-gating ─────────────────────────────────
+// Cards arrive from the sidecar and are queued here. They are shown one at
+// a time ONLY when the user has been idle — no interruption mid-thought.
+const proactiveCardQueue: ProactiveCardPayload[] = [];
+let lastGhampusActivity = Date.now();
+// Minimum 5 min idle before the first card is ever shown.
+const IDLE_BEFORE_FIRST_MS = 5 * 60_000;
+// After each card, pick a random wait of 5–30 minutes before the next.
+let nextCardAllowedAt = 0;
+let proactiveQueueTimer: ReturnType<typeof setInterval> | null = null;
+
+function trackGhampusActivity(): void {
+  lastGhampusActivity = Date.now();
+}
+
+function randBetweenMs(minMin: number, maxMin: number): number {
+  return (minMin + Math.floor((maxMin - minMin + 1) * (Date.now() % 1000) / 1000)) * 60_000;
+}
+
+function dequeueProactiveCard(): void {
+  if (proactiveCardQueue.length === 0) return;
+  const now = Date.now();
+  const idleMs = now - lastGhampusActivity;
+  if (idleMs < IDLE_BEFORE_FIRST_MS) return;
+  if (nextCardAllowedAt > 0 && now < nextCardAllowedAt) return;
+
+  const card = proactiveCardQueue.shift();
+  if (!card) return;
+
+  const pane = document.querySelector<HTMLElement>('.mode-pane[data-pane="ghampus"]');
+  if (!pane || pane.classList.contains('hidden')) {
+    proactiveCardQueue.unshift(card);
+    return;
+  }
+
+  // Schedule next card 5–30 minutes from now (random)
+  nextCardAllowedAt = now + randBetweenMs(5, 30);
+
+  const msg: GhampusChatMessage = { kind: 'proactive-card', card, ts: card.createdAt };
+  appendToThread(msg);
+}
+
+function startProactiveQueueTimer(): void {
+  if (proactiveQueueTimer) return;
+  proactiveQueueTimer = setInterval(dequeueProactiveCard, 30_000); // check every 30 s
+}
+
+function renderWalkPlanCard(plan: WalkPlan): string {
+  const totalFmt = plan.totalCost === 0 ? 'free' : `≈\$${plan.totalCost.toFixed(4)}`;
+  const metaParts = [
+    `${plan.steps.length} steps`,
+    plan.routing === 'adaptive' ? 'adaptive routing' : plan.routing.replace('-', ' '),
+    plan.privacySafe ? 'privacy-safe (no sensitive engrams)' : '',
+  ].filter(Boolean).join(' · ');
+
+  const rows = plan.steps.map((s) => {
+    const needChips = s.needs.map((n) => `<span class="walk-plan-need-chip">${escapeHtml(n)}</span>`).join('');
+    const costCell = s.cost === 0
+      ? `<span class="walk-plan-step-cost free">free</span>`
+      : `<span class="walk-plan-step-cost">\$${s.cost.toFixed(4)}</span>`;
+    const modelClass = s.isLocal ? 'local' : 'cloud';
+    const modelTag = s.isLocal ? '' : '<span class="walk-plan-model-tag">BYOK</span>';
+    return `<tr>
+      <td>${escapeHtml(s.label)}</td>
+      <td><div class="walk-plan-needs">${needChips}</div></td>
+      <td><span class="walk-plan-model ${modelClass}">${escapeHtml(s.model)}</span>${modelTag}</td>
+      <td>${costCell}</td>
+    </tr>`;
+  }).join('');
+
+  const hint = plan.learningHint
+    ? `<div class="walk-plan-hint"><span>💡</span><span>${escapeHtml(plan.learningHint)}</span></div>`
+    : '';
+
+  return `<div class="walk-plan-card" data-plan-source="${escapeHtml(plan.sourceId)}">
+    <div class="walk-plan-header">
+      <span class="walk-plan-title">${escapeHtml(plan.label)} walk plan</span>
+      <span class="walk-plan-meta">${escapeHtml(metaParts)}</span>
+      <span class="walk-plan-cost-badge">${totalFmt}</span>
+    </div>
+    <table class="walk-plan-table">
+      <thead><tr>
+        <th>STEP</th><th>NEEDS</th><th>WILL USE</th><th>EST. COST</th>
+      </tr></thead>
+      <tbody>${rows}</tbody>
+    </table>
+    <div class="walk-plan-actions">
+      <button class="g-btn primary btn-walk-confirm" style="font-size: 12px; padding: 5px 14px;"
+              data-source-id="${escapeHtml(plan.sourceId)}" data-routing="adaptive">
+        Walk it · ${totalFmt}
+      </button>
+      <button class="g-btn btn-walk-local" style="font-size: 12px; padding: 5px 12px;"
+              data-source-id="${escapeHtml(plan.sourceId)}">
+        Local-only this time (slower)
+      </button>
+      <button class="g-btn btn-walk-cancel" style="font-size: 12px; padding: 5px 10px;"
+              data-source-id="${escapeHtml(plan.sourceId)}">Cancel</button>
+    </div>
+    ${hint}
+  </div>`;
+}
+
+function renderWalkProgress(steps: WalkStep[]): string {
+  const rows = steps.map((s, i) => {
+    const icon = s.status === 'done' ? '✓'
+      : s.status === 'running' ? String(i + 1)
+      : s.status === 'error' ? '✕' : '';
+    return `<div class="walk-step ${s.status}">
+      <div class="walk-step-icon">${icon}</div>
+      <span>${escapeHtml(s.label)}</span>
+    </div>`;
+  }).join('');
+  return `<div class="walk-step-list">${rows}</div>`;
+}
+
+function renderRefineCard(proposal: RefineProposal): string {
+  return `<div class="refine-card" data-refine-source="${escapeHtml(proposal.sourceId)}">
+    <div class="refine-card-header">
+      <span style="font-size: 15px;">🎓</span>
+      <span class="refine-card-title">I've watched this skill walk for 3 weeks straight. Refine it?</span>
+    </div>
+    <p class="refine-card-obs">${escapeHtml(proposal.observation)}</p>
+    <pre class="refine-card-code">${escapeHtml(proposal.proposedStepCode)}</pre>
+    <div class="refine-card-actions">
+      <button class="btn-refine-primary btn-refine-update"
+              data-source-id="${escapeHtml(proposal.sourceId)}">Update ${escapeHtml(proposal.sourceId.split(':').pop() ?? 'skill')}</button>
+      <button class="btn-refine-secondary btn-refine-edit"
+              data-source-id="${escapeHtml(proposal.sourceId)}">Edit step first</button>
+      <button class="btn-refine-secondary btn-refine-skip"
+              data-source-id="${escapeHtml(proposal.sourceId)}">Skip this week</button>
+      <span class="refine-card-footnote">${escapeHtml(proposal.footnote)}</span>
+    </div>
+  </div>`;
+}
+
+function renderTierStrip(ctx: TierContext): string {
+  const proLabel = `<div class="tier-strip-label active">Pro (this view)</div>`;
+  const freeLabel = `<div class="tier-strip-label">Free</div>`;
+  const teamsLabel = `<div class="tier-strip-label">Teams+</div>`;
+  return `<div class="tier-strip">
+    <div class="tier-strip-col">${proLabel}<div class="tier-strip-body">${escapeHtml(ctx.pro)}</div></div>
+    <div class="tier-strip-col">${freeLabel}<div class="tier-strip-body">${escapeHtml(ctx.free)}</div></div>
+    <div class="tier-strip-col">${teamsLabel}<div class="tier-strip-body">${escapeHtml(ctx.teams)}</div></div>
+  </div>`;
+}
+
+// In-memory thread cache — cleared on pane enter; rebuilt from history IPC.
+// When the sidecar stub is not yet wired this stays empty and the empty state shows.
+let ghampusThreadMessages: GhampusChatMessage[] = [];
+
+function appendToThread(msg: GhampusChatMessage): void {
+  ghampusThreadMessages.push(msg);
+  const container = document.getElementById('ghampus-chat-messages') ?? document.getElementById('ghampus-thread');
+  if (!container) return;
+  const empty = document.getElementById('ghampus-thread-empty');
+  if (empty) empty.remove();
+  const node = document.createElement('div');
+  node.className = 'ghampus-thread-entry';
+  node.innerHTML = renderChatMessage(msg);
+  container.appendChild(node);
+  wireThreadNodeActions(node, msg);
+  const thread = document.getElementById('ghampus-thread');
+  if (thread) thread.scrollTop = thread.scrollHeight;
+}
+
+function wireThreadNodeActions(node: HTMLElement, msg: GhampusChatMessage): void {
+  // Copy button — present on user + ghampus messages.
+  node.querySelector<HTMLButtonElement>('.chat-msg-copy')?.addEventListener('click', (e) => {
+    e.stopPropagation();
+    const btn = e.currentTarget as HTMLButtonElement;
+    const text = btn.dataset.copy ?? '';
+    void navigator.clipboard.writeText(text).then(() => {
+      btn.classList.add('copied');
+      btn.title = 'Copied!';
+      setTimeout(() => { btn.classList.remove('copied'); btn.title = 'Copy'; }, 1500);
+    });
+  });
+
+  if (msg.kind === 'skill-match') {
+    node.querySelector<HTMLButtonElement>('.btn-skill-run')?.addEventListener('click', (e) => {
+      const sourceId = (e.currentTarget as HTMLButtonElement).dataset.sourceId ?? '';
+      void requestWalkPlan(sourceId);
+    });
+    node.querySelector<HTMLButtonElement>('.btn-skill-dismiss')?.addEventListener('click', (e) => {
+      (e.currentTarget as HTMLElement).closest('.ghampus-thread-entry')?.remove();
+    });
+  }
+  if (msg.kind === 'walk-plan') {
+    node.querySelector<HTMLButtonElement>('.btn-walk-confirm')?.addEventListener('click', (e) => {
+      const sourceId = (e.currentTarget as HTMLButtonElement).dataset.sourceId ?? '';
+      showSkillRunning(msg.plan.label);
+      void confirmWalk(sourceId, 'adaptive');
+    });
+    node.querySelector<HTMLButtonElement>('.btn-walk-local')?.addEventListener('click', (e) => {
+      const sourceId = (e.currentTarget as HTMLButtonElement).dataset.sourceId ?? '';
+      showSkillRunning(msg.plan.label);
+      void confirmWalk(sourceId, 'local-only');
+    });
+    node.querySelector<HTMLButtonElement>('.btn-walk-cancel')?.addEventListener('click', (e) => {
+      (e.currentTarget as HTMLElement).closest('.ghampus-thread-entry')?.remove();
+    });
+  }
+  if (msg.kind === 'refine-proposal') {
+    node.querySelector<HTMLButtonElement>('.btn-refine-update')?.addEventListener('click', (e) => {
+      const sourceId = (e.currentTarget as HTMLButtonElement).dataset.sourceId ?? '';
+      void sendRefineResponse(sourceId, 'update');
+    });
+    node.querySelector<HTMLButtonElement>('.btn-refine-edit')?.addEventListener('click', (e) => {
+      const sourceId = (e.currentTarget as HTMLButtonElement).dataset.sourceId ?? '';
+      void sendRefineResponse(sourceId, 'edit');
+    });
+    node.querySelector<HTMLButtonElement>('.btn-refine-skip')?.addEventListener('click', (e) => {
+      const sourceId = (e.currentTarget as HTMLButtonElement).dataset.sourceId ?? '';
+      void sendRefineResponse(sourceId, 'skip');
+    });
+  }
+  if (msg.kind === 'proactive-card') {
+    node.querySelector<HTMLButtonElement>('.proactive-card-run')?.addEventListener('click', async (e) => {
+      const cardId = (e.currentTarget as HTMLButtonElement).dataset.cardId ?? '';
+      const sourceId = (e.currentTarget as HTMLButtonElement).dataset.sourceId ?? '';
+      await ipcCall('ghampus:inbox:run', { id: cardId }).catch(() => {});
+      // Grab the skill label from the button text ("Run Skill Name ▸")
+      const btnText = (e.currentTarget as HTMLButtonElement).textContent ?? '';
+      const skillLabel = btnText.replace(/^Run\s+/, '').replace(/\s*▸\s*$/, '').trim();
+      const signalEl = node.querySelector<HTMLElement>('.proactive-card-signal');
+      const signalLabel = signalEl?.textContent?.replace(/^[⏰📥🔍]\s*/, '').trim();
+      void requestWalkPlan(sourceId, skillLabel || undefined, signalLabel || undefined);
+      node.querySelector<HTMLElement>('.proactive-card-actions')?.remove();
+    });
+    // Snooze toggle — show/hide the dropdown menu
+    node.querySelector<HTMLButtonElement>('.proactive-card-snooze')?.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const menu = (e.currentTarget as HTMLElement)
+        .closest('.proactive-snooze-wrap')?.querySelector<HTMLElement>('.proactive-snooze-menu');
+      if (menu) menu.classList.toggle('hidden');
+    });
+    // Snooze option selected
+    node.querySelectorAll<HTMLButtonElement>('.proactive-snooze-opt').forEach((btn) => {
+      btn.addEventListener('click', async (e) => {
+        e.stopPropagation();
+        const mins = Number((e.currentTarget as HTMLButtonElement).dataset.mins ?? 60);
+        const cardId = node.querySelector<HTMLElement>('[data-card-id]')?.dataset.cardId ?? '';
+        await ipcCall('ghampus:inbox:snooze', { id: cardId, snoozeMs: mins * 60_000 }).catch(() => {});
+        // Push next card window out by the snooze duration too
+        nextCardAllowedAt = Math.max(nextCardAllowedAt, Date.now() + mins * 60_000);
+        const label = btn.textContent ?? 'later';
+        node.querySelector<HTMLElement>('.proactive-card')?.classList.add('proactive-card--snoozed');
+        const actionsEl = node.querySelector<HTMLElement>('.proactive-card-actions');
+        if (actionsEl) actionsEl.innerHTML = `<span style="font-size:12px;opacity:.5;">Snoozed — I'll remind you ${label.toLowerCase().replace('in ', 'in ')}</span>`;
+      });
+    });
+    node.querySelector<HTMLButtonElement>('.proactive-card-dismiss')?.addEventListener('click', async (e) => {
+      const cardId = (e.currentTarget as HTMLButtonElement).dataset.cardId ?? '';
+      await ipcCall('ghampus:inbox:dismiss', { id: cardId }).catch(() => {});
+      const entry = (e.currentTarget as HTMLElement).closest('.ghampus-thread-entry');
+      entry?.remove();
+    });
+  }
+}
+
+let _skillRunningTimer: ReturnType<typeof setInterval> | null = null;
+
+const SKILL_RUNNING_PHRASES = [
+  'Recalling relevant memories…',
+  'Checking for duplicate nodes…',
+  'Reviewing contradictions…',
+  'Scanning skill steps…',
+  'Comparing against known patterns…',
+  'Trimming stale references…',
+  'Cross-referencing engrams…',
+  'Applying cortex updates…',
+  'Almost there…',
+];
+
+function showSkillRunning(skillLabel: string, signalLabel?: string): void {
+  setGhampusRunning(true);
+  clearSkillRunning();
+  const thread = document.getElementById('ghampus-thread');
+  if (!thread) return;
+  document.getElementById('ghampus-thread-empty')?.remove();
+
+  const entry = document.createElement('div');
+  entry.id = 'ghampus-skill-running';
+  entry.className = 'ghampus-thread-entry skill-running-entry';
+
+  const signalHtml = signalLabel
+    ? `<div class="skill-running-signal">⏰ ${escapeHtml(signalLabel)}</div>`
+    : '';
+
+  entry.innerHTML = `<div class="chat-msg ghampus">
+    <div class="chat-msg-avatar">
+      <img src="/graphnosis-logo-transparent-bg.png" alt="Ghampus" />
+    </div>
+    <div class="skill-running-bubble">
+      ${signalHtml}
+      <div class="skill-running-label">Running <strong>${escapeHtml(skillLabel)}</strong></div>
+      <div class="skill-running-bar-track"><div class="skill-running-bar-fill"></div></div>
+      <div id="ghampus-skill-running-status" class="skill-running-status">${SKILL_RUNNING_PHRASES[0]}</div>
+    </div>
+  </div>`;
+
+  thread.appendChild(entry);
+  thread.scrollTop = thread.scrollHeight;
+
+  let phraseIdx = 0;
+  _skillRunningTimer = setInterval(() => {
+    const statusEl = document.getElementById('ghampus-skill-running-status');
+    if (!statusEl) return;
+    statusEl.classList.add('fade');
+    setTimeout(() => {
+      phraseIdx = (phraseIdx + 1) % SKILL_RUNNING_PHRASES.length;
+      statusEl.textContent = SKILL_RUNNING_PHRASES[phraseIdx];
+      statusEl.classList.remove('fade');
+      thread.scrollTop = thread.scrollHeight;
+    }, 300);
+  }, 2800);
+}
+
+function clearSkillRunning(): void {
+  if (_skillRunningTimer) { clearInterval(_skillRunningTimer); _skillRunningTimer = null; }
+  document.getElementById('ghampus-skill-running')?.remove();
+  setGhampusRunning(false);
+}
+
+async function requestWalkPlan(sourceId: string, skillLabel?: string, signalLabel?: string): Promise<void> {
+  try {
+    const plan = await ipcCall<WalkPlan>('ghampus:walkPlan', { sourceId });
+    if (!plan.steps || plan.steps.length === 0) {
+      const name = skillLabel ?? plan.label ?? sourceId;
+      showSkillRunning(name, signalLabel);
+      await confirmWalk(sourceId, 'adaptive');
+      return;
+    }
+    appendToThread({ kind: 'walk-plan', plan, ts: Date.now() });
+  } catch { /* non-fatal */ }
+}
+
+async function confirmWalk(sourceId: string, routing: 'adaptive' | 'local-only'): Promise<void> {
+  try {
+    await ipcCall('ghampus:confirmWalk', { sourceId, routing });
+  } catch { /* non-fatal */ }
+}
+
+async function sendRefineResponse(sourceId: string, action: 'update' | 'edit' | 'skip'): Promise<void> {
+  try {
+    await ipcCall('ghampus:refineResponse', { sourceId, action });
+  } catch { /* non-fatal */ }
+}
+
+function renderNotifCard(n: {
+  id: string; engramId: string; tier: string; originKind: string;
+  origin: string; label: string; ingestedAtMs: number;
+}, now: number): string {
+  const ageMs = now - n.ingestedAtMs;
+  const when = ageMs < 60_000 ? 'just now'
+    : ageMs < 3_600_000 ? `${Math.floor(ageMs / 60_000)} min ago`
+    : ageMs < 86_400_000 ? `${Math.floor(ageMs / 3_600_000)}h ago`
+    : `${Math.floor(ageMs / 86_400_000)}d ago`;
+  const icon = (NOTIF_ORIGIN_ICONS as Record<string, string>)[n.originKind] ?? '·';
+  const isSensitive = n.tier === 'sensitive';
+  const preview = isSensitive
+    ? '<div class="notif-card-preview sensitive">[content hidden · sensitive engram]</div>'
+    : `<div class="notif-card-preview">${escapeHtml(n.label)}</div>`;
+  return `<div class="notif-card" data-notif-id="${escapeHtml(n.id)}">
+    <div class="notif-card-header">
+      <span>${icon}</span>
+      <span class="notif-card-origin">${escapeHtml(n.origin)}</span>
+      <span class="notif-card-engram">${escapeHtml(n.engramId)}</span>
+      <span class="notif-card-time">${when}</span>
+    </div>
+    ${preview}
+    <div class="notif-card-actions">
+      ${isSensitive ? '' : `<button class="g-btn primary btn-notif-switch"
+        style="font-size: 11px; padding: 3px 10px;"
+        data-engram="${escapeHtml(n.engramId)}">Switch to ${escapeHtml(n.engramId)} to chat</button>`}
+      <button class="g-btn btn-notif-dismiss"
+        style="font-size: 11px; padding: 3px 8px;"
+        data-notif-id="${escapeHtml(n.id)}">Dismiss</button>
+    </div>
+  </div>`;
+}
+
+async function refreshGhampusThread(): Promise<void> {
+  const thread = document.getElementById('ghampus-thread');
+  if (!thread) return;
+
+  // If we already have live messages from this session, leave the DOM alone.
+  // Only the first load (or an explicit clear) should fetch history.
+  const hasLiveMessages = ghampusThreadMessages.length > 0;
+  if (hasLiveMessages) return;
+
+  // Try history first
+  let messages: GhampusChatMessage[] = [];
+  try {
+    const res = await ipcCall<{ messages: GhampusChatMessage[] }>('ghampus:history', {});
+    messages = res.messages ?? [];
+  } catch { /* not yet wired */ }
+
+  if (messages.length > 0) {
+    ghampusThreadMessages = [];
+    thread.innerHTML = '';
+    for (const msg of messages) appendToThread(msg);
+    return;
+  }
+
+  // No history — show "while you were away" notification cards as opener
+  try {
+    const lastVisited = Number(localStorage.getItem(GHAMPUS_LAST_VISITED_KEY))
+      || (Date.now() - 7 * 24 * 60 * 60 * 1000);
+    const res = await ipcCall<{
+      notifications: Array<{
+        id: string; engramId: string; tier: string; originKind: string;
+        origin: string; label: string; ingestedAtMs: number;
+      }>;
+      totalAvailable: number;
+    }>('agent:listNotifications', { sinceMs: lastVisited, limit: 8 });
+
+    if (res.notifications.length === 0) {
+      // Truly nothing — show empty state
+      thread.innerHTML = `<div id="ghampus-thread-empty" class="ghampus-thread-empty">
+        <div style="width: 36px; height: 36px; border-radius: 10px; background: #14b8a6;
+                    display: flex; align-items: center; justify-content: center;
+                    font-weight: 700; font-size: 18px; color: #fff; margin-bottom: 12px; opacity: .5;">G</div>
+        <p style="margin: 0; font-size: 13px; opacity: .5;">
+          Start typing — or wait for Ghampus to pick up where you left off.
+        </p>
+      </div>`;
+      return;
+    }
+
+    // Render notification cards as a "while you were away" opener header + cards
+    const count = res.notifications.length;
+    const total = res.totalAvailable;
+    const summaryText = `${total > count ? `${total}` : `${count}`} item${count === 1 ? '' : 's'} arrived since your last visit · last ${Math.round((Date.now() - lastVisited) / 3_600_000)} hours · batched by source`;
+    const now = Date.now();
+
+    const headerHtml = `<div style="margin-bottom: 10px;">
+      <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 4px;">
+        <strong style="font-size: 14px;">While you were away</strong>
+        <div style="display: flex; gap: 10px;">
+          <button class="ghampus-dashboard-btn" id="btn-ghampus-mute-sources" type="button"
+                  style="padding: 0; font-size: 12px;">Mute sources</button>
+          <button class="ghampus-dashboard-btn" id="btn-ghampus-mark-all-read" type="button"
+                  style="padding: 0; font-size: 12px;">Mark all read</button>
+        </div>
+      </div>
+      <p class="subtitle" style="margin: 0; font-size: 12px;">${escapeHtml(summaryText)}</p>
+    </div>`;
+
+    const cardsHtml = res.notifications.map((n) => renderNotifCard(n, now)).join('');
+
+    // Pro upsell if free plan
+    const upsell = ghampusPlan === 'free'
+      ? `<div style="margin-top: 10px; padding: 10px 14px; border: 1px dashed var(--g-border, rgba(255,255,255,.15));
+                     border-radius: 8px; font-size: 12px; opacity: .7; line-height: 1.55;">
+           💡 On Pro, Ghampus would open with a single summary instead of a list — and let you chat across all ${count} engrams in one query. Free chats one engram at a time, but you can switch with one click.
+         </div>`
+      : '';
+
+    thread.innerHTML = `<div class="ghampus-thread-entry ghampus-notif-opener">
+      ${headerHtml}${cardsHtml}${upsell}
+    </div>`;
+
+    // Wire dismiss and switch buttons
+    thread.querySelectorAll<HTMLButtonElement>('.btn-notif-switch').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const engramId = btn.dataset.engram ?? '';
+        const nameEl = document.getElementById('ghampus-active-engram-name');
+        const badge = document.getElementById('ghampus-active-engram');
+        if (nameEl) nameEl.textContent = engramId;
+        if (badge) badge.classList.remove('hidden');
+        updateGhampusInputPlaceholder(engramId);
+        // Scroll to input
+        document.getElementById('ghampus-input')?.focus();
+      });
+    });
+    thread.querySelectorAll<HTMLButtonElement>('.btn-notif-dismiss').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        btn.closest('.notif-card')?.remove();
+      });
+    });
+    document.getElementById('btn-ghampus-mark-all-read')?.addEventListener('click', () => {
+      thread.querySelectorAll('.notif-card').forEach((c) => c.remove());
+    });
+
+    // Show the quiet/snooze footer
+    document.getElementById('ghampus-quiet-footer')?.classList.remove('hidden');
+
+    // Update badge count in header
+    const badge = document.getElementById('ghampus-notif-badge');
+    if (badge && count > 0) {
+      badge.textContent = `${count} new`;
+      badge.classList.remove('hidden');
+    }
+  } catch { /* non-fatal */ }
+}
+
+function updateGhampusInputPlaceholder(activeEngramId?: string): void {
+  const input = document.getElementById('ghampus-input') as HTMLTextAreaElement | null;
+  if (!input) return;
+  input.placeholder = 'Ask anything — type / to save, recall, or run a skill';
+}
+
+async function refreshGhampusHeader(): Promise<void> {
+  try {
+    const data = await ipcCall<{
+      catalogVersion: string;
+      providers: Array<{ id: string; local: boolean; enabled: boolean; hasKey?: boolean }>;
+      models: Array<{ id: string; provider: string; displayName: string; capabilities: string[] }>;
+      strategy: string;
+      monthlyBudgetUsd: number | null;
+      spentThisCycleUsd: number;
+    }>('models:catalog', {});
+
+    // Find the active local model (first enabled local provider's first model)
+    const localProvider = data.providers.find((p) => p.local && p.enabled);
+    if (localProvider) {
+      const localModel = data.models.find((m) => m.provider === localProvider.id);
+      const modelName = localModel?.displayName ?? localProvider.id;
+      const nameEl = document.getElementById('ghampus-model-name');
+      const badge = document.getElementById('ghampus-model-badge');
+      if (nameEl) nameEl.textContent = modelName;
+      if (badge) badge.classList.remove('hidden');
+    }
+
+    // Usage counter
+    const counterEl = document.getElementById('ghampus-usage-counter');
+    if (counterEl && data.monthlyBudgetUsd !== null) {
+      const spent = data.spentThisCycleUsd ?? 0;
+      const budget = data.monthlyBudgetUsd;
+      const pct = Math.round((spent / budget) * 100);
+      counterEl.textContent = `${pct}/100`;
+      counterEl.classList.remove('hidden');
+    } else if (counterEl && ghampusPlan !== 'free') {
+      counterEl.textContent = 'unlimited calls';
+      counterEl.title = 'No monthly call limit on your current plan';
+      counterEl.classList.remove('hidden');
+    }
+  } catch { /* non-fatal */ }
+
+  updateGhampusInputPlaceholder();
+}
+
+// ── Slash command definitions ─────────────────────────────────────────────────
+const SLASH_COMMANDS = [
+  { name: 'save',    icon: '💾', args: '[content] [@engram]', desc: 'Save a memory',         template: '/save '         },
+  { name: 'create',  icon: '✨', args: '[engram name]',       desc: 'Create a new engram',   template: '/create '       },
+  { name: 'engrams', icon: '🗂️', args: '',                    desc: 'List your engrams',     template: '/engrams'       },
+  { name: 'skills',  icon: '⚡', args: '',                    desc: 'List your skills',      template: '/skills'        },
+  { name: 'forget',  icon: '🗑️', args: '',                    desc: 'Manage / delete memories', template: '/forget'     },
+  { name: 'help',    icon: '❓', args: '',                    desc: 'Show all commands',     template: '/help'          },
+] as const;
+
+function wireGhampusChat(): void {
+  const input = document.getElementById('ghampus-input') as HTMLTextAreaElement | null;
+  const sendBtn = document.getElementById('btn-ghampus-send');
+  if (!input || !sendBtn) return;
+
+  // ── Slash palette ──────────────────────────────────────────────────────────
+  let palette: HTMLDivElement | null = null;
+  let paletteActive = 0; // index of highlighted item
+  let paletteVisible = false;
+  let filteredCmds: typeof SLASH_COMMANDS[number][] = [];
+
+  function buildPalette(filter: string): void {
+    filteredCmds = SLASH_COMMANDS.filter(
+      (c) => c.name.startsWith(filter) || filter === '',
+    ) as typeof SLASH_COMMANDS[number][];
+
+    if (!palette) {
+      palette = document.createElement('div');
+      palette.className = 'slash-palette';
+      input!.closest('.ghampus-input-row')!.appendChild(palette);
+    }
+    palette.innerHTML =
+      `<div class="slash-palette-header">Commands</div>` +
+      filteredCmds.map((c, i) =>
+        `<div class="slash-palette-item${i === paletteActive ? ' slash-active' : ''}" data-idx="${i}">
+          <span class="slash-palette-icon">${c.icon}</span>
+          <span class="slash-palette-name">/${c.name}</span>
+          ${c.args ? `<span class="slash-palette-args">${escapeHtml(c.args)}</span>` : ''}
+          <span class="slash-palette-desc">${escapeHtml(c.desc)}</span>
+        </div>`,
+      ).join('');
+
+    palette.querySelectorAll<HTMLElement>('.slash-palette-item').forEach((el) => {
+      el.addEventListener('mousedown', (e) => {
+        e.preventDefault(); // don't blur the textarea
+        const idx = Number(el.dataset['idx']);
+        selectPaletteItem(idx);
+      });
+    });
+
+    paletteVisible = filteredCmds.length > 0;
+    palette.style.display = paletteVisible ? '' : 'none';
+  }
+
+  function selectPaletteItem(idx: number): void {
+    const cmd = filteredCmds[idx];
+    if (!cmd) return;
+    input!.value = cmd.template;
+    hidePalette();
+    input!.focus();
+    // Move cursor to end
+    input!.selectionStart = input!.selectionEnd = input!.value.length;
+    autoGrow();
+    // Execute no-arg commands immediately
+    if (!cmd.args) void sendMessage();
+  }
+
+  function hidePalette(): void {
+    if (palette) palette.style.display = 'none';
+    paletteVisible = false;
+    paletteActive = 0;
+  }
+
+  function updatePalette(): void {
+    const val = input!.value;
+    if (!val.startsWith('/')) { hidePalette(); return; }
+    const filter = val.slice(1).split(/\s/)[0].toLowerCase();
+    // Only show palette while user is still typing the command word (no space yet after it)
+    if (val.includes(' ') && !val.match(/^\/\w+$/)) { hidePalette(); return; }
+    paletteActive = 0;
+    buildPalette(filter);
+  }
+
+  // ── Auto-grow textarea ─────────────────────────────────────────────────────
+  function autoGrow(): void {
+    input!.style.height = 'auto';
+    input!.style.height = `${Math.min(input!.scrollHeight, 140)}px`;
+  }
+  input.addEventListener('input', () => { autoGrow(); updatePalette(); });
+
+  async function sendMessage(): Promise<void> {
+    const text = input!.value.trim();
+    if (!text) return;
+    hidePalette();
+    input!.value = '';
+    input!.style.height = 'auto';
+    const ts = Date.now();
+    appendToThread({ kind: 'user', text, ts });
+    showThinkingBubble();
+    try {
+      await ipcCall('ghampus:send', { text });
+    } catch {
+      clearThinkingBubble();
+    }
+  }
+
+  input.addEventListener('keydown', (e) => {
+    // Palette navigation
+    if (paletteVisible) {
+      if (e.key === 'ArrowDown') {
+        e.preventDefault();
+        paletteActive = (paletteActive + 1) % filteredCmds.length;
+        buildPalette(input.value.slice(1).split(/\s/)[0].toLowerCase());
+        return;
+      }
+      if (e.key === 'ArrowUp') {
+        e.preventDefault();
+        paletteActive = (paletteActive - 1 + filteredCmds.length) % filteredCmds.length;
+        buildPalette(input.value.slice(1).split(/\s/)[0].toLowerCase());
+        return;
+      }
+      if (e.key === 'Tab' || (e.key === 'Enter' && paletteVisible)) {
+        e.preventDefault();
+        selectPaletteItem(paletteActive);
+        return;
+      }
+      if (e.key === 'Escape') { hidePalette(); return; }
+    }
+
+    if (e.key === 'Enter') {
+      if (e.metaKey || e.ctrlKey) {
+        e.preventDefault();
+        const pos = input.selectionStart ?? input.value.length;
+        input.value = input.value.slice(0, pos) + '\n' + input.value.slice(pos);
+        input.selectionStart = input.selectionEnd = pos + 1;
+        autoGrow();
+      } else if (!e.shiftKey) {
+        e.preventDefault();
+        void sendMessage();
+      }
+    }
+  });
+
+  // Hide palette on outside click
+  document.addEventListener('mousedown', (e) => {
+    if (palette && !palette.contains(e.target as Node) && e.target !== input) {
+      hidePalette();
+    }
+  });
+
+  sendBtn.addEventListener('click', () => void sendMessage());
+
+  // Wire pill-based section accordion — one panel open at a time
+  const strip = document.getElementById('ghampus-sections-strip');
+  if (strip) {
+    strip.querySelectorAll<HTMLButtonElement>('.ghampus-section-pill').forEach((pill) => {
+      pill.addEventListener('click', () => {
+        const section = pill.dataset['section'] ?? '';
+        const panel = strip.querySelector<HTMLElement>(`.ghampus-section-panel[data-panel="${section}"]`);
+        const isOpen = pill.getAttribute('aria-expanded') === 'true';
+
+        // Collapse all pills and panels first
+        strip.querySelectorAll<HTMLButtonElement>('.ghampus-section-pill').forEach((p) => {
+          p.setAttribute('aria-expanded', 'false');
+        });
+        strip.querySelectorAll<HTMLElement>('.ghampus-section-panel').forEach((p) => {
+          p.classList.remove('open');
+        });
+
+        // If it wasn't open, open it now (toggle behaviour)
+        if (!isOpen && panel) {
+          pill.setAttribute('aria-expanded', 'true');
+          panel.classList.add('open');
+        }
+      });
+    });
+  }
+}
+wireGhampusChat();
 
 function wireGhampusControls(): void {
   document.getElementById('btn-ghampus-kill')?.addEventListener('click', () => {
@@ -27424,6 +28483,10 @@ function closeLicenseModal(): void {
 // (= "Paste a license token") is routed here, so every gate surface
 // across the app gets identical behavior without per-card wiring.
 document.addEventListener('click', (e) => {
+  // Close any open proactive snooze menus when clicking outside
+  if (!(e.target as HTMLElement)?.closest('.proactive-snooze-wrap')) {
+    document.querySelectorAll<HTMLElement>('.proactive-snooze-menu:not(.hidden)').forEach(m => m.classList.add('hidden'));
+  }
   const target = e.target as HTMLElement | null;
   if (!target) return;
   const upgradeBtn = target.closest<HTMLElement>('[data-pro-upgrade-btn]');
