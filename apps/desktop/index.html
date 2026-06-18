@@ -4210,11 +4210,9 @@
       .home-bar-row { display: flex; align-items: center; gap: 10px; margin-bottom: 6px; }
       .home-bar-name { font-size: 12px; flex: 0 0 120px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--fg); }
       .home-bar-track { flex: 1; height: 7px; border-radius: 4px; background: color-mix(in srgb, var(--fg) 12%, transparent); overflow: hidden; }
-      .home-bar-fill { display: block; height: 100%; border-radius: 4px; }
-      .home-bar-fill.ok { background: var(--ok); }
-      .home-bar-fill.accent { background: var(--accent); }
-      .home-bar-fill.warn { background: #d9a445; }
-      .home-bar-fill.error { background: var(--error); }
+      .home-bar-fill { display: block; height: 100%; border-radius: 4px; width: var(--bar-w, 0%); background: var(--bar-color-light, #15803d); }
+      :root[data-theme="dark"] .home-bar-fill { background: var(--bar-color-dark, #4ade80); }
+      @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .home-bar-fill { background: var(--bar-color-dark, #4ade80); } }
       .home-bar-val { font-size: 12px; font-weight: 700; flex: 0 0 28px; text-align: right; color: var(--fg-dim); }
       .home-bar-row-empty { opacity: 0.5; }
       .home-bar-row-empty .home-bar-name { font-style: italic; }
@@ -5234,6 +5232,721 @@
         50%      { transform: translateY(calc(-50% - 4px)) rotate(2deg); }
       }
       .ghampus-header-mascot { animation: ghampus-header-bob 3.4s ease-in-out infinite; }
+
+      /* Chat-header logo — larger, swimming animation */
+      .ghampus-chat-header-logo {
+        width: 42px; height: 42px; object-fit: contain;
+        animation: ghampus-swim 4s ease-in-out infinite;
+        transform-origin: 50% 60%;
+      }
+      @keyframes ghampus-swim {
+        0%   { transform: translateY(0px) rotate(-4deg) scaleX(1); }
+        25%  { transform: translateY(-3px) rotate(0deg) scaleX(1.04); }
+        50%  { transform: translateY(-5px) rotate(4deg) scaleX(1); }
+        75%  { transform: translateY(-2px) rotate(1deg) scaleX(0.97); }
+        100% { transform: translateY(0px) rotate(-4deg) scaleX(1); }
+      }
+
+      /* ── Ghampus chat surface ──────────────────────────────────────────── */
+
+      /* Height chain: mode-pane → studio-section → #ghampus-shell → wrap.
+         .mode-pane is display:block inside a flex parent (#studio-workspace),
+         so we must opt it into flex:1 stretching explicitly for this pane. */
+      .mode-pane[data-pane="ghampus"] {
+        display: flex; flex-direction: column;
+        flex: 1; min-height: 0; height: 100%;
+        max-width: none; /* allow full width for chat */
+      }
+      .mode-pane[data-pane="ghampus"] .studio-section {
+        overflow: hidden; flex: 1; min-height: 0;
+        padding: 0; /* remove default studio-section padding */
+      }
+      #ghampus-shell {
+        display: flex; flex-direction: column; flex: 1; min-height: 0;
+      }
+      #ghampus-chat-wrap {
+        display: flex; flex-direction: column;
+        flex: 1; min-height: 0;
+      }
+
+      .ghampus-chat-header {
+        display: flex; align-items: center; justify-content: space-between;
+        gap: 10px; padding: 10px 14px;
+        border-bottom: 1px solid var(--g-border, rgba(255,255,255,.1));
+        flex-shrink: 0;
+      }
+      .ghampus-plan-chip {
+        font-size: 11px; font-weight: 500; padding: 2px 8px; border-radius: 10px;
+        background: var(--accent-soft, rgba(99,102,241,.18));
+        color: var(--accent, #6366f1);
+      }
+      .ghampus-walk-chip {
+        font-size: 11px; font-weight: 500; padding: 2px 8px; border-radius: 10px;
+        background: rgba(245,158,11,.15); color: #f59e0b;
+      }
+      .ghampus-notif-badge {
+        font-size: 11px; font-weight: 600; padding: 1px 7px; border-radius: 10px;
+        background: rgba(99,102,241,.2); color: var(--accent, #6366f1);
+      }
+      .ghampus-header-right { display: flex; align-items: center; }
+
+      /* Notification card in thread (first-paint opener, Free tier) */
+      .notif-card {
+        background: var(--bg-elev, rgba(255,255,255,.04));
+        border: 1px solid var(--g-border, rgba(255,255,255,.1));
+        border-radius: 10px; padding: 12px 14px;
+        font-size: 13px; align-self: stretch;
+      }
+      .notif-card-header {
+        display: flex; align-items: baseline; gap: 8px; margin-bottom: 6px;
+      }
+      .notif-card-origin { font-weight: 600; }
+      .notif-card-engram {
+        font-size: 11px; padding: 1px 6px; border-radius: 5px;
+        background: var(--accent-soft, rgba(99,102,241,.12));
+        color: var(--accent, #6366f1); font-family: var(--font-mono, monospace);
+      }
+      .notif-card-time { font-size: 11px; opacity: .5; margin-left: auto; }
+      .notif-card-preview { font-size: 12px; opacity: .7; margin: 0 0 10px; line-height: 1.5; }
+      .notif-card-preview.sensitive { font-style: italic; opacity: .45; }
+      .notif-card-actions { display: flex; gap: 6px; }
+
+      /* Pro synthesis opener card */
+      .ghampus-opener-card {
+        background: rgba(16,185,129,.05);
+        border: 1px solid rgba(16,185,129,.2);
+        border-radius: 10px; padding: 14px 16px;
+        font-size: 13px; line-height: 1.6; align-self: stretch;
+      }
+      .ghampus-opener-meta {
+        font-size: 11px; color: #10b981; margin-bottom: 8px; display: flex; align-items: center; gap: 8px;
+      }
+      .ghampus-opener-avatar {
+        width: 26px; height: 26px; border-radius: 7px; background: #14b8a6;
+        display: flex; align-items: center; justify-content: center;
+        font-weight: 700; font-size: 12px; color: #fff; flex-shrink: 0;
+      }
+      .ghampus-opener-body { margin-bottom: 12px; }
+      .ghampus-opener-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+      .btn-opener-primary {
+        background: #10b981; color: #fff; border: none; border-radius: 7px;
+        padding: 6px 14px; font-size: 12px; font-weight: 600; cursor: pointer;
+      }
+      .btn-opener-primary:hover { background: #059669; }
+      .btn-opener-secondary {
+        background: transparent; border: 1px solid rgba(16,185,129,.35);
+        color: #10b981; border-radius: 7px; padding: 6px 12px; font-size: 12px; cursor: pointer;
+      }
+      .btn-opener-secondary:hover { background: rgba(16,185,129,.08); }
+      .btn-opener-text {
+        background: none; border: none; color: var(--accent, #6366f1);
+        font-size: 12px; cursor: pointer; padding: 6px 4px;
+      }
+      .btn-opener-text:hover { text-decoration: underline; }
+
+      /* ── Skill running bubble ─────────────────────────────────────────── */
+      .skill-running-entry {
+        position: sticky; bottom: 0;
+        /* Slight fade at top so it feels like it's floating above the thread */
+        padding-top: 8px;
+        background: linear-gradient(to bottom, transparent, var(--bg, #0f0f14) 24%);
+      }
+      .skill-running-bubble {
+        background: rgba(99,102,241,.13);
+        border: 1px solid rgba(99,102,241,.3);
+        border-radius: 14px 14px 14px 4px;
+        padding: 14px 16px 12px;
+        display: flex; flex-direction: column; gap: 10px;
+      }
+      .skill-running-signal {
+        font-size: 12px; opacity: .6; display: flex; align-items: center; gap: 5px;
+      }
+      .skill-running-label {
+        font-size: 14px; font-weight: 600; line-height: 1.4;
+      }
+      .skill-running-status {
+        font-size: 12px; opacity: .55;
+        min-height: 16px;
+        transition: opacity .3s;
+      }
+      .skill-running-status.fade { opacity: 0; }
+      .skill-running-bar-track {
+        height: 3px; border-radius: 2px;
+        background: rgba(99,102,241,.2); overflow: hidden;
+      }
+      .skill-running-bar-fill {
+        height: 100%; border-radius: 2px;
+        background: linear-gradient(90deg, #6366f1, #14b8a6);
+        animation: skill-bar-sweep 2s ease-in-out infinite;
+        transform-origin: left;
+      }
+      @keyframes skill-bar-sweep {
+        0%   { width: 0%;   margin-left: 0; }
+        40%  { width: 60%;  margin-left: 0; }
+        60%  { width: 60%;  margin-left: 40%; }
+        100% { width: 0%;   margin-left: 100%; }
+      }
+
+      /* Quiet/snooze footer below thread */
+      .ghampus-quiet-footer {
+        text-align: center; font-size: 11px; opacity: .5;
+        padding: 6px 14px; flex-shrink: 0;
+      }
+      .ghampus-quiet-footer a { color: var(--accent, #6366f1); text-decoration: none; }
+      .ghampus-quiet-footer a:hover { text-decoration: underline; }
+
+      /* Thread */
+      .ghampus-thread {
+        flex: 1; min-height: 0;
+        overflow-y: auto;
+        display: flex; flex-direction: column;
+        padding: 14px 14px 6px;
+        gap: 10px;
+        scroll-behavior: smooth;
+      }
+      .ghampus-thread-empty {
+        flex: 1; display: flex; flex-direction: column;
+        align-items: center; justify-content: center;
+        text-align: center; padding: 24px;
+      }
+
+      /* Message bubbles */
+      /* Allow text selection inside the chat thread */
+      #ghampus-chat-messages {
+        -webkit-user-select: text !important;
+        user-select: text !important;
+      }
+
+      .chat-msg {
+        display: flex; gap: 8px; align-items: flex-end; max-width: 88%;
+        font-size: 15px; position: relative;
+        -webkit-user-select: text !important;
+        user-select: text !important;
+      }
+      .chat-msg.ghampus { align-self: flex-start; }
+      /* Right-align user bubbles; pad-left mirrors avatar+gap offset on Ghampus side */
+      .chat-msg.user { align-self: flex-end; flex-direction: row-reverse; padding-left: 32px; }
+
+      .chat-msg-wrap { display: flex; flex-direction: column; max-width: 100%; }
+
+      /* Meta row: time + copy side by side, hidden until hover (space always reserved) */
+      .chat-msg-meta {
+        display: flex; align-items: center; gap: 6px;
+        margin-top: 3px; opacity: 0;
+        transition: opacity .15s;
+        height: 20px; /* reserve space so layout doesn't shift */
+      }
+      .chat-msg:hover .chat-msg-meta { opacity: 1; }
+      /* User: reverse so copy is on the left, time on the right */
+      .chat-msg.user .chat-msg-meta { flex-direction: row-reverse; justify-content: flex-start; }
+
+      .chat-msg-time {
+        font-size: 11px; opacity: .5; white-space: nowrap; cursor: default;
+      }
+
+      /* Copy button — inline in the meta row */
+      .chat-msg-copy {
+        background: var(--bg-elev, rgba(255,255,255,.07));
+        border: 1px solid var(--g-border, rgba(255,255,255,.12));
+        border-radius: 6px; padding: 2px 6px;
+        cursor: pointer; transition: background .12s, color .12s;
+        font-size: 11px; line-height: 1; color: var(--fg-dim, rgba(255,255,255,.5));
+        -webkit-user-select: none; user-select: none;
+        display: flex; align-items: center; gap: 4px;
+        white-space: nowrap; flex-shrink: 0;
+      }
+      .chat-msg-copy:hover { background: var(--bg-elev2, rgba(255,255,255,.12)); color: var(--fg, #fff); }
+      .chat-msg-copy.copied { color: #10b981; border-color: rgba(16,185,129,.4); }
+
+      /* Thinking indicator */
+      .ghampus-thinking-bubble {
+        display: flex; align-items: center; gap: 10px;
+        align-self: flex-start;
+      }
+      .ghampus-thinking-dots {
+        display: flex; gap: 5px; align-items: center;
+        background: var(--bg-elev, rgba(255,255,255,.07));
+        border: 1px solid var(--g-border, rgba(255,255,255,.1));
+        border-radius: 14px 14px 14px 4px;
+        padding: 10px 16px;
+      }
+      .ghampus-thinking-dots span {
+        width: 7px; height: 7px; border-radius: 50%;
+        background: var(--accent, #6366f1); opacity: .4;
+        animation: ghampus-dot-pulse 1.2s ease-in-out infinite;
+        display: block;
+      }
+      .ghampus-thinking-dots span:nth-child(2) { animation-delay: .2s; }
+      .ghampus-thinking-dots span:nth-child(3) { animation-delay: .4s; }
+      @keyframes ghampus-dot-pulse {
+        0%, 80%, 100% { opacity: .2; transform: scale(.85); }
+        40% { opacity: 1; transform: scale(1); }
+      }
+
+      .chat-msg-avatar {
+        width: 24px; height: 24px; border-radius: 50%; flex-shrink: 0;
+        background: var(--color-surface-2, #f1f5f9);
+        display: flex; align-items: center; justify-content: center;
+        overflow: hidden;
+      }
+      .chat-msg-avatar img { width: 100%; height: 100%; object-fit: contain; }
+
+      .chat-msg-bubble {
+        padding: 10px 14px; border-radius: 14px;
+        font-size: 15px; line-height: 1.6;
+        max-width: 100%;
+      }
+      /* --color-surface-2 is defined for both themes: #f1f5f9 light, #2a2a2e dark */
+      .chat-msg.ghampus .chat-msg-bubble {
+        background: var(--color-surface-2, #f1f5f9);
+        border: 1px solid var(--border, rgba(0,0,0,.1));
+        color: var(--fg);
+        border-bottom-left-radius: 4px;
+      }
+      /* Light mode: dark teal bg + white text. Dark mode: bright cyan bg + near-black text. */
+      .chat-msg.user .chat-msg-bubble {
+        background: var(--color-brand-turquoise-mid, #0e7490); color: #fff;
+        border-bottom-right-radius: 4px;
+      }
+      :root[data-theme="dark"] .chat-msg.user .chat-msg-bubble { background: var(--color-brand-turquoise-bright, #67e8f9); color: #0f2028; }
+      @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .chat-msg.user .chat-msg-bubble { background: var(--color-brand-turquoise-bright, #67e8f9); color: #0f2028; } }
+
+      /* Markdown inside Ghampus bubbles */
+      .chat-msg-bubble--markdown p { margin: 0 0 6px; }
+      .chat-msg-bubble--markdown p:last-child { margin-bottom: 0; }
+      .chat-msg-bubble--markdown h1,
+      .chat-msg-bubble--markdown h2 { font-size: 14px; font-weight: 600; margin: 8px 0 4px; }
+      .chat-msg-bubble--markdown h3 { font-size: 13px; font-weight: 600; margin: 6px 0 3px; }
+      .chat-msg-bubble--markdown ul { margin: 4px 0 6px 16px; padding: 0; }
+      .chat-msg-bubble--markdown li { margin-bottom: 3px; }
+      .chat-msg-bubble--markdown code {
+        font-family: var(--font-mono, monospace); font-size: 13px;
+        background: rgba(255,255,255,.08); border-radius: 4px; padding: 1px 5px;
+      }
+      .chat-msg-bubble--markdown strong { font-weight: 600; }
+      .chat-msg-bubble--markdown hr { border: none; border-top: 1px solid var(--g-border, rgba(255,255,255,.1)); margin: 8px 0; }
+
+      /* Proactive card — rendered as a Ghampus chat bubble in the thread */
+      .proactive-card {
+        background: var(--bg-elev, rgba(255,255,255,.06));
+        border: 1px solid var(--g-border, rgba(255,255,255,.1));
+        border-radius: 14px 14px 14px 4px;
+        padding: 14px 16px;
+        width: 100%;
+        transition: opacity .25s;
+      }
+      .proactive-card--snoozed { opacity: .35; }
+      .proactive-card-header {
+        display: flex; align-items: center; justify-content: space-between;
+        margin-bottom: 10px;
+      }
+      .proactive-card-signal {
+        font-size: 13px; font-weight: 500; opacity: .75;
+        display: flex; align-items: center; gap: 5px;
+      }
+      .proactive-card-label {
+        font-size: 10px; font-weight: 600; letter-spacing: .06em;
+        text-transform: uppercase; opacity: .4; white-space: nowrap;
+      }
+      .proactive-card-why { margin: 0 0 14px; line-height: 1.65; font-size: 14px; }
+      .proactive-card-actions { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+      .proactive-snooze-wrap { position: relative; }
+      .proactive-snooze-menu {
+        position: absolute; bottom: calc(100% + 6px); left: 0;
+        background: var(--bg-elev2, rgba(30,30,40,.98));
+        border: 1px solid var(--g-border, rgba(255,255,255,.15));
+        border-radius: 10px; padding: 4px;
+        display: flex; flex-direction: column; min-width: 160px;
+        box-shadow: 0 8px 24px rgba(0,0,0,.4); z-index: 50;
+      }
+      .proactive-snooze-menu.hidden { display: none; }
+      .proactive-snooze-opt {
+        background: none; border: none; color: var(--fg, #fff);
+        font-size: 13px; text-align: left; padding: 8px 12px;
+        border-radius: 7px; cursor: pointer; width: 100%;
+      }
+      .proactive-snooze-opt:hover { background: var(--accent-soft, rgba(99,102,241,.2)); }
+
+      .skill-match-card {
+        background: rgba(245,158,11,.07);
+        border: 1px solid rgba(245,158,11,.3);
+        border-radius: 10px; padding: 12px 14px;
+        font-size: 13px; align-self: flex-start; max-width: 92%;
+      }
+      .skill-match-card-header {
+        display: flex; align-items: center; gap: 8px; margin-bottom: 6px;
+      }
+      .skill-match-card-name {
+        font-weight: 600; font-size: 14px;
+      }
+      .skill-match-chips {
+        display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 8px;
+      }
+      .skill-meta-chip {
+        font-size: 11px; padding: 1px 7px; border-radius: 8px;
+        background: rgba(245,158,11,.12); color: #d97706;
+        font-family: var(--font-mono, monospace);
+      }
+      .skill-match-desc {
+        font-size: 12px; opacity: .75; margin: 0 0 10px; line-height: 1.5;
+      }
+      .skill-match-actions { display: flex; gap: 6px; }
+
+      /* Walk step list */
+      .walk-step-list {
+        align-self: flex-start; max-width: 92%;
+        display: flex; flex-direction: column; gap: 4px;
+        font-size: 12px;
+      }
+      .walk-step {
+        display: flex; align-items: center; gap: 8px;
+        padding: 4px 0; opacity: .7;
+      }
+      .walk-step.done { opacity: .5; }
+      .walk-step.running { opacity: 1; font-weight: 500; }
+      .walk-step-icon {
+        width: 20px; height: 20px; border-radius: 50%; flex-shrink: 0;
+        display: flex; align-items: center; justify-content: center;
+        font-size: 10px; font-weight: 700;
+      }
+      .walk-step.done .walk-step-icon {
+        background: rgba(16,185,129,.15); color: #10b981;
+      }
+      .walk-step.running .walk-step-icon {
+        background: var(--accent, #6366f1); color: #fff;
+      }
+      .walk-step.pending .walk-step-icon {
+        background: var(--g-border, rgba(255,255,255,.1)); color: transparent;
+        border: 1px solid var(--g-border, rgba(255,255,255,.2));
+      }
+
+      /* Walk plan card */
+      .walk-plan-card {
+        background: var(--bg-elev, rgba(255,255,255,.04));
+        border: 1px solid var(--g-border, rgba(255,255,255,.12));
+        border-radius: 10px; padding: 14px;
+        align-self: flex-start; max-width: 98%; width: 100%;
+        font-size: 13px;
+      }
+      .walk-plan-header {
+        display: flex; align-items: baseline; gap: 10px;
+        margin-bottom: 12px; flex-wrap: wrap;
+      }
+      .walk-plan-title { font-weight: 600; font-size: 14px; }
+      .walk-plan-meta { font-size: 11px; opacity: .6; }
+      .walk-plan-cost-badge {
+        margin-left: auto; font-size: 12px; font-weight: 600;
+        padding: 2px 8px; border-radius: 8px;
+        background: rgba(16,185,129,.1); color: #10b981;
+      }
+      .walk-plan-table {
+        width: 100%; border-collapse: collapse; font-size: 12px;
+        margin-bottom: 12px;
+      }
+      .walk-plan-table th {
+        text-align: left; font-size: 10px; text-transform: uppercase;
+        letter-spacing: .06em; opacity: .5; padding: 0 8px 6px 0; font-weight: 500;
+      }
+      .walk-plan-table td {
+        padding: 5px 8px 5px 0; vertical-align: top;
+        border-top: 1px solid var(--g-border, rgba(255,255,255,.06));
+      }
+      .walk-plan-needs { display: flex; gap: 4px; flex-wrap: wrap; }
+      .walk-plan-need-chip {
+        font-size: 10px; padding: 1px 6px; border-radius: 6px;
+        background: var(--bg-elev, rgba(255,255,255,.08));
+        border: 1px solid var(--g-border, rgba(255,255,255,.1));
+        font-family: var(--font-mono, monospace);
+      }
+      .walk-plan-model { font-weight: 500; }
+      .walk-plan-model.local { color: #10b981; }
+      .walk-plan-model.cloud { color: var(--accent, #6366f1); }
+      .walk-plan-model-tag {
+        font-size: 10px; opacity: .6; margin-left: 4px; font-weight: 400;
+      }
+      .walk-plan-step-cost { opacity: .7; white-space: nowrap; }
+      .walk-plan-step-cost.free { color: #10b981; }
+      .walk-plan-actions {
+        display: flex; gap: 8px; align-items: center; flex-wrap: wrap;
+        margin-bottom: 10px;
+      }
+      .walk-plan-hint {
+        font-size: 11px; opacity: .55; line-height: 1.5;
+        display: flex; gap: 6px; align-items: flex-start;
+      }
+      .walk-plan-remember {
+        display: flex; align-items: center; gap: 5px;
+        font-size: 12px; margin-left: auto; white-space: nowrap;
+      }
+
+      /* Refine proposal card */
+      .refine-card {
+        background: rgba(245,158,11,.06);
+        border: 1.5px solid rgba(245,158,11,.35);
+        border-radius: 10px; padding: 14px;
+        align-self: flex-start; max-width: 96%;
+        font-size: 13px;
+      }
+      .refine-card-header {
+        display: flex; align-items: center; gap: 8px; margin-bottom: 8px;
+      }
+      .refine-card-title { font-weight: 600; font-size: 13px; }
+      .refine-card-obs {
+        font-size: 12px; line-height: 1.55; opacity: .8; margin: 0 0 10px;
+      }
+      .refine-card-code {
+        background: rgba(0,0,0,.25); border-radius: 6px;
+        padding: 10px 12px; font-family: var(--font-mono, monospace);
+        font-size: 11px; line-height: 1.6; overflow-x: auto;
+        margin-bottom: 12px; white-space: pre;
+      }
+      .refine-card-actions { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+      .refine-card-footnote {
+        font-size: 10px; opacity: .45; margin-left: auto; white-space: nowrap;
+      }
+      .btn-refine-primary {
+        background: #f59e0b; color: #000; border: none;
+        border-radius: 7px; padding: 5px 14px; font-size: 12px;
+        font-weight: 600; cursor: pointer;
+      }
+      .btn-refine-primary:hover { background: #d97706; }
+      .btn-refine-secondary {
+        background: transparent;
+        border: 1px solid rgba(245,158,11,.4); color: #f59e0b;
+        border-radius: 7px; padding: 5px 12px; font-size: 12px; cursor: pointer;
+      }
+      .btn-refine-secondary:hover { background: rgba(245,158,11,.08); }
+
+      /* Tier strip */
+      .tier-strip {
+        display: grid; grid-template-columns: repeat(3, 1fr);
+        gap: 1px; border-radius: 8px; overflow: hidden;
+        border: 1px solid var(--g-border, rgba(255,255,255,.1));
+        font-size: 11px; align-self: stretch; margin-top: 4px;
+      }
+      .tier-strip-col {
+        padding: 8px 10px; background: var(--bg-elev, rgba(255,255,255,.03));
+        line-height: 1.5;
+      }
+      .tier-strip-col:nth-child(2) { border-left: 1px solid var(--g-border, rgba(255,255,255,.1)); border-right: 1px solid var(--g-border, rgba(255,255,255,.1)); }
+      .tier-strip-label { font-weight: 600; font-size: 10px; margin-bottom: 2px; }
+      .tier-strip-label.active { color: var(--accent, #6366f1); }
+      .tier-strip-body { opacity: .65; }
+
+      /* Input row */
+      /* Slash-command palette */
+      .slash-palette {
+        position: absolute; bottom: calc(100% + 6px); left: 14px; right: 14px;
+        background: var(--bg-elev2, rgba(30,30,40,.97));
+        border: 1px solid var(--g-border, rgba(255,255,255,.14));
+        border-radius: 12px; overflow: hidden;
+        box-shadow: 0 12px 32px rgba(0,0,0,.45);
+        z-index: 200;
+      }
+      .slash-palette-header {
+        padding: 7px 14px 5px;
+        font-size: 10px; letter-spacing: .08em; text-transform: uppercase;
+        opacity: .4; user-select: none;
+      }
+      .slash-palette-item {
+        display: flex; align-items: center; gap: 12px;
+        padding: 9px 14px; cursor: pointer;
+        transition: background .1s;
+      }
+      .slash-palette-item:hover,
+      .slash-palette-item.slash-active { background: rgba(99,102,241,.18); }
+      .slash-palette-icon { font-size: 16px; flex-shrink: 0; width: 22px; text-align: center; }
+      .slash-palette-name { font-size: 13px; font-weight: 600; color: var(--accent, #6366f1); }
+      .slash-palette-args { font-size: 12px; opacity: .5; margin-left: 2px; }
+      .slash-palette-desc { font-size: 12px; opacity: .55; margin-left: auto; }
+      .slash-palette-divider { height: 1px; background: var(--g-border, rgba(255,255,255,.08)); margin: 3px 0; }
+
+      .ghampus-input-row {
+        position: relative;
+        display: flex; align-items: flex-end; gap: 8px;
+        padding: 10px 14px;
+        border-top: 1px solid var(--g-border, rgba(255,255,255,.1));
+        flex-shrink: 0;
+      }
+      .ghampus-input {
+        flex: 1; resize: none; min-height: 38px; max-height: 140px;
+        background: var(--bg-elev, rgba(255,255,255,.06));
+        border: 1px solid var(--g-border, rgba(255,255,255,.12));
+        border-radius: 10px; padding: 9px 14px;
+        font-size: 15px; color: var(--fg, #fff); font-family: inherit;
+        line-height: 1.45; outline: none;
+        transition: border-color .15s;
+      }
+      .ghampus-input:focus { border-color: var(--accent, #6366f1); }
+      .ghampus-input::placeholder { opacity: .45; }
+      .ghampus-send-btn {
+        width: 36px; height: 36px; border-radius: 10px; flex-shrink: 0;
+        background: var(--accent, #6366f1); color: #fff;
+        border: none; cursor: pointer; display: flex;
+        align-items: center; justify-content: center;
+        transition: background .15s, opacity .15s;
+      }
+      .ghampus-send-btn:hover { background: color-mix(in oklab, var(--accent) 85%, white); }
+      .ghampus-send-btn:disabled { opacity: .4; cursor: not-allowed; }
+
+      /* ── Sections strip ─────────────────────────────────────────────────── */
+      /* Pinned above the scrollable thread — does NOT scroll with messages   */
+      #ghampus-sections-strip {
+        flex-shrink: 0;
+        background: var(--bg, #111);
+        border-bottom: 1px solid var(--g-border, rgba(255,255,255,.08));
+        overflow: hidden; /* clip section-detail during animation */
+      }
+
+      /* Pill row of section buttons */
+      .ghampus-sections-pills {
+        display: flex; gap: 6px; padding: 8px 14px 8px;
+        overflow-x: auto; flex-wrap: nowrap;
+        scrollbar-width: none;
+      }
+      .ghampus-sections-pills::-webkit-scrollbar { display: none; }
+
+      .ghampus-section-pill {
+        display: inline-flex; align-items: center; gap: 5px;
+        padding: 4px 11px 4px 8px; border-radius: 20px;
+        border: 1px solid var(--g-border, rgba(255,255,255,.12));
+        background: var(--bg-elev, rgba(255,255,255,.04));
+        font-size: 11.5px; font-weight: 500;
+        color: var(--fg, rgba(255,255,255,.75));
+        cursor: pointer; white-space: nowrap; flex-shrink: 0;
+        transition: background .13s, border-color .13s, color .13s;
+        user-select: none;
+      }
+      .ghampus-section-pill:hover {
+        background: rgba(255,255,255,.07);
+        border-color: rgba(255,255,255,.22);
+        color: var(--fg, #fff);
+      }
+      .ghampus-section-pill[aria-expanded="true"] {
+        background: var(--accent-soft, rgba(99,102,241,.18));
+        border-color: var(--accent, rgba(99,102,241,.5));
+        color: var(--accent, #818cf8);
+      }
+      .ghampus-section-pill-icon {
+        font-size: 13px; line-height: 1; flex-shrink: 0;
+      }
+      .ghampus-section-pill-badge {
+        font-size: 10px; font-weight: 600; padding: 1px 5px;
+        border-radius: 8px; background: rgba(255,255,255,.12);
+        color: var(--fg, #fff); margin-left: 2px; flex-shrink: 0;
+      }
+      .ghampus-section-pill[aria-expanded="true"] .ghampus-section-pill-badge {
+        background: var(--accent, rgba(99,102,241,.5));
+        color: #fff;
+      }
+
+      /* Expanded panel — slides in below the pill row */
+      .ghampus-section-panel {
+        overflow: hidden;
+        max-height: 0;
+        transition: max-height .22s ease, padding .22s ease;
+        padding: 0 14px;
+      }
+      .ghampus-section-panel.open {
+        max-height: 300px;
+        padding: 0 14px 12px;
+        overflow-y: auto;
+      }
+      .ghampus-section-panel-inner {
+        border-top: 1px solid var(--g-border, rgba(255,255,255,.07));
+        padding-top: 10px;
+        font-size: 12px;
+      }
+
+      /* Panel content styles */
+      .ghampus-panel-empty {
+        font-size: 12px; opacity: .45; padding: 6px 0;
+      }
+      .ghampus-panel-list {
+        list-style: none; padding: 0; margin: 0;
+        display: flex; flex-direction: column; gap: 6px;
+      }
+      .ghampus-panel-item {
+        display: flex; align-items: baseline; gap: 6px;
+        padding: 6px 10px; border-radius: 8px;
+        background: var(--bg-elev, rgba(255,255,255,.03));
+        border: 1px solid var(--g-border, rgba(255,255,255,.07));
+        font-size: 12px;
+      }
+      .ghampus-panel-item-label {
+        flex: 1; min-width: 0;
+        white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+        font-weight: 500;
+      }
+      .ghampus-panel-item-meta {
+        font-size: 11px; opacity: .5; flex-shrink: 0;
+      }
+      .ghampus-panel-item-action {
+        font-size: 11px; padding: 2px 8px; border-radius: 5px;
+        background: none; border: 1px solid var(--g-border, rgba(255,255,255,.15));
+        color: var(--fg, rgba(255,255,255,.7)); cursor: pointer; flex-shrink: 0;
+      }
+      .ghampus-panel-item-action:hover { background: rgba(255,255,255,.07); }
+
+      /* Skills panel — vitality ring beside each skill */
+      .ghampus-skill-row {
+        display: flex; align-items: center; gap: 8px;
+        padding: 6px 10px; border-radius: 8px;
+        background: var(--bg-elev, rgba(255,255,255,.03));
+        border: 1px solid var(--g-border, rgba(255,255,255,.07));
+        cursor: pointer;
+      }
+      .ghampus-skill-row:hover { background: rgba(255,255,255,.055); }
+      .ghampus-skill-vitality {
+        width: 28px; height: 28px; flex-shrink: 0;
+      }
+      .ghampus-skill-vitality circle.track {
+        fill: none; stroke: rgba(255,255,255,.1); stroke-width: 3;
+      }
+      .ghampus-skill-vitality circle.fill {
+        fill: none; stroke: #10b981; stroke-width: 3;
+        stroke-linecap: round; stroke-dasharray: 72; /* 2πr, r=11.5 */
+        transform: rotate(-90deg); transform-origin: 50% 50%;
+        transition: stroke-dashoffset .3s;
+      }
+      .ghampus-skill-info { flex: 1; min-width: 0; }
+      .ghampus-skill-name {
+        font-size: 12px; font-weight: 500;
+        white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+      }
+      .ghampus-skill-meta { font-size: 10.5px; opacity: .5; margin-top: 1px; }
+      .ghampus-skill-run {
+        font-size: 11px; padding: 2px 9px; border-radius: 5px;
+        background: none; border: 1px solid var(--g-border, rgba(255,255,255,.15));
+        color: var(--fg, rgba(255,255,255,.7)); cursor: pointer; flex-shrink: 0;
+      }
+      .ghampus-skill-run:hover { background: rgba(255,255,255,.07); color: #fff; }
+
+      /* Linked-files panel */
+      .ghampus-linked-desc {
+        font-size: 12px; opacity: .6; line-height: 1.55; margin-bottom: 10px;
+      }
+      .ghampus-linked-actions {
+        display: flex; gap: 6px; margin-bottom: 10px;
+      }
+
+      /* Savings panel */
+      .ghampus-savings-grid {
+        display: flex; gap: 16px; flex-wrap: wrap; align-items: flex-start;
+      }
+      .ghampus-savings-stat {
+        display: flex; flex-direction: column; gap: 2px;
+      }
+      .ghampus-savings-stat-label { font-size: 10.5px; opacity: .55; }
+      .ghampus-savings-stat-val { font-size: 16px; font-weight: 600; color: #10b981; }
+      .ghampus-savings-stat-val.dim { font-size: 13px; color: var(--fg, #fff); }
+
+      /* Chat messages container */
+      #ghampus-chat-messages {
+        display: flex; flex-direction: column; gap: 10px;
+        flex: 1;
+      }
+
       .skills-train-progress-body {
         flex: 1; min-width: 0;
         display: flex; flex-direction: column; gap: 6px;
@@ -10079,11 +10792,7 @@
                  settings.ui.defaultLandingMode). Gated to Teams/Enterprise
                  on entry; the pane itself shows the upgrade card for free
                  plans, or the chat shell once licensed. -->
-            <button class="rail-btn active" data-mode="ghampus" title="Ghampus — your local AI agent: chat over your memory, drop .gez packs to import, watch outbound shares">
-              <span class="rail-icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2a4 4 0 0 1 4 4v2h2a3 3 0 0 1 3 3v8a3 3 0 0 1-3 3H6a3 3 0 0 1-3-3v-8a3 3 0 0 1 3-3h2V6a4 4 0 0 1 4-4Z"/><path d="M9 14h.01M15 14h.01"/></svg></span>
-              <span class="rail-label">Ghampus</span>
-            </button>
-            <button class="rail-btn" data-mode="atlas" title="Your Cortex — your memory at a glance: search, check-in deck, health, live AI-client status">
+            <button class="rail-btn active" data-mode="atlas" title="Your Cortex — your memory at a glance: search, check-in deck, health, live AI-client status">
               <span class="rail-icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 9.5L12 3l9 6.5"/><path d="M5 9v11a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V9"/><path d="M9 21v-7h6v7"/></svg></span>
               <span class="rail-label">Your Cortex</span>
               <!-- Trailing cluster (right-aligned): pending-corrections badge +
@@ -10093,6 +10802,10 @@
                 <span id="rail-corrections-badge" class="rail-badge hidden" title="Pending corrections waiting in the deck">0</span>
                 <span id="rail-mcp-indicator" class="rail-mcp-indicator" data-pres="surface:mcpClients"></span>
               </span>
+            </button>
+            <button class="rail-btn" data-mode="ghampus" title="Ghampus — your AI agent: chat over your memory, run skills, save and recall">
+              <span class="rail-icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2L9.5 9.5 2 12l7.5 2.5L12 22l2.5-7.5L22 12l-7.5-2.5z"/><circle cx="5" cy="5" r="1.2" fill="currentColor" stroke="none"/><circle cx="19" cy="19" r="1.2" fill="currentColor" stroke="none"/></svg></span>
+              <span class="rail-label">Ghampus</span>
             </button>
             <!-- Get Connected — directly under Home: grow your cortex (AI clients
                  read it, data sources feed it). Chips/recipes live on its page. -->
@@ -10137,11 +10850,13 @@
               <span class="rail-label">Activity</span>
               <span></span>
             </button>
+            <!-- MemoryStudio rail item hidden for now — may be revisited later
             <button class="rail-btn" data-mode="power-tools" title="MemoryStudio — recall / remember / edit / GNN by hand (your AI usually does this for you via MCP)">
               <span class="rail-icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14.7 6.3a4 4 0 0 0-5.4 5.4L3 18v3h3l6.3-6.3a4 4 0 0 0 5.4-5.4l-2.6 2.6-2-2 2.6-2.6z"/></svg></span>
               <span class="rail-label">MemoryStudio</span>
               <span></span>
             </button>
+            -->
             <!-- Nodes rail tab removed — its functionality (search,
                  per-node inspect, edit, forget) is covered by the
                  Graphnosis pane's search + detail pane + deck. The
@@ -11643,118 +12358,225 @@ ollama list</code></pre>
             <section class="mode-pane hidden" data-pane="ghampus">
               <div id="ghampus-section" class="studio-section">
                 <div id="ghampus-shell">
-                  <div class="studio-paywall-card">
-                    <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 6px;">
-                      <h2 style="margin: 0;">Ghampus</h2>
-                      <span id="ghampus-plan-chip" style="font-size: 11px; background: var(--accent-soft, rgba(99,102,241,.18)); color: var(--accent, #6366f1); padding: 2px 8px; border-radius: 10px; font-weight: 500;">—</span>
-                    </div>
-                    <p id="ghampus-state-line" class="subtitle">Chat surface coming online in the next release.</p>
-                    <div style="margin-top: 16px; display: flex; gap: 8px; flex-wrap: wrap;">
-                      <button id="btn-ghampus-kill" class="g-btn" type="button">Stop all agent activity</button>
-                      <button id="btn-ghampus-resume" class="g-btn hidden" type="button">Resume Ghampus</button>
-                    </div>
-                    <p id="ghampus-kill-banner" class="subtitle hidden" style="margin-top: 12px; color: var(--g-warn, #c47);">Ghampus is stopped. No tool calls or watcher activity will fire until you resume.</p>
+                  <!-- ── Chat layout ─────────────────────────────────────────────
+                       Three zones stacked vertically:
+                         1. chat header  — name + plan chip + live walk status
+                         2. thread       — scrollable message history
+                         3. input row    — textarea + send button
+                       Existing dashboard panels collapse below a toggle. -->
+                  <div id="ghampus-chat-wrap">
 
-                    <!-- While you were away — inbound activity (connectors, AI
-                         clients, sharing-token writes, direct ingest). Empty
-                         on first boot; populates as sources arrive. Excludes
-                         Ghampus's own saves — those live in the panel below. -->
-                    <div id="ghampus-notifications-panel" style="margin-top: 20px; padding-top: 16px; border-top: 1px solid var(--g-border, rgba(255,255,255,.1));">
-                      <h3 style="margin: 0 0 8px;">While you were away</h3>
-                      <p id="ghampus-notifications-summary" class="subtitle" style="margin: 0 0 8px;">—</p>
-                      <ul id="ghampus-notifications-list" style="list-style: none; padding: 0; margin: 0;"></ul>
+                    <!-- Header -->
+                    <div class="ghampus-chat-header">
+                      <div style="display: flex; align-items: center; gap: 8px; min-width: 0;">
+                        <img src="/graphnosis-logo-transparent-bg.png" alt="Ghampus"
+                             class="ghampus-chat-header-logo"
+                             style="flex-shrink: 0;" />
+                        <h2 style="margin: 0; font-size: 16px; font-weight: 700; white-space: nowrap;">Ghampus <span style="font-weight: 400; background: linear-gradient(90deg, #6366f1, #14b8a6); -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text;">— Your AI. Already on it.</span></h2>
+                        <span id="ghampus-notif-badge" class="ghampus-notif-badge hidden"></span>
+                        <span id="ghampus-walk-chip" class="ghampus-walk-chip hidden"></span>
+                      </div>
+                      <div style="display: flex; gap: 8px; align-items: center; flex-shrink: 0;">
+                        <span id="ghampus-active-engram" class="ghampus-header-right hidden"
+                              style="font-size: 12px; opacity: .7;">
+                          Active: <code id="ghampus-active-engram-name" style="font-size: 11px; opacity: 1;
+                            background: var(--accent-soft, rgba(99,102,241,.15));
+                            padding: 1px 5px; border-radius: 4px;"></code>
+                        </span>
+                        <span id="ghampus-model-badge" class="ghampus-header-right hidden"
+                              style="display: flex; align-items: center; gap: 5px; font-size: 12px; opacity: .7;">
+                          <span style="width: 7px; height: 7px; border-radius: 50%; background: #10b981; flex-shrink: 0;"></span>
+                          <span id="ghampus-model-name"></span>
+                        </span>
+                        <button id="btn-ghampus-kill" class="g-btn hidden" type="button"
+                                style="font-size: 11px; padding: 2px 9px;"
+                                title="Stop all active Ghampus tool calls and skill walks">Stop all</button>
+                        <button id="btn-ghampus-resume" class="g-btn hidden" type="button"
+                                style="font-size: 11px; padding: 2px 9px;">Resume</button>
+                        <span id="ghampus-plan-chip" class="ghampus-plan-chip">—</span>
+                        <span id="ghampus-usage-counter" class="ghampus-header-right hidden"
+                              style="font-size: 12px; opacity: .6;"></span>
+                      </div>
                     </div>
+                    <p id="ghampus-kill-banner" class="subtitle hidden"
+                       style="margin: 0; padding: 6px 14px; font-size: 12px;
+                              background: rgba(204,68,119,.08); border-bottom: 1px solid rgba(204,68,119,.2);
+                              color: var(--g-warn, #c47);">
+                      Ghampus is stopped. No tool calls or watcher activity until you resume.
+                    </p>
 
-                    <!-- Savings dashboard — measures what your memory layer
-                         saves you vs sending every prompt to a baseline paid
-                         model. Drives the "Graphnosis pays for itself"
-                         narrative. Empty on first boot; populates after the
-                         first walk or recall-only answer. -->
-                    <div id="ghampus-savings-panel" style="margin-top: 20px; padding-top: 16px; border-top: 1px solid var(--g-border, rgba(255,255,255,.1));">
-                      <h3 style="margin: 0 0 8px;">What Graphnosis saves you</h3>
-                      <p id="ghampus-savings-summary" class="subtitle" style="margin: 0 0 8px;">—</p>
-                      <div id="ghampus-savings-breakdown" style="display: none; margin-top: 10px; padding: 12px 14px; background: rgba(16, 185, 129, .06); border: 1px solid rgba(16, 185, 129, .25); border-radius: 8px;">
-                        <div style="display: flex; gap: 18px; font-size: 13px;">
-                          <div>
-                            <div style="font-size: 11px; opacity: .7;">vs paid baseline</div>
-                            <div id="ghampus-savings-total" style="font-size: 17px; font-weight: 600; color: #10b981;">$0.00</div>
-                          </div>
-                          <div>
-                            <div style="font-size: 11px; opacity: .7;">recall-only answers</div>
-                            <div id="ghampus-savings-recall" style="font-size: 13px;">0 events</div>
-                          </div>
-                          <div>
-                            <div style="font-size: 11px; opacity: .7;">routing wins</div>
-                            <div id="ghampus-savings-routing" style="font-size: 13px;">0 events</div>
-                          </div>
-                          <div style="margin-left: auto; font-size: 11px; opacity: .7;">window: 30 days</div>
+                    <!-- Sections strip — PINNED above the thread, not inside it -->
+                    <div id="ghampus-sections-strip">
+
+                      <!-- Pill row -->
+                      <div class="ghampus-sections-pills">
+
+                        <button class="ghampus-section-pill" type="button"
+                                data-section="notifications" aria-expanded="false">
+                          <span class="ghampus-section-pill-icon">🔔</span>
+                          <span>Updates</span>
+                          <span id="ghampus-notif-pill-badge" class="ghampus-section-pill-badge hidden"></span>
+                        </button>
+
+                        <button class="ghampus-section-pill" type="button"
+                                data-section="recent-saves" aria-expanded="false">
+                          <span class="ghampus-section-pill-icon">📌</span>
+                          <span>Recent saves</span>
+                          <span id="ghampus-saves-pill-badge" class="ghampus-section-pill-badge hidden"></span>
+                        </button>
+
+                        <button class="ghampus-section-pill" type="button"
+                                data-section="skills" aria-expanded="false">
+                          <span class="ghampus-section-pill-icon">⚡</span>
+                          <span>Skills</span>
+                          <span id="ghampus-skills-pill-badge" class="ghampus-section-pill-badge hidden"></span>
+                        </button>
+
+                        <button class="ghampus-section-pill" type="button"
+                                data-section="linked-files" aria-expanded="false">
+                          <span class="ghampus-section-pill-icon">🔗</span>
+                          <span>Linked files</span>
+                          <span id="ghampus-files-pill-badge" class="ghampus-section-pill-badge hidden"></span>
+                        </button>
+
+                        <button class="ghampus-section-pill" type="button"
+                                data-section="savings" aria-expanded="false">
+                          <span class="ghampus-section-pill-icon">💰</span>
+                          <span>Savings</span>
+                        </button>
+
+                        <button class="ghampus-section-pill" type="button"
+                                data-section="shares" aria-expanded="false">
+                          <span class="ghampus-section-pill-icon">🤝</span>
+                          <span>Shares</span>
+                          <span id="ghampus-shares-pill-badge" class="ghampus-section-pill-badge hidden"></span>
+                        </button>
+
+                      </div><!-- /.ghampus-sections-pills -->
+
+                      <!-- Expandable panels (one at a time, managed by JS) -->
+
+                      <div class="ghampus-section-panel" data-panel="notifications">
+                        <div class="ghampus-section-panel-inner">
+                          <ul id="ghampus-notifications-list" class="ghampus-panel-list">
+                            <li class="ghampus-panel-empty">No new updates.</li>
+                          </ul>
                         </div>
                       </div>
-                    </div>
 
-                    <!-- Picking up where we left off — memories Ghampus saved
-                         during chat conversations (addedBy === 'ghampus'). -->
-                    <div id="ghampus-recent-saves-panel" style="margin-top: 20px; padding-top: 16px; border-top: 1px solid var(--g-border, rgba(255,255,255,.1));">
-                      <h3 style="margin: 0 0 8px;">Picking up where we left off</h3>
-                      <p id="ghampus-recent-saves-summary" class="subtitle" style="margin: 0 0 8px;">—</p>
-                      <ul id="ghampus-recent-saves-list" style="list-style: none; padding: 0; margin: 0;"></ul>
-                    </div>
-
-                    <!-- Skills awareness — the user's trained-skill library.
-                         Surfaces what's available so Ghampus can discover
-                         them mid-conversation; clicking opens the skill in
-                         the Skills page for manual inspection. -->
-                    <div id="ghampus-skills-panel" style="margin-top: 20px; padding-top: 16px; border-top: 1px solid var(--g-border, rgba(255,255,255,.1));">
-                      <h3 style="margin: 0 0 8px;">Skills I can walk for you</h3>
-                      <p id="ghampus-skills-summary" class="subtitle" style="margin: 0 0 8px;">—</p>
-                      <ul id="ghampus-skills-list" style="list-style: none; padding: 0; margin: 0;"></ul>
-                    </div>
-
-                    <!-- Linked files — local file paths attached to memories
-                         without ingesting their content. Files stay on disk
-                         (or shared drives, network paths, OneNote URIs); we
-                         just remember WHERE they are so recall can surface
-                         them and the user can open the original in its
-                         native app. -->
-                    <div id="ghampus-attachments-panel" style="margin-top: 20px; padding-top: 16px; border-top: 1px solid var(--g-border, rgba(255,255,255,.1));">
-                      <div style="display: flex; align-items: baseline; gap: 8px; margin-bottom: 8px;">
-                        <h3 style="margin: 0;">Linked files</h3>
-                        <button id="btn-ghampus-attach-file" class="g-btn" type="button" style="font-size: 12px; padding: 3px 10px; margin-left: auto;">+ Attach a file</button>
-                        <button id="btn-ghampus-attach-path" class="g-btn" type="button" style="font-size: 12px; padding: 3px 10px;">+ Path…</button>
-                      </div>
-                      <p id="ghampus-attachments-summary" class="subtitle" style="margin: 0 0 8px;">—</p>
-                      <ul id="ghampus-attachments-list" style="list-style: none; padding: 0; margin: 0;"></ul>
-                    </div>
-
-                    <!-- Manual visual annotation modal (V1 scaffolding).
-                         User clicks "✏️ Annotate" on an image attachment;
-                         this overlay opens with the image as background +
-                         a canvas overlay for drawing boxes and labels.
-                         Save commits them as graph nodes through the
-                         existing engram. Arrows + multi-node selection
-                         come in a follow-up iteration. -->
-                    <div id="annotation-modal" class="hidden" style="position: fixed; inset: 0; background: rgba(0,0,0,.85); z-index: 1000; display: flex; flex-direction: column; padding: 20px;">
-                      <div style="display: flex; align-items: center; gap: 12px; margin-bottom: 12px;">
-                        <h2 style="margin: 0; color: white; font-size: 18px;">Annotate image</h2>
-                        <p style="margin: 0; color: rgba(255,255,255,.6); font-size: 13px;">Click on the image to add a labeled box. Each box becomes a graph node when you save.</p>
-                        <div style="margin-left: auto; display: flex; gap: 8px;">
-                          <button id="btn-annotation-clear" class="g-btn" type="button" style="background: rgba(255,255,255,.1); color: white; border: 1px solid rgba(255,255,255,.2);">Clear</button>
-                          <button id="btn-annotation-save" class="g-btn" type="button" style="background: var(--accent, #6366f1); color: white;">Save annotations</button>
-                          <button id="btn-annotation-close" class="g-btn" type="button" style="background: rgba(255,255,255,.1); color: white; border: 1px solid rgba(255,255,255,.2);">Close</button>
+                      <div class="ghampus-section-panel" data-panel="recent-saves">
+                        <div class="ghampus-section-panel-inner">
+                          <ul id="ghampus-recent-saves-list" class="ghampus-panel-list">
+                            <li class="ghampus-panel-empty">Nothing saved yet this week.</li>
+                          </ul>
                         </div>
                       </div>
-                      <div id="annotation-canvas-wrap" style="flex: 1; position: relative; overflow: auto; background: rgba(0,0,0,.4); border-radius: 8px; display: flex; align-items: center; justify-content: center;">
-                        <div id="annotation-canvas-inner" style="position: relative; max-width: 100%; max-height: 100%;">
-                          <img id="annotation-image" style="max-width: 100%; max-height: 100%; display: block; pointer-events: none;" />
-                          <div id="annotation-overlay" style="position: absolute; inset: 0; cursor: crosshair;"></div>
+
+                      <div class="ghampus-section-panel" data-panel="skills">
+                        <div class="ghampus-section-panel-inner">
+                          <ul id="ghampus-skills-list" class="ghampus-panel-list"></ul>
                         </div>
                       </div>
+
+                      <div class="ghampus-section-panel" data-panel="linked-files">
+                        <div class="ghampus-section-panel-inner">
+                          <p class="ghampus-linked-desc">
+                            Link a local file to your memory without ingesting its content — Graphnosis
+                            remembers where to find it and surfaces it during recall.
+                            Works with any file, path, shared-drive link, or OneNote URI.
+                          </p>
+                          <div class="ghampus-linked-actions">
+                            <button id="btn-ghampus-attach-file" class="g-btn" type="button"
+                                    style="font-size: 12px; padding: 4px 12px;">+ Attach a file</button>
+                            <button id="btn-ghampus-attach-path" class="g-btn" type="button"
+                                    style="font-size: 12px; padding: 4px 12px;">+ Path or URI…</button>
+                          </div>
+                          <ul id="ghampus-attachments-list" class="ghampus-panel-list"></ul>
+                        </div>
+                      </div>
+
+                      <div class="ghampus-section-panel" data-panel="savings">
+                        <div class="ghampus-section-panel-inner">
+                          <div class="ghampus-savings-grid">
+                            <div class="ghampus-savings-stat">
+                              <span class="ghampus-savings-stat-label">saved vs paid baseline</span>
+                              <span id="ghampus-savings-total" class="ghampus-savings-stat-val">$0.00</span>
+                            </div>
+                            <div class="ghampus-savings-stat">
+                              <span class="ghampus-savings-stat-label">recall-only answers</span>
+                              <span id="ghampus-savings-recall" class="ghampus-savings-stat-val dim">0</span>
+                            </div>
+                            <div class="ghampus-savings-stat">
+                              <span class="ghampus-savings-stat-label">routing wins</span>
+                              <span id="ghampus-savings-routing" class="ghampus-savings-stat-val dim">0</span>
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+
+                      <div class="ghampus-section-panel" data-panel="shares">
+                        <div class="ghampus-section-panel-inner">
+                          <ul id="ghampus-sharing-list" class="ghampus-panel-list">
+                            <li class="ghampus-panel-empty">No active shares.</li>
+                          </ul>
+                        </div>
+                      </div>
+
+                    </div><!-- /#ghampus-sections-strip -->
+
+                    <!-- Scrollable thread — chat messages only -->
+                    <div id="ghampus-thread" class="ghampus-thread">
+
+                      <!-- Chat messages render here -->
+                      <div id="ghampus-chat-messages">
+                        <div id="ghampus-thread-empty" class="ghampus-thread-empty">
+                          <img src="/graphnosis-logo-transparent-bg.png" alt=""
+                               style="width: 40px; height: 40px; opacity: .3; margin-bottom: 10px;" />
+                          <p style="margin: 0; font-size: 13px; opacity: .45;">
+                            Start typing — or wait for Ghampus to pick up where you left off.
+                          </p>
+                        </div>
+                      </div>
+
+                    </div><!-- /#ghampus-thread -->
+
+                    <!-- Quiet/snooze hint -->
+                    <div id="ghampus-quiet-footer" class="ghampus-quiet-footer hidden">
+                      Quiet during deep work?
+                      <a href="#" id="btn-ghampus-snooze">Snooze proactive starters until tomorrow</a>
+                      · <a href="#" id="btn-ghampus-configure-sources">Configure sources</a>
                     </div>
 
-                    <div id="ghampus-sharing-panel" style="margin-top: 20px; padding-top: 16px; border-top: 1px solid var(--g-border, rgba(255,255,255,.1));">
-                      <h3 style="margin: 0 0 8px;">Active shares</h3>
-                      <p id="ghampus-sharing-summary" class="subtitle">—</p>
-                      <ul id="ghampus-sharing-list" style="list-style: none; padding: 0; margin: 8px 0 0;"></ul>
+                    <!-- Input row — sticky at bottom, outside the thread -->
+                    <div class="ghampus-input-row">
+                      <textarea id="ghampus-input" class="ghampus-input"
+                                placeholder="Ask anything — type / to save, recall, or run a skill"
+                                rows="1"></textarea>
+                      <button id="btn-ghampus-send" class="ghampus-send-btn" type="button"
+                              title="Send (Enter · Cmd+Enter for new line)">
+                        <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+                          <path d="M2 8L14 2L10 8L14 14L2 8Z" fill="currentColor"/>
+                        </svg>
+                      </button>
+                    </div>
+                  </div><!-- /#ghampus-chat-wrap -->
+
+                  <!-- Annotation modal lives outside the chat wrap so it can cover the full pane -->
+                  <div id="annotation-modal" class="hidden" style="position: fixed; inset: 0; background: rgba(0,0,0,.85); z-index: 1000; display: flex; flex-direction: column; padding: 20px;">
+                    <div style="display: flex; align-items: center; gap: 12px; margin-bottom: 12px;">
+                      <h2 style="margin: 0; color: white; font-size: 18px;">Annotate image</h2>
+                      <p style="margin: 0; color: rgba(255,255,255,.6); font-size: 13px;">Click on the image to add a labeled box. Each box becomes a graph node when you save.</p>
+                      <div style="margin-left: auto; display: flex; gap: 8px;">
+                        <button id="btn-annotation-clear" class="g-btn" type="button" style="background: rgba(255,255,255,.1); color: white; border: 1px solid rgba(255,255,255,.2);">Clear</button>
+                        <button id="btn-annotation-save" class="g-btn" type="button" style="background: var(--accent, #6366f1); color: white;">Save annotations</button>
+                        <button id="btn-annotation-close" class="g-btn" type="button" style="background: rgba(255,255,255,.1); color: white; border: 1px solid rgba(255,255,255,.2);">Close</button>
+                      </div>
+                    </div>
+                    <div id="annotation-canvas-wrap" style="flex: 1; position: relative; overflow: auto; background: rgba(0,0,0,.4); border-radius: 8px; display: flex; align-items: center; justify-content: center;">
+                      <div id="annotation-canvas-inner" style="position: relative; max-width: 100%; max-height: 100%;">
+                        <img id="annotation-image" style="max-width: 100%; max-height: 100%; display: block; pointer-events: none;" />
+                        <div id="annotation-overlay" style="position: absolute; inset: 0; cursor: crosshair;"></div>
+                      </div>
                     </div>
                   </div>
                 </div>
