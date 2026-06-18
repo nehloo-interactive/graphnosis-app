@@ -14318,40 +14318,39 @@ ollama list</code></pre>
           <p class="subtitle">Create shares so collaborators can access specific engrams via your MCP server. Requires Mobile &amp; Remote Access.</p>
           <p id="sharing-plan-badge" style="display:none;margin:6px 0 0;font-size:12px;color:var(--fg-muted);"></p>
         </div>
-        <div class="modal-body" id="sharing-modal-body" style="min-height:120px;">
+        <div class="modal-body" id="sharing-modal-body" style="min-height:120px;max-height:70vh;overflow-y:auto;">
           <!-- Seat usage bar (Teams/Enterprise only) -->
           <div id="sharing-seat-bar" style="margin-bottom:12px;display:none;"></div>
           <!-- Shown when not on Teams/Enterprise plan -->
           <p id="sharing-unlicensed-notice" class="subtitle" style="display:none;padding:10px;background:var(--bg-raised);border-radius:6px;margin-bottom:10px;"></p>
           <!-- Share list rendered dynamically -->
           <div id="sharing-token-list" style="display:flex;flex-direction:column;gap:8px;"></div>
-          <p id="sharing-no-tokens" class="subtitle" style="display:none;margin:16px 0;">No shares yet. Create one below.</p>
-        </div>
-        <div class="modal-footer" style="flex-direction:column;align-items:stretch;gap:12px;">
-          <!-- Create new share form -->
-          <details id="sharing-create-details" style="cursor:pointer;">
-            <summary style="font-size:14px;font-weight:600;cursor:pointer;user-select:none;">+ Create new share</summary>
-            <div style="margin-top:12px;display:flex;flex-direction:column;gap:10px;">
-              <label style="font-size:13px;">
+          <p id="sharing-no-tokens" class="subtitle" style="display:none;margin:12px 0 0;">No shares yet. Create one below.</p>
+
+          <!-- Create new share — own section, always visible when licensed -->
+          <div id="sharing-create-section" style="display:none;margin-top:20px;padding-top:16px;border-top:1px solid var(--border);">
+            <p class="settings-section-label" style="margin:0 0 12px;">Create new share</p>
+            <div style="display:flex;flex-direction:column;gap:10px;">
+              <label style="font-size:13px;display:block;">
                 Share name
                 <input id="sharing-new-name" type="text" placeholder="e.g. Alice – Project X" style="display:block;width:100%;margin-top:4px;" />
               </label>
-              <label style="font-size:13px;">
+              <label style="font-size:13px;display:block;">
                 Role
                 <select id="sharing-new-role" style="display:block;width:100%;margin-top:4px;">
                   <option value="viewer">Viewer — read-only</option>
                   <option value="editor">Editor — can remember &amp; edit</option>
                 </select>
               </label>
-              <label style="font-size:13px;">
+              <label style="font-size:13px;display:block;">
                 Engrams
                 <select id="sharing-new-engrams-mode" style="display:block;width:100%;margin-top:4px;">
                   <option value="all">All engrams</option>
                   <option value="select">Specific engrams…</option>
                 </select>
               </label>
-              <div id="sharing-engram-picker" style="display:none;flex-wrap:wrap;gap:6px;" aria-label="Select engrams"></div>
-              <label style="font-size:13px;">
+              <div id="sharing-engram-picker" style="display:none;flex-direction:column;gap:4px;margin-top:2px;max-height:130px;overflow-y:auto;padding:6px 8px;background:var(--bg-raised);border-radius:6px;" aria-label="Select engrams"></div>
+              <label style="font-size:13px;display:block;">
                 Expires
                 <select id="sharing-new-expiry" style="display:block;width:100%;margin-top:4px;">
                   <option value="never">Never</option>
@@ -14361,20 +14360,19 @@ ollama list</code></pre>
                   <option value="1y">1 year</option>
                 </select>
               </label>
-              <div style="display:flex;gap:8px;justify-content:flex-end;">
+              <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:4px;">
                 <button id="btn-sharing-create" class="primary">Create share</button>
               </div>
             </div>
-          </details>
+          </div>
+        </div>
+        <div class="modal-footer">
           <!-- Enterprise-only: audit log download -->
-          <div id="sharing-audit-section" style="display:none;margin-top:16px;padding-top:12px;border-top:1px solid var(--border);">
-            <p class="settings-section-label" style="margin:0 0 8px;">Audit log export</p>
-            <p class="subtitle" style="margin:0 0 10px;font-size:12px;">Download the full op-log as CSV for SIEM ingestion or compliance review.</p>
+          <div id="sharing-audit-section" style="display:none;flex:1;">
+            <p class="settings-section-label" style="margin:0 0 4px;">Audit log export</p>
             <button id="btn-sharing-audit-export">Download audit log (.csv)</button>
           </div>
-          <div style="display:flex;justify-content:flex-end;">
-            <button id="btn-sharing-close">Close</button>
-          </div>
+          <button id="btn-sharing-close">Close</button>
         </div>
       </div>
     </div>
