@@ -19388,7 +19388,7 @@ async function refreshSharingTokenSummary(): Promise<void> {
   const summary = document.getElementById('sharing-token-summary');
   if (!summary) return;
   try {
-    const plan = await invoke<SharingPlanInfo>('sharing:planInfo', {});
+    const plan = await ipcCall<SharingPlanInfo>('sharing:planInfo', {});
     const seatStr = plan.seats !== null
       ? `${plan.activeCount} / ${plan.seats} share used`
       : `${plan.activeCount} active share${plan.activeCount === 1 ? '' : 's'}`;
@@ -19454,7 +19454,7 @@ function renderSharingTokenList(
       const id = btn.dataset['id'];
       if (!id) return;
       if (!await gConfirm('Revoke share?', 'Collaborators using this share will lose access on their next request. This cannot be undone.')) return;
-      await invoke('sharing:revoke', { id });
+      await ipcCall('sharing:revoke', { id });
       void openSharingModal();
       void refreshSharingTokenSummary();
     });
@@ -19468,16 +19468,16 @@ async function openSharingModal(): Promise<void> {
 
   // Fetch plan info, token list, and active sessions in parallel.
   const [plan, tokens, sessions] = await Promise.all([
-    invoke<SharingPlanInfo>('sharing:planInfo', {}).catch(() => ({ licensed: false, plan: null, seats: null, activeCount: 0 })),
-    invoke<SharingTokenInfo[]>('sharing:list', {}).catch(() => [] as SharingTokenInfo[]),
-    invoke<Record<string, SharingSessionEntry[]>>('sharing:sessions', {}).catch(() => ({})),
+    ipcCall<SharingPlanInfo>('sharing:planInfo', {}).catch(() => ({ licensed: false, plan: null, seats: null, activeCount: 0 })),
+    ipcCall<SharingTokenInfo[]>('sharing:list', {}).catch(() => [] as SharingTokenInfo[]),
+    ipcCall<Record<string, SharingSessionEntry[]>>('sharing:sessions', {}).catch(() => ({} as Record<string, SharingSessionEntry[]>)),
   ]);
 
   // Show/hide the create form based on license. Show current plan when licensed.
-  const createDetails = document.getElementById('sharing-create-details');
+  const createSection = document.getElementById('sharing-create-section');
   const unlicensedNotice = document.getElementById('sharing-unlicensed-notice');
   const planBadge = document.getElementById('sharing-plan-badge');
-  if (createDetails) createDetails.style.display = '';
+  if (createSection) createSection.style.display = '';
   if (unlicensedNotice) unlicensedNotice.style.display = 'none';
   if (planBadge) {
     if (plan.licensed && plan.plan) {
@@ -19506,8 +19506,15 @@ async function openSharingModal(): Promise<void> {
       picker.innerHTML = '';
       for (const g of visible) {
         const label = document.createElement('label');
-        label.style.cssText = 'display:flex;align-items:center;gap:4px;font-size:13px;cursor:pointer;';
-        label.innerHTML = `<input type="checkbox" value="${escape(g.graphId)}" /> ${escape(g.metadata.displayName ?? g.graphId)}`;
+        label.style.cssText = 'display:flex;align-items:center;gap:8px;font-size:13px;cursor:pointer;padding:2px 0;';
+        const cb = document.createElement('input');
+        cb.type = 'checkbox';
+        cb.value = g.graphId;
+        cb.style.cssText = 'flex-shrink:0;margin:0;';
+        const span = document.createElement('span');
+        span.textContent = g.metadata.displayName ?? g.graphId;
+        label.appendChild(cb);
+        label.appendChild(span);
         picker.appendChild(label);
       }
     } catch { /* sidecar not ready */ }
@@ -19599,7 +19606,7 @@ async function openSharingModal(): Promise<void> {
 
     btn.disabled = true;
     try {
-      const result = await invoke<SharingCreateResult>('sharing:create', {
+      const result = await ipcCall<SharingCreateResult>('sharing:create', {
         name,
         role: roleEl.value as 'viewer' | 'editor',
         engrams,
@@ -19607,16 +19614,11 @@ async function openSharingModal(): Promise<void> {
       });
 
       if (!result.ok) {
-        void gAlert(
-          'Token limit reached',
-          result.message ?? 'Unable to create share.',
-        );
+        void gAlert('Token limit reached', result.message ?? 'Unable to create share.');
         return;
       }
 
-      // Close create form, show reveal modal.
-      const details = document.getElementById('sharing-create-details') as HTMLDetailsElement | null;
-      if (details) details.open = false;
+      // Reset name field after successful creation.
       nameEl.value = '';
 
       // Show reveal modal with the one-time token.
@@ -19633,6 +19635,8 @@ async function openSharingModal(): Promise<void> {
 
       void openSharingModal();
       void refreshSharingTokenSummary();
+    } catch (e) {
+      void gAlert('Share creation failed', (e as Error).message ?? String(e));
     } finally { btn.disabled = false; }
   });
 
@@ -24241,11 +24245,12 @@ function wireThreadNodeActions(node: HTMLElement, msg: GhampusChatMessage): void
   }
   if (msg.kind === 'proactive-card') {
     node.querySelector<HTMLButtonElement>('.proactive-card-run')?.addEventListener('click', async (e) => {
-      const cardId = (e.currentTarget as HTMLButtonElement).dataset.cardId ?? '';
-      const sourceId = (e.currentTarget as HTMLButtonElement).dataset.sourceId ?? '';
+      const btn = e.currentTarget as HTMLButtonElement;
+      const cardId = btn.dataset.cardId ?? '';
+      const sourceId = btn.dataset.sourceId ?? '';
       await ipcCall('ghampus:inbox:run', { id: cardId }).catch(() => {});
       // Grab the skill label from the button text ("Run Skill Name ▸")
-      const btnText = (e.currentTarget as HTMLButtonElement).textContent ?? '';
+      const btnText = btn.textContent ?? '';
       const skillLabel = btnText.replace(/^Run\s+/, '').replace(/\s*▸\s*$/, '').trim();
       const signalEl = node.querySelector<HTMLElement>('.proactive-card-signal');
       const signalLabel = signalEl?.textContent?.replace(/^[⏰📥🔍]\s*/, '').trim();
@@ -24275,10 +24280,10 @@ function wireThreadNodeActions(node: HTMLElement, msg: GhampusChatMessage): void
       });
     });
     node.querySelector<HTMLButtonElement>('.proactive-card-dismiss')?.addEventListener('click', async (e) => {
-      const cardId = (e.currentTarget as HTMLButtonElement).dataset.cardId ?? '';
+      const btn = e.currentTarget as HTMLButtonElement;
+      const cardId = btn.dataset.cardId ?? '';
       await ipcCall('ghampus:inbox:dismiss', { id: cardId }).catch(() => {});
-      const entry = (e.currentTarget as HTMLElement).closest('.ghampus-thread-entry');
-      entry?.remove();
+      btn.closest('.ghampus-thread-entry')?.remove();
     });
   }
 }
