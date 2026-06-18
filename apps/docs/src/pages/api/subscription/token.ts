@@ -87,11 +87,17 @@ export const GET: APIRoute = async ({ url, locals }) => {
         const otpParam = url.searchParams.get('otp')?.trim();
 
         if (!otpParam) {
-          // No OTP provided — generate one, send it, ask the user to verify.
-          const code = String(crypto.getRandomValues(new Uint32Array(1))[0] % 1_000_000).padStart(6, '0');
-          await putOtp(kv, email, { code, expiresAt: Date.now() + OTP_TTL_SECONDS * 1000, attempts: 0 });
-          await sendOtpEmail(env, { to: email, code });
-          console.log('[billing token] OTP sent for domain auto-mint', email, 'domain:', domain);
+          // Only send a new OTP if one isn't already pending — prevents repeated
+          // emails when the desktop polls multiple times before the user can enter.
+          const existingOtp = await getOtp(kv, email);
+          if (!existingOtp || Date.now() > existingOtp.expiresAt) {
+            const code = String(crypto.getRandomValues(new Uint32Array(1))[0] % 1_000_000).padStart(6, '0');
+            await putOtp(kv, email, { code, expiresAt: Date.now() + OTP_TTL_SECONDS * 1000, attempts: 0 });
+            await sendOtpEmail(env, { to: email, code });
+            console.log('[billing token] OTP sent for domain auto-mint', email, 'domain:', domain);
+          } else {
+            console.log('[billing token] OTP already pending for', email, '— not resending');
+          }
           return new Response(
             JSON.stringify({ status: 'otp_required' }),
             { status: 202, headers: { 'Content-Type': 'application/json' } },
@@ -174,10 +180,15 @@ export const GET: APIRoute = async ({ url, locals }) => {
     if (domainRec2) {
       const otpParam2 = url.searchParams.get('otp')?.trim();
       if (!otpParam2) {
-        const code = String(crypto.getRandomValues(new Uint32Array(1))[0] % 1_000_000).padStart(6, '0');
-        await putOtp(kv, email, { code, expiresAt: Date.now() + OTP_TTL_SECONDS * 1000, attempts: 0 });
-        await sendOtpEmail(env, { to: email, code });
-        console.log('[billing token] OTP re-auth for stale domain token', email, 'domain:', domain2);
+        const existingOtp2 = await getOtp(kv, email);
+        if (!existingOtp2 || Date.now() > existingOtp2.expiresAt) {
+          const code = String(crypto.getRandomValues(new Uint32Array(1))[0] % 1_000_000).padStart(6, '0');
+          await putOtp(kv, email, { code, expiresAt: Date.now() + OTP_TTL_SECONDS * 1000, attempts: 0 });
+          await sendOtpEmail(env, { to: email, code });
+          console.log('[billing token] OTP re-auth for stale domain token', email, 'domain:', domain2);
+        } else {
+          console.log('[billing token] OTP already pending for stale domain token', email, '— not resending');
+        }
         return new Response(
           JSON.stringify({ status: 'otp_required' }),
           { status: 202, headers: { 'Content-Type': 'application/json' } },
@@ -218,10 +229,15 @@ export const GET: APIRoute = async ({ url, locals }) => {
     // This self-heals without admin intervention: the stored token IS the subscription proof.
     const otpParam3 = url.searchParams.get('otp')?.trim();
     if (!otpParam3) {
-      const code = String(crypto.getRandomValues(new Uint32Array(1))[0] % 1_000_000).padStart(6, '0');
-      await putOtp(kv, email, { code, expiresAt: Date.now() + OTP_TTL_SECONDS * 1000, attempts: 0 });
-      await sendOtpEmail(env, { to: email, code });
-      console.log('[billing token] OTP re-auth for Stripe subscriber', email);
+      const existingOtp3 = await getOtp(kv, email);
+      if (!existingOtp3 || Date.now() > existingOtp3.expiresAt) {
+        const code = String(crypto.getRandomValues(new Uint32Array(1))[0] % 1_000_000).padStart(6, '0');
+        await putOtp(kv, email, { code, expiresAt: Date.now() + OTP_TTL_SECONDS * 1000, attempts: 0 });
+        await sendOtpEmail(env, { to: email, code });
+        console.log('[billing token] OTP re-auth for Stripe subscriber', email);
+      } else {
+        console.log('[billing token] OTP already pending for Stripe subscriber', email, '— not resending');
+      }
       return new Response(
         JSON.stringify({ status: 'otp_required' }),
         { status: 202, headers: { 'Content-Type': 'application/json' } },
