@@ -13697,6 +13697,13 @@ void listen<GraphMutationPayload>('graphnosis://graph-mutation', (evt) => {
   // active-engram-changed predicate against the full cursor set
   // returned by inspector_stats and only repaints when relevant.
   void pollGraphMutations();
+  // Skill engram mutated (MCP train_skill, autonomous retrain, import, etc.).
+  // pollGraphMutations only refreshes the 3D atlas — the Skills library reads
+  // from a separate cache and must be refetched or new rows stay invisible
+  // until the user manually hits ↻ or re-opens the tab.
+  if (activeStudioTool === 'skills') {
+    scheduleSkillsLibraryRefresh({ syncGraphs: false });
+  }
   // Live-refresh the Activity Log if the Status pane is open and the
   // mutation targets the currently displayed engram.
   if (currentMode === 'status' && graphId === atlasActiveGraph) {
@@ -23202,7 +23209,37 @@ function purgeOrphanedHiddenSkills(): void {
   if (changed) persistSkillsHidden();
 }
 
+/** Force-expand engram group headers in the Skills library list. */
+function expandSkillEngramGroups(graphIds: Iterable<string>): void {
+  for (const gid of graphIds) skillEngramGroupState.set(gid, true);
+}
+
+/** Debounced refetch of skill:list + re-render. Shared by mount, ↻, and
+ *  graph-mutation while the Skills tab is open (MCP train_skill, auto-retrain). */
+function scheduleSkillsLibraryRefresh(opts: { syncGraphs?: boolean } = {}): void {
+  if (_skillsRefreshTimer) clearTimeout(_skillsRefreshTimer);
+  _skillsRefreshTimer = window.setTimeout(() => {
+    _skillsRefreshTimer = null;
+    void (async () => {
+      const prevIds = new Set(skillsLibrary.map((s) => s.sourceId));
+      if (opts.syncGraphs !== false) await fetchGraphsMetadata();
+      await fetchSkillsLibrary();
+      const newOnes = skillsLibrary.filter((s) => !prevIds.has(s.sourceId));
+      if (newOnes.length > 0) {
+        expandSkillEngramGroups(new Set(newOnes.map((s) => s.graphId)));
+      }
+      purgeOrphanedHiddenSkills();
+      renderSkillsLibrary();
+      if (newOnes.length > 0) void warmVitalityCache();
+    })();
+  }, 350);
+}
+
 async function mountSkillsPane(): Promise<void> {
+  // loadedGraphs must be current before filteredSortedLibrary() runs — otherwise
+  // visibleGraphIds is empty/stale and every skill is filtered out (shows as
+  // "All your skills are hidden" even when skill:list returned dozens of rows).
+  await fetchGraphsMetadata();
   populateSkillsEngramPickers();
   await fetchSkillsLibrary();
   purgeOrphanedHiddenSkills();
@@ -23215,11 +23252,12 @@ async function mountSkillsPane(): Promise<void> {
   // user knows where to look. Then refresh the snapshot.
   const newSkills = diffSkillsLibraryAgainstSnapshot();
   if (newSkills.length > 0) {
+    expandSkillEngramGroups(new Set(newSkills.map((s) => s.graphId)));
     const first = newSkills[0];
     if (first) {
       const others = newSkills.length > 1 ? ` and ${newSkills.length - 1} more` : '';
       showSkillsToast(
-        `Ghampus finished training "${first.label}"${others} while you were away. Open the library to review.`,
+        `Ghampus finished training "${humanizeSkillName(first.label) || skillDisplayName(first.label)}"${others} while you were away. Open the library to review.`,
         'success',
       );
     }
@@ -23432,7 +23470,11 @@ function filteredSortedLibrary(): SkillListEntry[] {
   const visibleGraphIds = new Set(
     loadedGraphs.filter((g) => !g.metadata.archived).map((g) => g.graphId),
   );
-  let list = skillsLibrary.filter((s) => visibleGraphIds.has(s.graphId));
+  // When loadedGraphs hasn't caught up yet (boot race, fresh engram create),
+  // don't hide every skill — trust skill:list until Tauri metadata syncs.
+  let list = visibleGraphIds.size === 0
+    ? skillsLibrary.slice()
+    : skillsLibrary.filter((s) => visibleGraphIds.has(s.graphId));
   if (!skillsShowHidden) {
     list = list.filter((s) => !skillsHiddenSet.has(s.sourceId));
   }
@@ -23522,9 +23564,17 @@ function renderSkillsLibrary(): void {
   }
   if (!listEl) return;
   if (list.length === 0) {
-    const msg = skillsLibrary.length === 0
-      ? 'You haven\'t trained any skills yet. Compose one on the right to begin.'
-      : 'All your skills are hidden. Click "Show hidden" to bring them back.';
+    let msg: string;
+    if (skillsLibrary.length === 0) {
+      msg = 'You haven\'t trained any skills yet. Compose one on the right to begin.';
+    } else if (skillsShowHidden) {
+      msg = 'No skills match your filter.';
+    } else {
+      const allHidden = skillsLibrary.every((s) => skillsHiddenSet.has(s.sourceId));
+      msg = allHidden
+        ? 'All your skills are hidden. Click "Show hidden" to bring them back.'
+        : 'No skills match your filter.';
+    }
     listEl.innerHTML = `<p class="subtitle skills-library-empty">${escape(msg)}</p>`;
     return;
   }
@@ -26680,12 +26730,8 @@ function _bindSkillsHandlersInner(): void {
     // (e.g. bundled demos that just landed, or a .gsk import that finished
     // in the background) surface in the list. Without this, refresh was a
     // no-op visually — it only cleared the vitality cache.
-    void (async () => {
-      skillsVitalityCache.clear();
-      await fetchSkillsLibrary();
-      renderSkillsLibrary();
-      void warmVitalityCache();
-    })();
+    skillsVitalityCache.clear();
+    scheduleSkillsLibraryRefresh();
   });
   document.getElementById('btn-skills-show-hidden')?.addEventListener('click', () => {
     skillsShowHidden = !skillsShowHidden;
