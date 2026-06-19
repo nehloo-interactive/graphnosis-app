@@ -5855,8 +5855,17 @@ function renderSettingsTab(): void {
   // (regenerate button), which is non-destructive and worth top-level
   // visibility.
   const regenBtn = document.getElementById('btn-regenerate-recovery-phrase') as HTMLButtonElement | null;
+  const regenHint = document.getElementById('recovery-phrase-settings-hint');
+  const cortexReady = !unlockPending && !els.viewApp.classList.contains('hidden');
   if (regenBtn) {
+    regenBtn.disabled = !cortexReady;
+    if (regenHint) {
+      regenHint.textContent = cortexReady
+        ? 'Shows the new phrase once — write it down before dismissing.'
+        : 'Unlock your cortex first to regenerate the recovery phrase.';
+    }
     regenBtn.onclick = () => {
+      if (!cortexReady) return;
       showQuarantineConfirm({
         title: 'Generate a fresh recovery phrase?',
         subtitle: 'The current recovery phrase will stop working. The new one becomes your only fallback to the passphrase.',
@@ -5866,11 +5875,16 @@ function renderSettingsTab(): void {
         confirmPhrase: 'regenerate recovery phrase',
         confirmLabel: 'Generate & show me the phrase',
         onConfirm: async () => {
-          const phrase = await invoke<string>('regenerate_recovery_phrase');
-          if (typeof phrase === 'string' && phrase.length > 0) {
-            showRecoveryPhraseModal(phrase);
-          } else {
-            throw new Error('Sidecar returned an empty phrase.');
+          try {
+            const phrase = await invoke<string>('regenerate_recovery_phrase');
+            if (typeof phrase === 'string' && phrase.length > 0) {
+              showRecoveryPhraseModal(phrase);
+            } else {
+              throw new Error('Sidecar returned an empty phrase.');
+            }
+          } catch (e) {
+            void gAlert('Recovery phrase regeneration failed', e instanceof Error ? e.message : String(e));
+            throw e;
           }
         },
       });
@@ -18124,10 +18138,13 @@ function showRecoveryPhraseModal(phrase: string): void {
   const grid = document.getElementById('recovery-phrase-grid') as HTMLDivElement | null;
   const ack = document.getElementById('recovery-phrase-ack') as HTMLInputElement | null;
   const closeBtn = document.getElementById('btn-recovery-phrase-close') as HTMLButtonElement | null;
+  const copyBtn = document.getElementById('btn-recovery-phrase-copy') as HTMLButtonElement | null;
   if (!modal || !grid || !ack || !closeBtn) return;
 
+  const normalized = phrase.trim().replace(/\s+/g, ' ');
+
   // Populate the 4×6 grid
-  const words = phrase.trim().split(/\s+/);
+  const words = normalized.split(/\s+/);
   grid.innerHTML = words.map((w, i) =>
     `<div class="recovery-phrase-word">` +
     `<span class="word-num">${i + 1}.</span>` +
@@ -18141,6 +18158,20 @@ function showRecoveryPhraseModal(phrase: string): void {
   ack.onchange = () => {
     closeBtn.disabled = !ack.checked;
   };
+
+  if (copyBtn) {
+    copyBtn.disabled = false;
+    copyBtn.textContent = 'Copy phrase';
+    copyBtn.onclick = async () => {
+      try {
+        await navigator.clipboard.writeText(normalized);
+        copyBtn.textContent = 'Copied!';
+        window.setTimeout(() => { copyBtn.textContent = 'Copy phrase'; }, 2000);
+      } catch {
+        void gAlert('Copy failed', 'Could not copy to the clipboard. Select and copy the words manually.');
+      }
+    };
+  }
 
   closeBtn.onclick = () => {
     modal.classList.add('hidden');
