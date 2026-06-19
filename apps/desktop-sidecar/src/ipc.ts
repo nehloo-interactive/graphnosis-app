@@ -6624,7 +6624,18 @@ OUTPUT RULES — non-negotiable:
       if (a.until !== undefined) events = events.filter((ev) => ev.ts <= a.until!);
       if (a.engram !== undefined) events = events.filter((ev) => ev.graphId === a.engram);
       events = events.slice().sort((x, y) => x.ts - y.ts);
-      return { ok: true, count: events.length, events };
+
+      let mcpEvents = await deps.host.listMcpAuditEvents();
+      if (a.since !== undefined) mcpEvents = mcpEvents.filter((ev) => ev.ts >= a.since!);
+      if (a.until !== undefined) mcpEvents = mcpEvents.filter((ev) => ev.ts <= a.until!);
+      if (a.engram !== undefined) {
+        mcpEvents = mcpEvents.filter((ev) =>
+          ev.engramIds?.includes(a.engram!) ?? false,
+        );
+      }
+      mcpEvents = mcpEvents.slice().sort((x, y) => x.ts - y.ts);
+
+      return { ok: true, count: events.length, events, mcpCount: mcpEvents.length, mcpEvents };
     }
 
     default:

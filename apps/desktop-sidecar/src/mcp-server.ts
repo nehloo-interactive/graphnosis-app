@@ -18,6 +18,7 @@ import { constantTimeEqual } from './crypto-compare.js';
 import type { ConsentRecord } from '@graphnosis-app/core/settings';
 import { SkillTrainer, type ExportFormat } from './skill-trainer.js';
 import { LicenseValidator } from './license-validator.js';
+import { hashMcpQuery, type McpAuditEvent } from './mcp-audit.js';
 
 // ── Session-level data budget ─────────────────────────────────────────────────
 // These caps apply per MCP connection (i.e. per AI client session). They exist
@@ -785,6 +786,8 @@ export interface McpDeps {
   sharingScope?: SharingScope | null;
   /** Absolute path to the cortex directory. Used for GEZ signing-key storage. */
   cortexDir?: string;
+  /** Transport label for MCP audit rows. Defaults to stdio. */
+  mcpTransport?: 'stdio' | 'socket' | 'http';
 }
 
 /** Single MCP tool result — matches the MCP SDK CallToolResult shape. */
@@ -2807,7 +2810,9 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
   // (internal chat path) call this function so each tool is implemented
   // exactly once. The MCP wrapper adds policy checks; Ghampus skips them
   // (it runs as the owner with no client-disable or tool-allowlist gates).
-  async function dispatchTool(name: string, rawInput: Record<string, unknown>): Promise<McpToolResult> {
+  let mcpAuditExtras: Partial<Omit<McpAuditEvent, 'id' | 'ts' | 'tool' | 'clientId'>> = {};
+
+  async function dispatchToolInner(name: string, rawInput: Record<string, unknown>): Promise<McpToolResult> {
     try {
     switch (name) {
       case 'recall':
@@ -2876,6 +2881,19 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
         // already visible in the prompt body as `## <displayName>` section
         // headers, so this footer is purely informational + tier signal.
         const contributing = sub.audit.filter((a) => a.nodesIncluded > 0);
+        mcpAuditExtras.engramIds = contributing.map((a) => a.graphId);
+        mcpAuditExtras.tokenBudget = {
+          requestedTokens: budget.maxTokens,
+          requestedNodes: budget.maxNodes,
+          servedTokens: sub.tokensUsed,
+          servedNodes: sub.nodesIncluded,
+        };
+        const settingsForAudit = deps.host.getSettings();
+        const clientForAudit = mcpRegistry.getMostRecentClientName() ?? 'unknown-client';
+        const consentRec = settingsForAudit.ai.dataAccessConsents?.find(
+          (r) => r.clientName === clientForAudit && !r.withdrawnAt && r.expiresAt > Date.now(),
+        );
+        if (consentRec) mcpAuditExtras.consentGrantId = consentRec.consentId;
         const skippedCount = sub.audit.length - contributing.length;
         const perGraphPart = contributing.length > 0
           ? ` Per-graph (tier · nodes · tokens): ${contributing.map(a => `${a.graphId} · ${a.tier} · ${a.nodesIncluded}n · ${a.tokensIncluded}t`).join(', ')}.`
@@ -4983,6 +5001,43 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
       if (e instanceof ConsentRequiredError) return mcpError(e.message);
       if (e instanceof ScopeViolationError) return mcpError(e.message);
       throw e;
+    }
+  }
+
+  async function dispatchTool(name: string, rawInput: Record<string, unknown>): Promise<McpToolResult> {
+    mcpAuditExtras = {};
+    const clientId = mcpRegistry.getMostRecentClientName() ?? 'unknown-client';
+    const transport = deps.mcpTransport ?? 'stdio';
+    const queryRaw = typeof rawInput['query'] === 'string' ? rawInput['query']
+      : typeof rawInput['question'] === 'string' ? rawInput['question']
+      : typeof rawInput['q'] === 'string' ? rawInput['q']
+      : undefined;
+    let isError = false;
+    try {
+      const result = await dispatchToolInner(name, rawInput);
+      isError = result.isError === true;
+      return result;
+    } catch (e) {
+      isError = true;
+      throw e;
+    } finally {
+      if (deps.cortexDir) {
+        const onlyRaw = rawInput['only_engrams'];
+        const engramIdsFromInput = Array.isArray(onlyRaw)
+          ? onlyRaw.filter((e): e is string => typeof e === 'string')
+          : undefined;
+        void deps.host.appendMcpAuditEvent({
+          tool: name,
+          clientId,
+          transport,
+          isError,
+          ...(queryRaw !== undefined ? { queryLen: queryRaw.length, queryHash: hashMcpQuery(queryRaw) } : {}),
+          ...(engramIdsFromInput?.length ? { engramIds: engramIdsFromInput } : {}),
+          ...mcpAuditExtras,
+        }).catch((err: unknown) => {
+          console.error(`[mcp-audit] append failed: ${(err as Error).message}`);
+        });
+      }
     }
   }
 
