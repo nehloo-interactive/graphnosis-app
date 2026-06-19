@@ -111,9 +111,9 @@ A memory is only as useful as what it is connected to. Graphnosis links memories
 
 When you ingest a file or URL, Graphnosis creates a **Source** record and splits the content into chunks. Each chunk is embedded (converted to a vector) locally using a BGE-small-en-v1.5 model running entirely on your device. The embedding is what enables semantic recall — finding relevant memories even when you don't remember the exact words you used.
 
-### Memory-trained Skills — procedural memory as SOPs
+### Autonomous Skills — procedural memory as SOPs
 
-Graphnosis ships a dedicated **Skills engram** for procedural memory: Standard Operating Procedures you author and compile into structured SOPs (the **Memory-trained Skills** product layer). Compile uses your source text only; personal memory applies at walk/runtime via recall, not baked in at train time. Skills are callable by any MCP client. A skill is a sequence of body steps wired by five edge types (linear, loops, branches, supporting context, and cross-skill calls), with eight goal categories per skill (Success, Out of scope, On completion, Trigger, Prerequisites, On failure, Requires, Produces). The AI executes a skill by calling `walk_skill_structured`, which returns a `SkillExecutionPlan` JSON: required inputs, ordered steps, sub-skill calls with args + return captures, and failure handlers. Three signed `.gsk` demo packs auto-load on first unlock so there is something to try immediately. See [Memory-trained Skills](/reference/skills/).
+Graphnosis ships a dedicated **Skills engram** for procedural memory: Standard Operating Procedures you author and compile into structured SOPs (the **Autonomous Skills** product layer). Compile uses your source text only; personal memory applies at walk/runtime via recall, not baked in at train time. Skills are callable by any MCP client. A skill is a sequence of body steps wired by five edge types (linear, loops, branches, supporting context, and cross-skill calls), with eight goal categories per skill (Success, Out of scope, On completion, Trigger, Prerequisites, On failure, Requires, Produces). The AI executes a skill by calling `walk_skill_structured`, which returns a `SkillExecutionPlan` JSON: required inputs, ordered steps, sub-skill calls with args + return captures, and failure handlers. Three signed `.gsk` demo packs auto-load on first unlock so there is something to try immediately. See [Autonomous Skills](/reference/skills/).
 
 ### Recall via MCP
 
@@ -175,7 +175,7 @@ The embedding model (ONNX, ~90 MB) and any optional local LLM for corrections ru
 
 [Federated Multi-Graphs](/reference/federated-multi-graphs/) — the dual graph inside every engram, and how federation works across many.
 
-[Memory-trained Skills](/reference/skills/) — the procedural-memory layer for executable Standard Operating Procedures.
+[Autonomous Skills](/reference/skills/) — the procedural-memory layer for executable Standard Operating Procedures.
 
 [MCP Tools](/reference/mcp-tools/) — the toolset any connected AI client sees.
 
