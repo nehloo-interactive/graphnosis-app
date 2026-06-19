@@ -13464,8 +13464,8 @@ ollama list</code></pre>
                   (or if you think it's been exposed), generate a fresh one. The old phrase becomes invalid;
                   the new one wraps the same data. Your engrams are untouched.
                 </p>
-                <button id="btn-regenerate-recovery-phrase">Regenerate recovery phrase…</button>
-                <span class="subtitle" style="font-size: 15px; margin-left: 8px;">Shows the new phrase once — write it down before dismissing.</span>
+                <button id="btn-regenerate-recovery-phrase" type="button">Regenerate recovery phrase…</button>
+                <span id="recovery-phrase-settings-hint" class="subtitle" style="font-size: 15px; margin-left: 8px;">Shows the new phrase once — write it down before dismissing.</span>
               </div>
 
             </section>
@@ -14720,7 +14720,9 @@ ollama list</code></pre>
             </label>
           </div>
         </div>
-        <div class="modal-footer">
+        <div class="modal-footer" style="display: flex; gap: 8px; flex-wrap: wrap; align-items: center;">
+          <button id="btn-recovery-phrase-copy" type="button" title="Copy all 24 words to the clipboard">Copy phrase</button>
+          <span class="filler"></span>
           <button id="btn-recovery-phrase-close" class="primary" disabled>I've saved my recovery phrase — Continue</button>
         </div>
       </div>
