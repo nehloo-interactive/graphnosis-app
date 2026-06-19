@@ -71,6 +71,8 @@ export interface AppContext {
   presActive: () => boolean;
   applyPresentationMasking: (root?: ParentNode) => void;
   clearAtlasGraphData: () => void;
+  switchActiveEngram: (graphId: string) => Promise<void>;
+  getIngestJobCount: () => number;
 }
 
 export interface QuarantineConfirmOptions {
