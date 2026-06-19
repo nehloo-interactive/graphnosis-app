@@ -243,6 +243,26 @@ const RecallStructuredInput = z.preprocess(
   }),
 );
 const RecallWithCitationsInput = RecallStructuredInput;
+const RecallAsOfInput = z.preprocess(
+  (raw: unknown) => {
+    if (typeof raw !== 'object' || raw === null) return raw;
+    const r = raw as Record<string, unknown>;
+    if (!r.query && (r.q || r.question)) return { ...r, query: r.q ?? r.question };
+    if (r.as_of_seq === undefined && r.asOfSeq !== undefined) return { ...r, as_of_seq: r.asOfSeq };
+    if (r.as_of_ts === undefined && r.asOfTs !== undefined) return { ...r, as_of_ts: r.asOfTs };
+    if (r.graphId === undefined && r.engram !== undefined) return { ...r, graphId: r.engram };
+    return raw;
+  },
+  z.object({
+    query: z.string(),
+    graphId: z.string().optional(),
+    as_of_seq: z.coerce.number().int().nonnegative().optional(),
+    as_of_ts: z.coerce.number().int().nonnegative().optional(),
+    maxNodes: z.coerce.number().int().positive().max(50).optional(),
+  }).refine((d) => d.as_of_seq !== undefined || d.as_of_ts !== undefined, {
+    message: 'Provide as_of_seq or as_of_ts (op-log boundary for point-in-time recall).',
+  }),
+);
 const FindSourceInput = z.object({
   keyword: z.string().optional(),
   content: z.string().optional(),
@@ -2089,6 +2109,28 @@ export function createMcpServer(deps: McpDeps): { server: Server; callTool: McpC
         },
       },
       {
+        name: 'recall_as_of',
+        description:
+          'Point-in-time audit recall — search memory as it existed at an op-log sequence or timestamp boundary. ' +
+          'Returns reduced op-log node previews (not full semantic recall). Use for compliance questions like ' +
+          '"what did we know on audit date?" Requires as_of_seq or as_of_ts. Enterprise audit tool.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            query: { type: 'string', description: 'Keywords to match against node content at the boundary.' },
+            graphId: { type: 'string', description: 'Optional engram slug to scope the search.' },
+            as_of_seq: { type: 'number', description: 'Inclusive op-log seq ceiling (v2 events).' },
+            as_of_ts: { type: 'number', description: 'Inclusive Unix-ms timestamp ceiling.' },
+            maxNodes: { type: 'number', description: 'Max matches. Default 20.' },
+          },
+          required: ['query'],
+        },
+        annotations: {
+          title: 'Point-in-time recall',
+          readOnlyHint: true,
+        },
+      },
+      {
         name: 'recall_with_citations',
         description: 'DETERMINISM — Same as recall: deterministic by default.\n\nLike recall, but each memory node is followed by an inline citation: the sourceId and label it was derived from (e.g. "[clip:abc123·location-notes]"). Use when you want to offer the user traceable provenance — "this came from source X" — or when a downstream tool needs source attribution per fact. Example output line: "Nelu lived in Bucharest in 2019 [clip:abc123·location-notes]." Accepts the same scope filters as recall.',
         inputSchema: {
@@ -3538,6 +3580,22 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
         }, null, 2) }] };
       }
       // ── Advanced recall ───────────────────────────────────────────────────
+      case 'recall_as_of': {
+        const licenseToken = await getEffectiveLicenseToken(deps);
+        const hasEnterprise = deps.licenseValidator?.hasFeature(licenseToken, 'enterprise') ?? false;
+        if (!hasEnterprise) {
+          return mcpError('recall_as_of requires an Enterprise license (Compliance Mode).');
+        }
+        const args = RecallAsOfInput.parse(rawInput);
+        const { recallAsOf } = await import('./compliance.js');
+        const result = await recallAsOf(deps.host, args.query, {
+          ...(args.graphId ? { graphId: args.graphId } : {}),
+          ...(args.as_of_seq !== undefined ? { asOfSeq: args.as_of_seq } : {}),
+          ...(args.as_of_ts !== undefined ? { asOfTs: args.as_of_ts } : {}),
+          ...(args.maxNodes !== undefined ? { maxNodes: args.maxNodes } : {}),
+        });
+        return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+      }
       case 'recall_structured': {
         const rawRsArgs = RecallStructuredInput.parse(rawInput);
         const args = { ...rawRsArgs, ...applyEngramScope(rawRsArgs) };
