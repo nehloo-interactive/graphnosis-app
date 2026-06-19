@@ -5,7 +5,8 @@ import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/
 import { createMcpServer, type McpDeps } from './mcp-server.js';
 import { mcpRegistry } from './mcp-registry.js';
 import type { Server as McpServer } from '@modelcontextprotocol/sdk/server/index.js';
-import type { SharingToken, SharingScope } from '@graphnosis-app/core/settings';
+import type { SharingToken, SharingScope, SharingRole } from '@graphnosis-app/core/settings';
+import { SHARING_TOKEN_ROLES } from '@graphnosis-app/core/settings';
 
 export interface HttpBridgeOptions {
   deps: McpDeps;
@@ -512,7 +513,11 @@ export async function startHttpMcpServer(opts: HttpBridgeOptions): Promise<http.
       }
       const parsed = body as Record<string, unknown>;
       const name = typeof parsed['name'] === 'string' && parsed['name'].length > 0 ? parsed['name'] : null;
-      const role = parsed['role'] === 'viewer' || parsed['role'] === 'editor' ? parsed['role'] : null;
+      const rawRole = typeof parsed['role'] === 'string' ? parsed['role'] : null;
+      const role: SharingRole | null = rawRole && rawRole !== 'owner'
+        && (SHARING_TOKEN_ROLES as readonly string[]).includes(rawRole)
+        ? rawRole as SharingRole
+        : null;
       const rawEngrams = parsed['engrams'];
       const engrams: string[] | '*' | null = rawEngrams === '*'
         ? '*'
@@ -524,9 +529,22 @@ export async function startHttpMcpServer(opts: HttpBridgeOptions): Promise<http.
         res.writeHead(400, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({
           error: 'invalid_params',
-          message: 'Required: name (string), role ("viewer"|"editor"), engrams (string[]|"*")',
+          message: 'Required: name (string), role (sharing role from enterprise RBAC matrix), engrams (string[]|"*")',
         }));
         return;
+      }
+
+      const enterpriseRoles = new Set<SharingRole>(['skill-train', 'admin-audit']);
+      if (enterpriseRoles.has(role)) {
+        const licenseToken = await opts.deps.host.getLicenseToken();
+        if (!(opts.deps.licenseValidator?.hasFeature(licenseToken, 'enterprise') ?? false)) {
+          res.writeHead(403, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({
+            error: 'enterprise_required',
+            message: 'Skill trainer and admin/audit roles require an Enterprise license.',
+          }));
+          return;
+        }
       }
 
       const expiresAt = typeof parsed['expiresAt'] === 'number' ? parsed['expiresAt'] : undefined;
