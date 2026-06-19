@@ -4,7 +4,14 @@ import { randomBytes } from 'node:crypto';
 import path from 'node:path';
 import { generateMnemonic } from '@scure/bip39';
 import { wordlist } from '@scure/bip39/wordlists/english';
-import { embeddings, settings as settingsMod, sources, type SourceRecord } from '@graphnosis-app/core';
+import {
+  embeddings,
+  settings as settingsMod,
+  sources,
+  assertEngramNotOnLegalHold,
+  assertSourceNotOnLegalHold,
+  type SourceRecord,
+} from '@graphnosis-app/core';
 import { crypto, federation, oplog, policy, type DeviceId, type GraphId, type SubgraphBudget } from '@nehloo-interactive/graphnosis-secure-sync';
 import type { GraphnosisAdapter, GraphHandle, AppendDocumentInput, CorrectionEdit } from './graphnosis-adapter.js';
 import * as healingJournalMod from './healing-journal.js';
@@ -2829,8 +2836,97 @@ export class GraphnosisHost {
     return { reingested: totalReingested, cancelled, skipped: totalSkipped, failed: totalFailed, perGraph };
   }
 
+  /** Block forget / edit / transfer when engram or source is under legal hold. */
+  private assertMutationAllowed(graphId: GraphId, sourceId?: string, nodeId?: string): void {
+    const meta = this.getGraphMetadata(graphId);
+    assertEngramNotOnLegalHold(meta, graphId);
+    if (sourceId) {
+      const rec = this.getSourceRecord(graphId, sourceId);
+      assertSourceNotOnLegalHold(rec, graphId, sourceId, meta);
+      return;
+    }
+    if (nodeId) {
+      const sid = this.getNodeSource(graphId, nodeId);
+      if (sid) {
+        const rec = this.getSourceRecord(graphId, sid);
+        assertSourceNotOnLegalHold(rec, graphId, sid, meta);
+      }
+    }
+  }
+
+  /**
+   * Toggle engram-level preservation (legal hold). Persisted in graph metadata
+   * and recorded in the op-log for audit export.
+   */
+  async setEngramPreserve(
+    graphId: GraphId,
+    preserved: boolean,
+    matter?: string,
+  ): Promise<void> {
+    this.must(graphId);
+    const existing: settingsMod.GraphMetadata = this.settings.graphMetadata[graphId] ?? {
+      template: 'personal' as settingsMod.GraphTemplate,
+      displayName: graphId,
+      createdAt: 0,
+    };
+    const updated: settingsMod.GraphMetadata = { ...existing };
+    if (preserved) {
+      updated.legalHold = true;
+      updated.legalHoldAt = Date.now();
+      if (matter) updated.legalHoldMatter = matter;
+      else delete updated.legalHoldMatter;
+    } else {
+      delete updated.legalHold;
+      delete updated.legalHoldAt;
+      delete updated.legalHoldMatter;
+    }
+    await this.setGraphMetadata(graphId, updated);
+    this.oplogWriter.emit({
+      graphId,
+      op: 'merge',
+      target: { kind: 'source', id: '__compliance:engram-preserve' },
+      after: { action: 'setEngramPreserve', preserved, matter, triggeredBy: 'compliance' },
+    });
+    this.invalidateOplogCache();
+  }
+
+  async setSourceLegalHold(
+    graphId: GraphId,
+    sourceId: string,
+    held: boolean,
+    matter?: string,
+  ): Promise<void> {
+    const g = this.must(graphId);
+    const rec = g.sourceIndex.get(sourceId);
+    if (!rec) throw new Error(`Source ${sourceId} not found in engram ${graphId}.`);
+    const updated: SourceRecord = { ...rec };
+    if (held) {
+      updated.legalHold = true;
+      updated.legalHoldAt = Date.now();
+      if (matter) updated.legalHoldMatter = matter;
+      else delete updated.legalHoldMatter;
+    } else {
+      delete updated.legalHold;
+      delete updated.legalHoldAt;
+      delete updated.legalHoldMatter;
+    }
+    g.sourceIndex.upsert(updated);
+    g.dirty = true;
+    await this.save(graphId);
+    this.oplogWriter.emit({
+      graphId,
+      op: 'merge',
+      target: { kind: 'source', id: sourceId },
+      after: { action: 'setLegalHold', held, matter, triggeredBy: 'compliance' },
+    });
+    this.invalidateOplogCache();
+  }
+
   async forgetSource(graphId: GraphId, sourceId: string, opts?: { triggeredBy?: string; skipOplogEmit?: boolean }): Promise<{ nodeIds: string[] }> {
     const g = this.must(graphId);
+    if (opts?.triggeredBy !== 'compliance:retention') {
+      this.assertMutationAllowed(graphId, sourceId);
+    }
     // Grab the ref BEFORE the forget so we can notify the file-watcher.
     // sourceIndex.forget() removes the record; we'd otherwise lose the path.
     const priorRecord = g.sourceIndex.get(sourceId);
@@ -3000,6 +3096,8 @@ export class GraphnosisHost {
     if (fromGraphId === toGraphId) throw new Error('Source and destination engram must be different.');
     const fromG = this.must(fromGraphId);
     this.must(toGraphId); // ensure destination exists
+    this.assertMutationAllowed(fromGraphId, sourceId);
+    assertEngramNotOnLegalHold(this.getGraphMetadata(toGraphId), toGraphId);
 
     const rec = fromG.sourceIndex.get(sourceId);
     if (!rec) throw new Error(`Source ${sourceId} not found in engram ${fromGraphId}.`);
@@ -3692,6 +3790,11 @@ export class GraphnosisHost {
     opts?: { correctedBy?: string; triggeredBy?: string },
   ): Promise<void> {
     const g = this.must(graphId);
+    for (const edit of patches.edits ?? []) {
+      if (edit.kind === 'delete' || edit.kind === 'edit' || edit.kind === 'supersede') {
+        this.assertMutationAllowed(graphId, undefined, edit.nodeId);
+      }
+    }
     // Attribution: every op-log event emitted by this call carries the
     // `correctedBy` field when the correction was driven by an MCP client
     // (e.g. "claude-ai"). Lets the audit log show "Claude edited this
