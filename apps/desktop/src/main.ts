@@ -18960,7 +18960,7 @@ async function openMobileWizard(): Promise<void> {
 interface SharingTokenInfo {
   id: string;
   name: string;
-  role: 'viewer' | 'editor';
+  role: string;
   engrams: string[] | '*';
   createdAt: number;
   expiresAt: number | null;
@@ -19036,7 +19036,7 @@ function computeSharingExpiresAtFromForm(expVal: string): number | null {
 
 function readSharingCreateForm(): {
   name: string;
-  role: 'viewer' | 'editor';
+  role: string;
   engrams: string[] | '*';
   expiresAt: number | null;
 } {
@@ -19053,7 +19053,7 @@ function readSharingCreateForm(): {
 
   return {
     name: nameEl?.value.trim() ?? '',
-    role: (roleEl?.value ?? 'viewer') as 'viewer' | 'editor',
+    role: roleEl?.value ?? 'viewer',
     engrams,
     expiresAt: computeSharingExpiresAtFromForm(expiryEl?.value ?? 'never'),
   };
