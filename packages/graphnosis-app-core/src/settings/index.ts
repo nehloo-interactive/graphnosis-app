@@ -572,6 +572,13 @@ export interface GraphMetadata {
   correctionsBaselineAsOf?: number;
 
   /**
+   * High-water mark from the last successful `reconcileGraphFromOplog` on this
+   * engram. When present and `.gai` integrity is OK, `loadGraph` tail-replays
+   * only op-log events after this boundary instead of scanning the full log.
+   */
+  oplogReconcileCheckpoint?: { maxTs: number; maxSeq?: number };
+
+  /**
    * Per-engram retention TTL in milliseconds. Sources whose `ingestedAt`
    * is older than this window may be purged by the compliance retention job
    * unless the source is under legal hold. Absent = no automatic purge.
