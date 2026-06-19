@@ -570,6 +570,51 @@ export interface GraphMetadata {
    * 0 / absent = no compaction yet → count all events.
    */
   correctionsBaselineAsOf?: number;
+
+  /**
+   * Per-engram retention TTL in milliseconds. Sources whose `ingestedAt`
+   * is older than this window may be purged by the compliance retention job
+   * unless the source is under legal hold. Absent = no automatic purge.
+   */
+  retentionTtlMs?: number;
+
+  /**
+   * When true (default), the retention job writes an evidence slice for each
+   * purged source before calling forget. Set false only when export storage
+   * is constrained and legal has signed off on purge-without-export.
+   */
+  retentionExportBeforePurge?: boolean;
+
+  /**
+   * Engram preservation — when true, forget / edit / move / retention purge on
+   * any source in this engram is blocked until released. Original files on disk
+   * are unchanged. Toggling emits a `setEngramPreserve` op-log event for audit.
+   */
+  legalHold?: boolean;
+  /** Unix ms when preservation was last placed ON. Cleared when released. */
+  legalHoldAt?: number;
+  /** Optional matter / case label for compliance exports. */
+  legalHoldMatter?: string;
+}
+
+/**
+ * Per-cortex cloud onboarding + shared-folder confirmation.
+ * Keys are normalized absolute cortex paths (same convention as Touch ID cache).
+ */
+export interface CloudOnboardingSettings {
+  /** Cortex paths where the user completed the cloud onboarding wizard. */
+  completed?: Record<string, true>;
+  /**
+   * User answer to "Is this folder shared with another account?" for ambiguous paths.
+   * true = shared-cloud, false = personal-cloud.
+   */
+  sharedConfirm?: Record<string, boolean>;
+}
+
+/** Compliance Mode control plane — legal hold, retention, evidence export. */
+export interface ComplianceSettings {
+  /** Master toggle. When off, retention purge is skipped; legal hold still enforced. */
+  enabled: boolean;
 }
 
 export interface HttpBridgeSettings {
@@ -698,8 +743,42 @@ export interface SkillRetrainProposal {
   triggerReason: string;
 }
 
-/** Access role for a sharing token. */
-export type SharingRole = 'viewer' | 'editor' | 'owner';
+/**
+ * Skill awaiting retrain because cited source memory changed. Created by the
+ * staleness monitor when an influential node referenced at training time is
+ * edited, superseded, or forgotten. Keyed by skill sourceId in
+ * AppSettings.skillRetrainQueue — one pending entry per skill at a time.
+ */
+export interface SkillRetrainQueueEntry {
+  /** Engram the skill lives in. */
+  graphId: string;
+  /** Skill sourceId (same as the map key). */
+  sourceId: string;
+  /** Human-readable skill label for UI surfaces. */
+  skillLabel?: string;
+  /** Unix-ms when this entry was queued (or last refreshed). */
+  queuedAt: number;
+  /** Why the skill was queued. */
+  reason: 'source-edited' | 'source-superseded' | 'source-forgotten';
+  /** Influential memory node ids that changed (may span engrams). */
+  affectedNodeIds: string[];
+}
+
+/** Access role for a sharing token — see `rbac.ts` for the enterprise matrix. */
+import type { SharingRole, McpToolCapability } from './rbac.js';
+export type { SharingRole, McpToolCapability };
+export {
+  SHARING_TOKEN_ROLES,
+  SHARING_ROLE_LABELS,
+  MCP_TOOL_CAPABILITIES,
+  isSharingRole,
+  normalizeSharingRole,
+  roleCapabilities,
+  isMcpToolAllowedForRole,
+  mcpToolsForRole,
+  sharingRoleViolationMessage,
+  toolRequiredCapabilities,
+} from './rbac.js';
 
 /**
  * Engram scope attached to a sharing token.
@@ -757,12 +836,23 @@ export interface VsCodeBridgeSettings {
   localBridgePort: number;
 }
 
+/** Cortex-wide boot and memory policy. */
+export interface CortexSettings {
+  /**
+   * @deprecated Ignored — full sequential load at unlock is always the default.
+   * Lazy-boot (default engram only at startup) is opt-in via GRAPHNOSIS_LAZY_BOOT=1.
+   */
+  preloadAllEngramsAtUnlock?: boolean;
+}
+
 export interface AppSettings {
   contentCache: ContentCacheSettings;
   forget: ForgetSettings;
   mcpRelay: McpRelaySettings;
   ui: UiSettings;
   ai: AiSettings;
+  /** Boot/memory policy for multi-engram cortices. */
+  cortex?: CortexSettings;
   /** Per-graph metadata keyed by graphId. Older cortexes may have no entry for an existing graph. */
   graphMetadata: Record<string, GraphMetadata>;
   /**
@@ -850,6 +940,13 @@ export interface AppSettings {
    * proposal at a time (newer proposals overwrite older ones).
    */
   skillRetrainPending?: Record<string, SkillRetrainProposal>;
+
+  /**
+   * Staleness-driven retrain queue — skills whose cited source memories changed
+   * since training. Populated automatically by the sidecar staleness monitor;
+   * cleared when the user dismisses the entry or completes a retrain.
+   */
+  skillRetrainQueue?: Record<string, SkillRetrainQueueEntry>;
 
   /** Docs-engram ingest state. Absent on cortexes that never saw the offer. */
   docsEngram?: {
@@ -983,6 +1080,15 @@ export interface AppSettings {
    * first load.
    */
   models?: ModelsSettings;
+
+  /** Compliance Mode — legal hold, retention policies, evidence export. */
+  compliance?: ComplianceSettings;
+
+  /**
+   * Unified cloud onboarding state — which cortex folders have seen the wizard
+   * and how ambiguous cloud paths were classified.
+   */
+  cloudOnboarding?: CloudOnboardingSettings;
 }
 
 /** Ghampus runtime settings. Phase 1 scope: just the kill switch. */
@@ -1104,7 +1210,9 @@ export const DEFAULT_SETTINGS: AppSettings = {
     mode: 'soft',
   },
   mcpRelay: {
-    initialWaitMs: 10_000,
+    // Match sidecar.rs's 90s IPC-socket wait — cold boot (embed probe, Argon2,
+    // first engram decrypt, iCloud mtime lag) routinely exceeds 10s.
+    initialWaitMs: 90_000,
     reconnectMs: 24 * 60 * 60 * 1000, // 24h — see mcp-relay.ts for rationale
   },
   ui: {
@@ -1623,6 +1731,15 @@ export function mergeWithDefaults(partial: Partial<AppSettings> | null | undefin
       ...(typeof ai.extraPrecautionMode === 'boolean' ? { extraPrecautionMode: ai.extraPrecautionMode } : {}),
     },
     graphMetadata,
+    ...(partial?.cortex && typeof partial.cortex === 'object'
+      ? {
+          cortex: {
+            ...(partial.cortex.preloadAllEngramsAtUnlock === true
+              ? { preloadAllEngramsAtUnlock: true }
+              : {}),
+          },
+        }
+      : {}),
     ...(consentHmacKey !== undefined ? { consentHmacKey } : {}),
     ...(typeof partial?.licenseEnc === 'string' ? { licenseEnc: partial.licenseEnc } : {}),
     ...(typeof partial?.domainSeatLicenseToken === 'string' ? { domainSeatLicenseToken: partial.domainSeatLicenseToken } : {}),
@@ -1637,6 +1754,9 @@ export function mergeWithDefaults(partial: Partial<AppSettings> | null | undefin
     ...(partial?.skillRetrainPending && typeof partial.skillRetrainPending === 'object'
       ? { skillRetrainPending: partial.skillRetrainPending }
       : {}),
+    ...(partial?.skillRetrainQueue && typeof partial.skillRetrainQueue === 'object'
+      ? { skillRetrainQueue: partial.skillRetrainQueue }
+      : {}),
     ...(mobile !== undefined ? { mobile } : {}),
     ...(connectors !== undefined ? { connectors } : {}),
     ...(vscode !== undefined ? { vscode } : {}),
@@ -1645,7 +1765,68 @@ export function mergeWithDefaults(partial: Partial<AppSettings> | null | undefin
     ...(brain !== undefined ? { brain } : {}),
     ...(agent !== undefined ? { agent } : {}),
     ...(models !== undefined ? { models } : {}),
+    ...(partial?.sharing && typeof partial.sharing === 'object'
+      ? { sharing: sanitizeSharingSettings(partial.sharing) }
+      : {}),
+    ...(partial?.compliance && typeof partial.compliance === 'object'
+      ? { compliance: { enabled: partial.compliance.enabled === true } }
+      : {}),
+    ...(partial?.cloudOnboarding && typeof partial.cloudOnboarding === 'object'
+      ? { cloudOnboarding: sanitizeCloudOnboarding(partial.cloudOnboarding) }
+      : {}),
   };
+}
+
+function sanitizeCloudOnboarding(raw: Partial<CloudOnboardingSettings>): CloudOnboardingSettings {
+  const out: CloudOnboardingSettings = {};
+  if (raw.completed && typeof raw.completed === 'object') {
+    const completed: Record<string, true> = {};
+    for (const [k, v] of Object.entries(raw.completed)) {
+      if (typeof k === 'string' && k.length > 0 && v === true) completed[k] = true;
+    }
+    if (Object.keys(completed).length > 0) out.completed = completed;
+  }
+  if (raw.sharedConfirm && typeof raw.sharedConfirm === 'object') {
+    const sharedConfirm: Record<string, boolean> = {};
+    for (const [k, v] of Object.entries(raw.sharedConfirm)) {
+      if (typeof k === 'string' && k.length > 0 && typeof v === 'boolean') sharedConfirm[k] = v;
+    }
+    if (Object.keys(sharedConfirm).length > 0) out.sharedConfirm = sharedConfirm;
+  }
+  return out;
+}
+
+function sanitizeSharingSettings(
+  raw: { tokens?: unknown },
+): { tokens: SharingToken[] } {
+  const tokens = Array.isArray(raw.tokens)
+    ? raw.tokens.filter(isSharingTokenRecord)
+    : [];
+  return { tokens };
+}
+
+function isSharingTokenRecord(v: unknown): v is SharingToken {
+  if (!v || typeof v !== 'object') return false;
+  const t = v as Record<string, unknown>;
+  const scope = t['scope'];
+  if (!scope || typeof scope !== 'object') return false;
+  const s = scope as Record<string, unknown>;
+  const role = s['role'];
+  const engrams = s['engrams'];
+  const roleOk = typeof role === 'string' && (
+    role === 'viewer' || role === 'recall-only' || role === 'remember' ||
+    role === 'edit-approve' || role === 'editor' || role === 'skill-train' ||
+    role === 'admin-audit' || role === 'owner'
+  );
+  const engramsOk = engrams === '*' || (
+    Array.isArray(engrams) && engrams.every((e) => typeof e === 'string' && e.length > 0)
+  );
+  return (
+    typeof t['id'] === 'string' && t['id'].length > 0 &&
+    typeof t['name'] === 'string' && t['name'].length > 0 &&
+    typeof t['createdAt'] === 'number' &&
+    roleOk && engramsOk
+  );
 }
 
 /**

@@ -4,12 +4,31 @@
 export * as sources from './sources/index.js';
 export * as embeddings from './embeddings/index.js';
 export * as settings from './settings/index.js';
+export * as cortex from './cortex/index.js';
+export * as compliance from './compliance/index.js';
+export {
+  LegalHoldError,
+  assertEngramNotOnLegalHold,
+  assertSourceNotOnLegalHold,
+  isEngramOnLegalHold,
+  isSourceOnLegalHold,
+  retentionTtlMsForGraph,
+  isRetentionExpired,
+  shouldExportBeforePurge,
+} from './compliance/index.js';
 
 // Source tracking types are App-specific and stay here.
 export type { SourceId, SourceRecord } from './types.js';
 
 // Connector types are used by the sidecar's connector subsystem.
-export type { ConnectorKind, ConnectorConfig, ConnectorSettings } from './settings/index.js';
+export type {
+  ConnectorKind,
+  ConnectorConfig,
+  ConnectorSettings,
+  SkillAutoRetrainConfig,
+  SkillRetrainProposal,
+  SkillRetrainQueueEntry,
+} from './settings/index.js';
 
 // Shared infrastructure types are re-exported from the extracted package
 // so existing call sites keep working with @graphnosis-app/core imports.
