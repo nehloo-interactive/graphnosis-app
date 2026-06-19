@@ -7,6 +7,12 @@ import { fileURLToPath } from 'node:url';
 import { randomUUID } from 'node:crypto';
 import lockfile from 'proper-lockfile';
 import { embeddings, settings as settingsMod } from '@graphnosis-app/core';
+import {
+  writeSessionLease,
+  clearSessionLease,
+  isCortexSessionBusy,
+  SESSION_LEASE_REFRESH_MS,
+} from '@graphnosis-app/core/cortex';
 import { policy } from '@nehloo-interactive/graphnosis-secure-sync';
 import { GraphnosisHost } from './host.js';
 import { GraphnosisImpl } from './graphnosis-impl.js';
@@ -450,8 +456,39 @@ async function main(): Promise<void> {
   // is holding it, we exit immediately rather than starting a competing writer.
   const releaseLock = await acquireCortexLock(env.cortexDir);
 
+  const deviceLabel = process.env.GRAPHNOSIS_DEVICE_NAME ?? os.hostname();
+  let leaseRefreshTimer: ReturnType<typeof setInterval> | null = null;
+
+  async function refreshSessionLease(): Promise<void> {
+    await writeSessionLease(env.cortexDir, {
+      deviceName: deviceLabel,
+      hostname: os.hostname(),
+      pid: process.pid,
+      updatedAt: Date.now(),
+    });
+  }
+
+  const otherSession = await isCortexSessionBusy(env.cortexDir);
+  if (otherSession.busy && otherSession.lease) {
+    console.error(
+      `[graphnosis-sidecar] NOTE: fresh session lease from ${otherSession.lease.deviceName} ` +
+      `on ${otherSession.lease.hostname} — another Graphnosis session may be open. ` +
+      'The cortex write lock still governs conflicting writers.',
+    );
+  }
+  await refreshSessionLease();
+  leaseRefreshTimer = setInterval(() => {
+    void refreshSessionLease().catch(() => { /* non-fatal heartbeat */ });
+  }, SESSION_LEASE_REFRESH_MS);
+  leaseRefreshTimer.unref();
+
   // Ensure the lock is released cleanly on common termination paths.
   const safeRelease = async (): Promise<void> => {
+    if (leaseRefreshTimer) {
+      clearInterval(leaseRefreshTimer);
+      leaseRefreshTimer = null;
+    }
+    await clearSessionLease(env.cortexDir).catch(() => { /* non-fatal */ });
     // Terminate embed workers before releasing the lock so they don't linger
     // as orphan threads after the main process exits.
     await terminateEmbedWorker().catch(() => { /* non-fatal on shutdown */ });
