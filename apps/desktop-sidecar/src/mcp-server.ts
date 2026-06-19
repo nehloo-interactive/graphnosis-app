@@ -727,7 +727,7 @@ export type LlmCapability =
 /** Returns the highest-tier valid license token across the personal slot
  *  and the domain seat slot. Mirrors the same helper in ipc.ts. */
 async function getEffectiveLicenseToken(deps: McpDeps): Promise<string | null> {
-  const primary = await getEffectiveLicenseToken(deps);
+  const primary = await deps.host.getLicenseToken();
   const settings = deps.host.getSettings();
   const domain = settings.domainSeatLicenseToken ?? null;
   if (!domain) return primary;
