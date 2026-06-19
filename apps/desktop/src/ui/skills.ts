@@ -4308,6 +4308,15 @@ document.querySelectorAll<HTMLTextAreaElement>('.studio-textarea, .studio-text-i
 }
 
 
+/** Drop hidden-skill localStorage entries for a graph being deleted. */
+export function removeHiddenSkillsForGraph(graphId: string): void {
+  const orphanedHidden = skillsLibrary
+    .filter((s) => s.graphId === graphId)
+    .map((s) => s.sourceId);
+  orphanedHidden.forEach((id) => getSkillsHiddenSet().delete(id));
+  if (orphanedHidden.length > 0) persistSkillsHidden();
+}
+
 export function getSkillsHiddenSet(): Set<string> {
   return skillsHiddenSet;
 }
