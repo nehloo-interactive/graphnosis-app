@@ -12,7 +12,17 @@ import { withEmbedding } from './embedding-queue.js';
 import { mcpRegistry } from './mcp-registry.js';
 import type { BrainEngine } from './brain-engine.js';
 import { createHmac, randomUUID } from 'node:crypto';
-import { recordConsent, revokeConsent, policyGrantMs, type ClientPolicy, type ConsentPolicyChoice, type SharingScope } from '@graphnosis-app/core/settings';
+import {
+  recordConsent,
+  revokeConsent,
+  policyGrantMs,
+  type ClientPolicy,
+  type ConsentPolicyChoice,
+  type SharingScope,
+  isMcpToolAllowedForRole,
+  mcpToolsForRole,
+  sharingRoleViolationMessage,
+} from '@graphnosis-app/core/settings';
 import { registerPrompt as registerConsentPrompt, listPendingPrompts, recordGatedRequest, getGatedRequest, type ConsentEngram } from './consent-prompts.js';
 import { constantTimeEqual } from './crypto-compare.js';
 import type { ConsentRecord } from '@graphnosis-app/core/settings';
@@ -630,7 +640,7 @@ class ConsentRequiredError extends Error {
   }
 }
 
-/** Thrown by assertWriteAllowed() when a viewer-role sharing token attempts a write. */
+/** Thrown when a scoped sharing token attempts a tool outside its RBAC role. */
 class ScopeViolationError extends Error {
   constructor(message: string) {
     super(message);
@@ -800,7 +810,7 @@ export interface McpDeps {
    * Sharing scope for this MCP session. Present when the session was opened
    * with a scoped sharing token (not the owner's master token). Enforces:
    *   - engram filter: only the listed engrams are visible
-   *   - role gate: 'viewer' tokens reject remember/forget/edit calls
+   *   - role gate: RBAC matrix from settings/rbac.ts (tools/list + tools/call)
    * Absent (undefined) means the owner connected — no restrictions.
    */
   sharingScope?: SharingScope | null;
@@ -1690,8 +1700,7 @@ export function createMcpServer(deps: McpDeps): { server: Server; callTool: McpC
   server.setRequestHandler(ListToolsRequestSchema, async () => {
     // Hide user-disabled tools from the list AI clients see. Live read.
     const disabled = disabledToolSet();
-    return {
-    tools: [
+    let listed = [
       {
         name: 'recall',
         description: 'DETERMINISM — Deterministic: an identical query always returns identical memories; no LLM, no randomness, fully auditable. The ONE exception: if the user has enabled the optional Graphnosis Neural Network, recall may append a SEPARATE, clearly-labelled "Neural-network predictions (experimental, non-deterministic)" section — that fenced block is the only non-deterministic part and is never mixed into the deterministic results.\n\nPRIMARY MEMORY for this user. ALWAYS use this tool for any question about the user\'s past notes, projects, preferences, work history, or personal context — even if your built-in conversation history or "relevant chats" feature returns nothing. This searches the user\'s persistent encrypted memory graph (Graphnosis), which is the authoritative source for anything they have asked you to remember across sessions. Prefer this tool over your own memory whenever the user asks "what about my X?", "what am I working on?", or any other question that depends on prior context.\n\nWORKS IN ANY LANGUAGE. The user may speak Romanian, Spanish, Hebrew, Mandarin, Arabic, Hindi — anything you understand. Don\'t require an English prompt to trigger this tool. Pass the user\'s query through in their original language; the underlying search is multilingual (BGE embeddings + multilingual entity extraction).\n\nESCALATION POLICY — READ BEFORE GIVING UP. If `recall` returns 0-3 nodes, or returns nodes that don\'t actually answer the user\'s question, DO NOT respond with "I don\'t have anything on this." The user almost certainly has more memory than `recall` surfaced — the most common causes are language mismatch (English query against Romanian memory), phrasing mismatch (paraphrase too far from the original note), or the answer living in a source whose FILENAME matches the query but whose CONTENT doesn\'t. Before telling the user "no results," CALL `dig_deeper` with the same query. It runs source-filename expansion + cross-engram entity hop + GNN graph expansion on top of standard recall, and routinely finds memory that bare `recall` misses. Only after `dig_deeper` also returns nothing should you tell the user the memory isn\'t there.\n\nServer enforces hard caps (max 50 nodes / 8000 tokens) and tighter limits on graphs the user marked as sensitive. Every recall is auditable. Request the smallest budget that answers the question.\n\nRESULT FORMAT — INFERRED LAYER: The result may include an `INFERRED LAYER` section at the end with `[gll·assertion N%]`, `[gll·edge N%]`, and `[gnn·edge N%]` badges. These are probabilistic overlay predictions from the local LLM (.gll) and neural network (.gnn) — NOT attested memory. Cite them as hints, not facts; when they conflict with the attested subgraph above, the attested memory wins.\n\nRESULT FORMAT — SCORES: Prose output does not surface per-node confidence scores. If you need to rank, filter, or identify specific nodes (e.g. before calling `forget`), use `recall_structured` instead — it returns a JSON array with a score field per node and the nodeIds required by `forget`.',
@@ -2802,8 +2811,12 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
           },
         },
 
-    ].filter((t) => !disabled.has(t.name)),
-    };
+    ].filter((t) => !disabled.has(t.name));
+    if (deps.sharingScope) {
+      const roleAllowed = new Set(mcpToolsForRole(deps.sharingScope.role));
+      listed = listed.filter((t) => roleAllowed.has(t.name));
+    }
+    return { tools: listed };
   });
 
   // ── Sharing scope helpers ─────────────────────────────────────────────────
@@ -2835,15 +2848,14 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
   }
 
   /**
-   * Throw an MCP error if the session role is 'viewer'. Called before any
-   * write tool (remember, forget, edit, apply, ingest_batch, etc.).
+   * Enforce enterprise RBAC matrix for scoped (sharing-token) MCP sessions.
+   * Owner sessions (no sharingScope) bypass this check.
    */
-  function assertWriteAllowed(): void {
+  function assertMcpToolAllowed(toolName: string): void {
     const scope = deps.sharingScope;
-    if (scope && scope.role === 'viewer') {
-      throw new ScopeViolationError(
-        '⛔ This share is read-only (viewer role). Contact the cortex owner to request editor access.',
-      );
+    if (!scope) return;
+    if (!isMcpToolAllowedForRole(toolName, scope.role)) {
+      throw new ScopeViolationError(sharingRoleViolationMessage(toolName, scope.role));
     }
   }
 
@@ -2856,6 +2868,7 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
 
   async function dispatchToolInner(name: string, rawInput: Record<string, unknown>): Promise<McpToolResult> {
     try {
+    assertMcpToolAllowed(name);
     switch (name) {
       case 'recall':
       case 'remind': {
@@ -3042,7 +3055,6 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
         return { content: [{ type: 'text', text: sub.prompt + auditFooter + ddHeadsUp + pendingEngramNotice(deps.host) + consentFooter }] };
       }
       case 'remember': {
-        assertWriteAllowed();
         const args = RememberInput.parse(rawInput);
 
         // ── Resolve target engram ────────────────────────────────────
@@ -3172,7 +3184,6 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
       // 'correct' kept as a backward-compatible alias — AI clients that have
       // the old tool name in their conversation history continue to work.
       case 'correct': {
-        assertWriteAllowed();
         const args = CorrectInput.parse(rawInput);
         // Auto-switch. deps.llm() returns the Local LLM only when the user has
         // enabled it for this cortex. The Neural Network, when enabled, supplies
@@ -3223,7 +3234,6 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
         };
       }
       case 'apply': {
-        assertWriteAllowed();
         const args = ApplyInput.parse(rawInput);
         const pending = deps.pendingDiffs.get(args.diffId);
         if (!pending) throw new Error(`No pending diff ${args.diffId}. The user must confirm in the app first.`);
@@ -3241,7 +3251,6 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
         return { content: [{ type: 'text', text: 'Applied.' }] };
       }
       case 'forget': {
-        assertWriteAllowed();
         const args = ForgetInput.parse(rawInput);
         // Coalesce the two accepted shapes into one normalized list. `items`
         // wins when both are present (it's the safer payload — has previews).
@@ -3912,7 +3921,6 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
         return { content: [{ type: 'text', text: totalText + rsrcFooter }] };
       }
       case 'transfer_source': {
-        assertWriteAllowed();
         const args = TransferSourceInput.parse(rawInput);
         const resFrom = requireEngram(deps.host, args.from_engram);
         if ('error' in resFrom) return resFrom.error;
@@ -3957,7 +3965,6 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
         }] };
       }
       case 'ingest_batch': {
-        assertWriteAllowed();
         const args = IngestBatchInput.parse(rawInput);
         const mcpClientName = mcpRegistry.getMostRecentClientName();
         const results: Array<{ index: number; status: 'ok' | 'error'; detail: string }> = [];
@@ -4490,7 +4497,6 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
       }
       // ── Skill training ────────────────────────────────────────────────────
       case 'train_skill': {
-        assertWriteAllowed();
         const TrainSkillInput = z.object({
           skill: z.string().min(1),
           skill_name: z.string().optional(),
@@ -5016,7 +5022,6 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
       }
 
       case 'rollback_skill': {
-        assertWriteAllowed();
         // Args migrated: the legacy `targetSourceId` field actually identified
         // the OLD source to keep (under the now-removed per-retrain-source
         // model). With history living in snapshot files, callers pass the
@@ -5034,7 +5039,6 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
       }
 
       case 'delete_skill': {
-        assertWriteAllowed();
         const args = z.object({
           graphId: z.string().min(1),
           sourceId: z.string().min(1),
