@@ -1344,13 +1344,40 @@ async function requestWalkPlan(sourceId: string, skillLabel?: string, signalLabe
 }
 
 async function confirmWalk(sourceId: string, routing: 'adaptive' | 'local-only', graphId?: string): Promise<void> {
+  setGhampusRunning(true);
   try {
-    await ipcCall('ghampus:confirmWalk', {
+    const res = await ipcCall<{
+      ok?: boolean;
+      reason?: string;
+      result?: { steps: Array<{ label: string; output?: string; error?: string }>; ok?: boolean };
+    }>('ghampus:confirmWalk', {
       sourceId,
       routing: ghampusCloudRoutingReady ? routing : 'local-only',
       ...(graphId ? { graphId } : {}),
     });
-  } catch { /* non-fatal */ }
+    clearSkillRunning();
+    if (res?.result?.steps?.length) {
+      const walkSteps: WalkStep[] = res.result.steps.map((s) => ({
+        label: s.error ? `${s.label} — ${s.error}` : s.label,
+        status: s.error ? 'error' : 'done',
+      }));
+      appendToThread({ kind: 'walk-progress', steps: walkSteps, ts: Date.now() });
+      const summary = res.result.steps
+        .filter((s) => s.output && !s.error)
+        .map((s) => `**${s.label}**\n${s.output}`)
+        .join('\n\n');
+      if (summary) {
+        appendToThread({ kind: 'ghampus', text: summary, ts: Date.now() });
+      }
+    } else if (res?.ok === false) {
+      void gAlert('Skill walk failed', res.reason ?? 'Could not execute the walk.');
+    }
+  } catch (e) {
+    clearSkillRunning();
+    void gAlert('Skill walk error', e instanceof Error ? e.message : String(e));
+  } finally {
+    setGhampusRunning(false);
+  }
 }
 
 async function sendRefineResponse(sourceId: string, action: 'update' | 'edit' | 'skip'): Promise<void> {
