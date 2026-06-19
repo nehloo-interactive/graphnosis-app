@@ -841,7 +841,7 @@ Skills are the procedural memory layer of Graphnosis — Standard Operating Proc
 
 The procedural model in one paragraph: each skill is a sequence of body steps stored in source order; five evidence-tagged edge types connect them — `skill:seq` for the linear chain, `skill:loop` for "go back to step N", `skill:branch` for conditional forks, `skill:ctx` for recalled memories anchored to a specific step, and `skill:calls` for `@skill: target(args) -> $capture` cross-skill invocations. Eight goal categories live inside each skill (Success, Out of scope, On completion, Trigger, Prerequisites, On failure, Requires, Produces). See [Skills as SOPs](/reference/skills/) for the full model.
 
-All twelve Skills tools are deterministic reads/writes against the same engram. **Five tools are free** — `walk_skill`, `walk_skill_structured`, `get_skill`, `list_skills`, `delete_skill` — so imported `.gsk` packs are fully usable without a Pro license. **Seven tools require Pro** (`train_skill`, `export_skill`, `rollback_skill`, `skill_history`, `skill_vitality`, `save_skill_run`, `resume_skill_run`) — they return a license error on the free plan. `train_skill` additionally has a Pro LLM path: by default it uses memory-augmented training (deterministic); with Pro + Local LLM, the body is LLM-rewritten while keeping `_(from source)_` attribution markers.
+All twelve Skills tools are deterministic reads/writes against the same engram. **Five tools are free** — `walk_skill`, `walk_skill_structured`, `get_skill`, `list_skills`, `delete_skill` — so imported `.gsk` packs are fully usable without a Pro license. **Seven tools require Pro** (`train_skill`, `export_skill`, `rollback_skill`, `skill_history`, `skill_vitality`, `save_skill_run`, `resume_skill_run`) — they return a license error on the free plan. `train_skill` compiles from authored source with **empty train-time recall**; with Pro + Local LLM and `use_llm_rewrite=true`, the body can be LLM-restructured from source only (still no cortex pull at compile time).
 
 ### `walk_skill`
 
@@ -883,9 +883,9 @@ Lists every skill in the Skills engram with metadata: source id, name, last-trai
 
 **Requires Graphnosis Pro.** [Upgrade →](https://graphnosis.com/upgrade)
 
-**Determinism: conditional.** Deterministic memory-augmented body by default; LLM-rewritten body with the Pro license + Local LLM.
+**Determinism: conditional.** Deterministic source-only compile by default; optional LLM restructure with Pro + Local LLM + `use_llm_rewrite=true`.
 
-Trains or retrains a skill — anchors fresh recall to body steps, wires the five SOP edge types, and writes a snapshot to history. In-place: one source per skill (no duplicate sources per retraining run). The Pro path additionally rewrites the body through the local LLM with `_(from source)_` attribution preserved.
+Trains or retrains a skill — parses authored text, wires the five SOP edge types, and writes a snapshot to history. Train-time recall is empty (no pull from personal engrams). In-place: one source per skill (no duplicate sources per retraining run). The Pro LLM path restructures the body from source text only.
 
 - **Parameters:** `sourceId` (required for retrain) · `name` / `goals` / `base` (required for new) · `mode` (optional — `"deterministic"` or `"llm"`; auto-selected from your license).
 - **Returns:** JSON `{ sourceId, mode, snapshotId, edges: { seq, loop, branch, ctx, calls } }`.
