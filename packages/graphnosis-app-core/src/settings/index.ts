@@ -764,6 +764,13 @@ export interface SkillRetrainQueueEntry {
   affectedNodeIds: string[];
 }
 
+/** Cited memory nodes recorded at skill train time (for staleness detection). */
+export interface SkillCitedNodesEntry {
+  graphId: string;
+  /** nodeId → engram id where the node lives. */
+  nodes: Record<string, string>;
+}
+
 /** Access role for a sharing token — see `rbac.ts` for the enterprise matrix. */
 import type { SharingRole, McpToolCapability } from './rbac.js';
 export type { SharingRole, McpToolCapability };
@@ -947,6 +954,9 @@ export interface AppSettings {
    * cleared when the user dismisses the entry or completes a retrain.
    */
   skillRetrainQueue?: Record<string, SkillRetrainQueueEntry>;
+
+  /** Influential node ids cited at train time — keyed by skill sourceId. */
+  skillCitedNodes?: Record<string, SkillCitedNodesEntry>;
 
   /** Docs-engram ingest state. Absent on cortexes that never saw the offer. */
   docsEngram?: {
@@ -1756,6 +1766,9 @@ export function mergeWithDefaults(partial: Partial<AppSettings> | null | undefin
       : {}),
     ...(partial?.skillRetrainQueue && typeof partial.skillRetrainQueue === 'object'
       ? { skillRetrainQueue: partial.skillRetrainQueue }
+      : {}),
+    ...(partial?.skillCitedNodes && typeof partial.skillCitedNodes === 'object'
+      ? { skillCitedNodes: partial.skillCitedNodes }
       : {}),
     ...(mobile !== undefined ? { mobile } : {}),
     ...(connectors !== undefined ? { connectors } : {}),
