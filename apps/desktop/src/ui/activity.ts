@@ -2,7 +2,8 @@
  * Activity — global op-log timeline (Settings → Activity pane).
  */
 import { app } from './app-context';
-import { ipcCallTimeout } from './ipc';
+import { gAlert } from './dialogs';
+import { ipcCall, ipcCallTimeout } from './ipc';
 import { escape, presSourceAttr } from './util';
 import type { OpLogEvent, GraphWithMetadata } from './types';
 
@@ -16,6 +17,62 @@ function getLoadedGraphs(): GraphWithMetadata[] {
 export function initActivity(activityEls: Record<string, HTMLElement>): void {
   els = activityEls;
   wireActivityEvents();
+  wireActivityComplianceExport();
+}
+
+interface SharingPlanInfo {
+  licensed: boolean;
+  enterprise?: boolean;
+}
+
+/** Show/hide the Enterprise Evidence Pack panel on the Activity pane. */
+export async function refreshActivityCompliancePanel(): Promise<void> {
+  const section = document.getElementById('activity-compliance-section');
+  if (!section) return;
+  try {
+    const plan = await ipcCall<SharingPlanInfo>('sharing:planInfo', {});
+    section.style.display = plan.enterprise ? '' : 'none';
+  } catch {
+    section.style.display = 'none';
+  }
+}
+
+function wireActivityComplianceExport(): void {
+  const btn = document.getElementById('btn-activity-evidence-export') as HTMLButtonElement | null;
+  if (!btn) return;
+  btn.addEventListener('click', async () => {
+    btn.disabled = true;
+    try {
+      const bounds = activityDateBounds();
+      const engram = els.activityEngramSelect.value.trim();
+      const params: { since?: number; until?: number; engram?: string } = { ...bounds };
+      if (engram) params.engram = engram;
+      const result = await ipcCallTimeout<{
+        ok: boolean;
+        pack?: unknown;
+        reason?: string;
+        message?: string;
+      }>('compliance.exportEvidencePack', params, ACTIVITY_IPC_TIMEOUT_MS);
+      if (!result.ok) {
+        void gAlert('Evidence Pack export failed', result.message ?? result.reason ?? 'Unknown error');
+        return;
+      }
+      const json = JSON.stringify(result.pack ?? {}, null, 2);
+      const blob = new Blob([json], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      const datePart = new Date().toISOString().slice(0, 10);
+      const scopePart = engram ? `-${engram.replace(/[^a-z0-9_-]+/gi, '_')}` : '';
+      a.download = `graphnosis-evidence-pack${scopePart}-${datePart}.json`;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch (e) {
+      void gAlert('Evidence Pack export error', e instanceof Error ? e.message : String(e));
+    } finally {
+      btn.disabled = false;
+    }
+  });
 }
 
 export function getActivityCat(): ActivityCat { return activityCat; }
