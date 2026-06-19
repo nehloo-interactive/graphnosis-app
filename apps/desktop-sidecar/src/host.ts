@@ -1880,6 +1880,19 @@ export class GraphnosisHost {
       }
     }
     const sourceIndex = await this.loadBundle(graphId);
+    const cache = new EmbeddingCache({ path: this.cachePath(graphId), key: this.key, salt: this.salt });
+    const entry: LoadedGraph = { handle, sourceIndex, cache, dirty: false, embeddingsBuilding: null };
+
+    // Converge .gai + source bundle with the merged multi-device op-log.
+    // .gai is a materialized cache; the op-log is durable truth for
+    // corrections and cross-device source lifecycle.
+    try {
+      await this.reconcileGraphFromOplog(graphId, entry);
+    } catch (e) {
+      console.error(
+        `[graphnosis-host] op-log reconcile failed for engram[${redactId(graphId)}]: ${(e as Error).message} — continuing with on-disk .gai`,
+      );
+    }
 
     // ── Early commit: make the engram available in the picker immediately ──
     //
@@ -1896,8 +1909,6 @@ export class GraphnosisHost {
     // a write. The cache object reference is shared with the background task
     // below, so once cache.load() completes, lookups in cached() start
     // returning hits without any further coordination.
-    const cache = new EmbeddingCache({ path: this.cachePath(graphId), key: this.key, salt: this.salt });
-    const entry: LoadedGraph = { handle, sourceIndex, cache, dirty: false, embeddingsBuilding: null };
     this.graphs.set(graphId, entry);
     this.everLoaded.add(graphId); // mark available even after a future LRU evict
     this.correctionsCount.set(graphId, 0);
@@ -2348,7 +2359,7 @@ export class GraphnosisHost {
     kind: SourceRecord['kind'],
     ref: string,
     input: AppendDocumentInput,
-    opts?: { addedBy?: string; triggeredBy?: string; skipAutoRelink?: boolean; skipSave?: boolean },
+    opts?: { addedBy?: string; triggeredBy?: string; skipAutoRelink?: boolean; skipSave?: boolean; skipOplogEmit?: boolean },
   ): Promise<SourceRecord> {
     const g = this.must(graphId);
     const sourceId = makeSourceId(kind, ref);
@@ -2436,19 +2447,21 @@ export class GraphnosisHost {
     }
 
     const trigAttr = opts?.triggeredBy ? { triggeredBy: opts.triggeredBy } : {};
-    this.oplogWriter.emit({
-      graphId,
-      op: 'ingestSource',
-      target: { kind: 'source', id: sourceId },
-      after: { ...record, ...trigAttr },
-    });
-    for (const nodeId of result.newNodeIds) {
+    if (!opts?.skipOplogEmit) {
       this.oplogWriter.emit({
         graphId,
-        op: 'addNode',
-        target: { kind: 'node', id: nodeId },
-        after: { sourceId, ...trigAttr },
+        op: 'ingestSource',
+        target: { kind: 'source', id: sourceId },
+        after: { ...record, ...trigAttr },
       });
+      for (const nodeId of result.newNodeIds) {
+        this.oplogWriter.emit({
+          graphId,
+          op: 'addNode',
+          target: { kind: 'node', id: nodeId },
+          after: { sourceId, ...trigAttr },
+        });
+      }
     }
 
     // Content cache — respect user settings + per-source size cap. Failures
@@ -2816,7 +2829,7 @@ export class GraphnosisHost {
     return { reingested: totalReingested, cancelled, skipped: totalSkipped, failed: totalFailed, perGraph };
   }
 
-  async forgetSource(graphId: GraphId, sourceId: string, opts?: { triggeredBy?: string }): Promise<{ nodeIds: string[] }> {
+  async forgetSource(graphId: GraphId, sourceId: string, opts?: { triggeredBy?: string; skipOplogEmit?: boolean }): Promise<{ nodeIds: string[] }> {
     const g = this.must(graphId);
     // Grab the ref BEFORE the forget so we can notify the file-watcher.
     // sourceIndex.forget() removes the record; we'd otherwise lose the path.
@@ -2856,19 +2869,23 @@ export class GraphnosisHost {
       }
       // Soft-delete in Graphnosis: node stays for audit, confidence drops, won't be returned by queries.
       await this.opts.adapter.applyCorrection(g.handle, { kind: 'delete', nodeId, reason: `forget source ${sourceId}` });
+      if (!opts?.skipOplogEmit) {
+        this.oplogWriter.emit({
+          graphId,
+          op: 'deleteNode',
+          target: { kind: 'node', id: nodeId },
+          before: { sourceId, preview: contentPreview, ...forgetTrigAttr },
+        });
+      }
+    }
+    if (!opts?.skipOplogEmit) {
       this.oplogWriter.emit({
         graphId,
-        op: 'deleteNode',
-        target: { kind: 'node', id: nodeId },
-        before: { sourceId, preview: contentPreview, ...forgetTrigAttr },
+        op: 'forgetSource',
+        target: { kind: 'source', id: sourceId },
+        before: { ref: priorRecord?.ref, kind: priorRecord?.kind, nodeCount: nodeIds.length, ...forgetTrigAttr },
       });
     }
-    this.oplogWriter.emit({
-      graphId,
-      op: 'forgetSource',
-      target: { kind: 'source', id: sourceId },
-      before: { ref: priorRecord?.ref, kind: priorRecord?.kind, nodeCount: nodeIds.length, ...forgetTrigAttr },
-    });
     // Forget means forget everywhere — drop the cached content blob too.
     // If the user re-ingests later, we'll cache a fresh copy.
     await this.deleteContentBlob(sourceId);
@@ -5240,6 +5257,180 @@ export class GraphnosisHost {
     }
 
     return { id, sizeBytes, fileCount };
+  }
+
+  // ── Op-log merge / materialization ─────────────────────────────────────
+  //
+  // On loadGraph, converge the on-disk .gai cache with the merged op-log
+  // (all devices' *.oplog files). Corrections (edit/supersede/delete) and
+  // source lifecycle (ingest/forget/reorder) from peer devices are replayed
+  // here; missing recoverable sources are re-ingested without duplicating
+  // op-log rows (skipOplogEmit).
+
+  private async reconcileGraphFromOplog(graphId: GraphId, entry: LoadedGraph): Promise<void> {
+    const events = await this.listOplogEvents();
+    const graphEvents = events.filter((e) => e.graphId === graphId);
+    if (graphEvents.length === 0) return;
+
+    await this.opts.adapter.build(entry.handle);
+
+    let dirty = false;
+    const liveSources = this.buildLiveSourceMapFromOplog(graphId, graphEvents, entry);
+
+    for (const [sourceId, rec] of liveSources) {
+      const local = entry.sourceIndex.get(sourceId);
+      if (!local) {
+        if (await this.recoverSourceFromOplog(graphId, entry, rec)) dirty = true;
+      } else if (JSON.stringify(local.nodeIds) !== JSON.stringify(rec.nodeIds)) {
+        try {
+          entry.sourceIndex.reorderNodes(sourceId, rec.nodeIds);
+          dirty = true;
+        } catch {
+          // nodeId mismatch between .gai and op-log — leave for manual recovery
+        }
+      }
+    }
+
+    for (const s of [...entry.sourceIndex.list()]) {
+      if (!liveSources.has(s.sourceId)) {
+        await this.forgetSource(graphId, s.sourceId, { triggeredBy: 'oplog-sync', skipOplogEmit: true });
+        dirty = true;
+      }
+    }
+
+    dirty = await this.replayNodeCorrectionsFromOplog(entry, graphEvents) || dirty;
+
+    if (dirty) {
+      entry.dirty = true;
+      await this.save(graphId);
+      this.invalidateOplogCache();
+    }
+  }
+
+  /** Walk op-log source events chronologically — ingestSource wins over reorderSource partials. */
+  private buildLiveSourceMapFromOplog(
+    graphId: GraphId,
+    graphEvents: Awaited<ReturnType<typeof oplog.readAllEvents>>,
+    entry: LoadedGraph,
+  ): Map<string, SourceRecord> {
+    const live = new Map<string, SourceRecord>();
+    for (const ev of graphEvents) {
+      if (ev.op === 'ingestSource' && ev.target.kind === 'source') {
+        const rec = ev.after as Partial<SourceRecord> | undefined;
+        if (!rec?.ref || !rec?.kind) continue;
+        live.set(ev.target.id, {
+          sourceId: ev.target.id,
+          graphId,
+          kind: rec.kind,
+          ref: rec.ref,
+          ingestedAt: rec.ingestedAt ?? ev.ts,
+          nodeIds: rec.nodeIds ?? [],
+          ...(rec.contentHash ? { contentHash: rec.contentHash } : {}),
+          ...(rec.addedBy ? { addedBy: rec.addedBy } : {}),
+        });
+      } else if (ev.op === 'forgetSource' && ev.target.kind === 'source') {
+        live.delete(ev.target.id);
+      } else if ((ev.op as string) === 'reorderSource' && ev.target.kind === 'source') {
+        const after = ev.after as { nodeIds?: string[] } | undefined;
+        const base = live.get(ev.target.id) ?? entry.sourceIndex.get(ev.target.id);
+        if (base && after?.nodeIds) {
+          live.set(ev.target.id, { ...base, nodeIds: after.nodeIds });
+        }
+      }
+    }
+    return live;
+  }
+
+  private async recoverSourceFromOplog(
+    graphId: GraphId,
+    _entry: LoadedGraph,
+    rec: SourceRecord,
+  ): Promise<boolean> {
+    try {
+      await fs.stat(this.contentPath(rec.sourceId));
+      const blob = await this.readContentBlob(rec.sourceId);
+      if (!blob) return false;
+      const content = blob.header.docKind === 'pdf'
+        ? Buffer.from(blob.content)
+        : new TextDecoder().decode(blob.content);
+      await this.ingest(graphId, blob.header.kind, blob.header.ref, {
+        kind: blob.header.docKind,
+        content: content as never,
+        sourceRef: blob.header.ref,
+      }, { triggeredBy: 'oplog-sync', skipOplogEmit: true, skipAutoRelink: true });
+      return true;
+    } catch { /* no cache blob */ }
+
+    if (rec.kind === 'file') {
+      try {
+        const buf = await fs.readFile(rec.ref);
+        const ext = path.extname(rec.ref).toLowerCase().replace(/^\./, '');
+        const docKind: 'markdown' | 'text' | 'json' | 'html' | 'pdf' = (
+          ext === 'md' || ext === 'markdown' ? 'markdown' :
+          ext === 'json' ? 'json' :
+          ext === 'html' || ext === 'htm' ? 'html' :
+          ext === 'pdf' ? 'pdf' :
+          'text'
+        );
+        const content = docKind === 'pdf' ? buf : new TextDecoder().decode(buf);
+        await this.ingest(graphId, 'file', rec.ref, {
+          kind: docKind,
+          content: content as never,
+          sourceRef: rec.ref,
+        }, { triggeredBy: 'oplog-sync', skipOplogEmit: true, skipAutoRelink: true });
+        return true;
+      } catch { /* file gone */ }
+    }
+    return false;
+  }
+
+  /** Replay edit/supersede/delete node ops in ts order (multi-device LWW is in reduce; here we apply the stream). */
+  private async replayNodeCorrectionsFromOplog(
+    entry: LoadedGraph,
+    graphEvents: Awaited<ReturnType<typeof oplog.readAllEvents>>,
+  ): Promise<boolean> {
+    let dirty = false;
+    for (const ev of graphEvents) {
+      if (ev.target.kind !== 'node') continue;
+      const nodeId = ev.target.id;
+      if (ev.op === 'deleteNode') {
+        const local = this.opts.adapter.inspectNodes(entry.handle).find((n) => n.id === nodeId);
+        if (!local || local.confidence <= 0.2) continue;
+        await this.opts.adapter.applyCorrection(entry.handle, {
+          kind: 'delete',
+          nodeId,
+          reason: 'oplog-sync: deleted on peer device',
+        });
+        dirty = true;
+        continue;
+      }
+      if (ev.op !== 'editNode' && ev.op !== 'supersede') continue;
+      const after = ev.after as { content?: string; reason?: string } | undefined;
+      if (typeof after?.content !== 'string') continue;
+      const local = this.opts.adapter.inspectNodes(entry.handle).find((n) => n.id === nodeId);
+      if (!local) continue;
+      const preview = after.content.slice(0, 200);
+      if (local.contentPreview === preview || local.contentPreview === after.content) continue;
+      await this.opts.adapter.applyCorrection(entry.handle, {
+        kind: ev.op === 'supersede' ? 'supersede' : 'edit',
+        nodeId,
+        content: after.content,
+        reason: String(after.reason ?? 'oplog-sync'),
+      });
+      dirty = true;
+    }
+    return dirty;
+  }
+
+  /** Enterprise MCP audit export — encrypted at rest in mcp-audit.enc. */
+  async listMcpAuditEvents(): Promise<import('./mcp-audit.js').McpAuditEvent[]> {
+    const { listMcpAuditEvents } = await import('./mcp-audit.js');
+    return listMcpAuditEvents(this.opts.cortexDir, this.key);
+  }
+
+  async appendMcpAuditEvent(partial: Omit<import('./mcp-audit.js').McpAuditEvent, 'id' | 'ts'>): Promise<void> {
+    const { appendMcpAuditEvent } = await import('./mcp-audit.js');
+    await appendMcpAuditEvent(this.opts.cortexDir, this.key, partial);
   }
 
   // ── Recovery ────────────────────────────────────────────────────────────
