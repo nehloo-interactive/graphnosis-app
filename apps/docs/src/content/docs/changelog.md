@@ -11,6 +11,29 @@ Conventions: **Added** = new features, **Changed** = behavior or UX shifts, **Fi
 
 ---
 
+## v1.17.4 — Skills compile contract + Cursor connect
+
+<p style="margin-top:0.5rem;font-size:1.25em;opacity:0.85;">2026-06-19</p>
+
+Patch release aligning skill training with source-only compile, skills UI copy, and Cursor setup docs (plugin vs in-app MCP wizard).
+
+### Changed
+
+- **Skill training (source-only).** Training compiles from your authored skill source with an **empty engram** at train time — personal memory is not baked into the trained graph. Recall applies at walk/runtime when MCP clients call `walk_skill_structured`.
+- **Skills UI.** Home and trainer surfaces describe source-only compile and empty-engram training consistently with the sidecar contract.
+- **Cursor setup (Option A).** Docs and README: optional [graphnosis-cursor-plugin](https://github.com/nehloo-interactive/graphnosis-cursor-plugin) for rules/skills/hooks; MCP via Graphnosis **Configure Cursor** wizard (`graphnosis-mcp-relay` + `~/.graphnosis/mcp.sock`).
+- **Download redirect fallbacks.** Netlify `_redirects` and `sync-graphnosis-md.mjs` stay in sync for release download URLs.
+
+### Fixed
+
+- **`train_skill` MCP tool description.** Matches the empty-engram, source-only train contract (no misleading memory-augmented wording).
+
+### Note
+
+- **graphnosis-cursor-plugin v1.0.1** shipped separately from this app release.
+
+---
+
 ## v1.17.3 — Stability, Touch ID, and license refresh
 
 <p style="margin-top:0.5rem;font-size:1.25em;opacity:0.85;">2026-06-19</p>
