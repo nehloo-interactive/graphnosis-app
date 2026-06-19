@@ -413,7 +413,14 @@ export async function invoke<T>(cmd: string, args?: Record<string, unknown>): Pr
   if (TAURI_ONLY.has(cmd)) {
     // Return null/false rather than throwing so callers that don't check can degrade
     // gracefully. The UI hides these affordances when IS_TAURI is false.
-    if (cmd === 'biometric_available') return false as unknown as T;
+    if (cmd === 'biometric_available') {
+      return {
+        available: false,
+        has_saved_passphrase: false,
+        hardware_available: false,
+        hint: null,
+      } as unknown as T;
+    }
     if (cmd === 'pick_cortex_folder' || cmd === 'pick_files' || cmd === 'pick_folders' || cmd === 'pick_gsk_file') return null as unknown as T;
     return undefined as unknown as T;
   }

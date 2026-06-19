@@ -201,6 +201,12 @@
         font-size: 15px;
         color: var(--fg-dim);
         white-space: nowrap;
+        cursor: pointer;
+      }
+      .touchid-inline-hint:hover {
+        color: var(--fg);
+        text-decoration: underline;
+        text-underline-offset: 2px;
       }
       .touchid-inline-hint.hidden { display: none; }
       .passphrase-warning { margin: 10px 0 0; padding: 10px 12px; background: var(--color-status-warn-yellow); border-left: 3px solid var(--color-status-warn-border); border-radius: 0 6px 6px 0; font-size: 11.5px; line-height: 1.6; color: var(--fg-dim); }
@@ -575,16 +581,43 @@
       .sources-filter-bar input[type="search"] { flex: 1; padding: 6px 9px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg-elev); color: var(--fg); font-family: inherit; font-size: 14px; box-sizing: border-box; min-width: 0; }
       .sources-filter-bar input[type="search"]::placeholder { color: var(--fg-dim); }
       .sources-engram-select { flex-shrink: 0; padding: 6px 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg-elev); color: var(--fg); font-family: inherit; font-size: 14px; max-width: 160px; cursor: pointer; }
-      .sources-engram-heading { font-size: 15px; font-weight: 600; color: var(--fg-dim); text-transform: uppercase; letter-spacing: 0.05em; padding-bottom: 4px; margin-bottom: 2px; border-bottom: 1px solid var(--border); position: sticky; top: -20px; background: var(--bg); z-index: 1; padding-top: 20px; }
-      .source-row { display: flex; align-items: center; gap: 8px; padding: 6px 0; font-size: 14px; }
+      .sources-engram-heading { font-size: 15px; font-weight: 600; color: var(--fg-dim); text-transform: uppercase; letter-spacing: 0.05em; padding-bottom: 4px; margin-bottom: 2px; border-bottom: 1px solid var(--border); position: sticky; top: -20px; background: var(--bg); z-index: 1; padding-top: 20px; display: flex; align-items: center; flex-wrap: wrap; gap: 4px; }
+      .source-row { display: flex; align-items: center; gap: 8px; padding: 6px 0; font-size: 14px; container-type: inline-size; container-name: source-row; }
+      .source-row-main { flex: 1; min-width: 0; display: flex; align-items: center; gap: 8px; overflow: hidden; }
+      /* Inline action flows (move / forget / reingest): filename stays on row 1;
+         confirm widget wraps below instead of squeezing the name out. */
+      .source-row.source-row-moving,
+      .source-row.source-row-forgetting,
+      .source-row.source-row-reingesting {
+        flex-wrap: wrap;
+        align-items: flex-start;
+      }
+      .source-row.source-row-moving .source-row-main,
+      .source-row.source-row-forgetting .source-row-main,
+      .source-row.source-row-reingesting .source-row-main {
+        flex: 1 1 auto;
+        overflow: visible;
+      }
+      .source-row.source-row-moving .source-name,
+      .source-row.source-row-forgetting .source-name,
+      .source-row.source-row-reingesting .source-name {
+        overflow: visible;
+        text-overflow: clip;
+      }
+      /* Forget confirm: dim + strike the name so the row still reads clearly
+         but signals the pending deletion. */
+      .source-row.source-row-forgetting .source-name {
+        opacity: 0.55;
+        text-decoration: line-through;
+        text-decoration-thickness: 1px;
+      }
       .source-row-disabled .source-name { opacity: 0.4; }
       .source-row-disabled .source-meta { opacity: 0.4; }
       /* Excluded-from-recall: dim the name + strike it so it reads as "present
          but not used by the AI", distinct from forgotten/disabled. */
       .source-row-excluded .source-name { opacity: 0.55; text-decoration: line-through; text-decoration-thickness: 1px; }
-      .btn-source-include { color: var(--color-status-warn-gold, #b8860b); }
-      .source-name { color: var(--fg); flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-      .source-meta { color: var(--fg-dim); white-space: nowrap; }
+      .source-name { color: var(--fg); flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .source-meta { color: var(--fg-dim); white-space: nowrap; flex-shrink: 0; }
       .source-moved-label { color: var(--fg-dim); font-size: 13px; white-space: nowrap; font-style: italic; }
       /* Attribution chip for AI-client-added sources (remember/correct
          via MCP). Soft turquoise tint so it's clearly informational, not
@@ -599,41 +632,124 @@
         color: color-mix(in oklab, var(--accent) 75%, var(--fg));
         white-space: nowrap;
         cursor: help;
+        flex-shrink: 0;
       }
-      .btn-forget {
-        font-size: 15px;
-        padding: 2px 8px;
+      /* Preserved engram badge — warm amber, distinct from archived/active. */
+      .sources-engram-preserved-chip,
+      .sgr-badge-preserved {
+        font-size: 14px;
+        padding: 1px 6px;
         border-radius: 4px;
+        background: color-mix(in oklab, var(--color-status-warn-gold, #b8860b) 14%, var(--bg-elev));
+        border: 1px solid color-mix(in oklab, var(--color-status-warn-gold, #b8860b) 35%, var(--border));
+        color: color-mix(in oklab, var(--color-status-warn-gold, #b8860b) 85%, var(--fg));
+        white-space: nowrap;
+        cursor: help;
+        flex-shrink: 0;
+        margin-left: 8px;
+      }
+      .source-excluded-badge {
+        font-size: 14px;
+        padding: 1px 6px;
+        border-radius: 4px;
+        background: color-mix(in oklab, var(--fg-dim) 10%, var(--bg-elev));
+        border: 1px solid color-mix(in oklab, var(--fg-dim) 25%, var(--border));
+        color: var(--fg-dim);
+        white-space: nowrap;
+        cursor: help;
+        flex-shrink: 0;
+      }
+      .source-row-excluded .source-name { opacity: 0.72; }
+      /* Compact ⋯ menu — all row actions live in the dropdown. */
+      .source-row-actions-wrap {
+        position: relative;
+        flex-shrink: 0;
+        margin-left: auto;
+      }
+      .btn-source-menu {
+        width: 28px;
+        height: 28px;
+        padding: 0;
+        border-radius: 6px;
+        border: 1px solid var(--border);
         background: transparent;
         color: var(--fg-dim);
-        border: 1px solid var(--border);
+        font-size: 18px;
+        line-height: 1;
+        cursor: pointer;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
       }
-      .btn-forget:hover {
+      .btn-source-menu:hover,
+      .btn-source-menu[aria-expanded="true"] {
+        background: color-mix(in oklab, var(--fg) 6%, transparent);
+        color: var(--fg);
+        border-color: color-mix(in oklab, var(--fg) 20%, var(--border));
+      }
+      .source-actions-menu {
+        position: absolute;
+        top: calc(100% + 4px);
+        right: 0;
+        z-index: 20;
+        min-width: 210px;
+        max-width: min(280px, 90vw);
+        padding: 4px 0;
+        border-radius: 8px;
+        border: 1px solid var(--border);
+        background: var(--bg-elev);
+        box-shadow: 0 4px 16px color-mix(in oklab, var(--fg) 12%, transparent);
+      }
+      .source-actions-menu.hidden { display: none; }
+      .source-actions-menu-item {
+        display: block;
+        width: 100%;
+        text-align: left;
+        padding: 8px 12px;
+        border: none;
+        background: transparent;
+        color: var(--fg);
+        font: inherit;
+        font-size: 14px;
+        cursor: pointer;
+      }
+      .source-actions-menu-item:hover:not(:disabled) {
+        background: color-mix(in oklab, var(--fg) 6%, transparent);
+      }
+      .source-actions-menu-item.danger { color: var(--error); }
+      .source-actions-menu-item.danger:hover:not(:disabled) {
         background: color-mix(in oklab, var(--error) 12%, transparent);
-        color: var(--error);
-        border-color: color-mix(in oklab, var(--error) 40%, transparent);
       }
-      /* Reingest mirrors Forget's chrome but uses the accent color on hover
-         since it's a re-read action, not a destructive one. */
-      .btn-reingest {
-        font-size: 15px;
-        padding: 2px 8px;
-        border-radius: 4px;
-        background: transparent;
+      .source-actions-menu-item:disabled {
+        opacity: 0.45;
+        cursor: not-allowed;
+      }
+      .source-actions-menu-item-hint {
+        display: flex;
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 1px;
+      }
+      .source-actions-menu-sub {
+        font-size: 12px;
         color: var(--fg-dim);
-        border: 1px solid var(--border);
+        font-weight: 400;
       }
-      .btn-reingest:hover {
-        background: color-mix(in oklab, var(--accent) 12%, transparent);
-        color: var(--accent);
-        border-color: color-mix(in oklab, var(--accent) 40%, transparent);
+      .source-actions-menu-sep {
+        height: 1px;
+        margin: 4px 0;
+        background: var(--border);
       }
-      .btn-reingest:disabled {
-        opacity: 0.5;
-        cursor: progress;
+      @container source-row (max-width: 360px) {
+        .source-row-main .source-added-by { display: none; }
       }
       /* Inline two-step forget confirmation inside a .source-row.
-         Replaces the .btn-forget in-place; collapses on Escape / blur. */
+         Replaces the ⋯ menu in-place; collapses on Escape / blur. */
+      .source-row-forget-confirm,
+      .source-row-reingest-confirm,
+      .source-row-move-picker {
+        flex: 1 1 100%;
+      }
       .source-row-forget-confirm,
       .source-row-reingest-confirm {
         display: flex;
@@ -703,20 +819,6 @@
         cursor: not-allowed;
       }
       /* Move-to source picker — inline engram selector */
-      .btn-move-source {
-        font-size: 15px;
-        padding: 2px 8px;
-        border-radius: 4px;
-        background: transparent;
-        color: var(--fg-dim);
-        border: 1px solid var(--border);
-      }
-      .btn-move-source:hover {
-        background: color-mix(in oklab, var(--accent) 12%, transparent);
-        color: var(--accent);
-        border-color: color-mix(in oklab, var(--accent) 40%, transparent);
-      }
-      .btn-move-source:disabled { opacity: 0.5; cursor: progress; }
       .source-row-move-picker {
         display: flex;
         align-items: center;
@@ -727,6 +829,10 @@
         font-size: 15px;
         color: var(--fg-dim);
         white-space: nowrap;
+      }
+      .source-row-move-filename {
+        font-weight: 600;
+        color: var(--fg);
       }
       .source-row-move-select {
         font-size: 15px;
@@ -818,6 +924,49 @@
         white-space: nowrap;
       }
       .sgr-badge-skill { background: color-mix(in oklab, var(--accent) 15%, transparent) !important; color: var(--accent) !important; }
+      .sgr-confirm-preserve {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+        flex: 1 1 100%;
+        padding: 8px 0 0;
+        font-size: 14px;
+      }
+      .sgr-preserve-copy { margin: 0; color: var(--fg-dim); line-height: 1.45; }
+      .sgr-preserve-matter-details summary {
+        cursor: pointer;
+        color: var(--fg-dim);
+        font-size: 13px;
+      }
+      .sgr-preserve-matter-input {
+        width: 100%;
+        margin-top: 6px;
+        padding: 4px 8px;
+        border-radius: 4px;
+        border: 1px solid var(--border);
+        background: var(--bg);
+        color: var(--fg);
+        font-family: inherit;
+        font-size: 14px;
+      }
+      .btn-graph-preserve {
+        font-size: 13px;
+        padding: 4px 8px;
+        border-radius: 4px;
+        border: 1px solid color-mix(in oklab, var(--color-status-warn-gold, #b8860b) 45%, var(--border));
+        background: color-mix(in oklab, var(--color-status-warn-gold, #b8860b) 8%, transparent);
+        color: color-mix(in oklab, var(--color-status-warn-gold, #b8860b) 90%, var(--fg));
+        cursor: pointer;
+        white-space: nowrap;
+      }
+      .btn-graph-preserve:hover {
+        background: color-mix(in oklab, var(--color-status-warn-gold, #b8860b) 16%, transparent);
+      }
+      .settings-graph-row.is-preserved .btn-graph-preserve {
+        border-color: var(--border);
+        background: transparent;
+        color: var(--fg-dim);
+      }
       .sgr-section-header {
         font-size: 12px; font-weight: 600; letter-spacing: 0.02em;
         color: var(--fg-dim); margin: 20px 0 6px; padding-bottom: 4px;
@@ -1566,21 +1715,153 @@
       .modal-footer .filler { flex: 1; color: var(--fg-dim); font-size: 15px; line-height: 1.45; }
       /* The engram-create dialog's privacy note is a longer paragraph — render it a notch smaller. */
       #gw-note { font-size: 13px; line-height: 1.4; }
-      /* Pinned name/id block between the scrolling template list and the footer */
-      .modal-sticky-fields {
-        padding: 10px 16px 8px;
+
+      /* Engram Sharing — standard modal-body scroll; footer stays pinned below. */
+      #sharing-modal .sharing-create-section {
+        margin-top: 0;
+        padding-top: 16px;
         border-top: 1px solid var(--border);
-        background: var(--bg);
-        flex-shrink: 0;
       }
-      .modal-sticky-fields .row label {
-        display: block;
+      #sharing-modal .sharing-audit-section {
+        flex: 1;
+        min-width: 0;
+        text-align: left;
+      }
+      #sharing-modal .sharing-audit-hint {
+        margin: 0 0 6px;
         font-size: 11px;
+        line-height: 1.35;
+        color: var(--fg-muted);
+      }
+      #sharing-modal .sharing-create-review {
+        margin: 0 0 10px;
+        padding: 8px 10px;
+        font-size: 12px;
+        line-height: 1.45;
+        color: var(--fg-muted);
+        background: var(--bg-raised);
+        border-radius: 6px;
+      }
+      #sharing-reveal-modal .sharing-reveal-summary {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+        margin-bottom: 14px;
+        padding: 10px 12px;
+        background: var(--bg-raised);
+        border-radius: 6px;
+        font-size: 13px;
+        line-height: 1.45;
+      }
+      #sharing-reveal-modal .sharing-reveal-row {
+        display: grid;
+        grid-template-columns: 88px 1fr;
+        gap: 6px 10px;
+        align-items: start;
+      }
+      #sharing-reveal-modal .sharing-reveal-label {
+        color: var(--fg-muted);
+        font-size: 12px;
+      }
+      #sharing-reveal-modal .sharing-reveal-value-text {
         font-weight: 600;
-        color: var(--fg-dim);
-        text-transform: uppercase;
-        letter-spacing: 0.05em;
-        margin-bottom: 3px;
+      }
+      #sharing-reveal-modal .sharing-reveal-can-do {
+        margin: 0;
+        font-size: 13px;
+        line-height: 1.45;
+      }
+      #sharing-reveal-modal .sharing-reveal-not-shared {
+        margin: 10px 0 0;
+        font-size: 12px;
+        line-height: 1.45;
+        color: var(--fg-muted);
+      }
+      #sharing-reveal-modal .sharing-reveal-token-label {
+        margin: 0 0 6px;
+        font-size: 12px;
+        font-weight: 600;
+        color: var(--fg-muted);
+      }
+      #sharing-reveal-modal .sharing-reveal-copy-row {
+        display: flex;
+        align-items: flex-start;
+        gap: 8px;
+        margin-bottom: 8px;
+      }
+      #sharing-reveal-modal .sharing-reveal-copy-row code {
+        flex: 1;
+        font-size: 12px;
+        word-break: break-all;
+        padding: 8px;
+        background: var(--bg-raised);
+        border-radius: 6px;
+        user-select: all;
+      }
+      #sharing-reveal-modal .sharing-reveal-config {
+        margin: 0 0 8px;
+        font-size: 11px;
+        line-height: 1.4;
+        word-break: break-all;
+        white-space: pre-wrap;
+        padding: 8px;
+        background: var(--bg-raised);
+        border-radius: 6px;
+        user-select: all;
+        max-height: 160px;
+        overflow-y: auto;
+      }
+      #sharing-reveal-modal .sharing-reveal-url-note {
+        margin: 0 0 14px;
+        font-size: 12px;
+        line-height: 1.45;
+        color: var(--fg-muted);
+      }
+      #sharing-reveal-modal .sharing-client-tabs {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+        margin: 0 0 10px;
+      }
+      #sharing-reveal-modal .sharing-client-tab {
+        padding: 5px 10px;
+        font-size: 12px;
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        background: var(--bg-raised);
+        color: var(--fg-muted);
+        cursor: pointer;
+      }
+      #sharing-reveal-modal .sharing-client-tab.active {
+        border-color: var(--accent);
+        color: var(--fg);
+        background: var(--bg-elev);
+      }
+      #sharing-reveal-modal .sharing-reveal-panel {
+        display: none;
+        margin-bottom: 10px;
+      }
+      #sharing-reveal-modal .sharing-reveal-panel.active {
+        display: block;
+      }
+      #sharing-reveal-modal .sharing-reveal-panel p {
+        margin: 0 0 8px;
+        font-size: 12px;
+        line-height: 1.45;
+        color: var(--fg-muted);
+      }
+      #sharing-reveal-modal .sharing-reveal-panel ol {
+        margin: 0 0 10px;
+        padding-left: 18px;
+        font-size: 12px;
+        line-height: 1.45;
+        color: var(--fg-muted);
+      }
+      #sharing-reveal-modal .sharing-reveal-install-actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        margin-top: 8px;
       }
 
       .recovery-item {
@@ -1934,33 +2215,58 @@
         height: 100%;
       }
 
-      /* Unlock view stays full-screen and centered until the user authenticates.
-         Belt-and-suspenders centering: outer shell flex-centers the inner
-         wrapper, which is then ALSO margin-auto'd to handle any browser
-         quirk where flex alignment doesn't take effect (e.g. when the
-         parent's height didn't establish cleanly). */
+      /* Unlock view stays full-screen until the user authenticates.
+         Scroll when content overflows (lock-conflict card, recovery flow).
+         align-items:flex-start + wrapper margin:auto centers when content
+         fits; when taller than the viewport, overflow-y:auto scrolls. */
       .unlock-shell {
         display: flex;
-        align-items: center;
+        align-items: flex-start;
         justify-content: center;
         width: 100%;
         height: 100%;
+        min-height: 0;
         padding: 24px;
+        box-sizing: border-box;
+        overflow-x: hidden;
+        overflow-y: auto;
+        -webkit-overflow-scrolling: touch;
         text-align: center;
       }
       .unlock-wrapper {
         width: 100%;
         max-width: 480px;
-        margin: 0 auto;
+        margin: auto 0;
         display: flex;
         flex-direction: column;
         align-items: center;
       }
       .unlock-wrapper > * { max-width: 100%; }
       .unlock-shell .unlock-card { max-width: 480px; width: 100%; text-align: left; }
+      .cortex-lock-card { margin-bottom: 16px; border: 1px solid color-mix(in oklab, var(--color-status-warn-border) 55%, var(--border)); background: color-mix(in oklab, var(--color-status-warn-border) 8%, var(--bg-elev)); }
+      .cortex-lock-card .cortex-lock-steps { margin: 0 0 12px 20px; padding: 0; font-size: 14px; line-height: 1.55; color: var(--fg); }
+      .cortex-lock-card .cortex-lock-steps li { margin-bottom: 6px; }
+      .cortex-lock-mode-badge { display: inline-block; font-size: 11px; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; padding: 3px 8px; border-radius: 999px; margin-bottom: 8px; background: color-mix(in oklab, var(--color-status-warn-border) 18%, transparent); color: var(--color-status-warn-border); }
+      .cortex-lock-mode-badge.hidden { display: none; }
+      .cortex-lock-details { font-size: 13px; color: var(--fg-dim); margin-bottom: 4px; }
+      .cortex-lock-details summary { cursor: pointer; user-select: none; }
+      .cortex-lock-details pre { margin: 8px 0 0; padding: 10px; border-radius: 6px; background: var(--bg); border: 1px solid var(--border); font-size: 12px; line-height: 1.45; white-space: pre-wrap; word-break: break-word; max-height: 180px; overflow-y: auto; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
       .unlock-shell h1 { font-size: 22px; margin-bottom: 4px; text-align: center; }
       .unlock-shell #subtitle { margin-bottom: 16px; text-align: center; }
       .unlock-footer { margin-top: 20px; font-size: 14px; color: var(--fg-dim); text-align: center; line-height: 1.6; }
+      /* Short viewports: tighter unlock spacing (lock card + form can exceed 760px). */
+      @media (max-height: 860px) {
+        .unlock-shell { padding: 16px; }
+        .unlock-shell h1 { font-size: 20px; }
+        .unlock-shell #subtitle { margin-bottom: 12px; font-size: 14px; }
+        .unlock-wrapper > img { width: 96px !important; height: 96px !important; margin-bottom: 12px !important; }
+        .cortex-lock-card { margin-bottom: 12px; }
+        .cortex-lock-card .panel-title { margin-bottom: 6px; }
+        .cortex-lock-card .cortex-lock-steps { margin-bottom: 8px; font-size: 13px; }
+        .cortex-lock-card .cortex-lock-steps li { margin-bottom: 4px; }
+        .cortex-lock-details pre { max-height: 120px; }
+        .unlock-footer { margin-top: 12px; font-size: 13px; }
+      }
 
       /* The full shell — header, body (rail + canvas), status bar. Three rows. */
       .app-shell {
@@ -4989,6 +5295,11 @@
       .skills-trainer-header {
         display: flex; flex-direction: column; align-items: stretch; gap: 6px;
         margin-bottom: 4px;
+        /* Sticky so "+ New skill" stays reachable while scrolling long review
+           content — the trainer column scrolls independently of the library. */
+        position: sticky; top: 0; z-index: 2;
+        background: var(--bg-elev);
+        padding-bottom: 6px;
       }
       /* Title sits on its own full-width line above the action buttons */
       .skills-trainer-title {
@@ -5234,8 +5545,10 @@
       .ghampus-header-mascot { animation: ghampus-header-bob 3.4s ease-in-out infinite; }
 
       /* Chat-header logo — larger, swimming animation */
+      .ghampus-header-logo,
       .ghampus-chat-header-logo {
         width: 42px; height: 42px; object-fit: contain;
+        flex-shrink: 0;
         animation: ghampus-swim 4s ease-in-out infinite;
         transform-origin: 50% 60%;
       }
@@ -5269,11 +5582,88 @@
         flex: 1; min-height: 0;
       }
 
+      /* Ghampus pane header — row 1: brand (logo + title + tagline) | meta
+         (plan chip + usage). Styles live in the sheet (not inline) so prod
+         bundles match dev; flex-wrap: nowrap keeps both clusters on one line. */
+      .ghampus-header,
       .ghampus-chat-header {
-        display: flex; align-items: center; justify-content: space-between;
-        gap: 10px; padding: 10px 14px;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        flex-wrap: nowrap;
+        gap: 10px;
+        padding: 10px 14px;
         border-bottom: 1px solid var(--g-border, rgba(255,255,255,.1));
         flex-shrink: 0;
+        min-width: 0;
+      }
+      .ghampus-header-brand {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        min-width: 0;
+        flex: 1 1 auto;
+        flex-wrap: nowrap;
+      }
+      .ghampus-header-title {
+        margin: 0;
+        font-size: 16px;
+        font-weight: 700;
+        min-width: 0;
+        display: flex;
+        align-items: baseline;
+        gap: 0.35em;
+        flex-wrap: nowrap;
+        white-space: nowrap;
+      }
+      .ghampus-header-name { flex-shrink: 0; }
+      .ghampus-header-tagline {
+        font-weight: 400;
+        background: linear-gradient(90deg, #6366f1, #14b8a6);
+        -webkit-background-clip: text;
+        -webkit-text-fill-color: transparent;
+        background-clip: text;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        min-width: 0;
+      }
+      .ghampus-header-meta {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        flex-shrink: 0;
+        flex-wrap: nowrap;
+      }
+      .ghampus-header-model {
+        display: inline-flex;
+        align-items: center;
+        gap: 5px;
+        font-size: 12px;
+        opacity: .7;
+      }
+      .ghampus-header-model-dot {
+        width: 7px;
+        height: 7px;
+        border-radius: 50%;
+        background: #10b981;
+        flex-shrink: 0;
+      }
+      .ghampus-header-engram {
+        font-size: 12px;
+        opacity: .7;
+      }
+      .ghampus-header-engram-code {
+        font-size: 11px;
+        opacity: 1;
+        background: var(--accent-soft, rgba(99,102,241,.15));
+        padding: 1px 5px;
+        border-radius: 4px;
+      }
+      .ghampus-header-usage {
+        font-size: 12px;
+        opacity: .6;
+        white-space: nowrap;
       }
       .ghampus-plan-chip {
         font-size: 11px; font-weight: 500; padding: 2px 8px; border-radius: 10px;
@@ -5288,7 +5678,8 @@
         font-size: 11px; font-weight: 600; padding: 1px 7px; border-radius: 10px;
         background: rgba(99,102,241,.2); color: var(--accent, #6366f1);
       }
-      .ghampus-header-right { display: flex; align-items: center; }
+      /* Legacy hook — layout is on .ghampus-header-meta / -model / -usage. */
+      .ghampus-header-right { display: inline-flex; align-items: center; }
 
       /* Notification card in thread (first-paint opener, Free tier) */
       .notif-card {
@@ -6067,6 +6458,12 @@
 
       /* Review mode */
       .skills-review-meta { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+      /* New skill + Retrain pinned to the right of the chip row — always
+         visible in review without scrolling back to the trainer header. */
+      .skills-review-meta-actions {
+        display: flex; align-items: center; gap: 8px;
+        margin-left: auto; flex-shrink: 0;
+      }
       .skills-mode-chip,
       .skills-engram-chip,
       .skills-vitality-chip {
@@ -6528,6 +6925,12 @@
         background: color-mix(in oklab, var(--color-status-warn-gold) 18%, transparent);
         color: var(--color-status-warn-gold); font-weight: 600;
       }
+      /* Staleness badge — cited source memory changed since training. */
+      .skill-row-stale {
+        font-size: 10px; padding: 1px 6px; border-radius: 8px;
+        background: color-mix(in oklab, var(--error) 14%, transparent);
+        color: var(--error); font-weight: 600;
+      }
       /* Review proposal card — only visible in review mode for skills with
          a pending auto-retrain. Lets the user accept or reject the proposal
          without leaving the trainer. */
@@ -6949,45 +7352,36 @@
         color: var(--fg-dim);
       }
 
-      /* Graph wizard cards */
-      .graph-templates {
-        display: grid;
-        grid-template-columns: 1fr 1fr;
-        gap: 7px;
-        margin: 8px 0;
-      }
-      .graph-template-card {
-        text-align: left;
-        padding: 7px 10px;
-        border: 1px solid var(--border);
-        border-radius: 8px;
-        background: var(--bg-elev);
-        cursor: pointer;
-        position: relative;
-        transition: border-color 80ms, background 80ms;
-      }
-      .graph-template-card:hover { border-color: var(--accent); }
-      .graph-template-card.selected {
-        border-color: var(--accent);
-        background: color-mix(in oklab, var(--accent) 12%, transparent);
-      }
-      .graph-template-card .gt-title { font-weight: 600; font-size: 13px; margin-bottom: 1px; }
-      .graph-template-card .gt-desc { font-size: 12px; color: var(--fg-dim); line-height: 1.35; }
-      .graph-template-card .gt-tier {
-        position: absolute;
-        top: 8px; right: 8px;
-        font-size: 9px;
+      /* Graph wizard — simplified (name + sensitivity only) */
+      .gw-modal { max-width: 500px; }
+      #graph-wizard-modal .modal-body { padding: 16px 20px; }
+      #graph-wizard-modal .row label {
+        display: block;
+        font-size: 11px;
         font-weight: 600;
-        padding: 1px 6px;
-        border-radius: 4px;
+        color: var(--fg-dim);
         text-transform: uppercase;
         letter-spacing: 0.05em;
+        margin-bottom: 4px;
       }
-      .gt-tier.free { background: color-mix(in oklab, var(--ok) 18%, transparent); color: var(--ok); }
-      .gt-tier.power { background: color-mix(in oklab, var(--accent) 22%, transparent); color: var(--accent); }
-      .gt-tier.enterprise { background: color-mix(in oklab, var(--color-brand-purple-bright) 22%, transparent); color: var(--color-brand-purple-bright); }
-      .graph-template-card.locked { opacity: 0.55; cursor: not-allowed; }
-      .graph-template-card.locked:hover { border-color: var(--border); }
+      .gw-name-id-row { display: flex; gap: 10px; }
+      .gw-id-field { flex: 0 0 190px; }
+      .gw-tier-row { display: flex; flex-direction: column; gap: 5px; margin-top: 6px; }
+      .gw-tier-opt {
+        display: flex; align-items: flex-start; gap: 9px;
+        padding: 8px 10px; border-radius: 7px;
+        cursor: pointer;
+        border: 1px solid transparent;
+        transition: background 80ms, border-color 80ms;
+      }
+      .gw-tier-opt input[type="radio"] { margin-top: 2px; flex-shrink: 0; }
+      .gw-tier-opt:hover { background: color-mix(in oklab, var(--fg) 5%, transparent); }
+      .gw-tier-opt:has(input:checked) {
+        border-color: var(--accent);
+        background: color-mix(in oklab, var(--accent) 8%, transparent);
+      }
+      .gw-tier-name { font-weight: 600; font-size: 12px; display: block; }
+      .gw-tier-desc { font-size: 11px; color: var(--fg-dim); line-height: 1.4; display: block; margin-top: 1px; }
 
       /* ─── Graphnosis pane v2: search + tabs + detail ─────────────── */
       .g-topbar {
@@ -10532,7 +10926,21 @@
           <h1>Graphnosis</h1>
           <p class="subtitle" id="subtitle">Your local encrypted memory, indexed for deterministic recall — auditable</p>
           <div id="error-unlock" class="error hidden"></div>
-          <div class="panel unlock-card">
+          <div id="cortex-lock-card" class="panel unlock-card cortex-lock-card hidden" role="alert">
+            <span id="cortex-lock-mode-badge" class="cortex-lock-mode-badge hidden"></span>
+            <p class="panel-title" id="cortex-lock-title"></p>
+            <p id="cortex-lock-body" class="subtitle" style="margin: 0 0 12px; text-align: left; line-height: 1.55;"></p>
+            <ol id="cortex-lock-steps" class="cortex-lock-steps"></ol>
+            <details id="cortex-lock-details" class="cortex-lock-details">
+              <summary>Show technical details</summary>
+              <pre id="cortex-lock-technical"></pre>
+            </details>
+            <div class="actions" style="margin-top: 14px; gap: 8px;">
+              <button id="btn-cortex-lock-retry" class="primary" type="button">Try again</button>
+              <button id="btn-cortex-lock-release" class="btn-secondary hidden" type="button">Continue on this Mac</button>
+            </div>
+          </div>
+          <div class="panel unlock-card" id="unlock-form-card">
             <p class="panel-title">Unlock your local encrypted cortex</p>
             <div class="row">
               <label for="cortex-dir" class="visually-hidden">cortex folder path</label>
@@ -10545,12 +10953,16 @@
               <p id="cortex-missing-notice" class="hidden" style="margin:6px 0 0; font-size:12px; color:var(--color-status-warn-border); line-height:1.5;">
                 This folder was moved or deleted. Choose a new location or re-create it.
               </p>
+              <p id="cortex-cloud-hint" class="subtitle" style="margin:8px 0 0; font-size:12px; text-align:left; line-height:1.5; color:var(--fg-dim);">
+                Tip: place your cortex inside iCloud Drive, Dropbox, Google Drive, or OneDrive to sync across devices — or keep it local on this Mac.
+              </p>
             </div>
             <div class="row">
               <div class="passphrase-label-row">
                 <label for="passphrase">Passphrase</label>
                 <span id="touchid-hint" class="touchid-inline-hint hidden">Unlock with Touch ID →</span>
               </div>
+              <p id="touchid-setup-hint" class="hidden" style="margin:4px 0 0;font-size:12px;color:var(--color-muted);line-height:1.45;"></p>
               <div class="passphrase-input-wrap">
                 <input type="password" id="passphrase" placeholder="Your Graphnosis cortex passphrase" data-pres="surface:cortexPath" />
                 <button id="btn-touchid-inline" class="touchid-inline-btn hidden" type="button"
@@ -11279,7 +11691,7 @@
                               <div class="skills-trainer-header">
                                 <span id="skills-trainer-title" class="skills-trainer-title">Train a skill</span>
                                 <div class="skills-trainer-header-actions">
-                                  <button id="btn-skills-trainer-back" class="btn-ghost btn-sm hidden">← New skill</button>
+                                  <button id="btn-skills-trainer-back" class="btn-ghost btn-sm hidden" type="button" title="Return to a blank Train a skill form">← New skill</button>
                                   <!-- Upload routes through the Rust `pick_gsk_file` command, which
                                        opens a native OS picker (Tauri webviews don't reliably surface
                                        the dialog for a hidden <input type="file">). See runGskImport()
@@ -11358,14 +11770,10 @@
                                   <ol id="skills-chunk-preview-list" class="skills-chunk-preview-list"></ol>
                                   <span id="skills-chunk-preview-more" class="skills-chunk-preview-more"></span>
                                 </div>
-                                <!-- LLM rewrite UI intentionally removed from the compose form.
-                                     The trainer ALWAYS chunks pasted text paragraph-by-paragraph
-                                     into nodes (fast, deterministic, no Ollama dependency, no
-                                     hang risk). The MCP-level useLlmRewrite flag still exists
-                                     for programmatic callers, but the desktop never sets it.
-                                     See Graphnosis memory: "TODO: SOP-preserving LLM rewrite"
-                                     for the work needed to safely re-introduce LLM rewriting
-                                     without silently breaking SOP edge detection. -->
+                                <!-- Training uses deterministic paragraph chunking (no LLM rewrite
+                                     toggle in the desktop UI). MCP callers may pass
+                                     useLlmRewrite=true; the desktop always uses the fast,
+                                     SOP-structure-preserving chunk-and-save path. -->
 
                                 <label class="skills-field">
                                   <span class="skills-field-label">Skill name</span>
@@ -11482,10 +11890,15 @@
                                   <span id="skills-review-mode" class="skills-mode-chip"></span>
                                   <button id="skills-review-vitality" class="skills-vitality-chip" title="Recompute vitality"></button>
                                   <span id="skills-review-engram" class="skills-engram-chip"></span>
-                                  <!-- One-click retrain — same effect as the Retrain action in the
-                                       skills list row, but available right inside the inspector
-                                       so the user doesn't have to scroll back to the list. -->
-                                  <button id="btn-skills-review-retrain" class="primary btn-sm" type="button" title="Re-train this skill against fresh memory">↻ Retrain</button>
+                                  <div class="skills-review-meta-actions">
+                                    <!-- Always visible in review — escape hatch back to compose
+                                         without scrolling to the sticky trainer header. -->
+                                    <button id="btn-skills-review-new" class="btn-ghost btn-sm" type="button" title="Return to a blank Train a skill form">← New skill</button>
+                                    <!-- One-click retrain — same effect as the Retrain action in the
+                                         skills list row, but available right inside the inspector
+                                         so the user doesn't have to scroll back to the list. -->
+                                    <button id="btn-skills-review-retrain" class="primary btn-sm" type="button" title="Re-train this skill against fresh memory">↻ Retrain</button>
+                                  </div>
                                 </div>
                                 <div id="skills-degraded-note" class="skills-degraded-note hidden"></div>
                                 <!-- Pending auto-retrain proposal card. Shown only when the
@@ -12367,25 +12780,25 @@ ollama list</code></pre>
                   <div id="ghampus-chat-wrap">
 
                     <!-- Header -->
-                    <div class="ghampus-chat-header">
-                      <div style="display: flex; align-items: center; gap: 8px; min-width: 0;">
+                    <div class="ghampus-header ghampus-chat-header">
+                      <div class="ghampus-header-brand">
                         <img src="/graphnosis-logo-transparent-bg.png" alt="Ghampus"
-                             class="ghampus-chat-header-logo"
-                             style="flex-shrink: 0;" />
-                        <h2 style="margin: 0; font-size: 16px; font-weight: 700; white-space: nowrap;">Ghampus <span style="font-weight: 400; background: linear-gradient(90deg, #6366f1, #14b8a6); -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text;">— Your AI. Already on it.</span></h2>
+                             class="ghampus-header-logo ghampus-chat-header-logo" />
+                        <h2 class="ghampus-header-title">
+                          <span class="ghampus-header-name">Ghampus</span>
+                          <span class="ghampus-header-tagline">— Your AI. Already on it.</span>
+                        </h2>
                         <span id="ghampus-notif-badge" class="ghampus-notif-badge hidden"></span>
                         <span id="ghampus-walk-chip" class="ghampus-walk-chip hidden"></span>
                       </div>
-                      <div style="display: flex; gap: 8px; align-items: center; flex-shrink: 0;">
-                        <span id="ghampus-active-engram" class="ghampus-header-right hidden"
-                              style="font-size: 12px; opacity: .7;">
-                          Active: <code id="ghampus-active-engram-name" style="font-size: 11px; opacity: 1;
-                            background: var(--accent-soft, rgba(99,102,241,.15));
-                            padding: 1px 5px; border-radius: 4px;"></code>
+                      <div class="ghampus-header-meta">
+                        <span id="ghampus-active-engram"
+                              class="ghampus-header-right ghampus-header-engram hidden">
+                          Active: <code id="ghampus-active-engram-name" class="ghampus-header-engram-code"></code>
                         </span>
-                        <span id="ghampus-model-badge" class="ghampus-header-right hidden"
-                              style="display: flex; align-items: center; gap: 5px; font-size: 12px; opacity: .7;">
-                          <span style="width: 7px; height: 7px; border-radius: 50%; background: #10b981; flex-shrink: 0;"></span>
+                        <span id="ghampus-model-badge"
+                              class="ghampus-header-right ghampus-header-model hidden">
+                          <span class="ghampus-header-model-dot" aria-hidden="true"></span>
                           <span id="ghampus-model-name"></span>
                         </span>
                         <button id="btn-ghampus-kill" class="g-btn hidden" type="button"
@@ -12394,8 +12807,8 @@ ollama list</code></pre>
                         <button id="btn-ghampus-resume" class="g-btn hidden" type="button"
                                 style="font-size: 11px; padding: 2px 9px;">Resume</button>
                         <span id="ghampus-plan-chip" class="ghampus-plan-chip">—</span>
-                        <span id="ghampus-usage-counter" class="ghampus-header-right hidden"
-                              style="font-size: 12px; opacity: .6;"></span>
+                        <span id="ghampus-usage-counter"
+                              class="ghampus-header-right ghampus-header-usage hidden"></span>
                       </div>
                     </div>
                     <p id="ghampus-kill-banner" class="subtitle hidden"
@@ -13320,50 +13733,47 @@ ollama list</code></pre>
       </div>
     </div>
 
-    <!-- Graph wizard: pick a template + name; creates the graph + stores metadata. -->
+    <!-- Graph wizard: name + sensitivity; creates the graph + stores metadata. -->
     <div id="graph-wizard-modal" class="modal-backdrop hidden">
-      <div class="modal">
+      <div class="modal gw-modal">
         <div class="modal-header">
           <h2>New engram</h2>
-          <p class="subtitle">Pick a template to seed it with sensible defaults — you can change settings later.</p>
+          <p class="subtitle">One engram per topic — notes, files, conversations, decisions. Claude recalls them together.</p>
         </div>
         <div class="modal-body">
-          <p class="brain-subtitle" style="margin-bottom: 3px;">Free templates</p>
-          <div class="graph-templates" id="gw-free"></div>
-          <p class="brain-subtitle" style="margin: 10px 0 3px;">Power-user templates</p>
-          <div class="graph-templates" id="gw-power"></div>
-          <p class="brain-subtitle" style="margin: 10px 0 3px;">Enterprise templates</p>
-          <div class="graph-templates" id="gw-enterprise"></div>
-
-        </div>
-        <div class="modal-sticky-fields">
-          <div class="gw-name-id-row" style="display:flex; gap:10px;">
+          <div class="gw-name-id-row">
             <div class="row" style="flex:1;">
               <label for="gw-name">Display name</label>
-              <input type="text" id="gw-name" placeholder="e.g. Work project · Music notes · Reading 2026" />
+              <input type="text" id="gw-name" placeholder="e.g. Work project · Music notes · Reading 2026" autocomplete="off" />
             </div>
-            <div class="row gw-id-field" style="flex:0 0 210px;">
+            <div class="row gw-id-field">
               <label for="gw-id">Internal ID</label>
-              <input type="text" id="gw-id" placeholder="slug-id" title="Filename inside your cortex — can't be changed later." />
+              <input type="text" id="gw-id" placeholder="slug-id" title="Filename inside your cortex — can't be changed later." autocomplete="off" />
             </div>
           </div>
-          <div class="row" style="margin-top:8px;">
-            <label>Sensitivity tier</label>
-            <div class="gw-tier-row" style="display:flex; gap:6px; margin-top:3px;">
-              <label style="flex:1; display:flex; align-items:center; gap:5px; cursor:pointer; font-size:12px;">
+          <div class="row" style="margin-top:14px;">
+            <label>Sensitivity</label>
+            <div class="gw-tier-row">
+              <label class="gw-tier-opt">
                 <input type="radio" name="gw-tier" value="public" />
-                <span style="color:var(--color-status-ok-bright); font-weight:600;">Public</span>
-                <span class="subtitle" style="font-size:11px;">AI always on</span>
+                <div>
+                  <span class="gw-tier-name" style="color:var(--color-status-ok-bright);">Public</span>
+                  <span class="gw-tier-desc">AI always has access. Good for non-private notes like reading lists or study material.</span>
+                </div>
               </label>
-              <label style="flex:1; display:flex; align-items:center; gap:5px; cursor:pointer; font-size:12px;">
+              <label class="gw-tier-opt">
                 <input type="radio" name="gw-tier" value="personal" checked />
-                <span style="color:var(--color-status-warn-gold); font-weight:600;">Personal</span>
-                <span class="subtitle" style="font-size:11px;">Ask once</span>
+                <div>
+                  <span class="gw-tier-name" style="color:var(--color-status-warn-gold);">Personal</span>
+                  <span class="gw-tier-desc">AI asks once, then remembers. Right for most things — work notes, projects, journals.</span>
+                </div>
               </label>
-              <label style="flex:1; display:flex; align-items:center; gap:5px; cursor:pointer; font-size:12px;">
+              <label class="gw-tier-opt">
                 <input type="radio" name="gw-tier" value="sensitive" />
-                <span style="color:var(--color-status-error); font-weight:600;">Sensitive</span>
-                <span class="subtitle" style="font-size:11px;">Ask hourly</span>
+                <div>
+                  <span class="gw-tier-name" style="color:var(--color-status-error);">Sensitive</span>
+                  <span class="gw-tier-desc">AI re-confirms every hour. For health, finances, legal documents, or anything private.</span>
+                </div>
               </label>
             </div>
           </div>
@@ -13500,6 +13910,18 @@ ollama list</code></pre>
                header) so the subscription affordance isn't buried behind
                a "Preferences" modal. -->
           <div class="settings-section no-top-border">
+          <p class="settings-section-label">Sync</p>
+          <div id="settings-sync-panel" class="hidden">
+            <p class="subtitle" style="margin-bottom: 8px;" id="settings-sync-headline">Local only</p>
+            <p class="subtitle" style="margin-bottom: 8px; font-size: 13px; color: var(--fg-dim);">
+              Provider: <span id="settings-sync-provider">—</span>
+            </p>
+            <ul id="settings-sync-bullets" class="cortex-lock-steps" style="margin-bottom: 12px;"></ul>
+            <button type="button" id="btn-cloud-onboarding-replay" class="btn-secondary">Review cloud onboarding</button>
+          </div>
+          </div><!-- /section: sync -->
+
+          <div class="settings-section">
           <p class="settings-section-label">Memory storage</p>
           <p class="subtitle" style="margin-bottom: 12px;">
             Cached source content lets the App rebuild your graph from the encrypted op-log
@@ -14136,12 +14558,13 @@ ollama list</code></pre>
       <div class="modal" style="max-width: 640px;">
         <div class="modal-header">
           <h2>Cortex Management</h2>
-          <p class="subtitle">Archive or delete engrams, and clean up quarantined files. Destructive actions require you to type a confirmation phrase.</p>
+          <p class="subtitle">Archive, preserve, or delete engrams, and clean up quarantined files. Destructive actions require you to type a confirmation phrase.</p>
         </div>
         <div class="modal-body">
           <p class="panel-title" style="margin-top: 0;">Engrams in this cortex</p>
           <p class="subtitle" style="font-size: 15px; margin: -4px 0 10px;">
             Archive an engram to hide it from the picker without touching its data.
+            <strong>Preserve</strong> blocks forget, edit, and purge on that engram's memory until you release it — your original files aren't changed.
             Delete permanently removes all memories, sources, and embeddings — this cannot be undone.
           </p>
           <p class="subtitle" style="font-size: 15px; margin: 0 0 6px;">
@@ -14292,6 +14715,20 @@ ollama list</code></pre>
       </div>
     </div>
 
+    <!-- Cloud onboarding wizard (first-run + replay from Settings → Sync) -->
+    <div id="cloud-onboarding-modal" class="modal-backdrop hidden">
+      <div class="modal" style="max-width: 520px;">
+        <div class="modal-header">
+          <h2 id="cloud-onboarding-title">Cloud folder setup</h2>
+          <p class="subtitle" id="cloud-onboarding-progress" style="margin-top: 6px;">Step 1 of 4</p>
+        </div>
+        <div class="modal-body">
+          <p id="cloud-onboarding-body" class="subtitle" style="text-align: left; white-space: pre-wrap; line-height: 1.55; margin: 0;"></p>
+        </div>
+        <div class="modal-footer" id="cloud-onboarding-actions" style="display: flex; gap: 8px; flex-wrap: wrap;"></div>
+      </div>
+    </div>
+
     <!-- Recovery modal: scanned op-log + per-item status, then apply + report -->
     <div id="recovery-modal" class="modal-backdrop hidden">
       <div class="modal">
@@ -14318,17 +14755,19 @@ ollama list</code></pre>
           <p class="subtitle">Create shares so collaborators can access specific engrams via your MCP server. Requires Mobile &amp; Remote Access.</p>
           <p id="sharing-plan-badge" style="display:none;margin:6px 0 0;font-size:12px;color:var(--fg-muted);"></p>
         </div>
-        <div class="modal-body" id="sharing-modal-body" style="min-height:120px;max-height:70vh;overflow-y:auto;">
-          <!-- Seat usage bar (Teams/Enterprise only) -->
-          <div id="sharing-seat-bar" style="margin-bottom:12px;display:none;"></div>
-          <!-- Shown when not on Teams/Enterprise plan -->
-          <p id="sharing-unlicensed-notice" class="subtitle" style="display:none;padding:10px;background:var(--bg-raised);border-radius:6px;margin-bottom:10px;"></p>
-          <!-- Share list rendered dynamically -->
-          <div id="sharing-token-list" style="display:flex;flex-direction:column;gap:8px;"></div>
-          <p id="sharing-no-tokens" class="subtitle" style="display:none;margin:12px 0 0;">No shares yet. Create one below.</p>
+        <div class="modal-body" id="sharing-modal-body">
+          <div class="sharing-scroll-area" id="sharing-scroll-area">
+            <!-- Seat usage bar (Teams/Enterprise only) -->
+            <div id="sharing-seat-bar" style="margin-bottom:12px;display:none;"></div>
+            <!-- Shown when not on Teams/Enterprise plan -->
+            <p id="sharing-unlicensed-notice" class="subtitle" style="display:none;padding:10px;background:var(--bg-raised);border-radius:6px;margin-bottom:10px;"></p>
+            <!-- Share list rendered dynamically -->
+            <div id="sharing-token-list" style="display:flex;flex-direction:column;gap:8px;"></div>
+            <p id="sharing-no-tokens" class="subtitle" style="display:none;margin:12px 0 0;">No shares yet. Create one below.</p>
+          </div>
 
-          <!-- Create new share — own section, always visible when licensed -->
-          <div id="sharing-create-section" style="display:none;margin-top:20px;padding-top:16px;border-top:1px solid var(--border);">
+          <!-- Create new share -->
+          <div id="sharing-create-section" class="sharing-create-section" style="display:none;margin-top:16px;">
             <p class="settings-section-label" style="margin:0 0 12px;">Create new share</p>
             <div style="display:flex;flex-direction:column;gap:10px;">
               <label style="font-size:13px;display:block;">
@@ -14337,6 +14776,7 @@ ollama list</code></pre>
               </label>
               <label style="font-size:13px;display:block;">
                 Role
+                <!-- UI: viewer/editor only; sidecar also supports recall-only, remember, edit-approve, skill-train, admin-audit via API. -->
                 <select id="sharing-new-role" style="display:block;width:100%;margin-top:4px;">
                   <option value="viewer">Viewer — read-only</option>
                   <option value="editor">Editor — can remember &amp; edit</option>
@@ -14360,17 +14800,19 @@ ollama list</code></pre>
                   <option value="1y">1 year</option>
                 </select>
               </label>
-              <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:4px;">
+              <p id="sharing-create-review" class="sharing-create-review" style="display:none;" aria-live="polite"></p>
+              <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:4px;padding-bottom:2px;">
                 <button id="btn-sharing-create" class="primary">Create share</button>
               </div>
             </div>
           </div>
         </div>
         <div class="modal-footer">
-          <!-- Enterprise-only: audit log download -->
-          <div id="sharing-audit-section" style="display:none;flex:1;">
-            <p class="settings-section-label" style="margin:0 0 4px;">Audit log export</p>
-            <button id="btn-sharing-audit-export">Download audit log (.csv)</button>
+          <!-- Enterprise-only: op-log + MCP access export for compliance / SIEM -->
+          <div id="sharing-audit-section" class="sharing-audit-section" style="display:none;">
+            <p class="settings-section-label" style="margin:0 0 2px;">Compliance export</p>
+            <p class="sharing-audit-hint">Recall, write, and share-access events from your MCP server.</p>
+            <button id="btn-sharing-audit-export" title="Download a CSV of engram reads, writes, and collaborator access for audit or SIEM ingestion">Export sharing &amp; access log (.csv)</button>
           </div>
           <button id="btn-sharing-close">Close</button>
         </div>
@@ -14379,17 +14821,65 @@ ollama list</code></pre>
 
     <!-- Share reveal modal — shown once after share creation -->
     <div id="sharing-reveal-modal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="sharing-reveal-title">
-      <div class="modal" style="max-width:480px;">
+      <div class="modal" style="max-width:520px;">
         <div class="modal-header">
           <h2 id="sharing-reveal-title">Share created</h2>
-          <p class="subtitle">Copy this share now — it will not be shown again.</p>
+          <p class="subtitle">Review what this share includes, then copy the token — it will not be shown again.</p>
         </div>
         <div class="modal-body">
+          <div id="sharing-reveal-summary" class="sharing-reveal-summary" aria-label="Share details"></div>
+          <p id="sharing-reveal-can-do" class="sharing-reveal-can-do"></p>
+          <p class="sharing-reveal-token-label">Share token</p>
           <div style="display:flex;align-items:center;gap:8px;">
             <code id="sharing-reveal-value" style="flex:1;font-size:12px;word-break:break-all;padding:8px;background:var(--bg-raised);border-radius:6px;user-select:all;"></code>
             <button id="btn-sharing-reveal-copy" title="Copy to clipboard">Copy</button>
           </div>
-          <p style="margin-top:10px;font-size:13px;color:var(--fg-muted);">Send this share to your collaborator along with your MCP server URL (<code id="sharing-reveal-url"></code>). They add it to their MCP client config.</p>
+          <p id="sharing-reveal-not-shared" class="sharing-reveal-not-shared"></p>
+          <p class="sharing-reveal-token-label" style="margin-top:14px;">Collaborator MCP URL</p>
+          <div class="sharing-reveal-copy-row">
+            <code id="sharing-reveal-url"></code>
+            <button id="btn-sharing-reveal-copy-url" title="Copy MCP server URL">Copy URL</button>
+          </div>
+          <p id="sharing-reveal-url-note" class="sharing-reveal-url-note"></p>
+          <p class="sharing-reveal-token-label" style="margin-top:14px;">Set up your collaborator's client</p>
+          <div class="sharing-client-tabs" role="tablist" aria-label="MCP client setup">
+            <button type="button" class="sharing-client-tab active" data-sharing-tab="cursor" role="tab" aria-selected="true">Cursor</button>
+            <button type="button" class="sharing-client-tab" data-sharing-tab="vscode" role="tab" aria-selected="false">VS Code</button>
+            <button type="button" class="sharing-client-tab" data-sharing-tab="claude" role="tab" aria-selected="false">Claude mobile</button>
+            <button type="button" class="sharing-client-tab" data-sharing-tab="manual" role="tab" aria-selected="false">Manual JSON</button>
+          </div>
+          <div id="sharing-reveal-panel-cursor" class="sharing-reveal-panel active" role="tabpanel">
+            <p>Send your collaborator a one-click install link. They open it in a browser (or paste into the address bar) and Cursor prompts to add the MCP server with URL and bearer token pre-filled.</p>
+            <div class="sharing-reveal-install-actions">
+              <button type="button" id="btn-sharing-reveal-copy-cursor-link" class="primary">Copy Cursor install link</button>
+              <button type="button" id="btn-sharing-reveal-open-cursor">Open in Cursor</button>
+            </div>
+            <p style="margin-top:10px;">If the link does not open Cursor, paste the Manual JSON into <code>~/.cursor/mcp.json</code> instead.</p>
+          </div>
+          <div id="sharing-reveal-panel-vscode" class="sharing-reveal-panel" role="tabpanel" hidden>
+            <p>VS Code supports a similar install deeplink when the official MCP extension is installed. Send the link below, or open the user MCP config and paste the Manual JSON snippet.</p>
+            <div class="sharing-reveal-install-actions">
+              <button type="button" id="btn-sharing-reveal-copy-vscode-link" class="primary">Copy VS Code install link</button>
+              <button type="button" id="btn-sharing-reveal-open-vscode-config">Open MCP config in VS Code</button>
+            </div>
+          </div>
+          <div id="sharing-reveal-panel-claude" class="sharing-reveal-panel" role="tabpanel" hidden>
+            <p>On Claude for iOS or Android, your collaborator adds a remote MCP server manually (no deeplink yet).</p>
+            <ol>
+              <li>Open Claude → Settings → <strong>Claude.ai account</strong> → <strong>MCP Servers</strong></li>
+              <li>Tap <strong>Add server</strong> and paste the <strong>Collaborator MCP URL</strong> above</li>
+              <li>Under Authentication, choose <strong>Bearer token</strong> and paste the share token above</li>
+              <li>Tap <strong>Save</strong> — shared engrams appear in the next conversation</li>
+            </ol>
+            <p>The QR in Mobile &amp; Remote Access is for <em>your</em> cortex token, not this share — send URL + token from this screen.</p>
+          </div>
+          <div id="sharing-reveal-panel-manual" class="sharing-reveal-panel" role="tabpanel" hidden>
+            <p>Paste into <code>~/.cursor/mcp.json</code>, VS Code user MCP config, or any client's MCP settings. The share token goes in the Authorization header — never in the URL.</p>
+            <pre id="sharing-reveal-config" class="sharing-reveal-config"></pre>
+            <div class="sharing-reveal-install-actions">
+              <button type="button" id="btn-sharing-reveal-copy-config" title="Copy full MCP client config">Copy config JSON</button>
+            </div>
+          </div>
         </div>
         <div class="modal-footer">
           <button id="btn-sharing-reveal-close" class="primary">Done</button>
@@ -14971,7 +15461,7 @@ ollama list</code></pre>
     <!-- Generic in-app confirm / alert modal.
          Replaces window.confirm() and window.alert() for destructive actions
          because Tauri's webview silently swallows native JS dialogs.
-         Driven by gConfirm() and gAlert() helpers in main.ts. -->
+         Driven by gConfirm() and gAlert() helpers in ui/dialogs.ts. -->
     <div id="g-confirm-modal" class="modal-backdrop hidden">
       <div class="modal" style="max-width:460px;">
         <div class="modal-header">
@@ -14982,6 +15472,24 @@ ollama list</code></pre>
           <div style="display:flex; gap:10px; justify-content:flex-end;">
             <button id="g-confirm-cancel" style="min-width:80px;">Cancel</button>
             <button id="g-confirm-ok" class="primary" style="min-width:80px;">Confirm</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Generic in-app prompt modal — replaces window.prompt() (also swallowed in Tauri). -->
+    <div id="g-prompt-modal" class="modal-backdrop hidden">
+      <div class="modal" style="max-width:460px;">
+        <div class="modal-header">
+          <h2 id="g-prompt-title">Enter value</h2>
+        </div>
+        <div class="modal-body" style="padding:20px 28px 24px;">
+          <p id="g-prompt-body" style="margin:0 0 14px; font-size:14px; line-height:1.6; white-space:pre-wrap; color:var(--fg-dim);"></p>
+          <input type="password" id="g-prompt-input" autocomplete="off" spellcheck="false"
+                 style="width:100%; box-sizing:border-box; padding:8px 10px; margin-bottom:20px; border:1px solid var(--border, #ccc); border-radius:6px; background:transparent; color:inherit; font-size:14px;" />
+          <div style="display:flex; gap:10px; justify-content:flex-end;">
+            <button id="g-prompt-cancel" style="min-width:80px;">Cancel</button>
+            <button id="g-prompt-ok" class="primary" style="min-width:80px;">Save</button>
           </div>
         </div>
       </div>

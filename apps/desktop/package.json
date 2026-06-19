@@ -1,6 +1,6 @@
 {
   "name": "@graphnosis-app/desktop",
-  "version": "1.17.2",
+  "version": "1.17.3",
   "private": true,
   "type": "module",
   "author": "Nehloo Interactive LLC",
@@ -13,6 +13,7 @@
     "tauri:build": "tauri build"
   },
   "dependencies": {
+    "@graphnosis-app/core": "workspace:*",
     "3d-force-graph": "^1.80.0",
     "@deck.gl/core": "^9.3.2",
     "@deck.gl/layers": "^9.3.2",

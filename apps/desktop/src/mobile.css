@@ -39,6 +39,19 @@
    it doesn't override the mobile layout's own header padding. */
 @media (min-width: 1025px), (min-width: 769px) and (orientation: landscape) {
   body.browser-mode .app-header { padding-left: 16px !important; }
+  /* Ghampus chat header: keep brand + meta on one row in desktop / tablet
+     landscape. mobile.css loads after the inline sheet in prod bundles — these
+     guards beat the portrait-phone column rules if a viewport misreports. */
+  .ghampus-header,
+  .ghampus-chat-header {
+    flex-wrap: nowrap !important;
+    align-items: center !important;
+  }
+  .ghampus-header-brand,
+  .ghampus-header-meta,
+  .ghampus-header-title {
+    flex-wrap: nowrap !important;
+  }
 }
 
 /* Top-bar Ghampus mascot + label, right of the "Graphnosis" title.
@@ -443,14 +456,14 @@ body.mobile-more-open .mobile-more-sheet {
     display: none;
   }
 
-  /* ── Dashboard header: stack vertically, hide Ghampus, search-on-demand ── */
+  /* Legacy dashboard Ghampus block (#ghampus-header) was removed; chat header
+     layout is handled by .ghampus-header rules in index.html. Keep the old
+     Graphnosis pane header stacking for any remaining .g-pane-header surfaces. */
   .g-pane-header {
     flex-direction: column !important;
     align-items: stretch !important;
     gap: 10px !important;
   }
-  /* Ghampus mascot + tagline block: removed on mobile to save vertical space */
-  #ghampus-header { display: none !important; }
 
   /* Search: hidden until the magnifier in the header is tapped */
   .g-search-wrap { width: 100% !important; display: none !important; }
@@ -723,6 +736,10 @@ body.mobile-more-open .mobile-more-sheet {
   }
   .modal-sticky-fields { flex: none !important; }
 
+  /* Engram Sharing: footer wraps audit export on small screens. */
+  #sharing-modal .modal-footer { flex-wrap: wrap !important; }
+  #sharing-modal .sharing-audit-section { flex: 1 1 100% !important; margin-bottom: 4px; }
+
   /* Chips / studio chips: allow wrapping */
   .studio-chips,
   .chip-row {
@@ -787,10 +804,15 @@ body.mobile-more-open .mobile-more-sheet {
     box-sizing: border-box;
   }
 
-  /* ── Source rows: title on top (wraps), meta + chips + buttons underneath ─ */
+  /* ── Source rows: title on top (wraps), meta + chips + ⋯ underneath ─ */
   .source-row {
     flex-wrap: wrap !important;
     align-items: center;
+    gap: 6px !important;
+  }
+  .source-row-main {
+    flex: 1 1 100% !important;
+    flex-wrap: wrap;
     gap: 6px !important;
   }
   .source-row .source-name {
@@ -799,18 +821,25 @@ body.mobile-more-open .mobile-more-sheet {
     overflow-wrap: anywhere;
     font-weight: 600;
   }
+  .source-row.source-row-forgetting .source-name {
+    opacity: 0.55;
+    text-decoration: line-through;
+    text-decoration-thickness: 1px;
+  }
   .source-row .source-meta,
   .source-row .source-added-by,
   .source-row .source-kind-badge,
-  .source-row button {
+  .source-row .source-excluded-badge {
     flex: 0 0 auto;
   }
+  .source-row-actions-wrap {
+    flex: 0 0 auto;
+    margin-left: 0 !important;
+  }
   /* "Show in Finder" is a native macOS action — meaningless in the browser. */
-  .source-row .btn-show-finder { display: none !important; }
-  /* The JS-built "Move to:" inline editor → two rows:
-       row 1: "Move to:" + engram dropdown
-       row 2: [Move] [Cancel]
-     (the actions span has flex-basis 100% so it wraps below). */
+  .source-actions-menu-item[data-source-action="show-finder"] { display: none !important; }
+  /* Move picker: row 1 = source filename (unchanged); row 2 = "Move README.md to:"
+     + engram dropdown; row 3 = [Move] [Cancel] (actions span wraps full width). */
   .source-row-move-picker {
     flex-wrap: wrap !important;
     row-gap: 8px !important;
