@@ -211,6 +211,84 @@ ferry to Naxos. The food in Mykonos was overrated.`;
   }
   log('oplog-merge-roundtrip.ok', { mergeEventCount: mergeEvents.length, materialized: true });
 
+  // --- op-log tail replay + checkpoint (Batch 6 v2) -------------------------
+  log('oplog-tail-checkpoint', {});
+  const { crypto: gnCrypto } = await import('@nehloo-interactive/graphnosis-secure-sync');
+  const { DeviceIdentity } = await import('./device-identity.js');
+  const saltBytes = new Uint8Array(await fs.readFile(path.join(cortexDir, 'salt.bin')));
+  const wrap = await gnCrypto.deriveKey(newPassphrase, saltBytes);
+  const masterBlob = new Uint8Array(await fs.readFile(path.join(cortexDir, 'master.enc')));
+  const dataKey = await gnCrypto.decrypt(masterBlob, wrap.key);
+  const ident = await DeviceIdentity.loadOrCreate(cortexDir, dataKey);
+  const oplogDir = path.join(cortexDir, 'oplog');
+  const tailWriter = new oplog.OpLogWriter({
+    dir: oplogDir,
+    deviceId: ident.deviceId,
+    key: dataKey,
+    salt: saltBytes,
+    signSecretKey: ident.signSecretKey,
+    initialSeq: ident.initialSeq,
+    persistSeq: ident.persistSeq.bind(ident),
+  });
+  const readTailOpts = {
+    getDevicePubKey: (d: string) => ident.getPubKey(d),
+    onIntegrityIssue: () => {},
+  };
+  let tailCheckpoint = { maxTs: 0, maxSeq: -1 };
+  for (let i = 0; i < 100; i++) {
+    const emitted = tailWriter.emit({
+      graphId: 'personal',
+      op: 'merge',
+      target: { kind: 'source', id: '__tail-smoke' },
+      after: { phase: 'pre', i },
+    });
+    if (i === 99) tailCheckpoint = { maxTs: emitted.ts, maxSeq: emitted.seq! };
+  }
+  await tailWriter.flush();
+  await new Promise((r) => setTimeout(r, 50));
+  await mergedHost.setGraphMetadata('personal', {
+    ...(mergedHost.getSettings().graphMetadata.personal ?? {
+      template: 'personal',
+      displayName: 'personal',
+      createdAt: Date.now(),
+    }),
+    oplogReconcileCheckpoint: tailCheckpoint,
+  });
+  await new Promise((r) => setTimeout(r, 5));
+  for (let i = 0; i < 10; i++) {
+    tailWriter.emit({
+      graphId: 'personal',
+      op: 'merge',
+      target: { kind: 'source', id: '__tail-smoke' },
+      after: { phase: 'tail', i },
+    });
+  }
+  await tailWriter.flush();
+  await new Promise((r) => setTimeout(r, 50));
+  const tailEvents = await oplog.readEventsSince(oplogDir, dataKey, {
+    sinceTs: tailCheckpoint.maxTs,
+    ...(tailCheckpoint.maxSeq !== undefined ? { sinceSeq: tailCheckpoint.maxSeq } : {}),
+    ...readTailOpts,
+  });
+  if (tailEvents.length !== 10) {
+    throw new Error(`FAIL: readEventsSince expected 10 tail events, got ${tailEvents.length}`);
+  }
+  await mergedHost.unloadGraph('personal');
+  await mergedHost.loadGraph('personal');
+  const ckAfterLoad = mergedHost.getSettings().graphMetadata.personal?.oplogReconcileCheckpoint;
+  if (!ckAfterLoad || ckAfterLoad.maxTs <= tailCheckpoint.maxTs) {
+    throw new Error('FAIL: loadGraph tail reconcile did not advance checkpoint');
+  }
+  const tailAfterLoad = await oplog.readEventsSince(oplogDir, dataKey, {
+    sinceTs: ckAfterLoad.maxTs,
+    ...(ckAfterLoad.maxSeq !== undefined ? { sinceSeq: ckAfterLoad.maxSeq } : {}),
+    ...readTailOpts,
+  });
+  if (tailAfterLoad.length !== 0) {
+    throw new Error(`FAIL: expected no tail events after loadGraph checkpoint, got ${tailAfterLoad.length}`);
+  }
+  log('oplog-tail-checkpoint.ok', { tailCount: tailEvents.length, checkpoint: ckAfterLoad });
+
   // --- MCP audit log -------------------------------------------------------
   log('mcp-audit', {});
   await mergedHost.appendMcpAuditEvent({
