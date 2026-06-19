@@ -28,6 +28,7 @@ export type {
   SkillAutoRetrainConfig,
   SkillRetrainProposal,
   SkillRetrainQueueEntry,
+  SkillCitedNodesEntry,
 } from './settings/index.js';
 
 // Shared infrastructure types are re-exported from the extracted package

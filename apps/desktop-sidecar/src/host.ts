@@ -3129,6 +3129,11 @@ export class GraphnosisHost {
       }
     }
 
+    if (nodeIds.length > 0) {
+      const { enqueueSkillsForNodeChange } = await import('./skill-retrain-queue.js');
+      await enqueueSkillsForNodeChange(this, graphId, nodeIds, 'source-forgotten');
+    }
+
     // Tell the file-watcher to stop watching this path. Doing this AFTER
     // save() (vs. before) means the path stays in the watch set during
     // the brief window where the encrypted bundle is being rewritten —
@@ -3953,6 +3958,16 @@ export class GraphnosisHost {
     // so it deserves the same cross-doc wiring.
     if ((patches.adds?.length ?? 0) > 0) {
       this.kickoffRelink(graphId);
+    }
+    const changedNodeIds = (patches.edits ?? []).map((e) => e.nodeId);
+    if (changedNodeIds.length > 0) {
+      const supersede = (patches.edits ?? []).some((e) => e.kind === 'supersede');
+      const deleted = (patches.edits ?? []).some((e) => e.kind === 'delete');
+      const reason = deleted ? 'source-forgotten' as const
+        : supersede ? 'source-superseded' as const
+        : 'source-edited' as const;
+      const { enqueueSkillsForNodeChange } = await import('./skill-retrain-queue.js');
+      await enqueueSkillsForNodeChange(this, graphId, changedNodeIds, reason);
     }
   }
 

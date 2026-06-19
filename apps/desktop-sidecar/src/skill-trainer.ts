@@ -950,6 +950,15 @@ export class SkillTrainer {
       // Re-run linkSkillCalls on every OTHER skill so any `@skill: <this>`
       // reference gets re-pointed to the new title node.
       await refreshIncomingCallsToSkill(this.host, graphId, skillId);
+      if (topNodes.length > 0) {
+        const { persistSkillCitedNodes } = await import('./skill-retrain-queue.js');
+        await persistSkillCitedNodes(
+          this.host,
+          skillId,
+          graphId,
+          topNodes.map((n) => n.nodeId),
+        );
+      }
     }
 
     return {
