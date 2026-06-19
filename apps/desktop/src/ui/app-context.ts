@@ -63,6 +63,14 @@ export interface AppContext {
   switchStudioTool: (tool: string, save?: boolean) => void;
   BILLING_BASE_URL: string;
   BILLING_EMAIL_KEY: string;
+  replaceLoadedGraphs: (graphs: GraphWithMetadata[]) => void;
+  pickAtlasGraph: () => string | null;
+  setAtlasActiveGraph: (id: string | null) => void;
+  refreshActiveEngramLabel: () => void;
+  refreshAtlasView: () => Promise<void>;
+  presActive: () => boolean;
+  applyPresentationMasking: (root?: ParentNode) => void;
+  clearAtlasGraphData: () => void;
 }
 
 export interface QuarantineConfirmOptions {
