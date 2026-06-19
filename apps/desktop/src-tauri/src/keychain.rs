@@ -34,9 +34,28 @@ use anyhow::Result;
 // address the same cortex via the same identifier.
 //
 //   "/Users/nelulazar/Graphnosis-test" → "Users_nelulazar_Graphnosis-test"
-fn account_for(cortex_dir: &str) -> String {
-    let mut safe = String::with_capacity(cortex_dir.len());
-    for c in cortex_dir.chars() {
+//
+// Paths are normalized before hashing so minor UI differences (trailing
+// slash, surrounding whitespace, symlink vs real path) don't miss the
+// keychain entry that was written on a prior passphrase unlock.
+pub fn normalize_cortex_dir(cortex_dir: &str) -> String {
+    let trimmed = cortex_dir.trim();
+    let path = std::path::Path::new(trimmed);
+    if path.is_dir() {
+        if let Ok(canon) = path.canonicalize() {
+            return canon.to_string_lossy().into_owned();
+        }
+    }
+    let mut s = trimmed.to_string();
+    while s.len() > 1 && (s.ends_with('/') || s.ends_with('\\')) {
+        s.pop();
+    }
+    s
+}
+
+fn account_for(path: &str) -> String {
+    let mut safe = String::with_capacity(path.len());
+    for c in path.chars() {
         if c.is_ascii_alphanumeric() || c == '-' || c == '.' {
             safe.push(c);
         } else {
@@ -44,6 +63,35 @@ fn account_for(cortex_dir: &str) -> String {
         }
     }
     safe.trim_start_matches('_').to_string()
+}
+
+fn is_usable_passphrase(passphrase: &str) -> bool {
+    !passphrase.trim().is_empty()
+}
+
+/// Paths that may still hold a Touch ID cache entry from before
+/// `normalize_cortex_dir` or from moving the cortex folder (e.g.
+/// `~/Graphnosis-UI-Test` → `~/Documents/Graphnosis/Graphnosis-UI-Test`).
+fn legacy_touchid_candidates(normalized: &str, raw: &str) -> Vec<String> {
+    let trimmed = raw.trim();
+    let mut out = vec![trimmed.to_string()];
+    if !trimmed.ends_with('/') && !trimmed.ends_with('\\') {
+        out.push(format!("{}/", trimmed));
+    }
+    let path = std::path::Path::new(normalized);
+    if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+        if let Some(home) = dirs::home_dir() {
+            out.push(home.join(name).to_string_lossy().into_owned());
+        }
+    }
+    let mut deduped = Vec::new();
+    for candidate in out {
+        if candidate == normalized || deduped.iter().any(|c| c == &candidate) {
+            continue;
+        }
+        deduped.push(candidate);
+    }
+    deduped
 }
 
 // ── keyring path (Windows always; macOS when `keychain` feature is on) ───────
@@ -109,7 +157,7 @@ mod kc {
 #[cfg(not(target_os = "windows"))]
 #[allow(dead_code)]
 mod file_cache {
-    use super::account_for;
+    use super::{account_for, is_usable_passphrase};
     use anyhow::{anyhow, Context, Result};
     use std::path::PathBuf;
     use std::os::unix::fs::PermissionsExt;
@@ -142,7 +190,13 @@ mod file_cache {
     pub fn load(cortex_dir: &str) -> Result<Option<String>> {
         let path = cache_file(cortex_dir)?;
         match std::fs::read_to_string(&path) {
-            Ok(s) => Ok(Some(s)),
+            Ok(s) if is_usable_passphrase(&s) => Ok(Some(s)),
+            Ok(_) => {
+                // Zero-byte or whitespace-only files block legacy migration;
+                // treat as missing and remove the corrupt entry.
+                let _ = std::fs::remove_file(&path);
+                Ok(None)
+            }
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
             Err(e) => Err(anyhow!(e))
                 .with_context(|| format!("read {}", path.display())),
@@ -180,14 +234,62 @@ mod kc {
 // ── Public API ────────────────────────────────────────────────────────────────
 
 pub fn store_passphrase(cortex_dir: &str, passphrase: &str) -> Result<()> {
-    kc::store(cortex_dir, passphrase)
+    if !is_usable_passphrase(passphrase) {
+        return Err(anyhow::anyhow!("refusing to store empty passphrase for Touch ID"));
+    }
+    kc::store(&normalize_cortex_dir(cortex_dir), passphrase)
 }
 
 pub fn load_passphrase(cortex_dir: &str) -> Result<Option<String>> {
-    kc::load(cortex_dir)
+    let normalized = normalize_cortex_dir(cortex_dir);
+    if let Some(p) = kc::load(&normalized)? {
+        if is_usable_passphrase(&p) {
+            return Ok(Some(p));
+        }
+        // Corrupt / empty entry at the current key — clear and fall through to
+        // legacy migration (common after a cortex folder move left a 0-byte file).
+        let _ = kc::clear(&normalized);
+    }
+    // Pre-normalization installs and moved cortex folders may be keyed under
+    // a different literal path (trailing slash, old parent directory, …).
+    for legacy in legacy_touchid_candidates(&normalized, cortex_dir) {
+        if let Some(p) = kc::load(&legacy)? {
+            // Promote to the normalized key so future lookups are stable.
+            let _ = kc::store(&normalized, &p);
+            let _ = kc::clear(&legacy);
+            return Ok(Some(p));
+        }
+    }
+    Ok(None)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn legacy_candidates_include_home_basename_for_nested_path() {
+        let Some(home) = dirs::home_dir() else { return; };
+        let normalized = home
+            .join("Documents/Graphnosis/MyCortex")
+            .to_string_lossy()
+            .into_owned();
+        let raw = normalized.clone();
+        let candidates = legacy_touchid_candidates(&normalized, &raw);
+        let expected = home.join("MyCortex").to_string_lossy().into_owned();
+        assert!(candidates.contains(&expected));
+    }
+
+    #[test]
+    fn legacy_candidates_skip_normalized_duplicate() {
+        let normalized = "/Users/alice/MyCortex";
+        let raw = "/Users/alice/MyCortex";
+        let candidates = legacy_touchid_candidates(normalized, raw);
+        assert!(!candidates.iter().any(|c| c == normalized));
+    }
 }
 
 #[allow(dead_code)]
 pub fn clear_passphrase(cortex_dir: &str) -> Result<()> {
-    kc::clear(cortex_dir)
+    kc::clear(&normalize_cortex_dir(cortex_dir))
 }

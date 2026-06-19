@@ -16,6 +16,7 @@ mod tray;
 
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 use tauri::async_runtime::Mutex as AsyncMutex;
@@ -49,6 +50,9 @@ struct AppInner {
     /// `change_passphrase` call goes through with `skipOldPassphraseCheck`
     /// because the user can't be expected to also know the forgotten old one.
     unlocked_via_recovery: bool,
+    /// Bumped on lock / sidecar replacement so the exit watchdog ignores
+    /// intentional shutdowns and stale tasks from prior unlock attempts.
+    sidecar_watch_generation: u64,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -76,6 +80,123 @@ pub struct StatusSnapshot {
     pub unlocked: bool,
     pub cortex_dir: Option<String>,
     pub sidecar_running: bool,
+}
+
+/// Touch ID readiness for a cortex path — returned by `biometric_available`.
+#[derive(Serialize, Deserialize, Clone)]
+pub struct BiometricStatus {
+    pub available: bool,
+    pub has_saved_passphrase: bool,
+    pub hardware_available: bool,
+    /// User-facing hint when `available` is false; omitted when Touch ID is ready.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hint: Option<String>,
+}
+
+// ---------- sidecar session helpers ------------------------------------
+
+/// Stop the supervised sidecar + push-event reader. Bumps the watch
+/// generation so any in-flight exit watchdog exits quietly.
+async fn stop_sidecar_session(inner: &mut AppInner) {
+    inner.sidecar_watch_generation = inner.sidecar_watch_generation.wrapping_add(1);
+    if let Some(stream) = inner.event_stream.take() {
+        stream.shutdown().await;
+    }
+    if let Some(handle) = inner.sidecar.take() {
+        let _ = handle.shutdown().await;
+    }
+}
+
+async fn emit_status_snapshot(app: &AppHandle, snapshot: &StatusSnapshot) {
+    let _ = app.emit("graphnosis://status", snapshot);
+    tray::refresh_status(app, snapshot);
+}
+
+async fn emit_locked_status(app: &AppHandle) {
+    emit_status_snapshot(
+        app,
+        &StatusSnapshot {
+            unlocked: false,
+            cortex_dir: None,
+            sidecar_running: false,
+        },
+    )
+    .await;
+}
+
+/// Poll until the sidecar OS process exits, then tear down session state and
+/// tell the UI to re-lock. Intentional lock/shutdown bumps `generation` so
+/// this task becomes a no-op instead of flashing a false "synapse died" card.
+fn spawn_sidecar_watchdog(app: AppHandle, inner: Arc<AsyncMutex<AppInner>>, pid: u32, generation: u64) {
+    tauri::async_runtime::spawn(async move {
+        loop {
+            tokio::time::sleep(Duration::from_secs(1)).await;
+            #[cfg(unix)]
+            let alive = {
+                extern "C" {
+                    fn kill(pid: i32, sig: i32) -> i32;
+                }
+                // SAFETY: signal 0 is a presence probe; ESRCH => not running.
+                unsafe { kill(pid as i32, 0) == 0 }
+            };
+            #[cfg(windows)]
+            let alive = {
+                use std::os::windows::process::CommandExt;
+                std::process::Command::new("tasklist")
+                    .args(["/FI", &format!("PID eq {}", pid), "/NH"])
+                    .creation_flags(0x08000000)
+                    .output()
+                    .map(|o| String::from_utf8_lossy(&o.stdout).contains(&pid.to_string()))
+                    .unwrap_or(false)
+            };
+            if alive {
+                continue;
+            }
+
+            let should_notify = {
+                let mut guard = inner.lock().await;
+                if guard.sidecar_watch_generation != generation {
+                    return;
+                }
+                if guard.sidecar.as_ref().and_then(|h| h.pid()) != Some(pid) {
+                    return;
+                }
+                guard.cortex_dir = None;
+                guard.unlocked_via_recovery = false;
+                stop_sidecar_session(&mut guard).await;
+                true
+            };
+            if should_notify {
+                let _ = app.emit("graphnosis://sidecar-died", ());
+                emit_locked_status(&app).await;
+            }
+            return;
+        }
+    });
+}
+
+async fn adopt_sidecar_session(
+    app: &AppHandle,
+    state: &State<'_, AppState>,
+    cortex_dir: PathBuf,
+    handle: sidecar::SidecarHandle,
+    via_recovery: bool,
+) -> StatusSnapshot {
+    let pid = handle.pid();
+    let events_path = handle.events_socket_path.clone();
+    let generation = {
+        let mut inner = state.inner.lock().await;
+        inner.cortex_dir = Some(cortex_dir);
+        inner.sidecar = Some(handle);
+        inner.unlocked_via_recovery = via_recovery;
+        inner.event_stream = Some(event_stream::spawn(app.clone(), events_path));
+        inner.sidecar_watch_generation = inner.sidecar_watch_generation.wrapping_add(1);
+        inner.sidecar_watch_generation
+    };
+    if let Some(pid) = pid {
+        spawn_sidecar_watchdog(app.clone(), state.inner.clone(), pid, generation);
+    }
+    current_status(state).await
 }
 
 // ---------- commands -----------------------------------------------------
@@ -111,6 +232,15 @@ async fn unlock_cortex(
         return Err(e.to_string());
     }
 
+    // Shut down any stale supervised session BEFORE sidecar::start. start()
+    // pkill's all graphnosis-sidecar processes first — if we still hold a
+    // SidecarHandle from a prior session and spawn then fails, the UI would
+    // stay "unlocked" with a dead synapse until lock/unlock.
+    {
+        let mut inner = state.inner.lock().await;
+        stop_sidecar_session(&mut inner).await;
+    }
+
     // Spawn the supervised Node sidecar. The sidecar acquires an exclusive
     // cortex lock on its own, so if another sidecar is already running against
     // the same cortex, this call will fail visibly.
@@ -118,26 +248,14 @@ async fn unlock_cortex(
         .await
         .map_err(|e| e.to_string())?;
 
-    {
-        let mut inner = state.inner.lock().await;
-        // If we had a previous sidecar running for a different cortex, kill it cleanly.
-        if let Some(prev) = inner.sidecar.take() {
-            let _ = prev.shutdown().await;
-        }
-        // Tear down the prior event stream (different cortex → different
-        // socket). The new stream is spawned just below.
-        if let Some(prev) = inner.event_stream.take() {
-            prev.shutdown().await;
-        }
-        inner.cortex_dir = Some(cortex_dir.clone());
-        let events_path = handle.events_socket_path.clone();
-        inner.sidecar = Some(handle);
-        inner.unlocked_via_recovery = false;
-        // Spawn the push-event reader for this cortex. It tolerates the
-        // sidecar's events socket not being up yet — bounded backoff
-        // retries until either it connects or cortex lock cancels it.
-        inner.event_stream = Some(event_stream::spawn(app.clone(), events_path));
-    }
+    let snapshot = adopt_sidecar_session(
+        &app,
+        &state,
+        cortex_dir.clone(),
+        handle,
+        false,
+    )
+    .await;
 
     // First-run detection: the sidecar writes `.recovery-pending` with the
     // plaintext 24-word phrase when it creates a brand-new cortex (or backfills
@@ -186,9 +304,7 @@ async fn unlock_cortex(
         }
     }
 
-    let snapshot = current_status(&state).await;
-    let _ = app.emit("graphnosis://status", &snapshot);
-    tray::refresh_status(&app, &snapshot);
+    emit_status_snapshot(&app, &snapshot).await;
     Ok(snapshot)
 }
 
@@ -215,31 +331,26 @@ async fn unlock_cortex_with_recovery(
         );
     }
 
+    {
+        let mut inner = state.inner.lock().await;
+        stop_sidecar_session(&mut inner).await;
+    }
+
     let handle = sidecar::start_with_recovery(&app, &cortex_dir, &args.recovery_phrase, args.preferred_default_graph.as_deref())
         .await
         .map_err(|e| e.to_string())?;
 
-    {
-        let mut inner = state.inner.lock().await;
-        if let Some(prev) = inner.sidecar.take() {
-            let _ = prev.shutdown().await;
-        }
-        if let Some(prev) = inner.event_stream.take() {
-            prev.shutdown().await;
-        }
-        inner.cortex_dir = Some(cortex_dir.clone());
-        let events_path = handle.events_socket_path.clone();
-        inner.sidecar = Some(handle);
-        inner.unlocked_via_recovery = true;
-        inner.event_stream = Some(event_stream::spawn(app.clone(), events_path));
-    }
+    let snapshot = adopt_sidecar_session(
+        &app,
+        &state,
+        cortex_dir.clone(),
+        handle,
+        true,
+    )
+    .await;
 
-    let snapshot = current_status(&state).await;
-    let _ = app.emit("graphnosis://status", &snapshot);
-    // Tell the frontend this session was unlocked via recovery so it can
-    // surface the "Set a new passphrase?" modal.
     let _ = app.emit("graphnosis://unlocked-via-recovery", ());
-    tray::refresh_status(&app, &snapshot);
+    emit_status_snapshot(&app, &snapshot).await;
     Ok(snapshot)
 }
 
@@ -301,14 +412,30 @@ async fn create_cortex_dir(path: String) -> Result<(), String> {
 async fn biometric_available(
     app: AppHandle,
     cortex_dir: String,
-) -> Result<bool, String> {
+) -> Result<BiometricStatus, String> {
     let has_passphrase = keychain::load_passphrase(&cortex_dir)
         .map_err(|e| e.to_string())?
         .is_some();
-    if !has_passphrase {
-        return Ok(false);
-    }
-    Ok(biometric::is_available(&app).await)
+    let hardware_available = biometric::is_available(&app).await;
+    let available = has_passphrase && hardware_available;
+    let hint = if available {
+        None
+    } else if !has_passphrase {
+        Some(
+            "Unlock with your cortex passphrase once to enable Touch ID for this folder."
+                .to_string(),
+        )
+    } else if !hardware_available {
+        Some("Touch ID isn't available on this Mac.".to_string())
+    } else {
+        None
+    };
+    Ok(BiometricStatus {
+        available,
+        has_saved_passphrase: has_passphrase,
+        hardware_available,
+        hint,
+    })
 }
 
 /// Unlock the cortex via Touch ID. Triggers the macOS biometric prompt
@@ -581,12 +708,7 @@ async fn restore_quarantine(
 async fn lock_cortex(app: AppHandle, state: State<'_, AppState>) -> Result<StatusSnapshot, String> {
     {
         let mut inner = state.inner.lock().await;
-        if let Some(handle) = inner.sidecar.take() {
-            let _ = handle.shutdown().await;
-        }
-        if let Some(stream) = inner.event_stream.take() {
-            stream.shutdown().await;
-        }
+        stop_sidecar_session(&mut inner).await;
     }
     // NOTE: we deliberately do NOT clear the cached passphrase here. Lock
     // means "step away" not "forget everything"; if we delete the cached
@@ -603,8 +725,7 @@ async fn lock_cortex(app: AppHandle, state: State<'_, AppState>) -> Result<Statu
         cortex_dir: None,
         sidecar_running: false,
     };
-    let _ = app.emit("graphnosis://status", &snapshot);
-    tray::refresh_status(&app, &snapshot);
+    emit_status_snapshot(&app, &snapshot).await;
     Ok(snapshot)
 }
 
