@@ -19816,6 +19816,8 @@ bindAppContext({
     graphnosisAllNodes = [];
     if (mainAtlas) { mainAtlas.setNodes([]); mainAtlas.setEdges([], []); }
   },
+  switchActiveEngram,
+  getIngestJobCount: () => ingestJobToasts.size,
 });
 initActivity({
   activityList: els.activityList, activityDateFrom: els.activityDateFrom, activityDateTo: els.activityDateTo,

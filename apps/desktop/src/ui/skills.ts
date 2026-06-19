@@ -614,6 +614,8 @@ function expandSkillEngramGroups(graphIds: Iterable<string>): void {
   for (const gid of graphIds) skillEngramGroupState.set(gid, true);
 }
 
+let _skillsRefreshTimer: number | null = null;
+
 /** Debounced refetch of skill:list + re-render. Shared by mount, ↻, and
  *  graph-mutation while the Skills tab is open (MCP train_skill, auto-retrain). */
 export function scheduleSkillsLibraryRefresh(opts: { syncGraphs?: boolean } = {}): void {
@@ -622,7 +624,7 @@ export function scheduleSkillsLibraryRefresh(opts: { syncGraphs?: boolean } = {}
     _skillsRefreshTimer = null;
     void (async () => {
       const prevIds = new Set(skillsLibrary.map((s) => s.sourceId));
-      if (opts.syncGraphs !== false) await fetchGraphsMetadata();
+      if (opts.syncGraphs !== false) await app().reloadGraphsMetadata();
       await fetchSkillsLibrary();
       const newOnes = skillsLibrary.filter((s) => !prevIds.has(s.sourceId));
       if (newOnes.length > 0) {
@@ -639,7 +641,7 @@ export async function mountSkillsPane(): Promise<void> {
   // getLoadedGraphs() must be current before filteredSortedLibrary() runs — otherwise
   // visibleGraphIds is empty/stale and every skill is filtered out (shows as
   // "All your skills are hidden" even when skill:list returned dozens of rows).
-  await fetchGraphsMetadata();
+  await app().reloadGraphsMetadata();
   populateSkillsEngramPickers();
   await fetchSkillsLibrary();
   purgeOrphanedHiddenSkills();
@@ -677,7 +679,7 @@ export async function mountSkillsPane(): Promise<void> {
   const skillEngrams = getLoadedGraphs().filter(
     (g) => !g.metadata.archived && g.loaded !== false && g.metadata.template === 'skill',
   );
-  if (skillEngrams.length > 0 && skillsLibrary.length === 0 && skillsLibraryLoadOk && ingestJobToasts.size === 0) {
+  if (skillEngrams.length > 0 && skillsLibrary.length === 0 && skillsLibraryLoadOk && app().getIngestJobCount() === 0) {
     showSkillsToast(
       `You have ${skillEngrams.length} Skills engram${skillEngrams.length === 1 ? '' : 's'} but no skills — you may have accidentally removed them. Check Sources in each Skills engram.`,
       'error',
@@ -728,6 +730,34 @@ async function warmVitalityCache(): Promise<void> {
 }
 
 // ── Skill grouping helpers ────────────────────────────────────────────────────
+
+/**
+ * Extract the human-readable display name from a Graphnosis source ref.
+ *
+ * Source refs are stored in the form `{kind}:{timestamp}:{label}` by ingestClip,
+ * e.g. `skill:1780131345514:Executive decision recall (imported 2026-05-30)`.
+ * Strip the prefix so the UI shows only the label part. Falls back to the raw
+ * string for source refs that don't match the pattern (manually-set names,
+ * legacy cortexes, trainer-generated labels that use a different format).
+ */
+export function skillDisplayName(label: string): string {
+  return label.replace(/^(?:skill|clip|ai-conversation):\d+:/, '').trim();
+}
+
+/** User-facing skill title — friendly name with date suffixes stripped and
+ *  dash-slugs title-cased. Prefer this over skillDisplayName in headers. */
+function skillFriendlyName(label: string): string {
+  return humanizeSkillName(label) || skillDisplayName(label) || 'Untitled skill';
+}
+
+/** Strip the metadata comment (and optional ATX/bold title line) from stored
+ *  skill text — used when falling back to plain-text Trained Output render. */
+function stripSkillMetadataHeader(text: string): string {
+  return text
+    .replace(/^(?:#[^\n]+|\*\*[^\n]+\*\*)\n+<!--[\s\S]*?-->\n+/, '')
+    .replace(/^<!--[\s\S]*?-->\n+/, '')
+    .trim();
+}
 
 /**
  * Strip the "(imported YYYY-MM-DD)" and "(trained YYYY-MM-DD)" date suffixes
@@ -1188,7 +1218,7 @@ function renderSkillRow(s: SkillListEntry, hasChildren = false, groupExpanded = 
   // Show the friendly, humanized BASE name (no date suffixes, dashes → spaces,
   // Title Case) as the visible title — kind/mode chips carry the context. The
   // raw slug stays in the tooltip as the canonical identifier for power users.
-  const displayName = humanizeSkillName(s.label) || skillDisplayName(s.label) || 'Untitled skill';
+  const displayName = skillFriendlyName(s.label);
 
   return `
     <div class="skill-row${activeClass}" data-source-id="${escape(s.sourceId)}" data-graph-id="${escape(s.graphId)}">
@@ -1396,8 +1426,25 @@ async function paintTrainedOutputSourceDriven(
     return;
   }
   // Hide metadata chunks (HTML comments) — they're an internal audit artefact.
+  // Also hide title chunks — the detail header shows the friendly name; duplicating
+  // the raw slug label as card #1 was confusing after Batch 5.
   // Prefer the server-provided canonical role; fall back to the prefix test.
-  const visible = result.nodes.filter((n) => (n.role ?? '') !== 'metadata' && !n.content.trim().startsWith('<!--'));
+  const visible = result.nodes.filter((n) => {
+    const role = n.role ?? '';
+    if (role === 'metadata' || role === 'title') return false;
+    if (n.content.trim().startsWith('<!--')) return false;
+    return true;
+  });
+
+  if (visible.length === 0) {
+    const fallback = skillsActiveResult?.trained
+      ? stripSkillMetadataHeader(skillsActiveResult.trained)
+      : '';
+    if (fallback) {
+      paintTrainedOutput(el, fallback, skillsActiveResult?.mode ?? '', skillsActiveResult?.influentialNodes ?? []);
+      return;
+    }
+  }
 
   // Detect goal nodes to inject a "Goals" section header before the first one.
   // Fallback regex for older sidecars that don't return a role.
@@ -1429,7 +1476,7 @@ async function paintTrainedOutputSourceDriven(
   el.setAttribute('data-pres-engram', graphId);
   const titleEl = document.getElementById('skills-trainer-title');
   if (titleEl) { titleEl.setAttribute('data-pres', `skill:${skillId}`); titleEl.setAttribute('data-pres-engram', graphId); }
-  if (presActive()) applyPresentationMasking();
+  if (app().presActive()) app().applyPresentationMasking();
   bindCardInteractions(el, skillId, graphId);
 }
 
@@ -1502,18 +1549,6 @@ function bindCardInteractions(root: HTMLElement, skillId: string, graphId: strin
           reason: 'Skills editor: inline edit',
         });
         snapshots.set(card, newContent);
-        // Title card (index 0) also drives the source label and the
-        // heading at the top of the review panel.
-        if (card.dataset['index'] === '0') {
-          const titleEl = document.getElementById('skills-trainer-title');
-          if (titleEl) titleEl.textContent = newContent;
-          try {
-            await invoke('source_rename', { graphId, sourceId: skillId, newRef: newContent });
-            renderSkillsLibrary();
-          } catch (e) {
-            console.warn('[skills] source_rename failed:', e);
-          }
-        }
       } catch (e) {
         console.warn('[skills] node_direct_edit failed:', e);
         text.innerText = prev; // revert
@@ -1976,7 +2011,8 @@ function paintSkillsReview(result: SkillTrainResult, opts: {
   // output, so stay on the Output view.
   const isSaved = result.skillId !== undefined || opts.sourceId !== undefined;
   const hasChanges = !!result.original && result.trained !== result.original;
-  if (hasChanges && result.original && isSaved) {
+  const diffAvailable = !!document.getElementById('skills-review-diff-output');
+  if (hasChanges && result.original && isSaved && diffAvailable) {
     setOutputView('diff');
     renderDiffView({ animate: true });
   } else {
@@ -1990,9 +2026,13 @@ function paintSkillsReview(result: SkillTrainResult, opts: {
  *  diff view. Both elements live in the DOM at the same time; we just
  *  flip the hidden class so the toggle has no perceptible lag. */
 function setOutputView(view: 'output' | 'diff'): void {
+  const diffEl = document.getElementById('skills-review-diff-output');
+  // The Output/Changes toggle + diff panel were removed from index.html during
+  // the SOP editor pass — when those nodes aren't in the DOM, never hide the
+  // trained-output box or the user sees an empty "Trained output" section.
+  if (!diffEl) view = 'output';
   skillsOutputView = view;
   const outEl = document.getElementById('skills-review-output');
-  const diffEl = document.getElementById('skills-review-diff-output');
   const metaEl = document.getElementById('skills-review-diff-meta');
   outEl?.classList.toggle('hidden', view !== 'output');
   diffEl?.classList.toggle('hidden', view !== 'diff');
@@ -2329,8 +2369,8 @@ async function openSkillInTrainer(
   // atlas-reset / data-reload path on the no-op case. switchActiveEngram
   // never changes the current tab on its own, so the user stays in the
   // Skills view.
-  if (graphId && atlasActiveGraph !== graphId) {
-    void switchActiveEngram(graphId).catch((e) => console.warn('[skills] switchActiveEngram failed', e));
+  if (graphId && app().getAtlasActiveGraph() !== graphId) {
+    void app().switchActiveEngram(graphId).catch((e) => console.warn('[skills] switchActiveEngram failed', e));
   }
   // Clear the 🆕 notification when the user actually opens the skill —
   // this is the "acknowledge" moment for `notify` autonomy.
@@ -2367,7 +2407,7 @@ async function openSkillInTrainer(
 
       // Show skill name in the panel title so the user always knows which
       // skill they're retraining without having to remember from the list.
-      const retrainName = skillDisplayName(detail.label) || 'skill';
+      const retrainName = skillFriendlyName(detail.label) || 'skill';
       const titleEl = document.getElementById('skills-trainer-title');
       if (titleEl) titleEl.textContent = `Train a skill: ${retrainName}`;
 
@@ -2430,7 +2470,8 @@ async function openSkillInTrainer(
       return;
     }
     // Default: open into Review mode with the stored skill text as the trained output.
-    showSkillsReviewMode(skillDisplayName(detail.label) || 'Skill');
+    setOutputView('output');
+    showSkillsReviewMode(skillFriendlyName(detail.label));
     paintSkillsReview(
       {
         original: detail.text,
@@ -2547,7 +2588,7 @@ function readSkillsComposeForm(): {
   let save = true;
   if (isPreview) {
     save = false;
-    const fallback = atlasActiveGraph
+    const fallback = app().getAtlasActiveGraph()
       ?? getLoadedGraphs().find((g) => !g.metadata.archived && g.loaded !== false)?.graphId;
     if (!fallback) {
       showSkillsToast('No engrams loaded — can\'t run recall for preview.', 'error');
@@ -2764,8 +2805,8 @@ function ensureLiveReviewModeForStreaming(): void {
   if (out) out.textContent = '';
   if (diff) diff.innerHTML = '';
   // Force the diff view to be the active one — that's what users want
-  // to watch fill in.
-  setOutputView('diff');
+  // to watch fill in — but only when the diff panel exists in the DOM.
+  if (diff) setOutputView('diff');
 }
 
 /** Re-run the line diff over the current partial buffer and update the
@@ -3000,7 +3041,7 @@ async function runSkillTraining(): Promise<void> {
       return;
     }
     const engramName = getLoadedGraphs().find((g) => g.graphId === params.graphId)?.metadata.displayName ?? params.graphId;
-    showSkillsReviewMode(params.skillName || 'Trained skill');
+    showSkillsReviewMode(skillFriendlyName(params.skillName || 'Trained skill'));
     paintSkillsReview(result, {
       graphId: params.graphId,
       ...(result.skillId !== undefined ? { sourceId: result.skillId } : {}),
@@ -3114,7 +3155,7 @@ async function runSkillsFallbackTraining(opts: { silent?: boolean } = {}): Promi
     renderStatusProcess();
     const trained = params.skill;
     const engramName = getLoadedGraphs().find((g) => g.graphId === params.graphId)?.metadata.displayName ?? params.graphId;
-    showSkillsReviewMode(params.skillName || 'Skill (source-only)');
+    showSkillsReviewMode(skillFriendlyName(params.skillName || 'Skill (source-only)'));
 
     // Save if the user picked a real engram — free users persist via skill:saveFallback.
     let savedSkillId: string | undefined;
