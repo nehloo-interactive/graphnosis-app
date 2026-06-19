@@ -116,6 +116,10 @@ In your project root, create or edit `.cursor/mcp.json`:
 
 Reload the Cursor window. Graphnosis tools will appear in the MCP tools panel.
 
+:::tip[Dev builds (`pnpm dev:desktop`)]
+Sidecar rebuilds kill the synapse while Cursor keeps the relay process running. The relay reconnects automatically when you unlock, but Cursor may stay on **Loading tools** until you reload the window or toggle Graphnosis in **Settings → MCP**. The Graphnosis app **Connections → Reconnect** button bounces the MCP socket without restarting Cursor.
+:::
+
 ## GitHub Copilot (VS Code)
 
 Graphnosis integrates with Copilot Chat via three paths. The in-app wizard (**Settings → Configure Copilot…** or the AI clients panel) shows all three options and generates your config with the bearer token pre-filled.

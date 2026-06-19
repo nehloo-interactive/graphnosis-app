@@ -11,6 +11,72 @@ Conventions: **Added** = new features, **Changed** = behavior or UX shifts, **Fi
 
 ---
 
+## v1.17.3 — Stability, Touch ID, and license refresh
+
+<p style="margin-top:0.5rem;font-size:1.25em;opacity:0.85;">2026-06-19</p>
+
+Patch release focused on session reliability, biometric unlock, and quieter license refresh when you unlock your cortex.
+
+### Fixed
+
+- **Memory engine recovery.** If the background memory engine stops unexpectedly, Graphnosis returns to the lock screen and offers **Restart memory** instead of leaving the app in a broken unlocked state.
+- **Cleaner unlock.** Each unlock starts from a fresh session, so a failed start cannot leave the UI open without a running memory engine.
+- **Touch ID reliability.** Touch ID unlock is more dependable after sleep, cortex folder moves, and repeated unlock attempts on macOS. Saved credentials migrate automatically when the cortex path changes.
+- **Repeated license verification emails.** Work-email license checks on unlock are throttled and no longer resend verification emails when a prior attempt was abandoned.
+- **Cortex switch display glitch.** Home stats and the Sources list no longer briefly show counts from a previous cortex after you lock or switch folders.
+
+### Changed
+
+- **Sources panel layout (mobile).** Filter bar, confirm dialogs, and action menus wrap below filenames on narrow screens; status badges are easier to read.
+- **Connect AI docs.** Added a dev-build note: after `pnpm dev:desktop`, Cursor may show "Loading tools" until you reload the window; **Connections → Reconnect** in Graphnosis refreshes MCP without restarting Cursor.
+
+---
+
+## v1.17.2 — Local LLM routing + Engram Sharing + Ghampus dismiss
+
+<p style="margin-top:0.5rem;font-size:1.25em;opacity:0.85;">2026-06-18</p>
+
+Patch release fixing local model selection at call time, proactive-card dismiss in Ghampus, and Engram Sharing in the Tauri app.
+
+### Fixed
+
+- **Local LLM model mismatch.** The sidecar no longer hardcodes `llama3.2:3b-instruct-q4_K_M` at boot. A new `DynamicOllamaLlm` proxy reads `settings.ai.llmModel` on every call, so machines running non-catalog models (e.g. `mistral-nemo:12b`) stop getting 404s. Changing the active model in Settings → Local LLM takes effect immediately without a sidecar restart; Ghampus skill walks also prefer the installed model over the catalog default.
+- **Ghampus proactive-card Dismiss button.** Async click handlers were calling `e.currentTarget.closest(...)` after an `await`, when the browser had already nulled out `currentTarget`. The card never removed. Dismiss and Run handlers now capture the button element before the first await.
+- **Engram Sharing "Create share" button.** All `sharing:*` IPC calls used Tauri `invoke(...)`, which routes to Rust — but no Rust commands exist for sharing. Read calls failed silently via `.catch()` fallbacks; create threw an unhandled rejection and did nothing. Every sharing call now routes through `ipcCall(...)` to the Node sidecar, with an explicit error alert on create failure.
+
+### Changed
+
+- **Engram Sharing modal layout.** Create form moved out of a `<details>` footer into a proper modal-body section with a labelled heading. Engram picker uses a vertical checklist instead of horizontal chip wrapping so long engram lists stay scannable.
+
+---
+
+## v1.17.1 — Ghampus chat surface + UI polish
+
+<p style="margin-top:0.5rem;font-size:1.25em;opacity:0.85;">2026-06-18</p>
+
+Ghampus gets a full chat thread with skill-match cards, walk plans, and proactive suggestions — plus rail-nav reorder, bubble contrast fixes, and a billing OTP guard.
+
+### Added
+
+- **Ghampus chat thread.** Two-zone layout: scrollable conversation above, input row below. Message types include user/Ghampus bubbles, skill-match cards, walk-plan cards (step table + cost + model routing), and refine-proposal cards. Skill-running bubble with animated progress bar and rotating status phrases on "Walk it" / "Local-only".
+- **Slash commands in Ghampus input.** `/save`, `/recall`, and `/skill` route through a unified MCP tool dispatcher and persist to `ghampus-history.jsonl` (last 100 messages reload on unlock).
+- **Proactive skill-match inbox.** A background ProactiveWatcher surfaces skill suggestions into the Ghampus thread; cards can be dismissed, snoozed, or run inline via `ghampus:inbox:*` IPC.
+- **Unified MCP tool dispatch.** External AI clients still go through the MCP transport with policy checks; Ghampus calls the same handlers directly as the cortex owner. One implementation for all 47+ tools.
+
+### Changed
+
+- **Default landing tab.** Your Cortex (atlas) is now first in the rail and the default landing page; Ghampus is second with a sparkle icon. Dashboard panels collapse under a "Dashboard ▸" toggle.
+- **Chat bubble contrast.** User bubbles use dark teal/white in light mode and bright cyan/near-black in dark mode; Ghampus bubbles use `--color-surface-2` so dark mode no longer renders white.
+- **Vitality bars on macOS.** Skill vitality bars set width and colour via CSS custom properties (`--bar-w`, `--bar-color-dark`, `--bar-color-light`) so WebKit production builds render them correctly.
+- **Unified Ghampus input placeholder.** "Ask anything — type / to save, recall, or run a skill" across all engram contexts.
+- **Docs site nav.** Ghampus nav item moved before Docs; Upgrade link removed from top menu; Ghampus chip enlarged on `/ghampus` and the landing page.
+
+### Fixed
+
+- **Duplicate OTP emails on billing poll.** The billing token endpoint no longer generates and sends a fresh OTP on every unauthenticated request while a valid code is still pending — stops burying the active code when the desktop polls before you enter it.
+
+---
+
 ## v1.17.0 — Ghampus: Your AI. Already on it.
 
 <p style="margin-top:0.5rem;font-size:1.25em;opacity:0.85;">2026-06-17</p>
