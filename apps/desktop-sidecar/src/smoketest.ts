@@ -12,7 +12,7 @@
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import { policy } from '@nehloo-interactive/graphnosis-secure-sync';
+import { policy, oplog } from '@nehloo-interactive/graphnosis-secure-sync';
 import { GraphnosisHost } from './host.js';
 import { GraphnosisImpl } from './graphnosis-impl.js';
 import { proposeCorrection, applyCorrection } from './correction.js';
@@ -135,6 +135,65 @@ ferry to Naxos. The food in Mykonos was overrated.`;
     );
   }
   log('skill-train-empty-recall.ok', { nodeCount: trainCtx.nodeCount, recallNodesIncluded: recall.nodesIncluded });
+
+  // --- op-log merge on loadGraph (before supersede correction) ------------
+  log('oplog-merge-roundtrip', {});
+  const gaiPath = path.join(cortexDir, 'graphs', 'personal.gai');
+  const bundlePath = path.join(cortexDir, 'graphs', 'personal.bundle');
+  const staleGaiBytes = await fs.readFile(gaiPath);
+  const staleBundleBytes = await fs.readFile(bundlePath);
+  const mergeNodeId = src.nodeIds[1] ?? src.nodeIds[0]!;
+  await host.applyCorrection('personal', {
+    edits: [{
+      kind: 'edit',
+      nodeId: mergeNodeId,
+      content: 'We went to Greece in September 2020 (op-log merge smoke).',
+      reason: 'smoke:oplog-merge',
+    }],
+  });
+  const mergeEvents = (await host.listOplogEvents()).filter((e) => e.graphId === 'personal');
+  const reduced = oplog.reduce(mergeEvents).get('personal');
+  const mergedNode = reduced?.nodes.get(mergeNodeId);
+  const mergedContent = (mergedNode?.data as { content?: string } | undefined)?.content;
+  if (typeof mergedContent !== 'string' || !mergedContent.includes('September 2020 (op-log merge smoke)')) {
+    throw new Error('FAIL: op-log reduce did not merge editNode into canonical node state');
+  }
+  const mtimeBeforeReconcile = (await fs.stat(gaiPath)).mtimeMs;
+  await fs.writeFile(gaiPath, staleGaiBytes);
+  await fs.writeFile(bundlePath, staleBundleBytes);
+  await fs.unlink(path.join(cortexDir, 'graphs', 'personal.embcache')).catch(() => {});
+  const { host: mergedHost } = await GraphnosisHost.open({
+    cortexDir,
+    passphrase: newPassphrase,
+    deviceId: 'smoke-oplog-merge',
+    adapter: new GraphnosisImpl(),
+    policy: policyCfg,
+  });
+  await mergedHost.loadGraph('personal');
+  const mtimeAfterReconcile = (await fs.stat(gaiPath)).mtimeMs;
+  if (mtimeAfterReconcile <= mtimeBeforeReconcile) {
+    throw new Error('FAIL: loadGraph reconcile did not materialize op-log edits to .gai');
+  }
+  log('oplog-merge-roundtrip.ok', { mergeEventCount: mergeEvents.length, materialized: true });
+
+  // --- MCP audit log -------------------------------------------------------
+  log('mcp-audit', {});
+  await mergedHost.appendMcpAuditEvent({
+    tool: 'recall',
+    clientId: 'smoke-test',
+    transport: 'stdio',
+    queryLen: 42,
+    queryHash: 'abc123deadbeef',
+    engramIds: ['personal'],
+    tokenBudget: { servedTokens: 100, servedNodes: 3 },
+  });
+  const auditRows = await mergedHost.listMcpAuditEvents();
+  const smokeRow = auditRows.find((r) => r.clientId === 'smoke-test' && r.tool === 'recall');
+  if (!smokeRow) throw new Error('FAIL: MCP audit row not persisted');
+  if (smokeRow.queryHash !== 'abc123deadbeef') {
+    throw new Error('FAIL: MCP audit export missing queryHash');
+  }
+  log('mcp-audit.ok', { rows: auditRows.length });
 
   // --- deterministic correction (no LLM) -----------------------------------
   // `correct` must work with no Local LLM configured: it deterministically
