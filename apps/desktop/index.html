@@ -14791,8 +14791,13 @@ ollama list</code></pre>
                 Role
                 <!-- UI: viewer/editor only; sidecar also supports recall-only, remember, edit-approve, skill-train, admin-audit via API. -->
                 <select id="sharing-new-role" style="display:block;width:100%;margin-top:4px;">
-                  <option value="viewer">Viewer — read-only</option>
-                  <option value="editor">Editor — can remember &amp; edit</option>
+                  <option value="viewer">Viewer — recall only (legacy)</option>
+                  <option value="recall-only">Recall only</option>
+                  <option value="remember">Remember — recall + save</option>
+                  <option value="edit-approve">Edit (approve in app)</option>
+                  <option value="editor">Editor — remember, edit, forget</option>
+                  <option value="skill-train">Skill trainer (Enterprise)</option>
+                  <option value="admin-audit">Admin / audit (Enterprise)</option>
                 </select>
               </label>
               <label style="font-size:13px;display:block;">
