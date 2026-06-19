@@ -98,23 +98,33 @@ The fastest way to wire this is the menu-bar tray's **Connect an AI client → C
 
 ## Cursor
 
-In your project root, create or edit `.cursor/mcp.json`:
+Graphnosis connects Cursor through a **user-level** MCP config — not a per-project file. The in-app wizard writes it for you.
+
+### Recommended setup
+
+1. Install the optional [**Graphnosis Cursor plugin**](https://github.com/nehloo-interactive/graphnosis-cursor-plugin) for rules, skills, hooks, and slash commands. The plugin does **not** configure MCP — it only adds instruction layers.
+2. Open Graphnosis, unlock your cortex, and click the **Cursor** chip on the home screen (or go to **Settings → AI Clients → Configure Cursor**).
+3. Click **Apply**. Graphnosis writes `~/.cursor/mcp.json` with the `graphnosis-mcp-relay` binary and the fixed socket path `~/.graphnosis/mcp.sock`. Any other MCP servers you already had are preserved.
+4. **Developer: Reload Window** in Cursor (or reopen the app). Graphnosis tools appear in the MCP tools panel.
+
+The relay talks to the same synapse as every other MCP client — one in-memory graph, one cortex lock, no bearer token, no `GRAPHNOSIS_CORTEX_PATH` env var. The socket path is cortex-independent, so one Apply survives every cortex switch.
+
+### Manual config (advanced)
+
+If you prefer to edit by hand, the wizard produces JSON shaped like this (paths vary by platform and install location):
 
 ```json
 {
   "mcpServers": {
-    "graphnosis": {
-      "command": "/Applications/Graphnosis.app/Contents/MacOS/graphnosis-sidecar",
-      "args": ["--mcp-stdio"],
-      "env": {
-        "GRAPHNOSIS_CORTEX_PATH": "/Users/you/Documents/MyCortex"
-      }
+    "Graphnosis": {
+      "command": "/Applications/Graphnosis.app/Contents/MacOS/graphnosis-mcp-relay",
+      "args": ["/Users/you/.graphnosis/mcp.sock"]
     }
   }
 }
 ```
 
-Reload the Cursor window. Graphnosis tools will appear in the MCP tools panel.
+On Windows, the config file is `%USERPROFILE%\.cursor\mcp.json` and the relay is `graphnosis-mcp-relay.exe` next to the sidecar in the Graphnosis install folder.
 
 :::tip[Dev builds (`pnpm dev:desktop`)]
 Sidecar rebuilds kill the synapse while Cursor keeps the relay process running. The relay reconnects automatically when you unlock, but Cursor may stay on **Loading tools** until you reload the window or toggle Graphnosis in **Settings → MCP**. The Graphnosis app **Connections → Reconnect** button bounces the MCP socket without restarting Cursor.

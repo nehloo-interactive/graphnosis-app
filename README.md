@@ -156,13 +156,13 @@ The sidecar exposes **48 tools** across **10 functional categories**. Tool-level
 
 ## AI clients that read from your cortex
 
-Any MCP-aware AI client speaks Graphnosis natively — no API keys, no custom plugin. The desktop app ships first-day-supported configuration flows for the most common clients. ([Full setup guide →](https://graphnosis.com/getting-started/connect-ai))
+Any MCP-aware AI client speaks Graphnosis natively — no API keys. The desktop app ships first-day-supported configuration flows for the most common clients. ([Full setup guide →](https://graphnosis.com/getting-started/connect-ai))
 
 | Client | Status |
 |---|---|
 | **Claude Desktop** | Supported (macOS + Windows) |
 | **Claude Code** | Supported (macOS + Windows) |
-| **Cursor** | Supported (macOS + Windows) |
+| **Cursor** | Supported (macOS + Windows) — optional [Cursor plugin](https://github.com/nehloo-interactive/graphnosis-cursor-plugin) for rules/skills; MCP via in-app **Configure Cursor** wizard |
 | **VS Code / GitHub Copilot Chat** | Supported via bundled Graphnosis VS Code extension (OAuth) |
 | **Zed** | Supported |
 | **Cline · Continue.dev** | Supported |
