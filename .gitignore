@@ -13,6 +13,9 @@ target/
 # non-shipping notes. Always ignored — never committed.
 sandbox/
 
+# Cursor IDE local state (plans, caches). Agent rules live in CLAUDE.md + the plugin.
+.cursor/
+
 # Enterprise / compliance sidecar WIP — quarantined iteration, not wired into build.
 apps/desktop-sidecar/_wip-enterprise/
 
