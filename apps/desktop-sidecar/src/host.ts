@@ -5386,9 +5386,22 @@ export class GraphnosisHost {
   // op-log rows (skipOplogEmit).
 
   private async reconcileGraphFromOplog(graphId: GraphId, entry: LoadedGraph): Promise<void> {
-    const events = await this.listOplogEvents();
+    const checkpoint = this.settings.graphMetadata[graphId]?.oplogReconcileCheckpoint;
+    const tailReplay = checkpoint !== undefined;
+    const oplogDir = path.join(this.opts.cortexDir, 'oplog');
+    const readOpts = this.oplogReadOptions();
+    const events = tailReplay
+      ? await oplog.readEventsSince(oplogDir, this.key, {
+          ...readOpts,
+          sinceTs: checkpoint.maxTs,
+          ...(checkpoint.maxSeq !== undefined ? { sinceSeq: checkpoint.maxSeq } : {}),
+        })
+      : await this.listOplogEvents();
     const graphEvents = events.filter((e) => e.graphId === graphId);
-    if (graphEvents.length === 0) return;
+    if (graphEvents.length === 0) {
+      if (events.length > 0) await this.persistOplogReconcileCheckpoint(graphId, events);
+      return;
+    }
 
     await this.opts.adapter.build(entry.handle);
 
@@ -5409,10 +5422,23 @@ export class GraphnosisHost {
       }
     }
 
-    for (const s of [...entry.sourceIndex.list()]) {
-      if (!liveSources.has(s.sourceId)) {
-        await this.forgetSource(graphId, s.sourceId, { triggeredBy: 'oplog-sync', skipOplogEmit: true });
-        dirty = true;
+    // Full replay reconstructs the live source set from the entire log; tail
+    // replay only applies deltas — never sweep sources absent from the tail slice.
+    if (!tailReplay) {
+      for (const s of [...entry.sourceIndex.list()]) {
+        if (!liveSources.has(s.sourceId)) {
+          await this.reconcileForgetSource(graphId, entry, s.sourceId);
+          dirty = true;
+        }
+      }
+    } else {
+      for (const ev of graphEvents) {
+        if (ev.op === 'forgetSource' && ev.target.kind === 'source') {
+          if (entry.sourceIndex.get(ev.target.id)) {
+            await this.reconcileForgetSource(graphId, entry, ev.target.id);
+            dirty = true;
+          }
+        }
       }
     }
 
@@ -5423,6 +5449,74 @@ export class GraphnosisHost {
       await this.save(graphId);
       this.invalidateOplogCache();
     }
+
+    await this.persistOplogReconcileCheckpoint(graphId, events);
+  }
+
+  /** forgetSource during loadGraph reconcile — entry is not yet in graphs.set(). */
+  private async reconcileForgetSource(
+    graphId: GraphId,
+    entry: LoadedGraph,
+    sourceId: string,
+  ): Promise<void> {
+    const priorRecord = entry.sourceIndex.get(sourceId);
+    const nodeIds = entry.sourceIndex.forget(sourceId);
+    for (const nodeId of nodeIds) {
+      const local = this.opts.adapter.inspectNodes(entry.handle).find((n) => n.id === nodeId);
+      if (!local || local.confidence <= 0.2) continue;
+      await this.opts.adapter.applyCorrection(entry.handle, {
+        kind: 'delete',
+        nodeId,
+        reason: 'oplog-sync: source forgotten on peer device',
+      });
+    }
+    if (priorRecord && nodeIds.length > 0) {
+      // skip op-log emit — replaying existing history
+    }
+  }
+
+  /** Advance per-engram reconcile checkpoint to the high-water of `events`. */
+  private async persistOplogReconcileCheckpoint(
+    graphId: GraphId,
+    events: Awaited<ReturnType<typeof oplog.readAllEvents>>,
+  ): Promise<void> {
+    const next = this.mergeOplogReconcileCheckpoint(
+      this.settings.graphMetadata[graphId]?.oplogReconcileCheckpoint,
+      events,
+    );
+    if (!next) return;
+    const existing: settingsMod.GraphMetadata = this.settings.graphMetadata[graphId] ?? {
+      template: 'personal' as settingsMod.GraphTemplate,
+      displayName: graphId,
+      createdAt: 0,
+    };
+    await this.setGraphMetadata(graphId, { ...existing, oplogReconcileCheckpoint: next });
+  }
+
+  private mergeOplogReconcileCheckpoint(
+    prev: settingsMod.GraphMetadata['oplogReconcileCheckpoint'],
+    events: Awaited<ReturnType<typeof oplog.readAllEvents>>,
+  ): { maxTs: number; maxSeq?: number } | undefined {
+    if (events.length === 0) return prev;
+    let maxTs = prev?.maxTs ?? 0;
+    let maxSeq = prev?.maxSeq;
+    for (const ev of events) {
+      if (ev.ts > maxTs) {
+        maxTs = ev.ts;
+        maxSeq = typeof ev.seq === 'number' ? ev.seq : undefined;
+      } else if (ev.ts === maxTs && typeof ev.seq === 'number') {
+        maxSeq = Math.max(maxSeq ?? -1, ev.seq);
+      }
+    }
+    return { maxTs, ...(maxSeq !== undefined ? { maxSeq } : {}) };
+  }
+
+  /** Clear tail-replay checkpoint after full op-log recovery rebuilds the engram. */
+  private async clearOplogReconcileCheckpoint(graphId: GraphId): Promise<void> {
+    const existing = this.settings.graphMetadata[graphId];
+    if (!existing?.oplogReconcileCheckpoint) return;
+    const { oplogReconcileCheckpoint: _removed, ...rest } = existing;
+    await this.setGraphMetadata(graphId, rest);
   }
 
   /** Walk op-log source events chronologically — ingestSource wins over reorderSource partials. */
@@ -5766,6 +5860,9 @@ export class GraphnosisHost {
         }
         outcomes.push(outcome);
         callbacks?.onSourceDone?.(outcome, globalIndex, total);
+      }
+      if (outcomes.some((o) => o.ok && !o.skipped)) {
+        await this.clearOplogReconcileCheckpoint(graphId);
       }
     }
 
