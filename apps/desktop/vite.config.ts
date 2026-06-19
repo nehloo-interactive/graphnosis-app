@@ -1,12 +1,19 @@
 import { defineConfig } from 'vite';
 import { readFileSync } from 'node:fs';
+import path from 'node:path';
 
 // Inject the desktop package.json version at build time so the frontend
 // can show it in the status bar without an extra Tauri IPC roundtrip.
 const pkgVersion = JSON.parse(readFileSync('./package.json', 'utf8')).version;
+const coreRoot = path.resolve(__dirname, '../../packages/graphnosis-app-core/src');
 
 export default defineConfig({
   clearScreen: false,
+  resolve: {
+    alias: {
+      '@graphnosis-app/core/cortex/cloud-location': path.join(coreRoot, 'cortex/cloud-location.ts'),
+    },
+  },
   server: {
     port: 5173,
     strictPort: true,

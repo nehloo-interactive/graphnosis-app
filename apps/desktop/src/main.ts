@@ -31,6 +31,37 @@ import {
   ATLAS_ENGINES,
   type AtlasEngineKind,
 } from './atlas-engine';
+// ── UI domain modules (ui-modularize pass) ──────────────────────────────
+import { $, isTauriRuntime } from './ui/dom';
+import { escape, escapeHtml, formatBytes } from './ui/util';
+import { ipcCall, ipcCallTimeout, withTimeout, invokeRetry } from './ui/ipc';
+import { initDialogs, gConfirm, gAlert } from './ui/dialogs';
+import { bindAppContext } from './ui/app-context';
+import {
+  initActivity, refreshActivityView, loadMoreActivity, setActivityCat, resetActivityWindow,
+} from './ui/activity';
+import {
+  initConnectors, refreshConnectorsList, openConnectorSetupModal,
+  installedConnectorKinds, connectorPullingGraphIds, lastConnectorList, updateConnectorPullSnapshot,
+  type ConnectorKind, type ConnectorConfigShape, type ConnectorStatus,
+} from './ui/connectors';
+import {
+  initGhampus, refreshGhampusState, setGhampusRunning, updateGhampusVisibility,
+  refreshGhampusAttachments, refreshGhampusSavings, refreshGhampusNotifications,
+  refreshGhampusSkills, refreshGhampusRecentSaves, refreshGhampusSharingPanel,
+  refreshGhampusThread, refreshGhampusHeader, refreshModelsPanel, refreshAiActivityRollup,
+} from './ui/ghampus';
+import {
+  initUnlock, attemptUnlock, runBiometricUnlock, webauthnUnlock,
+  offerSidecarRecovery,
+} from './ui/unlock';
+import {
+  initCloudOnboardingHandlers,
+  refreshSyncSettingsPanel,
+  analyzeCortexCloudLocation,
+  cloudLocationChoiceCopy,
+} from './ui/cloud-onboarding';
+
 
 // ---- types matching Rust ------------------------------------------------
 
@@ -65,6 +96,10 @@ interface SourceRecord {
    *  AI tool call (e.g. "claude-ai", "cursor"). Undefined for user-driven
    *  ingests (drag-drop, paste, file picker). */
   addedBy?: string;
+  /** Legal hold — forget / edit / transfer blocked until released. */
+  legalHold?: boolean;
+  legalHoldAt?: number;
+  legalHoldMatter?: string;
 }
 
 interface StatsSummary {
@@ -228,6 +263,11 @@ interface GraphMetadata {
   createdAt: number;
   archived?: boolean;
   sensitivityTier?: 'public' | 'personal' | 'sensitive';
+  excludedSources?: string[];
+  /** Engram preservation — blocks forget/edit/move until released. */
+  legalHold?: boolean;
+  legalHoldAt?: number;
+  legalHoldMatter?: string;
 }
 interface GraphWithMetadata { graphId: string; metadata: GraphMetadata; loaded?: boolean; }
 
@@ -472,12 +512,16 @@ interface PendingDiff {
 
 interface McpConnection {
   id: string;
-  transport: 'socket' | 'stdio';
+  transport: 'socket' | 'stdio' | 'http';
   connectedAt: number;
   lastActivityAt: number;
   clientName?: string;
   clientVersion?: string;
   requestCount: number;
+  /** Present when the session authenticated with a scoped sharing bearer token. */
+  sharingTokenId?: string;
+  sharingTokenName?: string;
+  userAgent?: string;
 }
 
 interface PurgeReport {
@@ -499,7 +543,6 @@ interface PurgeReport {
 // with the released app version without a Tauri IPC roundtrip.
 declare const __APP_VERSION__: string;
 
-const $ = <T extends HTMLElement>(id: string): T => document.getElementById(id) as T;
 
 /** True only inside the Tauri desktop shell. In browser/personal-server mode the
  *  Tauri window/webview native APIs (scaleFactor, onDragDropEvent, setSize…) are
@@ -894,6 +937,10 @@ let brainVitalityReport: {
 // Cortex-wide totals cached from inspector_stats (refreshFederatedStats) so the
 // Home hero can show whole-cortex numbers, not just the active engram's.
 let cortexStats: { memories: number; sources: number; engrams: number } | null = null;
+// Bumped on lock / cortex switch so in-flight stats IPC can't paint the
+// previous cortex after the user unlocks a different folder.
+let cortexUiGeneration = 0;
+let lastUnlockedCortexDir: string | null = null;
 let brainInsights: Array<{ id: string; graphId: string; kind: string; title: string; body: string; relevantNodeIds: string[]; createdAt: number; dismissed?: boolean }> = [];
 // A near-duplicate / possibly-conflicting memory pair the autonomous
 // brain could NOT safely auto-merge — surfaced in the Check-in deck's
@@ -943,60 +990,7 @@ let moveSourceQueue: Promise<void> | null = null;
 // ── In-app confirm / alert ────────────────────────────────────────────────
 //
 // window.confirm() and window.alert() are silently swallowed by Tauri's
-// WKWebView — the webview's UI delegate methods aren't wired, so dialogs
-// auto-dismiss without user interaction. These helpers render the app's own
-// modal instead so destructive actions always get explicit user confirmation.
-//
-// gConfirm(title, body) → Promise<boolean>  (true = user clicked Confirm)
-// gAlert(title, body)   → Promise<void>     (resolves when user clicks OK)
-
-let _gConfirmResolve: ((v: boolean) => void) | null = null;
-
-function _initGConfirmModal(): void {
-  const modal   = document.getElementById('g-confirm-modal')!;
-  const okBtn   = document.getElementById('g-confirm-ok')   as HTMLButtonElement;
-  const cancelBtn = document.getElementById('g-confirm-cancel') as HTMLButtonElement;
-  const resolve = (v: boolean) => {
-    modal.classList.add('hidden');
-    if (_gConfirmResolve) { _gConfirmResolve(v); _gConfirmResolve = null; }
-  };
-  okBtn.addEventListener('click',     () => resolve(true));
-  cancelBtn.addEventListener('click', () => resolve(false));
-  // Esc key
-  modal.addEventListener('keydown', (e) => { if (e.key === 'Escape') resolve(false); });
-}
-
-function gConfirm(title: string, body: string): Promise<boolean> {
-  const modal    = document.getElementById('g-confirm-modal')!;
-  const titleEl  = document.getElementById('g-confirm-title')!;
-  const bodyEl   = document.getElementById('g-confirm-body')!;
-  const okBtn    = document.getElementById('g-confirm-ok') as HTMLButtonElement;
-  const cancelEl = document.getElementById('g-confirm-cancel') as HTMLButtonElement;
-  titleEl.textContent  = title;
-  bodyEl.textContent   = body;
-  okBtn.textContent    = 'Confirm';
-  cancelEl.classList.remove('hidden');
-  modal.classList.remove('hidden');
-  (document.getElementById('g-confirm-ok') as HTMLButtonElement).focus();
-  return new Promise<boolean>((resolve) => { _gConfirmResolve = resolve; });
-}
-
-function gAlert(title: string, body: string): Promise<void> {
-  const modal    = document.getElementById('g-confirm-modal')!;
-  const titleEl  = document.getElementById('g-confirm-title')!;
-  const bodyEl   = document.getElementById('g-confirm-body')!;
-  const okBtn    = document.getElementById('g-confirm-ok') as HTMLButtonElement;
-  const cancelEl = document.getElementById('g-confirm-cancel') as HTMLButtonElement;
-  titleEl.textContent = title;
-  bodyEl.textContent  = body;
-  okBtn.textContent   = 'OK';
-  cancelEl.classList.add('hidden');
-  modal.classList.remove('hidden');
-  okBtn.focus();
-  return new Promise<void>((resolve) => {
-    _gConfirmResolve = (v) => { void v; resolve(); };
-  });
-}
+// WKWebView. See ui/dialogs.ts (gConfirm, gAlert, gPrompt).
 
 /** Make any error string safe to show in the UI: sidecar-connection failures
  *  become a friendly path-free message; everything else has absolute filesystem
@@ -1562,6 +1556,84 @@ void listen<{ jobId: string; graphId: string; fileName: string; nodesAdded: numb
  */
 let queuedStatusAfterRecovery: StatusSnapshot | null = null;
 
+/** Drop every cortex-scoped module cache + reset stats/Home DOM placeholders.
+ *  Called on lock and at the start of each unlock boot so a demo→real cortex
+ *  switch can't leave stale hero / Per-engram / Trust & Vitality numbers. */
+function invalidateCortexScopedState(): void {
+  cortexUiGeneration += 1;
+  _cortexStatsRefreshToken += 1;
+
+  cortexStats = null;
+  lastInspectorStats = null;
+  brainVitalityReport = null;
+  brainInsights = [];
+  brainGoals = [];
+  brainHealingJournal = [];
+  brainMemoryHealth = null;
+  brainNeuralNetworkStatus = null;
+  brainStatus = null;
+
+  loadedGraphs = [];
+  graphnosisAllNodes = [];
+  graphnosisGlobalNodes.clear();
+  graphnosisListRows = [];
+  lastSeenMutationAt.clear();
+  graphLoadFailedAt.clear();
+  atlasLoadedForGraph = null;
+
+  homeLoadToken += 1;
+  homePrefetchDone = false;
+
+  resetCortexStatsDom();
+}
+
+/** Sync placeholders for cortex-wide stats surfaces (Home hero, Per engram,
+ *  Trust & Vitality strip, Sources list). Safe while #view-app is hidden. */
+function resetCortexStatsDom(): void {
+  const SKEL = '<div class="home-skel"></div><div class="home-skel w70"></div><div class="home-skel"></div>';
+  const pulseEl = document.getElementById('home-pulse');
+  if (pulseEl) pulseEl.textContent = 'Loading your memory…';
+
+  const cg = document.getElementById('home-cortex-grade');
+  const cf = document.getElementById('home-cortex-fill') as HTMLElement | null;
+  if (cg) { cg.textContent = '…'; cg.className = 'g-health-grade'; }
+  if (cf) { cf.style.width = '0%'; cf.style.background = ''; }
+
+  const factorsEl = document.getElementById('home-trust-factors');
+  if (factorsEl) factorsEl.innerHTML = '';
+
+  const bars = document.getElementById('home-engram-bars');
+  if (bars) {
+    bars.style.display = '';
+    bars.innerHTML = `<div class="home-bars-title">Per engram</div>${SKEL}`;
+  }
+
+  const mem = document.getElementById('stat-total-memories');
+  const src = document.getElementById('stat-total-sources');
+  const eng = document.getElementById('stat-total-engrams');
+  if (mem) mem.textContent = '… memories';
+  if (src) src.textContent = '… sources';
+  if (eng) eng.textContent = '… engrams';
+
+  if (els.sourcesList) els.sourcesList.innerHTML = SKEL;
+
+  renderLbVitality();
+  showHomeSkeletons();
+}
+
+/** Refetch cortex-wide stats after unlock, lock, cortex switch, or engram
+ *  boot completion. Vitality + inspector_stats only cover engrams loaded in
+ *  memory; the picker lists every engram from metadata — refresh when the
+ *  loaded set catches up so Home / Per engram / trust strip stay in sync. */
+let _cortexStatsRefreshToken = 0;
+async function refreshCortexScopedStats(): Promise<void> {
+  const gen = cortexUiGeneration;
+  const token = ++_cortexStatsRefreshToken;
+  await Promise.all([refreshStats(), refreshFederatedStats(), refreshBrainState()]);
+  if (gen !== cortexUiGeneration || token !== _cortexStatsRefreshToken) return;
+  renderHomeDashboard();
+}
+
 function render(status: StatusSnapshot): void {
   // Gate the unlock transition on the recovery-phrase modal being dismissed.
   // The modal is shown by `graphnosis://cortex-created` (fired before the
@@ -1677,7 +1749,7 @@ function render(status: StatusSnapshot): void {
         _missedDuringUnlockPayload = null;
         const allDone = loaded >= total;
         if (allDone) markEngramsLoaded();
-        processEngramsLoadingRefresh(allDone);
+        processEngramsLoadingRefresh(allDone, true);
       }
       // Belt-and-suspenders: start the periodic greyed-refresh poll. If any
       // engrams are still loading at unlock-complete, this self-heals the
@@ -1977,7 +2049,6 @@ const CONNECTOR_SHORTCUTS: Array<[ConnectorKind, string]> = [
 /** Friendly name of the most recently active (non-idle) client — persists
  *  when all clients become idle so the status bar still shows a useful name. */
 let lastNonIdleClient: string | null = null;
-let installedConnectorKinds = new Set<ConnectorKind>();
 
 /**
  * Render the "Get connected" status list in the left sidebar. Every row is a
@@ -2108,7 +2179,7 @@ function refreshGetConnectedStatus(): void {
       //    shown — connected users see who's tapped in; offline users see that
       //    nothing is, and that their cortex stays private. ──
       const clientRows = lastMcpConnections.map((c) => {
-        const name = friendlyClient(c.clientName);
+        const name = mcpConnectionLabel(c);
         const version = c.clientVersion ? ` · v${escape(c.clientVersion)}` : '';
         const since = c.connectedAt ? new Date(c.connectedAt).toLocaleTimeString() : '';
         const blocked = isClientBlocked(name);
@@ -3059,7 +3130,7 @@ document.querySelectorAll<HTMLButtonElement>('.mobile-nav-btn').forEach((btn) =>
 {
   const resetModalScroll = (backdrop: HTMLElement): void => {
     backdrop.scrollTop = 0;
-    backdrop.querySelectorAll<HTMLElement>('.modal, .modal-body, .modal-sticky-fields')
+    backdrop.querySelectorAll<HTMLElement>('.modal, .modal-body, .modal-sticky-fields, .sharing-scroll-area')
       .forEach((n) => { n.scrollTop = 0; });
   };
   const obs = new MutationObserver((muts) => {
@@ -3277,6 +3348,8 @@ function friendlyClient(name?: string): string {
     'cursor': 'Cursor',
     'zed': 'Zed',
     'windsurf': 'Windsurf',
+    'Graphnosis': 'Graphnosis',
+    'shared-engrams': 'Shared engrams',
   };
   if (map[name]) return map[name] as string;
   // Claude Desktop spawns a per-server "Skills" background agent with the
@@ -3285,6 +3358,67 @@ function friendlyClient(name?: string): string {
   // alongside `claude-ai`.
   if (name.startsWith('local-agent-mode-')) return 'Claude Skills agent';
   return name;
+}
+
+/** True when clientInfo.name is a known MCP host identity (not an mcp.json key). */
+function isKnownMcpClientId(name?: string): boolean {
+  if (!name) return false;
+  const known = new Set([
+    'claude-ai', 'claude-desktop', 'claude-code', 'cursor-vscode', 'cursor',
+    'zed', 'windsurf', 'vscode-graphnosis',
+  ]);
+  if (known.has(name)) return true;
+  if (name.startsWith('local-agent-mode-')) return true;
+  return false;
+}
+
+/** Best-effort host-app name from an HTTP MCP request's User-Agent header. */
+function inferClientFromUserAgent(ua?: string): string | undefined {
+  if (!ua) return undefined;
+  const u = ua.toLowerCase();
+  if (u.includes('cursor')) return 'Cursor';
+  if (u.includes('vscode') || u.includes('visual studio code')) return 'VS Code';
+  if (u.includes('claude')) return 'Claude';
+  if (u.includes('copilot')) return 'Copilot';
+  if (u.includes('windsurf')) return 'Windsurf';
+  if (u.includes('zed')) return 'Zed';
+  return undefined;
+}
+
+/**
+ * Human label for a live MCP connection row. Share-token HTTP sessions often
+ * report the mcp.json server *key* (e.g. the share name "test") as
+ * clientInfo.name — infer the real host from User-Agent when that happens.
+ */
+function mcpConnectionLabel(c: McpConnection): string {
+  const raw = c.clientName;
+  const friendly = friendlyClient(raw);
+  const shareName = c.sharingTokenName;
+
+  if (c.sharingTokenId) {
+    const looksLikeServerKey = !isKnownMcpClientId(raw)
+      || (shareName !== undefined && raw === shareName);
+    if (looksLikeServerKey) {
+      const inferred = inferClientFromUserAgent(c.userAgent);
+      if (inferred) {
+        return shareName ? `${inferred} · share “${shareName}”` : inferred;
+      }
+      if (shareName) return `Share “${shareName}”`;
+    }
+    if (shareName && isKnownMcpClientId(raw)) {
+      return `${friendly} · share “${shareName}”`;
+    }
+  }
+  return friendly;
+}
+
+function mcpTransportLabel(transport: McpConnection['transport']): string {
+  switch (transport) {
+    case 'stdio': return 'stdio (legacy)';
+    case 'http': return 'http (share / remote)';
+    case 'socket': return 'relay (local)';
+    default: return transport;
+  }
 }
 
 /** Compact idle-age formatter for the MCP rows: "47s" / "12m" / "3h" / "2d". */
@@ -3306,7 +3440,7 @@ function renderMcpStatus(connections: McpConnection[]): void {
   // A client is idle when ALL its connections have been inactive long enough.
   const clientConns = new Map<string, McpConnection[]>();
   for (const c of connections) {
-    const name = friendlyClient(c.clientName);
+    const name = mcpConnectionLabel(c);
     if (!clientConns.has(name)) clientConns.set(name, []);
     clientConns.get(name)!.push(c);
   }
@@ -3328,7 +3462,7 @@ function renderMcpStatus(connections: McpConnection[]): void {
   }
   updateStatusBar(connections);
   // Mirror the live client set into the sidebar's Get-connected status list.
-  liveMcpClients = new Set(connections.map((c) => friendlyClient(c.clientName)));
+  liveMcpClients = new Set(connections.map((c) => mcpConnectionLabel(c)));
   lastMcpConnections = connections; // feeds the Home Get-Connected card list
   renderRailGetConnected();
   // Single target now that Overview is gone: the Graphnosis dashboard's
@@ -3366,11 +3500,11 @@ function renderMcpStatus(connections: McpConnection[]): void {
   const now = Date.now();
   target.innerHTML = connections
     .map((c) => {
-      const name = friendlyClient(c.clientName);
+      const name = mcpConnectionLabel(c);
       const version = c.clientVersion ? ` · v${escape(c.clientVersion)}` : '';
       const since = new Date(c.connectedAt).toLocaleTimeString();
       const reqs = c.requestCount === 1 ? '1 request' : `${c.requestCount} requests`;
-      const transportLabel = c.transport === 'stdio' ? 'stdio (legacy)' : 'relay';
+      const transportLabel = mcpTransportLabel(c.transport);
       const idleMs = now - c.lastActivityAt;
       const isIdle = idleMs >= MCP_IDLE_MS;
       const blocked = isClientBlocked(name);
@@ -3627,10 +3761,378 @@ function stopMcpPolling(): void {
   }
 }
 
+// ── Sources row: compact ⋯ menu + delegated actions ─────────────────────────
+const ENGRAM_PRESERVED_TOOLTIP =
+  'Preserved — release preservation in Settings → Cortex Management to forget or edit.';
+
+function closeAllSourceMenus(except?: Element): void {
+  els.sourcesList.querySelectorAll<HTMLElement>('.source-actions-menu').forEach((menu) => {
+    if (except && menu === except) return;
+    menu.classList.add('hidden');
+    menu.closest('.source-row-actions-wrap')
+      ?.querySelector<HTMLButtonElement>('.btn-source-menu')
+      ?.setAttribute('aria-expanded', 'false');
+  });
+}
+
+function sourceRowActionsWrap(row: HTMLElement): HTMLElement | null {
+  return row.querySelector<HTMLElement>('.source-row-actions-wrap');
+}
+
+function hideSourceRowActions(row: HTMLElement): void {
+  const wrap = sourceRowActionsWrap(row);
+  if (wrap) wrap.style.display = 'none';
+}
+
+function showSourceRowActions(row: HTMLElement): void {
+  const wrap = sourceRowActionsWrap(row);
+  if (wrap) wrap.style.display = '';
+}
+
+function sourceRowContext(row: HTMLElement): {
+  graphId: string;
+  sourceId: string;
+  ref: string;
+  kind: string;
+  nodeCount: number;
+} {
+  return {
+    graphId: row.dataset.graphId ?? '',
+    sourceId: row.dataset.sourceId ?? '',
+    ref: row.dataset.ref ?? '',
+    kind: row.dataset.kind ?? '',
+    nodeCount: Number.parseInt(row.dataset.nodeCount ?? '0', 10),
+  };
+}
+
+async function runSourceShowInFinder(row: HTMLElement): Promise<void> {
+  const { ref } = sourceRowContext(row);
+  if (!ref) return;
+  try {
+    await invoke('reveal_file_in_finder', { path: ref });
+  } catch (e) {
+    showError(`Could not reveal file: ${e}`);
+  }
+}
+
+async function runSourceExcludeToggle(row: HTMLElement, excluding: boolean): Promise<void> {
+  const { graphId, sourceId } = sourceRowContext(row);
+  if (!graphId || !sourceId) return;
+  try {
+    await ipcCall('sources.setExcluded', { graphId, sourceId, excluded: excluding });
+    const meta = loadedGraphs.find((g) => g.graphId === graphId)?.metadata;
+    if (meta) {
+      const set = new Set(meta.excludedSources ?? []);
+      if (excluding) set.add(sourceId); else set.delete(sourceId);
+      meta.excludedSources = [...set];
+    }
+    void refreshStats();
+  } catch (e) {
+    console.error('sources.setExcluded failed', e);
+  }
+}
+
+function openSourceForgetConfirm(row: HTMLElement): void {
+  const { graphId, sourceId, ref, kind } = sourceRowContext(row);
+  if (!graphId || !sourceId) return;
+
+  if (kind === 'skill') {
+    const displayName = ref.split('/').pop() ?? ref;
+    const ok = window.confirm(
+      `"${displayName}" is a trained skill — forgetting it removes it from your Skills library permanently.\n\nContinue?`,
+    );
+    if (!ok) return;
+  }
+
+  if (row.querySelector('.source-row-forget-confirm')) return;
+
+  const widget = document.createElement('div');
+  widget.className = 'source-row-forget-confirm';
+  widget.innerHTML =
+    `<input type="text" class="source-row-forget-input" placeholder='type "forget" to confirm' autocomplete="off" spellcheck="false" />` +
+    `<button class="source-row-forget-cancel">Cancel</button>` +
+    `<button class="source-row-forget-go" disabled>Forget</button>`;
+
+  const input = widget.querySelector<HTMLInputElement>('.source-row-forget-input')!;
+  const cancelBtn = widget.querySelector<HTMLButtonElement>('.source-row-forget-cancel')!;
+  const goBtn = widget.querySelector<HTMLButtonElement>('.source-row-forget-go')!;
+
+  hideSourceRowActions(row);
+  row.classList.add('source-row-forgetting');
+  row.appendChild(widget);
+  input.focus();
+
+  input.addEventListener('input', () => {
+    goBtn.disabled = input.value.trim().toLowerCase() !== 'forget';
+  });
+
+  const collapse = (): void => {
+    widget.remove();
+    row.classList.remove('source-row-forgetting');
+    showSourceRowActions(row);
+  };
+
+  cancelBtn.addEventListener('click', () => collapse());
+
+  input.addEventListener('keydown', (e: KeyboardEvent) => {
+    if (e.key === 'Escape') { e.stopPropagation(); collapse(); }
+    if (e.key === 'Enter' && !goBtn.disabled) { e.preventDefault(); goBtn.click(); }
+  });
+
+  const onDocMousedown = (e: MouseEvent): void => {
+    if (!widget.contains(e.target as Node)) {
+      collapse();
+      document.removeEventListener('mousedown', onDocMousedown, true);
+    }
+  };
+  document.addEventListener('mousedown', onDocMousedown, true);
+
+  goBtn.addEventListener('click', async () => {
+    document.removeEventListener('mousedown', onDocMousedown, true);
+    widget.remove();
+    goBtn.disabled = true;
+    goBtn.textContent = 'Forgetting…';
+    try {
+      await invoke('forget_source', { graphId, sourceId });
+      row.classList.remove('source-row-forgetting');
+      row.remove();
+    } catch (e) {
+      row.classList.remove('source-row-forgetting');
+      showError(`Forget failed: ${e}`);
+      showSourceRowActions(row);
+    }
+  });
+}
+
+function openSourceReingestConfirm(row: HTMLElement): void {
+  const { graphId, sourceId, ref } = sourceRowContext(row);
+  if (!graphId || !sourceId) return;
+  if (row.querySelector('.source-row-reingest-confirm')) return;
+
+  const widget = document.createElement('div');
+  widget.className = 'source-row-reingest-confirm';
+  widget.innerHTML =
+    `<span class="source-row-reingest-label">Re-read file and replace nodes?</span>` +
+    `<button class="source-row-reingest-cancel">Cancel</button>` +
+    `<button class="source-row-reingest-go">Confirm</button>`;
+
+  const cancelBtn = widget.querySelector<HTMLButtonElement>('.source-row-reingest-cancel')!;
+  const goBtn = widget.querySelector<HTMLButtonElement>('.source-row-reingest-go')!;
+
+  hideSourceRowActions(row);
+  row.classList.add('source-row-reingesting');
+  row.appendChild(widget);
+
+  const collapse = (): void => {
+    widget.remove();
+    row.classList.remove('source-row-reingesting');
+    showSourceRowActions(row);
+  };
+
+  cancelBtn.addEventListener('click', () => collapse());
+
+  goBtn.addEventListener('click', async () => {
+    widget.remove();
+    row.classList.remove('source-row-reingesting');
+    const fileName = ref.split('/').pop() ?? ref;
+    hideSourceRowActions(row);
+    const toastId = addIngestToast(`Reingesting ${fileName}…`);
+    try {
+      const result = (await invoke('reingest_source', { graphId, sourceId })) as { nodeIds?: string[] };
+      const n = result?.nodeIds?.length ?? 0;
+      finishIngestToast(toastId, 'success', n > 0 ? `Re-saved ${n} node${n === 1 ? '' : 's'}` : 'Reingested');
+      showSourceRowActions(row);
+      await refreshStats();
+    } catch (e) {
+      finishIngestToast(toastId, 'error', String(e));
+      showError(`Reingest failed: ${e}`);
+      showSourceRowActions(row);
+    }
+  });
+}
+
+function openSourceMovePicker(row: HTMLElement): void {
+  const { graphId: fromGraphId, sourceId, ref, kind } = sourceRowContext(row);
+  if (!fromGraphId || !sourceId) return;
+  if (row.querySelector('.source-row-move-picker')) return;
+
+  const nameFromRow = row.querySelector('.source-name')?.textContent?.trim();
+  const fileName = nameFromRow
+    || (kind === 'file' ? (ref.split('/').pop() ?? ref) : formatLegendLabel(ref));
+
+  const targets = loadedGraphs.filter((g) => g.graphId !== fromGraphId && !g.metadata.archived);
+
+  const picker = document.createElement('div');
+  picker.className = 'source-row-move-picker';
+  picker.innerHTML =
+    `<span class="source-row-move-label">Move <strong class="source-row-move-filename">${escape(fileName)}</strong> to:</span>` +
+    `<input type="text" class="source-row-move-name-input" placeholder="New engram name…" style="display:none" />` +
+    `<select class="source-row-move-select">` +
+    [...targets].sort((a, b) => (a.metadata.displayName ?? a.graphId).localeCompare(b.metadata.displayName ?? b.graphId)).map((g) =>
+      `<option value="${escape(g.graphId)}">${escape(g.metadata.displayName || g.graphId)}</option>`,
+    ).join('') +
+    `<option value="__new__">New Engram…</option>` +
+    `</select>` +
+    `<span class="source-row-move-actions">` +
+      `<button class="source-row-move-go">Move</button>` +
+      `<button class="source-row-move-cancel">Cancel</button>` +
+    `</span>`;
+
+  const select = picker.querySelector<HTMLSelectElement>('.source-row-move-select')!;
+  const nameInput = picker.querySelector<HTMLInputElement>('.source-row-move-name-input')!;
+  const goBtn = picker.querySelector<HTMLButtonElement>('.source-row-move-go')!;
+  const cancelBtn = picker.querySelector<HTMLButtonElement>('.source-row-move-cancel')!;
+
+  const syncNameInput = (): void => {
+    const isNew = select.value === '__new__';
+    nameInput.style.display = isNew ? '' : 'none';
+    select.style.display = isNew ? 'none' : '';
+    if (isNew) nameInput.focus();
+  };
+  select.addEventListener('change', syncNameInput);
+
+  hideSourceRowActions(row);
+  row.classList.add('source-row-moving');
+  row.appendChild(picker);
+  syncNameInput();
+
+  const closeMovePicker = (): void => {
+    picker.remove();
+    row.classList.remove('source-row-moving');
+    showSourceRowActions(row);
+  };
+
+  cancelBtn.addEventListener('click', () => closeMovePicker());
+
+  goBtn.addEventListener('click', async () => {
+    let toGraphId = select.value;
+    let toName = targets.find((g) => g.graphId === toGraphId)?.metadata.displayName ?? toGraphId;
+
+    if (toGraphId === '__new__') {
+      const displayName = nameInput.value.trim();
+      if (!displayName) { nameInput.focus(); return; }
+      const slug = displayName.toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9_-]/g, '');
+      const suffix = Math.random().toString(36).slice(-4);
+      toGraphId = `${slug || 'engram'}-${suffix}`;
+      toName = displayName;
+      try {
+        await invoke('create_graph_with_template', { graphId: toGraphId, template: 'personal', displayName });
+        loadedGraphs = (await invoke('list_graphs_with_metadata', { includeUnloaded: true })) as typeof loadedGraphs;
+        syncEngramPicker();
+      } catch (e) {
+        showError(`Could not create engram "${displayName}": ${e}`);
+        return;
+      }
+    }
+
+    picker.remove();
+    row.classList.remove('source-row-moving');
+    goBtn.disabled = true;
+    goBtn.textContent = moveSourceQueue ? 'Queued…' : 'Moving…';
+    moveSourceQueue = (moveSourceQueue ?? Promise.resolve()).then(async () => {
+      goBtn.textContent = 'Moving…';
+      try {
+        await invoke('move_source', { fromGraphId, sourceId, toGraphId });
+        const nameEl = row.querySelector<HTMLElement>('.source-name');
+        if (nameEl) {
+          nameEl.style.opacity = '0.4';
+          nameEl.title = `Moved to ${toName}`;
+        }
+        sourceRowActionsWrap(row)?.remove();
+        row.querySelector<HTMLElement>('.source-row-main')?.querySelectorAll<HTMLElement>(
+          '.source-meta, .source-added-by, .source-kind-badge, .source-excluded-badge',
+        ).forEach((b) => b.remove());
+        const confirmLabel = document.createElement('span');
+        confirmLabel.className = 'source-moved-label';
+        confirmLabel.textContent = `Moved to "${toName}"`;
+        row.appendChild(confirmLabel);
+      } catch (e) {
+        showError(`Move to "${toName}" failed: ${e}`);
+        showSourceRowActions(row);
+        goBtn.disabled = false;
+        goBtn.textContent = 'Move';
+      }
+    });
+  });
+}
+
+function handleSourceMenuAction(row: HTMLElement, action: string): void {
+  closeAllSourceMenus();
+  switch (action) {
+    case 'show-finder':
+      void runSourceShowInFinder(row);
+      break;
+    case 'reingest':
+      openSourceReingestConfirm(row);
+      break;
+    case 'exclude':
+      void runSourceExcludeToggle(row, true);
+      break;
+    case 'include':
+      void runSourceExcludeToggle(row, false);
+      break;
+    case 'move':
+      openSourceMovePicker(row);
+      break;
+    case 'forget':
+      openSourceForgetConfirm(row);
+      break;
+    default:
+      break;
+  }
+}
+
+let sourcesListDelegationWired = false;
+function wireSourcesListDelegation(): void {
+  if (sourcesListDelegationWired) return;
+  sourcesListDelegationWired = true;
+
+  els.sourcesList.addEventListener('click', (e) => {
+    const target = e.target as HTMLElement;
+
+    const menuBtn = target.closest<HTMLButtonElement>('.btn-source-menu');
+    if (menuBtn) {
+      e.stopPropagation();
+      const menu = menuBtn.closest('.source-row-actions-wrap')?.querySelector<HTMLElement>('.source-actions-menu');
+      if (!menu) return;
+      const opening = menu.classList.contains('hidden');
+      closeAllSourceMenus(opening ? menu : undefined);
+      menu.classList.toggle('hidden', !opening);
+      menuBtn.setAttribute('aria-expanded', opening ? 'true' : 'false');
+      if (opening) {
+        const first = menu.querySelector<HTMLButtonElement>('.source-actions-menu-item:not(:disabled)');
+        first?.focus();
+      }
+      return;
+    }
+
+    const menuItem = target.closest<HTMLButtonElement>('.source-actions-menu-item');
+    if (menuItem && !menuItem.disabled) {
+      e.stopPropagation();
+      const row = menuItem.closest<HTMLElement>('.source-row');
+      const action = menuItem.dataset.sourceAction ?? '';
+      if (row && action) handleSourceMenuAction(row, action);
+      return;
+    }
+  });
+
+  document.addEventListener('click', (e) => {
+    const t = e.target as HTMLElement;
+    if (t.closest('.source-row-actions-wrap')) return;
+    closeAllSourceMenus();
+  });
+
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') closeAllSourceMenus();
+  });
+}
+
 async function refreshStats(): Promise<void> {
+  const gen = cortexUiGeneration;
   els.sourcesList.innerHTML = '<div class="home-skel"></div><div class="home-skel w70"></div><div class="home-skel"></div>';
   try {
     const data = (await withTimeout(invoke('inspector_stats'), 25_000, 'inspector_stats')) as StatsSummary;
+    if (gen !== cortexUiGeneration) return;
     // Stash for the Graphnosis dashboard so it can render the active
     // engram's forgotten-on-disk count + corrections-applied lifetime
     // counter without a second IPC roundtrip.
@@ -3668,32 +4170,12 @@ async function refreshStats(): Promise<void> {
       // (called from syncEngramPicker() whenever loadedGraphs changes) so we
       // don't need to rebuild it here — just apply the current filter state.
 
-      const renderSourceRow = (s: SourceRecord): string => {
-        // Reingest is only meaningful for file-backed sources: the
-        // SDK can re-read the disk path. URLs would need a fresh
-        // network fetch (separate concern), clips have no canonical
-        // file, ai-conversation has no source-of-truth file at all.
-        // Reingest is only meaningful for real filesystem paths. Bundled
-        // sources (e.g. graphnosis-docs:* URIs) were historically stored with
-        // kind='file' but have no disk path to re-read — guard them out here
-        // so the button doesn't appear and fail with ENOENT.
-        const reingestBtn = s.kind === 'file' && s.ref.startsWith('/')
-          ? `<button class="btn-reingest" data-graph-id="${escape(s.graphId)}" data-source-id="${escape(s.sourceId)}" data-ref="${escape(s.ref)}" title="Re-read this file from disk and replace the existing nodes">Reingest</button>`
-          : '';
-        const finderBtn = s.kind === 'file'
-          ? `<button class="btn-show-finder" data-ref="${escape(s.ref)}" title="Reveal this file in Finder">Show in Finder</button>`
-          : '';
-        // Disable/Enable toggle hidden pending a redesign — see the
-        // "source disable / session filtering for power users" TODO in
-        // the Coding engram. The current implementation was client-only
-        // (no persistence, no sidecar filter for check-in / 3D / stats /
-        // recall) and gave the false impression that disabled sources
-        // were excluded everywhere. Until we land a real design (demo
-        // mode, per-recall exclusion, or tag-based filters), the button
-        // is omitted from the row. Forget remains for permanent removal.
-        // "via Claude" attribution badge for sources added through an MCP
-        // client (remember/correct tools). User-added sources (drag-drop,
-        // paste, file picker) have no `addedBy` and get no badge.
+      const renderSourceRow = (s: SourceRecord, engramPreserved: boolean): string => {
+        const preservedTitle = ENGRAM_PRESERVED_TOOLTIP;
+        const canReingest = s.kind === 'file' && s.ref.startsWith('/');
+        const canFinder = s.kind === 'file';
+        const moveTargets = loadedGraphs.filter((g) => g.graphId !== s.graphId && !g.metadata.archived);
+        const canMove = moveTargets.length > 0;
         const addedByRaw = s.addedBy ?? '';
         const addedByDisplay = addedByRaw === 'ghampus' || addedByRaw.startsWith('local-agent-mode-')
           ? 'Ghampus'
@@ -3701,390 +4183,90 @@ async function refreshStats(): Promise<void> {
         const addedByBadge = addedByDisplay
           ? `<span class="source-added-by" title="Added by ${escape(addedByDisplay)}">via ${escape(addedByDisplay)}</span>`
           : '';
-        // Move-to button: only show when there are other non-archived engrams.
-        const moveTargets = loadedGraphs.filter((g) => g.graphId !== s.graphId && !g.metadata.archived);
-        const moveBtn = moveTargets.length > 0
-          ? `<button class="btn-move-source" data-graph-id="${escape(s.graphId)}" data-source-id="${escape(s.sourceId)}" title="Move this source to another engram">Move to…</button>`
-          : '';
         const skillBadge = s.kind === 'skill'
           ? `<span class="source-kind-badge source-kind-skill" title="Skill">🛠</span>`
           : '';
-        // Exclude-from-recall toggle (power user). Real sidecar-backed
-        // exclusion — the source's nodes drop out of recall / dig_deeper /
-        // search but stay in this list, stats, and 3D. State lives in graph
-        // metadata (loadedGraphs), so it survives re-renders + persists.
         const excludedSet = loadedGraphs.find((g) => g.graphId === s.graphId)?.metadata.excludedSources ?? [];
         const isExcluded = excludedSet.includes(s.sourceId);
-        const excludeBtn = isExcluded
-          ? `<button class="btn-source-include" data-graph-id="${escape(s.graphId)}" data-source-id="${escape(s.sourceId)}" title="Excluded from AI recall. Click to include it again.">Excluded — include</button>`
-          : `<button class="btn-source-exclude" data-graph-id="${escape(s.graphId)}" data-source-id="${escape(s.sourceId)}" title="Stop this source's memories from appearing in recall / dig_deeper / search. It stays in Sources, stats, and 3D.">Exclude from recall</button>`;
+        const excludedBadge = isExcluded
+          ? `<span class="source-excluded-badge" title="Excluded from AI recall — use the menu to include again.">Excluded</span>`
+          : '';
+
+        const menuItems: string[] = [];
+        if (canFinder) {
+          menuItems.push(
+            `<button type="button" class="source-actions-menu-item" role="menuitem" data-source-action="show-finder">Show in Finder</button>`,
+          );
+        }
+        if (canReingest) {
+          menuItems.push(
+            engramPreserved
+              ? `<button type="button" class="source-actions-menu-item" role="menuitem" data-source-action="reingest" disabled title="${escape(preservedTitle)}">Reingest</button>`
+              : `<button type="button" class="source-actions-menu-item" role="menuitem" data-source-action="reingest">Reingest</button>`,
+          );
+        }
+        menuItems.push(
+          isExcluded
+            ? `<button type="button" class="source-actions-menu-item" role="menuitem" data-source-action="include">Include again</button>`
+            : `<button type="button" class="source-actions-menu-item" role="menuitem" data-source-action="exclude">Exclude from recall</button>`,
+        );
+        if (canMove) {
+          menuItems.push(
+            engramPreserved
+              ? `<button type="button" class="source-actions-menu-item" role="menuitem" data-source-action="move" disabled title="${escape(preservedTitle)}">Move to…</button>`
+              : `<button type="button" class="source-actions-menu-item" role="menuitem" data-source-action="move">Move to…</button>`,
+          );
+        }
+        menuItems.push('<div class="source-actions-menu-sep" role="separator"></div>');
+        menuItems.push(
+          engramPreserved
+            ? `<button type="button" class="source-actions-menu-item danger" role="menuitem" data-source-action="forget" disabled title="${escape(preservedTitle)}">Forget</button>`
+            : `<button type="button" class="source-actions-menu-item danger" role="menuitem" data-source-action="forget">Forget</button>`,
+        );
+
         return `
-          <div class="source-row${isExcluded ? ' source-row-excluded' : ''}" data-source-id="${escape(s.sourceId)}">
-            ${skillBadge}<span class="source-name" title="${escape(s.ref)}" data-pres="source:${escape(s.sourceId)}" data-pres-engram="${escape(s.graphId)}">${escape(s.kind === 'file' ? (s.ref.split('/').pop() ?? s.ref) : formatLegendLabel(s.ref))}</span>
-            <span class="source-meta">${s.nodeIds.length} node${s.nodeIds.length === 1 ? '' : 's'}</span>
-            ${addedByBadge}
-            ${finderBtn}
-            ${reingestBtn}
-            ${excludeBtn}
-            ${moveBtn}
-            <button class="btn-forget" data-graph-id="${escape(s.graphId)}" data-source-id="${escape(s.sourceId)}" data-node-count="${s.nodeIds.length}" data-ref="${escape(s.ref)}" data-kind="${escape(s.kind)}">Forget</button>
+          <div class="source-row${isExcluded ? ' source-row-excluded' : ''}" data-source-id="${escape(s.sourceId)}" data-graph-id="${escape(s.graphId)}" data-ref="${escape(s.ref)}" data-kind="${escape(s.kind)}" data-node-count="${s.nodeIds.length}">
+            <div class="source-row-main">
+              ${skillBadge}<span class="source-name" title="${escape(s.ref)}" data-pres="source:${escape(s.sourceId)}" data-pres-engram="${escape(s.graphId)}">${escape(s.kind === 'file' ? (s.ref.split('/').pop() ?? s.ref) : formatLegendLabel(s.ref))}</span>
+              <span class="source-meta">${s.nodeIds.length} node${s.nodeIds.length === 1 ? '' : 's'}</span>
+              ${addedByBadge}
+              ${excludedBadge}
+            </div>
+            <div class="source-row-actions-wrap">
+              <button type="button" class="btn-source-menu" aria-label="Source actions" aria-haspopup="menu" aria-expanded="false" title="Actions">⋯</button>
+              <div class="source-actions-menu hidden" role="menu">
+                ${menuItems.join('')}
+              </div>
+            </div>
           </div>`;
       };
 
       els.sourcesList.innerHTML = orderedGroupIds.map((graphId) => {
-        const displayName = loadedGraphs.find((g) => g.graphId === graphId)?.metadata.displayName ?? graphId;
+        const graphMeta = loadedGraphs.find((g) => g.graphId === graphId)?.metadata;
+        const displayName = graphMeta?.displayName ?? graphId;
+        const engramPreserved = graphMeta?.legalHold === true;
+        const preservedChip = engramPreserved
+          ? `<span class="sources-engram-preserved-chip" title="${escape(ENGRAM_PRESERVED_TOOLTIP)}">Preserved</span>`
+          : '';
         const sources = byEngram.get(graphId)!;
         return `
           <div class="sources-engram-group" data-graph-id="${escape(graphId)}">
-            <div class="sources-engram-heading"><span data-pres="engram:${escape(graphId)}">${escape(displayName)}</span></div>
-            ${sources.map(renderSourceRow).join('')}
+            <div class="sources-engram-heading"><span data-pres="engram:${escape(graphId)}">${escape(displayName)}</span>${preservedChip}</div>
+            ${sources.map((s) => renderSourceRow(s, engramPreserved)).join('')}
           </div>`;
       }).join('');
-      // Disable/Enable toggle — hides/shows this source's nodes in the
-      // Atlas without permanently forgetting them. State survives graph
-      // data reloads (pushDataIntoAtlas re-applies it); resets on lock.
-      els.sourcesList.querySelectorAll<HTMLButtonElement>('.btn-source-disable, .btn-source-enable').forEach((btn) => {
-        btn.addEventListener('click', () => {
-          const sourceId = btn.dataset.sourceId ?? '';
-          const ref = btn.dataset.ref ?? '';
-          if (!sourceId) return;
-          const nowDisabled = !disabledSources.has(sourceId);
-          if (nowDisabled) {
-            disabledSources.set(sourceId, ref);
-          } else {
-            disabledSources.delete(sourceId);
-          }
-          mainAtlas?.setSourceVisible(ref, !nowDisabled);
-          // Update button and row in place — no full re-render needed.
-          const row = els.sourcesList.querySelector<HTMLDivElement>(`[data-source-id="${CSS.escape(sourceId)}"]`);
-          if (row) {
-            row.classList.toggle('source-row-disabled', nowDisabled);
-            btn.textContent = nowDisabled ? 'Enable' : 'Disable';
-            btn.className = nowDisabled ? 'btn-source-enable' : 'btn-source-disable';
-          }
-        });
-      });
-      // Exclude-from-recall toggle — real sidecar-backed exclusion (persists in
-      // graph metadata; the next recall drops this source's nodes). Distinct
-      // from the Atlas-visibility toggle above.
-      els.sourcesList.querySelectorAll<HTMLButtonElement>('.btn-source-exclude, .btn-source-include').forEach((btn) => {
-        btn.addEventListener('click', () => { void (async () => {
-          const graphId = btn.dataset.graphId ?? '';
-          const sourceId = btn.dataset.sourceId ?? '';
-          if (!graphId || !sourceId) return;
-          const excluding = btn.classList.contains('btn-source-exclude');
-          btn.disabled = true;
-          try {
-            await ipcCall('sources.setExcluded', { graphId, sourceId, excluded: excluding });
-            // Mirror into local metadata so the state survives re-renders.
-            const meta = loadedGraphs.find((g) => g.graphId === graphId)?.metadata;
-            if (meta) {
-              const set = new Set(meta.excludedSources ?? []);
-              if (excluding) set.add(sourceId); else set.delete(sourceId);
-              meta.excludedSources = [...set];
-            }
-            const row = els.sourcesList.querySelector<HTMLDivElement>(`[data-source-id="${CSS.escape(sourceId)}"]`);
-            row?.classList.toggle('source-row-excluded', excluding);
-            btn.textContent = excluding ? 'Excluded — include' : 'Exclude from recall';
-            btn.className = excluding ? 'btn-source-include' : 'btn-source-exclude';
-          } catch (e) {
-            console.error('sources.setExcluded failed', e);
-          } finally { btn.disabled = false; }
-        })(); });
-      });
-      // Wire each Forget button — two-step inline confirmation flow.
-      // First click expands an input; the source is only forgotten once the
-      // user types "forget" and clicks the enabled confirm button.
-      // Pressing Escape or clicking outside collapses back without any action.
-      els.sourcesList.querySelectorAll<HTMLButtonElement>('.btn-forget').forEach((btn) => {
-        btn.addEventListener('click', () => {
-          const graphId = btn.dataset.graphId ?? '';
-          const sourceId = btn.dataset.sourceId ?? '';
-          const ref = btn.dataset.ref ?? sourceId;
-          const sourceKind = btn.dataset.kind ?? '';
-          if (!graphId || !sourceId) return;
-
-          // Warn before forgetting a trained skill source
-          if (sourceKind === 'skill') {
-            const displayName = ref.split('/').pop() ?? ref;
-            const ok = window.confirm(
-              `"${displayName}" is a trained skill — forgetting it removes it from your Skills library permanently.\n\nContinue?`
-            );
-            if (!ok) return;
-          }
-
-          // If this row already has a confirm widget open, do nothing (guard
-          // against double-clicks while the widget is animating into view).
-          const row = btn.closest<HTMLDivElement>('.source-row');
-          if (!row || row.querySelector('.source-row-forget-confirm')) return;
-
-          // --- Build the inline confirm widget ---
-          const widget = document.createElement('div');
-          widget.className = 'source-row-forget-confirm';
-          widget.innerHTML =
-            `<input type="text" class="source-row-forget-input" placeholder='type "forget" to confirm' autocomplete="off" spellcheck="false" />` +
-            `<button class="source-row-forget-cancel">Cancel</button>` +
-            `<button class="source-row-forget-go" disabled>Forget</button>`;
-
-          const input     = widget.querySelector<HTMLInputElement>('.source-row-forget-input')!;
-          const cancelBtn = widget.querySelector<HTMLButtonElement>('.source-row-forget-cancel')!;
-          const goBtn     = widget.querySelector<HTMLButtonElement>('.source-row-forget-go')!;
-
-          // Hide Forget button + sibling action buttons while confirming.
-          const forgetsiblingBtns = Array.from(
-            row.querySelectorAll<HTMLElement>('.btn-show-finder, .btn-reingest, .btn-move-source'),
-          );
-          btn.style.display = 'none';
-          forgetsiblingBtns.forEach((b) => { b.style.display = 'none'; });
-          btn.insertAdjacentElement('afterend', widget);
-          input.focus();
-
-          // Enable/disable the confirm button as the user types.
-          input.addEventListener('input', () => {
-            goBtn.disabled = input.value.trim().toLowerCase() !== 'forget';
-          });
-
-          // Collapse helper — removes widget, restores all buttons, no action.
-          const collapse = (): void => {
-            widget.remove();
-            btn.style.display = '';
-            forgetsiblingBtns.forEach((b) => { b.style.display = ''; });
-          };
-
-          cancelBtn.addEventListener('click', () => collapse());
-
-          // Escape collapses; Enter confirms if enabled.
-          input.addEventListener('keydown', (e: KeyboardEvent) => {
-            if (e.key === 'Escape') { e.stopPropagation(); collapse(); }
-            if (e.key === 'Enter' && !goBtn.disabled) { e.preventDefault(); goBtn.click(); }
-          });
-
-          // Clicking outside the widget collapses it. Use a mousedown listener
-          // on the document so we catch clicks on the confirm button too (the
-          // click on goBtn fires before blur, so we handle that case inline).
-          const onDocMousedown = (e: MouseEvent): void => {
-            if (!widget.contains(e.target as Node)) {
-              collapse();
-              document.removeEventListener('mousedown', onDocMousedown, true);
-            }
-          };
-          document.addEventListener('mousedown', onDocMousedown, true);
-
-          // Confirm: perform the actual forget.
-          goBtn.addEventListener('click', async () => {
-            document.removeEventListener('mousedown', onDocMousedown, true);
-            widget.remove();
-            btn.style.display = '';
-            btn.disabled = true;
-            btn.textContent = 'Forgetting…';
-            try {
-              await invoke('forget_source', { graphId, sourceId });
-              // Remove the row in place — no full re-render so scroll position is preserved.
-              const row = els.sourcesList.querySelector<HTMLDivElement>(`[data-source-id="${CSS.escape(sourceId)}"]`);
-              row?.remove();
-            } catch (e) {
-              showError(`Forget failed: ${e}`);
-              btn.disabled = false;
-              btn.textContent = 'Forget';
-            }
-          });
-        });
-      });
-      // Reingest button: shows an inline confirmation before re-reading the
-      // file from disk. Progress is surfaced via the same toast plumbing the
-      // drag-drop path uses so long PDF re-parses don't look like a frozen UI.
-      els.sourcesList.querySelectorAll<HTMLButtonElement>('.btn-reingest').forEach((btn) => {
-        btn.addEventListener('click', () => {
-          const graphId = btn.dataset.graphId ?? '';
-          const sourceId = btn.dataset.sourceId ?? '';
-          const ref = btn.dataset.ref ?? sourceId;
-          if (!graphId || !sourceId) return;
-
-          const row = btn.closest<HTMLDivElement>('.source-row');
-          if (!row || row.querySelector('.source-row-reingest-confirm')) return;
-
-          const widget = document.createElement('div');
-          widget.className = 'source-row-reingest-confirm';
-          widget.innerHTML =
-            `<span class="source-row-reingest-label">Re-read file and replace nodes?</span>` +
-            `<button class="source-row-reingest-cancel">Cancel</button>` +
-            `<button class="source-row-reingest-go">Confirm</button>`;
-
-          const cancelBtn = widget.querySelector<HTMLButtonElement>('.source-row-reingest-cancel')!;
-          const goBtn     = widget.querySelector<HTMLButtonElement>('.source-row-reingest-go')!;
-
-          const reingestSiblings = Array.from(
-            row.querySelectorAll<HTMLElement>('.btn-show-finder, .btn-move-source, .btn-forget'),
-          );
-          btn.style.display = 'none';
-          reingestSiblings.forEach((b) => { b.style.display = 'none'; });
-          btn.insertAdjacentElement('afterend', widget);
-
-          const collapse = (): void => {
-            widget.remove();
-            btn.style.display = '';
-            reingestSiblings.forEach((b) => { b.style.display = ''; });
-          };
-
-          cancelBtn.addEventListener('click', () => collapse());
-
-          goBtn.addEventListener('click', async () => {
-            widget.remove();
-            const fileName = ref.split('/').pop() ?? ref;
-            btn.disabled = true;
-            btn.style.display = '';
-            btn.textContent = 'Reingesting…';
-            reingestSiblings.forEach((b) => { b.style.display = ''; (b as HTMLButtonElement).disabled = true; });
-            const toastId = addIngestToast(`Reingesting ${fileName}…`);
-            try {
-              const result = (await invoke('reingest_source', { graphId, sourceId })) as { nodeIds?: string[] };
-              const n = result?.nodeIds?.length ?? 0;
-              finishIngestToast(toastId, 'success', n > 0 ? `Re-saved ${n} node${n === 1 ? '' : 's'}` : 'Reingested');
-              await refreshStats();
-            } catch (e) {
-              finishIngestToast(toastId, 'error', String(e));
-              showError(`Reingest failed: ${e}`);
-              btn.disabled = false;
-              btn.textContent = 'Reingest';
-              reingestSiblings.forEach((b) => { (b as HTMLButtonElement).disabled = false; });
-            }
-          });
-        });
-      });
-      // Move-to: inline engram picker that replaces the button row temporarily.
-      els.sourcesList.querySelectorAll<HTMLButtonElement>('.btn-move-source').forEach((btn) => {
-        btn.addEventListener('click', () => {
-          const fromGraphId = btn.dataset.graphId ?? '';
-          const sourceId = btn.dataset.sourceId ?? '';
-          if (!fromGraphId || !sourceId) return;
-
-          const row = btn.closest<HTMLDivElement>('.source-row');
-          if (!row || row.querySelector('.source-row-move-picker')) return;
-
-          const targets = loadedGraphs.filter((g) => g.graphId !== fromGraphId && !g.metadata.archived);
-
-          const picker = document.createElement('div');
-          picker.className = 'source-row-move-picker';
-          picker.innerHTML =
-            `<span class="source-row-move-label">Move to:</span>` +
-            `<input type="text" class="source-row-move-name-input" placeholder="New engram name…" style="display:none" />` +
-            `<select class="source-row-move-select">` +
-            [...targets].sort((a, b) => (a.metadata.displayName ?? a.graphId).localeCompare(b.metadata.displayName ?? b.graphId)).map((g) =>
-              `<option value="${escape(g.graphId)}">${escape(g.metadata.displayName || g.graphId)}</option>`
-            ).join('') +
-            `<option value="__new__">New Engram…</option>` +
-            `</select>` +
-            `<span class="source-row-move-actions">` +
-              `<button class="source-row-move-go">Move</button>` +
-              `<button class="source-row-move-cancel">Cancel</button>` +
-            `</span>`;
-
-          const select    = picker.querySelector<HTMLSelectElement>('.source-row-move-select')!;
-          const nameInput = picker.querySelector<HTMLInputElement>('.source-row-move-name-input')!;
-          const goBtn     = picker.querySelector<HTMLButtonElement>('.source-row-move-go')!;
-          const cancelBtn = picker.querySelector<HTMLButtonElement>('.source-row-move-cancel')!;
-
-          const syncNameInput = () => {
-            const isNew = select.value === '__new__';
-            nameInput.style.display = isNew ? '' : 'none';
-            select.style.display = isNew ? 'none' : '';
-            if (isNew) nameInput.focus();
-          };
-          select.addEventListener('change', syncNameInput);
-
-          // Hide all other action buttons in this row while the picker is open.
-          const siblingBtns = Array.from(
-            row.querySelectorAll<HTMLElement>('.btn-show-finder, .btn-reingest, .btn-forget'),
-          );
-          btn.style.display = 'none';
-          siblingBtns.forEach((b) => { b.style.display = 'none'; });
-          row.appendChild(picker);
-          // Apply initial visibility — "New Engram…" is the first option so
-          // the name input must be shown straight away without waiting for a
-          // change event that will never fire on the initial render.
-          syncNameInput();
-
-          cancelBtn.addEventListener('click', () => {
-            picker.remove();
-            btn.style.display = '';
-            siblingBtns.forEach((b) => { b.style.display = ''; });
-          });
-
-          goBtn.addEventListener('click', async () => {
-            let toGraphId = select.value;
-            let toName = targets.find((g) => g.graphId === toGraphId)?.metadata.displayName ?? toGraphId;
-
-            if (toGraphId === '__new__') {
-              const displayName = nameInput.value.trim();
-              if (!displayName) { nameInput.focus(); return; }
-              // Slug: lowercase, spaces→dash, strip non-alphanumeric except -_
-              const slug = displayName.toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9_-]/g, '');
-              const suffix = Math.random().toString(36).slice(-4);
-              toGraphId = `${slug || 'engram'}-${suffix}`;
-              toName = displayName;
-              try {
-                await invoke('create_graph_with_template', { graphId: toGraphId, template: 'personal', displayName });
-                loadedGraphs = (await invoke('list_graphs_with_metadata', { includeUnloaded: true })) as typeof loadedGraphs;
-                syncEngramPicker();
-              } catch (e) {
-                showError(`Could not create engram "${displayName}": ${e}`);
-                return;
-              }
-            }
-
-            picker.remove();
-            btn.disabled = true;
-            btn.style.display = '';
-            // Chain onto the global move queue so rapid clicks don't fire
-            // concurrent moves — each move triggers a heavy relink pass and
-            // concurrent passes on large engrams can saturate the sidecar.
-            btn.textContent = moveSourceQueue ? 'Queued…' : 'Moving…';
-            moveSourceQueue = (moveSourceQueue ?? Promise.resolve()).then(async () => {
-              btn.textContent = 'Moving…';
-              try {
-                await invoke('move_source', { fromGraphId, sourceId, toGraphId });
-                // Gray out the row name — makes it visually distinct from
-                // sources that are still in this engram.
-                const nameEl = row.querySelector<HTMLElement>('.source-name');
-                if (nameEl) {
-                  nameEl.style.opacity = '0.4';
-                  nameEl.title = `Moved to ${toName}`;
-                }
-                // Replace all action buttons with a single confirmation label.
-                row.querySelectorAll<HTMLElement>(
-                  '.btn-show-finder, .btn-reingest, .btn-move-source, .btn-forget, .source-meta',
-                ).forEach((b) => b.remove());
-                btn.remove();
-                const confirmLabel = document.createElement('span');
-                confirmLabel.className = 'source-moved-label';
-                confirmLabel.textContent = `Moved to "${toName}"`;
-                row.appendChild(confirmLabel);
-              } catch (e) {
-                showError(`Move to "${toName}" failed: ${e}`);
-                btn.disabled = false;
-                btn.textContent = 'Move to…';
-              }
-            });
-          });
-        });
-      });
-
-      // Show in Finder — reveals the file (selects it) in macOS Finder.
-      els.sourcesList.querySelectorAll<HTMLButtonElement>('.btn-show-finder').forEach((btn) => {
-        btn.addEventListener('click', async () => {
-          const ref = btn.dataset.ref ?? '';
-          if (!ref) return;
-          try {
-            await invoke('reveal_file_in_finder', { path: ref });
-          } catch (e) {
-            showError(`Could not reveal file: ${e}`);
-          }
-        });
-      });
+      wireSourcesListDelegation();
     }
   } catch (e) {
     const msg = String(e);
-    const timedOut = msg.includes('timed out');
+    const preloading = isEngramPreloadInProgress();
+    const timedOut = msg.includes('timed out') || msg.includes('did not respond');
+    const unreachable = /connect to sidecar|ECONNREFUSED|cortex is locked|not running/i.test(msg);
+    if (preloading && (timedOut || unreachable)) {
+      els.sourcesList.innerHTML =
+        '<p class="subtitle">Loading cortex — stats will update as engrams finish loading…</p>';
+      return;
+    }
     els.sourcesList.innerHTML = timedOut
       ? '<p class="subtitle">Couldn’t load sources — the stats read timed out. ' +
         '<button id="btn-sources-retry" class="btn-sm" type="button">Retry</button></p>'
@@ -4113,11 +4295,6 @@ function applySourcesFilter(): void {
   });
 }
 
-function escape(s: string): string {
-  return s.replace(/[&<>"']/g, (c) => ({
-    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
-  })[c] as string);
-}
 
 // ---- event wiring -------------------------------------------------------
 
@@ -4234,6 +4411,22 @@ function updateReingestAllLabel(): void {
   });
 }
 
+function refreshCortexCloudHint(path: string): void {
+  const hint = document.getElementById('cortex-cloud-hint');
+  if (!hint) return;
+  const trimmed = path.trim();
+  if (!trimmed) {
+    hint.textContent = 'Tip: place your cortex inside iCloud Drive, Dropbox, Google Drive, or OneDrive to sync across devices — or keep it local on this Mac.';
+    return;
+  }
+  const info = analyzeCortexCloudLocation(trimmed);
+  if (!info.inCloudFolder) {
+    hint.textContent = 'Local folder on this Mac — no cloud sync. You can move it to a cloud folder later.';
+    return;
+  }
+  hint.textContent = `Detected: ${info.providerLabel} (${info.mode === 'shared-cloud' ? 'shared folder' : info.mode === 'personal-cloud' ? 'your account' : 'confirm sharing at unlock'}).`;
+}
+
 // Re-probe biometric availability whenever the cortex-folder input changes
 // (typed, pasted, picked-via-dialog). Debounced because the input fires per
 // keystroke. Without this, the Touch ID button stays stale if the user
@@ -4244,6 +4437,7 @@ function updateReingestAllLabel(): void {
     // Hide the "folder missing" notice as soon as the user edits the path —
     // they're actively correcting it.
     document.getElementById('cortex-missing-notice')?.classList.add('hidden');
+    refreshCortexCloudHint(els.cortexDir.value);
     if (timer !== null) window.clearTimeout(timer);
     timer = window.setTimeout(() => {
       void refreshBiometricButton(els.cortexDir.value.trim());
@@ -4253,10 +4447,20 @@ function updateReingestAllLabel(): void {
 
 els.btnPick.addEventListener('click', async () => {
   showError(null);
+  const choice = cloudLocationChoiceCopy();
+  const pickMsg = [
+    choice.title,
+    '',
+    ...choice.options.map((o) => `• ${o.label} — ${o.hint}`),
+    '',
+    'Choose the folder where your encrypted cortex will live.',
+  ].join('\n');
+  if (!confirm(pickMsg)) return;
   try {
     const folder = (await invoke('pick_cortex_folder')) as string | null;
     if (folder) {
       els.cortexDir.value = folder;
+      refreshCortexCloudHint(folder);
       els.passphrase.focus();
       void refreshBiometricButton(folder);
     }
@@ -4264,198 +4468,6 @@ els.btnPick.addEventListener('click', async () => {
     showError(String(e));
   }
 });
-
-// Touch ID — both the "Touch ID" button (next to Unlock) and the inline
-// fingerprint icon (inside the passphrase field's right edge) fire the
-// same flow: spawn the Swift sidecar for biometric auth, read the cached
-// passphrase, run the normal unlock.
-async function runBiometricUnlock(): Promise<void> {
-  if (!els.cortexDir.value.trim()) {
-    showError('Choose a Graphnosis cortex folder first.');
-    return;
-  }
-  showError(null);
-  const inlineBtn = document.getElementById('btn-touchid-inline') as HTMLButtonElement | null;
-  if (inlineBtn) inlineBtn.disabled = true;
-  els.btnUnlock.disabled = true;
-  els.bootStatusText.textContent = 'Touch the sensor…';
-  const progressBar = document.getElementById('unlock-progress');
-  progressBar?.classList.remove('hidden');
-  els.bootStatusText.textContent = '';
-  els.unlockStatus.classList.remove('hidden');
-  try {
-    const status = await invoke<StatusSnapshot>('biometric_unlock', {
-      cortexDir: els.cortexDir.value,
-      preferredDefaultGraph: localStorage.getItem(LAST_ENGRAM_KEY) ?? null,
-    });
-    rememberCortexDir(els.cortexDir.value);
-    els.passphrase.value = '';
-    els.bootStatusText.textContent = '';
-    render(status);
-  } catch (e) {
-    showError(String(e));
-    els.bootStatusText.textContent = '';
-  } finally {
-    if (inlineBtn) inlineBtn.disabled = false;
-    if (!unlockPending) els.btnUnlock.disabled = false;
-    progressBar?.classList.add('hidden');
-    if (!unlockPending) els.unlockStatus.classList.add('hidden');
-  }
-}
-
-{
-  const inlineBtn = document.getElementById('btn-touchid-inline') as HTMLButtonElement | null;
-  inlineBtn?.addEventListener('click', () => void runBiometricUnlock());
-}
-
-els.btnUnlock.addEventListener('click', async () => {
-  showError(null);
-  // Client-side guards. Sidecar would also reject these, but failing fast in
-  // the UI is friendlier than a 30s wait for the timeout error.
-  // Browser mode (personal-server): the server owns the cortex — the user
-  // can't and shouldn't pick one, so skip the cortex-folder guard. The
-  // passphrase field holds the HTTP UI access token instead.
-  if (IS_TAURI && !els.cortexDir.value.trim()) {
-    showError('Choose a Graphnosis cortex folder first.');
-    return;
-  }
-  if (!els.passphrase.value) {
-    showError(IS_TAURI ? 'Enter your cortex passphrase.' : 'Enter your access token.');
-    return;
-  }
-  await attemptUnlock();
-});
-
-/**
- * Run the unlock flow. Extracted from the click handler so we can re-call
- * it after the user confirms "create the missing folder" without rebuilding
- * the click handler's pre-flight checks.
- */
-// ── A8 — biometric / security-key unlock (browser mode only) ─────────────────
-
-/** Authenticate with a registered WebAuthn device. On success the session is
- *  minted server-side; render the unlocked state (same transition the token
- *  unlock uses in browser mode). */
-async function webauthnUnlock(): Promise<void> {
-  const waBtn = document.getElementById('btn-webauthn-unlock') as HTMLButtonElement | null;
-  els.btnUnlock.disabled = true;
-  if (waBtn) waBtn.disabled = true;
-  const progressBar = document.getElementById('unlock-progress');
-  progressBar?.classList.remove('hidden');
-  els.unlockStatus.classList.remove('hidden');
-  els.bootStatusText.textContent = 'Verifying…';
-  try {
-    await webauthnAuthenticate();
-    els.bootStatusText.textContent = '';
-    render({ unlocked: true, cortex_dir: null, sidecar_running: true } as StatusSnapshot);
-  } catch (e) {
-    progressBar?.classList.add('hidden');
-    els.bootStatusText.textContent = '';
-    els.btnUnlock.disabled = false;
-    if (waBtn) waBtn.disabled = false;
-    showError(e instanceof Error ? e.message : String(e));
-  }
-}
-
-/** After a browser token-unlock, offer to register this device for biometric
- *  unlock — once, only when available and none registered yet. */
-let biometricSetupOffered = false;
-async function maybeOfferBiometricSetup(): Promise<void> {
-  if (IS_TAURI || biometricSetupOffered) return;
-  biometricSetupOffered = true;
-  let st: { available: boolean; registered: number };
-  try { st = await webauthnStatus(); } catch { return; }
-  if (!st.available || st.registered > 0) return;
-  if (!confirm('Set up biometric / security-key unlock on this device, so you don\'t need to paste the access token next time?')) return;
-  const tid = addIngestToast('Setting up biometric unlock', 'Follow your device\'s prompt…');
-  try {
-    await webauthnRegister('This device');
-    finishIngestToast(tid, 'success', 'Biometric unlock enabled for this device.');
-  } catch (e) {
-    finishIngestToast(tid, 'error', `Setup failed: ${e instanceof Error ? e.message : String(e)}`);
-  }
-}
-
-async function attemptUnlock(): Promise<void> {
-  els.btnUnlock.disabled = true;
-  els.bootStatusText.textContent = 'Starting synapse…';
-  // Indeterminate progress bar — the unlock has several variable-duration
-  // steps (Argon2id key derivation, sidecar spawn, embedding-worker init,
-  // engram loads). We don't have meaningful percentages, but a moving bar
-  // tells the user something IS happening so they don't second-guess the
-  // click and try to mash the button again.
-  const progressBar = document.getElementById('unlock-progress');
-  progressBar?.classList.remove('hidden');
-  // Boot-status line: cleared then shown live as sidecar boot events arrive.
-  els.bootStatusText.textContent = '';
-  els.unlockStatus.classList.remove('hidden');
-  try {
-    const status = (await invoke('unlock_cortex', {
-      args: {
-        cortex_dir: els.cortexDir.value,
-        passphrase: els.passphrase.value,
-        preferred_default_graph: localStorage.getItem(LAST_ENGRAM_KEY) ?? null,
-      },
-    })) as StatusSnapshot;
-    // Persist for the next launch — see rememberCortexDir().
-    rememberCortexDir(els.cortexDir.value);
-    // A different cortex just opened — its non-deterministic preferences
-    // (GNN, Local LLM) live in its own settings.json and are reloaded by the
-    // fresh sidecar. Clear any half-finished two-step enable-confirm so it
-    // can't leak from the previous cortex into this one.
-    nnConfirmPending = false;
-    nnEnablingInProgress = false;
-    llmConfirmPending = false;
-    els.passphrase.value = '';
-    els.bootStatusText.textContent = '';
-    render(status);
-    // Offer biometric setup once, after a successful browser token-unlock.
-    void maybeOfferBiometricSetup();
-  } catch (e) {
-    const msg = String(e);
-    // Auto-unlock (QR / ?token=) failed — reveal the lock form again so the
-    // user can correct the token. No-op in normal (non-auto) unlock flows.
-    document.body.classList.remove('browser-auto-unlock');
-    const sub0 = document.getElementById('subtitle');
-    if (sub0 && !IS_TAURI) sub0.textContent = 'Your local encrypted memory, indexed for deterministic recall — auditable';
-    // First-run friendly: if the cortex folder doesn't exist, don't dead-
-    // end — offer to create it on the spot. The Rust error has the form
-    // "cortex folder does not exist: <path>"; we parse and confirm.
-    const missingPrefix = 'cortex folder does not exist:';
-    const lacksPrefix = msg.indexOf(missingPrefix);
-    if (lacksPrefix !== -1) {
-      const path = msg.slice(lacksPrefix + missingPrefix.length).trim();
-      els.bootStatusText.textContent = '';
-      progressBar?.classList.add('hidden');
-      els.btnUnlock.disabled = false;
-      const proceed = confirm(
-        `The folder "${path}" doesn't exist yet.\n\n` +
-        `Create it now and continue unlocking?\n\n` +
-        `(If this is a typo, click Cancel and edit the path.)`
-      );
-      if (!proceed) return;
-      try {
-        await invoke('create_cortex_dir', { path });
-      } catch (createErr) {
-        showError(`Couldn't create folder: ${String(createErr)}`);
-        return;
-      }
-      // Retry unlock now that the folder exists. Re-enter attemptUnlock
-      // (rather than recursing inline) so the progress bar + status state
-      // cycle through cleanly.
-      await attemptUnlock();
-      return;
-    }
-    // All other startup errors (wrong passphrase, cortex corrupt, sidecar
-    // missing, etc.) — surface as-is. The Rust side already classified it.
-    showError(msg);
-    els.bootStatusText.textContent = '';
-  } finally {
-    if (!unlockPending) els.btnUnlock.disabled = false;
-    progressBar?.classList.add('hidden');
-    if (!unlockPending) els.unlockStatus.classList.add('hidden');
-  }
-}
 
 els.btnRefresh.addEventListener('click', () => void refreshStats());
 
@@ -4585,15 +4597,6 @@ document.getElementById('btn-report-bug')?.addEventListener('click', () => {
   void invoke('plugin:opener|open_url', {
     url: 'https://github.com/nehloo-interactive/graphnosis-app/issues',
   });
-});
-
-els.btnLock.addEventListener('click', async () => {
-  try {
-    const status = (await invoke('lock_cortex')) as StatusSnapshot;
-    render(status);
-  } catch (e) {
-    showError(String(e));
-  }
 });
 
 // ---- recovery flow -----------------------------------------------------
@@ -5224,15 +5227,20 @@ function renderSettingsGraphsList(): void {
 
   const renderRow = (g: GraphWithMetadata): string => {
     const archived = g.metadata.archived ?? false;
+    const preserved = g.metadata.legalHold === true;
     const isActive = g.graphId === atlasActiveGraph;
     const tier = g.metadata.sensitivityTier ?? 'personal';
     const isSkillEngram = g.metadata.template === 'skill';
     const skillCount = isSkillEngram ? skillsLibrary.filter((s) => s.graphId === g.graphId).length : 0;
     const skillBadge = isSkillEngram ? `<span class="sgr-badge sgr-badge-skill" title="${skillCount} skill${skillCount === 1 ? '' : 's'}">🛠 ${skillCount}</span>` : '';
+    const preservedBadge = preserved
+      ? `<span class="sgr-badge sgr-badge-preserved" title="${escape(g.metadata.legalHoldMatter ? `Preserved (${g.metadata.legalHoldMatter})` : 'Preserved — forget, edit, and purge blocked until released.')}">Preserved</span>`
+      : '';
     return `
-      <div class="settings-graph-row${archived ? ' is-archived' : ''}" data-sgr-id="${escape(g.graphId)}" data-skill-count="${skillCount}">
+      <div class="settings-graph-row${archived ? ' is-archived' : ''}${preserved ? ' is-preserved' : ''}" data-sgr-id="${escape(g.graphId)}" data-skill-count="${skillCount}">
         <span class="sgr-name" title="Click to rename" data-sgr-id="${escape(g.graphId)}" data-pres="engram:${escape(g.graphId)}">${escape(formatEngramLabel(g))}</span>
         ${archived ? '<span class="sgr-badge">archived</span>' : ''}
+        ${preservedBadge}
         ${isActive ? '<span class="sgr-badge">active</span>' : ''}
         ${skillBadge}
         <select class="sgr-tier-select" data-sgr-id="${escape(g.graphId)}" title="${TIER_CAPS[tier]}"
@@ -5241,6 +5249,9 @@ function renderSettingsGraphsList(): void {
           <option value="personal"  ${tier === 'personal'  ? 'selected' : ''} style="color:var(--color-status-warn-gold)">personal</option>
           <option value="sensitive" ${tier === 'sensitive' ? 'selected' : ''} style="color:var(--error)">sensitive</option>
         </select>
+        <button class="btn-graph-preserve" data-sgr-id="${escape(g.graphId)}" data-preserved="${preserved}" title="${preserved ? 'Release preservation — forget, edit, and purge allowed again' : 'Preserve engram — blocks forget, edit, and purge until released'}">
+          ${preserved ? 'Release' : 'Preserve'}
+        </button>
         <button class="btn-graph-archive" data-sgr-id="${escape(g.graphId)}" data-archived="${archived}">
           ${archived ? 'Unarchive' : 'Archive'}
         </button>
@@ -5268,6 +5279,94 @@ function renderSettingsGraphsList(): void {
   // CSS default-deny would redact every engram name with nothing ever revealing
   // the allowlisted ones. Sweep this container explicitly so revealed engrams show.
   if (presActive()) applyPresentationMasking(container);
+
+  // ── Preserve / Release ───────────────────────────────────────────────────
+  container.querySelectorAll<HTMLButtonElement>('.btn-graph-preserve').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const graphId = btn.dataset['sgrId'] ?? '';
+      const currentlyPreserved = btn.dataset['preserved'] === 'true';
+      const g = loadedGraphs.find((gr) => gr.graphId === graphId);
+      const displayName = g?.metadata.displayName ?? graphId;
+      if (!graphId) return;
+
+      const row = btn.closest<HTMLElement>('.settings-graph-row');
+      if (!row) return;
+
+      if (currentlyPreserved) {
+        const ok = window.confirm(
+          `Release preservation on "${displayName}"? Graphnosis will allow forget, edit, and purge again.`,
+        );
+        if (!ok) return;
+        btn.disabled = true;
+        void ipcCall('compliance.setEngramPreserve', { graphId, preserved: false })
+          .then(() => {
+            if (g) {
+              delete g.metadata.legalHold;
+              delete g.metadata.legalHoldAt;
+              delete g.metadata.legalHoldMatter;
+            }
+            renderSettingsGraphsList();
+            void refreshStats();
+          })
+          .catch((e) => {
+            showError(`Could not release preservation: ${e}`);
+            btn.disabled = false;
+          });
+        return;
+      }
+
+      btn.style.display = 'none';
+      const archiveBtn = row.querySelector<HTMLButtonElement>('.btn-graph-archive');
+      const deleteBtn = row.querySelector<HTMLButtonElement>('.btn-graph-delete');
+      if (archiveBtn) archiveBtn.style.display = 'none';
+      if (deleteBtn) deleteBtn.style.display = 'none';
+
+      const confirmDiv = document.createElement('div');
+      confirmDiv.className = 'sgr-confirm-preserve';
+      confirmDiv.innerHTML = `
+        <p class="sgr-preserve-copy">Preserve this engram? Graphnosis won't forget, edit, or purge its memory until you release preservation. Your original files aren't changed.</p>
+        <details class="sgr-preserve-matter-details">
+          <summary>Matter reference (optional)</summary>
+          <input type="text" class="sgr-preserve-matter-input" placeholder="Case or matter label" autocomplete="off" />
+        </details>
+        <button class="sgr-preserve-go">Preserve engram</button>
+        <button class="sgr-preserve-cancel">Cancel</button>
+      `;
+      row.appendChild(confirmDiv);
+
+      const goBtn = confirmDiv.querySelector<HTMLButtonElement>('.sgr-preserve-go')!;
+      const cancelBtn = confirmDiv.querySelector<HTMLButtonElement>('.sgr-preserve-cancel')!;
+      const matterInput = confirmDiv.querySelector<HTMLInputElement>('.sgr-preserve-matter-input')!;
+
+      cancelBtn.addEventListener('click', () => renderSettingsGraphsList());
+
+      goBtn.addEventListener('click', async () => {
+        goBtn.disabled = true;
+        cancelBtn.disabled = true;
+        matterInput.disabled = true;
+        const matter = matterInput.value.trim();
+        try {
+          await ipcCall('compliance.setEngramPreserve', {
+            graphId,
+            preserved: true,
+            ...(matter ? { matter } : {}),
+          });
+          if (g) {
+            g.metadata.legalHold = true;
+            g.metadata.legalHoldAt = Date.now();
+            if (matter) g.metadata.legalHoldMatter = matter;
+          }
+          renderSettingsGraphsList();
+          void refreshStats();
+        } catch (e) {
+          showError(`Could not preserve engram: ${e}`);
+          goBtn.disabled = false;
+          cancelBtn.disabled = false;
+          matterInput.disabled = false;
+        }
+      });
+    });
+  });
 
   // ── Archive / Unarchive ──────────────────────────────────────────────────
   container.querySelectorAll<HTMLButtonElement>('.btn-graph-archive').forEach((btn) => {
@@ -5475,7 +5574,9 @@ function renderSettingsGraphsList(): void {
       // Hide the original action buttons while confirming.
       btn.style.display = 'none';
       const archiveBtn = row.querySelector<HTMLButtonElement>('.btn-graph-archive');
+      const preserveBtn = row.querySelector<HTMLButtonElement>('.btn-graph-preserve');
       if (archiveBtn) archiveBtn.style.display = 'none';
+      if (preserveBtn) preserveBtn.style.display = 'none';
 
       const skillCount = Number(row.dataset['skillCount'] ?? 0);
       const skillWarning = skillCount > 0
@@ -6047,7 +6148,7 @@ els.btnSettingsSave.addEventListener('click', async () => {
     currentForgetMode = forgetMode;   // keep in-memory copy in sync
     // Clamp to the same min/max the sidecar enforces. Convert seconds → ms.
     const initialWaitMs = clampMs(
-      (Number.parseInt(els.relayInitial.value, 10) || 10) * 1000,
+      (Number.parseInt(els.relayInitial.value, 10) || 90) * 1000,
       RELAY_INITIAL_MIN_MS,
       RELAY_INITIAL_MAX_MS,
     );
@@ -6739,6 +6840,18 @@ async function fetchGraphsMetadata(): Promise<void> {
   }
 }
 
+/** Re-fetch the full engram catalog (loaded + on-disk) and refresh cortex stats.
+ *  Under lazy-boot, selecting an engram loads it on demand — stats/picker must
+ *  catch up once the engram becomes resident. */
+async function refreshGraphsCatalogAndStats(): Promise<void> {
+  try {
+    loadedGraphs = await invoke<GraphWithMetadata[]>('list_graphs_with_metadata', { includeUnloaded: true });
+    syncEngramPicker();
+    populateStudioEngramSelects();
+    void refreshCortexScopedStats();
+  } catch { /* non-fatal */ }
+}
+
 // ── Graph wizard ──────────────────────────────────────────────────────
 
 function openGraphWizard(): void {
@@ -6879,11 +6992,11 @@ function updateStatusBar(connections: McpConnection[]): void {
   } else {
     // Blocked clients (rejected by Access Control) shouldn't claim the
     // status-bar "connected" signal — surface a live/idle client instead.
-    const allowed = connections.filter((c) => !isClientBlocked(friendlyClient(c.clientName)));
+    const allowed = connections.filter((c) => !isClientBlocked(mcpConnectionLabel(c)));
     if (allowed.length === 0) {
       // Every connected client is blocked — say so plainly rather than green.
-      const blockedName = friendlyClient(
-        [...connections].sort((a, b) => friendlyClient(a.clientName).localeCompare(friendlyClient(b.clientName)))[0]?.clientName,
+      const blockedName = mcpConnectionLabel(
+        [...connections].sort((a, b) => mcpConnectionLabel(a).localeCompare(mcpConnectionLabel(b)))[0]!,
       );
       els.statusMcpDot.className = 'status-dot';
       els.statusMcpText.textContent = `${blockedName} · blocked`;
@@ -6895,12 +7008,12 @@ function updateStatusBar(connections: McpConnection[]): void {
     }
     // Prefer an actively non-idle client; fall back to any connected client.
     // If all are idle, still show the most recently active one (no idle styling).
-    const nonIdle = allowed.filter((c) => !liveIdleClients.has(friendlyClient(c.clientName)));
+    const nonIdle = allowed.filter((c) => !liveIdleClients.has(mcpConnectionLabel(c)));
     const pool = nonIdle.length > 0 ? nonIdle : allowed;
     const sorted = [...pool].sort((a, b) =>
-      friendlyClient(a.clientName).localeCompare(friendlyClient(b.clientName))
+      mcpConnectionLabel(a).localeCompare(mcpConnectionLabel(b))
     );
-    const primary = friendlyClient(sorted[0]?.clientName);
+    const primary = mcpConnectionLabel(sorted[0]!);
     const allIdle = nonIdle.length === 0;
     // Status bar — green when at least one client is active; amber when all are idle.
     els.statusMcpDot.className = allIdle ? 'status-dot idle' : 'status-dot ok';
@@ -7168,6 +7281,10 @@ async function loadGraphnosisDataInner(graphId: string): Promise<void> {
   // stale data on a same-engram refresh blip (where keeping it is correct).
   const isSwitch = graphId !== atlasLoadedForGraph;
   try {
+    // Lazy-boot: ensure the engram is resident before list_nodes/edges. The IPC
+    // dispatch hook also calls ensureLoaded, but an explicit load here surfaces
+    // failures to the switch flow and dedupes with the sidecar's in-flight map.
+    await ipcCall('graphs.load', { graphId });
     // Nodes first — they're required to render anything. Edges second, and
     // BEST-EFFORT: on a brain-bloated engram list_edges can blow past the IPC
     // deadline while list_nodes still returns. Letting that fail the whole load
@@ -7248,13 +7365,12 @@ async function loadGraphnosisDataInner(graphId: string): Promise<void> {
   }
 }
 
-/** Lazily ensure every non-archived loaded engram has its nodes cached in
+/** Lazily ensure every non-archived engram has its nodes cached in
  *  graphnosisGlobalNodes. Used by the global-search path. Failures for one
- *  engram don't block the others — we just skip whatever didn't load. */
+ *  engram don't block the others — we just skip whatever didn't load.
+ *  Under lazy-boot, unloaded engrams (loaded:false) load on demand here. */
 async function ensureGlobalNodesLoaded(): Promise<void> {
-  const targets = loadedGraphs.filter(
-    (g) => !g.metadata.archived && g.loaded !== false,
-  );
+  const targets = loadedGraphs.filter((g) => !g.metadata.archived);
   const missing = targets.filter((g) => !graphnosisGlobalNodes.has(g.graphId));
   if (missing.length === 0) return;
   await Promise.all(
@@ -7280,7 +7396,7 @@ function collectGlobalSearchNodes(): NodeRecord[] {
   // Skip archived engrams even if they happen to be cached.
   const visible = new Set(
     loadedGraphs
-      .filter((g) => !g.metadata.archived && g.loaded !== false)
+      .filter((g) => !g.metadata.archived)
       .map((g) => g.graphId),
   );
   const out: NodeRecord[] = [];
@@ -7300,7 +7416,7 @@ function syncSearchEngramSelect(): void {
   if (!sel) return;
   const prev = searchEngramFilter;
   const options = loadedGraphs
-    .filter((g) => !g.metadata.archived && g.loaded !== false)
+    .filter((g) => !g.metadata.archived)
     .map((g) => ({ id: g.graphId, name: formatEngramLabel(g) }))
     .sort((a, b) => a.name.localeCompare(b.name));
   const html = ['<option value="">All engrams</option>']
@@ -7578,14 +7694,22 @@ function renderHomeEngramBars(): void {
   if (!barsEl) return;
   // Vitality not fetched yet → leave the loading skeleton in place (no flash).
   if (!brainVitalityReport) return;
+  const liveGraphIds = new Set(
+    loadedGraphs.filter((g) => !g.metadata.archived).map((g) => g.graphId),
+  );
   const rows = Object.entries(brainVitalityReport.byGraph ?? {})
+    .filter(([gid]) => liveGraphIds.has(gid))
     .map(([gid, score]) => {
       const g = loadedGraphs.find((x) => x.graphId === gid);
-      if (g?.metadata.archived) return null;
       return { gid, name: g?.metadata.displayName ?? gid, score: score as number };
     })
-    .filter((r): r is { gid: string; name: string; score: number } => r !== null)
     .sort((a, b) => b.score - a.score);
+  // Stale vitality from a prior cortex (byGraph keys not in this picker) — refetch.
+  const stillBooting = loadedGraphs.some((g) => !g.metadata.archived && g.loaded === false);
+  if (rows.length === 0 && liveGraphIds.size > 0 && !stillBooting) {
+    void refreshCortexScopedStats();
+    return;
+  }
   barsEl.style.display = '';
   if (rows.length === 0) {
     barsEl.innerHTML = `<div class="home-bars-title">Per engram</div><p class="home-bars-empty">No engrams to break down yet.</p>`;
@@ -7614,7 +7738,10 @@ function renderHomeEngramBars(): void {
   const more = rows.length > CAP
     ? `<p class="home-bars-empty">+ ${(rows.length - CAP).toLocaleString()} more engrams</p>`
     : '';
-  barsEl.innerHTML = `<div class="home-bars-title">Per engram (${rows.length.toLocaleString()})</div>${shown.map(bar).join('')}${more}`;
+  const titleCount = stillBooting && liveGraphIds.size > rows.length
+    ? liveGraphIds.size
+    : rows.length;
+  barsEl.innerHTML = `<div class="home-bars-title">Per engram (${titleCount.toLocaleString()})</div>${shown.map(bar).join('')}${more}`;
 }
 
 // "Since you last opened" — the autonomy digest. The anchor (last app-open
@@ -7810,7 +7937,7 @@ async function refreshHomeGrowth(): Promise<void> {
   // Clicking the card jumps to Activity, pre-filtered to ingests, for the full
   // history. Wired idempotently (onclick replaces).
   card.style.cursor = 'pointer';
-  card.onclick = () => { activityCat = 'ingested'; activityWindow = ACTIVITY_WINDOW_START; activateMode('activity'); };
+  card.onclick = () => { setActivityCat('ingested'); resetActivityWindow(); activateMode('activity'); };
   const DAYS = 90;
   const since = Date.now() - DAYS * 864e5;
   let events: OpLogEvent[] = [];
@@ -7902,7 +8029,7 @@ function showHomeSkeletons(): void {
   }
   // The per-engram breakdown shows its loading progress from the very start too.
   const bars = document.getElementById('home-engram-bars');
-  if (bars && !bars.querySelector('.home-bar-row')) {
+  if (bars && (!bars.querySelector('.home-bar-row') || !brainVitalityReport)) {
     bars.style.display = '';
     bars.innerHTML = `<div class="home-bars-title">Per engram</div>${SKEL}${SKEL}${SKEL}`;
   }
@@ -8042,7 +8169,7 @@ function renderHomeSelfHealing(): void {
     `</div>` +
     `<p class="home-sh-note">Nothing is ever lost — every merge is a soft-delete you can undo from Recovery.</p>` +
     `<button type="button" class="home-digest-link" id="home-sh-activity">See merges in Activity →</button>`;
-  body.querySelector<HTMLButtonElement>('#home-sh-activity')?.addEventListener('click', () => { activityCat = 'merged'; activityWindow = ACTIVITY_WINDOW_START; activateMode('activity'); });
+  body.querySelector<HTMLButtonElement>('#home-sh-activity')?.addEventListener('click', () => { setActivityCat('merged'); resetActivityWindow(); activateMode('activity'); });
 }
 
 function renderHomeBrainActivity(): void {
@@ -8086,7 +8213,7 @@ function renderHomeBrainActivity(): void {
       `<button type="button" class="home-digest-link" id="home-brain-activity">See in Activity →</button>` +
     `</div>` +
     `<p class="home-ba-det">Deterministic — same memory, same result, fully auditable.</p>`;
-  body.querySelector<HTMLButtonElement>('#home-brain-activity')?.addEventListener('click', () => { activityCat = 'all'; activityWindow = ACTIVITY_WINDOW_START; activateMode('activity'); });
+  body.querySelector<HTMLButtonElement>('#home-brain-activity')?.addEventListener('click', () => { setActivityCat('all'); resetActivityWindow(); activateMode('activity'); });
   body.querySelector<HTMLButtonElement>('#home-brain-scan')?.addEventListener('click', (ev) => {
     const btn = ev.currentTarget as HTMLButtonElement;
     btn.disabled = true; btn.textContent = '↻ Scanning…';
@@ -12554,7 +12681,6 @@ function renderAtlasLegend(): void {
 // Engrams with a connector actively pulling into them right now (graphIds).
 // Selecting such an engram must NOT run the heavy per-engram load — that
 // competes with the ingest on the single sidecar thread and stalls it.
-let connectorPullingGraphIds = new Set<string>();
 // An engram whose render we deferred because it was mid-ingest when selected.
 // pollGraphMutations loads it once the ingest finishes.
 let deferredAtlasLoadGraph: string | null = null;
@@ -12564,16 +12690,11 @@ let deferredAtlasLoadGraph: string | null = null;
  *  sidecar). Best-effort: leaves the set untouched on a transient failure. */
 // Last list_connectors snapshot — drives the pulling set + the 3D "Sync now"
 // button (which engram has a manual connector and whether it's pulling).
-let lastConnectorList: { configs: ConnectorConfigShape[]; statuses: ConnectorStatus[] } | null = null;
 
 async function refreshConnectorPullingSet(): Promise<void> {
   try {
     const res = await ipcCall<{ configs: ConnectorConfigShape[]; statuses: ConnectorStatus[] }>('list_connectors');
-    lastConnectorList = res;
-    const statusById = new Map(res.statuses.map((s) => [s.id, s]));
-    connectorPullingGraphIds = new Set(
-      res.configs.filter((c) => statusById.get(c.id)?.pulling).map((c) => c.graphId),
-    );
+    updateConnectorPullSnapshot(res);
     updateAtlasSyncButton();
   } catch { /* keep the last-known snapshot on a transient failure */ }
 }
@@ -12724,6 +12845,7 @@ els.atlasGraphPicker.addEventListener('change', () => void (async () => {
   await new Promise<void>((r) => requestAnimationFrame(() => requestAnimationFrame(() => r())));
   await refreshAtlasView();
   hideAtlasLoading(); // new engram is loaded + pushed — drop the overlay
+  void refreshGraphsCatalogAndStats();
   // Re-render the Home dashboard's active-engram card + gauge in place when the
   // user is on Home (the picker scoped the view; it didn't navigate away).
   if (graphnosisActiveTab === 'checkin') renderHealth();
@@ -13041,544 +13163,6 @@ function cssColorForCategory(cat: EdgeCategory): string {
   return `#${CATEGORY_COLOR[cat].toString(16).padStart(6, '0')}`;
 }
 
-// ── Activity (op-log timeline) ────────────────────────────────────────
-
-// Growing fetch window: autonomous-brain ops (e.g. mass edge re-links) can fill
-// the most-recent N events and bury the user's ingests/edits/forgets, which are
-// older. So we start at 2000 and grow the window (see auto-load in renderActivity)
-// until there's real variety. The sidecar's incremental cache makes re-slicing a
-// bigger window cheap after the first cold read.
-// Default ~500 events loaded; the user clicks "Load more" for more. The
-// autonomous brain can emit tens of thousands of edge ops a day, so for a
-// specific category (Ingested/Forgotten/Edits…) we pass `ops` to the sidecar so
-// it pulls THAT type from the full op-log — no longer buried under edge spam.
-// 500 felt thin. The render groups+collapses events by day→signature, so the DOM
-// is bounded by GROUP count, not event count — the only cost is the op-log fetch,
-// and the backend already pulls limit:10000 elsewhere. So we can start much higher
-// and step bigger. 2000 initial loads in well under a second and shows real depth;
-// "Load more" ramps 2000 at a time to a 20000 hard cap (a brief load at the top
-// end, on demand).
-const ACTIVITY_WINDOW_START = 2000;
-const ACTIVITY_WINDOW_STEP = 2000;
-const ACTIVITY_WINDOW_MAX = 20000;
-let activityWindow = ACTIVITY_WINDOW_START;
-let activityHasMore = false;      // fetched == window → more events may exist
-let activityLoading = false;      // guards re-entrancy + the button spinner
-
-/** Read the date-range inputs → an absolute ms window for the op-log fetch.
- *  `since` is exclusive (IPC uses `ts > since`), so we subtract 1ms from the
- *  start-of-day; `until` is inclusive end-of-day. Returns {} when no dates set. */
-function activityDateBounds(): { since?: number; until?: number } {
-  const out: { since?: number; until?: number } = {};
-  const from = els.activityDateFrom.value;
-  const to = els.activityDateTo.value;
-  if (from) out.since = new Date(`${from}T00:00:00`).getTime() - 1;
-  if (to) out.until = new Date(`${to}T23:59:59.999`).getTime();
-  return out;
-}
-function activityDateRangeActive(): boolean {
-  return Boolean(els.activityDateFrom.value || els.activityDateTo.value);
-}
-
-async function refreshActivityView(): Promise<void> {
-  if (activityLoading) return;
-  activityLoading = true;
-  if (activityEvents.length === 0) {
-    els.activityList.innerHTML = '<div class="home-skel"></div><div class="home-skel w70"></div><div class="home-skel"></div>';
-  }
-  try {
-    const bounds = activityDateBounds();
-    const dateScoped = activityDateRangeActive();
-    // With an explicit date range, pull the WHOLE range from the op-log (up to
-    // the hard cap) rather than the recent-N window — old days are otherwise
-    // unreachable. Without one, keep the cheap recent-window paging.
-    const params: { limit: number; ops?: string[]; since?: number; until?: number; actor?: string } =
-      { limit: dateScoped ? ACTIVITY_WINDOW_MAX : activityWindow };
-    if (activityCat !== 'all') params.ops = ACTIVITY_CAT_OPS[activityCat]; // server-side type filter
-    if (bounds.since !== undefined) params.since = bounds.since;
-    if (bounds.until !== undefined) params.until = bounds.until;
-    // Actor ("who") is now a SERVER-side filter (applied across the full op-log,
-    // like categories) so picking a rare actor surfaces their events even when
-    // outside the recent window.
-    const actorSel = els.activityActorSelect.value;
-    if (actorSel) params.actor = actorSel;
-    const r = await ipcCallTimeout<{ events: OpLogEvent[]; actors?: string[] }>('activity.list', params, 25_000);
-    activityEvents = r.events ?? [];
-    activityServerActors = r.actors ?? []; // complete distinct-actor set for the dropdown
-    // Date-scoped fetches pull the whole range (no recent-window paging), so
-    // "more" only means we hit the hard cap; otherwise it's window-relative.
-    activityHasMore = dateScoped
-      ? activityEvents.length >= ACTIVITY_WINDOW_MAX
-      : activityEvents.length >= activityWindow;
-    populateActivityEngramSelect();
-    populateActivityActorSelect();
-    applyActivityFilter();
-  } catch {
-    els.activityList.innerHTML =
-      '<p class="subtitle">Couldn’t load activity — the op-log read timed out. ' +
-      '<button id="btn-activity-retry" class="btn-sm" type="button">Retry</button></p>';
-    document.getElementById('btn-activity-retry')?.addEventListener('click', () => { activityWindow = ACTIVITY_WINDOW_START; void refreshActivityView(); });
-  } finally {
-    activityLoading = false;
-  }
-}
-
-/** Grow the fetch window by a batch and reload (the "Load more" button). */
-function loadMoreActivity(): void {
-  if (activityLoading || activityWindow >= ACTIVITY_WINDOW_MAX) return;
-  activityWindow = Math.min(ACTIVITY_WINDOW_MAX, activityWindow + ACTIVITY_WINDOW_STEP);
-  void refreshActivityView();
-}
-
-// Most-recent events from the last activity.list fetch. Chip/search/engram
-// filtering runs against this cache so it's instant (no re-fetch per keystroke).
-let activityEvents: OpLogEvent[] = [];
-let activityFiltered: OpLogEvent[] = []; // last filtered set
-type ActivityCat = 'all' | 'ingested' | 'nodes' | 'edits' | 'edges' | 'merged' | 'forgotten';
-let activityCat: ActivityCat = 'all';
-// op → friendly category. Granular: ingests, nodes, edits, edges, merges,
-// forgets. Drives both the chips and their count badges.
-const ACTIVITY_CAT_OPS: Record<Exclude<ActivityCat, 'all'>, OpLogEvent['op'][]> = {
-  ingested: ['ingestSource'],
-  nodes: ['addNode', 'deleteNode'],
-  edits: ['editNode', 'supersede'],
-  edges: ['addEdge', 'deleteEdge'],
-  merged: ['merge'],
-  forgotten: ['forgetSource'],
-};
-const ACTIVITY_CAT_LABELS: Record<ActivityCat, string> = {
-  all: 'All', ingested: 'Ingested', nodes: 'Nodes', edits: 'Edits',
-  edges: 'Edges', merged: 'Merged', forgotten: 'Forgotten',
-};
-function activityCatOf(op: OpLogEvent['op']): Exclude<ActivityCat, 'all'> | null {
-  for (const cat of Object.keys(ACTIVITY_CAT_OPS) as Array<Exclude<ActivityCat, 'all'>>) {
-    if (ACTIVITY_CAT_OPS[cat].includes(op)) return cat;
-  }
-  return null;
-}
-
-/** Fill the engram scope dropdown from ALL loaded engrams (not just those that
- *  happen to appear in the recent-events window), preserving the selection. */
-function populateActivityEngramSelect(): void {
-  const prev = els.activityEngramSelect.value;
-  const graphs = loadedGraphs.filter((g) => !g.metadata.archived);
-  const ids = graphs.map((g) => g.graphId)
-    .sort((a, b) => engramName(a).localeCompare(engramName(b)));
-  els.activityEngramSelect.innerHTML =
-    '<option value="">All engrams</option>' +
-    ids.map((id) => `<option value="${escape(id)}">${escape(engramName(id))}</option>`).join('');
-  if (prev && ids.includes(prev)) els.activityEngramSelect.value = prev;
-}
-
-/** Fill the "who" dropdown from the distinct actors present in the loaded
- *  events (You, Autonomous brain, Claude Code / other AI clients, App…),
- *  preserving the current selection. */
-// Distinct actor labels are computed SERVER-SIDE across the full op-log scope
-// (activity.list returns `actors`), so the dropdown is always complete — no
-// dependence on which events happen to be in the recent-N window.
-let activityServerActors: string[] = [];
-function populateActivityActorSelect(): void {
-  const prev = els.activityActorSelect.value;
-  els.activityActorSelect.innerHTML =
-    '<option value="">Anyone</option>' +
-    activityServerActors.map((l) => `<option value="${escape(l)}">${escape(l)}</option>`).join('');
-  // Keep the current selection even if it's not in the latest set (e.g. it's
-  // the active filter and the server excluded it from `actors`); re-add it.
-  if (prev) {
-    if (!activityServerActors.includes(prev)) {
-      els.activityActorSelect.insertAdjacentHTML('beforeend', `<option value="${escape(prev)}">${escape(prev)}</option>`);
-    }
-    els.activityActorSelect.value = prev;
-  }
-}
-
-/** Category is server-filtered (via `ops`); here we only apply the engram scope
- *  + text query to the fetched set, then render. */
-/** Parse a "HH:MM" time input → minutes-since-midnight, or null if empty. */
-function activityHourMinutes(val: string): number | null {
-  const m = /^(\d{2}):(\d{2})$/.exec(val);
-  if (!m) return null;
-  return Number(m[1]) * 60 + Number(m[2]);
-}
-
-function applyActivityFilter(): void {
-  const engram = els.activityEngramSelect.value;
-  // Actor is filtered server-side (refetch on change) — not here.
-  const query = els.activitySearch.value.trim().toLowerCase();
-  const matchesText = (e: OpLogEvent): boolean => {
-    if (!query) return true;
-    const hay = `${e.op} ${e.graphId} ${engramName(e.graphId)} ${activityLabel(e).replace(/<[^>]+>/g, '')} ${activityDetail(e).replace(/<[^>]+>/g, '')}`.toLowerCase();
-    return hay.includes(query);
-  };
-  // Hour-of-day window (applies to every selected day). Supports wrap-around
-  // (e.g. 22:00 → 06:00 = overnight) by inverting the test when from > to.
-  const hourFrom = activityHourMinutes(els.activityHourFrom.value);
-  const hourTo = activityHourMinutes(els.activityHourTo.value);
-  const matchesHour = (e: OpLogEvent): boolean => {
-    if (hourFrom === null && hourTo === null) return true;
-    const d = new Date(e.ts);
-    const mins = d.getHours() * 60 + d.getMinutes();
-    const lo = hourFrom ?? 0;
-    const hi = hourTo ?? 24 * 60 - 1;
-    return lo <= hi ? (mins >= lo && mins <= hi) : (mins >= lo || mins <= hi);
-  };
-  els.activityChips.querySelectorAll<HTMLButtonElement>('.g-activity-chip').forEach((chip) => {
-    const cat = (chip.dataset.cat ?? 'all') as ActivityCat;
-    chip.classList.toggle('active', cat === activityCat);
-    chip.textContent = ACTIVITY_CAT_LABELS[cat]; // no counts — category now pulls full history
-  });
-  // Reflect whether any date/hour filter is active on the Clear button.
-  const rangeActive = activityDateRangeActive() || hourFrom !== null || hourTo !== null;
-  els.activityDateClear.classList.toggle('hidden', !rangeActive);
-  activityFiltered = activityEvents
-    .filter((e) => (!engram || e.graphId === engram)
-      && matchesText(e) && matchesHour(e))
-    .slice().sort((a, b) => b.ts - a.ts);
-  renderActivity();
-}
-
-const activityDayLabel = (ts: number): string => {
-  const d = new Date(ts);
-  const today = new Date();
-  const yesterday = new Date(today); yesterday.setDate(today.getDate() - 1);
-  if (d.toDateString() === today.toDateString()) return 'Today';
-  if (d.toDateString() === yesterday.toDateString()) return 'Yesterday';
-  return d.toLocaleDateString(undefined, { weekday: 'long', month: 'short', day: 'numeric' });
-};
-const activityTime = (ts: number): string => new Date(ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-
-/** Who/what triggered an op — derived from the scattered provenance fields
- *  (addedBy / correctedBy MCP client, triggeredBy user:/brain:/ipc:, edge reason). */
-function activityActor(e: OpLogEvent): { label: string; cls: string } {
-  // Prefer the server-computed actor (activity.list attaches it) so labels match
-  // the dropdown + filter exactly; fall back to client classification otherwise.
-  if (e.actor) return { label: e.actor, cls: e.actorCls ?? 'app' };
-  const a = (e.after ?? {}) as Record<string, unknown>;
-  const b = (e.before ?? {}) as Record<string, unknown>;
-  const client = (a['addedBy'] ?? a['correctedBy']) as string | undefined;
-  if (client) return { label: friendlyClient(client), cls: 'ai' };
-  const trig = ((a['triggeredBy'] ?? b['triggeredBy']) as string | undefined) ?? '';
-  const reason = ((a['reason'] ?? b['reason']) as string | undefined) ?? '';
-  if (trig.startsWith('user:')) return { label: 'You', cls: 'user' };
-  if (trig.startsWith('brain:') || /\bbrain:|auto-relink|auto-link/i.test(reason)) return { label: 'Autonomous brain', cls: 'brain' };
-  if (/user-confirmed/i.test(reason)) return { label: 'You', cls: 'user' };
-  if (trig.startsWith('ipc:')) return { label: 'App', cls: 'app' };
-  return { label: 'System', cls: 'app' };
-}
-
-/** Grouping key: identical events (same op, engram, actor, detail) collapse. */
-function activitySig(e: OpLogEvent): string {
-  // Use the grouping-stable detail (omits per-node addNode content) so 350
-  // identical "Added a memory node" events still collapse into one ×350 group.
-  return `${e.op}|${e.graphId}|${activityActor(e).label}|${activityDetail(e, { forGrouping: true }).replace(/<[^>]+>/g, '')}`;
-}
-
-function actorBadge(a: { label: string; cls: string }): string {
-  // Presentation Mode: external identities redact — connectors follow the
-  // connectors surface, AI clients the mcpClients surface. "You" / "Autonomous
-  // brain" / "App" / "System" are generic and stay visible.
-  const tag = a.label.startsWith('connector:') ? 'surface:connectors'
-    : a.cls === 'ai' ? 'surface:mcpClients' : '';
-  const attr = tag ? ` data-pres="${tag}"` : '';
-  return `<span class="activity-actor actor-${a.cls}" title="Who made this change"${attr}>${escape(a.label)}</span>`;
-}
-
-/** Translate the internal reason/trigger codes into plain language an auditor
- *  can read. The parenthetical in auto-relink reasons IS the shared entity. */
-function humanizeReason(reason: string): string {
-  const r = reason.toLowerCase();
-  const paren = reason.match(/\(([^)]+)\)/)?.[1];
-  if (r.includes('consolidation-cleanup')) return 'removed a redundant connection during consolidation';
-  if (r.includes('transitive-inference')) return 'inferred from a chain of related memories';
-  // NOTE: the SDK's "same-person" heuristic flags any capitalised entity (e.g.
-  // "Remote Access", "2026"), so don't assert it's a person — just say both
-  // memories reference it. The SAME-PERSON badge already conveys the edge type.
-  if (r.startsWith('auto-relink: same-person')) return paren ? `both reference ${paren}` : 'both reference the same entity';
-  if (r.startsWith('auto-relink: shares-entity')) return paren ? `both mention ${paren}` : 'both mention the same entity';
-  if (r.startsWith('auto-relink')) return paren ? `shared reference — ${paren}` : 'shared reference';
-  if (r.startsWith('auto-link')) { const m = reason.match(/(\d+%)/); return m ? `semantically similar (${m[1]})` : 'semantically similar'; }
-  if (r.includes('reinforcement')) return 'confidence reinforced by repeated recall';
-  if (r.includes('user-confirmed')) return 'you confirmed this connection';
-  if (r.startsWith('user:')) return 'you · ' + reason.slice(5);
-  if (r.startsWith('brain:')) return 'autonomous brain · ' + reason.slice(6);
-  if (r.startsWith('ipc:')) return 'app · ' + reason.slice(4);
-  return reason;
-}
-
-/** Best-effort node-id → content preview, from the engrams currently loaded in
- *  memory. Rebuilt per render. Cross-engram / unvisited engrams won't resolve
- *  client-side — full coverage needs sidecar enrichment (see the audit plan). */
-let _activityNodePreviews = new Map<string, string>();
-function rebuildActivityNodePreviews(): void {
-  _activityNodePreviews = new Map();
-  for (const nodes of graphnosisGlobalNodes.values()) for (const n of nodes) if (n.contentPreview) _activityNodePreviews.set(n.id, n.contentPreview);
-  for (const n of graphnosisAllNodes) if (n.contentPreview) _activityNodePreviews.set(n.id, n.contentPreview);
-}
-function nodePreview(id: string): string | null {
-  const p = _activityNodePreviews.get(id);
-  return p && p.trim() ? p.trim() : null;
-}
-
-function renderActivity(): void {
-  rebuildActivityNodePreviews(); // for resolving node ids → content in rows
-  const total = activityEvents.length;
-  const all = activityFiltered;
-
-  if (all.length === 0) {
-    els.activityStats.textContent = `0 of ${total} loaded event${total === 1 ? '' : 's'}`;
-    els.activityList.innerHTML = '<p class="subtitle">No events match these filters.</p>';
-    return;
-  }
-
-  // Group by day, then collapse identical events (same op · ENGRAM · actor ·
-  // detail) within each day. The engram is part of the signature, so groups
-  // never merge across engrams. Count top-level items to drive auto-load.
-  const byDay = new Map<string, OpLogEvent[]>();
-  for (const e of all) {
-    const k = activityDayLabel(e.ts);
-    (byDay.get(k) ?? byDay.set(k, []).get(k)!).push(e);
-  }
-
-  let html = '';
-  let topLevelItems = 0;
-  for (const [day, dayEvents] of byDay) {
-    html += `<p class="activity-day-divider">${escape(day)}</p>`;
-    const groups = new Map<string, OpLogEvent[]>();
-    const order: string[] = [];
-    for (const e of dayEvents) {
-      const sig = activitySig(e);
-      if (!groups.has(sig)) { groups.set(sig, []); order.push(sig); }
-      groups.get(sig)!.push(e);
-    }
-    for (const sig of order) {
-      const evs = groups.get(sig)!;
-      html += evs.length > 1 ? renderActivityGroup(evs) : renderActivityRow(evs[0]);
-      topLevelItems++;
-    }
-  }
-
-  const scope = activityCat === 'all' ? '' : ` · ${ACTIVITY_CAT_LABELS[activityCat]} only`;
-  els.activityStats.textContent = `${topLevelItems} group${topLevelItems === 1 ? '' : 's'} · ${all.length} event${all.length === 1 ? '' : 's'} loaded${scope}`;
-
-  if (activityHasMore && activityWindow < ACTIVITY_WINDOW_MAX) {
-    html += `<button id="activity-load-more" class="activity-load-more" type="button">↓ Load ${ACTIVITY_WINDOW_STEP} more…</button>`;
-  } else if (activityWindow >= ACTIVITY_WINDOW_MAX && activityHasMore) {
-    html += `<p class="subtitle" style="text-align:center; padding:10px;">Showing the most recent ${ACTIVITY_WINDOW_MAX.toLocaleString()} — filter by a category or engram to dig deeper.</p>`;
-  }
-  els.activityList.innerHTML = html;
-
-  document.getElementById('activity-load-more')?.addEventListener('click', (e) => {
-    const btn = e.currentTarget as HTMLButtonElement;
-    btn.innerHTML = '<span class="activity-spinner"></span> Loading…';
-    btn.disabled = true;
-    loadMoreActivity();
-  });
-  els.activityList.querySelectorAll<HTMLButtonElement>('.activity-group-head').forEach((h) => {
-    h.addEventListener('click', () => h.closest('.activity-group')?.classList.toggle('open'));
-  });
-}
-
-function renderActivityRow(e: OpLogEvent): string {
-  const detail = activityDetail(e);
-  return `<div class="activity-row">
-    <span class="ar-when">${escape(activityTime(e.ts))}</span>
-    <span class="ar-dot ${e.op}"></span>
-    <div>
-      <div>${activityLabel(e)} ${actorBadge(activityActor(e))}</div>
-      ${detail ? `<div class="ar-detail" data-pres="node:${escape(e.target.id)}" data-pres-engram="${escape(e.graphId)}"${presSourceAttr(e.target.kind === 'source' ? e.target.id : e.targetSourceId)}>${detail}</div>` : ''}
-    </div>
-  </div>`;
-}
-
-/** Collapsed-by-default box for N identical same-day events. */
-/** Per-event descriptor for an expanded subrow — the specific thing each
- *  (otherwise-identical) event touched: the source filename, the corrected
- *  content, the edge endpoints + type, etc. Falls back to the target id. */
-function activitySubrowDesc(e: OpLogEvent): string {
-  const a = (e.after ?? {}) as Record<string, unknown>;
-  const b = (e.before ?? {}) as Record<string, unknown>;
-  const clip = (s: string, n: number): string => escape(s.length > n ? s.slice(0, n) + '…' : s);
-  if (e.op === 'ingestSource') {
-    const ref = a['ref'] as string | undefined;
-    return ref ? `<span class="ar-sub-name">${clip(ref, 110)}</span>` : `<code>${escape(e.target.id.slice(0, 16))}…</code>`;
-  }
-  if (e.op === 'forgetSource') {
-    const ref = (b['ref'] ?? a['ref']) as string | undefined;
-    return ref ? `<span class="ar-sub-name">${clip(ref, 110)}</span>` : `<code>${escape(e.target.id.slice(0, 16))}…</code>`;
-  }
-  // Resolve a node id → content preview. Prefer the server-side `resolved`
-  // block (works for ANY engram), then the client-side cache (only the open
-  // engram), then fall back to the truncated id.
-  const nodeRef = (id: string | undefined, max = 70, resolved?: string): string => {
-    const p = resolved ?? (id ? nodePreview(id) : undefined);
-    if (p) return `<span class="ar-sub-name">“${clip(p, max)}”</span>`;
-    return id ? `<code>${escape(id.slice(0, 12))}…</code>` : '';
-  };
-  if (e.op === 'addNode') {
-    return nodeRef(e.target.id, 120, e.resolved?.target);
-  }
-  if (e.op === 'editNode' || e.op === 'supersede') {
-    const content = (a['content'] as string | undefined) ?? e.resolved?.target ?? nodePreview(e.target.id) ?? undefined;
-    if (content) return `<span class="ar-sub-name">“${clip(content, 140)}”</span>`;
-    const reason = a['reason'] as string | undefined;
-    if (reason) return `<span class="ar-why">${escape(humanizeReason(reason))}</span>`;
-  }
-  if (e.op === 'deleteNode') {
-    const preview = (b['preview'] as string | undefined) ?? e.resolved?.target ?? nodePreview(e.target.id) ?? undefined;
-    if (preview) return `<span class="ar-sub-name">was: “${clip(preview, 130)}”</span>`;
-    const reason = a['reason'] as string | undefined;
-    if (reason) return `<span class="ar-why">${escape(humanizeReason(reason))}</span>`;
-  }
-  if (e.op === 'addEdge' || e.op === 'deleteEdge') {
-    const type = a['type'] as string | undefined;
-    const from = a['fromNodeId'] as string | undefined;
-    const to = a['toNodeId'] as string | undefined;
-    const reason = a['reason'] as string | undefined;
-    const parts: string[] = [];
-    if (type) parts.push(`<span class="ar-kind">${escape(type)}</span>`);
-    if (from && to) parts.push(`${nodeRef(from, 46, e.resolved?.from)} → ${nodeRef(to, 46, e.resolved?.to)}`);
-    if (reason) parts.push(`<span class="ar-why">${escape(humanizeReason(reason))}</span>`);
-    if (parts.length) return parts.join(' · ');
-  }
-  return `<code>${escape(e.target.id.slice(0, 18))}…</code>`;
-}
-
-/** Full (untruncated) plain-text descriptor for a subrow's hover tooltip. */
-function activitySubrowTitle(e: OpLogEvent): string {
-  const a = (e.after ?? {}) as Record<string, unknown>;
-  const full = (id: string | undefined, resolved?: string): string => resolved ?? (id ? (nodePreview(id) ?? id) : '');
-  if (e.op === 'addEdge' || e.op === 'deleteEdge') {
-    const from = full(a['fromNodeId'] as string | undefined, e.resolved?.from);
-    const to = full(a['toNodeId'] as string | undefined, e.resolved?.to);
-    const reason = a['reason'] as string | undefined;
-    return `From: ${from}\nTo: ${to}${reason ? `\nWhy: ${humanizeReason(reason)}` : ''}`;
-  }
-  if (e.op === 'ingestSource' || e.op === 'forgetSource') {
-    const ref = (a['ref'] ?? (e.before as Record<string, unknown> | undefined)?.['ref']) as string | undefined;
-    return ref ?? e.target.id;
-  }
-  return full(e.target.id, e.resolved?.target) || e.target.id;
-}
-
-function renderActivityGroup(evs: OpLogEvent[]): string {
-  const e = evs[0];
-  // Group head uses the grouping-stable detail (reason/confidence only) since
-  // the N events differ in per-item content — that lives in the subrows.
-  const detail = activityDetail(e, { forGrouping: true });
-  const last = activityTime(evs[0].ts);
-  const first = activityTime(evs[evs.length - 1].ts);
-  const range = first === last ? last : `${first}–${last}`;
-  const children = evs.map((x) => `<div class="activity-subrow" title="${escape(activitySubrowTitle(x))}"><span class="ar-when">${escape(activityTime(x.ts))}</span><span class="activity-subrow-desc" data-pres="node:${escape(x.target.id)}" data-pres-engram="${escape(x.graphId)}"${presSourceAttr(x.target.kind === 'source' ? x.target.id : x.targetSourceId)}>${activitySubrowDesc(x)}</span></div>`).join('');
-  return `<div class="activity-group">
-    <button class="activity-group-head" type="button">
-      <span class="ar-when">${escape(range)}</span>
-      <span class="ar-dot ${e.op}"></span>
-      <div class="activity-group-main">
-        <div>${activityLabel(e)} ${actorBadge(activityActor(e))} <span class="activity-group-count">×${evs.length}</span></div>
-        <div class="ar-detail">${evs.length} identical events${detail ? ` · <span data-pres="node:${escape(e.target.id)}" data-pres-engram="${escape(e.graphId)}"${presSourceAttr(e.target.kind === 'source' ? e.target.id : e.targetSourceId)}>${detail}</span>` : ''} — tap to expand</div>
-      </div>
-      <span class="activity-group-chevron" aria-hidden="true">▾</span>
-    </button>
-    <div class="activity-group-children">${children}</div>
-  </div>`;
-}
-
-function activityLabel(e: OpLogEvent): string {
-  // Show the friendly engram name, not the raw slug. Fall back to the slug
-  // only if the engram isn't loaded (engramName handles that).
-  const inEngram = ` in <span class="ar-engram" data-pres="engram:${escape(e.graphId)}">${escape(engramName(e.graphId))}</span>`;
-  const a = (e.after ?? {}) as Record<string, unknown>;
-  switch (e.op) {
-    case 'ingestSource': {
-      const ref = typeof a['ref'] === 'string' ? a['ref'] as string : 'source';
-      const file = ref.split('/').pop() ?? ref;
-      const count = Array.isArray(a['nodeIds']) ? (a['nodeIds'] as unknown[]).length : 0;
-      const kind = typeof a['kind'] === 'string' ? ` <span class="ar-kind">${escape(a['kind'] as string)}</span>` : '';
-      return `Ingested <strong data-pres="source:${escape(e.target.id)}" data-pres-engram="${escape(e.graphId)}">${escape(file)}</strong>${kind} <span class="ar-quiet">+${count} node${count === 1 ? '' : 's'}</span>${inEngram}`;
-    }
-    case 'forgetSource': {
-      const ref = typeof a['ref'] === 'string' ? (a['ref'] as string) : ((e.before as Record<string, unknown> | undefined)?.['ref'] as string | undefined);
-      const nc = (e.before as Record<string, unknown> | undefined)?.['nodeCount'];
-      const file = ref ? (ref.split('/').pop() ?? ref) : `${e.target.id.slice(0, 12)}…`;
-      return `Forgot source <strong data-pres="source:${escape(e.target.id)}" data-pres-engram="${escape(e.graphId)}">${escape(file)}</strong>${typeof nc === 'number' ? ` <span class="ar-quiet">(${nc} node${nc === 1 ? '' : 's'})</span>` : ''}${inEngram}`;
-    }
-    case 'editNode':   return `Corrected a memory${inEngram}`;
-    case 'supersede':  return `Replaced a memory with a corrected version${inEngram}`;
-    case 'addNode':    return `Added a memory node${inEngram}`;
-    case 'deleteNode': return `Soft-deleted a memory${inEngram}`;
-    case 'addEdge': {
-      const t = typeof a['type'] === 'string' ? ` <span class="ar-kind">${escape(a['type'] as string)}</span>` : '';
-      return `Linked two memories${t}${inEngram}`;
-    }
-    case 'deleteEdge': return `Unlinked two memories${inEngram}`;
-    case 'merge':      return `Merged duplicate memories${inEngram}`;
-    default:           return `${escape(e.op)}${inEngram}`;
-  }
-}
-
-/** The "why / what changed" line — pulled from the op's before/after payload. */
-function activityDetail(e: OpLogEvent, opts?: { forGrouping?: boolean }): string {
-  const a = (e.after ?? {}) as Record<string, unknown>;
-  const b = (e.before ?? {}) as Record<string, unknown>;
-  const bits: string[] = [];
-  const reason = (a['reason'] ?? b['reason']) as string | undefined;
-  if (reason) bits.push(`<span class="ar-why">${escape(humanizeReason(reason))}</span>`);
-  // Per-item content (the specific node touched) is omitted in `forGrouping`
-  // mode so N events with different content still collapse into one ×N group;
-  // the expanded subrows (activitySubrowDesc) carry each item's content. It's
-  // shown on single (ungrouped) rows and on every subrow.
-  if (!opts?.forGrouping) {
-    const content = (a['content'] as string | undefined) ?? (e.op === 'editNode' || e.op === 'supersede' ? e.resolved?.target : undefined);
-    if (content && (e.op === 'editNode' || e.op === 'supersede')) {
-      bits.push(`“${escape(content.slice(0, 120))}${content.length > 120 ? '…' : ''}”`);
-    }
-    const preview = (b['preview'] as string | undefined) ?? (e.op === 'deleteNode' ? e.resolved?.target : undefined);
-    if (preview && (e.op === 'deleteNode' || e.op === 'forgetSource')) {
-      bits.push(`was: “${escape(preview.slice(0, 100))}${preview.length > 100 ? '…' : ''}”`);
-    }
-    if (e.op === 'addNode' && e.resolved?.target) {
-      bits.push(`“${escape(e.resolved.target.slice(0, 120))}${e.resolved.target.length > 120 ? '…' : ''}”`);
-    }
-  }
-  if (typeof a['confidence'] === 'number') bits.push(`confidence → ${(a['confidence'] as number).toFixed(2)}`);
-  return bits.join(' · ');
-}
-
-// Category chips → filter the cached events (no re-fetch).
-els.activityChips.addEventListener('click', (e) => {
-  const chip = (e.target as HTMLElement).closest<HTMLButtonElement>('.g-activity-chip');
-  if (!chip) return;
-  activityCat = (chip.dataset.cat ?? 'all') as ActivityCat;
-  // Category is now a SERVER-side filter (so a rare type pulls from the full
-  // op-log, not the recent window) — refetch with the new ops, reset paging.
-  activityWindow = ACTIVITY_WINDOW_START;
-  void refreshActivityView();
-});
-// Text filter + engram scope → also re-filter the cache live.
-let activitySearchTimer: number | null = null;
-els.activitySearch.addEventListener('input', () => {
-  if (activitySearchTimer !== null) clearTimeout(activitySearchTimer);
-  activitySearchTimer = window.setTimeout(() => applyActivityFilter(), 120);
-});
-els.activityEngramSelect.addEventListener('change', () => applyActivityFilter());
-els.activityActorSelect.addEventListener('change', () => { activityWindow = ACTIVITY_WINDOW_START; void refreshActivityView(); });
-// Date range changes the fetch window (since/until) → re-fetch from the op-log.
-els.activityDateFrom.addEventListener('change', () => { activityWindow = ACTIVITY_WINDOW_START; void refreshActivityView(); });
-els.activityDateTo.addEventListener('change', () => { activityWindow = ACTIVITY_WINDOW_START; void refreshActivityView(); });
-// Hour-of-day is a client-side narrowing of the already-fetched set.
-els.activityHourFrom.addEventListener('change', () => applyActivityFilter());
-els.activityHourTo.addEventListener('change', () => applyActivityFilter());
-els.activityDateClear.addEventListener('click', () => {
-  els.activityDateFrom.value = '';
-  els.activityDateTo.value = '';
-  els.activityHourFrom.value = '';
-  els.activityHourTo.value = '';
-  activityWindow = ACTIVITY_WINDOW_START;
-  void refreshActivityView();
-});
-// Refresh re-fetches from the sidecar (picks up new events).
-els.btnActivityRefresh.addEventListener('click', () => void refreshActivityView());
-
 // ── Snapshots ────────────────────────────────────────────────────────
 
 els.btnSnapshotsOpen.addEventListener('click', () => {
@@ -13695,6 +13279,11 @@ globalThis.atlasPerfApply = (): void => {
 
 // Tray-driven status updates push us into the right view in real time.
 void listen<StatusSnapshot>('graphnosis://status', (evt) => render(evt.payload));
+void listen('graphnosis://sidecar-died', () => {
+  invalidateCortexScopedState();
+  render({ unlocked: false, cortex_dir: null, sidecar_running: false });
+  offerSidecarRecovery();
+});
 
 // Tray "Open Ghampus" emits the target mode id as the payload.
 // The tray only ever emits 'ghampus' today, but we accept any Mode so
@@ -13711,6 +13300,12 @@ void listen<{ step: string; detail: string }>('graphnosis://sidecar-boot-status'
   els.bootStatusText.textContent = detail;
   els.unlockStatus.classList.remove('hidden');
   if (step === 'ready') {
+    // Sidecar finished its boot sweep — vitality / inspector_stats now cover
+    // every loaded engram. Refresh if the app is already visible (re-unlock,
+    // cortex switch) so Per engram / trust strip match the picker.
+    if (!els.viewApp.classList.contains('hidden')) {
+      void refreshCortexScopedStats();
+    }
     // Socket is up — hide the status line shortly after, BUT only if the
     // boot sequence hasn't already taken over (unlockPending = true means
     // render() has started its own status messages — don't stomp on them).
@@ -14096,6 +13691,9 @@ void listen<GraphMutationPayload>('graphnosis://graph-mutation', (evt) => {
 // and our subscription being established.
 void listen<EventStreamConnectedPayload>('graphnosis://event-stream-connected', () => {
   void pollGraphMutations();
+  // Terminal engrams-loading may have fired before we subscribed; unblock
+  // docs ingest when the picker already shows a fully-loaded cortex.
+  if (allEngramsReportLoaded()) markEngramsLoaded();
 });
 
 // ── Layer-4 consent: in-app prompt (replaces phrase typing when GUI is up) ──
@@ -14323,6 +13921,7 @@ async function switchActiveEngram(graphId: string): Promise<void> {
       // Let the physics warmup settle so the bounding-sphere is honest.
       setTimeout(() => mainAtlas?.zoomToFit(700, 20), 800);
     }
+    void refreshGraphsCatalogAndStats();
   } finally {
     hideAtlasLoading();
   }
@@ -14438,19 +14037,24 @@ void listen<{ loaded: number; total: number }>('graphnosis://engrams-loading', (
     return;
   }
 
-  processEngramsLoadingRefresh(allDone);
+  processEngramsLoadingRefresh(allDone, false);
 });
 
 /** Re-fetch loadedGraphs + sync UI after an engrams-loading event (or after
  *  the post-unlock catch-up flushes a missed event). Extracted so both the
  *  live listener AND the catch-up can call it. */
-function processEngramsLoadingRefresh(allDone: boolean): void {
+function processEngramsLoadingRefresh(allDone: boolean, forceStatsRefresh = false): void {
   const saved = localStorage.getItem(LAST_ENGRAM_KEY);
+  const prevActiveCount = loadedGraphs.filter((g) => !g.metadata.archived).length;
   void invoke<GraphWithMetadata[]>('list_graphs_with_metadata', { includeUnloaded: true }).then((graphs) => {
     loadedGraphs = graphs;
     populateStudioEngramSelects();
+    const newActiveCount = graphs.filter((g) => !g.metadata.archived).length;
+    if (allDone || forceStatsRefresh || newActiveCount !== prevActiveCount) {
+      void refreshCortexScopedStats();
+    }
     if (saved && saved !== atlasActiveGraph
-        && graphs.some((g) => !g.metadata.archived && g.graphId === saved && g.loaded !== false)) {
+        && graphs.some((g) => !g.metadata.archived && g.graphId === saved)) {
       void switchActiveEngram(saved);
       schedulePeriodicGreyedRefresh();
       return;
@@ -14495,58 +14099,6 @@ function schedulePeriodicGreyedRefresh(): void {
   }
 }
 
-// ── Sidecar IPC helper ────────────────────────────────────────────────────
-// Generic pass-through to the sidecar's IPC dispatch via the Tauri command
-// `sidecar_ipc_call`. Used for brain and LLM methods.
-async function ipcCall<T = unknown>(method: string, params: unknown): Promise<T> {
-  return invoke<T>('sidecar_ipc_call', { method, params });
-}
-
-// ipcCall with a hard client-side deadline. The base ipcCall can hang
-// indefinitely if a heavy sidecar call (a full-graph walk, a huge op-log
-// slice) is slow — leaving Home cards stuck on their skeletons forever. Home's
-// non-critical cards use this so a slow call rejects → the card shows its quiet
-// empty state instead of spinning. NOTE: it doesn't cancel the sidecar work;
-// it just stops the UI from waiting on it.
-function ipcCallTimeout<T = unknown>(method: string, params: unknown, ms = 8000): Promise<T> {
-  return Promise.race([
-    ipcCall<T>(method, params),
-    new Promise<T>((_resolve, reject) => setTimeout(() => reject(new Error(`ipc '${method}' timed out after ${ms}ms`)), ms)),
-  ]);
-}
-
-// Same hard-deadline guard, but for raw Tauri `invoke` (Rust commands like
-// `inspector_stats`) rather than sidecar IPC. A Rust command that fans out to a
-// slow sidecar op-log walk can hang the same way — this stops the UI from
-// waiting forever. Does NOT cancel the underlying Rust work.
-function withTimeout<T>(p: Promise<T>, ms: number, label = 'operation'): Promise<T> {
-  return Promise.race([
-    p,
-    new Promise<T>((_resolve, reject) => setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms)),
-  ]);
-}
-
-// Retry a raw Tauri invoke on a TRANSIENT sidecar-connection failure. During a
-// heavy ingest the single-threaded sidecar can briefly stop servicing its IPC
-// socket (a stop-the-world GC parks the event loop), so the FIRST attempt of a
-// user action can fail to connect even though the same call a moment later
-// succeeds — the "delete the engram, it bounces back, second click works" bug.
-// Only connection-class errors are retried; real errors (not-found, validation)
-// throw immediately so we never mask a genuine failure.
-async function invokeRetry<T>(cmd: string, args?: Record<string, unknown>, tries = 3, delayMs = 600): Promise<T> {
-  let lastErr: unknown;
-  for (let attempt = 0; attempt < tries; attempt++) {
-    try {
-      return await invoke<T>(cmd, args);
-    } catch (e) {
-      lastErr = e;
-      const transient = /connect to sidecar|sidecar\.sock|ECONNREFUSED|ENOENT|connection refused|broken pipe|not connected|did not respond|timed out|was busy|sidecar.{0,12}busy/i.test(String(e));
-      if (!transient || attempt === tries - 1) throw e;
-      await new Promise((r) => setTimeout(r, delayMs * (attempt + 1))); // 600ms, 1.2s backoff
-    }
-  }
-  throw lastErr;
-}
 
 // ── Brain / Alive state ───────────────────────────────────────────────────
 
@@ -14759,6 +14311,7 @@ function renderStatusProcess(): void {
 
 /** Pull all brain state from the sidecar into module cache, then repaint. */
 async function refreshBrainState(): Promise<void> {
+  const gen = cortexUiGeneration;
   // Each panel applies its own IPC result independently. The previous
   // Promise.all-then-assign pattern meant that ONE slow IPC (memory health
   // walks the whole graph; vitality used to block on first-scan completion)
@@ -14779,6 +14332,7 @@ async function refreshBrainState(): Promise<void> {
   await Promise.all(fetchers.map(async (f) => {
     try {
       const v = await f.promise;
+      if (gen !== cortexUiGeneration) return;
       f.apply(v);
       // Repaint after each one — cheap, and means each panel flips out of
       // its placeholder the instant its data lands rather than waiting on
@@ -14843,6 +14397,9 @@ function updateBrainUI(): void {
     animateVitality(v);
   }
   renderLivingBrainPane();
+  // Home Trust & Vitality + Per-engram bars read brainVitalityReport / cortexStats
+  // — repaint when vitality lands (refreshBrainState doesn't call renderDashboard).
+  renderHomeDashboard();
 }
 
 // ── Autonomous Brain pane ─────────────────────────────────────────────────
@@ -17686,11 +17243,31 @@ let docsOfferChecked = false;
 // Promise that resolves when the initial engram loading sweep is done
 // (engrams-loading event with loaded === total). Docs reingest awaits this
 // so it doesn't saturate the embed workers while the loading loop is still
-// running — that made the loading progress appear stuck.
+// running — that made the loading progress appear stuck. Reset on each lock
+// so a re-unlock starts with a fresh waiter (the sidecar only broadcasts
+// engrams-loading during its boot sweep).
 let _engramsLoadedResolve: (() => void) | null = null;
-const engramsLoaded: Promise<void> = new Promise<void>((resolve) => {
-  _engramsLoadedResolve = resolve;
-});
+let engramsLoaded: Promise<void> = createEngramsLoadedPromise();
+
+function createEngramsLoadedPromise(): Promise<void> {
+  return new Promise<void>((resolve) => {
+    _engramsLoadedResolve = resolve;
+  });
+}
+
+function resetEngramsLoaded(): void {
+  engramsLoaded = createEngramsLoadedPromise();
+}
+
+/** True while the sidecar's boot sweep still has unloaded engrams in the picker. */
+function isEngramPreloadInProgress(): boolean {
+  return loadedGraphs.length > 0 && loadedGraphs.some((g) => g.loaded === false);
+}
+
+/** True when the picker shows no greyed engrams — sidecar sweep is done. */
+function allEngramsReportLoaded(): boolean {
+  return loadedGraphs.length === 0 || loadedGraphs.every((g) => g.loaded !== false);
+}
 
 /** Resolve the engramsLoaded promise. Called from the engrams-loading listener. */
 function markEngramsLoaded(): void {
@@ -17698,6 +17275,16 @@ function markEngramsLoaded(): void {
     _engramsLoadedResolve();
     _engramsLoadedResolve = null;
   }
+}
+
+/** Wait for the sidecar's initial engram sweep, with a timeout fallback for
+ *  missed terminal engrams-loading frames (broadcast before subscribers). */
+async function waitForEngramsLoaded(timeoutMs?: number): Promise<void> {
+  const ms = timeoutMs ?? (allEngramsReportLoaded() ? 5_000 : 30_000);
+  await Promise.race([
+    engramsLoaded,
+    new Promise<void>((r) => setTimeout(r, ms)),
+  ]);
 }
 
 /** Ask the sidecar what to do about the docs engram, then act on it. Runs
@@ -17721,10 +17308,10 @@ async function checkDocsIngestOffer(): Promise<void> {
       // Docs ingest builds embeddings for 24 pages; running it while the
       // main load queue is also building embeddings for large engrams
       // saturates the embed workers and can stall the entire load sweep.
-      // No 30s fallback here — we must not compete with the initial load.
-      // The 30s shortcut is kept only for the `reingest` path below (app
-      // update refresh), where the cortex is already fully loaded.
-      await engramsLoaded;
+      // Timeout fallback: the sidecar may broadcast the terminal
+      // engrams-loading frame before the event stream connects (frame is
+      // dropped with no subscribers), which would otherwise hang forever.
+      await waitForEngramsLoaded();
       const tid = addIngestToast('Setting up Graphnosis docs', 'Loading the documentation into your cortex…');
       try {
         const { ingested, failed } = await ipcCall<{ ingested: number; failed: number }>(
@@ -17743,13 +17330,7 @@ async function checkDocsIngestOffer(): Promise<void> {
       // embed workers while the loading loop is still running, which
       // makes the loading progress appear frozen.
       //
-      // Timeout: if loading never fires an allDone event within 30s
-      // (e.g. the cortex is tiny with 0 secondary engrams), proceed
-      // anyway — loading is done implicitly.
-      await Promise.race([
-        engramsLoaded,
-        new Promise<void>((r) => setTimeout(r, 30_000)),
-      ]);
+      await waitForEngramsLoaded();
       const tid = addIngestToast('Updating Graphnosis docs', 'The app updated — refreshing docs…');
       try {
         const { ingested, failed } = await ipcCall<{ ingested: number; failed: number }>(
@@ -18293,88 +17874,8 @@ void listen<{ uniqueEngramsAccessed: number; tokensServed: number; nodesServed: 
   },
 );
 
-// ── Ghampus chat response events ─────────────────────────────────────────
-// Fired by the sidecar after processing a ghampus:send IPC (LLM response,
-// error message, or proactive starter). Appended to the thread in real time.
-void listen<GhampusChatMessage>(
-  'graphnosis://ghampus-message',
-  (ev) => {
-    if (!ev.payload) return;
-    clearThinkingBubble();
-    clearSkillRunning();
-    const pane = document.querySelector<HTMLElement>('.mode-pane[data-pane="ghampus"]');
-    if (pane && !pane.classList.contains('hidden')) {
-      appendToThread(ev.payload);
-    } else {
-      ghampusThreadMessages.push(ev.payload);
-    }
-  },
-);
-
-// Fired immediately when the sidecar starts processing — show a thinking indicator.
-void listen<{ thinking: boolean; ts: number }>(
-  'graphnosis://ghampus-thinking',
-  () => { showThinkingBubble(); },
-);
-
-// Proactive watcher — cards arrive from the sidecar and go into the idle queue.
-// The queue dequeues one card at a time after the user has been idle for
-// IDLE_BEFORE_FIRST_MS, then waits BETWEEN_CARDS_MS before the next one.
-void listen<{
-  id: string; createdAt: number; signalType: string; signalLabel: string;
-  skillSourceId: string; skillGraphId: string; skillLabel: string; why: string; status: string;
-}>(
-  'graphnosis://ghampus-card',
-  (ev) => {
-    if (!ev.payload) return;
-    proactiveCardQueue.push(ev.payload);
-    startProactiveQueueTimer();
-  },
-);
-
-// Track user activity in the Ghampus input so idle detection resets on each keystroke.
-document.getElementById('ghampus-input')?.addEventListener('keydown', trackGhampusActivity);
-document.getElementById('btn-ghampus-send')?.addEventListener('click', trackGhampusActivity);
-
-let _thinkingClearTimer: ReturnType<typeof setTimeout> | null = null;
-
-function showThinkingBubble(): void {
-  setGhampusRunning(true);
-  // Cancel any pending deferred clear from a previous fast response.
-  if (_thinkingClearTimer) { clearTimeout(_thinkingClearTimer); _thinkingClearTimer = null; }
-
-  if (document.getElementById('ghampus-thinking')) return; // already showing
-
-  const thread = document.getElementById('ghampus-thread');
-  if (!thread) return;
-
-  document.getElementById('ghampus-thread-empty')?.remove();
-
-  const entry = document.createElement('div');
-  entry.id = 'ghampus-thinking';
-  entry.className = 'ghampus-thread-entry';
-  entry.innerHTML = `<div class="ghampus-thinking-bubble">
-    <div class="chat-msg-avatar">
-      <img src="/graphnosis-logo-transparent-bg.png" alt="Ghampus" />
-    </div>
-    <div class="ghampus-thinking-dots">
-      <span></span><span></span><span></span>
-    </div>
-  </div>`;
-  thread.appendChild(entry);
-  thread.scrollTop = thread.scrollHeight;
-}
-
-function clearThinkingBubble(): void {
-  // Keep the bubble visible for at least 400 ms so a fast LLM response
-  // doesn't make it flash imperceptibly.
-  if (_thinkingClearTimer) return;
-  _thinkingClearTimer = setTimeout(() => {
-    document.getElementById('ghampus-thinking')?.remove();
-    _thinkingClearTimer = null;
-    setGhampusRunning(false);
-  }, 400);
-}
+// Ghampus sidecar events (message / thinking / proactive cards) are wired in
+// ui/ghampus.ts via initGhampus() → wireGhampusSidecarEvents().
 
 // ── First-run guided tour ─────────────────────────────────────────────────
 //
@@ -18849,7 +18350,7 @@ const LAST_CORTEX_KEY = 'graphnosis_last_cortex_dir';
 
 function rememberCortexDir(dir: string | null | undefined): void {
   if (!dir) return;
-  try { localStorage.setItem(LAST_CORTEX_KEY, dir); } catch { /* private mode / quota */ }
+  try { localStorage.setItem(LAST_CORTEX_KEY, dir.trim()); } catch { /* private mode / quota */ }
 }
 
 function prefillLastCortexDir(): void {
@@ -18857,13 +18358,14 @@ function prefillLastCortexDir(): void {
     const last = localStorage.getItem(LAST_CORTEX_KEY);
     if (last && !els.cortexDir.value.trim()) {
       els.cortexDir.value = last;
+      refreshCortexCloudHint(last);
       // Path is already filled — the next thing the user needs to type is
       // their passphrase. Focus that input so they can just start typing
       // and hit Enter, skipping the click-into-passphrase-field step.
       window.setTimeout(() => els.passphrase.focus(), 0);
       // Also probe whether Touch ID is set up for this cortex. If yes,
       // surface the button alongside the passphrase Unlock button.
-      void refreshBiometricButton(last);
+      void refreshBiometricButton(last.trim());
       // Proactively warn if the remembered folder no longer exists on disk
       // (moved, deleted, or on an unmounted volume). The notice appears
       // immediately below the path input so the user sees it before they
@@ -18889,6 +18391,7 @@ function prefillLastCortexDir(): void {
           if (suggested && !els.cortexDir.value.trim()) {
             els.cortexDir.value = suggested;
             window.setTimeout(() => els.passphrase.focus(), 0);
+            void refreshBiometricButton(suggested);
           }
         } catch { /* fine — leave input empty + show placeholder */ }
       })();
@@ -18909,28 +18412,46 @@ function prefillLastCortexDir(): void {
 // unlock_cortex flow. On cancel/failure, button re-enables and user can
 // fall back to typing the passphrase.
 
+let biometricProbeSeq = 0;
+
 async function refreshBiometricButton(cortexDir: string): Promise<void> {
+  const probeSeq = ++biometricProbeSeq;
+  const normalized = cortexDir.trim();
   // Two UI surfaces share the same availability state:
   //   - The inline fingerprint icon inside the passphrase field's right edge
   //   - The "Unlock with Touch ID →" hint right-justified on the label row
   // Both hide together when biometric isn't ready.
   const inlineBtn = document.getElementById('btn-touchid-inline') as HTMLButtonElement | null;
   const hint = document.getElementById('touchid-hint') as HTMLElement | null;
-  if (!cortexDir.trim()) {
+  const setupHint = document.getElementById('touchid-setup-hint') as HTMLElement | null;
+  if (!normalized) {
     inlineBtn?.classList.add('hidden');
     hint?.classList.add('hidden');
+    setupHint?.classList.add('hidden');
     return;
   }
   try {
-    const available = await invoke<boolean>('biometric_available', { cortexDir });
-    inlineBtn?.classList.toggle('hidden', !available);
-    hint?.classList.toggle('hidden', !available);
+    const status = await invoke<{ available: boolean; hint?: string | null }>('biometric_available', { cortexDir: normalized });
+    if (probeSeq !== biometricProbeSeq) return;
+    inlineBtn?.classList.toggle('hidden', !status.available);
+    hint?.classList.toggle('hidden', !status.available);
+    if (setupHint) {
+      if (!status.available && status.hint) {
+        setupHint.textContent = status.hint;
+        setupHint.classList.remove('hidden');
+      } else {
+        setupHint.textContent = '';
+        setupHint.classList.add('hidden');
+      }
+    }
   } catch {
+    if (probeSeq !== biometricProbeSeq) return;
     // Command failure → hide the Touch ID affordances. No console log —
     // the user can see the button isn't there, and there's nothing they
     // can do client-side to fix the underlying issue.
     inlineBtn?.classList.add('hidden');
     hint?.classList.add('hidden');
+    setupHint?.classList.add('hidden');
   }
 }
 
@@ -18942,6 +18463,8 @@ interface MobileConnectionInfo {
   port: number;
   token: string;
   localIps: string[];
+  /** Bonjour/mDNS hostname (e.g. Nelus-MacBook-Pro.local) when detectable. */
+  localHostname?: string | null;
   tailscaleIp?: string;
   /** Tailscale MagicDNS name (host.tailnet.ts.net) when detectable. */
   tailscaleHost?: string | null;
@@ -19384,6 +18907,290 @@ interface SharingSessionEntry {
   clientName?: string;
 }
 
+/** Display names for engrams in the sharing picker (refreshed when modal opens). */
+const sharingEngramLabels = new Map<string, string>();
+
+function sharingRoleInfo(role: string): { label: string; subtitle: string; canDo: string } {
+  if (role === 'editor') {
+    return {
+      label: 'Editor',
+      subtitle: 'Can remember & edit',
+      canDo: 'Your collaborator can read, save new memories, and edit existing ones in the shared engrams.',
+    };
+  }
+  return {
+    label: 'Viewer',
+    subtitle: 'Read-only',
+    canDo: 'Your collaborator can read and search shared engrams — they cannot add or change memories.',
+  };
+}
+
+function resolveSharingEngramDisplayNames(engrams: string[] | '*'): string[] {
+  if (engrams === '*') return ['All engrams'];
+  return engrams.map((id) => {
+    const fromPicker = sharingEngramLabels.get(id);
+    if (fromPicker) return fromPicker;
+    const g = loadedGraphs.find((x) => x.graphId === id);
+    return g?.metadata?.displayName ?? id;
+  });
+}
+
+function formatSharingExpiresAt(expiresAt: number | null | undefined): string {
+  if (expiresAt == null) return 'Never';
+  return new Date(expiresAt).toLocaleDateString(undefined, { year: 'numeric', month: 'long', day: 'numeric' });
+}
+
+function computeSharingExpiresAtFromForm(expVal: string): number | null {
+  if (expVal === 'never') return null;
+  const ms: Record<string, number> = { '7d': 7, '30d': 30, '90d': 90, '1y': 365 };
+  return Date.now() + (ms[expVal] ?? 30) * 24 * 60 * 60 * 1000;
+}
+
+function readSharingCreateForm(): {
+  name: string;
+  role: 'viewer' | 'editor';
+  engrams: string[] | '*';
+  expiresAt: number | null;
+} {
+  const nameEl = document.getElementById('sharing-new-name') as HTMLInputElement | null;
+  const roleEl = document.getElementById('sharing-new-role') as HTMLSelectElement | null;
+  const engramsModeEl = document.getElementById('sharing-new-engrams-mode') as HTMLSelectElement | null;
+  const expiryEl = document.getElementById('sharing-new-expiry') as HTMLSelectElement | null;
+
+  let engrams: string[] | '*' = '*';
+  if (engramsModeEl?.value === 'select') {
+    const checked = Array.from(document.querySelectorAll<HTMLInputElement>('#sharing-engram-picker input:checked')).map((i) => i.value);
+    engrams = checked.length ? checked : [];
+  }
+
+  return {
+    name: nameEl?.value.trim() ?? '',
+    role: (roleEl?.value ?? 'viewer') as 'viewer' | 'editor',
+    engrams,
+    expiresAt: computeSharingExpiresAtFromForm(expiryEl?.value ?? 'never'),
+  };
+}
+
+function sharingNotSharedCopy(engrams: string[] | '*'): string {
+  const engramPart = engrams === '*'
+    ? 'other engrams outside this share'
+    : 'engrams not listed above';
+  return `This does not share your passphrase, ${engramPart}, or any of your app settings.`;
+}
+
+function buildSharingCollaboratorMcpUrl(info: MobileConnectionInfo | null): {
+  url: string;
+  note: string;
+  isLocalhost: boolean;
+} {
+  const port = info?.port ?? 3457;
+  if (info?.mcpTailscaleHttps && info.mcpTailscaleHttpsUrl) {
+    return {
+      url: `${info.mcpTailscaleHttpsUrl}/mcp`,
+      note: 'Reachable over your Tailscale network (HTTPS). Collaborator must be on the same tailnet.',
+      isLocalhost: false,
+    };
+  }
+  const remoteBound = info?.host === '0.0.0.0';
+  if (info?.tailscaleHost) {
+    return {
+      url: `http://${info.tailscaleHost}:${port}/mcp`,
+      note: 'Reachable over Tailscale. Collaborator must be on the same tailnet.',
+      isLocalhost: false,
+    };
+  }
+  if (remoteBound && info?.localHostname) {
+    return {
+      url: `http://${info.localHostname}:${port}/mcp`,
+      note: 'Uses this Mac\'s network name — works on the same Wi‑Fi or VPN when Mobile & Remote is bound to all interfaces. mDNS (.local) must resolve on the collaborator\'s network.',
+      isLocalhost: false,
+    };
+  }
+  if (remoteBound && info?.localIps?.[0]) {
+    return {
+      url: `http://${info.localIps[0]}:${port}/mcp`,
+      note: 'LAN IP — collaborator must be on the same network (or VPN). IP may change when DHCP renews.',
+      isLocalhost: false,
+    };
+  }
+  return {
+    url: `http://127.0.0.1:${port}/mcp`,
+    note: 'Localhost only — collaborators on another machine cannot reach this. Enable Mobile & Remote Access (bind to all interfaces) or set up Tailscale, then create a new share to get a reachable URL.',
+    isLocalhost: true,
+  };
+}
+
+interface SharingMcpHttpEntry {
+  type: 'http';
+  url: string;
+  headers: { Authorization: string };
+}
+
+/** Sanitize a share display name for use as an mcp.json / deeplink server key. */
+function sanitizeSharingMcpServerKey(name: string): string {
+  const s = name.trim().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+  return s || 'shared-engrams';
+}
+
+function buildSharingMcpHttpEntry(mcpUrl: string, shareToken: string): SharingMcpHttpEntry {
+  return {
+    type: 'http',
+    url: mcpUrl,
+    headers: { Authorization: `Bearer ${shareToken}` },
+  };
+}
+
+function buildSharingMcpConfigSnippet(mcpUrl: string, shareToken: string, serverKey = 'shared-engrams'): string {
+  return JSON.stringify(
+    { mcpServers: { [serverKey]: buildSharingMcpHttpEntry(mcpUrl, shareToken) } },
+    null,
+    2,
+  );
+}
+
+/** Cursor one-click MCP install — documented at https://docs.cursor.com/deeplinks */
+function buildCursorMcpInstallDeeplink(serverKey: string, entry: SharingMcpHttpEntry): string {
+  const configJson = JSON.stringify(entry);
+  const base64 = btoa(configJson);
+  return `cursor://anysphere.cursor-deeplink/mcp/install?name=${encodeURIComponent(serverKey)}&config=${base64}`;
+}
+
+/** VS Code MCP extension install deeplink (URL-encoded JSON payload). */
+function buildVscodeMcpInstallDeeplink(serverKey: string, entry: SharingMcpHttpEntry): string {
+  const payload = JSON.stringify({ name: serverKey, ...entry });
+  return `vscode://mcp/install?${encodeURIComponent(payload)}`;
+}
+
+let sharingRevealInstall: {
+  serverKey: string;
+  cursorLink: string;
+  vscodeLink: string;
+  configSnippet: string;
+} | null = null;
+
+function setSharingRevealClientTab(tab: 'cursor' | 'vscode' | 'claude' | 'manual'): void {
+  document.querySelectorAll<HTMLButtonElement>('#sharing-reveal-modal .sharing-client-tab').forEach((btn) => {
+    const active = btn.dataset['sharingTab'] === tab;
+    btn.classList.toggle('active', active);
+    btn.setAttribute('aria-selected', active ? 'true' : 'false');
+  });
+  const panels: Record<string, string> = {
+    cursor: 'sharing-reveal-panel-cursor',
+    vscode: 'sharing-reveal-panel-vscode',
+    claude: 'sharing-reveal-panel-claude',
+    manual: 'sharing-reveal-panel-manual',
+  };
+  for (const [key, id] of Object.entries(panels)) {
+    const el = document.getElementById(id);
+    if (!el) continue;
+    const active = key === tab;
+    el.classList.toggle('active', active);
+    el.toggleAttribute('hidden', !active);
+  }
+}
+
+function sharingRevealCopyFeedback(btn: HTMLButtonElement | null, label = 'Copied!'): void {
+  if (!btn) return;
+  const orig = btn.textContent;
+  btn.textContent = label;
+  setTimeout(() => { btn.textContent = orig; }, 2000);
+}
+
+function renderSharingRevealSummary(opts: {
+  name: string;
+  role: string;
+  engrams: string[] | '*';
+  expiresAt: number | null | undefined;
+}): void {
+  const summary = document.getElementById('sharing-reveal-summary');
+  const canDoEl = document.getElementById('sharing-reveal-can-do');
+  const notSharedEl = document.getElementById('sharing-reveal-not-shared');
+  if (!summary || !canDoEl || !notSharedEl) return;
+
+  const roleInfo = sharingRoleInfo(opts.role);
+  const engramNames = resolveSharingEngramDisplayNames(opts.engrams);
+  const engramText = engramNames.join(', ');
+
+  summary.innerHTML = `
+    <div class="sharing-reveal-row">
+      <span class="sharing-reveal-label">Share name</span>
+      <span class="sharing-reveal-value-text">${escape(opts.name)}</span>
+    </div>
+    <div class="sharing-reveal-row">
+      <span class="sharing-reveal-label">Role</span>
+      <span>${escape(roleInfo.label)} — ${escape(roleInfo.subtitle)}</span>
+    </div>
+    <div class="sharing-reveal-row">
+      <span class="sharing-reveal-label">Engrams</span>
+      <span>${escape(engramText)}</span>
+    </div>
+    <div class="sharing-reveal-row">
+      <span class="sharing-reveal-label">Expires</span>
+      <span>${escape(formatSharingExpiresAt(opts.expiresAt))}</span>
+    </div>`;
+  canDoEl.textContent = roleInfo.canDo;
+  notSharedEl.textContent = sharingNotSharedCopy(opts.engrams);
+}
+
+function updateSharingCreateReview(): void {
+  const review = document.getElementById('sharing-create-review');
+  if (!review) return;
+
+  const form = readSharingCreateForm();
+  if (!form.name) {
+    review.style.display = 'none';
+    review.textContent = '';
+    return;
+  }
+
+  const roleInfo = sharingRoleInfo(form.role);
+  const engramNames = resolveSharingEngramDisplayNames(form.engrams);
+  const engramText = engramNames.length ? engramNames.join(', ') : 'select at least one engram';
+  const expiryText = formatSharingExpiresAt(form.expiresAt);
+
+  review.textContent = `${form.name} · ${roleInfo.label} · ${engramText} · expires ${expiryText}`;
+  review.style.display = '';
+}
+
+async function showSharingRevealModal(result: SharingCreateResult): Promise<void> {
+  const revealModal = document.getElementById('sharing-reveal-modal');
+  const revealValue = document.getElementById('sharing-reveal-value');
+  const revealUrl = document.getElementById('sharing-reveal-url');
+  const revealUrlNote = document.getElementById('sharing-reveal-url-note');
+  const revealConfig = document.getElementById('sharing-reveal-config');
+  if (!revealModal || !revealValue || !result.id) return;
+
+  renderSharingRevealSummary({
+    name: result.name ?? 'Share',
+    role: result.role ?? 'viewer',
+    engrams: result.engrams ?? '*',
+    expiresAt: result.expiresAt,
+  });
+
+  revealValue.textContent = result.id;
+
+  try {
+    mobileConnInfo = (await invoke('get_mobile_connection_info')) as MobileConnectionInfo;
+  } catch { /* use cached mobileConnInfo */ }
+
+  const conn = buildSharingCollaboratorMcpUrl(mobileConnInfo);
+  const shareName = result.name ?? 'Share';
+  const serverKey = sanitizeSharingMcpServerKey(shareName);
+  const entry = buildSharingMcpHttpEntry(conn.url, result.id);
+  sharingRevealInstall = {
+    serverKey,
+    cursorLink: buildCursorMcpInstallDeeplink(serverKey, entry),
+    vscodeLink: buildVscodeMcpInstallDeeplink(serverKey, entry),
+    configSnippet: buildSharingMcpConfigSnippet(conn.url, result.id, serverKey),
+  };
+  if (revealUrl) revealUrl.textContent = conn.url;
+  if (revealUrlNote) revealUrlNote.textContent = conn.note;
+  if (revealConfig) revealConfig.textContent = sharingRevealInstall.configSnippet;
+  setSharingRevealClientTab('cursor');
+
+  revealModal.classList.remove('hidden');
+}
+
 async function refreshSharingTokenSummary(): Promise<void> {
   const summary = document.getElementById('sharing-token-summary');
   if (!summary) return;
@@ -19503,8 +19310,10 @@ async function openSharingModal(): Promise<void> {
     try {
       const graphs = await invoke<GraphWithMetadata[]>('list_graphs_with_metadata', { includeUnloaded: false });
       const visible = graphs.filter((g) => !g.metadata.archived);
+      sharingEngramLabels.clear();
       picker.innerHTML = '';
       for (const g of visible) {
+        sharingEngramLabels.set(g.graphId, g.metadata.displayName ?? g.graphId);
         const label = document.createElement('label');
         label.style.cssText = 'display:flex;align-items:center;gap:8px;font-size:13px;cursor:pointer;padding:2px 0;';
         const cb = document.createElement('input');
@@ -19527,6 +19336,7 @@ async function openSharingModal(): Promise<void> {
   }
 
   renderSharingTokenList(tokens, sessions, plan);
+  updateSharingCreateReview();
 }
 
 {
@@ -19540,26 +19350,66 @@ async function openSharingModal(): Promise<void> {
     const btn = document.getElementById('btn-sharing-audit-export') as HTMLButtonElement | null;
     if (btn) btn.disabled = true;
     try {
-      const result = await invoke<{ ok: boolean; count?: number; events?: unknown[]; reason?: string; message?: string }>('audit.export', {});
+      const result = await ipcCall<{
+        ok: boolean;
+        count?: number;
+        events?: Array<Record<string, unknown>>;
+        mcpCount?: number;
+        mcpEvents?: Array<Record<string, unknown>>;
+        reason?: string;
+        message?: string;
+      }>('audit.export', {});
       if (!result.ok) {
         void gAlert('Audit export failed', result.message ?? result.reason ?? 'Unknown error');
         return;
       }
-      const events = (result.events ?? []) as Array<Record<string, unknown>>;
+      const events = result.events ?? [];
+      const mcpEvents = result.mcpEvents ?? [];
       const csvEsc = (v: unknown) => `"${String(v ?? '').replace(/"/g, '""')}"`;
-      const rows = [
-        ['id', 'ts', 'isoDate', 'op', 'graphId', 'targetKind', 'targetId', 'deviceId', 'triggeredBy'].map(csvEsc).join(','),
-        ...events.map((ev) => [
-          ev['id'] ?? '', ev['ts'] ?? '',
+      const header = [
+        'eventType', 'id', 'ts', 'isoDate', 'action', 'actor',
+        'graphIdOrEngrams', 'nodeIds', 'servedTokens', 'servedNodes',
+        'consentGrantId', 'queryHash', 'queryLen', 'isError', 'transport',
+      ].map(csvEsc).join(',');
+      const oplogRows = events.map((ev) => [
+        'oplog',
+        ev['id'] ?? '',
+        ev['ts'] ?? '',
+        ev['ts'] ? new Date(ev['ts'] as number).toISOString() : '',
+        ev['op'] ?? '',
+        ev['triggeredBy'] ?? ev['deviceId'] ?? '',
+        ev['graphId'] ?? '',
+        (ev['target'] as Record<string, unknown> | undefined)?.['id'] ?? '',
+        '', '', '', '', '', '',
+      ].map(csvEsc).join(','));
+      const mcpRows = mcpEvents.map((ev) => {
+        const budget = ev['tokenBudget'] as Record<string, unknown> | undefined;
+        const engramIds = ev['engramIds'] as string[] | undefined;
+        const nodeIds = ev['nodeIds'] as string[] | undefined;
+        return [
+          'mcp',
+          ev['id'] ?? '',
+          ev['ts'] ?? '',
           ev['ts'] ? new Date(ev['ts'] as number).toISOString() : '',
-          ev['op'] ?? '',
-          ev['graphId'] ?? '',
-          (ev['target'] as Record<string, unknown> | undefined)?.['kind'] ?? '',
-          (ev['target'] as Record<string, unknown> | undefined)?.['id'] ?? '',
-          ev['deviceId'] ?? '',
-          ev['triggeredBy'] ?? '',
-        ].map(csvEsc).join(',')),
-      ].join('\r\n');
+          ev['tool'] ?? '',
+          ev['clientId'] ?? '',
+          (engramIds ?? []).join(';'),
+          (nodeIds ?? []).join(';'),
+          budget?.['servedTokens'] ?? '',
+          budget?.['servedNodes'] ?? '',
+          ev['consentGrantId'] ?? '',
+          ev['queryHash'] ?? '',
+          ev['queryLen'] ?? '',
+          ev['isError'] ? 'true' : 'false',
+          ev['transport'] ?? '',
+        ].map(csvEsc).join(',');
+      });
+      const merged = [...oplogRows, ...mcpRows].sort((a, b) => {
+        const tsA = Number(a.split(',')[2]?.replace(/"/g, '') ?? 0);
+        const tsB = Number(b.split(',')[2]?.replace(/"/g, '') ?? 0);
+        return tsA - tsB;
+      });
+      const rows = [header, ...merged].join('\r\n');
       const blob = new Blob([rows], { type: 'text/csv' });
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
@@ -19577,7 +19427,13 @@ async function openSharingModal(): Promise<void> {
   document.getElementById('sharing-new-engrams-mode')?.addEventListener('change', (e) => {
     const picker = document.getElementById('sharing-engram-picker');
     if (picker) picker.style.display = (e.target as HTMLSelectElement).value === 'select' ? 'flex' : 'none';
+    updateSharingCreateReview();
   });
+
+  document.getElementById('sharing-new-name')?.addEventListener('input', () => { updateSharingCreateReview(); });
+  document.getElementById('sharing-new-role')?.addEventListener('change', () => { updateSharingCreateReview(); });
+  document.getElementById('sharing-new-expiry')?.addEventListener('change', () => { updateSharingCreateReview(); });
+  document.getElementById('sharing-engram-picker')?.addEventListener('change', () => { updateSharingCreateReview(); });
 
   document.getElementById('btn-sharing-create')?.addEventListener('click', async () => {
     const nameEl = document.getElementById('sharing-new-name') as HTMLInputElement | null;
@@ -19587,28 +19443,23 @@ async function openSharingModal(): Promise<void> {
     const btn = document.getElementById('btn-sharing-create') as HTMLButtonElement | null;
     if (!nameEl || !roleEl || !engramsModeEl || !expiryEl || !btn) return;
 
-    const name = nameEl.value.trim();
+    const form = readSharingCreateForm();
+    const { name, role, engrams } = form;
     if (!name) { void gAlert('Name required', 'Enter a name for this token.'); return; }
 
-    let engrams: string[] | '*' = '*';
-    if (engramsModeEl.value === 'select') {
-      const checked = Array.from(document.querySelectorAll<HTMLInputElement>('#sharing-engram-picker input:checked')).map((i) => i.value);
-      if (!checked.length) { void gAlert('No engrams selected', 'Select at least one engram, or choose "All engrams".'); return; }
-      engrams = checked;
+    if (Array.isArray(engrams) && !engrams.length) {
+      void gAlert('No engrams selected', 'Select at least one engram, or choose "All engrams".');
+      return;
     }
 
     let expiresAt: number | undefined;
-    const expVal = expiryEl.value;
-    if (expVal !== 'never') {
-      const ms: Record<string, number> = { '7d': 7, '30d': 30, '90d': 90, '1y': 365 };
-      expiresAt = Date.now() + (ms[expVal] ?? 30) * 24 * 60 * 60 * 1000;
-    }
+    if (form.expiresAt != null) expiresAt = form.expiresAt;
 
     btn.disabled = true;
     try {
       const result = await ipcCall<SharingCreateResult>('sharing:create', {
         name,
-        role: roleEl.value as 'viewer' | 'editor',
+        role,
         engrams,
         ...(expiresAt !== undefined ? { expiresAt } : {}),
       });
@@ -19620,18 +19471,9 @@ async function openSharingModal(): Promise<void> {
 
       // Reset name field after successful creation.
       nameEl.value = '';
+      updateSharingCreateReview();
 
-      // Show reveal modal with the one-time token.
-      const revealModal = document.getElementById('sharing-reveal-modal');
-      const revealValue = document.getElementById('sharing-reveal-value');
-      const revealUrl = document.getElementById('sharing-reveal-url');
-      if (revealModal && revealValue && result.id) {
-        revealValue.textContent = result.id;
-        const port = mobileConnInfo?.port ?? 3457;
-        const host = mobileConnInfo?.host === '0.0.0.0' ? (mobileConnInfo?.localIps?.[0] ?? '127.0.0.1') : '127.0.0.1';
-        if (revealUrl) revealUrl.textContent = `http://${host}:${port}/mcp`;
-        revealModal.classList.remove('hidden');
-      }
+      void showSharingRevealModal(result);
 
       void openSharingModal();
       void refreshSharingTokenSummary();
@@ -19645,6 +19487,65 @@ async function openSharingModal(): Promise<void> {
     if (val) void navigator.clipboard.writeText(val);
     const btn = document.getElementById('btn-sharing-reveal-copy') as HTMLButtonElement | null;
     if (btn) { btn.textContent = 'Copied!'; setTimeout(() => { btn.textContent = 'Copy'; }, 2000); }
+  });
+
+  document.getElementById('btn-sharing-reveal-copy-url')?.addEventListener('click', () => {
+    const val = document.getElementById('sharing-reveal-url')?.textContent ?? '';
+    if (val) void navigator.clipboard.writeText(val);
+    const btn = document.getElementById('btn-sharing-reveal-copy-url') as HTMLButtonElement | null;
+    if (btn) { btn.textContent = 'Copied!'; setTimeout(() => { btn.textContent = 'Copy URL'; }, 2000); }
+  });
+
+  document.getElementById('btn-sharing-reveal-copy-config')?.addEventListener('click', () => {
+    const val = sharingRevealInstall?.configSnippet
+      ?? document.getElementById('sharing-reveal-config')?.textContent
+      ?? '';
+    if (val) void navigator.clipboard.writeText(val);
+    sharingRevealCopyFeedback(
+      document.getElementById('btn-sharing-reveal-copy-config') as HTMLButtonElement | null,
+    );
+  });
+
+  document.querySelectorAll<HTMLButtonElement>('#sharing-reveal-modal .sharing-client-tab').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const tab = btn.dataset['sharingTab'] as 'cursor' | 'vscode' | 'claude' | 'manual' | undefined;
+      if (tab) setSharingRevealClientTab(tab);
+    });
+  });
+
+  document.getElementById('btn-sharing-reveal-copy-cursor-link')?.addEventListener('click', () => {
+    const link = sharingRevealInstall?.cursorLink;
+    if (!link) return;
+    void navigator.clipboard.writeText(link);
+    sharingRevealCopyFeedback(
+      document.getElementById('btn-sharing-reveal-copy-cursor-link') as HTMLButtonElement | null,
+      'Link copied!',
+    );
+  });
+
+  document.getElementById('btn-sharing-reveal-open-cursor')?.addEventListener('click', () => {
+    const link = sharingRevealInstall?.cursorLink;
+    if (!link) return;
+    void invoke('open_external_url', { url: link });
+  });
+
+  document.getElementById('btn-sharing-reveal-copy-vscode-link')?.addEventListener('click', () => {
+    const link = sharingRevealInstall?.vscodeLink;
+    if (!link) return;
+    void navigator.clipboard.writeText(link);
+    sharingRevealCopyFeedback(
+      document.getElementById('btn-sharing-reveal-copy-vscode-link') as HTMLButtonElement | null,
+      'Link copied!',
+    );
+  });
+
+  document.getElementById('btn-sharing-reveal-open-vscode-config')?.addEventListener('click', () => {
+    void (async () => {
+      try {
+        const p = (await invoke('get_vscode_mcp_config_path')) as string;
+        await invoke('open_external_url', { url: `vscode://file/${p}` });
+      } catch { /* ignore */ }
+    })();
   });
 
   document.getElementById('btn-sharing-reveal-close')?.addEventListener('click', () => {
@@ -20193,1053 +20094,23 @@ function installCustomEngramPicker(): void {
   renderOptions();
 }
 
-// ── Settings → Connectors panel ─────────────────────────────────────────────
-//
-// Wires the Settings pane's connectors list + per-kind setup modals to the
-// sidecar's connectors.* IPC (via the Tauri commands list_connectors,
-// install_connector, remove_connector, trigger_connector_pull,
-// get_connector_auth_url). BYO-credentials by design: every kind that needs
-// auth (GitHub, Slack, Trello, Linear) takes credentials the user generated
-// in that service's developer console — Graphnosis is never in the OAuth
-// callback chain. v0.6.1 adds transparent encryption of the credentials
-// field at the host I/O boundary; this UI never sees ciphertext.
-//
-// Connector "kind" determines the modal's body shape (different services
-// need different inputs). Six kinds shipped: rss, github, slack, trello,
-// linear, webhook.
 
-type ConnectorKind = 'webhook' | 'rss' | 'github' | 'slack' | 'trello' | 'linear' | 'obsidian' | 'gbrain' | 'ai-context';
-
-interface ConnectorConfigShape {
-  id: string;
-  kind: ConnectorKind;
-  graphId: string;
-  enabled: boolean;
-  credentials: Record<string, string>;
-  options: Record<string, unknown>;
-  lastPulledAt?: number;
-  lastError?: string;
-}
-
-interface ConnectorStatus {
-  id: string;
-  kind: string;
-  enabled: boolean;
-  lastPulledAt?: number;
-  lastError?: string;
-  eventsTotal: number;
-  pulling: boolean;
-}
-
-const CONNECTOR_KIND_LABEL: Record<ConnectorKind, string> = {
-  rss: 'RSS', github: 'GitHub', slack: 'Slack',
-  trello: 'Trello', linear: 'Linear', webhook: 'Webhook',
-  obsidian: 'Obsidian', gbrain: 'GBrain', 'ai-context': 'AI Context Files',
-};
-const CONNECTOR_KIND_GLYPH: Record<ConnectorKind, string> = {
-  rss: '📰', github: '🐙', slack: '💬',
-  trello: '📋', linear: '📐', webhook: '🪝',
-  obsidian: '🔮', gbrain: '🧠', 'ai-context': '📎',
-};
-
-/** Paint the configured-connector instances onto the Get Connected page
- *  (#gc-connectors-list) — every instance, including multiples of the same
- *  kind. Reuses renderConnectorRow + the shared row-action handlers, so a user
- *  with 3 Obsidian vaults or 12 NAS folders sees + manages each one here. */
-function paintGcConnectorList(configs: ConnectorConfigShape[], statuses: ConnectorStatus[]): void {
-  const wrap = document.getElementById('gc-connectors-list');
-  const head = document.getElementById('gc-connected-head');
-  const intervalRow = document.getElementById('gc-interval-row');
-  if (!wrap) return;
-  if (configs.length === 0) {
-    wrap.innerHTML = '';
-    if (head) head.style.display = 'none';
-    if (intervalRow) intervalRow.style.display = 'none';
-    return;
-  }
-  if (head) head.style.display = '';
-  if (intervalRow) intervalRow.style.display = '';
-  const statusById = new Map(statuses.map((s) => [s.id, s]));
-  wrap.innerHTML = configs.map((cfg) => renderConnectorRow(cfg, statusById.get(cfg.id))).join('');
-  wrap.querySelectorAll<HTMLButtonElement>('button[data-connector-action]').forEach((btn) => {
-    btn.addEventListener('click', () => {
-      const action = btn.dataset['connectorAction'];
-      const id = btn.dataset['connectorId'];
-      if (!id) return;
-      if (action === 'pull') void handleConnectorPull(id, btn);
-      else if (action === 'resync') void handleConnectorResync(id, btn);
-      else if (action === 'stop') void handleConnectorStop(id, btn);
-      else if (action === 'copy-url') void handleConnectorCopyUrl(btn);
-      else if (action === 'remove') void handleConnectorRemove(id, btn);
-      else if (action === 'edit') void handleConnectorEdit(id, configs);
-    });
-  });
-}
-
-// Fetches the connector list and paints it wherever it's surfaced. The Settings
-// Connectors panel was removed, so this no longer depends on #connectors-list —
-// it always updates the Get Connected page list + the rail status, and paints
-// the legacy Settings list only if that element still exists.
-async function refreshConnectorsList(): Promise<void> {
-  try {
-    const res = await invokeRetry<{ configs: ConnectorConfigShape[]; statuses: ConnectorStatus[]; pullIntervalMs?: number }>(
-      'list_connectors',
-    );
-    // Reflect installed connectors in the sidebar's Get-connected status list.
-    installedConnectorKinds = new Set(res.configs.map((c) => c.kind));
-    // Keep the "engrams currently being ingested" set fresh (drives the
-    // defer-load-while-ingesting behavior on the 3D Engram picker).
-    {
-      lastConnectorList = { configs: res.configs, statuses: res.statuses };
-      const statusById = new Map(res.statuses.map((s) => [s.id, s]));
-      connectorPullingGraphIds = new Set(
-        res.configs.filter((c) => statusById.get(c.id)?.pulling).map((c) => c.graphId),
-      );
-      updateAtlasSyncButton();
-    }
-    renderRailGetConnected();
-    // The connector list now lives on the Get Connected page (in sync with
-    // every connector add/edit/remove, which all call through here).
-    paintGcConnectorList(res.configs, res.statuses);
-    // Default check-interval control (the per-connector fallback), now on the
-    // Get Connected page. Don't clobber a value the user is mid-edit on.
-    const intervalInput = document.getElementById('gc-default-interval') as HTMLInputElement | null;
-    if (intervalInput && typeof res.pullIntervalMs === 'number' && document.activeElement !== intervalInput) {
-      intervalInput.value = String(Math.round(res.pullIntervalMs / 60_000));
-    }
-    // Legacy Settings list (kept working if the element is still present).
-    const wrap = document.getElementById('connectors-list');
-    if (wrap) {
-      if (!res.configs.length) {
-        wrap.innerHTML = '<p style="color: var(--fg-dim); font-size: 14px; padding: 10px 4px; margin: 0;">No connectors installed yet.</p>';
-      } else {
-        const statusById = new Map(res.statuses.map((s) => [s.id, s]));
-        wrap.innerHTML = res.configs.map((cfg) => renderConnectorRow(cfg, statusById.get(cfg.id))).join('');
-        wrap.querySelectorAll<HTMLButtonElement>('button[data-connector-action]').forEach((btn) => {
-          btn.addEventListener('click', () => {
-            const action = btn.dataset['connectorAction'];
-            const id = btn.dataset['connectorId'];
-            if (!id) return;
-            if (action === 'pull') void handleConnectorPull(id, btn);
-            else if (action === 'resync') void handleConnectorResync(id, btn);
-            else if (action === 'stop') void handleConnectorStop(id, btn);
-            else if (action === 'copy-url') void handleConnectorCopyUrl(btn);
-            else if (action === 'remove') void handleConnectorRemove(id, btn);
-            else if (action === 'edit') void handleConnectorEdit(id, res.configs);
-          });
-        });
-      }
-    }
-  } catch (e) {
-    const gcWrap = document.getElementById('gc-connectors-list');
-    const head = document.getElementById('gc-connected-head');
-    if (head) head.style.display = '';
-    const timedOut = /within \d+s|timed out|did not respond/i.test(String(e));
-    if (gcWrap) {
-      gcWrap.innerHTML =
-        `<div class="gc-connectors-error">` +
-        `<p>${timedOut ? 'The sidecar was busy and didn’t answer in time.' : 'Couldn’t load your connectors.'} ` +
-        `<span class="subtitle">${escapeHtml(String(e))}</span></p>` +
-        `<button id="gc-connectors-retry" class="gc-retry-btn" type="button">↻ Retry</button>` +
-        (timedOut ? `<p class="subtitle gc-connectors-trouble">If this keeps happening, a large cortex can make the first read slow — wait a moment and retry, or reopen the app.</p>` : '') +
-        `</div>`;
-      gcWrap.querySelector<HTMLButtonElement>('#gc-connectors-retry')
-        ?.addEventListener('click', () => void refreshConnectorsList());
-    }
-  }
-}
-
-// Default poll-interval control (Get Connected page): the fallback used by any
-// connector without its own per-connector interval. Persists via the generic
-// settings update; the sidecar swaps live timers. Clamp to 1–1440 min.
 {
-  const intervalInput = document.getElementById('gc-default-interval') as HTMLInputElement | null;
-  intervalInput?.addEventListener('change', () => {
-    const mins = Math.min(1440, Math.max(1, Math.round(Number(intervalInput.value) || 15)));
-    intervalInput.value = String(mins);
-    void (async () => {
-      try {
-        await invoke('update_settings', { settings: { connectors: { pullIntervalMs: mins * 60_000 } } });
-        const tid = addIngestToast('Connector poll interval', `Now checking every ${mins} min`);
-        finishIngestToast(tid, 'success', `Now checking every ${mins} min`);
-      } catch (e) {
-        const tid = addIngestToast('Couldn’t update interval', String(e));
-        finishIngestToast(tid, 'error', String(e));
-      }
-    })();
-  });
-}
-
-function renderConnectorRow(cfg: ConnectorConfigShape, status?: ConnectorStatus): string {
-  const glyph = CONNECTOR_KIND_GLYPH[cfg.kind] ?? '🔌';
-  const label = CONNECTOR_KIND_LABEL[cfg.kind] ?? cfg.kind;
-  let statusKind: 'enabled' | 'disabled' | 'error' | 'pulling';
-  let statusLabel: string;
-  if (status?.pulling) { statusKind = 'pulling'; statusLabel = 'pulling…'; }
-  else if (status?.paused) { statusKind = 'disabled'; statusLabel = 'paused'; }
-  else if (cfg.lastError) { statusKind = 'error'; statusLabel = 'error'; }
-  else if (cfg.enabled) { statusKind = 'enabled'; statusLabel = 'enabled'; }
-  else { statusKind = 'disabled'; statusLabel = 'disabled'; }
-
-  const lastPullStr = cfg.lastPulledAt
-    ? `last pulled ${relativeTimeShort(cfg.lastPulledAt)}`
-    : 'never pulled';
-  const events = status?.eventsTotal ?? 0;
-  const eventsStr = events > 0 ? ` · ${events} event${events === 1 ? '' : 's'} this session` : '';
-  const errorStr = cfg.lastError ? ` · ${escapeHtml(cfg.lastError)}` : '';
-  // Effective check interval: manual mode, per-connector override, else default.
-  const optsRec = cfg.options as Record<string, unknown> | undefined;
-  const manualSync = optsRec?.['autoSync'] === false;
-  const ovr = optsRec?.['intervalMs'];
-  const intervalStr = manualSync
-    ? ' · manual — pull on demand'
-    : typeof ovr === 'number' && ovr >= 60_000
-      ? ` · every ${Math.round(ovr / 60_000)} min`
-      : ' · default interval';
-
-  // Webhook URL (push-only connectors) — surfaced so the user can copy it from
-  // the row without opening the Edit modal. Only available once the token has
-  // been generated (i.e. the webhook has been saved at least once).
-  const webhookToken = cfg.kind === 'webhook'
-    ? ((cfg.options as Record<string, unknown> | undefined)?.['webhookToken'] as string | undefined)
-    : undefined;
-  const webhookUrl = webhookToken ? `http://localhost:3458/webhook/${cfg.id}/${webhookToken}` : '';
-
-  // Show the engram's real display name, not the internal slug. Fall back to
-  // the slug if the engram isn't loaded (e.g. it was deleted out from under the
-  // connector). The data-pres attribute keeps the slug so Presentation Mode
-  // redaction still targets the right engram.
-  const engramName = loadedGraphs.find((g) => g.graphId === cfg.graphId)?.metadata.displayName ?? cfg.graphId;
-
-  return `
-    <div class="connector-row" data-connector-id="${escapeHtml(cfg.id)}">
-      <span class="connector-row-kind" aria-hidden="true">${glyph}</span>
-      <div class="connector-row-body">
-        <div class="connector-row-title">
-          <span class="connector-row-name" data-pres="engram:${escapeHtml(cfg.graphId)}">${escapeHtml(label)} · ${escapeHtml(cfg.id)}</span>
-          <span class="connector-row-status ${statusKind}">${escapeHtml(statusLabel)}</span>
-        </div>
-        <span class="connector-row-meta">
-          → engram <span data-pres="engram:${escapeHtml(cfg.graphId)}">${escapeHtml(engramName)}</span> · ${escapeHtml(lastPullStr)}${escapeHtml(intervalStr)}${escapeHtml(eventsStr)}${errorStr}
-        </span>
-      </div>
-      <div class="connector-row-actions">
-        ${cfg.kind === 'webhook'
-          ? (webhookUrl ? `<button data-connector-action="copy-url" data-connector-id="${escapeHtml(cfg.id)}" data-webhook-url="${escapeHtml(webhookUrl)}" title="Copy this webhook's URL to the clipboard">Copy URL</button>` : '')
-          : (status?.pulling
-            ? `<button data-connector-action="stop" data-connector-id="${escapeHtml(cfg.id)}" class="danger" title="Stop ingesting now — pauses this connector until you Pull or Re-sync">⏸ Stop</button>`
-            : `<button data-connector-action="pull" data-connector-id="${escapeHtml(cfg.id)}">${status?.paused ? 'Resume' : 'Pull now'}</button>
-        <button data-connector-action="resync" data-connector-id="${escapeHtml(cfg.id)}" title="Reset this connector's cursor and re-pull everything from scratch">Re-sync</button>`)}
-        <button data-connector-action="edit" data-connector-id="${escapeHtml(cfg.id)}">Edit</button>
-        <button data-connector-action="remove" data-connector-id="${escapeHtml(cfg.id)}" class="danger">Remove</button>
-      </div>
-    </div>`;
-}
-
-function relativeTimeShort(ms: number): string {
-  const d = Date.now() - ms;
-  if (d < 60_000) return `${Math.max(1, Math.floor(d / 1000))}s ago`;
-  if (d < 3_600_000) return `${Math.floor(d / 60_000)}m ago`;
-  if (d < 86_400_000) return `${Math.floor(d / 3_600_000)}h ago`;
-  return `${Math.floor(d / 86_400_000)}d ago`;
-}
-
-async function handleConnectorPull(id: string, btn: HTMLButtonElement): Promise<void> {
-  const originalText = btn.textContent;
-  btn.disabled = true;
-  btn.textContent = 'Pulling…';
-  try {
-    const res = await invokeRetry<{ eventsIngested: number }>('trigger_connector_pull', { id });
-    const tid = addIngestToast(`Pulled ${id}`, `${res.eventsIngested} new event(s) ingested`);
-    finishIngestToast(tid, 'success', `${res.eventsIngested} new event(s) ingested`);
-    await refreshConnectorsList();
-  } catch (e) {
-    const tid = addIngestToast(`Pull failed: ${id}`, String(e));
-    finishIngestToast(tid, 'error', String(e));
-  } finally {
-    btn.disabled = false;
-    if (originalText) btn.textContent = originalText;
-  }
-}
-
-async function handleConnectorRemove(id: string, btn?: HTMLButtonElement): Promise<void> {
-  // Two-click inline confirm (no typing). First click arms the button ("Confirm
-  // remove?"); a second click within 4s removes. Auto-resets so a stray first
-  // click can't leave it armed forever.
-  if (btn) {
-    if (btn.dataset['armed'] !== '1') {
-      btn.dataset['armed'] = '1';
-      btn.dataset['orig'] = btn.textContent ?? 'Remove';
-      btn.textContent = 'Confirm remove?';
-      btn.classList.add('confirm-armed');
-      const reset = (): void => {
-        if (!btn.isConnected) return;
-        btn.dataset['armed'] = '';
-        btn.textContent = btn.dataset['orig'] ?? 'Remove';
-        btn.classList.remove('confirm-armed');
-      };
-      btn.dataset['resetTimer'] = String(window.setTimeout(reset, 4000));
-      return;
-    }
-    clearTimeout(Number(btn.dataset['resetTimer']));
-    btn.disabled = true;
-    btn.textContent = 'Removing…';
-  }
-  try {
-    await invokeRetry('remove_connector', { id });
-    await refreshConnectorsList();
-    const tid = addIngestToast(`Removed connector "${id}"`, 'Credentials deleted; engram content untouched');
-    finishIngestToast(tid, 'success', 'Credentials deleted; engram content untouched');
-  } catch (e) {
-    const tid = addIngestToast(`Couldn't remove "${id}"`, String(e));
-    finishIngestToast(tid, 'error', String(e));
-  }
-}
-
-// Copy a webhook connector's URL straight from its row — no need to open Edit.
-// The URL is baked into the button's data attribute by renderConnectorRow.
-async function handleConnectorCopyUrl(btn?: HTMLButtonElement): Promise<void> {
-  const url = btn?.dataset['webhookUrl'];
-  if (!url) return;
-  try {
-    await navigator.clipboard.writeText(url);
-    if (btn) {
-      const orig = btn.textContent ?? 'Copy URL';
-      btn.textContent = 'Copied ✓';
-      setTimeout(() => { if (btn.isConnected) btn.textContent = orig; }, 1500);
-    }
-  } catch (e) {
-    const tid = addIngestToast('Copy failed', String(e));
-    finishIngestToast(tid, 'error', String(e));
-  }
-}
-
-// Re-sync a connector from scratch: reset its pull cursor + re-pull everything.
-// Use after a partial sync (e.g. files stranded behind the cursor by an earlier
-// failed pull). Already-ingested sources dedup-skip; the rest get picked up.
-async function handleConnectorResync(id: string, btn?: HTMLButtonElement): Promise<void> {
-  const orig = btn?.textContent;
-  if (btn) { btn.disabled = true; btn.textContent = 'Re-syncing…'; }
-  const tid = addIngestToast(`Re-syncing "${id}"`, 'Cursor reset — re-scanning from scratch…');
-  try {
-    const res = await ipcCall<{ eventsIngested: number }>('connectors.resync', { id });
-    finishIngestToast(tid, 'success', `${res.eventsIngested} new event(s) ingested this pass`);
-    await refreshConnectorsList();
-  } catch (e) {
-    finishIngestToast(tid, 'error', String(e));
-  } finally {
-    if (btn) { btn.disabled = false; if (orig) btn.textContent = orig; }
-  }
-}
-
-// Stop an in-progress ingest. The sidecar aborts the drain at the next
-// file/batch boundary and pauses the connector until the user Pulls/Re-syncs.
-async function handleConnectorStop(id: string, btn?: HTMLButtonElement): Promise<void> {
-  if (btn) { btn.disabled = true; btn.textContent = 'Stopping…'; }
-  const tid = addIngestToast(`Stopping "${id}"`, 'Halting the current ingest…');
-  try {
-    await ipcCall('connectors.stop', { id });
-    finishIngestToast(tid, 'success', 'Ingest stopped — Pull or Re-sync to resume.');
-    await refreshConnectorsList();
-  } catch (e) {
-    finishIngestToast(tid, 'error', String(e));
-    if (btn) { btn.disabled = false; btn.textContent = '⏸ Stop'; }
-  }
-}
-
-async function handleConnectorEdit(id: string, configs: ConnectorConfigShape[]): Promise<void> {
-  const cfg = configs.find((c) => c.id === id);
-  if (!cfg) return;
-  openConnectorSetupModal(cfg.kind, cfg);
-}
-
-// ── Setup modal ────────────────────────────────────────────────────────────
-
-let pendingConnectorEditId: string | null = null;
-let pendingConnectorKind: ConnectorKind | null = null;
-
-function openConnectorSetupModal(kind: ConnectorKind, existing?: ConnectorConfigShape): void {
-  pendingConnectorEditId = existing?.id ?? null;
-  pendingConnectorKind = kind;
-  const modal = document.getElementById('connector-setup-modal');
-  const title = document.getElementById('connector-setup-title');
-  const subtitle = document.getElementById('connector-setup-subtitle');
-  const body = document.getElementById('connector-setup-body');
-  if (!modal || !title || !subtitle || !body) return;
-  title.textContent = (existing ? 'Edit ' : 'Add ') + CONNECTOR_KIND_LABEL[kind] + ' connector';
-  subtitle.textContent = connectorSubtitleFor(kind);
-  body.innerHTML = renderConnectorSetupBody(kind, existing);
-  // Populate engram dropdown after body renders
-  populateEngramDropdown('connector-graphid', existing?.graphId);
-  // "+ New engram" button — switch the dropdown to new-engram mode and prefill
-  // a relevant, unique suggested name.
-  document.getElementById('connector-new-engram-btn')?.addEventListener('click', () => {
-    const sel = document.getElementById('connector-graphid') as HTMLSelectElement | null;
-    const nameInput = document.getElementById('connector-new-engram-name') as HTMLInputElement | null;
-    if (sel) { sel.value = '__new__'; sel.dispatchEvent(new Event('change')); }
-    if (nameInput) {
-      nameInput.style.display = '';
-      if (!nameInput.value.trim()) nameInput.value = suggestEngramName(kind);
-      nameInput.focus();
-      nameInput.select();
-    }
-  });
-  // Folder browse — uses the native dialog in the Tauri app, or a server-side
-  // folder picker in browser/personal-server mode (pickFolders abstracts both).
-  document.getElementById('connector-aicontext-browse')?.addEventListener('click', async () => {
-    const picked = await pickFolders();
-    if (!picked.length) return;
-    const ta = document.getElementById('connector-aicontext-paths') as HTMLTextAreaElement | null;
-    if (!ta) return;
-    const current = ta.value.split('\n').map((s) => s.trim()).filter(Boolean);
-    ta.value = [...new Set([...current, ...picked])].join('\n');
-  });
-  document.getElementById('connector-obsidian-browse')?.addEventListener('click', async () => {
-    const picked = await pickFolders();
-    const inp = document.getElementById('connector-obsidian-vault') as HTMLInputElement | null;
-    if (inp && picked[0]) inp.value = picked[0];
-  });
-  document.getElementById('connector-gbrain-browse')?.addEventListener('click', async () => {
-    const picked = await pickFolders();
-    const inp = document.getElementById('connector-gbrain-repo') as HTMLInputElement | null;
-    if (inp && picked[0]) inp.value = picked[0];
-  });
-  modal.classList.remove('hidden');
-  // This modal lives OUTSIDE <main>, so the page-level Presentation masking +
-  // MutationObserver never reach it. Mask it explicitly so the Target Engram
-  // dropdown redacts engrams that aren't allowlisted for the demo.
-  if (presActive()) applyPresentationMasking(modal);
-}
-
-/**
- * Pick one or more folders. In the Tauri app this is the native OS dialog. In
- * browser / personal-server mode there's no native dialog AND the relevant
- * disk is the SERVER's, so we open a server-side folder navigator backed by
- * the `fs.listDir` IPC. Returns selected absolute path(s), or [] if cancelled.
- */
-async function pickFolders(): Promise<string[]> {
-  if (IS_TAURI) {
-    const picked = await invoke<string[]>('pick_folders');
-    return picked ?? [];
-  }
-  const chosen = await browserFolderPicker();
-  return chosen ? [chosen] : [];
-}
-
-interface ListDirResult { path: string; parent: string; dirs: Array<{ name: string; path: string }>; }
-
-/** Server-side folder navigator (browser/personal-server mode). Walks the
- *  server's directories via the `fs.listDir` IPC; resolves the chosen absolute
- *  path, or null if cancelled. */
-function browserFolderPicker(): Promise<string | null> {
-  return new Promise<string | null>((resolve) => {
-    const overlay = document.createElement('div');
-    overlay.className = 'folder-picker-overlay';
-    overlay.innerHTML =
-      `<div class="folder-picker">` +
-        `<div class="folder-picker-head"><strong>Choose a folder on the server</strong>` +
-          `<button class="folder-picker-x" aria-label="Cancel">×</button></div>` +
-        `<div class="folder-picker-path" id="fp-path"></div>` +
-        `<div class="folder-picker-list" id="fp-list"></div>` +
-        `<div class="folder-picker-actions">` +
-          `<button class="folder-picker-cancel">Cancel</button>` +
-          `<button class="folder-picker-use primary">Use this folder</button>` +
-        `</div>` +
-      `</div>`;
-    document.body.appendChild(overlay);
-    let current = '';
-    const pathEl = overlay.querySelector('#fp-path') as HTMLElement;
-    const listEl = overlay.querySelector('#fp-list') as HTMLElement;
-    const close = (val: string | null): void => { overlay.remove(); resolve(val); };
-
-    const load = async (p?: string): Promise<void> => {
-      listEl.innerHTML = '<div class="fp-empty">Loading…</div>';
-      try {
-        const res = await invoke<ListDirResult>('fs_list_dir', p ? { path: p } : {});
-        current = res.path;
-        pathEl.textContent = res.path;
-        const up = res.parent && res.parent !== res.path
-          ? `<button class="fp-row fp-up" data-path="${escapeHtml(res.parent)}">⬆ ..</button>` : '';
-        listEl.innerHTML = up + (res.dirs.length
-          ? res.dirs.map((d) => `<button class="fp-row" data-path="${escapeHtml(d.path)}">📁 ${escapeHtml(d.name)}</button>`).join('')
-          : '<div class="fp-empty">No subfolders here</div>');
-        listEl.querySelectorAll<HTMLButtonElement>('.fp-row').forEach((b) =>
-          b.addEventListener('click', () => void load(b.dataset['path'])));
-      } catch (e) {
-        listEl.innerHTML = `<div class="fp-empty">Couldn't read folder: ${escapeHtml(String(e))}</div>`;
-      }
-    };
-
-    overlay.querySelector('.folder-picker-x')?.addEventListener('click', () => close(null));
-    overlay.querySelector('.folder-picker-cancel')?.addEventListener('click', () => close(null));
-    overlay.querySelector('.folder-picker-use')?.addEventListener('click', () => close(current || null));
-    overlay.addEventListener('click', (e) => { if (e.target === overlay) close(null); });
-    void load();
-  });
-}
-
-function connectorSubtitleFor(kind: ConnectorKind): string {
-  switch (kind) {
-    case 'webhook': return 'Receive POSTed events from Zapier, IFTTT, custom scripts, anything.';
-    case 'rss': return 'Pull new entries from any RSS or Atom feed on a schedule.';
-    case 'github': return 'Pull issues, pull requests, and releases from repos you watch.';
-    case 'slack': return 'Pull starred items and channel history from your workspace.';
-    case 'trello': return 'Pull cards and checklists from boards you choose.';
-    case 'linear': return 'Pull issues from your teams with status / priority filters.';
-    case 'obsidian': return 'Auto-ingest notes from your local Obsidian vault. No API key needed.';
-    case 'gbrain': return 'Auto-ingest notes from your local GBrain repo. No API key needed.';
-    case 'ai-context': return 'Index CLAUDE.md, AGENTS.md, .cursorrules and other AI context files from your projects.';
-  }
-}
-
-// Relevant base label per connector kind — used to suggest a new engram name
-// and a connector slug by default.
-const CONNECTOR_SUGGEST_BASE: Record<ConnectorKind, string> = {
-  rss: 'RSS Feeds', github: 'GitHub', slack: 'Slack', trello: 'Trello',
-  linear: 'Linear', obsidian: 'Obsidian Notes', gbrain: 'GBrain Notes',
-  'ai-context': 'AI Context', webhook: 'Webhook Inbox',
-};
-
-/** A slug like "obsidian-7f3a" — relevant + unlikely to collide. */
-function suggestConnectorId(kind: ConnectorKind): string {
-  const suffix = Date.now().toString(36).slice(-4);
-  return `${kind}-${suffix}`;
-}
-
-/** A relevant engram display name, deduped against existing engrams ("… 2"). */
-function suggestEngramName(kind: ConnectorKind): string {
-  const base = CONNECTOR_SUGGEST_BASE[kind] ?? 'Imported';
-  const taken = new Set(loadedGraphs.map((g) => (g.metadata.displayName ?? g.graphId).toLowerCase()));
-  if (!taken.has(base.toLowerCase())) return base;
-  for (let i = 2; i < 100; i++) {
-    const candidate = `${base} ${i}`;
-    if (!taken.has(candidate.toLowerCase())) return candidate;
-  }
-  return `${base} ${Date.now().toString(36).slice(-3)}`;
-}
-
-function renderConnectorSetupBody(kind: ConnectorKind, existing?: ConnectorConfigShape): string {
-  const opts = (existing?.options ?? {}) as Record<string, unknown>;
-  const creds = existing?.credentials ?? {};
-  const idField = `
-    <div class="connector-field">
-      <label for="connector-id">Connector ID (slug)</label>
-      <input type="text" id="connector-id" placeholder="e.g. my-rss-news" value="${escapeHtml(existing?.id ?? suggestConnectorId(kind))}" ${existing ? 'readonly' : ''} />
-      <span class="field-hint">${existing ? 'Cannot change after install.' : 'Letters, numbers, hyphens. Edit or clear to auto-generate.'}</span>
-    </div>`;
-  const graphField = `
-    <div class="connector-field">
-      <label for="connector-graphid">Target engram</label>
-      <div class="connector-engram-row" style="display:flex;gap:6px;align-items:center;">
-        <select id="connector-graphid" style="flex:1;min-width:0;"></select>
-        <button type="button" id="connector-new-engram-btn" class="btn-secondary" style="white-space:nowrap;">+ New engram</button>
-      </div>
-      <input type="text" id="connector-new-engram-name" placeholder="New engram name…" style="display:none;margin-top:6px;" />
-      <span class="field-hint">Ingested events become source nodes in this engram.</span>
-    </div>`;
-  // Opt-in mirror toggle for local-file connectors. Off = additive (default):
-  // deleting a file leaves its memory in the cortex. On = the engram mirrors the
-  // folder: deleting or renaming a file forgets the corresponding source, and
-  // editing a file replaces (not duplicates) it.
-  const mirrorDeletesField = `
-    <div class="connector-field">
-      <label style="display:flex;align-items:flex-start;gap:8px;cursor:pointer;font-weight:400;">
-        <input type="checkbox" id="connector-mirror-deletes" ${opts['mirrorDeletes'] === true ? 'checked' : ''} style="margin-top:3px;" />
-        <span>Mirror deletions
-          <span class="field-hint" style="display:block;margin-top:2px;">By default, deleting a file keeps its memory (Graphnosis is durable memory, not a folder mirror). Turn this on to also <strong>remove</strong> a memory when its file is deleted, and replace it when edited. Destructive — affects this engram only.</span>
-        </span>
-      </label>
-    </div>`;
-  // Per-connector check interval (optional). Blank = use the global default.
-  // Applies to every kind; appended to the form just above the privacy note.
-  const curIntervalMin = typeof opts['intervalMs'] === 'number' && (opts['intervalMs'] as number) > 0
-    ? String(Math.round((opts['intervalMs'] as number) / 60_000)) : '';
-  const intervalField = `
-    <div class="connector-field">
-      <label for="connector-interval">Check this source every <span style="font-weight:400;color:var(--fg-dim);">(optional)</span></label>
-      <div style="display:flex;gap:6px;align-items:center;">
-        <input type="number" id="connector-interval" min="1" max="1440" step="1" placeholder="default" value="${curIntervalMin}" style="width:120px;" />
-        <span>minutes</span>
-      </div>
-      <span class="field-hint">Leave blank to use the default interval. Local-folder connectors also sync instantly on change.</span>
-    </div>`;
-  // Self-heal full re-scan cadence (per-connector). Blank = default (30 min);
-  // 0 = off (manual re-sync only).
-  const curFullRescanMin = typeof opts['fullRescanMinutes'] === 'number'
-    ? String(opts['fullRescanMinutes'] as number) : '';
-  const fullRescanField = `
-    <div class="connector-field">
-      <label for="connector-full-rescan">Full re-scan (self-heal) every <span style="font-weight:400;color:var(--fg-dim);">(optional)</span></label>
-      <div style="display:flex;gap:6px;align-items:center;">
-        <input type="number" id="connector-full-rescan" min="0" max="10080" step="1" placeholder="default 30" value="${curFullRescanMin}" style="width:120px;" />
-        <span>minutes</span>
-      </div>
-      <span class="field-hint">Periodically re-checks every source so nothing skipped/failed in a prior run is permanently missed. Blank = 30 min. Set 0 to disable (manual re-sync only).</span>
-    </div>`;
-  const autoSyncOn = opts['autoSync'] !== false;
-  const autoSyncField = `
-    <div class="connector-field">
-      <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-weight:600;">
-        <input type="checkbox" id="connector-autosync" ${autoSyncOn ? 'checked' : ''} />
-        Auto-sync (ingest automatically)
-      </label>
-      <span class="field-hint">On: pulls on its schedule and on file changes. <strong>Off (manual)</strong>: the connector stays idle until you click <strong>Pull now</strong> or <strong>Re-sync</strong> — set the stage first (e.g. Presentation Mode + select the engram), then start the import on cue.</span>
-    </div>`;
-  // Shown at the bottom of every connector form — applies universally.
-  const privacyNote = `
-    <div class="connector-help" style="border-left-color:var(--ok); margin-top:4px;">
-      <strong>Continuous sync · fully local · encrypted.</strong>
-      Graphnosis keeps pulling updates from this connector on its own schedule — you connect once and it stays current.
-      All ingested data is stored encrypted on your machine and never sent to Graphnosis servers. Fully auditable from Graphnosis → Sources.
-    </div>`;
-
-  let html = '';
-  switch (kind) {
-    case 'rss':
-      html = `
-        <div class="connector-help">
-          Paste one feed URL per line. Graphnosis dedupes by entry guid/link so re-pulls are no-ops on already-seen entries.
-        </div>
-        ${idField}
-        ${graphField}
-        <div class="connector-field">
-          <label for="connector-rss-feeds">Feed URL(s)</label>
-          <textarea id="connector-rss-feeds" placeholder="https://example.com/feed.xml&#10;https://another.com/rss">${escapeHtml(((opts['feeds'] as string[]) ?? []).join('\n'))}</textarea>
-        </div>`;
-      break;
-    case 'github':
-      html = `
-        <div class="connector-help">
-          <strong>Bring your own Personal Access Token.</strong>
-          <ol>
-            <li><a href="#" data-extlink="https://github.com/settings/tokens?type=beta">Open GitHub fine-grained tokens →</a></li>
-            <li>Create a token with read access to the repos you want indexed.</li>
-            <li>Paste it below. Your token never leaves your machine.</li>
-          </ol>
-        </div>
-        ${idField}
-        ${graphField}
-        <div class="connector-field">
-          <label for="connector-github-token">Personal Access Token</label>
-          <input type="password" id="connector-github-token" placeholder="github_pat_…" value="${escapeHtml(creds['token'] ?? '')}" />
-        </div>
-        <div class="connector-field">
-          <label for="connector-github-repos">Repos to watch (comma-separated)</label>
-          <input type="text" id="connector-github-repos" placeholder="owner/repo, another-owner/another-repo" value="${escapeHtml(((opts['repos'] as string[]) ?? []).join(', '))}" />
-        </div>
-        <div class="connector-field">
-          <label>Event types</label>
-          <div class="connector-checkboxes">
-            <label><input type="checkbox" id="connector-github-issues" ${((opts['issues'] as boolean) ?? true) ? 'checked' : ''} /> Issues</label>
-            <label><input type="checkbox" id="connector-github-prs" ${((opts['prs'] as boolean) ?? true) ? 'checked' : ''} /> Pull requests</label>
-            <label><input type="checkbox" id="connector-github-releases" ${((opts['releases'] as boolean) ?? false) ? 'checked' : ''} /> Releases</label>
-          </div>
-        </div>`;
-      break;
-    case 'slack':
-      html = `
-        <div class="connector-help">
-          <strong>Bring your own Slack app.</strong>
-          <ol>
-            <li><a href="#" data-extlink="https://api.slack.com/apps">Open api.slack.com/apps →</a></li>
-            <li>Create New App → From scratch → name it "Graphnosis".</li>
-            <li>OAuth & Permissions → add scopes: <code>channels:history</code>, <code>stars:read</code> (whichever you want indexed).</li>
-            <li>Install to Workspace → copy the <strong>Bot Token</strong> (starts with <code>xoxb-</code>) or use a <strong>User Token</strong> (<code>xoxp-</code>).</li>
-          </ol>
-        </div>
-        ${idField}
-        ${graphField}
-        <div class="connector-field">
-          <label for="connector-slack-token">Bot or User Token</label>
-          <input type="password" id="connector-slack-token" placeholder="xoxb-… or xoxp-…" value="${escapeHtml(creds['token'] ?? '')}" />
-        </div>
-        <div class="connector-field">
-          <label>What to pull</label>
-          <div class="connector-checkboxes">
-            <label><input type="checkbox" id="connector-slack-starred" ${((opts['starred'] as boolean) ?? true) ? 'checked' : ''} /> Starred items</label>
-            <label><input type="checkbox" id="connector-slack-channels" ${((opts['channelHistory'] as boolean) ?? false) ? 'checked' : ''} /> Channel history</label>
-          </div>
-        </div>`;
-      break;
-    case 'trello':
-      html = `
-        <div class="connector-help">
-          <strong>Bring your own Trello API key + token.</strong>
-          <ol>
-            <li><a href="#" data-extlink="https://trello.com/power-ups/admin">Open trello.com/power-ups/admin →</a> create a new Power-Up.</li>
-            <li>API Key tab → generate a Server Token by clicking "Token".</li>
-            <li>Paste both below.</li>
-          </ol>
-        </div>
-        ${idField}
-        ${graphField}
-        <div class="connector-field-row">
-          <div class="connector-field">
-            <label for="connector-trello-key">API Key</label>
-            <input type="password" id="connector-trello-key" value="${escapeHtml(creds['apiKey'] ?? '')}" />
-          </div>
-          <div class="connector-field">
-            <label for="connector-trello-token">Token</label>
-            <input type="password" id="connector-trello-token" value="${escapeHtml(creds['token'] ?? '')}" />
-          </div>
-        </div>
-        <div class="connector-field">
-          <label for="connector-trello-boards">Board IDs (comma-separated)</label>
-          <input type="text" id="connector-trello-boards" placeholder="boardId1, boardId2" value="${escapeHtml(((opts['boardIds'] as string[]) ?? []).join(', '))}" />
-          <span class="field-hint">Get board IDs from the URL: trello.com/b/<strong>BOARD_ID</strong>/board-name</span>
-        </div>`;
-      break;
-    case 'linear':
-      html = `
-        <div class="connector-help">
-          <strong>Bring your own Linear API key.</strong>
-          <ol>
-            <li><a href="#" data-extlink="https://linear.app/settings/api">Open linear.app/settings/api →</a></li>
-            <li>Create a Personal API key. No OAuth flow — Linear's personal keys are first-class.</li>
-            <li>Paste below.</li>
-          </ol>
-        </div>
-        ${idField}
-        ${graphField}
-        <div class="connector-field">
-          <label for="connector-linear-key">Personal API Key</label>
-          <input type="password" id="connector-linear-key" placeholder="lin_api_…" value="${escapeHtml(creds['apiKey'] ?? '')}" />
-        </div>
-        <div class="connector-field">
-          <label for="connector-linear-team">Team key (optional filter)</label>
-          <input type="text" id="connector-linear-team" placeholder="ENG, OPS, …" value="${escapeHtml(creds['teamKey'] ?? '')}" />
-          <span class="field-hint">Leave blank to pull from every team you have access to.</span>
-        </div>`;
-      break;
-    case 'obsidian':
-      html = `
-        <div class="connector-help">
-          No API key needed — Graphnosis reads your vault's <code>.md</code> files directly from disk.
-          Point it at your vault folder and it will ingest new and modified notes within
-          seconds (it watches the folder), with a periodic re-scan as a backstop.
-          The <code>.obsidian/</code> config directory is always skipped.
-        </div>
-        ${idField}
-        ${graphField}
-        <div class="connector-field">
-          <label for="connector-obsidian-vault">Vault folder path</label>
-          <div style="display:flex; gap:8px; align-items:flex-start;">
-            <input type="text" id="connector-obsidian-vault" placeholder="/Users/you/Documents/MyVault" value="${escapeHtml((opts['vaultPath'] as string) ?? '')}" style="flex:1;" />
-            <button type="button" id="connector-obsidian-browse" class="btn-secondary" style="white-space:nowrap;">Browse…</button>
-          </div>
-          <span class="field-hint">Absolute path to the folder Obsidian uses as your vault.</span>
-        </div>
-        ${mirrorDeletesField}`;
-      break;
-    case 'gbrain':
-      html = `
-        <div class="connector-help">
-          No API key needed — Graphnosis reads GBrain's <code>.md</code> files directly from your local git repo.
-          Point it at the repo folder and it will ingest new and modified notes within
-          seconds (it watches the folder), with a periodic re-scan as a backstop.
-          GBrain wikilinks (<code>[[wiki/...]]</code>) are preserved in the ingested text.
-        </div>
-        ${idField}
-        ${graphField}
-        <div class="connector-field">
-          <label for="connector-gbrain-repo">GBrain repo path</label>
-          <div style="display:flex; gap:8px; align-items:flex-start;">
-            <input type="text" id="connector-gbrain-repo" placeholder="/Users/you/Documents/my-gbrain" value="${escapeHtml((opts['repoPath'] as string) ?? '')}" style="flex:1;" />
-            <button type="button" id="connector-gbrain-browse" class="btn-secondary" style="white-space:nowrap;">Browse…</button>
-          </div>
-          <span class="field-hint">Absolute path to the root of your GBrain git repository.</span>
-        </div>
-        ${mirrorDeletesField}`;
-      break;
-    case 'ai-context':
-      html = `
-        <div class="connector-help">
-          Indexes standard AI assistant context files across your projects — no credentials required.
-          <br /><br />
-          <strong>Only these specific filenames are indexed</strong> — no source code or other files are read:
-          <code>CLAUDE.md</code>, <code>AGENTS.md</code>, <code>MEMORY.md</code>,
-          <code>.cursorrules</code>, <code>.cursor/rules/*.md</code>,
-          <code>.github/copilot-instructions.md</code>, <code>GEMINI.md</code>, <code>.windsurfrules</code>.
-          <br /><br />
-          <strong>~/.claude/CLAUDE.md</strong> is always included automatically.
-          <br /><br />
-          To index code or all <code>.md</code> files in a repo, use the <strong>GBrain</strong> connector instead.
-        </div>
-        ${idField}
-        ${graphField}
-        <div class="connector-field">
-          <label for="connector-aicontext-paths">Project folders (one per line)</label>
-          <textarea id="connector-aicontext-paths" rows="4" placeholder="/Users/you/Developer/my-project&#10;/Users/you/Developer/another-project">${escapeHtml(((opts['paths'] as string[]) ?? []).join('\n'))}</textarea>
-          <button type="button" id="connector-aicontext-browse" class="btn-secondary" style="margin-top:6px;">Browse…</button>
-          <span class="field-hint">Point at the root of each project folder. Only the known AI context filenames above will be read — nothing else.</span>
-        </div>
-        ${mirrorDeletesField}`;
-      break;
-    case 'webhook': {
-      const token = (opts['webhookToken'] as string) || '<generated on save>';
-      const url = `http://localhost:3458/webhook/${existing?.id ?? '<id>'}/${token}`;
-      html = `
-        <div class="connector-help">
-          Push-only connector. Anything that can POST JSON can send events here:
-          Zapier, IFTTT, custom scripts, GitHub Actions, ngrok-exposed webhooks, etc.
-          Expected body shape: <code>{ "text": "...", "label": "...", "source": "..." }</code>.
-        </div>
-        ${idField}
-        ${graphField}
-        ${existing ? `
-        <div class="connector-field">
-          <label>Webhook URL</label>
-          <div class="connector-webhook-url-row">
-            <code id="connector-webhook-url">${escapeHtml(url)}</code>
-            <button type="button" id="btn-copy-webhook-url" class="btn-ghost" style="font-size: 15px; padding: 3px 8px;">Copy</button>
-          </div>
-          <span class="field-hint">Paste into Zapier / IFTTT / your script's webhook target.</span>
-        </div>` : `
-        <div class="connector-help connector-help-accent">
-          🔑 <strong>Your unique webhook URL appears here once you click Save.</strong> Copy it then, and point your device, script, or Zapier/IFTTT/Make at it.
-        </div>`}`;
-      break;
-    }
-  }
-  return html + intervalField + fullRescanField + autoSyncField + privacyNote;
-}
-
-function populateEngramDropdown(selectId: string, selectedId?: string): void {
-  const sel = document.getElementById(selectId) as HTMLSelectElement | null;
-  if (!sel) return;
-  const fallback = selectedId ?? loadedGraphs[0]?.graphId ?? '';
-  const nameInput = document.getElementById('connector-new-engram-name') as HTMLInputElement | null;
-  sel.innerHTML =
-    `<option value="__new__">New Engram…</option>` +
-    [...loadedGraphs]
-      // Archived engrams must never appear as a choice. Keep the currently
-      // selected one (if it happens to be archived) so editing an existing
-      // connector/scope doesn't silently drop its target.
-      .filter((g) => !g.metadata.archived || g.graphId === selectedId)
-      .sort((a, b) => (a.metadata.displayName ?? a.graphId).localeCompare(b.metadata.displayName ?? b.graphId))
-      .map((g) => `<option value="${escapeHtml(g.graphId)}" ${g.graphId === fallback ? 'selected' : ''}>${escapeHtml(g.metadata.displayName ?? g.graphId)}</option>`)
-      .join('');
-  // Select the fallback (skips __new__ unless no graphs exist)
-  if (fallback && Array.from(sel.options).some((o) => o.value === fallback)) sel.value = fallback;
-  sel.addEventListener('change', () => {
-    if (nameInput) nameInput.style.display = sel.value === '__new__' ? '' : 'none';
-  });
-}
-
-function collectConnectorFormData(kind: ConnectorKind): Partial<ConnectorConfigShape> | null {
-  const id = ($m<HTMLInputElement>('connector-id')?.value || '').trim();
-  const graphId = ($m<HTMLSelectElement>('connector-graphid')?.value || '').trim();
-  if (!graphId) { alert('Pick a target engram.'); return null; }
-  // __new__ is resolved to a real graphId in the save handler before install.
-  const credentials: Record<string, string> = {};
-  const options: Record<string, unknown> = {};
-  switch (kind) {
-    case 'rss': {
-      const feeds = ($m<HTMLTextAreaElement>('connector-rss-feeds')?.value || '')
-        .split('\n').map((s) => s.trim()).filter(Boolean);
-      if (!feeds.length) { alert('At least one feed URL is required.'); return null; }
-      options['feeds'] = feeds;
-      break;
-    }
-    case 'github': {
-      const token = $m<HTMLInputElement>('connector-github-token')?.value || '';
-      if (!token) { alert('GitHub PAT is required.'); return null; }
-      credentials['token'] = token;
-      options['repos'] = ($m<HTMLInputElement>('connector-github-repos')?.value || '')
-        .split(',').map((s) => s.trim()).filter(Boolean);
-      options['issues'] = $m<HTMLInputElement>('connector-github-issues')?.checked ?? true;
-      options['prs'] = $m<HTMLInputElement>('connector-github-prs')?.checked ?? true;
-      options['releases'] = $m<HTMLInputElement>('connector-github-releases')?.checked ?? false;
-      break;
-    }
-    case 'slack': {
-      const token = $m<HTMLInputElement>('connector-slack-token')?.value || '';
-      if (!token) { alert('Slack token is required.'); return null; }
-      credentials['token'] = token;
-      options['starred'] = $m<HTMLInputElement>('connector-slack-starred')?.checked ?? true;
-      options['channelHistory'] = $m<HTMLInputElement>('connector-slack-channels')?.checked ?? false;
-      break;
-    }
-    case 'trello': {
-      const apiKey = $m<HTMLInputElement>('connector-trello-key')?.value || '';
-      const token = $m<HTMLInputElement>('connector-trello-token')?.value || '';
-      if (!apiKey || !token) { alert('Trello API key + token are both required.'); return null; }
-      credentials['apiKey'] = apiKey;
-      credentials['token'] = token;
-      options['boardIds'] = ($m<HTMLInputElement>('connector-trello-boards')?.value || '')
-        .split(',').map((s) => s.trim()).filter(Boolean);
-      break;
-    }
-    case 'linear': {
-      const apiKey = $m<HTMLInputElement>('connector-linear-key')?.value || '';
-      if (!apiKey) { alert('Linear API key is required.'); return null; }
-      credentials['apiKey'] = apiKey;
-      const team = $m<HTMLInputElement>('connector-linear-team')?.value.trim() || '';
-      if (team) credentials['teamKey'] = team;
-      break;
-    }
-    case 'obsidian': {
-      const vaultPath = $m<HTMLInputElement>('connector-obsidian-vault')?.value.trim() || '';
-      if (!vaultPath) { alert('Vault path is required.'); return null; }
-      options['vaultPath'] = vaultPath;
-      options['mirrorDeletes'] = $m<HTMLInputElement>('connector-mirror-deletes')?.checked === true;
-      break;
-    }
-    case 'gbrain': {
-      const repoPath = $m<HTMLInputElement>('connector-gbrain-repo')?.value.trim() || '';
-      if (!repoPath) { alert('Repo path is required.'); return null; }
-      options['repoPath'] = repoPath;
-      options['mirrorDeletes'] = $m<HTMLInputElement>('connector-mirror-deletes')?.checked === true;
-      break;
-    }
-    case 'ai-context': {
-      const paths = ($m<HTMLTextAreaElement>('connector-aicontext-paths')?.value || '')
-        .split('\n').map((s) => s.trim()).filter(Boolean);
-      options['paths'] = paths;
-      options['mirrorDeletes'] = $m<HTMLInputElement>('connector-mirror-deletes')?.checked === true;
-      break;
-    }
-    case 'webhook': {
-      // Token auto-generated server-side if missing.
-      break;
-    }
-  }
-  // Per-connector check interval (optional, universal). Blank → no override
-  // (the sidecar falls back to the global default).
-  const intervalRaw = ($m<HTMLInputElement>('connector-interval')?.value || '').trim();
-  if (intervalRaw) {
-    const mins = Math.min(1440, Math.max(1, Math.round(Number(intervalRaw) || 0)));
-    options['intervalMs'] = mins > 0 ? mins * 60_000 : undefined;
-  } else {
-    // Blank → clear any existing override (merge persists, undefined is dropped).
-    options['intervalMs'] = undefined;
-  }
-  // Self-heal full re-scan cadence: blank → default (drop override); 0 → disable.
-  const fullRescanRaw = ($m<HTMLInputElement>('connector-full-rescan')?.value || '').trim();
-  if (fullRescanRaw === '') {
-    options['fullRescanMinutes'] = undefined;
-  } else {
-    options['fullRescanMinutes'] = Math.min(10080, Math.max(0, Math.round(Number(fullRescanRaw) || 0)));
-  }
-  // Manual mode: unchecked → connector stays idle until Pull now / Re-sync.
-  options['autoSync'] = $m<HTMLInputElement>('connector-autosync')?.checked ?? true;
-  return {
-    ...(id ? { id } : {}),
-    kind,
-    graphId,
-    enabled: true,
-    credentials,
-    options,
-  };
-}
-
-// Wire up the connectors UI.
-{
-  // Refresh on cortex unlock + when user toggles the Settings tab.
-  document.querySelectorAll<HTMLButtonElement>('.btn-add-connector').forEach((btn) => {
-    btn.addEventListener('click', () => {
-      const kind = btn.dataset['kind'] as ConnectorKind | undefined;
-      if (kind) openConnectorSetupModal(kind);
-    });
-  });
-
-  document.getElementById('connector-setup-cancel')?.addEventListener('click', () => {
-    document.getElementById('connector-setup-modal')?.classList.add('hidden');
-    pendingConnectorEditId = null; pendingConnectorKind = null;
-  });
-
-  document.getElementById('connector-setup-save')?.addEventListener('click', async () => {
-    if (!pendingConnectorKind) return;
-    const btn = document.getElementById('connector-setup-save') as HTMLButtonElement | null;
-    if (btn) { btn.disabled = true; btn.textContent = 'Saving…'; }
-    try {
-      const config = collectConnectorFormData(pendingConnectorKind);
-      if (!config) { if (btn) { btn.disabled = false; btn.textContent = 'Save'; } return; }
-      // Create a new engram on-the-fly when the user picked "New Engram…".
-      if (config.graphId === '__new__') {
-        const displayName = ($m<HTMLInputElement>('connector-new-engram-name')?.value || '').trim();
-        if (!displayName) { alert('Enter a name for the new engram.'); if (btn) { btn.disabled = false; btn.textContent = 'Save'; } return; }
-        const newGraphId = displayName.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') +
-          '-' + Math.random().toString(36).slice(-4);
-        const connCreateResult = await invoke<{ error?: { code: string } }>('create_graph_with_template', { graphId: newGraphId, template: 'personal', displayName });
-        if (connCreateResult?.error?.code === 'ENGRAM_LIMIT_REACHED') {
-          alert('Free plan: 3 engram limit reached. Upgrade to Pro at graphnosis.com/upgrade to create more engrams.');
-          void invoke('plugin:opener|open_url', { url: 'https://graphnosis.com/upgrade' });
-          if (btn) { btn.disabled = false; btn.textContent = 'Save'; }
-          return;
-        }
-        loadedGraphs = await invoke<GraphWithMetadata[]>('list_graphs_with_metadata', { includeUnloaded: true });
-        syncEngramPicker();
-        config.graphId = newGraphId;
-      }
-      // If editing, force the id from the existing record.
-      if (pendingConnectorEditId) config.id = pendingConnectorEditId;
-      await invoke('install_connector', { config });
-      document.getElementById('connector-setup-modal')?.classList.add('hidden');
-      pendingConnectorEditId = null; pendingConnectorKind = null;
-      await refreshConnectorsList();
-      const tid = addIngestToast('Connector saved', 'Will start pulling on the next interval');
-      finishIngestToast(tid, 'success', 'Will start pulling on the next interval');
-    } catch (e) {
-      const tid = addIngestToast(`Couldn't save connector`, String(e));
-      finishIngestToast(tid, 'error', String(e));
-    } finally {
-      if (btn) { btn.disabled = false; btn.textContent = 'Save'; }
-    }
-  });
-
-  // External links in the help panels (deep-links to provider dev consoles).
-  document.addEventListener('click', (e) => {
-    const a = (e.target as HTMLElement | null)?.closest('a[data-extlink]') as HTMLAnchorElement | null;
-    if (!a) return;
-    e.preventDefault();
-    const url = a.dataset['extlink'];
-    if (url) void invoke('open_external_url', { url });
-  });
-
-  // Copy webhook URL button (delegated since the URL row may not exist yet).
-  document.addEventListener('click', (e) => {
-    const btn = (e.target as HTMLElement | null)?.closest('#btn-copy-webhook-url') as HTMLButtonElement | null;
-    if (!btn) return;
-    const code = document.getElementById('connector-webhook-url');
-    if (!code) return;
-    void navigator.clipboard.writeText(code.textContent ?? '').then(() => {
-      const orig = btn.textContent; btn.textContent = 'Copied!';
-      setTimeout(() => { btn.textContent = orig; }, 1500);
-    });
-  });
-
-  // ── Custom engram picker dropdown — forces "drop down" direction ────────
-  // The native <select id="atlas-graph-picker"> opens in whatever direction
-  // macOS thinks fits (often upward, centered on the selected option). We
-  // replace its open behavior with a custom button + absolute-positioned
-  // dropdown that always opens DOWNWARD. The native <select> stays in DOM
-  // (hidden) as the source of truth — `.value` and `change` event listeners
-  // throughout the codebase keep working without modification.
   installCustomEngramPicker();
-
-  // Sources → Settings jump links. The "want this list to grow on its own?"
-  // hint above the source list points at the AI-clients and connectors
-  // panels in Settings. We switch panes, then scroll the target panel into
-  // view with a brief highlight so the user's eye lands on the right place.
   document.addEventListener('click', (e) => {
     const link = (e.target as HTMLElement | null)?.closest('[data-jump-settings]') as HTMLElement | null;
     if (!link) return;
     e.preventDefault();
     const target = link.dataset['jumpSettings'];
-    // Connectors + AI clients now live on the Get Connected page, not Settings.
     if (target === 'connectors' || target === 'ai-clients') { activateMode('get-connected'); return; }
     activateMode('settings');
-    // Defer scroll so the pane has finished its display:block transition.
     setTimeout(() => {
       const targetId = target === 'connectors' ? 'settings-panel-connectors'
-        : target === 'ai-clients' ? 'settings-panel-ai-clients'
-        : null;
+        : target === 'ai-clients' ? 'settings-panel-ai-clients' : null;
       if (!targetId) return;
       const panel = document.getElementById(targetId);
       if (!panel) return;
       panel.scrollIntoView({ behavior: 'smooth', block: 'start' });
-      // Brief 1.5s accent ring so the user's eye lands on the right panel.
       panel.style.transition = 'box-shadow 200ms ease';
       panel.style.boxShadow = '0 0 0 2px var(--accent)';
       setTimeout(() => { panel.style.boxShadow = ''; }, 1500);
@@ -21309,7 +20180,42 @@ void (async () => {
   try {
     // Restore the last cortex path before any UI renders so the unlock
     // screen — if that's where we land — already has the path filled in.
-    _initGConfirmModal();
+
+bindAppContext({
+  els, getLoadedGraphs: () => loadedGraphs, engramName, friendlyClient, showError, render,
+  getUnlockPending: () => unlockPending, rememberCortexDir, addIngestToast, finishIngestToast,
+  renderRailGetConnected, updateAtlasSyncButton, activateMode, renderMarkdownLite,
+  getGraphnosisGlobalNodes: () => graphnosisGlobalNodes, getGraphnosisAllNodes: () => graphnosisAllNodes,
+  getAtlasActiveGraph: () => atlasActiveGraph,
+  getSourcesFilterTerm: () => sourcesFilterTerm, setSourcesFilterTerm: (v) => { sourcesFilterTerm = v; },
+  showQuarantineConfirm, showRecoveryPhraseModal, refreshStats, openCortexManagementModal,
+  getNnConfirmPending: () => nnConfirmPending, setNnConfirmPending: (v) => { nnConfirmPending = v; },
+  getNnEnablingInProgress: () => nnEnablingInProgress, setNnEnablingInProgress: (v) => { nnEnablingInProgress = v; },
+  getLlmConfirmPending: () => llmConfirmPending, setLlmConfirmPending: (v) => { llmConfirmPending = v; },
+  LAST_ENGRAM_KEY, refreshBiometricButton, syncEngramPicker,
+  reloadGraphsMetadata: async () => {
+    loadedGraphs = await invoke<GraphWithMetadata[]>('list_graphs_with_metadata', { includeUnloaded: true });
+    syncEngramPicker();
+    void refreshCortexScopedStats();
+  },
+  pushDataIntoAtlas, renderAtlasLegend, mountAtlasIfNeeded, currentAtlasEngineKind,
+  getMainAtlas: () => mainAtlas, getCurrentForgetMode: () => currentForgetMode,
+  setCurrentForgetMode: (m) => { currentForgetMode = m; }, ATLAS_ENGINE_STORAGE_KEY,
+  isEngramPreloadInProgress,
+});
+initActivity({
+  activityList: els.activityList, activityDateFrom: els.activityDateFrom, activityDateTo: els.activityDateTo,
+  activityActorSelect: els.activityActorSelect, activityEngramSelect: els.activityEngramSelect,
+  activitySearch: els.activitySearch, activityChips: els.activityChips, activityHourFrom: els.activityHourFrom,
+  activityHourTo: els.activityHourTo, activityDateClear: els.activityDateClear, activityStats: els.activityStats,
+  btnActivityRefresh: els.btnActivityRefresh,
+});
+initConnectors();
+initGhampus();
+initUnlock({ cortexDir: els.cortexDir, btnUnlock: els.btnUnlock, btnLock: els.btnLock, bootStatusText: els.bootStatusText, unlockStatus: els.unlockStatus, passphrase: els.passphrase });
+initCloudOnboardingHandlers();
+
+    initDialogs();
     prefillLastCortexDir();
     initPresentation(); // load saved selection + wire Esc/banner (boots un-masked)
 
@@ -22435,6 +21341,8 @@ async function loadStudioSubscriptionState(): Promise<void> {
     updateStudioVisibility();
     populateStudioEngramSelects();
     void refreshStudioLlmBadge();
+    // Drop stale domain OTP cache left in localStorage by an earlier attempt.
+    clearAbandonedDomainVerificationCache();
     // Refresh the license token from the billing server on unlock. If the
     // user has previously stored a token, we know their email (from the
     // token's `sub` field). If not, the poll is a no-op — they'll either
@@ -22482,6 +21390,10 @@ const BILLING_DOMAIN_POLL_KEY = 'billing:domainPollKey';
 // unlock-time poll to once per 24 hours so the server never sends a
 // spurious OTP email on every cortex unlock.
 const BILLING_LAST_POLL_TS_KEY = 'billing:lastPollTs';
+// Set when the user explicitly clicks "Activate work email" and the server
+// returns otp_required. Cleared on verify, reset, or clearing the domain field.
+// Prevents treating an abandoned domain OTP attempt as a silent refresh target.
+const BILLING_DOMAIN_OTP_PENDING_KEY = 'billing:domainOtpPending';
 const BILLING_POLL_THROTTLE_MS = 24 * 60 * 60 * 1000; // 24 h
 
 interface LicenseTokenEntry {
@@ -22523,52 +21435,112 @@ async function ipcLicenseSetToken(token: string): Promise<{
   return ipcCall('license:setToken', { token });
 }
 
-async function ipcLicenseClear(): Promise<void> {
-  try { await ipcCall('license:clear', {}); } catch { /* ignore — local cleanup still runs */ }
+function clearBillingLocalCache(): void {
   localStorage.removeItem(BILLING_EMAIL_KEY);
   localStorage.removeItem(BILLING_DOMAIN_EMAIL_KEY);
   localStorage.removeItem(BILLING_POLL_KEY);
   localStorage.removeItem(BILLING_DOMAIN_POLL_KEY);
   localStorage.removeItem(BILLING_LAST_POLL_TS_KEY);
+  localStorage.removeItem(BILLING_DOMAIN_OTP_PENDING_KEY);
 }
 
-/** Best-known email for billing — the token's `sub` first, then the cached
- *  value the user typed into the Refresh prompt (if any). */
+function getStoredDomainEmail(): string {
+  return localStorage.getItem(BILLING_DOMAIN_EMAIL_KEY)?.trim() ?? '';
+}
+
+function markDomainOtpPending(email: string): void {
+  localStorage.setItem(BILLING_DOMAIN_OTP_PENDING_KEY, email.toLowerCase());
+}
+
+function clearDomainOtpPending(): void {
+  localStorage.removeItem(BILLING_DOMAIN_OTP_PENDING_KEY);
+}
+
+function clearAbandonedDomainVerificationCache(): void {
+  // Domain/work email + pending OTP live in localStorage, which survives cortex
+  // reset. Drop stale entries when no domain seat token is stored so unlock-time
+  // polls cannot keep hitting the billing server for an abandoned verification.
+  void ipcLicenseStatus().then((status) => {
+    const hasDomainSeat = status.tokens?.some((t) => t.source === 'domain') ?? false;
+    if (hasDomainSeat) {
+      clearDomainOtpPending();
+      return;
+    }
+    const domainEmail = getStoredDomainEmail();
+    const pending = localStorage.getItem(BILLING_DOMAIN_OTP_PENDING_KEY);
+    if (pending) {
+      localStorage.removeItem(BILLING_DOMAIN_EMAIL_KEY);
+      clearDomainOtpPending();
+    }
+    // Legacy builds wrote the work address into billing:email — scrub it when
+    // it matches the abandoned domain address so Stripe refresh/poll won't reuse it.
+    const stripeEmail = localStorage.getItem(BILLING_EMAIL_KEY)?.trim() ?? '';
+    if (stripeEmail && domainEmail && stripeEmail.toLowerCase() === domainEmail.toLowerCase()) {
+      localStorage.removeItem(BILLING_EMAIL_KEY);
+    }
+  }).catch(() => { /* non-fatal */ });
+}
+
+async function ipcLicenseClear(): Promise<void> {
+  try { await ipcCall('license:clear', {}); } catch { /* ignore — local cleanup still runs */ }
+  clearBillingLocalCache();
+}
+
+/** Best-known Stripe/personal receipt email — never the domain-seat address. */
 async function getBillingEmail(): Promise<string | null> {
   const status = await ipcLicenseStatus();
-  if (status.sub && status.sub.includes('@')) return status.sub;
+  const personal = status.tokens?.find((t) => t.source === 'personal');
+  if (personal?.sub?.includes('@')) return personal.sub;
+  if (status.sub && status.sub.includes('@')) {
+    const domain = status.tokens?.find((t) => t.source === 'domain');
+    if (!domain || status.sub.toLowerCase() !== domain.sub.toLowerCase()) return status.sub;
+  }
   const cached = localStorage.getItem(BILLING_EMAIL_KEY);
   return cached && cached.includes('@') ? cached : null;
 }
 
 async function pollLicenseTokenFromServer(explicitEmail?: string): Promise<{ ok: boolean; reason?: string; plan?: string } | null> {
-  const email = explicitEmail ?? await getBillingEmail();
-  if (!email) return null;
-  // Domain seat emails require OTP — polling them hits the billing server and
-  // triggers a new verification email on every call. Skip silently if the
-  // resolved email matches the stored domain address.
-  const domainEmail = localStorage.getItem(BILLING_DOMAIN_EMAIL_KEY) ?? '';
-  if (!explicitEmail && domainEmail && email.toLowerCase() === domainEmail.toLowerCase()) return null;
-  // Background (non-explicit) polls are throttled to once per 24 hours.
-  // Without this gate, every cortex unlock hits the billing server and
-  // the server sends a fresh OTP email whenever the poll secret is absent
-  // or stale — even for users who already have a valid local license.
+  let email = explicitEmail;
+  let key: string | undefined;
+
   if (!explicitEmail) {
+    // Silent unlock-time poll: only refresh a Stripe claim the device already
+    // holds a poll secret for. Never auto-poll domain/work emails (OTP gate) or
+    // trigger Stripe OTP recovery — those require an explicit user click.
+    const status = await ipcLicenseStatus();
+    if (status.present && status.valid) return null;
+    key = localStorage.getItem(BILLING_POLL_KEY) ?? undefined;
+    if (!key) return null;
+    email = localStorage.getItem(BILLING_EMAIL_KEY)?.trim() ?? '';
+    if (!email.includes('@')) return null;
+    const domainEmail = getStoredDomainEmail();
+    if (domainEmail && email.toLowerCase() === domainEmail.toLowerCase()) return null;
+    if (localStorage.getItem(BILLING_DOMAIN_OTP_PENDING_KEY)) return null;
     const lastPoll = Number(localStorage.getItem(BILLING_LAST_POLL_TS_KEY) ?? 0);
     if (Date.now() - lastPoll < BILLING_POLL_THROTTLE_MS) return null;
+    // Stamp before the network call so a failed/otp_required response cannot
+    // cause a retry loop on every subsequent unlock within the throttle window.
+    localStorage.setItem(BILLING_LAST_POLL_TS_KEY, String(Date.now()));
+  } else {
+    email = explicitEmail;
+    key = localStorage.getItem(BILLING_POLL_KEY) ?? undefined;
   }
+
+  if (!email) return null;
+
   try {
     // Done in the sidecar (Node) — a browser fetch to graphnosis.com is blocked
     // by CORS in BOTH dev (localhost:5173) and the installed app (tauri://…),
     // since the billing API only allows its own web origin. The sidecar has no
     // such restriction, validates the token, and persists it on success.
-    const key = localStorage.getItem(BILLING_POLL_KEY) ?? undefined;
     const result = await ipcCall<{ ok: boolean; reason?: string; plan?: string }>(
       'license:pollServer', { email, key, baseUrl: BILLING_BASE_URL },
     );
     if (result?.ok) {
       console.log('[license] refreshed from server', result.plan);
-      localStorage.setItem(BILLING_LAST_POLL_TS_KEY, String(Date.now()));
+      if (explicitEmail) {
+        localStorage.setItem(BILLING_LAST_POLL_TS_KEY, String(Date.now()));
+      }
       void refreshSettingsLicenseStatus();
     } else if (result?.reason && result.reason !== 'no_token' && result.reason !== 'otp_required') {
       console.warn('[license] server poll:', result.reason);
@@ -22718,7 +21690,12 @@ function bindSettingsLicensePanel(): void {
   // Persist domain/work email to localStorage on blur; sync button state on every keystroke.
   domainEmailInput?.addEventListener('blur', () => {
     const v = domainEmailInput.value.trim();
-    if (v) localStorage.setItem(BILLING_DOMAIN_EMAIL_KEY, v);
+    if (v) {
+      localStorage.setItem(BILLING_DOMAIN_EMAIL_KEY, v);
+    } else {
+      localStorage.removeItem(BILLING_DOMAIN_EMAIL_KEY);
+      clearDomainOtpPending();
+    }
   });
   domainEmailInput?.addEventListener('input', () => syncDomainActivateBtn());
 
@@ -22822,6 +21799,7 @@ function bindSettingsLicensePanel(): void {
         'license:pollServer', { email, baseUrl: BILLING_BASE_URL },
       );
       if (result?.reason === 'otp_required') {
+        markDomainOtpPending(email);
         const otpSection = document.getElementById('license-otp-section');
         const otpEmailDisplay = document.getElementById('license-otp-email-display');
         if (otpEmailDisplay) otpEmailDisplay.textContent = email;
@@ -22857,9 +21835,12 @@ function bindSettingsLicensePanel(): void {
           ? `Activated — ${humanizePlanName(status.plan ?? 'Pro')} seat active.`
           : `No domain seat found for ${email} [${result?.reason ?? 'null'}] — check the address or contact your administrator.`;
       }
+      if (status.valid) clearDomainOtpPending();
     } catch (e) {
       console.error('[domain-activate] ipcCall threw:', e);
       if (domainFeedback) domainFeedback.textContent = `Activation failed: ${(e as Error).message ?? String(e)}`;
+    } finally {
+      domainActivateBtn.disabled = false;
     }
   });
 
@@ -22881,7 +21862,7 @@ function bindSettingsLicensePanel(): void {
     }
     const email = stripeOtpPending
       ? ((emailInput?.value ?? '').trim() || localStorage.getItem(BILLING_EMAIL_KEY) || '')
-      : (domainEmailInput?.value ?? '').trim();
+      : ((domainEmailInput?.value ?? '').trim() || getStoredDomainEmail());
     if (!email) return;
     const otpTarget = stripeOtpPending ? 'primary' : 'domain';
     otpSubmitBtn.disabled = true;
@@ -22906,6 +21887,7 @@ function bindSettingsLicensePanel(): void {
           // server with an OTP-required domain address on every unlock, sending a new
           // verification email each time.
           if (result.sub) localStorage.setItem(BILLING_DOMAIN_EMAIL_KEY, result.sub);
+          clearDomainOtpPending();
           document.getElementById('license-otp-section')?.classList.add('hidden');
           if (otpInput) otpInput.value = '';
           if (domainFeedback) domainFeedback.textContent = `Activated — ${humanizePlanName(result.plan ?? 'Pro')} seat claimed.`;
@@ -22938,7 +21920,7 @@ function bindSettingsLicensePanel(): void {
   otpResendBtn?.addEventListener('click', async () => {
     const email = stripeOtpPending
       ? ((emailInput?.value ?? '').trim() || localStorage.getItem(BILLING_EMAIL_KEY) || '')
-      : (domainEmailInput?.value ?? '').trim();
+      : ((domainEmailInput?.value ?? '').trim() || getStoredDomainEmail());
     if (!email) return;
     otpResendBtn.disabled = true;
     if (otpFeedback) otpFeedback.textContent = 'Sending…';
@@ -22947,6 +21929,7 @@ function bindSettingsLicensePanel(): void {
         'license:pollServer', { email, baseUrl: BILLING_BASE_URL },
       );
       if (result?.reason === 'otp_required') {
+        if (!stripeOtpPending) markDomainOtpPending(email);
         if (otpFeedback) otpFeedback.textContent = 'New code sent. Check your inbox.';
         if (otpInput) otpInput.value = '';
       } else {
@@ -23137,1635 +22120,6 @@ function updateStudioVisibility(): void {
     workspace?.classList.add('hidden');
   }
 }
-
-// ── Ghampus (local agent) ───────────────────────────────────────────────
-let ghampusEnabled = true;
-let ghampusPlan: 'free' | 'pro' | 'teams' | 'enterprise' = 'free';
-let ghampusRunning = false;  // true while a skill walk or message is in flight
-
-function setGhampusRunning(running: boolean): void {
-  ghampusRunning = running;
-  // "Stop all" only shows while something is actually in flight.
-  document.getElementById('btn-ghampus-kill')
-    ?.classList.toggle('hidden', !ghampusRunning || !ghampusEnabled);
-}
-
-function updateGhampusVisibility(): void {
-  document.getElementById('btn-ghampus-kill')
-    ?.classList.toggle('hidden', !ghampusRunning || !ghampusEnabled);
-  document.getElementById('btn-ghampus-resume')?.classList.toggle('hidden', ghampusEnabled);
-  document.getElementById('ghampus-kill-banner')?.classList.toggle('hidden', ghampusEnabled);
-  const chip = document.getElementById('ghampus-plan-chip');
-  if (chip) chip.textContent = ghampusPlan.charAt(0).toUpperCase() + ghampusPlan.slice(1);
-}
-
-async function refreshGhampusState(): Promise<void> {
-  try {
-    const s = await ipcCall<{ enabled: boolean; plan: 'free' | 'pro' | 'teams' | 'enterprise' }>('agent:status', {});
-    ghampusEnabled = s.enabled;
-    ghampusPlan = s.plan;
-    updateGhampusVisibility();
-  } catch { /* non-fatal — keep last known state */ }
-}
-
-// localStorage tracks when the user last visited the Ghampus tab so the
-// notifications panel can filter "what's new since then". A 7-day fallback
-// applies on first visit so brand-new users see SOMETHING populated.
-const GHAMPUS_LAST_VISITED_KEY = 'graphnosis.ghampusLastVisitedAt';
-
-const NOTIF_ORIGIN_ICONS: Record<string, string> = {
-  connector: '🔌',
-  'ai-client': '💬',
-  sharing: '🤝',
-  direct: '📁',
-  other: '·',
-};
-
-// ── Settings → Models panel ────────────────────────────────────────────
-interface ProviderRow {
-  id: string;
-  displayName: string;
-  tagline: string;
-  local: boolean;
-  builtIn: boolean;
-  homepage: string;
-  enabled: boolean;
-  hasKey?: boolean;
-  keyTail?: string;
-  adminLocked?: boolean;
-  poolSpentUsd?: number;
-}
-
-interface ModelsCatalogResponse {
-  catalogVersion: string;
-  providers: ProviderRow[];
-  models: Array<{ id: string; provider: string; displayName: string; capabilities: string[] }>;
-  strategy: 'adaptive' | 'local-only' | 'always-best';
-  monthlyBudgetUsd: number | null;
-  spentThisCycleUsd: number;
-}
-
-async function refreshModelsPanel(): Promise<void> {
-  try {
-    const data = await ipcCall<ModelsCatalogResponse>('models:catalog', {});
-    // Strategy radios
-    document.querySelectorAll<HTMLInputElement>('input[name="models-strategy"]').forEach((r) => {
-      r.checked = r.value === data.strategy;
-      r.onchange = () => {
-        if (r.checked) void ipcCall('models:setStrategy', { strategy: r.value });
-      };
-    });
-    // Budget input
-    const budgetInput = document.getElementById('models-budget-input') as HTMLInputElement | null;
-    if (budgetInput) budgetInput.value = data.monthlyBudgetUsd != null ? String(data.monthlyBudgetUsd) : '';
-    const spentLabel = document.getElementById('models-budget-spent');
-    if (spentLabel) {
-      spentLabel.textContent = data.monthlyBudgetUsd
-        ? `spent: $${data.spentThisCycleUsd.toFixed(2)} of $${data.monthlyBudgetUsd.toFixed(2)} this cycle`
-        : `spent: $${data.spentThisCycleUsd.toFixed(2)} this cycle · no cap`;
-    }
-    const saveBtn = document.getElementById('btn-models-save-budget');
-    if (saveBtn) {
-      saveBtn.onclick = () => {
-        void (async () => {
-          const v = budgetInput?.value.trim();
-          const n = v ? Number(v) : null;
-          await ipcCall('models:setBudget', { monthlyBudgetUsd: n });
-          void refreshModelsPanel();
-        })();
-      };
-    }
-    // Catalog version
-    const ver = document.getElementById('models-catalog-version');
-    if (ver) ver.textContent = `Catalog version: ${data.catalogVersion} · ${data.models.length} models known`;
-    // Provider list
-    const list = document.getElementById('models-provider-list');
-    if (list) {
-      list.innerHTML = data.providers.map((p) => {
-        const lockBadge = p.adminLocked ? '<span style="font-size: 11px; background: #fee2e2; color: #991b1b; padding: 1px 6px; border-radius: 8px; margin-left: 6px;">🔒 admin</span>' : '';
-        const localBadge = p.local ? '<span style="font-size: 11px; background: #d1fae5; color: #065f46; padding: 1px 6px; border-radius: 8px; margin-left: 6px;">local · free</span>' : '';
-        const keyChip = p.hasKey ? `<span class="subtitle" style="font-size: 11px;">key ···${escapeHtml(p.keyTail ?? '')}</span>` : '';
-        const modelCount = data.models.filter((m) => m.provider === p.id).length;
-        return `<li style="display: flex; align-items: baseline; gap: 10px; padding: 10px 0; border-bottom: 1px solid var(--border, rgba(0,0,0,.06));">
-          <label style="display: flex; align-items: center; gap: 8px; flex: 1; cursor: ${p.adminLocked ? 'not-allowed' : 'pointer'};">
-            <input type="checkbox" ${p.enabled ? 'checked' : ''} ${p.adminLocked ? 'disabled' : ''} data-provider-toggle="${escapeHtml(p.id)}">
-            <span><strong>${escapeHtml(p.displayName)}</strong>${lockBadge}${localBadge}</span>
-          </label>
-          <span class="subtitle" style="font-size: 12px;">${escapeHtml(p.tagline)}</span>
-          <span class="subtitle" style="font-size: 11px;">${modelCount} model${modelCount === 1 ? '' : 's'}</span>
-          ${keyChip}
-        </li>`;
-      }).join('');
-      list.querySelectorAll<HTMLInputElement>('input[data-provider-toggle]').forEach((cb) => {
-        cb.onchange = () => {
-          const providerId = cb.dataset['providerToggle']!;
-          void (async () => {
-            await ipcCall('models:setProviderEnabled', { providerId, enabled: cb.checked });
-            void refreshModelsPanel();
-          })();
-        };
-      });
-    }
-  } catch { /* non-fatal */ }
-}
-
-// ── Activity → AI activity rollup ──────────────────────────────────────
-async function refreshAiActivityRollup(): Promise<void> {
-  try {
-    const data = await ipcCall<{
-      windowDays: number;
-      byClient: Array<{ client: string; events: number; lastSeenMs: number }>;
-      byTool: Array<{ tool: string; events: number; lastSeenMs: number }>;
-      skillWalks: Array<{ sourceId: string; whenMs: number }>;
-    }>('mcp:activitySummary', {});
-    const empty = document.getElementById('activity-ai-rollup-empty');
-    const body = document.getElementById('activity-ai-rollup-body');
-    const skillsBlock = document.getElementById('activity-ai-skills-block');
-    const hasAny = data.byClient.length > 0 || data.byTool.length > 0;
-    if (empty) empty.style.display = hasAny ? 'none' : '';
-    if (body) body.style.display = hasAny ? 'grid' : 'none';
-
-    const clientList = document.getElementById('activity-ai-clients-list');
-    if (clientList) {
-      const top = [...data.byClient].sort((a, b) => b.events - a.events).slice(0, 8);
-      clientList.innerHTML = top.length === 0
-        ? '<li class="subtitle" style="font-size: 12px;">No external client activity in the window.</li>'
-        : top.map((c) => `<li style="padding: 4px 0; display: flex; gap: 6px;">
-          <span>${escapeHtml(c.client)}</span>
-          <span class="subtitle" style="font-size: 12px; margin-left: auto;">${c.events} call${c.events === 1 ? '' : 's'}</span>
-        </li>`).join('');
-    }
-    const toolList = document.getElementById('activity-ai-tools-list');
-    if (toolList) {
-      const top = [...data.byTool].sort((a, b) => b.events - a.events).slice(0, 8);
-      toolList.innerHTML = top.length === 0
-        ? '<li class="subtitle" style="font-size: 12px;">No Ghampus tool calls in the window.</li>'
-        : top.map((t) => `<li style="padding: 4px 0; display: flex; gap: 6px;">
-          <code style="font-size: 12px;">${escapeHtml(t.tool)}</code>
-          <span class="subtitle" style="font-size: 12px; margin-left: auto;">${t.events} call${t.events === 1 ? '' : 's'}</span>
-        </li>`).join('');
-    }
-    if (skillsBlock) {
-      skillsBlock.style.display = data.skillWalks.length > 0 ? '' : 'none';
-      const skillsList = document.getElementById('activity-ai-skills-list');
-      if (skillsList) {
-        const now = Date.now();
-        skillsList.innerHTML = data.skillWalks.slice(0, 5).map((w) => {
-          const ago = Math.floor((now - w.whenMs) / 3600000);
-          return `<li style="padding: 4px 0;">
-            <code style="font-size: 12px;">${escapeHtml(w.sourceId)}</code>
-            <span class="subtitle" style="font-size: 12px; margin-left: 8px;">${ago}h ago</span>
-          </li>`;
-        }).join('');
-      }
-    }
-  } catch { /* non-fatal */ }
-}
-
-// ── Attachments — Linked files panel ──────────────────────────────────
-interface AttachmentRow {
-  id: string;
-  path: string;
-  kind: string;
-  label: string;
-  note?: string;
-  graphId: string;
-  sourceId?: string;
-  nodeIds?: string[];
-  lastVerifiedOk: boolean;
-  sizeBytes?: number;
-  addedAt?: number;
-}
-
-const ATTACHMENT_KIND_ICONS: Record<string, string> = {
-  image: '🖼',
-  pdf: '📕',
-  doc: '📄',
-  spreadsheet: '📊',
-  video: '🎬',
-  audio: '🎵',
-  archive: '🗜',
-  code: '⌨︎',
-  onenote: '📓',
-  other: '📎',
-};
-
-async function refreshGhampusAttachments(): Promise<void> {
-  try {
-    const res = await ipcCall<{ attachments: AttachmentRow[] }>('attachments:list', {});
-    const badge = document.getElementById('ghampus-files-pill-badge');
-    if (badge) {
-      if (res.attachments.length > 0) { badge.textContent = String(res.attachments.length); badge.classList.remove('hidden'); }
-      else { badge.classList.add('hidden'); }
-    }
-    const ul = document.getElementById('ghampus-attachments-list');
-    if (ul) {
-      ul.innerHTML = res.attachments.slice(0, 12).map((a) => {
-        const icon = ATTACHMENT_KIND_ICONS[a.kind] ?? '📎';
-        const stale = a.lastVerifiedOk ? '' : '<span class="subtitle" style="font-size: 10px; color: var(--g-warn, #c47); padding: 1px 5px; border: 1px solid var(--g-warn, #c47); border-radius: 3px;">not on this device</span>';
-        const size = a.sizeBytes ? formatAttachmentBytes(a.sizeBytes) : '';
-        // Broken attachments get a "Find new location…" repair button —
-        // the user picks the moved file; if we stored a content hash, we
-        // verify the new file matches before re-pointing.
-        const repairBtn = a.lastVerifiedOk
-          ? ''
-          : `<button class="g-btn" type="button" data-attach-repair="${escapeHtml(a.id)}" style="font-size: 10px; padding: 1px 6px;">Find new location…</button>`;
-        // Vision actions for image attachments: (A) Describe is open to
-        // everyone; (B) Extract entities + relationships is Pro; (C)
-        // Annotate opens the manual canvas surface.
-        const visionBtns = a.kind === 'image' && a.lastVerifiedOk
-          ? `<button class="g-btn" type="button" data-attach-describe="${escapeHtml(a.id)}" style="font-size: 10px; padding: 1px 6px;" title="Generate a text description via vision model (A)">🔍 Describe</button>
-             <button class="g-btn" type="button" data-attach-extract="${escapeHtml(a.id)}" style="font-size: 10px; padding: 1px 6px;" title="Extract entities + relationships as graph structure (B · Pro)">✨ Extract</button>
-             <button class="g-btn" type="button" data-attach-annotate="${escapeHtml(a.id)}" style="font-size: 10px; padding: 1px 6px;" title="Manually annotate boxes + arrows (C)">✏️ Annotate</button>`
-          : '';
-        return `<li style="padding: 6px 0; display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap;">
-          <span>${icon}</span>
-          <strong style="font-size: 13px; cursor: pointer;" data-attach-open="${escapeHtml(a.path)}" title="${a.lastVerifiedOk ? 'Open in default app' : 'File not found — pick its new location'}">${escapeHtml(a.label)}</strong>
-          <code style="font-size: 11px; opacity: .6;">${escapeHtml(a.graphId)}</code>
-          ${stale}
-          <span class="subtitle" style="font-size: 11px;">${size}</span>
-          ${repairBtn}
-          ${visionBtns}
-          <button class="g-btn" type="button" data-attach-detach="${escapeHtml(a.id)}" style="font-size: 10px; padding: 1px 6px; opacity: .6;">remove</button>
-        </li>`;
-      }).join('');
-      ul.querySelectorAll<HTMLButtonElement>('[data-attach-describe]').forEach((b) => {
-        b.onclick = () => {
-          void (async () => {
-            const id = b.dataset['attachDescribe']!;
-            b.textContent = '⏳ Describing…';
-            b.disabled = true;
-            try {
-              const result = await ipcCall<{ ok: boolean; description?: string; reason?: string; error?: string }>('attachments:describeImage', { attachmentId: id, ingestAsSource: true });
-              if (!result.ok) {
-                void gAlert('Vision describe failed', `${result.reason ?? 'unknown'} — ${result.error ?? 'is Ollama running with llama3.2-vision installed?'}`);
-                return;
-              }
-              void gAlert('Saved as memory', `Description ingested into the engram. First lines: "${(result.description ?? '').slice(0, 200)}…"`);
-              void refreshGhampusAttachments();
-            } finally {
-              b.disabled = false;
-              b.textContent = '🔍 Describe';
-            }
-          })();
-        };
-      });
-      ul.querySelectorAll<HTMLButtonElement>('[data-attach-extract]').forEach((b) => {
-        b.onclick = () => {
-          void (async () => {
-            const id = b.dataset['attachExtract']!;
-            b.textContent = '⏳ Extracting…';
-            b.disabled = true;
-            try {
-              const result = await ipcCall<{ ok: boolean; nodes?: Array<{ id: string; label: string; category?: string; note?: string }>; edges?: Array<{ from: string; to: string; label?: string; directed?: boolean }>; reason?: string; error?: string; message?: string }>('attachments:extractStructure', { attachmentId: id });
-              if (!result.ok) {
-                void gAlert('Extraction failed', result.message ?? result.error ?? result.reason ?? 'unknown');
-                return;
-              }
-              const nodes = result.nodes ?? [];
-              const edges = result.edges ?? [];
-              if (nodes.length === 0) {
-                void gAlert('Nothing to extract', 'The model didn\'t find any boxes or labeled elements in this image.');
-                return;
-              }
-              const preview = `${nodes.length} entit${nodes.length === 1 ? 'y' : 'ies'}, ${edges.length} relationship${edges.length === 1 ? '' : 's'}.\n\nEntities:\n${nodes.slice(0, 6).map((n) => `  • ${n.label}${n.category ? ` (${n.category})` : ''}`).join('\n')}${nodes.length > 6 ? `\n  …and ${nodes.length - 6} more` : ''}\n\nSave them to the engram as a new structured memory?`;
-              const ok = await gConfirm('Vision extracted a diagram', preview);
-              if (!ok) return;
-              const commit = await ipcCall<{ ok: boolean; sourceId?: string; reason?: string }>('attachments:commitExtraction', {
-                attachmentId: id,
-                nodes,
-                edges,
-              });
-              if (!commit.ok) {
-                void gAlert('Commit failed', commit.reason ?? 'unknown');
-                return;
-              }
-              void gAlert('Saved', `Extracted graph structure committed as a new source in the engram.`);
-              void refreshGhampusAttachments();
-            } finally {
-              b.disabled = false;
-              b.textContent = '✨ Extract';
-            }
-          })();
-        };
-      });
-      ul.querySelectorAll<HTMLButtonElement>('[data-attach-annotate]').forEach((b) => {
-        b.onclick = () => {
-          void (async () => {
-            const id = b.dataset['attachAnnotate']!;
-            void openAnnotationModal(id);
-          })();
-        };
-      });
-      ul.querySelectorAll<HTMLButtonElement>('[data-attach-repair]').forEach((b) => {
-        b.onclick = () => {
-          void (async () => {
-            const id = b.dataset['attachRepair']!;
-            const newPath = await invoke<string | null>('pick_attachment_file', {}).catch(() => null);
-            if (!newPath) return;
-            let result = await ipcCall<{ ok: boolean; reason?: string; storedHash?: string; candidateHash?: string }>('attachments:repair', { id, newPath });
-            if (!result.ok && result.reason === 'hash_mismatch') {
-              const cont = await gConfirm(
-                'That file looks different',
-                'The file at this path doesn\'t match the content fingerprint Graphnosis recorded when you first attached. It might be a different file, an edited copy, or a similarly-named one. Re-point the attachment anyway?',
-              );
-              if (!cont) return;
-              result = await ipcCall<{ ok: boolean; reason?: string }>('attachments:repair', { id, newPath, force: true });
-            }
-            if (!result.ok) {
-              void gAlert('Repair failed', result.reason ?? 'Unknown error');
-              return;
-            }
-            void refreshGhampusAttachments();
-          })();
-        };
-      });
-      ul.querySelectorAll<HTMLElement>('[data-attach-open]').forEach((el) => {
-        el.onclick = () => {
-          const p = el.dataset['attachOpen']!;
-          void invoke('open_attachment_in_default_app', { path: p }).catch((err) => {
-            void gAlert('Could not open file', String(err));
-          });
-        };
-      });
-      ul.querySelectorAll<HTMLButtonElement>('[data-attach-detach]').forEach((b) => {
-        b.onclick = () => {
-          void (async () => {
-            const id = b.dataset['attachDetach']!;
-            if (!await gConfirm('Remove linked file?', 'The file stays on disk — Graphnosis just stops tracking it.')) return;
-            await ipcCall('attachments:detach', { id });
-            void refreshGhampusAttachments();
-          })();
-        };
-      });
-    }
-  } catch { /* non-fatal */ }
-}
-
-// ── Manual annotation modal (Phase C, V1 scaffolding) ──────────────────
-//
-// Click on the image to drop a labeled box. Each click prompts for a
-// label. Save commits the boxes to the engram as a new structured
-// source — each box becomes a node, the engram entity-link pass auto-
-// connects them to existing memories about the same labels.
-//
-// V1 scope deliberately limited to: image background, click-to-add box
-// with label, save. No arrows, no resize, no drag, no multi-select. The
-// data structure is forward-compatible — adding edges (V2) just extends
-// the same payload shape and ships through the same commit IPC.
-
-interface AnnotationBox {
-  id: string;
-  /** Normalized 0-1 position within the image (top-left of box). */
-  x: number;
-  y: number;
-  /** Normalized width/height. V1 uses a fixed visual size for clarity. */
-  w: number;
-  h: number;
-  label: string;
-}
-
-let annotationState: { attachmentId: string; boxes: AnnotationBox[] } | null = null;
-
-async function openAnnotationModal(attachmentId: string): Promise<void> {
-  const res = await ipcCall<{ attachments: AttachmentRow[] }>('attachments:list', {}).catch(() => ({ attachments: [] as AttachmentRow[] }));
-  const att = res.attachments.find((a) => a.id === attachmentId);
-  if (!att) { void gAlert('Attachment not found', ''); return; }
-  if (!att.lastVerifiedOk) { void gAlert('File not on this device', 'Repair the attachment first.'); return; }
-
-  const modal = document.getElementById('annotation-modal');
-  const img = document.getElementById('annotation-image') as HTMLImageElement | null;
-  const overlay = document.getElementById('annotation-overlay');
-  if (!modal || !img || !overlay) return;
-
-  annotationState = { attachmentId, boxes: [] };
-  // We load the image via a file:// URL — Tauri's webview allows this on
-  // explicit user action. For paths that aren't accessible (network
-  // shares, etc.) the image just fails to load and the modal stays empty.
-  img.src = `file://${att.path}`;
-  overlay.innerHTML = '';
-
-  // Click to add a box at the click position.
-  overlay.onclick = (e) => {
-    const rect = overlay.getBoundingClientRect();
-    const x = (e.clientX - rect.left) / rect.width;
-    const y = (e.clientY - rect.top) / rect.height;
-    const label = window.prompt('Label for this box:')?.trim();
-    if (!label) return;
-    const box: AnnotationBox = {
-      id: `b${annotationState!.boxes.length + 1}`,
-      x: Math.max(0, x - 0.06),
-      y: Math.max(0, y - 0.02),
-      w: 0.12,
-      h: 0.04,
-      label,
-    };
-    annotationState!.boxes.push(box);
-    renderAnnotationBoxes(overlay);
-  };
-
-  modal.classList.remove('hidden');
-}
-
-function renderAnnotationBoxes(overlay: HTMLElement): void {
-  overlay.innerHTML = '';
-  if (!annotationState) return;
-  for (const b of annotationState.boxes) {
-    const el = document.createElement('div');
-    el.style.cssText = `position: absolute; left: ${(b.x * 100).toFixed(2)}%; top: ${(b.y * 100).toFixed(2)}%; width: ${(b.w * 100).toFixed(2)}%; height: ${(b.h * 100).toFixed(2)}%; border: 2px solid var(--accent, #6366f1); background: rgba(99, 102, 241, .15); border-radius: 4px; display: flex; align-items: center; justify-content: center; pointer-events: none;`;
-    const label = document.createElement('span');
-    label.textContent = b.label;
-    label.style.cssText = 'background: var(--accent, #6366f1); color: white; padding: 2px 8px; border-radius: 3px; font-size: 12px; font-weight: 500; white-space: nowrap;';
-    el.appendChild(label);
-    overlay.appendChild(el);
-  }
-}
-
-function wireAnnotationModalControls(): void {
-  document.getElementById('btn-annotation-close')?.addEventListener('click', () => {
-    document.getElementById('annotation-modal')?.classList.add('hidden');
-    annotationState = null;
-  });
-  document.getElementById('btn-annotation-clear')?.addEventListener('click', () => {
-    if (!annotationState) return;
-    annotationState.boxes = [];
-    const overlay = document.getElementById('annotation-overlay');
-    if (overlay) renderAnnotationBoxes(overlay);
-  });
-  document.getElementById('btn-annotation-save')?.addEventListener('click', () => {
-    void (async () => {
-      if (!annotationState || annotationState.boxes.length === 0) {
-        void gAlert('Nothing to save', 'Click on the image to add at least one labeled box.');
-        return;
-      }
-      // Commit through the same extraction-commit IPC the vision flow
-      // uses — annotated boxes become nodes, no edges yet (V2).
-      const nodes = annotationState.boxes.map((b) => ({
-        id: b.id,
-        label: b.label,
-        category: 'other' as const,
-      }));
-      const result = await ipcCall<{ ok: boolean; reason?: string }>('attachments:commitExtraction', {
-        attachmentId: annotationState.attachmentId,
-        nodes,
-        edges: [],
-      });
-      if (!result.ok) {
-        void gAlert('Commit failed', result.reason ?? 'unknown');
-        return;
-      }
-      void gAlert('Saved', `${annotationState.boxes.length} annotated node${annotationState.boxes.length === 1 ? '' : 's'} committed.`);
-      document.getElementById('annotation-modal')?.classList.add('hidden');
-      annotationState = null;
-      void refreshGhampusAttachments();
-    })();
-  });
-}
-wireAnnotationModalControls();
-
-function formatAttachmentBytes(n: number): string {
-  if (n < 1024) return `${n} B`;
-  if (n < 1024 * 1024) return `${(n / 1024).toFixed(0)} KB`;
-  if (n < 1024 * 1024 * 1024) return `${(n / 1024 / 1024).toFixed(1)} MB`;
-  return `${(n / 1024 / 1024 / 1024).toFixed(2)} GB`;
-}
-
-function wireGhampusAttachButtons(): void {
-  document.getElementById('btn-ghampus-attach-file')?.addEventListener('click', () => {
-    void (async () => {
-      try {
-        const picked = await invoke<string | null>('pick_attachment_file', {});
-        if (!picked) return;
-        // Attach to the currently active engram. Full UX: a modal with
-        // engram dropdown + note field. V1 keeps it one-click for speed.
-        const graphId = atlasActiveGraph && atlasActiveGraph !== FULL_CORTEX ? atlasActiveGraph : (loadedGraphs[0]?.graphId ?? '');
-        if (!graphId) {
-          void gAlert('No engram selected', 'Pick an active engram from the header dropdown first, then attach.');
-          return;
-        }
-        await ipcCall('attachments:attach', { path: picked, graphId });
-        void refreshGhampusAttachments();
-      } catch (err) {
-        void gAlert('Attach failed', String(err));
-      }
-    })();
-  });
-  document.getElementById('btn-ghampus-attach-path')?.addEventListener('click', () => {
-    void (async () => {
-      // Path entry — for shared-drive paths, OneNote URIs, anything the
-      // file picker won't reach directly. No validation here; the store
-      // records whether the path resolves on the current machine.
-      const p = window.prompt('Path or URI to attach\n\nExamples:\n  /Users/you/docs/report.pdf\n  //server/share/file.docx\n  onenote:https://...\n  smb://...');
-      if (!p || !p.trim()) return;
-      // Prefer the atlas active engram; fall back to the first loaded personal/public engram.
-      const graphId = (atlasActiveGraph && atlasActiveGraph !== FULL_CORTEX)
-        ? atlasActiveGraph
-        : (loadedGraphs.find((g) => !g.graphId.startsWith('__'))?.graphId ?? loadedGraphs[0]?.graphId ?? '');
-      if (!graphId) {
-        void gAlert('No engram found', 'Open Your Cortex, select an engram, then try attaching again.');
-        return;
-      }
-      try {
-        await ipcCall('attachments:attach', { path: p.trim(), graphId });
-        void refreshGhampusAttachments();
-      } catch (err) {
-        void gAlert('Attach failed', String(err));
-      }
-    })();
-  });
-}
-wireGhampusAttachButtons();
-
-async function refreshGhampusSavings(): Promise<void> {
-  try {
-    const res = await ipcCall<{
-      windowDays: number;
-      totalEvents: number;
-      totalSavedUsd: number;
-      byKind: {
-        'recall-only': { events: number; savedUsd: number };
-        routing: { events: number; savedUsd: number };
-        walk: { events: number; savedUsd: number };
-      };
-      reportLine: string;
-    }>('savings:summary', { windowDays: 30 });
-    const total = document.getElementById('ghampus-savings-total');
-    const recall = document.getElementById('ghampus-savings-recall');
-    const routing = document.getElementById('ghampus-savings-routing');
-    if (total) total.textContent = `$${res.totalSavedUsd.toFixed(2)}`;
-    if (recall) recall.textContent = String(res.byKind['recall-only'].events);
-    if (routing) routing.textContent = String(res.byKind.routing.events);
-  } catch { /* non-fatal */ }
-}
-
-async function refreshGhampusNotifications(): Promise<void> {
-  try {
-    const lastVisited = Number(localStorage.getItem(GHAMPUS_LAST_VISITED_KEY)) || (Date.now() - 7 * 24 * 60 * 60 * 1000);
-    const res = await ipcCall<{
-      notifications: Array<{
-        id: string;
-        engramId: string;
-        tier: 'public' | 'personal' | 'sensitive';
-        sourceId: string;
-        originKind: keyof typeof NOTIF_ORIGIN_ICONS;
-        origin: string;
-        label: string;
-        ingestedAtMs: number;
-      }>;
-      totalAvailable: number;
-    }>('agent:listNotifications', { sinceMs: lastVisited, limit: 12 });
-
-    const badge = document.getElementById('ghampus-notif-pill-badge');
-    if (badge) {
-      if (res.notifications.length > 0) { badge.textContent = String(res.notifications.length); badge.classList.remove('hidden'); }
-      else { badge.classList.add('hidden'); }
-    }
-    const ul = document.getElementById('ghampus-notifications-list');
-    if (ul) {
-      const now = Date.now();
-      ul.innerHTML = res.notifications.map((n) => {
-        const ageMs = now - n.ingestedAtMs;
-        const when = ageMs < 60_000 ? 'just now'
-          : ageMs < 3_600_000 ? `${Math.floor(ageMs / 60_000)} min ago`
-          : ageMs < 86_400_000 ? `${Math.floor(ageMs / 3_600_000)}h ago`
-          : `${Math.floor(ageMs / 86_400_000)}d ago`;
-        const icon = NOTIF_ORIGIN_ICONS[n.originKind] ?? '·';
-        const previewLine = n.tier === 'sensitive'
-          ? '<span class="subtitle" style="font-style: italic; font-size: 11px;">[preview hidden · sensitive engram]</span>'
-          : `<span class="subtitle" style="font-size: 11px;">${escapeHtml(n.label)}</span>`;
-        return `<li style="padding: 8px 0; border-bottom: 1px solid var(--g-border, rgba(255,255,255,.05));">
-          <div style="display: flex; gap: 8px; align-items: baseline;">
-            <span>${icon}</span>
-            <strong style="font-size: 13px;">${escapeHtml(n.origin)}</strong>
-            <code style="font-size: 11px; opacity: .7;">${escapeHtml(n.engramId)}</code>
-            <span class="subtitle" style="margin-left: auto; font-size: 11px;">${when}</span>
-          </div>
-          <div style="margin: 4px 0 0 24px;">${previewLine}</div>
-        </li>`;
-      }).join('');
-    }
-  } catch { /* non-fatal */ }
-  // Record the visit AFTER the read so the next refresh shows what arrives
-  // between now and the next visit, not what's already on screen.
-  localStorage.setItem(GHAMPUS_LAST_VISITED_KEY, String(Date.now()));
-}
-
-async function refreshGhampusSkills(): Promise<void> {
-  try {
-    const res = await ipcCall<{ skills: Array<{ sourceId: string; engramId: string; label: string; nodeCount: number; origin: 'local' | 'pack'; trainedAt?: string; recallBreadth?: number }> }>('agent:listSkills', {});
-    const ul = document.getElementById('ghampus-skills-list');
-    const badge = document.getElementById('ghampus-skills-pill-badge');
-    if (badge) {
-      if (res.skills.length > 0) {
-        badge.textContent = String(res.skills.length);
-        badge.classList.remove('hidden');
-      } else {
-        badge.classList.add('hidden');
-      }
-    }
-    if (ul) {
-      if (res.skills.length === 0) {
-        ul.innerHTML = '<li class="ghampus-panel-empty">No skills in your library yet.</li>';
-      } else {
-        ul.innerHTML = res.skills.map((s) => {
-          const displayLabel = s.label.replace(/^skill:\d+:/, '');
-          const trained = s.trainedAt ? new Date(s.trainedAt).toLocaleDateString() : 'imported';
-          const vitality = s.recallBreadth ?? 80;
-          // strokeDashoffset = circumference * (1 - vitality/100), circumference ≈ 72 (r=11.5)
-          const offset = (72 * (1 - vitality / 100)).toFixed(1);
-          const color = vitality >= 70 ? '#10b981' : vitality >= 40 ? '#f59e0b' : '#ef4444';
-          return `<li>
-            <div class="ghampus-skill-row">
-              <svg class="ghampus-skill-vitality" viewBox="0 0 28 28">
-                <circle class="track" cx="14" cy="14" r="11.5"/>
-                <circle class="fill" cx="14" cy="14" r="11.5"
-                  stroke="${color}"
-                  stroke-dashoffset="${offset}"/>
-              </svg>
-              <div class="ghampus-skill-info">
-                <div class="ghampus-skill-name">${escapeHtml(displayLabel)}</div>
-                <div class="ghampus-skill-meta">${trained}${s.origin === 'pack' ? ' · pack' : ''}</div>
-              </div>
-              <button class="ghampus-skill-run" type="button"
-                      data-skill-source="${escapeHtml(s.sourceId)}">Run ▸</button>
-            </div>
-          </li>`;
-        }).join('');
-      }
-    }
-  } catch { /* non-fatal */ }
-}
-
-async function refreshGhampusRecentSaves(): Promise<void> {
-  try {
-    const { saves } = await ipcCall<{ saves: Array<{ sourceId: string; engramId: string; label: string; addedAtMs: number }> }>('agent:recentSaves', { limit: 8 });
-    const badge = document.getElementById('ghampus-saves-pill-badge');
-    if (badge) {
-      if (saves.length > 0) { badge.textContent = String(saves.length); badge.classList.remove('hidden'); }
-      else { badge.classList.add('hidden'); }
-    }
-    const ul = document.getElementById('ghampus-recent-saves-list');
-    if (ul) {
-      if (saves.length === 0) {
-        ul.innerHTML = '<li class="ghampus-panel-empty">Nothing saved through chats yet.</li>';
-      } else {
-        const now = Date.now();
-        ul.innerHTML = saves.map((s) => {
-          const ageMs = now - s.addedAtMs;
-          const when = ageMs < 60_000 ? 'just now'
-            : ageMs < 3_600_000 ? `${Math.floor(ageMs / 60_000)} min ago`
-            : ageMs < 86_400_000 ? `${Math.floor(ageMs / 3_600_000)}h ago`
-            : `${Math.floor(ageMs / 86_400_000)}d ago`;
-          return `<li><div class="ghampus-panel-item">
-            <span class="ghampus-panel-item-label">${escapeHtml(s.label)}</span>
-            <span class="ghampus-panel-item-meta">${escapeHtml(s.engramId)}</span>
-            <span class="ghampus-panel-item-meta">${when}</span>
-          </div></li>`;
-        }).join('');
-      }
-    }
-  } catch { /* non-fatal */ }
-}
-
-async function refreshGhampusSharingPanel(): Promise<void> {
-  try {
-    const info = await ipcCall<{ seats: number | null; activeCount: number; plan: string | null }>('sharing:planInfo', {});
-    const list = await ipcCall<Array<{ id: string; name: string; role: string; expiresAt: number | null; createdAt: number }>>('sharing:list', {});
-    const ul = document.getElementById('ghampus-sharing-list');
-    const badge = document.getElementById('ghampus-shares-pill-badge');
-    if (badge) {
-      if (info.activeCount > 0) { badge.textContent = String(info.activeCount); badge.classList.remove('hidden'); }
-      else { badge.classList.add('hidden'); }
-    }
-    if (ul) {
-      const now = Date.now();
-      const WARN_MS = 72 * 60 * 60 * 1000;
-      ul.innerHTML = list.map((t) => {
-        const expiringSoon = t.expiresAt !== null && t.expiresAt - now < WARN_MS && t.expiresAt - now > 0;
-        const expired = t.expiresAt !== null && t.expiresAt <= now;
-        const expiryNote = expired
-          ? '<span style="color: var(--g-warn, #c47);">expired</span>'
-          : expiringSoon
-            ? `<span style="color: var(--g-warn, #c47);">expires soon</span>`
-            : t.expiresAt === null ? 'no expiry' : new Date(t.expiresAt).toLocaleDateString();
-        return `<li><div class="ghampus-panel-item">
-          <span class="ghampus-panel-item-label">${escapeHtml(t.name)}</span>
-          <span class="ghampus-panel-item-meta">${escapeHtml(t.role)}</span>
-          <span class="ghampus-panel-item-meta">${expiryNote}</span>
-        </div></li>`;
-      }).join('') || '<li class="ghampus-panel-empty">No active shares.</li>';
-    }
-  } catch { /* non-fatal */ }
-}
-
-// ── Ghampus chat surface ──────────────────────────────────────────────────
-
-type GhampusChatMessage =
-  | { kind: 'user'; text: string; ts: number }
-  | { kind: 'ghampus'; text: string; ts: number }
-  | { kind: 'skill-match'; skill: SkillMatchPayload; ts: number }
-  | { kind: 'walk-plan'; plan: WalkPlan; ts: number }
-  | { kind: 'walk-progress'; steps: WalkStep[]; ts: number }
-  | { kind: 'refine-proposal'; proposal: RefineProposal; ts: number }
-  | { kind: 'tier-strip'; context: TierContext; ts: number }
-  | { kind: 'proactive-card'; card: ProactiveCardPayload; ts: number };
-
-interface ProactiveCardPayload {
-  id: string; createdAt: number; signalType: string; signalLabel: string;
-  skillSourceId: string; skillGraphId: string; skillLabel: string; why: string; status: string;
-}
-
-interface SkillMatchPayload {
-  sourceId: string; label: string; steps: number; subSkills: number;
-  lastRunAgo: string; vitality: number; description: string;
-}
-interface WalkPlan {
-  sourceId: string; label: string; steps: WalkPlanStep[];
-  totalCost: number; privacySafe: boolean; routing: 'adaptive' | 'local-only' | 'always-best';
-  learningHint?: string;
-}
-interface WalkPlanStep {
-  label: string; needs: string[]; model: string; isLocal: boolean; cost: number;
-}
-interface WalkStep { label: string; status: 'pending' | 'running' | 'done' | 'error'; }
-interface RefineProposal {
-  sourceId: string; observation: string; proposedStepCode: string;
-  captureVars: string[]; footnote: string;
-}
-interface TierContext { pro: string; free: string; teams: string; }
-
-function fmtRelTime(ts: number): string {
-  const diffS = Math.floor((Date.now() - ts) / 1000);
-  if (diffS < 60)  return 'just now';
-  if (diffS < 3600) return `${Math.floor(diffS / 60)}m ago`;
-  if (diffS < 86400) return `${Math.floor(diffS / 3600)}h ago`;
-  if (diffS < 7 * 86400) return `${Math.floor(diffS / 86400)}d ago`;
-  return new Date(ts).toLocaleDateString([], { month: 'short', day: 'numeric' });
-}
-
-function fmtAbsTime(ts: number): string {
-  return new Date(ts).toLocaleString([], {
-    weekday: 'short', month: 'short', day: 'numeric',
-    hour: '2-digit', minute: '2-digit',
-  });
-}
-
-function fmtTime(ts: number): string {
-  return `<time datetime="${new Date(ts).toISOString()}" title="${escapeHtml(fmtAbsTime(ts))}">${fmtRelTime(ts)}</time>`;
-}
-
-const COPY_ICON = `<svg width="13" height="13" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" style="flex-shrink:0">
-  <rect x="5" y="5" width="9" height="9" rx="1.5" stroke="currentColor" stroke-width="1.4"/>
-  <path d="M11 5V3.5A1.5 1.5 0 0 0 9.5 2H3.5A1.5 1.5 0 0 0 2 3.5V9.5A1.5 1.5 0 0 0 3.5 11H5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
-</svg>`;
-
-function copyBtn(plainText: string): string {
-  return `<button class="chat-msg-copy" data-copy="${escapeHtml(plainText)}" title="Copy">${COPY_ICON}</button>`;
-}
-
-function renderChatMessage(msg: GhampusChatMessage): string {
-  switch (msg.kind) {
-    case 'user':
-      return `<div class="chat-msg user">
-        <div class="chat-msg-wrap">
-          <div class="chat-msg-bubble">${escapeHtml(msg.text)}</div>
-          <div class="chat-msg-meta">
-            <div class="chat-msg-time">${fmtTime(msg.ts)}</div>
-            ${copyBtn(msg.text)}
-          </div>
-        </div>
-      </div>`;
-    case 'ghampus':
-      return `<div class="chat-msg ghampus">
-        <div class="chat-msg-avatar">
-          <img src="/graphnosis-logo-transparent-bg.png" alt="" />
-        </div>
-        <div class="chat-msg-wrap">
-          <div class="chat-msg-bubble chat-msg-bubble--markdown">${renderMarkdownLite(msg.text)}</div>
-          <div class="chat-msg-meta">
-            <div class="chat-msg-time">${fmtTime(msg.ts)}</div>
-            ${copyBtn(msg.text)}
-          </div>
-        </div>
-      </div>`;
-    case 'skill-match':
-      return renderSkillMatchCard(msg.skill, msg.ts);
-    case 'walk-plan':
-      return renderWalkPlanCard(msg.plan);
-    case 'walk-progress':
-      return renderWalkProgress(msg.steps);
-    case 'refine-proposal':
-      return renderRefineCard(msg.proposal);
-    case 'tier-strip':
-      return renderTierStrip(msg.context);
-    case 'proactive-card':
-      return renderProactiveCard(msg.card);
-    default:
-      return '';
-  }
-}
-
-function renderSkillMatchCard(skill: SkillMatchPayload, ts: number): string {
-  const subChip = skill.subSkills > 0
-    ? `<span class="skill-meta-chip">${skill.subSkills} sub-skill${skill.subSkills > 1 ? 's' : ''}</span>` : '';
-  return `<div class="skill-match-card" data-skill-source="${escapeHtml(skill.sourceId)}">
-    <div class="skill-match-card-header">
-      <span style="font-size: 16px;">🎓</span>
-      <span class="skill-match-card-name">${escapeHtml(skill.label)}</span>
-    </div>
-    <div class="skill-match-chips">
-      <span class="skill-meta-chip">${skill.steps} steps</span>
-      ${subChip}
-      <span class="skill-meta-chip">last run ${escapeHtml(skill.lastRunAgo)}</span>
-      <span class="skill-meta-chip">vitality ${skill.vitality}</span>
-    </div>
-    <p class="skill-match-desc">${escapeHtml(skill.description)}</p>
-    <div class="skill-match-actions">
-      <button class="g-btn primary btn-skill-run" style="font-size: 12px; padding: 4px 12px;"
-              data-source-id="${escapeHtml(skill.sourceId)}">Run it?</button>
-      <button class="g-btn btn-skill-dismiss" style="font-size: 12px; padding: 4px 10px;"
-              data-source-id="${escapeHtml(skill.sourceId)}">Not now</button>
-    </div>
-  </div>`;
-}
-
-function renderProactiveCard(card: ProactiveCardPayload): string {
-  const signalIcon = card.signalType === 'time-based' ? '⏰' : card.signalType === 'recent-ingest' ? '📥' : '🔍';
-  const skillName = card.skillLabel.replace(/-/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
-  const whyHtml = escapeHtml(card.why).replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
-  return `<div class="chat-msg ghampus">
-    <div class="chat-msg-avatar">
-      <img src="/graphnosis-logo-transparent-bg.png" alt="Ghampus" />
-    </div>
-    <div class="chat-msg-wrap">
-      <div class="proactive-card" data-card-id="${escapeHtml(card.id)}" data-skill-source="${escapeHtml(card.skillSourceId)}">
-        <div class="proactive-card-header">
-          <div class="proactive-card-signal">${signalIcon} ${escapeHtml(card.signalLabel)}</div>
-          <span class="proactive-card-label">Suggested action</span>
-        </div>
-        <p class="proactive-card-why">${whyHtml}</p>
-        <div class="proactive-card-actions">
-          <button class="g-btn primary proactive-card-run" data-card-id="${escapeHtml(card.id)}"
-                  data-source-id="${escapeHtml(card.skillSourceId)}">Run ${escapeHtml(skillName)} ▸</button>
-          <div class="proactive-snooze-wrap">
-            <button class="g-btn proactive-card-snooze" data-card-id="${escapeHtml(card.id)}">Remind me later ▾</button>
-            <div class="proactive-snooze-menu hidden">
-              <button class="proactive-snooze-opt" data-mins="15">In 15 minutes</button>
-              <button class="proactive-snooze-opt" data-mins="30">In 30 minutes</button>
-              <button class="proactive-snooze-opt" data-mins="60">In 1 hour</button>
-              <button class="proactive-snooze-opt" data-mins="480">This evening</button>
-              <button class="proactive-snooze-opt" data-mins="1440">Tomorrow</button>
-            </div>
-          </div>
-          <button class="g-btn proactive-card-dismiss" data-card-id="${escapeHtml(card.id)}">Dismiss</button>
-        </div>
-      </div>
-      <div class="chat-msg-meta">
-        <div class="chat-msg-time">${fmtTime(card.createdAt)}</div>
-      </div>
-    </div>
-  </div>`;
-}
-
-// ── Proactive card queue with idle-gating ─────────────────────────────────
-// Cards arrive from the sidecar and are queued here. They are shown one at
-// a time ONLY when the user has been idle — no interruption mid-thought.
-const proactiveCardQueue: ProactiveCardPayload[] = [];
-let lastGhampusActivity = Date.now();
-// Minimum 5 min idle before the first card is ever shown.
-const IDLE_BEFORE_FIRST_MS = 5 * 60_000;
-// After each card, pick a random wait of 5–30 minutes before the next.
-let nextCardAllowedAt = 0;
-let proactiveQueueTimer: ReturnType<typeof setInterval> | null = null;
-
-function trackGhampusActivity(): void {
-  lastGhampusActivity = Date.now();
-}
-
-function randBetweenMs(minMin: number, maxMin: number): number {
-  return (minMin + Math.floor((maxMin - minMin + 1) * (Date.now() % 1000) / 1000)) * 60_000;
-}
-
-function dequeueProactiveCard(): void {
-  if (proactiveCardQueue.length === 0) return;
-  const now = Date.now();
-  const idleMs = now - lastGhampusActivity;
-  if (idleMs < IDLE_BEFORE_FIRST_MS) return;
-  if (nextCardAllowedAt > 0 && now < nextCardAllowedAt) return;
-
-  const card = proactiveCardQueue.shift();
-  if (!card) return;
-
-  const pane = document.querySelector<HTMLElement>('.mode-pane[data-pane="ghampus"]');
-  if (!pane || pane.classList.contains('hidden')) {
-    proactiveCardQueue.unshift(card);
-    return;
-  }
-
-  // Schedule next card 5–30 minutes from now (random)
-  nextCardAllowedAt = now + randBetweenMs(5, 30);
-
-  const msg: GhampusChatMessage = { kind: 'proactive-card', card, ts: card.createdAt };
-  appendToThread(msg);
-}
-
-function startProactiveQueueTimer(): void {
-  if (proactiveQueueTimer) return;
-  proactiveQueueTimer = setInterval(dequeueProactiveCard, 30_000); // check every 30 s
-}
-
-function renderWalkPlanCard(plan: WalkPlan): string {
-  const totalFmt = plan.totalCost === 0 ? 'free' : `≈\$${plan.totalCost.toFixed(4)}`;
-  const metaParts = [
-    `${plan.steps.length} steps`,
-    plan.routing === 'adaptive' ? 'adaptive routing' : plan.routing.replace('-', ' '),
-    plan.privacySafe ? 'privacy-safe (no sensitive engrams)' : '',
-  ].filter(Boolean).join(' · ');
-
-  const rows = plan.steps.map((s) => {
-    const needChips = s.needs.map((n) => `<span class="walk-plan-need-chip">${escapeHtml(n)}</span>`).join('');
-    const costCell = s.cost === 0
-      ? `<span class="walk-plan-step-cost free">free</span>`
-      : `<span class="walk-plan-step-cost">\$${s.cost.toFixed(4)}</span>`;
-    const modelClass = s.isLocal ? 'local' : 'cloud';
-    const modelTag = s.isLocal ? '' : '<span class="walk-plan-model-tag">BYOK</span>';
-    return `<tr>
-      <td>${escapeHtml(s.label)}</td>
-      <td><div class="walk-plan-needs">${needChips}</div></td>
-      <td><span class="walk-plan-model ${modelClass}">${escapeHtml(s.model)}</span>${modelTag}</td>
-      <td>${costCell}</td>
-    </tr>`;
-  }).join('');
-
-  const hint = plan.learningHint
-    ? `<div class="walk-plan-hint"><span>💡</span><span>${escapeHtml(plan.learningHint)}</span></div>`
-    : '';
-
-  return `<div class="walk-plan-card" data-plan-source="${escapeHtml(plan.sourceId)}">
-    <div class="walk-plan-header">
-      <span class="walk-plan-title">${escapeHtml(plan.label)} walk plan</span>
-      <span class="walk-plan-meta">${escapeHtml(metaParts)}</span>
-      <span class="walk-plan-cost-badge">${totalFmt}</span>
-    </div>
-    <table class="walk-plan-table">
-      <thead><tr>
-        <th>STEP</th><th>NEEDS</th><th>WILL USE</th><th>EST. COST</th>
-      </tr></thead>
-      <tbody>${rows}</tbody>
-    </table>
-    <div class="walk-plan-actions">
-      <button class="g-btn primary btn-walk-confirm" style="font-size: 12px; padding: 5px 14px;"
-              data-source-id="${escapeHtml(plan.sourceId)}" data-routing="adaptive">
-        Walk it · ${totalFmt}
-      </button>
-      <button class="g-btn btn-walk-local" style="font-size: 12px; padding: 5px 12px;"
-              data-source-id="${escapeHtml(plan.sourceId)}">
-        Local-only this time (slower)
-      </button>
-      <button class="g-btn btn-walk-cancel" style="font-size: 12px; padding: 5px 10px;"
-              data-source-id="${escapeHtml(plan.sourceId)}">Cancel</button>
-    </div>
-    ${hint}
-  </div>`;
-}
-
-function renderWalkProgress(steps: WalkStep[]): string {
-  const rows = steps.map((s, i) => {
-    const icon = s.status === 'done' ? '✓'
-      : s.status === 'running' ? String(i + 1)
-      : s.status === 'error' ? '✕' : '';
-    return `<div class="walk-step ${s.status}">
-      <div class="walk-step-icon">${icon}</div>
-      <span>${escapeHtml(s.label)}</span>
-    </div>`;
-  }).join('');
-  return `<div class="walk-step-list">${rows}</div>`;
-}
-
-function renderRefineCard(proposal: RefineProposal): string {
-  return `<div class="refine-card" data-refine-source="${escapeHtml(proposal.sourceId)}">
-    <div class="refine-card-header">
-      <span style="font-size: 15px;">🎓</span>
-      <span class="refine-card-title">I've watched this skill walk for 3 weeks straight. Refine it?</span>
-    </div>
-    <p class="refine-card-obs">${escapeHtml(proposal.observation)}</p>
-    <pre class="refine-card-code">${escapeHtml(proposal.proposedStepCode)}</pre>
-    <div class="refine-card-actions">
-      <button class="btn-refine-primary btn-refine-update"
-              data-source-id="${escapeHtml(proposal.sourceId)}">Update ${escapeHtml(proposal.sourceId.split(':').pop() ?? 'skill')}</button>
-      <button class="btn-refine-secondary btn-refine-edit"
-              data-source-id="${escapeHtml(proposal.sourceId)}">Edit step first</button>
-      <button class="btn-refine-secondary btn-refine-skip"
-              data-source-id="${escapeHtml(proposal.sourceId)}">Skip this week</button>
-      <span class="refine-card-footnote">${escapeHtml(proposal.footnote)}</span>
-    </div>
-  </div>`;
-}
-
-function renderTierStrip(ctx: TierContext): string {
-  const proLabel = `<div class="tier-strip-label active">Pro (this view)</div>`;
-  const freeLabel = `<div class="tier-strip-label">Free</div>`;
-  const teamsLabel = `<div class="tier-strip-label">Teams+</div>`;
-  return `<div class="tier-strip">
-    <div class="tier-strip-col">${proLabel}<div class="tier-strip-body">${escapeHtml(ctx.pro)}</div></div>
-    <div class="tier-strip-col">${freeLabel}<div class="tier-strip-body">${escapeHtml(ctx.free)}</div></div>
-    <div class="tier-strip-col">${teamsLabel}<div class="tier-strip-body">${escapeHtml(ctx.teams)}</div></div>
-  </div>`;
-}
-
-// In-memory thread cache — cleared on pane enter; rebuilt from history IPC.
-// When the sidecar stub is not yet wired this stays empty and the empty state shows.
-let ghampusThreadMessages: GhampusChatMessage[] = [];
-
-function appendToThread(msg: GhampusChatMessage): void {
-  ghampusThreadMessages.push(msg);
-  const container = document.getElementById('ghampus-chat-messages') ?? document.getElementById('ghampus-thread');
-  if (!container) return;
-  const empty = document.getElementById('ghampus-thread-empty');
-  if (empty) empty.remove();
-  const node = document.createElement('div');
-  node.className = 'ghampus-thread-entry';
-  node.innerHTML = renderChatMessage(msg);
-  container.appendChild(node);
-  wireThreadNodeActions(node, msg);
-  const thread = document.getElementById('ghampus-thread');
-  if (thread) thread.scrollTop = thread.scrollHeight;
-}
-
-function wireThreadNodeActions(node: HTMLElement, msg: GhampusChatMessage): void {
-  // Copy button — present on user + ghampus messages.
-  node.querySelector<HTMLButtonElement>('.chat-msg-copy')?.addEventListener('click', (e) => {
-    e.stopPropagation();
-    const btn = e.currentTarget as HTMLButtonElement;
-    const text = btn.dataset.copy ?? '';
-    void navigator.clipboard.writeText(text).then(() => {
-      btn.classList.add('copied');
-      btn.title = 'Copied!';
-      setTimeout(() => { btn.classList.remove('copied'); btn.title = 'Copy'; }, 1500);
-    });
-  });
-
-  if (msg.kind === 'skill-match') {
-    node.querySelector<HTMLButtonElement>('.btn-skill-run')?.addEventListener('click', (e) => {
-      const sourceId = (e.currentTarget as HTMLButtonElement).dataset.sourceId ?? '';
-      void requestWalkPlan(sourceId);
-    });
-    node.querySelector<HTMLButtonElement>('.btn-skill-dismiss')?.addEventListener('click', (e) => {
-      (e.currentTarget as HTMLElement).closest('.ghampus-thread-entry')?.remove();
-    });
-  }
-  if (msg.kind === 'walk-plan') {
-    node.querySelector<HTMLButtonElement>('.btn-walk-confirm')?.addEventListener('click', (e) => {
-      const sourceId = (e.currentTarget as HTMLButtonElement).dataset.sourceId ?? '';
-      showSkillRunning(msg.plan.label);
-      void confirmWalk(sourceId, 'adaptive');
-    });
-    node.querySelector<HTMLButtonElement>('.btn-walk-local')?.addEventListener('click', (e) => {
-      const sourceId = (e.currentTarget as HTMLButtonElement).dataset.sourceId ?? '';
-      showSkillRunning(msg.plan.label);
-      void confirmWalk(sourceId, 'local-only');
-    });
-    node.querySelector<HTMLButtonElement>('.btn-walk-cancel')?.addEventListener('click', (e) => {
-      (e.currentTarget as HTMLElement).closest('.ghampus-thread-entry')?.remove();
-    });
-  }
-  if (msg.kind === 'refine-proposal') {
-    node.querySelector<HTMLButtonElement>('.btn-refine-update')?.addEventListener('click', (e) => {
-      const sourceId = (e.currentTarget as HTMLButtonElement).dataset.sourceId ?? '';
-      void sendRefineResponse(sourceId, 'update');
-    });
-    node.querySelector<HTMLButtonElement>('.btn-refine-edit')?.addEventListener('click', (e) => {
-      const sourceId = (e.currentTarget as HTMLButtonElement).dataset.sourceId ?? '';
-      void sendRefineResponse(sourceId, 'edit');
-    });
-    node.querySelector<HTMLButtonElement>('.btn-refine-skip')?.addEventListener('click', (e) => {
-      const sourceId = (e.currentTarget as HTMLButtonElement).dataset.sourceId ?? '';
-      void sendRefineResponse(sourceId, 'skip');
-    });
-  }
-  if (msg.kind === 'proactive-card') {
-    node.querySelector<HTMLButtonElement>('.proactive-card-run')?.addEventListener('click', async (e) => {
-      const btn = e.currentTarget as HTMLButtonElement;
-      const cardId = btn.dataset.cardId ?? '';
-      const sourceId = btn.dataset.sourceId ?? '';
-      await ipcCall('ghampus:inbox:run', { id: cardId }).catch(() => {});
-      // Grab the skill label from the button text ("Run Skill Name ▸")
-      const btnText = btn.textContent ?? '';
-      const skillLabel = btnText.replace(/^Run\s+/, '').replace(/\s*▸\s*$/, '').trim();
-      const signalEl = node.querySelector<HTMLElement>('.proactive-card-signal');
-      const signalLabel = signalEl?.textContent?.replace(/^[⏰📥🔍]\s*/, '').trim();
-      void requestWalkPlan(sourceId, skillLabel || undefined, signalLabel || undefined);
-      node.querySelector<HTMLElement>('.proactive-card-actions')?.remove();
-    });
-    // Snooze toggle — show/hide the dropdown menu
-    node.querySelector<HTMLButtonElement>('.proactive-card-snooze')?.addEventListener('click', (e) => {
-      e.stopPropagation();
-      const menu = (e.currentTarget as HTMLElement)
-        .closest('.proactive-snooze-wrap')?.querySelector<HTMLElement>('.proactive-snooze-menu');
-      if (menu) menu.classList.toggle('hidden');
-    });
-    // Snooze option selected
-    node.querySelectorAll<HTMLButtonElement>('.proactive-snooze-opt').forEach((btn) => {
-      btn.addEventListener('click', async (e) => {
-        e.stopPropagation();
-        const mins = Number((e.currentTarget as HTMLButtonElement).dataset.mins ?? 60);
-        const cardId = node.querySelector<HTMLElement>('[data-card-id]')?.dataset.cardId ?? '';
-        await ipcCall('ghampus:inbox:snooze', { id: cardId, snoozeMs: mins * 60_000 }).catch(() => {});
-        // Push next card window out by the snooze duration too
-        nextCardAllowedAt = Math.max(nextCardAllowedAt, Date.now() + mins * 60_000);
-        const label = btn.textContent ?? 'later';
-        node.querySelector<HTMLElement>('.proactive-card')?.classList.add('proactive-card--snoozed');
-        const actionsEl = node.querySelector<HTMLElement>('.proactive-card-actions');
-        if (actionsEl) actionsEl.innerHTML = `<span style="font-size:12px;opacity:.5;">Snoozed — I'll remind you ${label.toLowerCase().replace('in ', 'in ')}</span>`;
-      });
-    });
-    node.querySelector<HTMLButtonElement>('.proactive-card-dismiss')?.addEventListener('click', async (e) => {
-      const btn = e.currentTarget as HTMLButtonElement;
-      const cardId = btn.dataset.cardId ?? '';
-      await ipcCall('ghampus:inbox:dismiss', { id: cardId }).catch(() => {});
-      btn.closest('.ghampus-thread-entry')?.remove();
-    });
-  }
-}
-
-let _skillRunningTimer: ReturnType<typeof setInterval> | null = null;
-
-const SKILL_RUNNING_PHRASES = [
-  'Recalling relevant memories…',
-  'Checking for duplicate nodes…',
-  'Reviewing contradictions…',
-  'Scanning skill steps…',
-  'Comparing against known patterns…',
-  'Trimming stale references…',
-  'Cross-referencing engrams…',
-  'Applying cortex updates…',
-  'Almost there…',
-];
-
-function showSkillRunning(skillLabel: string, signalLabel?: string): void {
-  setGhampusRunning(true);
-  clearSkillRunning();
-  const thread = document.getElementById('ghampus-thread');
-  if (!thread) return;
-  document.getElementById('ghampus-thread-empty')?.remove();
-
-  const entry = document.createElement('div');
-  entry.id = 'ghampus-skill-running';
-  entry.className = 'ghampus-thread-entry skill-running-entry';
-
-  const signalHtml = signalLabel
-    ? `<div class="skill-running-signal">⏰ ${escapeHtml(signalLabel)}</div>`
-    : '';
-
-  entry.innerHTML = `<div class="chat-msg ghampus">
-    <div class="chat-msg-avatar">
-      <img src="/graphnosis-logo-transparent-bg.png" alt="Ghampus" />
-    </div>
-    <div class="skill-running-bubble">
-      ${signalHtml}
-      <div class="skill-running-label">Running <strong>${escapeHtml(skillLabel)}</strong></div>
-      <div class="skill-running-bar-track"><div class="skill-running-bar-fill"></div></div>
-      <div id="ghampus-skill-running-status" class="skill-running-status">${SKILL_RUNNING_PHRASES[0]}</div>
-    </div>
-  </div>`;
-
-  thread.appendChild(entry);
-  thread.scrollTop = thread.scrollHeight;
-
-  let phraseIdx = 0;
-  _skillRunningTimer = setInterval(() => {
-    const statusEl = document.getElementById('ghampus-skill-running-status');
-    if (!statusEl) return;
-    statusEl.classList.add('fade');
-    setTimeout(() => {
-      phraseIdx = (phraseIdx + 1) % SKILL_RUNNING_PHRASES.length;
-      statusEl.textContent = SKILL_RUNNING_PHRASES[phraseIdx];
-      statusEl.classList.remove('fade');
-      thread.scrollTop = thread.scrollHeight;
-    }, 300);
-  }, 2800);
-}
-
-function clearSkillRunning(): void {
-  if (_skillRunningTimer) { clearInterval(_skillRunningTimer); _skillRunningTimer = null; }
-  document.getElementById('ghampus-skill-running')?.remove();
-  setGhampusRunning(false);
-}
-
-async function requestWalkPlan(sourceId: string, skillLabel?: string, signalLabel?: string): Promise<void> {
-  try {
-    const plan = await ipcCall<WalkPlan>('ghampus:walkPlan', { sourceId });
-    if (!plan.steps || plan.steps.length === 0) {
-      const name = skillLabel ?? plan.label ?? sourceId;
-      showSkillRunning(name, signalLabel);
-      await confirmWalk(sourceId, 'adaptive');
-      return;
-    }
-    appendToThread({ kind: 'walk-plan', plan, ts: Date.now() });
-  } catch { /* non-fatal */ }
-}
-
-async function confirmWalk(sourceId: string, routing: 'adaptive' | 'local-only'): Promise<void> {
-  try {
-    await ipcCall('ghampus:confirmWalk', { sourceId, routing });
-  } catch { /* non-fatal */ }
-}
-
-async function sendRefineResponse(sourceId: string, action: 'update' | 'edit' | 'skip'): Promise<void> {
-  try {
-    await ipcCall('ghampus:refineResponse', { sourceId, action });
-  } catch { /* non-fatal */ }
-}
-
-function renderNotifCard(n: {
-  id: string; engramId: string; tier: string; originKind: string;
-  origin: string; label: string; ingestedAtMs: number;
-}, now: number): string {
-  const ageMs = now - n.ingestedAtMs;
-  const when = ageMs < 60_000 ? 'just now'
-    : ageMs < 3_600_000 ? `${Math.floor(ageMs / 60_000)} min ago`
-    : ageMs < 86_400_000 ? `${Math.floor(ageMs / 3_600_000)}h ago`
-    : `${Math.floor(ageMs / 86_400_000)}d ago`;
-  const icon = (NOTIF_ORIGIN_ICONS as Record<string, string>)[n.originKind] ?? '·';
-  const isSensitive = n.tier === 'sensitive';
-  const preview = isSensitive
-    ? '<div class="notif-card-preview sensitive">[content hidden · sensitive engram]</div>'
-    : `<div class="notif-card-preview">${escapeHtml(n.label)}</div>`;
-  return `<div class="notif-card" data-notif-id="${escapeHtml(n.id)}">
-    <div class="notif-card-header">
-      <span>${icon}</span>
-      <span class="notif-card-origin">${escapeHtml(n.origin)}</span>
-      <span class="notif-card-engram">${escapeHtml(n.engramId)}</span>
-      <span class="notif-card-time">${when}</span>
-    </div>
-    ${preview}
-    <div class="notif-card-actions">
-      ${isSensitive ? '' : `<button class="g-btn primary btn-notif-switch"
-        style="font-size: 11px; padding: 3px 10px;"
-        data-engram="${escapeHtml(n.engramId)}">Switch to ${escapeHtml(n.engramId)} to chat</button>`}
-      <button class="g-btn btn-notif-dismiss"
-        style="font-size: 11px; padding: 3px 8px;"
-        data-notif-id="${escapeHtml(n.id)}">Dismiss</button>
-    </div>
-  </div>`;
-}
-
-async function refreshGhampusThread(): Promise<void> {
-  const thread = document.getElementById('ghampus-thread');
-  if (!thread) return;
-
-  // If we already have live messages from this session, leave the DOM alone.
-  // Only the first load (or an explicit clear) should fetch history.
-  const hasLiveMessages = ghampusThreadMessages.length > 0;
-  if (hasLiveMessages) return;
-
-  // Try history first
-  let messages: GhampusChatMessage[] = [];
-  try {
-    const res = await ipcCall<{ messages: GhampusChatMessage[] }>('ghampus:history', {});
-    messages = res.messages ?? [];
-  } catch { /* not yet wired */ }
-
-  if (messages.length > 0) {
-    ghampusThreadMessages = [];
-    thread.innerHTML = '';
-    for (const msg of messages) appendToThread(msg);
-    return;
-  }
-
-  // No history — show "while you were away" notification cards as opener
-  try {
-    const lastVisited = Number(localStorage.getItem(GHAMPUS_LAST_VISITED_KEY))
-      || (Date.now() - 7 * 24 * 60 * 60 * 1000);
-    const res = await ipcCall<{
-      notifications: Array<{
-        id: string; engramId: string; tier: string; originKind: string;
-        origin: string; label: string; ingestedAtMs: number;
-      }>;
-      totalAvailable: number;
-    }>('agent:listNotifications', { sinceMs: lastVisited, limit: 8 });
-
-    if (res.notifications.length === 0) {
-      // Truly nothing — show empty state
-      thread.innerHTML = `<div id="ghampus-thread-empty" class="ghampus-thread-empty">
-        <div style="width: 36px; height: 36px; border-radius: 10px; background: #14b8a6;
-                    display: flex; align-items: center; justify-content: center;
-                    font-weight: 700; font-size: 18px; color: #fff; margin-bottom: 12px; opacity: .5;">G</div>
-        <p style="margin: 0; font-size: 13px; opacity: .5;">
-          Start typing — or wait for Ghampus to pick up where you left off.
-        </p>
-      </div>`;
-      return;
-    }
-
-    // Render notification cards as a "while you were away" opener header + cards
-    const count = res.notifications.length;
-    const total = res.totalAvailable;
-    const summaryText = `${total > count ? `${total}` : `${count}`} item${count === 1 ? '' : 's'} arrived since your last visit · last ${Math.round((Date.now() - lastVisited) / 3_600_000)} hours · batched by source`;
-    const now = Date.now();
-
-    const headerHtml = `<div style="margin-bottom: 10px;">
-      <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 4px;">
-        <strong style="font-size: 14px;">While you were away</strong>
-        <div style="display: flex; gap: 10px;">
-          <button class="ghampus-dashboard-btn" id="btn-ghampus-mute-sources" type="button"
-                  style="padding: 0; font-size: 12px;">Mute sources</button>
-          <button class="ghampus-dashboard-btn" id="btn-ghampus-mark-all-read" type="button"
-                  style="padding: 0; font-size: 12px;">Mark all read</button>
-        </div>
-      </div>
-      <p class="subtitle" style="margin: 0; font-size: 12px;">${escapeHtml(summaryText)}</p>
-    </div>`;
-
-    const cardsHtml = res.notifications.map((n) => renderNotifCard(n, now)).join('');
-
-    // Pro upsell if free plan
-    const upsell = ghampusPlan === 'free'
-      ? `<div style="margin-top: 10px; padding: 10px 14px; border: 1px dashed var(--g-border, rgba(255,255,255,.15));
-                     border-radius: 8px; font-size: 12px; opacity: .7; line-height: 1.55;">
-           💡 On Pro, Ghampus would open with a single summary instead of a list — and let you chat across all ${count} engrams in one query. Free chats one engram at a time, but you can switch with one click.
-         </div>`
-      : '';
-
-    thread.innerHTML = `<div class="ghampus-thread-entry ghampus-notif-opener">
-      ${headerHtml}${cardsHtml}${upsell}
-    </div>`;
-
-    // Wire dismiss and switch buttons
-    thread.querySelectorAll<HTMLButtonElement>('.btn-notif-switch').forEach((btn) => {
-      btn.addEventListener('click', () => {
-        const engramId = btn.dataset.engram ?? '';
-        const nameEl = document.getElementById('ghampus-active-engram-name');
-        const badge = document.getElementById('ghampus-active-engram');
-        if (nameEl) nameEl.textContent = engramId;
-        if (badge) badge.classList.remove('hidden');
-        updateGhampusInputPlaceholder(engramId);
-        // Scroll to input
-        document.getElementById('ghampus-input')?.focus();
-      });
-    });
-    thread.querySelectorAll<HTMLButtonElement>('.btn-notif-dismiss').forEach((btn) => {
-      btn.addEventListener('click', () => {
-        btn.closest('.notif-card')?.remove();
-      });
-    });
-    document.getElementById('btn-ghampus-mark-all-read')?.addEventListener('click', () => {
-      thread.querySelectorAll('.notif-card').forEach((c) => c.remove());
-    });
-
-    // Show the quiet/snooze footer
-    document.getElementById('ghampus-quiet-footer')?.classList.remove('hidden');
-
-    // Update badge count in header
-    const badge = document.getElementById('ghampus-notif-badge');
-    if (badge && count > 0) {
-      badge.textContent = `${count} new`;
-      badge.classList.remove('hidden');
-    }
-  } catch { /* non-fatal */ }
-}
-
-function updateGhampusInputPlaceholder(activeEngramId?: string): void {
-  const input = document.getElementById('ghampus-input') as HTMLTextAreaElement | null;
-  if (!input) return;
-  input.placeholder = 'Ask anything — type / to save, recall, or run a skill';
-}
-
-async function refreshGhampusHeader(): Promise<void> {
-  try {
-    const data = await ipcCall<{
-      catalogVersion: string;
-      providers: Array<{ id: string; local: boolean; enabled: boolean; hasKey?: boolean }>;
-      models: Array<{ id: string; provider: string; displayName: string; capabilities: string[] }>;
-      strategy: string;
-      monthlyBudgetUsd: number | null;
-      spentThisCycleUsd: number;
-    }>('models:catalog', {});
-
-    // Find the active local model (first enabled local provider's first model)
-    const localProvider = data.providers.find((p) => p.local && p.enabled);
-    if (localProvider) {
-      const localModel = data.models.find((m) => m.provider === localProvider.id);
-      const modelName = localModel?.displayName ?? localProvider.id;
-      const nameEl = document.getElementById('ghampus-model-name');
-      const badge = document.getElementById('ghampus-model-badge');
-      if (nameEl) nameEl.textContent = modelName;
-      if (badge) badge.classList.remove('hidden');
-    }
-
-    // Usage counter
-    const counterEl = document.getElementById('ghampus-usage-counter');
-    if (counterEl && data.monthlyBudgetUsd !== null) {
-      const spent = data.spentThisCycleUsd ?? 0;
-      const budget = data.monthlyBudgetUsd;
-      const pct = Math.round((spent / budget) * 100);
-      counterEl.textContent = `${pct}/100`;
-      counterEl.classList.remove('hidden');
-    } else if (counterEl && ghampusPlan !== 'free') {
-      counterEl.textContent = 'unlimited calls';
-      counterEl.title = 'No monthly call limit on your current plan';
-      counterEl.classList.remove('hidden');
-    }
-  } catch { /* non-fatal */ }
-
-  updateGhampusInputPlaceholder();
-}
-
-// ── Slash command definitions ─────────────────────────────────────────────────
-const SLASH_COMMANDS = [
-  { name: 'save',    icon: '💾', args: '[content] [@engram]', desc: 'Save a memory',         template: '/save '         },
-  { name: 'create',  icon: '✨', args: '[engram name]',       desc: 'Create a new engram',   template: '/create '       },
-  { name: 'engrams', icon: '🗂️', args: '',                    desc: 'List your engrams',     template: '/engrams'       },
-  { name: 'skills',  icon: '⚡', args: '',                    desc: 'List your skills',      template: '/skills'        },
-  { name: 'forget',  icon: '🗑️', args: '',                    desc: 'Manage / delete memories', template: '/forget'     },
-  { name: 'help',    icon: '❓', args: '',                    desc: 'Show all commands',     template: '/help'          },
-] as const;
-
-function wireGhampusChat(): void {
-  const input = document.getElementById('ghampus-input') as HTMLTextAreaElement | null;
-  const sendBtn = document.getElementById('btn-ghampus-send');
-  if (!input || !sendBtn) return;
-
-  // ── Slash palette ──────────────────────────────────────────────────────────
-  let palette: HTMLDivElement | null = null;
-  let paletteActive = 0; // index of highlighted item
-  let paletteVisible = false;
-  let filteredCmds: typeof SLASH_COMMANDS[number][] = [];
-
-  function buildPalette(filter: string): void {
-    filteredCmds = SLASH_COMMANDS.filter(
-      (c) => c.name.startsWith(filter) || filter === '',
-    ) as typeof SLASH_COMMANDS[number][];
-
-    if (!palette) {
-      palette = document.createElement('div');
-      palette.className = 'slash-palette';
-      input!.closest('.ghampus-input-row')!.appendChild(palette);
-    }
-    palette.innerHTML =
-      `<div class="slash-palette-header">Commands</div>` +
-      filteredCmds.map((c, i) =>
-        `<div class="slash-palette-item${i === paletteActive ? ' slash-active' : ''}" data-idx="${i}">
-          <span class="slash-palette-icon">${c.icon}</span>
-          <span class="slash-palette-name">/${c.name}</span>
-          ${c.args ? `<span class="slash-palette-args">${escapeHtml(c.args)}</span>` : ''}
-          <span class="slash-palette-desc">${escapeHtml(c.desc)}</span>
-        </div>`,
-      ).join('');
-
-    palette.querySelectorAll<HTMLElement>('.slash-palette-item').forEach((el) => {
-      el.addEventListener('mousedown', (e) => {
-        e.preventDefault(); // don't blur the textarea
-        const idx = Number(el.dataset['idx']);
-        selectPaletteItem(idx);
-      });
-    });
-
-    paletteVisible = filteredCmds.length > 0;
-    palette.style.display = paletteVisible ? '' : 'none';
-  }
-
-  function selectPaletteItem(idx: number): void {
-    const cmd = filteredCmds[idx];
-    if (!cmd) return;
-    input!.value = cmd.template;
-    hidePalette();
-    input!.focus();
-    // Move cursor to end
-    input!.selectionStart = input!.selectionEnd = input!.value.length;
-    autoGrow();
-    // Execute no-arg commands immediately
-    if (!cmd.args) void sendMessage();
-  }
-
-  function hidePalette(): void {
-    if (palette) palette.style.display = 'none';
-    paletteVisible = false;
-    paletteActive = 0;
-  }
-
-  function updatePalette(): void {
-    const val = input!.value;
-    if (!val.startsWith('/')) { hidePalette(); return; }
-    const filter = val.slice(1).split(/\s/)[0].toLowerCase();
-    // Only show palette while user is still typing the command word (no space yet after it)
-    if (val.includes(' ') && !val.match(/^\/\w+$/)) { hidePalette(); return; }
-    paletteActive = 0;
-    buildPalette(filter);
-  }
-
-  // ── Auto-grow textarea ─────────────────────────────────────────────────────
-  function autoGrow(): void {
-    input!.style.height = 'auto';
-    input!.style.height = `${Math.min(input!.scrollHeight, 140)}px`;
-  }
-  input.addEventListener('input', () => { autoGrow(); updatePalette(); });
-
-  async function sendMessage(): Promise<void> {
-    const text = input!.value.trim();
-    if (!text) return;
-    hidePalette();
-    input!.value = '';
-    input!.style.height = 'auto';
-    const ts = Date.now();
-    appendToThread({ kind: 'user', text, ts });
-    showThinkingBubble();
-    try {
-      await ipcCall('ghampus:send', { text });
-    } catch {
-      clearThinkingBubble();
-    }
-  }
-
-  input.addEventListener('keydown', (e) => {
-    // Palette navigation
-    if (paletteVisible) {
-      if (e.key === 'ArrowDown') {
-        e.preventDefault();
-        paletteActive = (paletteActive + 1) % filteredCmds.length;
-        buildPalette(input.value.slice(1).split(/\s/)[0].toLowerCase());
-        return;
-      }
-      if (e.key === 'ArrowUp') {
-        e.preventDefault();
-        paletteActive = (paletteActive - 1 + filteredCmds.length) % filteredCmds.length;
-        buildPalette(input.value.slice(1).split(/\s/)[0].toLowerCase());
-        return;
-      }
-      if (e.key === 'Tab' || (e.key === 'Enter' && paletteVisible)) {
-        e.preventDefault();
-        selectPaletteItem(paletteActive);
-        return;
-      }
-      if (e.key === 'Escape') { hidePalette(); return; }
-    }
-
-    if (e.key === 'Enter') {
-      if (e.metaKey || e.ctrlKey) {
-        e.preventDefault();
-        const pos = input.selectionStart ?? input.value.length;
-        input.value = input.value.slice(0, pos) + '\n' + input.value.slice(pos);
-        input.selectionStart = input.selectionEnd = pos + 1;
-        autoGrow();
-      } else if (!e.shiftKey) {
-        e.preventDefault();
-        void sendMessage();
-      }
-    }
-  });
-
-  // Hide palette on outside click
-  document.addEventListener('mousedown', (e) => {
-    if (palette && !palette.contains(e.target as Node) && e.target !== input) {
-      hidePalette();
-    }
-  });
-
-  sendBtn.addEventListener('click', () => void sendMessage());
-
-  // Wire pill-based section accordion — one panel open at a time
-  const strip = document.getElementById('ghampus-sections-strip');
-  if (strip) {
-    strip.querySelectorAll<HTMLButtonElement>('.ghampus-section-pill').forEach((pill) => {
-      pill.addEventListener('click', () => {
-        const section = pill.dataset['section'] ?? '';
-        const panel = strip.querySelector<HTMLElement>(`.ghampus-section-panel[data-panel="${section}"]`);
-        const isOpen = pill.getAttribute('aria-expanded') === 'true';
-
-        // Collapse all pills and panels first
-        strip.querySelectorAll<HTMLButtonElement>('.ghampus-section-pill').forEach((p) => {
-          p.setAttribute('aria-expanded', 'false');
-        });
-        strip.querySelectorAll<HTMLElement>('.ghampus-section-panel').forEach((p) => {
-          p.classList.remove('open');
-        });
-
-        // If it wasn't open, open it now (toggle behaviour)
-        if (!isOpen && panel) {
-          pill.setAttribute('aria-expanded', 'true');
-          panel.classList.add('open');
-        }
-      });
-    });
-  }
-}
-wireGhampusChat();
-
-function wireGhampusControls(): void {
-  document.getElementById('btn-ghampus-kill')?.addEventListener('click', () => {
-    void (async () => {
-      await ipcCall('agent:setEnabled', { enabled: false });
-      await refreshGhampusState();
-    })();
-  });
-  document.getElementById('btn-ghampus-resume')?.addEventListener('click', () => {
-    void (async () => {
-      await ipcCall('agent:setEnabled', { enabled: true });
-      await refreshGhampusState();
-    })();
-  });
-}
-wireGhampusControls();
 
 async function refreshStudioLlmBadge(): Promise<void> {
   try {
@@ -25471,6 +22825,7 @@ function applySkillsDraft(draft: SkillsDraft): void {
     const exists = Array.from(engramEl.options).some((o) => o.value === draft.targetEngramId);
     if (exists) engramEl.value = draft.targetEngramId;
   }
+  syncSkillsPreviewWarning();
   if (breadthEl && typeof draft.recallBreadth === 'number') {
     breadthEl.value = String(draft.recallBreadth);
     if (breadthLive) breadthLive.textContent = String(draft.recallBreadth);
@@ -25605,16 +22960,23 @@ function pickDefaultSkillsTargetGraph(): { graphId: string } | null {
   return { graphId: first.graphId };
 }
 
+/** True when the Skills trainer "Saving to" target won't persist (preview sentinel
+ *  or nothing selected). Real Skills-template engram graphIds return false. */
+function isSkillsPreviewSaveTarget(value: string | undefined | null): boolean {
+  return !value || value === '__preview__';
+}
+
 /** Show the ⚠️ preview-mode warning ONLY when the "Saving to" target is the
  *  non-persisting sentinel. Must be called after EVERY change to the select —
- *  including programmatic `value =` assignments (create / import flows), which
- *  don't fire a 'change' event — otherwise the warning gets stranded visible
- *  even though a real engram is now selected. */
+ *  including programmatic `value =` assignments (create / import / draft-restore /
+ *  retrain flows), which don't fire a 'change' event — otherwise the warning
+ *  gets stranded visible even though a real engram is now selected. */
 function syncSkillsPreviewWarning(): void {
   const sel = document.getElementById('skills-input-engram') as HTMLSelectElement | null;
   const warn = document.getElementById('skills-preview-warning');
   if (!sel || !warn) return;
-  warn.classList.toggle('hidden', sel.value !== '__preview__');
+  const showPreviewWarning = isSkillsPreviewSaveTarget(sel.value);
+  warn.classList.toggle('hidden', !showPreviewWarning);
 }
 
 function populateSkillsEngramPickers(): void {
@@ -25650,9 +23012,13 @@ function populateSkillsEngramPickers(): void {
         '<option disabled>──────────</option>',
         ...skillsEngrams.map((g) => `<option value="${escape(g.graphId)}">${escape(formatEngramLabel(g))}</option>`),
       ].join('');
-      // Preserve any prior selection; otherwise default to the first Skills
-      // engram alphabetically (so saving is the default when one exists).
-      if (prev && (prev === '__preview__' || skillsEngrams.some((g) => g.graphId === prev))) {
+      // Preserve a real engram the user already picked; otherwise default to the
+      // first Skills engram alphabetically (so saving is the default when one
+      // exists). The HTML/bootstrap '__preview__' sentinel is NOT preserved here
+      // — it only means "no engrams loaded yet", not an explicit user choice.
+      const prevIsRealEngram = prev && prev !== '__preview__'
+        && skillsEngrams.some((g) => g.graphId === prev);
+      if (prevIsRealEngram) {
         target.value = prev;
       } else {
         const first = skillsEngrams[0];
@@ -25854,6 +23220,8 @@ async function mountSkillsPane(): Promise<void> {
   // Show the draft-restore prompt if there's a saved draft AND the
   // textarea is currently empty. Subtle non-modal — just a banner.
   showSkillsDraftRestorePrompt();
+  updateSkillsResetButton();
+  syncSkillsPreviewWarning();
 }
 
 async function warmRetrainCache(): Promise<void> {
@@ -26434,7 +23802,7 @@ async function rollbackSkillVersion(sourceId: string, graphId: string, snapshotI
 }
 
 /** Wipe the compose form back to a blank slate — used by genuinely-fresh
- *  entry points ("← New skill", deleting the open skill). NOT called from the
+ *  entry points ("+ New skill", deleting the open skill). NOT called from the
  *  retrain path, which switches to compose mode and then repopulates the form
  *  with the trained text. Clears content fields (text + name) and the saved
  *  draft; leaves config prefs (target engram, model, recall breadth) intact. */
@@ -26456,8 +23824,6 @@ function showSkillsComposeMode(): void {
   document.getElementById('skills-compose')?.classList.remove('hidden');
   document.getElementById('skills-review')?.classList.add('hidden');
   document.getElementById('skills-license-card')?.classList.add('hidden');
-  const back = document.getElementById('btn-skills-trainer-back');
-  back?.classList.add('hidden');
   const title = document.getElementById('skills-trainer-title');
   if (title) {
     title.textContent = 'Train a skill';
@@ -26468,13 +23834,14 @@ function showSkillsComposeMode(): void {
   skillsActiveSourceId = null;
   skillsActiveResult = null;
   renderSkillsLibrary();
+  updateSkillsResetButton();
+  syncSkillsPreviewWarning();
 }
 
 function showSkillsReviewMode(title: string): void {
   document.getElementById('skills-compose')?.classList.add('hidden');
   document.getElementById('skills-review')?.classList.remove('hidden');
   document.getElementById('skills-license-card')?.classList.add('hidden');
-  document.getElementById('btn-skills-trainer-back')?.classList.remove('hidden');
   const titleEl = document.getElementById('skills-trainer-title');
   if (titleEl) {
     titleEl.textContent = title;
@@ -26500,6 +23867,7 @@ function showSkillsReviewMode(title: string): void {
       });
     }
   }
+  updateSkillsResetButton();
 }
 
 /**
@@ -27132,6 +24500,7 @@ function paintSkillsReview(result: SkillTrainResult, opts: {
     setOutputView('output');
     renderDiffView();
   }
+  updateSkillsResetButton();
 }
 
 /** Switch the trained-output panel between the plain text view and the
@@ -27461,6 +24830,7 @@ async function openSkillInTrainer(
   if (_openSkillInFlight === sourceId) return;
   _openSkillInFlight = sourceId;
   skillsActiveSourceId = sourceId;
+  updateSkillsResetButton();
 
   // Show a thin indeterminate progress bar if the skill hasn't loaded within 350ms.
   const loadBar = document.getElementById('skills-load-bar');
@@ -27527,11 +24897,12 @@ async function openSkillInTrainer(
         .replace(/^(?:#[^\n]+|\*\*[^\n]+\*\*)\n+<!--[\s\S]*?-->\n+/, '')
         .trim();
       (document.getElementById('skills-input-text') as HTMLTextAreaElement | null)!.value = cleanedText;
-      updateSkillsResetButton(); // a skill is loaded — reveal "← New skill"
+      updateSkillsResetButton(); // compose populated — reveal "+ New skill"
       const nameInput = document.getElementById('skills-input-name') as HTMLInputElement | null;
       if (nameInput) nameInput.value = retrainName;
       const engSel = document.getElementById('skills-input-engram') as HTMLSelectElement | null;
       if (engSel) engSel.value = detail.graphId;
+      syncSkillsPreviewWarning();
       if (typeof detail.recallBreadth === 'number') {
         const breadth = document.getElementById('skills-input-breadth') as HTMLInputElement | null;
         const live = document.getElementById('skills-input-breadth-live');
@@ -27654,6 +25025,7 @@ async function openSkillInTrainer(
   } finally {
     hideLoadBar();
     if (_openSkillInFlight === sourceId) _openSkillInFlight = null;
+    updateSkillsResetButton();
   }
 }
 
@@ -29157,35 +26529,42 @@ function bindSkillsHandlers(): void {
   }
 }
 
-// Show/hide the "← New skill" reset affordance based on whether the trainer
-// has any work in it. Visible whenever there's skill text (typed, or a skill
-// loaded for retrain/import) so the user can always start over; hidden on the
-// pristine empty form where "New skill" would be a no-op.
+// Show/hide the "← New skill" reset affordance in the trainer header. Visible
+// whenever the trainer has work in it — review mode (library skill open),
+// compose draft text, or an in-flight selection — so the user can always
+// start over. Hidden only on the pristine empty compose form where "New skill"
+// would be a no-op. Review mode also carries btn-skills-review-new in the
+// meta row (always visible while #skills-review is shown).
 function updateSkillsResetButton(): void {
   const back = document.getElementById('btn-skills-trainer-back');
+  if (!back) return;
+  const reviewOpen = !document.getElementById('skills-review')?.classList.contains('hidden');
   const ta = document.getElementById('skills-input-text') as HTMLTextAreaElement | null;
-  if (!back || !ta) return;
-  back.classList.toggle('hidden', ta.value.trim().length === 0);
+  const hasComposeDraft = (ta?.value.trim().length ?? 0) > 0;
+  const hasActiveSkill = skillsActiveSourceId !== null || skillsActiveResult !== null;
+  back.classList.toggle('hidden', !(reviewOpen || hasComposeDraft || hasActiveSkill));
+}
+
+/** Return to a blank "Train a skill" compose form from review or compose. */
+async function startNewSkill(): Promise<void> {
+  const reviewOpen = !document.getElementById('skills-review')?.classList.contains('hidden');
+  const ta = document.getElementById('skills-input-text') as HTMLTextAreaElement | null;
+  const hasComposeDraft = (ta?.value.trim().length ?? 0) > 0;
+  // Review mode is read-only — no unsaved compose work to lose. Confirm only
+  // when the user has draft text in the compose form that isn't saved yet.
+  if (!reviewOpen && hasComposeDraft) {
+    const ok = await confirmPermanent(
+      'Start a new skill? This clears the trainer form. If you haven’t trained (saved) this skill into an engram yet, do that first — resetting discards the text shown here.',
+    );
+    if (!ok) return;
+  }
+  showSkillsComposeMode();
+  resetSkillsComposeForm();
 }
 
 function _bindSkillsHandlersInner(): void {
-  document.getElementById('btn-skills-trainer-back')?.addEventListener('click', () => {
-    void (async () => {
-      // Remind the user to save (train) their work before wiping the form. The
-      // draft is auto-saved to localStorage, but a trained/persisted skill is
-      // not — so confirm whenever there's content in the trainer.
-      const ta = document.getElementById('skills-input-text') as HTMLTextAreaElement | null;
-      const hasWork = (ta?.value.trim().length ?? 0) > 0;
-      if (hasWork) {
-        const ok = await confirmPermanent(
-          'Start a new skill? This clears the trainer form. If you haven’t trained (saved) this skill into an engram yet, do that first — resetting discards the text shown here.',
-        );
-        if (!ok) return;
-      }
-      showSkillsComposeMode();
-      resetSkillsComposeForm();
-    })();
-  });
+  document.getElementById('btn-skills-trainer-back')?.addEventListener('click', () => { void startNewSkill(); });
+  document.getElementById('btn-skills-review-new')?.addEventListener('click', () => { void startNewSkill(); });
   document.getElementById('skills-review-vitality')?.addEventListener('click', () => void refreshSkillVitality());
   // In-review Retrain button — same flow as the list row's Retrain action,
   // but reachable from the inspector view so the user doesn't have to go
@@ -29218,11 +26597,14 @@ function _bindSkillsHandlersInner(): void {
   document.getElementById('skills-input-text')?.addEventListener('input', () => {
     onDraftInput();
     scheduleSkillsChunkPreview();
-    updateSkillsResetButton(); // reveal "← New skill" as soon as there's content
+    updateSkillsResetButton(); // reveal "+ New skill" as soon as there's content
   });
   document.getElementById('skills-input-name')?.addEventListener('input', onDraftInput);
   document.getElementById('skills-input-model')?.addEventListener('change', onDraftInput);
-  document.getElementById('skills-input-engram')?.addEventListener('change', onDraftInput);
+  document.getElementById('skills-input-engram')?.addEventListener('change', () => {
+    onDraftInput();
+    syncSkillsPreviewWarning();
+  });
   document.getElementById('skills-input-breadth')?.addEventListener('change', onDraftInput);
   // Restore / Discard banner buttons.
   document.getElementById('btn-skills-draft-restore')?.addEventListener('click', () => {
@@ -29414,19 +26796,11 @@ function _bindSkillsHandlersInner(): void {
   // dropdown changes. Also run once at bind time so the initial state
   // (which defaults to '__preview__' when no Skills engram exists) is
   // reflected immediately on first render.
-  const targetSel = document.getElementById('skills-input-engram') as HTMLSelectElement | null;
-  targetSel?.addEventListener('change', syncSkillsPreviewWarning);
-  // Belt-and-suspenders: a DELEGATED listener so the warning re-syncs on every
-  // change of the target select even if the direct binding above missed it
-  // (e.g. the element wasn't in the DOM yet at bind time, or was re-rendered).
-  // This guarantees "engram selected → no preview warning" regardless of timing.
+  // Belt-and-suspenders: delegated listener so the warning re-syncs even if the
+  // compose form was re-rendered after bind time.
   document.addEventListener('change', (e) => {
     if ((e.target as HTMLElement | null)?.id === 'skills-input-engram') syncSkillsPreviewWarning();
   });
-  // Initial sync — the dropdown is populated by populateSkillsEngramPickers
-  // which runs later via syncEngramPicker(); a microtask defer is enough to
-  // catch the first render without a polling loop.
-  queueMicrotask(syncSkillsPreviewWarning);
 }
 bindSkillsHandlers();
 
@@ -29494,8 +26868,10 @@ document.querySelectorAll<HTMLTextAreaElement>('.studio-textarea, .studio-text-i
 // ── Federated stats strip ────────────────────────────────────────────────────
 
 async function refreshFederatedStats(): Promise<void> {
+  const gen = cortexUiGeneration;
   try {
     const data = (await invoke('inspector_stats')) as { graphs: Array<{ totalNodes: number; sources: number; graphId: string }>; sources: unknown[] };
+    if (gen !== cortexUiGeneration) return;
     const active = data.graphs; // includes all engrams
     const totalMemories = active.reduce((s, g) => s + g.totalNodes, 0);
     const totalSources = active.reduce((s, g) => s + g.sources, 0);
