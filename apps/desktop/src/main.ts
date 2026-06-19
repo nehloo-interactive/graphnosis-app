@@ -1702,7 +1702,11 @@ function render(status: StatusSnapshot): void {
       els.brainVitality.style.display = '';
       els.brainVitality.textContent = '🧠 Vitality…';
       els.brainVitality.style.opacity = '0.5';
-      void refreshStats();
+      if (isEngramPreloadInProgress()) {
+        scheduleDebouncedFederatedStats();
+      } else {
+        void refreshStats();
+      }
       void refreshConnectorsList();
       startMcpPolling();
       void refreshBrainState();

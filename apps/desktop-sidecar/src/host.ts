@@ -277,6 +277,12 @@ export class GraphnosisHost {
    * preventing a stale in-flight read from overwriting fresh post-write data.
    */
   private _oplogReadGeneration = 0;
+  /** True while loadAllGraphsFromDisk is running — serialises cold-cache
+   *  buildEmbeddings so N engrams don't all contend on the background worker. */
+  private bootSweepActive = false;
+  private bootEmbBuildInFlight = 0;
+  private bootEmbBuildWaiters: Array<() => void> = [];
+  private static readonly BOOT_EMB_BUILD_MAX = 1;
   private readonly oplogWriter: oplog.OpLogWriter;
   /** Append-only LLM event log — one .gll file per engram. */
   readonly gllWriter: GllWriter;
@@ -1755,6 +1761,47 @@ export class GraphnosisHost {
     return [...this.graphs.keys()];
   }
 
+  /** Called by the sidecar boot sweep — gates concurrent embedding rebuilds. */
+  setBootSweepActive(active: boolean): void {
+    this.bootSweepActive = active;
+    if (!active) {
+      while (
+        this.bootEmbBuildWaiters.length > 0
+        && this.bootEmbBuildInFlight < GraphnosisHost.BOOT_EMB_BUILD_MAX
+      ) {
+        const next = this.bootEmbBuildWaiters.shift();
+        if (next) {
+          this.bootEmbBuildInFlight++;
+          next();
+        }
+      }
+    }
+  }
+
+  private yieldToLoop(): Promise<void> {
+    return new Promise<void>((resolve) => setImmediate(resolve));
+  }
+
+  private async acquireBootEmbBuildSlot(): Promise<void> {
+    if (this.bootEmbBuildInFlight < GraphnosisHost.BOOT_EMB_BUILD_MAX) {
+      this.bootEmbBuildInFlight++;
+      return;
+    }
+    await new Promise<void>((resolve) => {
+      this.bootEmbBuildWaiters.push(resolve);
+    });
+    this.bootEmbBuildInFlight++;
+  }
+
+  private releaseBootEmbBuildSlot(): void {
+    this.bootEmbBuildInFlight = Math.max(0, this.bootEmbBuildInFlight - 1);
+    const next = this.bootEmbBuildWaiters.shift();
+    if (next) {
+      this.bootEmbBuildInFlight++;
+      next();
+    }
+  }
+
   /** Canonical on-disk path for a graph. New saves always go here (.gai). */
   private graphPath(graphId: GraphId): string {
     return path.join(this.opts.cortexDir, 'graphs', `${graphId}.gai`);
@@ -1845,9 +1892,11 @@ export class GraphnosisHost {
       console.error(`[graphnosis-host] loaded legacy engram[${redactId(graphId)}].aikg — will migrate to .gai on next save`);
     }
     const aikgPlain = await decrypt(new Uint8Array(bytes!), this.key);
+    await this.yieldToLoop();
     // Inner SDK HMAC key (independent of outer encryption) — derived from data key + a fixed label.
     try {
       handle = await this.opts.adapter.loadFromBuffer(graphId, aikgPlain, hmacKey);
+      await this.yieldToLoop();
     } catch (e) {
       // ── Auto-quarantine on integrity failure ──────────────────────────
       // HMAC / checksum mismatch from loadFromBuffer means the .gai bytes
@@ -1908,6 +1957,7 @@ export class GraphnosisHost {
     }
     } // !usedTinyLkgRestore
     const sourceIndex = await this.loadBundle(graphId);
+    await this.yieldToLoop();
 
     // ── Early commit: make the engram available in the picker immediately ──
     //
@@ -1929,6 +1979,16 @@ export class GraphnosisHost {
     this.graphs.set(graphId, entry);
     this.everLoaded.add(graphId); // mark available even after a future LRU evict
     this.correctionsCount.set(graphId, 0);
+
+    // Converge .gai + source bundle with the merged multi-device op-log.
+    // Deferred to background so decrypt + SDK parse don't block IPC for
+    // seconds per engram (adapter.build + full oplog replay on first load).
+    void this.reconcileGraphFromOplog(graphId, entry)
+      .catch((e: unknown) => {
+        console.error(
+          `[graphnosis-host] op-log reconcile failed for engram[${redactId(graphId)}]: ${(e as Error).message} — continuing with on-disk .gai`,
+        );
+      });
 
     // ── Background: load the embedding cache, then kick off rebuild ────────
     //
@@ -1957,6 +2017,8 @@ export class GraphnosisHost {
         // worker) not the foreground embed. With ≥ 2 workers this reserves
         // the foreground worker(s) for user-facing search/recall so they
         // never stall behind a cold-cache rebuild on a large engram.
+        const bootSlot = this.bootSweepActive;
+        if (bootSlot) await this.acquireBootEmbBuildSlot();
         try {
           await this.opts.adapter.buildEmbeddings(handle, {
             embed: cached(this.embedBackground, cache),
@@ -1967,6 +2029,7 @@ export class GraphnosisHost {
         } catch (e) {
           console.error(`[graphnosis-host] could not build embeddings on load for engram[${redactId(graphId)}]: ${(e as Error).message} — query will use TF-IDF only.`);
         } finally {
+          if (bootSlot) this.releaseBootEmbBuildSlot();
           // Clear so callers can know the build is no longer in flight.
           if (this.graphs.get(graphId) === entry) entry.embeddingsBuilding = null;
         }
