@@ -151,6 +151,9 @@ async function loadAllGraphsFromDisk(
   const quarantinedIds: string[] = [];
   const batchStart = Date.now();
 
+  if (total > 0) {
+    console.error(`[graphnosis-sidecar] loading ${total} more engram(s) from disk…`);
+  }
   if (broadcastRaw && total > 0) {
     try {
       broadcastRaw({ kind: 'engrams-loading', name: 'engrams-loading', payload: { loaded: 0, total } });
@@ -208,6 +211,7 @@ async function loadAllGraphsFromDisk(
 
   for (const graphId of toLoad) {
     const tLoad = Date.now();
+    console.error(`[graphnosis-sidecar] loading engram '${graphId}' (${loaded + failed + 1}/${total})…`);
     // Kick off the real load WITHOUT awaiting it directly — that way the
     // same promise instance can be watched by both the race AND the
     // background watcher (we keep a reference so a timed-out load still
@@ -1211,15 +1215,26 @@ async function main(): Promise<void> {
     }
   }
 
-  // Load remaining engrams sequentially and await completion before starting
-  // any background machinery. The default engram is already in memory (loaded
-  // above), so IPC remains responsive throughout. broadcastRaw fires incremental
-  // progress events so the UI can show/grey each engram as it becomes ready.
-  // Connectors and the brain engine start only after the full cortex is in
-  // memory — avoids ingest races on not-yet-loaded engrams and keeps startup
-  // sequencing predictable.
-  await loadAllGraphsFromDisk(host, env.cortexDir, env.defaultGraph, broadcastRaw);
-  await backfillGraphMetadata(host);
+  // Start brain + connectors before the engram sweep — activity, vitality, and
+  // IPC handlers must work while secondary engrams load. Awaiting the full
+  // sequential decrypt ahead of brainEngine.start() blocks the event loop for
+  // minutes on large cortexes (sync decrypt monopolizes the loop) and leaves
+  // the UI stuck on "Loading N more engrams…" with no terminal progress until
+  // the entire batch finishes.
+  brainEngine.start();
+  await connectorManager.start();
+
+  // Background engram sweep — sequential with yields between each graph so IPC
+  // can interleave. broadcastRaw fires incremental progress for the picker/status
+  // bar. Metadata backfill runs when the sweep finishes.
+  void loadAllGraphsFromDisk(host, env.cortexDir, env.defaultGraph, broadcastRaw)
+    .then(async () => {
+      await backfillGraphMetadata(host);
+      (globalThis as { Bun?: { gc?: (force: boolean) => void } }).Bun?.gc?.(true);
+    })
+    .catch((e) => {
+      console.error(`[graphnosis-sidecar] background engram sweep failed: ${(e as Error).message}`);
+    });
   // ZERO op-log at boot. The op-log is cold storage (2M events / ~2.2 GB on a
   // mature cortex) — reading it all here cost ~4.5 GB of resident JS heap that
   // never came back (it was THE memory floor). Corrections are baked into each
@@ -1227,17 +1242,6 @@ async function main(): Promise<void> {
   // needs nothing from the log. The corrections COUNT + activity feed read the
   // log on demand (Activity/Audit view) and release it afterward — see
   // listOplogEvents' idle-release below. Compaction is triggered lazily, not here.
-
-  // Scavenge the boot-load churn so the allocator returns those pages.
-  (globalThis as { Bun?: { gc?: (force: boolean) => void } }).Bun?.gc?.(true);
-  // Start the brain + connectors at boot. (An earlier lean-boot deferred them 60 s
-  // to MEASURE the idle floor — but that broke "Sync now" in the first 60 s
-  // because the connector wasn't mounted yet, and the floor turned out to be
-  // Bun's allocator, not these passes. The brain now self-gates on
-  // isIngestActive(), so it no longer contends with a pull regardless.)
-  // Connectors mount immediately so a manual Sync-now works on cue.
-  brainEngine.start();
-  await connectorManager.start();
 
   // Full graceful shutdown: flush dirty graphs, stop brain + connectors, then
   // release the lock and exit. Replaces the shallow pre-brain handlers above.

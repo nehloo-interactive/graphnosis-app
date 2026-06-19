@@ -13359,11 +13359,11 @@ void listen<{ step: string; detail: string }>('graphnosis://sidecar-boot-status'
   els.bootStatusText.textContent = detail;
   els.unlockStatus.classList.remove('hidden');
   if (step === 'ready') {
-    // Sidecar finished its boot sweep — vitality / inspector_stats now cover
-    // every loaded engram. Refresh if the app is already visible (re-unlock,
-    // cortex switch) so Per engram / trust strip match the picker.
+    // IPC socket is up (engram sweep may still be running in the background).
+    // If the app is already visible, nudge hero stats; full scoped refresh
+    // runs on engrams-loading completion / showApp.
     if (!els.viewApp.classList.contains('hidden')) {
-      void refreshCortexScopedStats();
+      scheduleDebouncedFederatedStats();
     }
     // Socket is up — hide the status line shortly after, BUT only if the
     // boot sequence hasn't already taken over (unlockPending = true means
@@ -13760,6 +13760,11 @@ void listen<EventStreamConnectedPayload>('graphnosis://event-stream-connected', 
   // Terminal engrams-loading may have fired before we subscribed; unblock
   // docs ingest when the picker already shows a fully-loaded cortex.
   if (allEngramsReportLoaded()) markEngramsLoaded();
+  // Catch up picker + hero stats if boot broadcasts landed before subscribe.
+  else if (isEngramPreloadInProgress()) {
+    schedulePeriodicGreyedRefresh();
+    scheduleDebouncedFederatedStats();
+  }
 });
 
 // ── Layer-4 consent: in-app prompt (replaces phrase typing when GUI is up) ──
@@ -14072,6 +14077,46 @@ void listen<QuarantineRecoveredPayload>('graphnosis://cortex-recovered-from-quar
 /** Debounce handle for the engrams-loading → skills-library refresh. */
 let _skillsRefreshTimer: number | null = null;
 
+/** Debounce hero-only stats during the boot engram sweep — a full
+ *  refreshCortexScopedStats per engram (inspector_stats + brain IPC +
+ *  sources DOM rebuild) saturates the IPC queue and freezes the UI on large
+ *  cortexes. Federated hero numbers are enough while greyed engrams load. */
+let _federatedStatsDebounce: ReturnType<typeof setTimeout> | null = null;
+function scheduleDebouncedFederatedStats(): void {
+  if (_federatedStatsDebounce) clearTimeout(_federatedStatsDebounce);
+  _federatedStatsDebounce = setTimeout(() => {
+    _federatedStatsDebounce = null;
+    void refreshFederatedStats();
+  }, 400);
+}
+function cancelDebouncedFederatedStats(): void {
+  if (_federatedStatsDebounce) {
+    clearTimeout(_federatedStatsDebounce);
+    _federatedStatsDebounce = null;
+  }
+}
+
+/** Active non-archived engrams still waiting on the boot disk sweep. */
+function engramsPendingDiskLoad(): GraphWithMetadata[] {
+  return loadedGraphs.filter((g) => !g.metadata.archived && g.loaded === false);
+}
+
+/** Status-bar line for the background engram sweep. Prefer picker truth
+ *  (loadedGraphs) over the event payload — broadcasts can be missed or
+ *  lag behind resident state after unlockPending catch-up. */
+function updateEngramLoadingStatus(loaded: number, total: number): void {
+  if (!els.statusSaved) return;
+  if (allEngramsReportLoaded()) {
+    els.statusSaved.textContent = '';
+    return;
+  }
+  const pending = engramsPendingDiskLoad().length;
+  const remaining = pending > 0 ? pending : Math.max(0, total - loaded);
+  els.statusSaved.textContent = remaining <= 0
+    ? ''
+    : `Loading ${remaining} more engram${remaining === 1 ? '' : 's'}…`;
+}
+
 /** Most-recent engrams-loading payload that arrived while `unlockPending` was
  *  true. Used by the post-unlock catch-up to re-fire the listener logic with
  *  the latest state, so events that boot saw get reflected in the picker.
@@ -14086,12 +14131,7 @@ void listen<{ loaded: number; total: number }>('graphnosis://engrams-loading', (
   // Unblock any docs reingest that was waiting for loading to complete.
   if (allDone) markEngramsLoaded();
 
-  // Status bar: always show a count so the user sees progress.
-  if (els.statusSaved) {
-    els.statusSaved.textContent = allDone
-      ? ''
-      : `Loading ${remaining} more engram${remaining === 1 ? '' : 's'}…`;
-  }
+  updateEngramLoadingStatus(loaded, total);
 
   // During boot, the boot sequence owns atlasActiveGraph / loadedGraphs /
   // view refreshes. Touching them here races against the boot's awaits and
@@ -14112,12 +14152,26 @@ void listen<{ loaded: number; total: number }>('graphnosis://engrams-loading', (
 function processEngramsLoadingRefresh(allDone: boolean, forceStatsRefresh = false): void {
   const saved = localStorage.getItem(LAST_ENGRAM_KEY);
   const prevActiveCount = loadedGraphs.filter((g) => !g.metadata.archived).length;
+  const prevResidentCount = loadedGraphs.filter((g) => g.loaded !== false).length;
   void invoke<GraphWithMetadata[]>('list_graphs_with_metadata', { includeUnloaded: true }).then((graphs) => {
     loadedGraphs = graphs;
     populateStudioEngramSelects();
     const newActiveCount = graphs.filter((g) => !g.metadata.archived).length;
-    if (allDone || forceStatsRefresh || newActiveCount !== prevActiveCount) {
+    const newResidentCount = graphs.filter((g) => g.loaded !== false).length;
+    if (allDone || forceStatsRefresh) {
+      cancelDebouncedFederatedStats();
       void refreshCortexScopedStats();
+    } else if (
+      newActiveCount !== prevActiveCount
+      || newResidentCount !== prevResidentCount
+    ) {
+      scheduleDebouncedFederatedStats();
+    }
+    if (allEngramsReportLoaded()) {
+      if (els.statusSaved) els.statusSaved.textContent = '';
+      markEngramsLoaded();
+    } else {
+      updateEngramLoadingStatus(0, 0);
     }
     if (saved && saved !== atlasActiveGraph
         && graphs.some((g) => !g.metadata.archived && g.graphId === saved)) {
@@ -14153,16 +14207,34 @@ function processEngramsLoadingRefresh(allDone: boolean, forceStatsRefresh = fals
  *  The single tick re-schedules itself if still needed. */
 let _periodicGreyedRefreshTimer: ReturnType<typeof setTimeout> | null = null;
 function schedulePeriodicGreyedRefresh(): void {
-  // Obsolete under lazy-boot: loaded:false is now the normal "on disk, not
-  // resident" state, not a transient "still loading at boot" — there's no
-  // background load to poll for, so this must NOT spin a 5s timer forever (it
-  // would never self-terminate now that some engram is always unloaded). The
-  // picker lists every engram regardless, and loaded-state refreshes when an
-  // engram is selected (switch flow) or evicted. No-op; clear any stray timer.
-  if (_periodicGreyedRefreshTimer !== null) {
-    clearTimeout(_periodicGreyedRefreshTimer);
+  if (_periodicGreyedRefreshTimer !== null) return; // already scheduled
+  if (!isEngramPreloadInProgress()) return; // boot sweep done (or not started)
+  _periodicGreyedRefreshTimer = window.setTimeout(() => {
     _periodicGreyedRefreshTimer = null;
-  }
+    void invoke<GraphWithMetadata[]>('list_graphs_with_metadata', { includeUnloaded: true })
+      .then((graphs) => {
+        const before = loadedGraphs.filter((g) => g.loaded === false).length;
+        loadedGraphs = graphs;
+        populateStudioEngramSelects();
+        const after = graphs.filter((g) => g.loaded === false).length;
+        if (before !== after) {
+          syncEngramPicker();
+          scheduleDebouncedFederatedStats();
+        }
+        if (allEngramsReportLoaded()) {
+          if (els.statusSaved) els.statusSaved.textContent = '';
+          markEngramsLoaded();
+          cancelDebouncedFederatedStats();
+          void refreshCortexScopedStats();
+        } else {
+          updateEngramLoadingStatus(0, 0);
+          schedulePeriodicGreyedRefresh();
+        }
+      })
+      .catch(() => {
+        schedulePeriodicGreyedRefresh();
+      });
+  }, 5000);
 }
 
 
