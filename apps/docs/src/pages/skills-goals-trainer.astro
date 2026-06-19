@@ -62,8 +62,9 @@ try {
 
         <p class="text-lg sm:text-xl text-[#c4c6d6] max-w-2xl mx-auto leading-relaxed mb-10">
           Turn AI instructions into Standard Operating Procedures your AI can actually execute.
-          Author once &mdash; Graphnosis personalises against your memory, links steps as a typed graph,
-          and hands any MCP-connected AI a deterministic plan to run.
+          Author once &mdash; Graphnosis compiles your source into a typed SOP graph.
+          At walk time, recall recipes pull live memory into the right steps;
+          any MCP-connected AI gets a deterministic plan to run.
         </p>
 
         <div class="flex flex-col sm:flex-row gap-4 justify-center items-center mb-12">
@@ -85,7 +86,7 @@ try {
           <span class="px-4 py-1.5 rounded-full bg-[#1c1c27] border border-[#2a2a3d] text-[#67e8f9]">📋 SOPs, not blobs</span>
           <span class="px-4 py-1.5 rounded-full bg-[#1c1c27] border border-[#2a2a3d] text-[#67e8f9]">🎯 8-category goals</span>
           <span class="px-4 py-1.5 rounded-full bg-[#1c1c27] border border-[#2a2a3d] text-[#67e8f9]">🔗 Cross-skill orchestration</span>
-          <span class="px-4 py-1.5 rounded-full bg-[#1c1c27] border border-[#2a2a3d] text-[#a78bfa]">🧠 Retrains against your memory</span>
+          <span class="px-4 py-1.5 rounded-full bg-[#1c1c27] border border-[#2a2a3d] text-[#a78bfa]">🧠 Memory at walk time</span>
         </div>
       </div>
     </section>
@@ -133,7 +134,7 @@ try {
             <h3 class="text-xl font-bold text-white mb-3">A Standard Operating Procedure</h3>
             <ul class="flex flex-col gap-2.5 text-sm text-[#b0b3c6]">
               <li class="flex items-start gap-2"><span class="text-[#67e8f9] mt-0.5">✓</span><span>Each step is a typed graph node with sequence, loop, and branch edges</span></li>
-              <li class="flex items-start gap-2"><span class="text-[#67e8f9] mt-0.5">✓</span><span>Recalled memory is surgically placed at the step where it makes the SOP read coherently</span></li>
+              <li class="flex items-start gap-2"><span class="text-[#67e8f9] mt-0.5">✓</span><span>At walk time, recalled memory lands at the step where it makes the SOP read coherently</span></li>
               <li class="flex items-start gap-2"><span class="text-[#67e8f9] mt-0.5">✓</span><span>Declared <code class="font-mono text-[#67e8f9]">Requires</code> / <code class="font-mono text-[#67e8f9]">Produces</code> variables, plus failure handlers</span></li>
               <li class="flex items-start gap-2"><span class="text-[#67e8f9] mt-0.5">✓</span><span>Skills call other skills via <code class="font-mono text-[#67e8f9]">@skill name(args) -&gt; $capture</code></span></li>
               <li class="flex items-start gap-2"><span class="text-[#67e8f9] mt-0.5">✓</span><span>Snapshot-based history &mdash; every retrain is reversible</span></li>
@@ -424,8 +425,8 @@ complete &mdash; invoke the rollback path.</code></pre>
             One source per skill, ever.
           </h2>
           <p class="text-[#c4c6d6] max-w-3xl mx-auto leading-relaxed">
-            Retrain a skill against fresh memory &mdash; goals, recipes, and structure are
-            rewritten in place. The prior version is saved to an encrypted side-table so
+            Retrain recompiles from your authored source &mdash; goals, recipes, and structure
+            are rewritten in place (no personal-cortex recall at compile time). The prior version is saved to an encrypted side-table so
             you can roll back any retrain that drifted.
           </p>
         </div>
@@ -478,9 +479,8 @@ complete &mdash; invoke the rollback path.</code></pre>
         </div>
 
         <p class="text-center text-sm text-[#71717a] mt-10 max-w-2xl mx-auto leading-relaxed">
-          The trainer also <strong class="text-[#9a9db8]">self-tunes recall breadth</strong> &mdash;
-          on each train, the cited-vs-fetched ratio nudges the next retrain&rsquo;s recall
-          window wider or tighter. You don&rsquo;t tune it &mdash; it learns.
+          At <strong class="text-[#9a9db8]">walk time</strong>, recall recipes self-tune against your live cortex &mdash;
+          each step pulls the memories most relevant to that moment. Train time stays source-only so SOPs stay portable.
         </p>
       </div>
     </section>
@@ -771,10 +771,9 @@ complete &mdash; invoke the rollback path.</code></pre>
             <div class="text-sm font-mono text-[#a78bfa]">03</div>
             <h3 class="text-lg font-bold text-white">Train</h3>
             <p class="text-sm text-[#9a9db8] leading-relaxed">
-              The trainer interleaves your memories at the exact step where they
-              fit. With Ollama on, you watch the rewrite stream in live with
-              <code class="font-mono">(from memory: ...)</code> attribution
-              on every changed line.
+              Compile from your authored source into a typed graph (empty recall at train time).
+              With Ollama on, Pro streams an LLM rewrite with goal/step clarity.
+              Personal memory applies when you <code class="font-mono">walk_skill</code>, not baked into the SOP body.
             </p>
           </article>
 
@@ -840,9 +839,9 @@ complete &mdash; invoke the rollback path.</code></pre>
         </h2>
         <p class="text-[#c4c6d6] text-lg leading-relaxed mb-10">
           Download Graphnosis, unlock your cortex, and open the Memory-trained Skills tab. The free tier
-          gives you author / browse / walk / retrain against your memory with a Personal
-          Context block &mdash; plus full <strong class="text-white">version history with one-click rollback</strong> on every skill,
-          so a retrain is never a one-way door. Pro (MemoryStudio Advanced) adds the streaming LLM rewrite with per-line memory attribution.
+          gives you author / browse / walk / retrain from source with full
+          <strong class="text-white">version history and one-click rollback</strong> on every skill,
+          so a retrain is never a one-way door. Pro adds the streaming LLM rewrite; live memory arrives at walk time via recall recipes.
         </p>
         <div class="flex flex-col sm:flex-row gap-4 justify-center">
           <a

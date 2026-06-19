@@ -5,7 +5,7 @@ sidebar:
   order: 2
 ---
 
-A **Skill** in Graphnosis is a Standard Operating Procedure (SOP) — a step-by-step instruction set, anchored to your cortex and made callable by any MCP client. They're called **Memory-trained Skills** because the training pass compiles the relevant memories from your engrams into the skill body: each one is grounded in what you actually know and decided, not a generic template. Skills live in their own **Skills engram** that ships with every cortex on first unlock.
+A **Skill** in Graphnosis is a Standard Operating Procedure (SOP) — a step-by-step instruction set you author, structured into an executable graph, and made callable by any MCP client. **Memory-trained Skills** is the product name for this procedural-memory layer: compile/train turns your authored text into a structured SOP in the Skills engram (deterministic parsing, optional Pro LLM rewrite from source only). **Train-time recall is empty** — compile does not pull from your personal engrams. Personal memory applies when you **walk** a skill at runtime (via `recallRecipes` and MCP `recall`), not baked into the SOP body at compile time.
 
 This page is the reference for the procedural-memory model: the graph shape, the eight goal categories, how retraining writes snapshots into a side-table history, the `.gsk` wire format, and the two training paths (Free deterministic vs. Pro LLM-assisted). The companion AI-facing surface is in the [MCP Tools reference — Skills (SOPs)](/reference/mcp-tools/#skills-sops).
 
@@ -25,9 +25,9 @@ Each skill is a sequence of body steps stored in source order — the same order
 
 The Skills engram itself is a normal engram — same encryption, same op-log, same recall caps — so the five SOP edges live in the same `.gai` graph as everything else. Nothing about Skills bypasses the deterministic substrate.
 
-## Position-aware recall placement
+## Position-aware recall placement (walk / runtime)
 
-The training pipeline doesn't dump recalled memories at the end of a skill as a flat block. It **places** each candidate fragment at the position in the procedure where it actually fits — between the steps it elaborates on. Placement uses a two-step deterministic check:
+At **walk time** (not at compile/train), recalled context can be placed at the position in the procedure where it fits — between the steps it elaborates on — rather than dumped as a flat block at the end. Placement uses a two-step deterministic check:
 
 1. **Similarity** between the candidate and the surrounding step pair (`prev` + `next`).
 2. **Triplet coherence** — does the candidate read sensibly between `prev` and `next`? Same-sentence Jaccard on the trailing sentence of `prev` and the leading sentence of `next`.
@@ -121,8 +121,8 @@ A `@skill:` (or `@parallel:`) target can now live in **another Skills engram**. 
 
 | Path | Requires | What it does |
 |---|---|---|
-| **Free — memory-augmented** | Nothing extra | Deterministic. Recall is run against the cortex for each body step; the top fragments are placed in-line with `_(from source)_` attribution, between the steps they fit. The body the user wrote is preserved verbatim. |
-| **Pro — LLM-rewritten with attribution** | Pro license + Local LLM | Non-deterministic body, deterministic recall. The local LLM rewrites the body steps to integrate the recalled context fluently, but every fact pulled in keeps its `_(from source)_` marker so the lineage is preserved. The rewrite happens entirely on-device. |
+| **Free — source-only compile** | Nothing extra | Deterministic. Parses and chunks your authored skill text; wires SOP edges; saves to the Skills engram. **No cortex recall at train time.** |
+| **Pro — LLM rewrite from source** | Pro license + Local LLM | Non-deterministic body restructure (goal/step clarity) from your authored text only — still **no cortex recall at train time**. Runs entirely on-device when Local LLM is enabled. |
 
 Both paths produce a snapshot in the skill's history. Both update the five SOP edge types. The Pro path adds an `autonomous retrain` capability — the brain engine can re-run training on a schedule when the cortex has changed enough to warrant it.
 
