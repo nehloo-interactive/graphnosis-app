@@ -19,6 +19,17 @@ import { proposeCorrection, applyCorrection } from './correction.js';
 import { SkillTrainer } from './skill-trainer.js';
 import { BUNDLED_DOCS } from './docs-content.generated.js';
 import { BUNDLED_SKILL_DEMOS } from './skill-demos.generated.js';
+import {
+  isMcpToolAllowedForRole,
+  mcpToolsForRole,
+} from '@graphnosis-app/core/settings';
+import {
+  writeSessionLease,
+  readSessionLease,
+  clearSessionLease,
+  isSessionLeaseFresh,
+  isCortexSessionBusy,
+} from '@graphnosis-app/core/cortex';
 
 async function main(): Promise<void> {
   const cortexDir = process.env.GRAPHNOSIS_CORTEX ?? path.join(os.tmpdir(), `gn-smoke-${process.pid}`);
@@ -484,6 +495,50 @@ ferry to Naxos. The food in Mykonos was overrated.`;
     }
     log('bundled-skill-demos.ok', { packs: BUNDLED_SKILL_DEMOS.length });
   }
+
+  // --- enterprise RBAC matrix (Batch 4) ------------------------------------
+  log('rbac-matrix', {});
+  if (isMcpToolAllowedForRole('remember', 'recall-only')) {
+    throw new Error('FAIL: recall-only role must not allow remember');
+  }
+  if (!isMcpToolAllowedForRole('remember', 'editor')) {
+    throw new Error('FAIL: editor role must allow remember');
+  }
+  const auditTools = mcpToolsForRole('admin-audit');
+  if (!auditTools.includes('recall_as_of') || !auditTools.includes('audit_memory')) {
+    throw new Error('FAIL: admin-audit role must include recall_as_of and audit_memory');
+  }
+  const trainerTools = mcpToolsForRole('skill-train');
+  if (!trainerTools.includes('train_skill') || !trainerTools.includes('export_skill')) {
+    throw new Error('FAIL: skill-train role tool set mismatch');
+  }
+  log('rbac-matrix.ok', {
+    recallOnlyTools: mcpToolsForRole('recall-only').length,
+    adminAuditTools: auditTools.length,
+  });
+
+  // --- session heartbeat lease ---------------------------------------------
+  log('session-lease', {});
+  await writeSessionLease(cortexDir, {
+    deviceName: 'smoke-device',
+    hostname: os.hostname(),
+    pid: process.pid,
+    updatedAt: Date.now(),
+  });
+  const lease = await readSessionLease(cortexDir);
+  if (!lease || !isSessionLeaseFresh(lease)) {
+    throw new Error('FAIL: session lease not written or not fresh');
+  }
+  const busyOther = await isCortexSessionBusy(cortexDir, process.pid + 1);
+  if (!busyOther.busy) {
+    throw new Error('FAIL: isCortexSessionBusy should detect another pid');
+  }
+  await clearSessionLease(cortexDir);
+  const afterClear = await readSessionLease(cortexDir);
+  if (afterClear !== null) {
+    throw new Error('FAIL: session lease not cleared');
+  }
+  log('session-lease.ok', { deviceName: lease.deviceName });
 }
 
 function log(phase: string, data: Record<string, unknown>): void {
