@@ -136,6 +136,30 @@ ferry to Naxos. The food in Mykonos was overrated.`;
   }
   log('skill-train-empty-recall.ok', { nodeCount: trainCtx.nodeCount, recallNodesIncluded: recall.nodesIncluded });
 
+  log('skill-walk-structured', {});
+  const walkTrain = await skillTrainer.trainSkill({
+    skill: '# Walk smoke skill\n\n1. Verify step one.\n2. Verify step two.\n',
+    graphId: 'personal',
+    skillName: 'walk-smoke',
+    save: true,
+    addedBy: 'smoke:walk',
+  });
+  const walkSourceId = walkTrain.skillId;
+  if (!walkSourceId) throw new Error('FAIL: walk smoke skill train did not return skillId');
+  const { walkSkillSequence, walkSkillToJson } = await import('./skill-trainer.js');
+  const walked = walkSkillSequence(host, 'personal', walkSourceId, { recursive: false });
+  if (walked.steps.length < 2) {
+    throw new Error(`FAIL: walkSkillSequence expected ≥2 steps, got ${walked.steps.length}`);
+  }
+  const walkJson = walkSkillToJson(walked, { sourceId: walkSourceId, title: 'Walk smoke skill' });
+  if (!walkJson.skill?.sourceId || !Array.isArray(walkJson.steps) || walkJson.steps.length < 2) {
+    throw new Error('FAIL: walkSkillToJson missing skill metadata or steps');
+  }
+  if (!walkJson.steps.every((s) => typeof s.index === 'number' && typeof s.text === 'string')) {
+    throw new Error('FAIL: walkSkillToJson steps malformed');
+  }
+  log('skill-walk-structured.ok', { steps: walkJson.steps.length, requires: walkJson.requires?.length ?? 0 });
+
   // --- op-log merge on loadGraph (before supersede correction) ------------
   log('oplog-merge-roundtrip', {});
   const gaiPath = path.join(cortexDir, 'graphs', 'personal.gai');
