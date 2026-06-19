@@ -6367,6 +6367,9 @@ export class GraphnosisHost {
         outcomes.push(outcome);
         callbacks?.onSourceDone?.(outcome, globalIndex, total);
       }
+      if (outcomes.some((o) => o.ok && !o.skipped)) {
+        await this.clearOplogReconcileCheckpoint(graphId);
+      }
     }
 
     return {

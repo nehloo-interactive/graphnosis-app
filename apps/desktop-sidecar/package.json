@@ -24,7 +24,7 @@
     "@graphnosis-app/core": "workspace:*",
     "@modelcontextprotocol/sdk": "^1.0.0",
     "@mozilla/readability": "^0.6.0",
-    "@nehloo-interactive/graphnosis-secure-sync": "https://github.com/nehloo-interactive/graphnosis-secure-sync.git#v0.2.1",
+    "@nehloo-interactive/graphnosis-secure-sync": "https://github.com/nehloo-interactive/graphnosis-secure-sync.git#v0.2.2",
     "@nehloo/graphnosis": "^0.6.1",
     "@scure/bip39": "^1.4.0",
     "@simplewebauthn/server": "^13.3.1",
