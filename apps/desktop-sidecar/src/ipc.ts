@@ -35,7 +35,12 @@ import { withEmbedding } from './embedding-queue.js';
 import type { ConnectorManager } from './connectors/manager.js';
 import { getAdminPolicy, setAdminPolicy } from './admin-policy.js';
 import { getConsentPhraseForTier, type McpCallTool } from './mcp-server.js';
-import { revokeConsent } from '@graphnosis-app/core/settings';
+import { revokeConsent, SHARING_TOKEN_ROLES, type SharingRole } from '@graphnosis-app/core/settings';
+import {
+  isCortexSessionBusy,
+  isSessionLeaseFresh,
+  readSessionLease,
+} from '@graphnosis-app/core/cortex';
 
 // Local IPC between Tauri shell and Node sidecar. Newline-delimited JSON over a
 // Unix-domain socket on macOS/Linux (Windows uses a named pipe — same socket API).
@@ -6512,6 +6517,18 @@ OUTPUT RULES — non-negotiable:
 
     // ── Sharing token management ──────────────────────────────────────────────
 
+    case 'cortex:sessionLease': {
+      const cortexDir = deps.cortexDir ?? deps.host.getCortexDir?.() ?? '';
+      if (!cortexDir) return { busy: false, lease: null, self: true };
+      const { busy, lease } = await isCortexSessionBusy(cortexDir);
+      const fresh = lease && isSessionLeaseFresh(lease) ? lease : null;
+      return {
+        busy,
+        lease: fresh,
+        self: fresh?.pid === process.pid,
+      };
+    }
+
     case 'sharing:list': {
       // Returns all active sharing tokens. Token IDs (the bearer values) are
       // included so the UI can display them for copy-paste. The tokens are
@@ -6537,10 +6554,22 @@ OUTPUT RULES — non-negotiable:
       // as the bearer token value; stored in settings and returned once for copy-paste.
       const args = z.object({
         name: z.string().min(1).max(80),
-        role: z.enum(['viewer', 'editor']),
+        role: z.enum(SHARING_TOKEN_ROLES as unknown as [SharingRole, ...SharingRole[]]),
         engrams: z.union([z.array(z.string().min(1)), z.literal('*')]),
         expiresAt: z.number().optional(), // Unix ms; absent = never
       }).parse(params ?? {});
+
+      const enterpriseRoles = new Set<SharingRole>(['skill-train', 'admin-audit']);
+      if (enterpriseRoles.has(args.role)) {
+        const licenseToken = await getEffectiveLicenseToken(deps);
+        if (!(deps.licenseValidator?.hasFeature(licenseToken, 'enterprise') ?? false)) {
+          return {
+            ok: false,
+            reason: 'enterprise_required',
+            message: 'Skill trainer and admin/audit roles require an Enterprise license.',
+          };
+        }
+      }
 
       // ── Token limit enforcement ────────────────────────────────────────────
       // Free: 1 token. Any paid plan (Pro / Teams / Enterprise / domain-
