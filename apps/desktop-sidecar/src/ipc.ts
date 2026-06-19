@@ -3743,9 +3743,6 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
     }
 
     case 'ghampus:inbox:run': {
-      // Mark the card as running, then emit it as a chat message so the
-      // thread shows the "skill walk started" card. Real walk execution
-      // is via ghampus:walkPlan + ghampus:confirmWalk (user-triggered).
       const { id } = z.object({ id: z.string() }).parse(params ?? {});
       const watcher = deps.proactiveWatcher;
       if (watcher) {
@@ -3753,17 +3750,33 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
         const card = watcher.listCards().find((c) => c.id === id);
         if (card) {
           deps.broadcastRaw({
-            kind: 'ghampus.message',
-            name: 'ghampus.message',
-            payload: {
-              kind: 'ghampus',
-              text: `Starting skill: **${card.skillLabel}**\n\n${card.why}`,
-              ts: Date.now(),
-            },
+            kind: 'ghampus.card',
+            name: 'ghampus.card',
+            payload: card,
           });
         }
       }
       return { ok: true };
+    }
+
+    case 'ghampus:digest': {
+      const args = z.object({ sinceMs: z.number().optional() }).parse(params ?? {});
+      const sinceMs = args.sinceMs ?? Date.now() - 7 * 24 * 60 * 60 * 1000;
+      const cortexDir = deps.cortexDir ?? deps.host.getCortexDir?.() ?? '';
+      if (!cortexDir) return { emitted: false };
+      const { listNotifications } = await import('./agent-notifications.js');
+      const { notifications, totalAvailable } = listNotifications({ host: deps.host }, { sinceMs, limit: 12 });
+      if (notifications.length === 0) return { emitted: false };
+      const count = notifications.length;
+      const lines = notifications.slice(0, 6).map((n) => `• ${n.origin}: ${n.label}`).join('\n');
+      const text =
+        `**While you were away** — ${totalAvailable > count ? `${totalAvailable} items` : `${count} item${count === 1 ? '' : 's'}`} since your last visit.\n\n` +
+        `${lines}${count > 6 ? `\n…and ${count - 6} more` : ''}`;
+      const digestMsg = { kind: 'ghampus', text, ts: Date.now() };
+      const histPath = `${cortexDir}/ghampus-history.jsonl`;
+      const { appendFile } = await import('node:fs/promises');
+      await appendFile(histPath, JSON.stringify(digestMsg) + '\n').catch(() => {});
+      return { emitted: true };
     }
     case 'ghampus:send': {
       // Recall memory context, call local LLM, emit response as a
@@ -4662,30 +4675,145 @@ OUTPUT RULES — non-negotiable:
       return { ok: true };
     }
     case 'ghampus:walkPlan': {
-      // Returns estimated cost + model routing for a skill walk before
-      // committing. Attempts to resolve the skill label from the Skills engram;
-      // falls back to a slug derived from the sourceId.
-      const { sourceId } = z.object({ sourceId: z.string() }).parse(params ?? {});
-      let label = sourceId.replace(/^skill:\d+:/, '').replace(/-/g, ' ')
-        .replace(/\b\w/g, (c) => c.toUpperCase());
-      try {
-        const skillResult = await deps.callMcpTool?.('get_skill', { sourceId }) as { label?: string; title?: string } | null;
-        if (skillResult?.label) label = skillResult.label;
-        else if (skillResult?.title) label = skillResult.title;
-      } catch { /* best-effort */ }
+      const args = z.object({
+        sourceId: z.string(),
+        graphId: z.string().optional(),
+      }).parse(params ?? {});
+      let graphId = args.graphId;
+      if (!graphId) {
+        for (const gid of skillEngramIds(deps.host)) {
+          try {
+            if (deps.host.getSourceRecord(gid, args.sourceId)) {
+              graphId = gid;
+              break;
+            }
+          } catch { /* engram not loaded */ }
+        }
+      }
+      if (!graphId) {
+        return {
+          sourceId: args.sourceId,
+          label: args.sourceId,
+          steps: [],
+          totalCost: 0,
+          privacySafe: true,
+          routing: 'local-only',
+          cloudRoutingReady: false,
+        };
+      }
+      const { walkSkillSequence, walkSkillToJson } = await import('./skill-trainer.js');
+      const { planSkillWalk, deriveStepsFromText } = await import('./model-router.js');
+      const { KNOWN_PROVIDERS } = await import('./model-registry.js');
+      const walked = walkSkillSequence(deps.host, graphId, args.sourceId, { recursive: false });
+      const meta = deps.host.getGraphMetadata(graphId);
+      const src = deps.host.getSourceRecord(graphId, args.sourceId);
+      const title = walked.steps[0]?.text ?? src?.ref ?? args.sourceId;
+      const label = title.replace(/^#+\s*/, '').slice(0, 80);
+      if (walked.steps.length === 0) {
+        return {
+          sourceId: args.sourceId,
+          label,
+          steps: [],
+          totalCost: 0,
+          privacySafe: true,
+          routing: 'local-only',
+          cloudRoutingReady: false,
+          graphId,
+        };
+      }
+      const settings = deps.host.getSettings();
+      const providerStates = settings.models?.providers ?? {};
+      const enabledProviders = Object.entries(providerStates)
+        .filter(([, s]) => s?.enabled === true)
+        .map(([id]) => id as Parameters<typeof planSkillWalk>[1]['enabledProviders'][number]);
+      if (enabledProviders.length === 0) enabledProviders.push('ollama');
+      const cloudRoutingReady = KNOWN_PROVIDERS.some((p) => {
+        if (p.local) return false;
+        const ps = providerStates[p.id];
+        return ps?.enabled === true && ps?.hasKey === true;
+      }) && (settings.models?.strategy ?? 'adaptive') !== 'local-only';
+      const subscriptionPoolUsage: Record<string, { poolSpentUsd: number; flexSpentUsd: number }> = {};
+      for (const [pid, ps] of Object.entries(providerStates)) {
+        if (ps?.poolSpentUsd !== undefined || ps?.flexSpentUsd !== undefined) {
+          subscriptionPoolUsage[pid] = { poolSpentUsd: ps.poolSpentUsd ?? 0, flexSpentUsd: ps.flexSpentUsd ?? 0 };
+        }
+      }
+      const skillPlan = walkSkillToJson(walked, {
+        sourceId: args.sourceId,
+        title,
+        ...(meta?.displayName ? { engramName: meta.displayName } : {}),
+      });
+      const rawSteps = skillPlan.steps.map((s) => ({ index: s.index, text: s.text }));
+      const planSteps = deriveStepsFromText(rawSteps);
+      const strategy = settings.models?.strategy ?? 'adaptive';
+      const plan = planSkillWalk(planSteps, {
+        strategy,
+        enabledProviders,
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        subscriptionPoolUsage: subscriptionPoolUsage as any,
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        customRates: (settings.models?.customRates as any) ?? [],
+      });
+      const steps = plan.steps.map((s) => ({
+        label: s.label,
+        needs: s.capabilities,
+        model: s.pickedModelDisplay ?? s.unsatisfiedReason ?? 'Not configured',
+        isLocal: !s.pickedProvider || s.pickedProvider === 'ollama',
+        cost: s.cost?.usd ?? 0,
+      }));
       return {
-        sourceId,
+        sourceId: args.sourceId,
         label,
-        steps: [],
-        totalCost: 0,
-        privacySafe: true,
-        routing: 'adaptive',
-        learningHint: undefined,
+        steps,
+        totalCost: plan.totalUsd,
+        privacySafe: !plan.steps.some((s) => s.privacyLocked),
+        routing: strategy,
+        cloudRoutingReady,
+        graphId,
+        learningHint: plan.feasible ? undefined : plan.missingCapabilities.join(', '),
       };
     }
     case 'ghampus:confirmWalk': {
-      z.object({ sourceId: z.string(), routing: z.string() }).parse(params ?? {});
-      return { ok: true };
+      const args = z.object({
+        sourceId: z.string(),
+        routing: z.enum(['adaptive', 'local-only']),
+        graphId: z.string().optional(),
+      }).parse(params ?? {});
+      let graphId = args.graphId;
+      if (!graphId) {
+        for (const gid of skillEngramIds(deps.host)) {
+          try {
+            if (deps.host.getSourceRecord(gid, args.sourceId)) {
+              graphId = gid;
+              break;
+            }
+          } catch { /* not loaded */ }
+        }
+      }
+      if (!graphId) return { ok: false, reason: 'skill-not-found' };
+
+      const settings = deps.host.getSettings();
+      const priorStrategy = settings.models?.strategy ?? 'adaptive';
+      if (args.routing === 'local-only' && priorStrategy !== 'local-only') {
+        await deps.host.setSettings({
+          ...settings,
+          models: { ...(settings.models ?? { providers: {} }), strategy: 'local-only' },
+        });
+      }
+      try {
+        return await dispatch(deps, 'agent:walkSkill', {
+          sourceId: args.sourceId,
+          graphId,
+        });
+      } finally {
+        if (args.routing === 'local-only' && priorStrategy !== 'local-only') {
+          const cur = deps.host.getSettings();
+          await deps.host.setSettings({
+            ...cur,
+            models: { ...(cur.models ?? { providers: {} }), strategy: priorStrategy },
+          });
+        }
+      }
     }
     case 'ghampus:refineResponse': {
       z.object({ sourceId: z.string(), action: z.enum(['update', 'edit', 'skip']) }).parse(params ?? {});
@@ -4702,6 +4830,11 @@ OUTPUT RULES — non-negotiable:
       const providerStates = settings.models?.providers ?? {};
       return {
         catalogVersion: KNOWN_MODELS_VERSION,
+        cloudRoutingReady: KNOWN_PROVIDERS.some((p) => {
+          if (p.local) return false;
+          const ps = providerStates[p.id];
+          return ps?.enabled === true && ps?.hasKey === true;
+        }) && (settings.models?.strategy ?? 'adaptive') !== 'local-only',
         providers: KNOWN_PROVIDERS.map((p) => ({
           ...p,
           enabled: providerStates[p.id]?.enabled === true,
@@ -5473,6 +5606,18 @@ OUTPUT RULES — non-negotiable:
       // header to render a "N pending reviews" indicator + dedicated UI.
       const settings = deps.host.getSettings();
       return { proposals: settings.skillRetrainPending ?? {} };
+    }
+
+    case 'skill:listRetrainQueue': {
+      const settings = deps.host.getSettings();
+      return { queue: settings.skillRetrainQueue ?? {} };
+    }
+
+    case 'skill:dismissRetrainQueue': {
+      const args = z.object({ sourceId: z.string().min(1) }).parse(params ?? {});
+      const { clearSkillRetrainQueueEntry } = await import('./skill-retrain-queue.js');
+      await clearSkillRetrainQueueEntry(deps.host, args.sourceId);
+      return { ok: true };
     }
 
     case 'skill:acceptProposal': {
