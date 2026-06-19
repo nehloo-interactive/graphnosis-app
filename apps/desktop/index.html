@@ -13103,6 +13103,17 @@ ollama list</code></pre>
                 </div>
                 <span id="activity-stats" class="subtitle"></span>
               </div>
+              <!-- Enterprise-only: compliance Evidence Pack (op-log + consent + MCP audit + hashes) -->
+              <div id="activity-compliance-section" class="panel activity-compliance-section" style="display: none; margin-bottom: 14px;">
+                <p class="panel-title" style="margin: 0 0 4px;">Compliance export</p>
+                <p class="subtitle activity-compliance-hint" style="font-size: 13px; margin: 0 0 10px;">
+                  Structured Evidence Pack for auditors — op-log, consent records, MCP audit trail, and engram file hashes.
+                  Respects the date range and engram scope filters above.
+                </p>
+                <button id="btn-activity-evidence-export" type="button" title="Download a JSON Evidence Pack for compliance review or SIEM ingestion">
+                  Export Evidence Pack (.json)
+                </button>
+              </div>
               <div id="activity-list" class="activity-list">
                 <p class="subtitle">Loading…</p>
               </div>
