@@ -16,6 +16,7 @@ import { policy } from '@nehloo-interactive/graphnosis-secure-sync';
 import { GraphnosisHost } from './host.js';
 import { GraphnosisImpl } from './graphnosis-impl.js';
 import { proposeCorrection, applyCorrection } from './correction.js';
+import { SkillTrainer } from './skill-trainer.js';
 import { BUNDLED_DOCS } from './docs-content.generated.js';
 import { BUNDLED_SKILL_DEMOS } from './skill-demos.generated.js';
 
@@ -121,6 +122,19 @@ ferry to Naxos. The food in Mykonos was overrated.`;
   console.log('--- recalled context ---');
   console.log(recall.prompt);
   console.log('--- end context ---');
+
+  // Skill compile uses empty train-time recall — personal cortex must not surface.
+  log('skill-train-empty-recall', {});
+  const skillTrainer = new SkillTrainer(host, null);
+  const skillProbe = '# Smoke skill\n\n1. Recall anything about Greece.\n';
+  const trainCtx = await skillTrainer.buildSkillContext(skillProbe, 'personal', ['personal'], 0);
+  if (trainCtx.nodeCount !== 0 || trainCtx.influentialNodes.length !== 0 || trainCtx.subgraph !== '') {
+    throw new Error(
+      `FAIL: buildSkillContext must be empty at train time (got nodeCount=${trainCtx.nodeCount}, ` +
+      `influential=${trainCtx.influentialNodes.length})`,
+    );
+  }
+  log('skill-train-empty-recall.ok', { nodeCount: trainCtx.nodeCount, recallNodesIncluded: recall.nodesIncluded });
 
   // --- deterministic correction (no LLM) -----------------------------------
   // `correct` must work with no Local LLM configured: it deterministically

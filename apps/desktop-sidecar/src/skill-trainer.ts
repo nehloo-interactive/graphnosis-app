@@ -1,18 +1,18 @@
 /**
- * SkillTrainer — personalize AI skills using the user's Graphnosis memory.
+ * SkillTrainer — compile AI skills into structured Graphnosis SOPs.
  *
  * A "skill" is any AI behavior instruction: a Claude Code skill file, a system
  * prompt, a CLAUDE.md instruction block, a .cursorrules file, a ChatGPT system
  * message — anything that shapes how an AI assistant behaves.
  *
  * The training pipeline:
- *   1. Recall relevant memories from the user's cortex (GNN-informed, deterministic).
- *   2. If a local LLM is available: rewrite the skill to reflect those memories,
- *      producing a diff with per-change memory attribution.
- *      If no LLM: append the top memories as a "Personal Context" block —
- *      still valuable; the AI consuming the skill sees and applies the context.
- *   3. Optionally save the trained version into the Skills engram as a new node
- *      that supersedes the previous version (version history lives in the graph).
+ *   1. Parse and chunk the authored skill source (deterministic). Train-time
+ *      recall is scoped to an **empty engram** — no federated pull from coding,
+ *      notes, or other personal engrams (see ENABLE_CORTEX_RECALL_AT_TRAIN).
+ *   2. Optional Pro path: local LLM rewrite when useLlmRewrite=true and a
+ *      reachable LLM is available — still with empty train-time recall context.
+ *   3. Save the trained version into the Skills engram (in-place rewrite).
+ *      Personal context belongs at walk/runtime via recallRecipes, not here.
  *
  * Subscription gate: the full training pipeline (both LLM-rewrite and memory-augmented
  * paths) requires a monthly-subscription subscription. The gate is enforced at the MCP
@@ -38,7 +38,10 @@ export interface TrainSkillInput {
   skill: string;
   /** Human-readable name (used as the source label in the Skills engram). */
   skillName?: string;
-  /** Restrict memory recall to these engram IDs. Null = federated (all engrams). */
+  /**
+   * Ignored at train time (empty-engram contract). Kept for API compat with
+   * MCP focus_engrams and the Skills UI focus checkboxes.
+   */
   focusGraphIds?: string[] | null;
   /** Target AI tool — shapes export hints in the diff notes. */
   modelTarget?: string;
@@ -317,6 +320,19 @@ function buildMemoryAugmented(memoriesPrompt: string): string[] {
     .map((p) => `${p}\n_(from cortex recall)_`);
 }
 
+/**
+ * Skill train recall contract.
+ *
+ * Training/retraining must NOT federate into the user's personal cortex.
+ * Skills stay portable SOPs grounded in authored source text (+ parsed
+ * structure saved into the Skills engram). MCP train_skill, IPC skill:train,
+ * autoretrain, and UI preview all share this gate via buildSkillContext().
+ *
+ * Personal memory augmentation belongs at walk/runtime (recallRecipes), not
+ * at compile/train time — otherwise unrelated nodes pollute skill bodies.
+ */
+const ENABLE_CORTEX_RECALL_AT_TRAIN = false;
+
 // ── Breadth helpers ───────────────────────────────────────────────────────────
 
 /**
@@ -373,12 +389,14 @@ export class SkillTrainer {
   // ── buildSkillContext ────────────────────────────────────────────────────────
 
   /**
-   * Phase 1 (deterministic): surface relevant memories for a skill without
-   * running the LLM rewrite. Returns the full subgraph + ranked influential
-   * nodes so the Skills panel can preview what will be used before training.
+   * Phase 1 (deterministic): recall context preview for a skill.
+   *
+   * Under the empty-engram train contract (ENABLE_CORTEX_RECALL_AT_TRAIN=false),
+   * returns an empty context — no nodes from personal engrams. All train
+   * entry points (MCP, IPC, autoretrain, UI buildContext preview) share this.
    *
    * `recallBreadth` = null reads the stored value from skill metadata (or starts
-   * at 50 on first use). Pass 0–100 to override.
+   * at 50 on first use). Pass 0–100 to override. Ignored when recall is disabled.
    */
   async buildSkillContext(
     skill: string,
@@ -387,6 +405,20 @@ export class SkillTrainer {
     recallBreadth?: number | null,
     goals?: import('./gsk-format.js').SkillGoals,
   ): Promise<SkillContext> {
+    if (!ENABLE_CORTEX_RECALL_AT_TRAIN) {
+      void skill;
+      void graphId;
+      void focusGraphIds;
+      void recallBreadth;
+      void goals;
+      return {
+        subgraph: '',
+        influentialNodes: [],
+        tokenCount: 0,
+        nodeCount: 0,
+      };
+    }
+
     const effectiveBreadth = recallBreadth ?? 50;
     const { maxTokens, maxNodes } = breadthToBudget(effectiveBreadth);
 
@@ -551,8 +583,8 @@ export class SkillTrainer {
     // throws.
     this.host.setSkipOverlayRecompute(true);
     try {
-    // ── Phase 1: Build skill context (deterministic recall) ───────────────────
-    onStatus?.('Gathering relevant memories…');
+    // ── Phase 1: Build skill context (empty train-time recall scope) ──────────
+    onStatus?.('Structuring skill from source…');
     const effectiveBreadth = inputBreadth ?? 50;
     const context = await this.buildSkillContext(skill, graphId, focusGraphIds, effectiveBreadth, input.goals);
     const topNodes = context.influentialNodes.slice(0, 10);
@@ -636,13 +668,10 @@ export class SkillTrainer {
             '(Foresight → Local LLM) for full skill rewriting with change attribution.'
           : undefined;
     } else {
-      // No memories found — return original unchanged
+      // Expected default: source-only compile (empty train-time recall scope).
       trained = skill;
       mode = 'memory-augmented';
-      degradedNote =
-        'No relevant memories were found for this skill. ' +
-        'The skill is returned unchanged. Try adding more notes to your ' +
-        'Graphnosis cortex about your working style, preferences, and context.';
+      degradedNote = undefined;
     }
 
     // ── Self-tune recallBreadth ────────────────────────────────────────────────

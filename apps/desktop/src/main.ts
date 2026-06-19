@@ -2682,7 +2682,7 @@ const TOOL_INFO: Record<string, { determinism: string; body: string; examples: s
   },
   train_skill: {
     determinism: 'Conditional',
-    body: 'Personalize an AI skill (instruction text, system prompt, CLAUDE.md, .cursorrules) against your Graphnosis memory. Pro: a local LLM rewrites the skill with per-line attribution and conflict detection. Free: a memory-augmented path appends a Personal Context block from your most relevant memories. Either way, your memories never leave the device.',
+    body: 'Compile an AI skill (instruction text, system prompt, CLAUDE.md, .cursorrules) from your authored source. Pro: a local LLM restructures the skill with goal/step clarity. Free: deterministic source-only compile (no cortex recall at train time). Personal memory applies when you walk the skill at runtime — not baked into the SOP body.',
     examples: ['Train my code-review skill against my engineering memory.', 'Personalize this CLAUDE.md against my Work engram.'],
   },
   skill_vitality: {
@@ -5014,7 +5014,7 @@ const MCP_CLIENT_COPY: Record<McpClientId, ClientUiCopy> = {
   },
   'cursor': {
     title: 'Configure Cursor',
-    subtitle: "Make Cursor's Graphnosis MCP tools talk to Graphnosis Synapse. Writes the user-level `~/.cursor/mcp.json`; project-scoped MCP configs are unaffected.",
+    subtitle: "Make Cursor's Graphnosis MCP tools talk to Graphnosis Synapse. Writes the user-level `~/.cursor/mcp.json` with the relay binary and `~/.graphnosis/mcp.sock`. Optional: install the Graphnosis Cursor plugin for rules, skills, and hooks — MCP is configured here, not by the plugin.",
   },
 };
 
@@ -22944,11 +22944,9 @@ function parseTrainedAt(s: string | undefined): number | undefined {
 }
 
 /** Pick the engram a new skill should be saved into — strictly Skills-template
- *  engrams. The Focus Engrams list still includes everything (recall happens
- *  across any engram), but the target is constrained: skills are a typed
- *  source kind ('skill') and have a dedicated engram template that the UI
- *  surfaces as a separate library. Saving them to a non-skill engram would
- *  scatter trained skills across unrelated cortex areas.
+ *  engrams. Train-time recall is empty (source-only); the focus-engram picker
+ *  is hidden in the UI. Saving to a non-skill engram would scatter trained
+ *  skills across unrelated cortex areas.
  *  Returns null when no Skills engram exists — caller renders the "No
  *  Skills engram yet" placeholder and surfaces the create button. */
 function pickDefaultSkillsTargetGraph(): { graphId: string } | null {
@@ -23029,9 +23027,9 @@ function populateSkillsEngramPickers(): void {
     syncSkillsPreviewWarning();
   }
 
-  // ── Focus engrams — ALL loaded engrams ────────────────────────────────
-  // Unlike the target, recall can pull from any engram regardless of
-  // template, so the focus picker stays unfiltered.
+  // ── Focus engrams — hidden (train uses empty recall scope) ───────────
+  // Kept for API compat if the section is re-enabled; populateSkillsEngramPickers
+  // still fills the list when the DOM node exists.
   if (focus) {
     const ordered = loadedGraphs
       .filter((g) => !g.metadata.archived && g.loaded !== false)
@@ -25503,7 +25501,7 @@ async function runSkillTraining(): Promise<void> {
       // Same timeout/cancel guard applies to this path — without it, a
       // slow recall could hang the banner forever (the bug that surfaced
       // as a 4+ minute "training" run with no auto-cancel).
-      if (status) status.textContent = 'Building memory-augmented version…';
+      if (status) status.textContent = 'Building source-only version…';
       await Promise.race([
         runSkillsFallbackTraining({ silent: true }),
         cancelPromise,
@@ -25511,7 +25509,7 @@ async function runSkillTraining(): Promise<void> {
       // After the fallback completes, surface a non-blocking upgrade hint
       // inside review mode so the user knows what Pro would add.
       showInlineProUpgradeHint(
-        'You\'re on the free memory-augmented path — your memories are appended to the skill as a Personal Context block. Upgrade to Pro for an LLM-powered rewrite with per-line attribution and conflict detection.',
+        'You\'re on the free source-only path — skill compiled from your text without LLM rewrite. Upgrade to Pro for a local LLM-powered restructure with goal/step clarity.',
         result.upgrade_url ?? 'https://graphnosis.com/upgrade',
       );
       return;
@@ -25585,11 +25583,9 @@ function showSkillsLicenseCard(result: SkillTrainResult): void {
 }
 
 async function runSkillsFallbackTraining(opts: { silent?: boolean } = {}): Promise<void> {
-  // Memory-augmented training path — free for ALL users (no license gate).
-  // Uses skill:buildContext (ungated) to surface influential memories, then
-  // synthesises a Personal Context block appended to the user's skill text.
-  // This is the SkillTrainer.trainSkill() memory-augmented branch, just
-  // driven from the desktop side so it never trips the Pro gate.
+  // Free-tier training path — source-only compile (empty recall at train time).
+  // Uses skill:buildContext → SkillTrainer.buildSkillContext(), which returns
+  // no personal-cortex nodes under the empty-engram train contract.
   //
   // Two entry points use this:
   //   1. The dedicated "Train without LLM" button (legacy explicit path)
@@ -25600,11 +25596,8 @@ async function runSkillsFallbackTraining(opts: { silent?: boolean } = {}): Promi
   const status = document.getElementById('skills-train-status');
   const btn = document.getElementById('btn-skills-fallback') as HTMLButtonElement | null;
   const trainBtn = document.getElementById('btn-skills-train') as HTMLButtonElement | null;
-  if (status && !opts.silent) status.textContent = 'Building context (ungated)…';
-  // Global status-bar line, same per-operation labels as the Pro path so the
-  // free (memory-augmented) flow shows progress too. Generic text; the element
-  // redacts in Presentation Mode.
-  skillTrainStatusLabel = 'Gathering relevant memories…';
+  if (status && !opts.silent) status.textContent = 'Structuring from source…';
+  skillTrainStatusLabel = 'Structuring skill from source…';
   renderStatusProcess();
   if (btn) btn.disabled = true;
   if (trainBtn && opts.silent) trainBtn.disabled = true;
@@ -25627,48 +25620,18 @@ async function runSkillsFallbackTraining(opts: { silent?: boolean } = {}): Promi
       ...(params.goals !== undefined ? { goals: params.goals } : {}),
     });
     if (!ctx) {
-      showSkillsToast('Build context failed.', 'error');
+      showSkillsToast('Train failed.', 'error');
       return;
     }
-    // ── Free-tier dedup + stale-node pruning ──────────────────────────────
-    //
-    // 1. DEDUP — skip any recalled node whose key content (first 60 chars) is
-    //    already present in the skill text (e.g. from a previous training run's
-    //    Personal Context block). Prevents the same facts from accumulating in
-    //    the output across repeated retrains. Uses a simple string probe — no
-    //    LLM required, deterministic, cheap.
-    //
-    // 2. STALE pruning — nodes from forgotten sources are already excluded by
-    //    the recall pipeline (soft-deleted nodes have confidence ≤ 0.2 and are
-    //    not returned). No extra step needed here.
-    //
-    // Goal-conflict detection and redundancy collapse (near-duplicate phrasing)
-    // require semantic reasoning → belong in the Pro LLM rewrite path.
-    const skillLower = params.skill.toLowerCase();
-    const freshNodes = ctx.influentialNodes.filter((n) => {
-      const probe = n.preview.slice(0, 60).toLowerCase().trim();
-      // Probes under 20 chars are too short to be reliable — always include.
-      if (probe.length < 20) return true;
-      // Skip if this content is already substantially present in the skill.
-      return !skillLower.includes(probe);
-    });
+    const freshNodes: SkillInfluentialNode[] = [];
 
-    skillTrainStatusLabel = 'Synthesizing from your memories…';
+    skillTrainStatusLabel = 'Finalizing trained skill…';
     renderStatusProcess();
-    // Each node on its own blank-line-separated paragraph so the diff
-    // algorithm treats each as a separate hunk — the user sees individual
-    // change blocks they can act on, not one giant +53 green blob.
-    const personalBlock = freshNodes.length === 0
-      ? ''
-      : `\n\n---\n## Personal Context (from your Graphnosis memory)\n\n${freshNodes
-          .map((n) => `${n.preview}${n.sourceLabel ? `\n_(from ${n.sourceLabel})_` : ''}`)
-          .join('\n\n')}\n`;
-    const trained = params.skill + personalBlock;
+    const trained = params.skill;
     const engramName = loadedGraphs.find((g) => g.graphId === params.graphId)?.metadata.displayName ?? params.graphId;
-    showSkillsReviewMode(params.skillName || 'Skill (memory-augmented)');
+    showSkillsReviewMode(params.skillName || 'Skill (source-only)');
 
-    // Save if the user picked a real engram (params.save) — free users can
-    // persist memory-augmented results via the ungated skill:saveFallback IPC.
+    // Save if the user picked a real engram — free users persist via skill:saveFallback.
     let savedSkillId: string | undefined;
     if (params.save) {
       skillTrainStatusLabel = 'Saving the trained skill…';
@@ -25704,11 +25667,11 @@ async function runSkillsFallbackTraining(opts: { silent?: boolean } = {}): Promi
         influentialNodes: freshNodes,
         mode: 'memory-augmented',
         ...(savedSkillId !== undefined ? { skillId: savedSkillId } : {}),
-        degradedNote: 'Trained on the free memory-augmented path — your Graphnosis memory has been appended as a Personal Context block. Upgrade to Pro for an LLM-powered rewrite with per-line attribution.',
+        degradedNote: 'Trained on the free source-only path — no cortex recall at compile time. Upgrade to Pro for an LLM-powered rewrite with goal/step structure.',
       },
       { graphId: params.graphId, engramName, ...(savedSkillId !== undefined ? { sourceId: savedSkillId } : {}) },
     );
-    if (!opts.silent) showSkillsToast(params.save && savedSkillId ? 'Memory-augmented skill saved.' : 'Memory-augmented build complete.', 'success');
+    if (!opts.silent) showSkillsToast(params.save && savedSkillId ? 'Skill saved.' : 'Source-only compile complete.', 'success');
   } catch (e) {
     console.warn('[skills] skill:buildContext failed', e);
     showSkillsToast('Build context failed.', 'error');
