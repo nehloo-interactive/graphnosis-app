@@ -5218,9 +5218,8 @@ OUTPUT RULES — non-negotiable:
     // ── Graphnosis Skills IPC ────────────────────────────────────────────────
 
     case 'skill:buildContext': {
-      // Deterministic Phase 1 — surface relevant memories for a skill without
-      // running the LLM. Returns the full subgraph + ranked influential nodes
-      // so the Skills panel can show what will be used before training starts.
+      // Deterministic Phase 1 preview. Under the empty-engram train contract,
+      // returns empty context (no personal-cortex recall). Same scope as train.
       const args = z.object({
         skill: z.string().min(1),
         graphId: z.string().min(1),
@@ -5759,7 +5758,7 @@ OUTPUT RULES — non-negotiable:
     case 'skill:saveFallback': {
   // Save a memory-augmented skill result without a Pro license gate.
   // The Pro path uses skill:train (LLM rewrite). The free path uses
-  // skill:buildContext (ungated recall) and assembles the trained text on
+  // skill:buildContext (empty recall scope) and assembles the trained text on
   // the JS side. This handler persists that assembled text so free users
   // can save their memory-augmented output — previously they could train
   // but not save, which meant closing the app lost the result.

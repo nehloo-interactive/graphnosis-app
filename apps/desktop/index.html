@@ -11726,7 +11726,7 @@
                                 <p id="skills-license-message" class="subtitle"></p>
                                 <div class="skills-license-actions">
                                   <button id="btn-skills-upgrade" class="primary">Upgrade</button>
-                                  <button id="btn-skills-fallback" class="btn-ghost">Train without LLM (memory-augmented)</button>
+                                  <button id="btn-skills-fallback" class="btn-ghost">Train without LLM (source-only)</button>
                                 </div>
                               </div>
 
@@ -11853,10 +11853,10 @@
                                     ⚠️ Preview mode — the trained skill won't be saved to any engram. Pick a Skills engram above (or create one) to persist it.
                                   </div>
                                 </div>
-                                <div class="skills-field skills-section-start">
+                                <div class="skills-field skills-section-start hidden" id="skills-focus-engrams-section" aria-hidden="true">
                                   <span class="skills-field-label">Focus engrams (optional)</span>
                                   <div id="skills-input-focus" class="skills-focus-list" role="group" aria-label="Focus engrams"></div>
-                                  <span class="skills-field-hint">Tick engrams to scope recall. Leave empty to recall across all engrams.</span>
+                                  <span class="skills-field-hint">Deprecated — skill training uses source text only; personal memory applies at walk time.</span>
                                 </div>
                                 <div class="skills-grid-row skills-section-start">
                                   <label class="skills-field">
@@ -11870,12 +11870,12 @@
                                     </select>
                                     <span class="skills-field-hint">Which AI tool you'll paste this into. Shapes the output style — Claude sections, .cursorrules, OpenAI system prompt, etc.</span>
                                   </label>
-                                  <label class="skills-field">
+                                  <label class="skills-field hidden" id="skills-recall-breadth-field" aria-hidden="true">
                                     <span class="skills-field-label">
                                       Recall breadth <span id="skills-input-breadth-live" class="skills-breadth-live">auto</span>
                                     </span>
                                     <input id="skills-input-breadth" type="range" min="0" max="100" step="1" value="50" />
-                                    <span class="skills-field-hint">How much memory the trainer pulls in. Left = broad (more context, more noise); right = exact (fewer, higher-signal memories). The trainer self-tunes after each run.</span>
+                                    <span class="skills-field-hint">Deprecated — train-time recall is disabled; breadth applies only if re-enabled server-side.</span>
                                   </label>
                                 </div>
                                 <div class="skills-actions">

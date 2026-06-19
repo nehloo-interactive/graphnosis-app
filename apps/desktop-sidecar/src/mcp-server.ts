@@ -2402,21 +2402,20 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
       {
         name: 'train_skill',
         description:
-          'DETERMINISM — Conditional. Memory surfacing is deterministic (same recall, same nodes). ' +
-          'The rewrite step is non-deterministic when the local LLM is on; deterministic ' +
-          '(memory-augmented: memories appended as context, no rewrite) when the LLM is off. ' +
+          'DETERMINISM — Conditional. Source-only compile is deterministic. Train-time recall is ' +
+          'empty (no pull from personal engrams). The optional LLM rewrite is non-deterministic ' +
+          'when enabled; otherwise the authored source is structured and saved as-is. ' +
           'The response `mode` field reports which path ran.\n\n' +
-          'Personalize an AI skill using the user\'s Graphnosis memories. ' +
+          'Compile an AI skill from authored source text. ' +
           'A "skill" is any AI behavior instruction: a Claude Code skill file, a system prompt, ' +
           'a CLAUDE.md block, a .cursorrules file, a ChatGPT system message — anything that ' +
           'shapes how an AI assistant behaves.\n\n' +
           'HOW IT WORKS:\n' +
-          '1. Recall: surface the memories most relevant to this skill (federated, GNN-aware).\n' +
-          '2. Personalize: if the Local LLM is on, rewrite the skill to reflect those memories ' +
-          '   with per-change attribution ("from memory"). If the LLM is off, append the top ' +
-          '   memories as a "Personal Context" block — still valuable; the AI consuming the ' +
-          '   skill sees and applies the context.\n' +
-          '3. Save: store the trained version in the Skills engram as a new node.\n\n' +
+          '1. Structure: parse and chunk the authored skill source (deterministic).\n' +
+          '   Train-time recall is empty — no pull from personal engrams.\n' +
+          '2. Optional Pro rewrite: if use_llm_rewrite=true and the Local LLM is on, rewrite ' +
+          '   from source only (still no cortex recall at train time).\n' +
+          '3. Save: store the trained version in the Skills engram.\n\n' +
           'WHEN TO CALL:\n' +
           '• User says "train my code review skill", "personalize this prompt", ' +
           '  "use my memory to improve this instruction"\n' +
@@ -2444,7 +2443,7 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
             focus_engrams: {
               type: 'array',
               items: { type: 'string' },
-              description: 'Restrict memory recall to these engram names/IDs. Omit to search all engrams (recommended).',
+              description: 'Ignored at train time — skill training uses empty recall scope (source text only). Kept for API compatibility.',
             },
             model_target: {
               type: 'string',
@@ -2459,11 +2458,11 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
               type: 'integer',
               minimum: 0,
               maximum: 100,
-              description: '0 = Broad (max context, up to 50 nodes from all engrams). 100 = Exact (strict semantic match, ~12 nodes). Omit to use auto-tuned value (starts at 50, self-adjusts after each training run based on cited/fetched ratio).',
+              description: 'Ignored at train time — empty recall scope. Kept for API compatibility.',
             },
             use_llm_rewrite: {
               type: 'boolean',
-              description: 'Opt into the LLM-rewrite path (clean goal/step structure, change attribution) instead of the default memory-augmented path (memories appended as a Personal Context block). Requires the Local LLM to be enabled (Foresight → Local LLM); falls back to memory-augmented if the LLM is unavailable or times out. Default false.',
+              description: 'Opt into the Pro LLM-rewrite path (clean goal/step structure from source text). Requires the Local LLM to be enabled (Foresight → Local LLM); falls back to source-only compile if unavailable. Default false.',
             },
           },
           required: ['skill'],
@@ -4521,7 +4520,7 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
         const lines: string[] = [];
         lines.push(`## Skill Training Complete`);
         lines.push('');
-        lines.push(`**Mode:** ${result.mode === 'llm' ? '✨ LLM rewrite' : '📎 Memory-augmented (no LLM)'}`);
+        lines.push(`**Mode:** ${result.mode === 'llm' ? '✨ LLM rewrite' : '📎 Source-only compile (no LLM)'}`);
         if (result.degradedNote) {
           lines.push(`**Note:** ${result.degradedNote}`);
         }
