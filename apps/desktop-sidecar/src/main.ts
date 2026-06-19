@@ -881,6 +881,8 @@ async function main(): Promise<void> {
           if (meta?.archived) return sum;
           return sum + host.listNodes(gid).length;
         }, 0);
+        const { processSkillRetrainQueue } = await import('./skill-retrain-queue.js');
+        await processSkillRetrainQueue(host, skillTrainer, totalActiveNodes);
         for (const [sourceId, cfg] of Object.entries(map)) {
           if (!cfg.enabled) continue;
           // Skip engrams that aren't currently loaded — getSkill would throw
