@@ -1179,9 +1179,9 @@ async fn configure_mcp_client(
 /// `%APPDATA%\Claude\` for Claude Desktop — Anthropic's documented Windows
 /// location, equivalent to macOS's Application Support folder.
 ///
-/// Linux is still unsupported (Claude Desktop isn't officially distributed
-/// for Linux) — the command surfaces a clear "not supported yet" error
-/// when this returns None.
+/// Linux: Cursor and Claude Code use dotfiles in `$HOME`; Claude Desktop
+/// has no official Linux build but we resolve the XDG config path for
+/// community builds.
 #[cfg(target_os = "macos")]
 fn mcp_client_config_path(client: McpClient) -> Option<PathBuf> {
     let home = dirs::home_dir()?;
@@ -1250,9 +1250,20 @@ fn windows_claude_desktop_config_path() -> Option<PathBuf> {
     Some(dirs::config_dir()?.join("Claude").join("claude_desktop_config.json"))
 }
 
-#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+#[cfg(target_os = "linux")]
+fn mcp_client_config_path(client: McpClient) -> Option<PathBuf> {
+    let home = dirs::home_dir()?;
+    Some(match client {
+        // Claude Desktop has no official Linux build — config path reserved
+        // for future / community builds under XDG config.
+        McpClient::ClaudeDesktop => dirs::config_dir()?.join("Claude").join("claude_desktop_config.json"),
+        McpClient::ClaudeCode => home.join(".claude.json"),
+        McpClient::Cursor => home.join(".cursor").join("mcp.json"),
+    })
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
 fn mcp_client_config_path(_client: McpClient) -> Option<PathBuf> {
-    // TODO: wire up Linux paths when that build ships.
     None
 }
 
