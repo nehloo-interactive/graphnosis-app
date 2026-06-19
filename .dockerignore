@@ -16,6 +16,9 @@ apps/desktop/src-tauri/binaries
 **/*.gnn
 **/*.gll
 **/cortex
+# Desktop vite alias imports this source module — must not be stripped by **/cortex.
+!packages/graphnosis-app-core/src/cortex/
+!packages/graphnosis-app-core/src/cortex/**
 **/GraphnosisCortex
 tests
 
