@@ -151,16 +151,18 @@ async function loadAllGraphsFromDisk(
   const quarantinedIds: string[] = [];
   const batchStart = Date.now();
 
-  if (total > 0) {
-    console.error(`[graphnosis-sidecar] loading ${total} more engram(s) from disk…`);
-  }
-  if (broadcastRaw && total > 0) {
-    try {
-      broadcastRaw({ kind: 'engrams-loading', name: 'engrams-loading', payload: { loaded: 0, total } });
-    } catch { /* non-fatal — events socket may not be ready yet */ }
-  }
+  host.setBootSweepActive(true);
+  try {
+    if (total > 0) {
+      console.error(`[graphnosis-sidecar] loading ${total} more engram(s) from disk…`);
+    }
+    if (broadcastRaw && total > 0) {
+      try {
+        broadcastRaw({ kind: 'engrams-loading', name: 'engrams-loading', payload: { loaded: 0, total } });
+      } catch { /* non-fatal — events socket may not be ready yet */ }
+    }
 
-  // Per-engram load timeout. Decryption + bundle parse are fast (< 5 s even
+    // Per-engram load timeout. Decryption + bundle parse are fast (< 5 s even
   // for large cortexes); the bottleneck is embedding-cache rebuild which can
   // run for minutes on a multi-thousand-node engram if the cache is cold.
   // Without a timeout, one slow engram blocks every engram behind it in the
@@ -174,9 +176,9 @@ async function loadAllGraphsFromDisk(
   // and will likely succeed eventually; we just stop waiting for it so the
   // queue moves on. The engram shows as "still loading" in the picker until
   // the background load resolves, at which point it becomes fully queryable.
-  const ENGRAM_LOAD_TIMEOUT_MS = 90_000;
+    const ENGRAM_LOAD_TIMEOUT_MS = 90_000;
 
-  // Background loads that timed out but are still in progress. We watch each
+    // Background loads that timed out but are still in progress. We watch each
   // one so the count + dimmed-engram state in the picker self-heal when the
   // load actually completes. Without this watcher, `loaded` never moves past
   // its post-timeout value and the user sees engrams stuck dimmed forever.
@@ -272,10 +274,14 @@ async function loadAllGraphsFromDisk(
         console.error(`[graphnosis-sidecar] broadcastRaw failed during engrams-loading: ${(broadcastErr as Error).message}`);
       }
     }
-    // Yield to the event loop so any pending IPC requests (notably the
-    // boot's list_nodes / list_edges for the default engram) can run
-    // before the next load locks the loop again.
+    // Yield to the event loop so pending IPC (list_nodes, activity.list,
+    // brain:getVitality) can run before the next load monopolizes the loop.
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
     await new Promise<void>((resolve) => setImmediate(resolve));
+  }
+
+  } finally {
+    host.setBootSweepActive(false);
   }
 
   // Always broadcast a terminal "all done" event so the frontend's
