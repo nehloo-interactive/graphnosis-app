@@ -106,6 +106,11 @@ impl Drop for SidecarHandle {
 }
 
 impl SidecarHandle {
+    /// OS PID captured at spawn time — used by the exit watchdog in lib.rs.
+    pub fn pid(&self) -> Option<u32> {
+        self.raw_pid
+    }
+
     pub async fn shutdown(mut self) -> Result<()> {
         // Ask the sidecar to flush dirty graphs and exit cleanly. On Unix we
         // send SIGTERM and wait up to 3 s; if it doesn't respond we fall back

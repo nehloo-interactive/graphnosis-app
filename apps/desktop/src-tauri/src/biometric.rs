@@ -15,8 +15,10 @@
 //! Both block on the sidecar process. Caller is async-aware (spawn_blocking).
 
 use anyhow::{anyhow, Result};
+use std::sync::OnceLock;
 use tauri::AppHandle;
 use tauri_plugin_shell::{process::CommandEvent, ShellExt};
+use tokio::sync::Mutex;
 
 // Tauri-plugin-shell's `sidecar(name)` resolves to
 // `<binaries-dir>/<name>-<triple>`. The `binaries/` prefix is implicit —
@@ -25,12 +27,22 @@ use tauri_plugin_shell::{process::CommandEvent, ShellExt};
 // time. Base name only.
 const SIDECAR_NAME: &str = "graphnosis-biometric";
 
+fn sidecar_lock() -> &'static Mutex<()> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(()))
+}
+
 /// Spawn the sidecar with the given args, collect stdout + exit code.
 ///
 /// Returns Ok((exit_code, stdout)). Errors are reserved for sidecar-spawn
 /// failures (e.g. binary missing). A non-zero exit code (1 = unavailable,
 /// 2 = failed) is NOT an error — it's a normal authentication outcome.
 async fn run_sidecar(app: &AppHandle, args: &[&str]) -> Result<(i32, String)> {
+    // Serialize all biometric sidecar spawns. Concurrent --check probes (boot
+    // refresh + lock-screen render) racing a --prompt unlock caused flaky
+    // first-attempt Touch ID failures on macOS LocalAuthentication.
+    let _guard = sidecar_lock().lock().await;
+
     let sidecar = app
         .shell()
         .sidecar(SIDECAR_NAME)
