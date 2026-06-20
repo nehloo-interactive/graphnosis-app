@@ -1517,14 +1517,17 @@ function wireThreadNodeActions(node: HTMLElement, msg: GhampusChatMessage): void
       const btn = e.currentTarget as HTMLButtonElement;
       const cardId = btn.dataset.cardId ?? '';
       const sourceId = btn.dataset.sourceId ?? '';
-      await ipcCall('ghampus:inbox:run', { id: cardId }).catch(() => {});
+      const graphId = msg.card.skillGraphId;
       // Grab the skill label from the button text ("Run Skill Name ▸")
       const btnText = btn.textContent ?? '';
       const skillLabel = btnText.replace(/^Run\s+/, '').replace(/\s*▸\s*$/, '').trim();
       const signalEl = node.querySelector<HTMLElement>('.proactive-card-signal');
       const signalLabel = signalEl?.textContent?.replace(/^[⏰📥🔍]\s*/, '').trim();
-      void requestWalkPlan(sourceId, skillLabel || undefined, signalLabel || undefined, card.skillGraphId);
+      btn.disabled = true;
       node.querySelector<HTMLElement>('.proactive-card-actions')?.remove();
+      await ipcCall('ghampus:inbox:run', { id: cardId }).catch(() => {});
+      showSkillRunning(skillLabel || msg.card.skillLabel, signalLabel);
+      void requestWalkPlan(sourceId, skillLabel || undefined, signalLabel || undefined, graphId);
     });
     // Snooze toggle — show/hide the dropdown menu
     node.querySelector<HTMLButtonElement>('.proactive-card-snooze')?.addEventListener('click', (e) => {
