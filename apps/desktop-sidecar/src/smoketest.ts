@@ -683,6 +683,24 @@ ferry to Naxos. The food in Mykonos was overrated.`;
     adminAuditTools: auditTools.length,
   });
 
+  // --- enterprise SSO group → role mapping --------------------------------
+  log('sso-group-role', {});
+  const { resolveRoleFromIdpGroups } = await import('@graphnosis-app/core/settings');
+  const mappings = [
+    { idpGroup: 'graphnosis-viewers', role: 'recall-only' as const },
+    { idpGroup: 'graphnosis-editors', role: 'editor' as const },
+    { idpGroup: 'graphnosis-audit', role: 'admin-audit' as const },
+  ];
+  const resolved = resolveRoleFromIdpGroups(mappings, ['graphnosis-viewers', 'graphnosis-editors']);
+  if (resolved !== 'editor') {
+    throw new Error(`FAIL: expected editor from dual groups, got ${resolved}`);
+  }
+  const fallback = resolveRoleFromIdpGroups(mappings, ['unmapped-group']);
+  if (fallback !== 'recall-only') {
+    throw new Error(`FAIL: unmapped groups should fall back to recall-only, got ${fallback}`);
+  }
+  log('sso-group-role.ok', { resolved, fallback });
+
   // --- session heartbeat lease ---------------------------------------------
   log('session-lease', {});
   await writeSessionLease(cortexDir, {

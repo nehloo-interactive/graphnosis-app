@@ -794,6 +794,29 @@ export {
   toolRequiredCapabilities,
 } from './rbac.js';
 
+export type {
+  SsoProtocol,
+  IdpGroupRoleMapping,
+  OidcSsoConfig,
+  SamlSsoConfig,
+  SsoLastLogin,
+  EnterpriseSsoSettings,
+  EnterpriseSsoPublicView,
+} from './sso.js';
+export {
+  DEFAULT_OIDC_SCOPES,
+  DEFAULT_SSO_REDIRECT_URI,
+  DEFAULT_SSO_SETTINGS,
+  resolveRoleFromIdpGroups,
+  isOidcSsoConfigured,
+  isSamlSsoConfigured,
+  isEnterpriseSsoConfigured,
+  enterpriseSsoPublicView,
+  sanitizeEnterpriseSsoSettings,
+} from './sso.js';
+import type { EnterpriseSsoSettings } from './sso.js';
+import { DEFAULT_SSO_SETTINGS, sanitizeEnterpriseSsoSettings } from './sso.js';
+
 /**
  * Engram scope attached to a sharing token.
  * `engrams: '*'` grants access to all engrams (owner-equivalent scope).
@@ -1106,6 +1129,12 @@ export interface AppSettings {
    * and how ambiguous cloud paths were classified.
    */
   cloudOnboarding?: CloudOnboardingSettings;
+
+  /**
+   * Enterprise SSO — IdP-gated unlock + group → role mapping (Phase D).
+   * Configuration-only in v1; federated unlock flow ships in a follow-on.
+   */
+  sso?: EnterpriseSsoSettings;
 }
 
 /** Ghampus runtime settings. Phase 1 scope: just the kill switch. */
@@ -1793,6 +1822,9 @@ export function mergeWithDefaults(partial: Partial<AppSettings> | null | undefin
       : {}),
     ...(partial?.cloudOnboarding && typeof partial.cloudOnboarding === 'object'
       ? { cloudOnboarding: sanitizeCloudOnboarding(partial.cloudOnboarding) }
+      : {}),
+    ...(partial?.sso !== undefined
+      ? { sso: sanitizeEnterpriseSsoSettings(partial.sso as Partial<EnterpriseSsoSettings>) ?? DEFAULT_SSO_SETTINGS }
       : {}),
   };
 }

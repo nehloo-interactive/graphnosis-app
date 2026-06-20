@@ -13597,6 +13597,76 @@ ollama list</code></pre>
                 </p>
                 <div id="settings-policy-body" aria-live="polite"></div>
               </div>
+
+              <!-- Enterprise SSO — IdP configuration (unlock flow Phase 2) -->
+              <div class="panel" id="settings-panel-sso" style="display:none;">
+                <p class="panel-title">Enterprise SSO</p>
+                <p class="subtitle" style="font-size: 15px; margin: -4px 0 10px;">
+                  Sign in with your corporate IdP (Okta, Azure AD, Google Workspace) and map directory groups to Graphnosis roles.
+                  <strong>Phase 1:</strong> configure here — federated unlock ships next. Today, use
+                  <code>/admin/provision</code> for MCP token onboarding.
+                </p>
+                <p id="sso-status-line" class="subtitle" style="font-size: 13px; margin: 0 0 12px; color: var(--fg-muted);" aria-live="polite"></p>
+
+                <label style="display:flex;align-items:center;gap:8px;font-size:14px;margin-bottom:12px;">
+                  <input type="checkbox" id="sso-enabled" />
+                  <span>Enable SSO unlock (when federated login ships)</span>
+                </label>
+
+                <label style="display:flex;align-items:center;gap:8px;font-size:14px;margin-bottom:12px;">
+                  <input type="checkbox" id="sso-break-glass" checked />
+                  <span>Keep passphrase as break-glass recovery</span>
+                </label>
+
+                <div style="margin-bottom:14px;">
+                  <p style="margin:0 0 6px;font-size:12px;text-transform:uppercase;letter-spacing:.05em;opacity:.7;">Protocol</p>
+                  <label style="display:flex;align-items:center;gap:8px;font-size:14px;margin-bottom:4px;">
+                    <input type="radio" name="sso-protocol" value="oidc" checked />
+                    <span><strong>OIDC</strong> — recommended for desktop (Okta, Azure AD, Google)</span>
+                  </label>
+                  <label style="display:flex;align-items:center;gap:8px;font-size:14px;opacity:.6;">
+                    <input type="radio" name="sso-protocol" value="saml" disabled />
+                    <span><strong>SAML 2.0</strong> — coming in a later release</span>
+                  </label>
+                </div>
+
+                <div id="sso-oidc-fields" style="display:flex;flex-direction:column;gap:10px;margin-bottom:14px;">
+                  <label style="font-size:13px;">
+                    Issuer URL
+                    <input id="sso-oidc-issuer" type="url" placeholder="https://login.microsoftonline.com/{tenant}/v2.0" style="display:block;width:100%;margin-top:4px;" />
+                  </label>
+                  <label style="font-size:13px;">
+                    Client ID
+                    <input id="sso-oidc-client-id" type="text" placeholder="Application (client) ID" style="display:block;width:100%;margin-top:4px;" />
+                  </label>
+                  <label style="font-size:13px;">
+                    Client secret
+                    <input id="sso-oidc-client-secret" type="password" placeholder="Leave blank to keep existing" style="display:block;width:100%;margin-top:4px;" autocomplete="off" />
+                    <span id="sso-oidc-secret-hint" class="subtitle" style="font-size:11px;display:none;margin-top:2px;">A secret is stored for this cortex.</span>
+                  </label>
+                  <label style="font-size:13px;">
+                    Groups claim
+                    <input id="sso-oidc-groups-claim" type="text" value="groups" placeholder="groups" style="display:block;width:100%;margin-top:4px;" />
+                  </label>
+                  <label style="font-size:13px;">
+                    Redirect URI (register at IdP)
+                    <input id="sso-oidc-redirect" type="url" value="http://127.0.0.1:4580/sso/callback" style="display:block;width:100%;margin-top:4px;" />
+                  </label>
+                </div>
+
+                <div style="margin-bottom:14px;">
+                  <p style="margin:0 0 8px;font-size:12px;text-transform:uppercase;letter-spacing:.05em;opacity:.7;">IdP group → role mapping</p>
+                  <p class="subtitle" style="font-size:12px;margin:0 0 8px;">Highest matching privilege wins when a user belongs to multiple mapped groups.</p>
+                  <div id="sso-group-mappings" style="display:flex;flex-direction:column;gap:6px;margin-bottom:8px;"></div>
+                  <button id="btn-sso-add-mapping" type="button" class="g-btn">Add mapping…</button>
+                  <p id="sso-mapping-preview" class="subtitle" style="font-size:12px;margin:8px 0 0;display:none;" aria-live="polite"></p>
+                </div>
+
+                <div style="display:flex;gap:8px;align-items:center;">
+                  <button id="btn-sso-save" type="button" class="primary">Save SSO settings</button>
+                  <span id="sso-save-status" class="subtitle" style="font-size:12px;"></span>
+                </div>
+              </div>
               <div class="panel">
                 <p class="panel-title">Cortex tools</p>
                 <p class="subtitle" style="font-size: 15px; margin: -4px 0 10px;">

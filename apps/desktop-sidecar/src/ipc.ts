@@ -35,7 +35,18 @@ import { withEmbedding } from './embedding-queue.js';
 import type { ConnectorManager } from './connectors/manager.js';
 import { getAdminPolicy, setAdminPolicy } from './admin-policy.js';
 import { getConsentPhraseForTier, type McpCallTool } from './mcp-server.js';
-import { revokeConsent, SHARING_TOKEN_ROLES, type SharingRole } from '@graphnosis-app/core/settings';
+import {
+  revokeConsent,
+  SHARING_TOKEN_ROLES,
+  SHARING_ROLE_LABELS,
+  enterpriseSsoPublicView,
+  isEnterpriseSsoConfigured,
+  resolveRoleFromIdpGroups,
+  sanitizeEnterpriseSsoSettings,
+  type SharingRole,
+  type EnterpriseSsoSettings,
+  type IdpGroupRoleMapping,
+} from '@graphnosis-app/core/settings';
 import {
   isCortexSessionBusy,
   isSessionLeaseFresh,
@@ -6561,6 +6572,160 @@ OUTPUT RULES — non-negotiable:
         busy,
         lease: fresh,
         self: fresh?.pid === process.pid,
+      };
+    }
+
+    case 'sso:get': {
+      const settings = deps.host.getSettings();
+      const licenseToken = await getEffectiveLicenseToken(deps);
+      const hasEnterprise = deps.licenseValidator?.hasFeature(licenseToken, 'enterprise') ?? false;
+      const domainSeat = (settings.domainSeatLicenseToken ?? null) !== null
+        && deps.licenseValidator?.verifyToken(settings.domainSeatLicenseToken ?? '') !== null;
+      return {
+        ok: true,
+        enterprise: hasEnterprise || domainSeat,
+        phase: 'config-only',
+        unlockMode: settings.sso?.enabled && isEnterpriseSsoConfigured(settings.sso)
+          ? 'sso-pending'
+          : 'passphrase',
+        settings: enterpriseSsoPublicView(settings.sso),
+      };
+    }
+
+    case 'sso:status': {
+      const settings = deps.host.getSettings();
+      const licenseToken = await getEffectiveLicenseToken(deps);
+      const hasEnterprise = deps.licenseValidator?.hasFeature(licenseToken, 'enterprise') ?? false;
+      const domainSeat = (settings.domainSeatLicenseToken ?? null) !== null
+        && deps.licenseValidator?.verifyToken(settings.domainSeatLicenseToken ?? '') !== null;
+      const sso = settings.sso;
+      const configured = isEnterpriseSsoConfigured(sso);
+      return {
+        ok: true,
+        enterprise: hasEnterprise || domainSeat,
+        enabled: sso?.enabled ?? false,
+        protocol: sso?.protocol ?? 'oidc',
+        configured,
+        breakGlassPassphrase: sso?.breakGlassPassphrase ?? true,
+        groupMappingCount: sso?.groupRoleMappings?.length ?? 0,
+        lastLogin: sso?.lastLogin ?? null,
+        unlockMode: sso?.enabled && configured ? 'sso-pending' : 'passphrase',
+        phase: 'config-only',
+        note: 'IdP unlock flow not yet wired — configure here; use /admin/provision for MCP token onboarding today.',
+      };
+    }
+
+    case 'sso:set': {
+      const licenseToken = await getEffectiveLicenseToken(deps);
+      const hasEnterprise = deps.licenseValidator?.hasFeature(licenseToken, 'enterprise') ?? false;
+      if (!hasEnterprise) {
+        return {
+          ok: false,
+          reason: 'enterprise_required',
+          message: 'Enterprise SSO configuration requires an Enterprise license.',
+        };
+      }
+
+      const args = z.object({
+        enabled: z.boolean().optional(),
+        protocol: z.enum(['oidc', 'saml']).optional(),
+        breakGlassPassphrase: z.boolean().optional(),
+        oidc: z.object({
+          issuer: z.string().max(512).optional(),
+          clientId: z.string().max(256).optional(),
+          clientSecret: z.string().max(512).optional(),
+          scopes: z.array(z.string().min(1).max(64)).max(32).optional(),
+          groupsClaim: z.string().max(128).optional(),
+          redirectUri: z.string().max(512).optional(),
+          clearClientSecret: z.boolean().optional(),
+        }).optional(),
+        saml: z.object({
+          entityId: z.string().max(512).optional(),
+          ssoUrl: z.string().max(512).optional(),
+          idpCertificate: z.string().max(8192).optional(),
+        }).optional(),
+        groupRoleMappings: z.array(z.object({
+          idpGroup: z.string().min(1).max(256),
+          role: z.enum(SHARING_TOKEN_ROLES as unknown as [SharingRole, ...SharingRole[]]),
+        })).max(64).optional(),
+      }).parse(params ?? {});
+
+      const current = deps.host.getSettings();
+      const prev = current.sso ?? sanitizeEnterpriseSsoSettings({})!;
+      const next: EnterpriseSsoSettings = {
+        ...prev,
+        ...(args.enabled !== undefined ? { enabled: args.enabled } : {}),
+        ...(args.protocol !== undefined ? { protocol: args.protocol } : {}),
+        ...(args.breakGlassPassphrase !== undefined ? { breakGlassPassphrase: args.breakGlassPassphrase } : {}),
+        ...(args.groupRoleMappings !== undefined
+          ? { groupRoleMappings: args.groupRoleMappings as IdpGroupRoleMapping[] }
+          : {}),
+      };
+
+      if (args.oidc) {
+        const o = args.oidc;
+        const prevOidc = prev.oidc ?? { issuer: '', clientId: '' };
+        let clientSecret = prevOidc.clientSecret;
+        let clientSecretEnc = prevOidc.clientSecretEnc;
+        if (o.clearClientSecret) {
+          clientSecret = undefined;
+          clientSecretEnc = undefined;
+        } else if (o.clientSecret !== undefined && o.clientSecret.length > 0) {
+          clientSecret = o.clientSecret;
+          clientSecretEnc = undefined;
+        }
+        next.oidc = {
+          issuer: o.issuer !== undefined ? o.issuer.trim() : prevOidc.issuer,
+          clientId: o.clientId !== undefined ? o.clientId.trim() : prevOidc.clientId,
+          ...(clientSecret ? { clientSecret } : {}),
+          ...(clientSecretEnc ? { clientSecretEnc } : {}),
+          ...(o.scopes ?? prevOidc.scopes ? { scopes: o.scopes ?? prevOidc.scopes } : {}),
+          ...(o.groupsClaim !== undefined
+            ? (o.groupsClaim.trim() ? { groupsClaim: o.groupsClaim.trim() } : {})
+            : prevOidc.groupsClaim ? { groupsClaim: prevOidc.groupsClaim } : {}),
+          ...(o.redirectUri !== undefined
+            ? (o.redirectUri.trim() ? { redirectUri: o.redirectUri.trim() } : {})
+            : prevOidc.redirectUri ? { redirectUri: prevOidc.redirectUri } : {}),
+        };
+      }
+
+      if (args.saml) {
+        const s = args.saml;
+        const prevSaml = prev.saml ?? {};
+        const entityId = s.entityId !== undefined ? s.entityId.trim() : prevSaml.entityId;
+        const ssoUrl = s.ssoUrl !== undefined ? s.ssoUrl.trim() : prevSaml.ssoUrl;
+        const idpCertificate = s.idpCertificate !== undefined ? s.idpCertificate : prevSaml.idpCertificate;
+        next.saml = {
+          ...(entityId ? { entityId } : {}),
+          ...(ssoUrl ? { ssoUrl } : {}),
+          ...(idpCertificate ? { idpCertificate } : {}),
+        };
+      }
+
+      const sanitized = sanitizeEnterpriseSsoSettings(next);
+      await deps.host.setSettings({
+        ...current,
+        sso: sanitized ?? next,
+      });
+
+      return {
+        ok: true,
+        settings: enterpriseSsoPublicView(sanitized ?? next),
+      };
+    }
+
+    case 'sso:resolveRole': {
+      // Test / preview helper — maps sample IdP groups to a sharing role.
+      const args = z.object({
+        groups: z.array(z.string()),
+      }).parse(params ?? {});
+      const settings = deps.host.getSettings();
+      const mappings = settings.sso?.groupRoleMappings ?? [];
+      const role = resolveRoleFromIdpGroups(mappings, args.groups);
+      return {
+        ok: true,
+        role,
+        label: SHARING_ROLE_LABELS[role] ?? role,
       };
     }
 

@@ -3056,6 +3056,7 @@ function activateMode(mode: Mode): void {
     // op-log, new ingest, startup-time quarantine, etc.).
     renderSettingsTab();
     void refreshModelsPanel();
+    void refreshSsoSettingsPanel();
     // Refresh the license launcher's status line on the pane (Free /
     // Pro active · expires X). Calls the same helper the Settings modal
     // uses; both DOM targets are updated in one pass.
@@ -19730,6 +19731,212 @@ function syncGezExportButton(): void {
     }).observe(gcPane, { attributes: true, attributeFilter: ['class'] });
   }
 }
+
+// ── Enterprise SSO settings (Phase 1 — config only) ─────────────────────────
+
+interface SsoPublicView {
+  enabled: boolean;
+  protocol: 'oidc' | 'saml';
+  breakGlassPassphrase: boolean;
+  oidc?: {
+    issuer: string;
+    clientId: string;
+    hasClientSecret: boolean;
+    scopes: string[];
+    groupsClaim: string;
+    redirectUri: string;
+  };
+  groupRoleMappings: Array<{ idpGroup: string; role: string }>;
+  lastLogin?: { at: number; email?: string; groups?: string[]; resolvedRole?: string };
+  configured: boolean;
+}
+
+interface SsoGetResult {
+  ok: boolean;
+  enterprise: boolean;
+  phase: string;
+  unlockMode: string;
+  settings: SsoPublicView;
+}
+
+const SSO_SHARING_ROLE_OPTIONS: Array<{ value: string; label: string }> = [
+  { value: 'recall-only', label: 'Recall only' },
+  { value: 'remember', label: 'Remember' },
+  { value: 'edit-approve', label: 'Edit (approve in app)' },
+  { value: 'editor', label: 'Editor' },
+  { value: 'skill-train', label: 'Skill trainer' },
+  { value: 'admin-audit', label: 'Admin / audit' },
+];
+
+function ssoMappingRowHtml(group = '', role = 'recall-only'): string {
+  const opts = SSO_SHARING_ROLE_OPTIONS.map((o) =>
+    `<option value="${escape(o.value)}"${o.value === role ? ' selected' : ''}>${escape(o.label)}</option>`,
+  ).join('');
+  return `
+    <div class="sso-mapping-row" style="display:flex;gap:8px;align-items:center;">
+      <input type="text" class="sso-mapping-group" placeholder="IdP group name" value="${escape(group)}" style="flex:1;" />
+      <select class="sso-mapping-role" style="flex:1;">${opts}</select>
+      <button type="button" class="sso-mapping-remove g-btn" title="Remove">✕</button>
+    </div>`;
+}
+
+function wireSsoMappingRows(container: HTMLElement): void {
+  container.querySelectorAll<HTMLButtonElement>('.sso-mapping-remove').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      btn.closest('.sso-mapping-row')?.remove();
+      void updateSsoMappingPreview();
+    });
+  });
+  container.querySelectorAll<HTMLElement>('.sso-mapping-group, .sso-mapping-role').forEach((el) => {
+    el.addEventListener('change', () => { void updateSsoMappingPreview(); });
+    el.addEventListener('input', () => { void updateSsoMappingPreview(); });
+  });
+}
+
+async function updateSsoMappingPreview(): Promise<void> {
+  const preview = document.getElementById('sso-mapping-preview');
+  const container = document.getElementById('sso-group-mappings');
+  if (!preview || !container) return;
+  const groups: string[] = [];
+  container.querySelectorAll<HTMLInputElement>('.sso-mapping-group').forEach((input) => {
+    const v = input.value.trim();
+    if (v) groups.push(v);
+  });
+  if (groups.length === 0) {
+    preview.style.display = 'none';
+    return;
+  }
+  try {
+    const result = await ipcCall<{ ok: boolean; role: string; label: string }>('sso:resolveRole', { groups });
+    preview.textContent = `Preview: a user in ${groups.map((g) => `"${g}"`).join(' or ')} → ${result.label}`;
+    preview.style.display = '';
+  } catch {
+    preview.style.display = 'none';
+  }
+}
+
+async function refreshSsoSettingsPanel(): Promise<void> {
+  const panel = document.getElementById('settings-panel-sso');
+  if (!panel) return;
+  try {
+    const data = await ipcCall<SsoGetResult>('sso:get', {});
+    panel.style.display = data.enterprise ? '' : 'none';
+    if (!data.enterprise) return;
+
+    const s = data.settings;
+    const statusLine = document.getElementById('sso-status-line');
+    if (statusLine) {
+      const parts = [
+        s.configured ? 'OIDC configured' : 'Not configured',
+        s.enabled ? 'SSO unlock enabled (pending IdP flow)' : 'Passphrase unlock',
+        data.unlockMode === 'sso-pending' ? '— federated login ships next' : '',
+      ];
+      if (s.lastLogin?.email) {
+        parts.push(`Last IdP login: ${s.lastLogin.email}`);
+      }
+      statusLine.textContent = parts.filter(Boolean).join(' · ');
+    }
+
+    const enabledCb = document.getElementById('sso-enabled') as HTMLInputElement | null;
+    if (enabledCb) enabledCb.checked = s.enabled;
+    const breakGlassCb = document.getElementById('sso-break-glass') as HTMLInputElement | null;
+    if (breakGlassCb) breakGlassCb.checked = s.breakGlassPassphrase;
+
+    const protocolOidc = document.querySelector<HTMLInputElement>('input[name="sso-protocol"][value="oidc"]');
+    if (protocolOidc) protocolOidc.checked = s.protocol === 'oidc';
+
+    const issuer = document.getElementById('sso-oidc-issuer') as HTMLInputElement | null;
+    const clientId = document.getElementById('sso-oidc-client-id') as HTMLInputElement | null;
+    const secret = document.getElementById('sso-oidc-client-secret') as HTMLInputElement | null;
+    const groupsClaim = document.getElementById('sso-oidc-groups-claim') as HTMLInputElement | null;
+    const redirect = document.getElementById('sso-oidc-redirect') as HTMLInputElement | null;
+    const secretHint = document.getElementById('sso-oidc-secret-hint');
+    if (s.oidc) {
+      if (issuer) issuer.value = s.oidc.issuer;
+      if (clientId) clientId.value = s.oidc.clientId;
+      if (groupsClaim) groupsClaim.value = s.oidc.groupsClaim;
+      if (redirect) redirect.value = s.oidc.redirectUri;
+      if (secret) secret.value = '';
+      if (secretHint) secretHint.style.display = s.oidc.hasClientSecret ? '' : 'none';
+    }
+
+    const mappings = document.getElementById('sso-group-mappings');
+    if (mappings) {
+      mappings.innerHTML = s.groupRoleMappings.length
+        ? s.groupRoleMappings.map((m) => ssoMappingRowHtml(m.idpGroup, m.role)).join('')
+        : '';
+      wireSsoMappingRows(mappings);
+    }
+    void updateSsoMappingPreview();
+  } catch {
+    panel.style.display = 'none';
+  }
+}
+
+function wireSsoSettingsPanel(): void {
+  const addBtn = document.getElementById('btn-sso-add-mapping');
+  addBtn?.addEventListener('click', () => {
+    const container = document.getElementById('sso-group-mappings');
+    if (!container) return;
+    const wrap = document.createElement('div');
+    wrap.innerHTML = ssoMappingRowHtml();
+    const row = wrap.firstElementChild as HTMLElement;
+    container.appendChild(row);
+    wireSsoMappingRows(container);
+    void updateSsoMappingPreview();
+  });
+
+  document.getElementById('btn-sso-save')?.addEventListener('click', async () => {
+    const status = document.getElementById('sso-save-status');
+    const btn = document.getElementById('btn-sso-save') as HTMLButtonElement | null;
+    if (btn) btn.disabled = true;
+    if (status) status.textContent = 'Saving…';
+    try {
+      const enabled = (document.getElementById('sso-enabled') as HTMLInputElement | null)?.checked ?? false;
+      const breakGlass = (document.getElementById('sso-break-glass') as HTMLInputElement | null)?.checked ?? true;
+      const protocol = document.querySelector<HTMLInputElement>('input[name="sso-protocol"]:checked')?.value ?? 'oidc';
+      const issuer = (document.getElementById('sso-oidc-issuer') as HTMLInputElement | null)?.value.trim() ?? '';
+      const clientId = (document.getElementById('sso-oidc-client-id') as HTMLInputElement | null)?.value.trim() ?? '';
+      const clientSecret = (document.getElementById('sso-oidc-client-secret') as HTMLInputElement | null)?.value ?? '';
+      const groupsClaim = (document.getElementById('sso-oidc-groups-claim') as HTMLInputElement | null)?.value.trim() ?? 'groups';
+      const redirectUri = (document.getElementById('sso-oidc-redirect') as HTMLInputElement | null)?.value.trim() ?? '';
+
+      const groupRoleMappings: Array<{ idpGroup: string; role: string }> = [];
+      document.querySelectorAll<HTMLElement>('.sso-mapping-row').forEach((row) => {
+        const g = row.querySelector<HTMLInputElement>('.sso-mapping-group')?.value.trim() ?? '';
+        const r = row.querySelector<HTMLSelectElement>('.sso-mapping-role')?.value ?? 'recall-only';
+        if (g) groupRoleMappings.push({ idpGroup: g, role: r });
+      });
+
+      const result = await ipcCall<{ ok: boolean; message?: string; reason?: string }>('sso:set', {
+        enabled,
+        protocol,
+        breakGlassPassphrase: breakGlass,
+        oidc: {
+          issuer,
+          clientId,
+          ...(clientSecret.length > 0 ? { clientSecret } : {}),
+          groupsClaim,
+          redirectUri,
+        },
+        groupRoleMappings,
+      });
+      if (!result.ok) {
+        if (status) status.textContent = result.message ?? result.reason ?? 'Save failed';
+        return;
+      }
+      if (status) status.textContent = 'Saved';
+      void refreshSsoSettingsPanel();
+    } catch (e) {
+      if (status) status.textContent = e instanceof Error ? e.message : String(e);
+    } finally {
+      if (btn) btn.disabled = false;
+      setTimeout(() => { if (status) status.textContent = ''; }, 3000);
+    }
+  });
+}
+
+wireSsoSettingsPanel();
 
 // ── VS Code / Copilot Chat setup (own modal) ──────────────────────────────────
 function buildCopilotSnippets(port: number, token: string): { vscode: string; cli: string } {
