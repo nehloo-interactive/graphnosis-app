@@ -37,9 +37,11 @@ import {
 } from './model-provider-keys.js';
 import { DeviceIdentity } from './device-identity.js';
 import { FEDERATED_MASTER_FILE, federatedMasterPath, generateFederatedUnlockKey } from '@graphnosis-app/core/sso';
+import type { WorkPriority } from './work-priority.js';
 import { hostRecall, hostDigDeeper, type RecallHost } from './host/recall-methods.js';
 import { extractQueryEntities } from './host/recall.js';
 import { invalidateQueryEnrichmentCache } from './query-enrichment-cache.js';
+import { bundledDocForRef } from './docs-ingest.js';
 
 const { deriveKey, encrypt, decrypt } = crypto;
 const { OpLogWriter } = oplog;
@@ -183,6 +185,12 @@ interface LoadedGraph {
   /** In-flight oplog reconcile (fire-and-forget in prod; tests await via
    *  waitForReconcile). Null when idle or queued for post-boot flush. */
   reconcileBuilding: Promise<void> | null;
+  /** In-flight hollow-bundle materialize (async outside boot; tests await via
+   *  waitForBundleMaterialize). */
+  bundleMaterializing: Promise<void> | null;
+  /** Source count from .bundle at loadGraph time — frozen so async reconcile does
+   *  not treat a mid-reconcile ingest as "bundle had sources" for op-log recovery. */
+  bundleSourcesAtLoad: number;
 }
 
 /** Payload emitted on every successful graph mutation. Consumers (the IPC
@@ -326,6 +334,8 @@ export class GraphnosisHost {
    *  them concurrently monopolizes the event loop and starves IPC mid-sweep. */
   private bootPhaseActive = false;
   private bootReconcileQueue: GraphId[] = [];
+  /** Hollow .gai shells (bundle has sources, 0 nodes) — materialize after boot sweep. */
+  private bootMaterializeQueue: GraphId[] = [];
   /** sourceRef sweeps deferred from boot — run on first engram access. */
   private deferredSourceRefSweep = new Set<GraphId>();
   private bootDeferredFlushPromise: Promise<void> | null = null;
@@ -1230,12 +1240,13 @@ export class GraphnosisHost {
   }
 
   /**
-   * Set of currently-active node IDs for a graph. "Active" matches the
-   * inspector's definition: confidence > 0.2 AND validUntil is unset or in
-   * the future. Used to drop soft-deleted nodes from `recall` and `search`
-   * results, which the SDK's hybrid query returns unconditionally.
+   * Single inspectNodes pass for recall — active ID set + full node list.
+   * Avoids scanning the same engram twice per recall (active filter + anchoring).
    */
-  private activeNodeIds(graphId: GraphId): Set<string> {
+  recallNodeSnapshot(graphId: GraphId): {
+    active: Set<string>;
+    nodes: ReturnType<GraphnosisAdapter['inspectNodes']>;
+  } {
     const g = this.must(graphId);
     const nodes = this.opts.adapter.inspectNodes(g.handle);
     const now = Date.now();
@@ -1246,12 +1257,23 @@ export class GraphnosisHost {
     const excludedNodes = excluded && excluded.length > 0
       ? new Set(excluded.flatMap((sid) => this.getSourceRecord(graphId, sid)?.nodeIds ?? []))
       : null;
-    return new Set(
+    const active = new Set(
       nodes
         .filter((n) => n.confidence > 0.2 && (n.validUntil === undefined || n.validUntil > now))
         .filter((n) => !excludedNodes || !excludedNodes.has(n.id))
         .map((n) => n.id),
     );
+    return { active, nodes };
+  }
+
+  /**
+   * Set of currently-active node IDs for a graph. "Active" matches the
+   * inspector's definition: confidence > 0.2 AND validUntil is unset or in
+   * the future. Used to drop soft-deleted nodes from `recall` and `search`
+   * results, which the SDK's hybrid query returns unconditionally.
+   */
+  private activeNodeIds(graphId: GraphId): Set<string> {
+    return this.recallNodeSnapshot(graphId).active;
   }
 
   /** Inspect every node in a graph, including soft-deleted ones — used by the Nodes table when there's no active search. */
@@ -2066,7 +2088,33 @@ export class GraphnosisHost {
   }
 
   private async runBootDeferredWork(): Promise<void> {
+    const materializeGraphIds = this.bootMaterializeQueue.splice(0);
     const reconcileGraphIds = this.bootReconcileQueue.splice(0);
+    if (materializeGraphIds.length === 0 && reconcileGraphIds.length === 0) {
+      this.bootDeferredFlushPromise = null;
+      return;
+    }
+    if (materializeGraphIds.length > 0) {
+      dbg(
+        `[graphnosis-host] boot deferred work: ${materializeGraphIds.length} bundle materialize(s)`,
+      );
+      for (const graphId of materializeGraphIds) {
+        const entry = this.graphs.get(graphId);
+        if (!entry) continue;
+        const t0 = Date.now();
+        try {
+          await this.runBundleMaterialize(graphId, entry);
+          dbg(
+            `[graphnosis-host] boot materialize engram[${redactId(graphId)}]: ${Date.now() - t0}ms`,
+          );
+        } catch (e: unknown) {
+          console.error(
+            `[graphnosis-host] boot materialize failed engram[${redactId(graphId)}] after ${Date.now() - t0}ms: ${(e as Error).message}`,
+          );
+        }
+        await this.yieldToLoop();
+      }
+    }
     if (reconcileGraphIds.length === 0) {
       this.bootDeferredFlushPromise = null;
       return;
@@ -2157,6 +2205,44 @@ export class GraphnosisHost {
     });
   }
 
+  /** Re-ingest bundle sources when .gai is empty but .bundle survived — deferred
+   *  during boot so loadGraph returns after early commit (not after 32-page ingest). */
+  private scheduleBundleMaterialize(graphId: GraphId, entry: LoadedGraph): void {
+    if (this.opts.adapter.inspectNodes(entry.handle).length > 0) return;
+    if (entry.sourceIndex.list().length === 0) return;
+    if (this.bootPhaseActive || this.bootSweepActive) {
+      if (!this.bootMaterializeQueue.includes(graphId)) {
+        this.bootMaterializeQueue.push(graphId);
+      }
+      return;
+    }
+    if (entry.bundleMaterializing) return;
+    entry.bundleMaterializing = this.runBundleMaterialize(graphId, entry)
+      .catch((e: unknown) => {
+        console.error(
+          `[graphnosis-host] bundle materialize failed for engram[${redactId(graphId)}]: ${(e as Error).message}`,
+        );
+      })
+      .finally(() => {
+        if (this.graphs.get(graphId) === entry) entry.bundleMaterializing = null;
+      });
+  }
+
+  private async runBundleMaterialize(graphId: GraphId, entry: LoadedGraph): Promise<void> {
+    if (this.graphs.get(graphId) !== entry) return;
+    const dirty = await this.materializeEmptyGraphFromBundle(graphId, entry);
+    if (!dirty) return;
+    entry.dirty = true;
+    try {
+      await this.save(graphId);
+      this.invalidateOplogCache();
+    } catch (e) {
+      console.error(
+        `[graphnosis-host] bundle materialize save failed for engram[${redactId(graphId)}]: ${(e as Error).message}`,
+      );
+    }
+  }
+
   /** Called by the sidecar boot sweep — gates concurrent embedding rebuilds. */
   setBootSweepActive(active: boolean): void {
     this.bootSweepActive = active;
@@ -2225,8 +2311,21 @@ export class GraphnosisHost {
   }
 
   /** True when a canonical or legacy graph file exists on disk. */
-  private graphOnDisk(graphId: GraphId): boolean {
+  isGraphOnDisk(graphId: GraphId): boolean {
     return existsSync(this.graphPath(graphId)) || existsSync(this.legacyGraphPath(graphId));
+  }
+
+  /** Source count from the encrypted .bundle without loading the full engram.
+   *  Used by docs:checkOffer when the engram is on disk but not yet resident
+   *  (boot sweep still in progress) — avoids treating "not loaded" as 0 sources. */
+  async countBundleSources(graphId: GraphId): Promise<number> {
+    if (!this.graphOnDisk(graphId)) return 0;
+    const bundle = await this.loadBundle(graphId);
+    return bundle.list().length;
+  }
+
+  private graphOnDisk(graphId: GraphId): boolean {
+    return this.isGraphOnDisk(graphId);
   }
 
   /** Engrams with a .gai/.aikg on disk, excluding already-resident ids. Archived
@@ -2287,6 +2386,8 @@ export class GraphnosisHost {
       dirty: true,
       embeddingsBuilding: null,
       reconcileBuilding: null,
+      bundleMaterializing: null,
+      bundleSourcesAtLoad: 0,
     });
     this.correctionsCount.set(graphId, 0);
     await this.save(graphId);
@@ -2296,6 +2397,18 @@ export class GraphnosisHost {
     const inflight = this.loadGraphInflight.get(graphId);
     if (inflight) return inflight;
     if (this.graphs.has(graphId)) return;
+    // Ghost metadata: settings row without .gai/.aikg. Fail fast with a clean
+    // ENOENT so callers (graphs.load, ensureLoaded) never reach the legacy
+    // .aikg open and spam raw filesystem stack traces.
+    if (!this.isGraphOnDisk(graphId)) {
+      const meta = this.getGraphMetadata(graphId);
+      const msg = meta !== undefined
+        ? `engram '${graphId}' has metadata but no graph file on disk`
+        : `engram '${graphId}' not found on disk`;
+      const enoentErr = new Error(msg) as NodeJS.ErrnoException;
+      enoentErr.code = 'ENOENT';
+      throw enoentErr;
+    }
     const p = this.loadGraphInner(graphId).finally(() => {
       this.loadGraphInflight.delete(graphId);
     });
@@ -2348,9 +2461,21 @@ export class GraphnosisHost {
     } catch (e) {
       const err = e as NodeJS.ErrnoException;
       if (err.code !== 'ENOENT') throw err;
-      bytes = await fs.readFile(this.legacyGraphPath(graphId));
-      loadedGaiBytes = bytes.length;
-      console.error(`[graphnosis-host] loaded legacy engram[${redactId(graphId)}].aikg — will migrate to .gai on next save`);
+      try {
+        bytes = await fs.readFile(this.legacyGraphPath(graphId));
+        loadedGaiBytes = bytes.length;
+        console.error(
+          `[graphnosis-host] loaded legacy engram[${redactId(graphId)}].aikg — will migrate to .gai on next save`,
+        );
+      } catch (legacyErr) {
+        const lerr = legacyErr as NodeJS.ErrnoException;
+        if (lerr.code !== 'ENOENT') throw legacyErr;
+        const enoentErr = new Error(
+          `engram '${graphId}' not found on disk (no .gai or .aikg)`,
+        ) as NodeJS.ErrnoException;
+        enoentErr.code = 'ENOENT';
+        throw enoentErr;
+      }
     }
     const tDecrypt0 = Date.now();
     const aikgPlain = await decrypt(new Uint8Array(bytes!), this.key);
@@ -2422,7 +2547,7 @@ export class GraphnosisHost {
     }
     } // !usedTinyLkgRestore
     const tBundle0 = Date.now();
-    const sourceIndex = await this.loadBundle(graphId);
+    let sourceIndex = await this.loadBundle(graphId);
     tBundle = Date.now() - tBundle0;
     await this.yieldToLoop();
     // Materialize the SDK graph before commit. fromBuffer usually leaves the
@@ -2430,8 +2555,32 @@ export class GraphnosisHost {
     // reconcile runs — without it, inspectNodes can briefly return [] on some
     // .gai shapes until reconcile finishes.
     await this.opts.adapter.build(handle);
+    // Zero-node .gai with a much larger .lkg (partial write / hollow shell):
+    // promote .lkg before hollow-bundle materialize tries a partial rebuild
+    // save that shrink-save guard would block (2.7MB over 13MB pattern).
+    let committedNodes = this.opts.adapter.inspectNodes(handle).length;
+    if (
+      !usedTinyLkgRestore &&
+      committedNodes === 0 &&
+      lkgSize > EMPTY_SAVE_BLOCK_MIN_BYTES &&
+      lkgSize > loadedGaiBytes / SHRINK_SAVE_BLOCK_RATIO
+    ) {
+      const restored = await this.tryRestoreTinyGaiFromLkg(graphId, hmacKey, loadedGaiBytes, lkgSize);
+      if (restored) {
+        handle = restored;
+        await this.opts.adapter.build(handle);
+        loadedGaiBytes = lkgSize;
+        committedNodes = this.opts.adapter.inspectNodes(handle).length;
+        sourceIndex = await this.loadBundle(graphId);
+      }
+    }
     const cache = new EmbeddingCache({ path: this.cachePath(graphId), key: this.key, salt: this.salt });
-    const entry: LoadedGraph = { handle, sourceIndex, cache, dirty: false, embeddingsBuilding: null, reconcileBuilding: null };
+    const bundleSources = sourceIndex.list().length;
+    const entry: LoadedGraph = {
+      handle, sourceIndex, cache, dirty: false,
+      embeddingsBuilding: null, reconcileBuilding: null, bundleMaterializing: null,
+      bundleSourcesAtLoad: bundleSources,
+    };
 
     // ── Early commit: make the engram available in the picker immediately ──
     //
@@ -2453,17 +2602,20 @@ export class GraphnosisHost {
     this.touchGraph(graphId); // boot-loaded engrams must not look idle to LRU
     this.correctionsCount.set(graphId, 0);
     const tEarlyCommit = Date.now() - tLoad;
-    const committedNodes = this.opts.adapter.inspectNodes(handle).length;
+    // Hollow shell: bundle lists sources but .gai has 0 nodes — schedule async
+    // re-ingest so loadGraph returns immediately (32 doc pages must not block boot).
+    if (committedNodes === 0 && bundleSources > 0) {
+      this.scheduleBundleMaterialize(graphId, entry);
+    }
     dbg(
       `[graphnosis-host] loadGraph engram[${redactId(graphId)}]: decrypt=${tDecrypt}ms fromBuffer=${tFromBuffer}ms bundle=${tBundle}ms earlyCommit=${tEarlyCommit}ms nodes=${committedNodes}`,
     );
-    if (committedNodes === 0 && loadedGaiBytes > 256) {
-      const bundleSources = sourceIndex.list().length;
+    if (committedNodes === 0 && loadedGaiBytes > EMPTY_SAVE_BLOCK_MIN_BYTES) {
       if (bundleSources > 0) {
         console.error(
           `[graphnosis-host] loadGraph engram[${redactId(graphId)}]: WARNING committed 0 nodes from ${loadedGaiBytes}B .gai with ${bundleSources} bundle source(s) — check oplog reconcile`,
         );
-      } else if (loadedGaiBytes > 2048) {
+      } else {
         console.error(
           `[graphnosis-host] loadGraph engram[${redactId(graphId)}]: WARNING committed 0 nodes from ${loadedGaiBytes}B .gai — engram will appear empty until recovery`,
         );
@@ -2619,17 +2771,34 @@ export class GraphnosisHost {
     await g.embeddingsBuilding;
   }
 
-  /** Resolve when the background oplog reconcile for `graphId` finishes. Also
-   *  waits on a queued boot reconcile if flushBootDeferredWork has not run yet
-   *  (smoke tests and headless scripts only — prod never calls this). */
+  /** Resolve when the background oplog reconcile for `graphId` finishes.
+   *  Does NOT flush the whole boot-deferred batch (materialize + reconcile for
+   *  every queued engram) — nodes.list must return promptly for hollow shells
+   *  while bundle materialize runs in the background. Headless tests that need
+   *  a full flush call flushBootDeferredWork() explicitly. */
   async waitForReconcile(graphId: GraphId): Promise<void> {
     const g = this.graphs.get(graphId);
     if (g?.reconcileBuilding) {
       await g.reconcileBuilding;
-      return;
     }
-    if (this.bootReconcileQueue.includes(graphId)) {
-      await this.flushBootDeferredWork();
+  }
+
+  /** Resolve when hollow-bundle materialize finishes (smoke tests / headless). */
+  async waitForBundleMaterialize(graphId: GraphId): Promise<void> {
+    for (let pass = 0; pass < 8; pass++) {
+      const g = this.graphs.get(graphId);
+      if (g?.bundleMaterializing) {
+        await g.bundleMaterializing;
+      }
+      if (this.bootMaterializeQueue.includes(graphId)) {
+        await this.flushBootDeferredWork();
+        continue;
+      }
+      // Safety net: deferred flush may have finished before this graph was queued.
+      if (g && this.opts.adapter.inspectNodes(g.handle).length === 0 && g.sourceIndex.list().length > 0) {
+        await this.runBundleMaterialize(graphId, g);
+      }
+      return;
     }
   }
 
@@ -2761,7 +2930,7 @@ export class GraphnosisHost {
     await this.appendRecoveryLog({
       event: 'shrink_save_blocked', graphId, newBytes, onDiskBytes: onDisk, kind,
     });
-    console.error(
+    dbg(
       `[graphnosis-host] save blocked for engram[${redactId(graphId)}]: refusing to write ${newBytes}B ` +
       `${kind} over ${onDisk}B on-disk .gai/.lkg (would clobber last-known-good)`,
     );
@@ -2785,7 +2954,7 @@ export class GraphnosisHost {
       await this.appendRecoveryLog({
         event: 'empty_save_blocked', graphId, nodeCount, onDiskBytes: onDisk,
       });
-      console.error(
+      dbg(
         `[graphnosis-host] save blocked for engram[${redactId(graphId)}]: refusing to persist ` +
         `0 nodes over ${onDisk}B on-disk .gai/.lkg — restore from .lkg or op-log recovery`,
       );
@@ -3035,6 +3204,30 @@ export class GraphnosisHost {
    */
   triggerRelink(graphId: GraphId): void {
     this.kickoffRelink(graphId);
+  }
+
+  /**
+   * Await any debounced or in-flight auto-relink for one engram.
+   * Benchmark / perf phases call this after bulk ingest so timed recalls
+   * don't race relinkFullGraph (multi-second ONNX contention on large engrams).
+   */
+  async waitForRelinkIdle(graphId: GraphId): Promise<void> {
+    const debounced = this.relinkDebounce.get(graphId);
+    if (debounced !== undefined) {
+      clearTimeout(debounced);
+      this.relinkDebounce.delete(graphId);
+      this.startRelinkPass(graphId);
+    }
+    for (;;) {
+      const inFlight = this.relinkInFlight.get(graphId);
+      if (inFlight) {
+        await inFlight.catch(() => undefined);
+        continue;
+      }
+      if (!this.relinkPending.has(graphId)) break;
+      this.relinkPending.delete(graphId);
+      this.startRelinkPass(graphId);
+    }
   }
 
   async ingest(
@@ -3458,6 +3651,19 @@ export class GraphnosisHost {
     }
     const blob = await this.readContentBlob(sourceId);
     if (!blob) {
+      const bundled = bundledDocForRef(record.ref);
+      if (bundled) {
+        await this.forgetSource(graphId, sourceId, { triggeredBy: 'user:reingest' });
+        await this.purgeOrphanNodes(graphId);
+        const result = await this.ingest(
+          graphId,
+          record.kind,
+          record.ref,
+          bundled,
+          { triggeredBy: 'user:reingest', skipOplogEmit: true, skipAutoRelink: true, ...(record.addedBy ? { addedBy: record.addedBy } : {}) },
+        );
+        return { skipped: false, newNodeIds: result.nodeIds };
+      }
       return { skipped: true, reason: 'content cache unavailable (cache was off or expired at ingest time)' };
     }
     // Soft-delete the existing nodes for this source so the new ingest's
@@ -3890,11 +4096,11 @@ export class GraphnosisHost {
     this.llmGetter = fn;
   }
 
-  async recall(query: string, opts?: { budget?: SubgraphBudget; onlyGraphIds?: string[]; exceptGraphIds?: string[]; perGraphAnchorMax?: number; skipEnrichment?: boolean; noLoadOnDemand?: boolean; consentedGraphIds?: string[] }): Promise<federation.FederatedSubgraph> {
+  async recall(query: string, opts?: { budget?: SubgraphBudget; onlyGraphIds?: string[]; exceptGraphIds?: string[]; perGraphAnchorMax?: number; skipEnrichment?: boolean; noLoadOnDemand?: boolean; consentedGraphIds?: string[]; recallPriority?: WorkPriority }): Promise<federation.FederatedSubgraph> {
     return hostRecall(this as unknown as RecallHost, query, opts);
   }
 
-  async digDeeper(query: string, opts?: { budget?: SubgraphBudget; onlyGraphIds?: string[]; exceptGraphIds?: string[]; skipEnrichment?: boolean; consentedGraphIds?: string[] }): Promise<federation.FederatedSubgraph & {
+  async digDeeper(query: string, opts?: { budget?: SubgraphBudget; onlyGraphIds?: string[]; exceptGraphIds?: string[]; skipEnrichment?: boolean; consentedGraphIds?: string[]; recallPriority?: WorkPriority }): Promise<federation.FederatedSubgraph & {
     digDeeperProvenance: {
       contentMatch: { nodes: number; avgScore: number };
       sourceFilenameExpansion: { nodes: number; sources: string[] };
@@ -5628,6 +5834,7 @@ export class GraphnosisHost {
       tailEvents?: Awaited<ReturnType<typeof oplog.readAllEvents>> | null;
     },
   ): Promise<'skipped' | 'ran'> {
+    if (this.graphs.get(graphId) !== entry) return 'skipped';
     const checkpoint = this.settings.graphMetadata[graphId]?.oplogReconcileCheckpoint;
     const tailReplay = checkpoint !== undefined;
     type OplogEventBatch = Awaited<ReturnType<typeof oplog.readAllEvents>>;
@@ -5651,19 +5858,30 @@ export class GraphnosisHost {
     }
 
     const graphEvents = events.filter((e) => e.graphId === graphId);
-    if (graphEvents.length === 0) {
-      if (events.length > 0) await this.persistOplogReconcileCheckpoint(graphId, events);
-      return 'skipped';
-    }
 
     await this.opts.adapter.build(entry.handle);
 
-    let dirty = false;
+    let dirty = await this.materializeEmptyGraphFromBundle(graphId, entry);
+
+    if (graphEvents.length === 0) {
+      if (dirty) {
+        entry.dirty = true;
+        await this.save(graphId);
+        this.invalidateOplogCache();
+      }
+      if (events.length > 0) await this.persistOplogReconcileCheckpoint(graphId, events);
+      return dirty ? 'ran' : 'skipped';
+    }
+
     const liveSources = this.buildLiveSourceMapFromOplog(graphId, graphEvents, entry);
 
+    const bundleHadSources = entry.bundleSourcesAtLoad > 0;
     for (const [sourceId, rec] of liveSources) {
       const local = entry.sourceIndex.get(sourceId);
       if (!local) {
+        // Empty .gai shell with no bundle metadata (save-guards pattern) — do not
+        // hydrate solely from op-log; hollow engrams must carry sources in .bundle.
+        if (!bundleHadSources) continue;
         if (await this.recoverSourceFromOplog(graphId, entry, rec)) dirty = true;
       } else if (JSON.stringify(local.nodeIds) !== JSON.stringify(rec.nodeIds)) {
         try {
@@ -5859,6 +6077,19 @@ export class GraphnosisHost {
       return true;
     } catch { /* no cache blob */ }
 
+    const bundled = bundledDocForRef(rec.ref);
+    if (bundled) {
+      try {
+        await this.ingest(graphId, rec.kind, rec.ref, bundled, {
+          triggeredBy: 'oplog-sync',
+          skipOplogEmit: true,
+          skipAutoRelink: true,
+          ...(rec.addedBy ? { addedBy: rec.addedBy } : {}),
+        });
+        return true;
+      } catch { /* bundled ingest failed */ }
+    }
+
     if (rec.kind === 'file') {
       try {
         const buf = await fs.readFile(rec.ref);
@@ -5880,6 +6111,46 @@ export class GraphnosisHost {
       } catch { /* file gone */ }
     }
     return false;
+  }
+
+  /** Re-ingest bundle sources when .gai loaded empty but source metadata survived. */
+  private async materializeEmptyGraphFromBundle(
+    graphId: GraphId,
+    entry: LoadedGraph,
+  ): Promise<boolean> {
+    if (this.opts.adapter.inspectNodes(entry.handle).length > 0) return false;
+    const sources = entry.sourceIndex.list();
+    if (sources.length === 0) return false;
+
+    let dirty = false;
+    let reingested = 0;
+    for (const src of sources) {
+      try {
+        const result = await this.reingestSource(graphId, src.sourceId);
+        if (!result.skipped) {
+          reingested++;
+          dirty = true;
+        }
+      } catch (e) {
+        console.error(
+          `[graphnosis-host] materialize bundle source failed engram[${redactId(graphId)}] ` +
+          `source[${redactId(src.sourceId)}]: ${(e as Error).message}`,
+        );
+      }
+    }
+    const nodesAfter = this.opts.adapter.inspectNodes(entry.handle).length;
+    if (nodesAfter === 0 && sources.length > 0) {
+      console.error(
+        `[graphnosis-host] loadGraph reconcile engram[${redactId(graphId)}]: WARNING still 0 nodes after ` +
+        `materialize (${sources.length} bundle source(s), ${reingested} re-ingested)`,
+      );
+    } else if (reingested > 0) {
+      dbg(
+        `[graphnosis-host] materialized engram[${redactId(graphId)}] from bundle: ` +
+        `${reingested}/${sources.length} source(s), ${nodesAfter} nodes`,
+      );
+    }
+    return dirty;
   }
 
   /** Replay edit/supersede/delete node ops in ts order (multi-device LWW is in reduce; here we apply the stream). */
