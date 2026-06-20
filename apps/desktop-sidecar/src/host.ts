@@ -1860,6 +1860,7 @@ export class GraphnosisHost {
       return;
     }
     entry.reconcileBuilding = this.reconcileGraphFromOplog(graphId, entry)
+      .then(() => {})
       .catch((e: unknown) => {
         console.error(
           `[graphnosis-host] op-log reconcile failed for engram[${redactId(graphId)}]: ${(e as Error).message} — continuing with on-disk .gai`,
