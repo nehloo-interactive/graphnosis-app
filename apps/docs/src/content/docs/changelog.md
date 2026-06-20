@@ -11,6 +11,23 @@ Conventions: **Added** = new features, **Changed** = behavior or UX shifts, **Fi
 
 ---
 
+## v1.20.3 — CI fix (re-ship cortex unlock)
+
+<p style="margin-top:0.5rem;font-size:1.25em;opacity:0.85;">2026-06-20</p>
+
+Re-publish after v1.20.2 failed CI — an accidental Ghampus WIP hunk in `main.ts` referenced APIs not yet in `@graphnosis-app/core`.
+
+### Fixed
+
+- **Build / release.** Removed stray `resolveLlmTemperature` call from the sidecar boot path so Linux Server smoke and the release workflow compile again.
+- **Cortex unlock** (same as v1.20.2): Bun-compiled sidecar no longer crashes loading `package.json` at boot.
+
+### Notes
+
+- Use **1.20.3** on Mac Mini — v1.20.2 installers never published.
+
+---
+
 ## v1.20.2 — Cortex unlock on Apple Silicon Macs
 
 <p style="margin-top:0.5rem;font-size:1.25em;opacity:0.85;">2026-06-20</p>
