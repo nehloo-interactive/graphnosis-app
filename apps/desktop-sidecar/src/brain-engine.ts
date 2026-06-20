@@ -6,7 +6,7 @@ import { VitalityScorer, type VitalityReport } from './vitality.js';
 import { TemporalEngine } from './temporal-engine.js';
 import { GoalTracker } from './goal-tracker.js';
 import { findSimilarPairs } from './duplicate-scan.js';
-import { clientActiveWithin, CLIENT_QUIET_MS, isIngestActive } from './client-activity.js';
+import { clientActiveWithin, CLIENT_QUIET_MS, isIngestActive, onClientIdle, onIngestIdle } from './client-activity.js';
 // Brain recalls/searches embed the query — they MUST go through the global
 // embedding queue or they can run concurrently with a connector ingest's embed
 // and crash the (non-reentrant) embed worker, deadlocking all embedding.
@@ -504,6 +504,8 @@ export class BrainEngine {
 
   /** Idempotent guard — notifyBootSettled() runs at most one first scan. */
   private bootSettled = false;
+  /** One-shot waiter for the post-boot first scan when brainPassesPaused(). */
+  private bootFirstScanPending = false;
   private duplicateScanTimer: NodeJS.Timeout | null = null;
   private synapseTimer: NodeJS.Timeout | null = null;
   private insightTimer: NodeJS.Timeout | null = null;
@@ -664,17 +666,6 @@ export class BrainEngine {
       },
       EDGE_PREDICTION_INTERVAL_MS,
     ).unref();
-
-    // Two vitality emissions on boot:
-    //   - 2 s in: a fast initial paint so the UI flips from "Computing
-    //     vitality…" to a real number as soon as engrams are loaded.
-    //     duplicatePairs may still be 0 (the scan hasn't run), so the score
-    //     is a slight over-estimate; the second emit corrects it.
-    //   - 12 s in: the original emit, retained as a refinement pass after
-    //     boot settles. Cheap and ensures we re-paint with whatever extra
-    //     state was loaded in the intervening window.
-    setTimeout(() => { void this.emitVitality(); }, 2_000).unref();
-    setTimeout(() => { void this.emitVitality(); }, 12_000).unref();
   }
 
   /**
@@ -685,14 +676,50 @@ export class BrainEngine {
   notifyBootSettled(): void {
     if (this.bootSettled) return;
     this.bootSettled = true;
-    // One coordinated sweep. runFullScan serialises the scan loops so they
-    // don't all pin the CPU at once, and coalesces with any scan the user
-    // triggered by opening the Brain tab early. Temporal decay runs alongside
-    // (runFullScan excludes it by design). skipLlmLoops: the very first
-    // sweep avoids synapse + insight to prevent boot-time fan-spin from
-    // Ollama timeouts across many engrams.
-    void this.runFullScan({ skipLlmLoops: true });
-    void this.runTemporalDecay();
+    void this.emitVitality();
+    this.runPostBootFirstScan();
+  }
+
+  /** First boot scan — event-deferred while ingest or emb-cache rebuild is active. */
+  private runPostBootFirstScan(): void {
+    const run = (): void => {
+      void this.runFullScan({ skipLlmLoops: true }).then(() => void this.emitVitality());
+      void this.runTemporalDecay();
+    };
+    if (!this.brainPassesPaused()) {
+      run();
+      return;
+    }
+    if (this.bootFirstScanPending) return;
+    this.bootFirstScanPending = true;
+    const unsubs: Array<() => void> = [];
+    const tryRun = (): void => {
+      if (this.brainPassesPaused()) return;
+      this.bootFirstScanPending = false;
+      for (const unsub of unsubs) unsub();
+      unsubs.length = 0;
+      run();
+    };
+    if (isIngestActive()) unsubs.push(onIngestIdle(tryRun));
+    if (this.host.isBootEmbBuildActive()) unsubs.push(this.host.onBootEmbBuildIdle(tryRun));
+    tryRun();
+  }
+
+  /** Re-run a brain pass once ingest, emb-cache rebuild, and client IPC are idle. */
+  private deferUntilBrainReady(run: () => void): void {
+    let fired = false;
+    const unsubs: Array<() => void> = [];
+    const tryRun = (): void => {
+      if (fired) return;
+      if (this.brainPassesPaused() || clientActiveWithin(CLIENT_QUIET_MS)) return;
+      fired = true;
+      for (const unsub of unsubs) unsub();
+      run();
+    };
+    if (isIngestActive()) unsubs.push(onIngestIdle(tryRun));
+    if (this.host.isBootEmbBuildActive()) unsubs.push(this.host.onBootEmbBuildIdle(tryRun));
+    if (clientActiveWithin(CLIENT_QUIET_MS)) unsubs.push(onClientIdle(tryRun));
+    tryRun();
   }
 
   stop(): void {
@@ -821,7 +848,7 @@ export class BrainEngine {
   private async runContradictionScan(): Promise<void> {
     if (this.contradictionScanRunning) return;
     if (clientActiveWithin(CLIENT_QUIET_MS) || this.brainPassesPaused()) {
-      setTimeout(() => { void this.runContradictionScan(); }, CLIENT_QUIET_MS).unref();
+      this.deferUntilBrainReady(() => { void this.runContradictionScan(); });
       return;
     }
     this.contradictionScanRunning = true;
@@ -1313,7 +1340,7 @@ export class BrainEngine {
     // Backpressure: defer while AI/UI clients are actively using the sidecar, so
     // recalls and the UI keep the single-threaded loop. Retry once they're idle.
     if (clientActiveWithin(CLIENT_QUIET_MS) || this.brainPassesPaused()) {
-      setTimeout(() => { void this.runDuplicateScan(); }, CLIENT_QUIET_MS);
+      this.deferUntilBrainReady(() => { void this.runDuplicateScan(); });
       return;
     }
     this.duplicateScanRunning = true;
@@ -1935,7 +1962,7 @@ export class BrainEngine {
     // Backpressure: defer while clients are active (GNN prediction + LSH scan is
     // heavy); retry once the sidecar is idle.
     if (clientActiveWithin(CLIENT_QUIET_MS) || this.brainPassesPaused()) {
-      setTimeout(() => { void this.runEdgePrediction(); }, CLIENT_QUIET_MS);
+      this.deferUntilBrainReady(() => { void this.runEdgePrediction(); });
       return;
     }
     // ── Pro gate: the autonomous edge-prediction loop is GNN-Exploration ──

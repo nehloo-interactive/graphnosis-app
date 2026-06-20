@@ -2,7 +2,7 @@ import net from 'node:net';
 import https from 'node:https';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
-import { markClientActivity, BACKGROUND_POLL_METHODS } from './client-activity.js';
+import { markClientActivity, BACKGROUND_POLL_METHODS, notifyClientRequestComplete } from './client-activity.js';
 import { randomUUID } from 'node:crypto';
 import os from 'node:os';
 import { z } from 'zod';
@@ -314,6 +314,7 @@ export async function startIpc(deps: IpcDeps): Promise<net.Server> {
         }
         try {
           const result = await dispatch(deps, req.method, req.params);
+          notifyClientRequestComplete(BACKGROUND_POLL_METHODS.has(req.method));
           // Sanitize string values before JSON-encoding. A node that was
           // ingested from a binary file (e.g. a JPEG mis-parsed as text)
           // can contain raw lone UTF-16 surrogates or unprintable bytes
@@ -326,6 +327,7 @@ export async function startIpc(deps: IpcDeps): Promise<net.Server> {
           // and lets the user see the bad node (and forget it).
           sock.write(JSON.stringify({ id: req.id, result: sanitizeForIpc(result) }) + '\n');
         } catch (e) {
+          notifyClientRequestComplete(BACKGROUND_POLL_METHODS.has(req.method));
           // Log full stack to stderr so the dev terminal shows it; return
           // a multi-line message to the caller so the UI surfaces the cause.
           const err = e instanceof Error ? e : new Error(String(e));
