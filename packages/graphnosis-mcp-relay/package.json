@@ -1,0 +1,34 @@
+{
+  "name": "@graphnosis/mcp-relay",
+  "version": "1.0.2",
+  "description": "Stdio MCP relay for Graphnosis — connects AI clients to ~/.graphnosis/mcp.sock",
+  "type": "module",
+  "author": "Nehloo Interactive LLC",
+  "license": "Apache-2.0",
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/nehloo-interactive/GraphnosisApp.git",
+    "directory": "packages/graphnosis-mcp-relay"
+  },
+  "homepage": "https://graphnosis.com/getting-started/connect-ai",
+  "bin": {
+    "graphnosis-mcp-relay": "./bin/graphnosis-mcp-relay"
+  },
+  "files": [
+    "bin",
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "smoke": "node dist/mcp-relay.js 2>&1 | head -1 || test $? -eq 2",
+    "prepublishOnly": "npm run build"
+  }
+}
