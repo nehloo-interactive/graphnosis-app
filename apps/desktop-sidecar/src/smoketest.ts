@@ -312,6 +312,10 @@ ferry to Naxos. The food in Mykonos was overrated.`;
   if (smokeRow.queryHash !== 'abc123deadbeef') {
     throw new Error('FAIL: MCP audit export missing queryHash');
   }
+  const byClient = auditRows.filter((r) => r.clientId === 'smoke-test');
+  if (!byClient.some((r) => r.tool === 'recall' && r.queryHash === 'abc123deadbeef')) {
+    throw new Error('FAIL: MCP audit list filter by client would miss smoke row');
+  }
   log('mcp-audit.ok', { rows: auditRows.length });
 
 
