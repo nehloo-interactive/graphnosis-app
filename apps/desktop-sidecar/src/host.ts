@@ -1835,7 +1835,7 @@ export class GraphnosisHost {
       this.bootDeferredFlushPromise = null;
       return;
     }
-    console.error(
+    dbg(
       `[graphnosis-host] boot deferred work: ${reconcileGraphIds.length} oplog reconcile(s)`,
     );
 
@@ -1871,11 +1871,11 @@ export class GraphnosisHost {
       try {
         const outcome = await this.reconcileGraphFromOplog(graphId, entry, prefetch);
         if (outcome === 'skipped') {
-          console.error(
+          dbg(
             `[graphnosis-host] boot reconcile engram[${redactId(graphId)}]: skipped (checkpoint current)`,
           );
         } else {
-          console.error(
+          dbg(
             `[graphnosis-host] boot reconcile engram[${redactId(graphId)}]: ${Date.now() - t0}ms`,
           );
         }
@@ -2218,7 +2218,7 @@ export class GraphnosisHost {
     this.correctionsCount.set(graphId, 0);
     const tEarlyCommit = Date.now() - tLoad;
     const committedNodes = this.opts.adapter.inspectNodes(handle).length;
-    console.error(
+    dbg(
       `[graphnosis-host] loadGraph engram[${redactId(graphId)}]: decrypt=${tDecrypt}ms fromBuffer=${tFromBuffer}ms bundle=${tBundle}ms earlyCommit=${tEarlyCommit}ms nodes=${committedNodes}`,
     );
     if (committedNodes === 0 && loadedGaiBytes > 256) {
