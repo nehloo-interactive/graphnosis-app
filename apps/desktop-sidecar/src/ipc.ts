@@ -1170,6 +1170,9 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
         graphId: z.string().min(1),
         sourceId: z.string().min(1),
       }).parse(params);
+      if (deps.skillTrainer) {
+        await deps.skillTrainer.repairHollowSkillSource(args.graphId, args.sourceId);
+      }
       const rec = deps.host.getSourceRecord(args.graphId, args.sourceId);
       if (!rec) {
         return { ok: false, reason: 'unknown_source', nodes: [] };
@@ -5891,6 +5894,9 @@ OUTPUT RULES — non-negotiable:
       const format = args.format as import('./skill-trainer.js').ExportFormat;
       let result: string | Buffer;
       if (args.graphId && args.sourceId) {
+        if (deps.skillTrainer) {
+          await deps.skillTrainer.repairHollowSkillSource(args.graphId, args.sourceId);
+        }
         result = deps.skillTrainer.exportSkillFromSource(args.graphId, args.sourceId, format);
       } else if (args.skillText) {
         result = deps.skillTrainer.exportSkill(args.skillText, format);
@@ -5931,6 +5937,7 @@ OUTPUT RULES — non-negotiable:
         sourceId: z.string().min(1),
       }).parse(params ?? {});
       if (!deps.skillTrainer) return null;
+      await deps.skillTrainer.repairHollowSkillSource(args.graphId, args.sourceId);
       return deps.skillTrainer.getSkill(args.graphId, args.sourceId);
     }
 
@@ -6400,16 +6407,12 @@ OUTPUT RULES — non-negotiable:
       } catch { /* non-fatal */ }
     }
 
-    // Wipe the source and rename so the new train date shows in the
-    // Sources panel.
+    // Wipe the source — rename only after inserts succeed (see trainSkill).
     await deps.host.clearSourceNodes(args.graphId, existing.sourceId, {
       triggeredBy: 'ipc:skill:saveFallback:in-place',
       reason: 'pre-retrain clear (snapshot saved)',
     });
     const newRef = `skill:${ts}:${baseName}`;
-    await deps.host.renameSource(args.graphId, existing.sourceId, newRef, {
-      triggeredBy: 'ipc:skill:saveFallback:in-place',
-    });
     skillId = existing.sourceId;
 
     // Insert every section into the cleared source. The metadata-comment
@@ -6423,6 +6426,9 @@ OUTPUT RULES — non-negotiable:
         triggeredBy: 'ipc:skill:saveFallback',
       });
     }
+    await deps.host.renameSource(args.graphId, existing.sourceId, newRef, {
+      triggeredBy: 'ipc:skill:saveFallback:in-place',
+    });
   } else {
     // First-time save for this skill name. Same as the legacy path: seed
     // the source via ingestClip(metadataComment) and append the rest.
