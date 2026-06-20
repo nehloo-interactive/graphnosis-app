@@ -347,6 +347,9 @@ export class ProactiveWatcher {
     if (this.cardsThisSession >= MAX_CARDS_SESSION) return;
     if (!this.deps.skillTrainer) return;
 
+    const { isBusyAbove, WorkPriority } = await import('./work-priority.js');
+    if (isBusyAbove(WorkPriority.P2_GHAMPUS)) return;
+
     this.refreshDispatchTriggers();
 
     const skills = this.deps.skillTrainer.listSkills();

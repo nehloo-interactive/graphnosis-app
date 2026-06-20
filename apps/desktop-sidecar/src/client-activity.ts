@@ -34,6 +34,9 @@ export const BACKGROUND_POLL_METHODS = new Set<string>([
   'brain:getVitality',
   'consent.listPendingPrompts',
   'skill:listPendingProposals',
+  // Scope notification only — not user data; must not mark the sidecar "busy"
+  // or boot/engram IPC starves behind the client-activity quiet gate.
+  'ui:workScope',
 ]);
 
 /** How long after a client request to treat the sidecar as "busy serving

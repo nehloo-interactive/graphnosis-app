@@ -507,6 +507,10 @@ export class BrainEngine {
 
   /** Idempotent guard — notifyBootSettled() runs at most one first scan. */
   private bootSettled = false;
+  /** Post-boot temporal decay finished — runs in parallel with the first full scan. */
+  private bootPostTemporalComplete = false;
+  /** UI may show live vitality (one-shot flip after boot work settles). */
+  private vitalityPresentationReady = false;
   /** One-shot waiter for the post-boot first scan when brainPassesPaused(). */
   private bootFirstScanPending = false;
   private duplicateScanTimer: NodeJS.Timeout | null = null;
@@ -679,14 +683,23 @@ export class BrainEngine {
   notifyBootSettled(): void {
     if (this.bootSettled) return;
     this.bootSettled = true;
+    // Unlock-time vitality may have cached a partial byGraph (only the default
+    // engram + a few sweep stragglers). Invalidate so emitVitality recomputes
+    // against the full resident set the sweep just finished loading.
+    this.vitality.invalidate();
     void this.emitVitality();
     this.runPostBootFirstScan();
+  }
+
+  /** Drop the vitality TTL cache — e.g. client `brain:getVitality { force: true }`. */
+  invalidateVitality(): void {
+    this.vitality.invalidate();
   }
 
   /** First boot scan — event-deferred while ingest or emb-cache rebuild is active. */
   private runPostBootFirstScan(): void {
     const run = (): void => {
-      void this.runFullScan({ skipLlmLoops: true }).then(() => void this.emitVitality());
+      void this.runFullScan({ skipLlmLoops: true });
       void this.runTemporalDecay();
     };
     if (!this.brainPassesPaused()) {
@@ -795,33 +808,88 @@ export class BrainEngine {
 
   /** UI-facing vitality.
    *
-   *  Two-stage strategy to avoid the "97 on boot → 75 after first scan" UX
-   *  whiplash:
+   *  During boot (duplicate scan + temporal decay + reinforcement passes +
+   *  hollow-bundle materialize), returns a FROZEN copy of the persisted
+   *  `brain.lastVitality` snapshot with `settling: true`. Partial live
+   *  recomputes against a growing resident set were the root cause of
+   *  per-engram bars drifting for minutes after unlock.
    *
-   *    Stage 1 (cold boot, no scan yet): if we have a persisted
-   *      `brain.lastVitality` from the previous session, fabricate a
-   *      VitalityReport using THAT overall score with the live pillar
-   *      breakdown. The score the user sees is the truthful one they left
-   *      with, not a 97 that pretends 0 duplicates.
-   *    Stage 2 (after the first duplicate scan completes):
-   *      `firstDuplicateScanComplete` flips to true → real compute uses
-   *      the actual duplicate count. The UI's animateVitality smoothly
-   *      transitions from the cached value to the live one.
-   *
-   *  Persistence lives in emitVitality below — every successful compute
-   *  writes the result back to settings.brain.lastVitality. */
+   *  Once every boot vitality-affecting pass finishes, flips to live
+   *  compute exactly once (`settling: false`) — typically when the UI
+   *  next pulls or when emitVitality() fires from maybeFinalize…(). */
   async getVitalityReport(): Promise<VitalityReport | null> {
+    if (!this.vitalityPresentationReady) {
+      if (!this.isVitalityPresentationReady()) {
+        return await this.frozenVitalitySnapshot();
+      }
+      this.vitalityPresentationReady = true;
+      this.vitality.invalidate();
+    }
     const report = await this.vitality.compute(this.duplicatePairs.length);
-    if (!this.firstDuplicateScanComplete) {
-      const cached = this.host.getSettings().brain?.lastVitality;
-      if (cached && typeof cached.overall === 'number') {
-        // Substitute the cached overall but preserve the live pillar
-        // breakdown — the per-pillar numbers are useful even pre-scan,
-        // it's only the AGGREGATE score that lies when dup-count is 0.
-        return { ...report, overall: cached.overall };
+    return { ...report, settling: false };
+  }
+
+  /** Called after boot deferred work (bundle materialize) — idempotent. */
+  maybeFinalizeVitalityPresentation(): void {
+    void this.emitVitality();
+  }
+
+  private isVitalityPresentationReady(): boolean {
+    return this.firstDuplicateScanComplete
+      && !this.scanInFlight
+      && !this.duplicateScanRunning
+      && !this.host.isBootDeferredWorkActive()
+      && this.bootPostTemporalComplete;
+  }
+
+  private async frozenVitalitySnapshot(): Promise<VitalityReport | null> {
+    const cached = this.host.getSettings().brain?.lastVitality;
+    if (!cached || typeof cached.overall !== 'number') {
+      return null;
+    }
+    const byGraph: Record<string, number> = {};
+    if (cached.byGraph) {
+      for (const [graphId, score] of Object.entries(cached.byGraph)) {
+        if (typeof score === 'number' && Number.isFinite(score)) {
+          byGraph[graphId] = Math.max(0, Math.min(100, Math.round(score)));
+        }
       }
     }
-    return report;
+    // Prior builds persisted overall only — or the catalog grew since last
+    // session. Fill gaps from one live pass so Home doesn't show empty grey
+    // tracks for every engram until boot scans finish. Cached graphIds stay
+    // frozen; only resident graphIds missing from the snapshot use live scores.
+    const resident = this.host.listGraphs();
+    const missingResident = resident.filter((id) => byGraph[id] === undefined);
+    if (missingResident.length > 0) {
+      const pendingDups = typeof cached.pendingDuplicatePairs === 'number'
+        && Number.isFinite(cached.pendingDuplicatePairs)
+        ? cached.pendingDuplicatePairs
+        : this.duplicatePairs.length;
+      try {
+        const live = await this.vitality.compute(pendingDups);
+        if (Object.keys(byGraph).length === 0) {
+          for (const [graphId, score] of Object.entries(live.byGraph)) {
+            if (typeof score === 'number' && Number.isFinite(score)) {
+              byGraph[graphId] = Math.max(0, Math.min(100, Math.round(score)));
+            }
+          }
+        } else {
+          for (const graphId of missingResident) {
+            const score = live.byGraph[graphId];
+            if (typeof score === 'number' && Number.isFinite(score)) {
+              byGraph[graphId] = Math.max(0, Math.min(100, Math.round(score)));
+            }
+          }
+        }
+      } catch { /* cached-only is still better than throwing */ }
+    }
+    return {
+      overall: Math.max(0, Math.min(100, Math.round(cached.overall))),
+      byGraph,
+      computedAt: typeof cached.computedAt === 'number' ? cached.computedAt : Date.now(),
+      settling: true,
+    };
   }
 
   getInsights(): Insight[] {
@@ -1273,6 +1341,7 @@ export class BrainEngine {
       this.scanInFlight = false;
       this.firstScanComplete = true;
       this.emitBrain('__brain_done_fullscan__');
+      void this.emitVitality();
     }
   }
 
@@ -2209,7 +2278,12 @@ export class BrainEngine {
   }
 
   private async runTemporalDecay(): Promise<void> {
-    if (this.brainPassesPaused()) return;
+    if (this.brainPassesPaused()) {
+      if (this.bootSettled && !this.bootPostTemporalComplete) {
+        this.deferUntilBrainReady(() => { void this.runTemporalDecay(); });
+      }
+      return;
+    }
     this.emitActivity('temporal', 'start');
     try {
       const report = await this.temporalEngine.runDecay();
@@ -2220,6 +2294,9 @@ export class BrainEngine {
     this.vitality.invalidate();
     await this.persistLastRun('temporalDecay');
     this.emitActivity('temporal', 'done');
+    if (this.bootSettled) {
+      this.bootPostTemporalComplete = true;
+    }
     await this.emitVitality();
   }
 
@@ -2309,6 +2386,13 @@ export class BrainEngine {
     // Warm the vitality cache so the UI's follow-up IPC pull is instant.
     // The event channel only carries graphId + ts, so the report itself
     // can't ride along — the UI fetches it when it sees the done frame.
+    // Skip mid-boot broadcasts — getVitalityReport() serves a frozen
+    // last-session snapshot until every boot pass settles.
+    if (!this.vitalityPresentationReady) {
+      if (!this.isVitalityPresentationReady()) return;
+      this.vitalityPresentationReady = true;
+      this.vitality.invalidate();
+    }
     try {
       const report = await this.vitality.compute(this.duplicatePairs.length);
       // Persist the live score so the NEXT cold boot can substitute it for
@@ -2322,7 +2406,12 @@ export class BrainEngine {
           await this.host.setSettings({
             brain: {
               ...current.brain,
-              lastVitality: { overall: report.overall, computedAt: Date.now() },
+              lastVitality: {
+                overall: report.overall,
+                computedAt: Date.now(),
+                byGraph: report.byGraph,
+                pendingDuplicatePairs: this.duplicatePairs.length,
+              },
             },
           });
         } catch { /* non-fatal — next compute will try again */ }

@@ -10,6 +10,7 @@ import type { SkillTrainer } from './skill-trainer.js';
 import type { BroadcastRawFn } from './events.js';
 import type { LicenseValidator } from './license-validator.js';
 import { isGhampusBusy } from './ghampus-busy.js';
+import { isBusyAbove, WorkPriority } from './work-priority.js';
 import {
   countSkillRetrainQueue,
   pickNextQueueEntry,
@@ -169,6 +170,7 @@ export class SkillMaintenanceScheduler {
 
   private canRun(): boolean {
     if (isGhampusBusy()) return false;
+    if (isBusyAbove(WorkPriority.P2_GHAMPUS)) return false;
     if (this.deps.host.isBootSweepActive()) return false;
     if (this.deps.host.isBootEmbBuildActive()) return false;
     if (this.deps.host.isBootDeferredWorkActive()) return false;
