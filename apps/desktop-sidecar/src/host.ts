@@ -3411,19 +3411,23 @@ export class GraphnosisHost {
       }
       // Soft-delete in Graphnosis: node stays for audit, confidence drops, won't be returned by queries.
       await this.opts.adapter.applyCorrection(g.handle, { kind: 'delete', nodeId, reason: `forget source ${sourceId}` });
+      if (!opts?.skipOplogEmit) {
+        this.oplogWriter.emit({
+          graphId,
+          op: 'deleteNode',
+          target: { kind: 'node', id: nodeId },
+          before: { sourceId, preview: contentPreview, ...forgetTrigAttr },
+        });
+      }
+    }
+    if (!opts?.skipOplogEmit) {
       this.oplogWriter.emit({
         graphId,
-        op: 'deleteNode',
-        target: { kind: 'node', id: nodeId },
-        before: { sourceId, preview: contentPreview, ...forgetTrigAttr },
+        op: 'forgetSource',
+        target: { kind: 'source', id: sourceId },
+        before: { ref: priorRecord?.ref, kind: priorRecord?.kind, nodeCount: nodeIds.length, ...forgetTrigAttr },
       });
     }
-    this.oplogWriter.emit({
-      graphId,
-      op: 'forgetSource',
-      target: { kind: 'source', id: sourceId },
-      before: { ref: priorRecord?.ref, kind: priorRecord?.kind, nodeCount: nodeIds.length, ...forgetTrigAttr },
-    });
     // Forget means forget everywhere — drop the cached content blob too.
     // If the user re-ingests later, we'll cache a fresh copy.
     await this.deleteContentBlob(sourceId);
@@ -6142,6 +6146,17 @@ export class GraphnosisHost {
       dirty = true;
     }
     return dirty;
+  }
+
+  /** Enterprise MCP audit export — encrypted at rest in mcp-audit.enc. */
+  async listMcpAuditEvents(): Promise<import('./mcp-audit.js').McpAuditEvent[]> {
+    const { listMcpAuditEvents } = await import('./mcp-audit.js');
+    return listMcpAuditEvents(this.opts.cortexDir, this.key);
+  }
+
+  async appendMcpAuditEvent(partial: Omit<import('./mcp-audit.js').McpAuditEvent, 'id' | 'ts'>): Promise<void> {
+    const { appendMcpAuditEvent } = await import('./mcp-audit.js');
+    await appendMcpAuditEvent(this.opts.cortexDir, this.key, partial);
   }
 
   // ── Recovery ────────────────────────────────────────────────────────────

@@ -20,7 +20,7 @@ Patch release aligning skill training with source-only compile, skills UI copy, 
 ### Changed
 
 - **Skill training (source-only).** Training compiles from your authored skill source with an **empty engram** at train time — personal memory is not baked into the trained graph. Recall applies at walk/runtime when MCP clients call `walk_skill_structured`.
-- **Skills UI.** Home and trainer surfaces describe source-only compile and empty-engram training consistently with the sidecar contract.
+- **Skills UI.** Renamed **Memory-trained Skills** → **Autonomous Skills** in nav and pane titles; praxis strip describes walkable SOPs dispatched each session. Home and trainer surfaces align with source-only compile and empty-engram training.
 - **Cursor setup (Option A).** Docs and README: optional [graphnosis-cursor-plugin](https://github.com/nehloo-interactive/graphnosis-cursor-plugin) for rules/skills/hooks; MCP via Graphnosis **Configure Cursor** wizard (`graphnosis-mcp-relay` + `~/.graphnosis/mcp.sock`).
 - **Download redirect fallbacks.** Netlify `_redirects` and `sync-graphnosis-md.mjs` stay in sync for release download URLs.
 

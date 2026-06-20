@@ -1,11 +1,11 @@
 ---
-title: Memory-trained Skills
-description: How Graphnosis represents Memory-trained Skills as Standard Operating Procedures (SOPs) — the graph model, the eight goal categories, the snapshot history, the .gsk wire format, and the Free vs Pro training paths.
+title: Autonomous Skills
+description: How Graphnosis represents Autonomous Skills as Standard Operating Procedures (SOPs) — the graph model, the eight goal categories, the snapshot history, the .gsk wire format, and the Free vs Pro training paths.
 sidebar:
   order: 2
 ---
 
-A **Skill** in Graphnosis is a Standard Operating Procedure (SOP) — a step-by-step instruction set you author, structured into an executable graph, and made callable by any MCP client. **Memory-trained Skills** is the product name for this procedural-memory layer: compile/train turns your authored text into a structured SOP in the Skills engram (deterministic parsing, optional Pro LLM rewrite from source only). **Train-time recall is empty** — compile does not pull from your personal engrams. Personal memory applies when you **walk** a skill at runtime (via `recallRecipes` and MCP `recall`), not baked into the SOP body at compile time.
+A **Skill** in Graphnosis is a Standard Operating Procedure (SOP) — a step-by-step instruction set you author, structured into an executable graph, and made callable by any MCP client. **Autonomous Skills** is the product name for this procedural-memory layer: compile/train turns your authored text into a structured SOP in the Skills engram (deterministic parsing, optional Pro LLM rewrite from source only). **Train-time recall is empty** — compile does not pull from your personal engrams. Personal memory applies when you **walk** a skill at runtime (via `recallRecipes` and MCP `recall`), not baked into the SOP body at compile time.
 
 This page is the reference for the procedural-memory model: the graph shape, the eight goal categories, how retraining writes snapshots into a side-table history, the `.gsk` wire format, and the two training paths (Free deterministic vs. Pro LLM-assisted). The companion AI-facing surface is in the [MCP Tools reference — Skills (SOPs)](/reference/mcp-tools/#skills-sops).
 
