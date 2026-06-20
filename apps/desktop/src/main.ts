@@ -39,7 +39,7 @@ import { initDialogs, gConfirm, gAlert } from './ui/dialogs';
 import { bindAppContext } from './ui/app-context';
 import {
   initActivity, refreshActivityView, refreshActivityCompliancePanel, loadMoreActivity, setActivityCat, resetActivityWindow,
-  applyActivityFilter,
+  applyActivityFilter, notifyOplogCompaction,
 } from './ui/activity';
 import {
   initMcpActivity, refreshMcpActivitySegment,
@@ -13808,6 +13808,29 @@ void listen<QuarantineRecoveredPayload>('graphnosis://cortex-recovered-from-quar
   finishIngestToast(id, p.sourcesFailed === 0 ? 'success' : 'error');
 });
 
+interface OplogCompactedPayload {
+  at: number;
+  eventsRemoved: number;
+  eventsBefore?: number;
+  eventsAfter?: number;
+  bytesBefore?: number;
+  bytesAfter?: number;
+}
+void listen<OplogCompactedPayload>('graphnosis://oplog-compacted', (evt) => {
+  const p = evt.payload;
+  const n = p.eventsRemoved;
+  const eventWord = n === 1 ? 'event' : 'events';
+  showTransientStatusBar(`Cortex maintenance: compacted audit log (${n.toLocaleString()} ${eventWord} archived)`);
+  notifyOplogCompaction({
+    at: p.at,
+    eventsRemoved: p.eventsRemoved,
+    eventsBefore: p.eventsBefore ?? 0,
+    eventsAfter: p.eventsAfter ?? 0,
+    bytesBefore: p.bytesBefore,
+    bytesAfter: p.bytesAfter,
+  });
+});
+
 /** Debounce handle for the engrams-loading → skills-library refresh. */
 let _skillsRefreshTimer: number | null = null;
 
@@ -13859,6 +13882,18 @@ function updateEngramLoadingStatus(loaded: number, total: number): void {
     : `Loading ${remaining} more engram${remaining === 1 ? '' : 's'}…`;
   renderStatusProcess();
   refreshPillPulse();
+}
+
+/** ~6s transient line in `#status-saved` — skipped during engram boot sweep. */
+let _transientStatusTimer: ReturnType<typeof setTimeout> | null = null;
+function showTransientStatusBar(message: string, durationMs = 6500): void {
+  if (!els.statusSaved || isEngramPreloadInProgress()) return;
+  if (_transientStatusTimer) clearTimeout(_transientStatusTimer);
+  els.statusSaved.textContent = message;
+  _transientStatusTimer = setTimeout(() => {
+    _transientStatusTimer = null;
+    if (els.statusSaved && !isEngramPreloadInProgress()) els.statusSaved.textContent = '';
+  }, durationMs);
 }
 
 /** Most-recent engrams-loading payload that arrived while `unlockPending` was

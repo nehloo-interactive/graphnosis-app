@@ -469,6 +469,7 @@ const SSE_TO_TAURI: Record<string, string> = {
   'embedding-switch-progress':    'graphnosis://embedding-switch-progress',
   'reingest.progress':            'graphnosis://reingest-progress',
   'quarantine-recovered':         'graphnosis://cortex-recovered-from-quarantine',
+  'oplog.compacted':              'graphnosis://oplog-compacted',
   'engram-budget-warning':        'graphnosis://mcp-session-budget-warning',
 };
 

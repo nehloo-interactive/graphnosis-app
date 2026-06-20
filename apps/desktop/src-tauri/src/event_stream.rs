@@ -202,6 +202,7 @@ async fn open_and_read(app: &AppHandle, socket_path: &Path) -> Result<()> {
             | "mcp.recall-rate-limited"
             | "mcp.session-replay-blocked"
             | "cortex.integrity-alert"
+            | "oplog.compacted"
             | "ghampus.message"
             | "ghampus.thinking"
             | "ghampus.card"
