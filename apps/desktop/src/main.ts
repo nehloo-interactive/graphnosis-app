@@ -3837,6 +3837,12 @@ function stopMcpPolling(): void {
 const ENGRAM_PRESERVED_TOOLTIP =
   'Preserved — release preservation in Settings → Cortex Management to forget or edit.';
 
+function sourceLegalHoldTooltip(matter?: string): string {
+  return matter
+    ? `Legal hold (${matter}) — forget, edit, and transfer blocked until released.`
+    : 'Legal hold — forget, edit, and transfer blocked until released.';
+}
+
 function closeAllSourceMenus(except?: Element): void {
   els.sourcesList.querySelectorAll<HTMLElement>('.source-actions-menu').forEach((menu) => {
     if (except && menu === except) return;
@@ -4023,6 +4029,77 @@ function openSourceReingestConfirm(row: HTMLElement): void {
   });
 }
 
+function openSourceLegalHoldConfirm(row: HTMLElement): void {
+  const { graphId, sourceId } = sourceRowContext(row);
+  if (!graphId || !sourceId) return;
+  if (row.querySelector('.source-row-legal-hold-confirm')) return;
+
+  const widget = document.createElement('div');
+  widget.className = 'source-row-legal-hold-confirm';
+  widget.innerHTML =
+    `<p class="source-legal-hold-copy">Place this source under legal hold? Graphnosis won't forget, edit, or transfer it until you release the hold. Your original files aren't changed.</p>` +
+    `<details class="source-legal-hold-matter-details">` +
+      `<summary>Matter reference (optional)</summary>` +
+      `<input type="text" class="source-legal-hold-matter-input" placeholder="Case or matter label" autocomplete="off" />` +
+    `</details>` +
+    `<button class="source-legal-hold-go">Place hold</button>` +
+    `<button class="source-legal-hold-cancel">Cancel</button>`;
+
+  const goBtn = widget.querySelector<HTMLButtonElement>('.source-legal-hold-go')!;
+  const cancelBtn = widget.querySelector<HTMLButtonElement>('.source-legal-hold-cancel')!;
+  const matterInput = widget.querySelector<HTMLInputElement>('.source-legal-hold-matter-input')!;
+
+  hideSourceRowActions(row);
+  row.classList.add('source-row-holding');
+  row.appendChild(widget);
+
+  const collapse = (): void => {
+    widget.remove();
+    row.classList.remove('source-row-holding');
+    showSourceRowActions(row);
+  };
+
+  cancelBtn.addEventListener('click', () => collapse());
+
+  goBtn.addEventListener('click', async () => {
+    goBtn.disabled = true;
+    cancelBtn.disabled = true;
+    matterInput.disabled = true;
+    const matter = matterInput.value.trim();
+    try {
+      await ipcCall('compliance.setSourceLegalHold', {
+        graphId,
+        sourceId,
+        held: true,
+        ...(matter ? { matter } : {}),
+      });
+      collapse();
+      void refreshStats();
+    } catch (e) {
+      showError(`Could not place legal hold: ${e}`);
+      goBtn.disabled = false;
+      cancelBtn.disabled = false;
+      matterInput.disabled = false;
+    }
+  });
+}
+
+async function releaseSourceLegalHold(row: HTMLElement): Promise<void> {
+  const { graphId, sourceId } = sourceRowContext(row);
+  if (!graphId || !sourceId) return;
+  const name = row.querySelector('.source-name')?.textContent?.trim() ?? sourceId;
+  const ok = window.confirm(
+    `Release legal hold on "${name}"? Graphnosis will allow forget, edit, and transfer again.`,
+  );
+  if (!ok) return;
+  try {
+    await ipcCall('compliance.setSourceLegalHold', { graphId, sourceId, held: false });
+    void refreshStats();
+  } catch (e) {
+    showError(`Could not release legal hold: ${e}`);
+  }
+}
+
 function openSourceMovePicker(row: HTMLElement): void {
   const { graphId: fromGraphId, sourceId, ref, kind } = sourceRowContext(row);
   if (!fromGraphId || !sourceId) return;
@@ -4149,6 +4226,12 @@ function handleSourceMenuAction(row: HTMLElement, action: string): void {
     case 'forget':
       openSourceForgetConfirm(row);
       break;
+    case 'legal-hold':
+      openSourceLegalHoldConfirm(row);
+      break;
+    case 'release-hold':
+      void releaseSourceLegalHold(row);
+      break;
     default:
       break;
   }
@@ -4243,7 +4326,10 @@ async function refreshStats(): Promise<void> {
       // don't need to rebuild it here — just apply the current filter state.
 
       const renderSourceRow = (s: SourceRecord, engramPreserved: boolean): string => {
-        const preservedTitle = ENGRAM_PRESERVED_TOOLTIP;
+        const sourceHeld = s.legalHold === true;
+        const holdTitle = sourceLegalHoldTooltip(s.legalHoldMatter);
+        const mutationBlocked = engramPreserved || sourceHeld;
+        const blockTitle = engramPreserved ? ENGRAM_PRESERVED_TOOLTIP : holdTitle;
         const canReingest = s.kind === 'file' && s.ref.startsWith('/');
         const canFinder = s.kind === 'file';
         const moveTargets = loadedGraphs.filter((g) => g.graphId !== s.graphId && !g.metadata.archived);
@@ -4263,6 +4349,9 @@ async function refreshStats(): Promise<void> {
         const excludedBadge = isExcluded
           ? `<span class="source-excluded-badge" title="Excluded from AI recall — use the menu to include again.">Excluded</span>`
           : '';
+        const holdBadge = sourceHeld
+          ? `<span class="source-legal-hold-badge" title="${escape(holdTitle)}">Held</span>`
+          : '';
 
         const menuItems: string[] = [];
         if (canFinder) {
@@ -4272,8 +4361,8 @@ async function refreshStats(): Promise<void> {
         }
         if (canReingest) {
           menuItems.push(
-            engramPreserved
-              ? `<button type="button" class="source-actions-menu-item" role="menuitem" data-source-action="reingest" disabled title="${escape(preservedTitle)}">Reingest</button>`
+            mutationBlocked
+              ? `<button type="button" class="source-actions-menu-item" role="menuitem" data-source-action="reingest" disabled title="${escape(blockTitle)}">Reingest</button>`
               : `<button type="button" class="source-actions-menu-item" role="menuitem" data-source-action="reingest">Reingest</button>`,
           );
         }
@@ -4282,26 +4371,40 @@ async function refreshStats(): Promise<void> {
             ? `<button type="button" class="source-actions-menu-item" role="menuitem" data-source-action="include">Include again</button>`
             : `<button type="button" class="source-actions-menu-item" role="menuitem" data-source-action="exclude">Exclude from recall</button>`,
         );
+        if (sourceHeld) {
+          menuItems.push(
+            `<button type="button" class="source-actions-menu-item" role="menuitem" data-source-action="release-hold">Release hold</button>`,
+          );
+        } else if (engramPreserved) {
+          menuItems.push(
+            `<button type="button" class="source-actions-menu-item" role="menuitem" data-source-action="legal-hold" disabled title="${escape(ENGRAM_PRESERVED_TOOLTIP)}">Legal hold</button>`,
+          );
+        } else {
+          menuItems.push(
+            `<button type="button" class="source-actions-menu-item" role="menuitem" data-source-action="legal-hold">Legal hold</button>`,
+          );
+        }
         if (canMove) {
           menuItems.push(
-            engramPreserved
-              ? `<button type="button" class="source-actions-menu-item" role="menuitem" data-source-action="move" disabled title="${escape(preservedTitle)}">Move to…</button>`
+            mutationBlocked
+              ? `<button type="button" class="source-actions-menu-item" role="menuitem" data-source-action="move" disabled title="${escape(blockTitle)}">Move to…</button>`
               : `<button type="button" class="source-actions-menu-item" role="menuitem" data-source-action="move">Move to…</button>`,
           );
         }
         menuItems.push('<div class="source-actions-menu-sep" role="separator"></div>');
         menuItems.push(
-          engramPreserved
-            ? `<button type="button" class="source-actions-menu-item danger" role="menuitem" data-source-action="forget" disabled title="${escape(preservedTitle)}">Forget</button>`
+          mutationBlocked
+            ? `<button type="button" class="source-actions-menu-item danger" role="menuitem" data-source-action="forget" disabled title="${escape(blockTitle)}">Forget</button>`
             : `<button type="button" class="source-actions-menu-item danger" role="menuitem" data-source-action="forget">Forget</button>`,
         );
 
         return `
-          <div class="source-row${isExcluded ? ' source-row-excluded' : ''}" data-source-id="${escape(s.sourceId)}" data-graph-id="${escape(s.graphId)}" data-ref="${escape(s.ref)}" data-kind="${escape(s.kind)}" data-node-count="${s.nodeIds.length}">
+          <div class="source-row${isExcluded ? ' source-row-excluded' : ''}${sourceHeld ? ' source-row-held' : ''}" data-source-id="${escape(s.sourceId)}" data-graph-id="${escape(s.graphId)}" data-ref="${escape(s.ref)}" data-kind="${escape(s.kind)}" data-node-count="${s.nodeIds.length}">
             <div class="source-row-main">
               ${skillBadge}<span class="source-name" title="${escape(s.ref)}" data-pres="source:${escape(s.sourceId)}" data-pres-engram="${escape(s.graphId)}">${escape(s.kind === 'file' ? (s.ref.split('/').pop() ?? s.ref) : formatLegendLabel(s.ref))}</span>
               <span class="source-meta">${s.nodeIds.length} node${s.nodeIds.length === 1 ? '' : 's'}</span>
               ${addedByBadge}
+              ${holdBadge}
               ${excludedBadge}
             </div>
             <div class="source-row-actions-wrap">
