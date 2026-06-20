@@ -1,0 +1,12 @@
+--- a/hermes_cli/mcp_config.py
++++ b/hermes_cli/mcp_config.py
+@@ -38,6 +38,10 @@
+     "codex": {
+         "command": "codex",
+         "args": ["mcp-server"],
+     },
++    "graphnosis": {
++        "command": "npx",
++        "args": ["-y", "@graphnosis/mcp-relay", "${HOME}/.graphnosis/mcp.sock"],
++    },
+ }
