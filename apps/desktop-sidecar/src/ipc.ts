@@ -6605,6 +6605,47 @@ OUTPUT RULES — non-negotiable:
       return { ok: true, publicKeyB64: pubKey.toString('base64') };
     }
 
+    case 'audit.mcp.list': {
+      const a = z.object({
+        since: z.number().int().nonnegative().optional(),
+        until: z.number().int().nonnegative().optional(),
+        limit: z.number().int().positive().max(10000).optional(),
+        client: z.string().optional(),
+        tool: z.string().optional(),
+        tools: z.array(z.string()).optional(),
+        engram: z.string().optional(),
+      }).parse(params ?? {});
+      const limit = a.limit ?? 500;
+
+      let events = await deps.host.listMcpAuditEvents();
+      if (a.since !== undefined) events = events.filter((ev) => ev.ts >= a.since!);
+      if (a.until !== undefined) events = events.filter((ev) => ev.ts <= a.until!);
+      if (a.engram !== undefined) {
+        events = events.filter((ev) => ev.engramIds?.includes(a.engram!) ?? false);
+      }
+      if (a.client) events = events.filter((ev) => ev.clientId === a.client);
+      if (a.tool) events = events.filter((ev) => ev.tool === a.tool);
+      if (a.tools !== undefined && a.tools.length > 0) {
+        const set = new Set(a.tools);
+        events = events.filter((ev) => set.has(ev.tool));
+      }
+
+      const clientSet = new Set<string>();
+      const toolSet = new Set<string>();
+      for (const ev of events) {
+        clientSet.add(ev.clientId);
+        toolSet.add(ev.tool);
+      }
+      const clients = [...clientSet].sort((x, y) => x.localeCompare(y));
+      const tools = [...toolSet].sort((x, y) => x.localeCompare(y));
+
+      events = events.slice().sort((x, y) => y.ts - x.ts);
+      const hasMore = events.length > limit;
+      events = events.slice(0, limit);
+
+      return { events, clients, tools, hasMore };
+    }
+
     case 'audit.export': {
       // Returns op-log events for SIEM/audit export. Enterprise-gated.
       // Query params (all optional): since (Unix ms), until (Unix ms), engram (graphId).

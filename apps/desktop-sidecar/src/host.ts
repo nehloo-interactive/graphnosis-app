@@ -262,6 +262,8 @@ export class GraphnosisHost {
    * rather than spawning N concurrent disk reads.
    */
   private _oplogReadPromise: Promise<Awaited<ReturnType<typeof oplog.readAllEvents>>> | null = null;
+  /** In-process cache for mcp-audit.enc reads — invalidated on append. */
+  private _mcpAuditCache: import('./mcp-audit.js').McpAuditEvent[] | null = null;
   /**
    * Incremented by `invalidateOplogCache()`. Captured by each in-flight read;
    * the read only writes to `_oplogReadCache` when the generation still matches,
@@ -5235,8 +5237,11 @@ export class GraphnosisHost {
 
 
   async listMcpAuditEvents(): Promise<import('./mcp-audit.js').McpAuditEvent[]> {
+    if (this._mcpAuditCache) return this._mcpAuditCache;
     const { listMcpAuditEvents } = await import('./mcp-audit.js');
-    return listMcpAuditEvents(this.opts.cortexDir, this.key);
+    const events = await listMcpAuditEvents(this.opts.cortexDir, this.key);
+    this._mcpAuditCache = events;
+    return events;
   }
 
   async appendMcpAuditEvent(
@@ -5244,6 +5249,7 @@ export class GraphnosisHost {
   ): Promise<void> {
     const { appendMcpAuditEvent } = await import('./mcp-audit.js');
     await appendMcpAuditEvent(this.opts.cortexDir, this.key, partial);
+    this._mcpAuditCache = null;
   }
 
   /** Expire the op-log read cache so the next listOplogEvents() re-reads from disk.

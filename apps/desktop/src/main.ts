@@ -41,6 +41,9 @@ import {
   initActivity, refreshActivityView, loadMoreActivity, setActivityCat, resetActivityWindow,
 } from './ui/activity';
 import {
+  initMcpActivity, refreshMcpActivityView,
+} from './ui/mcp-activity';
+import {
   initConnectors, refreshConnectorsList, openConnectorSetupModal,
   installedConnectorKinds, connectorPullingGraphIds, lastConnectorList, updateConnectorPullSnapshot,
   type ConnectorKind, type ConnectorConfigShape, type ConnectorStatus,
@@ -779,6 +782,21 @@ const els = {
   activityHourFrom: $<HTMLInputElement>('activity-hour-from'),
   activityHourTo: $<HTMLInputElement>('activity-hour-to'),
   activityDateClear: $<HTMLButtonElement>('activity-date-clear'),
+  activityMemoryToolbar: $<HTMLElement>('activity-memory-toolbar'),
+  activityMcpToolbar: $<HTMLElement>('activity-mcp-toolbar'),
+  mcpActivityList: $<HTMLDivElement>('mcp-activity-list'),
+  mcpActivitySearch: $<HTMLInputElement>('mcp-activity-search'),
+  mcpActivityClientSelect: $<HTMLSelectElement>('mcp-activity-client-select'),
+  mcpActivityToolSelect: $<HTMLSelectElement>('mcp-activity-tool-select'),
+  mcpActivityEngramSelect: $<HTMLSelectElement>('mcp-activity-engram-select'),
+  mcpActivityChips: $<HTMLDivElement>('mcp-activity-chips'),
+  mcpActivityStats: $<HTMLSpanElement>('mcp-activity-stats'),
+  btnMcpActivityRefresh: $<HTMLButtonElement>('btn-mcp-activity-refresh'),
+  mcpActivityDateFrom: $<HTMLInputElement>('mcp-activity-date-from'),
+  mcpActivityDateTo: $<HTMLInputElement>('mcp-activity-date-to'),
+  mcpActivityHourFrom: $<HTMLInputElement>('mcp-activity-hour-from'),
+  mcpActivityHourTo: $<HTMLInputElement>('mcp-activity-hour-to'),
+  mcpActivityDateClear: $<HTMLButtonElement>('mcp-activity-date-clear'),
   // Snapshot offer (pre-ingest prompt)
   snapshotOfferModal: $<HTMLDivElement>('snapshot-offer-modal'),
   snapshotOfferNote: $<HTMLSpanElement>('snapshot-offer-note'),
@@ -2954,7 +2972,7 @@ function activateMode(mode: Mode): void {
     void refreshGhampusAttachments();
     void refreshGhampusSharingPanel();
   }
-  if (mode === 'activity') { void refreshActivityView(); void refreshAiActivityRollup(); }
+  if (mode === 'activity') { refreshActiveActivitySegment(); void refreshAiActivityRollup(); }
   if (mode === 'presentation') {
     renderPresentationPane();
     document.querySelector<HTMLElement>('.app-canvas')?.scrollTo({ top: 0 });
@@ -20247,6 +20265,45 @@ initActivity({
   activitySearch: els.activitySearch, activityChips: els.activityChips, activityHourFrom: els.activityHourFrom,
   activityHourTo: els.activityHourTo, activityDateClear: els.activityDateClear, activityStats: els.activityStats,
   btnActivityRefresh: els.btnActivityRefresh,
+});
+initMcpActivity({
+  mcpActivityList: els.mcpActivityList, mcpActivitySearch: els.mcpActivitySearch,
+  mcpActivityClientSelect: els.mcpActivityClientSelect, mcpActivityToolSelect: els.mcpActivityToolSelect,
+  mcpActivityEngramSelect: els.mcpActivityEngramSelect, mcpActivityChips: els.mcpActivityChips,
+  mcpActivityStats: els.mcpActivityStats, btnMcpActivityRefresh: els.btnMcpActivityRefresh,
+  mcpActivityDateFrom: els.mcpActivityDateFrom, mcpActivityDateTo: els.mcpActivityDateTo,
+  mcpActivityHourFrom: els.mcpActivityHourFrom, mcpActivityHourTo: els.mcpActivityHourTo,
+  mcpActivityDateClear: els.mcpActivityDateClear,
+});
+
+type ActivitySegment = 'memory' | 'mcp';
+let activitySegment: ActivitySegment = 'memory';
+
+function applyActivitySegment(seg: ActivitySegment): void {
+  activitySegment = seg;
+  els.activityMemoryToolbar.classList.toggle('hidden', seg !== 'memory');
+  els.activityMcpToolbar.classList.toggle('hidden', seg !== 'mcp');
+  els.activityList.classList.toggle('hidden', seg !== 'memory');
+  els.mcpActivityList.classList.toggle('hidden', seg !== 'mcp');
+  document.querySelectorAll<HTMLButtonElement>('[data-activity-segment]').forEach((btn) => {
+    const active = btn.dataset.activitySegment === seg;
+    btn.classList.toggle('active', active);
+    btn.setAttribute('aria-selected', active ? 'true' : 'false');
+  });
+}
+
+function refreshActiveActivitySegment(): void {
+  if (activitySegment === 'memory') void refreshActivityView();
+  else void refreshMcpActivityView();
+}
+
+document.querySelectorAll<HTMLButtonElement>('[data-activity-segment]').forEach((btn) => {
+  btn.addEventListener('click', () => {
+    const seg = btn.dataset.activitySegment as ActivitySegment | undefined;
+    if (!seg || seg === activitySegment) return;
+    applyActivitySegment(seg);
+    refreshActiveActivitySegment();
+  });
 });
 initConnectors();
 initGhampus();

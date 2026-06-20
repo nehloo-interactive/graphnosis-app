@@ -10607,6 +10607,31 @@
         border-color: transparent;
       }
       .activity-date-clear { margin-left: 4px; }
+      .activity-segment {
+        display: inline-flex;
+        gap: 4px;
+        margin-bottom: 12px;
+        padding: 3px;
+        border-radius: 8px;
+        background: color-mix(in srgb, var(--fg) 6%, var(--bg));
+        border: 1px solid var(--border);
+      }
+      .activity-segment-btn {
+        font-size: 13px;
+        font-weight: 600;
+        padding: 6px 14px;
+        border: 0;
+        border-radius: 6px;
+        background: transparent;
+        color: var(--fg-dim);
+        cursor: pointer;
+      }
+      .activity-segment-btn:hover { color: var(--fg); }
+      .activity-segment-btn.active {
+        background: var(--bg-elev);
+        color: var(--fg);
+        box-shadow: 0 1px 2px color-mix(in srgb, var(--fg) 12%, transparent);
+      }
       .activity-list { display: flex; flex-direction: column; gap: 8px; }
       .activity-row {
         display: grid;
@@ -10626,6 +10651,14 @@
       .activity-row .ar-dot.supersede { background: var(--color-brand-purple-bright); }
       .activity-row .ar-dot.addNode { background: var(--fg-dim); }
       .activity-row .ar-dot.deleteNode { background: var(--error); opacity: 0.6; }
+      /* MCP audit tool dots */
+      .activity-row .ar-dot.mcp-recall,
+      .activity-row .ar-dot.mcp-remind,
+      .activity-row .ar-dot.mcp-dig_deeper { background: var(--ok); }
+      .activity-row .ar-dot.mcp-remember { background: var(--accent); }
+      .activity-row .ar-dot.mcp-edit,
+      .activity-row .ar-dot.mcp-apply { background: var(--color-brand-purple-bright); }
+      .activity-row .ar-dot.mcp-forget { background: var(--error); }
       .activity-row .ar-detail {
         font-size: 15px;
         color: var(--fg-dim);
@@ -13070,7 +13103,11 @@ ollama list</code></pre>
                   <ul id="activity-ai-skills-list" style="list-style: none; padding: 0; margin: 0; font-size: 13px;"></ul>
                 </div>
               </div>
-              <div class="activity-toolbar">
+              <div class="activity-segment" role="tablist" aria-label="Activity view">
+                <button type="button" class="activity-segment-btn active" data-activity-segment="memory" role="tab" aria-selected="true">Memory changes</button>
+                <button type="button" class="activity-segment-btn" data-activity-segment="mcp" role="tab" aria-selected="false">AI access log</button>
+              </div>
+              <div id="activity-memory-toolbar" class="activity-toolbar">
                 <div class="activity-controls-row">
                   <input id="activity-search" type="search" class="activity-search" placeholder="Filter events — file name, engram, reason…" autocomplete="off" />
                   <select id="activity-engram-select" class="activity-engram-select" aria-label="Scope to one engram">
@@ -13103,7 +13140,45 @@ ollama list</code></pre>
                 </div>
                 <span id="activity-stats" class="subtitle"></span>
               </div>
+              <div id="activity-mcp-toolbar" class="activity-toolbar hidden">
+                <div class="activity-controls-row">
+                  <input id="mcp-activity-search" type="search" class="activity-search" placeholder="Filter — client, tool, engram, query hash…" autocomplete="off" />
+                  <select id="mcp-activity-client-select" class="activity-engram-select" aria-label="Filter by MCP client">
+                    <option value="">All clients</option>
+                  </select>
+                  <select id="mcp-activity-tool-select" class="activity-engram-select" aria-label="Filter by MCP tool">
+                    <option value="">All tools</option>
+                  </select>
+                  <select id="mcp-activity-engram-select" class="activity-engram-select" aria-label="Scope to one engram">
+                    <option value="">All engrams</option>
+                  </select>
+                  <button id="btn-mcp-activity-refresh" class="btn-sm" title="Reload AI access events">↻ Refresh</button>
+                </div>
+                <div class="g-activity-filters" id="mcp-activity-chips" role="group" aria-label="Filter by tool category">
+                  <button class="g-activity-chip active" data-cat="all">All</button>
+                  <button class="g-activity-chip" data-cat="recall">Recall</button>
+                  <button class="g-activity-chip" data-cat="remember">Remember</button>
+                  <button class="g-activity-chip" data-cat="edit">Edit</button>
+                  <button class="g-activity-chip" data-cat="forget">Forget</button>
+                  <button class="g-activity-chip" data-cat="other">Other</button>
+                </div>
+                <div class="activity-daterow" id="mcp-activity-daterow">
+                  <span class="activity-daterow-label">Date</span>
+                  <input id="mcp-activity-date-from" type="date" class="activity-date" aria-label="From date" />
+                  <span class="activity-daterow-sep">→</span>
+                  <input id="mcp-activity-date-to" type="date" class="activity-date" aria-label="To date" />
+                  <span class="activity-daterow-label activity-daterow-hour">Hours</span>
+                  <input id="mcp-activity-hour-from" type="time" class="activity-time" aria-label="From hour" />
+                  <span class="activity-daterow-sep">→</span>
+                  <input id="mcp-activity-hour-to" type="time" class="activity-time" aria-label="To hour" />
+                  <button id="mcp-activity-date-clear" class="btn-sm activity-date-clear hidden" title="Clear date and hour filters">Clear</button>
+                </div>
+                <span id="mcp-activity-stats" class="subtitle"></span>
+              </div>
               <div id="activity-list" class="activity-list">
+                <p class="subtitle">Loading…</p>
+              </div>
+              <div id="mcp-activity-list" class="activity-list hidden">
                 <p class="subtitle">Loading…</p>
               </div>
             </section>
