@@ -194,6 +194,107 @@ ferry to Naxos. The food in Mykonos was overrated.`;
   }
   log('encrypted-on-disk-check.ok', { bytes: raw.length });
 
+  // --- save guards: empty shell, shrink, .lkg auto-restore ----------------
+  log('save-guards', {});
+  const guardId = 'empty-save-guard';
+  await host.createGraph(guardId);
+  const guardSrc = await host.ingest(guardId, 'clip', 'smoke://empty-guard', {
+    kind: 'text',
+    content: 'guard-payload-' + 'x'.repeat(60_000),
+    sourceRef: 'smoke://empty-guard',
+  });
+  const guardGai = path.join(cortexDir, 'graphs', `${guardId}.gai`);
+  const guardLkg = `${guardGai}.lkg`;
+  const guardStat = await fs.stat(guardGai);
+  if (guardStat.size < 10 * 1024) {
+    throw new Error(`FAIL: save-guards test engram not substantial (${guardStat.size}B)`);
+  }
+  const goodGaiBytes = await fs.readFile(guardGai);
+  const goodGaiCopy = `${guardGai}.good-copy`;
+  await fs.copyFile(guardGai, goodGaiCopy);
+  await host.unloadGraph(guardId);
+  const donorId = 'empty-donor';
+  await host.createGraph(donorId);
+  const emptyShell = await fs.readFile(path.join(cortexDir, 'graphs', `${donorId}.gai`));
+  await host.deleteGraph(donorId);
+  // Empty-save: in-memory 0-node shell while on-disk .gai is still substantial
+  // (reconcile-before-save pattern — must not persist the empty graph).
+  try { await fs.unlink(guardLkg); } catch { /* none yet */ }
+  await fs.writeFile(guardGai, emptyShell);
+  await host.loadGraph(guardId);
+  if (host.listNodes(guardId).length !== 0) {
+    throw new Error('FAIL: save-guards empty-save expected 0 nodes from empty shell load');
+  }
+  await fs.copyFile(goodGaiCopy, guardGai);
+  const gaiBytesBefore = await fs.readFile(guardGai);
+  host.markGraphDirty(guardId);
+  await host.save(guardId);
+  const gaiBytesAfter = await fs.readFile(guardGai);
+  if (!gaiBytesBefore.equals(gaiBytesAfter)) {
+    throw new Error('FAIL: empty-save-guard allowed .gai overwrite on blocked save');
+  }
+  await fs.unlink(goodGaiCopy);
+  log('empty-save-guard.ok', { gaiBytes: gaiBytesBefore.length });
+
+  // Tiny .gai + substantial .lkg → auto-restore on load (writings-qtb9 pattern).
+  host.markGraphClean(guardId);
+  await host.unloadGraph(guardId);
+  await fs.writeFile(guardGai, emptyShell);
+  await fs.writeFile(guardLkg, goodGaiBytes);
+  await host.loadGraph(guardId);
+  const restoredNodes = host.listNodes(guardId).length;
+  if (restoredNodes === 0) {
+    throw new Error('FAIL: tiny-gai-lkg-restore expected nodes after promoting .lkg');
+  }
+  let lkgStillThere = false;
+  try { await fs.stat(guardLkg); lkgStillThere = true; } catch { /* promoted */ }
+  if (lkgStillThere) {
+    throw new Error('FAIL: tiny-gai-lkg-restore expected .lkg promoted to .gai');
+  }
+  log('tiny-gai-lkg-restore.ok', { nodes: restoredNodes });
+
+  // Shrink-save: tiny in-memory graph must not clobber substantial .gai/.lkg.
+  const shrinkId = 'shrink-save-guard';
+  await host.createGraph(shrinkId);
+  await host.ingest(shrinkId, 'clip', 'smoke://shrink-guard', {
+    kind: 'text',
+    content: 'shrink-payload-' + 'y'.repeat(60_000),
+    sourceRef: 'smoke://shrink-guard',
+  });
+  const shrinkGai = path.join(cortexDir, 'graphs', `${shrinkId}.gai`);
+  const shrinkLkg = `${shrinkGai}.lkg`;
+  const shrinkBefore = (await fs.stat(shrinkGai)).size;
+  if (shrinkBefore < 10 * 1024) {
+    throw new Error(`FAIL: shrink-save-guard test engram not substantial (${shrinkBefore}B)`);
+  }
+  const shrinkGoodCopy = `${shrinkGai}.good-copy`;
+  await fs.copyFile(shrinkGai, shrinkGoodCopy);
+  await host.unloadGraph(shrinkId);
+  await fs.writeFile(shrinkGai, emptyShell);
+  try { await fs.unlink(shrinkLkg); } catch { /* none */ }
+  await host.loadGraph(shrinkId);
+  await host.ingest(shrinkId, 'clip', 'smoke://shrink-tiny', {
+    kind: 'text',
+    content: 'tiny',
+    sourceRef: 'smoke://shrink-tiny',
+  });
+  await fs.copyFile(shrinkGoodCopy, shrinkGai);
+  await fs.writeFile(shrinkLkg, await fs.readFile(shrinkGoodCopy));
+  const shrinkGaiMid = await fs.readFile(shrinkGai);
+  const shrinkLkgMid = await fs.readFile(shrinkLkg);
+  await host.save(shrinkId);
+  const shrinkGaiAfter = await fs.readFile(shrinkGai);
+  const shrinkLkgAfter = await fs.readFile(shrinkLkg);
+  if (!shrinkGaiMid.equals(shrinkGaiAfter) || !shrinkLkgMid.equals(shrinkLkgAfter)) {
+    throw new Error('FAIL: shrink-save-guard allowed .gai/.lkg shrink overwrite');
+  }
+  await fs.unlink(shrinkGoodCopy);
+  log('shrink-save-guard.ok', { onDiskBytes: shrinkBefore });
+
+  await host.deleteGraph(guardId);
+  await host.deleteGraph(shrinkId);
+  log('save-guards.ok', {});
+
   log('forget', { sourceId: src.sourceId });
   const forgot = await host.forgetSource('personal', src.sourceId);
   log('forget.done', { soft_deleted: forgot.nodeIds.length });
