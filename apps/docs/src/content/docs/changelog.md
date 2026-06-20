@@ -11,6 +11,22 @@ Conventions: **Added** = new features, **Changed** = behavior or UX shifts, **Fi
 
 ---
 
+## v1.19.2 — Ghampus Run fix and live timestamps
+
+<p style="margin-top:0.5rem;font-size:1.25em;opacity:0.85;">2026-06-20</p>
+
+Small Ghampus polish: proactive skill cards run without throwing; thread timestamps stay fresh.
+
+### Fixed
+
+- **Proactive Run buttons.** Clicking Run on a Ghampus proactive skill card no longer throws ReferenceError; `skillGraphId` is read from the card payload and the button disables while the walk starts.
+
+### Changed
+
+- **Live timestamps.** Relative times in the Ghampus thread refresh every 30 seconds and on hover, so "2m ago" stays accurate without leaving the view.
+
+---
+
 ## v1.19.1 — Vitality settling, docs repair, and Ghampus recall polish
 
 <p style="margin-top:0.5rem;font-size:1.25em;opacity:0.85;">2026-06-20</p>
