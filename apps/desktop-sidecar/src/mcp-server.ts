@@ -29,6 +29,7 @@ import type { ConsentRecord } from '@graphnosis-app/core/settings';
 import { SkillTrainer, type ExportFormat } from './skill-trainer.js';
 import { LicenseValidator } from './license-validator.js';
 import { hashMcpQuery, type McpAuditEvent } from './mcp-audit.js';
+import { dispatchAuditMcpTool } from './mcp/handlers-audit.js';
 
 // ── Session-level data budget ─────────────────────────────────────────────────
 // These caps apply per MCP connection (i.e. per AI client session). They exist
@@ -253,26 +254,6 @@ const RecallStructuredInput = z.preprocess(
   }),
 );
 const RecallWithCitationsInput = RecallStructuredInput;
-const RecallAsOfInput = z.preprocess(
-  (raw: unknown) => {
-    if (typeof raw !== 'object' || raw === null) return raw;
-    const r = raw as Record<string, unknown>;
-    if (!r.query && (r.q || r.question)) return { ...r, query: r.q ?? r.question };
-    if (r.as_of_seq === undefined && r.asOfSeq !== undefined) return { ...r, as_of_seq: r.asOfSeq };
-    if (r.as_of_ts === undefined && r.asOfTs !== undefined) return { ...r, as_of_ts: r.asOfTs };
-    if (r.graphId === undefined && r.engram !== undefined) return { ...r, graphId: r.engram };
-    return raw;
-  },
-  z.object({
-    query: z.string(),
-    graphId: z.string().optional(),
-    as_of_seq: z.coerce.number().int().nonnegative().optional(),
-    as_of_ts: z.coerce.number().int().nonnegative().optional(),
-    maxNodes: z.coerce.number().int().positive().max(50).optional(),
-  }).refine((d) => d.as_of_seq !== undefined || d.as_of_ts !== undefined, {
-    message: 'Provide as_of_seq or as_of_ts (op-log boundary for point-in-time recall).',
-  }),
-);
 const FindSourceInput = z.object({
   keyword: z.string().optional(),
   content: z.string().optional(),
@@ -305,15 +286,6 @@ const TransferSourceInput = z.object({
   from_engram: z.string(),
   to_engram: z.string(),
 });
-const AuditMemoryInput = z.object({
-  engrams: z.array(z.string()).optional(),
-  threshold: z.coerce.number().min(0.5).max(1.0).optional(),
-});
-const CheckDuplicateInput = z.object({
-  text: z.string(),
-  engram: z.string().optional(),
-  threshold: z.coerce.number().min(0.5).max(1.0).optional(),
-});
 const IngestBatchInput = z.object({
   items: z.array(z.object({
     text: z.string(),
@@ -324,15 +296,6 @@ const IngestBatchInput = z.object({
 });
 const GetEngramSchemaInput = z.object({
   engram: z.string(),
-});
-const DuplicatePairsInput = z.object({
-  limit: z.coerce.number().int().positive().max(50).optional(),
-});
-const ContradictionPairsInput = z.object({
-  limit: z.coerce.number().int().positive().max(50).optional(),
-});
-const HealingJournalInput = z.object({
-  limit: z.coerce.number().int().positive().max(50).optional(),
 });
 const GnnNeighborsInput = z.object({
   query: z.string(),
@@ -2869,6 +2832,12 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
   async function dispatchToolInner(name: string, rawInput: Record<string, unknown>): Promise<McpToolResult> {
     try {
     assertMcpToolAllowed(name);
+    const auditHandled = await dispatchAuditMcpTool(name, rawInput, deps as import('./mcp/handlers-audit.js').AuditMcpDeps, {
+      getEffectiveLicenseToken: (d) => getEffectiveLicenseToken(d as McpDeps),
+      resolveEngramList,
+      requireEngram,
+    });
+    if (auditHandled) return auditHandled;
     switch (name) {
       case 'recall':
       case 'remind': {
@@ -3588,23 +3557,6 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
           createdAt: (meta as any)?.createdAt,
         }, null, 2) }] };
       }
-      // ── Advanced recall ───────────────────────────────────────────────────
-      case 'recall_as_of': {
-        const licenseToken = await getEffectiveLicenseToken(deps);
-        const hasEnterprise = deps.licenseValidator?.hasFeature(licenseToken, 'enterprise') ?? false;
-        if (!hasEnterprise) {
-          return mcpError('recall_as_of requires an Enterprise license (Compliance Mode).');
-        }
-        const args = RecallAsOfInput.parse(rawInput);
-        const { recallAsOf } = await import('./compliance.js');
-        const result = await recallAsOf(deps.host, args.query, {
-          ...(args.graphId ? { graphId: args.graphId } : {}),
-          ...(args.as_of_seq !== undefined ? { asOfSeq: args.as_of_seq } : {}),
-          ...(args.as_of_ts !== undefined ? { asOfTs: args.as_of_ts } : {}),
-          ...(args.maxNodes !== undefined ? { maxNodes: args.maxNodes } : {}),
-        });
-        return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
-      }
       case 'recall_structured': {
         const rawRsArgs = RecallStructuredInput.parse(rawInput);
         const args = { ...rawRsArgs, ...applyEngramScope(rawRsArgs) };
@@ -4032,163 +3984,6 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
           `${active.length} active node(s) across ${deps.host.listSources(res.graphId).length} source(s)\n\n` +
           `Sample:\n${rows || '(empty)'}`
         }] };
-      }
-      case 'audit_memory': {
-        {
-          const licenseToken = await getEffectiveLicenseToken(deps);
-          const licensed = deps.licenseValidator?.hasFeature(licenseToken, 'foresight') ?? false;
-          if (!licensed) {
-            return mcpError(
-              'audit_memory requires a Graphnosis Pro subscription. ' +
-              'Subscribe at https://graphnosis.com/upgrade.',
-            );
-          }
-        }
-        const args = AuditMemoryInput.parse(rawInput);
-        const threshold = args.threshold ?? 0.85;
-        let graphIds = deps.host.listGraphs().filter(id => {
-          const m = deps.host.getGraphMetadata(id);
-          return !(m as any)?.archived && (m as any)?.sensitivityTier !== 'sensitive';
-        });
-        if (args.engrams?.length) {
-          const { resolved } = resolveEngramList(deps.host, args.engrams);
-          graphIds = graphIds.filter(id => resolved.includes(id));
-        }
-        const duplicates: string[] = [];
-        const graphPairs: Array<[string, string]> = [];
-        for (let i = 0; i < graphIds.length; i++) {
-          for (let j = i + 1; j < graphIds.length; j++) {
-            const a = graphIds[i], b = graphIds[j];
-            if (a && b) graphPairs.push([a, b]);
-          }
-        }
-        for (const [a, b] of graphPairs) {
-            const nodesA = deps.host.listNodes(a) as any[];
-            const activeA = nodesA.filter((n: any) => (n.confidence ?? 1) > 0.2).slice(0, 5);
-            for (const node of activeA) {
-              const nodeText = (node.contentPreview ?? node.text ?? '').toString();
-              if (!nodeText) continue;
-              const hits = await withEmbedding(() => deps.host.searchNodes(b, nodeText, 3));
-              for (const hit of hits) {
-                if (hit.score >= threshold) {
-                  const srcA = deps.host.getNodeSource(a, node.id);
-                  const srcB = deps.host.getNodeSource(b, hit.nodeId);
-                  duplicates.push(
-                    `Score ${hit.score.toFixed(2)} | ${deps.host.getGraphMetadata(a)?.displayName ?? a}${srcA ? ` [${srcA}]` : ''} ↔ ${deps.host.getGraphMetadata(b)?.displayName ?? b}${srcB ? ` [${srcB}]` : ''}\n  "${nodeText.slice(0, 80)}…"`
-                  );
-                  if (duplicates.length >= 20) break;
-                }
-              }
-              if (duplicates.length >= 20) break;
-            }
-            if (duplicates.length >= 20) break;
-          }
-        return { content: [{ type: 'text', text: duplicates.length
-          ? `Found ${duplicates.length} near-duplicate pair(s) (threshold ${threshold}):\n\n${duplicates.join('\n\n')}`
-          : `No near-duplicates found across ${graphIds.length} engram(s) at threshold ${threshold}.`
-        }] };
-      }
-      case 'check_duplicate': {
-
-        const args = CheckDuplicateInput.parse(rawInput);
-        const threshold = args.threshold ?? 0.85;
-        let graphIds = deps.host.listGraphs();
-        if (args.engram) {
-          const res = requireEngram(deps.host, args.engram);
-          if ('error' in res) return res.error;
-          graphIds = [res.graphId];
-        }
-        const hits: string[] = [];
-        for (const graphId of graphIds) {
-          const results = await withEmbedding(() => deps.host.searchNodes(graphId, args.text, 3));
-          for (const r of results) {
-            if (r.score >= threshold) {
-              const meta = deps.host.getGraphMetadata(graphId);
-              const sourceId = deps.host.getNodeSource(graphId, r.nodeId);
-              hits.push(`Score ${r.score.toFixed(2)} in ${meta?.displayName ?? graphId}${sourceId ? ` [${sourceId}]` : ''}:\n  "${r.text.slice(0, 120)}"`);
-            }
-          }
-        }
-        return { content: [{ type: 'text', text: hits.length
-          ? `Similar content found — consider calling edit instead of remember:\n\n${hits.join('\n\n')}`
-          : `No duplicates found above threshold ${threshold}. Safe to call remember.`
-        }] };
-      }
-      case 'duplicate_pairs': {
-        if (!deps.brainEngine) {
-          return mcpError('Brain engine is not available. Open the Graphnosis app to enable it.');
-        }
-        {
-          const licenseToken = await getEffectiveLicenseToken(deps);
-          const licensed = deps.licenseValidator?.hasFeature(licenseToken, 'foresight') ?? false;
-          if (!licensed) {
-            return mcpError(
-              'duplicate_pairs requires a Graphnosis Pro subscription. ' +
-              'Subscribe at https://graphnosis.com/upgrade.',
-            );
-          }
-        }
-        const args = DuplicatePairsInput.parse(rawInput);
-        const pairs = deps.brainEngine.getDuplicatePairs().slice(0, args.limit ?? 20);
-        if (!pairs.length) {
-          return { content: [{ type: 'text', text: 'No duplicate pairs queued for review.' }] };
-        }
-        const rows = pairs.map((p: any) =>
-          `• [${p.id}] score ${p.score?.toFixed(2) ?? '?'}\n` +
-          `  A: "${(p.nodeA?.text ?? p.nodeAId ?? '').toString().slice(0, 80)}" (${p.graphIdA})\n` +
-          `  B: "${(p.nodeB?.text ?? p.nodeBId ?? '').toString().slice(0, 80)}" (${p.graphIdB})`
-        ).join('\n\n');
-        return { content: [{ type: 'text', text:
-          `${pairs.length} duplicate pair(s) awaiting review:\n\n${rows}\n\n` +
-          `To resolve: call edit to merge, or forget(nodeIds=[nodeId]) to remove one side.`
-        }] };
-      }
-      case 'contradiction_pairs': {
-        if (!deps.brainEngine) {
-          return mcpError('Brain engine is not available. Open the Graphnosis app to enable it.');
-        }
-        {
-          const licenseToken = await getEffectiveLicenseToken(deps);
-          const licensed = deps.licenseValidator?.hasFeature(licenseToken, 'foresight') ?? false;
-          if (!licensed) {
-            return mcpError(
-              'contradiction_pairs requires a Graphnosis Pro subscription. ' +
-              'Subscribe at https://graphnosis.com/upgrade.',
-            );
-          }
-        }
-        const args = ContradictionPairsInput.parse(rawInput);
-        const getter = (deps.brainEngine as any).getContradictionPairs?.bind(deps.brainEngine);
-        const pairs = (getter ? getter() : []).slice(0, args.limit ?? 20);
-        if (!pairs.length) {
-          return { content: [{ type: 'text', text: 'No contradictions queued for review. (The reflection scan runs every 6h and on a built cortex; if you just ingested, give it a pass.)' }] };
-        }
-        const rows = pairs.map((p: any) =>
-          `• [${p.id}] ${p.description ?? 'Potential contradiction'} (${p.graphId})\n` +
-          `  A [${p.nodeA}]: "${(p.snippetA ?? '').toString().slice(0, 100)}"\n` +
-          `  B [${p.nodeB}]: "${(p.snippetB ?? '').toString().slice(0, 100)}"\n` +
-          `  shared: ${(p.sharedEntities ?? []).join(', ')}`
-        ).join('\n\n');
-        return { content: [{ type: 'text', text:
-          `${pairs.length} contradiction(s) awaiting review:\n\n${rows}\n\n` +
-          `To resolve: call edit to supersede the OUTDATED side (newer attested wins) — ` +
-          `do NOT add a third conflicting note. If both are still true, they may be context-dependent; ` +
-          `surface to the user to adjudicate.`
-        }] };
-      }
-      case 'healing_journal': {
-        if (!deps.brainEngine) {
-          return mcpError('Brain engine is not available. Open the Graphnosis app to enable it.');
-        }
-        const args = HealingJournalInput.parse(rawInput);
-        const journal = deps.brainEngine.getHealingJournal().slice(0, args.limit ?? 20);
-        if (!journal.length) {
-          return { content: [{ type: 'text', text: 'No autonomous heals recorded yet.' }] };
-        }
-        const rows = journal.map((r: any) =>
-          `• ${new Date(r.healedAt ?? r.at ?? 0).toISOString()}  ${r.kind ?? r.type ?? 'heal'}  ${r.graphId ?? ''}  ${(r.summary ?? JSON.stringify(r)).toString().slice(0, 100)}`
-        ).join('\n');
-        return { content: [{ type: 'text', text: `Healing journal (${journal.length} record(s)):\n\n${rows}` }] };
       }
       // ── On-demand LLM & GNN ───────────────────────────────────────────────
       case 'gnn_status': {
