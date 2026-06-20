@@ -2,10 +2,13 @@
  * Pre-unlock OIDC listener — no cortex lock, no host. Spawned by Tauri with
  * GRAPHNOSIS_SSO_LISTENER=1. Emits GRAPHNOSIS_SSO_AUTH_URL for browser open
  * and GRAPHNOSIS_SSO_RESULT JSON on success/failure.
+ *
+ * GRAPHNOSIS_SSO_PROBE=1 — reachability + lock-screen discover only (no browser).
  */
 
 import { loadSettings } from '@graphnosis-app/core/settings';
 import {
+  discoverSsoUnlock,
   oidcConfigFromSettings,
   runOidcUnlockFlow,
   type OidcUnlockOutcome,
@@ -20,6 +23,12 @@ async function main(): Promise<void> {
   const cortexDir = process.env.GRAPHNOSIS_CORTEX;
   if (!cortexDir) {
     emitResult({ ok: false, reason: 'missing_cortex', message: 'GRAPHNOSIS_CORTEX is required' });
+  }
+
+  if (process.env.GRAPHNOSIS_SSO_PROBE === '1') {
+    const discover = await discoverSsoUnlock(cortexDir);
+    console.error(`GRAPHNOSIS_SSO_PROBE_RESULT:${JSON.stringify(discover)}`);
+    process.exit(0);
   }
 
   const settings = await loadSettings(cortexDir);

@@ -748,6 +748,54 @@ ferry to Naxos. The food in Mykonos was overrated.`;
   jwksServer.close();
   log('sso-oidc-verify.ok', { sub: claims['sub'], groups });
 
+  // --- OIDC tenant binding (Entra tid + issuer) -----------------------------
+  log('sso-tenant-validate', {});
+  const { validateOidcTenantClaims, probeIdpReachability } = await import('@graphnosis-app/core/sso');
+  const goodTenant = validateOidcTenantClaims(
+    { iss: 'https://login.microsoftonline.com/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee/v2.0', tid: 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee' },
+    { issuer: 'https://login.microsoftonline.com/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee/v2.0' },
+  );
+  if (!goodTenant.ok) {
+    throw new Error(`FAIL: expected matching Entra tenant to pass, got ${goodTenant.reason}`);
+  }
+  const badTenant = validateOidcTenantClaims(
+    { iss: 'https://login.microsoftonline.com/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee/v2.0', tid: 'ffffffff-ffff-ffff-ffff-ffffffffffff' },
+    { issuer: 'https://login.microsoftonline.com/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee/v2.0', oidcTenantId: 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee' },
+  );
+  if (badTenant.ok) {
+    throw new Error('FAIL: mismatched tid should reject tenant binding');
+  }
+  log('sso-tenant-validate.ok', { badReason: badTenant.reason });
+
+  // --- IdP reachability probe (mock discovery server) -----------------------
+  log('sso-idp-probe', {});
+  const discoveryBody = JSON.stringify({
+    authorization_endpoint: 'http://127.0.0.1:1/auth',
+    token_endpoint: 'http://127.0.0.1:1/token',
+    jwks_uri: `http://127.0.0.1:${addr.port}/jwks`,
+  });
+  const discoveryServer = http.createServer((req, res) => {
+    if (req.url === '/.well-known/openid-configuration') {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(discoveryBody);
+      return;
+    }
+    res.writeHead(404).end();
+  });
+  await new Promise<void>((resolve) => discoveryServer.listen(0, '127.0.0.1', () => resolve()));
+  const discAddr = discoveryServer.address();
+  if (!discAddr || typeof discAddr === 'string') throw new Error('smoke: discovery server address missing');
+  const reachable = await probeIdpReachability(`http://127.0.0.1:${discAddr.port}`);
+  discoveryServer.close();
+  if (!reachable.reachable) {
+    throw new Error(`FAIL: mock IdP should be reachable, got ${reachable.error}`);
+  }
+  const unreachable = await probeIdpReachability('http://127.0.0.1:1', 500);
+  if (unreachable.reachable) {
+    throw new Error('FAIL: closed port should be unreachable');
+  }
+  log('sso-idp-probe.ok', { unreachableError: unreachable.error });
+
   // --- session heartbeat lease ---------------------------------------------
   log('session-lease', {});
   await writeSessionLease(cortexDir, {
