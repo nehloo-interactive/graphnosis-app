@@ -175,7 +175,7 @@ The following table covers deployment considerations that enterprise IT teams co
 | **Update deployment channel** | Configure for your environment | By default the app checks for updates on startup and prompts the user to install. For environments that require IT-validated updates, block the update endpoint at the firewall and deploy updates through your standard software distribution process. All updates are cryptographically signed |
 | **Headless / Docker passphrase injection** | Use a secrets manager | For Docker and scripted deployments, inject the passphrase via Docker secrets, Kubernetes secrets, or a vault integration rather than a plain environment variable. Interactive desktop deployments are handled entirely within the app |
 | **Docker network binding** | Set before deploying | The official Docker image exposes the browser UI on all interfaces by default to support reverse-proxy deployments. Set `GRAPHNOSIS_BIND=127.0.0.1` to restrict to loopback, or place the container behind a reverse proxy with TLS and access controls. A bearer token (`GRAPHNOSIS_HTTP_UI_TOKEN`) is required in all cases |
-| **Per-call MCP audit logging** | Integrate with existing SIEM | Consent grants and revocations are logged persistently. Individual tool-call logging requires routing sidecar output to a SIEM or adding a logging reverse proxy. A native per-call audit log is on the roadmap |
+| **Per-call MCP audit logging** | Review export workflow for your SIEM | Shipped in v1.18: durable encrypted per-call audit at `<cortex>/mcp-audit.enc` — one row per MCP tool call (client, tool, timestamp, consent grant ID, engram scope, token budgets, stable query hash; raw query text is never stored). Browse in Settings → Activity → AI access log. Enterprise: export op-log + MCP rows as CSV (Sharing → Export audit log) or bundle via Activity → Export signed evidence pack. Continuous SIEM ingest is not built in — schedule periodic export or ingest the CSV into your collector |
 | **Sensitive-data consent in headless environments** | Verify fallback works for your setup | The in-app consent modal works when a desktop GUI is available. For headless deployments (SSH, Docker, CI), a time-limited phrase shown in Settings provides the equivalent confirmation |
 | **Multi-user shared machines** | No action needed | Each OS user account has an independent, separately encrypted cortex not accessible to other accounts |
 | **Air-gapped or proxy-restricted environments** | Pre-stage the embedding model | The embedding model (~90 MB) downloads once on first use. Pre-stage it before deployment or pre-bake it into the Docker image; the application operates fully offline after that |
@@ -232,7 +232,7 @@ Graphnosis is actively working on all items below. As each is addressed, this pa
 |---|---|---|
 | No MDM configuration profile (`.mobileconfig` / `.admx`) | Policy must be deployed via scripted environment variables rather than an MDM payload | All policy settings are available as environment variables and a `policy.json` file, both of which can be deployed via MDM shell-script or file-delivery mechanisms |
 | No built-in update-check toggle | The update check cannot be disabled from the Settings UI | Block the update endpoint at the network layer for environments that require IT-controlled update deployment |
-| No persistent per-call MCP audit log | Individual AI tool calls are not durably logged | Route sidecar process output to a SIEM, or add a logging reverse proxy in front of the HTTP MCP bridge |
+| No native SIEM/syslog streaming for MCP audit | Audit rows stay local until exported | Per-call MCP audit is durable and encrypted (`mcp-audit.enc`); Enterprise CSV export and signed Evidence Pack cover SIEM handoff. Continuous syslog/CEF streaming is not built in — schedule periodic export or ingest the CSV via your log collector |
 | No SAML 2.0 SP integration | IdPs that expose SAML only (no OIDC) cannot integrate natively | Enterprise **OIDC** unlock is available today — see Section 5. Use an OIDC-capable IdP or bridge; SAML 2.0 service-provider flows are on the roadmap |
 | macOS App Sandbox pending | The app runs with standard user-level permissions rather than the tighter macOS App Sandbox | Access is bounded to the user-selected cortex folder and explicitly ingested paths; no access to system directories, browser data, or other user files |
 | Linux system keychain integration pending | Passphrase cache uses a user-restricted file rather than a system keychain | Use full-disk encryption on the host to protect the cached passphrase at rest. Linux keychain integration is on the roadmap |
@@ -354,7 +354,7 @@ This section maps Graphnosis's architecture to major regulatory frameworks. It i
 - **PHI classification**: place patient-related engrams in a `sensitive`-tier engram — AI access always requires explicit consent; consent is logged
 - **Encryption at rest (§164.312(a)(2)(iv))**: XChaCha20-Poly1305 satisfies the addressable encryption requirement
 - **Access controls (§164.312(a)(1))**: OS-level user account separation + passphrase; no shared cortex across users
-- **Audit controls (§164.312(b))**: Consent grant/revoke history is persisted and exportable. Individual recall queries are not yet durably logged — pipe sidecar output to a SIEM for per-query audit; a native per-call audit log is on the roadmap
+- **Audit controls (§164.312(b))**: Consent grant/revoke history and per-call MCP tool audit rows are persisted in encrypted cortex files and exportable (Enterprise CSV export or signed Evidence Pack). Query content is hashed, not stored verbatim. Continuous SIEM streaming is not built in — schedule periodic export for centralized retention
 - **BAA with Nehloo**: Not required — Nehloo never receives or processes PHI. If PHI recall results are sent to a cloud AI provider, a BAA with that provider is required
 - **Minimum necessary**: Session caps, engram-breadth cap, and `only_engrams` MCP parameter support minimum-necessary principles
 
@@ -367,7 +367,7 @@ This section maps Graphnosis's architecture to major regulatory frameworks. It i
 
 - **Air-gapped operation**: fully supported (pre-bake embedding model; no runtime internet required)
 - **Cryptographic module**: XChaCha20-Poly1305 and Argon2id are **not** on the FIPS 140-2 approved algorithm list. This is a hard blocker for FedRAMP High and DoD IL4+. [Contact us](/upgrade) if this is a requirement for your deployment
-- **Audit log (NIST AU-2)**: Consent history covers consent events; per-tool-call logging requires an external audit layer
+- **Audit log (NIST AU-2)**: Consent history and per-call MCP tool audit rows are persisted locally and exportable on Enterprise. Centralized log aggregation requires scheduled export — native syslog/CEF streaming is not yet available
 - **STIG/CIS hardening**: Hardening guides are not yet published; apply standard OS and process hardening for your platform. A hardening guide is on the roadmap
 
 ### ITAR / EAR (US export controls, defense / aerospace)
@@ -383,7 +383,7 @@ This section maps Graphnosis's architecture to major regulatory frameworks. It i
 
 ### FDA 21 CFR Part 11 (pharma / medical device / laboratory)
 
-- Consent history is append-only and encrypted. Individual recall/ingest operations are not yet individually time-stamped with an electronic signature — Part 11 compliant audit trails are on the roadmap
+- Consent history and MCP tool-call audit rows are append-only and encrypted with per-event timestamps. Electronic signatures on each recall/ingest operation (Part 11-style audit trails) are on the roadmap
 - Computer system validation (IQ/OQ/PQ) documentation is not yet available; organisations using Graphnosis in a regulated documentation workflow would need to include it in their own CSV programme in the interim
 
 ### PCI-DSS (payment card)
@@ -398,7 +398,7 @@ Graphnosis is actively working on the items below. Updates are announced in the 
 | Item | Affected frameworks | Current status and mitigation |
 |---|---|---|
 | FIPS 140-2 validated cryptographic module | FedRAMP High, DoD IL4+, some NIST profiles | Not yet available. Enforce FIPS at the TLS boundary layer in the interim; [contact us](/upgrade) to discuss your specific requirements |
-| Persistent per-call MCP audit log | HIPAA §164.312(b), SOC 2, FDA 21 CFR Part 11, NIST AU-2 | Consent grant/revoke history is persisted. Per-call logging: route sidecar output to a SIEM or add a logging reverse proxy; native support on the roadmap |
+| Native SIEM/syslog streaming for MCP audit | HIPAA §164.312(b), SOC 2, NIST AU-2 | Per-call MCP audit is durable and exportable (Enterprise CSV, signed Evidence Pack). Continuous syslog/CEF streaming is on the roadmap; schedule periodic export in the interim |
 | SOC 2 Type II report | Enterprise procurement, financial services | In progress. The source-available codebase (FSL-1.1) enables a customer-led or third-party audit in the interim |
 | BAA with Nehloo | HIPAA | **Not required** — Nehloo never receives, stores, or processes PHI. If recalled PHI is sent to a cloud AI provider, a BAA with that provider is required |
 | MDM configuration profiles (`.mobileconfig` / `.admx`) | macOS MDM, Windows ADMX | On the roadmap. Current alternative: deploy env vars and `policy.json` via MDM script or file-delivery |
