@@ -61,10 +61,23 @@ export interface EngramCatalogEntry {
   published?: boolean;
 }
 
+/** Optional SharePoint list provider for IT catalog sync (cached in cortex settings). */
+export interface EngramCatalogSharePointSettings {
+  /** Full SharePoint list URL (AllItems.aspx or site-relative list path). */
+  listUrl?: string;
+  /** Optional bearer token for SharePoint REST (org-managed; not exposed via MCP). */
+  accessToken?: string;
+  lastSyncedAt?: number;
+  lastSyncError?: string;
+  lastSyncEntryCount?: number;
+}
+
 export interface EngramCatalogSettings {
   entries: EngramCatalogEntry[];
   /** Schema version for forward compat. */
   version?: number;
+  /** SharePoint catalog provider state + last sync cache. */
+  sharePoint?: EngramCatalogSharePointSettings;
 }
 
 /** Machine-local subscription + install store (not in encrypted cortex). */
@@ -74,6 +87,10 @@ export interface CatalogSubscriptionStore {
   /** packageIds installed into the active cortex on this machine. */
   installedPackageIds?: string[];
   updatedAt?: number;
+  /** Machine-local path to last imported MDM catalog bundle JSON. */
+  mdmBundlePath?: string;
+  /** packageIds from MDM bundle — auto-subscribe on unlock when entitled. */
+  mdmDefaultSubscriptions?: string[];
 }
 
 export type CatalogEntitlementReason =
@@ -342,6 +359,26 @@ export function sanitizeEngramCatalogEntry(raw: Partial<EngramCatalogEntry> | Re
   };
 }
 
+function sanitizeSharePointSettings(
+  raw: Partial<EngramCatalogSharePointSettings> | undefined,
+): EngramCatalogSharePointSettings | undefined {
+  if (!raw || typeof raw !== 'object') return undefined;
+  const listUrl = typeof raw.listUrl === 'string' && raw.listUrl.trim() ? raw.listUrl.trim() : undefined;
+  const accessToken = typeof raw.accessToken === 'string' && raw.accessToken.trim()
+    ? raw.accessToken.trim()
+    : undefined;
+  if (!listUrl && !accessToken && raw.lastSyncedAt == null && !raw.lastSyncError) return undefined;
+  return {
+    ...(listUrl ? { listUrl } : {}),
+    ...(accessToken ? { accessToken } : {}),
+    ...(typeof raw.lastSyncedAt === 'number' ? { lastSyncedAt: raw.lastSyncedAt } : {}),
+    ...(typeof raw.lastSyncError === 'string' && raw.lastSyncError.trim()
+      ? { lastSyncError: raw.lastSyncError.trim() }
+      : {}),
+    ...(typeof raw.lastSyncEntryCount === 'number' ? { lastSyncEntryCount: raw.lastSyncEntryCount } : {}),
+  };
+}
+
 export function sanitizeEngramCatalogSettings(
   raw: Partial<EngramCatalogSettings> | undefined,
 ): EngramCatalogSettings | undefined {
@@ -351,9 +388,11 @@ export function sanitizeEngramCatalogSettings(
       .map((e) => sanitizeEngramCatalogEntry(e as Partial<EngramCatalogEntry> | Record<string, unknown>))
       .filter(Boolean) as EngramCatalogEntry[]
     : [];
+  const sharePoint = sanitizeSharePointSettings(raw.sharePoint);
   return {
     entries,
     version: typeof raw.version === 'number' ? raw.version : 2,
+    ...(sharePoint ? { sharePoint } : {}),
   };
 }
 

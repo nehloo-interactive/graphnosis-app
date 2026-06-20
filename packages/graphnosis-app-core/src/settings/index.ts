@@ -822,6 +822,7 @@ export type {
   EngramInstallMode,
   EngramCatalogEntry,
   EngramCatalogSettings,
+  EngramCatalogSharePointSettings,
   CatalogSubscriptionStore,
   CatalogEntitlementReason,
   CatalogEntitlement,
