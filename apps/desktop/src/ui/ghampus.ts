@@ -785,6 +785,25 @@ interface RefineProposal {
 }
 interface TierContext { pro: string; free: string; teams: string; }
 
+const AWAY_DIGEST_PREFIX = '**While you were away**';
+const QUIET_AWAY_DIGEST_RE = /all quiet/i;
+
+function isQuietAwayDigest(msg: GhampusChatMessage): boolean {
+  return msg.kind === 'ghampus'
+    && msg.text.startsWith(AWAY_DIGEST_PREFIX)
+    && QUIET_AWAY_DIGEST_RE.test(msg.text);
+}
+
+/** Collapse repeated quiet away digests in persisted history to the newest one. */
+function dedupeAwayDigests(messages: GhampusChatMessage[]): GhampusChatMessage[] {
+  let lastQuietIdx = -1;
+  for (let i = messages.length - 1; i >= 0; i--) {
+    if (isQuietAwayDigest(messages[i])) { lastQuietIdx = i; break; }
+  }
+  if (lastQuietIdx < 0) return messages;
+  return messages.filter((msg, i) => !isQuietAwayDigest(msg) || i === lastQuietIdx);
+}
+
 function fmtRelTime(ts: number): string {
   const diffS = Math.floor((Date.now() - ts) / 1000);
   if (diffS < 60)  return 'just now';
@@ -1419,7 +1438,17 @@ function renderNotifCard(n: {
   </div>`;
 }
 
+let refreshGhampusThreadInflight: Promise<void> | null = null;
+
 export async function refreshGhampusThread(): Promise<void> {
+  if (refreshGhampusThreadInflight) return refreshGhampusThreadInflight;
+  refreshGhampusThreadInflight = refreshGhampusThreadInner().finally(() => {
+    refreshGhampusThreadInflight = null;
+  });
+  return refreshGhampusThreadInflight;
+}
+
+async function refreshGhampusThreadInner(): Promise<void> {
   const thread = document.getElementById('ghampus-thread');
   if (!thread) return;
 
@@ -1432,7 +1461,7 @@ export async function refreshGhampusThread(): Promise<void> {
   let messages: GhampusChatMessage[] = [];
   try {
     const res = await ipcCall<{ messages: GhampusChatMessage[] }>('ghampus:history', {});
-    messages = res.messages ?? [];
+    messages = dedupeAwayDigests(res.messages ?? []);
   } catch { /* not yet wired */ }
 
   if (messages.length > 0) {
@@ -1442,11 +1471,12 @@ export async function refreshGhampusThread(): Promise<void> {
     return;
   }
 
-  // Request sidecar away digest (may already be in history on next refresh).
+  // Request sidecar away digest only when history is still empty (single-flight
+  // above prevents parallel tab-refresh races from appending duplicates).
   try {
     await ipcCall<{ emitted?: boolean }>('ghampus:digest', {});
     const res2 = await ipcCall<{ messages: GhampusChatMessage[] }>('ghampus:history', {});
-    const digestMessages = res2.messages ?? [];
+    const digestMessages = dedupeAwayDigests(res2.messages ?? []);
     if (digestMessages.length > 0) {
       ghampusThreadMessages = [];
       thread.innerHTML = '';
