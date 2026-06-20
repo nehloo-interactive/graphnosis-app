@@ -10632,6 +10632,57 @@
         color: var(--fg);
         box-shadow: 0 1px 2px color-mix(in srgb, var(--fg) 12%, transparent);
       }
+      /* Compact 30-day rollup — header inside AI access log segment only */
+      .mcp-activity-rollup {
+        padding: 10px 12px;
+        border-radius: 8px;
+        border: 1px solid var(--border);
+        background: color-mix(in srgb, var(--ai-accent) 4%, var(--bg-elev));
+        font-size: 13px;
+        line-height: 1.45;
+      }
+      .mcp-rollup-head {
+        display: flex;
+        align-items: baseline;
+        gap: 8px;
+        margin-bottom: 8px;
+      }
+      .mcp-rollup-label {
+        font-size: 11px;
+        font-weight: 600;
+        text-transform: uppercase;
+        letter-spacing: 0.04em;
+        color: var(--fg-dim);
+      }
+      .mcp-rollup-row {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+        margin-bottom: 6px;
+      }
+      .mcp-rollup-row:last-child { margin-bottom: 0; }
+      .mcp-rollup-chip {
+        display: inline-flex;
+        align-items: center;
+        gap: 4px;
+        padding: 3px 8px;
+        border-radius: 6px;
+        background: color-mix(in srgb, var(--fg) 6%, var(--bg));
+        border: 1px solid var(--border);
+        font-size: 12px;
+      }
+      .mcp-rollup-chip strong { font-variant-numeric: tabular-nums; }
+      .mcp-rollup-chip code { font-size: 11px; }
+      .mcp-rollup-tools .mcp-rollup-chip { opacity: 0.92; }
+      .mcp-rollup-skills {
+        margin-top: 8px;
+        padding-top: 8px;
+        border-top: 1px solid var(--border);
+        font-size: 12px;
+        color: var(--fg-dim);
+      }
+      .mcp-rollup-skills code { font-size: 11px; color: var(--fg); }
+      .mcp-rollup-empty { margin: 0; font-size: 12px; }
       .activity-list { display: flex; flex-direction: column; gap: 8px; }
       .activity-row {
         display: grid;
@@ -13078,31 +13129,6 @@ ollama list</code></pre>
                 <p class="brain-subtitle">your episodic timeline — every memory event, in order</p>
               </header>
 
-              <!-- ── AI activity rollup — counts of MCP work per external
-                   client (Claude Desktop, Cursor, Copilot, etc.) and per
-                   Ghampus tool over the last 30 days. Answers "what have
-                   my AI clients actually been doing with my cortex." -->
-              <div class="panel" id="activity-ai-rollup-panel" style="margin-bottom: 14px;">
-                <div style="display: flex; align-items: baseline; gap: 10px;">
-                  <p class="panel-title" style="margin: 0;">AI activity</p>
-                  <span class="subtitle" style="font-size: 12px;">last 30 days · across all engrams</span>
-                </div>
-                <div id="activity-ai-rollup-empty" class="subtitle" style="margin-top: 8px; font-size: 13px;">No AI client or Ghampus activity yet. Connect a client (Claude Desktop, Cursor, GitHub Copilot) or chat with Ghampus and stats appear here.</div>
-                <div id="activity-ai-rollup-body" style="display: none; margin-top: 10px; display: grid; grid-template-columns: 1fr 1fr; gap: 14px;">
-                  <div>
-                    <p style="margin: 0 0 6px; font-size: 11px; text-transform: uppercase; letter-spacing: .05em; opacity: .7;">AI clients</p>
-                    <ul id="activity-ai-clients-list" style="list-style: none; padding: 0; margin: 0; font-size: 13px;"></ul>
-                  </div>
-                  <div>
-                    <p style="margin: 0 0 6px; font-size: 11px; text-transform: uppercase; letter-spacing: .05em; opacity: .7;">Tools called by Ghampus</p>
-                    <ul id="activity-ai-tools-list" style="list-style: none; padding: 0; margin: 0; font-size: 13px;"></ul>
-                  </div>
-                </div>
-                <div id="activity-ai-skills-block" style="display: none; margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--border, rgba(0,0,0,.08));">
-                  <p style="margin: 0 0 6px; font-size: 11px; text-transform: uppercase; letter-spacing: .05em; opacity: .7;">Recent skill walks</p>
-                  <ul id="activity-ai-skills-list" style="list-style: none; padding: 0; margin: 0; font-size: 13px;"></ul>
-                </div>
-              </div>
               <div class="activity-segment" role="tablist" aria-label="Activity view">
                 <button type="button" class="activity-segment-btn active" data-activity-segment="memory" role="tab" aria-selected="true">Memory changes</button>
                 <button type="button" class="activity-segment-btn" data-activity-segment="mcp" role="tab" aria-selected="false">AI access log</button>
@@ -13141,6 +13167,7 @@ ollama list</code></pre>
                 <span id="activity-stats" class="subtitle"></span>
               </div>
               <div id="activity-mcp-toolbar" class="activity-toolbar hidden">
+                <div id="mcp-activity-rollup" class="mcp-activity-rollup" aria-live="polite"></div>
                 <div class="activity-controls-row">
                   <input id="mcp-activity-search" type="search" class="activity-search" placeholder="Filter — client, tool, engram, query hash…" autocomplete="off" />
                   <select id="mcp-activity-client-select" class="activity-engram-select" aria-label="Filter by MCP client">

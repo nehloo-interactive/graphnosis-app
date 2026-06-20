@@ -63,6 +63,72 @@ export function initMcpActivity(mcpEls: Record<string, HTMLElement>): void {
   wireMcpActivityEvents();
 }
 
+export async function refreshMcpActivityRollup(): Promise<void> {
+  const rollup = els.mcpActivityRollup;
+  if (!rollup) return;
+  try {
+    const data = await ipcCallTimeout<{
+      windowDays: number;
+      byClient: Array<{ client: string; events: number; lastSeenMs: number }>;
+      byTool: Array<{ tool: string; events: number; lastSeenMs: number }>;
+      skillWalks: Array<{ sourceId: string; whenMs: number }>;
+    }>('mcp:activitySummary', {}, MCP_IPC_TIMEOUT_MS);
+    renderMcpActivityRollup(data);
+  } catch {
+    rollup.innerHTML = '<p class="mcp-rollup-empty subtitle">Couldn\'t load 30-day summary.</p>';
+  }
+}
+
+function renderMcpActivityRollup(data: {
+  windowDays: number;
+  byClient: Array<{ client: string; events: number }>;
+  byTool: Array<{ tool: string; events: number }>;
+  skillWalks: Array<{ sourceId: string; whenMs: number }>;
+}): void {
+  const rollup = els.mcpActivityRollup;
+  const hasAny = data.byClient.length > 0 || data.byTool.length > 0;
+  if (!hasAny) {
+    rollup.innerHTML =
+      '<p class="mcp-rollup-empty subtitle">No AI client activity in the last 30 days. Connect an MCP client (Cursor, Claude Desktop, Copilot) and calls appear here.</p>';
+    return;
+  }
+
+  const topClients = [...data.byClient].sort((a, b) => b.events - a.events).slice(0, 5);
+  const topTools = [...data.byTool].sort((a, b) => b.events - a.events).slice(0, 5);
+
+  let html = `<div class="mcp-rollup-head"><span class="mcp-rollup-label">Last ${data.windowDays} days · all engrams</span></div>`;
+  if (topClients.length) {
+    html += '<div class="mcp-rollup-row">';
+    html += topClients.map((c) =>
+      `<span class="mcp-rollup-chip" data-pres="surface:mcpClients">${escape(app().friendlyClient(c.client))} <strong>${c.events}</strong></span>`,
+    ).join('');
+    html += '</div>';
+  }
+  if (topTools.length) {
+    html += '<div class="mcp-rollup-row mcp-rollup-tools">';
+    html += topTools.map((t) =>
+      `<span class="mcp-rollup-chip mcp-rollup-tool"><code>${escape(t.tool)}</code> ${t.events}</span>`,
+    ).join('');
+    html += '</div>';
+  }
+  if (data.skillWalks.length) {
+    const now = Date.now();
+    html += '<div class="mcp-rollup-skills"><span class="mcp-rollup-label">Skill walks</span> ';
+    html += data.skillWalks.slice(0, 3).map((w) => {
+      const ago = Math.floor((now - w.whenMs) / 3600000);
+      return `<span class="mcp-rollup-skill"><code>${escape(w.sourceId)}</code> <span class="subtitle">${ago}h ago</span></span>`;
+    }).join(' · ');
+    html += '</div>';
+  }
+  rollup.innerHTML = html;
+}
+
+/** Refresh rollup + audit list when entering or switching to the MCP segment. */
+export async function refreshMcpActivitySegment(opts?: { showLoading?: boolean }): Promise<void> {
+  void refreshMcpActivityRollup();
+  await refreshMcpActivityView(opts);
+}
+
 export function getMcpActivityCat(): McpCat { return mcpCat; }
 export function setMcpActivityCat(cat: McpCat): void { mcpCat = cat; }
 export function resetMcpActivityWindow(): void { mcpWindow = MCP_WINDOW_START; }
@@ -372,5 +438,8 @@ function wireMcpActivityEvents(): void {
     mcpWindow = MCP_WINDOW_START;
     void refreshMcpActivityView();
   });
-  els.btnMcpActivityRefresh.addEventListener('click', () => void refreshMcpActivityView());
+  els.btnMcpActivityRefresh.addEventListener('click', () => {
+    void refreshMcpActivityRollup();
+    void refreshMcpActivityView();
+  });
 }

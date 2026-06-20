@@ -42,7 +42,7 @@ import {
   applyActivityFilter,
 } from './ui/activity';
 import {
-  initMcpActivity, refreshMcpActivityView,
+  initMcpActivity, refreshMcpActivitySegment,
 } from './ui/mcp-activity';
 import {
   initConnectors, refreshConnectorsList, openConnectorSetupModal,
@@ -53,7 +53,7 @@ import {
   initGhampus, refreshGhampusState, setGhampusRunning, updateGhampusVisibility,
   refreshGhampusAttachments, refreshGhampusSavings, refreshGhampusNotifications,
   refreshGhampusSkills, refreshGhampusRecentSaves, refreshGhampusSharingPanel,
-  refreshGhampusThread, refreshGhampusHeader, refreshModelsPanel, refreshAiActivityRollup,
+  refreshGhampusThread, refreshGhampusHeader, refreshModelsPanel,
 } from './ui/ghampus';
 import {
   initUnlock, attemptUnlock, runBiometricUnlock, webauthnUnlock,
@@ -785,6 +785,7 @@ const els = {
   activityDateClear: $<HTMLButtonElement>('activity-date-clear'),
   activityMemoryToolbar: $<HTMLElement>('activity-memory-toolbar'),
   activityMcpToolbar: $<HTMLElement>('activity-mcp-toolbar'),
+  mcpActivityRollup: $<HTMLDivElement>('mcp-activity-rollup'),
   mcpActivityList: $<HTMLDivElement>('mcp-activity-list'),
   mcpActivitySearch: $<HTMLInputElement>('mcp-activity-search'),
   mcpActivityClientSelect: $<HTMLSelectElement>('mcp-activity-client-select'),
@@ -2900,7 +2901,7 @@ function applyActivitySegment(seg: ActivitySegment): void {
 
 function refreshActiveActivitySegment(): void {
   if (activitySegment === 'memory') void refreshActivityView();
-  else void refreshMcpActivityView();
+  else void refreshMcpActivitySegment();
 }
 
 function activateMode(mode: Mode): void {
@@ -2994,7 +2995,7 @@ function activateMode(mode: Mode): void {
     void refreshGhampusAttachments();
     void refreshGhampusSharingPanel();
   }
-  if (mode === 'activity') { refreshActiveActivitySegment(); void refreshAiActivityRollup(); }
+  if (mode === 'activity') refreshActiveActivitySegment();
   if (mode === 'presentation') {
     renderPresentationPane();
     document.querySelector<HTMLElement>('.app-canvas')?.scrollTo({ top: 0 });
@@ -20295,6 +20296,7 @@ initActivity({
   btnActivityRefresh: els.btnActivityRefresh,
 });
 initMcpActivity({
+  mcpActivityRollup: els.mcpActivityRollup,
   mcpActivityList: els.mcpActivityList, mcpActivitySearch: els.mcpActivitySearch,
   mcpActivityClientSelect: els.mcpActivityClientSelect, mcpActivityToolSelect: els.mcpActivityToolSelect,
   mcpActivityEngramSelect: els.mcpActivityEngramSelect, mcpActivityChips: els.mcpActivityChips,
