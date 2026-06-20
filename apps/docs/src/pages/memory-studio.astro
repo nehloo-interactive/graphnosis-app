@@ -79,7 +79,7 @@ try {
           <span class="px-4 py-1.5 rounded-full bg-[#1c1c27] border border-[#2a2a3d] text-[#67e8f9]">📵 Offline</span>
           <span class="px-4 py-1.5 rounded-full bg-[#1c1c27] border border-[#2a2a3d] text-[#67e8f9]">⚡ Deterministic</span>
           <span class="px-4 py-1.5 rounded-full bg-[#1c1c27] border border-[#2a2a3d] text-[#67e8f9]">🔒 Encrypted at rest</span>
-          <span class="px-4 py-1.5 rounded-full bg-[#1c1c27] border border-[#2a2a3d] text-[#a78bfa]">75 ms median recall</span>
+          <span class="px-4 py-1.5 rounded-full bg-[#1c1c27] border border-[#2a2a3d] text-[#a78bfa]">~75 ms recall (warm, single engram)</span>
         </div>
       </div>
     </section>
@@ -307,7 +307,7 @@ try {
             <h3 class="text-xl font-bold text-white">Type a query</h3>
             <p class="text-[#c4c6d6] text-sm leading-relaxed max-w-xs">
               Ask in any language. Graphnosis searches your local encrypted graph using
-              BGE multilingual embeddings &mdash; no API call, no cloud hop. Median: 75 ms.
+              BGE multilingual embeddings &mdash; no API call, no cloud hop. ~75 ms median on a warm single-engram cortex (local hybrid; not federated cold boot).
             </p>
           </div>
 
@@ -339,7 +339,7 @@ try {
         <!-- Stats strip -->
         <div class="mt-16 grid grid-cols-2 md:grid-cols-4 gap-4">
           {[
-            { value: '75 ms', label: 'Median recall latency' },
+            { value: '~75 ms', label: 'Median recall (warm, 1 engram)' },
             { value: '76.4%', label: 'LongMemEval accuracy' },
             { value: '$0', label: 'Per-query cloud cost' },
             { value: '100%', label: 'Data stays on your device' },
@@ -380,7 +380,7 @@ try {
             <div class="grid grid-cols-2 sm:grid-cols-4 gap-4 text-sm">
               {[
                 { icon: '🔒', text: 'Encrypted at rest', sub: 'XChaCha20-Poly1305' },
-                { icon: '⚡', text: '75 ms recall', sub: 'Local BGE embeddings' },
+                { icon: '⚡', text: '~75 ms recall', sub: 'Warm cache · local BGE' },
                 { icon: '🧠', text: 'Local LLM', sub: 'Ollama, optional' },
                 { icon: '📵', text: 'No telemetry', sub: 'No analytics, ever' },
               ].map(({ icon, text, sub }) => (

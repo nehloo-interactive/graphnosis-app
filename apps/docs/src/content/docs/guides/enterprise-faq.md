@@ -318,7 +318,7 @@ Industrial single-board computers with less than 4 GB RAM require tuning.
 
 - **Native protocol connectors**: Modbus, OPC-UA, DNP3, and EtherNet/IP are not natively supported. Data must be translated to JSON by a gateway or middleware layer before posting to the webhook endpoint. Native connectors are on the roadmap
 - **High-availability clustering**: The single-writer architecture ensures data integrity; HA is achieved through orchestrator-managed restarts (Docker restart policy, Kubernetes liveness probe) rather than parallel instances
-- **Real-time process control**: Graphnosis is a knowledge and memory layer, not a real-time data bus. Recall latency is appropriate for operator-assistance and agent-memory use cases, not for sub-second control loops
+- **Real-time process control**: Graphnosis is a knowledge and memory layer, not a real-time data bus. Recall latency is appropriate for operator-assistance and agent-memory use cases, not for sub-second control loops. Published ~75 ms figures are **warm, single-engram** measurements on developer hardware — not federated multi-engram cold-boot SLAs. See [Performance and recall latency](/guides/performance/) for CI guards and pre-release benchmarking.
 
 ---
 
