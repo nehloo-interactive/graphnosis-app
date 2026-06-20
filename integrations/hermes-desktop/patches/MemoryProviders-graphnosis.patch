@@ -1,0 +1,10 @@
+--- a/src/renderer/src/screens/Memory/MemoryProviders.tsx
++++ b/src/renderer/src/screens/Memory/MemoryProviders.tsx
+@@ -10,6 +10,7 @@
+   retaindb: "https://retaindb.com",
+   supermemory: "https://supermemory.ai",
+   byterover: "https://app.byterover.dev",
++  graphnosis: "https://graphnosis.com/download",
+ };
+ 
+ interface MemoryProvidersProps {
