@@ -19,9 +19,6 @@ sandbox/
 # Enterprise / compliance sidecar WIP — quarantined iteration, not wired into build.
 apps/desktop-sidecar/_wip-enterprise/
 
-# Enterprise design docs — keep drafts in sandbox/; never ship RBAC/SSO internals publicly.
-apps/docs/src/content/docs/guides/enterprise-rbac.md
-
 # One-off UI modularization extraction scripts — dev tooling only.
 apps/desktop/scripts/
 .env.*
