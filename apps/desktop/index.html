@@ -11330,9 +11330,9 @@
               <span class="rail-label">Sources</span>
               <span></span>
             </button>
-            <button class="rail-btn" data-mode="skills" title="Memory-trained Skills — train and run your stored procedures (SOPs)">
+            <button class="rail-btn" data-mode="skills" title="Autonomous Skills — walkable SOPs dispatched each session, self-improving with each run">
               <span class="rail-icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 10L12 5 2 10l10 5 10-5z"/><path d="M6 12v5c0 1 2.7 3 6 3s6-2 6-3v-5"/></svg></span>
-              <span class="rail-label">Memory-trained Skills</span>
+              <span class="rail-label">Autonomous Skills</span>
               <span></span>
             </button>
             <button class="rail-btn" data-mode="goals" title="Foresight — predict the future from your growing memory (develop · predict · insights)">
@@ -11704,11 +11704,8 @@
                             <a href="#" data-studio-banner-jump="edit">edit</a>, and
                             <a href="#" data-studio-banner-jump="gnn">GNN exploration</a>, running locally.
                             <span class="studio-banner-praxis">
-                              🛠️ <strong>Skills</strong> is powered by <strong>Graphnosis Autonomous Praxis</strong> — it compiles your saved memories into portable AI instructions.
-                              Start by feeding the cortex (<a href="#" data-studio-banner-jump="remember">Remember</a>,
-                              <a href="#" data-studio-banner-jump="edit">Edit / Correct</a>, or
-                              <a href="#" data-studio-banner-mode="sources">Add files to engram</a>),
-                              then come back here to train.
+                              🛠️ <strong>Autonomous Skills</strong> — Powered by <strong>Graphnosis Autonomous Praxis</strong> · walkable SOPs — dispatched each session, self-improving with each run.
+                              Author SOPs in the Skills tab, compile from source (empty engram at train time), and recall personal memory at walk time via MCP.
                             </span>
                             <span class="studio-banner-docs">
                               📖 Read the latest docs online: <a href="https://docs.graphnosis.com" data-studio-banner-doclink="docs">docs.graphnosis.com</a>
@@ -11741,14 +11738,14 @@
                           <div class="skills-praxis-strip">
                             Powered by <strong>Graphnosis Autonomous Praxis</strong>
                             <span class="skills-praxis-dot">·</span>
-                            <span class="skills-praxis-sub">the skills engine that trains with your memories</span>
+                            <span class="skills-praxis-sub">walkable SOPs — dispatched each session, self-improving with each run.</span>
                           </div>
                           <div class="skills-pane">
 
                             <!-- LEFT: Library of trained skills -->
                             <aside class="skills-library">
                               <div class="skills-library-header">
-                                <span class="skills-library-title">Memory-trained Skills</span>
+                                <span class="skills-library-title">Autonomous Skills</span>
                                 <span id="skills-library-count" class="skills-library-count">—</span>
                                 <select id="skills-library-sort" class="studio-select skills-library-sort">
                                   <option value="recent">Most recent</option>
@@ -13216,6 +13213,17 @@ ollama list</code></pre>
                   <button id="mcp-activity-date-clear" class="btn-sm activity-date-clear hidden" title="Clear date and hour filters">Clear</button>
                 </div>
                 <span id="mcp-activity-stats" class="subtitle"></span>
+              </div>
+              <!-- Enterprise-only: compliance Evidence Pack (op-log + consent + MCP audit + hashes) -->
+              <div id="activity-compliance-section" class="panel activity-compliance-section" style="display: none; margin-bottom: 14px;">
+                <p class="panel-title" style="margin: 0 0 4px;">Compliance export</p>
+                <p class="subtitle activity-compliance-hint" style="font-size: 13px; margin: 0 0 10px;">
+                  Structured Evidence Pack for auditors — op-log, consent records, MCP audit trail, and engram file hashes.
+                  Respects the date range and engram scope filters above.
+                </p>
+                <button id="btn-activity-evidence-export" type="button" title="Download a JSON Evidence Pack for compliance review or SIEM ingestion">
+                  Export Evidence Pack (.json)
+                </button>
               </div>
               <div id="activity-list" class="activity-list">
                 <p class="subtitle">Loading…</p>

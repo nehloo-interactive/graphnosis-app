@@ -55,6 +55,24 @@ export interface AppContext {
   setCurrentForgetMode: (m: import('./types').ForgetMode) => void;
   ATLAS_ENGINE_STORAGE_KEY: string;
   isEngramPreloadInProgress: () => boolean;
+
+  confirmPermanent: (bodyText: string) => Promise<boolean>;
+  ipcLicenseStatus: () => Promise<{ valid?: boolean; features?: string[]; [key: string]: unknown }>;
+  formatEngramLabel: (g: GraphWithMetadata) => string;
+  slugifyEngramName: (name: string) => string;
+  switchStudioTool: (tool: string, save?: boolean) => void;
+  BILLING_BASE_URL: string;
+  BILLING_EMAIL_KEY: string;
+  replaceLoadedGraphs: (graphs: GraphWithMetadata[]) => void;
+  pickAtlasGraph: () => string | null;
+  setAtlasActiveGraph: (id: string | null) => void;
+  refreshActiveEngramLabel: () => void;
+  refreshAtlasView: () => Promise<void>;
+  presActive: () => boolean;
+  applyPresentationMasking: (root?: ParentNode) => void;
+  clearAtlasGraphData: () => void;
+  switchActiveEngram: (graphId: string) => Promise<void>;
+  getIngestJobCount: () => number;
 }
 
 export interface QuarantineConfirmOptions {

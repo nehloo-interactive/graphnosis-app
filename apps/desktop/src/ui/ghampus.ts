@@ -211,6 +211,59 @@ export async function refreshModelsPanel(): Promise<void> {
 }
 
 
+export async function refreshAiActivityRollup(): Promise<void> {
+  try {
+    const data = await ipcCall<{
+      windowDays: number;
+      byClient: Array<{ client: string; events: number; lastSeenMs: number }>;
+      byTool: Array<{ tool: string; events: number; lastSeenMs: number }>;
+      skillWalks: Array<{ sourceId: string; whenMs: number }>;
+    }>('mcp:activitySummary', {});
+    const empty = document.getElementById('activity-ai-rollup-empty');
+    const body = document.getElementById('activity-ai-rollup-body');
+    const skillsBlock = document.getElementById('activity-ai-skills-block');
+    const hasAny = data.byClient.length > 0 || data.byTool.length > 0;
+    if (empty) empty.style.display = hasAny ? 'none' : '';
+    if (body) body.style.display = hasAny ? 'grid' : 'none';
+
+    const clientList = document.getElementById('activity-ai-clients-list');
+    if (clientList) {
+      const top = [...data.byClient].sort((a, b) => b.events - a.events).slice(0, 8);
+      clientList.innerHTML = top.length === 0
+        ? '<li class="subtitle" style="font-size: 12px;">No external client activity in the window.</li>'
+        : top.map((c) => `<li style="padding: 4px 0; display: flex; gap: 6px;">
+          <span>${escapeHtml(c.client)}</span>
+          <span class="subtitle" style="font-size: 12px; margin-left: auto;">${c.events} call${c.events === 1 ? '' : 's'}</span>
+        </li>`).join('');
+    }
+    const toolList = document.getElementById('activity-ai-tools-list');
+    if (toolList) {
+      const top = [...data.byTool].sort((a, b) => b.events - a.events).slice(0, 8);
+      toolList.innerHTML = top.length === 0
+        ? '<li class="subtitle" style="font-size: 12px;">No Ghampus tool calls in the window.</li>'
+        : top.map((t) => `<li style="padding: 4px 0; display: flex; gap: 6px;">
+          <code style="font-size: 12px;">${escapeHtml(t.tool)}</code>
+          <span class="subtitle" style="font-size: 12px; margin-left: auto;">${t.events} call${t.events === 1 ? '' : 's'}</span>
+        </li>`).join('');
+    }
+    if (skillsBlock) {
+      skillsBlock.style.display = data.skillWalks.length > 0 ? '' : 'none';
+      const skillsList = document.getElementById('activity-ai-skills-list');
+      if (skillsList) {
+        const now = Date.now();
+        skillsList.innerHTML = data.skillWalks.slice(0, 5).map((w) => {
+          const ago = Math.floor((now - w.whenMs) / 3600000);
+          return `<li style="padding: 4px 0;">
+            <code style="font-size: 12px;">${escapeHtml(w.sourceId)}</code>
+            <span class="subtitle" style="font-size: 12px; margin-left: 8px;">${ago}h ago</span>
+          </li>`;
+        }).join('');
+      }
+    }
+  } catch { /* non-fatal */ }
+}
+
+
 // ── Attachments — Linked files panel ──────────────────────────────────
 interface AttachmentRow {
   id: string;
