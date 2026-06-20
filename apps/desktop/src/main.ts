@@ -2955,6 +2955,9 @@ function activateMode(mode: Mode): void {
     // never opens with #home-overview hidden but studio still display:none while
     // the legacy brain pane (vitality ring / Memory health) stays visible.
     updateStudioVisibility();
+    // Module init defaults activeStudioTool to Remember — switch now so the
+    // drawer never flashes the MemoryStudio form before ATLAS_SUBMODES runs.
+    switchStudioTool('skills', false);
   }
   // Entering the 3D engram view: refresh connector state so the "Sync now"
   // button appears if the active engram has a manual (auto-sync off) connector.
@@ -2995,7 +2998,7 @@ function activateMode(mode: Mode): void {
   const sub = ATLAS_SUBMODES[mode];
   if (sub) {
     switchGraphnosisTab(sub.gtab);
-    if (sub.studioTool) switchStudioTool(sub.studioTool);
+    if (sub.studioTool) switchStudioTool(sub.studioTool, sub.studioTool !== 'skills');
     if (mode === 'search') {
       // Entering search: recenter the hero box + show guidance unless a query
       // is already in flight (e.g. coming back to a live result set).
@@ -22973,7 +22976,9 @@ let activeStudioTool: StudioTool = (() => {
 
 function switchStudioTool(tool: StudioTool, save = true): void {
   activeStudioTool = tool;
-  if (save) localStorage.setItem(STUDIO_CHIP_KEY, tool);
+  // Skills is a rail destination, not a studio chip — never persist it as the
+  // drawer's resting tool (would show skills pane with no active chip on Home).
+  if (save && tool !== 'skills') localStorage.setItem(STUDIO_CHIP_KEY, tool);
 
   document.querySelectorAll<HTMLButtonElement>('.studio-chip').forEach((chip) => {
     chip.classList.toggle('active', chip.dataset['tool'] === tool);

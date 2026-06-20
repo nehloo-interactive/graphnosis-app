@@ -4271,6 +4271,14 @@
       body.skills-studio-mode #studio-section {
         display: flex !important;
       }
+      /* Inside studio-section the default chip is Remember (module init).
+         Force the skills library/trainer — hide every other studio tool. */
+      body.skills-studio-mode .lb-section[data-studio-tool]:not([data-studio-tool="skills"]) {
+        display: none !important;
+      }
+      body.skills-studio-mode .lb-section[data-studio-tool="skills"] {
+        display: flex !important;
+      }
       /* Health, now a standalone Home card rather than an inline header item. */
       .home-health-card {
         display: flex; align-items: center; gap: 14px;
