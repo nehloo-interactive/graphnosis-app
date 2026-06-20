@@ -19,6 +19,8 @@
  * finishes — which is the correct behaviour.
  */
 
+import { dbg } from './log-redact.js';
+
 let _chain: Promise<void> = Promise.resolve();
 
 /** A single QUEUED op (e.g. one ingestClip) can legitimately run for MINUTES — a
@@ -47,7 +49,7 @@ export function withEmbedding<T>(fn: () => Promise<T>, label?: string): Promise<
     // local-embed.ts, which kills+respawns the worker for a single hung CHUNK
     // without aborting a large-but-healthy ingest.
     const warn = setTimeout(() => {
-      console.error(
+      dbg(
         `[embed] ${label ?? 'operation'} still running after ${Math.round(EMBED_STALL_WARN_MS / 1000)}s — ` +
         `a large file (book/changelog) can legitimately take minutes; per-chunk wedge recovery is in local-embed.`,
       );

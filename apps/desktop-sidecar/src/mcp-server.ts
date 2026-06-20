@@ -9,6 +9,8 @@ import type { LocalLlm } from './correction.js';
 import { proposeCorrection, applyCorrection, type GnnCandidateExpander } from './correction.js';
 import { ingestClip } from './ingest.js';
 import { withEmbedding } from './embedding-queue.js';
+import { beginScope, WorkPriority } from './work-priority.js';
+import { dbg } from './log-redact.js';
 import { mcpRegistry } from './mcp-registry.js';
 import type { BrainEngine } from './brain-engine.js';
 import { createHmac, randomUUID } from 'node:crypto';
@@ -182,6 +184,8 @@ const RecallInput = z.preprocess(
     maxNodes: z.coerce.number().int().positive().max(50).optional(),
     only_engrams: tolerantStringArray,
     except_engrams: tolerantStringArray,
+    /** Ghampus structured-list queries pass true — user phrasing is deliberate. */
+    skip_enrichment: z.boolean().optional(),
   }),
 );
 const CorrectInput = z.object({
@@ -2959,8 +2963,12 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
         // Merge any auto-excluded engrams (e.g. un-consented sensitive
         // tier on a federated recall) with the AI-provided exceptions.
         const mergedExcept = [...(except?.resolved ?? []), ...autoExceptGraphIds, ...ssoExceptGraphIds];
+        const endP1 = beginScope(WorkPriority.P1_USER);
+        try {
         const sub = await withEmbedding(() => deps.host.recall(args.query, {
           budget,
+          recallPriority: WorkPriority.P1_USER,
+          ...(args.skip_enrichment ? { skipEnrichment: true } : {}),
           ...(only?.resolved.length ? { onlyGraphIds: only.resolved } : {}),
           ...(mergedExcept.length ? { exceptGraphIds: mergedExcept } : {}),
           // The engrams in `only` are explicitly named AND have passed the
@@ -2986,7 +2994,7 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
           slot.n += a.nodesIncluded; slot.t += a.tokensIncluded;
           return acc;
         }, {});
-        console.error(`[${toolName}] qLen=${args.query.length} requested=${budget.maxNodes}n/${budget.maxTokens}t served=${sub.nodesIncluded}n/${sub.tokensUsed}t tiers=${JSON.stringify(tierSummary)} graphs=${sub.audit.length}`);
+        dbg(`[${toolName}] qLen=${args.query.length} requested=${budget.maxNodes}n/${budget.maxTokens}t served=${sub.nodesIncluded}n/${sub.tokensUsed}t tiers=${JSON.stringify(tierSummary)} graphs=${sub.audit.length}`);
         enforceSessionBudget(sub.tokensUsed, sub.nodesIncluded);
         // Audit footer — only list engrams that ACTUALLY contributed nodes
         // to this recall. The full sub.audit roster includes every engram
@@ -3040,6 +3048,9 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
         // forget — failure here mustn't break the recall path.
         recordMcpRecallSavings(deps, toolName, sub.tokensUsed, sub.nodesIncluded);
         return { content: [{ type: 'text', text: sub.prompt + auditFooter + headsUp + pendingEngramNotice(deps.host) + consentFooter }] };
+        } finally {
+          endP1();
+        }
       }
       case 'dig_deeper': {
         // Multi-strategy retrieval. Same input shape as recall + only/except
@@ -3059,8 +3070,12 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
         const { consentFooter, autoExceptGraphIds } = await checkConsentOrThrow(only?.resolved ?? null);
         const { autoExceptGraphIds: ssoExceptGraphIds } = checkRecallSsoGate(deps.host, deps, only?.resolved ?? null);
         const mergedExcept = [...(except?.resolved ?? []), ...autoExceptGraphIds, ...ssoExceptGraphIds];
+        const endP1 = beginScope(WorkPriority.P1_USER);
+        try {
         const sub = await withEmbedding(() => deps.host.digDeeper(args.query, {
           budget,
+          recallPriority: WorkPriority.P1_USER,
+          ...(args.skip_enrichment ? { skipEnrichment: true } : {}),
           ...(only?.resolved.length ? { onlyGraphIds: only.resolved } : {}),
           ...(mergedExcept.length ? { exceptGraphIds: mergedExcept } : {}),
           ...(only?.resolved.length ? { consentedGraphIds: only.resolved } : {}),
@@ -3070,7 +3085,7 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
         // dig_deeper call, no PII, redacted engram refs. Devs grep this
         // when investigating user reports about over-/under-expansion.
         const prov = sub.digDeeperProvenance;
-        console.error(
+        dbg(
           `[dig_deeper] qLen=${args.query.length} ` +
           `content=${prov.contentMatch.nodes}n@${prov.contentMatch.avgScore.toFixed(2)} ` +
           `sourceFilename=${prov.sourceFilenameExpansion.nodes}n ` +
@@ -3109,6 +3124,9 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
         }) ?? '';
         recordMcpRecallSavings(deps, 'dig_deeper', sub.tokensUsed, sub.nodesIncluded);
         return { content: [{ type: 'text', text: sub.prompt + auditFooter + ddHeadsUp + pendingEngramNotice(deps.host) + consentFooter }] };
+        } finally {
+          endP1();
+        }
       }
       case 'remember': {
         const args = RememberInput.parse(rawInput);
@@ -3506,6 +3524,7 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
       // ── Navigation & routing ──────────────────────────────────────────────
       case 'list_engrams': {
         const statsByGraph = new Map(deps.host.stats().graphs.map(g => [g.graphId, g]));
+        const resident = new Set(deps.host.listGraphs());
         const rows = deps.host.graphsWithMetadata({ includeUnloaded: true }).map(({ graphId, metadata, loaded }) => ({
           graphId,
           displayName: metadata.displayName ?? graphId,
@@ -3513,7 +3532,9 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
           template: metadata.template,
           archived: (metadata as any).archived ?? false,
           loaded,
-          sources: loaded ? deps.host.listSources(graphId).length : null,
+          // `loaded` can be true for LRU-evicted engrams (everLoaded) while the
+          // graph is not resident — listSources() would throw "Graph not loaded".
+          sources: resident.has(graphId) ? deps.host.listSources(graphId).length : null,
           lastMutationAt: statsByGraph.get(graphId)?.lastMutationAt,
         }));
         const notice = pendingEngramNotice(deps.host);
@@ -3819,9 +3840,11 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
         enforceReplayBlocker(args.query);
         const { consentFooter: ceFooter } = await checkConsentOrThrow([resA.graphId, resB.graphId]);
         const budget = { maxNodes: args.maxNodes ?? 10, maxTokens: 4000 };
+        const endP1 = beginScope(WorkPriority.P1_USER);
+        try {
         const [subA, subB] = await Promise.all([
-          withEmbedding(() => deps.host.recall(args.query, { budget, onlyGraphIds: [resA.graphId], consentedGraphIds: [resA.graphId] })),
-          withEmbedding(() => deps.host.recall(args.query, { budget, onlyGraphIds: [resB.graphId], consentedGraphIds: [resB.graphId] })),
+          withEmbedding(() => deps.host.recall(args.query, { budget, recallPriority: WorkPriority.P1_USER, onlyGraphIds: [resA.graphId], consentedGraphIds: [resA.graphId] })),
+          withEmbedding(() => deps.host.recall(args.query, { budget, recallPriority: WorkPriority.P1_USER, onlyGraphIds: [resB.graphId], consentedGraphIds: [resB.graphId] })),
         ]);
         const metaA = deps.host.getGraphMetadata(resA.graphId);
         const metaB = deps.host.getGraphMetadata(resB.graphId);
@@ -3840,6 +3863,9 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
           `## ${metaA?.displayName ?? resA.graphId}\n\n${subA.prompt || '(no results)'}\n\n` +
           `## ${metaB?.displayName ?? resB.graphId}\n\n${subB.prompt || '(no results)'}` + ceHeadsUp + ceFooter
         }] };
+        } finally {
+          endP1();
+        }
       }
       case 'cross_search': {
         const rawCsArgs = CrossSearchInput.parse(rawInput);
@@ -3859,7 +3885,9 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
         enforceReplayBlocker(args.query);
         const { consentFooter: csFooter } = await checkConsentOrThrow(resolved);
         const budget = { maxNodes: args.maxNodes ?? 20, maxTokens: 4000 };
-        const sub = await withEmbedding(() => deps.host.recall(args.query, { budget, onlyGraphIds: resolved, consentedGraphIds: resolved }));
+        const endP1 = beginScope(WorkPriority.P1_USER);
+        try {
+        const sub = await withEmbedding(() => deps.host.recall(args.query, { budget, recallPriority: WorkPriority.P1_USER, onlyGraphIds: resolved, consentedGraphIds: resolved }));
         enforceSessionBudget(sub.tokensUsed, sub.nodesIncluded);
         const csContributing = sub.audit.filter(a => a.nodesIncluded > 0).length;
         const csHeadsUp = anomalyHeadsUp({
@@ -3879,6 +3907,9 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
           csHeadsUp +
           csFooter
         }] };
+        } finally {
+          endP1();
+        }
       }
       // ── Source management ─────────────────────────────────────────────────
       case 'find_source': {

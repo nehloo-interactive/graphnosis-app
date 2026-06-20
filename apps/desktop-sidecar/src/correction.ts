@@ -63,9 +63,17 @@ const DiffSchema = z.object({
 });
 export type CorrectionDiff = z.infer<typeof DiffSchema>;
 
+export type LlmCompleteInput = {
+  system: string;
+  user: string;
+  jsonSchema?: unknown;
+  /** When aborted (e.g. work-priority preemption), implementations must cancel in-flight HTTP. */
+  signal?: AbortSignal;
+};
+
 export interface LocalLlm {
   /** Single-shot completion. Implementations: llama.cpp server, Ollama, MLX, etc. */
-  complete(input: { system: string; user: string; jsonSchema?: unknown }): Promise<string>;
+  complete(input: LlmCompleteInput): Promise<string>;
   /**
    * Streaming completion. Same prompt as `complete()`; `onChunk` is
    * invoked with each new piece of text as the LLM emits it. Resolves
@@ -74,7 +82,7 @@ export interface LocalLlm {
    * undefined; callers fall back to `complete()`.
    */
   completeStream?: (
-    input: { system: string; user: string; jsonSchema?: unknown },
+    input: LlmCompleteInput,
     onChunk: (chunk: string) => void,
   ) => Promise<string>;
   /** Human-readable identifier shown in the LLM picker UI. */
