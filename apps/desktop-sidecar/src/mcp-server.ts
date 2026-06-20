@@ -1,5 +1,5 @@
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
-import { markClientActivity } from './client-activity.js';
+import { markClientActivity, notifyClientRequestComplete } from './client-activity.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 import { z } from 'zod';
@@ -5126,7 +5126,11 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
         isError: true,
       };
     }
-    return dispatchTool(req.params.name, (req.params.arguments ?? {}) as Record<string, unknown>);
+    try {
+      return await dispatchTool(req.params.name, (req.params.arguments ?? {}) as Record<string, unknown>);
+    } finally {
+      notifyClientRequestComplete(false);
+    }
   });
 
   return { server, callTool: dispatchTool };

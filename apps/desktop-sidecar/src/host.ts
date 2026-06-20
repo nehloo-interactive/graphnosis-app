@@ -285,6 +285,7 @@ export class GraphnosisHost {
   private bootSweepActive = false;
   private bootEmbBuildInFlight = 0;
   private bootEmbBuildWaiters: Array<() => void> = [];
+  private bootEmbBuildIdleListeners: Array<() => void> = [];
   private static readonly BOOT_EMB_BUILD_MAX = 1;
   /** True from sidecar open until the disk sweep finishes (not until deferred
    *  oplog reconcile). While active, oplog reconcile + sourceRef sweeps are
@@ -1791,6 +1792,29 @@ export class GraphnosisHost {
     return this.bootEmbBuildInFlight > 0;
   }
 
+  /** One-shot: fires when no boot embedding-cache rebuilds are in flight. */
+  onBootEmbBuildIdle(cb: () => void): () => void {
+    if (!this.isBootEmbBuildActive()) {
+      queueMicrotask(cb);
+      return () => {};
+    }
+    this.bootEmbBuildIdleListeners.push(cb);
+    return () => {
+      const i = this.bootEmbBuildIdleListeners.indexOf(cb);
+      if (i >= 0) this.bootEmbBuildIdleListeners.splice(i, 1);
+    };
+  }
+
+  private emitBootEmbBuildIdle(): void {
+    if (this.bootEmbBuildInFlight > 0) return;
+    const listeners = this.bootEmbBuildIdleListeners.splice(0);
+    for (const cb of listeners) {
+      try { cb(); } catch (e: unknown) {
+        console.error(`[graphnosis-host] bootEmbBuildIdle listener failed: ${(e as Error).message}`);
+      }
+    }
+  }
+
   /** Mark the sidecar boot window — defer oplog reconcile until flushBootDeferredWork. */
   setBootPhaseActive(active: boolean): void {
     this.bootPhaseActive = active;
@@ -1936,6 +1960,7 @@ export class GraphnosisHost {
       this.bootEmbBuildInFlight++;
       next();
     }
+    this.emitBootEmbBuildIdle();
   }
 
   /** Canonical on-disk path for a graph. New saves always go here (.gai). */

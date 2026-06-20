@@ -40,6 +40,68 @@ export const BACKGROUND_POLL_METHODS = new Set<string>([
  *  clients" — heavy background passes defer within this window. */
 export const CLIENT_QUIET_MS = 8_000;
 
+const ingestIdleListeners: Array<() => void> = [];
+let clientIdleTimer: NodeJS.Timeout | null = null;
+const clientIdleListeners: Array<() => void> = [];
+
+function emitIngestIdle(): void {
+  if (ingestTotal > 0) return;
+  const listeners = ingestIdleListeners.splice(0);
+  for (const cb of listeners) {
+    try { cb(); } catch { /* listener must not abort the chain */ }
+  }
+}
+
+function scheduleClientIdleCheck(): void {
+  if (clientIdleListeners.length === 0) return;
+  if (clientIdleTimer) return;
+  clientIdleTimer = setTimeout(() => {
+    clientIdleTimer = null;
+    if (clientActiveWithin(CLIENT_QUIET_MS)) {
+      scheduleClientIdleCheck();
+      return;
+    }
+    const listeners = clientIdleListeners.splice(0);
+    for (const cb of listeners) {
+      try { cb(); } catch { /* listener must not abort the chain */ }
+    }
+  }, CLIENT_QUIET_MS);
+  clientIdleTimer.unref();
+}
+
+/** One-shot: fires when no ingest is in flight (immediately if already idle). */
+export function onIngestIdle(cb: () => void): () => void {
+  if (!isIngestActive()) {
+    queueMicrotask(cb);
+    return () => {};
+  }
+  ingestIdleListeners.push(cb);
+  return () => {
+    const i = ingestIdleListeners.indexOf(cb);
+    if (i >= 0) ingestIdleListeners.splice(i, 1);
+  };
+}
+
+/** One-shot: fires once the client has been quiet for CLIENT_QUIET_MS. */
+export function onClientIdle(cb: () => void): () => void {
+  if (!clientActiveWithin(CLIENT_QUIET_MS)) {
+    queueMicrotask(cb);
+    return () => {};
+  }
+  clientIdleListeners.push(cb);
+  scheduleClientIdleCheck();
+  return () => {
+    const i = clientIdleListeners.indexOf(cb);
+    if (i >= 0) clientIdleListeners.splice(i, 1);
+  };
+}
+
+/** Called after a non-background IPC/MCP request completes — arms client-idle waiters. */
+export function notifyClientRequestComplete(isBackground: boolean): void {
+  if (isBackground) return;
+  scheduleClientIdleCheck();
+}
+
 // ── Ingest gate ─────────────────────────────────────────────────────────────
 // ANY active ingest (connector pull, drag-drop file, MCP ingest_batch) hammers
 // the single thread + the embed workers. If ANY background pass — autonomous
@@ -63,6 +125,7 @@ export function endIngest(graphId?: string): void {
     const n = (ingestCountByGraph.get(graphId) ?? 0) - 1;
     if (n > 0) ingestCountByGraph.set(graphId, n); else ingestCountByGraph.delete(graphId);
   }
+  if (ingestTotal === 0) emitIngestIdle();
 }
 /** True while ONE OR MORE engrams are actively ingesting — every background pass
  *  defers on this (single thread: any concurrent work slows the ingest). */
