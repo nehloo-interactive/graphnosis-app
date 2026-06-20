@@ -580,14 +580,23 @@ async function createSkillEngramInline(): Promise<void> {
 // on this so a transient skill:list failure (→ empty list) never cries "you
 // accidentally removed your skills."
 export let skillsLibraryLoadOk = false;
+/** Set when the most recent skill:list failed — drives error empty-state copy. */
+let skillsLibraryLoadError: string | null = null;
+let skillsLibraryFetching = false;
+
 export async function fetchSkillsLibrary(): Promise<void> {
+  skillsLibraryFetching = true;
   try {
-    skillsLibrary = (await ipcCall<SkillListEntry[]>('skill:list', {})) ?? [];
+    skillsLibraryLoadError = null;
+    skillsLibrary = (await ipcCallTimeout<SkillListEntry[]>('skill:list', {}, 45_000)) ?? [];
     skillsLibraryLoadOk = true;
   } catch (e) {
     console.warn('[skills] skill:list failed', e);
+    skillsLibraryLoadError = e instanceof Error ? e.message : String(e);
     skillsLibrary = [];
     skillsLibraryLoadOk = false;
+  } finally {
+    skillsLibraryFetching = false;
   }
 }
 
@@ -619,6 +628,8 @@ function expandSkillEngramGroups(graphIds: Iterable<string>): void {
 }
 
 let _skillsRefreshTimer: number | null = null;
+/** Cancels stale mountSkillsPane runs when the user re-enters the tab quickly. */
+let _mountSkillsGen = 0;
 
 /** Debounced refetch of skill:list + re-render. Shared by mount, ↻, and
  *  graph-mutation while the Skills tab is open (MCP train_skill, auto-retrain). */
@@ -642,63 +653,83 @@ export function scheduleSkillsLibraryRefresh(opts: { syncGraphs?: boolean } = {}
 }
 
 export async function mountSkillsPane(): Promise<void> {
-  // getLoadedGraphs() must be current before filteredSortedLibrary() runs — otherwise
-  // visibleGraphIds is empty/stale and every skill is filtered out (shows as
-  // "All your skills are hidden" even when skill:list returned dozens of rows).
-  await app().reloadGraphsMetadata();
-  populateSkillsEngramPickers();
-  await fetchSkillsLibrary();
-  purgeOrphanedHiddenSkills();
-  // Cross-session resume detection — find any sourceIds in the library
-  // that weren't in last mount's snapshot. These are skills the sidecar
-  // finished while the desktop wasn't running (autonomous retrain ran
-  // overnight, scheduled retrain fired after the user closed the app,
-  // train completed on the sidecar but the desktop crashed before the
-  // IPC response landed, etc.). Surface them as a single toast so the
-  // user knows where to look. Then refresh the snapshot.
-  const newSkills = diffSkillsLibraryAgainstSnapshot();
-  if (newSkills.length > 0) {
-    expandSkillEngramGroups(new Set(newSkills.map((s) => s.graphId)));
-    const first = newSkills[0];
-    if (first) {
-      const others = newSkills.length > 1 ? ` and ${newSkills.length - 1} more` : '';
+  const gen = ++_mountSkillsGen;
+  // Drop the static HTML "Loading…" placeholder immediately when we already
+  // have a cached library (re-entry) or can paint loading/empty/error state.
+  if (skillsLibrary.length > 0) {
+    renderSkillsLibrary();
+  } else {
+    skillsLibraryFetching = true;
+    renderSkillsLibrary();
+  }
+  try {
+    // Metadata + skill:list are independent — run in parallel so a slow
+    // graphs.listWithMetadata / refreshCortexScopedStats chain cannot block
+    // the library for minutes behind reloadGraphsMetadata alone.
+    await Promise.all([
+      app().reloadGraphsMetadata().catch((e) => {
+        console.warn('[skills] reloadGraphsMetadata failed', e);
+      }),
+      fetchSkillsLibrary(),
+    ]);
+    if (gen !== _mountSkillsGen) return;
+
+    populateSkillsEngramPickers();
+    purgeOrphanedHiddenSkills();
+    // Cross-session resume detection — find any sourceIds in the library
+    // that weren't in last mount's snapshot. These are skills the sidecar
+    // finished while the desktop wasn't running (autonomous retrain ran
+    // overnight, scheduled retrain fired after the user closed the app,
+    // train completed on the sidecar but the desktop crashed before the
+    // IPC response landed, etc.). Surface them as a single toast so the
+    // user knows where to look. Then refresh the snapshot.
+    const newSkills = diffSkillsLibraryAgainstSnapshot();
+    if (newSkills.length > 0) {
+      expandSkillEngramGroups(new Set(newSkills.map((s) => s.graphId)));
+      const first = newSkills[0];
+      if (first) {
+        const others = newSkills.length > 1 ? ` and ${newSkills.length - 1} more` : '';
+        showSkillsToast(
+          `Ghampus finished training "${humanizeSkillName(first.label) || skillDisplayName(first.label)}"${others} while you were away. Open the library to review.`,
+          'success',
+        );
+      }
+    }
+    writeSkillsLibrarySnapshot();
+    renderSkillsLibrary();
+    // Orphan detection: if skill engrams exist but the library is empty, the
+    // user may have accidentally forgotten all their skills. Guard hard against
+    // false alarms: only when skill:list actually SUCCEEDED (not a transient
+    // failure → empty) and we're NOT mid-ingest (a post-ingest refresh can race
+    // ahead of skill:list repopulating). Otherwise this fires the alarming
+    // "you removed your skills" message during normal, healthy states.
+    const skillEngrams = getLoadedGraphs().filter(
+      (g) => !g.metadata.archived && g.loaded !== false && g.metadata.template === 'skill',
+    );
+    if (skillEngrams.length > 0 && skillsLibrary.length === 0 && skillsLibraryLoadOk && app().getIngestJobCount() === 0) {
       showSkillsToast(
-        `Ghampus finished training "${humanizeSkillName(first.label) || skillDisplayName(first.label)}"${others} while you were away. Open the library to review.`,
-        'success',
+        `You have ${skillEngrams.length} Skills engram${skillEngrams.length === 1 ? '' : 's'} but no skills — you may have accidentally removed them. Check Sources in each Skills engram.`,
+        'error',
       );
     }
+    // Autopraxis badges are non-blocking — paint the list first, then refresh
+    // row dots / pending-review indicator when settings IPC returns.
+    void Promise.all([fetchRetrainNotifications(), fetchPendingProposals()])
+      .then(() => { if (gen === _mountSkillsGen) renderSkillsLibrary(); })
+      .catch(() => {});
+    // Auto-compute vitality + retrain-schedule lookup for the top N by recency.
+    void warmVitalityCache();
+    void warmRetrainCache();
+    showSkillsDraftRestorePrompt();
+    updateSkillsResetButton();
+    syncSkillsPreviewWarning();
+  } catch (e) {
+    console.warn('[skills] mountSkillsPane failed', e);
+    skillsLibraryLoadError = e instanceof Error ? e.message : String(e);
+    skillsLibraryLoadOk = false;
+  } finally {
+    if (gen === _mountSkillsGen) renderSkillsLibrary();
   }
-  writeSkillsLibrarySnapshot();
-  // Pull autopraxis state (notifications + pending proposals) before the
-  // first render so badges and the "N reviews pending" indicator appear
-  // on initial paint instead of after a flicker.
-  await Promise.all([fetchRetrainNotifications(), fetchPendingProposals()]);
-  renderSkillsLibrary();
-  // Orphan detection: if skill engrams exist but the library is empty, the
-  // user may have accidentally forgotten all their skills. Guard hard against
-  // false alarms: only when skill:list actually SUCCEEDED (not a transient
-  // failure → empty) and we're NOT mid-ingest (a post-ingest refresh can race
-  // ahead of skill:list repopulating). Otherwise this fires the alarming
-  // "you removed your skills" message during normal, healthy states.
-  const skillEngrams = getLoadedGraphs().filter(
-    (g) => !g.metadata.archived && g.loaded !== false && g.metadata.template === 'skill',
-  );
-  if (skillEngrams.length > 0 && skillsLibrary.length === 0 && skillsLibraryLoadOk && app().getIngestJobCount() === 0) {
-    showSkillsToast(
-      `You have ${skillEngrams.length} Skills engram${skillEngrams.length === 1 ? '' : 's'} but no skills — you may have accidentally removed them. Check Sources in each Skills engram.`,
-      'error',
-    );
-  }
-  // Auto-compute vitality + retrain-schedule lookup for the top N by recency.
-  // Retrain config is a one-shot per skill (settings.json read on the
-  // sidecar side, no expensive computation) so we fan out all in parallel.
-  void warmVitalityCache();
-  void warmRetrainCache();
-  // Show the draft-restore prompt if there's a saved draft AND the
-  // textarea is currently empty. Subtle non-modal — just a banner.
-  showSkillsDraftRestorePrompt();
-  updateSkillsResetButton();
-  syncSkillsPreviewWarning();
 }
 
 async function warmRetrainCache(): Promise<void> {
@@ -999,7 +1030,11 @@ export function renderSkillsLibrary(): void {
   if (!listEl) return;
   if (list.length === 0) {
     let msg: string;
-    if (skillsLibrary.length === 0) {
+    if (skillsLibraryLoadError) {
+      msg = `Could not load skills (${skillsLibraryLoadError}). Try ↻ or reopen this tab.`;
+    } else if (skillsLibraryFetching && skillsLibrary.length === 0) {
+      msg = 'Loading skills…';
+    } else if (skillsLibrary.length === 0) {
       msg = 'You haven\'t trained any skills yet. Compose one on the right to begin.';
     } else if (skillsShowHidden) {
       msg = 'No skills match your filter.';
