@@ -4,6 +4,9 @@ export interface VitalityReport {
   overall: number;
   byGraph: Record<string, number>;
   computedAt: number;
+  /** True while boot scans / deferred materialize are still reshaping scores —
+   *  UI should hold the prior snapshot (or "Computing…") until this clears. */
+  settling?: boolean;
   /** Cortex-wide trust aggregates (across ALL engrams) — computed in the same
    *  pass that scores vitality, so the Home dashboard can show decomposable
    *  trust factors without loading every engram's nodes client-side. */
@@ -38,17 +41,29 @@ export interface VitalityReport {
 export class VitalityScorer {
   private cache: VitalityReport | null = null;
   private cacheExpireAt = 0;
+  /** Fingerprint of listGraphs() at last compute — stale when the resident set grows mid-boot. */
+  private cachedGraphKey = '';
   private static readonly TTL_MS = 5 * 60 * 1000;
 
   constructor(private readonly host: GraphnosisHost) {}
 
   async compute(pendingDuplicatePairs: number): Promise<VitalityReport> {
-    if (this.cache && Date.now() < this.cacheExpireAt) return this.cache;
-    return this.recompute(pendingDuplicatePairs);
+    const graphKey = this.graphSetKey();
+    if (this.cache && Date.now() < this.cacheExpireAt && this.cachedGraphKey === graphKey) {
+      return this.cache;
+    }
+    const report = await this.recompute(pendingDuplicatePairs);
+    this.cachedGraphKey = graphKey;
+    return report;
   }
 
   invalidate(): void {
     this.cache = null;
+    this.cachedGraphKey = '';
+  }
+
+  private graphSetKey(): string {
+    return this.host.listGraphs().slice().sort().join('\0');
   }
 
   private async recompute(pendingDuplicatePairs: number): Promise<VitalityReport> {
