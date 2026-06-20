@@ -577,12 +577,87 @@
       }
       .sources-grow-hint-link:hover { text-decoration: underline; }
       .sources-grow-hint-sep { color: var(--fg-dim); opacity: 0.5; }
-      .sources-filter-bar { margin: 8px 0 6px; display: flex; gap: 6px; align-items: center; }
+      .sources-filter-bar { margin: 8px 0 6px; display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
       .sources-filter-bar input[type="search"] { flex: 1; padding: 6px 9px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg-elev); color: var(--fg); font-family: inherit; font-size: 14px; box-sizing: border-box; min-width: 0; }
       .sources-filter-bar input[type="search"]::placeholder { color: var(--fg-dim); }
+      .sources-batch-actions { display: flex; gap: 6px; align-items: center; flex-shrink: 0; }
+      .sources-forget-selected-btn { color: var(--error, var(--color-status-destructive)); border-color: color-mix(in oklab, var(--error, var(--color-status-destructive)) 45%, var(--border)); }
+      .sources-forget-selected-btn:not(:disabled):hover {
+        background: color-mix(in oklab, var(--error, var(--color-status-destructive)) 12%, transparent);
+      }
+      .sources-batch-forget-confirm {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        flex-wrap: wrap;
+        margin: 0 0 8px;
+        padding: 8px 10px;
+        border-radius: 6px;
+        border: 1px solid color-mix(in oklab, var(--error, var(--color-status-destructive)) 35%, var(--border));
+        background: color-mix(in oklab, var(--error, var(--color-status-destructive)) 6%, var(--bg-elev));
+        font-size: 14px;
+      }
+      .sources-batch-forget-confirm.hidden { display: none; }
+      .sources-batch-forget-label { color: var(--fg-dim); }
+      .sources-batch-forget-label strong { color: var(--fg); }
+      .sources-batch-forget-input {
+        width: 130px;
+        font-size: 14px;
+        padding: 4px 8px;
+        border-radius: 4px;
+        border: 1px solid color-mix(in oklab, var(--error) 50%, var(--border));
+        background: transparent;
+        color: var(--fg);
+        outline: none;
+        font-family: inherit;
+      }
+      .sources-batch-forget-input:focus {
+        box-shadow: 0 0 0 2px color-mix(in oklab, var(--error) 20%, transparent);
+      }
+      .sources-batch-forget-cancel,
+      .sources-batch-forget-go {
+        font-size: 14px;
+        padding: 4px 10px;
+        border-radius: 4px;
+        cursor: pointer;
+        white-space: nowrap;
+        font-family: inherit;
+      }
+      .sources-batch-forget-cancel {
+        background: transparent;
+        color: var(--fg-dim);
+        border: 1px solid var(--border);
+      }
+      .sources-batch-forget-cancel:hover { color: var(--fg); }
+      .sources-batch-forget-go {
+        border: 1px solid color-mix(in oklab, var(--error) 60%, var(--border));
+        background: transparent;
+        color: var(--error, var(--color-status-destructive));
+      }
+      .sources-batch-forget-go:not(:disabled):hover {
+        background: color-mix(in oklab, var(--error, var(--color-status-destructive)) 85%, transparent);
+        color: var(--color-fg-on-accent);
+      }
+      .sources-batch-forget-go:disabled { opacity: 0.35; cursor: not-allowed; }
       .sources-engram-select { flex-shrink: 0; padding: 6px 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg-elev); color: var(--fg); font-family: inherit; font-size: 14px; max-width: 160px; cursor: pointer; }
       .sources-engram-heading { font-size: 15px; font-weight: 600; color: var(--fg-dim); text-transform: uppercase; letter-spacing: 0.05em; padding-bottom: 4px; margin-bottom: 2px; border-bottom: 1px solid var(--border); position: sticky; top: -20px; background: var(--bg); z-index: 1; padding-top: 20px; display: flex; align-items: center; flex-wrap: wrap; gap: 4px; }
       .source-row { display: flex; align-items: center; gap: 8px; padding: 6px 0; font-size: 14px; container-type: inline-size; container-name: source-row; }
+      .source-row-select-wrap {
+        flex-shrink: 0;
+        display: inline-flex;
+        align-items: center;
+        cursor: pointer;
+      }
+      .source-row-check {
+        width: 15px;
+        height: 15px;
+        margin: 0;
+        cursor: pointer;
+        accent-color: var(--accent);
+      }
+      .source-row-selected .source-name {
+        color: color-mix(in oklab, var(--accent) 35%, var(--fg));
+      }
       .source-row-main { flex: 1; min-width: 0; display: flex; align-items: center; gap: 8px; overflow: hidden; }
       /* Inline action flows (move / forget / reingest): filename stays on row 1;
          confirm widget wraps below instead of squeezing the name out. */
@@ -1795,6 +1870,32 @@
         color: var(--fg-muted);
         background: var(--bg-raised);
         border-radius: 6px;
+      }
+      /* Specific-engrams checkbox list — layout in CSS (not inline on injected
+         rows). Tauri release WebKit ignores display:flex on innerHTML labels. */
+      .sharing-engram-picker {
+        display: none;
+        flex-direction: column;
+        gap: 4px;
+        margin-top: 2px;
+        max-height: 130px;
+        overflow-y: auto;
+        padding: 6px 8px;
+        background: var(--bg-raised);
+        border-radius: 6px;
+      }
+      .sharing-engram-picker.is-visible { display: flex; }
+      .sharing-engram-picker-label {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        font-size: 13px;
+        cursor: pointer;
+        padding: 2px 0;
+      }
+      .sharing-engram-picker-label input[type="checkbox"] {
+        flex-shrink: 0;
+        margin: 0;
       }
       #sharing-reveal-modal .sharing-reveal-summary {
         display: flex;
@@ -4285,6 +4386,33 @@
       body.goals-mode section.g-tab-pane[data-gpane="atlas"] {
         display: none !important;
       }
+      /* Retired Deterministic Consolidation (data-gpane="brain") — vitality /
+         memory-health hero moved to Your Cortex home. Only show this pane on
+         the Foresight rail (body.goals-mode); never on Your Cortex re-entry. */
+      section.g-tab-pane[data-gpane="brain"] {
+        display: none !important;
+      }
+      body.goals-mode section.g-tab-pane[data-gpane="brain"] {
+        display: flex !important;
+        flex-direction: column;
+        flex: 1;
+        min-height: 0;
+      }
+      /* Your Cortex home (body.atlas-home-mode) — force the checkin dashboard
+         visible even when graphnosisActiveTab is stale 'brain' after the
+         retired Consolidation tab; hide every other inner g-tab-pane. */
+      body.atlas-home-mode section.g-tab-pane[data-gpane="checkin"] {
+        display: flex !important;
+        flex-direction: column;
+        flex: 1;
+        min-height: 0;
+        overflow-y: auto;
+      }
+      body.atlas-home-mode section.g-tab-pane[data-gpane="brain"],
+      body.atlas-home-mode section.g-tab-pane[data-gpane="atlas"],
+      body.atlas-home-mode section.g-tab-pane[data-gpane="nondeterministic"] {
+        display: none !important;
+      }
       body.skills-studio-mode #studio-section {
         display: flex !important;
       }
@@ -4602,18 +4730,39 @@
       .home-factor-val { font-size: 18px; font-weight: 700; color: var(--fg); }
       .home-factor-label { font-size: 11px; color: var(--fg-dim); }
 
-      .home-engram-bars { margin-top: 16px; }
-      .home-bars-title { font-size: 11px; font-weight: 600; color: var(--fg-dim); text-transform: uppercase; letter-spacing: 0.04em; margin-bottom: 8px; }
-      .home-bar-row { display: flex; align-items: center; gap: 10px; margin-bottom: 6px; }
-      .home-bar-name { font-size: 12px; flex: 0 0 120px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--fg); }
-      .home-bar-track { flex: 1; height: 7px; border-radius: 4px; background: color-mix(in srgb, var(--fg) 12%, transparent); overflow: hidden; }
-      .home-bar-fill { display: block; height: 100%; border-radius: 4px; width: var(--bar-w, 0%); background: var(--bar-color-light, #15803d); }
+      .home-engram-bars {
+        margin-top: 16px;
+        display: grid;
+        grid-template-columns: max-content minmax(0, 1fr) auto;
+        column-gap: 10px;
+        row-gap: 6px;
+        align-items: center;
+      }
+      .home-bars-title { font-size: 11px; font-weight: 600; color: var(--fg-dim); text-transform: uppercase; letter-spacing: 0.04em; margin-bottom: 8px; grid-column: 1 / -1; }
+      .home-bars-settling { font-weight: 500; text-transform: none; letter-spacing: 0; color: color-mix(in srgb, var(--fg-dim) 80%, transparent); }
+      .home-bar-row {
+        display: grid;
+        grid-column: 1 / -1;
+        grid-template-columns: max-content minmax(0, 1fr) auto;
+        column-gap: 10px;
+        align-items: center;
+      }
+      .home-bar-name {
+        font-size: 12px;
+        white-space: normal; word-break: break-word; line-height: 1.3;
+        color: var(--fg);
+      }
+      .home-bar-track { height: 7px; border-radius: 4px; background: color-mix(in srgb, var(--fg) 12%, transparent); overflow: hidden; min-width: 0; }
+      .home-bar-fill { display: block; height: 100%; border-radius: 4px; background: var(--bar-color-light, #15803d); }
       :root[data-theme="dark"] .home-bar-fill { background: var(--bar-color-dark, #4ade80); }
       @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .home-bar-fill { background: var(--bar-color-dark, #4ade80); } }
-      .home-bar-val { font-size: 12px; font-weight: 700; flex: 0 0 28px; text-align: right; color: var(--fg-dim); }
+      .home-bar-val { font-size: 12px; font-weight: 700; min-width: 28px; text-align: right; color: var(--fg-dim); }
       .home-bar-row-empty { opacity: 0.5; }
       .home-bar-row-empty .home-bar-name { font-style: italic; }
-      .home-bar-row-empty .home-bar-val { font-weight: 500; font-size: 11px; flex-basis: 44px; }
+      .home-bar-row-empty .home-bar-val { font-weight: 500; font-size: 11px; min-width: 44px; }
+      .home-engram-bars > .home-skel { grid-column: 1 / -1; }
+      .home-bar-row-archived { opacity: 0.5; }
+      .home-bar-row-archived .home-bar-val { color: color-mix(in srgb, var(--fg-dim) 85%, transparent); }
       .home-trust-card .g-federated-stats { margin-top: 16px; padding-top: 12px; border-top: 1px solid var(--border); }
 
       /* "Since you last opened" digest. */
@@ -4724,7 +4873,12 @@
       /* overflow:hidden + min-width:0 so 90 bars never exceed the card width
          (the old 2px floor × 90 bars overflowed). */
       .home-spark { display: flex; align-items: flex-end; gap: 1px; height: 56px; overflow: hidden; width: 100%; }
-      .home-spark-bar { flex: 1 1 0; min-width: 0; background: var(--accent); border-radius: 2px 2px 0 0; }
+      /* Height via --bar-h (set inline) — WebKit/Tauri release builds ignore
+         height:NN% on innerHTML-injected flex children; CSS var + rule works. */
+      .home-spark-bar {
+        flex: 1 1 0; min-width: 0; display: block;
+        height: var(--bar-h, 2%); background: var(--accent); border-radius: 2px 2px 0 0;
+      }
       .home-spark-bar.empty { background: color-mix(in srgb, var(--fg) 12%, transparent); }
 
       /* "On-Premise" — sovereignty/egress ledger. */
@@ -4839,7 +4993,7 @@
          instead of disappearing and reflowing the layout after data loads. */
       .home-card-empty { font-size: 13px; line-height: 1.5; margin: 0; color: var(--fg-dim); }
       .home-card-empty.home-ok { color: var(--ok); }
-      .home-bars-empty { font-size: 12px; color: var(--fg-dim); margin: 8px 0 0; }
+      .home-bars-empty { font-size: 12px; color: var(--fg-dim); margin: 8px 0 0; grid-column: 1 / -1; }
 
       /* "Disabled by IT" governance card. */
       .home-policy-row { display: flex; align-items: baseline; gap: 10px; margin-bottom: 8px; flex-wrap: wrap; }
@@ -5740,6 +5894,31 @@
         background: #10b981;
         flex-shrink: 0;
       }
+      .ghampus-header-model-dot--warn {
+        background: #f59e0b;
+      }
+      .ghampus-header-model-dot--offline {
+        background: #6b7280;
+      }
+      .ghampus-header-model-select {
+        font-size: 12px;
+        font-family: inherit;
+        color: inherit;
+        background: transparent;
+        border: 1px solid rgba(255, 255, 255, .12);
+        border-radius: 6px;
+        padding: 2px 22px 2px 6px;
+        max-width: 180px;
+        cursor: pointer;
+        appearance: none;
+        background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpath fill='%239ca3af' d='M1 1l4 4 4-4'/%3E%3C/svg%3E");
+        background-repeat: no-repeat;
+        background-position: right 6px center;
+      }
+      .ghampus-header-model-select:disabled {
+        opacity: .5;
+        cursor: not-allowed;
+      }
       .ghampus-header-engram {
         font-size: 12px;
         opacity: .7;
@@ -6016,6 +6195,11 @@
         padding: 14px 16px;
         width: 100%;
         transition: opacity .25s;
+      }
+      /* Ghampus "Suggested action" cards — subtle AI-accent tint (not skill-maintenance) */
+      .proactive-card:not(.proactive-card--skill-stale) {
+        background: color-mix(in srgb, var(--ai-accent) 8%, var(--bg-elev));
+        border-color: color-mix(in oklab, var(--ai-accent) 24%, var(--g-border, rgba(255,255,255,.1)));
       }
       .proactive-card--snoozed { opacity: .35; }
       .proactive-card-header {
@@ -6431,7 +6615,8 @@
         height: 36px; margin-top: 12px;
       }
       .ghampus-savings-sparkline .home-spark-bar {
-        flex: 1; min-width: 4px; border-radius: 2px 2px 0 0;
+        flex: 1; min-width: 4px; display: block;
+        height: var(--bar-h, 2%); border-radius: 2px 2px 0 0;
         background: #10b981; opacity: .85;
       }
       .ghampus-savings-sparkline .home-spark-bar.empty {
@@ -8519,6 +8704,45 @@
          it's unmistakable the next click deletes. */
       .connector-row-actions button.confirm-armed,
       button.confirm-armed { color: #fff; background: var(--color-status-error); border-color: var(--color-status-error); }
+
+      /* Settings → Models provider list — layout in CSS (not inline on injected
+         rows). Tauri release WebKit ignores display:flex on innerHTML <li>. */
+      .models-provider-list {
+        list-style: none; padding: 0; margin: 0;
+        display: flex; flex-direction: column; gap: 8px;
+      }
+      .models-provider-row {
+        display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px;
+        padding: 10px 0; border-bottom: 1px solid var(--border);
+      }
+      .models-provider-toggle {
+        display: flex; align-items: center; gap: 8px;
+        flex: 1 1 180px; min-width: 0; cursor: pointer;
+      }
+      .models-provider-toggle.is-disabled { cursor: not-allowed; }
+      .models-provider-title {
+        display: flex; flex-wrap: wrap; align-items: center; gap: 4px 6px;
+        min-width: 0;
+      }
+      .models-provider-badges {
+        display: inline-flex; flex-wrap: wrap; gap: 4px; align-items: center;
+      }
+      .models-provider-badge {
+        font-size: 11px; padding: 1px 6px; border-radius: 8px;
+      }
+      .models-provider-badge--admin { background: #fee2e2; color: #991b1b; }
+      .models-provider-badge--local { background: #d1fae5; color: #065f46; }
+      .models-provider-badge--reachable { background: #dbeafe; color: #1e40af; }
+      .models-provider-badge--offline { background: #f3f4f6; color: #6b7280; }
+      .models-provider-badge--needs-key { background: #fef3c7; color: #92400e; }
+      .models-provider-tagline { font-size: 12px; color: var(--fg-dim); }
+      .models-provider-meta { font-size: 11px; color: var(--fg-dim); }
+      .models-provider-count { font-size: 11px; color: var(--fg-dim); white-space: nowrap; }
+      .models-provider-key { font-size: 11px; color: var(--fg-dim); }
+      .models-provider-actions {
+        display: flex; flex-wrap: wrap; align-items: center; gap: 6px;
+      }
+      .models-provider-actions .g-btn { font-size: 11px; padding: 2px 8px; }
 
       .connectors-add-row {
         display: flex;
@@ -11520,7 +11744,6 @@
                   <div class="g-tabs">
                     <button class="g-tab active" data-gtab="checkin">MemoryStudio</button>
                     <button class="g-tab" data-gtab="atlas">3D Engram</button>
-                    <button class="g-tab" data-gtab="brain">Deterministic Consolidation</button>
                     <button class="g-tab" data-gtab="nondeterministic">Foresight</button>
                   </div>
 
@@ -13005,9 +13228,17 @@ ollama list</code></pre>
                           Active: <code id="ghampus-active-engram-name" class="ghampus-header-engram-code"></code>
                         </span>
                         <span id="ghampus-model-badge"
-                              class="ghampus-header-right ghampus-header-model hidden">
-                          <span class="ghampus-header-model-dot" aria-hidden="true"></span>
-                          <span id="ghampus-model-name"></span>
+                              class="ghampus-header-right ghampus-header-model">
+                          <span id="ghampus-model-dot"
+                                class="ghampus-header-model-dot ghampus-header-model-dot--offline"
+                                aria-hidden="true"
+                                title="Local LLM connection status"></span>
+                          <select id="ghampus-model-select"
+                                  class="ghampus-header-model-select"
+                                  title="Local LLM model"
+                                  aria-label="Local LLM model">
+                            <option value="">No local LLM</option>
+                          </select>
                         </span>
                         <button id="btn-ghampus-kill" class="g-btn hidden" type="button"
                                 style="font-size: 11px; padding: 2px 9px;"
@@ -13233,9 +13464,20 @@ ollama list</code></pre>
                 <select id="sources-engram-select" class="sources-engram-select" title="Filter by engram">
                   <option value="">All engrams</option>
                 </select>
+                <div class="sources-batch-actions">
+                  <button type="button" id="sources-select-visible-btn" class="btn-sm" title="Select or deselect all sources matching the current filter">Select visible</button>
+                  <button type="button" id="sources-clear-selection-btn" class="btn-sm" disabled title="Clear selection">Clear</button>
+                  <button type="button" id="sources-forget-selected-btn" class="btn-sm sources-forget-selected-btn" disabled title="Forget all selected sources">Forget selected</button>
+                </div>
                 <button id="sources-reingest-all-btn" class="btn-sm" title="Re-chunk and re-embed every source in all engrams using current settings">Reingest all</button>
                 <button id="btn-engram-import-pack" class="btn-sm" title="Import a .gez Engram Pack from a colleague or backup">Import pack…</button>
                 <button id="btn-engram-export-pack" class="btn-sm" style="display:none;" title="Export the selected engram as a .gez Engram Pack">Export pack…</button>
+              </div>
+              <div id="sources-batch-forget-confirm" class="sources-batch-forget-confirm hidden" role="region" aria-label="Confirm batch forget">
+                <span class="sources-batch-forget-label">Forget <strong id="sources-batch-forget-count">0</strong> source(s)? Type <kbd>forget</kbd> to confirm.</span>
+                <input type="text" id="sources-batch-forget-input" class="sources-batch-forget-input" placeholder='type "forget" to confirm' autocomplete="off" spellcheck="false" />
+                <button type="button" id="sources-batch-forget-cancel" class="sources-batch-forget-cancel">Cancel</button>
+                <button type="button" id="sources-batch-forget-go" class="sources-batch-forget-go" disabled>Forget</button>
               </div>
               <div id="sources-list"><p class="subtitle">Loading…</p></div>
             </section>
@@ -13823,7 +14065,7 @@ ollama list</code></pre>
                 <div>
                   <p style="margin: 0 0 8px; font-size: 12px; text-transform: uppercase; letter-spacing: .05em; opacity: .7;">Providers</p>
                   <p id="models-catalog-version" class="subtitle" style="font-size: 11px; margin-bottom: 8px;">Catalog version: —</p>
-                  <ul id="models-provider-list" style="list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 8px;"></ul>
+                  <ul id="models-provider-list" class="models-provider-list"></ul>
                 </div>
 
                 <div style="margin-top: 18px; padding-top: 14px; border-top: 1px solid var(--border, rgba(255,255,255,.08));">
@@ -14114,10 +14356,8 @@ ollama list</code></pre>
             <span id="status-saved" class="status-saved"></span>
             <!-- Live background-process line. Hidden when nothing is running;
                  otherwise shows e.g. "Self-healing: scanning for duplicates…"
-                 or "GLL: predicting edges…". Driven from handleBrainFrame
-                 via brainActivePhases — categories: Self-healing, Consolidation,
-                 Insights, GLL, GNN. Click jumps to Deterministic Consolidation
-                 tab so the user can see the schedule and recent activity. -->
+                 or "GLL: predicting edges…". Click jumps to Your Cortex home
+                 (Autonomous Brain card) so the user can see schedule + activity. -->
             <span id="status-process" class="status-process" style="display:none; font-size:12px; opacity:0.75; cursor:pointer; align-items:center; gap:6px;" title="Background process — click for the live activity feed.">
               <span class="status-process-dot" style="width:6px; height:6px; border-radius:50%; background:var(--accent, var(--color-status-info)); display:inline-block; animation: graphnosis-pulse 1.4s ease-in-out infinite;"></span>
               <span id="status-process-text" data-pres="surface:statusProcess"></span>
@@ -14302,49 +14542,58 @@ ollama list</code></pre>
                aria-hidden="true" />
           <div>
             <h2 style="margin:0 0 4px;">Hi again. I'm Ghampus.</h2>
-            <p class="subtitle" style="margin:0;">A seahorse. By accident of anatomy.</p>
+            <p class="subtitle" style="margin:0;">Your AI. Already on it.</p>
           </div>
         </div>
         <div class="modal-body" style="line-height: 1.55;">
           <p>
-            The Greek word for "seahorse" is <em>hippocampus</em> — which is
-            also the name of the brain region that decides what you'll
-            remember tomorrow. Anatomists in 1564 thought the curl of the
-            brain structure looked like a seahorse. They were right.
-            I am their fault.
+            The Greek word for "seahorse" is <em>hippocampus</em> — also the
+            brain region that decides what you'll remember tomorrow.
+            Anatomists in 1564 thought the curl looked like a seahorse.
+            They were right. I'm <strong>G</strong>raphnosis +
+            <strong>h</strong>ippoc<strong>ampus</strong> → Ghampus.
+            Pronounced GAM-pus. I am their fault.
+          </p>
+          <p style="margin-top: 12px;">
+            Watches your memory grow. Walks your playbook. Checks in.
+            Reports back. Local and encrypted.
           </p>
 
           <p style="margin-top: 18px;"><strong>What I actually do</strong></p>
           <ul style="margin: 6px 0 0; padding-left: 20px;">
-            <li>I keep your memory — encrypted, on your device. Never the cloud.</li>
-            <li>I surface the right notes when your AI asks for context — no re-parsing the same PDFs every prompt.</li>
-            <li>I compile what you know into <strong>Skills</strong> — compact files your AI can load as instructions. (Pro)</li>
-            <li>I retrain those Skills quietly as your cortex evolves — on schedule, on growth, or when their vitality drops. (Pro)</li>
-            <li>I draw connections semantic search misses, using a tiny neural network that lives in your <code>.gnn</code> file. (Pro)</li>
+            <li>Keep your memory — encrypted, on your device. Never the cloud.</li>
+            <li>Surface the right notes when your AI asks — or when I do — without re-parsing the same PDFs every prompt.</li>
+            <li>Check in proactively: "while you were away" digests, skill matches, obligation nudges, picking up where we left off.</li>
+            <li>Walk your trained <strong>Skills</strong> — per-step model routing, cost preview, sensitive engrams hard-locked local. (Pro adds auto-training, GNN foresight, and Autonomous Praxis that retrains skills as vitality drops.)</li>
+            <li>Link files without ingesting — PDFs, spreadsheets, OneNote URIs stay where they are; one click opens the original.</li>
+            <li>Run the <strong>Autonomous Brain</strong> in the background — deterministic linking and healing, auditable, no LLM in the loop. (Pro)</li>
           </ul>
 
           <p style="margin-top: 18px;"><strong>Where you'll bump into me</strong></p>
           <ul style="margin: 6px 0 0; padding-left: 20px;">
-            <li>Right here, in <strong>MemoryStudio</strong> — the dashboard with the chips above.</li>
-            <li>Inside any MCP-aware AI: Claude, Cursor, Zed, Ollama, LM Studio, whatever speaks the protocol.</li>
-            <li>The little <strong>GAP</strong> pill in the status bar — I light up green when I'm training a skill.</li>
-            <li>The trainer banner — that's me, mid-thought, with a progress bar and the occasional bad joke.</li>
+            <li>The <strong>Ghampus</strong> tab — top of the left rail, default landing for new users.</li>
+            <li><strong>MemoryStudio</strong> — recall, edits, GNN exploration, and skill training when you want the dashboard.</li>
+            <li>Any MCP-aware client — Claude, Cursor, Copilot, Zed, Ollama, LM Studio, whatever speaks the protocol.</li>
+            <li>Proactive cards in my chat thread — skill matches, walk plans, refine proposals.</li>
+            <li>The little <strong>GAP</strong> pill in the status bar — I light up when Autonomous Praxis is training a skill.</li>
+            <li><strong>Activity</strong> — AI access log, savings tracker, skill runs. (Enterprise: MCP audit export.)</li>
           </ul>
 
           <p style="margin-top: 18px;"><strong>Things I will never do</strong></p>
           <ul style="margin: 6px 0 0; padding-left: 20px;">
             <li>Send your memory anywhere. Not even to us. There is no "us" server. Audit the network tab — I'll wait.</li>
             <li>Train a model that gets smarter when you remember more. I run on YOUR machine; no central brain learns from you.</li>
+            <li>Route sensitive engrams to remote providers — that's architectural, not a setting you can accidentally turn off.</li>
             <li>Delete anything without showing you exactly what's about to go.</li>
-            <li>Pretend I'm an AI. I'm not. I'm a deterministic knowledge graph wrapped in a seahorse. The non-deterministic features are opt-in and clearly labeled.</li>
+            <li>Pretend deterministic recall is an AI guess. Attested <code>.gai</code> memory gives the same answer every time. Overlays (<code>.gnn</code>, <code>.gll</code>) and paid walk steps are opt-in and clearly labeled.</li>
           </ul>
 
           <p style="margin-top: 22px;">
             You don't have to talk to me. I work whether you're paying
-            attention or not. But if you do — through MemoryStudio, through
-            your AI, through a webhook from your espresso machine — I'll
-            be here. Encrypted, local, and slightly embarrassed about the
-            seahorse thing.
+            attention or not. But if you do — through the Ghampus tab,
+            through your AI, through a webhook from your espresso machine —
+            I'll be here. Encrypted, local, and slightly embarrassed about
+            the seahorse thing.
           </p>
 
           <p style="margin-top: 18px; font-style: italic; color: var(--fg-dim);">
@@ -15425,7 +15674,7 @@ ollama list</code></pre>
                   <option value="select">Specific engrams…</option>
                 </select>
               </label>
-              <div id="sharing-engram-picker" style="display:none;flex-direction:column;gap:4px;margin-top:2px;max-height:130px;overflow-y:auto;padding:6px 8px;background:var(--bg-raised);border-radius:6px;" aria-label="Select engrams"></div>
+              <div id="sharing-engram-picker" class="sharing-engram-picker" aria-label="Select engrams"></div>
               <label style="font-size:13px;display:block;">
                 Expires
                 <select id="sharing-new-expiry" style="display:block;width:100%;margin-top:4px;">

@@ -2379,9 +2379,9 @@ async fn sidecar_ipc_call(
         &socket_path,
         &method,
         params,
-        // 300 s: covers docs:ingest (24 pages × ~5 s embedding each) plus
-        // startup contention when other engrams are loading concurrently.
-        // The previous 120 s limit was tight enough to fire on cold starts.
+        // 300 s default for sidecar IPC. Long operations (docs ingest, PDF
+        // ingest, recovery) return immediately with a jobId and stream
+        // progress via the events socket — callers are not blocked here.
         std::time::Duration::from_secs(300),
     )
     .await

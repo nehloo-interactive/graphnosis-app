@@ -454,6 +454,8 @@ const SSE_TO_TAURI: Record<string, string> = {
   'graph.events':                 'graphnosis://event-stream-connected',
   'ingest.progress':              'graphnosis://ingest-progress',
   'ingest.done':                  'graphnosis://ingest-done',
+  'docs.progress':                'graphnosis://docs-progress',
+  'docs.done':                    'graphnosis://docs-done',
   'recovery.progress':            'graphnosis://recovery-progress',
   'recovery.done':                'graphnosis://recovery-done',
   'engrams-loading':              'graphnosis://engrams-loading',

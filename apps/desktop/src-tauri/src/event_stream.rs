@@ -184,6 +184,7 @@ async fn open_and_read(app: &AppHandle, socket_path: &Path) -> Result<()> {
                 }
             }
             "ingest.progress" | "ingest.done"
+            | "docs.progress" | "docs.done"
             | "recovery.progress" | "recovery.done"
             | "engram.create-suggested"
             | "correction.proposed"
