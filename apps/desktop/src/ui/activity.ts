@@ -38,12 +38,16 @@ interface SharingPlanInfo {
 /** Show/hide the Enterprise Evidence Pack panel on the Activity pane. */
 export async function refreshActivityCompliancePanel(): Promise<void> {
   const section = document.getElementById('activity-compliance-section');
+  const recallPanel = document.getElementById('activity-recall-as-of-panel');
   if (!section) return;
   try {
     const plan = await ipcCall<SharingPlanInfo>('sharing:planInfo', {});
-    section.style.display = plan.enterprise ? '' : 'none';
+    const show = plan.enterprise === true;
+    section.style.display = show ? '' : 'none';
+    if (recallPanel) recallPanel.style.display = show ? '' : 'none';
   } catch {
     section.style.display = 'none';
+    if (recallPanel) recallPanel.style.display = 'none';
   }
 }
 
@@ -59,7 +63,10 @@ function wireActivityComplianceExport(): void {
       if (engram) params.engram = engram;
       const result = await ipcCallTimeout<{
         ok: boolean;
-        pack?: unknown;
+        pack?: { manifestHash?: string; signatures?: unknown[] };
+        manifestHash?: string;
+        signatures?: unknown[];
+        detachedSig?: unknown;
         reason?: string;
         message?: string;
       }>('compliance.exportEvidencePack', params, ACTIVITY_IPC_TIMEOUT_MS);
@@ -67,7 +74,8 @@ function wireActivityComplianceExport(): void {
         void gAlert('Evidence Pack export failed', result.message ?? result.reason ?? 'Unknown error');
         return;
       }
-      const json = JSON.stringify(result.pack ?? {}, null, 2);
+      const pack = result.pack ?? {};
+      const json = JSON.stringify(pack, null, 2);
       const blob = new Blob([json], { type: 'application/json' });
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
@@ -77,12 +85,73 @@ function wireActivityComplianceExport(): void {
       a.download = `graphnosis-evidence-pack${scopePart}-${datePart}.json`;
       a.click();
       URL.revokeObjectURL(url);
+      const sigPayload = result.detachedSig ?? {
+        manifestHash: result.manifestHash ?? pack.manifestHash,
+        signatures: result.signatures ?? pack.signatures,
+      };
+      if (sigPayload && (sigPayload as { signatures?: unknown[] }).signatures?.length) {
+        const sigBlob = new Blob([JSON.stringify(sigPayload, null, 2)], { type: 'application/json' });
+        const sigUrl = URL.createObjectURL(sigBlob);
+        const sigA = document.createElement('a');
+        sigA.href = sigUrl;
+        sigA.download = `graphnosis-evidence-pack${scopePart}-${datePart}.sig.json`;
+        sigA.click();
+        URL.revokeObjectURL(sigUrl);
+      }
     } catch (e) {
       void gAlert('Evidence Pack export error', e instanceof Error ? e.message : String(e));
     } finally {
       btn.disabled = false;
     }
   });
+
+  const recallBtn = document.getElementById('btn-activity-recall-as-of') as HTMLButtonElement | null;
+  if (recallBtn) {
+    recallBtn.addEventListener('click', async () => {
+      const query = (document.getElementById('activity-recall-as-of-query') as HTMLInputElement | null)?.value.trim() ?? '';
+      const seqRaw = (document.getElementById('activity-recall-as-of-seq') as HTMLInputElement | null)?.value.trim();
+      const tsRaw = (document.getElementById('activity-recall-as-of-ts') as HTMLInputElement | null)?.value.trim();
+      const preview = document.getElementById('activity-recall-as-of-preview');
+      if (!query) {
+        void gAlert('Recall as of', 'Enter a search query.');
+        return;
+      }
+      if (!seqRaw && !tsRaw) {
+        void gAlert('Recall as of', 'Enter an op-log sequence number or Unix timestamp (ms).');
+        return;
+      }
+      recallBtn.disabled = true;
+      if (preview) preview.textContent = 'Loading preview…';
+      try {
+        const engram = els.activityEngramSelect.value.trim();
+        const result = await ipcCallTimeout<{
+          ok: boolean;
+          result?: unknown;
+          message?: string;
+          reason?: string;
+        }>('compliance.recallAsOf', {
+          query,
+          ...(engram ? { graphId: engram } : {}),
+          ...(seqRaw ? { asOfSeq: Number(seqRaw) } : {}),
+          ...(tsRaw ? { asOfTs: Number(tsRaw) } : {}),
+          maxNodes: 20,
+        }, ACTIVITY_IPC_TIMEOUT_MS);
+        if (!result.ok) {
+          void gAlert('Recall as of failed', result.message ?? result.reason ?? 'Unknown error');
+          if (preview) preview.textContent = '';
+          return;
+        }
+        if (preview) {
+          preview.textContent = JSON.stringify(result.result ?? {}, null, 2);
+        }
+      } catch (e) {
+        void gAlert('Recall as of error', e instanceof Error ? e.message : String(e));
+        if (preview) preview.textContent = '';
+      } finally {
+        recallBtn.disabled = false;
+      }
+    });
+  }
 }
 
 export function getActivityCat(): ActivityCat { return activityCat; }

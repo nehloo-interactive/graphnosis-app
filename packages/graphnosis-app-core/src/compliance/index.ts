@@ -1,5 +1,25 @@
 import type { SourceRecord } from '../types.js';
-import type { GraphMetadata } from '../settings/index.js';
+import type { ComplianceSettings, GraphMetadata } from '../settings/index.js';
+
+/** Resolve retention TTL: per-engram override, then cortex default, then none. */
+export function retentionTtlMsForGraph(
+  meta: GraphMetadata | undefined,
+  compliance?: ComplianceSettings,
+): number | undefined {
+  const ttl = meta?.retentionTtlMs ?? compliance?.defaultRetentionTtlMs;
+  if (typeof ttl !== 'number' || ttl <= 0) return undefined;
+  return Math.floor(ttl);
+}
+
+/** Whether to export before purge — per-engram wins, then cortex default (true). */
+export function shouldExportBeforePurge(
+  meta: GraphMetadata | undefined,
+  compliance?: ComplianceSettings,
+): boolean {
+  if (meta?.retentionExportBeforePurge !== undefined) return meta.retentionExportBeforePurge;
+  if (compliance?.defaultExportBeforePurge !== undefined) return compliance.defaultExportBeforePurge;
+  return true;
+}
 
 /** Thrown when a mutating operation targets a preserved source or engram. */
 export class LegalHoldError extends Error {
@@ -53,13 +73,6 @@ export function assertSourceNotOnLegalHold(
   }
 }
 
-/** Resolve per-engram retention TTL from graph metadata. Undefined = no TTL. */
-export function retentionTtlMsForGraph(meta: GraphMetadata | undefined): number | undefined {
-  const ttl = meta?.retentionTtlMs;
-  if (typeof ttl !== 'number' || ttl <= 0) return undefined;
-  return Math.floor(ttl);
-}
-
 /** True when a source has exceeded its engram retention window and is not held. */
 export function isRetentionExpired(
   ingestedAt: number,
@@ -72,6 +85,28 @@ export function isRetentionExpired(
   return now - ingestedAt >= ttlMs;
 }
 
-export function shouldExportBeforePurge(meta: GraphMetadata | undefined): boolean {
-  return meta?.retentionExportBeforePurge !== false;
-}
+export type { IndustryTag, SensitivityTier } from './industry.js';
+export {
+  normalizeIndustryTags,
+  hasRegulatedIndustryTag,
+  effectiveSensitivityTier,
+  TIER_CAPS,
+  industryRecallBudgetClamp,
+  budgetForGraph,
+} from './industry.js';
+export type {
+  ClassificationColor,
+  ClassificationLabel,
+  ClassificationSchema,
+  ClassificationPolicy,
+} from './classification-schema.js';
+export {
+  DEFAULT_CLASSIFICATION_LABELS,
+  findClassificationLabel,
+  userAssignableLabels,
+  resolveClassificationPolicy,
+  sanitizeClassificationLabel,
+  sanitizeClassificationSchema,
+  classificationSchemaFromCompliance,
+} from './classification-schema.js';
+export { detectPolicyContradictions, type PolicyContradictionCandidate } from './policy-contradiction.js';

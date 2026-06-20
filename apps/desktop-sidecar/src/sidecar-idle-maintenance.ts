@@ -13,6 +13,7 @@ import { dbg } from './log-redact.js';
 
 export interface SidecarIdleMaintenanceDeps {
   host: GraphnosisHost;
+  cortexDir: string;
   broadcastRaw?: BroadcastRawFn;
 }
 
@@ -43,11 +44,14 @@ const TICK_MS = 90_000;
 const INITIAL_DELAY_MS = 5 * 60_000;
 /** At most one housekeeping pass per 24 h while the sidecar stays up. */
 const MIN_INTERVAL_MS = 24 * 60 * 60 * 1000;
+/** Weekly compliance retention dry-run (log only — never auto-purge). */
+const RETENTION_DRY_RUN_INTERVAL_MS = 7 * 24 * 60 * 60 * 1000;
 
 export class SidecarIdleMaintenance {
   private timer: ReturnType<typeof setInterval> | null = null;
   private bootNotifyTimer: ReturnType<typeof setTimeout> | null = null;
   private lastRunAt = 0;
+  private lastRetentionDryRunAt = 0;
   private inFlight = false;
 
   constructor(private deps: SidecarIdleMaintenanceDeps) {}
@@ -112,6 +116,7 @@ export class SidecarIdleMaintenance {
       } else {
         dbg('[sidecar-idle-maintenance] oplog housekeeping complete');
       }
+      await this.maybeRunRetentionDryRun(force);
       return { action: 'run' };
     } catch (e: unknown) {
       console.error(
@@ -120,6 +125,25 @@ export class SidecarIdleMaintenance {
       return { action: 'skip', detail: 'error' };
     } finally {
       this.inFlight = false;
+    }
+  }
+
+  private async maybeRunRetentionDryRun(force = false): Promise<void> {
+    const settings = this.deps.host.getSettings();
+    const compliance = settings.compliance;
+    if (compliance?.enabled !== true) return;
+    const lastAt = compliance.lastRetentionDryRunAt ?? this.lastRetentionDryRunAt;
+    if (!force && lastAt > 0 && Date.now() - lastAt < RETENTION_DRY_RUN_INTERVAL_MS) return;
+    const cortexDir = this.deps.cortexDir;
+    if (!cortexDir) return;
+    try {
+      const { runRetentionPurge } = await import('./compliance.js');
+      const result = await runRetentionPurge(this.deps.host, cortexDir, true);
+      await this.deps.host.recordComplianceRetentionDryRun(result.items.length);
+      this.lastRetentionDryRunAt = Date.now();
+      dbg(`[sidecar-idle-maintenance] compliance retention dry-run: ${result.items.length} candidate(s)`);
+    } catch (e: unknown) {
+      console.error(`[sidecar-idle-maintenance] retention dry-run failed: ${(e as Error).message}`);
     }
   }
 }

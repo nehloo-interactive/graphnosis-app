@@ -1,5 +1,5 @@
 /**
- * Compliance Mode v1 — Evidence Pack export, retention purge, point-in-time recall.
+ * Compliance Mode — Evidence Pack export, retention purge, point-in-time recall.
  *
  * PRIVACY: Evidence packs contain structural audit data only — no raw MCP queries,
  * no passphrase material, no encryption keys. Consent records are tier/client scoped.
@@ -8,7 +8,7 @@
 import { createHash } from 'node:crypto';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
-import { oplog } from '@nehloo-interactive/graphnosis-secure-sync';
+import { crypto, oplog } from '@nehloo-interactive/graphnosis-secure-sync';
 import {
   isRetentionExpired,
   retentionTtlMsForGraph,
@@ -24,6 +24,15 @@ export interface EvidencePackOptions {
   engram?: string;
 }
 
+export interface EvidencePackSignature {
+  algorithm: 'Ed25519';
+  signer: 'device' | 'org';
+  deviceId?: string;
+  publicKey: string;
+  signature: string;
+  manifestHash: string;
+}
+
 export interface EvidencePack {
   version: 1;
   exportedAt: number;
@@ -32,6 +41,16 @@ export interface EvidencePack {
   consent: { count: number; records: NonNullable<ReturnType<GraphnosisHost['getSettings']>['ai']['dataAccessConsents']> };
   mcpAudit: { count: number; events: McpAuditEvent[] };
   engramHashes: Array<{ graphId: string; gaiSha256: string; bundleSha256?: string }>;
+  manifestHash?: string;
+  signatures?: EvidencePackSignature[];
+}
+
+export interface SignedEvidencePackExport {
+  pack: EvidencePack;
+  manifestHash: string;
+  signatures: EvidencePackSignature[];
+  /** Detached .sig payload (same as signatures, for dual-file export). */
+  detachedSig: { manifestHash: string; signatures: EvidencePackSignature[] };
 }
 
 export interface RetentionPurgeItem {
@@ -63,6 +82,9 @@ export interface RecallAsOfResult {
   matches: RecallAsOfMatch[];
 }
 
+const b64 = (u: Uint8Array) => Buffer.from(u).toString('base64');
+const unb64 = (s: string) => new Uint8Array(Buffer.from(s, 'base64'));
+
 function filterEventsByWindow<T extends { ts: number }>(
   events: T[],
   since?: number,
@@ -81,6 +103,50 @@ async function sha256File(filePath: string): Promise<string | undefined> {
   } catch {
     return undefined;
   }
+}
+
+function manifestHashForPack(pack: Omit<EvidencePack, 'manifestHash' | 'signatures'>): string {
+  const canonical = JSON.stringify({
+    version: pack.version,
+    exportedAt: pack.exportedAt,
+    window: pack.window,
+    oplog: { count: pack.oplog.count },
+    consent: { count: pack.consent.count },
+    mcpAudit: { count: pack.mcpAudit.count },
+    engramHashes: pack.engramHashes,
+  });
+  return createHash('sha256').update(canonical).digest('hex');
+}
+
+export async function signManifestHash(
+  manifestHash: string,
+  signers: Array<{
+    kind: 'device' | 'org';
+    deviceId?: string;
+    publicKey: Uint8Array;
+    secretKey: Uint8Array;
+  }>,
+): Promise<EvidencePackSignature[]> {
+  const message = new TextEncoder().encode(manifestHash);
+  const out: EvidencePackSignature[] = [];
+  for (const s of signers) {
+    const signature = await crypto.sign(message, s.secretKey);
+    out.push({
+      algorithm: 'Ed25519',
+      signer: s.kind,
+      ...(s.deviceId ? { deviceId: s.deviceId } : {}),
+      publicKey: b64(s.publicKey),
+      signature: b64(signature),
+      manifestHash,
+    });
+  }
+  return out;
+}
+
+export async function verifyEvidencePackSignature(sig: EvidencePackSignature): Promise<boolean> {
+  if (sig.algorithm !== 'Ed25519') return false;
+  const message = new TextEncoder().encode(sig.manifestHash);
+  return crypto.verify(unb64(sig.signature), message, unb64(sig.publicKey));
 }
 
 export async function buildEvidencePack(
@@ -143,6 +209,22 @@ export async function buildEvidencePack(
   };
 }
 
+export async function buildSignedEvidencePack(
+  host: GraphnosisHost,
+  cortexDir: string,
+  opts: EvidencePackOptions = {},
+): Promise<SignedEvidencePackExport> {
+  const pack = await buildEvidencePack(host, cortexDir, opts);
+  const manifestHash = manifestHashForPack(pack);
+  const signers = host.getEvidencePackSigners();
+  const signatures = signers.length > 0
+    ? await signManifestHash(manifestHash, signers)
+    : [];
+  const signedPack: EvidencePack = { ...pack, manifestHash, signatures };
+  const detachedSig = { manifestHash, signatures };
+  return { pack: signedPack, manifestHash, signatures, detachedSig };
+}
+
 async function writeRetentionExportSlice(
   cortexDir: string,
   graphId: string,
@@ -161,7 +243,8 @@ export async function runRetentionPurge(
   dryRun = false,
 ): Promise<RetentionPurgeResult> {
   const settings = host.getSettings();
-  const complianceEnabled = settings.compliance?.enabled === true;
+  const compliance = settings.compliance;
+  const complianceEnabled = compliance?.enabled === true;
   const items: RetentionPurgeItem[] = [];
 
   if (!complianceEnabled) {
@@ -173,7 +256,7 @@ export async function runRetentionPurge(
 
   for (const { graphId, metadata } of graphs) {
     if (isEngramOnLegalHold(metadata)) continue;
-    const ttlMs = retentionTtlMsForGraph(metadata);
+    const ttlMs = retentionTtlMsForGraph(metadata, compliance);
     if (ttlMs === undefined) continue;
 
     let sources: ReturnType<GraphnosisHost['listSources']>;
@@ -206,7 +289,7 @@ export async function runRetentionPurge(
         continue;
       }
 
-      if (shouldExportBeforePurge(metadata)) {
+      if (shouldExportBeforePurge(metadata, compliance)) {
         const previews: Array<{ nodeId: string; preview?: string }> = [];
         for (const nodeId of src.nodeIds) {
           const preview = host.listNodes(graphId).find((n) => n.id === nodeId)?.contentPreview;
@@ -307,4 +390,23 @@ export async function recallAsOf(
     query,
     matches: matches.slice(0, maxNodes),
   };
+}
+
+export function compactionManifestHash(record: {
+  at: number;
+  eventsRemoved: number;
+  eventsBefore: number;
+  eventsAfter: number;
+  bytesBefore?: number;
+  bytesAfter?: number;
+}): string {
+  const canonical = JSON.stringify({
+    at: record.at,
+    eventsRemoved: record.eventsRemoved,
+    eventsBefore: record.eventsBefore,
+    eventsAfter: record.eventsAfter,
+    bytesBefore: record.bytesBefore ?? null,
+    bytesAfter: record.bytesAfter ?? null,
+  });
+  return createHash('sha256').update(canonical).digest('hex');
 }

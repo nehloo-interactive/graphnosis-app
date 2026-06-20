@@ -86,6 +86,13 @@ export interface EnterpriseSsoSettings {
    */
   federatedUnlockKey?: string;
   federatedUnlockKeyEnc?: string;
+  /**
+   * Optional org Ed25519 signing key for evidence packs and compaction checkpoints.
+   * In-memory secret during save; on-disk encrypted in `orgSignSecretEnc`.
+   */
+  orgSignPublicKey?: string;
+  orgSignSecret?: string;
+  orgSignSecretEnc?: string;
 }
 
 export const DEFAULT_OIDC_SCOPES = ['openid', 'profile', 'email'] as const;
@@ -169,6 +176,8 @@ export interface EnterpriseSsoPublicView {
   lastLogin?: SsoLastLogin;
   configured: boolean;
   federatedUnlockReady: boolean;
+  hasOrgSigningKey: boolean;
+  orgSignPublicKey?: string;
 }
 
 export function enterpriseSsoPublicView(
@@ -198,6 +207,8 @@ export function enterpriseSsoPublicView(
     ...(base.lastLogin ? { lastLogin: { ...base.lastLogin } } : {}),
     configured: isEnterpriseSsoConfigured(base),
     federatedUnlockReady: base.federatedUnlockReady === true,
+    hasOrgSigningKey: Boolean(base.orgSignPublicKey?.length || base.orgSignSecretEnc?.length),
+    ...(base.orgSignPublicKey?.trim() ? { orgSignPublicKey: base.orgSignPublicKey.trim() } : {}),
   };
 }
 
@@ -291,6 +302,19 @@ export function sanitizeEnterpriseSsoSettings(
     federatedUnlockKeyEnc = raw.federatedUnlockKeyEnc;
   }
 
+  let orgSignPublicKey: string | undefined;
+  let orgSignSecret: string | undefined;
+  let orgSignSecretEnc: string | undefined;
+  if (typeof raw.orgSignPublicKey === 'string' && raw.orgSignPublicKey.trim()) {
+    orgSignPublicKey = raw.orgSignPublicKey.trim();
+  }
+  if (typeof raw.orgSignSecret === 'string' && raw.orgSignSecret.length > 0) {
+    orgSignSecret = raw.orgSignSecret;
+  }
+  if (typeof raw.orgSignSecretEnc === 'string' && raw.orgSignSecretEnc.length > 0) {
+    orgSignSecretEnc = raw.orgSignSecretEnc;
+  }
+
   return {
     enabled: raw.enabled === true,
     protocol,
@@ -302,5 +326,8 @@ export function sanitizeEnterpriseSsoSettings(
     ...(federatedUnlockReady ? { federatedUnlockReady } : {}),
     ...(federatedUnlockKey ? { federatedUnlockKey } : {}),
     ...(federatedUnlockKeyEnc ? { federatedUnlockKeyEnc } : {}),
+    ...(orgSignPublicKey ? { orgSignPublicKey } : {}),
+    ...(orgSignSecret ? { orgSignSecret } : {}),
+    ...(orgSignSecretEnc ? { orgSignSecretEnc } : {}),
   };
 }

@@ -654,6 +654,48 @@ ferry to Naxos. The food in Mykonos was overrated.`;
   }
   log('compliance-recall-as-of.ok', { matches: pit.matches.length });
 
+  // --- Classification schema (Compliance v1.2) --------------------------------
+  log('compliance-classification-schema', {});
+  const {
+    resolveClassificationPolicy,
+    budgetForGraph,
+    sanitizeClassificationSchema,
+    DEFAULT_CLASSIFICATION_LABELS,
+  } = await import('@graphnosis-app/core');
+  const schema = sanitizeClassificationSchema({
+    enabled: true,
+    labels: DEFAULT_CLASSIFICATION_LABELS.map((l) =>
+      l.id === 'red'
+        ? { ...l, capOverrides: { maxTokens: 500, maxNodes: 5 } }
+        : l,
+    ),
+    defaultEngramLabel: 'yellow',
+  });
+  if (!schema?.enabled) throw new Error('FAIL: classification schema sanitize');
+  await host.setSettings({
+    compliance: {
+      enabled: false,
+      classificationSchema: schema,
+    },
+  });
+  const redPolicy = resolveClassificationPolicy('red', schema, undefined);
+  if (redPolicy.tier !== 'sensitive') {
+    throw new Error(`FAIL: red label should map to sensitive tier, got ${redPolicy.tier}`);
+  }
+  if (redPolicy.caps.maxTokens !== 500 || redPolicy.caps.maxNodes !== 5) {
+    throw new Error(`FAIL: red cap overrides expected 500/5, got ${redPolicy.caps.maxTokens}/${redPolicy.caps.maxNodes}`);
+  }
+  await host.setGraphClassificationLabel('personal', 'red');
+  const personalMeta = host.getGraphMetadata('personal');
+  if (personalMeta?.classificationLabelId !== 'red' || personalMeta?.sensitivityTier !== 'sensitive') {
+    throw new Error('FAIL: setGraphClassificationLabel should persist label + tier');
+  }
+  const clamped = budgetForGraph(personalMeta, { maxTokens: 8000, maxNodes: 50 }, schema);
+  if (clamped.maxTokens > 500 || clamped.maxNodes > 5) {
+    throw new Error(`FAIL: budgetForGraph should clamp to red caps, got ${clamped.maxTokens}/${clamped.maxNodes}`);
+  }
+  log('compliance-classification-schema.ok', { tier: redPolicy.tier, caps: redPolicy.caps });
+
   log('forget', { sourceId: src.sourceId });
   const forgot = await host.forgetSource('personal', src.sourceId);
   log('forget.done', { soft_deleted: forgot.nodeIds.length });
