@@ -14,11 +14,13 @@ import {
   type EnterpriseSsoSettings,
   type IdpGroupRoleMapping,
 } from '../settings/sso.js';
+import { validateOidcTenantClaims } from './idp.js';
 
 export interface OidcUnlockConfig {
   issuer: string;
   clientId: string;
   clientSecret?: string;
+  oidcTenantId?: string;
   redirectUri?: string;
   scopes?: string[];
   groupsClaim?: string;
@@ -202,6 +204,7 @@ export function oidcConfigFromSettings(sso: EnterpriseSsoSettings): OidcUnlockCo
     issuer: oidc.issuer.trim(),
     clientId: oidc.clientId.trim(),
     ...(oidc.clientSecret ? { clientSecret: oidc.clientSecret } : {}),
+    ...(oidc.oidcTenantId?.trim() ? { oidcTenantId: oidc.oidcTenantId.trim() } : {}),
     redirectUri: oidc.redirectUri?.trim() || DEFAULT_SSO_REDIRECT_URI,
     scopes: oidc.scopes?.length ? oidc.scopes : [...DEFAULT_OIDC_SCOPES],
     groupsClaim: oidc.groupsClaim?.trim() || 'groups',
@@ -237,7 +240,14 @@ export async function runOidcUnlockFlow(opts: RunOidcUnlockOptions): Promise<Oid
   try {
     discovery = opts.discoveryOverride ?? await discoverOidcIssuer(config.issuer);
   } catch (e) {
-    return { ok: false, reason: 'discovery_failed', message: String(e) };
+    const msg = String(e);
+    const reason = /abort|timeout|timed out|ENOTFOUND|ECONNREFUSED|fetch failed/i.test(msg)
+      ? 'idp_unreachable'
+      : 'discovery_failed';
+    const friendly = reason === 'idp_unreachable'
+      ? 'Connect to your company network to sign in'
+      : msg;
+    return { ok: false, reason, message: friendly };
   }
 
   const authUrl = new URL(discovery.authorization_endpoint);
@@ -306,6 +316,18 @@ export async function runOidcUnlockFlow(opts: RunOidcUnlockOptions): Promise<Oid
     });
   } catch (e) {
     return { ok: false, reason: 'id_token_invalid', message: String(e) };
+  }
+
+  const tenantCheck = validateOidcTenantClaims(claims, {
+    issuer: config.issuer,
+    ...(config.oidcTenantId ? { oidcTenantId: config.oidcTenantId } : {}),
+  });
+  if (!tenantCheck.ok) {
+    return {
+      ok: false,
+      reason: tenantCheck.reason ?? 'tenant_mismatch',
+      message: tenantCheck.message ?? 'Organization mismatch',
+    };
   }
 
   const groups = extractGroupsFromClaims(claims, groupsClaim);

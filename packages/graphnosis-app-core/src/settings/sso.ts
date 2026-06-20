@@ -3,7 +3,8 @@
  *
  * Phase 1 (shipped): settings types, persistence, Settings UI, IPC.
  * Phase 2: OIDC device / system-browser callback unlock on desktop.
- * Phase 3: SAML SP-initiated flow; org cortex subkeys.
+ * Phase 3: IdP reachability, tenant-bound unlock, lock-screen UX polish.
+ * Phase 4: SAML SP-initiated flow; per-user org subkeys.
  *
  * See apps/docs/src/content/docs/guides/enterprise-rbac.md.
  */
@@ -32,6 +33,11 @@ export interface OidcSsoConfig {
    */
   clientSecret?: string;
   clientSecretEnc?: string;
+  /**
+   * Expected Entra tenant GUID (optional). When set, ID-token `tid` must match.
+   * Auto-derived from issuer path for `login.microsoftonline.com/{tenant}/v2.0`.
+   */
+  oidcTenantId?: string;
   /** OAuth scopes. Default: openid profile email groups (when supported). */
   scopes?: string[];
   /** JWT claim for group membership. Default `groups`. */
@@ -156,6 +162,7 @@ export interface EnterpriseSsoPublicView {
     scopes: string[];
     groupsClaim: string;
     redirectUri: string;
+    oidcTenantId?: string;
   };
   saml?: SamlSsoConfig;
   groupRoleMappings: IdpGroupRoleMapping[];
@@ -178,6 +185,7 @@ export function enterpriseSsoPublicView(
         scopes,
         groupsClaim: oidc.groupsClaim?.trim() || 'groups',
         redirectUri: oidc.redirectUri?.trim() || DEFAULT_SSO_REDIRECT_URI,
+        ...(oidc.oidcTenantId?.trim() ? { oidcTenantId: oidc.oidcTenantId.trim() } : {}),
       }
     : undefined;
   return {
@@ -236,6 +244,9 @@ export function sanitizeEnterpriseSsoSettings(
           : {}),
         ...(typeof o.redirectUri === 'string' && o.redirectUri.trim()
           ? { redirectUri: o.redirectUri.trim() }
+          : {}),
+        ...(typeof o.oidcTenantId === 'string' && o.oidcTenantId.trim()
+          ? { oidcTenantId: o.oidcTenantId.trim() }
           : {}),
       };
     }
