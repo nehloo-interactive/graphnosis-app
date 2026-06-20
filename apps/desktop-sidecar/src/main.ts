@@ -34,6 +34,7 @@ import type { BroadcastRawFn } from './events.js';
 import { FileWatcher } from './file-watcher.js';
 import { BrainEngine } from './brain-engine.js';
 import { ProactiveWatcher } from './proactive-watcher.js';
+import { SkillMaintenanceScheduler } from './skill-maintenance-scheduler.js';
 import { SkillTrainer } from './skill-trainer.js';
 import { LicenseValidator } from './license-validator.js';
 
@@ -908,8 +909,9 @@ async function main(): Promise<void> {
           if (meta?.archived) return sum;
           return sum + host.listNodes(gid).length;
         }, 0);
-        const { processSkillRetrainQueue } = await import('./skill-retrain-queue.js');
-        await processSkillRetrainQueue(host, skillTrainer, totalActiveNodes);
+        // Staleness queue is drained by SkillMaintenanceScheduler during idle
+        // windows — not on this poll. Scheduled auto-retrain triggers below
+        // still run here for skills the user opted into explicitly.
         for (const [sourceId, cfg] of Object.entries(map)) {
           if (!cfg.enabled) continue;
           // Skip engrams that aren't currently loaded — getSkill would throw
@@ -1154,6 +1156,13 @@ async function main(): Promise<void> {
     ?? path.join(env.cortexDir, 'sidecar.sock');
   const proactiveWatcher = new ProactiveWatcher({ host, skillTrainer: skillTrainer ?? null, broadcastRaw });
   proactiveWatcher.start();
+  const skillMaintenanceScheduler = new SkillMaintenanceScheduler({
+    host,
+    skillTrainer,
+    broadcastRaw,
+    licenseValidator,
+  });
+  skillMaintenanceScheduler.start();
   // Build a dispatcher bound to mcpDeps so Ghampus can call any of the 47+
   // MCP tool handlers without going through the network transport. The Server
   // returned here is not connected to any transport — it's just a side effect
@@ -1177,6 +1186,7 @@ async function main(): Promise<void> {
     skillTrainer,
     licenseValidator,
     proactiveWatcher,
+    skillMaintenanceScheduler,
     callMcpTool,
     ...(env.ssoRole
       ? {

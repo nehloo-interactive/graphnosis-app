@@ -1845,6 +1845,11 @@ export class GraphnosisHost {
     return this.bootPhaseActive || this.bootSweepActive;
   }
 
+  /** True while boot-deferred oplog reconcile / housekeeping is in flight. */
+  isBootDeferredWorkActive(): boolean {
+    return this.bootDeferredFlushPromise !== null;
+  }
+
   /** True while a boot-throttled embedding-cache rebuild is still in flight.
    *  loadGraph returns before buildEmbeddings finishes; brain passes defer until
    *  the last boot-slot rebuild completes so duplicate scan doesn't race cold caches. */
