@@ -2135,6 +2135,29 @@ export class GraphnosisHost {
     return trailing;
   }
 
+  /** Refuse to persist a 0-node graph over a substantial on-disk .gai or .lkg.
+   *  Boot-time reconcile (and the pre-b5f10e2 adapter.build wipe) could mark an
+   *  engram dirty and save an empty shell — writeFileAtomicWithBackup rolls the
+   *  good .gai to .lkg first, so one bad save leaves .gai empty and .lkg intact
+   *  (writings-qtb9, Jun 2026). Returns the max on-disk .gai/.lkg byte size. */
+  private async substantialGraphBytesOnDisk(graphId: GraphId): Promise<number> {
+    let max = 0;
+    for (const p of [this.graphPath(graphId), `${this.graphPath(graphId)}${LKG_SUFFIX}`]) {
+      try {
+        const st = await fs.stat(p);
+        if (st.size > max) max = st.size;
+      } catch (e) {
+        if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e;
+      }
+    }
+    return max;
+  }
+
+  private async shouldBlockEmptySave(graphId: GraphId, nodeCount: number): Promise<boolean> {
+    if (nodeCount > 0) return false;
+    return (await this.substantialGraphBytesOnDisk(graphId)) > EMPTY_SAVE_BLOCK_MIN_BYTES;
+  }
+
   private async saveInner(graphId: GraphId): Promise<void> {
     // Skip silently if the graph is no longer loaded — it was deleted/unloaded
     // (e.g. the user removed the engram while a connector batch was mid-flight).
@@ -2142,6 +2165,18 @@ export class GraphnosisHost {
     // unhandledRejection from the un-awaited save bookkeeping promise.
     const g = this.graphs.get(graphId);
     if (!g || !g.dirty) return;
+    const nodeCount = this.opts.adapter.inspectNodes(g.handle).length;
+    if (await this.shouldBlockEmptySave(graphId, nodeCount)) {
+      const onDisk = await this.substantialGraphBytesOnDisk(graphId);
+      await this.appendRecoveryLog({
+        event: 'empty_save_blocked', graphId, nodeCount, onDiskBytes: onDisk,
+      });
+      console.error(
+        `[graphnosis-host] save blocked for engram[${redactId(graphId)}]: refusing to persist ` +
+        `0 nodes over ${onDisk}B on-disk .gai/.lkg — restore from .lkg or op-log recovery`,
+      );
+      return; // keep dirty=true so a recovered graph can save later
+    }
     await fs.mkdir(path.dirname(this.graphPath(graphId)), { recursive: true });
     const buf = await this.opts.adapter.toBuffer(g.handle, this.key);
     const ct = await encrypt(buf, this.key, this.salt);
@@ -6127,6 +6162,10 @@ async function writeFileAtomic(target: string, data: Buffer): Promise<void> {
  *  separate namespace from purge's `.bak` (which startup recovery treats as a
  *  transient purge artifact) so the two never collide. */
 const LKG_SUFFIX = '.lkg';
+
+/** Never overwrite a substantial on-disk .gai/.lkg with a 0-node serialize.
+ *  Empty template shells are ~450B; anything above this threshold had real data. */
+const EMPTY_SAVE_BLOCK_MIN_BYTES = 10 * 1024;
 
 /** Global cap on concurrent saveInner bodies across ALL graphs. Each save
  *  holds 2-3× its engram size in off-heap Buffers (toBuffer + ciphertext +
