@@ -51,6 +51,10 @@ export interface EngramCatalogEntry {
   sourceEngramId?: string;
   /** Federated read-only hub reference for hub-slice packages. */
   hubRef?: string;
+  /** GSK pack id lineage for drift detection (SharePoint / MDM). */
+  packId?: string;
+  /** Semver of the published catalog package (SharePoint / MDM). */
+  catalogVersion?: string;
   /** IT / org is data controller (typical for org packages). */
   itControlled: boolean;
   /** Employees may not ad-hoc re-share org catalog content. */
@@ -99,6 +103,12 @@ export interface CatalogSubscriptionStore {
   mdmBundlePath?: string;
   /** packageIds from MDM bundle — auto-subscribe on unlock when entitled. */
   mdmDefaultSubscriptions?: string[];
+  /** Per-package install metadata for semver / packId drift detection. */
+  installedPackages?: Record<string, {
+    catalogVersion?: string;
+    packId?: string;
+    installedAt: number;
+  }>;
 }
 
 export type CatalogEntitlementReason =
@@ -392,6 +402,12 @@ export function sanitizeEngramCatalogEntry(raw: Partial<EngramCatalogEntry> | Re
       : {}),
     ...(typeof source.hubRef === 'string' && source.hubRef.trim()
       ? { hubRef: source.hubRef.trim() }
+      : {}),
+    ...(typeof source.packId === 'string' && source.packId.trim()
+      ? { packId: source.packId.trim() }
+      : {}),
+    ...(typeof source.catalogVersion === 'string' && source.catalogVersion.trim()
+      ? { catalogVersion: source.catalogVersion.trim() }
       : {}),
     ...(typeof source.mdmBundleId === 'string' && source.mdmBundleId.trim()
       ? { mdmBundleId: source.mdmBundleId.trim() }

@@ -1237,12 +1237,23 @@ export interface GhampusSkillMaintenanceSettings {
   snoozedUntil?: number;
 }
 
+/** Proactive skill-card watcher settings. */
+export interface GhampusProactiveSettings {
+  /**
+   * Ms to wait before the first proactive scan after sidecar start.
+   * Default 300_000 (5 min). Set 0 for immediate first tick.
+   */
+  startupDelayMs?: number;
+}
+
 /** Ghampus runtime settings. Phase 1 scope: just the kill switch. */
 export interface AgentSettings {
   /** User-controlled kill switch. Default true. Flipped from the tray menu or the Ghampus tab. */
   enabled: boolean;
   /** Stale-skill retrain scheduler owned by Ghampus. Absent → defaults (enabled, idleOnly). */
   skillMaintenance?: GhampusSkillMaintenanceSettings;
+  /** Proactive skill-card watcher tuning. Absent → defaults (5 min startup delay). */
+  proactive?: GhampusProactiveSettings;
 }
 
 /** Defaults for agent.skillMaintenance — enabled + idleOnly. */
@@ -1255,6 +1266,19 @@ export function resolveGhampusSkillMaintenance(
     idleOnly: sm?.idleOnly !== false,
     ...(typeof sm?.snoozedUntil === 'number' ? { snoozedUntil: sm.snoozedUntil } : {}),
   };
+}
+
+const DEFAULT_PROACTIVE_STARTUP_DELAY_MS = 5 * 60_000;
+
+/** Defaults for agent.proactive — 5 min startup delay. */
+export function resolveGhampusProactiveSettings(
+  agent?: AgentSettings | null,
+): Required<GhampusProactiveSettings> {
+  const p = agent?.proactive;
+  const startupDelayMs = typeof p?.startupDelayMs === 'number' && p.startupDelayMs >= 0
+    ? p.startupDelayMs
+    : DEFAULT_PROACTIVE_STARTUP_DELAY_MS;
+  return { startupDelayMs };
 }
 
 /**
@@ -1319,6 +1343,11 @@ export interface ModelProviderState {
   keyTail?: string;
   /** True when the provider is forced off by an IT admin policy. UI shows a lock. */
   adminLocked?: boolean;
+  /**
+   * Custom base URL for OpenAI-compatible local providers (mlx, vllm).
+   * Defaults: mlx → http://127.0.0.1:8080/v1, vllm → http://127.0.0.1:8000/v1.
+   */
+  baseUrl?: string;
   /**
    * Per-cycle pool spent for subscription-pool providers (Copilot).
    * Reset by the budget engine at cycle boundary. The cycle anchor is
@@ -1828,6 +1857,7 @@ export function mergeWithDefaults(partial: Partial<AppSettings> | null | undefin
   if (partial?.agent && typeof partial.agent === 'object') {
     const a = partial.agent;
     const sm = a.skillMaintenance;
+    const pr = a.proactive;
     agent = {
       enabled: typeof a.enabled === 'boolean' ? a.enabled : true,
       ...(sm && typeof sm === 'object'
@@ -1836,6 +1866,15 @@ export function mergeWithDefaults(partial: Partial<AppSettings> | null | undefin
               enabled: sm.enabled !== false,
               idleOnly: sm.idleOnly !== false,
               ...(typeof sm.snoozedUntil === 'number' ? { snoozedUntil: sm.snoozedUntil } : {}),
+            },
+          }
+        : {}),
+      ...(pr && typeof pr === 'object'
+        ? {
+            proactive: {
+              ...(typeof pr.startupDelayMs === 'number' && pr.startupDelayMs >= 0
+                ? { startupDelayMs: pr.startupDelayMs }
+                : {}),
             },
           }
         : {}),
@@ -1859,6 +1898,7 @@ export function mergeWithDefaults(partial: Partial<AppSettings> | null | undefin
           ...(typeof r.apiKeyEnc === 'string' ? { apiKeyEnc: r.apiKeyEnc } : {}),
           ...(typeof r.keyTail === 'string' ? { keyTail: r.keyTail } : {}),
           ...(typeof r.adminLocked === 'boolean' ? { adminLocked: r.adminLocked } : {}),
+          ...(typeof r.baseUrl === 'string' && r.baseUrl.trim() ? { baseUrl: r.baseUrl.trim() } : {}),
           ...(typeof r.poolSpentUsd === 'number' ? { poolSpentUsd: r.poolSpentUsd } : {}),
           ...(typeof r.flexSpentUsd === 'number' ? { flexSpentUsd: r.flexSpentUsd } : {}),
         };

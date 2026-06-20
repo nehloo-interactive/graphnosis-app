@@ -110,3 +110,10 @@ export {
   classificationSchemaFromCompliance,
 } from './classification-schema.js';
 export { detectPolicyContradictions, type PolicyContradictionCandidate } from './policy-contradiction.js';
+export type { ObligationType, NodeObligation, ObligationListFilter } from './obligation.js';
+export {
+  isActiveObligation,
+  obligationDueWithin,
+  sortObligationsByExpiresAt,
+  filterObligations,
+} from './obligation.js';
