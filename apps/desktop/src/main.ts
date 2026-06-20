@@ -39,6 +39,7 @@ import { initDialogs, gConfirm, gAlert } from './ui/dialogs';
 import { bindAppContext } from './ui/app-context';
 import {
   initActivity, refreshActivityView, loadMoreActivity, setActivityCat, resetActivityWindow,
+  applyActivityFilter,
 } from './ui/activity';
 import {
   initMcpActivity, refreshMcpActivityView,
@@ -2879,6 +2880,27 @@ function paneForMode(mode: Mode): string {
 // sub-modes that share that pane.
 function isAtlasPaneMode(mode: Mode = currentMode): boolean {
   return paneForMode(mode) === 'atlas';
+}
+
+type ActivitySegment = 'memory' | 'mcp';
+let activitySegment: ActivitySegment = 'memory';
+
+function applyActivitySegment(seg: ActivitySegment): void {
+  activitySegment = seg;
+  els.activityMemoryToolbar.classList.toggle('hidden', seg !== 'memory');
+  els.activityMcpToolbar.classList.toggle('hidden', seg !== 'mcp');
+  els.activityList.classList.toggle('hidden', seg !== 'memory');
+  els.mcpActivityList.classList.toggle('hidden', seg !== 'mcp');
+  document.querySelectorAll<HTMLButtonElement>('[data-activity-segment]').forEach((btn) => {
+    const active = btn.dataset.activitySegment === seg;
+    btn.classList.toggle('active', active);
+    btn.setAttribute('aria-selected', active ? 'true' : 'false');
+  });
+}
+
+function refreshActiveActivitySegment(): void {
+  if (activitySegment === 'memory') void refreshActivityView();
+  else void refreshMcpActivityView();
 }
 
 function activateMode(mode: Mode): void {
@@ -6867,6 +6889,7 @@ async function fetchGraphsMetadata(): Promise<void> {
     // was empty and refresh*View bailed out. Now that the fetch resolved,
     // re-trigger the currently-active mode so its view actually populates.
     if (isAtlasPaneMode()) void refreshAtlasView();
+    if (currentMode === 'activity') refreshActiveActivitySegment();
   } catch (e) {
     console.error('list_graphs_with_metadata failed', e);
   }
@@ -14677,13 +14700,18 @@ function applyPresentationMasking(root: ParentNode = document.querySelector('mai
     //    identity → connectors follow the connectors surface, the rest (AI
     //    clients / agents) follow mcpClients.
     //  • Elsewhere: engram-scope selects (graphId values) + connector options.
-    const inActorSelect = opt.closest('select')?.id === 'activity-actor-select';
+    const selectId = opt.closest('select')?.id;
+    const inActorSelect = selectId === 'activity-actor-select';
+    const inMcpClientSelect = selectId === 'mcp-activity-client-select';
     const isEngram = graphIds.has(opt.value);
     const isConnector = opt.value.startsWith('connector:');
     let hide: boolean;
     if (inActorSelect) {
       if (GENERIC_ACTORS.has(opt.value)) return;
       hide = isConnector ? !presState.surfaces.connectors : !presState.surfaces.mcpClients;
+    } else if (inMcpClientSelect) {
+      if (!opt.value) return; // "All clients"
+      hide = !presState.surfaces.mcpClients;
     } else {
       if (!isEngram && !isConnector) return; // All / sentinels / non-engram selects
       hide = isEngram ? !presRevealEngram(opt.value) : !presState.surfaces.connectors;
@@ -20275,27 +20303,6 @@ initMcpActivity({
   mcpActivityHourFrom: els.mcpActivityHourFrom, mcpActivityHourTo: els.mcpActivityHourTo,
   mcpActivityDateClear: els.mcpActivityDateClear,
 });
-
-type ActivitySegment = 'memory' | 'mcp';
-let activitySegment: ActivitySegment = 'memory';
-
-function applyActivitySegment(seg: ActivitySegment): void {
-  activitySegment = seg;
-  els.activityMemoryToolbar.classList.toggle('hidden', seg !== 'memory');
-  els.activityMcpToolbar.classList.toggle('hidden', seg !== 'mcp');
-  els.activityList.classList.toggle('hidden', seg !== 'memory');
-  els.mcpActivityList.classList.toggle('hidden', seg !== 'mcp');
-  document.querySelectorAll<HTMLButtonElement>('[data-activity-segment]').forEach((btn) => {
-    const active = btn.dataset.activitySegment === seg;
-    btn.classList.toggle('active', active);
-    btn.setAttribute('aria-selected', active ? 'true' : 'false');
-  });
-}
-
-function refreshActiveActivitySegment(): void {
-  if (activitySegment === 'memory') void refreshActivityView();
-  else void refreshMcpActivityView();
-}
 
 document.querySelectorAll<HTMLButtonElement>('[data-activity-segment]').forEach((btn) => {
   btn.addEventListener('click', () => {
