@@ -59,6 +59,8 @@ export interface EngramCatalogEntry {
   mdmBundleId?: string;
   /** When false, hidden from employee catalog (IT draft). Default true. */
   published?: boolean;
+  /** Fixed classification label for IT-controlled catalog installs (schema label id). */
+  defaultClassificationLabelId?: string;
 }
 
 /** Optional SharePoint list provider for IT catalog sync (cached in cortex settings). */
@@ -118,6 +120,10 @@ export interface MdmEngramCatalogBundle {
   };
   /** packageIds to auto-subscribe on enrolled devices. */
   defaultSubscriptions: string[];
+  /** Optional Enterprise compliance controls pushed with the catalog bundle. */
+  compliance?: {
+    classificationSchema?: import('../compliance/classification-schema.js').ClassificationSchema;
+  };
 }
 
 export const DEFAULT_ENGRAM_CATALOG_SETTINGS: EngramCatalogSettings = {
@@ -208,6 +214,7 @@ export function buildMdmEngramCatalogBundle(
   entries: readonly EngramCatalogEntry[],
   sso: EnterpriseSsoSettings | undefined,
   defaultSubscriptions: readonly string[],
+  compliance?: MdmEngramCatalogBundle['compliance'],
 ): MdmEngramCatalogBundle | null {
   const oidc = sso?.oidc;
   if (!isEnterpriseSsoConfigured(sso) || !oidc) return null;
@@ -221,6 +228,7 @@ export function buildMdmEngramCatalogBundle(
       ...(oidc.oidcTenantId?.trim() ? { tenantId: oidc.oidcTenantId.trim() } : {}),
     },
     defaultSubscriptions: packageIds,
+    ...(compliance?.classificationSchema ? { compliance } : {}),
   };
 }
 
@@ -354,6 +362,9 @@ export function sanitizeEngramCatalogEntry(raw: Partial<EngramCatalogEntry> | Re
       : {}),
     ...(typeof source.mdmBundleId === 'string' && source.mdmBundleId.trim()
       ? { mdmBundleId: source.mdmBundleId.trim() }
+      : {}),
+    ...(typeof source.defaultClassificationLabelId === 'string' && source.defaultClassificationLabelId.trim()
+      ? { defaultClassificationLabelId: source.defaultClassificationLabelId.trim() }
       : {}),
     published: source.published !== false,
   };

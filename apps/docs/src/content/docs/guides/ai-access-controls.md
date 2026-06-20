@@ -7,6 +7,43 @@ sidebar:
 
 Graphnosis is **local encrypted memory, indexed for deterministic recall — auditable**. The "auditable" part is enforced by a layered access-control system that sits between your AI client and your cortex. This page explains each layer, what threat it addresses, and where to configure it.
 
+## IT-configurable classification labels (Enterprise)
+
+Regulated enterprises often prefer **business labels** (Non-confidential / Internal / Restricted — green, yellow, red) over exposing raw `public` / `personal` / `sensitive` tiers to employees. Compliance v1.2 adds an optional **classification schema**:
+
+| Field | Meaning |
+|---|---|
+| `id` | Stable label key (e.g. `green`, `yellow`, `red`) |
+| `displayName` | Employee-facing name |
+| `color` | Hex or token — drives UI chips, not cosmetic-only |
+| `internalTier` | Maps to consent + recall policy (`public` / `personal` / `sensitive`) |
+| `userAssignable` | When false, only IT/catalog defaults may set this label |
+| `enabled` | When false, hidden from assign pickers |
+| `capOverrides` | Optional per-label `maxTokens` / `maxNodes` clamp |
+
+When the schema is **enabled**, Settings → Graphs shows only IT-enabled, user-assignable labels (with color chips). Raw tier dropdowns are hidden. Each engram stores `classificationLabelId` in metadata; federation, consent, and recall caps resolve through `resolveClassificationPolicy`.
+
+**IT configuration paths:**
+
+- **Get Connected → Compliance classification** — CRUD the label palette (Enterprise license).
+- **MDM bundle** — `compliance.classificationSchema` rides alongside SSO + catalog subscriptions in `graphnosis-mdm-engram-catalog.json`. Import applies the schema to the cortex automatically.
+
+**Catalog defaults:** IT-controlled catalog entries may set `defaultClassificationLabelId` so org packages install with a fixed label (employees cannot pick a looser tier when `userAssignable` is false).
+
+## Compliance mode (Enterprise v1.1)
+
+| Feature | Where | Notes |
+|---------|-------|-------|
+| Retention TTL | Settings → Graphs (per engram) + Settings → Compliance (default) | Purge requires `compliance.enabled` + explicit Run purge |
+| Legal hold | Source inspector + engram Preserve | Blocks forget, edit, transfer, retention purge |
+| Signed Evidence Pack | Activity → Export signed evidence pack | Ed25519 over manifest hash; optional org co-sign |
+| Recall as of | Activity → audit preview panel | Enterprise; op-log boundary by seq or timestamp |
+| Industry tags | Settings → Graphs | `hipaa` / `pci` / `export-controlled` tighten effective tier + recall caps |
+
+See [Enterprise RBAC — Compliance operations](/docs/guides/enterprise-rbac#compliance-operations-v11).
+
+---
+
 ## The six layers, summarised
 
 | # | Layer | What it stops | Default |
