@@ -110,7 +110,7 @@ The timeline is tight. Past projects slipped by about two months each.`;
   log('brain-stopped', { framesEmitted: frames.length });
 
   // 3 — getDuplicatePairs() returns a valid array (empty before any scan —
-  // start() now defers the first sweep past a boot grace period).
+  // start() defers the first sweep until notifyBootSettled()).
   const duplicatePairs = brain.getDuplicatePairs();
   assert(Array.isArray(duplicatePairs), 'getDuplicatePairs must return an array');
   log('duplicatePairs', { count: duplicatePairs.length });
