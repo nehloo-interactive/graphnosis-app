@@ -1350,12 +1350,18 @@ export class SkillTrainer {
   }
 
   listSkills(graphId?: string): SkillListEntry[] {
-    const graphIds = graphId ? [graphId] : this.host.listGraphs();
+    const graphIds = graphId
+      ? [graphId]
+      : this.host.listGraphs().filter((gid) => {
+          const meta = this.host.getGraphMetadata(gid);
+          return meta?.template === 'skill' && meta.archived !== true;
+        });
     const entries: SkillListEntry[] = [];
     const now = Date.now();
     for (const gid of graphIds) {
       const meta = this.host.getGraphMetadata(gid);
       const sources = this.host.listSources(gid).filter((s) => s.kind === 'skill');
+      if (sources.length === 0) continue;
       const nodes = this.host.listNodes(gid);
       const activeBySource = new Map<string, number>();
       for (const n of nodes) {

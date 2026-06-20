@@ -8,7 +8,11 @@ import os from 'node:os';
 import { z } from 'zod';
 import type { GraphnosisHost } from './host.js';
 import { ingestFile, ingestWeb, ingestClip } from './ingest.js';
-import { ingestGraphnosisDocs } from './docs-ingest.js';
+import {
+  DOCS_ENGRAM_ID,
+  isDocsGhostEngram,
+  recreateAndIngestDocsEngram,
+} from './docs-ingest.js';
 import { BUNDLED_DOCS } from './docs-content.generated.js';
 import { ingestBundledSkillDemos } from './skill-demos-ingest.js';
 import { BUNDLED_SKILL_DEMOS } from './skill-demos.generated.js';
@@ -38,6 +42,15 @@ import { withEmbedding } from './embedding-queue.js';
 import type { ConnectorManager } from './connectors/manager.js';
 import { getAdminPolicy, isProviderDisabled, setAdminPolicy } from './admin-policy.js';
 import { getConsentPhraseForTier, type McpCallTool } from './mcp-server.js';
+import {
+  filterStructuredRecallNodes,
+  formatGroupedRecallList,
+  formatNodeBullet,
+  formatStructuredRecallList,
+  looksGroupedResponse,
+  stripRecallAuditTrail,
+  type StructuredRecallNode,
+} from './ghampus-recall-format.js';
 import {
   revokeConsent,
   SHARING_TOKEN_ROLES,
@@ -89,13 +102,10 @@ const Request = z.object({
   params: z.unknown().optional(),
 });
 
-/** Fixed slug for the engram holding the ingested Graphnosis documentation.
- *  Slug-like so it satisfies createGraph's filesystem-safety rules. */
-const DOCS_ENGRAM_ID = 'graphnosis-docs';
-// Stable id for the bundled skill demos engram. Stays in sync with the
-// displayName 'Skill Demos' via setGraphMetadata at ingest time. The id is
-// what every IPC + sidecar code path looks up (rename-safe); the display
-// name is purely user-facing.
+/** Fixed slug for the bundled skill demos engram. Stays in sync with the
+ * displayName 'Skill Demos' via setGraphMetadata at ingest time. The id is
+ * what every IPC + sidecar code path looks up (rename-safe); the display
+ * name is purely user-facing. */
 const SKILL_DEMOS_ENGRAM_ID = 'graphnosis-skill-demos';
 
 // Cooperative cancellation handles for long-running operations. Each is a
@@ -467,6 +477,65 @@ function flattenByGraph(
     }
   }
   return all.sort((a, b) => b.score - a.score);
+}
+
+/** In-flight docs ingest job — coalesce duplicate triggers (boot ghost + UI reingest). */
+let docsIngestJobId: string | null = null;
+let docsIngestInflight: Promise<void> | null = null;
+
+/** Await boot/UI docs ingest started via startBackgroundDocsIngest (no-op if idle). */
+export function whenBackgroundDocsIngestDone(): Promise<void> {
+  return docsIngestInflight ?? Promise.resolve();
+}
+
+/** Kick off bundled docs ingest in the background. Returns immediately with a
+ *  jobId; progress + completion arrive via `docs.progress` / `docs.done` on the
+ *  events socket (same pattern as ingest.upload / recovery.apply). */
+export function startBackgroundDocsIngest(
+  deps: IpcDeps,
+  appVersion: string,
+  reason: 'user' | 'boot-ghost' = 'user',
+): { accepted: boolean; jobId: string } {
+  if (docsIngestInflight) {
+    return { accepted: true, jobId: docsIngestJobId! };
+  }
+  const jobId = `docs-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+  docsIngestJobId = jobId;
+  const totalPages = BUNDLED_DOCS.length;
+  deps.broadcastRaw({
+    kind: 'docs.progress', name: 'docs.progress',
+    payload: { jobId, phase: 'started', totalPages, reason },
+  });
+  docsIngestInflight = (async () => {
+    try {
+      const { ingested, failed } = await recreateAndIngestDocsEngram(
+        deps.host,
+        appVersion,
+        (p) => {
+          deps.broadcastRaw({
+            kind: 'docs.progress', name: 'docs.progress',
+            payload: { jobId, ...p },
+          });
+        },
+      );
+      deps.broadcastRaw({
+        kind: 'docs.done', name: 'docs.done',
+        payload: { jobId, ingested, failed },
+      });
+      deps.brainEngine?.notifyIngestComplete();
+    } catch (e) {
+      const message = e instanceof Error ? e.message : String(e);
+      console.error('[graphnosis-sidecar] background docs ingest failed:', e);
+      deps.broadcastRaw({
+        kind: 'docs.done', name: 'docs.done',
+        payload: { jobId, ingested: 0, failed: totalPages, error: message },
+      });
+    } finally {
+      docsIngestJobId = null;
+      docsIngestInflight = null;
+    }
+  })();
+  return { accepted: true, jobId };
 }
 
 /** Kick off a background file ingest with progress/done events broadcast to the
@@ -2532,26 +2601,33 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
         maxTokens: z.number().optional(),
         maxNodes: z.number().optional(),
       }).parse(params);
-      const { autoExceptGraphIds } = checkRecallSsoGate(deps.host, deps, null);
-      const sub = await withEmbedding(() => deps.host.recall(query, {
-        budget: { maxTokens: maxTokens ?? 2000, maxNodes: maxNodes ?? 20 },
-        ...(autoExceptGraphIds.length ? { exceptGraphIds: autoExceptGraphIds } : {}),
-      }));
-      // Enrich each recalled node with its allowlist sourceId so MemoryStudio
-      // can redact per-source precisely in Presentation Mode.
-      const byGraph: Record<string, unknown> = {};
-      for (const [gid, nodes] of sub.byGraph) {
-        byGraph[gid] = (nodes as Array<{ nodeId: string }>).map(
-          (n) => ({ ...n, sourceId: deps.host.getNodeSource(gid, n.nodeId) }),
-        );
+      const { beginScope, WorkPriority } = await import('./work-priority.js');
+      const endP1 = beginScope(WorkPriority.P1_USER);
+      try {
+        const { autoExceptGraphIds } = checkRecallSsoGate(deps.host, deps, null);
+        const sub = await withEmbedding(() => deps.host.recall(query, {
+          budget: { maxTokens: maxTokens ?? 2000, maxNodes: maxNodes ?? 20 },
+          recallPriority: WorkPriority.P1_USER,
+          ...(autoExceptGraphIds.length ? { exceptGraphIds: autoExceptGraphIds } : {}),
+        }));
+        // Enrich each recalled node with its allowlist sourceId so MemoryStudio
+        // can redact per-source precisely in Presentation Mode.
+        const byGraph: Record<string, unknown> = {};
+        for (const [gid, nodes] of sub.byGraph) {
+          byGraph[gid] = (nodes as Array<{ nodeId: string }>).map(
+            (n) => ({ ...n, sourceId: deps.host.getNodeSource(gid, n.nodeId) }),
+          );
+        }
+        return {
+          prompt: sub.prompt,
+          tokensUsed: sub.tokensUsed,
+          nodesIncluded: sub.nodesIncluded,
+          byGraph,
+          audit: sub.audit,
+        };
+      } finally {
+        endP1();
       }
-      return {
-        prompt: sub.prompt,
-        tokensUsed: sub.tokensUsed,
-        nodesIncluded: sub.nodesIncluded,
-        byGraph,
-        audit: sub.audit,
-      };
     }
     // ── Connector IPC ────────────────────────────────────────────────────────
     case 'policy.get': {
@@ -2731,6 +2807,8 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
       // UI keep a neutral "computing…" ring instead of showing a real-
       // looking vitality of 0.
       if (!deps.brainEngine) return null;
+      const args = z.object({ force: z.boolean().optional() }).parse(params ?? {});
+      if (args.force) deps.brainEngine.invalidateVitality();
       return deps.brainEngine.getVitalityReport();
     }
 
@@ -3330,16 +3408,23 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
     case 'docs:checkOffer': {
       const { appVersion } = z.object({ appVersion: z.string() }).parse(params ?? {});
       const settings = deps.host.getSettings();
-      const exists = deps.host.listGraphs().includes(DOCS_ENGRAM_ID);
+      const loaded = deps.host.listGraphs().includes(DOCS_ENGRAM_ID);
+      const onDisk = deps.host.isGraphOnDisk(DOCS_ENGRAM_ID);
       const docsState = settings.docsEngram;
       let decision: 'offer' | 'reingest' | 'none';
-      if (exists) {
-        // Engram is present. Re-ingest if:
+      // Ghost metadata: settings row without a .gai — not a deliberate user
+      // delete (deleteGraph strips metadata). Repair on next unlock.
+      if (isDocsGhostEngram(deps.host)) {
+        decision = 'reingest';
+      } else if (loaded || onDisk) {
+        // Engram is present (loaded or on disk). Re-ingest if:
         //  (a) app version changed — docs content may have changed, OR
-        //  (b) source count is below the number of bundled doc pages — this
-        //      catches partial losses caused by interrupted reingest operations
-        //      (forgetSource succeeds, re-ingest fails → source permanently gone).
-        const sourceCount = deps.host.listSources(DOCS_ENGRAM_ID).length;
+        //  (b) source count is below bundled pages — partial/interrupted ingest.
+        // Hollow .gai (0 nodes, bundle intact) is repaired by deferred bundle
+        // materialize — do not wipe+reingest here (that blocks boot for minutes).
+        const sourceCount = loaded
+          ? deps.host.listSources(DOCS_ENGRAM_ID).length
+          : await deps.host.countBundleSources(DOCS_ENGRAM_ID);
         const versionMismatch = docsState?.ingestedAppVersion !== appVersion;
         const sourcesIncomplete = sourceCount < BUNDLED_DOCS.length;
         decision = (versionMismatch || sourcesIncomplete) ? 'reingest' : 'none';
@@ -3359,37 +3444,7 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
 
     case 'docs:ingest': {
       const { appVersion } = z.object({ appVersion: z.string() }).parse(params ?? {});
-      const docsExists = deps.host.listGraphs().includes(DOCS_ENGRAM_ID);
-      if (docsExists) {
-        // Wipe the entire docs engram and recreate it from scratch. A simple
-        // forgetSource loop is insufficient: previous partial ingests (failed
-        // mid-way due to IPC timeouts or crashes) can leave "orphan" active
-        // nodes in the graph whose source records were never saved. Those
-        // nodes stay confidence=0.9 across restarts, their content hashes
-        // land in the dedup set, and every subsequent ingest of the same
-        // content produces 0 new nodes → host.ingest throws → only the
-        // subset that didn't orphan ever succeeds. Deleting + recreating the
-        // engram guarantees a completely clean slate with no orphan nodes.
-        await deps.host.deleteGraph(DOCS_ENGRAM_ID);
-      }
-      // (Re-)create the docs engram with the same stable metadata.
-      await deps.host.createGraph(DOCS_ENGRAM_ID);
-      await deps.host.setGraphMetadata(DOCS_ENGRAM_ID, {
-        template: 'reading',
-        displayName: 'Graphnosis Docs',
-        createdAt: Date.now(),
-      });
-      const { ingested, failed } = await withEmbedding(() =>
-        ingestGraphnosisDocs(deps.host, DOCS_ENGRAM_ID),
-      );
-      // Record the app version we ingested under so a future app update
-      // triggers a re-ingest. Clearing `declined` is intentional: if the
-      // user previously declined and later ingested anyway, they no longer
-      // count as declined. setSettings deep-merges this partial.
-      await deps.host.setSettings({
-        docsEngram: { declined: false, ingestedAppVersion: appVersion },
-      });
-      return { ingested, failed };
+      return startBackgroundDocsIngest(deps, appVersion, 'user');
     }
 
     case 'docs:decline': {
@@ -4092,6 +4147,21 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
       return { ok: true };
     }
 
+    case 'ui:workScope': {
+      const args = z.object({
+        priority: z.number().int().min(0).max(3),
+        active: z.boolean(),
+      }).parse(params ?? {});
+      try {
+        const { setScopeActive } = await import('./work-priority.js');
+        setScopeActive(args.priority as import('./work-priority.js').WorkPriority, args.active);
+      } catch (err) {
+        console.error('[ui:workScope] failed:', err instanceof Error ? err.message : String(err));
+        throw err;
+      }
+      return { ok: true };
+    }
+
     case 'ghampus:skillMaintenance:run': {
       const args = z.object({
         cardId: z.string().optional(),
@@ -4280,6 +4350,16 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
               }
               case 'remember':
                 return { ok: true };
+              case 'recall_structured': {
+                try {
+                  const jsonText = rawText.slice(0, rawText.lastIndexOf('}') + 1).trim();
+                  return JSON.parse(jsonText) as {
+                    nodes?: Array<{ text?: string; engram?: string; graphId?: string; sourceId?: string; score?: number }>;
+                    nodesIncluded?: number;
+                    _notice?: string;
+                  };
+                } catch { return { nodes: [] }; }
+              }
               default:
                 return { rawText };
             }
@@ -4293,13 +4373,23 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
           const wantsSource    = /source|file|document|attachment|pdf|url|link|ref/i.test(text);
           const wantsCitations = /where did|which source|cite|citation|proof|evidence/i.test(text);
 
-          // Exhaustive-listing intent: the user wants ALL matches, not a summary.
-          // Use a much higher node cap and skip the LLM's natural summarizing tendency.
-          const wantsExhaustive = /\b(list all|show all|find all|give me all|what are all|all (my |the )?(nodes?|todos?|tasks?|items?|entries)|every|enumerate)\b/i.test(text);
+          // Exhaustive-listing intent: user wants broad recall (higher caps, dig_deeper).
+          const wantsExhaustive =
+            /\b(list all|show all|find all|give me all|what are all|all (my |the )?(nodes?|todos?|tasks?|items?|entries)|every|enumerate)\b/i.test(text)
+            || /\b(list|show)\b.*\b(todos?|tasks?|items?|entries|obligations?|memories)\b/i.test(text);
+          // Grouped/aggregated answers need LLM synthesis — never raw-dump these.
+          const wantsGrouped =
+            /\b(by team member|by member|grouped by|group by|per person|by person|by owner|by assignee|organized by|sorted by)\b/i.test(text)
+            || /\b(list|show)\b.+\bby\s+\w+/i.test(text);
 
           // RecallInput schema caps maxNodes at 50 — stay within that bound.
-          const recallMaxNodes  = wantsExhaustive ? 50 : 20;
-          const recallMaxTokens = wantsExhaustive ? 8000 : 2000;
+          const recallMaxNodes  = (wantsExhaustive || wantsGrouped) ? 50 : 20;
+          const recallMaxTokens = (wantsExhaustive || wantsGrouped) ? 8000 : 2000;
+          // Structured list queries: skip LLM query rewrite — cross-language expansion
+          // (e.g. Romanian "membrii echipei") pulls wrong engrams like "UnpublishedRomania".
+          const skipEnrichmentRecallOpts = (wantsExhaustive || wantsGrouped)
+            ? { skip_enrichment: true as const }
+            : {};
 
           // ── Helper: emit a Ghampus response and persist it ───────────────────
           // Defined early so slash-command handlers can use it before the LLM path.
@@ -4583,7 +4673,13 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
           let intent: GhampusIntent = keywordResult ?? { action: 'recall' };
           let llmConfidence: number | null = null;
 
-          try {
+          if (!keywordResult) {
+            const { isBusyAbove, tryAcquireLlmSlot, WorkPriority } = await import('./work-priority.js');
+            const { isGhampusBusy } = await import('./ghampus-busy.js');
+            if (!isBusyAbove(WorkPriority.P2_GHAMPUS) || isGhampusBusy()) {
+              const classifySlot = tryAcquireLlmSlot(WorkPriority.P2_GHAMPUS);
+              if (classifySlot) {
+                try {
             // Load the last 3 turns from history to give the LLM conversation context.
             // This lets it understand "what about X?" after a recall response.
             let recentContext = '';
@@ -4638,10 +4734,12 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
               '• content must not be empty for action=remember. If you cannot extract content, use action=recall instead.' +
               recentContext;
 
+            if (!classifySlot.signal.aborted) {
             const classifyRaw = await llm.complete({
               system: classifySystem,
               user: text,
               jsonSchema: { type: 'object', properties: { action: { type: 'string' }, confidence: { type: 'number' } }, required: ['action'] },
+              signal: classifySlot.signal,
             });
             console.log('[ghampus:classify] raw:', classifyRaw.slice(0, 200));
             // Use greedy match to capture the outermost JSON object (handles nested values).
@@ -4654,9 +4752,19 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
                 console.log('[ghampus:classify] intent:', JSON.stringify(intent), 'confidence:', llmConfidence);
               }
             }
-          } catch (err) {
-            // LLM classification failed — stick with keyword result or recall.
-            console.warn('[ghampus:classify] failed, using keyword fallback:', err instanceof Error ? err.message : String(err));
+            }
+                } catch (err) {
+                  // LLM classification failed — stick with keyword result or recall.
+                  if (err instanceof DOMException && err.name === 'AbortError') {
+                    console.warn('[ghampus:classify] aborted — using keyword fallback');
+                  } else {
+                    console.warn('[ghampus:classify] failed, using keyword fallback:', err instanceof Error ? err.message : String(err));
+                  }
+                } finally {
+                  classifySlot.release();
+                }
+              }
+            }
           }
 
           // ── Dispatch write actions ────────────────────────────────────────────
@@ -4779,7 +4887,7 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
 
           // ── Phase 1: recall + base tools ─────────────────────────────────
           const [recallResult, engramsResult, skillsResult] = await Promise.allSettled([
-            ghampusTool('recall', { query: text, maxNodes: recallMaxNodes, maxTokens: recallMaxTokens }),
+            ghampusTool('recall', { query: text, maxNodes: recallMaxNodes, maxTokens: recallMaxTokens, ...skipEnrichmentRecallOpts }),
             ghampusTool('list_engrams', {}),
             wantsSkills || !wantsRecent
               ? ghampusTool('list_skills', {})
@@ -4797,11 +4905,15 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
 
           // Escalation policy (per GRAPHNOSIS.md): recall < 3 nodes → dig_deeper.
           // Also force dig_deeper on exhaustive queries so we get cross-engram expansion.
-          if (recallNodeCount < 3 || wantsExhaustive) {
-            const digMaxNodes  = wantsExhaustive ? 50 : 30; // RecallInput schema caps at 50
-            const digMaxTokens = wantsExhaustive ? 12000 : 3000;
-            phase2.push(ghampusTool('dig_deeper', { query: text, maxNodes: digMaxNodes, maxTokens: digMaxTokens }));
+          if (recallNodeCount < 3 || wantsExhaustive || wantsGrouped) {
+            const digMaxNodes  = (wantsExhaustive || wantsGrouped) ? 50 : 30; // RecallInput schema caps at 50
+            const digMaxTokens = (wantsExhaustive || wantsGrouped) ? 12000 : 3000;
+            phase2.push(ghampusTool('dig_deeper', { query: text, maxNodes: digMaxNodes, maxTokens: digMaxTokens, ...skipEnrichmentRecallOpts }));
             phase2Labels.push('dig_deeper');
+          }
+          if (wantsExhaustive || wantsGrouped) {
+            phase2.push(ghampusTool('recall_structured', { query: text, maxNodes: recallMaxNodes }));
+            phase2Labels.push('recall_structured');
           }
           if (wantsStats) {
             phase2.push(ghampusTool('stats', {}));
@@ -4833,8 +4945,26 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
           //   [n2|fact|0.79|src:skill:1781244988966:Task Todo Management] content…
           // The LLM must never see or repeat those IDs. Strip them down to
           // the readable content + a clean source attribution.
+          // Attested vs inferred: overlays (.gll/.gnn) are NOT user memory —
+          // keep them out of the primary context Ghampus treats as ground truth.
+          const INFERRED_LAYER_MARKER = '--- INFERRED LAYER (overlays — NOT attested memory) ---';
+
+          function splitAttestedInferred(raw: string): { attested: string; inferred: string } {
+            const idx = raw.indexOf(INFERRED_LAYER_MARKER);
+            if (idx < 0) return { attested: raw, inferred: '' };
+            return {
+              attested: raw.slice(0, idx).trim(),
+              inferred: raw.slice(idx).trim(),
+            };
+          }
+
           function cleanRecallPrompt(raw: string): string {
-            return raw
+            return cleanRecallPromptAttested(splitAttestedInferred(raw).attested);
+          }
+
+          function cleanRecallPromptAttested(attestedRaw: string): string {
+            return stripRecallAuditTrail(
+              attestedRaw
               // Node lines: [shortId|type|score|src:sourceRef] → "• content (from Source Name)"
               .replace(
                 /\[[\w-]+\|[\w-]+\|[\d.]+\|src:([^\]]+)\]\s*/g,
@@ -4858,7 +4988,8 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
               .replace(/src:[\w:/.-]+/g, '')
               // Collapse 3+ blank lines to 2
               .replace(/\n{3,}/g, '\n\n')
-              .trim();
+              .trim(),
+            );
           }
 
           // ── Build context sections ────────────────────────────────────────
@@ -4895,24 +5026,38 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
             );
           }
 
-          // Primary recall — cleaned.
+          // Primary recall — attested only (inferred overlay kept separate).
           const citationsResult = phase2Results[phase2Labels.indexOf('recall_with_citations')];
           const citationsText = citationsResult?.status === 'fulfilled'
             ? (citationsResult.value as { prompt?: string })?.prompt ?? '' : '';
           const primaryRecallRaw = citationsText || recallPromptRaw;
-          const primaryRecall = cleanRecallPrompt(primaryRecallRaw);
+          const { attested: attestedRaw, inferred: inferredRaw } = splitAttestedInferred(primaryRecallRaw);
+          const primaryRecall = cleanRecallPromptAttested(attestedRaw);
+          const recallContextLimit = wantsExhaustive ? 8000 : 3000;
           if (primaryRecall) {
-            sections.push('## What I found in your cortex\n' + primaryRecall.slice(0, 3000));
+            sections.push('## What I found in your cortex (attested memory)\n' + primaryRecall.slice(0, recallContextLimit));
           }
 
-          // dig_deeper — only add if it surfaced something beyond phase-1.
+          // dig_deeper — only add attested portion if it surfaced something beyond phase-1.
           const deeperIdx = phase2Labels.indexOf('dig_deeper');
           if (deeperIdx >= 0 && phase2Results[deeperIdx]?.status === 'fulfilled') {
-            const deeperRaw = (phase2Results[deeperIdx].value as { prompt?: string })?.prompt ?? '';
-            const deeper = cleanRecallPrompt(deeperRaw);
-            if (deeper && deeper !== primaryRecall) {
-              sections.push('## Additional context (deeper search)\n' + deeper.slice(0, 2000));
+            const deeperRawFull = (phase2Results[deeperIdx].value as { prompt?: string })?.prompt ?? '';
+            const deeperAttested = cleanRecallPromptAttested(splitAttestedInferred(deeperRawFull).attested);
+            if (deeperAttested && deeperAttested !== primaryRecall) {
+              const deeperLimit = wantsExhaustive ? 6000 : 2000;
+              sections.push('## Additional context (deeper search · attested)\n' + deeperAttested.slice(0, deeperLimit));
             }
+          }
+
+          // Inferred overlay — labelled so the LLM cannot treat predictions as facts.
+          const inferredClean = inferredRaw
+            ? cleanRecallPromptAttested(inferredRaw.replace(INFERRED_LAYER_MARKER, '').trim())
+            : '';
+          if (inferredClean) {
+            sections.push(
+              '## Predicted overlay (NOT attested — do not cite as user memory)\n' +
+              inferredClean.slice(0, 1500),
+            );
           }
 
           // recent sources.
@@ -4950,33 +5095,76 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
             }
           }
 
+          // Structured recall — cleaner node text for synthesis (and last-resort fallback).
+          let structuredNodesForFallback: StructuredRecallNode[] = [];
+          if (wantsExhaustive || wantsGrouped) {
+            const structIdx = phase2Labels.indexOf('recall_structured');
+            if (structIdx >= 0 && phase2Results[structIdx]?.status === 'fulfilled') {
+              const structData = phase2Results[structIdx].value as {
+                nodes?: StructuredRecallNode[];
+                _notice?: string;
+              };
+              structuredNodesForFallback = filterStructuredRecallNodes(
+                structData?.nodes ?? [],
+                text,
+              );
+              if (structuredNodesForFallback.length > 0) {
+                sections.push(
+                  '## Recall hits (structured)\n' +
+                  structuredNodesForFallback.map(formatNodeBullet).join('\n'),
+                );
+              }
+            }
+          }
+
           const contextBlock = sections.length > 0
             ? `\n\n<cortex_data>\n${sections.join('\n\n')}\n</cortex_data>`
             : '';
 
+          // No attested context at all — refuse to invent an answer.
+          const hasAttestedContext = !!primaryRecall
+            || structuredNodesForFallback.length > 0
+            || sections.some((s) =>
+              s.startsWith('## Additional context (deeper search')
+              || s.startsWith('## Recall hits (structured)'),
+            );
+          if (!hasAttestedContext && !wantsStats && !wantsRecent) {
+            await emitGhampusMsg(
+              'I couldn\'t find any **attested memories** matching that in your cortex. ' +
+              'Nothing was saved with those terms — try rephrasing, or save the list first with `/save`.',
+            );
+            return { ok: true };
+          }
+
           // ── System prompt with explicit output guardrails ─────────────────
           const system = `You are Ghampus — the AI built into Graphnosis, the user's personal knowledge graph. You're sharp, warm, and direct. You know their cortex deeply and you guide them through it like a knowledgeable friend, not a search engine.
 
-Your job: help the user navigate, understand, and act on their memories, skills, and engrams. That means answering questions, surfacing patterns they haven't noticed, suggesting next steps, and walking them through their saved procedures (skills) when asked.
+Your job: help the user navigate, understand, and act on their memories, skills, and engrams — using ONLY what appears in <cortex_data> below.
 
-You have access to what's in their cortex via <cortex_data> below. Use it as your primary source of truth — but don't be robotic about it. Interpret, connect, and synthesize what you find. If something is missing from the cortex, say so naturally and suggest what they could save to fill the gap.
+GROUND TRUTH RULES — non-negotiable:
+1. <cortex_data> is your ONLY source of facts. Never invent names, tasks, dates, team members, or counts not present in attested memory sections.
+2. Sections labelled "attested memory" are authoritative. Sections labelled "Predicted overlay (NOT attested)" are second-class — prefix any use with "Predicted (not attested):" and never mix them with attested facts.
+3. If attested memory is empty or irrelevant, say plainly: "No relevant memories found for this query." Do NOT fill gaps from world knowledge or guess plausible names.
+4. Before listing items, scan attested memory for the user's keywords. Only list items whose text actually appears there — quote or paraphrase closely, never embellish.
+5. Do NOT produce strategic plans, recommended next steps, or sample data when memory is thin — say what's missing instead.
 
 TONE:
 - Conversational and direct. Cut filler words. Get to the point fast.
 - Use "you" and "your" freely — you know this person and their data.
-- When you find something relevant, lead with it: "Here's what I found:" or "You have 12 items tagged todo:" not "Based on the cortex data, I was able to locate..."
+- When you find something relevant, lead with it: "Here's what I found:" not "Based on the cortex data…"
 - It's OK to ask a follow-up question if the answer would be much better with one more detail.
-- When the user seems stuck or doesn't know what to ask, offer a concrete suggestion: "You might also want to check your skill for X" or "Want me to list all your engrams?"
 
 OUTPUT RULES — non-negotiable:
 1. NEVER output node IDs, short IDs, pipe-separated records, or raw source refs. Specifically: never output n1, n2, n3, anything matching [n2|fact|…], src:skill:…, skill:1781…, clip:…, |fact|, |0.79|, or any text containing pipe characters (|) from the raw graph format. Translate everything to plain English.
 2. Do NOT echo or paraphrase the user's question.
 3. When listing items, use clean bullet points or numbered lists — never database-style records.
-4. If the data is truly empty, say so in one sentence and suggest what to save next.
+4. If attested data is truly empty, say so in one sentence and suggest what to save next.
 5. Use **bold** for key terms and markdown lists for structure. Keep it readable.
 6. Source attribution: natural and human-readable only — "(from your Milestones engram)" not "(src:abc123)".
-7. You can reference skill names by their human label (e.g. "your Task Todo Management skill") — never by their raw ID.${wantsExhaustive ? `
-8. EXHAUSTIVE MODE: The user asked for ALL items. List every single one found in <cortex_data> — no summarizing, no "here are some examples". If there are 80 items, show all 80. Completeness is required here.` : ''}${contextBlock}`;
+7. You can reference skill names by their human label (e.g. "your Task Todo Management skill") — never by their raw ID.
+8. NEVER cite query-enrichment metadata (lines like "Enriched:" or "enriched: ... → ..."), anchor logs, or GNN expansion notes — those are internal debug text, not user memory.${wantsExhaustive ? `
+9. EXHAUSTIVE MODE: The user asked for ALL items. List every single attested item found in <cortex_data> — no summarizing, no "here are some examples". If there are 80 items, show all 80. Do not add items that are not in attested memory.` : ''}${wantsGrouped ? `
+${wantsExhaustive ? '10' : '9'}. GROUPED LIST MODE: Organize attested items under markdown headings (### Name) grouped exactly as the user requested (team member, owner, assignee, etc.). A flat bullet dump is wrong. Only use names/categories that appear in attested memory — never invent people or assignments. Put items with no clear owner under **Unassigned**. Quote or paraphrase item text closely; do not embellish.` : ''}${contextBlock}`;
 
           // user is the bare message — no "User:" prefix to avoid echo
           const userMsg = text;
@@ -5009,45 +5197,101 @@ OUTPUT RULES — non-negotiable:
               .replace(/\bclip:[a-f0-9]+\b/g, '')
               .replace(/\bn\d+\b/g, '')
               .replace(/\|fact\|[\d.]+\|/g, '')
+              // Recall audit metadata must never appear in user-facing answers
+              .replace(/^[_]*enriched:\s*".*"\s*→\s*".*"[_]*\s*$/gim, '')
               .replace(/\n{3,}/g, '\n\n')
               .trim();
           }
 
-          async function callLlm(systemPrompt: string, userPrompt: string): Promise<string> {
-            let out = '';
-            // llm is non-null here — guarded by the early-return above; TS can't
-            // narrow across the async closure boundary so we assert.
-            if (llm!.completeStream) {
-              await llm!.completeStream({ system: systemPrompt, user: userPrompt }, (chunk) => { out += chunk; });
-            } else {
-              out = await llm!.complete({ system: systemPrompt, user: userPrompt });
+          async function callLlm(systemPrompt: string, userPrompt: string): Promise<string | null> {
+            const { isBusyAbove, tryAcquireLlmSlot, WorkPriority } = await import('./work-priority.js');
+            const { isGhampusBusy } = await import('./ghampus-busy.js');
+            if (isBusyAbove(WorkPriority.P2_GHAMPUS) && !isGhampusBusy()) {
+              console.warn('[ghampus:synthesize] skipped — higher-priority work active');
+              return null;
             }
-            return out;
+            const synthSlot = tryAcquireLlmSlot(WorkPriority.P2_GHAMPUS);
+            if (!synthSlot) {
+              console.warn('[ghampus:synthesize] skipped — LLM slot busy');
+              return null;
+            }
+            try {
+              if (synthSlot.signal.aborted) return null;
+              let out = '';
+              // llm is non-null here — guarded by the early-return above; TS can't
+              // narrow across the async closure boundary so we assert.
+              if (llm!.completeStream) {
+                await llm!.completeStream({ system: systemPrompt, user: userPrompt, signal: synthSlot.signal }, (chunk) => { out += chunk; });
+              } else {
+                out = await llm!.complete({ system: systemPrompt, user: userPrompt, signal: synthSlot.signal });
+              }
+              return synthSlot.signal.aborted ? null : out;
+            } catch (err) {
+              if (err instanceof DOMException && err.name === 'AbortError') return null;
+              throw err;
+            } finally {
+              synthSlot.release();
+            }
+          }
+
+          async function emitRawRecallFallback(reason: string): Promise<void> {
+            if (structuredNodesForFallback.length > 0) {
+              const body = wantsGrouped
+                ? formatGroupedRecallList(structuredNodesForFallback, text)
+                : formatStructuredRecallList(structuredNodesForFallback);
+              await emitGhampusMsg(`${reason}\n\n${body}`);
+              return;
+            }
+            if (primaryRecall) {
+              await emitGhampusMsg(
+                `${reason}\n\nHere's what I found in your cortex:\n\n${primaryRecall.slice(0, recallContextLimit)}`,
+              );
+              return;
+            }
+            await emitGhampusMsg(
+              "I couldn't synthesize an answer and didn't find attested memories to show. Try rephrasing, or save the list first with `/save`.",
+            );
           }
 
           let responseText = await callLlm(system, userMsg);
+
+          if (!responseText?.trim()) {
+            await emitRawRecallFallback(
+              "I couldn't synthesize a structured answer right now — the local LLM was busy or unavailable.",
+            );
+            return { ok: true };
+          }
 
           // Retry once if the response contains leaked internal IDs.
           if (hasLeakedIDs(responseText)) {
             const retrySystem = system +
               '\n\nIMPORTANT: Your previous response contained raw database IDs like "n2", "|fact|", "src:skill:…". ' +
               'Rewrite your answer in plain English only. No IDs, no pipe characters, no source references.';
-            responseText = await callLlm(retrySystem, userMsg);
+            const retryText = await callLlm(retrySystem, userMsg);
+            if (retryText?.trim()) responseText = retryText;
+          }
+
+          // Grouped-list queries must use section headings — retry once if flat dump.
+          if (wantsGrouped && responseText.trim() && !looksGroupedResponse(responseText)) {
+            const retrySystem = system +
+              '\n\nIMPORTANT: Your previous answer was a flat bullet list. ' +
+              'Reformat with markdown headings (### Name) grouping items by the dimension the user asked for. ' +
+              'Do not invent assignees — use **Unassigned** when owner is unclear.';
+            const retryText = await callLlm(retrySystem, userMsg);
+            if (retryText?.trim()) responseText = retryText;
           }
 
           // Final sanitization pass — scrub anything that still slipped through.
           responseText = sanitizeResponse(responseText);
 
-          const responseMsg = { kind: 'ghampus', text: responseText, ts: Date.now() };
-          if (histPath) {
-            const { appendFile } = await import('node:fs/promises');
-            await appendFile(histPath, JSON.stringify(responseMsg) + '\n').catch(() => {});
+          if (!responseText.trim()) {
+            await emitRawRecallFallback(
+              "I couldn't produce a clean synthesized answer — here's the raw recall instead.",
+            );
+            return { ok: true };
           }
-          deps.broadcastRaw({
-            kind: 'ghampus.message',
-            name: 'ghampus.message',
-            payload: responseMsg,
-          });
+
+          await emitGhampusMsg(responseText);
         } catch (err) {
           const msg = err instanceof Error ? err.message : String(err);
           const errMsg = { kind: 'ghampus', text: `Error: ${msg}`, ts: Date.now() };

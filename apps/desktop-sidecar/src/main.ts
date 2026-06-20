@@ -16,7 +16,9 @@ import {
 import { policy } from '@nehloo-interactive/graphnosis-secure-sync';
 import { GraphnosisHost } from './host.js';
 import { GraphnosisImpl } from './graphnosis-impl.js';
-import { startIpc } from './ipc.js';
+import { isDocsGhostEngram, isGhostMetadataEngram, isGhostLoadError, repairDocsGhostEngram, DOCS_ENGRAM_ID } from './docs-ingest.js';
+import { createRequire } from 'node:module';
+import { startIpc, startBackgroundDocsIngest, whenBackgroundDocsIngestDone } from './ipc.js';
 import { dbg } from './log-redact.js';
 import { startEvents } from './events.js';
 import { startHttpUiServer } from './http-ui-server.js';
@@ -125,11 +127,15 @@ function loadEnv(): CliEnv {
 // (Revisit lazy-boot only once we're off Bun's allocator — then it saves real RAM.)
 const LAZY_BOOT = false;
 
+const require = createRequire(import.meta.url);
+const SIDECAR_VERSION: string = require('../package.json').version as string;
+
 async function loadAllGraphsFromDisk(
   host: GraphnosisHost,
   cortexDir: string,
   defaultGraphId: string,
   broadcastRaw?: BroadcastRawFn,
+  appVersion?: string,
 ): Promise<void> {
   const graphsDir = path.join(cortexDir, 'graphs');
   try {
@@ -140,8 +146,21 @@ async function loadAllGraphsFromDisk(
     console.error(`[graphnosis-sidecar] could not access ${graphsDir}: ${err.message}`);
     return;
   }
+
+  // Let IPC-started ghost repair finish before we scan disk — otherwise a
+  // graphnosis-docs row in settings can race deleteGraph (wipe .gai) with
+  // loadGraph and log a scary FAILED stack for expected ghost metadata.
+  await whenBackgroundDocsIngestDone();
+  if (appVersion && isDocsGhostEngram(host)) {
+    dbg(
+      '[graphnosis-sidecar] repairing ghost graphnosis-docs before engram sweep',
+    );
+    await repairDocsGhostEngram(host, appVersion);
+  }
+
   const seen = new Set<string>(host.listGraphs());
-  const toLoad = LAZY_BOOT ? [] : host.listBootPendingEngramIds(seen);
+  const toLoad = (LAZY_BOOT ? [] : host.listBootPendingEngramIds(seen))
+    .filter((graphId) => !isGhostMetadataEngram(host, graphId));
   const total = toLoad.length;
   let loaded = 0;
   let failed = 0;
@@ -200,6 +219,12 @@ async function loadAllGraphsFromDisk(
         }
       },
       (err: Error) => {
+        if (isGhostLoadError(err, host, graphId)) {
+          dbg(
+            `[graphnosis-sidecar] ghost metadata engram '${graphId}' background load skipped`,
+          );
+          return;
+        }
         failed++;
         console.error(
           `[graphnosis-sidecar] engram '${graphId}' background load FAILED after ${Date.now() - startedAt}ms: ${err.message}`,
@@ -214,6 +239,10 @@ async function loadAllGraphsFromDisk(
   };
 
   for (const graphId of toLoad) {
+    if (isGhostMetadataEngram(host, graphId)) {
+      dbg(`[graphnosis-sidecar] skipping ghost metadata engram '${graphId}' in sweep`);
+      continue;
+    }
     const tLoad = Date.now();
     dbg(`[graphnosis-sidecar] loading engram '${graphId}' (${loaded + failed + 1}/${total})…`);
     // Kick off the real load WITHOUT awaiting it directly — that way the
@@ -261,11 +290,20 @@ async function loadAllGraphsFromDisk(
         // broadcast updates the picker / status bar.
         watchBackgroundLoad(graphId, loadPromise, tLoad);
       } else if (!isTimeout) {
-        console.error(
-          `[graphnosis-sidecar] FAILED to load engram '${graphId}' after ${Date.now() - tLoad}ms: ${err.message}`,
-        );
-        if (err.stack) console.error(err.stack);
-        failed++;
+        if (isGhostLoadError(e, host, graphId)) {
+          dbg(
+            `[graphnosis-sidecar] skipped ghost metadata engram '${graphId}' during sweep`,
+          );
+          if (appVersion && graphId === DOCS_ENGRAM_ID && isDocsGhostEngram(host)) {
+            void repairDocsGhostEngram(host, appVersion);
+          }
+        } else {
+          console.error(
+            `[graphnosis-sidecar] FAILED to load engram '${graphId}' after ${Date.now() - tLoad}ms: ${err.message}`,
+          );
+          if (err.stack) console.error(err.stack);
+          failed++;
+        }
       }
     }
     if (broadcastRaw) {
@@ -756,6 +794,9 @@ async function main(): Promise<void> {
   // Idempotent: skips graphs that already have metadata.
   await backfillGraphMetadata(host);
 
+  // Ghost graphnosis-docs is repaired AFTER IPC starts (background job) so boot
+  // and home UI are not blocked for minutes while 32 pages embed. docs:checkOffer
+  // and the UI coalesce on the same in-flight job via startBackgroundDocsIngest.
   // Filesystem auto-reingest. Off by default; honors the
   // `ai.autoReingestOnFileChange` flag in settings.json. We wire the
   // watcher into the host so ingest/forget lifecycle points keep the
@@ -1216,6 +1257,13 @@ async function main(): Promise<void> {
     `[graphnosis-sidecar] IPC listening on ${ipcSocketPath} (${Date.now() - sidecarStartMs}ms from sidecar start)`,
   );
 
+  if (isDocsGhostEngram(host)) {
+    dbg(
+      '[graphnosis-sidecar] scheduling ghost graphnosis-docs repair (background, non-blocking)',
+    );
+    startBackgroundDocsIngest(ipcDeps, SIDECAR_VERSION, 'boot-ghost');
+  }
+
   // Optional HTTP UI server for browser-based access (personal server mode).
   // Two ways to enable, in priority order:
   //   1. Env vars (server/headless deploy): GRAPHNOSIS_HTTP_UI=1
@@ -1288,18 +1336,24 @@ async function main(): Promise<void> {
 
   // Background engram sweep — sequential with yields between each graph so IPC
   // can interleave. broadcastRaw fires incremental progress for the picker.
-  void loadAllGraphsFromDisk(host, env.cortexDir, env.defaultGraph, broadcastRaw)
+  void loadAllGraphsFromDisk(host, env.cortexDir, env.defaultGraph, broadcastRaw, SIDECAR_VERSION)
     .catch((e) => {
       console.error(`[graphnosis-sidecar] background engram sweep failed: ${(e as Error).message}`);
     })
     .then(async () => {
       host.setBootPhaseActive(false);
       brainEngine.notifyBootSettled();
-      void host.flushBootDeferredWork().catch((e: unknown) => {
-        console.error(
-          `[graphnosis-sidecar] boot deferred work failed: ${(e as Error).message}`,
-        );
-      });
+      void host.flushBootDeferredWork()
+        .then(() => {
+          // Hollow-bundle materialize adds nodes after the sweep — finalize
+          // vitality once so Home per-engram bars get one live refresh.
+          brainEngine.maybeFinalizeVitalityPresentation();
+        })
+        .catch((e: unknown) => {
+          console.error(
+            `[graphnosis-sidecar] boot deferred work failed: ${(e as Error).message}`,
+          );
+        });
       sidecarIdleMaintenance.notifyBootSettled();
       await backfillGraphMetadata(host);
       (globalThis as { Bun?: { gc?: (force: boolean) => void } }).Bun?.gc?.(true);
