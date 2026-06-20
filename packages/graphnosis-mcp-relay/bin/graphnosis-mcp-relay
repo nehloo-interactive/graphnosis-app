@@ -1,0 +1,12 @@
+#!/usr/bin/env sh
+set -eu
+PRG="$0"
+while [ -L "$PRG" ]; do
+  link=$(readlink "$PRG")
+  case $link in
+    /*) PRG=$link ;;
+    *) PRG=$(dirname "$PRG")/$link ;;
+  esac
+done
+DIR=$(CDPATH= cd -- "$(dirname -- "$PRG")" && pwd)
+exec node "$DIR/../dist/mcp-relay.js" "$@"
