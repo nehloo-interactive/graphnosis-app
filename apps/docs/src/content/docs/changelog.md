@@ -11,6 +11,43 @@ Conventions: **Added** = new features, **Changed** = behavior or UX shifts, **Fi
 
 ---
 
+## v1.19.1 — Vitality settling, docs repair, and Ghampus recall polish
+
+<p style="margin-top:0.5rem;font-size:1.25em;opacity:0.85;">2026-06-20</p>
+
+Reliability and UX patch: boot-time vitality no longer drifts per-engram bars for minutes after unlock; ghost Graphnosis Docs metadata auto-repairs; Ghampus recall output is grouped and deduped; home dashboard cards load consistently.
+
+### Fixed
+
+- **Docs ghost engram.** Settings row without a `.gai` on disk is detected and rebuilt via async background ingest (no scary boot FAILED stack during repair race).
+- **Home dashboard cards.** Autonomous Brain, Memory health, and Self-healing cards load reliably after unlock instead of staying blank on slow sweeps.
+- **PER ENGRAM chart.** Full engram names, archived rows dimmed, grid alignment fixed; vitality shows a settling state until brain passes finish.
+- **New engram wizard.** Template/create flow no longer fails when metadata races disk load.
+- **Recall latency bench.** Smoke regression guard uses the correct warm corpus threshold.
+- **Offer bundle counts.** `checkOffer` uses source count frozen at load time so mid-reconcile ingest does not skew recovery hints.
+
+### Changed
+
+- **Vitality settling.** UI shows the last-session snapshot with `settling: true` until duplicate scan, temporal decay, and hollow-bundle materialize complete; then flips to live compute once. Per-engram scores persist in `brain.lastVitality.byGraph`.
+- **Work priority.** Background Ghampus thinking runs at P2 while ingest/embedding stay P0–P1 via a cooperative priority queue.
+- **Ghampus recall.** Structured grouping, audit-trail stripping, and synthesis formatting for cleaner chat answers; model dropdown dedupes duplicate labels.
+- **Skills library.** `listSkills` filters by engram template for faster open on large cortexes.
+- **Sources.** Batch forget selected sources from the desktop inspector.
+- **Self-healing.** Single consolidated stat when every item has been rechecked.
+- **Boot logs.** Ghost metadata skips downgrade to error-level noise.
+- **Save guards.** Shrink-save blocked; `.lkg` promotion when a shell would overwrite substantial on-disk data.
+
+### Added
+
+- **`ghampus-recall-format`** — shared formatters for Ghampus structured recall and grouped list rendering.
+- **`work-priority`** — P0–P3 scheduling hints for sidecar background work.
+
+### Deferred
+
+- Ghampus logo/layout polish in the chat modal (reverted to v1.19.0 asset; manual layout pass planned).
+
+---
+
 ## v1.19.0 — Skill runs, Temporal Job Memory, and Ghampus discipline
 
 <p style="margin-top:0.5rem;font-size:1.25em;opacity:0.85;">2026-06-20</p>
