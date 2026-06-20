@@ -14,7 +14,7 @@ mod keychain;
 mod sidecar;
 mod tray;
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -1450,6 +1450,16 @@ pub struct HermesConfigResult {
     previous_memory_provider: Option<String>,
 }
 
+/// Read-only preview before writing Hermes config (overwrite guard).
+#[derive(serde::Serialize)]
+pub struct HermesPreviewResult {
+    config_path: String,
+    socket_path: String,
+    already_configured: bool,
+    previous_memory_provider: Option<String>,
+    requires_overwrite_confirm: bool,
+}
+
 fn hermes_config_path() -> Option<PathBuf> {
     Some(dirs::home_dir()?.join(".hermes").join("config.yaml"))
 }
@@ -1528,31 +1538,8 @@ fn hermes_graphnosis_already_configured(root: &serde_yaml::Mapping, socket_path:
     provider_ok && mcp_ok
 }
 
-/// Configure Hermes Agent for Graphnosis memory (provider + MCP catalog).
-///
-/// Writes `memory.provider: graphnosis` and `mcp_servers.graphnosis` to
-/// `~/.hermes/config.yaml`, plus `$HERMES_HOME/graphnosis.json` socket settings.
-#[tauri::command]
-async fn configure_hermes_client(state: State<'_, AppState>) -> Result<HermesConfigResult, String> {
-    {
-        let inner = state.inner.lock().await;
-        if inner.cortex_dir.is_none() {
-            return Err(
-                "Unlock Graphnosis first — Hermes connects to the running app.".to_string(),
-            );
-        }
-    }
-
-    let config_path = hermes_config_path().ok_or_else(|| {
-        "Could not locate ~/.hermes/config.yaml for this user.".to_string()
-    })?;
-    let graphnosis_json_path = hermes_graphnosis_json_path().ok_or_else(|| {
-        "Could not locate ~/.hermes/graphnosis.json for this user.".to_string()
-    })?;
-    let socket_path = sidecar::mcp_socket_path().map_err(|e| e.to_string())?;
-    let socket_str = socket_path.to_string_lossy().into_owned();
-
-    let (mut root, created_file) = match std::fs::read_to_string(&config_path) {
+fn load_hermes_config_root(config_path: &Path) -> Result<(serde_yaml::Value, bool), String> {
+    match std::fs::read_to_string(config_path) {
         Ok(s) => {
             let parsed: serde_yaml::Value = serde_yaml::from_str(&s).map_err(|e| {
                 format!(
@@ -1561,15 +1548,52 @@ async fn configure_hermes_client(state: State<'_, AppState>) -> Result<HermesCon
                     e
                 )
             })?;
-            (parsed, false)
+            Ok((parsed, false))
         }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            (serde_yaml::Value::Mapping(serde_yaml::Mapping::new()), true)
+            Ok((serde_yaml::Value::Mapping(serde_yaml::Mapping::new()), true))
         }
-        Err(e) => return Err(format!("Could not read {}: {}", config_path.display(), e)),
-    };
+        Err(e) => Err(format!("Could not read {}: {}", config_path.display(), e)),
+    }
+}
 
-    let root_map = root.as_mapping_mut().ok_or_else(|| {
+fn hermes_requires_overwrite_confirm(
+    previous_memory_provider: &Option<String>,
+    already_configured: bool,
+) -> bool {
+    if already_configured {
+        return false;
+    }
+    match previous_memory_provider.as_deref() {
+        None | Some("") => false,
+        Some("graphnosis") => false,
+        Some(_) => true,
+    }
+}
+
+async fn hermes_unlock_guard(state: &State<'_, AppState>) -> Result<(), String> {
+    let inner = state.inner.lock().await;
+    if inner.cortex_dir.is_none() {
+        return Err(
+            "Unlock Graphnosis first — Hermes connects to the running app.".to_string(),
+        );
+    }
+    Ok(())
+}
+
+/// Preview Hermes config changes without writing files.
+#[tauri::command]
+async fn preview_hermes_client(state: State<'_, AppState>) -> Result<HermesPreviewResult, String> {
+    hermes_unlock_guard(&state).await?;
+
+    let config_path = hermes_config_path().ok_or_else(|| {
+        "Could not locate ~/.hermes/config.yaml for this user.".to_string()
+    })?;
+    let socket_path = sidecar::mcp_socket_path().map_err(|e| e.to_string())?;
+    let socket_str = socket_path.to_string_lossy().into_owned();
+
+    let (root, _) = load_hermes_config_root(&config_path)?;
+    let root_map = root.as_mapping().ok_or_else(|| {
         format!(
             "{} root is not a YAML mapping — aborting.",
             config_path.display()
@@ -1580,9 +1604,24 @@ async fn configure_hermes_client(state: State<'_, AppState>) -> Result<HermesCon
         .get(serde_yaml::Value::String("memory".into()))
         .and_then(|m| m.as_mapping())
         .and_then(|m| yaml_mapping_get_str(m, "provider"));
-
     let already_configured = hermes_graphnosis_already_configured(root_map, &socket_str);
 
+    Ok(HermesPreviewResult {
+        config_path: config_path.to_string_lossy().into_owned(),
+        socket_path: socket_str,
+        already_configured,
+        previous_memory_provider: previous_memory_provider.clone(),
+        requires_overwrite_confirm: hermes_requires_overwrite_confirm(
+            &previous_memory_provider,
+            already_configured,
+        ),
+    })
+}
+
+fn apply_hermes_graphnosis_config(
+    root_map: &mut serde_yaml::Mapping,
+    socket_str: &str,
+) -> Result<(), String> {
     // memory.provider: graphnosis
     {
         let memory_key = serde_yaml::Value::String("memory".into());
@@ -1612,9 +1651,59 @@ async fn configure_hermes_client(state: State<'_, AppState>) -> Result<HermesCon
         }
         servers_entry.as_mapping_mut().expect("checked above").insert(
             serde_yaml::Value::String("graphnosis".into()),
-            build_hermes_graphnosis_mcp_entry(&socket_str),
+            build_hermes_graphnosis_mcp_entry(socket_str),
         );
     }
+
+    Ok(())
+}
+
+/// Configure Hermes Agent for Graphnosis memory (provider + MCP catalog).
+///
+/// Writes `memory.provider: graphnosis` and `mcp_servers.graphnosis` to
+/// `~/.hermes/config.yaml`, plus `$HERMES_HOME/graphnosis.json` socket settings.
+#[tauri::command]
+async fn configure_hermes_client(
+    state: State<'_, AppState>,
+    confirm_overwrite: bool,
+) -> Result<HermesConfigResult, String> {
+    hermes_unlock_guard(&state).await?;
+
+    let config_path = hermes_config_path().ok_or_else(|| {
+        "Could not locate ~/.hermes/config.yaml for this user.".to_string()
+    })?;
+    let graphnosis_json_path = hermes_graphnosis_json_path().ok_or_else(|| {
+        "Could not locate ~/.hermes/graphnosis.json for this user.".to_string()
+    })?;
+    let socket_path = sidecar::mcp_socket_path().map_err(|e| e.to_string())?;
+    let socket_str = socket_path.to_string_lossy().into_owned();
+
+    let (mut root, created_file) = load_hermes_config_root(&config_path)?;
+
+    let root_map = root.as_mapping_mut().ok_or_else(|| {
+        format!(
+            "{} root is not a YAML mapping — aborting.",
+            config_path.display()
+        )
+    })?;
+
+    let previous_memory_provider = root_map
+        .get(serde_yaml::Value::String("memory".into()))
+        .and_then(|m| m.as_mapping())
+        .and_then(|m| yaml_mapping_get_str(m, "provider"));
+
+    let already_configured = hermes_graphnosis_already_configured(root_map, &socket_str);
+
+    if hermes_requires_overwrite_confirm(&previous_memory_provider, already_configured)
+        && !confirm_overwrite
+    {
+        let provider = previous_memory_provider.as_deref().unwrap_or("unknown");
+        return Err(format!(
+            "Hermes already uses memory provider \"{provider}\". Confirm in the wizard to replace it with Graphnosis."
+        ));
+    }
+
+    apply_hermes_graphnosis_config(root_map, &socket_str)?;
 
     // graphnosis.json beside config.yaml
     if let Some(parent) = graphnosis_json_path.parent() {
@@ -3926,6 +4015,7 @@ pub fn run() {
             trigger_connector_pull,
             get_connector_auth_url,
             configure_mcp_client,
+            preview_hermes_client,
             configure_hermes_client,
             open_cortex_in_finder,
             reveal_file_in_finder,

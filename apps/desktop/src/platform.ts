@@ -405,6 +405,7 @@ export async function invoke<T>(cmd: string, args?: Record<string, unknown>): Pr
     'open_about_window', 'open_cortex_in_finder', 'reveal_file_in_finder',
     'check_for_updates', 'install_update',
     'configure_mcp_client',
+    'preview_hermes_client',
     'configure_hermes_client',
     'biometric_available', 'biometric_unlock',
     'change_passphrase_with_biometric',

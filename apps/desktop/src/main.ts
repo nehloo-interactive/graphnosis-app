@@ -216,6 +216,15 @@ interface HermesConfigResult {
   previous_memory_provider: string | null;
 }
 
+/** Read-only preview from `preview_hermes_client`. */
+interface HermesPreviewResult {
+  config_path: string;
+  socket_path: string;
+  already_configured: boolean;
+  previous_memory_provider: string | null;
+  requires_overwrite_confirm: boolean;
+}
+
 type ContentCacheMode = 'all' | 'ephemeral-only' | 'off';
 type ForgetMode = 'soft' | 'purge';
 interface AppSettings {
@@ -5607,6 +5616,8 @@ function openConfigureClientModal(clientId: McpClientId): void {
   // — without this, opening the modal a second time would show the
   // Apply button labelled "Done" and clicking it would just close.
   delete els.claudeModal.dataset['applyDone'];
+  delete els.claudeModal.dataset['hermesConfirmPending'];
+  delete els.claudeModal.dataset['hermesPreview'];
   els.claudeModalTitle.textContent = copy.title;
   els.claudeModalSubtitle.textContent = copy.subtitle;
   els.claudeModalApplyHint.innerHTML = 'Click <strong>Apply</strong> to update the client\'s config.';
@@ -5619,6 +5630,24 @@ function openConfigureClientModal(clientId: McpClientId): void {
   // Per-client restart hint set by the success path; show a generic
   // placeholder until then.
   els.claudeFooterNote.textContent = 'After applying, restart the client so it re-reads the config.';
+  if (clientId === 'hermes') {
+    void (async () => {
+      try {
+        const preview = (await invoke('preview_hermes_client')) as HermesPreviewResult;
+        els.claudeModal.dataset['hermesPreview'] = JSON.stringify(preview);
+        if (preview.already_configured) {
+          els.claudeModalApplyHint.innerHTML =
+            'Graphnosis is already configured in Hermes. Click <strong>Apply</strong> to refresh paths if needed.';
+        } else if (preview.requires_overwrite_confirm && preview.previous_memory_provider) {
+          els.claudeModalApplyHint.innerHTML =
+            `Hermes uses memory provider <code>${escape(preview.previous_memory_provider)}</code>. ` +
+            'Click <strong>Apply</strong>, then confirm to replace it with Graphnosis.';
+        }
+      } catch (e) {
+        showError(e instanceof Error ? e.message : String(e));
+      }
+    })();
+  }
 }
 
 // These Settings buttons were removed (AI client integration now lives on the
@@ -5647,7 +5676,25 @@ els.btnClaudeApply.addEventListener('click', async () => {
   els.claudeFooterNote.textContent = '';
   try {
     if (clientId === 'hermes') {
-      const r = (await invoke('configure_hermes_client')) as HermesConfigResult;
+      const previewRaw = els.claudeModal.dataset['hermesPreview'];
+      const preview = previewRaw
+        ? (JSON.parse(previewRaw) as HermesPreviewResult)
+        : null;
+      if (
+        preview?.requires_overwrite_confirm
+        && els.claudeModal.dataset['hermesConfirmPending'] !== '1'
+      ) {
+        els.claudeModal.dataset['hermesConfirmPending'] = '1';
+        const provider = preview.previous_memory_provider ?? 'another provider';
+        els.claudeModalApplyHint.innerHTML =
+          `Replace <code>${escape(provider)}</code> with Graphnosis? ` +
+          'Click <strong>Apply</strong> again to confirm.';
+        els.btnClaudeApply.disabled = false;
+        els.btnClaudeApply.textContent = 'Replace memory provider';
+        return;
+      }
+      const confirmOverwrite = els.claudeModal.dataset['hermesConfirmPending'] === '1';
+      const r = (await invoke('configure_hermes_client', { confirmOverwrite })) as HermesConfigResult;
       const providerNote = r.previous_memory_provider && r.previous_memory_provider !== 'graphnosis'
         ? `<p style="margin-top: 6px;">Replaced external memory provider <code>${escape(r.previous_memory_provider)}</code> with Graphnosis.</p>`
         : '';
