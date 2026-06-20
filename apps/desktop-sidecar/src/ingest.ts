@@ -13,6 +13,7 @@ import { unzipSync, strFromU8 } from 'fflate';
 // Pushing the import into the function body keeps startup clean; jsdom
 // still loads (or surfaces a clean error) when the user actually pastes
 // a URL to ingest.
+import type { ObligationWriteInput } from './obligation-index.js';
 import type { GraphnosisHost } from './host.js';
 import type { AppendDocumentInput } from './graphnosis-adapter.js';
 import { beginIngest, endIngest } from './client-activity.js';
@@ -416,7 +417,14 @@ export async function ingestClip(
   graphId: string,
   text: string,
   label: string,
-  opts?: { addedBy?: string; sourceKind?: 'clip' | 'ai-conversation' | 'skill'; triggeredBy?: string; skipSave?: boolean; skipAutoRelink?: boolean },
+  opts?: {
+    addedBy?: string;
+    sourceKind?: 'clip' | 'ai-conversation' | 'skill';
+    triggeredBy?: string;
+    skipSave?: boolean;
+    skipAutoRelink?: boolean;
+    obligation?: ObligationWriteInput;
+  },
 ) {
   // Gate background passes (brain / GNN / GLL) for the duration of THIS ingest —
   // covers drag-drop + MCP ingest_batch + single-file connector ingests. (A
@@ -435,7 +443,14 @@ async function ingestClipImpl(
   graphId: string,
   text: string,
   label: string,
-  opts?: { addedBy?: string; sourceKind?: 'clip' | 'ai-conversation' | 'skill'; triggeredBy?: string; skipSave?: boolean; skipAutoRelink?: boolean },
+  opts?: {
+    addedBy?: string;
+    sourceKind?: 'clip' | 'ai-conversation' | 'skill';
+    triggeredBy?: string;
+    skipSave?: boolean;
+    skipAutoRelink?: boolean;
+    obligation?: ObligationWriteInput;
+  },
 ) {
   const sourceKind = opts?.sourceKind ?? 'clip';
   // Prefix the source ref so Sources-list filtering + the recovery panel
@@ -473,6 +488,7 @@ async function ingestClipImpl(
     ...(opts?.triggeredBy ? { triggeredBy: opts.triggeredBy } : {}),
     ...(opts?.skipSave ? { skipSave: true } : {}),
     ...(opts?.skipAutoRelink ? { skipAutoRelink: true } : {}),
+    ...(opts?.obligation ? { obligation: opts.obligation } : {}),
   });
   if (opts?.addedBy) {
     await host.gllWriter.append({

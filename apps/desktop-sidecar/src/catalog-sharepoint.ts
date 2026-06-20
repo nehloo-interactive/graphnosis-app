@@ -20,6 +20,9 @@
  * | NoReshare           | noReshare                | Yes/true/1 → true |
  * | Published           | published                | No/false/0 → draft; default true |
  * | RequireSsoSession   | requireSsoSession        | Yes/true/1 → SSO unlock required |
+ * | PackId              | packId                   | GSK pack lineage id |
+ * | PackVersion         | catalogVersion           | Semver for drift detection |
+ * | DefaultRole         | defaultRole              | Sharing role for auto-provisioned token |
  */
 
 import type { EngramCatalogEntry } from '@graphnosis-app/core/settings';
@@ -146,6 +149,18 @@ export function sharePointRowToCatalogEntry(
     ...(parseBoolField(fieldValue(fields, 'RequireSsoSession', 'requireSsoSession'), false)
       ? { requireSsoSession: true }
       : {}),
+    ...(typeof fieldValue(fields, 'PackId', 'packId') === 'string'
+      && String(fieldValue(fields, 'PackId', 'packId')).trim()
+      ? { packId: String(fieldValue(fields, 'PackId', 'packId')).trim() }
+      : {}),
+    ...(typeof fieldValue(fields, 'PackVersion', 'catalogVersion', 'CatalogVersion') === 'string'
+      && String(fieldValue(fields, 'PackVersion', 'catalogVersion', 'CatalogVersion')).trim()
+      ? { catalogVersion: String(fieldValue(fields, 'PackVersion', 'catalogVersion', 'CatalogVersion')).trim() }
+      : {}),
+    ...(typeof fieldValue(fields, 'DefaultRole', 'defaultRole') === 'string'
+      && String(fieldValue(fields, 'DefaultRole', 'defaultRole')).trim()
+      ? { defaultRole: String(fieldValue(fields, 'DefaultRole', 'defaultRole')).trim() as import('@graphnosis-app/core/settings').SharingRole }
+      : {}),
   });
 }
 
@@ -165,7 +180,7 @@ export async function fetchSharePointCatalogEntries(
     };
   }
 
-  const apiUrl = `${target.siteUrl}/_api/web/lists/getbytitle('${target.listTitle.replace(/'/g, "''")}')/items?$select=Id,Title,PackageId,Description,Region,Kind,InstallMode,SourceEngramId,HubRef,RequiredGroups,MDMBundleId,ITControlled,NoReshare,Published,RequireSsoSession&$top=500`;
+  const apiUrl = `${target.siteUrl}/_api/web/lists/getbytitle('${target.listTitle.replace(/'/g, "''")}')/items?$select=Id,Title,PackageId,Description,Region,Kind,InstallMode,SourceEngramId,HubRef,RequiredGroups,MDMBundleId,ITControlled,NoReshare,Published,RequireSsoSession,PackId,PackVersion,DefaultRole&$top=500`;
   const headers: Record<string, string> = {
     Accept: 'application/json;odata=nometadata',
   };

@@ -3,6 +3,10 @@
  *
  * PRIVACY: Evidence packs contain structural audit data only — no raw MCP queries,
  * no passphrase material, no encryption keys. Consent records are tier/client scoped.
+ *
+ * RETENTION + OBLIGATIONS: Per-source retention purge skips sources that still carry
+ * an active obligation (expiresAt in the future). Legal hold continues to block all
+ * mutating ops. Obligation expiry uses `expiresAt` — never `validUntil`.
  */
 
 import { createHash } from 'node:crypto';
@@ -40,6 +44,7 @@ export interface EvidencePack {
   oplog: { count: number; events: Awaited<ReturnType<GraphnosisHost['listOplogEvents']>> };
   consent: { count: number; records: NonNullable<ReturnType<GraphnosisHost['getSettings']>['ai']['dataAccessConsents']> };
   mcpAudit: { count: number; events: McpAuditEvent[] };
+  skillRuns: { count: number; runs: import('./skill-runs.js').SkillRunListItem[] };
   engramHashes: Array<{ graphId: string; gaiSha256: string; bundleSha256?: string }>;
   manifestHash?: string;
   signatures?: EvidencePackSignature[];
@@ -113,6 +118,7 @@ function manifestHashForPack(pack: Omit<EvidencePack, 'manifestHash' | 'signatur
     oplog: { count: pack.oplog.count },
     consent: { count: pack.consent.count },
     mcpAudit: { count: pack.mcpAudit.count },
+    skillRuns: { count: pack.skillRuns.count },
     engramHashes: pack.engramHashes,
   });
   return createHash('sha256').update(canonical).digest('hex');
@@ -194,6 +200,18 @@ export async function buildEvidencePack(
     // graphs dir may not exist on fresh cortex
   }
 
+  let skillRunRows = await host.skillRuns.listPublic();
+  if (opts.since !== undefined || opts.until !== undefined) {
+    skillRunRows = skillRunRows.filter((r) => {
+      if (opts.since !== undefined && r.updatedAt < opts.since) return false;
+      if (opts.until !== undefined && r.updatedAt > opts.until) return false;
+      return true;
+    });
+  }
+  if (opts.engram) {
+    skillRunRows = skillRunRows.filter((r) => r.skillGraphId === opts.engram);
+  }
+
   return {
     version: 1,
     exportedAt: Date.now(),
@@ -205,6 +223,7 @@ export async function buildEvidencePack(
     oplog: { count: events.length, events },
     consent: { count: consentSlice.length, records: consentSlice },
     mcpAudit: { count: mcpEvents.length, events: mcpEvents },
+    skillRuns: { count: skillRunRows.length, runs: skillRunRows },
     engramHashes,
   };
 }
@@ -271,6 +290,13 @@ export async function runRetentionPurge(
         items.push({
           graphId, sourceId: src.sourceId, ingestedAt: src.ingestedAt,
           exported: false, purged: false, skippedReason: 'source-legal-hold',
+        });
+        continue;
+      }
+      if (host.obligationIndex.hasActiveForSource(graphId, src.sourceId, now)) {
+        items.push({
+          graphId, sourceId: src.sourceId, ingestedAt: src.ingestedAt,
+          exported: false, purged: false, skippedReason: 'active-obligation',
         });
         continue;
       }

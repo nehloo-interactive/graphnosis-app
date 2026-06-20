@@ -14,6 +14,7 @@
 
 import type { ModelCapability, KnownModel, CustomRateOverride, CallCostEstimate, ModelProviderId } from './model-registry.js';
 import { KNOWN_MODELS, getKnownProvider, estimateCallCost, isSensitiveEngramSafe } from './model-registry.js';
+import { isProviderDisabled } from './admin-policy.js';
 
 /** One step in the plan request — typically derived from a SkillExecutionPlan step. */
 export interface PlanStepInput {
@@ -214,6 +215,7 @@ function planOneStep(step: PlanStepInput, ctx: PlanContext): PlannedStep {
   };
 
   let candidates = KNOWN_MODELS.filter((m) => ctx.enabledProviders.includes(m.provider))
+    .filter((m) => !isProviderDisabled(m.provider))
     .filter((m) => capabilities.every((c) => m.capabilities.includes(c)));
 
   if (privacyLocked) {

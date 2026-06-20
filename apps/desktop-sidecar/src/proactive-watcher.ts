@@ -6,22 +6,27 @@
 // appear in the Ghampus chat thread — the user presses Run, Snooze, or
 // Dismiss.
 //
-// Matching strategy: two-pass.
-//   1. Keyword overlap between signal labels and skill name words.
-//   2. Time-based rules for skills with no strong label signal (security
+// Matching strategy: three-pass.
+//   1. Skill-dispatch trigger lines (trained routing rules).
+//   2. Keyword overlap between signal labels and skill name words.
+//   3. Time-based rules for skills with no strong label signal (security
 //      cadence, cortex gardening, skill maintenance review).
 //
-// Anti-spam: max 3 NEW cards per session; 6-hour suppression per
-// {signalType, skillSourceId} pair; skill-dispatch + skill-maintenance-review
-// are excluded from auto-proposal (they're meta-skills).
+// Anti-spam: max 5 NEW cards per session; 6-hour suppression per
+// {signalType, skillSourceId} pair; skill-dispatch itself is excluded
+// from auto-proposal (meta-skill), but its trigger table drives matching.
 //
-// All state is in-memory per sidecar session. Disk persistence of dismissed
-// cards is deferred to the next iteration.
+// Dismiss/snooze state persists to `<cortex>/proactive-watcher-state.json`.
 
+import { promises as fs } from 'node:fs';
+import path from 'node:path';
 import type { GraphnosisHost } from './host.js';
 import type { SkillTrainer } from './skill-trainer.js';
 import type { BroadcastRawFn } from './events.js';
 import { listNotifications } from './agent-notifications.js';
+import { extractDispatchTriggerLines, findSkillDispatchSourceId } from './skill-dispatch-sync.js';
+import { matchDispatchTriggers } from './proactive-dispatch-match.js';
+import { resolveGhampusProactiveSettings } from '@graphnosis-app/core/settings';
 
 // ── Public types ──────────────────────────────────────────────────────────────
 
@@ -29,7 +34,7 @@ export interface ProactiveCard {
   id: string;
   createdAt: number;
   /** What triggered this proposal. */
-  signalType: 'recent-ingest' | 'time-based' | 'recall-pattern';
+  signalType: 'recent-ingest' | 'time-based' | 'recall-pattern' | 'obligation-due';
   /** Human-readable description of the signal, shown in the card's "why" line. */
   signalLabel: string;
   /** The skill being proposed. */
@@ -53,6 +58,28 @@ export interface ProactiveWatcherDeps {
 const TICK_MS           = 90_000;    // 90 seconds
 const SUPPRESS_MS       = 6 * 60 * 60 * 1000;  // 6 hours per {signal, skill}
 const MAX_CARDS_SESSION = 5;
+const DEFAULT_STARTUP_DELAY_MS = 5 * 60_000;
+const STATE_FILE = 'proactive-watcher-state.json';
+
+interface PersistedWatcherState {
+  suppressed?: Record<string, number>;
+  lastTimeBasedProposal?: Record<string, number>;
+  snoozedUntil?: Record<string, number>;
+  dismissedSkills?: Record<string, number>;
+}
+
+async function loadWatcherState(cortexDir: string): Promise<PersistedWatcherState> {
+  try {
+    const raw = await fs.readFile(path.join(cortexDir, STATE_FILE), 'utf8');
+    return JSON.parse(raw) as PersistedWatcherState;
+  } catch {
+    return {};
+  }
+}
+
+async function saveWatcherState(cortexDir: string, state: PersistedWatcherState): Promise<void> {
+  await fs.writeFile(path.join(cortexDir, STATE_FILE), JSON.stringify(state, null, 2), 'utf8');
+}
 
 // Meta-skills that should never be auto-proposed (they route to others).
 const META_SKILLS = new Set([
@@ -155,7 +182,9 @@ function describeSkill(skillLabel: string): { what: string; benefit: string } {
     : { what: 'automates a multi-step task across your cortex', benefit: 'saves you time and keeps things consistent' };
 }
 
-// Time-based rules.
+const OBLIGATION_DUE_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
+const OBLIGATION_TASK_SKILL_FRAGMENT = 'task-todo-management';
+
 const TIME_BASED_RULES: Array<{
   skillLabelFragment: string;
   minElapsedMs: number;
@@ -187,26 +216,94 @@ const TIME_BASED_RULES: Array<{
 
 export class ProactiveWatcher {
   private timer: ReturnType<typeof setInterval> | null = null;
+  private startupTimer: ReturnType<typeof setTimeout> | null = null;
   private cards: ProactiveCard[] = [];
   private cardsThisSession = 0;
   // suppression key → last proposed timestamp
   private suppressed = new Map<string, number>();
   // last proposed timestamp for time-based rules, keyed by fragment
   private lastTimeBasedProposal = new Map<string, number>();
+  // skillSourceId → snooze-until ms
+  private snoozedUntil = new Map<string, number>();
+  // skillSourceId → dismissed-at ms (longer suppression)
+  private dismissedSkills = new Map<string, number>();
+  private dispatchTriggerLines: string[] = [];
+  private stateLoaded = false;
+  private stateDirty = false;
 
   constructor(private deps: ProactiveWatcherDeps) {}
 
   start(): void {
     if (this.timer) return;
-    // Wait 5 minutes before first scan — gives the user time to orient and
-    // avoids flooding the thread with cards the moment the app opens.
-    setTimeout(() => { void this.tick(); }, 5 * 60_000);
-    this.timer = setInterval(() => { void this.tick(); }, TICK_MS);
-    this.timer.unref?.();
+    void this.initState().then(() => {
+      this.refreshDispatchTriggers();
+      const delayMs = resolveGhampusProactiveSettings(this.deps.host.getSettings().agent).startupDelayMs;
+      this.startupTimer = setTimeout(() => { void this.tick(); }, delayMs);
+      this.startupTimer.unref?.();
+      this.timer = setInterval(() => { void this.tick(); }, TICK_MS);
+      this.timer.unref?.();
+    });
   }
 
   stop(): void {
+    if (this.startupTimer) { clearTimeout(this.startupTimer); this.startupTimer = null; }
     if (this.timer) { clearInterval(this.timer); this.timer = null; }
+    void this.flushState();
+  }
+
+  private async initState(): Promise<void> {
+    const cortexDir = this.deps.host.getCortexDir?.();
+    if (!cortexDir) return;
+    const persisted = await loadWatcherState(cortexDir);
+    for (const [k, v] of Object.entries(persisted.suppressed ?? {})) {
+      if (typeof v === 'number') this.suppressed.set(k, v);
+    }
+    for (const [k, v] of Object.entries(persisted.lastTimeBasedProposal ?? {})) {
+      if (typeof v === 'number') this.lastTimeBasedProposal.set(k, v);
+    }
+    for (const [k, v] of Object.entries(persisted.snoozedUntil ?? {})) {
+      if (typeof v === 'number') this.snoozedUntil.set(k, v);
+    }
+    for (const [k, v] of Object.entries(persisted.dismissedSkills ?? {})) {
+      if (typeof v === 'number') this.dismissedSkills.set(k, v);
+    }
+    this.stateLoaded = true;
+  }
+
+  private async flushState(): Promise<void> {
+    if (!this.stateDirty || !this.stateLoaded) return;
+    const cortexDir = this.deps.host.getCortexDir?.();
+    if (!cortexDir) return;
+    await saveWatcherState(cortexDir, {
+      suppressed: Object.fromEntries(this.suppressed),
+      lastTimeBasedProposal: Object.fromEntries(this.lastTimeBasedProposal),
+      snoozedUntil: Object.fromEntries(this.snoozedUntil),
+      dismissedSkills: Object.fromEntries(this.dismissedSkills),
+    });
+    this.stateDirty = false;
+  }
+
+  private markStateDirty(): void {
+    this.stateDirty = true;
+    void this.flushState();
+  }
+
+  /** Reload skill-dispatch trigger table (call after retrain). */
+  refreshDispatchTriggers(): void {
+    if (!this.deps.skillTrainer) {
+      this.dispatchTriggerLines = [];
+      return;
+    }
+    for (const gid of this.deps.host.listGraphs()) {
+      const sourceId = findSkillDispatchSourceId(this.deps.host, gid);
+      if (!sourceId) continue;
+      const detail = this.deps.skillTrainer.getSkill(gid, sourceId);
+      if (detail?.text) {
+        this.dispatchTriggerLines = extractDispatchTriggerLines(detail.text);
+        return;
+      }
+    }
+    this.dispatchTriggerLines = [];
   }
 
   listCards(): ProactiveCard[] {
@@ -215,17 +312,23 @@ export class ProactiveWatcher {
 
   dismissCard(id: string): void {
     const card = this.cards.find((c) => c.id === id);
-    if (card) card.status = 'dismissed';
+    if (!card) return;
+    card.status = 'dismissed';
+    this.dismissedSkills.set(card.skillSourceId, Date.now());
+    const key = `${card.signalType}:${card.skillSourceId}`;
+    this.suppressed.set(key, Date.now());
+    this.markStateDirty();
   }
 
-  snoozeCard(id: string): void {
+  snoozeCard(id: string, snoozeMs = SUPPRESS_MS): void {
     const card = this.cards.find((c) => c.id === id);
-    if (card) {
-      card.status = 'snoozed';
-      // Re-propose after 6 hours by pushing the suppression window.
-      const key = `${card.signalType}:${card.skillSourceId}`;
-      this.suppressed.set(key, Date.now());
-    }
+    if (!card) return;
+    card.status = 'snoozed';
+    const until = Date.now() + snoozeMs;
+    this.snoozedUntil.set(card.skillSourceId, until);
+    const key = `${card.signalType}:${card.skillSourceId}`;
+    this.suppressed.set(key, Date.now());
+    this.markStateDirty();
   }
 
   markRunning(id: string): void {
@@ -244,6 +347,8 @@ export class ProactiveWatcher {
     if (this.cardsThisSession >= MAX_CARDS_SESSION) return;
     if (!this.deps.skillTrainer) return;
 
+    this.refreshDispatchTriggers();
+
     const skills = this.deps.skillTrainer.listSkills();
     if (skills.length === 0) return;
 
@@ -260,6 +365,11 @@ export class ProactiveWatcher {
     // signals match it.
     const proposedSkillIds = new Set<string>();
 
+    // ── Pass 0: temporal obligations due ≤7d or overdue ─────────────────────
+    // Parallel to GoalTracker deadline alerts — obligations use structured
+    // expiresAt metadata rather than text extraction from goal: sources.
+    await this.proposeObligationCards(usableSkills, proposed, proposedSkillIds, now);
+
     // ── Pass 1: recent-ingest signals ──────────────────────────────────────────
     try {
       const { notifications: recent } = listNotifications(
@@ -270,12 +380,12 @@ export class ProactiveWatcher {
       for (const notif of recent) {
         if (this.cardsThisSession + proposed.length >= MAX_CARDS_SESSION) break;
 
-        // Build signal words from label + originKind + sourceId fragment.
-        const signalWords = tokenize(
-          `${notif.label} ${notif.originKind} ${notif.origin} ${notif.engramId}`,
-        );
+        const signalContext = `${notif.label} ${notif.originKind} ${notif.origin} ${notif.engramId}`;
+        const signalWords = tokenize(signalContext);
 
-        const bestMatch = this.findBestSkillMatch(usableSkills, signalWords, 'recent-ingest', notif.sourceId, proposedSkillIds);
+        const bestMatch = this.findBestSkillMatch(
+          usableSkills, signalWords, signalContext, 'recent-ingest', notif.sourceId, proposedSkillIds,
+        );
         if (bestMatch) {
           proposedSkillIds.add(bestMatch.sourceId);
           const skillLabel = bestMatch.label.replace(/^skill:\d+:/, '');
@@ -313,6 +423,7 @@ export class ProactiveWatcher {
 
       // Don't propose if the same skill was already proposed this tick.
       if (proposedSkillIds.has(skill.sourceId)) continue;
+      if (this.isSkillSnoozedOrDismissed(skill.sourceId, now)) continue;
 
       const skillLabel = skill.label.replace(/^skill:\d+:/, '');
       const desc = describeSkill(skillLabel);
@@ -328,6 +439,7 @@ export class ProactiveWatcher {
         status: 'pending',
       });
       this.lastTimeBasedProposal.set(rule.skillLabelFragment, now);
+      this.markStateDirty();
     }
 
     // ── Emit new cards ────────────────────────────────────────────────────────
@@ -336,6 +448,7 @@ export class ProactiveWatcher {
       this.suppressed.set(suppressKey, now);
       this.cards.push(card);
       this.cardsThisSession++;
+      this.markStateDirty();
 
       try {
         this.deps.broadcastRaw({
@@ -347,9 +460,57 @@ export class ProactiveWatcher {
     }
   }
 
+  private async proposeObligationCards(
+    skills: Array<{ sourceId: string; graphId: string; label: string }>,
+    proposed: ProactiveCard[],
+    proposedSkillIds: Set<string>,
+    now: number,
+  ): Promise<void> {
+    if (this.cardsThisSession + proposed.length >= MAX_CARDS_SESSION) return;
+
+    const taskSkill = skills.find((s) =>
+      s.label.replace(/^skill:\d+:/, '').includes(OBLIGATION_TASK_SKILL_FRAGMENT),
+    );
+    if (!taskSkill) return;
+
+    const suppressKey = `obligation-due:${taskSkill.sourceId}`;
+    if (this.isSuppressed(suppressKey, now)) return;
+    if (this.isSkillSnoozedOrDismissed(taskSkill.sourceId, now)) return;
+    if (proposedSkillIds.has(taskSkill.sourceId)) return;
+
+    await this.deps.host.obligationIndex.ensureLoaded();
+    const due = this.deps.host.obligationIndex.list({
+      dueWithinMs: OBLIGATION_DUE_WINDOW_MS,
+      includeOverdue: true,
+      maxResults: 5,
+      now,
+    });
+    if (due.length === 0) return;
+
+    const overdue = due.filter((ob) => ob.expiresAt <= now).length;
+    const upcoming = due.length - overdue;
+    const skillLabel = taskSkill.label.replace(/^skill:\d+:/, '');
+    proposed.push({
+      id: `card-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      createdAt: now,
+      signalType: 'obligation-due',
+      signalLabel: overdue > 0
+        ? `${overdue} obligation(s) overdue, ${upcoming} due within 7 days`
+        : `${upcoming} obligation(s) due within 7 days`,
+      skillSourceId: taskSkill.sourceId,
+      skillGraphId: taskSkill.graphId,
+      skillLabel,
+      why: `**Temporal obligations** — ${due.length} active deadline/renewal/review-by item(s) need attention. Run **task-todo-management** or call \`recall_obligations(due_within_days=7)\` for the full list.`,
+      status: 'pending',
+    });
+    proposedSkillIds.add(taskSkill.sourceId);
+    this.suppressed.set(suppressKey, now);
+  }
+
   private findBestSkillMatch(
     skills: Array<{ sourceId: string; graphId: string; label: string }>,
     signalWords: string[],
+    signalContext: string,
     signalType: string,
     signalId: string,
     proposedSkillIds: Set<string>,
@@ -362,23 +523,18 @@ export class ProactiveWatcher {
       const skillLabel = skill.label.replace(/^skill:\d+:/, '');
       const suppressKey = `${signalType}:${skill.sourceId}:${signalId}`;
 
-      // Skip if already proposed this tick, suppressed from a prior tick,
-      // or already pending in the card inbox.
       if (proposedSkillIds.has(skill.sourceId)) continue;
       if (this.isSuppressed(suppressKey, now)) continue;
+      if (this.isSkillSnoozedOrDismissed(skill.sourceId, now)) continue;
       if (this.cards.some((c) => c.skillSourceId === skill.sourceId && c.status === 'pending')) continue;
 
-      const score = this.scoreMatch(skillLabel, signalWords);
+      const score = this.scoreMatch(skillLabel, signalWords, signalContext);
       if (score > bestScore && score >= 2) {
         bestScore = score;
         bestSkill = skill;
-        // Don't record suppression here — only record it after the card is
-        // actually committed, in tick(). Recording here would suppress the
-        // winning skill from being found by subsequent signal iterations.
       }
     }
 
-    // Record per-signal suppression only for the winner, after scoring is done.
     if (bestSkill) {
       this.suppressed.set(`${signalType}:${bestSkill.sourceId}:${signalId}`, now);
     }
@@ -386,16 +542,32 @@ export class ProactiveWatcher {
     return bestSkill;
   }
 
-  private scoreMatch(skillLabel: string, signalWords: string[]): number {
+  private isSkillSnoozedOrDismissed(skillSourceId: string, now: number): boolean {
+    const snoozeUntil = this.snoozedUntil.get(skillSourceId) ?? 0;
+    if (snoozeUntil > now) return true;
+    const dismissedAt = this.dismissedSkills.get(skillSourceId) ?? 0;
+    return now - dismissedAt < SUPPRESS_MS;
+  }
+
+  private scoreMatch(skillLabel: string, signalWords: string[], signalContext: string): number {
     let score = 0;
     const skillWords = tokenize(skillLabel);
 
-    // Direct word overlap between skill name and signal words.
+    // Pass 1: skill-dispatch trigger table (highest weight).
+    if (this.dispatchTriggerLines.length > 0) {
+      const dispatchMatches = matchDispatchTriggers(signalContext, this.dispatchTriggerLines);
+      for (const dm of dispatchMatches) {
+        if (skillLabel.includes(dm.skillSlug)) {
+          score += dm.score + 4;
+        }
+      }
+    }
+
+    // Pass 2: direct word overlap + keyword map.
     for (const sw of signalWords) {
       if (skillWords.some((kw) => kw.startsWith(sw) || sw.startsWith(kw))) {
         score += 2;
       }
-      // Keyword map lookup.
       const mapped = KEYWORD_SKILL_MAP[sw];
       if (mapped) {
         const mapList = Array.isArray(mapped) ? mapped : [mapped];

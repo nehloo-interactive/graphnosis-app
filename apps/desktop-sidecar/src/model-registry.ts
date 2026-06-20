@@ -288,6 +288,30 @@ export const KNOWN_MODELS: KnownModel[] = [
     contextWindow: 8192,
   },
 
+  // ── Local: MLX (OpenAI-compatible mlx_lm.server) ──
+  {
+    id: 'mlx:default',
+    provider: 'mlx',
+    modelTag: 'mlx-community/Meta-Llama-3-8B-Instruct-4bit',
+    displayName: 'MLX Local',
+    capabilities: ['general', 'fast', 'reasoning', 'summarization', 'structured-output', 'code'],
+    pricing: { kind: 'free' },
+    typicalLatencyMs: 1200,
+    contextWindow: 8192,
+  },
+
+  // ── Local: vLLM (OpenAI-compatible /v1) ──
+  {
+    id: 'vllm:default',
+    provider: 'vllm',
+    modelTag: 'meta-llama/Meta-Llama-3-8B-Instruct',
+    displayName: 'vLLM Local',
+    capabilities: ['general', 'reasoning', 'summarization', 'structured-output', 'code', 'high-context'],
+    pricing: { kind: 'free' },
+    typicalLatencyMs: 1500,
+    contextWindow: 32768,
+  },
+
   // ── Anthropic ──
   {
     id: 'anthropic:claude-haiku-4',

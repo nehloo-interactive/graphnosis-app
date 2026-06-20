@@ -136,6 +136,12 @@ export class SkillMaintenanceScheduler {
       return { action: 'skip', detail: 'unlicensed' };
     }
 
+    // Enqueue skills whose cited memory nodes drifted since last bind.
+    try {
+      const { auditSkillCitedNodeDrift } = await import('./skill-retrain-queue.js');
+      await auditSkillCitedNodeDrift(this.deps.host, this.deps.skillTrainer);
+    } catch { /* non-fatal */ }
+
     const entry = pickNextQueueEntry(this.deps.host, this.deps.skillTrainer);
     if (!entry) {
       if (this.pendingCard) this.pendingCard = null;

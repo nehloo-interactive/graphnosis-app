@@ -1,0 +1,32 @@
+{
+  "skill": {
+    "title": "bug-investigation golden"
+  },
+  "steps": [
+    {
+      "index": 3,
+      "text": "1. Reproduce the issue."
+    },
+    {
+      "index": 4,
+      "text": "2. Narrow root cause @loop: 1 max=5",
+      "loopsBackTo": [
+        1
+      ],
+      "maxIterations": 5
+    },
+    {
+      "index": 5,
+      "text": "3. Propose fix."
+    }
+  ],
+  "requires": [
+    "errorDescription"
+  ],
+  "produces": [
+    "rootCause"
+  ],
+  "constraints": {
+    "trigger": "bug report"
+  }
+}

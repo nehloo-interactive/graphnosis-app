@@ -23,6 +23,12 @@
 
 import type { GraphnosisHost } from './host.js';
 import type { LocalLlm } from './correction.js';
+import { isRecallRecipeParagraph, parseRecallRecipeText } from './skill-recall-bindings.js';
+import {
+  buildGskPackage,
+  generateGraphnosisMd,
+  nextGskExportVersion,
+} from './gsk-format.js';
 import { ingestClip } from './ingest.js';
 import { SkillSnapshotStore } from './skill-snapshots.js';
 import type { SkillCallLinkStore, SkillCallLink } from './skill-call-links.js';
@@ -140,8 +146,14 @@ export interface SkillVitalityResult {
   /** 0–100. 100 = just trained, fully fresh. Drops as influential memories evolve. */
   score: number;
   trainedAt?: number;
-  /** How many of the skill's influential source nodes have been forgotten since training. */
+  /** How many of the skill's own graph nodes have been soft-deleted since training. */
   staleNodesCount: number;
+  /** Total cited memory nodes bound via recall recipes. */
+  citedNodesCount?: number;
+  /** Cited memory nodes that were edited, forgotten, or are missing from cortex. */
+  missingCitedNodesCount?: number;
+  /** True when recall-recipe bindings no longer match live cortex. */
+  driftDetected?: boolean;
   /** Human-readable recommendation based on the score. */
   recommendation: string;
 }
@@ -158,6 +170,8 @@ export interface SkillProvenance {
   /** Source pack id and version, useful for change tracking and re-import. */
   packId?: string;
   packVersion?: string;
+  /** Upstream pack this skill was derived from (delta / re-export lineage). */
+  upstreamPackId?: string;
   importedAt?: string;
 }
 
@@ -758,7 +772,12 @@ export class SkillTrainer {
         let bodyRun: string[] = [];
         const flushBodyRun = (): void => {
           const text = bodyRun.join('\n').trim();
-          if (text) bodySections.push({ role: 'body', text });
+          if (text) {
+            bodySections.push({
+              role: isRecallRecipeParagraph(text) ? 'recipe' : 'body',
+              text,
+            });
+          }
           bodyRun = [];
         };
         for (const line of p.split('\n')) {
@@ -957,15 +976,29 @@ export class SkillTrainer {
       // Re-run linkSkillCalls on every OTHER skill so any `@skill: <this>`
       // reference gets re-pointed to the new title node.
       await refreshIncomingCallsToSkill(this.host, graphId, skillId);
-      if (topNodes.length > 0) {
-        const { persistSkillCitedNodes } = await import('./skill-retrain-queue.js');
-        await persistSkillCitedNodes(
-          this.host,
-          skillId,
-          graphId,
-          topNodes.map((n) => n.nodeId),
-        );
+      // Bind cited memory nodes from recall recipes (empty-engram train contract).
+      {
+        const { syncSkillCitedNodesFromRecipes } = await import('./skill-recall-bindings.js');
+        await syncSkillCitedNodesFromRecipes(this.host, graphId, skillId);
+        // Legacy: train-time influential nodes (when ENABLE_CORTEX_RECALL_AT_TRAIN is on).
+        if (topNodes.length > 0) {
+          const settings = this.host.getSettings();
+          const prior = settings.skillCitedNodes?.[skillId]?.nodes ?? {};
+          const merged: Record<string, string> = { ...prior };
+          for (const n of topNodes) merged[n.nodeId] = n.graphId ?? graphId;
+          await this.host.setSettings({
+            skillCitedNodes: {
+              ...(settings.skillCitedNodes ?? {}),
+              [skillId]: { graphId, nodes: merged },
+            },
+          });
+        }
       }
+      // Post-retrain dispatch registry sync for routing skills.
+      try {
+        const { scheduleDispatchSyncAfterRetrain } = await import('./skill-dispatch-sync.js');
+        await scheduleDispatchSyncAfterRetrain(this.host, this, graphId, skillId);
+      } catch { /* non-fatal */ }
     }
 
     return {
@@ -1016,7 +1049,6 @@ export class SkillTrainer {
     const now = Date.now();
 
     // Count skill nodes that have been soft-deleted (validUntil in the past).
-    // inspectNodes returns { id, confidence, validUntil?, ... }
     const allNodes = this.host.listNodes(graphId);
     const nodeIdSet = new Set(source.nodeIds);
     const staleNodes = allNodes.filter(
@@ -1024,6 +1056,25 @@ export class SkillTrainer {
     );
     const staleNodesCount = staleNodes.length;
     const totalSkillNodes = source.nodeIds.length;
+
+    // Recall-recipe cited-node drift vs live cortex.
+    const citedEntry = this.host.getSettings().skillCitedNodes?.[sourceId];
+    let citedNodesCount = 0;
+    let missingCitedNodesCount = 0;
+    if (citedEntry) {
+      for (const [nodeId, eg] of Object.entries(citedEntry.nodes)) {
+        citedNodesCount++;
+        if (!this.host.listGraphs().includes(eg)) {
+          missingCitedNodesCount++;
+          continue;
+        }
+        const extNodes = this.host.listNodes(eg);
+        const n = extNodes.find((x) => x.id === nodeId);
+        if (!n || n.confidence <= 0.2 || (n.validUntil !== undefined && n.validUntil <= now)) {
+          missingCitedNodesCount++;
+        }
+      }
+    }
 
     // Age penalty: 5 points per month, capped at 25
     const monthsOld = (now - trainedAt) / (1000 * 60 * 60 * 24 * 30);
@@ -1034,10 +1085,19 @@ export class SkillTrainer {
       ? Math.round((staleNodesCount / totalSkillNodes) * 50)
       : 0;
 
-    const score = Math.max(0, 100 - agePenalty - stalenessPenalty);
+    // Cited-memory drift penalty: up to 40 pts when all cited nodes are gone
+    const driftDetected = citedNodesCount > 0 && missingCitedNodesCount > 0;
+    const citedDriftPenalty = citedNodesCount > 0
+      ? Math.round((missingCitedNodesCount / citedNodesCount) * 40)
+      : 0;
+
+    const score = Math.max(0, 100 - agePenalty - stalenessPenalty - citedDriftPenalty);
 
     let recommendation: string;
-    if (score >= 80) {
+    if (driftDetected && score < 60) {
+      recommendation =
+        `${missingCitedNodesCount} of ${citedNodesCount} cited memory node(s) changed since last bind — retrain recommended.`;
+    } else if (score >= 80) {
       recommendation = 'Skill is fresh — no retraining needed.';
     } else if (score >= 60) {
       recommendation =
@@ -1050,7 +1110,13 @@ export class SkillTrainer {
         'Skill is stale. Call train_skill to personalize against your current cortex.';
     }
 
-    return { score, trainedAt, staleNodesCount, recommendation };
+    return {
+      score,
+      trainedAt,
+      staleNodesCount,
+      ...(citedNodesCount > 0 ? { citedNodesCount, missingCitedNodesCount, driftDetected } : {}),
+      recommendation,
+    };
   }
 
   // ── exportSkill ────────────────────────────────────────────────────────────
@@ -1070,14 +1136,13 @@ export class SkillTrainer {
       // Delegate to gsk-format for pack building. The caller (MCP handler or IPC
       // handler) is responsible for providing the full GskPayload; this path
       // returns a minimal single-skill pack from just the skill text.
-      const { buildGskPackage } = require('./gsk-format.js') as typeof import('./gsk-format.js');
       const payload = {
         formatVersion: '1' as const,
         kind: 'community' as const,
         id: `exported-${Date.now()}`,
         displayName: 'Exported Skill',
         description: 'Single skill exported from Graphnosis.',
-        version: '1.0.0',
+        version: nextGskExportVersion(null),
         author: 'community',
         tierRequired: 'pro' as const,
         skills: [{
@@ -1146,8 +1211,7 @@ export class SkillTrainer {
       .filter(Boolean);
 
     if (format === 'gsk') {
-      // Reassemble as raw text and reuse the gsk builder.
-      return this.exportSkill(chunks.join('\n\n'), 'gsk');
+      return this.buildGskFromSource(graphId, sourceId, chunks);
     }
     const body = formatTrainedOutputAsMarkdown(chunks, format);
     const header = FORMAT_HEADERS[format];
@@ -1157,6 +1221,69 @@ export class SkillTrainer {
     const startsWithFrontmatter = body.startsWith('---\n');
     const withHeader = header && !startsWithFrontmatter ? `${header}\n\n${body}` : body;
     return wrapper ? wrapper(body) : withHeader;
+  }
+
+  /** Build a semver-aware GSK pack from a trained skill source. */
+  private buildGskFromSource(graphId: string, sourceId: string, chunks: string[]): Buffer {
+    const rec = this.host.getSourceRecord(graphId, sourceId);
+    const text = chunks.join('\n\n');
+    const provenance = parseSkillProvenance(text);
+    const goals = parseSkillGoals(text);
+    const title = extractSkillTitle(text) || baseSkillName(rec?.ref ?? sourceId);
+    const skillName = baseSkillName(title);
+
+    const bodyLines: string[] = [];
+    const recipeLines: string[] = [];
+    for (const chunk of chunks) {
+      const t = chunk.trim();
+      if (!t || t.startsWith('<!--')) continue;
+      if (parseRecallRecipeText(t)) recipeLines.push(t);
+      else if (!/^Success:|^Out of scope:|^On completion:|^Trigger:|^Prerequisites:|^On failure:|^Requires:|^Produces:/i.test(t)
+        && !t.startsWith('#') && t !== title) {
+        bodyLines.push(t);
+      }
+    }
+
+    const recallRecipes = recipeLines
+      .map((r) => parseRecallRecipeText(r))
+      .filter(Boolean)
+      .map((r) => ({
+        name: r!.name,
+        trigger: r!.trigger,
+        steps: r!.steps.map((s) => ({
+          tool: s.tool,
+          query: s.query,
+          ...(s.onlyEngrams ? { onlyEngrams: s.onlyEngrams } : {}),
+          ...(s.ifResultsBelow !== undefined ? { ifResultsBelow: s.ifResultsBelow } : {}),
+        })),
+      }));
+
+    const version = nextGskExportVersion(provenance?.packVersion, 'patch');
+    const packId = provenance?.packId ?? `exported-${skillName}`;
+    const payload = {
+      formatVersion: '1' as const,
+      kind: (provenance?.kind ?? 'community') as 'official' | 'community',
+      id: packId,
+      displayName: skillName,
+      description: `Exported skill: ${skillName}`,
+      version,
+      author: provenance?.author ?? 'community',
+      tierRequired: 'pro' as const,
+      ...(provenance?.packId ? { upstreamPackId: provenance.packId } : {}),
+      skills: [{
+        name: skillName,
+        engramTemplate: 'skill' as const,
+        sensitivityTier: 'personal' as const,
+        baseText: bodyLines.join('\n\n'),
+        recallRecipes,
+        ...(goals ? { goals } : {}),
+        ...(provenance?.packId ? { basedOn: provenance.packId } : {}),
+      }],
+      graphnosisMd: '',
+      signature: '',
+    };
+    payload.graphnosisMd = generateGraphnosisMd(payload);
+    return buildGskPackage(payload);
   }
 
 
@@ -3165,17 +3292,31 @@ function parseSkillMetadata(text: string): ParsedSkillMeta {
  * Returns undefined for locally-trained skills (no provenance node).
  */
 function parseSkillProvenance(text: string): import('./skill-trainer.js').SkillProvenance | undefined {
-  const m = text.match(
+  const withUpstream = text.match(
+    /<!--\s*imported\s+(\S+)\s+·\s+pack:(\S+)\s+v(\S+)(?:\s+·\s+upstream:(\S+))?\s+·\s+(official|community)\s+·\s+verified:(true|false)\s+·\s+author:([^-]+?)\s*-->/,
+  );
+  if (withUpstream) {
+    return {
+      importedAt: withUpstream[1]!,
+      packId: withUpstream[2]!,
+      packVersion: withUpstream[3]!,
+      ...(withUpstream[4] ? { upstreamPackId: withUpstream[4]! } : {}),
+      kind: withUpstream[5]! as 'official' | 'community',
+      verified: withUpstream[6]! === 'true',
+      author: withUpstream[7]!.trim(),
+    };
+  }
+  const legacy = text.match(
     /<!--\s*imported\s+(\S+)\s+·\s+pack:(\S+)\s+v(\S+)\s+·\s+(official|community)\s+·\s+verified:(true|false)\s+·\s+author:([^-]+?)\s*-->/,
   );
-  if (!m) return undefined;
+  if (!legacy) return undefined;
   return {
-    importedAt: m[1]!,
-    packId: m[2]!,
-    packVersion: m[3]!,
-    kind: m[4]! as 'official' | 'community',
-    verified: m[5]! === 'true',
-    author: m[6]!.trim(),
+    importedAt: legacy[1]!,
+    packId: legacy[2]!,
+    packVersion: legacy[3]!,
+    kind: legacy[4]! as 'official' | 'community',
+    verified: legacy[5]! === 'true',
+    author: legacy[6]!.trim(),
   };
 }
 

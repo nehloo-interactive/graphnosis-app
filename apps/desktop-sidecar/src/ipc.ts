@@ -15,6 +15,8 @@ import { BUNDLED_SKILL_DEMOS } from './skill-demos.generated.js';
 import type { BroadcastRawFn } from './events.js';
 import { broadcastOplogCompacted } from './sidecar-idle-maintenance.js';
 import { mcpRegistry } from './mcp-registry.js';
+import { skillRunToListItem, deriveSkillRunStatus } from './skill-runs.js';
+import { loadCatalogDrift } from './catalog-drift.js';
 import { applyCorrection as runApplyCorrection, proposeCorrection } from './correction.js';
 import {
   linkSkillSequence,
@@ -34,7 +36,7 @@ import type { CorrectionDiff } from './correction.js';
 import { oplog } from '@nehloo-interactive/graphnosis-secure-sync';
 import { withEmbedding } from './embedding-queue.js';
 import type { ConnectorManager } from './connectors/manager.js';
-import { getAdminPolicy, setAdminPolicy } from './admin-policy.js';
+import { getAdminPolicy, isProviderDisabled, setAdminPolicy } from './admin-policy.js';
 import { getConsentPhraseForTier, type McpCallTool } from './mcp-server.js';
 import {
   revokeConsent,
@@ -656,12 +658,56 @@ function catalogEntitlementMessage(entry: EngramCatalogEntry, reason: string): s
   return `You are not entitled to access "${entry.displayName}".`;
 }
 
+/** Resolve hubRef to a local engram id for federated read pull. */
+function resolveHubRefEngramId(hubRef: string, host: GraphnosisHost): string | null {
+  const trimmed = hubRef.trim();
+  if (!trimmed) return null;
+  if (trimmed.startsWith('engram:')) {
+    const id = trimmed.slice('engram:'.length).trim();
+    return host.listGraphs().includes(id) ? id : null;
+  }
+  if (host.listGraphs().includes(trimmed)) return trimmed;
+  return null;
+}
+
+/** Mint a catalog-scoped share token when IT sets defaultRole on subscribe/install. */
+async function provisionCatalogDefaultRoleToken(
+  deps: IpcDeps,
+  entry: EngramCatalogEntry,
+  engramId: string,
+): Promise<{ tokenId?: string; created: boolean }> {
+  if (!entry.defaultRole) return { created: false };
+  const tokenName = `Catalog: ${entry.displayName}`;
+  const current = deps.host.getSettings();
+  const existing = current.sharing?.tokens ?? [];
+  const match = existing.find((t) => t.name === tokenName && (
+    Array.isArray(t.scope.engrams)
+      ? t.scope.engrams.includes(engramId)
+      : t.scope.engrams === '*'
+  ));
+  if (match) return { tokenId: match.id, created: false };
+  const newToken = {
+    id: randomUUID(),
+    name: tokenName,
+    scope: {
+      engrams: [engramId] as string[],
+      role: entry.defaultRole,
+    },
+    createdAt: Date.now(),
+  };
+  await deps.host.setSettings({
+    ...current,
+    sharing: { tokens: [...existing, newToken] },
+  });
+  return { tokenId: newToken.id, created: true };
+}
+
 /** Install catalog package — create engram shell and pull content when configured. */
 async function installCatalogPackage(
   deps: IpcDeps,
   entry: EngramCatalogEntry,
 ): Promise<
-  | { ok: true; engramId: string; contentPull: 'shell-only' | 'copied' | 'empty-source' | 'hub-slice-metadata' }
+  | { ok: true; engramId: string; contentPull: 'shell-only' | 'copied' | 'empty-source' | 'hub-slice-metadata' | 'hub-slice-pulled' }
   | { ok: false; reason: string; message: string }
 > {
   const engramId = entry.packageId;
@@ -721,8 +767,22 @@ async function installCatalogPackage(
       createdAt: meta?.createdAt ?? Date.now(),
       ...(entry.requireSsoSession === true ? { requireSsoSession: true } : {}),
     });
-    // Hub-slice federated pull is metadata-only until remote hub IPC ships.
-    void entry.hubRef;
+    const hubEngramId = resolveHubRefEngramId(entry.hubRef, deps.host);
+    if (hubEngramId) {
+      await deps.host.ensureLoaded(hubEngramId);
+      await deps.host.ensureLoaded(engramId);
+      const { exportEngram, importEngram } = await import('./engram-pack.js');
+      const { pack } = await exportEngram(deps.host, hubEngramId, {});
+      const { result } = await importEngram(deps.host, pack, {
+        targetEngramId: engramId,
+        skipExisting: false,
+      });
+      return {
+        ok: true,
+        engramId,
+        contentPull: result.imported > 0 ? 'hub-slice-pulled' : 'empty-source',
+      };
+    }
     return { ok: true, engramId, contentPull: 'hub-slice-metadata' };
   }
 
@@ -1032,6 +1092,7 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
           reason: args.reason ?? 'Forgotten from Graphnosis App',
         }],
       }, { triggeredBy: 'user:forget' });
+      await deps.host.obligationIndex.removeNodeIds([args.nodeId]);
       return { ok: true };
     }
 
@@ -1924,6 +1985,7 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
     case 'sources.forget': {
       const { graphId, sourceId } = z.object({ graphId: z.string(), sourceId: z.string() }).parse(params);
       const result = await deps.host.forgetSource(graphId, sourceId, { triggeredBy: 'user:forget' });
+      await deps.host.obligationIndex.removeForSource(graphId, sourceId);
       // Purge in-memory ghost edges from the brain engine's live caches.
       // host.forgetSource already cleaned the on-disk stores.
       if (result.nodeIds.length > 0) {
@@ -2031,7 +2093,8 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
       // direct-spawn clients). The App polls this for its inspector panel.
       return { connections: mcpRegistry.list() };
     }
-    case 'settings.get': {
+    case 'settings.get':
+    case 'settings:get': {
       return deps.host.getSettings();
     }
     case 'fs.listDir': {
@@ -3792,11 +3855,12 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
       // field drives the upgrade language not access.
       const settings = deps.host.getSettings();
       const plan = await resolveAgentPlan(deps);
-      const { resolveGhampusSkillMaintenance } = await import('@graphnosis-app/core/settings');
+      const { resolveGhampusSkillMaintenance, resolveGhampusProactiveSettings } = await import('@graphnosis-app/core/settings');
       return {
         enabled: settings.agent?.enabled !== false,
         plan,
         skillMaintenance: resolveGhampusSkillMaintenance(settings.agent),
+        proactive: resolveGhampusProactiveSettings(settings.agent),
       };
     }
     case 'agent:setEnabled': {
@@ -3828,6 +3892,26 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
             ...sm,
             ...(args.enabled !== undefined ? { enabled: args.enabled } : {}),
             ...(args.idleOnly !== undefined ? { idleOnly: args.idleOnly } : {}),
+          },
+        },
+      });
+      return { ok: true };
+    }
+    case 'agent:setProactive': {
+      const args = z.object({
+        startupDelayMs: z.number().int().nonnegative().optional(),
+      }).parse(params ?? {});
+      const current = deps.host.getSettings();
+      const prior = current.agent ?? { enabled: true };
+      const { resolveGhampusProactiveSettings } = await import('@graphnosis-app/core/settings');
+      const pr = resolveGhampusProactiveSettings(prior);
+      await deps.host.setSettings({
+        ...current,
+        agent: {
+          ...prior,
+          proactive: {
+            ...pr,
+            ...(args.startupDelayMs !== undefined ? { startupDelayMs: args.startupDelayMs } : {}),
           },
         },
       });
@@ -3976,8 +4060,11 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
     }
 
     case 'ghampus:inbox:snooze': {
-      const { id } = z.object({ id: z.string() }).parse(params ?? {});
-      deps.proactiveWatcher?.snoozeCard(id);
+      const { id, snoozeMs } = z.object({
+        id: z.string(),
+        snoozeMs: z.number().int().positive().optional(),
+      }).parse(params ?? {});
+      deps.proactiveWatcher?.snoozeCard(id, snoozeMs ?? 6 * 60 * 60 * 1000);
       return { ok: true };
     }
 
@@ -4052,9 +4139,10 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
       if (!cortexDir) return { emitted: false };
       const histPath = `${cortexDir}/ghampus-history.jsonl`;
       const { readFile, appendFile } = await import('node:fs/promises');
-      const AWAY_PREFIX = '**While you were away**';
-      const QUIET_RE = /all quiet/i;
-      const DEDUPE_MS = 6 * 60 * 60 * 1000;
+      const {
+        hasRecentAwayDigest,
+        buildAwayDigestText,
+      } = await import('./away-digest.js');
 
       type HistMsg = { kind?: string; text?: string; ts?: number };
       const tail: HistMsg[] = (await readFile(histPath, 'utf8').catch(() => ''))
@@ -4062,34 +4150,17 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
         .map((line) => { try { return JSON.parse(line) as HistMsg; } catch { return null; } })
         .filter((m): m is HistMsg => m != null);
 
-      const hasRecentAwayDigest = (quietOnly: boolean): boolean => {
-        const now = Date.now();
-        for (let i = tail.length - 1; i >= 0; i--) {
-          const m = tail[i];
-          if (m?.kind !== 'ghampus' || !String(m.text ?? '').startsWith(AWAY_PREFIX)) continue;
-          const ts = typeof m.ts === 'number' ? m.ts : 0;
-          if (now - ts >= DEDUPE_MS) continue;
-          if (quietOnly && !QUIET_RE.test(String(m.text))) continue;
-          return true;
-        }
-        return false;
-      };
-
       const { listNotifications } = await import('./agent-notifications.js');
       const { notifications, totalAvailable } = listNotifications({ host: deps.host }, { sinceMs, limit: 12 });
 
-      let text: string;
       if (notifications.length === 0) {
-        if (hasRecentAwayDigest(true)) return { emitted: false };
-        text = `${AWAY_PREFIX} (just now) — all quiet. Nothing new arrived in your cortex.`;
-      } else {
-        if (hasRecentAwayDigest(false)) return { emitted: false };
-        const count = notifications.length;
-        const lines = notifications.slice(0, 6).map((n) => `• ${n.origin}: ${n.label}`).join('\n');
-        text =
-          `${AWAY_PREFIX} — ${totalAvailable > count ? `${totalAvailable} items` : `${count} item${count === 1 ? '' : 's'}`} since your last visit.\n\n` +
-          `${lines}${count > 6 ? `\n…and ${count - 6} more` : ''}`;
+        if (hasRecentAwayDigest(tail, true)) return { emitted: false };
+      } else if (hasRecentAwayDigest(tail, false)) {
+        return { emitted: false };
       }
+
+      const llm = deps.llm?.() ?? null;
+      const text = await buildAwayDigestText(notifications, totalAvailable, llm);
 
       const digestMsg = { kind: 'ghampus', text, ts: Date.now() };
       await appendFile(histPath, JSON.stringify(digestMsg) + '\n').catch(() => {});
@@ -5045,11 +5116,11 @@ OUTPUT RULES — non-negotiable:
       const settings = deps.host.getSettings();
       const providerStates = settings.models?.providers ?? {};
       const enabledProviders = Object.entries(providerStates)
-        .filter(([, s]) => s?.enabled === true)
+        .filter(([id, s]) => s?.enabled === true && !isProviderDisabled(id))
         .map(([id]) => id as Parameters<typeof planSkillWalk>[1]['enabledProviders'][number]);
       if (enabledProviders.length === 0) enabledProviders.push('ollama');
       const cloudRoutingReady = KNOWN_PROVIDERS.some((p) => {
-        if (p.local) return false;
+        if (p.local || isProviderDisabled(p.id)) return false;
         const ps = providerStates[p.id];
         return ps?.enabled === true && ps?.hasKey === true;
       }) && (settings.models?.strategy ?? 'adaptive') !== 'local-only';
@@ -5150,29 +5221,53 @@ OUTPUT RULES — non-negotiable:
       // user's current per-provider state. Drives the Settings → Models
       // page entirely. No gate — visible on every plan.
       const { KNOWN_PROVIDERS, KNOWN_MODELS, KNOWN_MODELS_VERSION } = await import('./model-registry.js');
+      const {
+        pingOpenAiCompatible,
+        resolveLocalOpenAiBaseUrl,
+      } = await import('./cloud-llm.js');
       const settings = deps.host.getSettings();
       const providerStates = settings.models?.providers ?? {};
+      const ollamaUrl = 'http://127.0.0.1:11434';
+      let ollamaReachable = false;
+      try {
+        const res = await fetch(`${ollamaUrl}/api/tags`, { signal: AbortSignal.timeout(2000) });
+        ollamaReachable = res.ok;
+      } catch { /* not running */ }
+      const providers = await Promise.all(KNOWN_PROVIDERS.map(async (p) => {
+        const ps = providerStates[p.id];
+        let reachable: boolean | undefined;
+        if (p.id === 'ollama') reachable = ollamaReachable;
+        else if (p.id === 'mlx' || p.id === 'vllm') {
+          const baseUrl = resolveLocalOpenAiBaseUrl(deps.host, p.id);
+          reachable = baseUrl ? await pingOpenAiCompatible(baseUrl) : false;
+        }
+        return {
+          ...p,
+          enabled: ps?.enabled === true && !isProviderDisabled(p.id),
+          hasKey: ps?.hasKey === true,
+          keyTail: ps?.keyTail,
+          adminLocked: isProviderDisabled(p.id) || ps?.adminLocked === true,
+          poolSpentUsd: ps?.poolSpentUsd ?? 0,
+          flexSpentUsd: ps?.flexSpentUsd ?? 0,
+          needsKey: !p.local,
+          ...(typeof ps?.baseUrl === 'string' && ps.baseUrl.trim() ? { baseUrl: ps.baseUrl.trim() } : {}),
+          ...(reachable !== undefined ? { reachable } : {}),
+        };
+      }));
       return {
         catalogVersion: KNOWN_MODELS_VERSION,
         cloudRoutingReady: KNOWN_PROVIDERS.some((p) => {
-          if (p.local) return false;
+          if (p.local || isProviderDisabled(p.id)) return false;
           const ps = providerStates[p.id];
           return ps?.enabled === true && ps?.hasKey === true;
         }) && (settings.models?.strategy ?? 'adaptive') !== 'local-only',
-        providers: KNOWN_PROVIDERS.map((p) => ({
-          ...p,
-          enabled: providerStates[p.id]?.enabled === true,
-          hasKey: providerStates[p.id]?.hasKey === true,
-          keyTail: providerStates[p.id]?.keyTail,
-          adminLocked: providerStates[p.id]?.adminLocked === true,
-          poolSpentUsd: providerStates[p.id]?.poolSpentUsd ?? 0,
-          flexSpentUsd: providerStates[p.id]?.flexSpentUsd ?? 0,
-        })),
+        providers,
         models: KNOWN_MODELS,
         strategy: settings.models?.strategy ?? 'adaptive',
         monthlyBudgetUsd: settings.models?.monthlyBudgetUsd ?? null,
         spentThisCycleUsd: settings.models?.spentThisCycleUsd ?? 0,
         customRates: settings.models?.customRates ?? [],
+        savingsBaseline: (await import('./savings-tracker.js')).resolveSavingsBaseline(settings),
       };
     }
     case 'models:setStrategy': {
@@ -5279,6 +5374,22 @@ OUTPUT RULES — non-negotiable:
       await deps.host.setSettings({ ...current, models: next });
       return { ok: true };
     }
+    case 'models:setSavingsBaseline': {
+      const { savingsBaseline } = z.object({
+        savingsBaseline: z.object({
+          modelDisplayName: z.string().min(1),
+          inputUsdPer1M: z.number().nonnegative(),
+          outputUsdPer1M: z.number().nonnegative(),
+        }),
+      }).parse(params ?? {});
+      const current = deps.host.getSettings();
+      const models = current.models ?? { providers: {}, strategy: 'adaptive' as const };
+      await deps.host.setSettings({
+        ...current,
+        models: { ...models, savingsBaseline },
+      });
+      return { ok: true };
+    }
     case 'models:setCustomRate': {
       // Add or update an override. Admin-enforced overrides cannot be
       // changed by users — only the admin policy fetcher writes those.
@@ -5350,7 +5461,7 @@ OUTPUT RULES — non-negotiable:
 
       const settings = deps.host.getSettings();
       const enabledProviders = Object.entries(settings.models?.providers ?? { ollama: { enabled: true } })
-        .filter(([, s]) => s?.enabled === true)
+        .filter(([id, s]) => s?.enabled === true && !isProviderDisabled(id))
         .map(([id]) => id as Parameters<typeof planSkillWalk>[1]['enabledProviders'][number]);
 
       const subscriptionPoolUsage: Record<string, { poolSpentUsd: number; flexSpentUsd: number }> = {};
@@ -5386,9 +5497,10 @@ OUTPUT RULES — non-negotiable:
       // Aggregate the savings log into the Ghampus / Settings dashboard
       // numbers. Defaults to a 30-day window so the panel speaks in
       // monthly terms.
-      const { summariseSavings } = await import('./savings-tracker.js');
+      const { summariseSavings, resolveSavingsBaseline } = await import('./savings-tracker.js');
       const args = z.object({ windowDays: z.number().int().positive().max(365).optional() }).parse(params ?? {});
-      return summariseSavings(deps.host.getCortexDir(), args.windowDays ?? 30);
+      const baseline = resolveSavingsBaseline(deps.host.getSettings());
+      return summariseSavings(deps.host.getCortexDir(), args.windowDays ?? 30, baseline);
     }
     case 'agent:walkSkill': {
       // Execute a planned skill walk step-by-step against the chosen
@@ -5402,6 +5514,7 @@ OUTPUT RULES — non-negotiable:
         sourceId: z.string().min(1),
         graphId: z.string().min(1),
         initialCaptures: z.record(z.string(), z.string()).optional(),
+        runId: z.string().min(1).optional(),
       }).parse(params ?? {});
 
       // Re-derive the steps + plan inline so callers don't have to ship
@@ -5421,7 +5534,7 @@ OUTPUT RULES — non-negotiable:
 
       const settings = deps.host.getSettings();
       const enabledProviders = Object.entries(settings.models?.providers ?? { ollama: { enabled: true } })
-        .filter(([, s]) => s?.enabled === true)
+        .filter(([id, s]) => s?.enabled === true && !isProviderDisabled(id))
         .map(([id]) => id as Parameters<typeof planSkillWalk>[1]['enabledProviders'][number]);
       const subscriptionPoolUsage: Record<string, { poolSpentUsd: number; flexSpentUsd: number }> = {};
       for (const [pid, ps] of Object.entries(settings.models?.providers ?? {})) {
@@ -5444,10 +5557,48 @@ OUTPUT RULES — non-negotiable:
 
       const result = await walkSkillPlan({ host: deps.host }, {
         sourceId: args.sourceId,
+        graphId: args.graphId,
         steps: rawSteps,
         plan,
+        executionSteps: skillPlan.steps,
+        failureHandlers: skillPlan.failureHandlers,
         ...(args.initialCaptures ? { initialCaptures: args.initialCaptures } : {}),
       });
+
+      if (args.runId) {
+        const { resolveSkillRunActor } = await import('./skill-runs.js');
+        const existing = await deps.host.skillRuns.read(args.runId);
+        if (existing) {
+          const actor = resolveSkillRunActor({
+            ...(deps.ssoSession ? { ssoSession: deps.ssoSession } : {}),
+            host: deps.host,
+          });
+          const lastCompleted = result.steps.reduce(
+            (max, s) => (!s.error && s.index > max ? s.index : max),
+            existing.completedStepIndex,
+          );
+          const stepLog = [...(existing.stepLog ?? [])];
+          for (const s of result.steps) {
+            stepLog.push({
+              stepIndex: s.index,
+              actor: actor.actorLabel,
+              tool: 'agent:walkSkill',
+              outcome: s.error ? 'error' : 'ok',
+              ts: Date.now(),
+            });
+          }
+          const status = result.ok ? 'complete' : (result.steps.some((s) => s.error) ? 'failed' : 'running');
+          await deps.host.skillRuns.save({
+            ...existing,
+            completedStepIndex: lastCompleted,
+            status,
+            capturedVars: { ...existing.capturedVars, ...result.captures },
+            stepLog,
+            updatedAt: Date.now(),
+          });
+        }
+      }
+
       return { ok: true, plan, result };
     }
     case 'savings:recordRecallOnly': {
@@ -5455,17 +5606,18 @@ OUTPUT RULES — non-negotiable:
       // returned context to the AI client. The counterfactual is "the
       // AI would have spent these tokens at baseline rates"; we record
       // the saving so the dashboard reflects it.
-      const { recordRecallOnlySavings } = await import('./savings-tracker.js');
+      const { recordRecallOnlySavings, resolveSavingsBaseline } = await import('./savings-tracker.js');
       const args = z.object({
         inputTokensSaved: z.number().int().nonnegative(),
         outputTokensSaved: z.number().int().nonnegative().optional(),
         source: z.string().optional(),
       }).parse(params ?? {});
+      const baseline = resolveSavingsBaseline(deps.host.getSettings());
       await recordRecallOnlySavings(deps.host.getCortexDir(), {
         inputTokensSaved: args.inputTokensSaved,
         outputTokensSaved: args.outputTokensSaved ?? 0,
         ...(args.source !== undefined ? { source: args.source } : {}),
-      });
+      }, baseline);
       return { ok: true };
     }
 
@@ -5908,6 +6060,25 @@ OUTPUT RULES — non-negotiable:
       return result;
     }
 
+    case 'skill:syncDispatchExport': {
+      const args = z.object({
+        graphId: z.string().min(1).default('graphnosis-skills'),
+      }).parse(params ?? {});
+      if (!deps.skillTrainer || !deps.host) {
+        return { ok: false, reason: 'skill-trainer-unavailable' };
+      }
+      const { exportDispatchToExternalTargets } = await import('./skill-dispatch-sync.js');
+      const result = await exportDispatchToExternalTargets(deps.host, deps.skillTrainer, args.graphId);
+      return {
+        ok: true,
+        registryPath: path.join(deps.host.getCortexDir(), 'skill-dispatch-registry.json'),
+        claudeLocalPaths: result.claudeLocalPaths,
+        cursorRulePath: result.cursorRulePath ?? null,
+        cursorrulesPaths: result.cursorrulesPaths,
+        routeCount: result.registry?.routes.length ?? 0,
+      };
+    }
+
     case 'skill:vitality': {
       const args = z.object({
         graphId: z.string().min(1),
@@ -5927,6 +6098,19 @@ OUTPUT RULES — non-negotiable:
       }).parse(params ?? {});
       if (!deps.skillTrainer) return [];
       return deps.skillTrainer.listSkills(args.graphId);
+    }
+
+    case 'skill:listRuns': {
+      const args = z.object({
+        status: z.enum(['running', 'paused', 'blocked-on-human', 'complete', 'failed']).optional(),
+        graphId: z.string().min(1).optional(),
+        limit: z.number().int().min(1).max(500).optional(),
+      }).parse(params ?? {});
+      let runs = await deps.host.skillRuns.listPublic();
+      if (args.graphId) runs = runs.filter((r) => r.skillGraphId === args.graphId);
+      if (args.status) runs = runs.filter((r) => r.status === args.status);
+      const limit = args.limit ?? 100;
+      return { ok: true, runs: runs.slice(0, limit), total: runs.length };
     }
 
     case 'skill:get': {
@@ -6195,12 +6379,41 @@ OUTPUT RULES — non-negotiable:
         sourceId: z.string().min(1),
         recursive: z.boolean().optional().default(false),
       }).parse(params ?? {});
+      const { ensureSkillCitedNodesPersisted } = await import('./skill-recall-bindings.js');
+      await ensureSkillCitedNodesPersisted(deps.host, args.graphId, args.sourceId);
       const walked = walkSkillSequence(deps.host, args.graphId, args.sourceId, { recursive: args.recursive });
-      // Lazy back-fill: run loop detection for skills that predate this feature.
       if (walked.loops.length === 0 && walked.branches.length === 0 && walked.steps.length >= 3) {
         void linkSkillLoopsAndBranches(deps.host, args.graphId, args.sourceId).catch(() => {});
       }
       return walked;
+    }
+
+    case 'skill:walkStructured': {
+      // Machine-readable SkillExecutionPlan — IPC mirror of MCP walk_skill_structured.
+      const args = z.object({
+        graphId: z.string().min(1),
+        sourceId: z.string().min(1),
+        recursive: z.boolean().optional().default(false),
+      }).parse(params ?? {});
+      const { walkSkillSequence: walkFn, walkSkillToJson } = await import('./skill-trainer.js');
+      const crossLinks = await deps.host.skillCallLinks.getForSource(args.graphId, args.sourceId);
+      const { ensureSkillCitedNodesPersisted } = await import('./skill-recall-bindings.js');
+      await ensureSkillCitedNodesPersisted(deps.host, args.graphId, args.sourceId);
+      const walked = walkFn(deps.host, args.graphId, args.sourceId, {
+        recursive: args.recursive,
+        crossEngramLinks: crossLinks,
+      });
+      if (walked.steps.length === 0 && walked.goals.length === 0) {
+        return { ok: false, reason: 'empty-skill' };
+      }
+      const meta = deps.host.getGraphMetadata(args.graphId);
+      const src = deps.host.getSourceRecord(args.graphId, args.sourceId);
+      const title = walked.steps[0]?.text ?? src?.ref ?? args.sourceId;
+      return walkSkillToJson(walked, {
+        sourceId: args.sourceId,
+        title,
+        ...(meta?.displayName ? { engramName: meta.displayName } : {}),
+      });
     }
 
     case 'skill:linkLoops': {
@@ -6541,7 +6754,11 @@ OUTPUT RULES — non-negotiable:
         // formatTrainedOutputAsMarkdown at export time only). Preserve the
         // .gsk's paragraph boundaries verbatim — one chunk per body
         // paragraph, one per recipe, one per goal line.
-        const provenanceComment = `<!-- imported ${new Date().toISOString()} · pack:${payload.id} v${payload.version} · ${payload.kind} · verified:${verified} · author:${payload.author} -->`;
+        const provenanceComment = [
+          `<!-- imported ${new Date().toISOString()} · pack:${payload.id} v${payload.version}`,
+          payload.upstreamPackId ? ` · upstream:${payload.upstreamPackId}` : '',
+          ` · ${payload.kind} · verified:${verified} · author:${payload.author} -->`,
+        ].join('');
 
         const formatRecipePlain = (
           r: { name: string; trigger: string; steps: Array<{ tool: string; query: string }> },
@@ -7158,6 +7375,7 @@ OUTPUT RULES — non-negotiable:
         entries: visible.map(engramCatalogPublicEntry),
         subscribedCatalogIds: subs.subscribedCatalogIds,
         installedPackageIds: subs.installedPackageIds ?? [],
+        drift: await loadCatalogDrift(visible),
       };
     }
 
@@ -7197,6 +7415,8 @@ OUTPUT RULES — non-negotiable:
           mdmBundleId: z.string().max(128).optional(),
           published: z.boolean().optional(),
           requireSsoSession: z.boolean().optional(),
+          packId: z.string().max(128).optional(),
+          catalogVersion: z.string().max(32).optional(),
         }),
       }).parse(params ?? {});
       const e = args.entry;
@@ -7214,6 +7434,8 @@ OUTPUT RULES — non-negotiable:
         ...(e.defaultRole !== undefined ? { defaultRole: e.defaultRole } : {}),
         ...(e.sourceEngramId !== undefined ? { sourceEngramId: e.sourceEngramId } : {}),
         ...(e.hubRef !== undefined ? { hubRef: e.hubRef } : {}),
+        ...(e.packId !== undefined ? { packId: e.packId } : {}),
+        ...(e.catalogVersion !== undefined ? { catalogVersion: e.catalogVersion } : {}),
         ...(e.mdmBundleId !== undefined ? { mdmBundleId: e.mdmBundleId } : {}),
         ...(e.published !== undefined ? { published: e.published } : {}),
         ...(e.requireSsoSession === true ? { requireSsoSession: true } : {}),
@@ -7276,12 +7498,17 @@ OUTPUT RULES — non-negotiable:
       }
       const installed = await installCatalogPackage(deps, entry);
       if (!installed.ok) return installed;
-      const store = await recordInstalledPackage(entry.packageId);
+      const store = await recordInstalledPackage(entry.packageId, {
+        ...(entry.catalogVersion ? { catalogVersion: entry.catalogVersion } : {}),
+        ...(entry.packId ? { packId: entry.packId } : {}),
+      });
+      const tokenProvision = await provisionCatalogDefaultRoleToken(deps, entry, installed.engramId);
       return {
         ok: true,
         engramId: installed.engramId,
         contentPull: installed.contentPull,
         installedPackageIds: store.installedPackageIds ?? [],
+        ...(tokenProvision.created ? { defaultRoleTokenId: tokenProvision.tokenId } : {}),
       };
     }
 
@@ -7304,8 +7531,13 @@ OUTPUT RULES — non-negotiable:
       }
       const store = await subscribeCatalogEntry(args.catalogId);
       const installed = await installCatalogPackage(deps, entry);
+      let tokenProvision: { tokenId?: string; created: boolean } = { created: false };
       if (installed.ok) {
-        await recordInstalledPackage(entry.packageId);
+        await recordInstalledPackage(entry.packageId, {
+          ...(entry.catalogVersion ? { catalogVersion: entry.catalogVersion } : {}),
+          ...(entry.packId ? { packId: entry.packId } : {}),
+        });
+        tokenProvision = await provisionCatalogDefaultRoleToken(deps, entry, installed.engramId);
       }
       const finalStore = await readCatalogSubscriptions();
       return {
@@ -7313,7 +7545,11 @@ OUTPUT RULES — non-negotiable:
         subscribedCatalogIds: store.subscribedCatalogIds,
         installedPackageIds: finalStore.installedPackageIds ?? [],
         ...(installed.ok
-          ? { engramId: installed.engramId, contentPull: installed.contentPull }
+          ? {
+            engramId: installed.engramId,
+            contentPull: installed.contentPull,
+            ...(tokenProvision.created ? { defaultRoleTokenId: tokenProvision.tokenId } : {}),
+          }
           : { installWarning: 'Subscription recorded but engram install failed.' }),
       };
     }
@@ -7330,6 +7566,86 @@ OUTPUT RULES — non-negotiable:
         ok: true,
         subscribedCatalogIds: store.subscribedCatalogIds,
         installedPackageIds: store.installedPackageIds ?? [],
+        installedPackages: store.installedPackages ?? {},
+      };
+    }
+
+    case 'catalog:checkDrift': {
+      const entries = catalogEntriesFromSettings(deps).filter((e) => e.published !== false);
+      const drift = await loadCatalogDrift(entries);
+      return { ok: true, drift, count: drift.length };
+    }
+
+    case 'catalog:remergePackage': {
+      const args = z.object({ catalogId: z.string().min(1).max(64) }).parse(params ?? {});
+      const entry = catalogEntriesFromSettings(deps).find((e) => e.id === args.catalogId);
+      if (!entry || entry.published === false) {
+        return { ok: false, reason: 'not_found', message: 'Catalog entry not found or not published.' };
+      }
+      const settings = deps.host.getSettings();
+      const groups = settings.sso?.lastLogin?.groups ?? [];
+      const ent = catalogInstallEntitlement(deps, entry, groups);
+      if (!ent.entitled) {
+        return {
+          ok: false,
+          reason: ent.reason,
+          message: catalogEntitlementMessage(entry, ent.reason),
+        };
+      }
+      const installed = await installCatalogPackage(deps, entry);
+      if (!installed.ok) return installed;
+      const store = await recordInstalledPackage(entry.packageId, {
+        ...(entry.catalogVersion ? { catalogVersion: entry.catalogVersion } : {}),
+        ...(entry.packId ? { packId: entry.packId } : {}),
+      });
+      return {
+        ok: true,
+        engramId: installed.engramId,
+        contentPull: installed.contentPull,
+        installedPackageIds: store.installedPackageIds ?? [],
+      };
+    }
+
+    case 'playbooks:supervisorDashboard': {
+      const runs = await deps.host.skillRuns.list();
+      const active = runs.filter((r) => {
+        const st = r.status ?? deriveSkillRunStatus(r);
+        return st === 'running' || st === 'paused' || st === 'blocked-on-human';
+      });
+      const complete = runs.filter((r) => (r.status ?? deriveSkillRunStatus(r)) === 'complete');
+      const failed = runs.filter((r) => (r.status ?? deriveSkillRunStatus(r)) === 'failed');
+      const blocked = runs.filter((r) => (r.status ?? deriveSkillRunStatus(r)) === 'blocked-on-human');
+      const entries = catalogEntriesFromSettings(deps).filter((e) => e.published !== false);
+      const drift = await loadCatalogDrift(entries);
+      const staleSkills: Array<{ graphId: string; sourceId: string; score: number; label?: string }> = [];
+      if (deps.skillTrainer) {
+        for (const graphId of deps.host.listGraphs()) {
+          for (const sk of deps.skillTrainer.listSkills(graphId)) {
+            const vit = deps.skillTrainer.computeSkillVitality(graphId, sk.sourceId);
+            if (vit.score < 80) {
+              staleSkills.push({
+                graphId,
+                sourceId: sk.sourceId,
+                score: vit.score,
+                ...(sk.label ? { label: sk.label } : {}),
+              });
+            }
+          }
+        }
+      }
+      return {
+        ok: true,
+        activePlaybooks: active.map(skillRunToListItem),
+        blockedRuns: blocked.map(skillRunToListItem),
+        completionRate: runs.length > 0 ? complete.length / runs.length : 0,
+        totals: {
+          runs: runs.length,
+          complete: complete.length,
+          failed: failed.length,
+          active: active.length,
+        },
+        catalogDrift: drift,
+        staleSkills: staleSkills.slice(0, 20),
       };
     }
 

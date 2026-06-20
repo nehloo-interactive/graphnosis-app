@@ -1,0 +1,28 @@
+{
+  "skill": {
+    "title": "ship-workflow golden"
+  },
+  "steps": [
+    {
+      "index": 3,
+      "text": "1. Review changelog."
+    },
+    {
+      "index": 4,
+      "text": "2. Bump version @loop: 2 max=3"
+    },
+    {
+      "index": 5,
+      "text": "3. Publish release."
+    }
+  ],
+  "constraints": {
+    "trigger": "user says ship"
+  },
+  "failureHandlers": [
+    {
+      "description": "@skill: rollback-ship",
+      "unresolvedCall": "rollback-ship"
+    }
+  ]
+}

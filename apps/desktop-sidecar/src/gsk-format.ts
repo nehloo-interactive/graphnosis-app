@@ -79,6 +79,8 @@ export interface GskPayload {
   version: string;
   author: string;
   tierRequired: 'free' | 'pro';
+  /** When this pack is a semver bump of a prior official/community pack. */
+  upstreamPackId?: string;
   skills: GskSkill[];
   /**
    * Full GRAPHNOSIS.md content to write into the user's project root.
@@ -117,6 +119,61 @@ const GSK_SIGNING_PUBLIC_KEY = new Uint8Array([
 
 // ── Wire format: [4-byte magic][12-byte IV][16-byte auth tag][N-byte ciphertext]
 const MAGIC = Buffer.from('GSK1');
+
+// ── Semver helpers ──────────────────────────────────────────────────────────
+
+/** Bump a semver string (defaults patch). Returns input unchanged when invalid. */
+export function bumpSemver(version: string, level: 'patch' | 'minor' | 'major' = 'patch'): string {
+  const m = version.trim().match(/^(\d+)\.(\d+)\.(\d+)(?:[-+].*)?$/);
+  if (!m) return version;
+  let major = Number(m[1]);
+  let minor = Number(m[2]);
+  let patch = Number(m[3]);
+  if (level === 'major') { major += 1; minor = 0; patch = 0; }
+  else if (level === 'minor') { minor += 1; patch = 0; }
+  else patch += 1;
+  return `${major}.${minor}.${patch}`;
+}
+
+/** Next export version: bump upstream pack version or start at 1.0.0. */
+export function nextGskExportVersion(
+  priorVersion?: string | null,
+  level: 'patch' | 'minor' | 'major' = 'patch',
+): string {
+  if (!priorVersion) return '1.0.0';
+  const bumped = bumpSemver(priorVersion, level);
+  return bumped === priorVersion ? '1.0.0' : bumped;
+}
+
+/** Parse semver to [major, minor, patch] or null when invalid. */
+export function parseSemver(version: string): [number, number, number] | null {
+  const m = version.trim().match(/^(\d+)\.(\d+)\.(\d+)(?:[-+].*)?$/);
+  if (!m) return null;
+  return [Number(m[1]), Number(m[2]), Number(m[3])];
+}
+
+/** Compare semver strings. Returns -1 | 0 | 1, or null when either is invalid. */
+export function compareSemver(a: string, b: string): number | null {
+  const pa = parseSemver(a);
+  const pb = parseSemver(b);
+  if (!pa || !pb) return null;
+  for (let i = 0; i < 3; i++) {
+    if (pa[i]! < pb[i]!) return -1;
+    if (pa[i]! > pb[i]!) return 1;
+  }
+  return 0;
+}
+
+/** True when catalog semver differs from installed (IT published a newer package). */
+export function catalogVersionDrift(
+  installedVersion: string | undefined,
+  catalogVersion: string | undefined,
+): boolean {
+  if (!catalogVersion?.trim()) return false;
+  if (!installedVersion?.trim()) return true;
+  const cmp = compareSemver(catalogVersion.trim(), installedVersion.trim());
+  return cmp !== null && cmp > 0;
+}
 
 // ── buildGskPackage ───────────────────────────────────────────────────────────
 

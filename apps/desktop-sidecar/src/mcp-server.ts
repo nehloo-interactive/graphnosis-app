@@ -31,6 +31,7 @@ import { LicenseValidator } from './license-validator.js';
 import { hashMcpQuery, type McpAuditEvent } from './mcp-audit.js';
 import { dispatchAuditMcpTool } from './mcp/handlers-audit.js';
 import { checkRecallSsoGate, SsoRecallRequiredError } from './catalog-sso-gate.js';
+import { resolveSkillRunActor } from './skill-runs.js';
 
 // ── Session-level data budget ─────────────────────────────────────────────────
 // These caps apply per MCP connection (i.e. per AI client session). They exist
@@ -127,6 +128,11 @@ const RememberInput = z.preprocess(
      *     this in a doc I shared".
      */
     kind: z.enum(['clip', 'ai-conversation']).optional(),
+    obligation: z.object({
+      obligationType: z.enum(['deadline', 'renewal', 'review-by']),
+      effectiveDate: z.coerce.number().int().positive().optional(),
+      expiresAt: z.coerce.number().int().positive(),
+    }).optional(),
   }),
 );
 /**
@@ -293,7 +299,18 @@ const IngestBatchInput = z.object({
     label: z.string().optional(),
     target_engram: z.string().optional(),
     graphId: z.string().optional(),
+    obligation: z.object({
+      obligationType: z.enum(['deadline', 'renewal', 'review-by']),
+      effectiveDate: z.coerce.number().int().positive().optional(),
+      expiresAt: z.coerce.number().int().positive(),
+    }).optional(),
   })).min(1).max(20),
+});
+const RecallObligationsInput = z.object({
+  due_within_days: z.coerce.number().int().positive().max(365).optional(),
+  obligation_type: z.enum(['deadline', 'renewal', 'review-by']).optional(),
+  only_engrams: tolerantStringArray,
+  max_results: z.coerce.number().int().positive().max(50).optional(),
 });
 const GetEngramSchemaInput = z.object({
   engram: z.string(),
@@ -737,6 +754,24 @@ async function getEffectiveLicenseToken(deps: McpDeps): Promise<string | null> {
     return 1;
   };
   return tier(domain) >= tier(primary) ? domain : primary;
+}
+
+/** Fire-and-forget savings event when recall-class tools return context. */
+function recordMcpRecallSavings(
+  deps: { host: GraphnosisHost },
+  toolName: string,
+  tokensUsed: number,
+  nodesIncluded: number,
+): void {
+  if (nodesIncluded <= 0) return;
+  import('./savings-tracker.js').then(({ recordRecallOnlySavings, resolveSavingsBaseline }) => {
+    const baseline = resolveSavingsBaseline(deps.host.getSettings());
+    void recordRecallOnlySavings(deps.host.getCortexDir(), {
+      inputTokensSaved: tokensUsed,
+      outputTokensSaved: 0,
+      source: `mcp:${toolName}`,
+    }, baseline).catch(() => { /* non-fatal */ });
+  }).catch(() => { /* dynamic import failed — skip silently */ });
 }
 
 export interface McpDeps {
@@ -1777,6 +1812,16 @@ export function createMcpServer(deps: McpDeps): { server: Server; callTool: McpC
               enum: ['clip', 'ai-conversation'],
               description: 'What sort of memory this is. Default is "clip" — a discrete note or fact you extracted (from a doc, the user\'s earlier message, a search result, etc.). Use "ai-conversation" when you\'re saving a turn or summary of the CURRENT conversation between you and the user; the Sources list shows these distinctly so the user can tell "the AI summarized me" from "the AI saw this in a doc I shared".',
             },
+            obligation: {
+              type: 'object',
+              description: 'Optional Temporal Job Memory fields — separate from validUntil soft-delete.',
+              properties: {
+                obligationType: { type: 'string', enum: ['deadline', 'renewal', 'review-by'] },
+                effectiveDate: { type: 'number', description: 'Unix ms when obligation becomes actionable.' },
+                expiresAt: { type: 'number', description: 'Unix ms deadline — retention purge will not remove before this.' },
+              },
+              required: ['obligationType', 'expiresAt'],
+            },
           },
           required: ['text'],
         },
@@ -2084,6 +2129,46 @@ export function createMcpServer(deps: McpDeps): { server: Server; callTool: McpC
         },
         annotations: {
           title: 'Structured search',
+          readOnlyHint: true,
+        },
+      },
+      {
+        name: 'recall_obligations',
+        description:
+          'DETERMINISM — Deterministic: reads the local obligation index sorted by expiresAt; no LLM.\n\n' +
+          'List temporal obligations (deadline, renewal, review-by) attached to memory nodes via `remember` / `ingest_batch`. ' +
+          'Results are sorted by expiresAt ascending. Filter by engram scope, obligation type, and due window. ' +
+          'Use for "what is due this week", contract renewals, compliance review-by dates, and Temporal Job Memory workflows. ' +
+          'Respects enterprise consent gates on sensitive engrams (same as recall).',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            due_within_days: {
+              type: 'number',
+              minimum: 1,
+              maximum: 365,
+              description: 'Include obligations expiring within this many days (and overdue). Omit for all active obligations.',
+            },
+            obligation_type: {
+              type: 'string',
+              enum: ['deadline', 'renewal', 'review-by'],
+              description: 'Filter to one obligation kind.',
+            },
+            only_engrams: {
+              type: 'array',
+              items: { type: 'string' },
+              description: 'Restrict to these engram slugs or display names.',
+            },
+            max_results: {
+              type: 'number',
+              minimum: 1,
+              maximum: 50,
+              description: 'Cap on rows returned. Default 20.',
+            },
+          },
+        },
+        annotations: {
+          title: 'List due obligations',
           readOnlyHint: true,
         },
       },
@@ -2953,15 +3038,7 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
         // to produce that context. The counterfactual cost is the
         // baseline rate applied to the same token volume. Fire-and-
         // forget — failure here mustn't break the recall path.
-        if (sub.nodesIncluded > 0) {
-          import('./savings-tracker.js').then(({ recordRecallOnlySavings }) => {
-            void recordRecallOnlySavings(deps.host.getCortexDir(), {
-              inputTokensSaved: sub.tokensUsed,
-              outputTokensSaved: 0,
-              source: `mcp:${toolName}`,
-            }).catch(() => { /* non-fatal */ });
-          }).catch(() => { /* dynamic import failed — skip silently */ });
-        }
+        recordMcpRecallSavings(deps, toolName, sub.tokensUsed, sub.nodesIncluded);
         return { content: [{ type: 'text', text: sub.prompt + auditFooter + headsUp + pendingEngramNotice(deps.host) + consentFooter }] };
       }
       case 'dig_deeper': {
@@ -3030,6 +3107,7 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
           query: args.query,
           tool: 'dig_deeper',
         }) ?? '';
+        recordMcpRecallSavings(deps, 'dig_deeper', sub.tokensUsed, sub.nodesIncluded);
         return { content: [{ type: 'text', text: sub.prompt + auditFooter + ddHeadsUp + pendingEngramNotice(deps.host) + consentFooter }] };
       }
       case 'remember': {
@@ -3141,11 +3219,21 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
         // remember/correct flows from user-driven ingest.
         const addedBy = mcpRegistry.getMostRecentClientName();
         const sourceKind = args.kind ?? 'clip';
+        const obligationOpt = args.obligation
+          ? {
+              obligationType: args.obligation.obligationType,
+              expiresAt: args.obligation.expiresAt,
+              ...(args.obligation.effectiveDate !== undefined
+                ? { effectiveDate: args.obligation.effectiveDate }
+                : {}),
+            }
+          : undefined;
         const rec = await withEmbedding(() =>
           ingestClip(deps.host, graphId, args.text, args.label, {
             ...(addedBy ? { addedBy } : {}),
             sourceKind,
             triggeredBy: 'mcp:remember',
+            ...(obligationOpt ? { obligation: obligationOpt } : {}),
           })
         ) as import('@graphnosis-app/core').SourceRecord & { contradictions?: unknown[] };
         let msg = `Saved to ${graphId} as ${rec.sourceId}.`;
@@ -3627,6 +3715,55 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
         if (rsPendingNotice) rsResult._pendingEngrams = rsPendingNotice.trim();
         return { content: [{ type: 'text', text: JSON.stringify(rsResult, null, 2) + rsFooter }] };
       }
+      case 'recall_obligations': {
+        const args = RecallObligationsInput.parse(rawInput);
+        const only = args.only_engrams?.length ? resolveEngramList(deps.host, args.only_engrams) : null;
+        enforceRecallRateLimit();
+        const { consentFooter: obFooter, autoExceptGraphIds: obAutoExcept } =
+          await checkConsentOrThrow(only?.resolved ?? null);
+        const { autoExceptGraphIds: obSsoExcept } = checkRecallSsoGate(deps.host, deps, only?.resolved ?? null);
+        const scopedIds = only
+          ? only.resolved.filter((id) => !obAutoExcept.includes(id) && !obSsoExcept.includes(id))
+          : deps.host.listGraphs().filter((id) => !obAutoExcept.includes(id) && !obSsoExcept.includes(id));
+
+        await deps.host.obligationIndex.ensureLoaded();
+        const now = Date.now();
+        const dueWithinMs = args.due_within_days !== undefined
+          ? args.due_within_days * 24 * 60 * 60 * 1000
+          : undefined;
+        const rows = deps.host.obligationIndex.list({
+          ...(scopedIds.length ? { graphIds: scopedIds } : {}),
+          ...(args.obligation_type ? { obligationType: args.obligation_type } : {}),
+          ...(dueWithinMs !== undefined ? { dueWithinMs, includeOverdue: true } : {}),
+          maxResults: args.max_results ?? 20,
+          now,
+        });
+
+        const obligations = rows.map((ob) => {
+          const meta = deps.host.getGraphMetadata(ob.graphId);
+          const node = deps.host.listNodes(ob.graphId).find((n) => n.id === ob.nodeId);
+          const daysUntil = Math.ceil((ob.expiresAt - now) / (24 * 60 * 60 * 1000));
+          return {
+            graphId: ob.graphId,
+            engram: meta?.displayName ?? ob.graphId,
+            nodeId: ob.nodeId,
+            sourceId: ob.sourceId,
+            obligationType: ob.obligationType,
+            effectiveDate: ob.effectiveDate,
+            expiresAt: ob.expiresAt,
+            daysUntil,
+            overdue: ob.expiresAt <= now,
+            preview: node?.contentPreview?.slice(0, 200) ?? '',
+          };
+        });
+
+        const payload = {
+          obligations,
+          count: obligations.length,
+          ...(only?.warnings?.length ? { warnings: only.warnings } : {}),
+        };
+        return { content: [{ type: 'text', text: JSON.stringify(payload, null, 2) + obFooter }] };
+      }
       case 'recall_with_citations': {
         const rawRwcArgs = RecallWithCitationsInput.parse(rawInput);
         const args = { ...rawRwcArgs, ...applyEngramScope(rawRwcArgs) };
@@ -3734,6 +3871,7 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
           query: args.query,
           tool: 'cross_search',
         }) ?? '';
+        recordMcpRecallSavings(deps, 'cross_search', sub.tokensUsed, sub.nodesIncluded);
         return { content: [{ type: 'text', text:
           sub.prompt +
           `\n\n---\nScope: ${resolved.map(id => deps.host.getGraphMetadata(id)?.displayName ?? id).join(', ')}` +
@@ -3949,10 +4087,20 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
               }
             }
             if (!graphId) graphId = deps.defaultGraphId();
+            const batchObligation = item.obligation
+              ? {
+                  obligationType: item.obligation.obligationType,
+                  expiresAt: item.obligation.expiresAt,
+                  ...(item.obligation.effectiveDate !== undefined
+                    ? { effectiveDate: item.obligation.effectiveDate }
+                    : {}),
+                }
+              : undefined;
             const rec = await withEmbedding(() =>
               ingestClip(deps.host, graphId!, item.text, item.label ?? 'Batch note', {
                 ...(mcpClientName ? { addedBy: mcpClientName } : {}),
                 triggeredBy: 'mcp:remember',
+                ...(batchObligation ? { obligation: batchObligation } : {}),
               })
             );
             const nContra = (rec as any).contradictions?.length ?? 0;
@@ -4736,6 +4884,8 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
         const { walkSkillSequence: walkFn2, walkSkillToJson } =
           await import('./skill-trainer.js');
         const crossLinksS = await deps.host.skillCallLinks.getForSource(resEngramS.graphId, args.sourceId);
+        const { ensureSkillCitedNodesPersisted } = await import('./skill-recall-bindings.js');
+        await ensureSkillCitedNodesPersisted(deps.host, resEngramS.graphId, args.sourceId);
         const walked = walkFn2(deps.host, resEngramS.graphId, args.sourceId, { recursive: args.recursive, crossEngramLinks: crossLinksS });
         if (walked.steps.length === 0 && walked.goals.length === 0) {
           return mcpError(`Skill "${args.sourceId}" has no steps or goals to walk. Use get_skill, or train_skill to rebuild it.`);
@@ -4760,10 +4910,36 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
           planTitle:          z.string().optional(),
           capturedVars:       z.record(z.string(), z.unknown()),
           completedStepIndex: z.number().int().nonnegative(),
+          status:             z.enum(['running', 'paused', 'blocked-on-human', 'complete', 'failed']).optional(),
+          stepLogEntry: z.object({
+            stepIndex: z.number().int().nonnegative(),
+            actor: z.string().min(1),
+            tool: z.string().optional(),
+            outcome: z.enum(['ok', 'error', 'skipped', 'human-wait']),
+            ts: z.number().optional(),
+          }).optional(),
         }).parse(rawInput);
         const now = Date.now();
         const runId = args.runId ?? randomUUID();
         const existing = args.runId ? await deps.host.skillRuns.read(args.runId) : null;
+        const actor = resolveSkillRunActor({
+          ...(deps.ssoSession ? { ssoSession: deps.ssoSession } : {}),
+          ...(deps.sharingScope ? { sharingScope: deps.sharingScope } : {}),
+          host: deps.host,
+        });
+        const stepLog = [...(existing?.stepLog ?? [])];
+        if (args.stepLogEntry) {
+          const entry = {
+            stepIndex: args.stepLogEntry.stepIndex,
+            actor: args.stepLogEntry.actor,
+            outcome: args.stepLogEntry.outcome,
+            ts: args.stepLogEntry.ts ?? now,
+            ...(args.stepLogEntry.tool ? { tool: args.stepLogEntry.tool } : {}),
+          };
+          stepLog.push(entry);
+        }
+        const status = args.status
+          ?? (args.completedStepIndex > 0 ? 'paused' : 'running');
         await deps.host.skillRuns.save({
           runId,
           skillGraphId: args.skillGraphId,
@@ -4771,21 +4947,42 @@ NEVER call preemptively. NEVER supply the phrase yourself. NEVER guess.`,
           ...(args.planTitle ? { planTitle: args.planTitle } : {}),
           capturedVars: args.capturedVars,
           completedStepIndex: args.completedStepIndex,
+          status,
+          actorId: existing?.actorId ?? actor.actorId,
+          actorLabel: existing?.actorLabel ?? actor.actorLabel,
+          ...(stepLog.length ? { stepLog } : {}),
           createdAt: existing?.createdAt ?? now,
           updatedAt: now,
         });
-        return { content: [{ type: 'text', text: JSON.stringify({ runId, saved: true, completedStepIndex: args.completedStepIndex }, null, 2) }] };
+        return { content: [{ type: 'text', text: JSON.stringify({ runId, saved: true, completedStepIndex: args.completedStepIndex, status }, null, 2) }] };
       }
 
       case 'resume_skill_run': {
         const args = z.object({ runId: z.string().min(1) }).parse(rawInput);
         const rec = await deps.host.skillRuns.read(args.runId);
         if (!rec) return mcpError(`No saved skill-run with runId "${args.runId}". It may have completed (and been deleted) or never been saved.`);
+        const actor = resolveSkillRunActor({
+          ...(deps.ssoSession ? { ssoSession: deps.ssoSession } : {}),
+          ...(deps.sharingScope ? { sharingScope: deps.sharingScope } : {}),
+          host: deps.host,
+        });
+        if (!rec.actorId) {
+          await deps.host.skillRuns.save({
+            ...rec,
+            actorId: actor.actorId,
+            actorLabel: actor.actorLabel,
+            updatedAt: Date.now(),
+          });
+        }
         return { content: [{ type: 'text', text: JSON.stringify({
           runId: rec.runId,
           skill: { graphId: rec.skillGraphId, sourceId: rec.skillSourceId, ...(rec.planTitle ? { title: rec.planTitle } : {}) },
           capturedVars: rec.capturedVars,
           completedStepIndex: rec.completedStepIndex,
+          status: rec.status ?? 'paused',
+          actorId: rec.actorId ?? actor.actorId,
+          actorLabel: rec.actorLabel ?? actor.actorLabel,
+          stepLog: rec.stepLog ?? [],
           nextStepIndex: rec.completedStepIndex + 1,
           updatedAt: rec.updatedAt,
           hint: 'Call walk_skill_structured on skill.graphId/sourceId, then continue at nextStepIndex with capturedVars in scope.',
