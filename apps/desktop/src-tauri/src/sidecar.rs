@@ -292,6 +292,7 @@ async fn start_inner(
 
     let mut cmd = Command::new(&binary);
     cmd
+        .env("GRAPHNOSIS_APP_VERSION", app.package_info().version.to_string())
         .env("GRAPHNOSIS_CORTEX", cortex_dir)
         .env("GRAPHNOSIS_IPC_SOCKET", &socket_path)
         // Fixed, cortex-independent path so a client configured once stays
