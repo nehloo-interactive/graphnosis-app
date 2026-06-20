@@ -1,5 +1,5 @@
 /**
- * Machine-local cortex catalog subscriptions — not stored in the encrypted cortex.
+ * Machine-local engram catalog subscriptions + install state — not in encrypted cortex.
  * Path: ~/.graphnosis/catalog-subscriptions.json
  */
 
@@ -12,7 +12,7 @@ const STORE_DIR = path.join(os.homedir(), '.graphnosis');
 const STORE_FILE = path.join(STORE_DIR, 'catalog-subscriptions.json');
 
 function emptyStore(): CatalogSubscriptionStore {
-  return { subscribedCatalogIds: [] };
+  return { subscribedCatalogIds: [], installedPackageIds: [] };
 }
 
 export async function readCatalogSubscriptions(): Promise<CatalogSubscriptionStore> {
@@ -22,7 +22,14 @@ export async function readCatalogSubscriptions(): Promise<CatalogSubscriptionSto
     const ids = Array.isArray(parsed.subscribedCatalogIds)
       ? parsed.subscribedCatalogIds.filter((id): id is string => typeof id === 'string' && id.length > 0)
       : [];
-    return { subscribedCatalogIds: [...new Set(ids)], ...(parsed.updatedAt != null ? { updatedAt: parsed.updatedAt } : {}) };
+    const installed = Array.isArray(parsed.installedPackageIds)
+      ? parsed.installedPackageIds.filter((id): id is string => typeof id === 'string' && id.length > 0)
+      : [];
+    return {
+      subscribedCatalogIds: [...new Set(ids)],
+      installedPackageIds: [...new Set(installed)],
+      ...(parsed.updatedAt != null ? { updatedAt: parsed.updatedAt } : {}),
+    };
   } catch {
     return emptyStore();
   }
@@ -32,6 +39,7 @@ export async function writeCatalogSubscriptions(store: CatalogSubscriptionStore)
   await fs.mkdir(STORE_DIR, { recursive: true, mode: 0o700 });
   const payload: CatalogSubscriptionStore = {
     subscribedCatalogIds: [...new Set(store.subscribedCatalogIds)],
+    installedPackageIds: [...new Set(store.installedPackageIds ?? [])],
     updatedAt: Date.now(),
   };
   await fs.writeFile(STORE_FILE, JSON.stringify(payload, null, 2), { encoding: 'utf8', mode: 0o600 });
@@ -49,6 +57,15 @@ export async function subscribeCatalogEntry(catalogId: string): Promise<CatalogS
 export async function unsubscribeCatalogEntry(catalogId: string): Promise<CatalogSubscriptionStore> {
   const store = await readCatalogSubscriptions();
   store.subscribedCatalogIds = store.subscribedCatalogIds.filter((id) => id !== catalogId);
+  await writeCatalogSubscriptions(store);
+  return store;
+}
+
+export async function recordInstalledPackage(packageId: string): Promise<CatalogSubscriptionStore> {
+  const store = await readCatalogSubscriptions();
+  const installed = new Set(store.installedPackageIds ?? []);
+  installed.add(packageId);
+  store.installedPackageIds = [...installed];
   await writeCatalogSubscriptions(store);
   return store;
 }
