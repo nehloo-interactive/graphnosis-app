@@ -57,7 +57,7 @@ import {
 } from './ui/ghampus';
 import {
   initUnlock, attemptUnlock, runBiometricUnlock, webauthnUnlock,
-  offerSidecarRecovery, configureSsoUnlockButton, refreshLockScreenCatalog,
+  offerSidecarRecovery, configureSsoUnlockButton,
 } from './ui/unlock';
 import {
   initCloudOnboardingHandlers,
@@ -1733,7 +1733,8 @@ function render(status: StatusSnapshot): void {
       cancelDebouncedFederatedStats();
       void refreshCortexScopedStats();
       void refreshConnectorsList();
-      void syncCatalogSubscriptionsToSidecar();
+      void maybeOfferCatalogPackages();
+      void refreshEmployeeCatalogPanel();
       startMcpPolling();
       scheduleHomePrefetch(); // warm home-card cache in background after boot
       void refreshLlmStatus().then(() => void loadSearchLlmPreferences().then(syncSearchLlmCheckboxes));
@@ -3071,6 +3072,7 @@ function activateMode(mode: Mode): void {
     void refreshModelsPanel();
     void refreshSsoSettingsPanel();
     void refreshCatalogSettingsPanel();
+    void refreshEmployeeCatalogPanel();
     // Refresh the license launcher's status line on the pane (Free /
     // Pro active · expires X). Calls the same helper the Settings modal
     // uses; both DOM targets are updated in one pass.
@@ -4633,7 +4635,6 @@ function refreshCortexCloudHint(path: string): void {
       const path = els.cortexDir.value.trim();
       void refreshBiometricButton(path);
       void configureSsoUnlockButton();
-      void refreshLockScreenCatalog();
     }, 250);
   });
 }
@@ -19996,19 +19997,23 @@ function wireSsoSettingsPanel(): void {
 
 wireSsoSettingsPanel();
 
-// ── Organization Cortex Catalog (Enterprise Phase 4) ───────────────────────
+// ── Organization Engram Catalog (Enterprise Phase 4) ───────────────────────
 
 interface CatalogEntryView {
   id: string;
-  cortexId: string;
+  packageId: string;
   displayName: string;
+  description?: string;
   region?: string;
-  kind: 'org' | 'hub-package' | 'personal';
+  kind: 'engram-package' | 'hub-slice';
+  installMode: 'merge-copy' | 'federate-readonly';
   requiredIdpGroups: string[];
   defaultRole?: string;
+  sourceEngramId?: string;
+  hubRef?: string;
+  itControlled: boolean;
+  noReshare: boolean;
   mdmBundleId?: string;
-  hubPackageEngramIds: string[];
-  cortexPath?: string;
   published?: boolean;
 }
 
@@ -20016,38 +20021,64 @@ interface CatalogListResult {
   ok: boolean;
   entries: CatalogEntryView[];
   subscribedCatalogIds: string[];
+  installedPackageIds?: string[];
+}
+
+interface CatalogEntitlementsResult {
+  ok: boolean;
+  entitlements: Array<{
+    catalogId: string;
+    entitled: boolean;
+    reason: string;
+    entry: CatalogEntryView;
+    missingGroups?: string[];
+  }>;
+  installedPackageIds?: string[];
 }
 
 function clearCatalogEntryForm(): void {
   const set = (id: string, v: string) => {
-    const el = document.getElementById(id) as HTMLInputElement | HTMLSelectElement | null;
+    const el = document.getElementById(id) as HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement | null;
     if (el) el.value = v;
   };
   set('catalog-edit-id', '');
   set('catalog-display-name', '');
-  set('catalog-cortex-id', '');
+  set('catalog-package-id', '');
+  set('catalog-description', '');
   set('catalog-region', '');
-  set('catalog-kind', 'org');
-  set('catalog-cortex-path', '');
+  set('catalog-kind', 'engram-package');
+  set('catalog-install-mode', 'merge-copy');
+  set('catalog-source-engram-id', '');
+  set('catalog-hub-ref', '');
   set('catalog-required-groups', '');
   set('catalog-mdm-bundle-id', '');
+  const itControlled = document.getElementById('catalog-it-controlled') as HTMLInputElement | null;
+  const noReshare = document.getElementById('catalog-no-reshare') as HTMLInputElement | null;
   const pub = document.getElementById('catalog-published') as HTMLInputElement | null;
+  if (itControlled) itControlled.checked = true;
+  if (noReshare) noReshare.checked = true;
   if (pub) pub.checked = true;
 }
 
 function readCatalogEntryForm(): Partial<CatalogEntryView> & { id?: string } {
   const groupsRaw = (document.getElementById('catalog-required-groups') as HTMLInputElement | null)?.value ?? '';
-  const kind = (document.getElementById('catalog-kind') as HTMLSelectElement | null)?.value ?? 'org';
+  const kind = (document.getElementById('catalog-kind') as HTMLSelectElement | null)?.value ?? 'engram-package';
+  const installMode = (document.getElementById('catalog-install-mode') as HTMLSelectElement | null)?.value ?? 'merge-copy';
+  const itControlled = (document.getElementById('catalog-it-controlled') as HTMLInputElement | null)?.checked ?? true;
   return {
     id: (document.getElementById('catalog-edit-id') as HTMLInputElement | null)?.value.trim() || undefined,
     displayName: (document.getElementById('catalog-display-name') as HTMLInputElement | null)?.value.trim() ?? '',
-    cortexId: (document.getElementById('catalog-cortex-id') as HTMLInputElement | null)?.value.trim() ?? '',
+    packageId: (document.getElementById('catalog-package-id') as HTMLInputElement | null)?.value.trim() ?? '',
+    description: (document.getElementById('catalog-description') as HTMLTextAreaElement | null)?.value.trim() || undefined,
     region: (document.getElementById('catalog-region') as HTMLInputElement | null)?.value.trim() || undefined,
     kind: kind as CatalogEntryView['kind'],
-    cortexPath: (document.getElementById('catalog-cortex-path') as HTMLInputElement | null)?.value.trim() || undefined,
+    installMode: installMode as CatalogEntryView['installMode'],
+    sourceEngramId: (document.getElementById('catalog-source-engram-id') as HTMLInputElement | null)?.value.trim() || undefined,
+    hubRef: (document.getElementById('catalog-hub-ref') as HTMLInputElement | null)?.value.trim() || undefined,
     requiredIdpGroups: groupsRaw.split(/[,;\n]+/).map((g) => g.trim()).filter(Boolean),
     mdmBundleId: (document.getElementById('catalog-mdm-bundle-id') as HTMLInputElement | null)?.value.trim() || undefined,
-    hubPackageEngramIds: [],
+    itControlled,
+    noReshare: (document.getElementById('catalog-no-reshare') as HTMLInputElement | null)?.checked ?? itControlled,
     published: (document.getElementById('catalog-published') as HTMLInputElement | null)?.checked ?? true,
   };
 }
@@ -20055,12 +20086,17 @@ function readCatalogEntryForm(): Partial<CatalogEntryView> & { id?: string } {
 function fillCatalogEntryForm(entry: CatalogEntryView): void {
   (document.getElementById('catalog-edit-id') as HTMLInputElement).value = entry.id;
   (document.getElementById('catalog-display-name') as HTMLInputElement).value = entry.displayName;
-  (document.getElementById('catalog-cortex-id') as HTMLInputElement).value = entry.cortexId;
+  (document.getElementById('catalog-package-id') as HTMLInputElement).value = entry.packageId;
+  (document.getElementById('catalog-description') as HTMLTextAreaElement).value = entry.description ?? '';
   (document.getElementById('catalog-region') as HTMLInputElement).value = entry.region ?? '';
   (document.getElementById('catalog-kind') as HTMLSelectElement).value = entry.kind;
-  (document.getElementById('catalog-cortex-path') as HTMLInputElement).value = entry.cortexPath ?? '';
+  (document.getElementById('catalog-install-mode') as HTMLSelectElement).value = entry.installMode;
+  (document.getElementById('catalog-source-engram-id') as HTMLInputElement).value = entry.sourceEngramId ?? '';
+  (document.getElementById('catalog-hub-ref') as HTMLInputElement).value = entry.hubRef ?? '';
   (document.getElementById('catalog-required-groups') as HTMLInputElement).value = (entry.requiredIdpGroups ?? []).join(', ');
   (document.getElementById('catalog-mdm-bundle-id') as HTMLInputElement).value = entry.mdmBundleId ?? '';
+  (document.getElementById('catalog-it-controlled') as HTMLInputElement).checked = entry.itControlled;
+  (document.getElementById('catalog-no-reshare') as HTMLInputElement).checked = entry.noReshare;
   (document.getElementById('catalog-published') as HTMLInputElement).checked = entry.published !== false;
   document.getElementById('catalog-entry-form-wrap')?.setAttribute('open', '');
 }
@@ -20091,11 +20127,10 @@ async function refreshCatalogSettingsPanel(): Promise<void> {
       const pub = e.published === false ? ' · draft' : '';
       return `<div class="panel" style="padding:10px;margin:0;" data-catalog-row="${escape(e.id)}">`
         + `<p style="margin:0 0 4px;font-size:14px;"><strong>${escape(e.displayName)}</strong> <span class="subtitle" style="font-size:11px;">${escape(e.kind)}${escape(pub)}</span></p>`
-        + `<p class="subtitle" style="margin:0 0 8px;font-size:12px;">${escape(e.cortexId)}${e.region ? ` · ${escape(e.region)}` : ''} · Groups: ${escape(groups)}</p>`
+        + `<p class="subtitle" style="margin:0 0 8px;font-size:12px;">${escape(e.packageId)}${e.region ? ` · ${escape(e.region)}` : ''} · Groups: ${escape(groups)}</p>`
         + `<div style="display:flex;flex-wrap:wrap;gap:6px;">`
         + `<button type="button" class="g-btn catalog-edit-btn" data-id="${escape(e.id)}">Edit</button>`
         + `<button type="button" class="g-btn catalog-delete-btn" data-id="${escape(e.id)}">Delete</button>`
-        + `<button type="button" class="g-btn catalog-mdm-btn" data-id="${escape(e.id)}">Export MDM JSON</button>`
         + `</div></div>`;
     }).join('');
     list.querySelectorAll<HTMLButtonElement>('.catalog-edit-btn').forEach((btn) => {
@@ -20109,32 +20144,10 @@ async function refreshCatalogSettingsPanel(): Promise<void> {
       btn.addEventListener('click', () => {
         void (async () => {
           const id = btn.dataset.id;
-          if (!id || !await gConfirm('Delete catalog entry?', 'Employees will no longer see this cortex in the catalog.')) return;
+          if (!id || !await gConfirm('Delete catalog entry?', 'Employees will no longer see this package in the catalog.')) return;
           await ipcCall('catalog:delete', { catalogId: id });
           void refreshCatalogSettingsPanel();
-        })();
-      });
-    });
-    list.querySelectorAll<HTMLButtonElement>('.catalog-mdm-btn').forEach((btn) => {
-      btn.addEventListener('click', () => {
-        void (async () => {
-          const id = btn.dataset.id;
-          if (!id) return;
-          const result = await ipcCall<{ ok: boolean; bundle?: unknown; message?: string }>('catalog:exportMdm', {
-            catalogId: id,
-            subscriptions: [id],
-          });
-          if (!result.ok || !result.bundle) {
-            void gAlert('MDM export failed', result.message ?? 'Could not build MDM bundle.');
-            return;
-          }
-          const blob = new Blob([JSON.stringify(result.bundle, null, 2)], { type: 'application/json' });
-          const url = URL.createObjectURL(blob);
-          const a = document.createElement('a');
-          a.href = url;
-          a.download = `graphnosis-mdm-${id.slice(0, 8)}.json`;
-          a.click();
-          URL.revokeObjectURL(url);
+          void refreshEmployeeCatalogPanel();
         })();
       });
     });
@@ -20143,15 +20156,115 @@ async function refreshCatalogSettingsPanel(): Promise<void> {
   }
 }
 
+async function refreshEmployeeCatalogPanel(): Promise<void> {
+  const panel = document.getElementById('settings-panel-engram-catalog-employee');
+  const list = document.getElementById('employee-catalog-list');
+  const empty = document.getElementById('employee-catalog-empty');
+  if (!panel || !list) return;
+  try {
+    const data = await ipcCall<CatalogListResult>('catalog:list', {});
+    const entries = data.entries ?? [];
+    if (entries.length === 0) {
+      panel.style.display = 'none';
+      return;
+    }
+    panel.style.display = '';
+    empty?.classList.toggle('hidden', entries.length > 0);
+    const subs = new Set(data.subscribedCatalogIds ?? []);
+    const installed = new Set(data.installedPackageIds ?? []);
+    const ent = await ipcCall<CatalogEntitlementsResult>('catalog:entitlements', { requireSubscription: false });
+    const entMap = new Map((ent.entitlements ?? []).map((e) => [e.catalogId, e]));
+    list.innerHTML = entries.map((e) => {
+      const row = entMap.get(e.id);
+      const entitled = row?.entitled ?? false;
+      const isSub = subs.has(e.id);
+      const isInstalled = installed.has(e.packageId);
+      const status = isInstalled ? 'Installed in your cortex'
+        : isSub ? 'Subscribed — install pending'
+          : entitled ? 'Available'
+            : row?.reason === 'missing_groups'
+              ? `Requires groups: ${(row.missingGroups ?? e.requiredIdpGroups).join(', ')}`
+              : 'Not available';
+      return `<div class="panel" style="padding:10px;margin:0;">`
+        + `<p style="margin:0 0 4px;font-size:14px;"><strong>${escape(e.displayName)}</strong></p>`
+        + `<p class="subtitle" style="margin:0 0 8px;font-size:12px;">${escape(e.description ?? e.packageId)} · ${escape(status)}</p>`
+        + `<button type="button" class="g-btn employee-catalog-subscribe" data-id="${escape(e.id)}" data-entitled="${entitled ? '1' : '0'}" data-installed="${isInstalled ? '1' : '0'}" ${!entitled || isInstalled ? 'disabled' : ''}>`
+        + (isInstalled ? 'Added ✓' : isSub ? 'Install…' : 'Add to my cortex')
+        + '</button></div>';
+    }).join('');
+    list.querySelectorAll<HTMLButtonElement>('.employee-catalog-subscribe').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        void (async () => {
+          const id = btn.dataset.id;
+          if (!id) return;
+          btn.disabled = true;
+          try {
+            await ipcCall('catalog:subscribe', { catalogId: id });
+            void refreshEmployeeCatalogPanel();
+          } catch (e) {
+            void gAlert('Could not add package', e instanceof Error ? e.message : String(e));
+            btn.disabled = false;
+          }
+        })();
+      });
+    });
+  } catch {
+    panel.style.display = 'none';
+  }
+}
+
+let catalogOfferShownThisSession = false;
+
+/** After SSO unlock, offer entitled packages not yet installed. */
+async function maybeOfferCatalogPackages(): Promise<void> {
+  if (catalogOfferShownThisSession) return;
+  try {
+    const ent = await ipcCall<CatalogEntitlementsResult>('catalog:entitlements', { requireSubscription: false });
+    const installed = new Set(ent.installedPackageIds ?? []);
+    const available = (ent.entitlements ?? []).filter((e) => e.entitled && !installed.has(e.entry.packageId));
+    if (available.length === 0) return;
+    catalogOfferShownThisSession = true;
+    const names = available.slice(0, 3).map((e) => e.entry.displayName).join(', ');
+    const suffix = available.length > 3 ? ` (+${available.length - 3} more)` : '';
+    const go = await gConfirm(
+      `${available.length} organization package${available.length === 1 ? '' : 's'} available`,
+      `${names}${suffix}\n\nAdd to your cortex now? You can also browse in Settings → Organization engrams.`,
+    );
+    if (!go) return;
+    for (const row of available) {
+      try {
+        await ipcCall('catalog:subscribe', { catalogId: row.catalogId });
+      } catch { /* individual failure — continue */ }
+    }
+    void refreshEmployeeCatalogPanel();
+  } catch { /* catalog optional */ }
+}
+
 function wireCatalogSettingsPanel(): void {
   document.getElementById('btn-catalog-clear')?.addEventListener('click', () => clearCatalogEntryForm());
+  document.getElementById('btn-catalog-export-mdm')?.addEventListener('click', () => {
+    void (async () => {
+      const result = await ipcCall<{ ok: boolean; bundle?: unknown; message?: string }>('catalog:exportMdm', {});
+      if (!result.ok || !result.bundle) {
+        void gAlert('MDM export failed', result.message ?? 'Could not build MDM bundle.');
+        return;
+      }
+      const blob = new Blob([JSON.stringify(result.bundle, null, 2)], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'graphnosis-mdm-engram-catalog.json';
+      a.click();
+      URL.revokeObjectURL(url);
+    })();
+  });
   document.getElementById('btn-catalog-save')?.addEventListener('click', () => {
     void (async () => {
       const status = document.getElementById('catalog-save-status');
       const btn = document.getElementById('btn-catalog-save') as HTMLButtonElement | null;
       const entry = readCatalogEntryForm();
-      if (!entry.displayName || !entry.cortexId) {
-        if (status) status.textContent = 'Display name and Cortex ID are required.';
+      if (!entry.displayName || !entry.packageId) {
+        if (status) status.textContent = 'Display name and Package ID are required.';
         return;
       }
       if (btn) btn.disabled = true;
@@ -20161,6 +20274,7 @@ function wireCatalogSettingsPanel(): void {
         if (status) status.textContent = 'Saved.';
         clearCatalogEntryForm();
         void refreshCatalogSettingsPanel();
+        void refreshEmployeeCatalogPanel();
       } catch (e) {
         if (status) status.textContent = e instanceof Error ? e.message : String(e);
       } finally {
@@ -20173,19 +20287,8 @@ function wireCatalogSettingsPanel(): void {
 
 wireCatalogSettingsPanel();
 
-/** Sync lock-screen localStorage subscriptions to sidecar machine store after unlock. */
-async function syncCatalogSubscriptionsToSidecar(): Promise<void> {
-  const { getLocalCatalogSubscriptions } = await import('./ui/unlock');
-  const ids = getLocalCatalogSubscriptions();
-  for (const catalogId of ids) {
-    try {
-      await ipcCall('catalog:subscribe', { catalogId });
-    } catch { /* entry may not exist on this cortex yet */ }
-  }
-}
-
 const SHARING_POLICY_PERSONAL = 'You control this data. Sharing requires your explicit approval — nothing is shared automatically.';
-const SHARING_POLICY_ORG = 'Organization data — sharing is subject to IT policy. Consult the data owner before sharing sensitive engrams.';
+const SHARING_POLICY_ORG = 'Organization catalog engrams are IT-controlled — subscribe to add them; do not ad-hoc re-share. Consult IT before sharing sensitive content.';
 
 async function updateSharingPolicyNotice(): Promise<void> {
   const el = document.getElementById('sharing-policy-notice');
