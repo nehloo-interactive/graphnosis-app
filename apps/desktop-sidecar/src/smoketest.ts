@@ -625,8 +625,20 @@ ferry to Naxos. The food in Mykonos was overrated.`;
   await host.setEngramPreserve('personal', false);
   log('compliance-legal-hold.ok', { blocked: true });
 
+  log('compliance-source-legal-hold', {});
+  await host.setSourceLegalHold('personal', src.sourceId, true, 'smoke-source-matter');
+  let sourceHoldBlocked = false;
+  try {
+    await host.forgetSource('personal', src.sourceId, { triggeredBy: 'user:forget' });
+  } catch (e) {
+    sourceHoldBlocked = (e as { code?: string }).code === 'legal_hold';
+  }
+  if (!sourceHoldBlocked) throw new Error('FAIL: forgetSource should be blocked under source legal hold');
+  await host.setSourceLegalHold('personal', src.sourceId, false);
+  log('compliance-source-legal-hold.ok', { blocked: true });
+
   log('compliance-evidence-pack', {});
-  const { buildEvidencePack, recallAsOf } = await import('./compliance.js');
+  const { buildEvidencePack, buildSignedEvidencePack, recallAsOf, verifyEvidencePackSignature } = await import('./compliance.js');
   const pack = await buildEvidencePack(host, cortexDir, { engram: 'personal' });
   if (pack.version !== 1 || pack.oplog.count < 1) {
     throw new Error('FAIL: evidence pack missing op-log slice');
@@ -642,6 +654,24 @@ ferry to Naxos. The food in Mykonos was overrated.`;
     mcp: pack.mcpAudit.count,
     hashes: pack.engramHashes.length,
   });
+
+  log('compliance-evidence-pack-signed', {});
+  const signed = await buildSignedEvidencePack(host, cortexDir, { engram: 'personal' });
+  if (!signed.manifestHash || signed.signatures.length < 1) {
+    throw new Error('FAIL: signed evidence pack missing device signature');
+  }
+  const deviceSig = signed.signatures.find((s) => s.signer === 'device');
+  if (!deviceSig || !(await verifyEvidencePackSignature(deviceSig))) {
+    throw new Error('FAIL: evidence pack device signature verification failed');
+  }
+  log('compliance-evidence-pack-signed.ok', { signatures: signed.signatures.length });
+
+  log('compliance-retention-dry-run', {});
+  await host.setSettings({ compliance: { enabled: true, defaultRetentionTtlMs: 1 } });
+  await host.updateGraphComplianceFields('personal', { retentionTtlMs: 1 });
+  const dry = await (await import('./compliance.js')).runRetentionPurge(host, cortexDir, true);
+  if (!dry.complianceEnabled) throw new Error('FAIL: retention dry-run with compliance enabled');
+  log('compliance-retention-dry-run.ok', { candidates: dry.items.length });
 
   log('compliance-recall-as-of', {});
   const pit = await recallAsOf(host, 'Greece', {

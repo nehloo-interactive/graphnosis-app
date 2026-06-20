@@ -17,6 +17,7 @@ import {
   checkCatalogInstallEntitlement,
   sanitizeEngramCatalogSettings,
 } from '@graphnosis-app/core/settings';
+import { sanitizeClassificationSchema } from '@graphnosis-app/core';
 import type { GraphnosisHost } from './host.js';
 import {
   readCatalogSubscriptions,
@@ -44,6 +45,12 @@ export async function readMdmBundleFile(bundlePath: string): Promise<MdmEngramCa
       defaultSubscriptions: parsed.defaultSubscriptions
         .filter((p): p is string => typeof p === 'string' && p.trim().length > 0)
         .map((p) => p.trim()),
+      ...(parsed.compliance?.classificationSchema
+        ? (() => {
+          const schema = sanitizeClassificationSchema(parsed.compliance!.classificationSchema);
+          return schema ? { compliance: { classificationSchema: schema } } : {};
+        })()
+        : {}),
     };
   } catch {
     return null;
@@ -178,9 +185,30 @@ export async function mergeMdmSsoHints(
 ): Promise<void> {
   const current = host.getSettings();
   const sso = current.sso;
+  const schema = bundle.compliance?.classificationSchema
+    ? sanitizeClassificationSchema(bundle.compliance.classificationSchema)
+    : undefined;
+  const compliancePatch = schema
+    ? {
+      compliance: {
+        enabled: current.compliance?.enabled === true,
+        ...(current.compliance?.defaultRetentionTtlMs !== undefined
+          ? { defaultRetentionTtlMs: current.compliance.defaultRetentionTtlMs }
+          : {}),
+        ...(current.compliance?.defaultExportBeforePurge !== undefined
+          ? { defaultExportBeforePurge: current.compliance.defaultExportBeforePurge }
+          : {}),
+        ...(current.compliance?.lastRetentionDryRunAt !== undefined
+          ? { lastRetentionDryRunAt: current.compliance.lastRetentionDryRunAt }
+          : {}),
+        classificationSchema: schema,
+      },
+    }
+    : {};
   if (!sso?.oidc?.issuer && bundle.sso.issuer) {
     await host.setSettings({
       ...current,
+      ...compliancePatch,
       sso: {
         ...(sso ?? { enabled: false, protocol: 'oidc', breakGlassPassphrase: true, groupRoleMappings: [] }),
         oidc: {
@@ -195,5 +223,7 @@ export async function mergeMdmSsoHints(
         ?? current.engramCatalog
         ?? { entries: [], version: 2 },
     });
+  } else if (schema) {
+    await host.setSettings({ ...current, ...compliancePatch });
   }
 }

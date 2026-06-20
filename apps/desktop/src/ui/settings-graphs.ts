@@ -6,6 +6,7 @@ import { invoke } from '../platform';
 import { app } from './app-context';
 import { refreshConnectorsList } from './connectors';
 import { ipcCall, invokeRetry } from './ipc';
+import { industryTagOptionsHtml } from './settings-compliance';
 import {
   fetchSkillsLibrary,
   renderSkillsLibrary,
@@ -14,6 +15,12 @@ import {
 } from './skills';
 import { escape } from './util';
 import type { GraphWithMetadata } from './types';
+import {
+  assignableLabels,
+  fetchClassificationSchema,
+  labelColorStyle,
+  type ClassificationSchemaView,
+} from './classification-schema';
 
 /**
  * Render the "Graphs in this cortex" list inside Settings.
@@ -22,11 +29,19 @@ import type { GraphWithMetadata } from './types';
  * confirms. Armed state resets if the user moves away.
  */
 export function renderSettingsGraphsList(): void {
+  void renderSettingsGraphsListInner();
+}
+
+async function renderSettingsGraphsListInner(): Promise<void> {
   const ctx = app();
   const loadedGraphs = ctx.getLoadedGraphs();
   const atlasActiveGraph = ctx.getAtlasActiveGraph();
   const container = document.getElementById('settings-graphs-list');
   if (!container) return;
+
+  const schema = await fetchClassificationSchema();
+  const schemaEnabled = schema?.enabled === true && (schema.labels?.length ?? 0) > 0;
+  const userLabels = schemaEnabled && schema ? assignableLabels(schema) : [];
 
   if (loadedGraphs.length === 0) {
     container.innerHTML = '<p style="font-size:14px; color:var(--fg-dim); margin:0;">No graphs loaded.</p>';
@@ -37,6 +52,18 @@ export function renderSettingsGraphsList(): void {
     public:    '4 000 tokens — unrestricted',
     personal:  '2 000 tokens — explicit recall only',
     sensitive: '0 tokens — AI blocked',
+  };
+
+  const renderClassificationSelect = (g: GraphWithMetadata): string => {
+    const labelId = g.metadata.classificationLabelId ?? schema?.defaultEngramLabel ?? userLabels[0]?.id ?? '';
+    const current = userLabels.find((l) => l.id === labelId) ?? userLabels[0];
+    const color = current ? labelColorStyle(current.color) : 'var(--fg-dim)';
+    const opts = userLabels.map((l) => {
+      const c = labelColorStyle(l.color);
+      return `<option value="${escape(l.id)}" ${l.id === labelId ? 'selected' : ''} style="color:${c}">● ${escape(l.displayName)}</option>`;
+    }).join('');
+    return `<select class="sgr-label-select" data-sgr-id="${escape(g.graphId)}" title="IT classification label"
+      style="color:${color}; min-width:9rem;">${opts}</select>`;
   };
 
   const renderRow = (g: GraphWithMetadata): string => {
@@ -50,6 +77,9 @@ export function renderSettingsGraphsList(): void {
     const preservedBadge = preserved
       ? `<span class="sgr-badge sgr-badge-preserved" title="${escape(g.metadata.legalHoldMatter ? `Preserved (${g.metadata.legalHoldMatter})` : 'Preserved — forget, edit, and purge blocked until released.')}">Preserved</span>`
       : '';
+    const ttlDays = g.metadata.retentionTtlMs ? Math.round(g.metadata.retentionTtlMs / (24 * 60 * 60 * 1000)) : '';
+    const exportBefore = g.metadata.retentionExportBeforePurge !== false;
+    const industryTags = g.metadata.industryTags ?? [];
     return `
       <div class="settings-graph-row${archived ? ' is-archived' : ''}${preserved ? ' is-preserved' : ''}" data-sgr-id="${escape(g.graphId)}" data-skill-count="${skillCount}">
         <span class="sgr-name" title="Click to rename" data-sgr-id="${escape(g.graphId)}" data-pres="engram:${escape(g.graphId)}">${escape(ctx.formatEngramLabel(g))}</span>
@@ -57,12 +87,14 @@ export function renderSettingsGraphsList(): void {
         ${preservedBadge}
         ${isActive ? '<span class="sgr-badge">active</span>' : ''}
         ${skillBadge}
-        <select class="sgr-tier-select" data-sgr-id="${escape(g.graphId)}" title="${TIER_CAPS[tier]}"
+        ${schemaEnabled
+          ? renderClassificationSelect(g)
+          : `<select class="sgr-tier-select" data-sgr-id="${escape(g.graphId)}" title="${TIER_CAPS[tier]}"
           style="color:${tier === 'public' ? 'var(--ok)' : tier === 'sensitive' ? 'var(--error)' : 'var(--color-status-warn-gold)'}">
           <option value="public"    ${tier === 'public'    ? 'selected' : ''} style="color:var(--ok)">public</option>
           <option value="personal"  ${tier === 'personal'  ? 'selected' : ''} style="color:var(--color-status-warn-gold)">personal</option>
           <option value="sensitive" ${tier === 'sensitive' ? 'selected' : ''} style="color:var(--error)">sensitive</option>
-        </select>
+        </select>`}
         <button class="btn-graph-preserve" data-sgr-id="${escape(g.graphId)}" data-preserved="${preserved}" title="${preserved ? 'Release preservation — forget, edit, and purge allowed again' : 'Preserve engram — blocks forget, edit, and purge until released'}">
           ${preserved ? 'Release' : 'Preserve'}
         </button>
@@ -72,6 +104,18 @@ export function renderSettingsGraphsList(): void {
         <button class="btn-graph-delete" data-sgr-id="${escape(g.graphId)}" data-name="${escape(g.metadata.displayName ?? g.graphId)}">
           Delete
         </button>
+        <div class="sgr-compliance-fields" data-sgr-id="${escape(g.graphId)}" style="grid-column:1/-1;display:flex;flex-wrap:wrap;gap:10px;align-items:center;padding:6px 0 2px;font-size:12px;color:var(--fg-dim);">
+          <label title="Retention TTL in days — blank means use cortex default">TTL (days)
+            <input type="number" class="sgr-retention-ttl" min="1" placeholder="default" value="${ttlDays ? escape(String(ttlDays)) : ''}" style="width:72px;margin-left:4px;" />
+          </label>
+          <label style="display:inline-flex;align-items:center;gap:4px;">
+            <input type="checkbox" class="sgr-retention-export" ${exportBefore ? 'checked' : ''} />
+            Export before purge
+          </label>
+          <span>Industry:</span>
+          <span class="sgr-industry-tags">${industryTagOptionsHtml(industryTags)}</span>
+          <button type="button" class="btn-sm sgr-save-compliance" data-sgr-id="${escape(g.graphId)}">Save retention</button>
+        </div>
       </div>`;
   };
 
@@ -88,6 +132,40 @@ export function renderSettingsGraphsList(): void {
     : '';
   container.innerHTML = standardHtml + skillsHtml;
   if (ctx.presActive()) ctx.applyPresentationMasking(container);
+
+  container.querySelectorAll<HTMLButtonElement>('.sgr-save-compliance').forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      const graphId = btn.dataset['sgrId'] ?? '';
+      const row = btn.closest<HTMLElement>('.settings-graph-row');
+      if (!graphId || !row) return;
+      const ttlInput = row.querySelector<HTMLInputElement>('.sgr-retention-ttl');
+      const exportCb = row.querySelector<HTMLInputElement>('.sgr-retention-export');
+      const tags = [...row.querySelectorAll<HTMLInputElement>('.sgr-industry-cb:checked')].map((cb) => cb.value);
+      const ttlRaw = ttlInput?.value.trim() ?? '';
+      const ttlMs = ttlRaw ? Math.floor(Number(ttlRaw) * 24 * 60 * 60 * 1000) : null;
+      btn.disabled = true;
+      try {
+        await ipcCall('graphs.updateCompliance', {
+          graphId,
+          retentionTtlMs: ttlMs,
+          retentionExportBeforePurge: exportCb?.checked ?? true,
+          industryTags: tags,
+        });
+        const g = loadedGraphs.find((gr) => gr.graphId === graphId);
+        if (g) {
+          if (ttlMs) g.metadata.retentionTtlMs = ttlMs;
+          else delete g.metadata.retentionTtlMs;
+          g.metadata.retentionExportBeforePurge = exportCb?.checked ?? true;
+          if (tags.length) g.metadata.industryTags = tags;
+          else delete g.metadata.industryTags;
+        }
+      } catch (e) {
+        ctx.showError(`Could not save retention settings: ${e}`);
+      } finally {
+        btn.disabled = false;
+      }
+    });
+  });
 
   container.querySelectorAll<HTMLButtonElement>('.btn-graph-preserve').forEach((btn) => {
     btn.addEventListener('click', () => {
@@ -283,6 +361,32 @@ export function renderSettingsGraphsList(): void {
       warning: 'The AI will not see content from this engram until you explicitly grant access via Graphnosis.',
     },
   };
+
+  container.querySelectorAll<HTMLSelectElement>('.sgr-label-select').forEach((sel) => {
+    let prevLabel = sel.value;
+    sel.addEventListener('change', () => {
+      const graphId = sel.dataset['sgrId'] ?? '';
+      const labelId = sel.value;
+      const g = loadedGraphs.find((x) => x.graphId === graphId);
+      if (!graphId || !schema) return;
+      const label = userLabels.find((l) => l.id === labelId);
+      sel.disabled = true;
+      void ipcCall('graphs.setClassificationLabel', { graphId, labelId })
+        .then(() => {
+          if (g) {
+            g.metadata.classificationLabelId = labelId;
+            if (label) g.metadata.sensitivityTier = label.internalTier;
+          }
+          sel.style.color = label ? labelColorStyle(label.color) : '';
+          prevLabel = labelId;
+        })
+        .catch((e) => {
+          ctx.showError(`Could not update classification: ${e}`);
+          sel.value = prevLabel;
+        })
+        .finally(() => { sel.disabled = false; });
+    });
+  });
 
   container.querySelectorAll<HTMLSelectElement>('.sgr-tier-select').forEach((sel) => {
     let prevTier = sel.value;
