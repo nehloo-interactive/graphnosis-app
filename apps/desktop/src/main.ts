@@ -7967,19 +7967,29 @@ function annotateHomeHelp(): void {
 function renderHomeEngramBars(): void {
   const barsEl = document.getElementById('home-engram-bars');
   if (!barsEl) return;
-  // Whole-cortex count includes archived engrams (loaded at boot, hidden from pickers).
-  const resident = loadedGraphs.filter((g) => g.loaded !== false);
-  const liveGraphIds = new Set(resident.map((g) => g.graphId));
   const vitalityByGraph = brainVitalityReport?.byGraph ?? {};
   const vitalitySettling = brainVitalityReport?.settling === true;
-  const rows = resident
-    .map((g) => {
-      const score = vitalityByGraph[g.graphId];
-      const isArchived = g.metadata.archived ?? false;
+  const stillBooting = isEngramPreloadInProgress() || vitalitySettling;
+  // During boot/settling list the full catalog (metadata rows, including
+  // not-yet-resident engrams) with cached vitality scores. After boot, only
+  // engrams loaded in memory match inspector_stats / live vitality scope.
+  const catalogGraphs = stillBooting
+    ? loadedGraphs
+    : loadedGraphs.filter((g) => g.loaded !== false);
+  const metaById = new Map(catalogGraphs.map((g) => [g.graphId, g]));
+  const graphIds = new Set(catalogGraphs.map((g) => g.graphId));
+  if (stillBooting) {
+    for (const gid of Object.keys(vitalityByGraph)) graphIds.add(gid);
+  }
+  const rows = [...graphIds]
+    .map((gid) => {
+      const g = metaById.get(gid);
+      const score = vitalityByGraph[gid];
+      const isArchived = g?.metadata.archived ?? false;
       const archivedSuffix = isArchived ? ' (archived)' : '';
       return {
-        gid: g.graphId,
-        name: `${g.metadata.displayName ?? g.graphId}${archivedSuffix}`,
+        gid,
+        name: `${g?.metadata.displayName ?? gid}${archivedSuffix}`,
         score: typeof score === 'number' ? score : -1,
         archived: isArchived,
       };
@@ -7990,15 +8000,17 @@ function renderHomeEngramBars(): void {
       if (b.score < 0) return -1;
       return b.score - a.score;
     });
+  const liveGraphIds = new Set(loadedGraphs.filter((g) => g.loaded !== false).map((g) => g.graphId));
   // Stale vitality from a prior cortex — refetch when catalog has rows but none rendered.
-  const stillBooting = isEngramPreloadInProgress() || vitalitySettling;
   if (rows.length === 0 && liveGraphIds.size > 0 && !stillBooting) {
     void refreshCortexScopedStats();
     return;
   }
   // Footer/hero engram count comes from inspector_stats; bars use loadedGraphs.
   // After boot-defer the catalog can lag behind the sidecar — resync once.
-  const expectedEng = cortexStats?.engrams ?? 0;
+  const expectedEng = stillBooting
+    ? Math.max(loadedGraphs.length, cortexStats?.engrams ?? 0, _engramLoadProgress.total || 0)
+    : (cortexStats?.engrams ?? 0);
   if (!stillBooting && expectedEng > rows.length && !_engramBarsCatalogResyncPending) {
     _engramBarsCatalogResyncPending = true;
     void refreshGraphsCatalogAndStats().finally(() => { _engramBarsCatalogResyncPending = false; });
@@ -8052,8 +8064,8 @@ function renderHomeEngramBars(): void {
   const more = rows.length > CAP
     ? `<p class="home-bars-empty">+ ${(rows.length - CAP).toLocaleString()} more engrams</p>`
     : '';
-  const titleCount = stillBooting && liveGraphIds.size > rows.length
-    ? liveGraphIds.size
+  const titleCount = stillBooting
+    ? Math.max(rows.length, expectedEng, _engramLoadProgress.total || 0)
     : rows.length;
   const settlingHint = vitalitySettling
     ? ' <span class="home-bars-settling">· updating…</span>'
@@ -17833,9 +17845,12 @@ function markBootSweepCompleteIfCatalogReady(): void {
 
 /** Hero + federated strip engram count from the catalog — no inspector_stats wait. */
 function seedCortexStatsFromCatalog(): void {
-  const resident = loadedGraphs.filter((g) => g.loaded !== false);
-  if (resident.length === 0) return;
-  const engrams = resident.length;
+  if (loadedGraphs.length === 0) return;
+  const booting = isEngramPreloadInProgress() || brainVitalityReport?.settling === true;
+  const engrams = booting
+    ? Math.max(loadedGraphs.length, _engramLoadProgress.total || 0)
+    : loadedGraphs.filter((g) => g.loaded !== false).length;
+  if (engrams === 0) return;
   if (cortexStats) {
     cortexStats.engrams = Math.max(cortexStats.engrams, engrams);
   } else {
@@ -24013,17 +24028,22 @@ async function refreshFederatedStats(): Promise<void> {
     const active = data.graphs; // includes all resident engrams (archived included)
     const totalMemories = active.reduce((s, g) => s + g.totalNodes, 0);
     const totalSources = active.reduce((s, g) => s + g.sources, 0);
-    let catalogEngrams = loadedGraphs.filter((g) => g.loaded !== false).length;
-    if (active.length > catalogEngrams) {
+    const booting = isEngramPreloadInProgress() || brainVitalityReport?.settling === true;
+    let catalogResident = loadedGraphs.filter((g) => g.loaded !== false).length;
+    let catalogAll = loadedGraphs.length;
+    if (active.length > catalogResident) {
       try {
         loadedGraphs = await invoke<GraphWithMetadata[]>('list_graphs_with_metadata', { includeUnloaded: true });
         syncEngramPicker();
         populateStudioEngramSelects();
-        catalogEngrams = loadedGraphs.filter((g) => g.loaded !== false).length;
+        catalogResident = loadedGraphs.filter((g) => g.loaded !== false).length;
+        catalogAll = loadedGraphs.length;
         markBootSweepCompleteIfCatalogReady();
       } catch { /* non-fatal — render with best-known catalog */ }
     }
-    const engrams = Math.max(active.length, catalogEngrams);
+    const engrams = booting
+      ? Math.max(catalogAll, _engramLoadProgress.total || 0)
+      : Math.max(active.length, catalogResident);
     // Cache cortex-wide totals for the Home hero + refresh it if mounted.
     cortexStats = { memories: totalMemories, sources: totalSources, engrams };
     renderHomeDashboard();
