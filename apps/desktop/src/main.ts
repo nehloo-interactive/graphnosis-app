@@ -19821,11 +19821,19 @@ async function updateSsoMappingPreview(): Promise<void> {
 
 async function refreshSsoSettingsPanel(): Promise<void> {
   const panel = document.getElementById('settings-panel-sso');
+  const upsell = document.getElementById('settings-panel-sso-upsell');
+  const config = document.getElementById('settings-panel-sso-config');
   if (!panel) return;
   try {
     const data = await ipcCall<SsoGetResult>('sso:get', {});
-    panel.style.display = data.enterprise ? '' : 'none';
-    if (!data.enterprise) return;
+    panel.style.display = '';
+    if (!data.enterprise) {
+      upsell?.classList.remove('hidden');
+      config?.classList.add('hidden');
+      return;
+    }
+    upsell?.classList.add('hidden');
+    config?.classList.remove('hidden');
 
     const s = data.settings;
     const statusLine = document.getElementById('sso-status-line');
@@ -19873,7 +19881,9 @@ async function refreshSsoSettingsPanel(): Promise<void> {
     }
     void updateSsoMappingPreview();
   } catch {
-    panel.style.display = 'none';
+    panel.style.display = '';
+    upsell?.classList.remove('hidden');
+    config?.classList.add('hidden');
   }
 }
 
