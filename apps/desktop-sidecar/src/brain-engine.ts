@@ -370,10 +370,11 @@ const INSIGHT_INTERVAL_MS       =  6 * 60 * 60 * 1000; // 6 h (healthy cadence)
 const INSIGHT_RETRY_AFTER_FAILURE_MS = 60 * 60 * 1000; // 1 h (transient-failure retry)
 const TEMPORAL_INTERVAL_MS      = 24 * 60 * 60 * 1000; // 24 h
 const GOAL_CHECK_INTERVAL_MS    =  4 * 60 * 60 * 1000; // 4 h
-// Grace period before the first background sweep. The duplicate scan
-// does real embedding math now; running it during boot starves the IPC
-// the UI needs to load engrams. Hold off until the app has settled.
-const BOOT_GRACE_MS             = 60 * 1000;        // 60 s
+// Short IPC breathe after the sidecar signals boot settled — NOT a wall-clock
+// grace period. The sidecar calls notifyBootSettled() once loadAllGraphsFromDisk
+// and flushBootDeferredWork finish; we wait this long so pending IPC (list_nodes,
+// vitality, engram picker) can drain before the first embedding-heavy scan.
+const BOOT_SETTLE_MS            = 7 * 1000;         // 7 s
 // Debounce window after a file ingest completes before the brain runs a
 // duplicate scan. A batch of files dropped in together coalesces into a
 // single scan ~this long after the LAST one finishes — see
@@ -498,7 +499,7 @@ export class BrainEngine {
    *  so this flips within seconds of boot. */
   private firstDuplicateScanComplete = false;
   // Guards the (now genuinely expensive) duplicate scan against
-  // overlapping runs — the boot warmup, the 20-min interval, and a
+  // overlapping runs — the boot first-scan, the 20-min interval, and a
   // runFullScan can otherwise all enter it at once.
   private duplicateScanRunning = false;
   // Guards the healing-review pass (LLM second opinions on past auto-
@@ -506,7 +507,10 @@ export class BrainEngine {
   // from several places at once, so it needs its own re-entrancy guard.
   private healingReviewRunning = false;
 
-  private warmupTimer: NodeJS.Timeout | null = null;
+  /** One-shot timer for the post-boot first scan (see notifyBootSettled). */
+  private bootSettleTimer: NodeJS.Timeout | null = null;
+  /** Idempotent guard — notifyBootSettled() schedules at most one first scan. */
+  private bootSettled = false;
   private duplicateScanTimer: NodeJS.Timeout | null = null;
   private synapseTimer: NodeJS.Timeout | null = null;
   private insightTimer: NodeJS.Timeout | null = null;
@@ -553,9 +557,9 @@ export class BrainEngine {
 
   start(): void {
     // Load the autonomous-healing journal off-disk. Fire-and-forget — the
-    // first scan that would append to it is gated behind BOOT_GRACE_MS
-    // (60 s), far longer than this read takes. The `healingJournalLoaded`
-    // flag lets runAutoHeal defer if a scan somehow races the load.
+    // first scan that would append to it is gated behind notifyBootSettled(),
+    // far longer than this read takes. The `healingJournalLoaded` flag lets
+    // runAutoHeal defer if a scan somehow races the load.
     void this.host.loadHealingJournal()
       .then((records) => { this.healingJournal = records; this.healingJournalLoaded = true; })
       .catch((e) => {
@@ -578,34 +582,13 @@ export class BrainEngine {
     // Load the predictive association index off disk (fire-and-forget).
     void this.reinforcement.warmUp();
 
-    // Do NOT scan at boot. The duplicate scan does real embedding math
-    // now; running it while the app is still loading engrams and wiring the
-    // UI saturates the CPU and starves the IPC the UI needs — engrams then
-    // appear not to load. Hold the first sweep for a grace period; the
-    // intervals below take over after that, a completed file ingest
-    // triggers a debounced scan, and the "Scan now" button covers the rest.
-    const runBootWarmup = (): void => {
-      if (this.brainPassesPaused()) {
-        // Boot engram sweep or a connector pull still owns the loop — retry
-        // once they're done instead of running consolidation/cross-engram
-        // alongside loadAllGraphsFromDisk.
-        this.warmupTimer = setTimeout(runBootWarmup, CLIENT_QUIET_MS);
-        this.warmupTimer.unref();
-        return;
-      }
-      // One coordinated sweep. runFullScan serialises the scan loops so they
-      // don't all pin the CPU at once in the post-boot window, and coalesces
-      // with any scan the user triggered by opening the Brain tab early.
-      // Temporal decay runs alongside (runFullScan excludes it by design).
-      // skipLlmLoops: the very first sweep avoids synapse + insight to
-      // prevent boot-time fan-spin from Ollama timeouts across many engrams.
-      // The scheduled synapse (45 min) and insight (6 hr) timers below take
-      // over from there.
-      void this.runFullScan({ skipLlmLoops: true });
-      void this.runTemporalDecay();
-    };
-    this.warmupTimer = setTimeout(runBootWarmup, BOOT_GRACE_MS);
-    this.warmupTimer.unref();
+    // Do NOT scan at boot. The duplicate scan does real embedding math;
+    // running it while engrams are still loading starves IPC. The sidecar
+    // calls notifyBootSettled() once loadAllGraphsFromDisk +
+    // flushBootDeferredWork finish — event-based, not a fixed delay. Until
+    // then brainPassesPaused() keeps every pass (including manual "Scan now")
+    // standing down via isBootSweepActive(). Periodic intervals, post-ingest
+    // debounced scans, and "Scan now" cover everything after the first sweep.
 
     this.duplicateScanTimer = setInterval(
       () => { void this.runDuplicateScan(); },
@@ -699,9 +682,38 @@ export class BrainEngine {
     setTimeout(() => { void this.emitVitality(); }, 12_000).unref();
   }
 
+  /**
+   * Called by the sidecar once boot housekeeping finishes:
+   * loadAllGraphsFromDisk → flushBootDeferredWork → bootPhaseActive cleared.
+   * Schedules the first duplicate scan + temporal decay after a short IPC
+   * breathe (BOOT_SETTLE_MS). Idempotent — safe if called twice.
+   */
+  notifyBootSettled(): void {
+    if (this.bootSettled) return;
+    this.bootSettled = true;
+    const runFirstScan = (): void => {
+      if (this.brainPassesPaused()) {
+        // Ingest or connector pull raced us — retry once they're done.
+        this.bootSettleTimer = setTimeout(runFirstScan, CLIENT_QUIET_MS);
+        this.bootSettleTimer.unref();
+        return;
+      }
+      // One coordinated sweep. runFullScan serialises the scan loops so they
+      // don't all pin the CPU at once, and coalesces with any scan the user
+      // triggered by opening the Brain tab early. Temporal decay runs alongside
+      // (runFullScan excludes it by design). skipLlmLoops: the very first
+      // sweep avoids synapse + insight to prevent boot-time fan-spin from
+      // Ollama timeouts across many engrams.
+      void this.runFullScan({ skipLlmLoops: true });
+      void this.runTemporalDecay();
+    };
+    this.bootSettleTimer = setTimeout(runFirstScan, BOOT_SETTLE_MS);
+    this.bootSettleTimer.unref();
+  }
+
   stop(): void {
-    if (this.warmupTimer) clearTimeout(this.warmupTimer);
-    this.warmupTimer = null;
+    if (this.bootSettleTimer) clearTimeout(this.bootSettleTimer);
+    this.bootSettleTimer = null;
     if (this.ingestScanTimer) clearTimeout(this.ingestScanTimer);
     this.ingestScanTimer = null;
     for (const t of [this.duplicateScanTimer, this.contradictionScanTimer, this.synapseTimer, this.insightTimer, this.temporalTimer, this.goalTimer, this.reinforceTimer, this.consolidationTimer, this.crossEngramTimer, this.gnnTimer, this.edgePredictionTimer]) {
@@ -1184,9 +1196,9 @@ export class BrainEngine {
   }
 
   async runFullScan(opts: { skipLlmLoops?: boolean } = {}): Promise<void> {
-    // Stand down entirely during a connector pull — the boot warmup sweep used to
-    // run right as the first pull started, the two fighting for the one thread.
-    // The periodic timers re-run the scans once the pull finishes.
+    // Stand down entirely during boot sweep or ingest — manual "Scan now" and
+    // the post-boot first scan both respect brainPassesPaused(). Periodic
+    // timers re-run once the contention clears.
     if (this.brainPassesPaused()) return;
     if (this.scanInFlight) return;
     this.scanInFlight = true;
@@ -1194,9 +1206,9 @@ export class BrainEngine {
     try {
       await this.runDuplicateScan();
       // LLM-backed passes (synapse, insight) can stall on Ollama hangs and
-      // each timeout costs 8-15 s × N engrams. Skipped during boot warmup
-      // so the very first sweep can't pin the CPU for minutes (the original
-      // "fans spun up" symptom). The user's "Scan now" button DOES include
+      // each timeout costs 8-15 s × N engrams. Skipped during the post-boot
+      // first scan so the very first sweep can't pin the CPU for minutes (the
+      // original "fans spun up" symptom). The user's "Scan now" button DOES include
       // them — manual triggers express the user's intent to wait. And the
       // scheduled synapse/insight timers (45 min / 6 hr) still fire normally
       // so the boot-skip just defers the first LLM pass, doesn't disable it.

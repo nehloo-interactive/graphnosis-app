@@ -1239,13 +1239,16 @@ async function main(): Promise<void> {
   // can interleave. broadcastRaw fires incremental progress for the picker/status
   // bar. Metadata backfill runs when the sweep finishes.
   void loadAllGraphsFromDisk(host, env.cortexDir, env.defaultGraph, broadcastRaw)
-    .then(async () => {
-      await host.flushBootDeferredWork();
-      await backfillGraphMetadata(host);
-      (globalThis as { Bun?: { gc?: (force: boolean) => void } }).Bun?.gc?.(true);
-    })
     .catch((e) => {
       console.error(`[graphnosis-sidecar] background engram sweep failed: ${(e as Error).message}`);
+    })
+    .then(async () => {
+      // Deferred reconcile + sourceRef sweeps; clears bootPhaseActive at end.
+      await host.flushBootDeferredWork();
+      // Event-based first brain scan — replaces the old 60 s wall-clock grace.
+      brainEngine.notifyBootSettled();
+      await backfillGraphMetadata(host);
+      (globalThis as { Bun?: { gc?: (force: boolean) => void } }).Bun?.gc?.(true);
     });
   // ZERO op-log at boot. The op-log is cold storage (2M events / ~2.2 GB on a
   // mature cortex) — reading it all here cost ~4.5 GB of resident JS heap that
