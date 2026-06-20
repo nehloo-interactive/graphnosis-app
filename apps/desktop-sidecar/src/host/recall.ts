@@ -551,12 +551,13 @@ export function detectSourceFilenameMatches(
 // rewritten one shows up in the "_enriched: ..._" footer.
 //
 // Guard rails:
-//   - Hard 3-second timeout — recall must not become "wait for the LLM"
+//   - 30s watchdog timeout — hung-Ollama safety net only, NOT UX pacing.
+//     Enrichment skips immediately when P0–P2 work is active (work-priority).
 //   - Cap output at 200 chars; longer output is treated as a malformed
 //     response and we fall back to the original query
 //   - Strip leading/trailing punctuation and newlines; the LLM sometimes
 //     wraps with "Here is the query:" preamble despite the system prompt
-const ENRICHMENT_TIMEOUT_MS = 3000;
+const ENRICHMENT_TIMEOUT_MS = 30_000;
 const ENRICHMENT_SYSTEM_PROMPT = `You rewrite a search query for a personal knowledge-graph lookup.
 
 Rules:
@@ -577,18 +578,51 @@ Output: Nelu unde locuit trait casa locuinta lived home
 Input: "what did I say about the marketing project?"
 Output: marketing project campaign proiect marketing campanie`;
 
+function raceEnrichment<T>(
+  promise: Promise<T>,
+  signal: AbortSignal | undefined,
+  timeoutMs: number,
+): Promise<T> {
+  if (signal?.aborted) {
+    return Promise.reject(new DOMException('enrichment aborted', 'AbortError'));
+  }
+  return new Promise<T>((resolve, reject) => {
+    let settled = false;
+    const finish = (fn: () => void): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      signal?.removeEventListener('abort', onAbort);
+      fn();
+    };
+    const onAbort = (): void => {
+      finish(() => reject(new DOMException('enrichment aborted', 'AbortError')));
+    };
+    const timer = setTimeout(() => {
+      finish(() => reject(new Error(`enrichment timed out after ${timeoutMs}ms`)));
+    }, timeoutMs);
+    if (signal) signal.addEventListener('abort', onAbort, { once: true });
+    promise.then(
+      (value) => finish(() => resolve(value)),
+      (err) => finish(() => reject(err)),
+    );
+  });
+}
+
 export async function enrichRecallQuery(
   llm: import('../correction.js').LocalLlm,
   query: string,
+  signal?: AbortSignal,
 ): Promise<string | null> {
-  // Wrap the LLM call in a timeout so a hung Ollama can't block recall.
-  // 3 seconds is generous for a 3B model on modest hardware.
-  const completion = await Promise.race([
-    llm.complete({ system: ENRICHMENT_SYSTEM_PROMPT, user: query }),
-    new Promise<string>((_, reject) =>
-      setTimeout(() => reject(new Error(`enrichment timed out after ${ENRICHMENT_TIMEOUT_MS}ms`)), ENRICHMENT_TIMEOUT_MS),
-    ),
-  ]);
+  const completion = await raceEnrichment(
+    llm.complete({
+      system: ENRICHMENT_SYSTEM_PROMPT,
+      user: query,
+      ...(signal ? { signal } : {}),
+    }),
+    signal,
+    ENRICHMENT_TIMEOUT_MS,
+  );
   const cleaned = completion
     .trim()
     .replace(/^["'`]+|["'`]+$/g, '') // strip surrounding quotes

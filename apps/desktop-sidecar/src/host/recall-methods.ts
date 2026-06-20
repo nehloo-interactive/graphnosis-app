@@ -4,6 +4,12 @@ import type { HostOptions } from '../host.js';
 import { cachedExtractQueryEntities } from '../query-enrichment-cache.js';
 const { federatedQuery } = federation;
 import {
+  WorkPriority,
+  enrichmentLlmPriority,
+  shouldSkipRecallEnrichment,
+  tryAcquireLlmSlot,
+} from '../work-priority.js';
+import {
   ANCHOR_SCORE,
   DIG_DEEPER_CROSS_ENGRAM_CAP,
   DIG_DEEPER_PER_SOURCE_CAP,
@@ -35,6 +41,10 @@ export interface RecallHost {
   listGraphs(): GraphId[];
   ensureLoaded(id: GraphId): Promise<void>;
   activeNodeIds(graphId: GraphId): Set<string>;
+  recallNodeSnapshot(graphId: GraphId): {
+    active: Set<string>;
+    nodes: ReturnType<import('../graphnosis-adapter.js').GraphnosisAdapter['inspectNodes']>;
+  };
   must(graphId: GraphId): { handle: import('../graphnosis-adapter.js').GraphHandle };
   loadGnnStore(): Promise<import('../gnn-store.js').PredictedEdge[]>;
   loadGllOverlay(): Promise<{ edges: import('../gll-overlay.js').GllPredictedEdge[]; assertions: import('../gll-overlay.js').GllAssertion[] }>;
@@ -52,6 +62,8 @@ export interface RecallHost {
       skipEnrichment?: boolean;
       noLoadOnDemand?: boolean;
       consentedGraphIds?: string[];
+      /** Work-priority lane — defaults to P1 user recall, P3 when noLoadOnDemand. */
+      recallPriority?: WorkPriority;
     },
   ): Promise<federation.FederatedSubgraph>;
 }
@@ -64,6 +76,7 @@ export type RecallOpts = {
   skipEnrichment?: boolean;
   noLoadOnDemand?: boolean;
   consentedGraphIds?: string[];
+  recallPriority?: WorkPriority;
 };
 
 export async function hostRecall(
@@ -84,20 +97,28 @@ export async function hostRecall(
     // not conversational prompts, so LLM query rewriting does more harm than good.
     let effectiveQuery = query;
     let enrichmentNote: string | null = null;
+    const recallPriority = opts?.recallPriority
+      ?? (opts?.noLoadOnDemand ? WorkPriority.P3_ENRICHMENT : WorkPriority.P1_USER);
     const caps = settingsMod.resolveLlmCapabilities(host.settings);
-    if (!opts?.skipEnrichment && caps.recallEnrichment && host.llmGetter) {
-      const llm = host.llmGetter();
-      if (llm) {
-        try {
-          const enriched = await enrichRecallQuery(llm, query);
-          if (enriched && enriched !== query) {
-            effectiveQuery = enriched;
-            enrichmentNote = `enriched: "${query}" → "${enriched}"`;
-          }
-        } catch (e) {
-          // Non-fatal — recall must still work when the LLM is slow or down.
-          console.error(`[host] recall enrichment failed, using raw query: ${(e as Error).message}`);
-        }
+    const llm = !opts?.skipEnrichment && caps.recallEnrichment && host.llmGetter
+      ? host.llmGetter()
+      : null;
+    let enrichmentPromise: Promise<string | null> = Promise.resolve(null);
+    if (llm && !shouldSkipRecallEnrichment(recallPriority)) {
+      const slotPriority = enrichmentLlmPriority(recallPriority);
+      const slot = tryAcquireLlmSlot(slotPriority);
+      if (slot) {
+        enrichmentPromise = enrichRecallQuery(llm, query, slot.signal)
+          .catch((e: unknown) => {
+            const msg = (e as Error).message ?? String(e);
+            if ((e as Error).name === 'AbortError' || msg.includes('aborted') || msg.includes('preempted')) {
+              return null;
+            }
+            // Non-fatal — recall must still work when the LLM is slow or down.
+            console.error(`[host] recall enrichment failed, using raw query: ${msg}`);
+            return null;
+          })
+          .finally(() => slot.release());
       }
     }
     // Lazy-boot: not all engrams are resident. Ensure the search set is loaded
@@ -112,21 +133,32 @@ export async function hostRecall(
     // NOT pull the whole cortex into memory on a timer (that pins every engram
     // resident and defeats eviction → the "stuck in GBs"). Explicit user/MCP
     // recalls leave it unset and load their search set for full-cortex correctness.
-    if (!opts?.noLoadOnDemand) {
-      const recallSet = (opts?.onlyGraphIds?.length
-        ? opts.onlyGraphIds
-        : Object.keys(host.settings.graphMetadata)
-      ).filter((id) => !opts?.exceptGraphIds?.includes(id));
-      for (const id of recallSet) await host.ensureLoaded(id);
+    const loadPromise = !opts?.noLoadOnDemand
+      ? (async () => {
+          const recallSet = (opts?.onlyGraphIds?.length
+            ? opts.onlyGraphIds
+            : Object.keys(host.settings.graphMetadata)
+          ).filter((id) => !opts?.exceptGraphIds?.includes(id));
+          for (const id of recallSet) await host.ensureLoaded(id);
+        })()
+      : Promise.resolve();
+    const [enriched] = await Promise.all([enrichmentPromise, loadPromise]);
+    if (enriched && enriched !== query) {
+      effectiveQuery = enriched;
+      enrichmentNote = `enriched: "${query}" → "${enriched}"`;
     }
     // Snapshot active-node IDs per graph BEFORE the federated query runs.
-    // We use these to filter SDK results so soft-deleted (forgotten) nodes
-    // never leak back into the AI's context. Without this, garbage
-    // pre-forget content gets re-attached on recall — exactly the kind of
-    // "ghost memory" symptom that breaks user trust in the system.
-    const activeByGraph = new Map<GraphId, Set<string>>();
-    for (const graphId of host.listGraphs()) {
-      activeByGraph.set(graphId, host.activeNodeIds(graphId));
+    // Scope to engrams we will actually query — building active sets for every
+    // loaded engram adds pure overhead when the caller passed onlyGraphIds.
+    // One inspectNodes pass per engram (shared with anchoring / GNN expansion).
+    const recallGraphIds = opts?.onlyGraphIds?.length
+      ? opts.onlyGraphIds.filter((id) => !opts?.exceptGraphIds?.includes(id))
+      : opts?.exceptGraphIds?.length
+        ? host.listGraphs().filter((id) => !opts.exceptGraphIds!.includes(id))
+        : host.listGraphs();
+    const recallSnapshots = new Map<GraphId, ReturnType<RecallHost['recallNodeSnapshot']>>();
+    for (const graphId of recallGraphIds) {
+      recallSnapshots.set(graphId, host.recallNodeSnapshot(graphId));
     }
     // federatedQuery fires runQuery for every graph in parallel (Promise.all).
     // queryHybrid uses ONNX which is NOT safe for concurrent invocations —
@@ -173,7 +205,8 @@ export async function hostRecall(
       runQuery: async (graphId, q, k) => {
         const result = queryChain.then(async () => {
           const g = host.must(graphId);
-          const active = activeByGraph.get(graphId) ?? new Set<string>();
+          const snap = recallSnapshots.get(graphId);
+          const active = snap?.active ?? new Set<string>();
           // queryRich = queryHybrid/query + edge capture + serialize closure.
           // Same 3× over-fetch as searchNodes to recover real top-k after
           // dropping soft-deleted nodes without making the SDK call quadratic.
@@ -184,7 +217,7 @@ export async function hostRecall(
             .slice(0, k)
             .map((r) => ({ graphId, nodeId: r.nodeId, score: r.score, text: r.text, ...(r.type !== undefined ? { type: r.type } : {}) }));
           // Lookup we'll need for both entity anchoring AND GNN expansion.
-          const inspected = host.opts.adapter.inspectNodes(g.handle);
+          const inspected = snap?.nodes ?? host.opts.adapter.inspectNodes(g.handle);
           const perGraphAdj = gnnAdj?.get(graphId);
 
           // Step 1: entity-anchored seeds (deterministic). Anchor matching
@@ -286,14 +319,6 @@ export async function hostRecall(
     // cross_search and compare_engrams ignore the caller's engram list and
     // run a full federated recall over every graph — the scope footer in
     // the response looked correct but the actual retrieval was not scoped.
-    // If the caller named specific engrams, make sure they're resident — LRU
-    // eviction may have unloaded them, and a scoped recall must not silently
-    // miss an engram the user explicitly asked for. (An UNSCOPED federated
-    // recall intentionally searches only the resident working set — see the
-    // LRU note in maybeEvict().)
-    if (opts?.onlyGraphIds?.length) {
-      for (const id of opts.onlyGraphIds) await host.ensureLoaded(id);
-    }
     const allGraphIds = host.listGraphs();
     const scopedGraphIds = opts?.onlyGraphIds?.length
       ? allGraphIds.filter(id => opts.onlyGraphIds!.includes(id))
@@ -413,6 +438,7 @@ export async function hostDigDeeper(
     exceptGraphIds?: string[];
     skipEnrichment?: boolean;
     consentedGraphIds?: string[];
+    recallPriority?: WorkPriority;
   },
 ): Promise<federation.FederatedSubgraph & {
   digDeeperProvenance: {
