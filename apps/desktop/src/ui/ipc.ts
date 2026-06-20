@@ -24,6 +24,22 @@ export function withTimeout<T>(p: Promise<T>, ms: number, label = 'operation'): 
 
 const TRANSIENT_RE = /connection|socket|ECONNREFUSED|not running|sidecar/i;
 
+/** Run `fn` under P0 UI work scope so sidecar skips/defers P2/P3 LLM work.
+ *  Awaits scope enter/exit IPC so sidecar ref-count stays paired — fire-and-forget
+ *  toggles could leave P0 stuck and starve boot/engram loads behind LLM gates. */
+export async function withUiWorkScope<T>(fn: () => Promise<T>): Promise<T> {
+  await ipcCall('ui:workScope', { priority: 0, active: true }).catch((err) => {
+    console.warn('[ui:workScope] enter failed:', err instanceof Error ? err.message : String(err));
+  });
+  try {
+    return await fn();
+  } finally {
+    await ipcCall('ui:workScope', { priority: 0, active: false }).catch((err) => {
+      console.warn('[ui:workScope] exit failed:', err instanceof Error ? err.message : String(err));
+    });
+  }
+}
+
 /** Retry a raw Tauri invoke on transient sidecar-connection failure. */
 export async function invokeRetry<T>(
   cmd: string,

@@ -1,7 +1,7 @@
 /**
  * Ghampus — local AI agent UI (chat, panels, proactive cards).
  */
-import { listen } from '../platform';
+import { invoke, listen } from '../platform';
 import { app } from './app-context';
 import { gAlert, gConfirm, gPrompt } from './dialogs';
 import { ipcCall } from './ipc';
@@ -11,9 +11,12 @@ export function initGhampus(): void {
   wireGhampusSidecarEvents();
   wireGhampusChat();
   wireGhampusControls();
+  wireGhampusModelSelect();
   wireSkillMaintenanceSettings();
   wireProactiveSettings();
   wireSavingsBaselineSettings();
+  wireGhampusAttachButtons();
+  wireAnnotationModalControls();
 }
 
 export function isGhampusEnabled(): boolean { return ghampusEnabled; }
@@ -240,41 +243,50 @@ export async function refreshModelsPanel(): Promise<void> {
     const list = document.getElementById('models-provider-list');
     if (list) {
       list.innerHTML = data.providers.map((p) => {
-        const lockBadge = p.adminLocked ? '<span style="font-size: 11px; background: #fee2e2; color: #991b1b; padding: 1px 6px; border-radius: 8px; margin-left: 6px;">🔒 admin</span>' : '';
-        const localBadge = p.local ? '<span style="font-size: 11px; background: #d1fae5; color: #065f46; padding: 1px 6px; border-radius: 8px; margin-left: 6px;">local · free</span>' : '';
+        const lockBadge = p.adminLocked
+          ? '<span class="models-provider-badge models-provider-badge--admin">🔒 admin</span>'
+          : '';
+        const localBadge = p.local
+          ? '<span class="models-provider-badge models-provider-badge--local">local · free</span>'
+          : '';
         const reachBadge = p.local && p.reachable !== undefined
           ? (p.reachable
-            ? '<span style="font-size: 11px; background: #dbeafe; color: #1e40af; padding: 1px 6px; border-radius: 8px; margin-left: 6px;">reachable</span>'
-            : '<span style="font-size: 11px; background: #f3f4f6; color: #6b7280; padding: 1px 6px; border-radius: 8px; margin-left: 6px;">offline</span>')
+            ? '<span class="models-provider-badge models-provider-badge--reachable">reachable</span>'
+            : '<span class="models-provider-badge models-provider-badge--offline">offline</span>')
           : '';
         const baseUrlHint = p.baseUrl
-          ? `<span class="subtitle" style="font-size: 11px;">${escapeHtml(p.baseUrl)}</span>`
+          ? `<span class="models-provider-meta">${escapeHtml(p.baseUrl)}</span>`
           : (p.id === 'mlx' || p.id === 'vllm')
-            ? `<span class="subtitle" style="font-size: 11px;">default loopback</span>`
+            ? '<span class="models-provider-meta">default loopback</span>'
             : '';
         const needsKeyBadge = p.needsKey && !p.hasKey
-          ? '<span style="font-size: 11px; background: #fef3c7; color: #92400e; padding: 1px 6px; border-radius: 8px; margin-left: 6px;">needs key</span>'
+          ? '<span class="models-provider-badge models-provider-badge--needs-key">needs key</span>'
           : '';
-        const keyChip = p.hasKey ? `<span class="subtitle" style="font-size: 11px;">key ···${escapeHtml(p.keyTail ?? '')}</span>` : '';
+        const keyChip = p.hasKey
+          ? `<span class="models-provider-key">key ···${escapeHtml(p.keyTail ?? '')}</span>`
+          : '';
         const modelCount = data.models.filter((m) => m.provider === p.id).length;
         const toggleDisabled = p.adminLocked || (p.needsKey && !p.hasKey);
         const keyBtn = p.needsKey && !p.adminLocked
-          ? `<button type="button" class="g-btn" style="font-size: 11px; padding: 2px 8px;" data-provider-key="${escapeHtml(p.id)}">${p.hasKey ? 'Change key' : 'Add key'}</button>`
+          ? `<button type="button" class="g-btn" data-provider-key="${escapeHtml(p.id)}">${p.hasKey ? 'Change key' : 'Add key'}</button>`
           : '';
         const removeKeyBtn = p.needsKey && p.hasKey && !p.adminLocked
-          ? `<button type="button" class="g-btn" style="font-size: 11px; padding: 2px 8px;" data-provider-clear-key="${escapeHtml(p.id)}">Remove</button>`
+          ? `<button type="button" class="g-btn" data-provider-clear-key="${escapeHtml(p.id)}">Remove</button>`
           : '';
-        return `<li style="display: flex; align-items: baseline; gap: 10px; padding: 10px 0; border-bottom: 1px solid var(--border, rgba(0,0,0,.06));">
-          <label style="display: flex; align-items: center; gap: 8px; flex: 1; cursor: ${toggleDisabled ? 'not-allowed' : 'pointer'};">
+        const badges = [lockBadge, localBadge, reachBadge, needsKeyBadge].filter(Boolean).join('');
+        const badgesHtml = badges ? `<span class="models-provider-badges">${badges}</span>` : '';
+        return `<li class="models-provider-row">
+          <label class="models-provider-toggle${toggleDisabled ? ' is-disabled' : ''}">
             <input type="checkbox" ${p.enabled && !toggleDisabled ? 'checked' : ''} ${toggleDisabled ? 'disabled' : ''} data-provider-toggle="${escapeHtml(p.id)}">
-            <span><strong>${escapeHtml(p.displayName)}</strong>${lockBadge}${localBadge}${reachBadge}${needsKeyBadge}</span>
+            <span class="models-provider-title">
+              <strong>${escapeHtml(p.displayName)}</strong>${badgesHtml}
+            </span>
           </label>
-          <span class="subtitle" style="font-size: 12px;">${escapeHtml(p.tagline)}</span>
+          <span class="models-provider-tagline">${escapeHtml(p.tagline)}</span>
           ${baseUrlHint}
-          <span class="subtitle" style="font-size: 11px;">${modelCount} model${modelCount === 1 ? '' : 's'}</span>
+          <span class="models-provider-count">${modelCount} model${modelCount === 1 ? '' : 's'}</span>
           ${keyChip}
-          ${keyBtn}
-          ${removeKeyBtn}
+          <span class="models-provider-actions">${keyBtn}${removeKeyBtn}</span>
         </li>`;
       }).join('');
       list.querySelectorAll<HTMLInputElement>('input[data-provider-toggle]').forEach((cb) => {
@@ -370,6 +382,16 @@ export async function refreshAiActivityRollup(): Promise<void> {
 
 
 // ── Attachments — Linked files panel ──────────────────────────────────
+const FULL_CORTEX = '__full__';
+
+function resolveAttachGraphId(): string {
+  const loadedGraphs = app().getLoadedGraphs();
+  const atlasActiveGraph = app().getAtlasActiveGraph();
+  return (atlasActiveGraph && atlasActiveGraph !== FULL_CORTEX)
+    ? atlasActiveGraph
+    : (loadedGraphs.find((g) => !g.graphId.startsWith('__'))?.graphId ?? loadedGraphs[0]?.graphId ?? '');
+}
+
 interface AttachmentRow {
   id: string;
   path: string;
@@ -594,21 +616,23 @@ async function openAnnotationModal(attachmentId: string): Promise<void> {
 
   // Click to add a box at the click position.
   overlay.onclick = (e) => {
-    const rect = overlay.getBoundingClientRect();
-    const x = (e.clientX - rect.left) / rect.width;
-    const y = (e.clientY - rect.top) / rect.height;
-    const label = window.prompt('Label for this box:')?.trim();
-    if (!label) return;
-    const box: AnnotationBox = {
-      id: `b${annotationState!.boxes.length + 1}`,
-      x: Math.max(0, x - 0.06),
-      y: Math.max(0, y - 0.02),
-      w: 0.12,
-      h: 0.04,
-      label,
-    };
-    annotationState!.boxes.push(box);
-    renderAnnotationBoxes(overlay);
+    void (async () => {
+      const rect = overlay.getBoundingClientRect();
+      const x = (e.clientX - rect.left) / rect.width;
+      const y = (e.clientY - rect.top) / rect.height;
+      const label = (await gPrompt('Label for this box', '', { secret: false }))?.trim();
+      if (!label) return;
+      const box: AnnotationBox = {
+        id: `b${annotationState!.boxes.length + 1}`,
+        x: Math.max(0, x - 0.06),
+        y: Math.max(0, y - 0.02),
+        w: 0.12,
+        h: 0.04,
+        label,
+      };
+      annotationState!.boxes.push(box);
+      renderAnnotationBoxes(overlay);
+    })();
   };
 
   modal.classList.remove('hidden');
@@ -668,8 +692,6 @@ function wireAnnotationModalControls(): void {
     })();
   });
 }
-wireAnnotationModalControls();
-
 function formatAttachmentBytes(n: number): string {
   if (n < 1024) return `${n} B`;
   if (n < 1024 * 1024) return `${(n / 1024).toFixed(0)} KB`;
@@ -678,50 +700,53 @@ function formatAttachmentBytes(n: number): string {
 }
 
 function wireGhampusAttachButtons(): void {
-  document.getElementById('btn-ghampus-attach-file')?.addEventListener('click', () => {
-    void (async () => {
-      try {
-        const picked = await invoke<string | null>('pick_attachment_file', {});
-        if (!picked) return;
-        // Attach to the currently active engram. Full UX: a modal with
-        // engram dropdown + note field. V1 keeps it one-click for speed.
-        const graphId = atlasActiveGraph && atlasActiveGraph !== FULL_CORTEX ? atlasActiveGraph : (loadedGraphs[0]?.graphId ?? '');
+  const attachFileBtn = document.getElementById('btn-ghampus-attach-file');
+  if (attachFileBtn && !attachFileBtn.dataset.wired) {
+    attachFileBtn.dataset.wired = '1';
+    attachFileBtn.addEventListener('click', () => {
+      void (async () => {
+        try {
+          const picked = await invoke<string | null>('pick_attachment_file', {});
+          if (!picked) return;
+          const graphId = resolveAttachGraphId();
+          if (!graphId) {
+            void gAlert('No engram selected', 'Pick an active engram from the header dropdown first, then attach.');
+            return;
+          }
+          await ipcCall('attachments:attach', { path: picked, graphId });
+          void refreshGhampusAttachments();
+        } catch (err) {
+          void gAlert('Attach failed', String(err));
+        }
+      })();
+    });
+  }
+  const attachPathBtn = document.getElementById('btn-ghampus-attach-path');
+  if (attachPathBtn && !attachPathBtn.dataset.wired) {
+    attachPathBtn.dataset.wired = '1';
+    attachPathBtn.addEventListener('click', () => {
+      void (async () => {
+        const p = await gPrompt(
+          'Path or URI to attach',
+          'Examples:\n  /Users/you/docs/report.pdf\n  //server/share/file.docx\n  onenote:https://...\n  smb://...',
+          { secret: false, placeholder: '/path/to/file or URI' },
+        );
+        if (!p?.trim()) return;
+        const graphId = resolveAttachGraphId();
         if (!graphId) {
-          void gAlert('No engram selected', 'Pick an active engram from the header dropdown first, then attach.');
+          void gAlert('No engram found', 'Open Your Cortex, select an engram, then try attaching again.');
           return;
         }
-        await ipcCall('attachments:attach', { path: picked, graphId });
-        void refreshGhampusAttachments();
-      } catch (err) {
-        void gAlert('Attach failed', String(err));
-      }
-    })();
-  });
-  document.getElementById('btn-ghampus-attach-path')?.addEventListener('click', () => {
-    void (async () => {
-      // Path entry — for shared-drive paths, OneNote URIs, anything the
-      // file picker won't reach directly. No validation here; the store
-      // records whether the path resolves on the current machine.
-      const p = window.prompt('Path or URI to attach\n\nExamples:\n  /Users/you/docs/report.pdf\n  //server/share/file.docx\n  onenote:https://...\n  smb://...');
-      if (!p || !p.trim()) return;
-      // Prefer the atlas active engram; fall back to the first loaded personal/public engram.
-      const graphId = (atlasActiveGraph && atlasActiveGraph !== FULL_CORTEX)
-        ? atlasActiveGraph
-        : (loadedGraphs.find((g) => !g.graphId.startsWith('__'))?.graphId ?? loadedGraphs[0]?.graphId ?? '');
-      if (!graphId) {
-        void gAlert('No engram found', 'Open Your Cortex, select an engram, then try attaching again.');
-        return;
-      }
-      try {
-        await ipcCall('attachments:attach', { path: p.trim(), graphId });
-        void refreshGhampusAttachments();
-      } catch (err) {
-        void gAlert('Attach failed', String(err));
-      }
-    })();
-  });
+        try {
+          await ipcCall('attachments:attach', { path: p.trim(), graphId });
+          void refreshGhampusAttachments();
+        } catch (err) {
+          void gAlert('Attach failed', String(err));
+        }
+      })();
+    });
+  }
 }
-wireGhampusAttachButtons();
 
 export async function refreshGhampusSavings(): Promise<void> {
   try {
@@ -756,10 +781,11 @@ export async function refreshGhampusSavings(): Promise<void> {
         const bars = weeks.map((w) => {
           const pctH = w.savedUsd > 0 ? Math.max(8, Math.round((w.savedUsd / max) * 100)) : 2;
           const label = new Date(w.weekStartMs).toLocaleDateString([], { month: 'short', day: 'numeric' });
-          return `<span class="home-spark-bar${w.savedUsd > 0 ? '' : ' empty'}" style="height:${pctH}%" title="${label}: $${w.savedUsd.toFixed(2)}"></span>`;
+          return `<span class="home-spark-bar${w.savedUsd > 0 ? '' : ' empty'}" style="--bar-h:${pctH}%" title="${label}: $${w.savedUsd.toFixed(2)}"></span>`;
         }).join('');
         sparkEl.innerHTML = bars;
         sparkEl.classList.remove('hidden');
+        sparkEl.removeAttribute('aria-hidden');
         if (res.baselineModel) {
           sparkEl.setAttribute('title', `Weekly savings vs ${res.baselineModel}`);
         }
@@ -1242,10 +1268,14 @@ function wireGhampusSidecarEvents(): void {
       clearThinkingBubble();
       clearSkillRunning();
       const pane = document.querySelector<HTMLElement>('.mode-pane[data-pane="ghampus"]');
-      if (pane && !pane.classList.contains('hidden')) {
-        appendToThread(ev.payload);
-      } else {
-        ghampusThreadMessages.push(ev.payload);
+      const away = !pane || pane.classList.contains('hidden');
+      appendToThread(ev.payload);
+      if (away && ev.payload.kind === 'ghampus') {
+        const preview = ev.payload.text.length > 72
+          ? `${ev.payload.text.slice(0, 69)}…`
+          : ev.payload.text;
+        const id = app().addIngestToast('Ghampus replied', preview);
+        app().finishIngestToast(id, 'success');
       }
     },
   );
@@ -1407,8 +1437,8 @@ function renderTierStrip(ctx: TierContext): string {
 // When the sidecar stub is not yet wired this stays empty and the empty state shows.
 let ghampusThreadMessages: GhampusChatMessage[] = [];
 
-function appendToThread(msg: GhampusChatMessage): void {
-  ghampusThreadMessages.push(msg);
+function appendToThread(msg: GhampusChatMessage, opts?: { skipCache?: boolean }): void {
+  if (!opts?.skipCache) ghampusThreadMessages.push(msg);
   const container = document.getElementById('ghampus-chat-messages') ?? document.getElementById('ghampus-thread');
   if (!container) return;
   const empty = document.getElementById('ghampus-thread-empty');
@@ -1767,8 +1797,23 @@ export async function refreshGhampusThread(): Promise<void> {
   if (refreshGhampusThreadInflight) return refreshGhampusThreadInflight;
   refreshGhampusThreadInflight = refreshGhampusThreadInner().finally(() => {
     refreshGhampusThreadInflight = null;
+    reconcileGhampusThreadDom();
   });
   return refreshGhampusThreadInflight;
+}
+
+/** Paint any cached messages missing from the DOM (e.g. arrived while tab hidden). */
+function reconcileGhampusThreadDom(): void {
+  const thread = document.getElementById('ghampus-thread');
+  if (!thread) return;
+  const domCount = thread.querySelectorAll('.ghampus-thread-entry:not(#ghampus-thinking)').length;
+  if (ghampusThreadMessages.length <= domCount) {
+    if (ghampusRunning && !document.getElementById('ghampus-thinking')) showThinkingBubble();
+    return;
+  }
+  thread.innerHTML = '';
+  for (const msg of ghampusThreadMessages) appendToThread(msg, { skipCache: true });
+  if (ghampusRunning) showThinkingBubble();
 }
 
 async function refreshGhampusThreadInner(): Promise<void> {
@@ -1906,35 +1951,130 @@ function updateGhampusInputPlaceholder(activeEngramId?: string): void {
   input.placeholder = 'Ask anything — type / to save, recall, or run a skill';
 }
 
+function ghampusModelDisplayName(
+  modelTag: string,
+  catalog?: Array<{ model: string; label: string }>,
+): string {
+  if (!catalog?.length) return modelTag;
+  const exact = catalog.find((c) => c.model === modelTag);
+  if (exact) return exact.label;
+  const colon = modelTag.indexOf(':');
+  const base = colon >= 0 ? modelTag.slice(0, colon) : modelTag;
+  const variant = colon >= 0 ? modelTag.slice(colon + 1) : '';
+  for (const c of catalog) {
+    const cColon = c.model.indexOf(':');
+    const cBase = cColon >= 0 ? c.model.slice(0, cColon) : c.model;
+    const cVariant = cColon >= 0 ? c.model.slice(cColon + 1) : '';
+    if (base !== cBase || !variant || !cVariant) continue;
+    // Quantized tags extend the catalog id (e.g. llama3.2:3b-instruct-q4_K_M).
+    if (variant === cVariant || variant.startsWith(cVariant) || cVariant.startsWith(variant)) {
+      return c.label;
+    }
+  }
+  return modelTag;
+}
+
+function paintGhampusModelSelect(status: {
+  ollamaReachable: boolean;
+  installedModels: string[];
+  activeModel: string | null;
+  catalog?: Array<{ model: string; label: string }>;
+}): void {
+  const dot = document.getElementById('ghampus-model-dot');
+  const select = document.getElementById('ghampus-model-select') as HTMLSelectElement | null;
+  const badge = document.getElementById('ghampus-model-badge');
+  if (!dot || !select || !badge) return;
+
+  badge.classList.remove('hidden');
+
+  dot.classList.remove('ghampus-header-model-dot--warn', 'ghampus-header-model-dot--offline');
+  if (!status.ollamaReachable) {
+    dot.classList.add('ghampus-header-model-dot--offline');
+    dot.title = 'Ollama not detected — open Settings → Foresight → Local LLM';
+  } else if (status.installedModels.length === 0) {
+    dot.classList.add('ghampus-header-model-dot--warn');
+    dot.title = 'Ollama connected — no models installed yet';
+  } else {
+    dot.title = 'Local LLM connected';
+  }
+
+  const prev = select.value;
+  select.innerHTML = '';
+  if (!status.ollamaReachable) {
+    const opt = document.createElement('option');
+    opt.value = '';
+    opt.textContent = 'Ollama offline';
+    select.appendChild(opt);
+    select.disabled = true;
+    return;
+  }
+  if (status.installedModels.length === 0) {
+    const opt = document.createElement('option');
+    opt.value = '';
+    opt.textContent = 'No models installed';
+    select.appendChild(opt);
+    select.disabled = true;
+    return;
+  }
+
+  select.disabled = false;
+  const installedModels = [...new Set(status.installedModels)];
+  for (const m of installedModels) {
+    const opt = document.createElement('option');
+    opt.value = m;
+    opt.textContent = ghampusModelDisplayName(m, status.catalog);
+    if (m === status.activeModel) opt.selected = true;
+    select.appendChild(opt);
+  }
+  if (!select.value && prev && installedModels.includes(prev)) {
+    select.value = prev;
+  }
+}
+
+let ghampusModelSelectWired = false;
+
+function wireGhampusModelSelect(): void {
+  if (ghampusModelSelectWired) return;
+  ghampusModelSelectWired = true;
+  const select = document.getElementById('ghampus-model-select') as HTMLSelectElement | null;
+  if (!select) return;
+  select.addEventListener('change', () => {
+    const model = select.value;
+    if (!model) return;
+    void (async () => {
+      try {
+        await ipcCall('llm:setModel', { model });
+      } catch {
+        void refreshGhampusHeader();
+      }
+    })();
+  });
+}
+
 export async function refreshGhampusHeader(): Promise<void> {
   try {
-    const data = await ipcCall<{
-      catalogVersion: string;
-      cloudRoutingReady?: boolean;
-      providers: Array<{ id: string; local: boolean; enabled: boolean; hasKey?: boolean }>;
-      models: Array<{ id: string; provider: string; displayName: string; capabilities: string[] }>;
-      strategy: string;
-      monthlyBudgetUsd: number | null;
-      spentThisCycleUsd: number;
-    }>('models:catalog', {});
-    ghampusCloudRoutingReady = data.cloudRoutingReady === true;
-
-    // Find the active local model (first enabled local provider's first model)
-    const localProvider = data.providers.find((p) => p.local && p.enabled);
-    if (localProvider) {
-      const localModel = data.models.find((m) => m.provider === localProvider.id);
-      const modelName = localModel?.displayName ?? localProvider.id;
-      const nameEl = document.getElementById('ghampus-model-name');
-      const badge = document.getElementById('ghampus-model-badge');
-      if (nameEl) nameEl.textContent = modelName;
-      if (badge) badge.classList.remove('hidden');
-    }
+    const [catalogData, llmStatus] = await Promise.all([
+      ipcCall<{
+        catalogVersion: string;
+        cloudRoutingReady?: boolean;
+        monthlyBudgetUsd: number | null;
+        spentThisCycleUsd: number;
+      }>('models:catalog', {}),
+      ipcCall<{
+        ollamaReachable: boolean;
+        installedModels: string[];
+        activeModel: string | null;
+        catalog?: Array<{ model: string; label: string }>;
+      }>('llm:status', {}),
+    ]);
+    ghampusCloudRoutingReady = catalogData.cloudRoutingReady === true;
+    paintGhampusModelSelect(llmStatus);
 
     // Usage counter
     const counterEl = document.getElementById('ghampus-usage-counter');
-    if (counterEl && data.monthlyBudgetUsd !== null) {
-      const spent = data.spentThisCycleUsd ?? 0;
-      const budget = data.monthlyBudgetUsd;
+    if (counterEl && catalogData.monthlyBudgetUsd !== null) {
+      const spent = catalogData.spentThisCycleUsd ?? 0;
+      const budget = catalogData.monthlyBudgetUsd;
       const pct = Math.round((spent / budget) * 100);
       counterEl.textContent = `${pct}/100`;
       counterEl.classList.remove('hidden');
