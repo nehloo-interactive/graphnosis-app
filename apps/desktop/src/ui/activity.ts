@@ -156,6 +156,13 @@ function wireActivityComplianceExport(): void {
 
 export function getActivityCat(): ActivityCat { return activityCat; }
 export function setActivityCat(cat: ActivityCat): void { activityCat = cat; }
+export function setActivityActor(actor: string): void { els.activityActorSelect.value = actor; }
+export function clearActivityDateFilters(): void {
+  els.activityDateFrom.value = '';
+  els.activityDateTo.value = '';
+  els.activityHourFrom.value = '';
+  els.activityHourTo.value = '';
+}
 export function resetActivityWindow(): void { activityWindow = ACTIVITY_WINDOW_START; }
 
 

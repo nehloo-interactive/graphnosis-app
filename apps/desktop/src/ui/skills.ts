@@ -1494,9 +1494,13 @@ async function paintTrainedOutputSourceDriven(
     return;
   }
   // Hide metadata chunks (HTML comments) — they're an internal audit artefact.
-  // Also hide title chunks — the detail header shows the friendly name; duplicating
-  // the raw slug label as card #1 was confusing after Batch 5.
-  // Prefer the server-provided canonical role; fall back to the prefix test.
+  // Title chunks stay out of the numbered card list (slug + date as card #1 was
+  // confusing) but we render a static heading below so TRAINED OUTPUT still opens
+  // with the skill name before Goals / steps.
+  const titleNode = result.nodes.find((n) => (n.role ?? '') === 'title');
+  const titleHeading = titleNode
+    ? skillFriendlyName(titleNode.content.trim())
+    : (document.getElementById('skills-trainer-title')?.textContent?.trim() ?? '');
   const visible = result.nodes.filter((n) => {
     const role = n.role ?? '';
     if (role === 'metadata' || role === 'title') return false;
@@ -1543,7 +1547,11 @@ async function paintTrainedOutputSourceDriven(
   let goalHeaderInjected = false;
 
   // First slot: no preceding card → afterNodeId = '' (sidecar inserts before first visible node)
-  const parts: string[] = [renderInsertSlotHtml(0, '')];
+  const parts: string[] = [];
+  if (titleHeading && titleHeading !== 'Training in progress…') {
+    parts.push(`<div class="skills-output-title-heading">${escapeHtml(titleHeading)}</div>`);
+  }
+  parts.push(renderInsertSlotHtml(0, ''));
   let bodyN = 0;
   let goalN = 0;
   for (let i = 0; i < visible.length; i++) {
