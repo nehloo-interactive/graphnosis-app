@@ -401,6 +401,13 @@ ferry to Naxos. The food in Mykonos was overrated.`;
   }
   log('boot-deferred-reconcile.ok', { preFlush: bootPreFlush, postFlush: bootPostFlush });
 
+  // --- oplog housekeeping (refreshAllCorrectionsFromOplog → compactOplogIfNeeded) ---
+  // Smoketest corpus is far below the 500k compaction threshold; this verifies
+  // the wired path completes without error. Real compaction needs a mature cortex.
+  log('oplog-housekeeping', {});
+  await mergedHost.refreshAllCorrectionsFromOplog();
+  log('oplog-housekeeping.ok', {});
+
   // --- deterministic correction (no LLM) -----------------------------------
   // `correct` must work with no Local LLM configured: it deterministically
   // supersedes the closest-matching memory with the correction text. The core
