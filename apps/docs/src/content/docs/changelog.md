@@ -11,6 +11,29 @@ Conventions: **Added** = new features, **Changed** = behavior or UX shifts, **Fi
 
 ---
 
+## v1.20.0 — Hermes Agent integration
+
+<p style="margin-top:0.5rem;font-size:1.25em;opacity:0.85;">2026-06-20</p>
+
+Connect Graphnosis to [Hermes Agent](https://github.com/NousResearch/hermes-agent) from Get Connected — memory auto-prefetch plus full MCP tools via a published npm relay.
+
+### Added
+
+- **Hermes setup wizard.** Get Connected → **Hermes** writes `memory.provider: graphnosis` and `mcp_servers.graphnosis` to `~/.hermes/config.yaml`, plus `graphnosis.json` socket settings. Confirms before replacing an existing Hermes memory provider.
+- **`@graphnosis/mcp-relay` npm package.** Stdio relay for any MCP client (`npx @graphnosis/mcp-relay ~/.graphnosis/mcp.sock`); shell wrapper fixes `npx` bin resolution.
+- **Hermes SKILL.md** at `graphnosis.com/skills/graphnosis/SKILL.md` — recall hygiene and consent for Hermes sessions.
+- **Upstream PR bundles** under `integrations/hermes-agent/` and `integrations/hermes-desktop/` (memory provider, MCP catalog, desktop UI patches).
+
+### Changed
+
+- **Connect Your AI docs** — Hermes section documents both paths (memory provider + MCP catalog) and setup from the app wizard.
+
+### Notes
+
+- Hermes Agent / Hermes Desktop upstream PRs are not merged yet; the app wizard and npm relay work today. Full Discover/Tools install cards ship in the desktop PR bundle when applied upstream.
+
+---
+
 ## v1.19.2 — Ghampus Run fix and live timestamps
 
 <p style="margin-top:0.5rem;font-size:1.25em;opacity:0.85;">2026-06-20</p>
