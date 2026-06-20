@@ -11987,7 +11987,11 @@ function switchGraphnosisTab(tab: GraphnosisTab): void {
   //     via the `.trivia-open` class. We call closeTrivia() which is a
   //     no-op when the deck is already closed — the bar stays in place.
   if (tab === 'checkin') {
-    document.getElementById('g-search-results')?.classList.add('hidden');
+    // Search is a checkin sub-mode — keep results visible when re-entering
+    // with an active query (activateMode('search') always lands on checkin).
+    if (currentMode !== 'search') {
+      document.getElementById('g-search-results')?.classList.add('hidden');
+    }
     closeTrivia();
     // Clicking the MemoryStudio tab — even when already active — scrolls the
     // pane back to the top. This makes the tab act like a "home" affordance
@@ -20090,6 +20094,7 @@ interface CatalogEntryView {
   noReshare: boolean;
   mdmBundleId?: string;
   published?: boolean;
+  requireSsoSession?: boolean;
 }
 
 interface CatalogListResult {
@@ -20130,9 +20135,11 @@ function clearCatalogEntryForm(): void {
   const itControlled = document.getElementById('catalog-it-controlled') as HTMLInputElement | null;
   const noReshare = document.getElementById('catalog-no-reshare') as HTMLInputElement | null;
   const pub = document.getElementById('catalog-published') as HTMLInputElement | null;
+  const requireSso = document.getElementById('catalog-require-sso') as HTMLInputElement | null;
   if (itControlled) itControlled.checked = true;
   if (noReshare) noReshare.checked = true;
   if (pub) pub.checked = true;
+  if (requireSso) requireSso.checked = false;
 }
 
 function readCatalogEntryForm(): Partial<CatalogEntryView> & { id?: string } {
@@ -20155,6 +20162,7 @@ function readCatalogEntryForm(): Partial<CatalogEntryView> & { id?: string } {
     itControlled,
     noReshare: (document.getElementById('catalog-no-reshare') as HTMLInputElement | null)?.checked ?? itControlled,
     published: (document.getElementById('catalog-published') as HTMLInputElement | null)?.checked ?? true,
+    requireSsoSession: (document.getElementById('catalog-require-sso') as HTMLInputElement | null)?.checked === true,
   };
 }
 
@@ -20173,6 +20181,7 @@ function fillCatalogEntryForm(entry: CatalogEntryView): void {
   (document.getElementById('catalog-it-controlled') as HTMLInputElement).checked = entry.itControlled;
   (document.getElementById('catalog-no-reshare') as HTMLInputElement).checked = entry.noReshare;
   (document.getElementById('catalog-published') as HTMLInputElement).checked = entry.published !== false;
+  (document.getElementById('catalog-require-sso') as HTMLInputElement).checked = entry.requireSsoSession === true;
   document.getElementById('catalog-entry-form-wrap')?.setAttribute('open', '');
 }
 
@@ -20287,7 +20296,9 @@ async function refreshEmployeeCatalogPanel(): Promise<void> {
           : entitled ? 'Available'
             : row?.reason === 'missing_groups'
               ? `Requires groups: ${(row.missingGroups ?? e.requiredIdpGroups).join(', ')}`
-              : 'Not available';
+              : row?.reason === 'sso_required'
+                ? 'Requires Enterprise SSO sign-in'
+                : 'Not available';
       return `<div class="panel" style="padding:10px;margin:0;">`
         + `<p style="margin:0 0 4px;font-size:14px;"><strong>${escape(e.displayName)}</strong></p>`
         + `<p class="subtitle" style="margin:0 0 8px;font-size:12px;">${escape(e.description ?? e.packageId)} · ${escape(status)}</p>`

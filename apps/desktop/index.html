@@ -4265,7 +4265,24 @@
         display: flex !important;
       }
       body.skills-studio-mode section.g-tab-pane[data-gpane="brain"],
-      body.skills-studio-mode section.g-tab-pane[data-gpane="nondeterministic"] {
+      body.skills-studio-mode section.g-tab-pane[data-gpane="nondeterministic"],
+      body.skills-studio-mode section.g-tab-pane[data-gpane="atlas"] {
+        display: none !important;
+      }
+      /* Search rail — dedicated hero search + results on checkin, never the
+         legacy #living-brain vitality dashboard (data-gpane="brain"). */
+      body.search-mode section.g-tab-pane[data-gpane="checkin"] {
+        display: flex !important;
+      }
+      body.search-mode section.g-tab-pane[data-gpane="brain"],
+      body.search-mode section.g-tab-pane[data-gpane="nondeterministic"],
+      body.search-mode section.g-tab-pane[data-gpane="atlas"] {
+        display: none !important;
+      }
+      /* Same belt-and-suspenders for other checkin sub-modes that must not
+         show the 3D canvas or legacy brain pane beneath their surface. */
+      body.powertools-mode section.g-tab-pane[data-gpane="atlas"],
+      body.goals-mode section.g-tab-pane[data-gpane="atlas"] {
         display: none !important;
       }
       body.skills-studio-mode #studio-section {
@@ -13503,6 +13520,10 @@ ollama list</code></pre>
                         <label style="display:flex;align-items:center;gap:8px;font-size:14px;">
                           <input type="checkbox" id="catalog-no-reshare" checked />
                           <span>No ad-hoc re-share (subscribe only)</span>
+                        </label>
+                        <label style="display:flex;align-items:center;gap:8px;font-size:14px;">
+                          <input type="checkbox" id="catalog-require-sso" />
+                          <span>Require Enterprise SSO session (subscribe + recall)</span>
                         </label>
                         <label style="display:flex;align-items:center;gap:8px;font-size:14px;">
                           <input type="checkbox" id="catalog-published" checked />
