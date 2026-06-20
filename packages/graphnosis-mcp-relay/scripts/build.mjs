@@ -1,19 +1,36 @@
 import { mkdirSync, copyFileSync, chmodSync, existsSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
-const sidecarDist = join(root, '../../apps/desktop-sidecar/dist/mcp-relay.js');
+const repoRoot = join(root, '../..');
+const sidecarDist = join(repoRoot, 'apps/desktop-sidecar/dist/mcp-relay.js');
 const outDir = join(root, 'dist');
 const out = join(outDir, 'mcp-relay.js');
 
-if (!existsSync(sidecarDist)) {
-  console.error(
-    'Missing compiled relay at apps/desktop-sidecar/dist/mcp-relay.js\n' +
-      'Run: pnpm --filter @graphnosis-app/desktop-sidecar build',
+function ensureSidecarRelayBuilt() {
+  if (existsSync(sidecarDist)) return;
+  console.log(
+    'Sidecar relay not compiled — building @graphnosis-app/desktop-sidecar first…',
   );
-  process.exit(1);
+  const r = spawnSync(
+    'pnpm',
+    ['--filter', '@graphnosis-app/desktop-sidecar', 'run', 'build'],
+    { cwd: repoRoot, stdio: 'inherit' },
+  );
+  if (r.status !== 0) {
+    process.exit(r.status ?? 1);
+  }
+  if (!existsSync(sidecarDist)) {
+    console.error(
+      'Missing compiled relay at apps/desktop-sidecar/dist/mcp-relay.js after sidecar build.',
+    );
+    process.exit(1);
+  }
 }
+
+ensureSidecarRelayBuilt();
 
 mkdirSync(outDir, { recursive: true });
 copyFileSync(sidecarDist, out);
