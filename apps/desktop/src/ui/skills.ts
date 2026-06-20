@@ -3255,7 +3255,7 @@ function openLicenseModal(): void {
     }
     const domainEmailInput = document.getElementById('settings-license-domain-email') as HTMLInputElement | null;
     if (domainEmailInput && !domainEmailInput.value) {
-      domainEmailInput.value = localStorage.getItem(BILLING_DOMAIN_EMAIL_KEY) ?? '';
+      domainEmailInput.value = localStorage.getItem('billing:domainEmail') ?? '';
     }
   }, 30);
 }
