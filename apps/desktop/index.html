@@ -13599,9 +13599,29 @@ ollama list</code></pre>
                 <div id="settings-policy-body" aria-live="polite"></div>
               </div>
 
-              <!-- Enterprise SSO — IdP configuration (unlock flow Phase 2) -->
+              <!-- Enterprise SSO — full config when licensed; upsell stub otherwise -->
               <div class="panel" id="settings-panel-sso" style="display:none;">
                 <p class="panel-title">Enterprise SSO</p>
+
+                <div id="settings-panel-sso-upsell" class="hidden">
+                  <p class="subtitle" style="font-size: 15px; margin: -4px 0 10px;">
+                    Sign in with your corporate IdP (Okta, Azure AD, Google Workspace) and map directory groups to Graphnosis roles.
+                    Federated OIDC unlock on the lock screen and headless MCP seat onboarding via <code>/admin/provision</code> are Enterprise features.
+                  </p>
+                  <div class="pro-upgrade-card" style="margin-top: 0;">
+                    <h3>Enterprise plan required</h3>
+                    <p class="subtitle">
+                      Enterprise SSO lets your team unlock Graphnosis with corporate credentials, enforce break-glass recovery policy,
+                      and assign recall / admin roles from IdP group membership.
+                    </p>
+                    <div class="pro-upgrade-actions">
+                      <button class="primary" data-pro-upgrade-btn>View Premium Plans</button>
+                      <button class="btn-ghost" data-pro-paste-token>Paste a license token</button>
+                    </div>
+                  </div>
+                </div>
+
+                <div id="settings-panel-sso-config" class="hidden">
                 <p class="subtitle" style="font-size: 15px; margin: -4px 0 10px;">
                   Sign in with your corporate IdP (Okta, Azure AD, Google Workspace) and map directory groups to Graphnosis roles.
                   <strong>Phase 2:</strong> federated OIDC unlock is available on the lock screen when SSO is enabled and saved on this Mac.
@@ -13667,6 +13687,7 @@ ollama list</code></pre>
                   <button id="btn-sso-save" type="button" class="primary">Save SSO settings</button>
                   <span id="sso-save-status" class="subtitle" style="font-size:12px;"></span>
                 </div>
+                </div><!-- /settings-panel-sso-config -->
               </div>
               <div class="panel">
                 <p class="panel-title">Cortex tools</p>
