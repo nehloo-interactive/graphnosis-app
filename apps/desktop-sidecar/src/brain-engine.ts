@@ -370,12 +370,6 @@ const INSIGHT_INTERVAL_MS       =  6 * 60 * 60 * 1000; // 6 h (healthy cadence)
 const INSIGHT_RETRY_AFTER_FAILURE_MS = 60 * 60 * 1000; // 1 h (transient-failure retry)
 const TEMPORAL_INTERVAL_MS      = 24 * 60 * 60 * 1000; // 24 h
 const GOAL_CHECK_INTERVAL_MS    =  4 * 60 * 60 * 1000; // 4 h
-// Short IPC breathe after the sidecar signals boot settled — NOT a wall-clock
-// grace period. The sidecar calls notifyBootSettled() once loadAllGraphsFromDisk
-// finishes (oplog reconcile continues in the background); we wait this long so
-// pending IPC (list_nodes, vitality, engram picker) can drain before the first
-// embedding-heavy scan.
-const BOOT_SETTLE_MS            = 7 * 1000;         // 7 s
 // Debounce window after a file ingest completes before the brain runs a
 // duplicate scan. A batch of files dropped in together coalesces into a
 // single scan ~this long after the LAST one finishes — see
@@ -508,9 +502,7 @@ export class BrainEngine {
   // from several places at once, so it needs its own re-entrancy guard.
   private healingReviewRunning = false;
 
-  /** One-shot timer for the post-boot first scan (see notifyBootSettled). */
-  private bootSettleTimer: NodeJS.Timeout | null = null;
-  /** Idempotent guard — notifyBootSettled() schedules at most one first scan. */
+  /** Idempotent guard — notifyBootSettled() runs at most one first scan. */
   private bootSettled = false;
   private duplicateScanTimer: NodeJS.Timeout | null = null;
   private synapseTimer: NodeJS.Timeout | null = null;
@@ -687,35 +679,23 @@ export class BrainEngine {
 
   /**
    * Called by the sidecar once the disk sweep finishes (background oplog
-   * reconcile may still be running). Schedules the first duplicate scan + temporal decay after a short IPC
-   * breathe (BOOT_SETTLE_MS). Idempotent — safe if called twice.
+   * reconcile may still be running). Runs the first duplicate scan + temporal
+   * decay immediately — no boot timers. Idempotent — safe if called twice.
    */
   notifyBootSettled(): void {
     if (this.bootSettled) return;
     this.bootSettled = true;
-    const runFirstScan = (): void => {
-      if (this.brainPassesPaused()) {
-        // Ingest or connector pull raced us — retry once they're done.
-        this.bootSettleTimer = setTimeout(runFirstScan, CLIENT_QUIET_MS);
-        this.bootSettleTimer.unref();
-        return;
-      }
-      // One coordinated sweep. runFullScan serialises the scan loops so they
-      // don't all pin the CPU at once, and coalesces with any scan the user
-      // triggered by opening the Brain tab early. Temporal decay runs alongside
-      // (runFullScan excludes it by design). skipLlmLoops: the very first
-      // sweep avoids synapse + insight to prevent boot-time fan-spin from
-      // Ollama timeouts across many engrams.
-      void this.runFullScan({ skipLlmLoops: true });
-      void this.runTemporalDecay();
-    };
-    this.bootSettleTimer = setTimeout(runFirstScan, BOOT_SETTLE_MS);
-    this.bootSettleTimer.unref();
+    // One coordinated sweep. runFullScan serialises the scan loops so they
+    // don't all pin the CPU at once, and coalesces with any scan the user
+    // triggered by opening the Brain tab early. Temporal decay runs alongside
+    // (runFullScan excludes it by design). skipLlmLoops: the very first
+    // sweep avoids synapse + insight to prevent boot-time fan-spin from
+    // Ollama timeouts across many engrams.
+    void this.runFullScan({ skipLlmLoops: true });
+    void this.runTemporalDecay();
   }
 
   stop(): void {
-    if (this.bootSettleTimer) clearTimeout(this.bootSettleTimer);
-    this.bootSettleTimer = null;
     if (this.ingestScanTimer) clearTimeout(this.ingestScanTimer);
     this.ingestScanTimer = null;
     for (const t of [this.duplicateScanTimer, this.contradictionScanTimer, this.synapseTimer, this.insightTimer, this.temporalTimer, this.goalTimer, this.reinforceTimer, this.consolidationTimer, this.crossEngramTimer, this.gnnTimer, this.edgePredictionTimer]) {

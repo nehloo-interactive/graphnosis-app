@@ -1209,7 +1209,7 @@ async function main(): Promise<void> {
 
   // Brain + connectors start only after the full cortex is resident — avoids
   // duplicate scan / consolidation / auto-link running while engrams are still
-  // loading. notifyBootSettled() schedules the first scan; deferred oplog
+  // loading. notifyBootSettled() runs the first scan immediately; deferred oplog
   // reconcile runs in the background and does not block it.
   brainEngine.start();
   await connectorManager.start();
