@@ -613,16 +613,27 @@ async function hasEnterpriseAccess(deps: IpcDeps): Promise<boolean> {
   return hasEnterprise || domainSeat;
 }
 
+/** Teams or Enterprise license — org catalog admin CRUD + SharePoint sync. */
+async function hasTeamsOrEnterpriseAccess(deps: IpcDeps): Promise<boolean> {
+  const licenseToken = await getEffectiveLicenseToken(deps);
+  const hasTeams = deps.licenseValidator?.hasFeature(licenseToken, 'teams') ?? false;
+  if (hasTeams) return true;
+  return hasEnterpriseAccess(deps);
+}
+
 function catalogEntriesFromSettings(deps: IpcDeps): EngramCatalogEntry[] {
   const settings = deps.host.getSettings();
   return settings.engramCatalog?.entries ?? [];
 }
 
-/** Minimal install: create engram shell + metadata. Full hub pull is TODO. */
+/** Install catalog package — create engram shell and pull content when configured. */
 async function installCatalogPackage(
   deps: IpcDeps,
   entry: EngramCatalogEntry,
-): Promise<{ ok: true; engramId: string; contentPull: 'stub' } | { ok: false; reason: string; message: string }> {
+): Promise<
+  | { ok: true; engramId: string; contentPull: 'shell-only' | 'copied' | 'empty-source' | 'hub-slice-metadata' }
+  | { ok: false; reason: string; message: string }
+> {
   const engramId = entry.packageId;
   const graphs = deps.host.listGraphs();
   if (!graphs.includes(engramId)) {
@@ -633,11 +644,45 @@ async function installCatalogPackage(
       createdAt: Date.now(),
     });
   }
-  // TODO: merge-copy from entry.sourceEngramId or federate-readonly from entry.hubRef
-  void entry.installMode;
-  void entry.sourceEngramId;
-  void entry.hubRef;
-  return { ok: true, engramId, contentPull: 'stub' };
+
+  if (entry.installMode === 'merge-copy' && entry.sourceEngramId?.trim()) {
+    const sourceId = entry.sourceEngramId.trim();
+    if (!deps.host.listGraphs().includes(sourceId)) {
+      return {
+        ok: false,
+        reason: 'source_missing',
+        message: `Source engram "${sourceId}" is not in this cortex — publish content to the org hub first.`,
+      };
+    }
+    await deps.host.ensureLoaded(sourceId);
+    await deps.host.ensureLoaded(engramId);
+    const { exportEngram, importEngram } = await import('./engram-pack.js');
+    const { pack } = await exportEngram(deps.host, sourceId, {});
+    const { result } = await importEngram(deps.host, pack, {
+      targetEngramId: engramId,
+      skipExisting: false,
+    });
+    return {
+      ok: true,
+      engramId,
+      contentPull: result.imported > 0 ? 'copied' : 'empty-source',
+    };
+  }
+
+  if (entry.kind === 'hub-slice' && entry.hubRef?.trim()) {
+    const meta = deps.host.getGraphMetadata(engramId);
+    await deps.host.setGraphMetadata(engramId, {
+      ...(meta ?? {}),
+      template: entry.itControlled ? 'compliance' : 'team',
+      displayName: entry.displayName,
+      createdAt: meta?.createdAt ?? Date.now(),
+    });
+    // Hub-slice federated pull is metadata-only until remote hub IPC ships.
+    void entry.hubRef;
+    return { ok: true, engramId, contentPull: 'hub-slice-metadata' };
+  }
+
+  return { ok: true, engramId, contentPull: 'shell-only' };
 }
 
 export async function dispatch(deps: IpcDeps, method: string, params: unknown): Promise<unknown> {
@@ -6855,7 +6900,7 @@ OUTPUT RULES — non-negotiable:
         includeUnpublished: z.boolean().optional(),
       }).parse(params ?? {});
       const includeUnpublished = args.includeUnpublished === true
-        && await hasEnterpriseAccess(deps);
+        && await hasTeamsOrEnterpriseAccess(deps);
       const visible = includeUnpublished
         ? entries
         : entries.filter((e) => e.published !== false);
@@ -6868,12 +6913,22 @@ OUTPUT RULES — non-negotiable:
       };
     }
 
+    case 'catalog:adminAccess': {
+      const licensed = await hasTeamsOrEnterpriseAccess(deps);
+      const plan = await resolveAgentPlan(deps);
+      return {
+        ok: true,
+        licensed,
+        plan: licensed ? plan : null,
+      };
+    }
+
     case 'catalog:upsert': {
-      if (!await hasEnterpriseAccess(deps)) {
+      if (!await hasTeamsOrEnterpriseAccess(deps)) {
         return {
           ok: false,
-          reason: 'enterprise_required',
-          message: 'Organization Engram Catalog requires an Enterprise license.',
+          reason: 'teams_or_enterprise_required',
+          message: 'Organization Engram Catalog requires a Teams or Enterprise license.',
         };
       }
       const args = z.object({
@@ -6931,11 +6986,11 @@ OUTPUT RULES — non-negotiable:
     }
 
     case 'catalog:delete': {
-      if (!await hasEnterpriseAccess(deps)) {
+      if (!await hasTeamsOrEnterpriseAccess(deps)) {
         return {
           ok: false,
-          reason: 'enterprise_required',
-          message: 'Organization Engram Catalog requires an Enterprise license.',
+          reason: 'teams_or_enterprise_required',
+          message: 'Organization Engram Catalog requires a Teams or Enterprise license.',
         };
       }
       const args = z.object({ catalogId: z.string().min(1).max(64) }).parse(params ?? {});
@@ -7065,11 +7120,11 @@ OUTPUT RULES — non-negotiable:
     }
 
     case 'catalog:exportMdm': {
-      if (!await hasEnterpriseAccess(deps)) {
+      if (!await hasTeamsOrEnterpriseAccess(deps)) {
         return {
           ok: false,
-          reason: 'enterprise_required',
-          message: 'MDM export requires an Enterprise license.',
+          reason: 'teams_or_enterprise_required',
+          message: 'MDM export requires a Teams or Enterprise license.',
         };
       }
       const args = z.object({
@@ -7088,6 +7143,138 @@ OUTPUT RULES — non-negotiable:
         };
       }
       return { ok: true, bundle };
+    }
+
+    case 'catalog:syncFromSharePoint': {
+      if (!await hasTeamsOrEnterpriseAccess(deps)) {
+        return {
+          ok: false,
+          reason: 'teams_or_enterprise_required',
+          message: 'SharePoint catalog sync requires a Teams or Enterprise license.',
+        };
+      }
+      const args = z.object({
+        listUrl: z.string().max(2048).optional(),
+        accessToken: z.string().max(4096).optional(),
+      }).parse(params ?? {});
+      const current = deps.host.getSettings();
+      const prevCatalog = current.engramCatalog ?? { entries: [], version: 2 };
+      const listUrl = args.listUrl?.trim() || prevCatalog.sharePoint?.listUrl?.trim();
+      if (!listUrl) {
+        return {
+          ok: false,
+          reason: 'missing_url',
+          message: 'SharePoint list URL is required.',
+        };
+      }
+      const accessToken = args.accessToken?.trim() || prevCatalog.sharePoint?.accessToken;
+      const { fetchSharePointCatalogEntries } = await import('./catalog-sharepoint.js');
+      const sync = await fetchSharePointCatalogEntries(
+        listUrl,
+        prevCatalog.entries ?? [],
+        accessToken,
+      );
+      const nextSharePoint = sync.ok
+        ? {
+          listUrl,
+          ...(accessToken ? { accessToken } : {}),
+          lastSyncedAt: sync.syncedAt,
+          lastSyncEntryCount: sync.entries.length,
+        }
+        : {
+          listUrl,
+          ...(accessToken ? { accessToken } : {}),
+          lastSyncedAt: sync.syncedAt,
+          lastSyncError: sync.message ?? sync.reason ?? 'Sync failed',
+        };
+      if (sync.ok) {
+        await deps.host.setSettings({
+          ...current,
+          engramCatalog: sanitizeEngramCatalogSettings({
+            entries: sync.entries,
+            version: 2,
+            sharePoint: nextSharePoint,
+          }) ?? { entries: sync.entries, version: 2, sharePoint: nextSharePoint },
+        });
+      } else {
+        await deps.host.setSettings({
+          ...current,
+          engramCatalog: sanitizeEngramCatalogSettings({
+            ...prevCatalog,
+            sharePoint: nextSharePoint,
+          }) ?? { ...prevCatalog, sharePoint: nextSharePoint },
+        });
+      }
+      return {
+        ok: sync.ok,
+        ...(sync.message ? { message: sync.message } : {}),
+        ...(sync.reason ? { reason: sync.reason } : {}),
+        entryCount: sync.entries.length,
+        lastSyncedAt: sync.syncedAt,
+        usedCache: !sync.ok,
+      };
+    }
+
+    case 'catalog:importMdmBundle': {
+      const args = z.object({
+        bundlePath: z.string().min(1).max(4096).optional(),
+        bundle: z.object({
+          sso: z.object({
+            issuer: z.string().min(1),
+            clientId: z.string().min(1),
+            tenantId: z.string().optional(),
+          }),
+          defaultSubscriptions: z.array(z.string()),
+        }).optional(),
+        mergeSsoHints: z.boolean().optional(),
+      }).parse(params ?? {});
+      const { readMdmBundleFile, importMdmCatalogBundle, mergeMdmSsoHints, DEFAULT_MDM_BUNDLE_PATH } = await import('./catalog-mdm.js');
+      let bundlePath = args.bundlePath?.trim();
+      let bundle = bundlePath ? await readMdmBundleFile(bundlePath) : null;
+      if (!bundle && args.bundle) {
+        bundle = {
+          sso: {
+            issuer: args.bundle.sso.issuer.trim(),
+            clientId: args.bundle.sso.clientId.trim(),
+            ...(args.bundle.sso.tenantId?.trim() ? { tenantId: args.bundle.sso.tenantId.trim() } : {}),
+          },
+          defaultSubscriptions: args.bundle.defaultSubscriptions.map((p) => p.trim()).filter(Boolean),
+        };
+        await fs.mkdir(path.dirname(DEFAULT_MDM_BUNDLE_PATH), { recursive: true, mode: 0o700 });
+        await fs.writeFile(DEFAULT_MDM_BUNDLE_PATH, JSON.stringify(bundle, null, 2), { encoding: 'utf8', mode: 0o600 });
+        bundlePath = DEFAULT_MDM_BUNDLE_PATH;
+      }
+      if (!bundle || !bundlePath) {
+        return {
+          ok: false,
+          reason: 'invalid_bundle',
+          message: 'MDM bundle JSON is invalid (need sso.issuer, sso.clientId, defaultSubscriptions).',
+        };
+      }
+      await importMdmCatalogBundle(bundlePath, bundle);
+      if (args.mergeSsoHints === true) {
+        await mergeMdmSsoHints(deps.host, bundle);
+      }
+      return {
+        ok: true,
+        defaultSubscriptions: bundle.defaultSubscriptions,
+        bundlePath,
+        message: `Imported MDM bundle with ${bundle.defaultSubscriptions.length} default subscription${bundle.defaultSubscriptions.length === 1 ? '' : 's'}.`,
+      };
+    }
+
+    case 'catalog:applyMdmAutoInstall': {
+      const { applyMdmAutoInstall } = await import('./catalog-mdm.js');
+      const result = await applyMdmAutoInstall(deps.host, async (entry) => {
+        const installed = await installCatalogPackage(deps, entry);
+        return installed.ok ? { ok: true as const } : { ok: false as const };
+      });
+      const store = await readCatalogSubscriptions();
+      return {
+        ...result,
+        subscribedCatalogIds: store.subscribedCatalogIds,
+        installedPackageIds: store.installedPackageIds ?? [],
+      };
     }
 
     case 'sharing:list': {

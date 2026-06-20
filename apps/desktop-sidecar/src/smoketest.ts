@@ -746,6 +746,26 @@ ferry to Naxos. The food in Mykonos was overrated.`;
   }
   log('catalog-entitlements.ok', { packageId: mdm.defaultSubscriptions[0] });
 
+  log('catalog-sharepoint-map', {});
+  const { sharePointRowToCatalogEntry, parseSharePointListUrl } = await import('./catalog-sharepoint.js');
+  const spTarget = parseSharePointListUrl('https://contoso.sharepoint.com/sites/IT/Lists/EngramCatalog/AllItems.aspx');
+  if (!spTarget || spTarget.listTitle !== 'EngramCatalog') {
+    throw new Error('FAIL: SharePoint list URL parse');
+  }
+  const spEntry = sharePointRowToCatalogEntry({
+    Title: 'DevOps Skills',
+    PackageId: 'devops-skills',
+    RequiredGroups: 'graphnosis-devops; graphnosis-eu',
+    SourceEngramId: 'org-devops-skills',
+    Kind: 'engram-package',
+    InstallMode: 'merge-copy',
+    Published: 'Yes',
+  }, new Map());
+  if (!spEntry || spEntry.packageId !== 'devops-skills' || spEntry.requiredIdpGroups.length !== 2) {
+    throw new Error('FAIL: SharePoint row → catalog entry mapping');
+  }
+  log('catalog-sharepoint-map.ok', { packageId: spEntry.packageId });
+
   // --- OIDC ID token verification (mock JWKS — no live IdP) ----------------
   log('sso-oidc-verify', {});
   const http = await import('node:http');

@@ -25,9 +25,17 @@ export async function readCatalogSubscriptions(): Promise<CatalogSubscriptionSto
     const installed = Array.isArray(parsed.installedPackageIds)
       ? parsed.installedPackageIds.filter((id): id is string => typeof id === 'string' && id.length > 0)
       : [];
+    const mdmBundlePath = typeof parsed.mdmBundlePath === 'string' && parsed.mdmBundlePath.trim()
+      ? parsed.mdmBundlePath.trim()
+      : undefined;
+    const mdmDefaultSubscriptions = Array.isArray(parsed.mdmDefaultSubscriptions)
+      ? parsed.mdmDefaultSubscriptions.filter((id): id is string => typeof id === 'string' && id.length > 0)
+      : undefined;
     return {
       subscribedCatalogIds: [...new Set(ids)],
       installedPackageIds: [...new Set(installed)],
+      ...(mdmBundlePath ? { mdmBundlePath } : {}),
+      ...(mdmDefaultSubscriptions?.length ? { mdmDefaultSubscriptions: [...new Set(mdmDefaultSubscriptions)] } : {}),
       ...(parsed.updatedAt != null ? { updatedAt: parsed.updatedAt } : {}),
     };
   } catch {
