@@ -2220,9 +2220,17 @@ export class GraphnosisHost {
       `[graphnosis-host] loadGraph engram[${redactId(graphId)}]: decrypt=${tDecrypt}ms fromBuffer=${tFromBuffer}ms bundle=${tBundle}ms earlyCommit=${tEarlyCommit}ms nodes=${committedNodes}`,
     );
     if (committedNodes === 0 && bytes!.length > 256) {
-      console.error(
-        `[graphnosis-host] loadGraph engram[${redactId(graphId)}]: WARNING committed 0 nodes from ${bytes!.length}B .gai — engram will appear empty until recovery`,
-      );
+      const bundleSources = sourceIndex.list().length;
+      if (bundleSources > 0) {
+        console.error(
+          `[graphnosis-host] loadGraph engram[${redactId(graphId)}]: WARNING committed 0 nodes from ${bytes!.length}B .gai with ${bundleSources} bundle source(s) — check oplog reconcile`,
+        );
+      } else if (bytes!.length > 2048) {
+        console.error(
+          `[graphnosis-host] loadGraph engram[${redactId(graphId)}]: WARNING committed 0 nodes from ${bytes!.length}B .gai — engram will appear empty until recovery`,
+        );
+      }
+      // Small empty shells (~450B template engrams, never ingested) are expected — no warning.
     }
 
     // Converge .gai + source bundle with the merged multi-device op-log.
