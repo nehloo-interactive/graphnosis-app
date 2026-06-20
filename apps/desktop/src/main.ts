@@ -38,7 +38,7 @@ import { ipcCall, ipcCallTimeout, withTimeout, invokeRetry } from './ui/ipc';
 import { initDialogs, gConfirm, gAlert } from './ui/dialogs';
 import { bindAppContext } from './ui/app-context';
 import {
-  initActivity, refreshActivityView, loadMoreActivity, setActivityCat, resetActivityWindow,
+  initActivity, refreshActivityView, refreshActivityCompliancePanel, loadMoreActivity, setActivityCat, resetActivityWindow,
   applyActivityFilter,
 } from './ui/activity';
 import {
@@ -2995,7 +2995,10 @@ function activateMode(mode: Mode): void {
     void refreshGhampusAttachments();
     void refreshGhampusSharingPanel();
   }
-  if (mode === 'activity') refreshActiveActivitySegment();
+  if (mode === 'activity') {
+    refreshActiveActivitySegment();
+    void refreshActivityCompliancePanel();
+  }
   if (mode === 'presentation') {
     renderPresentationPane();
     document.querySelector<HTMLElement>('.app-canvas')?.scrollTo({ top: 0 });

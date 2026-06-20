@@ -26,4 +26,14 @@ export interface SourceRecord {
    * from the MCP `initialize` handshake's `clientInfo.name`.
    */
   addedBy?: string;
+  /**
+   * Legal hold — when true, forget / edit / transfer on this source is
+   * blocked until the hold is released. Persisted in the encrypted bundle;
+   * toggling emits a `setLegalHold` op-log event for audit.
+   */
+  legalHold?: boolean;
+  /** Unix ms when legal hold was last placed ON. Cleared when released. */
+  legalHoldAt?: number;
+  /** Optional matter / case label shown in compliance exports. */
+  legalHoldMatter?: string;
 }

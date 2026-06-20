@@ -13,6 +13,16 @@ export class SourceIndex {
     for (const n of record.nodeIds) this.byNode.set(n, record.sourceId);
   }
 
+  /** Insert or replace a source record, refreshing node→source mappings. */
+  upsert(record: SourceRecord): void {
+    const prev = this.bySource.get(record.sourceId);
+    if (prev) {
+      for (const n of prev.nodeIds) this.byNode.delete(n);
+      this.bySource.delete(record.sourceId);
+    }
+    this.add(record);
+  }
+
   attachNode(sourceId: SourceId, nodeId: NodeId): void {
     const rec = this.bySource.get(sourceId);
     if (!rec) throw new Error(`Unknown source ${sourceId}`);

@@ -318,6 +318,47 @@ ferry to Naxos. The food in Mykonos was overrated.`;
   }
   log('mcp-audit.ok', { rows: auditRows.length });
 
+  // --- Compliance Mode v1: legal hold + evidence pack + recall_as_of --------
+  log('compliance-legal-hold', {});
+  await host.setEngramPreserve('personal', true, 'smoke-matter');
+  let holdBlocked = false;
+  try {
+    await host.forgetSource('personal', src.sourceId, { triggeredBy: 'user:forget' });
+  } catch (e) {
+    holdBlocked = (e as { code?: string }).code === 'legal_hold';
+  }
+  if (!holdBlocked) throw new Error('FAIL: forgetSource should be blocked under engram legal hold');
+  await host.setEngramPreserve('personal', false);
+  log('compliance-legal-hold.ok', { blocked: true });
+
+  log('compliance-evidence-pack', {});
+  const { buildEvidencePack, recallAsOf } = await import('./compliance.js');
+  const pack = await buildEvidencePack(host, cortexDir, { engram: 'personal' });
+  if (pack.version !== 1 || pack.oplog.count < 1) {
+    throw new Error('FAIL: evidence pack missing op-log slice');
+  }
+  if (pack.mcpAudit.count < 1) {
+    throw new Error('FAIL: evidence pack missing MCP audit rows');
+  }
+  if (!pack.engramHashes.some((h) => h.graphId === 'personal' && h.gaiSha256.length === 64)) {
+    throw new Error('FAIL: evidence pack missing engram hash');
+  }
+  log('compliance-evidence-pack.ok', {
+    oplog: pack.oplog.count,
+    mcp: pack.mcpAudit.count,
+    hashes: pack.engramHashes.length,
+  });
+
+  log('compliance-recall-as-of', {});
+  const pit = await recallAsOf(host, 'Greece', {
+    graphId: 'personal',
+    asOfTs: Date.now() + 60_000,
+    maxNodes: 10,
+  });
+  if (!pit.matches.some((m) => m.preview.toLowerCase().includes('greece'))) {
+    throw new Error('FAIL: recall_as_of did not surface Greece memory at boundary');
+  }
+  log('compliance-recall-as-of.ok', { matches: pit.matches.length });
 
   log('forget', { sourceId: src.sourceId });
   const forgot = await host.forgetSource('personal', src.sourceId);
