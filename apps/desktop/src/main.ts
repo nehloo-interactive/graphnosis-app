@@ -57,7 +57,7 @@ import {
 } from './ui/ghampus';
 import {
   initUnlock, attemptUnlock, runBiometricUnlock, webauthnUnlock,
-  offerSidecarRecovery, configureSsoUnlockButton,
+  offerSidecarRecovery, configureSsoUnlockButton, refreshLockScreenCatalog,
 } from './ui/unlock';
 import {
   initCloudOnboardingHandlers,
@@ -1733,6 +1733,7 @@ function render(status: StatusSnapshot): void {
       cancelDebouncedFederatedStats();
       void refreshCortexScopedStats();
       void refreshConnectorsList();
+      void syncCatalogSubscriptionsToSidecar();
       startMcpPolling();
       scheduleHomePrefetch(); // warm home-card cache in background after boot
       void refreshLlmStatus().then(() => void loadSearchLlmPreferences().then(syncSearchLlmCheckboxes));
@@ -3069,6 +3070,7 @@ function activateMode(mode: Mode): void {
     renderSettingsTab();
     void refreshModelsPanel();
     void refreshSsoSettingsPanel();
+    void refreshCatalogSettingsPanel();
     // Refresh the license launcher's status line on the pane (Free /
     // Pro active · expires X). Calls the same helper the Settings modal
     // uses; both DOM targets are updated in one pass.
@@ -4631,6 +4633,7 @@ function refreshCortexCloudHint(path: string): void {
       const path = els.cortexDir.value.trim();
       void refreshBiometricButton(path);
       void configureSsoUnlockButton();
+      void refreshLockScreenCatalog();
     }, 250);
   });
 }
@@ -19284,6 +19287,7 @@ async function openSharingModal(): Promise<void> {
 
   renderSharingTokenList(tokens, sessions, plan);
   updateSharingCreateReview();
+  void updateSharingPolicyNotice();
 }
 
 {
@@ -19991,6 +19995,208 @@ function wireSsoSettingsPanel(): void {
 }
 
 wireSsoSettingsPanel();
+
+// ── Organization Cortex Catalog (Enterprise Phase 4) ───────────────────────
+
+interface CatalogEntryView {
+  id: string;
+  cortexId: string;
+  displayName: string;
+  region?: string;
+  kind: 'org' | 'hub-package' | 'personal';
+  requiredIdpGroups: string[];
+  defaultRole?: string;
+  mdmBundleId?: string;
+  hubPackageEngramIds: string[];
+  cortexPath?: string;
+  published?: boolean;
+}
+
+interface CatalogListResult {
+  ok: boolean;
+  entries: CatalogEntryView[];
+  subscribedCatalogIds: string[];
+}
+
+function clearCatalogEntryForm(): void {
+  const set = (id: string, v: string) => {
+    const el = document.getElementById(id) as HTMLInputElement | HTMLSelectElement | null;
+    if (el) el.value = v;
+  };
+  set('catalog-edit-id', '');
+  set('catalog-display-name', '');
+  set('catalog-cortex-id', '');
+  set('catalog-region', '');
+  set('catalog-kind', 'org');
+  set('catalog-cortex-path', '');
+  set('catalog-required-groups', '');
+  set('catalog-mdm-bundle-id', '');
+  const pub = document.getElementById('catalog-published') as HTMLInputElement | null;
+  if (pub) pub.checked = true;
+}
+
+function readCatalogEntryForm(): Partial<CatalogEntryView> & { id?: string } {
+  const groupsRaw = (document.getElementById('catalog-required-groups') as HTMLInputElement | null)?.value ?? '';
+  const kind = (document.getElementById('catalog-kind') as HTMLSelectElement | null)?.value ?? 'org';
+  return {
+    id: (document.getElementById('catalog-edit-id') as HTMLInputElement | null)?.value.trim() || undefined,
+    displayName: (document.getElementById('catalog-display-name') as HTMLInputElement | null)?.value.trim() ?? '',
+    cortexId: (document.getElementById('catalog-cortex-id') as HTMLInputElement | null)?.value.trim() ?? '',
+    region: (document.getElementById('catalog-region') as HTMLInputElement | null)?.value.trim() || undefined,
+    kind: kind as CatalogEntryView['kind'],
+    cortexPath: (document.getElementById('catalog-cortex-path') as HTMLInputElement | null)?.value.trim() || undefined,
+    requiredIdpGroups: groupsRaw.split(/[,;\n]+/).map((g) => g.trim()).filter(Boolean),
+    mdmBundleId: (document.getElementById('catalog-mdm-bundle-id') as HTMLInputElement | null)?.value.trim() || undefined,
+    hubPackageEngramIds: [],
+    published: (document.getElementById('catalog-published') as HTMLInputElement | null)?.checked ?? true,
+  };
+}
+
+function fillCatalogEntryForm(entry: CatalogEntryView): void {
+  (document.getElementById('catalog-edit-id') as HTMLInputElement).value = entry.id;
+  (document.getElementById('catalog-display-name') as HTMLInputElement).value = entry.displayName;
+  (document.getElementById('catalog-cortex-id') as HTMLInputElement).value = entry.cortexId;
+  (document.getElementById('catalog-region') as HTMLInputElement).value = entry.region ?? '';
+  (document.getElementById('catalog-kind') as HTMLSelectElement).value = entry.kind;
+  (document.getElementById('catalog-cortex-path') as HTMLInputElement).value = entry.cortexPath ?? '';
+  (document.getElementById('catalog-required-groups') as HTMLInputElement).value = (entry.requiredIdpGroups ?? []).join(', ');
+  (document.getElementById('catalog-mdm-bundle-id') as HTMLInputElement).value = entry.mdmBundleId ?? '';
+  (document.getElementById('catalog-published') as HTMLInputElement).checked = entry.published !== false;
+  document.getElementById('catalog-entry-form-wrap')?.setAttribute('open', '');
+}
+
+async function refreshCatalogSettingsPanel(): Promise<void> {
+  const panel = document.getElementById('settings-panel-catalog');
+  const upsell = document.getElementById('settings-panel-catalog-upsell');
+  const config = document.getElementById('settings-panel-catalog-config');
+  const list = document.getElementById('catalog-entry-list');
+  const empty = document.getElementById('catalog-empty-hint');
+  if (!panel) return;
+  try {
+    const sso = await ipcCall<SsoGetResult>('sso:get', {});
+    panel.style.display = '';
+    if (!sso.enterprise) {
+      upsell?.classList.remove('hidden');
+      config?.classList.add('hidden');
+      return;
+    }
+    upsell?.classList.add('hidden');
+    config?.classList.remove('hidden');
+    const data = await ipcCall<CatalogListResult>('catalog:list', { includeUnpublished: true });
+    const entries = data.entries ?? [];
+    if (empty) empty.classList.toggle('hidden', entries.length > 0);
+    if (!list) return;
+    list.innerHTML = entries.map((e) => {
+      const groups = e.requiredIdpGroups.length ? e.requiredIdpGroups.join(', ') : 'any authenticated user';
+      const pub = e.published === false ? ' · draft' : '';
+      return `<div class="panel" style="padding:10px;margin:0;" data-catalog-row="${escape(e.id)}">`
+        + `<p style="margin:0 0 4px;font-size:14px;"><strong>${escape(e.displayName)}</strong> <span class="subtitle" style="font-size:11px;">${escape(e.kind)}${escape(pub)}</span></p>`
+        + `<p class="subtitle" style="margin:0 0 8px;font-size:12px;">${escape(e.cortexId)}${e.region ? ` · ${escape(e.region)}` : ''} · Groups: ${escape(groups)}</p>`
+        + `<div style="display:flex;flex-wrap:wrap;gap:6px;">`
+        + `<button type="button" class="g-btn catalog-edit-btn" data-id="${escape(e.id)}">Edit</button>`
+        + `<button type="button" class="g-btn catalog-delete-btn" data-id="${escape(e.id)}">Delete</button>`
+        + `<button type="button" class="g-btn catalog-mdm-btn" data-id="${escape(e.id)}">Export MDM JSON</button>`
+        + `</div></div>`;
+    }).join('');
+    list.querySelectorAll<HTMLButtonElement>('.catalog-edit-btn').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const id = btn.dataset.id;
+        const entry = entries.find((x) => x.id === id);
+        if (entry) fillCatalogEntryForm(entry);
+      });
+    });
+    list.querySelectorAll<HTMLButtonElement>('.catalog-delete-btn').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        void (async () => {
+          const id = btn.dataset.id;
+          if (!id || !await gConfirm('Delete catalog entry?', 'Employees will no longer see this cortex in the catalog.')) return;
+          await ipcCall('catalog:delete', { catalogId: id });
+          void refreshCatalogSettingsPanel();
+        })();
+      });
+    });
+    list.querySelectorAll<HTMLButtonElement>('.catalog-mdm-btn').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        void (async () => {
+          const id = btn.dataset.id;
+          if (!id) return;
+          const result = await ipcCall<{ ok: boolean; bundle?: unknown; message?: string }>('catalog:exportMdm', {
+            catalogId: id,
+            subscriptions: [id],
+          });
+          if (!result.ok || !result.bundle) {
+            void gAlert('MDM export failed', result.message ?? 'Could not build MDM bundle.');
+            return;
+          }
+          const blob = new Blob([JSON.stringify(result.bundle, null, 2)], { type: 'application/json' });
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement('a');
+          a.href = url;
+          a.download = `graphnosis-mdm-${id.slice(0, 8)}.json`;
+          a.click();
+          URL.revokeObjectURL(url);
+        })();
+      });
+    });
+  } catch {
+    panel.style.display = 'none';
+  }
+}
+
+function wireCatalogSettingsPanel(): void {
+  document.getElementById('btn-catalog-clear')?.addEventListener('click', () => clearCatalogEntryForm());
+  document.getElementById('btn-catalog-save')?.addEventListener('click', () => {
+    void (async () => {
+      const status = document.getElementById('catalog-save-status');
+      const btn = document.getElementById('btn-catalog-save') as HTMLButtonElement | null;
+      const entry = readCatalogEntryForm();
+      if (!entry.displayName || !entry.cortexId) {
+        if (status) status.textContent = 'Display name and Cortex ID are required.';
+        return;
+      }
+      if (btn) btn.disabled = true;
+      if (status) status.textContent = 'Saving…';
+      try {
+        await ipcCall('catalog:upsert', { entry });
+        if (status) status.textContent = 'Saved.';
+        clearCatalogEntryForm();
+        void refreshCatalogSettingsPanel();
+      } catch (e) {
+        if (status) status.textContent = e instanceof Error ? e.message : String(e);
+      } finally {
+        if (btn) btn.disabled = false;
+        window.setTimeout(() => { if (status) status.textContent = ''; }, 3000);
+      }
+    })();
+  });
+}
+
+wireCatalogSettingsPanel();
+
+/** Sync lock-screen localStorage subscriptions to sidecar machine store after unlock. */
+async function syncCatalogSubscriptionsToSidecar(): Promise<void> {
+  const { getLocalCatalogSubscriptions } = await import('./ui/unlock');
+  const ids = getLocalCatalogSubscriptions();
+  for (const catalogId of ids) {
+    try {
+      await ipcCall('catalog:subscribe', { catalogId });
+    } catch { /* entry may not exist on this cortex yet */ }
+  }
+}
+
+const SHARING_POLICY_PERSONAL = 'You control this data. Sharing requires your explicit approval — nothing is shared automatically.';
+const SHARING_POLICY_ORG = 'Organization data — sharing is subject to IT policy. Consult the data owner before sharing sensitive engrams.';
+
+async function updateSharingPolicyNotice(): Promise<void> {
+  const el = document.getElementById('sharing-policy-notice');
+  if (!el) return;
+  let isOrg = false;
+  try {
+    const status = await invoke<StatusSnapshot>('status');
+    isOrg = Boolean(status.sso_session?.role);
+  } catch { /* browser mode */ }
+  el.textContent = isOrg ? SHARING_POLICY_ORG : SHARING_POLICY_PERSONAL;
+}
 
 // ── VS Code / Copilot Chat setup (own modal) ──────────────────────────────────
 function buildCopilotSnippets(port: number, token: string): { vscode: string; cli: string } {
