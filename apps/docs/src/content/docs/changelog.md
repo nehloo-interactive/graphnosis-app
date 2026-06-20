@@ -20,8 +20,9 @@ Reliability and UX patch: boot-time vitality no longer drifts per-engram bars fo
 ### Fixed
 
 - **Docs ghost engram.** Settings row without a `.gai` on disk is detected and rebuilt via async background ingest (no scary boot FAILED stack during repair race).
+- **Docs re-ingest loop.** Graphnosis Docs no longer wipe+re-ingests on every unlock when source count lags bundled pages; re-ingest defers until post-boot idle, respects hollow-bundle materialize, and only stamps version on full success — no repeated unlock toasts.
 - **Home dashboard cards.** Autonomous Brain, Memory health, and Self-healing cards load reliably after unlock instead of staying blank on slow sweeps.
-- **PER ENGRAM chart.** Full engram names, archived rows dimmed, grid alignment fixed; vitality shows a settling state until brain passes finish.
+- **PER ENGRAM chart.** Full engram catalog (not just the one loaded in memory) during vitality settling, with cached scores and "· updating…" until finish; archived rows dimmed; bar tracks pinned to the middle grid column so a lone bar no longer stretches the card.
 - **New engram wizard.** Template/create flow no longer fails when metadata races disk load.
 - **Recall latency bench.** Smoke regression guard uses the correct warm corpus threshold.
 - **Offer bundle counts.** `checkOffer` uses source count frozen at load time so mid-reconcile ingest does not skew recovery hints.
