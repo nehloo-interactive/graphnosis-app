@@ -19759,6 +19759,7 @@ interface SsoPublicView {
     scopes: string[];
     groupsClaim: string;
     redirectUri: string;
+    oidcTenantId?: string;
   };
   groupRoleMappings: Array<{ idpGroup: string; role: string }>;
   lastLogin?: { at: number; email?: string; groups?: string[]; resolvedRole?: string };
@@ -19877,6 +19878,8 @@ async function refreshSsoSettingsPanel(): Promise<void> {
     if (s.oidc) {
       if (issuer) issuer.value = s.oidc.issuer;
       if (clientId) clientId.value = s.oidc.clientId;
+      const tenantId = document.getElementById('sso-oidc-tenant-id') as HTMLInputElement | null;
+      if (tenantId) tenantId.value = s.oidc.oidcTenantId ?? '';
       if (groupsClaim) groupsClaim.value = s.oidc.groupsClaim;
       if (redirect) redirect.value = s.oidc.redirectUri;
       if (secret) secret.value = '';
@@ -19925,6 +19928,7 @@ function wireSsoSettingsPanel(): void {
       const clientSecret = (document.getElementById('sso-oidc-client-secret') as HTMLInputElement | null)?.value ?? '';
       const groupsClaim = (document.getElementById('sso-oidc-groups-claim') as HTMLInputElement | null)?.value.trim() ?? 'groups';
       const redirectUri = (document.getElementById('sso-oidc-redirect') as HTMLInputElement | null)?.value.trim() ?? '';
+      const oidcTenantId = (document.getElementById('sso-oidc-tenant-id') as HTMLInputElement | null)?.value.trim() ?? '';
 
       const groupRoleMappings: Array<{ idpGroup: string; role: string }> = [];
       document.querySelectorAll<HTMLElement>('.sso-mapping-row').forEach((row) => {
@@ -19946,6 +19950,7 @@ function wireSsoSettingsPanel(): void {
           issuer,
           clientId,
           ...(clientSecret.length > 0 ? { clientSecret } : {}),
+          ...(oidcTenantId.length > 0 ? { oidcTenantId } : {}),
           groupsClaim,
           redirectUri,
         },
@@ -19975,6 +19980,7 @@ function wireSsoSettingsPanel(): void {
       }
       if (status) status.textContent = 'Saved';
       void refreshSsoSettingsPanel();
+      void syncLicenseDomainSeatSsoHint();
     } catch (e) {
       if (status) status.textContent = e instanceof Error ? e.message : String(e);
     } finally {
@@ -21804,6 +21810,30 @@ function setLicenseSectionMode(subscribed: boolean): void {
     .forEach((s) => s.classList.toggle('hidden', !subscribed));
 }
 
+async function syncLicenseDomainSeatSsoHint(): Promise<void> {
+  const section = document.getElementById('license-domain-seat-section');
+  const ssoNote = document.getElementById('license-domain-seat-sso-note');
+  const copy = document.getElementById('license-domain-seat-copy');
+  if (!section || !ssoNote || !copy) return;
+  try {
+    const data = await ipcCall<{ settings: { enabled: boolean; configured: boolean } }>('sso:get', {});
+    const ssoOn = data.settings.enabled && data.settings.configured;
+    if (ssoOn) {
+      section.style.opacity = '0.65';
+      ssoNote.classList.remove('hidden');
+      copy.classList.add('hidden');
+    } else {
+      section.style.opacity = '';
+      ssoNote.classList.add('hidden');
+      copy.classList.remove('hidden');
+    }
+  } catch {
+    section.style.opacity = '';
+    ssoNote.classList.add('hidden');
+    copy.classList.remove('hidden');
+  }
+}
+
 async function refreshSettingsLicenseStatus(): Promise<void> {
   const el = document.getElementById('settings-license-status');
   if (!el) return;
@@ -21813,6 +21843,7 @@ async function refreshSettingsLicenseStatus(): Promise<void> {
     (document.getElementById('license-modal') as HTMLElement | null)?.removeAttribute('data-active-sub');
     syncDomainActivateBtn();
     setLicenseSectionMode(false);
+    void syncLicenseDomainSeatSsoHint();
     return;
   }
   if (!status.valid) {
@@ -21820,6 +21851,7 @@ async function refreshSettingsLicenseStatus(): Promise<void> {
     (document.getElementById('license-modal') as HTMLElement | null)?.removeAttribute('data-active-sub');
     syncDomainActivateBtn();
     setLicenseSectionMode(false);
+    void syncLicenseDomainSeatSsoHint();
     return;
   }
   setLicenseSectionMode(true); // active subscription → show manage, hide acquire
@@ -21854,6 +21886,7 @@ async function refreshSettingsLicenseStatus(): Promise<void> {
   }).join('');
 
   el.innerHTML = `<div style="display:flex; flex-direction:column; gap:0;">${rowsHtml}</div>`;
+  void syncLicenseDomainSeatSsoHint();
 }
 
 function bindSettingsLicensePanel(): void {

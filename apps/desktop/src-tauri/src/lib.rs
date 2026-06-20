@@ -86,6 +86,7 @@ pub struct SsoSessionSnapshot {
 
 #[derive(Serialize, Deserialize)]
 pub struct SsoUnlockOffer {
+    pub show_button: bool,
     pub available: bool,
     pub enabled: bool,
     pub configured: bool,
@@ -93,6 +94,9 @@ pub struct SsoUnlockOffer {
     pub break_glass_passphrase: bool,
     pub federated_unlock_ready: bool,
     pub group_mapping_count: u32,
+    pub suggested_button_label: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tenant_hint: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
 }
@@ -244,6 +248,45 @@ async fn adopt_sidecar_session(
 
 // ---------- commands -----------------------------------------------------
 
+fn suggested_idp_button_label(issuer: &str) -> String {
+    let lower = issuer.to_lowercase();
+    if lower.contains("login.microsoftonline.com") || lower.contains("sts.windows.net") {
+        return "Sign in with Microsoft".to_string();
+    }
+    if lower.contains("accounts.google.com") {
+        return "Sign in with Google".to_string();
+    }
+    if lower.contains(".okta.com") || lower.contains("oktapreview.com") {
+        return "Sign in with Okta".to_string();
+    }
+    "Sign in with company account".to_string()
+}
+
+fn tenant_hint_from_issuer(issuer: &str, explicit: Option<&str>) -> Option<String> {
+    if let Some(tid) = explicit.filter(|s| !s.is_empty()) {
+        return Some(tid.to_string());
+    }
+    let trimmed = issuer.trim_end_matches('/');
+    if let Some(rest) = trimmed.strip_prefix("https://login.microsoftonline.com/") {
+        if let Some(tid) = rest.strip_suffix("/v2.0") {
+            if tid.len() == 36 {
+                return Some(tid.to_string());
+            }
+        }
+    }
+    if issuer.starts_with("https://") {
+        let host = issuer
+            .trim_start_matches("https://")
+            .split('/')
+            .next()
+            .unwrap_or("");
+        if !host.is_empty() && host != "localhost" {
+            return Some(host.to_string());
+        }
+    }
+    None
+}
+
 #[tauri::command]
 fn read_sso_unlock_offer(cortex_dir: String) -> Result<SsoUnlockOffer, String> {
     let path = PathBuf::from(&cortex_dir).join("settings.json");
@@ -266,6 +309,10 @@ fn read_sso_unlock_offer(cortex_dir: String) -> Result<SsoUnlockOffer, String> {
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
     let issuer = sso.and_then(|v| v.get("oidc")).and_then(|o| o.get("issuer")).and_then(|v| v.as_str()).unwrap_or("");
+    let tenant_id = sso
+        .and_then(|v| v.get("oidc"))
+        .and_then(|o| o.get("oidcTenantId"))
+        .and_then(|v| v.as_str());
     let client_id = sso.and_then(|v| v.get("oidc")).and_then(|o| o.get("clientId")).and_then(|v| v.as_str()).unwrap_or("");
     let configured = !issuer.is_empty() && !client_id.is_empty();
     let group_mapping_count = sso
@@ -273,6 +320,7 @@ fn read_sso_unlock_offer(cortex_dir: String) -> Result<SsoUnlockOffer, String> {
         .and_then(|v| v.as_array())
         .map(|a| a.len() as u32)
         .unwrap_or(0);
+    let show_button = configured && enabled && protocol == "oidc";
     let mut reason: Option<String> = None;
     if !configured {
         reason = Some("not_configured".to_string());
@@ -283,8 +331,9 @@ fn read_sso_unlock_offer(cortex_dir: String) -> Result<SsoUnlockOffer, String> {
     } else if protocol != "oidc" {
         reason = Some("saml_not_supported_yet".to_string());
     }
-    let available = configured && enabled && federated_ready && protocol == "oidc";
+    let available = show_button && federated_ready;
     Ok(SsoUnlockOffer {
+        show_button,
         available,
         enabled,
         configured,
@@ -292,8 +341,19 @@ fn read_sso_unlock_offer(cortex_dir: String) -> Result<SsoUnlockOffer, String> {
         break_glass_passphrase: break_glass,
         federated_unlock_ready: federated_ready,
         group_mapping_count,
+        suggested_button_label: suggested_idp_button_label(issuer),
+        tenant_hint: tenant_hint_from_issuer(issuer, tenant_id),
         reason,
     })
+}
+
+#[tauri::command]
+async fn discover_sso_unlock(cortex_dir: String) -> Result<sidecar::SsoDiscoverSnapshot, String> {
+    let path = PathBuf::from(&cortex_dir);
+    if !path.is_dir() {
+        return Err(format!("cortex folder does not exist: {cortex_dir}"));
+    }
+    sidecar::run_sso_probe(&path).await.map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -3545,6 +3605,7 @@ pub fn run() {
             unlock_cortex,
             unlock_cortex_with_recovery,
             read_sso_unlock_offer,
+            discover_sso_unlock,
             sso_store_keychain,
             sso_unlock_cortex,
             biometric_available,

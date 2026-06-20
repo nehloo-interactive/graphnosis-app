@@ -87,22 +87,56 @@ export function initUnlock(unlockEls: Record<string, HTMLElement>): void {
 export async function configureSsoUnlockButton(): Promise<void> {
   if (!IS_TAURI) return;
   const btn = document.getElementById('btn-sso-unlock') as HTMLButtonElement | null;
+  const hint = document.getElementById('sso-unlock-hint') as HTMLElement | null;
   const passphraseRow = document.querySelector('#unlock-form-card .row:has(#passphrase)') as HTMLElement | null;
   const warning = document.querySelector('.passphrase-warning') as HTMLElement | null;
   if (!btn) return;
   const cortexDir = getCortexDir();
   if (!cortexDir) {
     btn.classList.add('hidden');
+    if (hint) hint.classList.add('hidden');
     return;
   }
   try {
-    const offer = await invoke<{
+    const discover = await invoke<{
+      configured: boolean;
+      enabled: boolean;
+      provisioned: boolean;
+      idpReachable: boolean;
+      idpReachabilityError?: string | null;
+      suggestedButtonLabel: string;
+      tenantHint?: string | null;
+      breakGlassPassphrase: boolean;
+      showButton: boolean;
       available: boolean;
-      break_glass_passphrase: boolean;
-    }>('read_sso_unlock_offer', { cortex_dir: cortexDir });
-    if (offer.available) {
+      reason?: string | null;
+    }>('discover_sso_unlock', { cortex_dir: cortexDir });
+
+    if (discover.showButton) {
       btn.classList.remove('hidden');
-      if (!offer.break_glass_passphrase) {
+      btn.textContent = discover.suggestedButtonLabel || 'Sign in with company account';
+      if (!discover.available) {
+        btn.disabled = true;
+        btn.title = discover.reason === 'federated_key_not_provisioned'
+          ? 'SSO is not fully provisioned yet — ask your admin to save SSO settings while unlocked'
+          : 'SSO unlock is not ready on this device';
+      } else {
+        btn.disabled = false;
+        btn.title = '';
+      }
+      if (hint) {
+        if (!discover.idpReachable) {
+          hint.textContent = discover.idpReachabilityError
+            ?? 'Connect to your company network to sign in';
+          hint.classList.remove('hidden');
+        } else if (!discover.provisioned) {
+          hint.textContent = 'SSO is configured — your admin must save settings once while unlocked to enable sign-in.';
+          hint.classList.remove('hidden');
+        } else {
+          hint.classList.add('hidden');
+        }
+      }
+      if (!discover.breakGlassPassphrase) {
         if (passphraseRow) passphraseRow.classList.add('hidden');
         if (warning) warning.classList.add('hidden');
       } else {
@@ -111,11 +145,13 @@ export async function configureSsoUnlockButton(): Promise<void> {
       }
     } else {
       btn.classList.add('hidden');
+      if (hint) hint.classList.add('hidden');
       if (passphraseRow) passphraseRow.classList.remove('hidden');
       if (warning) warning.classList.remove('hidden');
     }
   } catch {
     btn.classList.add('hidden');
+    if (hint) hint.classList.add('hidden');
   }
 }
 
@@ -133,6 +169,32 @@ export async function runSsoUnlock(): Promise<void> {
   if (await checkPreUnlockBusy(cortexDir)) return;
   const proceed = await maybeShowCloudOnboarding(cortexDir);
   if (!proceed) return;
+
+  try {
+    const discover = await invoke<{
+      idpReachable: boolean;
+      idpReachabilityError?: string | null;
+      available: boolean;
+      breakGlassPassphrase: boolean;
+    }>('discover_sso_unlock', { cortex_dir: cortexDir });
+    if (!discover.available) {
+      app().showError(
+        'SSO unlock is not ready on this device. Ask your admin to save Enterprise SSO settings once while unlocked.',
+      );
+      return;
+    }
+    if (!discover.idpReachable) {
+      const msg = discover.idpReachabilityError ?? 'Connect to your company network to sign in';
+      if (!discover.breakGlassPassphrase) {
+        app().showError(msg);
+        return;
+      }
+      app().showError(`${msg} — or enter your break-glass passphrase below.`);
+      return;
+    }
+  } catch {
+    // Non-fatal — listener will probe again before opening the browser.
+  }
 
   const btn = document.getElementById('btn-sso-unlock') as HTMLButtonElement | null;
   els.btnUnlock.disabled = true;
@@ -479,6 +541,15 @@ function friendlyUnlockError(msg: string): string {
   }
   if (/no saved passphrase for this cortex/i.test(msg)) {
     return 'Touch ID is not set up for this cortex yet. Unlock with your passphrase once to enable it.';
+  }
+  if (/company network|idp unreachable|idp_unreachable/i.test(msg)) {
+    return msg;
+  }
+  if (/organization mismatch|tenant_mismatch|issuer_mismatch/i.test(msg)) {
+    return msg;
+  }
+  if (/SSO credentials are not stored/i.test(msg)) {
+    return 'SSO is not set up on this Mac yet. Ask your admin to save Enterprise SSO settings once while unlocked on this device — or use your break-glass passphrase.';
   }
   if (/Missing env var:\s*GRAPHNOSIS_PASSPHRASE/i.test(msg)
     || (/missing configuration value/i.test(msg) && /GRAPHNOSIS_PASSPHRASE/i.test(msg))) {

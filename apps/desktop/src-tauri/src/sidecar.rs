@@ -957,3 +957,52 @@ fn open_system_url(url: &str) -> Result<()> {
     Ok(())
 }
 
+#[derive(serde::Serialize, serde::Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct SsoDiscoverSnapshot {
+    pub configured: bool,
+    pub enabled: bool,
+    pub provisioned: bool,
+    pub idp_reachable: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub idp_reachability_error: Option<String>,
+    pub suggested_button_label: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tenant_hint: Option<String>,
+    pub break_glass_passphrase: bool,
+    pub show_button: bool,
+    pub available: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
+/// Pre-unlock SSO discover — IdP reachability probe via sidecar subprocess.
+pub async fn run_sso_probe(cortex_dir: &Path) -> Result<SsoDiscoverSnapshot> {
+    let binary = resolve_sidecar_path()?;
+    let mut cmd = Command::new(&binary);
+    cmd.env("GRAPHNOSIS_SSO_PROBE", "1")
+        .env("GRAPHNOSIS_CORTEX", cortex_dir)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    #[cfg(windows)]
+    cmd.creation_flags(0x08000000);
+
+    let mut child = cmd.spawn().context("spawn SSO probe")?;
+    let stderr = child.stderr.take().context("SSO probe stderr")?;
+    let mut lines = BufReader::new(stderr).lines();
+
+    let mut result_line: Option<String> = None;
+    while let Some(line) = lines.next_line().await.context("read SSO probe stderr")? {
+        eprintln!("{}", line);
+        if let Some(json) = line.strip_prefix("GRAPHNOSIS_SSO_PROBE_RESULT:") {
+            result_line = Some(json.to_string());
+            break;
+        }
+    }
+
+    let _status = child.wait().await.context("wait for SSO probe")?;
+    let json = result_line.ok_or_else(|| anyhow!("SSO probe did not emit result"))?;
+    serde_json::from_str(&json).context("parse SSO probe result")
+}
+
