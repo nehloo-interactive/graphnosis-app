@@ -818,28 +818,30 @@ import type { EnterpriseSsoSettings } from './sso.js';
 import { DEFAULT_SSO_SETTINGS, sanitizeEnterpriseSsoSettings } from './sso.js';
 
 export type {
-  CortexCatalogKind,
-  CortexCatalogEntry,
-  CortexCatalogSettings,
+  EngramCatalogKind,
+  EngramInstallMode,
+  EngramCatalogEntry,
+  EngramCatalogSettings,
   CatalogSubscriptionStore,
   CatalogEntitlementReason,
   CatalogEntitlement,
-  MdmCatalogBundle,
-} from './cortex-catalog.js';
+  MdmEngramCatalogBundle,
+} from './engram-catalog.js';
 export {
-  DEFAULT_CORTEX_CATALOG_SETTINGS,
+  DEFAULT_ENGRAM_CATALOG_SETTINGS,
   generateCatalogEntryId,
   userMeetsCatalogGroupRequirement,
+  checkCatalogInstallEntitlement,
   checkCatalogUnlockEntitlement,
   resolveCatalogEntitlements,
-  findCatalogEntryForCortex,
-  buildMdmCatalogBundle,
-  sanitizeCortexCatalogEntry,
-  sanitizeCortexCatalogSettings,
-  cortexCatalogPublicEntry,
-} from './cortex-catalog.js';
-import type { CortexCatalogSettings } from './cortex-catalog.js';
-import { DEFAULT_CORTEX_CATALOG_SETTINGS, sanitizeCortexCatalogSettings } from './cortex-catalog.js';
+  buildMdmEngramCatalogBundle,
+  sanitizeEngramCatalogEntry,
+  sanitizeEngramCatalogSettings,
+  engramCatalogFromAppSettings,
+  engramCatalogPublicEntry,
+} from './engram-catalog.js';
+import type { EngramCatalogSettings } from './engram-catalog.js';
+import { DEFAULT_ENGRAM_CATALOG_SETTINGS, engramCatalogFromAppSettings } from './engram-catalog.js';
 
 /**
  * Engram scope attached to a sharing token.
@@ -1161,11 +1163,13 @@ export interface AppSettings {
   sso?: EnterpriseSsoSettings;
 
   /**
-   * Organization Cortex Catalog — IT-published entries (org cortices, hub packages).
-   * Employee subscriptions are machine-local, not stored here.
-   * Data controller: IT on `org` entries; employee on `personal`.
+   * Organization Engram Catalog — IT-published engram packages only.
+   * Employee subscriptions + install state are machine-local, not stored here.
+   * Legacy `cortexCatalog` is migrated on read (org-cortex rows dropped).
    */
-  cortexCatalog?: CortexCatalogSettings;
+  engramCatalog?: EngramCatalogSettings;
+  /** @deprecated Migrated to engramCatalog on load — not written on save. */
+  cortexCatalog?: EngramCatalogSettings;
 }
 
 /** Ghampus runtime settings. Phase 1 scope: just the kill switch. */
@@ -1857,11 +1861,8 @@ export function mergeWithDefaults(partial: Partial<AppSettings> | null | undefin
     ...(partial?.sso !== undefined
       ? { sso: sanitizeEnterpriseSsoSettings(partial.sso as Partial<EnterpriseSsoSettings>) ?? DEFAULT_SSO_SETTINGS }
       : {}),
-    ...(partial?.cortexCatalog !== undefined
-      ? {
-          cortexCatalog: sanitizeCortexCatalogSettings(partial.cortexCatalog as Partial<CortexCatalogSettings>)
-            ?? DEFAULT_CORTEX_CATALOG_SETTINGS,
-        }
+    ...(engramCatalogFromAppSettings(partial) !== undefined
+      ? { engramCatalog: engramCatalogFromAppSettings(partial) ?? DEFAULT_ENGRAM_CATALOG_SETTINGS }
       : {}),
   };
 }
