@@ -1,0 +1,44 @@
+diff --git a/src/renderer/src/screens/Welcome/Welcome.tsx b/src/renderer/src/screens/Welcome/Welcome.tsx
+index 05f5151..db10229 100644
+--- a/src/renderer/src/screens/Welcome/Welcome.tsx
++++ b/src/renderer/src/screens/Welcome/Welcome.tsx
+@@ -394,6 +394,26 @@ function Welcome({
+           </button>
+           <p className="welcome-note">{t("welcome.installSizeHint")}</p>
+ 
++          <div className="welcome-graphnosis-card">
++            <div className="welcome-graphnosis-copy">
++              <div className="welcome-graphnosis-title">
++                {t("welcome.graphnosisTitle")}
++              </div>
++              <p className="welcome-graphnosis-body">{t("welcome.graphnosisBody")}</p>
++            </div>
++            <button
++              type="button"
++              className="btn btn-secondary btn-sm"
++              onClick={() =>
++                void window.hermesAPI.openExternal(
++                  "https://graphnosis.com/download",
++                )
++              }
++            >
++              {t("welcome.graphnosisDownload")}
++            </button>
++          </div>
++
+           <div className="welcome-divider">
+             <span>{t("welcome.dividerOr")}</span>
+           </div>
+diff --git a/src/shared/i18n/locales/en/welcome.ts b/src/shared/i18n/locales/en/welcome.ts
+index d9f3364..4778fcc 100644
+--- a/src/shared/i18n/locales/en/welcome.ts
++++ b/src/shared/i18n/locales/en/welcome.ts
+@@ -21,4 +21,8 @@ export default {
+   connect: "Connect",
+   remoteHint:
+     "Leave the key empty if the server accepts unauthenticated requests (e.g. via SSH tunnel to localhost).",
++  graphnosisTitle: "Pair with Graphnosis",
++  graphnosisBody:
++    "Add local encrypted memory to Hermes — auto-prefetch, recall, and MCP tools. Install Graphnosis, unlock your cortex, then enable the Graphnosis memory provider and MCP catalog in Settings.",
++  graphnosisDownload: "Download Graphnosis",
+ } as const;
