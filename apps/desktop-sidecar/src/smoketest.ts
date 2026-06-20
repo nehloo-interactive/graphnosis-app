@@ -295,6 +295,26 @@ ferry to Naxos. The food in Mykonos was overrated.`;
   await host.deleteGraph(shrinkId);
   log('save-guards.ok', {});
 
+  // --- MCP audit log -------------------------------------------------------
+  log('mcp-audit', {});
+  await host.appendMcpAuditEvent({
+    tool: 'recall',
+    clientId: 'smoke-test',
+    transport: 'stdio',
+    queryLen: 42,
+    queryHash: 'abc123deadbeef',
+    engramIds: ['personal'],
+    tokenBudget: { servedTokens: 100, servedNodes: 3 },
+  });
+  const auditRows = await host.listMcpAuditEvents();
+  const smokeRow = auditRows.find((r) => r.clientId === 'smoke-test' && r.tool === 'recall');
+  if (!smokeRow) throw new Error('FAIL: MCP audit row not persisted');
+  if (smokeRow.queryHash !== 'abc123deadbeef') {
+    throw new Error('FAIL: MCP audit export missing queryHash');
+  }
+  log('mcp-audit.ok', { rows: auditRows.length });
+
+
   log('forget', { sourceId: src.sourceId });
   const forgot = await host.forgetSource('personal', src.sourceId);
   log('forget.done', { soft_deleted: forgot.nodeIds.length });

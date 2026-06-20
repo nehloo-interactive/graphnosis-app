@@ -436,20 +436,45 @@ export async function startHttpMcpServer(opts: HttpBridgeOptions): Promise<http.
       if (engramFilter !== undefined) events = events.filter((ev) => ev.graphId === engramFilter);
       events = events.slice().sort((a, b) => a.ts - b.ts);
 
+      let mcpEvents = await opts.deps.host.listMcpAuditEvents();
+      if (from !== undefined) mcpEvents = mcpEvents.filter((ev) => ev.ts >= from);
+      if (to !== undefined) mcpEvents = mcpEvents.filter((ev) => ev.ts <= to);
+      if (engramFilter !== undefined) {
+        mcpEvents = mcpEvents.filter((ev) => ev.engramIds?.includes(engramFilter) ?? false);
+      }
+      mcpEvents = mcpEvents.slice().sort((a, b) => a.ts - b.ts);
+
       if (format === 'csv') {
         const csvEsc = (v: unknown) => `"${String(v ?? '').replace(/"/g, '""')}"`;
         const rows = [
-          ['id', 'ts', 'isoDate', 'op', 'graphId', 'targetKind', 'targetId', 'deviceId', 'triggeredBy'].map(csvEsc).join(','),
+          ['eventType', 'id', 'ts', 'isoDate', 'action', 'actor', 'graphIdOrEngrams', 'nodeIds', 'servedTokens', 'servedNodes', 'consentGrantId', 'queryHash', 'queryLen', 'isError', 'transport'].map(csvEsc).join(','),
           ...events.map((ev) => [
+            'oplog',
             ev.id ?? '',
             ev.ts,
             new Date(ev.ts).toISOString(),
             ev.op,
+            (ev as unknown as Record<string, unknown>)['triggeredBy'] ?? ev.deviceId ?? '',
             ev.graphId ?? '',
-            ev.target?.kind ?? '',
             ev.target?.id ?? '',
-            ev.deviceId ?? '',
-            (ev as unknown as Record<string, unknown>)['triggeredBy'] ?? '',
+            '', '', '', '', '', '', '',
+          ].map(csvEsc).join(',')),
+          ...mcpEvents.map((ev) => [
+            'mcp',
+            ev.id,
+            ev.ts,
+            new Date(ev.ts).toISOString(),
+            ev.tool,
+            ev.clientId,
+            (ev.engramIds ?? []).join(';'),
+            (ev.nodeIds ?? []).join(';'),
+            ev.tokenBudget?.servedTokens ?? '',
+            ev.tokenBudget?.servedNodes ?? '',
+            ev.consentGrantId ?? '',
+            ev.queryHash ?? '',
+            ev.queryLen ?? '',
+            ev.isError ? 'true' : 'false',
+            ev.transport ?? '',
           ].map(csvEsc).join(',')),
         ].join('\r\n');
         res.writeHead(200, {
@@ -461,7 +486,7 @@ export async function startHttpMcpServer(opts: HttpBridgeOptions): Promise<http.
       }
 
       res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ count: events.length, events }));
+      res.end(JSON.stringify({ count: events.length, events, mcpCount: mcpEvents.length, mcpEvents }));
       return;
     }
 
@@ -640,9 +665,10 @@ export async function startHttpMcpServer(opts: HttpBridgeOptions): Promise<http.
       mcpRegistry.unregister(connId);
     };
 
-    const sessionDeps: McpDeps = matchedSharingScope
-      ? { ...opts.deps, sharingScope: matchedSharingScope }
-      : opts.deps;
+    const sessionDeps: McpDeps = {
+      ...(matchedSharingScope ? { ...opts.deps, sharingScope: matchedSharingScope } : opts.deps),
+      mcpTransport: 'http',
+    };
     const { server: mcpServer } = createMcpServer(sessionDeps);
     await mcpServer.connect(transport as unknown as Parameters<typeof mcpServer.connect>[0]);
     pollForClientInfo(connId, mcpServer);
