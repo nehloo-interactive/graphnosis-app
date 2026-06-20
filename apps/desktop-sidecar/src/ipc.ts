@@ -47,7 +47,7 @@ import {
   type EnterpriseSsoSettings,
   type IdpGroupRoleMapping,
 } from '@graphnosis-app/core/settings';
-import { readSsoUnlockOffer } from '@graphnosis-app/core/sso';
+import { readSsoUnlockOffer, discoverSsoUnlock, idpUiHints, probeIdpReachability } from '@graphnosis-app/core/sso';
 import {
   isCortexSessionBusy,
   isSessionLeaseFresh,
@@ -6610,6 +6610,17 @@ OUTPUT RULES — non-negotiable:
       const sso = settings.sso;
       const configured = isEnterpriseSsoConfigured(sso);
       const ssoReady = sso?.enabled && configured && sso.federatedUnlockReady === true;
+      const issuer = sso?.oidc?.issuer?.trim() ?? '';
+      const hints = issuer ? idpUiHints(issuer, sso?.oidc?.oidcTenantId) : {
+        suggestedButtonLabel: 'Sign in with company account',
+      };
+      let idpReachable = false;
+      let idpReachabilityError: string | undefined;
+      if (issuer) {
+        const probe = await probeIdpReachability(issuer);
+        idpReachable = probe.reachable;
+        idpReachabilityError = probe.error;
+      }
       return {
         ok: true,
         enterprise: hasEnterprise || domainSeat,
@@ -6623,10 +6634,24 @@ OUTPUT RULES — non-negotiable:
         unlockMode: ssoReady ? 'sso' : 'passphrase',
         phase: 'oidc-unlock',
         ssoSession: deps.ssoSession ?? null,
+        idpReachable,
+        ...(idpReachabilityError ? { idpReachabilityError } : {}),
+        suggestedButtonLabel: hints.suggestedButtonLabel,
+        ...(hints.tenantHint ? { tenantHint: hints.tenantHint } : {}),
+        showButton: configured && (sso?.enabled ?? false) && (sso?.protocol ?? 'oidc') === 'oidc',
         note: ssoReady
-          ? 'Federated OIDC unlock is available on the lock screen when SSO credentials are in the OS keychain on this Mac.'
+          ? idpReachable
+            ? 'Federated OIDC unlock is available on the lock screen when SSO credentials are in the OS keychain on this Mac.'
+            : 'SSO is configured but the IdP is unreachable — connect to your company network, or use break-glass passphrase.'
           : 'Enable SSO and save while unlocked to provision federated unlock.',
       };
+    }
+
+    case 'sso:discover': {
+      const cortexDir = deps.cortexDir ?? deps.host.getCortexDir?.() ?? '';
+      if (!cortexDir) return { ok: false, reason: 'no_cortex' };
+      const discover = await discoverSsoUnlock(cortexDir);
+      return { ok: true, discover };
     }
 
     case 'sso:offer': {
@@ -6655,6 +6680,7 @@ OUTPUT RULES — non-negotiable:
           issuer: z.string().max(512).optional(),
           clientId: z.string().max(256).optional(),
           clientSecret: z.string().max(512).optional(),
+          oidcTenantId: z.string().max(64).optional(),
           scopes: z.array(z.string().min(1).max(64)).max(32).optional(),
           groupsClaim: z.string().max(128).optional(),
           redirectUri: z.string().max(512).optional(),
@@ -6700,6 +6726,9 @@ OUTPUT RULES — non-negotiable:
           clientId: o.clientId !== undefined ? o.clientId.trim() : prevOidc.clientId,
           ...(clientSecret ? { clientSecret } : {}),
           ...(clientSecretEnc ? { clientSecretEnc } : {}),
+          ...(o.oidcTenantId !== undefined
+            ? (o.oidcTenantId.trim() ? { oidcTenantId: o.oidcTenantId.trim() } : {})
+            : prevOidc.oidcTenantId ? { oidcTenantId: prevOidc.oidcTenantId } : {}),
           ...(o.scopes ?? prevOidc.scopes ? { scopes: o.scopes ?? prevOidc.scopes } : {}),
           ...(o.groupsClaim !== undefined
             ? (o.groupsClaim.trim() ? { groupsClaim: o.groupsClaim.trim() } : {})
