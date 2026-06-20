@@ -11,6 +11,22 @@ Conventions: **Added** = new features, **Changed** = behavior or UX shifts, **Fi
 
 ---
 
+## v1.20.1 — Release pipeline fix
+
+<p style="margin-top:0.5rem;font-size:1.25em;opacity:0.85;">2026-06-20</p>
+
+Re-publish of v1.20.0 after CI failed to build Linux server smoke artifacts.
+
+### Fixed
+
+- **CI build graph.** `@graphnosis/mcp-relay` is excluded from the monorepo `pnpm -r build` step so `@graphnosis-app/core` compiles before the sidecar; release and Linux Server workflows complete again.
+
+### Notes
+
+- Same Hermes integration as v1.20.0 — use this build if v1.20.0 installers never appeared on GitHub Releases.
+
+---
+
 ## v1.20.0 — Hermes Agent integration
 
 <p style="margin-top:0.5rem;font-size:1.25em;opacity:0.85;">2026-06-20</p>
