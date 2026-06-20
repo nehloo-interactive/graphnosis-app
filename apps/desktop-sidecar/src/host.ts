@@ -283,6 +283,14 @@ export class GraphnosisHost {
   private bootEmbBuildInFlight = 0;
   private bootEmbBuildWaiters: Array<() => void> = [];
   private static readonly BOOT_EMB_BUILD_MAX = 1;
+  /** True from sidecar open until the background engram sweep finishes.
+   *  While active, oplog reconcile + sourceRef sweeps are queued — each
+   *  reconcile calls sync adapter.build() and replaying 22 of them concurrently
+   *  monopolizes the event loop and starves IPC mid-sweep. */
+  private bootPhaseActive = false;
+  private bootReconcileQueue: Array<{ graphId: GraphId; entry: LoadedGraph }> = [];
+  private bootSourceRefQueue: GraphId[] = [];
+  private bootDeferredFlushPromise: Promise<void> | null = null;
   private readonly oplogWriter: oplog.OpLogWriter;
   /** Append-only LLM event log — one .gll file per engram. */
   readonly gllWriter: GllWriter;
@@ -1761,6 +1769,12 @@ export class GraphnosisHost {
     return [...this.graphs.keys()];
   }
 
+  /** True while loadAllGraphsFromDisk is running — brain passes and auto-relink
+   *  defer so the sweep owns the event loop. */
+  isBootSweepActive(): boolean {
+    return this.bootSweepActive;
+  }
+
   /** Called by the sidecar boot sweep — gates concurrent embedding rebuilds. */
   setBootSweepActive(active: boolean): void {
     this.bootSweepActive = active;
@@ -1775,6 +1789,12 @@ export class GraphnosisHost {
           next();
         }
       }
+      // Relinks queued while the sweep ran — kick them off now that engrams are
+      // resident and the brain isn't competing for decrypt/embed slots.
+      for (const graphId of this.relinkDeferredDuringBoot) {
+        this.kickoffRelink(graphId);
+      }
+      this.relinkDeferredDuringBoot.clear();
     }
   }
 
@@ -2811,6 +2831,8 @@ export class GraphnosisHost {
 
   private relinkInFlight: Map<GraphId, Promise<void>> = new Map();
   private relinkPending: Set<GraphId> = new Set();
+  /** Engrams that need a relink once the boot engram sweep finishes. */
+  private relinkDeferredDuringBoot: Set<GraphId> = new Set();
   private relinkDebounce: Map<GraphId, ReturnType<typeof setTimeout>> = new Map();
 
   // Debounce delay before starting a relink pass. Resets on every new
@@ -2818,6 +2840,10 @@ export class GraphnosisHost {
   private static RELINK_DEBOUNCE_MS = 1500;
 
   private kickoffRelink(graphId: GraphId): void {
+    if (this.bootSweepActive) {
+      this.relinkDeferredDuringBoot.add(graphId);
+      return;
+    }
     // Reset (or start) the debounce timer on every ingest call so rapid
     // batch ingests coalesce into a single pass once ingest goes quiet.
     const existing = this.relinkDebounce.get(graphId);
