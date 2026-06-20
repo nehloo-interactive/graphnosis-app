@@ -3768,17 +3768,48 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
       const sinceMs = args.sinceMs ?? Date.now() - 7 * 24 * 60 * 60 * 1000;
       const cortexDir = deps.cortexDir ?? deps.host.getCortexDir?.() ?? '';
       if (!cortexDir) return { emitted: false };
+      const histPath = `${cortexDir}/ghampus-history.jsonl`;
+      const { readFile, appendFile } = await import('node:fs/promises');
+      const AWAY_PREFIX = '**While you were away**';
+      const QUIET_RE = /all quiet/i;
+      const DEDUPE_MS = 6 * 60 * 60 * 1000;
+
+      type HistMsg = { kind?: string; text?: string; ts?: number };
+      const tail: HistMsg[] = (await readFile(histPath, 'utf8').catch(() => ''))
+        .trim().split('\n').filter(Boolean).slice(-40)
+        .map((line) => { try { return JSON.parse(line) as HistMsg; } catch { return null; } })
+        .filter((m): m is HistMsg => m != null);
+
+      const hasRecentAwayDigest = (quietOnly: boolean): boolean => {
+        const now = Date.now();
+        for (let i = tail.length - 1; i >= 0; i--) {
+          const m = tail[i];
+          if (m?.kind !== 'ghampus' || !String(m.text ?? '').startsWith(AWAY_PREFIX)) continue;
+          const ts = typeof m.ts === 'number' ? m.ts : 0;
+          if (now - ts >= DEDUPE_MS) continue;
+          if (quietOnly && !QUIET_RE.test(String(m.text))) continue;
+          return true;
+        }
+        return false;
+      };
+
       const { listNotifications } = await import('./agent-notifications.js');
       const { notifications, totalAvailable } = listNotifications({ host: deps.host }, { sinceMs, limit: 12 });
-      if (notifications.length === 0) return { emitted: false };
-      const count = notifications.length;
-      const lines = notifications.slice(0, 6).map((n) => `• ${n.origin}: ${n.label}`).join('\n');
-      const text =
-        `**While you were away** — ${totalAvailable > count ? `${totalAvailable} items` : `${count} item${count === 1 ? '' : 's'}`} since your last visit.\n\n` +
-        `${lines}${count > 6 ? `\n…and ${count - 6} more` : ''}`;
+
+      let text: string;
+      if (notifications.length === 0) {
+        if (hasRecentAwayDigest(true)) return { emitted: false };
+        text = `${AWAY_PREFIX} (just now) — all quiet. Nothing new arrived in your cortex.`;
+      } else {
+        if (hasRecentAwayDigest(false)) return { emitted: false };
+        const count = notifications.length;
+        const lines = notifications.slice(0, 6).map((n) => `• ${n.origin}: ${n.label}`).join('\n');
+        text =
+          `${AWAY_PREFIX} — ${totalAvailable > count ? `${totalAvailable} items` : `${count} item${count === 1 ? '' : 's'}`} since your last visit.\n\n` +
+          `${lines}${count > 6 ? `\n…and ${count - 6} more` : ''}`;
+      }
+
       const digestMsg = { kind: 'ghampus', text, ts: Date.now() };
-      const histPath = `${cortexDir}/ghampus-history.jsonl`;
-      const { appendFile } = await import('node:fs/promises');
       await appendFile(histPath, JSON.stringify(digestMsg) + '\n').catch(() => {});
       return { emitted: true };
     }

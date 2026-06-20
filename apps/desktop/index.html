@@ -5944,19 +5944,23 @@
       .proactive-snooze-wrap { position: relative; }
       .proactive-snooze-menu {
         position: absolute; bottom: calc(100% + 6px); left: 0;
-        background: var(--bg-elev2, rgba(30,30,40,.98));
-        border: 1px solid var(--g-border, rgba(255,255,255,.15));
+        background: var(--bg-elev);
+        border: 1px solid var(--border);
         border-radius: 10px; padding: 4px;
         display: flex; flex-direction: column; min-width: 160px;
-        box-shadow: 0 8px 24px rgba(0,0,0,.4); z-index: 50;
+        box-shadow: var(--shadow-pop, 0 8px 24px rgba(0,0,0,.4)); z-index: 50;
       }
       .proactive-snooze-menu.hidden { display: none; }
       .proactive-snooze-opt {
-        background: none; border: none; color: var(--fg, #fff);
+        background: none; border: none; color: var(--fg);
         font-size: 13px; text-align: left; padding: 8px 12px;
         border-radius: 7px; cursor: pointer; width: 100%;
       }
-      .proactive-snooze-opt:hover { background: var(--accent-soft, rgba(99,102,241,.2)); }
+      .proactive-snooze-opt:hover,
+      .proactive-snooze-opt:focus-visible {
+        background: color-mix(in oklab, var(--accent) 12%, transparent);
+        color: var(--fg);
+      }
 
       .skill-match-card {
         background: rgba(245,158,11,.07);
