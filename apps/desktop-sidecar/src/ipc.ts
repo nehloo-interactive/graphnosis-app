@@ -826,6 +826,7 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
       // instead of letting must() throw "Graph not loaded" + a stack trace —
       // benign race, not an error. (Mirrors the search.nodes guard.)
       if (!deps.host.listGraphs().includes(args.graphId)) return [];
+      await deps.host.waitForReconcile(args.graphId);
       const nodes = deps.host.listNodes(args.graphId);
       // Attach allowlist sourceId per node (see search.nodes note).
       return nodes.map((n) => ({ ...n, sourceId: deps.host.getNodeSource(args.graphId, n.id) }));
@@ -834,6 +835,7 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
       const args = z.object({ graphId: z.string() }).parse(params);
       // Same post-delete race guard as nodes.list — the 3D view fetches both.
       if (!deps.host.listGraphs().includes(args.graphId)) return [];
+      await deps.host.waitForReconcile(args.graphId);
       return deps.host.listEdges(args.graphId);
     }
     case 'node.directEdit': {

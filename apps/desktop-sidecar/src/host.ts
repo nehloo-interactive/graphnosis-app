@@ -292,10 +292,12 @@ export class GraphnosisHost {
    *  queued — each reconcile calls sync adapter.build() and replaying 22 of
    *  them concurrently monopolizes the event loop and starves IPC mid-sweep. */
   private bootPhaseActive = false;
-  private bootReconcileQueue: Array<{ graphId: GraphId; entry: LoadedGraph }> = [];
+  private bootReconcileQueue: GraphId[] = [];
   /** sourceRef sweeps deferred from boot — run on first engram access. */
   private deferredSourceRefSweep = new Set<GraphId>();
   private bootDeferredFlushPromise: Promise<void> | null = null;
+  /** Dedupes concurrent loadGraph calls (boot sweep timeout + UI graphs.load). */
+  private loadGraphInflight = new Map<GraphId, Promise<void>>();
   private readonly oplogWriter: oplog.OpLogWriter;
   /** Append-only LLM event log — one .gll file per engram. */
   readonly gllWriter: GllWriter;
@@ -1828,24 +1830,24 @@ export class GraphnosisHost {
   }
 
   private async runBootDeferredWork(): Promise<void> {
-    const reconciles = this.bootReconcileQueue.splice(0);
-    if (reconciles.length === 0) {
+    const reconcileGraphIds = this.bootReconcileQueue.splice(0);
+    if (reconcileGraphIds.length === 0) {
       this.bootDeferredFlushPromise = null;
       return;
     }
     console.error(
-      `[graphnosis-host] boot deferred work: ${reconciles.length} oplog reconcile(s)`,
+      `[graphnosis-host] boot deferred work: ${reconcileGraphIds.length} oplog reconcile(s)`,
     );
 
     type OplogEventBatch = Awaited<ReturnType<typeof oplog.readAllEvents>>;
     let fullEvents: OplogEventBatch | null = null;
     let tailEvents: OplogEventBatch | null = null;
 
-    const needsFull = reconciles.some(
-      ({ graphId }) => this.settings.graphMetadata[graphId]?.oplogReconcileCheckpoint === undefined,
+    const needsFull = reconcileGraphIds.some(
+      (graphId) => this.settings.graphMetadata[graphId]?.oplogReconcileCheckpoint === undefined,
     );
-    const tailCheckpoints = reconciles
-      .map(({ graphId }) => this.settings.graphMetadata[graphId]?.oplogReconcileCheckpoint)
+    const tailCheckpoints = reconcileGraphIds
+      .map((graphId) => this.settings.graphMetadata[graphId]?.oplogReconcileCheckpoint)
       .filter((ck): ck is NonNullable<typeof ck> => ck !== undefined);
 
     if (needsFull) {
@@ -1862,7 +1864,9 @@ export class GraphnosisHost {
 
     const prefetch = { fullEvents, tailEvents };
 
-    for (const { graphId, entry } of reconciles) {
+    for (const graphId of reconcileGraphIds) {
+      const entry = this.graphs.get(graphId);
+      if (!entry) continue;
       const t0 = Date.now();
       try {
         const outcome = await this.reconcileGraphFromOplog(graphId, entry, prefetch);
@@ -1887,7 +1891,9 @@ export class GraphnosisHost {
 
   private scheduleReconcile(graphId: GraphId, entry: LoadedGraph): void {
     if (this.bootPhaseActive || this.bootSweepActive) {
-      this.bootReconcileQueue.push({ graphId, entry });
+      if (!this.bootReconcileQueue.includes(graphId)) {
+        this.bootReconcileQueue.push(graphId);
+      }
       return;
     }
     entry.reconcileBuilding = this.reconcileGraphFromOplog(graphId, entry)
@@ -2051,7 +2057,17 @@ export class GraphnosisHost {
   }
 
   async loadGraph(graphId: GraphId): Promise<void> {
+    const inflight = this.loadGraphInflight.get(graphId);
+    if (inflight) return inflight;
     if (this.graphs.has(graphId)) return;
+    const p = this.loadGraphInner(graphId).finally(() => {
+      this.loadGraphInflight.delete(graphId);
+    });
+    this.loadGraphInflight.set(graphId, p);
+    return p;
+  }
+
+  private async loadGraphInner(graphId: GraphId): Promise<void> {
     const tLoad = Date.now();
     let tDecrypt = 0;
     let tFromBuffer = 0;
@@ -2169,7 +2185,13 @@ export class GraphnosisHost {
     const sourceIndex = await this.loadBundle(graphId);
     tBundle = Date.now() - tBundle0;
     await this.yieldToLoop();
-
+    // Materialize the SDK graph before commit. fromBuffer usually leaves the
+    // graph queryable, but build() is idempotent and matches what oplog
+    // reconcile runs — without it, inspectNodes can briefly return [] on some
+    // .gai shapes until reconcile finishes.
+    await this.opts.adapter.build(handle);
+    const cache = new EmbeddingCache({ path: this.cachePath(graphId), key: this.key, salt: this.salt });
+    const entry: LoadedGraph = { handle, sourceIndex, cache, dirty: false, embeddingsBuilding: null, reconcileBuilding: null };
 
     // ── Early commit: make the engram available in the picker immediately ──
     //
@@ -2190,11 +2212,18 @@ export class GraphnosisHost {
     const entry: LoadedGraph = { handle, sourceIndex, cache, dirty: false, embeddingsBuilding: null, reconcileBuilding: null };
     this.graphs.set(graphId, entry);
     this.everLoaded.add(graphId); // mark available even after a future LRU evict
+    this.touchGraph(graphId); // boot-loaded engrams must not look idle to LRU
     this.correctionsCount.set(graphId, 0);
     const tEarlyCommit = Date.now() - tLoad;
+    const committedNodes = this.opts.adapter.inspectNodes(handle).length;
     console.error(
-      `[graphnosis-host] loadGraph engram[${redactId(graphId)}]: decrypt=${tDecrypt}ms fromBuffer=${tFromBuffer}ms bundle=${tBundle}ms earlyCommit=${tEarlyCommit}ms`,
+      `[graphnosis-host] loadGraph engram[${redactId(graphId)}]: decrypt=${tDecrypt}ms fromBuffer=${tFromBuffer}ms bundle=${tBundle}ms earlyCommit=${tEarlyCommit}ms nodes=${committedNodes}`,
     );
+    if (committedNodes === 0 && bytes!.length > 256) {
+      console.error(
+        `[graphnosis-host] loadGraph engram[${redactId(graphId)}]: WARNING committed 0 nodes from ${bytes!.length}B .gai — engram will appear empty until recovery`,
+      );
+    }
 
     // Converge .gai + source bundle with the merged multi-device op-log.
     // Queued during boot — each reconcile calls sync adapter.build() and
@@ -2353,8 +2382,7 @@ export class GraphnosisHost {
       await g.reconcileBuilding;
       return;
     }
-    const queued = this.bootReconcileQueue.find((q) => q.graphId === graphId);
-    if (queued && (this.bootPhaseActive || this.bootSweepActive)) {
+    if (this.bootReconcileQueue.includes(graphId)) {
       await this.flushBootDeferredWork();
     }
   }

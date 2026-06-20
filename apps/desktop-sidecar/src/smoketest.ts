@@ -172,6 +172,209 @@ ferry to Naxos. The food in Mykonos was overrated.`;
   }
   log('skill-walk-structured.ok', { steps: walkJson.steps.length, requires: walkJson.requires?.length ?? 0 });
 
+  // --- op-log merge on loadGraph (before supersede correction) ------------
+  log('oplog-merge-roundtrip', {});
+  const gaiPath = path.join(cortexDir, 'graphs', 'personal.gai');
+  const bundlePath = path.join(cortexDir, 'graphs', 'personal.bundle');
+  const staleGaiBytes = await fs.readFile(gaiPath);
+  const staleBundleBytes = await fs.readFile(bundlePath);
+  const mergeNodeId = src.nodeIds[1] ?? src.nodeIds[0]!;
+  await host.applyCorrection('personal', {
+    edits: [{
+      kind: 'edit',
+      nodeId: mergeNodeId,
+      content: 'We went to Greece in September 2020 (op-log merge smoke).',
+      reason: 'smoke:oplog-merge',
+    }],
+  });
+  const mergeEvents = (await host.listOplogEvents()).filter((e) => e.graphId === 'personal');
+  const reduced = oplog.reduce(mergeEvents).get('personal');
+  const mergedNode = reduced?.nodes.get(mergeNodeId);
+  const mergedContent = (mergedNode?.data as { content?: string } | undefined)?.content;
+  if (typeof mergedContent !== 'string' || !mergedContent.includes('September 2020 (op-log merge smoke)')) {
+    throw new Error('FAIL: op-log reduce did not merge editNode into canonical node state');
+  }
+  const mtimeBeforeReconcile = (await fs.stat(gaiPath)).mtimeMs;
+  await fs.writeFile(gaiPath, staleGaiBytes);
+  await fs.writeFile(bundlePath, staleBundleBytes);
+  await fs.unlink(path.join(cortexDir, 'graphs', 'personal.embcache')).catch(() => {});
+  const { host: mergedHost } = await GraphnosisHost.open({
+    cortexDir,
+    passphrase: newPassphrase,
+    deviceId: 'smoke-oplog-merge',
+    adapter: new GraphnosisImpl(),
+    policy: policyCfg,
+  });
+  await mergedHost.loadGraph('personal');
+  const mtimeAfterReconcile = (await fs.stat(gaiPath)).mtimeMs;
+  if (mtimeAfterReconcile <= mtimeBeforeReconcile) {
+    throw new Error('FAIL: loadGraph reconcile did not materialize op-log edits to .gai');
+  }
+  log('oplog-merge-roundtrip.ok', { mergeEventCount: mergeEvents.length, materialized: true });
+
+  // --- op-log tail replay + checkpoint (Batch 6 v2) -------------------------
+  log('oplog-tail-checkpoint', {});
+  const { crypto: gnCrypto } = await import('@nehloo-interactive/graphnosis-secure-sync');
+  const { DeviceIdentity } = await import('./device-identity.js');
+  const saltBytes = new Uint8Array(await fs.readFile(path.join(cortexDir, 'salt.bin')));
+  const wrap = await gnCrypto.deriveKey(newPassphrase, saltBytes);
+  const masterBlob = new Uint8Array(await fs.readFile(path.join(cortexDir, 'master.enc')));
+  const dataKey = await gnCrypto.decrypt(masterBlob, wrap.key);
+  const ident = await DeviceIdentity.loadOrCreate(cortexDir, dataKey);
+  const oplogDir = path.join(cortexDir, 'oplog');
+  const tailWriter = new oplog.OpLogWriter({
+    dir: oplogDir,
+    deviceId: ident.deviceId,
+    key: dataKey,
+    salt: saltBytes,
+    signSecretKey: ident.signSecretKey,
+    initialSeq: ident.initialSeq,
+    persistSeq: ident.persistSeq.bind(ident),
+  });
+  const readTailOpts = {
+    getDevicePubKey: (d: string) => ident.getPubKey(d),
+    onIntegrityIssue: () => {},
+  };
+  let tailCheckpoint = { maxTs: 0, maxSeq: -1 };
+  for (let i = 0; i < 100; i++) {
+    const emitted = tailWriter.emit({
+      graphId: 'personal',
+      op: 'merge',
+      target: { kind: 'source', id: '__tail-smoke' },
+      after: { phase: 'pre', i },
+    });
+    if (i === 99) tailCheckpoint = { maxTs: emitted.ts, maxSeq: emitted.seq! };
+  }
+  await tailWriter.flush();
+  await new Promise((r) => setTimeout(r, 50));
+  await mergedHost.setGraphMetadata('personal', {
+    ...(mergedHost.getSettings().graphMetadata.personal ?? {
+      template: 'personal',
+      displayName: 'personal',
+      createdAt: Date.now(),
+    }),
+    oplogReconcileCheckpoint: tailCheckpoint,
+  });
+  await new Promise((r) => setTimeout(r, 5));
+  for (let i = 0; i < 10; i++) {
+    tailWriter.emit({
+      graphId: 'personal',
+      op: 'merge',
+      target: { kind: 'source', id: '__tail-smoke' },
+      after: { phase: 'tail', i },
+    });
+  }
+  await tailWriter.flush();
+  await new Promise((r) => setTimeout(r, 50));
+  const tailEvents = await oplog.readEventsSince(oplogDir, dataKey, {
+    sinceTs: tailCheckpoint.maxTs,
+    ...(tailCheckpoint.maxSeq !== undefined ? { sinceSeq: tailCheckpoint.maxSeq } : {}),
+    ...readTailOpts,
+  });
+  if (tailEvents.length !== 10) {
+    throw new Error(`FAIL: readEventsSince expected 10 tail events, got ${tailEvents.length}`);
+  }
+  await mergedHost.unloadGraph('personal');
+  await mergedHost.loadGraph('personal');
+  await mergedHost.waitForReconcile('personal');
+  const nodesAfterTailReconcile = mergedHost.listNodes('personal').length;
+  if (nodesAfterTailReconcile === 0) {
+    throw new Error('FAIL: tail reconcile wiped all nodes (adapter.build on fromBuffer handle)');
+  }
+  const ckAfterLoad = mergedHost.getSettings().graphMetadata.personal?.oplogReconcileCheckpoint;
+  if (!ckAfterLoad || ckAfterLoad.maxTs <= tailCheckpoint.maxTs) {
+    throw new Error('FAIL: loadGraph tail reconcile did not advance checkpoint');
+  }
+  const tailAfterLoad = await oplog.readEventsSince(oplogDir, dataKey, {
+    sinceTs: ckAfterLoad.maxTs,
+    ...(ckAfterLoad.maxSeq !== undefined ? { sinceSeq: ckAfterLoad.maxSeq } : {}),
+    ...readTailOpts,
+  });
+  if (tailAfterLoad.length !== 0) {
+    throw new Error(`FAIL: expected no tail events after loadGraph checkpoint, got ${tailAfterLoad.length}`);
+  }
+  log('oplog-tail-checkpoint.ok', { tailCount: tailEvents.length, checkpoint: ckAfterLoad, nodes: nodesAfterTailReconcile });
+
+  // --- boot deferred reconcile: nodes visible after flush (3D / list_nodes) ---
+  log('boot-deferred-reconcile', {});
+  await mergedHost.unloadGraph('personal');
+  mergedHost.setBootPhaseActive(true);
+  mergedHost.setBootSweepActive(true);
+  await mergedHost.loadGraph('personal');
+  const bootPreFlush = mergedHost.listNodes('personal').length;
+  if (bootPreFlush === 0) {
+    throw new Error('FAIL: loadGraph committed 0 nodes before boot reconcile flush');
+  }
+  mergedHost.setBootSweepActive(false);
+  mergedHost.setBootPhaseActive(false);
+  await mergedHost.flushBootDeferredWork();
+  const bootPostFlush = mergedHost.listNodes('personal').length;
+  if (bootPostFlush === 0) {
+    throw new Error('FAIL: boot flushBootDeferredWork left engram with 0 nodes');
+  }
+  log('boot-deferred-reconcile.ok', { preFlush: bootPreFlush, postFlush: bootPostFlush });
+
+  // --- MCP audit log -------------------------------------------------------
+  log('mcp-audit', {});
+  await mergedHost.appendMcpAuditEvent({
+    tool: 'recall',
+    clientId: 'smoke-test',
+    transport: 'stdio',
+    queryLen: 42,
+    queryHash: 'abc123deadbeef',
+    engramIds: ['personal'],
+    tokenBudget: { servedTokens: 100, servedNodes: 3 },
+  });
+  const auditRows = await mergedHost.listMcpAuditEvents();
+  const smokeRow = auditRows.find((r) => r.clientId === 'smoke-test' && r.tool === 'recall');
+  if (!smokeRow) throw new Error('FAIL: MCP audit row not persisted');
+  if (smokeRow.queryHash !== 'abc123deadbeef') {
+    throw new Error('FAIL: MCP audit export missing queryHash');
+  }
+  log('mcp-audit.ok', { rows: auditRows.length });
+
+  // --- Compliance Mode v1: legal hold + evidence pack + recall_as_of --------
+  log('compliance-legal-hold', {});
+  await mergedHost.setEngramPreserve('personal', true, 'smoke-matter');
+  let holdBlocked = false;
+  try {
+    await mergedHost.forgetSource('personal', src.sourceId, { triggeredBy: 'user:forget' });
+  } catch (e) {
+    holdBlocked = (e as { code?: string }).code === 'legal_hold';
+  }
+  if (!holdBlocked) throw new Error('FAIL: forgetSource should be blocked under engram legal hold');
+  await mergedHost.setEngramPreserve('personal', false);
+  log('compliance-legal-hold.ok', { blocked: true });
+
+  log('compliance-evidence-pack', {});
+  const { buildEvidencePack, recallAsOf } = await import('./compliance.js');
+  const pack = await buildEvidencePack(mergedHost, cortexDir, { engram: 'personal' });
+  if (pack.version !== 1 || pack.oplog.count < 1) {
+    throw new Error('FAIL: evidence pack missing op-log slice');
+  }
+  if (pack.mcpAudit.count < 1) {
+    throw new Error('FAIL: evidence pack missing MCP audit rows');
+  }
+  if (!pack.engramHashes.some((h) => h.graphId === 'personal' && h.gaiSha256.length === 64)) {
+    throw new Error('FAIL: evidence pack missing engram hash');
+  }
+  log('compliance-evidence-pack.ok', {
+    oplog: pack.oplog.count,
+    mcp: pack.mcpAudit.count,
+    hashes: pack.engramHashes.length,
+  });
+
+  log('compliance-recall-as-of', {});
+  const pit = await recallAsOf(mergedHost, 'Greece', {
+    graphId: 'personal',
+    asOfTs: Date.now() + 60_000,
+    maxNodes: 10,
+  });
+  if (!pit.matches.some((m) => m.preview.toLowerCase().includes('greece'))) {
+    throw new Error('FAIL: recall_as_of did not surface Greece memory at boundary');
+  }
+  log('compliance-recall-as-of.ok', { matches: pit.matches.length });
+
   // --- deterministic correction (no LLM) -----------------------------------
   // `correct` must work with no Local LLM configured: it deterministically
   // supersedes the closest-matching memory with the correction text. The core
