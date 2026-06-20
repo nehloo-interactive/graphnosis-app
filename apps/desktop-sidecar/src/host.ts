@@ -1803,6 +1803,26 @@ export class GraphnosisHost {
     //                                      restore .bak → .gai so the user's
     //                                      data isn't lost.
     await this.recoverFromInterruptedPurge(graphId);
+    const hmacKey = this.key;
+    let handle!: GraphHandle;
+    let usedTinyLkgRestore = false;
+
+    // Auto-restore: empty .gai shell + substantial .lkg (writings-qtb9 pattern).
+    const gaiPath = this.graphPath(graphId);
+    const lkgPath = `${gaiPath}${LKG_SUFFIX}`;
+    let gaiSize = 0;
+    let lkgSize = 0;
+    try { gaiSize = (await fs.stat(gaiPath)).size; } catch { /* missing → legacy path below */ }
+    try { lkgSize = (await fs.stat(lkgPath)).size; } catch { /* no .lkg */ }
+    if (gaiSize > 0 && gaiSize < EMPTY_SAVE_BLOCK_MIN_BYTES && lkgSize > EMPTY_SAVE_BLOCK_MIN_BYTES) {
+      const restored = await this.tryRestoreTinyGaiFromLkg(graphId, hmacKey, gaiSize, lkgSize);
+      if (restored) {
+        handle = restored;
+        usedTinyLkgRestore = true;
+      }
+    }
+
+    if (!usedTinyLkgRestore) {
     // Prefer the canonical .gai path; fall back to the legacy .aikg path so
     // cortexes created before 0.2.6 keep loading. The next `save()` will write
     // the .gai file (and we can clean up the .aikg later if both exist).
@@ -1817,8 +1837,6 @@ export class GraphnosisHost {
     }
     const aikgPlain = await decrypt(new Uint8Array(bytes!), this.key);
     // Inner SDK HMAC key (independent of outer encryption) — derived from data key + a fixed label.
-    const hmacKey = this.key;
-    let handle: GraphHandle;
     try {
       handle = await this.opts.adapter.loadFromBuffer(graphId, aikgPlain, hmacKey);
     } catch (e) {
@@ -1879,6 +1897,7 @@ export class GraphnosisHost {
         throw e;
       }
     }
+    } // !usedTinyLkgRestore
     const sourceIndex = await this.loadBundle(graphId);
 
     // ── Early commit: make the engram available in the picker immediately ──
@@ -2117,6 +2136,18 @@ export class GraphnosisHost {
     return run;
   }
 
+  /** Mark a loaded graph dirty so the next `save()` persists it. Smoketest
+   *  uses this to simulate boot reconcile marking a 0-node in-memory graph
+   *  dirty before saveInner runs. */
+  markGraphDirty(graphId: GraphId): void {
+    this.must(graphId).dirty = true;
+  }
+
+  /** Smoketest-only counterpart to {@link markGraphDirty}. */
+  markGraphClean(graphId: GraphId): void {
+    this.must(graphId).dirty = false;
+  }
+
   async save(graphId: GraphId): Promise<void> {
     const running = this.saveRunning.get(graphId);
     // Nothing in flight for this graph — start immediately.
@@ -2141,16 +2172,32 @@ export class GraphnosisHost {
    *  good .gai to .lkg first, so one bad save leaves .gai empty and .lkg intact
    *  (writings-qtb9, Jun 2026). Returns the max on-disk .gai/.lkg byte size. */
   private async substantialGraphBytesOnDisk(graphId: GraphId): Promise<number> {
-    let max = 0;
-    for (const p of [this.graphPath(graphId), `${this.graphPath(graphId)}${LKG_SUFFIX}`]) {
-      try {
-        const st = await fs.stat(p);
-        if (st.size > max) max = st.size;
-      } catch (e) {
-        if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e;
-      }
-    }
-    return max;
+    return maxFileAndLkgBytes(this.graphPath(graphId), LKG_SUFFIX);
+  }
+
+  private async shouldBlockShrinkSave(
+    graphId: GraphId,
+    newBytes: number,
+    kind: 'gai' | 'bundle',
+  ): Promise<boolean> {
+    const target = kind === 'gai' ? this.graphPath(graphId) : this.bundlePath(graphId);
+    return wouldBlockShrinkSaveAtPath(target, newBytes, LKG_SUFFIX);
+  }
+
+  private async logBlockedShrinkSave(
+    graphId: GraphId,
+    newBytes: number,
+    kind: 'gai' | 'bundle',
+  ): Promise<void> {
+    const target = kind === 'gai' ? this.graphPath(graphId) : this.bundlePath(graphId);
+    const onDisk = await maxFileAndLkgBytes(target, LKG_SUFFIX);
+    await this.appendRecoveryLog({
+      event: 'shrink_save_blocked', graphId, newBytes, onDiskBytes: onDisk, kind,
+    });
+    console.error(
+      `[graphnosis-host] save blocked for engram[${redactId(graphId)}]: refusing to write ${newBytes}B ` +
+      `${kind} over ${onDisk}B on-disk .gai/.lkg (would clobber last-known-good)`,
+    );
   }
 
   private async shouldBlockEmptySave(graphId: GraphId, nodeCount: number): Promise<boolean> {
@@ -2180,6 +2227,10 @@ export class GraphnosisHost {
     await fs.mkdir(path.dirname(this.graphPath(graphId)), { recursive: true });
     const buf = await this.opts.adapter.toBuffer(g.handle, this.key);
     const ct = await encrypt(buf, this.key, this.salt);
+    if (await this.shouldBlockShrinkSave(graphId, ct.length, 'gai')) {
+      await this.logBlockedShrinkSave(graphId, ct.length, 'gai');
+      return;
+    }
     // Atomic write: write to .tmp, fsync via writeFile flush, then rename.
     // POSIX rename is atomic — either the new file is fully there or the old
     // file is unchanged. A direct fs.writeFile() to the final path can leave
@@ -2230,6 +2281,10 @@ export class GraphnosisHost {
       this.key,
       this.salt,
     );
+    if (await this.shouldBlockShrinkSave(graphId, bundleCt.length, 'bundle')) {
+      await this.logBlockedShrinkSave(graphId, bundleCt.length, 'bundle');
+      return;
+    }
     await writeFileAtomicWithBackup(this.bundlePath(graphId), Buffer.from(bundleCt), LKG_SUFFIX);
     await g.cache.save();
     g.dirty = false;
@@ -2343,6 +2398,43 @@ export class GraphnosisHost {
     console.error(
       `[graphnosis-host] engram '${redactId(graphId)}' failed integrity (${badMsg}); ` +
       `auto-recovered from last-known-good (.lkg). Bad files quarantined as .corrupt-${ts}.`,
+    );
+    return handle;
+  }
+
+  /** When .gai is a tiny empty shell but .lkg is substantial, promote .lkg
+   *  without waiting for an integrity failure (writings-qtb9, Jun 2026). */
+  private async tryRestoreTinyGaiFromLkg(
+    graphId: GraphId,
+    hmacKey: Uint8Array,
+    gaiBytes: number,
+    lkgBytes: number,
+  ): Promise<GraphHandle | null> {
+    const gaiPath = this.graphPath(graphId);
+    const lkgPath = `${gaiPath}${LKG_SUFFIX}`;
+    let handle: GraphHandle;
+    try {
+      const lkgPlain = await decrypt(new Uint8Array(await fs.readFile(lkgPath)), this.key);
+      handle = await this.opts.adapter.loadFromBuffer(graphId, lkgPlain, hmacKey);
+    } catch (e) {
+      await this.appendRecoveryLog({
+        event: 'lkg_restore_failed', graphId, gaiBytes, lkgBytes, error: (e as Error).message,
+      });
+      return null;
+    }
+    const ts = Date.now();
+    try { await fs.rename(gaiPath, `${gaiPath}.corrupt-${ts}`); } catch { /* may be gone */ }
+    try { await fs.rename(lkgPath, gaiPath); } catch (e) {
+      console.error(`[graphnosis-host] could not promote .lkg for '${redactId(graphId)}': ${(e as Error).message}`);
+      return null;
+    }
+    const bundleLkg = `${this.bundlePath(graphId)}${LKG_SUFFIX}`;
+    try { await fs.rename(bundleLkg, this.bundlePath(graphId)); } catch { /* optional */ }
+    try { await fs.unlink(this.cachePath(graphId)); } catch { /* stale cache */ }
+    await this.appendRecoveryLog({ event: 'recovered_from_lkg', graphId, gaiBytes, lkgBytes, reason: 'tiny_gai_shell' });
+    console.error(
+      `[graphnosis-host] engram '${redactId(graphId)}': auto-restored from .lkg ` +
+      `(${gaiBytes}B .gai shell → ${lkgBytes}B .lkg promoted)`,
     );
     return handle;
   }
@@ -6166,6 +6258,45 @@ const LKG_SUFFIX = '.lkg';
 /** Never overwrite a substantial on-disk .gai/.lkg with a 0-node serialize.
  *  Empty template shells are ~450B; anything above this threshold had real data. */
 const EMPTY_SAVE_BLOCK_MIN_BYTES = 10 * 1024;
+/** Refuse a save when new ciphertext is less than half the best on-disk size —
+ *  blocks rotating a tiny .gai over a good .lkg (personal, Jun 2026). */
+const SHRINK_SAVE_BLOCK_RATIO = 0.5;
+
+async function maxFileAndLkgBytes(target: string, lkgSuffix: string): Promise<number> {
+  let max = 0;
+  for (const p of [target, `${target}${lkgSuffix}`]) {
+    try {
+      const st = await fs.stat(p);
+      if (st.size > max) max = st.size;
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e;
+    }
+  }
+  return max;
+}
+
+async function wouldBlockShrinkSaveAtPath(
+  target: string,
+  newBytes: number,
+  lkgSuffix: string,
+): Promise<boolean> {
+  const best = await maxFileAndLkgBytes(target, lkgSuffix);
+  if (best <= EMPTY_SAVE_BLOCK_MIN_BYTES) return false;
+  if (newBytes < best * SHRINK_SAVE_BLOCK_RATIO) return true;
+  try {
+    const tStat = await fs.stat(target);
+    const lStat = await fs.stat(`${target}${lkgSuffix}`);
+    if (
+      lStat.size > EMPTY_SAVE_BLOCK_MIN_BYTES &&
+      tStat.size < lStat.size * SHRINK_SAVE_BLOCK_RATIO
+    ) {
+      return true;
+    }
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e;
+  }
+  return false;
+}
 
 /** Global cap on concurrent saveInner bodies across ALL graphs. Each save
  *  holds 2-3× its engram size in off-heap Buffers (toBuffer + ciphertext +
@@ -6228,6 +6359,11 @@ const VERIFY_MIN_INTERVAL_MS = 20_000;
  * crash there still leaves the `.lkg` for loadGraph's fallback to recover.
  */
 async function writeFileAtomicWithBackup(target: string, data: Buffer, lkgSuffix: string): Promise<void> {
+  if (await wouldBlockShrinkSaveAtPath(target, data.length, lkgSuffix)) {
+    throw new Error(
+      `shrink_save_blocked: refusing to write ${data.length}B over substantial on-disk ${path.basename(target)}`,
+    );
+  }
   const tmp = `${target}.tmp-${process.pid}-${Date.now()}-${randomBytes(4).toString('hex')}`;
   const fh = await fs.open(tmp, 'w', 0o600);
   try {
