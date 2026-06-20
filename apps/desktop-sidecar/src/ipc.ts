@@ -62,6 +62,11 @@ import {
   unsubscribeCatalogEntry,
   recordInstalledPackage,
 } from './catalog-subscriptions.js';
+import {
+  catalogHasSsoSession,
+  checkRecallSsoGate,
+  CATALOG_SSO_REQUIRED_MESSAGE,
+} from './catalog-sso-gate.js';
 import { readSsoUnlockOffer, discoverSsoUnlock, idpUiHints, probeIdpReachability } from '@graphnosis-app/core/sso';
 import { resolveClassificationPolicy, sanitizeClassificationSchema } from '@graphnosis-app/core';
 import type { GraphMetadata } from '@graphnosis-app/core/settings';
@@ -631,6 +636,26 @@ function catalogEntriesFromSettings(deps: IpcDeps): EngramCatalogEntry[] {
   return settings.engramCatalog?.entries ?? [];
 }
 
+function catalogInstallEntitlement(
+  deps: IpcDeps,
+  entry: EngramCatalogEntry,
+  groups: readonly string[],
+) {
+  return checkCatalogInstallEntitlement(entry, groups, {
+    hasSsoSession: catalogHasSsoSession(deps),
+  });
+}
+
+function catalogEntitlementMessage(entry: EngramCatalogEntry, reason: string): string {
+  if (reason === 'missing_groups') {
+    return `You are not in the IdP groups required for "${entry.displayName}".`;
+  }
+  if (reason === 'sso_required') {
+    return CATALOG_SSO_REQUIRED_MESSAGE;
+  }
+  return `You are not entitled to access "${entry.displayName}".`;
+}
+
 /** Install catalog package — create engram shell and pull content when configured. */
 async function installCatalogPackage(
   deps: IpcDeps,
@@ -656,6 +681,9 @@ async function installCatalogPackage(
         schema,
         meta,
       ).tier;
+    }
+    if (entry.requireSsoSession === true) {
+      meta.requireSsoSession = true;
     }
     await deps.host.setGraphMetadata(engramId, meta);
   }
@@ -691,6 +719,7 @@ async function installCatalogPackage(
       template: entry.itControlled ? 'compliance' : 'team',
       displayName: entry.displayName,
       createdAt: meta?.createdAt ?? Date.now(),
+      ...(entry.requireSsoSession === true ? { requireSsoSession: true } : {}),
     });
     // Hub-slice federated pull is metadata-only until remote hub IPC ships.
     void entry.hubRef;
@@ -2437,8 +2466,10 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
         maxTokens: z.number().optional(),
         maxNodes: z.number().optional(),
       }).parse(params);
+      const { autoExceptGraphIds } = checkRecallSsoGate(deps.host, deps, null);
       const sub = await withEmbedding(() => deps.host.recall(query, {
         budget: { maxTokens: maxTokens ?? 2000, maxNodes: maxNodes ?? 20 },
+        ...(autoExceptGraphIds.length ? { exceptGraphIds: autoExceptGraphIds } : {}),
       }));
       // Enrich each recalled node with its allowlist sourceId so MemoryStudio
       // can redact per-source precisely in Presentation Mode.
@@ -3416,6 +3447,11 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
       }).parse(params ?? {});
 
       const scopeOpts = args.onlyEngrams?.length ? { onlyGraphIds: args.onlyEngrams } : {};
+      const onlyIds = args.onlyEngrams?.length ? args.onlyEngrams : null;
+      const { autoExceptGraphIds } = checkRecallSsoGate(deps.host, deps, onlyIds);
+      const recallScope = onlyIds?.length
+        ? scopeOpts
+        : { ...(autoExceptGraphIds.length ? { exceptGraphIds: autoExceptGraphIds } : {}) };
 
       if (args.displayMaxNodes !== undefined) {
         // Slider adjustment: single focused call, no allCandidates returned
@@ -3423,7 +3459,7 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
         const sub = await withEmbedding(() => deps.host.recall(args.query, {
           budget: { maxTokens: args.maxTokens ?? 3000, maxNodes: args.displayMaxNodes! },
           skipEnrichment: true,
-          ...scopeOpts,
+          ...recallScope,
         }));
         return {
           prompt: sub.prompt,
@@ -3442,7 +3478,7 @@ export async function dispatch(deps: IpcDeps, method: string, params: unknown): 
       const wideSub = await withEmbedding(() => deps.host.recall(args.query, {
         budget: { maxTokens: 999_999, maxNodes: args.maxNodes ?? 50 },
         skipEnrichment: true,
-        ...scopeOpts,
+        ...recallScope,
       }));
       const allCandidates = flattenByGraph(wideSub.byGraph);
       const topScore = allCandidates[0]?.score ?? 0;
@@ -7154,6 +7190,7 @@ OUTPUT RULES — non-negotiable:
           noReshare: z.boolean().optional(),
           mdmBundleId: z.string().max(128).optional(),
           published: z.boolean().optional(),
+          requireSsoSession: z.boolean().optional(),
         }),
       }).parse(params ?? {});
       const e = args.entry;
@@ -7173,6 +7210,7 @@ OUTPUT RULES — non-negotiable:
         ...(e.hubRef !== undefined ? { hubRef: e.hubRef } : {}),
         ...(e.mdmBundleId !== undefined ? { mdmBundleId: e.mdmBundleId } : {}),
         ...(e.published !== undefined ? { published: e.published } : {}),
+        ...(e.requireSsoSession === true ? { requireSsoSession: true } : {}),
       });
       if (!sanitized) {
         return { ok: false, reason: 'invalid_entry', message: 'Catalog entry failed validation.' };
@@ -7221,14 +7259,12 @@ OUTPUT RULES — non-negotiable:
       }
       const settings = deps.host.getSettings();
       const groups = settings.sso?.lastLogin?.groups ?? [];
-      const ent = checkCatalogInstallEntitlement(entry, groups);
+      const ent = catalogInstallEntitlement(deps, entry, groups);
       if (!ent.entitled) {
         return {
           ok: false,
           reason: ent.reason,
-          message: ent.reason === 'missing_groups'
-            ? `You are not in the IdP groups required for "${entry.displayName}".`
-            : `You are not entitled to install "${entry.displayName}".`,
+          message: catalogEntitlementMessage(entry, ent.reason),
           ...(ent.missingGroups ? { missingGroups: ent.missingGroups } : {}),
         };
       }
@@ -7251,14 +7287,12 @@ OUTPUT RULES — non-negotiable:
       }
       const settings = deps.host.getSettings();
       const groups = settings.sso?.lastLogin?.groups ?? [];
-      const ent = checkCatalogInstallEntitlement(entry, groups);
+      const ent = catalogInstallEntitlement(deps, entry, groups);
       if (!ent.entitled) {
         return {
           ok: false,
           reason: ent.reason,
-          message: ent.reason === 'missing_groups'
-            ? `You are not in the IdP groups required for "${entry.displayName}".`
-            : `You are not entitled to subscribe to "${entry.displayName}".`,
+          message: catalogEntitlementMessage(entry, ent.reason),
           ...(ent.missingGroups ? { missingGroups: ent.missingGroups } : {}),
         };
       }
@@ -7309,6 +7343,7 @@ OUTPUT RULES — non-negotiable:
         entries,
         groups,
         requireSub ? subs.subscribedCatalogIds : undefined,
+        { hasSsoSession: catalogHasSsoSession(deps) },
       );
       return {
         ok: true,
@@ -7472,7 +7507,8 @@ OUTPUT RULES — non-negotiable:
         };
       }
       await importMdmCatalogBundle(bundlePath, bundle);
-      if (args.mergeSsoHints === true || bundle.compliance?.classificationSchema) {
+      if (args.mergeSsoHints === true || bundle.compliance?.classificationSchema
+        || bundle.catalogEntries?.length || bundle.catalogOverrides) {
         await mergeMdmSsoHints(deps.host, bundle);
       }
       return {
@@ -7488,7 +7524,7 @@ OUTPUT RULES — non-negotiable:
       const result = await applyMdmAutoInstall(deps.host, async (entry) => {
         const installed = await installCatalogPackage(deps, entry);
         return installed.ok ? { ok: true as const } : { ok: false as const };
-      });
+      }, deps);
       const store = await readCatalogSubscriptions();
       return {
         ...result,

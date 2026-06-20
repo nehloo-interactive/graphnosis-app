@@ -16,9 +16,12 @@ import type {
 import {
   checkCatalogInstallEntitlement,
   sanitizeEngramCatalogSettings,
+  parseMdmCatalogBundleExtras,
+  mergeMdmCatalogIntoSettings,
 } from '@graphnosis-app/core/settings';
 import { sanitizeClassificationSchema } from '@graphnosis-app/core';
 import type { GraphnosisHost } from './host.js';
+import { catalogHasSsoSession } from './catalog-sso-gate.js';
 import {
   readCatalogSubscriptions,
   writeCatalogSubscriptions,
@@ -36,6 +39,7 @@ export async function readMdmBundleFile(bundlePath: string): Promise<MdmEngramCa
     const parsed = JSON.parse(raw) as Partial<MdmEngramCatalogBundle>;
     if (!parsed.sso?.issuer || !parsed.sso?.clientId) return null;
     if (!Array.isArray(parsed.defaultSubscriptions)) return null;
+    const extras = parseMdmCatalogBundleExtras(parsed);
     return {
       sso: {
         issuer: String(parsed.sso.issuer).trim(),
@@ -45,6 +49,7 @@ export async function readMdmBundleFile(bundlePath: string): Promise<MdmEngramCa
       defaultSubscriptions: parsed.defaultSubscriptions
         .filter((p): p is string => typeof p === 'string' && p.trim().length > 0)
         .map((p) => p.trim()),
+      ...extras,
       ...(parsed.compliance?.classificationSchema
         ? (() => {
           const schema = sanitizeClassificationSchema(parsed.compliance!.classificationSchema);
@@ -101,6 +106,10 @@ function catalogIdsForPackageIds(
 export async function applyMdmAutoInstall(
   host: GraphnosisHost,
   installPackage: (entry: EngramCatalogEntry) => Promise<{ ok: true } | { ok: false }>,
+  sessionDeps?: {
+    ssoSession?: { role: import('@graphnosis-app/core/settings').SharingRole } | null;
+    sharingScope?: { role: import('@graphnosis-app/core/settings').SharingRole; engrams: string[] | '*' } | null;
+  },
 ): Promise<{
   ok: boolean;
   applied: number;
@@ -121,6 +130,7 @@ export async function applyMdmAutoInstall(
   const settings = host.getSettings();
   const entries = settings.engramCatalog?.entries ?? [];
   const groups = settings.sso?.lastLogin?.groups ?? [];
+  const hasSsoSession = sessionDeps ? catalogHasSsoSession(sessionDeps) : false;
   const packageIds = bundle.defaultSubscriptions.length > 0
     ? bundle.defaultSubscriptions
     : (await readCatalogSubscriptions()).mdmDefaultSubscriptions ?? [];
@@ -147,7 +157,7 @@ export async function applyMdmAutoInstall(
       skipped++;
       continue;
     }
-    const ent = checkCatalogInstallEntitlement(entry, groups);
+    const ent = checkCatalogInstallEntitlement(entry, groups, { hasSsoSession });
     if (!ent.entitled) {
       skipped++;
       continue;
@@ -188,6 +198,12 @@ export async function mergeMdmSsoHints(
   const schema = bundle.compliance?.classificationSchema
     ? sanitizeClassificationSchema(bundle.compliance.classificationSchema)
     : undefined;
+  const mergedCatalogEntries = (bundle.catalogEntries?.length || bundle.catalogOverrides)
+    ? mergeMdmCatalogIntoSettings(current.engramCatalog?.entries ?? [], {
+      ...(bundle.catalogEntries?.length ? { catalogEntries: bundle.catalogEntries } : {}),
+      ...(bundle.catalogOverrides ? { catalogOverrides: bundle.catalogOverrides } : {}),
+    })
+    : undefined;
   const compliancePatch = schema
     ? {
       compliance: {
@@ -205,10 +221,17 @@ export async function mergeMdmSsoHints(
       },
     }
     : {};
+  const catalogPatch = mergedCatalogEntries
+    ? {
+      engramCatalog: sanitizeEngramCatalogSettings({ entries: mergedCatalogEntries, version: 2 })
+        ?? { entries: mergedCatalogEntries, version: 2 },
+    }
+    : {};
   if (!sso?.oidc?.issuer && bundle.sso.issuer) {
     await host.setSettings({
       ...current,
       ...compliancePatch,
+      ...catalogPatch,
       sso: {
         ...(sso ?? { enabled: false, protocol: 'oidc', breakGlassPassphrase: true, groupRoleMappings: [] }),
         oidc: {
@@ -219,11 +242,15 @@ export async function mergeMdmSsoHints(
           redirectUri: 'http://127.0.0.1:4580/sso/callback',
         },
       },
-      engramCatalog: sanitizeEngramCatalogSettings(current.engramCatalog)
-        ?? current.engramCatalog
-        ?? { entries: [], version: 2 },
+      ...(catalogPatch.engramCatalog
+        ? {}
+        : {
+          engramCatalog: sanitizeEngramCatalogSettings(current.engramCatalog)
+            ?? current.engramCatalog
+            ?? { entries: [], version: 2 },
+        }),
     });
-  } else if (schema) {
-    await host.setSettings({ ...current, ...compliancePatch });
+  } else if (schema || mergedCatalogEntries) {
+    await host.setSettings({ ...current, ...compliancePatch, ...catalogPatch });
   }
 }

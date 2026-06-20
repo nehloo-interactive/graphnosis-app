@@ -21,7 +21,7 @@ import { randomUUID } from 'node:crypto';
 import type { SharingRole } from './rbac.js';
 import { isSharingRole, normalizeSharingRole } from './rbac.js';
 import type { EnterpriseSsoSettings } from './sso.js';
-import { isEnterpriseSsoConfigured } from './sso.js';
+import { hasActiveSsoUnlockSession, isEnterpriseSsoConfigured } from './sso.js';
 
 export type EngramCatalogKind = 'engram-package' | 'hub-slice';
 
@@ -61,6 +61,12 @@ export interface EngramCatalogEntry {
   published?: boolean;
   /** Fixed classification label for IT-controlled catalog installs (schema label id). */
   defaultClassificationLabelId?: string;
+  /**
+   * When true, subscribe/install and recall into the installed engram require
+   * an Enterprise IdP unlock for this session (not passphrase-only break-glass).
+   * Default false when absent.
+   */
+  requireSsoSession?: boolean;
 }
 
 /** Optional SharePoint list provider for IT catalog sync (cached in cortex settings). */
@@ -99,6 +105,7 @@ export type CatalogEntitlementReason =
   | 'entitled'
   | 'not_subscribed'
   | 'missing_groups'
+  | 'sso_required'
   | 'not_published'
   | 'not_found';
 
@@ -111,6 +118,14 @@ export interface CatalogEntitlement {
   missingGroups?: string[];
 }
 
+/** Per-package catalog overrides in an MDM bundle (keyed by packageId). */
+export type MdmCatalogEntryOverride = Partial<
+  Pick<
+    EngramCatalogEntry,
+    'requireSsoSession' | 'requiredIdpGroups' | 'defaultClassificationLabelId' | 'published'
+  >
+>;
+
 /** MDM / plist JSON shape for IT push — SSO + default package subscriptions. */
 export interface MdmEngramCatalogBundle {
   sso: {
@@ -120,6 +135,10 @@ export interface MdmEngramCatalogBundle {
   };
   /** packageIds to auto-subscribe on enrolled devices. */
   defaultSubscriptions: string[];
+  /** Optional full catalog rows to upsert when the bundle is imported. */
+  catalogEntries?: Partial<EngramCatalogEntry>[];
+  /** Optional per-packageId field overrides merged onto existing catalog rows. */
+  catalogOverrides?: Record<string, MdmCatalogEntryOverride>;
   /** Optional Enterprise compliance controls pushed with the catalog bundle. */
   compliance?: {
     classificationSchema?: import('../compliance/classification-schema.js').ClassificationSchema;
@@ -152,13 +171,22 @@ export function userMeetsCatalogGroupRequirement(
   return { ok: false, missingGroups: [...required] };
 }
 
+export interface CatalogInstallEntitlementOpts {
+  /** Present when the active session was unlocked via Enterprise IdP. */
+  hasSsoSession?: boolean;
+}
+
 /** Resolve install entitlement for a single catalog entry. */
 export function checkCatalogInstallEntitlement(
   entry: EngramCatalogEntry,
   userGroups: readonly string[],
+  opts?: CatalogInstallEntitlementOpts,
 ): { entitled: boolean; reason: CatalogEntitlementReason; missingGroups?: string[] } {
   if (entry.published === false) {
     return { entitled: false, reason: 'not_published' };
+  }
+  if (entry.requireSsoSession === true && opts?.hasSsoSession !== true) {
+    return { entitled: false, reason: 'sso_required' };
   }
   const groupCheck = userMeetsCatalogGroupRequirement(entry.requiredIdpGroups, userGroups);
   if (!groupCheck.ok) {
@@ -182,6 +210,7 @@ export function resolveCatalogEntitlements(
   entries: readonly EngramCatalogEntry[],
   userGroups: readonly string[],
   subscribedCatalogIds?: readonly string[],
+  opts?: CatalogInstallEntitlementOpts,
 ): CatalogEntitlement[] {
   const subSet = subscribedCatalogIds
     ? new Set(subscribedCatalogIds)
@@ -198,7 +227,7 @@ export function resolveCatalogEntitlements(
       });
       continue;
     }
-    const check = checkCatalogInstallEntitlement(entry, userGroups);
+    const check = checkCatalogInstallEntitlement(entry, userGroups, opts);
     out.push({
       catalogId: entry.id,
       entry,
@@ -209,6 +238,9 @@ export function resolveCatalogEntitlements(
   }
   return out;
 }
+
+/** @deprecated Import from ./sso.js — re-export for catalog callers. */
+export { hasActiveSsoUnlockSession };
 
 export function buildMdmEngramCatalogBundle(
   entries: readonly EngramCatalogEntry[],
@@ -314,6 +346,7 @@ function migrateLegacyCatalogEntry(raw: Record<string, unknown>): Partial<Engram
       ? { mdmBundleId: raw['mdmBundleId'].trim() }
       : {}),
     published: raw['published'] !== false,
+    ...(typeof raw['requireSsoSession'] === 'boolean' ? { requireSsoSession: raw['requireSsoSession'] } : {}),
   };
 }
 
@@ -366,8 +399,80 @@ export function sanitizeEngramCatalogEntry(raw: Partial<EngramCatalogEntry> | Re
     ...(typeof source.defaultClassificationLabelId === 'string' && source.defaultClassificationLabelId.trim()
       ? { defaultClassificationLabelId: source.defaultClassificationLabelId.trim() }
       : {}),
+    ...(source.requireSsoSession === true ? { requireSsoSession: true } : {}),
     published: source.published !== false,
   };
+}
+
+function sanitizeMdmCatalogOverride(raw: unknown): MdmCatalogEntryOverride | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const r = raw as Record<string, unknown>;
+  const out: MdmCatalogEntryOverride = {};
+  if (typeof r['requireSsoSession'] === 'boolean') out.requireSsoSession = r['requireSsoSession'];
+  if (Array.isArray(r['requiredIdpGroups'])) {
+    out.requiredIdpGroups = r['requiredIdpGroups']
+      .filter((g): g is string => typeof g === 'string')
+      .map((g) => g.trim())
+      .filter(Boolean);
+  }
+  if (typeof r['defaultClassificationLabelId'] === 'string' && r['defaultClassificationLabelId'].trim()) {
+    out.defaultClassificationLabelId = r['defaultClassificationLabelId'].trim();
+  }
+  if (typeof r['published'] === 'boolean') out.published = r['published'];
+  return Object.keys(out).length > 0 ? out : null;
+}
+
+/** Parse catalog rows + overrides from an MDM bundle JSON object. */
+export function parseMdmCatalogBundleExtras(
+  raw: Partial<MdmEngramCatalogBundle> | Record<string, unknown>,
+): Pick<MdmEngramCatalogBundle, 'catalogEntries' | 'catalogOverrides'> {
+  const catalogEntries = Array.isArray(raw['catalogEntries'])
+    ? raw['catalogEntries']
+      .map((e) => sanitizeEngramCatalogEntry(e as Partial<EngramCatalogEntry>))
+      .filter(Boolean) as EngramCatalogEntry[]
+    : undefined;
+  let catalogOverrides: Record<string, MdmCatalogEntryOverride> | undefined;
+  if (raw['catalogOverrides'] && typeof raw['catalogOverrides'] === 'object') {
+    const parsed: Record<string, MdmCatalogEntryOverride> = {};
+    for (const [packageId, overrideRaw] of Object.entries(raw['catalogOverrides'] as Record<string, unknown>)) {
+      const key = packageId.trim();
+      if (!key) continue;
+      const override = sanitizeMdmCatalogOverride(overrideRaw);
+      if (override) parsed[key] = override;
+    }
+    if (Object.keys(parsed).length > 0) catalogOverrides = parsed;
+  }
+  return {
+    ...(catalogEntries?.length ? { catalogEntries } : {}),
+    ...(catalogOverrides ? { catalogOverrides } : {}),
+  };
+}
+
+/** Merge MDM catalog rows and per-package overrides into cortex catalog settings. */
+export function mergeMdmCatalogIntoSettings(
+  currentEntries: readonly EngramCatalogEntry[],
+  extras: Pick<MdmEngramCatalogBundle, 'catalogEntries' | 'catalogOverrides'>,
+): EngramCatalogEntry[] {
+  const byPackageId = new Map(currentEntries.map((e) => [e.packageId, { ...e }]));
+  for (const entry of extras.catalogEntries ?? []) {
+    const packageId = entry.packageId?.trim();
+    if (!packageId) continue;
+    byPackageId.set(packageId, entry as EngramCatalogEntry);
+  }
+  for (const [packageId, override] of Object.entries(extras.catalogOverrides ?? {})) {
+    const existing = byPackageId.get(packageId);
+    if (!existing) continue;
+    byPackageId.set(packageId, {
+      ...existing,
+      ...(override.requireSsoSession !== undefined ? { requireSsoSession: override.requireSsoSession } : {}),
+      ...(override.requiredIdpGroups !== undefined ? { requiredIdpGroups: override.requiredIdpGroups } : {}),
+      ...(override.defaultClassificationLabelId !== undefined
+        ? { defaultClassificationLabelId: override.defaultClassificationLabelId }
+        : {}),
+      ...(override.published !== undefined ? { published: override.published } : {}),
+    });
+  }
+  return [...byPackageId.values()];
 }
 
 function sanitizeSharePointSettings(

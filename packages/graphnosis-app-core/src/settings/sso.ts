@@ -331,3 +331,18 @@ export function sanitizeEnterpriseSsoSettings(
     ...(orgSignSecretEnc ? { orgSignSecretEnc } : {}),
   };
 }
+
+/**
+ * True when the active sidecar session was unlocked via Enterprise IdP (not
+ * passphrase-only break-glass). Detects runtime markers only — not persisted
+ * `lastLogin`, which survives across sessions.
+ */
+export function hasActiveSsoUnlockSession(input: {
+  ssoSession?: { role?: string } | null;
+  /** Full-cortex SSO unlock sets sharingScope with engrams: '*'. */
+  sharingScope?: { role?: string; engrams?: string[] | '*' } | null;
+}): boolean {
+  if (input.ssoSession?.role) return true;
+  if (input.sharingScope?.role && input.sharingScope.engrams === '*') return true;
+  return false;
+}

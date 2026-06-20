@@ -1058,6 +1058,11 @@ async function main(): Promise<void> {
             role: env.ssoRole as import('@graphnosis-app/core/settings').SharingRole,
             engrams: '*' as const,
           },
+          ssoSession: {
+            role: env.ssoRole as import('@graphnosis-app/core/settings').SharingRole,
+            ...(env.ssoEmail ? { email: env.ssoEmail } : {}),
+            ...(env.ssoSubject ? { subject: env.ssoSubject } : {}),
+          },
         }
       : {}),
   };

@@ -614,6 +614,12 @@ export interface GraphMetadata {
    * Auto-tightens effective sensitivity tier and recall caps.
    */
   industryTags?: string[];
+
+  /**
+   * Persisted when installed from a catalog package with `requireSsoSession: true`.
+   * Recall into this engram requires an Enterprise IdP unlock for the session.
+   */
+  requireSsoSession?: boolean;
 }
 
 /**
@@ -834,6 +840,7 @@ export {
   isOidcSsoConfigured,
   isSamlSsoConfigured,
   isEnterpriseSsoConfigured,
+  hasActiveSsoUnlockSession,
   enterpriseSsoPublicView,
   sanitizeEnterpriseSsoSettings,
 } from './sso.js';
@@ -850,6 +857,7 @@ export type {
   CatalogEntitlementReason,
   CatalogEntitlement,
   MdmEngramCatalogBundle,
+  MdmCatalogEntryOverride,
 } from './engram-catalog.js';
 export {
   DEFAULT_ENGRAM_CATALOG_SETTINGS,
@@ -863,6 +871,8 @@ export {
   sanitizeEngramCatalogSettings,
   engramCatalogFromAppSettings,
   engramCatalogPublicEntry,
+  parseMdmCatalogBundleExtras,
+  mergeMdmCatalogIntoSettings,
 } from './engram-catalog.js';
 import type { EngramCatalogSettings } from './engram-catalog.js';
 import { DEFAULT_ENGRAM_CATALOG_SETTINGS, engramCatalogFromAppSettings } from './engram-catalog.js';
