@@ -31,7 +31,7 @@ const RELEASES =
 
 // Last-resort fallback if the CURRENT_VERSION env var is ever missing/unset.
 // Keep roughly current; should match public/_redirects.
-const FALLBACK_VERSION = 'v1.20.1';
+const FALLBACK_VERSION = 'v1.20.2';
 
 export const onRequestGet: PagesFunction<Env> = (ctx) => {
   const platform = String(ctx.params.platform ?? '').toLowerCase();

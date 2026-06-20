@@ -11,6 +11,22 @@ Conventions: **Added** = new features, **Changed** = behavior or UX shifts, **Fi
 
 ---
 
+## v1.20.2 — Cortex unlock on Apple Silicon Macs
+
+<p style="margin-top:0.5rem;font-size:1.25em;opacity:0.85;">2026-06-20</p>
+
+Fixes a sidecar startup crash that prevented unlocking a cortex on fresh installs (including Mac Mini agent setups).
+
+### Fixed
+
+- **Cortex unlock.** The compiled sidecar no longer crashes loading `package.json` at boot (`Cannot find module '../package.json'` in Bun binaries). Version is passed from the app shell via `GRAPHNOSIS_APP_VERSION` instead.
+
+### Notes
+
+- Same Hermes integration as v1.20.0 / v1.20.1 — use **1.20.2** on Mac Mini and any machine where 1.20.1 could not open a cortex.
+
+---
+
 ## v1.20.1 — Release pipeline fix
 
 <p style="margin-top:0.5rem;font-size:1.25em;opacity:0.85;">2026-06-20</p>
