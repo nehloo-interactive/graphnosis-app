@@ -128,6 +128,23 @@ phrase = HMAC-SHA256( cortex_secret, tier + ":" + floor(now_ms / window_ms) )
 
 This is the same construction as a TOTP code, with words instead of digits. The phrase is **never** sent through MCP. The AI sees only what you type.
 
+### Automated verification (developers)
+
+After changes to consent handling or the `confirm_data_access` MCP tool in `mcp-server.ts`, run the sidecar smoke test. Phase **`consent-headless-flow`** exercises the full headless path:
+
+1. MCP `recall` on a sensitive engram (explicit `only_engrams`) → blocked with `⚠️ GRAPHNOSIS CONSENT REQUIRED`
+2. Wrong phrase via `confirm_data_access` → rejected (does not grant access)
+3. Valid phrase (same HMAC helper the app UI uses) → consent recorded
+4. Retry `recall` → sensitive data returned, tier caps enforced
+
+```bash
+pnpm --filter @graphnosis-app/desktop-sidecar smoke
+```
+
+Look for JSON log lines `consent-headless-flow.blocked`, `consent-headless-flow.confirmed`, and `consent-headless-flow.ok`. The harness reads the current phrase via `getConsentPhraseForTier` (identical to **Settings → AI → Consent Phrases**); optional env override `GRAPHNOSIS_SMOKE_CONSENT_PHRASE` exists for local debugging only and is not used in CI.
+
+This step is part of the **security-review-cadence** and **sidecar-change-verify** procedural skills in the `graphnosis-skills` engram — run smoke after any consent/MCP security change before shipping.
+
 ### Lockout after failed attempts
 
 After **5 consecutive failed** `confirm_data_access` attempts for the same `(client, tier)` pair within a 10-minute window, Graphnosis revokes that pair's consent and shows a notification. Lockout is **scoped** — it doesn't revoke unrelated consents.
