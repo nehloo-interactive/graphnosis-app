@@ -17,6 +17,7 @@ export function initGhampus(): void {
   wireSavingsBaselineSettings();
   wireGhampusAttachButtons();
   wireAnnotationModalControls();
+  wireGhampusThreadTimestamps();
 }
 
 export function isGhampusEnabled(): boolean { return ghampusEnabled; }
@@ -1046,7 +1047,53 @@ function fmtAbsTime(ts: number): string {
 }
 
 function fmtTime(ts: number): string {
-  return `<time datetime="${new Date(ts).toISOString()}" title="${escapeHtml(fmtAbsTime(ts))}">${fmtRelTime(ts)}</time>`;
+  return `<time datetime="${new Date(ts).toISOString()}" data-posted-at="${ts}" title="${escapeHtml(fmtAbsTime(ts))}">${fmtRelTime(ts)}</time>`;
+}
+
+const GHAMPUS_TIME_TICK_MS = 30_000;
+let ghampusTimeTicker: ReturnType<typeof setInterval> | null = null;
+
+function postedAtFromTimeEl(el: HTMLTimeElement): number {
+  const fromData = Number(el.dataset.postedAt);
+  if (Number.isFinite(fromData) && fromData > 0) return fromData;
+  const fromDatetime = Date.parse(el.getAttribute('datetime') ?? '');
+  return Number.isFinite(fromDatetime) ? fromDatetime : 0;
+}
+
+function updateLiveTimeEl(el: HTMLTimeElement): void {
+  const ts = postedAtFromTimeEl(el);
+  if (ts <= 0) return;
+  const rel = fmtRelTime(ts);
+  if (el.textContent !== rel) el.textContent = rel;
+  el.title = fmtAbsTime(ts);
+}
+
+function refreshGhampusMsgTimes(root: ParentNode = document): void {
+  root.querySelectorAll<HTMLTimeElement>('#ghampus-thread .chat-msg-time time').forEach(updateLiveTimeEl);
+}
+
+/** Start/stop the live relative-time ticker for Ghampus chat messages. */
+export function syncGhampusTimeTicker(active: boolean): void {
+  if (active) {
+    refreshGhampusMsgTimes();
+    if (ghampusTimeTicker) return;
+    ghampusTimeTicker = setInterval(() => refreshGhampusMsgTimes(), GHAMPUS_TIME_TICK_MS);
+    return;
+  }
+  if (ghampusTimeTicker) {
+    clearInterval(ghampusTimeTicker);
+    ghampusTimeTicker = null;
+  }
+}
+
+function wireGhampusThreadTimestamps(): void {
+  const thread = document.getElementById('ghampus-thread');
+  if (!thread || thread.dataset.timeHoverWired === '1') return;
+  thread.dataset.timeHoverWired = '1';
+  thread.addEventListener('mouseover', (e) => {
+    const el = (e.target as Element).closest<HTMLTimeElement>('.chat-msg-time time');
+    if (el) updateLiveTimeEl(el);
+  });
 }
 
 const COPY_ICON = `<svg width="13" height="13" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" style="flex-shrink:0">
@@ -1448,6 +1495,7 @@ function appendToThread(msg: GhampusChatMessage, opts?: { skipCache?: boolean })
   node.innerHTML = renderChatMessage(msg);
   container.appendChild(node);
   wireThreadNodeActions(node, msg);
+  node.querySelectorAll<HTMLTimeElement>('.chat-msg-time time').forEach(updateLiveTimeEl);
   const thread = document.getElementById('ghampus-thread');
   if (thread) thread.scrollTop = thread.scrollHeight;
 }

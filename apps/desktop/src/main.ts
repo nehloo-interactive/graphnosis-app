@@ -58,6 +58,7 @@ import {
   refreshGhampusAttachments, refreshGhampusSavings, refreshGhampusNotifications,
   refreshGhampusSkills, refreshGhampusRecentSaves, refreshGhampusSharingPanel,
   refreshGhampusThread, refreshGhampusHeader, refreshModelsPanel, refreshAiActivityRollup,
+  syncGhampusTimeTicker,
 } from './ui/ghampus';
 import {
   initUnlock, attemptUnlock, runBiometricUnlock, webauthnUnlock,
@@ -3194,6 +3195,7 @@ function activateMode(mode: Mode): void {
     // user should always start from the top.
     document.querySelector<HTMLElement>('.app-canvas')?.scrollTo({ top: 0 });
   }
+  syncGhampusTimeTicker(mode === 'ghampus');
 }
 
 // Wire the rail buttons once on module load.
