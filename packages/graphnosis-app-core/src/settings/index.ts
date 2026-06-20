@@ -817,6 +817,30 @@ export {
 import type { EnterpriseSsoSettings } from './sso.js';
 import { DEFAULT_SSO_SETTINGS, sanitizeEnterpriseSsoSettings } from './sso.js';
 
+export type {
+  CortexCatalogKind,
+  CortexCatalogEntry,
+  CortexCatalogSettings,
+  CatalogSubscriptionStore,
+  CatalogEntitlementReason,
+  CatalogEntitlement,
+  MdmCatalogBundle,
+} from './cortex-catalog.js';
+export {
+  DEFAULT_CORTEX_CATALOG_SETTINGS,
+  generateCatalogEntryId,
+  userMeetsCatalogGroupRequirement,
+  checkCatalogUnlockEntitlement,
+  resolveCatalogEntitlements,
+  findCatalogEntryForCortex,
+  buildMdmCatalogBundle,
+  sanitizeCortexCatalogEntry,
+  sanitizeCortexCatalogSettings,
+  cortexCatalogPublicEntry,
+} from './cortex-catalog.js';
+import type { CortexCatalogSettings } from './cortex-catalog.js';
+import { DEFAULT_CORTEX_CATALOG_SETTINGS, sanitizeCortexCatalogSettings } from './cortex-catalog.js';
+
 /**
  * Engram scope attached to a sharing token.
  * `engrams: '*'` grants access to all engrams (owner-equivalent scope).
@@ -1135,6 +1159,13 @@ export interface AppSettings {
    * Configuration-only in v1; federated unlock flow ships in a follow-on.
    */
   sso?: EnterpriseSsoSettings;
+
+  /**
+   * Organization Cortex Catalog — IT-published entries (org cortices, hub packages).
+   * Employee subscriptions are machine-local, not stored here.
+   * Data controller: IT on `org` entries; employee on `personal`.
+   */
+  cortexCatalog?: CortexCatalogSettings;
 }
 
 /** Ghampus runtime settings. Phase 1 scope: just the kill switch. */
@@ -1825,6 +1856,12 @@ export function mergeWithDefaults(partial: Partial<AppSettings> | null | undefin
       : {}),
     ...(partial?.sso !== undefined
       ? { sso: sanitizeEnterpriseSsoSettings(partial.sso as Partial<EnterpriseSsoSettings>) ?? DEFAULT_SSO_SETTINGS }
+      : {}),
+    ...(partial?.cortexCatalog !== undefined
+      ? {
+          cortexCatalog: sanitizeCortexCatalogSettings(partial.cortexCatalog as Partial<CortexCatalogSettings>)
+            ?? DEFAULT_CORTEX_CATALOG_SETTINGS,
+        }
       : {}),
   };
 }
